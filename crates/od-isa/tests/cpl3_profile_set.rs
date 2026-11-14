@@ -1377,3 +1377,432 @@ fn init_path_with_a_negative_openat_result_takes_the_js_to_the_error_exit() {
     assert_eq!(state.rip, RIP + 0x115);
     assert_eq!(state.rflags & (SF | ZF), SF);
 }
+
+// ---- S4-39f6: `[REX] C6 /0 ib` (MOV r/m8, imm8) with a memory operand ----
+
+/// Guest memory with a code page at `RIP` and a sparse data area: user pages (writable by CPL3)
+/// and supervisor pages (a CPL3 access is a #PF with U, a write with W too).
+struct DataMemory {
+    code: Vec<u8>,
+    user: std::collections::BTreeMap<u64, u8>,
+    supervisor: std::collections::BTreeMap<u64, u8>,
+    writes: Vec<(u64, u8)>,
+    reads: usize,
+}
+
+impl DataMemory {
+    fn new(code: &[u8]) -> Self {
+        Self {
+            code: code.to_vec(),
+            user: std::collections::BTreeMap::new(),
+            supervisor: std::collections::BTreeMap::new(),
+            writes: Vec::new(),
+            reads: 0,
+        }
+    }
+
+    fn with_user(mut self, address: u64, value: u8) -> Self {
+        self.user.insert(address, value);
+        self
+    }
+
+    fn with_supervisor(mut self, address: u64, value: u8) -> Self {
+        self.supervisor.insert(address, value);
+        self
+    }
+
+    fn page_fault(kind: AccessKind, context: AccessContext, address: u64) -> MemoryError {
+        MemoryError::Architectural(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(page_fault_error_code(kind, context, true, false, false)),
+            linear_address: Some(address),
+        })
+    }
+}
+
+impl GuestMemory for DataMemory {
+    fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+        let offset = address.checked_sub(RIP).unwrap_or(u64::MAX) as usize;
+        self.code.get(offset).copied().ok_or(MemoryError::Unmapped {
+            address,
+            access: AccessKind::Fetch,
+        })
+    }
+
+    fn read(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        destination: &mut [u8],
+    ) -> Result<(), MemoryError> {
+        self.reads += 1;
+        for (index, byte) in destination.iter_mut().enumerate() {
+            let at = address + index as u64;
+            if self.supervisor.contains_key(&at)
+                && context.page_privilege() == PrivilegeLevel::Ring3
+            {
+                return Err(Self::page_fault(AccessKind::Read, context, at));
+            }
+            *byte = *self
+                .user
+                .get(&at)
+                .or_else(|| self.supervisor.get(&at))
+                .ok_or(MemoryError::Unmapped {
+                    address: at,
+                    access: AccessKind::Read,
+                })?;
+        }
+        Ok(())
+    }
+
+    fn write(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        source: &[u8],
+    ) -> Result<(), MemoryError> {
+        // All checks before the first store: a failed store changes nothing.
+        for index in 0..source.len() as u64 {
+            let at = address + index;
+            if self.supervisor.contains_key(&at)
+                && context.page_privilege() == PrivilegeLevel::Ring3
+            {
+                return Err(Self::page_fault(AccessKind::Write, context, at));
+            }
+            if !self.user.contains_key(&at) && !self.supervisor.contains_key(&at) {
+                return Err(MemoryError::Unmapped {
+                    address: at,
+                    access: AccessKind::Write,
+                });
+            }
+        }
+        for (index, byte) in source.iter().enumerate() {
+            let at = address + index as u64;
+            if let Some(slot) = self.user.get_mut(&at) {
+                *slot = *byte;
+            } else if let Some(slot) = self.supervisor.get_mut(&at) {
+                *slot = *byte;
+            }
+            self.writes.push((at, *byte));
+        }
+        Ok(())
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+        unreachable!()
+    }
+}
+
+fn run3_data(
+    state: &mut LongModeState,
+    memory: &mut DataMemory,
+    budget: u64,
+) -> Result<Cpl0ProfileSetResult, Cpl0ProfileSetInputError> {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    run_with_cpl3_profile_set(
+        state,
+        memory,
+        config(PrivilegeLevel::Ring3, budget),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        None,
+        || false,
+    )
+}
+
+const DATA: u64 = 0x0060_1000;
+
+fn mov_byte_state() -> LongModeState {
+    let mut state = user_state();
+    for (index, value) in state.gpr.iter_mut().enumerate() {
+        *value = 0x1111_1111_1111_1111_u64.wrapping_mul(index as u64 + 1);
+    }
+    state.gpr[Register::Rbx as usize] = DATA;
+    state.gpr[Register::R13 as usize] = 3;
+    state.gpr[Register::R14 as usize] = DATA + 0x100;
+    state
+}
+
+#[test]
+fn init_movb_with_sib_rex_x_and_rex_b_stores_one_byte_at_the_effective_address() {
+    // `43 c6 04 2e 00`: `movb $0x0, (%r14,%r13)` of `/init` at `0x40013e` (REX.XB, SIB 2e).
+    for flags in [0, ARITH] {
+        let mut state = mov_byte_state();
+        state.rflags |= flags;
+        let mut expected = state.clone();
+        expected.rip = RIP + 5;
+        let target = DATA + 0x100 + 3;
+        let mut memory = DataMemory::new(&[0x43, 0xc6, 0x04, 0x2e, 0x00])
+            .with_user(target - 1, 0xaa)
+            .with_user(target, 0xff)
+            .with_user(target + 1, 0xbb);
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state, expected);
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+        assert_eq!(memory.writes, [(target, 0)]);
+        assert_eq!(memory.user[&(target - 1)], 0xaa);
+        assert_eq!(memory.user[&target], 0);
+        assert_eq!(memory.user[&(target + 1)], 0xbb);
+        assert_eq!(memory.reads, 0);
+    }
+}
+
+#[test]
+fn movb_imm8_forms_store_the_immediate_without_touching_registers_or_flags() {
+    // (name, bytes, effective address, stored byte)
+    let forms: &[(&str, &[u8], u64, u8)] = &[
+        ("c6 03 7f (%rbx)", &[0xc6, 0x03, 0x7f], DATA, 0x7f),
+        (
+            "c6 43 05 80 5(%rbx)",
+            &[0xc6, 0x43, 0x05, 0x80],
+            DATA + 5,
+            0x80,
+        ),
+        (
+            "c6 43 fe 01 -2(%rbx) (disp8 sign)",
+            &[0xc6, 0x43, 0xfe, 0x01],
+            DATA - 2,
+            0x01,
+        ),
+        (
+            "c6 83 00 01 00 00 11 0x100(%rbx) (disp32)",
+            &[0xc6, 0x83, 0x00, 0x01, 0x00, 0x00, 0x11],
+            DATA + 0x100,
+            0x11,
+        ),
+        (
+            "42 c6 04 2b 55 (%rbx,%r13) REX.X",
+            &[0x42, 0xc6, 0x04, 0x2b, 0x55],
+            DATA + 3,
+            0x55,
+        ),
+        (
+            "41 c6 04 5e 66 (%r14,%rbx,2) REX.B scale",
+            &[0x41, 0xc6, 0x04, 0x5e, 0x66],
+            DATA + 0x100 + 2 * DATA,
+            0x66,
+        ),
+        (
+            "c6 04 dd 00 10 60 00 22 0x601000(,%rbx,8) no base",
+            &[0xc6, 0x04, 0xdd, 0x00, 0x10, 0x60, 0x00, 0x22],
+            0x60_1000 + 8 * DATA,
+            0x22,
+        ),
+        (
+            "41 c6 06 99 (%r14) REX.B",
+            &[0x41, 0xc6, 0x06, 0x99],
+            DATA + 0x100,
+            0x99,
+        ),
+        // REX.W and REX.R do not change a byte store.
+        ("48 c6 03 33 REX.W", &[0x48, 0xc6, 0x03, 0x33], DATA, 0x33),
+        ("44 c6 03 34 REX.R", &[0x44, 0xc6, 0x03, 0x34], DATA, 0x34),
+    ];
+    for (name, bytes, target, value) in forms {
+        for flags in [0, ARITH] {
+            let mut state = mov_byte_state();
+            state.rflags |= flags;
+            let mut expected = state.clone();
+            expected.rip = RIP + bytes.len() as u64;
+            let mut memory = DataMemory::new(bytes)
+                .with_user(*target, 0xee)
+                .with_user(target + 1, 0xdd);
+            let result = run3_data(&mut state, &mut memory, 1).unwrap();
+            assert_eq!(
+                exit(&result),
+                &RunExit::InstructionBudgetExhausted,
+                "{name}"
+            );
+            assert_eq!(result.instructions_executed, 1, "{name}");
+            assert_eq!(state, expected, "{name}");
+            assert_eq!(memory.writes, [(*target, *value)], "{name}");
+            assert_eq!(memory.user[target], *value, "{name}");
+            assert_eq!(memory.user[&(target + 1)], 0xdd, "{name}");
+        }
+    }
+}
+
+#[test]
+fn movb_rip_relative_stores_at_next_rip_plus_displacement() {
+    // `c6 05 10 00 00 00 7a`: `movb $0x7a, 0x10(%rip)`; the base is the end of the instruction.
+    let mut state = mov_byte_state();
+    let mut expected = state.clone();
+    expected.rip = RIP + 7;
+    let target = RIP + 7 + 0x10;
+    let mut memory =
+        DataMemory::new(&[0xc6, 0x05, 0x10, 0x00, 0x00, 0x00, 0x7a]).with_user(target, 0);
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state, expected);
+    assert_eq!(memory.writes, [(target, 0x7a)]);
+}
+
+#[test]
+fn movb_to_a_supervisor_page_is_a_user_write_page_fault_without_a_store() {
+    let mut state = mov_byte_state();
+    let before = state.clone();
+    let mut memory =
+        DataMemory::new(&[0x43, 0xc6, 0x04, 0x2e, 0x00]).with_supervisor(DATA + 0x103, 0xcc);
+    let result = run3_data(&mut state, &mut memory, 4).unwrap();
+    // P (the page is present) | W (a write) | U (a CPL3 access).
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x7),
+            linear_address: Some(DATA + 0x103),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.writes.is_empty());
+    assert_eq!(memory.supervisor[&(DATA + 0x103)], 0xcc);
+}
+
+#[test]
+fn movb_to_a_non_canonical_address_is_a_general_protection_fault_without_a_store() {
+    let mut state = mov_byte_state();
+    state.gpr[Register::Rbx as usize] = 0x0000_8000_0000_0000;
+    let before = state.clone();
+    let mut memory = DataMemory::new(&[0xc6, 0x03, 0x01]);
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert!(
+        matches!(exit(&result), RunExit::Fault(fault) if fault.vector == 13),
+        "{:?}",
+        exit(&result)
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn movb_refusals_stop_as_unsupported_c6_without_change() {
+    let forms: &[(&str, &[u8])] = &[
+        ("c6 /1 (%rbx)", &[0xc6, 0x0b, 0x01]),
+        ("c6 /2", &[0xc6, 0x13, 0x01]),
+        ("c6 /3", &[0xc6, 0x1b, 0x01]),
+        ("c6 /4", &[0xc6, 0x23, 0x01]),
+        ("c6 /5", &[0xc6, 0x2b, 0x01]),
+        ("c6 /6", &[0xc6, 0x33, 0x01]),
+        ("c6 /7 (XABORT region)", &[0xc6, 0x3b, 0x01]),
+        ("c6 f8 00 xabort", &[0xc6, 0xf8, 0x00]),
+        ("c6 /1 with SIB and REX", &[0x43, 0xc6, 0x0c, 0x2e, 0x00]),
+        ("c6 c0 01 mov al, 1 (mod = 11)", &[0xc6, 0xc0, 0x01]),
+        ("41 c6 c0 01 mov r8b, 1", &[0x41, 0xc6, 0xc0, 0x01]),
+        ("66 c6 03 01", &[0x66, 0xc6, 0x03, 0x01]),
+        ("67 c6 03 01", &[0x67, 0xc6, 0x03, 0x01]),
+        ("f0 c6 03 01 LOCK", &[0xf0, 0xc6, 0x03, 0x01]),
+        ("f2 c6 03 01 REPNE", &[0xf2, 0xc6, 0x03, 0x01]),
+        ("f3 c6 03 01 REP", &[0xf3, 0xc6, 0x03, 0x01]),
+        ("64 c6 03 01 FS", &[0x64, 0xc6, 0x03, 0x01]),
+        ("65 c6 03 01 GS", &[0x65, 0xc6, 0x03, 0x01]),
+        ("26 c6 03 01 ES", &[0x26, 0xc6, 0x03, 0x01]),
+        ("2e c6 03 01 CS", &[0x2e, 0xc6, 0x03, 0x01]),
+        ("36 c6 03 01 SS", &[0x36, 0xc6, 0x03, 0x01]),
+        ("3e c6 03 01 DS", &[0x3e, 0xc6, 0x03, 0x01]),
+        ("66 43 c6 04 2e 00", &[0x66, 0x43, 0xc6, 0x04, 0x2e, 0x00]),
+        ("2e 43 c6 04 2e 00", &[0x2e, 0x43, 0xc6, 0x04, 0x2e, 0x00]),
+        ("3e 43 c6 04 2e 00", &[0x3e, 0x43, 0xc6, 0x04, 0x2e, 0x00]),
+    ];
+    for (name, bytes) in forms {
+        let mut state = mov_byte_state();
+        let before = state.clone();
+        let mut memory = DataMemory::new(bytes).with_user(DATA, 0xee);
+        let result = run3_data(&mut state, &mut memory, 4).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0xc6 },
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert_eq!(state, before, "{name}");
+        assert!(memory.writes.is_empty(), "{name}");
+        assert_eq!(memory.reads, 0, "{name}");
+    }
+}
+
+#[test]
+fn mov_r64_with_a_hint_or_segment_prefix_or_a_memory_operand_is_refused() {
+    // S4-39f5 review item 6: `2e`/`3e` (branch hints, CS/DS override) before the memory form and
+    // before the register form of `89` never reach the CPL0 `Operation::Mov`.
+    let forms: &[(&str, &[u8])] = &[
+        ("2e 89 03", &[0x2e, 0x89, 0x03]),
+        ("3e 89 03", &[0x3e, 0x89, 0x03]),
+        ("2e 48 89 03", &[0x2e, 0x48, 0x89, 0x03]),
+        ("3e 48 89 03", &[0x3e, 0x48, 0x89, 0x03]),
+        ("2e 48 89 c3", &[0x2e, 0x48, 0x89, 0xc3]),
+        ("3e 48 89 c3", &[0x3e, 0x48, 0x89, 0xc3]),
+        ("48 89 03 memory form", &[0x48, 0x89, 0x03]),
+    ];
+    for (name, bytes) in forms {
+        let mut state = mov_byte_state();
+        let before = state.clone();
+        let mut memory = DataMemory::new(bytes).with_user(DATA, 0xee);
+        let result = run3_data(&mut state, &mut memory, 4).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x89 },
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert_eq!(state, before, "{name}");
+        assert!(memory.writes.is_empty(), "{name}");
+        assert_eq!(memory.reads, 0, "{name}");
+    }
+}
+
+#[test]
+fn init_path_runs_the_movb_then_xor_and_stops_at_the_next_forbidden_form() {
+    // `/init` from `0x400137`: `leaq 0xec2(%rip), %r14; movb $0, (%r14,%r13); xorl %ebx, %ebx;
+    // cmpq %r13, %rbx` (`4c 39 eb`, REX.WR CMP r/m64, r64: outside the allow-list).
+    let bytes = [
+        0x4c, 0x8d, 0x35, 0xc2, 0x0e, 0x00, 0x00, 0x43, 0xc6, 0x04, 0x2e, 0x00, 0x31, 0xdb, 0x4c,
+        0x39, 0xeb,
+    ];
+    let mut state = mov_byte_state();
+    state.gpr[Register::R13 as usize] = 5;
+    let target = RIP + 7 + 0xec2 + 5;
+    let mut memory = DataMemory::new(&bytes).with_user(target, b'x');
+    let result = run3_data(&mut state, &mut memory, 16).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x39 });
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(state.rip, RIP + 14);
+    assert_eq!(state.gpr[Register::R14 as usize], RIP + 7 + 0xec2);
+    assert_eq!(state.gpr[Register::Rbx as usize], 0);
+    assert_eq!(memory.writes, [(target, 0)]);
+}

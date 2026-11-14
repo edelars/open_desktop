@@ -2717,6 +2717,76 @@ mod tests {
     }
 
     #[test]
+    fn cpl3_byte_write_obeys_the_user_supervisor_and_write_bits() {
+        // S4-39f6: the byte store of a CPL3 `MOV m8, imm8`. A supervisor leaf (P, W) refuses it
+        // with #PF P|W|U (0x7) and the page keeps its byte; a user leaf (P, W, U) takes it.
+        let user = AccessContext {
+            privilege: PrivilegeLevel::Ring3,
+            ..context()
+        };
+        let mut bus = bus(0x9003);
+        put(&mut bus, 0x9000, 0xaabb_ccdd_1122_3344);
+        let mut callback = |_| {};
+        let mut memory = adapter(&mut bus, &mut callback);
+        memory.cpl0_set_narrow_write = true;
+        let error = memory.write(DATA_LINEAR + 1, user, &[0x00]);
+        assert!(
+            matches!(
+                error,
+                Err(MemoryError::Architectural(ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(7),
+                    linear_address: Some(address),
+                })) if address == DATA_LINEAR + 1
+            ),
+            "{error:?}"
+        );
+        assert!(memory.page_fault.is_some());
+        drop(memory);
+        let value = bus
+            .read_physical(GuestPhysicalAddress::new(0x9000), AccessWidth::Qword)
+            .unwrap();
+        assert_eq!(value, 0xaabb_ccdd_1122_3344);
+
+        // A user leaf without W (P, U): the CPL3 write is refused with the same code 0x7.
+        let mut bus = self::bus(0x9005);
+        put(&mut bus, 0x9000, 0xaabb_ccdd_1122_3344);
+        let mut callback = |_| {};
+        let mut memory = adapter(&mut bus, &mut callback);
+        memory.cpl0_set_narrow_write = true;
+        let error = memory.write(DATA_LINEAR + 1, user, &[0x00]);
+        assert!(
+            matches!(
+                error,
+                Err(MemoryError::Architectural(ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(7),
+                    ..
+                }))
+            ),
+            "{error:?}"
+        );
+        drop(memory);
+        let value = bus
+            .read_physical(GuestPhysicalAddress::new(0x9000), AccessWidth::Qword)
+            .unwrap();
+        assert_eq!(value, 0xaabb_ccdd_1122_3344);
+
+        let mut bus = self::bus(0x9007);
+        put(&mut bus, 0x9000, 0xaabb_ccdd_1122_3344);
+        let mut callback = |_| {};
+        let mut memory = adapter(&mut bus, &mut callback);
+        memory.cpl0_set_narrow_write = true;
+        memory.write(DATA_LINEAR + 1, user, &[0x00]).unwrap();
+        assert_eq!(memory.page_fault, None);
+        drop(memory);
+        let value = bus
+            .read_physical(GuestPhysicalAddress::new(0x9000), AccessWidth::Qword)
+            .unwrap();
+        assert_eq!(value, 0xaabb_ccdd_1122_0044);
+    }
+
+    #[test]
     fn byte_reads_belong_to_the_cpl0_set_adapter_alone() {
         // Without the flag every shared profile keeps refusing a one-byte read.
         let mut bus = bus(0x9007);
