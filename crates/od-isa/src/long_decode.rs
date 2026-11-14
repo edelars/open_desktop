@@ -404,6 +404,10 @@ pub enum Operation {
     Sysenter,
     /// Bare long-mode SYSEXIT; policy is selected by the caller.
     Sysexit,
+    /// S4-39e: bare `0F 05` SYSCALL (no prefix, no REX). Decoding only names the form; the CPL0
+    /// profile set executes it from CPL3 under its syscall member, every other entry keeps the
+    /// refusal (`Unsupported`, opcode `0x05`).
+    Syscall,
     /// Exact bare `EC` (`IN AL, DX`); execution requires an explicit PIO profile.
     InAlDx,
     /// Exact bare `EE` (`OUT DX, AL`); execution requires an explicit PIO profile.
@@ -2956,6 +2960,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
             (OpcodeMap::Escape0f, 0x30) => Some(Operation::WriteMsr),
             (OpcodeMap::Escape0f, 0x34) => Some(Operation::Sysenter),
             (OpcodeMap::Escape0f, 0x35) => Some(Operation::Sysexit),
+            (OpcodeMap::Escape0f, 0x05) => Some(Operation::Syscall),
             _ => None,
         };
         if let Some(operation) = modeled_system_operation {
@@ -2975,7 +2980,10 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !prefixes.address_override
                 && prefixes.rex.is_none()
                 && self.length == 3
-                && !matches!(operation, Operation::Sysenter | Operation::Sysexit)
+                && !matches!(
+                    operation,
+                    Operation::Sysenter | Operation::Sysexit | Operation::Syscall
+                )
             {
                 return Err(DecodeError::Invalid {
                     opcode,

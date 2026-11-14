@@ -1922,6 +1922,7 @@ pub struct Cpl0ProfileSet<'a> {
     fp_state: Option<&'a RefCell<GuestFpState>>,
     int3: bool,
     user_mode: bool,
+    syscall: bool,
 }
 
 impl<'a> Cpl0ProfileSet<'a> {
@@ -1951,6 +1952,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             fp_state: None,
             int3: false,
             user_mode: false,
+            syscall: false,
         }
     }
 
@@ -2207,6 +2209,34 @@ impl<'a> Cpl0ProfileSet<'a> {
         self.user_mode
     }
 
+    /// S4-39e: admit the bare `SYSCALL` (`0F 05`, no prefix, no REX) from CPL3, through the
+    /// guest MSR cells of the set: `with_msr_efer_write` (EFER.SCE, bit 0), `with_msr_star_write`
+    /// (STAR[47:32]), `with_msr_lstar_write` (LSTAR) and `with_msr_syscall_mask_write` (FMASK, the
+    /// low 32 bits). All four must be present: a set with this member and a missing cell is
+    /// refused at entry ([`Cpl0ProfileSetInputError::SyscallCellsMissing`]). The instruction
+    /// executes only through [`run_with_cpl3_profile_set`] (the form is allow-listed there only
+    /// under this member); at CPL0 and in a set without the member it keeps its refusal
+    /// (`Unsupported`, opcode `0x05`). With EFER.SCE = 0 it is `#UD` (vector 6, no change).
+    /// Semantics and the checks before the commit: CPU_CONTRACT S4-39e (from memory of the SDM).
+    pub const fn with_syscall(mut self) -> Self {
+        self.syscall = true;
+        self
+    }
+
+    /// S4-39e: whether the set was built [`Self::with_syscall`].
+    pub const fn has_syscall(&self) -> bool {
+        self.syscall
+    }
+
+    /// S4-39e: false only for a set with the syscall member that lacks one of its four cells.
+    const fn syscall_cells_present(&self) -> bool {
+        !self.syscall
+            || (self.msr_efer.is_some()
+                && self.msr_star.is_some()
+                && self.msr_lstar.is_some()
+                && self.msr_syscall_mask.is_some())
+    }
+
     /// Admit exact bare HLT under the halt profile. HLT is autonomous here:
     /// the set delivers no interrupt (STI exists only under [`Self::with_sti`], S4-38L7bp, and
     /// models the instruction, not the delivery), so HLT cannot resume itself.
@@ -2424,6 +2454,9 @@ pub enum Cpl0ProfileSetInputError {
     /// RFLAGS bit 1 is clear. It is always 1 architecturally, so the state is
     /// rejected for every set, with or without CLI.
     RflagsReservedBitClear,
+    /// S4-39e: `with_syscall` was selected but the set lacks one of the EFER, STAR, LSTAR or
+    /// SYSCALL_MASK cells the instruction consumes.
+    SyscallCellsMissing,
 }
 
 const fn cr3_profiles_match(cr0: Option<Cr0Profile>, cr4: Option<Cr4Profile>) -> bool {
@@ -2495,6 +2528,9 @@ struct GuestMsrCells<'a> {
     kernel_gs_base: Option<&'a Cell<u64>>,
     /// S4-38L9c: `RDMSR` of IA32_MKTME_KEYID_PARTITIONING (`0x87`) returns `0:0`; no cell.
     tdx_keyid_partitioning_read: bool,
+    /// S4-39e: the set carries `with_syscall`; `SYSCALL` consumes the EFER cell of the profiles
+    /// and the STAR, LSTAR and SYSCALL_MASK cells above.
+    syscall: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -20981,6 +21017,11 @@ pub fn run_with_cpl3_profile_set(
     if config.context.privilege != PrivilegeLevel::Ring3 || !ring3_state_admitted(state) {
         return Err(Cpl0ProfileSetInputError::WrongPrivilege);
     }
+    // S4-39e: checked up front too, so that the later `SYSCALL` step never meets a member
+    // without cells (the loop below maps a late admission error to `Unsupported`).
+    if !set.syscall_cells_present() {
+        return Err(Cpl0ProfileSetInputError::SyscallCellsMissing);
+    }
     let mut rdtsc_source = rdtsc_source;
     let mut retired = 0u64;
     let mut rflags_defined = initial_rflags_defined;
@@ -20988,7 +21029,7 @@ pub fn run_with_cpl3_profile_set(
         let boundary = retired == config.instruction_budget || config.stop_rip == Some(state.rip);
         if !boundary
             && let Ok(instruction) = long_decode::decode(memory, state.rip, config.context)
-            && !cpl3_allows(&instruction)
+            && !cpl3_allows(&instruction, set.syscall)
         {
             return Ok(Cpl0ProfileSetResult {
                 exit: Cpl0ProfileSetExit::Run(RunExit::Unsupported {
@@ -21063,8 +21104,11 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// (`tests/fixtures/guest/stage4/initramfs/init.S`: `lea disp(%rip), %rdi; mov $imm32, %esi;
 /// mov $imm32, %eax`), as form classes without prefixes other than REX:
 /// `B8+r imm32` (MOV r32, imm32) and `REX.W 8D /r` with a RIP-relative operand (LEA r64).
-/// Everything else, including `SYSCALL`, is outside (S4-39e and later slices extend it).
-fn cpl3_allows(instruction: &long_decode::Instruction) -> bool {
+/// Everything else is outside (later slices extend it); `SYSCALL` joins under `with_syscall`.
+///
+/// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
+/// exactly when the set was built with `with_syscall` (`syscall`).
+fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool) -> bool {
     let prefixes = instruction.prefixes;
     if prefixes.group1.is_some()
         || prefixes.segment.is_some()
@@ -21086,6 +21130,7 @@ fn cpl3_allows(instruction: &long_decode::Instruction) -> bool {
                 ..
             },
         ) => instruction.operand_size == OperandSize::Dword,
+        (OpcodeMap::Escape0f, 0x05, Operation::Syscall) => syscall,
         (OpcodeMap::Primary, 0x8d, Operation::Lea { src, .. }) => {
             instruction.operand_size == OperandSize::Qword
                 && src.base == AddressBase::NextRip
@@ -21211,6 +21256,9 @@ fn run_cpl0_profile_set_inner(
     if state.x87.is_some() || state.sse.is_some() {
         return Err(Error::FpStateNotAdmitted);
     }
+    if !set.syscall_cells_present() {
+        return Err(Error::SyscallCellsMissing);
+    }
     if let Some(cell) = set.fp_state {
         // S4-38L9d: the FP instructions of the member run only on a CPU that declares them.
         let declared = set.cpuid.is_some_and(|profile| {
@@ -21292,6 +21340,7 @@ fn run_cpl0_profile_set_inner(
                 || set.msr_syscall_mask.is_some()
                 || set.msr_kernel_gs_base.is_some()
                 || set.msr_tdx_keyid_partitioning_read
+                || set.syscall
             {
                 Some(GuestMsrCells {
                     star: set.msr_star,
@@ -21303,6 +21352,7 @@ fn run_cpl0_profile_set_inner(
                     syscall_mask: set.msr_syscall_mask,
                     kernel_gs_base: set.msr_kernel_gs_base,
                     tdx_keyid_partitioning_read: set.msr_tdx_keyid_partitioning_read,
+                    syscall: set.syscall,
                 })
             } else {
                 None
@@ -28027,6 +28077,93 @@ const fn is_set_member_msr_index(index: u32) -> bool {
     )
 }
 
+/// S4-39e: `SYSCALL` (`0F 05`) from CPL3 through the set's guest MSR cells. All semantics here are
+/// from memory of the SDM (no copy in the repository; see CPU_CONTRACT S4-39e).
+///
+/// Admitted only when the set carries `with_syscall`, under a control-register policy, in Long64
+/// at CPL3 (Ring3 context over a CS selector with RPL 3), with the bare two-byte form, all four
+/// cells present and TF clear in RFLAGS (the trap after a single-stepped `SYSCALL` is not
+/// modelled). Anything else keeps the refusal of the form (`Unsupported`, opcode `0x05`) with no
+/// change; that includes CPL0.
+///
+/// With EFER.SCE = 0 the instruction is `#UD` (vector 6), no change. Before any write: LSTAR must
+/// be canonical and STAR[33:32] (the RPL bits of the kernel selector) clear, else `Unsupported`.
+/// The commit is one block, state last: RCX = next RIP, R11 = RFLAGS, RFLAGS = (RFLAGS and not the
+/// low 32 bits of FMASK) with RF cleared and bit 1 set, CS = STAR[47:32] and 0xFFFC (RPL 0) with a
+/// flat 64-bit code cache (base 0, limit 4 GiB - 1, access 0x9b, flags 0xa: L = 1, G = 1), SS =
+/// STAR[47:32] + 8 with a flat data cache (access 0x93, flags 0xc), RIP = LSTAR. RSP, the GDT and
+/// memory are not touched. Flags cleared by FMASK become defined (`rflags_defined`).
+#[allow(clippy::too_many_arguments)]
+fn execute_syscall(
+    state: &mut LongModeState,
+    context: AccessContext,
+    instruction: long_decode::Instruction,
+    next_rip: u64,
+    rflags_defined: &mut u64,
+    control_policy: bool,
+    efer: Option<&Cell<u64>>,
+    cells: Option<GuestMsrCells<'_>>,
+) -> StepOutcome {
+    const TF: u64 = 1 << 8;
+    const RF: u64 = 1 << 16;
+    let refused = StepOutcome::Unsupported {
+        opcode: instruction.opcode.byte,
+    };
+    let (Some(cells), Some(efer)) = (cells, efer) else {
+        return refused;
+    };
+    let (Some(star), Some(lstar), Some(fmask)) = (cells.star, cells.lstar, cells.syscall_mask)
+    else {
+        return refused;
+    };
+    if !cells.syscall
+        || !control_policy
+        || context.privilege != PrivilegeLevel::Ring3
+        || !context.mode.eq(&InstructionMode::Long64)
+        || instruction.length != 2
+        || instruction.prefixes != Prefixes::default()
+        || state.cs_selector.is_none_or(|selector| selector & 3 != 3)
+        || state.rflags & TF != 0
+    {
+        return refused;
+    }
+    if efer.get() & 1 == 0 {
+        return StepOutcome::Fault(ArchitecturalFault {
+            vector: 6,
+            error_code: None,
+            linear_address: None,
+        });
+    }
+    let target = lstar.get();
+    let selector = (star.get() >> 32) as u16;
+    if !canonical(target) || selector & 3 != 0 {
+        return refused;
+    }
+    let fmask = fmask.get() & 0xffff_ffff;
+    let old_rflags = state.rflags;
+    state.gpr[Register::Rcx as usize] = next_rip;
+    state.gpr[Register::R11 as usize] = old_rflags;
+    state.rflags = ((old_rflags & !fmask) & !RF) | 2;
+    *rflags_defined |= fmask & crate::INTEGER_FLAGS;
+    state.cs_selector = Some(selector);
+    state.cs_cache = Some(crate::state::CodeSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0x9b,
+        flags: 0xa,
+    });
+    state.ss_selector = Some(selector.wrapping_add(8));
+    state.ss_cache = Some(crate::state::DataSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0x93,
+        flags: 0xc,
+    });
+    state.ss_unusable = false;
+    state.rip = target;
+    StepOutcome::Advanced
+}
+
 fn step_configured(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -34483,6 +34620,18 @@ fn step_configured(
         state.rip = next_rip;
         return Ok(StepOutcome::Advanced);
     }
+    if instruction.operation == Operation::Syscall {
+        return Ok(execute_syscall(
+            state,
+            context,
+            instruction,
+            next_rip,
+            rflags_defined,
+            control_policy.is_some(),
+            msr_efer_cell,
+            guest_msr_cells,
+        ));
+    }
     if matches!(
         instruction.operation,
         Operation::Sysenter | Operation::Sysexit
@@ -36551,6 +36700,8 @@ fn step_configured(
         }
         Operation::ReadMsr | Operation::WriteMsr => false,
         Operation::Sysenter | Operation::Sysexit => false,
+        // S4-39e: SYSCALL is decided and committed (or refused) in its own branch before this match.
+        Operation::Syscall => false,
         Operation::ReadCr0 | Operation::WriteCr0 => {
             cr0_profile.is_some() || control_policy.is_some()
         }
@@ -39012,6 +39163,7 @@ fn step_configured(
         Operation::Cli => unreachable!("CLI commits in its profile-gated state path"),
         Operation::Sti => unreachable!("STI commits in its profile-gated state path"),
         Operation::Swapgs => unreachable!("SWAPGS commits in its profile-gated state path"),
+        Operation::Syscall => unreachable!("SYSCALL commits in its profile-gated state path"),
         Operation::FxsaveRipRelative(_) => {
             unreachable!("FXSAVE commits in its prevalidated field-store path")
         }
