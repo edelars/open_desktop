@@ -293,3 +293,38 @@ fn a_false_acknowledge_is_counted_and_changes_nothing() {
     assert_eq!(rig.pic.snapshot(), before);
     assert_eq!(rig.source.stats().ack_refused, 1);
 }
+
+#[test]
+fn a_mode4_count_gives_one_edge_one_tick_after_the_strobe_and_none_after() {
+    // S4-39g2: control word 0x38 (channel 0, LSB+MSB, mode 4), count 10 written at 0 ns: the
+    // strobe is at tick 10 (8381 ns), OUT rises at tick 11 (ceil(11e9 / 1_193_182) = 9220 ns).
+    let mut rig = Rig::new(0x00);
+    rig.source.0.borrow().pit.enable_software_strobe();
+    rig.program(0x38, 10);
+    assert_eq!(rig.source.next_deadline_ns(), Some(9220));
+    rig.advance_to(8381);
+    assert_eq!(
+        rig.source.pending_vector(),
+        None,
+        "no edge during the strobe"
+    );
+    assert_eq!(rig.irr_isr(), (0, 0));
+    assert_eq!(rig.source.irq0_edges(), 0);
+    assert_eq!(rig.step_to_deadline(), 9220);
+    assert_eq!(rig.source.pending_vector(), Some(VECTOR));
+    assert_eq!(rig.irr_isr(), (1, 0));
+    assert_eq!(rig.source.irq0_edges(), 1);
+    // One shot: no further edge is scheduled.
+    rig.eoi();
+    rig.advance_to(1_000_000);
+    assert_eq!(rig.source.next_deadline_ns(), None);
+    assert_eq!(rig.source.irq0_edges(), 1);
+    // A new count re-arms it from the write.
+    let write_ns = rig.now();
+    rig.program(0x38, 10);
+    rig.advance_to(write_ns + 1);
+    assert_eq!(
+        rig.source.next_deadline_ns(),
+        Some(deadline(pit_ticks(write_ns) + 11))
+    );
+}

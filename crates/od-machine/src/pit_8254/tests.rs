@@ -1468,3 +1468,198 @@ fn reset_drops_the_counter_reads_and_the_queue_but_keeps_the_mode() {
     inb(&mut dev.pit, 2);
     assert_eq!(dev.handle.take_port_tick_ns(), PIT_PORT_B_READ_TICK_NS);
 }
+
+// ---- S4-39g2: mode 4 (software triggered strobe), channel 0, user-mode board ----
+
+/// Devices as the user-mode board builds them: mode 4 on channel 0 enabled.
+fn setup_strobe() -> (Pit8254Devices, VirtualClockHandle) {
+    let (dev, clock) = setup();
+    dev.handle.enable_software_strobe();
+    (dev, clock)
+}
+
+#[test]
+fn the_mode4_control_word_is_refused_until_the_board_enables_it() {
+    // The word the kernel writes at 0xffffffff823a043a: 0x38 = channel 0, LSB+MSB, mode 4, binary.
+    let (mut dev, _clock) = setup();
+    let before = dev.handle.snapshot();
+    for word in [0x38u8, 0x18, 0x28] {
+        assert_eq!(
+            out(&mut dev.pit, 3, word),
+            Err(DeviceError::UnsupportedConfiguration),
+            "{word:#04x}"
+        );
+    }
+    assert_eq!(dev.handle.snapshot(), before);
+    // Enabled: accepted and the channel is programmed, with no count yet.
+    for (word, access) in [
+        (0x38u8, PitAccess::LsbMsb),
+        (0x18, PitAccess::Lsb),
+        (0x28, PitAccess::Msb),
+    ] {
+        let (mut dev, _clock) = setup_strobe();
+        out(&mut dev.pit, 3, word).unwrap();
+        let c = dev.handle.snapshot().channel0;
+        assert_eq!(
+            (c.mode, c.access, c.run),
+            (Some(PitMode::SoftwareStrobe), Some(access), None),
+            "{word:#04x}"
+        );
+        assert!(!c.loaded_by_reset);
+        assert_eq!(
+            dev.handle.snapshot().channel2,
+            PitSnapshot::default().channel2
+        );
+    }
+    // A machine reset does not switch the board setting off.
+    let (mut dev, _clock) = setup_strobe();
+    dev.handle.reset();
+    out(&mut dev.pit, 3, 0x38).unwrap();
+}
+
+#[test]
+fn every_other_mode_stays_refused_with_the_strobe_enabled() {
+    let mut refused = vec![0xB8u8, 0xA8, 0x98]; // mode 4 on channel 2
+    for mode in [1u8, 3, 5, 6, 7] {
+        refused.push(0x30 | (mode << 1));
+    }
+    refused.push(0x39); // mode 4 with BCD
+    refused.push(0x70 | 8); // channel 1, mode 4
+    for word in refused {
+        let (mut dev, _clock) = setup_strobe();
+        let before = dev.handle.snapshot();
+        assert_eq!(
+            out(&mut dev.pit, 3, word),
+            Err(DeviceError::UnsupportedConfiguration),
+            "{word:#04x}"
+        );
+        assert_eq!(dev.handle.snapshot(), before, "{word:#04x}");
+    }
+}
+
+#[test]
+fn mode4_out_is_high_and_low_for_the_one_tick_at_terminal_count() {
+    let (mut dev, clock) = setup_strobe();
+    goto_tick(&clock, 100); // 83_810 ns
+    out(&mut dev.pit, 3, 0x38).unwrap();
+    assert!(
+        dev.handle.out(PitChannel::Channel0),
+        "high after the control word"
+    );
+    assert_eq!(dev.handle.count(PitChannel::Channel0), None);
+    // Delta 1193 (0x04A9), as pit_next_event for about 1 ms: the low byte, then the high byte.
+    out(&mut dev.pit, 0, 0xA9).unwrap();
+    assert_eq!(
+        dev.handle.count(PitChannel::Channel0),
+        None,
+        "not loaded by the first byte"
+    );
+    out(&mut dev.pit, 0, 0x04).unwrap();
+    let run = dev.handle.snapshot().channel0.run.unwrap();
+    assert_eq!((run.reload, run.start_tick, run.next), (1193, 100, None));
+    assert_eq!(dev.handle.count(PitChannel::Channel0), Some(1193));
+    // 1193 ticks after the write: tick 1293 starts at ceil(1293e9 / 1193182) = 1_083_657 ns,
+    // 999_847 ns after the write at 83_810 ns.
+    goto_tick(&clock, 1292);
+    assert_eq!(dev.handle.count(PitChannel::Channel0), Some(1));
+    assert!(dev.handle.out(PitChannel::Channel0));
+    advance(&clock, 1_083_656 - clock.snapshot().now_ns());
+    assert_eq!(
+        pit_ticks(clock.snapshot().now_ns()),
+        1292,
+        "1_083_656 ns is still tick 1292"
+    );
+    assert!(dev.handle.out(PitChannel::Channel0));
+    advance(&clock, 1);
+    assert_eq!(clock.snapshot().now_ns(), 1_083_657);
+    assert_eq!(dev.handle.count(PitChannel::Channel0), Some(0));
+    assert!(!dev.handle.out(PitChannel::Channel0), "the strobe");
+    // High again one tick later (1_084_496 ns); the counter keeps counting through zero.
+    goto_tick(&clock, 1294);
+    assert_eq!(clock.snapshot().now_ns(), 1_084_496);
+    assert!(dev.handle.out(PitChannel::Channel0));
+    assert_eq!(dev.handle.count(PitChannel::Channel0), Some(0xFFFF));
+    // No second strobe when the counter wraps: it stays high.
+    for tick in [1293 + 1000, 1293 + 65_535, 1293 + 65_536, 1293 + 70_000] {
+        goto_tick(&clock, tick);
+        assert!(dev.handle.out(PitChannel::Channel0), "tick {tick}");
+    }
+}
+
+#[test]
+fn mode4_single_byte_accesses_and_reload_zero_is_65536() {
+    // LSB only: count 3 loaded by the one byte, strobe at tick 3 (2515 ns).
+    let (mut dev, clock) = setup_strobe();
+    out(&mut dev.pit, 3, 0x18).unwrap();
+    out(&mut dev.pit, 0, 3).unwrap();
+    goto_tick(&clock, 2);
+    assert!(dev.handle.out(PitChannel::Channel0));
+    goto_tick(&clock, 3);
+    assert_eq!(clock.snapshot().now_ns(), 2515);
+    assert!(!dev.handle.out(PitChannel::Channel0));
+    // MSB only: 0x01 is 0x0100 = 256.
+    let (mut dev, _clock) = setup_strobe();
+    out(&mut dev.pit, 3, 0x28).unwrap();
+    out(&mut dev.pit, 0, 1).unwrap();
+    assert_eq!(dev.handle.snapshot().channel0.run.unwrap().reload, 256);
+    // LSB+MSB 0x0000 is 65536: the strobe at tick 65536 (54_925_402 ns).
+    let (mut dev, clock) = setup_strobe();
+    program(&mut dev.pit, 0x38, 0, Some(0));
+    assert_eq!(dev.handle.count(PitChannel::Channel0), Some(0));
+    goto_tick(&clock, 65_535);
+    assert_eq!(dev.handle.count(PitChannel::Channel0), Some(1));
+    assert!(dev.handle.out(PitChannel::Channel0));
+    goto_tick(&clock, 65_536);
+    assert_eq!(clock.snapshot().now_ns(), 54_925_402);
+    assert!(!dev.handle.out(PitChannel::Channel0));
+    goto_tick(&clock, 65_537);
+    assert!(dev.handle.out(PitChannel::Channel0));
+}
+
+#[test]
+fn mode4_first_byte_keeps_counting_and_the_second_restarts() {
+    let (mut dev, clock) = setup_strobe();
+    program(&mut dev.pit, 0x38, 10, Some(0));
+    goto_tick(&clock, 5);
+    out(&mut dev.pit, 0, 7).unwrap();
+    // Unlike mode 0, the first byte neither stops the count nor changes OUT.
+    assert_eq!(dev.handle.count(PitChannel::Channel0), Some(5));
+    assert!(dev.handle.out(PitChannel::Channel0));
+    goto_tick(&clock, 8);
+    out(&mut dev.pit, 0, 0).unwrap();
+    let run = dev.handle.snapshot().channel0.run.unwrap();
+    assert_eq!((run.reload, run.start_tick), (7, 8));
+    // The old count would have struck at tick 10; the new one strikes at tick 15 (12_572 ns).
+    goto_tick(&clock, 10);
+    assert!(dev.handle.out(PitChannel::Channel0));
+    goto_tick(&clock, 14);
+    assert_eq!(dev.handle.count(PitChannel::Channel0), Some(1));
+    goto_tick(&clock, 15);
+    assert_eq!(clock.snapshot().now_ns(), 12_572);
+    assert_eq!(dev.handle.count(PitChannel::Channel0), Some(0));
+    assert!(!dev.handle.out(PitChannel::Channel0));
+    goto_tick(&clock, 16);
+    assert!(dev.handle.out(PitChannel::Channel0));
+}
+
+#[test]
+fn mode4_read_back_status_and_latch() {
+    let (mut dev, clock) = setup_strobe();
+    out(&mut dev.pit, 3, 0x38).unwrap();
+    // OUT high, null count 1, access 11, mode 100, binary: 1_1_11_100_0.
+    out(&mut dev.pit, 3, 0xE2).unwrap();
+    assert_eq!(inb(&mut dev.pit, 0), 0xF8);
+    out(&mut dev.pit, 0, 4).unwrap();
+    out(&mut dev.pit, 0, 0).unwrap();
+    out(&mut dev.pit, 3, 0xE2).unwrap();
+    assert_eq!(inb(&mut dev.pit, 0), 0xB8, "null count 0");
+    goto_tick(&clock, 4);
+    out(&mut dev.pit, 3, 0xE2).unwrap();
+    assert_eq!(inb(&mut dev.pit, 0), 0x38, "OUT low during the strobe");
+    // The ordinary counter latch reads the count (0 at the strobe tick).
+    out(&mut dev.pit, 3, 0x00).unwrap();
+    assert_eq!((inb(&mut dev.pit, 0), inb(&mut dev.pit, 0)), (0, 0));
+    goto_tick(&clock, 5);
+    out(&mut dev.pit, 3, 0x00).unwrap();
+    assert_eq!((inb(&mut dev.pit, 0), inb(&mut dev.pit, 0)), (0xFF, 0xFF));
+}
