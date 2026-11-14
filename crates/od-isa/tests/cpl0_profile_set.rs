@@ -4634,6 +4634,9 @@ struct LretqMemory {
     write_log: Vec<(u64, Vec<u8>, AccessOrigin)>,
     /// The write with this one-based number (counted in `writes`) faults with a #PF.
     fail_write_number: Option<usize>,
+    /// S4-39d: the page privilege of every read and of every stored write, in order.
+    read_privileges: Vec<PrivilegeLevel>,
+    write_privileges: Vec<PrivilegeLevel>,
 }
 
 impl LretqMemory {
@@ -4647,6 +4650,8 @@ impl LretqMemory {
             writes: 0,
             write_log: Vec::new(),
             fail_write_number: None,
+            read_privileges: Vec::new(),
+            write_privileges: Vec::new(),
         }
     }
 
@@ -4690,6 +4695,7 @@ impl GuestMemory for LretqMemory {
     ) -> Result<(), MemoryError> {
         self.reads
             .push((address, destination.len(), context.origin));
+        self.read_privileges.push(context.page_privilege());
         if let Some(error) = self.page_fault(address, destination.len()) {
             return Err(error);
         }
@@ -4725,6 +4731,7 @@ impl GuestMemory for LretqMemory {
         }
         self.write_log
             .push((address, source.to_vec(), context.origin));
+        self.write_privileges.push(context.page_privilege());
         let offset = (address - RAM_BASE) as usize;
         self.ram[offset..offset + source.len()].copy_from_slice(source);
         Ok(())
@@ -7601,6 +7608,494 @@ fn pf_delivery_refuses_a_cpl3_context() {
     );
     assert_eq!(state, before);
     assert_eq!(memory.writes, 0);
+}
+
+// ---- S4-39d: #PF and #GP from CPL3 through TSS.RSP0 ----------------------------
+
+const U3_TSS: u64 = STACK + 0xe00;
+/// `TSS.RSP0`, deliberately not 16-aligned.
+const U3_RSP0: u64 = STACK + 0x408;
+/// The user stack pointer and SS/CS selectors (RPL 3); nothing is ever stored there.
+const U3_USER_RSP: u64 = 0x0000_7fff_ffff_e008;
+const U3_USER_SS: u16 = 0x2b;
+const U3_USER_CS: u16 = 0x33;
+
+fn u3_record() -> od_isa::PageFaultRecord {
+    // A user instruction fetch from a supervisor page: P | U | I/D.
+    od_isa::PageFaultRecord::new(
+        RIP,
+        AccessKind::Fetch,
+        context(PrivilegeLevel::Ring3),
+        0x15,
+        RIP,
+    )
+}
+
+/// The `pf_state` image as a CPL3 state: user CS (DPL 3, L = 1) and SS, a user stack, a task
+/// register over a TSS at `U3_TSS` whose RSP0 is `U3_RSP0`; the gate selector 0x10 is the kernel
+/// code descriptor.
+fn u3_state() -> (LongModeState, LretqMemory) {
+    let (mut state, mut memory) = pf_state();
+    state.cs_selector = Some(U3_USER_CS);
+    state.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0xfb,
+        flags: 0x2,
+    });
+    state.ss_selector = Some(U3_USER_SS);
+    state.ss_cache = Some(od_isa::StackSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0xf3,
+        flags: 0xc,
+    });
+    state.gpr[Register::Rsp as usize] = U3_USER_RSP;
+    state.tr = Some(od_isa::TaskRegisterCache {
+        selector: 0x40,
+        base: U3_TSS,
+        limit: 0x67,
+        access: 0x8b,
+        flags: 0,
+    });
+    memory.put(U3_TSS + 4, U3_RSP0);
+    (state, memory)
+}
+
+fn u3_deliver(
+    state: &mut LongModeState,
+    memory: &mut LretqMemory,
+) -> od_isa::Cpl0PageFaultDelivery {
+    od_isa::deliver_page_fault_cpl0_set(state, memory, &u3_record(), context(PrivilegeLevel::Ring3))
+}
+
+#[test]
+fn pf_delivery_from_cpl3_stores_the_frame_on_the_tss_rsp0_stack_and_enters_the_handler() {
+    let (mut state, mut memory) = u3_state();
+    state.rflags |= (1 << 8) | (1 << 14) | (1 << 18);
+    let before = state.clone();
+    let delivered = u3_deliver(&mut state, &mut memory);
+    let frame = U3_RSP0 & !15;
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0PageFaultDelivery::Delivered {
+            target_rip: PF_HANDLER,
+            new_rsp: frame - 48,
+            trap_gate: false,
+        }
+    );
+    // The frame, from the highest address: user SS, user RSP, RFLAGS (RF = 1), user CS, RIP and
+    // the error code. The user stack is not touched; the frame lies below RSP0 aligned to 16.
+    assert_eq!(pf_qword(&memory, frame - 8), u64::from(U3_USER_SS));
+    assert_eq!(pf_qword(&memory, frame - 16), U3_USER_RSP);
+    assert_eq!(pf_qword(&memory, frame - 24), before.rflags | (1 << 16));
+    assert_eq!(pf_qword(&memory, frame - 32), u64::from(U3_USER_CS));
+    assert_eq!(pf_qword(&memory, frame - 40), RIP);
+    assert_eq!(pf_qword(&memory, frame - 48), 0x15);
+    assert_eq!(memory.writes, 6);
+    assert!(
+        memory
+            .write_log
+            .iter()
+            .all(|(address, bytes, origin)| bytes.len() == 8
+                && *origin == AccessOrigin::ImplicitStack
+                && (frame - 48..frame).contains(address))
+    );
+    // The frame is stored at the new privilege (CPL0), every table read is a descriptor-table
+    // read (page privilege CPL0, also under PTI): gate (two qwords), target descriptor, TSS.
+    assert!(
+        memory
+            .write_privileges
+            .iter()
+            .all(|privilege| *privilege == PrivilegeLevel::Ring0)
+    );
+    assert!(
+        memory
+            .read_privileges
+            .iter()
+            .all(|privilege| *privilege == PrivilegeLevel::Ring0)
+    );
+    assert_eq!(
+        memory.reads,
+        vec![
+            (PF_GATE, 8, AccessOrigin::DescriptorTable),
+            (PF_GATE + 8, 8, AccessOrigin::DescriptorTable),
+            (LRETQ_GDT + 0x10, 8, AccessOrigin::DescriptorTable),
+            (U3_TSS + 4, 8, AccessOrigin::DescriptorTable),
+        ]
+    );
+    // The CPU: CS from the gate (RPL 0), null SS (cache kept), RSP on the kernel stack, handler
+    // RIP, IF/TF/NT/RF cleared (AC kept), CR2 = the linear address of the record.
+    assert_eq!(state.cs_selector, Some(0x10));
+    assert_eq!(state.cs_cache.unwrap().access, 0x9b);
+    assert_eq!((state.ss_selector, state.ss_unusable), (Some(0), true));
+    assert_eq!(state.ss_cache, before.ss_cache, "the SS cache is kept");
+    assert_eq!(state.gpr[Register::Rsp as usize], frame - 48);
+    assert_eq!(state.rip, PF_HANDLER);
+    assert_eq!(state.rflags, 2 | 0x1 | 0x40 | PF_AC);
+    assert_eq!(state.cr2, Some(RIP));
+    let mut expected = before.clone();
+    expected.cs_selector = state.cs_selector;
+    expected.cs_cache = state.cs_cache;
+    expected.ss_selector = Some(0);
+    expected.ss_unusable = true;
+    expected.gpr[Register::Rsp as usize] = frame - 48;
+    expected.rip = PF_HANDLER;
+    expected.rflags = state.rflags;
+    expected.cr2 = Some(RIP);
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn pf_delivery_from_cpl3_through_a_trap_gate_keeps_if() {
+    let (mut state, mut memory) = u3_state();
+    pf_put_gate(&mut memory, pf_gate_bytes(PF_HANDLER, 0x10, 0, 0x8f));
+    let delivered = u3_deliver(&mut state, &mut memory);
+    assert!(
+        matches!(
+            delivered,
+            od_isa::Cpl0PageFaultDelivery::Delivered {
+                trap_gate: true,
+                ..
+            }
+        ),
+        "{delivered:?}"
+    );
+    assert_eq!(state.rflags & IF, IF);
+}
+
+/// Deliver from CPL3 after `tweak` and expect exactly `expected` with no write and no CPU change.
+fn assert_u3_pf_refused(
+    tweak: impl FnOnce(&mut LongModeState, &mut LretqMemory),
+    expected: od_isa::Cpl0PageFaultRefusal,
+    label: &str,
+) {
+    let (mut state, mut memory) = u3_state();
+    tweak(&mut state, &mut memory);
+    let before = state.clone();
+    let ram = memory.ram.clone();
+    let delivered = u3_deliver(&mut state, &mut memory);
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0PageFaultDelivery::Refused(expected),
+        "{label}"
+    );
+    assert_eq!(state, before, "{label}");
+    assert_eq!(memory.ram, ram, "{label}");
+    assert_eq!(memory.writes, 0, "{label}");
+}
+
+#[test]
+fn pf_delivery_from_cpl3_refuses_a_missing_or_bad_tss_without_any_write() {
+    use od_isa::Cpl0PageFaultRefusal as R;
+    assert_u3_pf_refused(|state, _| state.tr = None, R::MissingTaskRegister, "no TR");
+    for limit in [0u32, 10] {
+        assert_u3_pf_refused(
+            |state, _| state.tr.as_mut().unwrap().limit = limit,
+            R::TssRsp0BeyondLimit,
+            &format!("limit {limit}"),
+        );
+    }
+    // The limit of exactly 11 covers bytes 4..=11.
+    let (mut state, mut memory) = u3_state();
+    state.tr.as_mut().unwrap().limit = 11;
+    assert!(matches!(
+        u3_deliver(&mut state, &mut memory),
+        od_isa::Cpl0PageFaultDelivery::Delivered { .. }
+    ));
+    assert_u3_pf_refused(
+        |_, memory| memory.put(U3_TSS + 4, 0x0000_8000_0000_0000),
+        R::NonCanonicalRsp0,
+        "non-canonical RSP0",
+    );
+    assert_u3_pf_refused(
+        |state, _| state.tr.as_mut().unwrap().base = u64::MAX - 8,
+        R::NonCanonicalRsp0,
+        "TSS span overflows",
+    );
+    assert_u3_pf_refused(
+        |state, _| state.tr.as_mut().unwrap().base = 0x0000_8000_0000_0000,
+        R::NonCanonicalRsp0,
+        "non-canonical TSS base",
+    );
+    assert_u3_pf_refused(
+        |_, memory| memory.put(U3_TSS + 4, 0x2f),
+        R::StackAddressOverflow,
+        "RSP0 below the frame size",
+    );
+}
+
+#[test]
+fn pf_delivery_from_cpl3_refuses_a_bad_gate_or_state_without_any_write() {
+    use od_isa::Cpl0PageFaultRefusal as R;
+    assert_u3_pf_refused(|state, _| state.idtr = None, R::MissingIdtr, "no IDTR");
+    assert_u3_pf_refused(
+        |state, _| state.idtr.as_mut().unwrap().limit = 14 * 16 + 14,
+        R::GateBeyondIdtLimit,
+        "gate beyond the IDT limit",
+    );
+    assert_u3_pf_refused(
+        |_, memory| pf_put_gate(memory, pf_gate_bytes(PF_HANDLER, 0x10, 0, 0x0e)),
+        R::GateNotPresent,
+        "P = 0",
+    );
+    assert_u3_pf_refused(
+        |_, memory| pf_put_gate(memory, pf_gate_bytes(PF_HANDLER, 0x10, 1, 0x8e)),
+        R::UnsupportedIst(1),
+        "IST 1",
+    );
+    assert_u3_pf_refused(
+        |_, memory| pf_put_gate(memory, pf_gate_bytes(PF_HANDLER, 0x13, 0, 0x8e)),
+        R::InvalidTargetSelector,
+        "gate selector with RPL 3",
+    );
+    assert_u3_pf_refused(
+        |_, memory| memory.put(LRETQ_GDT + 0x10, CODE64 | (3 << 45)),
+        R::InvalidTargetCodeDescriptor,
+        "gate target with DPL 3",
+    );
+    assert_u3_pf_refused(|state, _| state.gdtr = None, R::MissingGdtr, "no GDTR");
+    assert_u3_pf_refused(
+        |state, _| state.ss_cache = None,
+        R::MissingCurrentSelectors,
+        "no SS cache",
+    );
+    assert_u3_pf_refused(
+        |state, _| state.cs_cache.as_mut().unwrap().access = 0x9b,
+        R::InvalidCurrentCodeSegment,
+        "user CS cache with DPL 0",
+    );
+    assert_u3_pf_refused(
+        |state, _| state.cs_cache.as_mut().unwrap().flags = 0xc,
+        R::InvalidCurrentCodeSegment,
+        "user CS cache not 64-bit",
+    );
+    assert_u3_pf_refused(
+        |state, _| state.ss_selector = Some(0x18),
+        R::InvalidCurrentCodeSegment,
+        "SS selector with RPL 0",
+    );
+    assert_u3_pf_refused(
+        |state, _| state.sti_shadow = Some(StiShadow::Blocking),
+        R::StiShadowActive,
+        "interrupt shadow",
+    );
+    assert_u3_pf_refused(
+        |state, _| state.rip = RIP + 1,
+        R::FaultRipMismatch,
+        "RIP moved",
+    );
+}
+
+#[test]
+fn pf_delivery_refuses_a_context_that_does_not_match_the_state() {
+    // A Ring3 context over a CPL0 state (the pre-S4-39d refusal) and a Ring0 context over a CPL3
+    // state: nothing is written and nothing changes.
+    let (mut state, mut memory) = pf_state();
+    let before = state.clone();
+    let delivered = od_isa::deliver_page_fault_cpl0_set(
+        &mut state,
+        &mut memory,
+        &u3_record(),
+        context(PrivilegeLevel::Ring3),
+    );
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0PageFaultDelivery::Refused(od_isa::Cpl0PageFaultRefusal::NotRing0Long64)
+    );
+    assert_eq!((state, memory.writes), (before, 0));
+    let (mut state, mut memory) = u3_state();
+    let before = state.clone();
+    let delivered = od_isa::deliver_page_fault_cpl0_set(
+        &mut state,
+        &mut memory,
+        &pf_record(),
+        context(PrivilegeLevel::Ring0),
+    );
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0PageFaultDelivery::Refused(
+            od_isa::Cpl0PageFaultRefusal::InvalidCurrentCodeSegment
+        )
+    );
+    assert_eq!((state, memory.writes), (before, 0));
+}
+
+#[test]
+fn pf_delivery_from_cpl3_tss_read_failure_and_store_failures_leave_the_cpu_unchanged() {
+    // The TSS page does not read: Aborted at the TSS read, nothing written.
+    let (mut state, mut memory) = u3_state();
+    memory.fault_pages = vec![U3_TSS & !0xfff];
+    let before = state.clone();
+    let delivered = u3_deliver(&mut state, &mut memory);
+    assert!(
+        matches!(
+            delivered,
+            od_isa::Cpl0PageFaultDelivery::Aborted {
+                phase: od_isa::Cpl0PageFaultDeliveryPhase::TssRsp0Read,
+                ..
+            }
+        ),
+        "{delivered:?}"
+    );
+    assert_eq!((&state, memory.writes), (&before, 0));
+    // Every failing store (1..=6) leaves the CPU as it was; the words already stored lie in the
+    // dead kernel stack below the aligned RSP0, the user stack is untouched.
+    let frame = U3_RSP0 & !15;
+    for failing in 1..=6usize {
+        let (mut state, mut memory) = u3_state();
+        memory.fail_write_number = Some(failing);
+        let before = state.clone();
+        let delivered = u3_deliver(&mut state, &mut memory);
+        assert!(
+            matches!(
+                delivered,
+                od_isa::Cpl0PageFaultDelivery::Aborted {
+                    phase: od_isa::Cpl0PageFaultDeliveryPhase::StackWrite { .. },
+                    ..
+                }
+            ),
+            "{failing}: {delivered:?}"
+        );
+        assert_eq!(state, before, "{failing}");
+        assert_eq!(memory.write_log.len(), failing - 1, "{failing}");
+        assert!(
+            memory
+                .write_log
+                .iter()
+                .all(|(address, _, _)| (frame - 48..frame).contains(address)),
+            "{failing}"
+        );
+    }
+    let (mut state, mut memory) = u3_state();
+    memory.put(LRETQ_GDT + 0x10, CODE64 & !(1 << 40));
+    memory.fail_write_number = Some(7);
+    let before = state.clone();
+    let delivered = u3_deliver(&mut state, &mut memory);
+    assert!(matches!(
+        delivered,
+        od_isa::Cpl0PageFaultDelivery::Aborted {
+            phase: od_isa::Cpl0PageFaultDeliveryPhase::TargetCodeDescriptorAccessedWrite,
+            ..
+        }
+    ));
+    assert_eq!(state, before);
+}
+
+/// `#GP(0)` delivery from CPL3: the gate of vector 13 is the interrupt gate of `PF_HANDLER`.
+fn u3_gp(
+    tweak: impl FnOnce(&mut LongModeState, &mut LretqMemory),
+    privilege: PrivilegeLevel,
+) -> (
+    LongModeState,
+    LretqMemory,
+    LongModeState,
+    od_isa::Cpl0GeneralProtectionDelivery,
+) {
+    let (mut state, mut memory) = u3_state();
+    let gate = pf_gate_bytes(PF_HANDLER, 0x10, 0, 0x8e);
+    let offset = (PF_IDT + 13 * 16 - RAM_BASE) as usize;
+    memory.ram[offset..offset + 16].copy_from_slice(&gate);
+    tweak(&mut state, &mut memory);
+    let before = state.clone();
+    let fault = ArchitecturalFault {
+        vector: 13,
+        error_code: Some(0),
+        linear_address: None,
+    };
+    let delivered = od_isa::deliver_general_protection_cpl0_set(
+        &mut state,
+        &mut memory,
+        &fault,
+        context(privilege),
+    );
+    (state, memory, before, delivered)
+}
+
+#[test]
+fn gp_delivery_from_cpl3_stores_the_frame_on_the_tss_rsp0_stack_and_keeps_cr2() {
+    let (state, memory, before, delivered) = u3_gp(|_, _| {}, PrivilegeLevel::Ring3);
+    let frame = U3_RSP0 & !15;
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0GeneralProtectionDelivery::Delivered {
+            target_rip: PF_HANDLER,
+            new_rsp: frame - 48,
+            trap_gate: false,
+        }
+    );
+    assert_eq!(pf_qword(&memory, frame - 8), u64::from(U3_USER_SS));
+    assert_eq!(pf_qword(&memory, frame - 16), U3_USER_RSP);
+    assert_eq!(pf_qword(&memory, frame - 24), before.rflags | (1 << 16));
+    assert_eq!(pf_qword(&memory, frame - 32), u64::from(U3_USER_CS));
+    assert_eq!(pf_qword(&memory, frame - 40), RIP);
+    assert_eq!(pf_qword(&memory, frame - 48), 0);
+    assert_eq!(state.cs_selector, Some(0x10));
+    assert_eq!((state.ss_selector, state.ss_unusable), (Some(0), true));
+    assert_eq!(state.cr2, None);
+    assert_eq!(state.rflags & IF, 0);
+    assert!(
+        memory
+            .write_privileges
+            .iter()
+            .all(|privilege| *privilege == PrivilegeLevel::Ring0)
+    );
+}
+
+#[test]
+fn gp_delivery_from_cpl3_refuses_without_a_write() {
+    use od_isa::Cpl0GeneralProtectionDelivery::Refused;
+    use od_isa::Cpl0GeneralProtectionRefusal as R;
+    type Tweak = fn(&mut LongModeState, &mut LretqMemory);
+    let cases: [(Tweak, PrivilegeLevel, R); 5] = [
+        (
+            |s, _| s.tr = None,
+            PrivilegeLevel::Ring3,
+            R::MissingTaskRegister,
+        ),
+        (
+            |s, _| s.tr.as_mut().unwrap().limit = 10,
+            PrivilegeLevel::Ring3,
+            R::TssRsp0BeyondLimit,
+        ),
+        (
+            |_, m| m.put(U3_TSS + 4, 0x0000_8000_0000_0000),
+            PrivilegeLevel::Ring3,
+            R::NonCanonicalRsp0,
+        ),
+        // A Ring0 context over this CPL3 state.
+        (
+            |_, _| {},
+            PrivilegeLevel::Ring0,
+            R::InvalidCurrentCodeSegment,
+        ),
+        (|s, _| s.idtr = None, PrivilegeLevel::Ring3, R::MissingIdtr),
+    ];
+    for (index, (tweak, privilege, expected)) in cases.into_iter().enumerate() {
+        let (state, memory, before, delivered) = u3_gp(tweak, privilege);
+        assert_eq!(delivered, Refused(expected), "{index}");
+        assert_eq!((state, memory.writes), (before, 0), "{index}");
+    }
+}
+
+#[test]
+fn external_interrupt_from_cpl3_stays_refused() {
+    // S4-39h: the external interrupt delivery of the set does not start from CPL3 yet.
+    let (mut state, mut memory) = u3_state();
+    let before = state.clone();
+    let delivered = od_isa::deliver_external_interrupt_cpl0_set(
+        &mut state,
+        &mut memory,
+        0x20,
+        context(PrivilegeLevel::Ring3),
+    );
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0ExternalInterruptDelivery::Refused(
+            od_isa::Cpl0ExternalInterruptRefusal::NotRing0Long64
+        )
+    );
+    assert_eq!((state, memory.writes), (before, 0));
 }
 
 #[test]

@@ -413,6 +413,19 @@ fn valid_ring0_long_code(selector: u16, access: u8, flags: u8) -> bool {
         && flags & 0x4 == 0
 }
 
+/// The current CS of a CPL3 delivery: a present, non-conforming 64-bit code segment with DPL 3
+/// under a selector with RPL 3 (the state an `IRETQ` to CPL3 leaves, S4-39a).
+fn valid_ring3_long_code(selector: u16, access: u8, flags: u8) -> bool {
+    selector & 0xfffc != 0
+        && selector & 3 == 3
+        && access & 0x18 == 0x18
+        && access & 0x04 == 0
+        && (access >> 5) & 3 == 3
+        && access & 0x80 != 0
+        && flags & 0x2 != 0
+        && flags & 0x4 == 0
+}
+
 fn pf_outside(reason: PageFaultDeliveryOutsideProfile) -> PageFaultDeliveryResult {
     PageFaultDeliveryResult::OutsideProfile(reason)
 }
@@ -473,6 +486,15 @@ pub enum Cpl0PageFaultRefusal {
     NonCanonicalTargetRip,
     StackAddressOverflow,
     NonCanonicalStackSpan,
+    /// S4-39d, a delivery from CPL3 only: no task register is modeled (no `LTR`), so the CPL0
+    /// stack (`TSS.RSP0`) is unknown.
+    MissingTaskRegister,
+    /// S4-39d, a delivery from CPL3 only: `TSS.RSP0` (bytes 4..=11 of the TSS) lies beyond the
+    /// task register limit.
+    TssRsp0BeyondLimit,
+    /// S4-39d, a delivery from CPL3 only: the span of `TSS.RSP0` or the value read from it is
+    /// not canonical.
+    NonCanonicalRsp0,
 }
 
 /// Where [`deliver_page_fault_cpl0_set`] failed on a memory access.
@@ -480,7 +502,11 @@ pub enum Cpl0PageFaultRefusal {
 pub enum Cpl0PageFaultDeliveryPhase {
     IdtGateRead,
     TargetCodeDescriptorRead,
-    StackWrite { slot: PageFaultFrameSlot },
+    /// S4-39d, a delivery from CPL3 only: the read of `TSS.RSP0`.
+    TssRsp0Read,
+    StackWrite {
+        slot: PageFaultFrameSlot,
+    },
     TargetCodeDescriptorAccessedWrite,
 }
 
@@ -567,15 +593,66 @@ struct ResolvedGate {
     trap_gate: bool,
     /// The gate DPL (attribute byte bits 5..=6), checked only by the software `INT n` family.
     dpl: u8,
+    /// S4-39d: `Some(TSS.RSP0)` for a delivery from CPL3 (the new stack and the CPL0 privilege of
+    /// the frame stores), `None` for a CPL0 to CPL0 delivery. Set by the wrapper after
+    /// [`read_tss_rsp0`], before the commit.
+    kernel_rsp: Option<u64>,
+}
+
+/// S4-39d: why the read of `TSS.RSP0` failed; the pair of [`GateFailure`] for the one step only a
+/// delivery from CPL3 makes. It is read-only: nothing was written.
+enum TssFailure {
+    MissingTaskRegister,
+    TssRsp0BeyondLimit,
+    NonCanonicalRsp0,
+    Aborted(MemoryError),
+}
+
+/// S4-39d: `RSP0` of the 64-bit TSS at `TR.base + 4`, read as a descriptor-table access (a CPL0
+/// page privilege, also under PTI where the TSS is a supervisor page of the user page tables).
+/// The read is the last check before the first write of a delivery from CPL3.
+fn read_tss_rsp0(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+) -> Result<u64, TssFailure> {
+    let Some(tr) = state.tr else {
+        return Err(TssFailure::MissingTaskRegister);
+    };
+    // RSP0 occupies bytes 4..=11 of the TSS.
+    if tr.limit < 11 {
+        return Err(TssFailure::TssRsp0BeyondLimit);
+    }
+    let (Some(address), Some(last)) = (tr.base.checked_add(4), tr.base.checked_add(11)) else {
+        return Err(TssFailure::NonCanonicalRsp0);
+    };
+    if !canonical(address) || !canonical(last) {
+        return Err(TssFailure::NonCanonicalRsp0);
+    }
+    let rsp0 = memory
+        .read_integer(
+            address,
+            context.descriptor_table(),
+            crate::OperandSize::Qword,
+        )
+        .map_err(TssFailure::Aborted)?;
+    if !canonical(rsp0) {
+        return Err(TssFailure::NonCanonicalRsp0);
+    }
+    Ok(rsp0)
 }
 
 /// Read and check the gate of `vector` and its target code descriptor: no write, no change of
 /// the CPU state. The wrapper has already checked the entry conditions of its own event.
+///
+/// `from_cpl3` (S4-39d, only the `#PF` and `#GP` wrappers pass it) asks for a CPL3 state in place
+/// of a CPL0 one: CS RPL 3 over a 64-bit code cache with DPL 3, SS selector and cache loaded.
 fn resolve_cpl0_gate(
     state: &LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
     vector: u8,
+    from_cpl3: bool,
 ) -> Result<ResolvedGate, GateFailure> {
     use GateRefusal as Refusal;
     let refuse = GateRefused;
@@ -584,7 +661,16 @@ fn resolve_cpl0_gate(
     else {
         return Err(refuse(Refusal::MissingCurrentSelectors));
     };
-    if !valid_ring0_long_code(old_cs, old_cs_cache.access, old_cs_cache.flags) {
+    if from_cpl3 {
+        if state.ss_cache.is_none() {
+            return Err(refuse(Refusal::MissingCurrentSelectors));
+        }
+        if !valid_ring3_long_code(old_cs, old_cs_cache.access, old_cs_cache.flags)
+            || old_ss & 3 != 3
+        {
+            return Err(refuse(Refusal::InvalidCurrentCodeSegment));
+        }
+    } else if !valid_ring0_long_code(old_cs, old_cs_cache.access, old_cs_cache.flags) {
         return Err(refuse(Refusal::InvalidCurrentCodeSegment));
     }
     let Some(idtr) = state.idtr else {
@@ -688,6 +774,7 @@ fn resolve_cpl0_gate(
         descriptor_address,
         trap_gate,
         dpl: (attributes >> 5) & 3,
+        kernel_rsp: None,
     })
 }
 
@@ -695,6 +782,12 @@ fn resolve_cpl0_gate(
 /// and the live flags. The frame is SS, old RSP, `saved_rflags`, old CS, `saved_rip` and, if
 /// present, `error_code` (stored in this order downwards from the 16-byte aligned RSP). A
 /// failure leaves the CPU state unchanged. Returns `(target_rip, new_rsp)`.
+///
+/// S4-39d: with `gate.kernel_rsp = Some(rsp0)` (a delivery from CPL3) the frame is stored
+/// downwards from `rsp0` aligned down to 16 in place of the old RSP, with the CPL0 privilege of the
+/// new level for the page checks of the stores; the old SS:RSP of the frame are the user ones. The
+/// commit then also loads SS with the null selector (64-bit mode, privilege change): selector 0, the
+/// cache kept and marked unusable (the S2-46 convention). The rest is the CPL0 to CPL0 delivery.
 fn commit_cpl0_gate(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -706,7 +799,7 @@ fn commit_cpl0_gate(
 ) -> Result<(u64, u64), GateFailure> {
     let table = context.descriptor_table();
     let old_rsp = state.gpr[crate::Register::Rsp as usize];
-    let aligned_rsp = old_rsp & !15;
+    let aligned_rsp = gate.kernel_rsp.unwrap_or(old_rsp) & !15;
     let words = 5 + u64::from(error_code.is_some());
     let Some(new_rsp) = aligned_rsp.checked_sub(8 * words) else {
         return Err(GateRefused(GateRefusal::StackAddressOverflow));
@@ -722,8 +815,14 @@ fn commit_cpl0_gate(
         saved_rip,
         error_code.unwrap_or(0),
     ];
+    // The frame is stored at the new privilege level: CPL0 after a delivery from CPL3.
     let stack_context = AccessContext {
         origin: AccessOrigin::ImplicitStack,
+        privilege: if gate.kernel_rsp.is_some() {
+            PrivilegeLevel::Ring0
+        } else {
+            context.privilege
+        },
         ..context
     };
     for (index, value) in frame.iter().take(words as usize).enumerate() {
@@ -748,7 +847,7 @@ fn commit_cpl0_gate(
         }
     }
 
-    // Commit. SS (selector, cache, unusable mark) stays as it was.
+    // Commit. SS (selector, cache, unusable mark) stays as it was, unless a CPL3 delivery nulls it.
     state.cs_selector = Some(gate.target_selector);
     state.cs_cache = Some(CodeSegmentDescriptorCache {
         base: 0,
@@ -757,6 +856,10 @@ fn commit_cpl0_gate(
         flags,
     });
     state.gpr[crate::Register::Rsp as usize] = new_rsp;
+    if gate.kernel_rsp.is_some() {
+        state.ss_selector = Some(0);
+        state.ss_unusable = true;
+    }
     state.rip = gate.target_rip;
     let mut cleared = GATE_CLEARED_FLAGS;
     if !gate.trap_gate {
@@ -801,6 +904,13 @@ impl_from_gate_refusal!(Cpl0GeneralProtectionRefusal);
 /// Deliver a synchronous page fault of the Long64 CPL0 profile set through the IDT gate of
 /// vector 14 (S4-38L5c): CPL0 to CPL0, interrupt gate (type 0xE) or trap gate (0xF), IST 0.
 ///
+/// S4-39d: a `Ring3` context over a CPL3 state (CS RPL 3, DPL 3 64-bit code cache, SS loaded) is
+/// delivered too, through the same gate checks and the CPL0 stack of `TSS.RSP0` (TR base + 4,
+/// canonical; no task register or a limit below 11 or a non-canonical value refuse before any
+/// write). The frame is the same, stored at CPL0 from `RSP0` aligned down to 16, with the user SS,
+/// RSP, RFLAGS, CS and RIP; the entry loads CS from the gate and SS with the null selector.
+/// Other state/context pairs are `NotRing0Long64`.
+///
 /// The caller runs the faulting instruction first; it did not retire and RIP is still on it
 /// (`record.saved_rip() == state.rip`). Everything is checked before the first write; the
 /// frame is then stored, the target code descriptor Accessed bit is set if clear, and the CPU
@@ -840,19 +950,25 @@ pub fn deliver_page_fault_cpl0_set(
     if state.rip != record.saved_rip() {
         return refuse(Refusal::FaultRipMismatch);
     }
-    if context.mode != InstructionMode::Long64 || context.privilege != PrivilegeLevel::Ring0 {
+    let Some(from_cpl3) = delivery_source(state, context) else {
         return refuse(Refusal::NotRing0Long64);
-    }
+    };
     if state.activity != Some(crate::CpuActivity::Running) {
         return refuse(Refusal::ActivityOutsideProfile);
     }
     if state.sti_shadow != Some(crate::StiShadow::Clear) {
         return refuse(Refusal::StiShadowActive);
     }
-    let gate = match resolve_cpl0_gate(state, memory, context, 14) {
+    let mut gate = match resolve_cpl0_gate(state, memory, context, 14, from_cpl3) {
         Ok(gate) => gate,
         Err(failure) => return pf_gate_failure(failure),
     };
+    if from_cpl3 {
+        match read_tss_rsp0(state, memory, context) {
+            Ok(rsp0) => gate.kernel_rsp = Some(rsp0),
+            Err(failure) => return pf_tss_failure(failure),
+        }
+    }
     let saved_rflags = state.rflags | (1 << 16) | (1 << 1);
     match commit_cpl0_gate(
         state,
@@ -904,6 +1020,39 @@ fn pf_gate_failure(failure: GateFailure) -> Cpl0PageFaultDelivery {
     }
 }
 
+/// S4-39d: where an exception delivery of the `#PF`/`#GP` wrappers starts: `Some(false)` at CPL0
+/// (Ring0 context), `Some(true)` at CPL3 (Ring3 context over a CS with RPL 3), `None` for any
+/// other mode, privilege, or a Ring3 context over a CS that is not RPL 3 (the wrapper refuses
+/// with `NotRing0Long64`). Ring1 and Ring2 do not exist in the profile.
+fn delivery_source(state: &LongModeState, context: AccessContext) -> Option<bool> {
+    if context.mode != InstructionMode::Long64 {
+        return None;
+    }
+    match context.privilege {
+        PrivilegeLevel::Ring0 => Some(false),
+        PrivilegeLevel::Ring3 if state.cs_selector.is_some_and(|cs| cs & 3 == 3) => Some(true),
+        _ => None,
+    }
+}
+
+fn pf_tss_failure(failure: TssFailure) -> Cpl0PageFaultDelivery {
+    match failure {
+        TssFailure::MissingTaskRegister => {
+            Cpl0PageFaultDelivery::Refused(Cpl0PageFaultRefusal::MissingTaskRegister)
+        }
+        TssFailure::TssRsp0BeyondLimit => {
+            Cpl0PageFaultDelivery::Refused(Cpl0PageFaultRefusal::TssRsp0BeyondLimit)
+        }
+        TssFailure::NonCanonicalRsp0 => {
+            Cpl0PageFaultDelivery::Refused(Cpl0PageFaultRefusal::NonCanonicalRsp0)
+        }
+        TssFailure::Aborted(cause) => Cpl0PageFaultDelivery::Aborted {
+            phase: Cpl0PageFaultDeliveryPhase::TssRsp0Read,
+            cause,
+        },
+    }
+}
+
 /// Why [`deliver_general_protection_cpl0_set`] refused to deliver. A refusal happens before any
 /// memory write: the CPU state and the guest memory are as they were (only the IDT and GDT
 /// reads preceded it). Every refusal is a stop of the caller, never a substitute delivery.
@@ -939,6 +1088,15 @@ pub enum Cpl0GeneralProtectionRefusal {
     NonCanonicalTargetRip,
     StackAddressOverflow,
     NonCanonicalStackSpan,
+    /// S4-39d, a delivery from CPL3 only: no task register is modeled (no `LTR`), so the CPL0
+    /// stack (`TSS.RSP0`) is unknown.
+    MissingTaskRegister,
+    /// S4-39d, a delivery from CPL3 only: `TSS.RSP0` (bytes 4..=11 of the TSS) lies beyond the
+    /// task register limit.
+    TssRsp0BeyondLimit,
+    /// S4-39d, a delivery from CPL3 only: the span of `TSS.RSP0` or the value read from it is
+    /// not canonical.
+    NonCanonicalRsp0,
 }
 
 /// Where [`deliver_general_protection_cpl0_set`] failed on a memory access.
@@ -946,7 +1104,11 @@ pub enum Cpl0GeneralProtectionRefusal {
 pub enum Cpl0GeneralProtectionPhase {
     IdtGateRead,
     TargetCodeDescriptorRead,
-    StackWrite { slot: PageFaultFrameSlot },
+    /// S4-39d, a delivery from CPL3 only: the read of `TSS.RSP0`.
+    TssRsp0Read,
+    StackWrite {
+        slot: PageFaultFrameSlot,
+    },
     TargetCodeDescriptorAccessedWrite,
 }
 
@@ -978,6 +1140,8 @@ pub enum Cpl0GeneralProtectionDelivery {
 /// the refusals are those of [`deliver_page_fault_cpl0_set`], with two differences: CR2 is not
 /// touched, and the metadata is the fault alone (there is no page-fault record).
 ///
+/// S4-39d: a CPL3 delivery works as in [`deliver_page_fault_cpl0_set`] (TSS.RSP0 stack, null SS).
+///
 /// The caller runs the faulting instruction first; it did not retire and RIP is still on it:
 /// `state.rip` is the saved RIP of the frame (the instruction is restarted by a handler that
 /// returns without a fixup). Everything is checked before the first write; the frame is then
@@ -1008,19 +1172,25 @@ pub fn deliver_general_protection_cpl0_set(
     let Some(error_code) = fault.error_code else {
         return refuse(Refusal::MissingFaultMetadata);
     };
-    if context.mode != InstructionMode::Long64 || context.privilege != PrivilegeLevel::Ring0 {
+    let Some(from_cpl3) = delivery_source(state, context) else {
         return refuse(Refusal::NotRing0Long64);
-    }
+    };
     if state.activity != Some(crate::CpuActivity::Running) {
         return refuse(Refusal::ActivityOutsideProfile);
     }
     if state.sti_shadow != Some(crate::StiShadow::Clear) {
         return refuse(Refusal::StiShadowActive);
     }
-    let gate = match resolve_cpl0_gate(state, memory, context, 13) {
+    let mut gate = match resolve_cpl0_gate(state, memory, context, 13, from_cpl3) {
         Ok(gate) => gate,
         Err(failure) => return gp_gate_failure(failure),
     };
+    if from_cpl3 {
+        match read_tss_rsp0(state, memory, context) {
+            Ok(rsp0) => gate.kernel_rsp = Some(rsp0),
+            Err(failure) => return gp_tss_failure(failure),
+        }
+    }
     let saved_rflags = state.rflags | (1 << 16) | (1 << 1);
     let saved_rip = state.rip;
     match commit_cpl0_gate(
@@ -1067,6 +1237,24 @@ fn gp_gate_failure(failure: GateFailure) -> Cpl0GeneralProtectionDelivery {
             };
             Cpl0GeneralProtectionDelivery::Aborted { phase, cause }
         }
+    }
+}
+
+fn gp_tss_failure(failure: TssFailure) -> Cpl0GeneralProtectionDelivery {
+    match failure {
+        TssFailure::MissingTaskRegister => Cpl0GeneralProtectionDelivery::Refused(
+            Cpl0GeneralProtectionRefusal::MissingTaskRegister,
+        ),
+        TssFailure::TssRsp0BeyondLimit => {
+            Cpl0GeneralProtectionDelivery::Refused(Cpl0GeneralProtectionRefusal::TssRsp0BeyondLimit)
+        }
+        TssFailure::NonCanonicalRsp0 => {
+            Cpl0GeneralProtectionDelivery::Refused(Cpl0GeneralProtectionRefusal::NonCanonicalRsp0)
+        }
+        TssFailure::Aborted(cause) => Cpl0GeneralProtectionDelivery::Aborted {
+            phase: Cpl0GeneralProtectionPhase::TssRsp0Read,
+            cause,
+        },
     }
 }
 
@@ -1179,7 +1367,7 @@ pub fn deliver_external_interrupt_cpl0_set(
     if state.sti_shadow != Some(crate::StiShadow::Clear) {
         return refuse(Refusal::StiShadowActive);
     }
-    let gate = match resolve_cpl0_gate(state, memory, context, vector) {
+    let gate = match resolve_cpl0_gate(state, memory, context, vector, false) {
         Ok(gate) => gate,
         Err(failure) => return external_gate_failure(failure),
     };
@@ -1345,7 +1533,7 @@ pub fn deliver_int3_cpl0_set(
     if state.sti_shadow != Some(crate::StiShadow::Clear) {
         return refuse(Refusal::StiShadowActive);
     }
-    let gate = match resolve_cpl0_gate(state, memory, context, 3) {
+    let gate = match resolve_cpl0_gate(state, memory, context, 3, false) {
         Ok(gate) => gate,
         Err(failure) => return int3_gate_failure(failure),
     };
