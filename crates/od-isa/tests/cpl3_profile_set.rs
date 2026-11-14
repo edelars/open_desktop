@@ -2998,7 +2998,8 @@ fn neighbouring_byte_mov_and_compare_opcodes_stay_outside() {
 #[test]
 fn init_movb_load_then_cmpb_then_jne_chain_stops_at_incq() {
     // `/init` at 0x40016f: `8a 06` (movb (%rsi), %al), `38 07` (cmpb %al, (%rdi); executes since
-    // S4-39f11), `75 00` (jne, taken: the bytes differ) and `48 ff c6` (incq %rsi, outside).
+    // S4-39f11), `75 00` (jne rel8 with displacement 0: taken and not taken reach the same RIP, so
+    // this test does not tell them apart) and `48 ff c6` (incq %rsi, outside).
     let mut state = mov_byte_state();
     state.gpr[Register::Rsi as usize] = DATA;
     state.gpr[Register::Rdi as usize] = DATA + 0x40;

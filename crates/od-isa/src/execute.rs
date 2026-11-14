@@ -21165,7 +21165,7 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// r8..r15) with no prefix other than REX, as in `4c 39 eb` (`cmpq %r13, %rbx`) of `/init` at
 /// `0x400145`. The CPL0 `Operation::Arithmetic { kind: Cmp }` is reused (flags as `dst - src`, the
 /// result is not written). `39` without REX.W (CMP r/m32, r32), a memory operand and the other CMP
-/// opcodes (`38`, `3A`..`3D`, `80`/`81`/`83 /7`) stay outside.
+/// opcodes (`3A`..`3D`, `80`/`81`/`83 /7`) stay outside; `38` with a memory operand is S4-39f11.
 ///
 /// S4-39f7 (continued): the short `7x rel8` Jcc (`74 08` = `je` of `/init` at `0x400151`) without
 /// REX and without any prefix: the same `Operation::Branch` as `0F 8x` (the decoder sign-extends
