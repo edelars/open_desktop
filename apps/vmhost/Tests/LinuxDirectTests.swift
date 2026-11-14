@@ -34,6 +34,11 @@ final class LinuxDirectXCTests: XCTestCase {
 
     private func path(_ name: String) -> String { directory + "/" + name }
 
+    private func refusal(_ code: String, _ stage: String) -> String {
+        "{\"schema_version\": 1, \"command\": \"linux-direct\", \"status\": \"refused\", "
+            + "\"error\": {\"code\": \"\(code)\", \"stage\": \"\(stage)\", \"detail\": \"d-\(code)\"}}"
+    }
+
     private func report(exitKind: String, retired: Int, com1: String, userMode: Bool = false) -> String {
         var stop = "\"exit_kind\": \"\(exitKind)\", \"retired\": \(retired), \"com1_text\": \"\(com1)\", \"rip\": \"0x1000\""
         if userMode {
@@ -149,10 +154,6 @@ final class LinuxDirectXCTests: XCTestCase {
     // MARK: refusals
 
     func testRunnerRefusalsAreReportedWithTheirReasonAndLeaveNoStatus() throws {
-        let refusal = { (code: String, stage: String) in
-            "{\"schema_version\": 1, \"command\": \"linux-direct\", \"status\": \"refused\", "
-                + "\"error\": {\"code\": \"\(code)\", \"stage\": \"\(stage)\", \"detail\": \"d-\(code)\"}}"
-        }
         for (exitCode, code, stage) in [(Int32(4), "vmlinuz_sha256_mismatch", "vmlinuz_sha256"), (3, "invalid_input", "vmlinuz_file")] {
             let runner = LinuxDirectProfileRunner(configuration: config(runner: try reportScript("refuse\(exitCode)", json: refusal(code, stage), exitCode: exitCode)))
             XCTAssertThrowsError(try runner.runSession()) {
@@ -162,9 +163,14 @@ final class LinuxDirectXCTests: XCTestCase {
             XCTAssertFalse(runner.isRunning)
             assertGone(runner.lastChildPID)
         }
-        // Exit 3 for bad arguments leaves no report file: the stderr text is the detail.
-        let noFile = try script("args3", "echo 'bad nonce' >&2\nexit 3")
-        XCTAssertThrowsError(try LinuxDirectProfileRunner(configuration: config(runner: noFile)).runSession()) {
+        // What the real runner does on a refusal of its arguments (exit 3): the JSON of the refusal goes to STDOUT, `--out` is not written.
+        let stdoutOnly = try script("args3", "cat <<'JSON'\n\(refusal("invalid_input", "arguments"))\nJSON\nexit 3")
+        XCTAssertThrowsError(try LinuxDirectProfileRunner(configuration: config(runner: stdoutOnly)).runSession()) {
+            XCTAssertEqual($0 as? LinuxDirectError, .runnerRefused(exitCode: 3, code: "invalid_input", stage: "arguments", detail: "d-invalid_input"))
+        }
+        // No JSON anywhere: the stderr text is the detail.
+        let noJSON = try script("args3b", "echo 'bad nonce' >&2\nexit 3")
+        XCTAssertThrowsError(try LinuxDirectProfileRunner(configuration: config(runner: noJSON)).runSession()) {
             XCTAssertEqual($0 as? LinuxDirectError, .runnerRefused(exitCode: 3, code: nil, stage: nil, detail: "bad nonce\n"))
         }
         // An unexpected exit code, a signal and a report that is not a linux-direct report are failures, not statuses.
@@ -343,6 +349,170 @@ final class LinuxDirectXCTests: XCTestCase {
         assertGone(runner.lastChildPID)
     }
 
+    func testReportNumbersAreStrictAndTheGuestMustHaveStarted() throws {
+        func parse(_ stop: String, started: String = "true") throws -> LinuxDirectStatus {
+            try LinuxDirectStatus.parse(report: Data(("{\"command\": \"linux-direct\", \"status\": \"loaded\", \"guest_started\": \(started), "
+                + "\"stop\": {\"exit_kind\": \"halted\", \"com1_text\": \"\", \(stop)}}").utf8))
+        }
+        XCTAssertEqual(try parse("\"retired\": 18446744073709551615").retired, UInt64.max)
+        for bad in ["true", "1.5", "-1", "\"7\"", "null"] {
+            XCTAssertThrowsError(try parse("\"retired\": \(bad)"), "retired \(bad)")
+        }
+        XCTAssertThrowsError(try parse("\"retired\": 1, \"cpl3_retired\": true"))
+        XCTAssertThrowsError(try parse("\"retired\": 1", started: "false"))
+    }
+
+    // MARK: races
+
+    func testASecondSessionIsRefusedWhileTheFirstIsStillBeforeItsSpawn() throws {
+        let runner = LinuxDirectProfileRunner(configuration: config(runner: try reportScript("ok", json: report(exitKind: "halted", retired: 1, com1: ""))))
+        let inWindow = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        runner.stageHook = { stage in
+            guard stage == .beforeSpawn else { return }
+            inWindow.signal()
+            release.wait()
+        }
+        let finished = expectation(description: "first session ends")
+        var outcome: Result<LinuxDirectStatus, Error>?
+        Thread {
+            outcome = Result { try runner.runSession() }
+            finished.fulfill()
+        }.start()
+        XCTAssertEqual(inWindow.wait(timeout: .now() + 10), .success)
+        // The first session has been accepted but has not spawned: the phase is already `running`.
+        XCTAssertTrue(runner.isRunning)
+        XCTAssertThrowsError(try runner.runSession()) { XCTAssertEqual($0 as? LinuxDirectError, .sessionRunning) }
+        XCTAssertEqual(spawnCount, 0)
+        runner.stageHook = nil
+        release.signal()
+        wait(for: [finished], timeout: 10)
+        guard case .success(let status)? = outcome else { return XCTFail("the first session failed: \(String(describing: outcome))") }
+        XCTAssertEqual(status.exitKind, "halted")
+        XCTAssertEqual(spawnCount, 1)
+        // A failed validation gives the session back: the error of the second call is the validation, not `sessionRunning`.
+        var broken = config(runner: nil)
+        broken.nonce = "a b"
+        let failing = LinuxDirectProfileRunner(configuration: broken)
+        for _ in 0..<2 {
+            XCTAssertThrowsError(try failing.runSession()) {
+                guard case .invalidConfig(let field, _)? = $0 as? LinuxDirectError else { return XCTFail("\($0)") }
+                XCTAssertEqual(field, "nonce")
+            }
+            XCTAssertFalse(failing.isRunning)
+        }
+    }
+
+    func testStopBeforeSpawnIsNotLostAndNothingIsSpawned() throws {
+        let runner = LinuxDirectProfileRunner(configuration: config(runner: try reportScript("ok", json: report(exitKind: "halted", retired: 1, com1: ""))))
+        let stopper = DispatchQueue(label: "stopper")
+        let stopped = expectation(description: "stop returns")
+        runner.stageHook = { stage in
+            guard stage == .beforeSpawn else { return }
+            stopper.async {
+                try? runner.stop()
+                stopped.fulfill()
+            }
+            while !runner.isStopRequested { usleep(1_000) }
+        }
+        XCTAssertThrowsError(try runner.runSession()) { XCTAssertEqual($0 as? LinuxDirectError, .terminatedByStop) }
+        wait(for: [stopped], timeout: 10)
+        XCTAssertEqual(spawnCount, 0)
+        XCTAssertFalse(runner.isRunning)
+        XCTAssertEqual(leftoverSessionDirectories(), [])
+    }
+
+    func testStopBetweenSpawnAndRegistrationOfThePidStillEndsTheChild() throws {
+        let sleeper = try script("sleeper2", "exec sleep 30")
+        let runner = LinuxDirectProfileRunner(configuration: config(runner: sleeper), terminationGraceSeconds: 0.3)
+        let stopper = DispatchQueue(label: "stopper")
+        let stopped = expectation(description: "stop returns")
+        runner.stageHook = { stage in
+            guard stage == .afterSpawn else { return }
+            stopper.async {
+                try? runner.stop()
+                stopped.fulfill()
+            }
+            while !runner.isStopRequested { usleep(1_000) }
+        }
+        XCTAssertThrowsError(try runner.runSession()) { XCTAssertEqual($0 as? LinuxDirectError, .terminatedByStop) }
+        wait(for: [stopped], timeout: 10)
+        // The child may be killed before its shell script wrote anything, so `spawnCount` is not checked; the PID is what counts.
+        assertGone(runner.lastChildPID)
+        XCTAssertFalse(runner.isRunning)
+        XCTAssertEqual(leftoverSessionDirectories(), [])
+    }
+
+    // MARK: signals of VMHost itself
+
+    /// `od-vmhost` as built next to the test bundle by SwiftPM; nil when it is not there.
+    private var vmhostExecutable: String? {
+        let candidate = Bundle(for: LinuxDirectXCTests.self).bundleURL.deletingLastPathComponent().appendingPathComponent("od-vmhost").path
+        return FileManager.default.isExecutableFile(atPath: candidate) ? candidate : nil
+    }
+
+    func testSigtermOfVMHostStopsTheChildAndRemovesTheDirectory() throws {
+        guard let vmhost = vmhostExecutable else { throw XCTSkip("od-vmhost is not built next to the test bundle") }
+        let pidFile = path("signal.pid")
+        let sleeper = try script("sleeper3", "echo $$ > \"\(pidFile).tmp\"; mv \"\(pidFile).tmp\" \"\(pidFile)\"\nexec sleep 30")
+        let value = config(runner: sleeper)
+        let document: [String: Any] = [
+            "profile": value.profile, "runner": sleeper, "vmlinuz": value.vmlinuz, "initramfs": value.initramfs, "acpi_blob": value.acpiBlob,
+            "nonce": value.nonce, "expected_vmlinuz_sha256": value.expectedVmlinuzSHA256,
+            "expected_initramfs_sha256": value.expectedInitramfsSHA256, "expected_acpi_manifest_hash": value.expectedAcpiManifestHash,
+            "ram_mib": 128, "budget": 10,
+        ]
+        try JSONSerialization.data(withJSONObject: document).write(to: URL(fileURLWithPath: path("vmhost.json")))
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: vmhost)
+        process.arguments = ["--linux-direct", path("vmhost.json")]
+        let output = Pipe()
+        process.standardOutput = output
+        try process.run()
+        let deadline = Date().addingTimeInterval(15)
+        while !FileManager.default.fileExists(atPath: pidFile), Date() < deadline { usleep(5_000) }
+        let child = pid_t(try String(contentsOfFile: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines))!
+        XCTAssertEqual(kill(child, 0), 0)
+        kill(process.processIdentifier, SIGTERM)
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationReason, .exit)
+        XCTAssertEqual(process.terminationStatus, VMHostExitStatus.failed)
+        let printed = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        XCTAssertTrue(printed.contains("\"status\":\"refused\""), printed)
+        errno = 0
+        XCTAssertEqual(kill(child, 0), -1, "the child outlived VMHost")
+        XCTAssertEqual(errno, ESRCH)
+        XCTAssertEqual(leftoverSessionDirectories(), [])
+    }
+
+    // MARK: the real runner
+
+    /// `target/debug/od-runner` of this repository (the test file is `<repo>/apps/vmhost/Tests/`), built by
+    /// `cargo build -p od-runner --bin od-runner`; the test is skipped, not failed, when it is not there.
+    func testTheRealRunnerRefusesAForeignKernelAndVMHostReportsItsCode() throws {
+        let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let binary = repository.appendingPathComponent("target/debug/od-runner").path
+        guard FileManager.default.isExecutableFile(atPath: binary) else {
+            throw XCTSkip("SKIPPED: \(binary) is not built (cargo build -p od-runner --bin od-runner)")
+        }
+        let runner = LinuxDirectProfileRunner(configuration: config(runner: binary))
+        // The files are not a kernel and the hash is not the pinned one: exit 4 `vmlinuz_sha256_mismatch`, the guest never starts.
+        XCTAssertThrowsError(try runner.runSession()) {
+            guard case .runnerRefused(let exitCode, let code, let stage, _)? = $0 as? LinuxDirectError else { return XCTFail("\($0)") }
+            XCTAssertEqual(exitCode, 4)
+            XCTAssertEqual(code, "vmlinuz_sha256_mismatch")
+            XCTAssertEqual(stage, "vmlinuz_sha256")
+        }
+        XCTAssertNil(runner.lastStatus)
+        assertGone(runner.lastChildPID)
+        // A missing kernel is refused by VMHost itself, before the runner is spawned.
+        var missing = config(runner: binary)
+        missing.vmlinuz = path("missing")
+        XCTAssertThrowsError(try LinuxDirectProfileRunner(configuration: missing).runSession())
+        XCTAssertEqual(leftoverSessionDirectories(), [])
+    }
+
     // MARK: repeated sessions and leaks
 
     func testTwoSessionsInOneProcessGiveTheSameStatusAndLeakNothing() throws {
@@ -372,7 +542,9 @@ final class LinuxDirectXCTests: XCTestCase {
     func testTheChildDoesNotInheritDescriptorsOfVMHost() throws {
         // A descriptor of this process that is not close-on-exec must not reach the runner (`POSIX_SPAWN_CLOEXEC_DEFAULT`).
         // A high number, so that the descriptor `ls` opens for its own listing in the child cannot be mistaken for it.
-        let probe = fcntl(open("/dev/null", O_RDONLY | O_CLOEXEC), F_DUPFD, 100)
+        let opened = open("/dev/null", O_RDONLY | O_CLOEXEC)
+        let probe = fcntl(opened, F_DUPFD, 100)
+        close(opened)
         XCTAssertGreaterThanOrEqual(probe, 100)
         defer { close(probe) }
         XCTAssertEqual(fcntl(probe, F_GETFD) & FD_CLOEXEC, 0)

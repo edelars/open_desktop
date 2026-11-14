@@ -14,8 +14,8 @@ import ODShared
 // SIGKILL after a grace period) from another thread and is idempotent. `pause` and `resume` answer `ProfileUnsupportedError`: the
 // Linux board has no pause, and a silent no-op would be a lie about the machine.
 //
-// Resources of a session: a private temp directory (the `--out` report and the stderr log) and the child process. Standard streams of
-// the child are `/dev/null` and a file, so no pipe exists; every other descriptor of VMHost is closed in the child
+// Resources of a session: a private temp directory (the `--out` report and the stdout and stderr files of the child) and the child
+// process. The child's stdin is `/dev/null`, stdout and stderr are files, so no pipe exists; every other descriptor of VMHost is closed in the child
 // (`POSIX_SPAWN_CLOEXEC_DEFAULT`). The child is always reaped with `waitpid` before the session returns, and the temp directory is
 // always removed. There are no termination handlers.
 
@@ -199,6 +199,12 @@ struct LinuxDirectStatus: Equatable {
     /// The whole report, re-serialized with sorted keys: two sessions of the same input compare equal byte for byte.
     var report: Data
 
+    /// A JSON integer that fits `UInt64`: not a boolean, not a fraction, not negative.
+    static func unsignedInteger(_ value: Any?) -> UInt64? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        return UInt64(number.stringValue)
+    }
+
     /// Reads the report of a run that ended with exit 0. A guest fault is a normal report (`exit_kind` `fault`).
     static func parse(report data: Data) throws -> LinuxDirectStatus {
         guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
@@ -208,18 +214,21 @@ struct LinuxDirectStatus: Equatable {
             throw LinuxDirectError.runnerFailed("the report is not a loaded linux-direct report")
         }
         guard let stop = object["stop"] as? [String: Any], let exitKind = stop["exit_kind"] as? String,
-              let retired = (stop["retired"] as? NSNumber)?.uint64Value, let com1 = stop["com1_text"] as? String,
-              let started = object["guest_started"] as? Bool else {
-            throw LinuxDirectError.runnerFailed("the report has no stop record of a started guest")
+              let retired = unsignedInteger(stop["retired"]), let com1 = stop["com1_text"] as? String,
+              object["guest_started"] as? Bool == true else {
+            throw LinuxDirectError.runnerFailed("the report has no stop record of a started guest (guest_started must be true)")
+        }
+        if stop["cpl3_retired"] != nil, unsignedInteger(stop["cpl3_retired"]) == nil {
+            throw LinuxDirectError.runnerFailed("cpl3_retired is not an unsigned integer")
         }
         var journal: SyscallJournal?
         if let raw = stop["syscall_journal"] as? [String: Any] {
-            guard let entered = (raw["entered"] as? NSNumber)?.uint64Value, let returned = (raw["returned"] as? NSNumber)?.uint64Value,
+            guard let entered = unsignedInteger(raw["entered"]), let returned = unsignedInteger(raw["returned"]),
                   let rawEntries = raw["entries"] as? [[String: Any]] else {
                 throw LinuxDirectError.runnerFailed("syscall_journal is malformed")
             }
             let entries = try rawEntries.map { entry -> SyscallEntry in
-                guard let nr = (entry["nr"] as? NSNumber)?.uint64Value, let rip = entry["rip"] as? String else {
+                guard let nr = unsignedInteger(entry["nr"]), let rip = entry["rip"] as? String else {
                     throw LinuxDirectError.runnerFailed("a syscall_journal entry is malformed")
                 }
                 return SyscallEntry(nr: nr, rip: rip, raxReturn: entry["rax_return"] as? String)
@@ -227,8 +236,8 @@ struct LinuxDirectStatus: Equatable {
             journal = SyscallJournal(entered: entered, returned: returned, entries: entries)
         }
         let normalized = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-        return LinuxDirectStatus(exitKind: exitKind, retired: retired, cpl3Retired: (stop["cpl3_retired"] as? NSNumber)?.uint64Value,
-                                 com1Text: com1, syscallJournal: journal, guestStarted: started, report: normalized)
+        return LinuxDirectStatus(exitKind: exitKind, retired: retired, cpl3Retired: unsignedInteger(stop["cpl3_retired"]),
+                                 com1Text: com1, syscallJournal: journal, guestStarted: true, report: normalized)
     }
 
     /// The status as the JSON that the `--linux-direct` mode prints.
@@ -251,8 +260,13 @@ struct LinuxDirectStatus: Equatable {
 final class LinuxDirectProfileRunner: ProfileRunner {
     private enum Phase { case idle, running, finished }
 
+    /// Points of a session where a test can act (a `stop` that arrives in the window before or around `posix_spawn`).
+    enum Stage { case beforeSpawn, afterSpawn }
+
     private let configuration: LinuxDirectConfig
     private let terminationGraceSeconds: Double
+    /// Test-only: called on the session thread, outside the lock, at `Stage`.
+    var stageHook: ((Stage) -> Void)?
     /// Guards `phase`, `childPID` and `stopRequested`: `stop` may come from another thread while `start` waits for the child.
     private let lock = NSLock()
     private var phase = Phase.idle
@@ -273,6 +287,12 @@ final class LinuxDirectProfileRunner: ProfileRunner {
         return phase == .running
     }
 
+    var isStopRequested: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopRequested
+    }
+
     // MARK: ProfileRunner
 
     func start(profile: UInt32, screens: Int) throws {
@@ -286,74 +306,91 @@ final class LinuxDirectProfileRunner: ProfileRunner {
 
     func resume(reason: ControlV2Reason) throws { throw ProfileUnsupportedError(operation: "resume of the linux-direct board") }
 
+    /// Ends the session that is running, in whatever step it is: the request is remembered from the moment the session is accepted
+    /// (validation, temp directory, spawn), so it cannot be lost between those steps. The session thread does not spawn after it
+    /// and signals a child it has just spawned at once. A child gets SIGTERM, and SIGKILL when it is still there after the grace period.
+    /// Returns when the session is over; without a running session it does nothing (idempotent).
     func stop() throws {
         lock.lock()
-        guard phase == .running, childPID > 0 else {
+        guard phase == .running else {
             lock.unlock()
             return
         }
         stopRequested = true
-        let pid = childPID
-        kill(pid, SIGTERM)
         lock.unlock()
-        // The thread that waits in `runSession` reaps the child; give it the grace period, then kill.
-        let deadline = Date().addingTimeInterval(terminationGraceSeconds)
-        while Date() < deadline {
-            if !isRunning { return }
+        var termSentTo: pid_t = 0
+        var termSentAt = Date()
+        while true {
+            lock.lock()
+            if phase != .running {
+                lock.unlock()
+                return
+            }
+            let pid = childPID
+            if pid > 0 {
+                if termSentTo != pid {
+                    kill(pid, SIGTERM)
+                    termSentTo = pid
+                    termSentAt = Date()
+                } else if Date().timeIntervalSince(termSentAt) >= terminationGraceSeconds {
+                    kill(pid, SIGKILL)
+                }
+            }
+            lock.unlock()
             usleep(2_000)
         }
-        lock.lock()
-        if phase == .running, childPID == pid { kill(pid, SIGKILL) }
-        lock.unlock()
-        while isRunning { usleep(2_000) }
     }
 
     // MARK: session
 
+    /// Accepts the session: the check of the phase and the move to `running` are one critical section, so two callers cannot both pass.
+    private func begin() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard phase != .running else { throw LinuxDirectError.sessionRunning }
+        phase = .running
+        stopRequested = false
+        lastStatus = nil
+    }
+
+    private func end() {
+        lock.lock()
+        phase = .finished
+        lock.unlock()
+    }
+
     /// Validates, spawns `od-runner linux-direct --run`, waits for the child, reads the report. Returns the status of the machine.
     @discardableResult
     func runSession() throws -> LinuxDirectStatus {
-        lock.lock()
-        guard phase != .running else {
-            lock.unlock()
-            throw LinuxDirectError.sessionRunning
-        }
-        lock.unlock()
+        try begin()
+        // The phase is left last, after the child is reaped and the directory is removed (defers run in reverse order).
+        defer { end() }
         // Everything is checked before the first system call that makes anything: no directory, no process.
         if let violation = configuration.validate() { throw violation }
         guard let runner = configuration.resolvedRunner else { throw LinuxDirectError.invalidConfig(field: "runner", detail: "no path") }
 
-        var template = Array((NSTemporaryDirectory() + "/od-vmhost-linux-direct-XXXXXX").utf8CString)
+        var template = Array((NSTemporaryDirectory() as NSString).appendingPathComponent("od-vmhost-linux-direct-XXXXXX").utf8CString)
         guard mkdtemp(&template) != nil else { throw LinuxDirectError.spawnFailed(errno) }
         let directory = String(cString: template)
         defer { try? FileManager.default.removeItem(atPath: directory) }
         let reportPath = directory + "/report.json"
+        let stdoutPath = directory + "/stdout.json"
         let stderrPath = directory + "/stderr.log"
 
-        lock.lock()
-        phase = .running
-        stopRequested = false
-        lastStatus = nil
-        lock.unlock()
-
-        let pid: pid_t
-        do {
-            pid = try spawn(runner: runner, arguments: configuration.arguments(out: reportPath), stderrPath: stderrPath)
-        } catch {
-            lock.lock()
-            phase = .idle
-            lock.unlock()
-            throw error
-        }
+        stageHook?(.beforeSpawn)
+        guard !isStopRequested else { throw LinuxDirectError.terminatedByStop }
+        let pid = try spawn(runner: runner, arguments: configuration.arguments(out: reportPath), stdoutPath: stdoutPath, stderrPath: stderrPath)
+        stageHook?(.afterSpawn)
         lock.lock()
         childPID = pid
         lastChildPID = pid
+        // A `stop` that came while the PID was not known yet: the child is signalled here (`stop` escalates to SIGKILL).
+        if stopRequested { kill(pid, SIGTERM) }
         lock.unlock()
 
         let waitStatus = reap(pid)
-        let wasStopped = finish()
-        if wasStopped, !(waitStatus.exited && waitStatus.code == 0) { throw LinuxDirectError.terminatedByStop }
-        let result = try interpret(waitStatus, reportPath: reportPath, stderrPath: stderrPath)
+        if isStopRequested, !(waitStatus.exited && waitStatus.code == 0) { throw LinuxDirectError.terminatedByStop }
+        let result = try interpret(waitStatus, reportPath: reportPath, stdoutPath: stdoutPath, stderrPath: stderrPath)
         lock.lock()
         lastStatus = result
         lock.unlock()
@@ -366,31 +403,35 @@ final class LinuxDirectProfileRunner: ProfileRunner {
         var signal: Int32
     }
 
-    private func spawn(runner: String, arguments: [String], stderrPath: String) throws -> pid_t {
+    /// `posix_spawn_file_actions_*` and `posix_spawnattr_*` return the error number itself.
+    private static func check(_ code: Int32) throws {
+        guard code == 0 else { throw LinuxDirectError.spawnFailed(code) }
+    }
+
+    /// The child gets stdin `/dev/null`, stdout and stderr as files of the session directory (no pipe: nothing to drain, no handler).
+    /// It inherits the whole environment of VMHost (`environ`) unchanged; the arguments are the only thing VMHost decides.
+    private func spawn(runner: String, arguments: [String], stdoutPath: String, stderrPath: String) throws -> pid_t {
         var actions: posix_spawn_file_actions_t?
         var attributes: posix_spawnattr_t?
-        posix_spawn_file_actions_init(&actions)
-        posix_spawnattr_init(&attributes)
-        defer {
-            posix_spawn_file_actions_destroy(&actions)
-            posix_spawnattr_destroy(&attributes)
-        }
-        posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
-        posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0)
-        posix_spawn_file_actions_addopen(&actions, 2, stderrPath, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+        try Self.check(posix_spawn_file_actions_init(&actions))
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        try Self.check(posix_spawnattr_init(&attributes))
+        defer { posix_spawnattr_destroy(&attributes) }
+        try Self.check(posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0))
+        try Self.check(posix_spawn_file_actions_addopen(&actions, 1, stdoutPath, O_WRONLY | O_CREAT | O_TRUNC, 0o600))
+        try Self.check(posix_spawn_file_actions_addopen(&actions, 2, stderrPath, O_WRONLY | O_CREAT | O_TRUNC, 0o600))
         var defaults = sigset_t()
         var mask = sigset_t()
         sigfillset(&defaults)
         sigemptyset(&mask)
-        posix_spawnattr_setsigdefault(&attributes, &defaults)
-        posix_spawnattr_setsigmask(&attributes, &mask)
+        try Self.check(posix_spawnattr_setsigdefault(&attributes, &defaults))
+        try Self.check(posix_spawnattr_setsigmask(&attributes, &mask))
         // Only descriptors 0, 1 and 2 of the file actions reach the child (the control socket, locks and shm stay in VMHost).
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
+        try Self.check(posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)))
         let argv: [UnsafeMutablePointer<CChar>?] = ([runner] + arguments).map { strdup($0) } + [nil]
         defer { argv.forEach { free($0) } }
         var pid: pid_t = 0
-        let code = posix_spawn(&pid, runner, &actions, &attributes, argv, environ)
-        guard code == 0 else { throw LinuxDirectError.spawnFailed(code) }
+        try Self.check(posix_spawn(&pid, runner, &actions, &attributes, argv, environ))
         return pid
     }
 
@@ -417,14 +458,7 @@ final class LinuxDirectProfileRunner: ProfileRunner {
         }
     }
 
-    private func finish() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        phase = .finished
-        return stopRequested
-    }
-
-    private func interpret(_ outcome: WaitOutcome, reportPath: String, stderrPath: String) throws -> LinuxDirectStatus {
+    private func interpret(_ outcome: WaitOutcome, reportPath: String, stdoutPath: String, stderrPath: String) throws -> LinuxDirectStatus {
         let report = FileManager.default.contents(atPath: reportPath)
         guard outcome.exited else {
             throw LinuxDirectError.runnerFailed(outcome.signal != 0 ? "terminated by signal \(outcome.signal)" : "waitpid failed")
@@ -434,8 +468,11 @@ final class LinuxDirectProfileRunner: ProfileRunner {
             guard let report else { throw LinuxDirectError.runnerFailed("exit 0 without a report file") }
             return try LinuxDirectStatus.parse(report: report)
         case 3, 4:
-            let error = report.flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
-                .flatMap { $0["error"] as? [String: Any] }
+            // A refusal of the arguments (exit 3) writes no `--out` file: the document is then the one the runner printed to stdout.
+            func refusal(_ data: Data?) -> [String: Any]? {
+                data.flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }.flatMap { $0["error"] as? [String: Any] }
+            }
+            let error = refusal(report) ?? refusal(FileManager.default.contents(atPath: stdoutPath))
             var detail = error?["detail"] as? String
             if detail == nil, let log = FileManager.default.contents(atPath: stderrPath), !log.isEmpty {
                 detail = String(decoding: log.prefix(512), as: UTF8.self)
@@ -450,7 +487,22 @@ final class LinuxDirectProfileRunner: ProfileRunner {
 
 /// `od-vmhost --linux-direct <config.json>`: one session, the status as one JSON line on stdout.
 /// Exit 0: the machine ran and the status is printed (a guest fault included); 2: usage or invalid config (no process spawned);
-/// 6: the runner refused or failed.
+/// 6: the runner refused or failed, or the session was ended by SIGTERM/SIGINT of VMHost (the child is stopped and reaped first).
+private final class SessionFlag {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+    func set() {
+        lock.lock()
+        value = true
+        lock.unlock()
+    }
+}
+
 enum LinuxDirectCommand {
     static func run(_ args: [String]) -> Int32 {
         guard args.count == 2, args[0] == "--linux-direct" else {
@@ -462,6 +514,29 @@ enum LinuxDirectCommand {
                 throw LinuxDirectError.invalidConfig(field: "config", detail: "cannot read \(args[1])")
             }
             let runner = LinuxDirectProfileRunner(configuration: try LinuxDirectConfig.parse(json: data))
+            // SIGTERM and SIGINT of VMHost end the child (SIGTERM, grace, SIGKILL) and the temp directory is removed before VMHost exits:
+            // the child is not left an orphan. The handler runs on its own queue because this thread is blocked in `runSession`.
+            // A signal that arrives before the session is accepted is retried until the session has ended.
+            let sessionOver = SessionFlag()
+            var sources: [DispatchSourceSignal] = []
+            for number in [SIGTERM, SIGINT] {
+                signal(number, SIG_IGN)
+                let source = DispatchSource.makeSignalSource(signal: number, queue: DispatchQueue.global())
+                source.setEventHandler {
+                    while !sessionOver.isSet {
+                        try? runner.stop()
+                        usleep(10_000)
+                    }
+                }
+                source.resume()
+                sources.append(source)
+            }
+            defer {
+                sessionOver.set()
+                sources.forEach { $0.cancel() }
+                signal(SIGTERM, SIG_DFL)
+                signal(SIGINT, SIG_DFL)
+            }
             let status = try runner.runSession()
             print(String(decoding: (try? JSONSerialization.data(withJSONObject: status.jsonObject, options: [.sortedKeys])) ?? Data(), as: UTF8.self))
             return VMHostExitStatus.ok
