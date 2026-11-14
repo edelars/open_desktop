@@ -709,6 +709,19 @@ fn hit_share_fit(cells: &[CellReport]) -> HitShareFit {
             fit_line(&zip(&ys))
         })
         .collect();
+    // The fit reads the hit-share-0 cell and the 16-accesses cell by position;
+    // check that instead of relying on the order silently.
+    assert!(
+        cells.len() >= 2
+            && cells[0].accesses_per_page == Some(1)
+            && cells[0].counts.cache_hits == 0
+            && cells[cells.len() - 1].accesses_per_page == Some(16),
+        "hit-share cells must start with the 1-access (hit share 0) cell and end with the 16-access cell"
+    );
+    assert!(
+        shares.windows(2).all(|pair| pair[0] < pair[1]),
+        "hit-share cells must be ordered by increasing hit share"
+    );
     let direct_miss = cells[0].cached_ns_per_access.median;
     let last = cells.len() - 1;
     let last_share = shares[last];
@@ -1020,6 +1033,7 @@ mod tests {
             assert_eq!(requests.len(), pages * run);
             // Offsets are distinct, 8-aligned and stay inside the page.
             let mut offsets: Vec<u64> = scenario.offsets.to_vec();
+            offsets.sort_unstable();
             offsets.dedup();
             assert_eq!(offsets.len(), run);
             assert!(offsets.iter().all(|o| o % 8 == 0 && o + 8 <= 4096));
