@@ -1614,7 +1614,8 @@ fn test_r32_register_form_sets_flags_and_writes_no_result() {
 
 #[test]
 fn test_r32_then_je_chain_keeps_the_boundary_state() {
-    // `/init` at 0x40016b: `85 c9` (testl %ecx, %ecx), `74 01` (je, taken on a zero low dword),
+    // Synthetic bytes modelled on the `/init` loop (not the real `/init` bytes at 0x40016b):
+    // `85 c9` (testl %ecx, %ecx), `74 01` (je, taken on a zero low dword),
     // a skipped `90`, then `8a 06` (movb (%rsi), %al), `38 07` (cmpb %al, (%rdi); executes since
     // S4-39f11) and `48 ff c6` (incq %rsi; executes since S4-39f12) retire, and `eb 00` (jmp rel8,
     // still outside) stops the run.
@@ -2999,10 +3000,11 @@ fn neighbouring_byte_mov_and_compare_opcodes_stay_outside() {
 
 #[test]
 fn init_movb_load_then_cmpb_then_jne_then_incq_chain_stops_at_jmp() {
-    // `/init` at 0x40016f: `8a 06` (movb (%rsi), %al), `38 07` (cmpb %al, (%rdi); executes since
-    // S4-39f11), `75 00` (jne rel8 with displacement 0: taken and not taken reach the same RIP, so
-    // this test does not tell them apart), `48 ff c6` (incq %rsi; executes since S4-39f12) and
-    // `eb 00` (jmp rel8, outside).
+    // Synthetic bytes modelled on the `/init` loop (the real `/init` at 0x40016f has `jne +0x0a`
+    // and `incq %rsi`/`incq %rdi` at 0x400175/0x400178): `8a 06` (movb (%rsi), %al), `38 07`
+    // (cmpb %al, (%rdi); executes since S4-39f11), `75 00` (jne rel8 with displacement 0: taken and
+    // not taken reach the same RIP, so this test does not tell them apart), `48 ff c6` (incq %rsi;
+    // executes since S4-39f12) and `eb 00` (jmp rel8, outside).
     let mut state = mov_byte_state();
     state.gpr[Register::Rsi as usize] = DATA;
     state.gpr[Register::Rdi as usize] = DATA + 0x40;
