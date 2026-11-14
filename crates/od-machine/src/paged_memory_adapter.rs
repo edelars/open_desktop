@@ -803,8 +803,12 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         // S4-39c: the entry follows the CPL of the state (the RPL of the CS selector). RPL 3 is
         // the CPL3 entry under `with_user_mode`; without it a CS with RPL 3 is refused before
         // anything runs, so user code never executes through the CPL0 entry (review S4-39b, 3).
-        // Everything below (IRQ delivery, peeks, fault delivery) uses the privilege of the entry:
-        // delivery from CPL3 is refused by the set (`NotRing0Long64`, S4-39d/g).
+        // Everything below (IRQ delivery, peeks, fault delivery) uses the privilege of the entry.
+        // S4-39d: a `#PF` or `#GP(0)` from CPL3 is delivered through `TSS.RSP0` and leaves a CPL0
+        // state (CS from the gate, RPL 0); the `continue` after a delivery returns here, so the CPL
+        // is computed again from the new CS and the next instruction runs through the CPL0 entry
+        // (review S4-39c, 1). An external interrupt from CPL3 is still the set's refusal
+        // (`NotRing0Long64`, `IrqDeliveryFailed`): S4-39h.
         let cpl3 = state.cs_selector.is_some_and(|selector| selector & 3 == 3);
         if cpl3 && !user_mode {
             break (
@@ -1728,8 +1732,14 @@ impl PagedMovMemoryAdapter<'_> {
         operation: RamAccessOperation,
         mmio_allowed: bool,
     ) -> Result<TrackedAccessOutcome, MemoryError> {
+        // S4-39d: the walker takes the CPL of the context; the origin is normalized to `Explicit`
+        // as before, but a descriptor-table access (IDT, GDT, TSS) keeps its supervisor page
+        // privilege: at CPL3 it is made with CPL0 page rights (also under PTI, where these tables
+        // are supervisor pages of the user page tables) and its fault has U/S = 0. At CPL0 and for
+        // every other origin `page_privilege()` is the CPL, so nothing changes there.
         let context = AccessContext {
             origin: od_isa::memory::AccessOrigin::Explicit,
+            privilege: context.page_privilege(),
             ..context
         };
         let request = TrackedAccessRequest {
@@ -2717,6 +2727,49 @@ mod tests {
             .unwrap();
         assert_eq!(destination, [0x5c]);
         assert_eq!(memory.page_fault, None);
+    }
+
+    #[test]
+    fn a_descriptor_table_read_at_cpl3_has_supervisor_page_rights_but_an_explicit_read_has_not() {
+        // S4-39d: the leaf PTE is supervisor-only (P, W). A CPL3 explicit read is a #PF with P
+        // and U; the same read as a descriptor-table access (IDT, GDT, TSS) succeeds, and a CPL3
+        // frame store made at the new CPL0 is allowed.
+        let mut bus = bus(0x9003);
+        put(&mut bus, 0x9000, 0x1122_3344_5566_7788);
+        let mut callback = |_| {};
+        let mut memory = adapter(&mut bus, &mut callback);
+        let user = AccessContext {
+            privilege: PrivilegeLevel::Ring3,
+            ..context()
+        };
+        let mut destination = [0; 8];
+        let error = memory.read(DATA_LINEAR, user, &mut destination);
+        assert!(
+            matches!(
+                error,
+                Err(MemoryError::Architectural(ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(5),
+                    ..
+                }))
+            ),
+            "{error:?}"
+        );
+        assert!(memory.page_fault.is_some());
+        memory.page_fault = None;
+        memory
+            .read(DATA_LINEAR, user.descriptor_table(), &mut destination)
+            .unwrap();
+        assert_eq!(u64::from_le_bytes(destination), 0x1122_3344_5566_7788);
+        assert_eq!(memory.page_fault, None);
+        let kernel_stack = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            origin: AccessOrigin::ImplicitStack,
+            ..user
+        };
+        memory
+            .write(DATA_LINEAR + 8, kernel_stack, &7u64.to_le_bytes())
+            .unwrap();
     }
 
     #[test]

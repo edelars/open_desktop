@@ -11030,20 +11030,69 @@ mod tests {
         assert_eq!(record.exit_kind, "budget_exhausted", "{record:?}");
     }
 
-    #[test]
-    fn user_mode_facade_a_supervisor_only_page_is_a_cpl3_fetch_fault_that_is_not_delivered() {
-        let (mut boot, file) = user_mode_board(&[0xb8, 0x53, 0, 0, 0], false);
-        // An IDT with a present #PF gate is loaded: delivery from CPL3 is the CPU delivery's
-        // refusal (S4-39d), not a board decision.
+    const USER_IDT_AT: u64 = DATA + 0x2000;
+    const USER_TSS_AT: u64 = DATA + 0x3000;
+    const USER_HANDLER_AT: u64 = ENTRY + 0x100;
+    /// `TSS.RSP0` of the S4-39d boards: not 16-aligned, so that the alignment shows.
+    const USER_RSP0: u64 = ENTRY + 0x1008;
+
+    /// The PDE of the 2 MiB page of `USER_CODE_AT` in the first GiB.
+    fn user_code_pde(boot: &LinuxDirectBoot) -> u64 {
+        boot.board.cr3() + 2 * 0x1000 + (USER_CODE_AT / (2 * MIB)) * 8
+    }
+
+    /// S4-39d: the board of `user_mode_board` with a kernel code descriptor at GDT 0x08, an IDT whose
+    /// gate 14 is an interrupt gate to `handler` at `USER_HANDLER_AT` through selector 0x08 and (with
+    /// `tss`) a task register over a TSS whose RSP0 is `USER_RSP0`. The user code page is
+    /// supervisor-only at the PDE (PML4E and PDPTE are user), so the first user fetch is a `#PF`.
+    /// `make_handler` gets the original PDE value and returns the handler bytes.
+    fn user_pf_board(
+        user_code: &[u8],
+        make_handler: &dyn Fn(u64, u64) -> Vec<u8>,
+        tss: bool,
+    ) -> (LinuxDirectBoot, Vec<u8>) {
+        let (mut boot, file) = user_mode_board(user_code, true);
+        let pde = user_code_pde(&boot);
+        let mut raw = [0u8; 8];
+        read(&mut boot.board, pde, &mut raw).expect("read pde");
+        let user_pde = u64::from_le_bytes(raw);
+        write_phys(&mut boot, pde, &(user_pde & !4).to_le_bytes());
+        write_phys(
+            &mut boot,
+            USER_GDT + 0x08,
+            &0x00af_9b00_0000_ffff_u64.to_le_bytes(),
+        );
+        write_phys(&mut boot, USER_HANDLER_AT, &make_handler(pde, user_pde));
         let mut gate = [0u8; 16];
-        gate[0..2].copy_from_slice(&0x0100u16.to_le_bytes());
-        gate[2..4].copy_from_slice(&0x10u16.to_le_bytes());
+        gate[0..2].copy_from_slice(&(USER_HANDLER_AT as u16).to_le_bytes());
+        gate[2..4].copy_from_slice(&0x08u16.to_le_bytes());
         gate[5] = 0x8E;
-        write_phys(&mut boot, DATA + 0x2000 + 14 * 16, &gate);
-        boot.board.state_mut().idtr = Some(od_isa::state::Idtr {
-            base: DATA + 0x2000,
+        gate[6..8].copy_from_slice(&((USER_HANDLER_AT >> 16) as u16).to_le_bytes());
+        write_phys(&mut boot, USER_IDT_AT + 14 * 16, &gate);
+        write_phys(&mut boot, USER_TSS_AT + 4, &USER_RSP0.to_le_bytes());
+        let state = boot.board.state_mut();
+        state.idtr = Some(od_isa::state::Idtr {
+            base: USER_IDT_AT,
             limit: 0xFF,
         });
+        if tss {
+            state.tr = Some(od_isa::TaskRegisterCache {
+                selector: 0x20,
+                base: USER_TSS_AT,
+                limit: 0x67,
+                access: 0x8B,
+                flags: 0,
+            });
+        }
+        (boot, file)
+    }
+
+    #[test]
+    fn user_mode_facade_without_a_task_register_a_cpl3_page_fault_is_not_delivered() {
+        // S4-39d: the delivery needs `TSS.RSP0`; with no modeled task register it is the CPU
+        // delivery's refusal (`MissingTaskRegister`), the fault stays the stop it was.
+        let (mut boot, file) =
+            user_pf_board(&[0xb8, 0x53, 0, 0, 0], &|_, _| vec![0x90, 0x90], false);
         let record = run_user_facade(&mut boot, &file, 8);
         assert_eq!(record.exit_kind, "user_mode_fault", "{record:?}");
         assert_eq!((record.retired, record.cpl3_retired, record.cpl), (1, 0, 3));
@@ -11051,11 +11100,76 @@ mod tests {
         assert_eq!(record.exceptions_delivered, 0);
         let detail = record.set_exit_detail.as_deref().expect("detail");
         assert!(
-            detail.starts_with("ExceptionDeliveryFailed {") && detail.contains("NotRing0Long64"),
+            detail.starts_with("ExceptionDeliveryFailed {")
+                && detail.contains("MissingTaskRegister"),
             "{detail}"
         );
         assert!(record.exit_detail.contains("vector: 14"), "{record:?}");
         assert!(record.page_fault.is_some());
+    }
+
+    #[test]
+    fn user_mode_facade_delivers_a_cpl3_page_fault_to_the_cpl0_handler_and_recomputes_the_cpl() {
+        // `IRETQ` to CPL3 (retired in CPL0), the user fetch faults, the frame goes to the
+        // TSS.RSP0 stack and the handler's NOPs retire through the CPL0 entry: the budget of 3
+        // ends in CPL0 (the CPL was computed again from the new CS).
+        let (mut boot, file) =
+            user_pf_board(&[0xb8, 0x53, 0, 0, 0], &|_, _| vec![0x90, 0x90, 0x90], true);
+        let record = run_user_facade(&mut boot, &file, 3);
+        assert_eq!(record.exit_kind, "budget_exhausted", "{record:?}");
+        assert_eq!(record.exceptions_delivered, 1, "{record:?}");
+        assert_eq!(record.cpl, 0, "{record:?}");
+        assert_eq!((record.retired, record.cpl3_retired), (3, 0), "{record:?}");
+        assert_eq!(record.rip, USER_HANDLER_AT + 2);
+        let frame = USER_RSP0 & !15;
+        assert_eq!(record.gpr[Register::Rsp as usize], frame - 48);
+        let words = [
+            (frame - 8, 0x1b),           // SS
+            (frame - 16, ENTRY + 0x800), // RSP
+            (frame - 32, 0x13),          // CS
+            (frame - 40, USER_CODE_AT),  // RIP
+            (frame - 48, 21),            // error code: P | U | I/D
+        ];
+        for (address, expected) in words {
+            assert_eq!(read_qword(&mut boot, address), expected, "{address:#x}");
+        }
+        let rflags = read_qword(&mut boot, frame - 24);
+        assert_eq!(
+            rflags & ((1 << 9) | (1 << 16) | 2),
+            (1 << 9) | (1 << 16) | 2
+        );
+        let state = boot.board.state();
+        assert_eq!(state.cs_selector, Some(0x08));
+        assert_eq!((state.ss_selector, state.ss_unusable), (Some(0), true));
+        assert_eq!(state.rflags & (1 << 9), 0, "interrupt gate clears IF");
+    }
+
+    #[test]
+    fn user_mode_facade_the_handler_repairs_the_page_and_iretq_returns_to_cpl3() {
+        // The handler makes the PDE of the user page a user page, drops the error code and
+        // returns: the user `mov` retires in CPL3 and the `syscall` is the next honest stop.
+        let make_handler = |pde: u64, user_pde: u64| {
+            let mut handler = vec![0x48, 0xC7, 0xC2]; // MOV RDX, imm32
+            handler.extend_from_slice(&(pde as u32).to_le_bytes());
+            handler.extend_from_slice(&[0x48, 0xC7, 0xC6]); // MOV RSI, imm32
+            handler.extend_from_slice(&(user_pde as u32).to_le_bytes());
+            handler.extend_from_slice(&[0x48, 0x89, 0x32]); // MOV [RDX], RSI
+            handler.extend_from_slice(&[0x48, 0x83, 0xC4, 0x08]); // ADD RSP, 8
+            handler.extend_from_slice(&[0x48, 0xCF]); // IRETQ
+            handler
+        };
+        let (mut boot, file) =
+            user_pf_board(&[0xb8, 0x53, 0, 0, 0, 0x0f, 0x05], &make_handler, true);
+        let record = run_user_facade(&mut boot, &file, 16);
+        assert_eq!(record.exit_kind, "user_mode_unsupported", "{record:?}");
+        assert_eq!(record.exceptions_delivered, 1, "{record:?}");
+        assert_eq!(record.cpl, 3);
+        // Entry IRETQ, five handler instructions (the last is IRETQ to CPL3), the user `mov`.
+        assert_eq!((record.retired, record.cpl3_retired), (7, 1), "{record:?}");
+        assert_eq!(record.rip, USER_CODE_AT + 5);
+        assert_eq!(record.gpr[Register::Rax as usize], 0x53);
+        assert_eq!(record.gpr[Register::Rsp as usize], ENTRY + 0x800);
+        assert_eq!(record.unsupported_opcode, Some(0x05));
     }
 
     #[test]
