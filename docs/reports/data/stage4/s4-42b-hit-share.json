@@ -1,0 +1,1075 @@
+{
+  "schema": "od-bench-translation-hit-share-v1",
+  "process_run": 1,
+  "fixture": "synthetic-long64-4k-5-regions-32m-v1",
+  "fixture_sha256": "3511e450a06920e57ab2dcaebc1d105bb20a6422f67645fb22df6ad97b5c1ddc",
+  "request_profile_sha256": "fcd221158d12ed8c93077a16a75420e348b1ce8fe9757b604129a45659db5fc4",
+  "guest_page_bytes": 4096,
+  "host_page_bytes": "16384",
+  "cache_model": "TranslationProbeCache: capacity one, fresh per batch, carried across episodes within a batch",
+  "repetitions": 15,
+  "batch_floor_ns": 50000000,
+  "config": {
+    "cr0": "0x80010011",
+    "cr3": "0x1000",
+    "cr4": "0x20",
+    "efer": "0xd00"
+  },
+  "environment": {
+    "host": {
+      "os": "macos",
+      "os_version": "26.7.1",
+      "architecture": "aarch64",
+      "cpu_model": "Apple M3 Max",
+      "build": {
+        "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+        "target": "aarch64-apple-darwin",
+        "profile": "release",
+        "source_revision": "9acb8570fd671b220039890e34bdb149bc899d82",
+        "source_sha256": "12ea98bdf4a86224b7293a02f80dcbedad02d34876db40b10b846fa9958d90d2",
+        "source_tree_dirty": false
+      },
+      "execution": {
+        "working_directory": "/Users/senya/projects/open_desktop/.claude/worktrees/agent-a3853d1a6f8dfa190",
+        "repository_revision": "9acb8570fd671b220039890e34bdb149bc899d82",
+        "working_tree_dirty": false
+      }
+    },
+    "binary_path": "/Users/senya/projects/open_desktop/.claude/worktrees/agent-a3853d1a6f8dfa190/target/release/od-bench",
+    "binary_sha256": "8b4611d6015ee003ba59f4564dc18600fdb65a78aea702e3063f6aecebaa3f5c",
+    "logical_cpus": 14,
+    "rustflags_env": "unset",
+    "power_source": "Now drawing from 'AC Power'"
+  },
+  "hit_share_fit": {
+    "method": "ordinary least squares of ns per access against hit share (hit/probes from the preflight counts) over the 4 cells; value at hit share 0 is the miss cost, at hit share 1 the hit cost; fitted on cell medians and, for spread, once per repetition index",
+    "accesses_per_page": [
+      1,
+      2,
+      4,
+      16
+    ],
+    "hit_share": [
+      0.0,
+      0.5,
+      0.75,
+      0.9375
+    ],
+    "cached_median_ns_per_access": [
+      35.48010206222534,
+      19.367257595062256,
+      11.244113206863403,
+      5.236044526100159
+    ],
+    "uncached_median_ns_per_access": [
+      30.309557914733887,
+      30.34156560897827,
+      30.342360377311707,
+      30.369090497493744
+    ],
+    "cached_fit_on_medians": {
+      "at_zero_hit": 35.4842839847655,
+      "at_full_hit": 3.2056012195948327,
+      "slope": -32.278682765170664,
+      "r_squared": 0.9999967899343566,
+      "max_abs_residual": 0.03115870402409371
+    },
+    "uncached_fit_on_medians": {
+      "at_zero_hit": 30.309255373548474,
+      "at_full_hit": 30.3666509869536,
+      "slope": 0.057395613405126084,
+      "r_squared": 0.9166545019057204,
+      "max_abs_residual": 0.009941706290611307
+    },
+    "cached_miss_ns_across_repetition_fits": {
+      "median": 35.49450651240302,
+      "min": 35.416569558826424,
+      "max": 35.8667933646979,
+      "q1": 35.47540484401131,
+      "q3": 35.594533420878754,
+      "relative_range": 0.012684323578752951
+    },
+    "cached_hit_ns_across_repetition_fits": {
+      "median": 3.2036077781071555,
+      "min": 3.09236518706561,
+      "max": 3.374251924793157,
+      "q1": 3.156215264717268,
+      "q3": 3.242642650472579,
+      "relative_range": 0.08799040246246963
+    },
+    "direct_miss_ns_run_1": 35.48010206222534,
+    "hit_ns_from_run_16_and_direct_miss": 3.219774023691813,
+    "s4_42a_estimate_hit_ns": 3.3,
+    "s4_42a_estimate_miss_ns": 33.7
+  },
+  "cells": [
+    {
+      "scenario": "hit-share-run-1",
+      "group": "hit-share",
+      "access_kind": "Read",
+      "privilege": "Ring3",
+      "region": "UserRwx",
+      "order": "Sequential",
+      "cross_page": false,
+      "accesses_per_page": 1,
+      "working_set_pages": 256,
+      "working_set_bytes": 1048576,
+      "counts": {
+        "accesses": 256,
+        "probes": 256,
+        "faults": 0,
+        "cache_hits": 0,
+        "cache_walks": 256,
+        "uncached_table_entry_reads": 1024,
+        "cached_table_entry_reads": 1024
+      },
+      "episodes_per_batch": 8192,
+      "calibration_batches_ns": [
+        [
+          20709,
+          9458
+        ],
+        [
+          15875,
+          18541
+        ],
+        [
+          31792,
+          37083
+        ],
+        [
+          63417,
+          74125
+        ],
+        [
+          126709,
+          148250
+        ],
+        [
+          253416,
+          296417
+        ],
+        [
+          506792,
+          604917
+        ],
+        [
+          1013500,
+          1270709
+        ],
+        [
+          2211500,
+          2274791
+        ],
+        [
+          3990250,
+          4787666
+        ],
+        [
+          8208875,
+          9524916
+        ],
+        [
+          16175083,
+          18846208
+        ],
+        [
+          32011917,
+          37351666
+        ],
+        [
+          64159417,
+          74716708
+        ]
+      ],
+      "expected_episode_checksum": "0xa73518eec18d8266",
+      "correctness": "every batch checksum equals the independent-oracle checksum",
+      "repetitions": [
+        {
+          "episodes": 8192,
+          "baseline_ns": 63795708,
+          "cached_ns": 74559500,
+          "baseline_ns_per_access": 30.420164108276367,
+          "cached_ns_per_access": 35.5527400970459,
+          "cached_over_baseline": 1.1687228237987421,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 63552500,
+          "cached_ns": 74394375,
+          "baseline_ns_per_access": 30.3041934967041,
+          "cached_ns_per_access": 35.47400236129761,
+          "cached_over_baseline": 1.170597144093466,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 63498916,
+          "cached_ns": 74381208,
+          "baseline_ns_per_access": 30.278642654418945,
+          "cached_ns_per_access": 35.46772384643555,
+          "cached_over_baseline": 1.1713776027294702,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 63510417,
+          "cached_ns": 74287542,
+          "baseline_ns_per_access": 30.28412675857544,
+          "cached_ns_per_access": 35.42306041717529,
+          "cached_over_baseline": 1.1696906666507954,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 63563750,
+          "cached_ns": 74244791,
+          "baseline_ns_per_access": 30.309557914733887,
+          "cached_ns_per_access": 35.40267515182495,
+          "cached_over_baseline": 1.1680366718451949,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 63546417,
+          "cached_ns": 75341917,
+          "baseline_ns_per_access": 30.301292896270752,
+          "cached_ns_per_access": 35.92582559585571,
+          "cached_over_baseline": 1.1856202215146134,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 63513166,
+          "cached_ns": 74704500,
+          "baseline_ns_per_access": 30.28543758392334,
+          "cached_ns_per_access": 35.62188148498535,
+          "cached_over_baseline": 1.1762049462311484,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 64060083,
+          "cached_ns": 74706291,
+          "baseline_ns_per_access": 30.54622793197632,
+          "cached_ns_per_access": 35.62273550033569,
+          "cached_over_baseline": 1.166190980426922,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 64670500,
+          "cached_ns": 74371500,
+          "baseline_ns_per_access": 30.837297439575195,
+          "cached_ns_per_access": 35.46309471130371,
+          "cached_over_baseline": 1.1500065717753845,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 64119417,
+          "cached_ns": 74752083,
+          "baseline_ns_per_access": 30.574520587921143,
+          "cached_ns_per_access": 35.64457082748413,
+          "cached_over_baseline": 1.165825993084123,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 63635875,
+          "cached_ns": 74684375,
+          "baseline_ns_per_access": 30.343949794769287,
+          "cached_ns_per_access": 35.612285137176514,
+          "cached_over_baseline": 1.1736206188726093,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 63531208,
+          "cached_ns": 74439792,
+          "baseline_ns_per_access": 30.29404067993164,
+          "cached_ns_per_access": 35.49565887451172,
+          "cached_over_baseline": 1.1717043378114265,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 63623208,
+          "cached_ns": 74407167,
+          "baseline_ns_per_access": 30.337909698486328,
+          "cached_ns_per_access": 35.48010206222534,
+          "cached_over_baseline": 1.1694972532664496,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 63544666,
+          "cached_ns": 74329125,
+          "baseline_ns_per_access": 30.30045795440674,
+          "cached_ns_per_access": 35.44288873672485,
+          "cached_over_baseline": 1.1697146224672894,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 63659375,
+          "cached_ns": 74388583,
+          "baseline_ns_per_access": 30.35515546798706,
+          "cached_ns_per_access": 35.471240520477295,
+          "cached_over_baseline": 1.1685408944087183,
+          "baseline_first": true
+        }
+      ],
+      "baseline_ns_per_access": {
+        "median": 30.309557914733887,
+        "min": 30.278642654418945,
+        "max": 30.837297439575195,
+        "q1": 30.29724931716919,
+        "q3": 30.387659788131714,
+        "relative_range": 0.01843163752925213
+      },
+      "cached_ns_per_access": {
+        "median": 35.48010206222534,
+        "min": 35.40267515182495,
+        "max": 35.92582559585571,
+        "q1": 35.46540927886963,
+        "q3": 35.61708331108093,
+        "relative_range": 0.014744896818877676
+      },
+      "cached_over_baseline": {
+        "median": 1.1696906666507954,
+        "min": 1.1500065717753845,
+        "max": 1.1856202215146134,
+        "q1": 1.1682887831269566,
+        "q3": 1.1715409702704482,
+        "relative_range": 0.030447066694310247
+      }
+    },
+    {
+      "scenario": "hit-share-run-2",
+      "group": "hit-share",
+      "access_kind": "Read",
+      "privilege": "Ring3",
+      "region": "UserRwx",
+      "order": "Sequential",
+      "cross_page": false,
+      "accesses_per_page": 2,
+      "working_set_pages": 256,
+      "working_set_bytes": 1048576,
+      "counts": {
+        "accesses": 512,
+        "probes": 512,
+        "faults": 0,
+        "cache_hits": 256,
+        "cache_walks": 256,
+        "uncached_table_entry_reads": 2048,
+        "cached_table_entry_reads": 1024
+      },
+      "episodes_per_batch": 8192,
+      "calibration_batches_ns": [
+        [
+          15792,
+          10000
+        ],
+        [
+          31000,
+          19792
+        ],
+        [
+          61917,
+          39583
+        ],
+        [
+          123834,
+          79208
+        ],
+        [
+          261333,
+          158292
+        ],
+        [
+          498292,
+          316375
+        ],
+        [
+          990166,
+          651667
+        ],
+        [
+          1983458,
+          1265250
+        ],
+        [
+          3974458,
+          2530375
+        ],
+        [
+          7928917,
+          5171375
+        ],
+        [
+          16170542,
+          10163500
+        ],
+        [
+          31743292,
+          20288916
+        ],
+        [
+          63470417,
+          40558917
+        ],
+        [
+          127310000,
+          81205041
+        ]
+      ],
+      "expected_episode_checksum": "0x4f255b629f2dddcf",
+      "correctness": "every batch checksum equals the independent-oracle checksum",
+      "repetitions": [
+        {
+          "episodes": 8192,
+          "baseline_ns": 127138958,
+          "cached_ns": 81153667,
+          "baseline_ns_per_access": 30.312289714813232,
+          "cached_ns_per_access": 19.348541975021362,
+          "cached_over_baseline": 0.6383068437606669,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 127815208,
+          "cached_ns": 81125708,
+          "baseline_ns_per_access": 30.473520278930664,
+          "cached_ns_per_access": 19.34187602996826,
+          "cached_over_baseline": 0.6347109179683845,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 127315125,
+          "cached_ns": 81336500,
+          "baseline_ns_per_access": 30.354291200637817,
+          "cached_ns_per_access": 19.39213275909424,
+          "cached_over_baseline": 0.6388596798691436,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 127493375,
+          "cached_ns": 81577042,
+          "baseline_ns_per_access": 30.39678931236267,
+          "cached_ns_per_access": 19.449482440948486,
+          "cached_over_baseline": 0.6398531845282157,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 133625709,
+          "cached_ns": 81336125,
+          "baseline_ns_per_access": 31.858851671218872,
+          "cached_ns_per_access": 19.392043352127075,
+          "cached_over_baseline": 0.6086861997491815,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 127169542,
+          "cached_ns": 81232166,
+          "baseline_ns_per_access": 30.319581508636475,
+          "cached_ns_per_access": 19.367257595062256,
+          "cached_over_baseline": 0.6387706106545544,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 127088917,
+          "cached_ns": 81195083,
+          "baseline_ns_per_access": 30.30035901069641,
+          "cached_ns_per_access": 19.358416318893433,
+          "cached_over_baseline": 0.6388840578443201,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 127378959,
+          "cached_ns": 81322041,
+          "baseline_ns_per_access": 30.369510412216187,
+          "cached_ns_per_access": 19.38868546485901,
+          "cached_over_baseline": 0.638426013514524,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 127642500,
+          "cached_ns": 82473875,
+          "baseline_ns_per_access": 30.43234348297119,
+          "cached_ns_per_access": 19.663304090499878,
+          "cached_over_baseline": 0.6461317742914782,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 127316667,
+          "cached_ns": 81408125,
+          "baseline_ns_per_access": 30.354658842086792,
+          "cached_ns_per_access": 19.409209489822388,
+          "cached_over_baseline": 0.6394145159329375,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 127221500,
+          "cached_ns": 81469625,
+          "baseline_ns_per_access": 30.331969261169434,
+          "cached_ns_per_access": 19.423872232437134,
+          "cached_over_baseline": 0.6403762335768718,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 127021042,
+          "cached_ns": 81200292,
+          "baseline_ns_per_access": 30.284176349639893,
+          "cached_ns_per_access": 19.359658241271973,
+          "cached_over_baseline": 0.6392664610639865,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 127179459,
+          "cached_ns": 81118334,
+          "baseline_ns_per_access": 30.321945905685425,
+          "cached_ns_per_access": 19.340117931365967,
+          "cached_over_baseline": 0.6378257514053429,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 127261750,
+          "cached_ns": 81056125,
+          "baseline_ns_per_access": 30.34156560897827,
+          "cached_ns_per_access": 19.325286149978638,
+          "cached_over_baseline": 0.6369244883085452,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 127062375,
+          "cached_ns": 81115417,
+          "baseline_ns_per_access": 30.294030904769897,
+          "cached_ns_per_access": 19.339422464370728,
+          "cached_over_baseline": 0.6383905306350522,
+          "baseline_first": true
+        }
+      ],
+      "baseline_ns_per_access": {
+        "median": 30.34156560897827,
+        "min": 30.284176349639893,
+        "max": 31.858851671218872,
+        "q1": 30.315935611724854,
+        "q3": 30.38314986228943,
+        "relative_range": 0.05189828837022908
+      },
+      "cached_ns_per_access": {
+        "median": 19.367257595062256,
+        "min": 19.325286149978638,
+        "max": 19.663304090499878,
+        "q1": 19.345209002494812,
+        "q3": 19.400671124458313,
+        "relative_range": 0.017453061635707215
+      },
+      "cached_over_baseline": {
+        "median": 0.6387706106545544,
+        "min": 0.6086861997491815,
+        "max": 0.6461317742914782,
+        "q1": 0.6380662975830049,
+        "q3": 0.639340488498462,
+        "relative_range": 0.058621317132805856
+      }
+    },
+    {
+      "scenario": "hit-share-run-4",
+      "group": "hit-share",
+      "access_kind": "Read",
+      "privilege": "Ring3",
+      "region": "UserRwx",
+      "order": "Sequential",
+      "cross_page": false,
+      "accesses_per_page": 4,
+      "working_set_pages": 256,
+      "working_set_bytes": 1048576,
+      "counts": {
+        "accesses": 1024,
+        "probes": 1024,
+        "faults": 0,
+        "cache_hits": 768,
+        "cache_walks": 256,
+        "uncached_table_entry_reads": 4096,
+        "cached_table_entry_reads": 1024
+      },
+      "episodes_per_batch": 8192,
+      "calibration_batches_ns": [
+        [
+          31750,
+          11625
+        ],
+        [
+          61916,
+          22958
+        ],
+        [
+          130125,
+          45875
+        ],
+        [
+          247542,
+          91834
+        ],
+        [
+          494959,
+          186834
+        ],
+        [
+          993041,
+          367125
+        ],
+        [
+          1987375,
+          737417
+        ],
+        [
+          3989791,
+          1471959
+        ],
+        [
+          7966333,
+          2936292
+        ],
+        [
+          15854625,
+          5872791
+        ],
+        [
+          31995750,
+          12054042
+        ],
+        [
+          64027625,
+          23529458
+        ],
+        [
+          127628250,
+          47140083
+        ],
+        [
+          253976375,
+          94113125
+        ]
+      ],
+      "expected_episode_checksum": "0x537e3e146f503335",
+      "correctness": "every batch checksum equals the independent-oracle checksum",
+      "repetitions": [
+        {
+          "episodes": 8192,
+          "baseline_ns": 254424959,
+          "cached_ns": 94140834,
+          "baseline_ns_per_access": 30.329818606376648,
+          "cached_ns_per_access": 11.222461938858032,
+          "cached_over_baseline": 0.37001414629293505,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 254530167,
+          "cached_ns": 94177292,
+          "baseline_ns_per_access": 30.342360377311707,
+          "cached_ns_per_access": 11.226808071136475,
+          "cached_over_baseline": 0.37000444037739544,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 254189541,
+          "cached_ns": 95053750,
+          "baseline_ns_per_access": 30.301754593849182,
+          "cached_ns_per_access": 11.331290006637573,
+          "cached_over_baseline": 0.37394831284580665,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 253958542,
+          "cached_ns": 94448666,
+          "baseline_ns_per_access": 30.27421736717224,
+          "cached_ns_per_access": 11.259158372879028,
+          "cached_over_baseline": 0.3719058443799067,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 254227875,
+          "cached_ns": 94177958,
+          "baseline_ns_per_access": 30.306324362754822,
+          "cached_ns_per_access": 11.226887464523315,
+          "cached_over_baseline": 0.37044701726748097,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 254286125,
+          "cached_ns": 94396125,
+          "baseline_ns_per_access": 30.313268303871155,
+          "cached_ns_per_access": 11.25289499759674,
+          "cached_over_baseline": 0.37122011670908117,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 254021583,
+          "cached_ns": 94143833,
+          "baseline_ns_per_access": 30.281732439994812,
+          "cached_ns_per_access": 11.222819447517395,
+          "cached_over_baseline": 0.3706135198755926,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 254633125,
+          "cached_ns": 94679375,
+          "baseline_ns_per_access": 30.354633927345276,
+          "cached_ns_per_access": 11.286661028862,
+          "cached_over_baseline": 0.3718266231072646,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 255147875,
+          "cached_ns": 94280292,
+          "baseline_ns_per_access": 30.41599690914154,
+          "cached_ns_per_access": 11.239086627960205,
+          "cached_over_baseline": 0.369512354355293,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 254313916,
+          "cached_ns": 94368333,
+          "baseline_ns_per_access": 30.31658124923706,
+          "cached_ns_per_access": 11.249581933021545,
+          "cached_over_baseline": 0.371070268132712,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 254759583,
+          "cached_ns": 94473667,
+          "baseline_ns_per_access": 30.36970889568329,
+          "cached_ns_per_access": 11.262138724327087,
+          "cached_over_baseline": 0.37083459584717565,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 256903875,
+          "cached_ns": 94770125,
+          "baseline_ns_per_access": 30.625328421592712,
+          "cached_ns_per_access": 11.297479271888733,
+          "cached_over_baseline": 0.3688933263462842,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 259139209,
+          "cached_ns": 94322458,
+          "baseline_ns_per_access": 30.89180099964142,
+          "cached_ns_per_access": 11.244113206863403,
+          "cached_over_baseline": 0.36398373817680363,
+          "baseline_first": true
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 255425542,
+          "cached_ns": 94128625,
+          "baseline_ns_per_access": 30.449097394943237,
+          "cached_ns_per_access": 11.221006512641907,
+          "cached_over_baseline": 0.3685168846583088,
+          "baseline_first": false
+        },
+        {
+          "episodes": 8192,
+          "baseline_ns": 254742792,
+          "cached_ns": 94308375,
+          "baseline_ns_per_access": 30.36770725250244,
+          "cached_ns_per_access": 11.24243438243866,
+          "cached_over_baseline": 0.3702101804709748,
+          "baseline_first": true
+        }
+      ],
+      "baseline_ns_per_access": {
+        "median": 30.342360377311707,
+        "min": 30.27421736717224,
+        "max": 30.89180099964142,
+        "q1": 30.30979633331299,
+        "q3": 30.392852902412415,
+        "relative_range": 0.020353842772593632
+      },
+      "cached_ns_per_access": {
+        "median": 11.244113206863403,
+        "min": 11.221006512641907,
+        "max": 11.331290006637573,
+        "q1": 11.226847767829895,
+        "q3": 11.260648548603058,
+        "relative_range": 0.009808109538451595
+      },
+      "cached_over_baseline": {
+        "median": 0.37044701726748097,
+        "min": 0.36398373817680363,
+        "max": 0.37394831284580665,
+        "q1": 0.3697583973663442,
+        "q3": 0.3711451924208966,
+        "relative_range": 0.02689878499361249
+      }
+    },
+    {
+      "scenario": "hit-share-run-16",
+      "group": "hit-share",
+      "access_kind": "Read",
+      "privilege": "Ring3",
+      "region": "UserRwx",
+      "order": "Sequential",
+      "cross_page": false,
+      "accesses_per_page": 16,
+      "working_set_pages": 256,
+      "working_set_bytes": 1048576,
+      "counts": {
+        "accesses": 4096,
+        "probes": 4096,
+        "faults": 0,
+        "cache_hits": 3840,
+        "cache_walks": 256,
+        "uncached_table_entry_reads": 16384,
+        "cached_table_entry_reads": 1024
+      },
+      "episodes_per_batch": 4096,
+      "calibration_batches_ns": [
+        [
+          124708,
+          21542
+        ],
+        [
+          247583,
+          42750
+        ],
+        [
+          498166,
+          85459
+        ],
+        [
+          1000250,
+          179333
+        ],
+        [
+          1997541,
+          344750
+        ],
+        [
+          3967542,
+          686333
+        ],
+        [
+          7944917,
+          1375416
+        ],
+        [
+          15890500,
+          2760083
+        ],
+        [
+          31757167,
+          5464625
+        ],
+        [
+          63639042,
+          10945125
+        ],
+        [
+          127338375,
+          22362958
+        ],
+        [
+          255123667,
+          43806750
+        ],
+        [
+          508425542,
+          87597459
+        ]
+      ],
+      "expected_episode_checksum": "0xea56d679e5379f5f",
+      "correctness": "every batch checksum equals the independent-oracle checksum",
+      "repetitions": [
+        {
+          "episodes": 4096,
+          "baseline_ns": 507837792,
+          "cached_ns": 87846250,
+          "baseline_ns_per_access": 30.26949119567871,
+          "cached_ns_per_access": 5.236044526100159,
+          "cached_over_baseline": 0.17298092301094442,
+          "baseline_first": true
+        },
+        {
+          "episodes": 4096,
+          "baseline_ns": 513168167,
+          "cached_ns": 88301917,
+          "baseline_ns_per_access": 30.587206304073334,
+          "cached_ns_per_access": 5.263204395771027,
+          "cached_over_baseline": 0.17207208606920468,
+          "baseline_first": false
+        },
+        {
+          "episodes": 4096,
+          "baseline_ns": 509792042,
+          "cached_ns": 87724917,
+          "baseline_ns_per_access": 30.385973572731018,
+          "cached_ns_per_access": 5.228812515735626,
+          "cached_over_baseline": 0.17207980857417934,
+          "baseline_first": true
+        },
+        {
+          "episodes": 4096,
+          "baseline_ns": 508618792,
+          "cached_ns": 87690167,
+          "baseline_ns_per_access": 30.31604242324829,
+          "cached_ns_per_access": 5.226741254329681,
+          "cached_over_baseline": 0.17240842921902894,
+          "baseline_first": false
+        },
+        {
+          "episodes": 4096,
+          "baseline_ns": 509275584,
+          "cached_ns": 88643833,
+          "baseline_ns_per_access": 30.35519027709961,
+          "cached_ns_per_access": 5.283584177494049,
+          "cached_over_baseline": 0.17405867429136362,
+          "baseline_first": true
+        },
+        {
+          "episodes": 4096,
+          "baseline_ns": 509084042,
+          "cached_ns": 87696750,
+          "baseline_ns_per_access": 30.34377348423004,
+          "cached_ns_per_access": 5.227133631706238,
+          "cached_over_baseline": 0.17226379686833712,
+          "baseline_first": false
+        },
+        {
+          "episodes": 4096,
+          "baseline_ns": 509543417,
+          "cached_ns": 89078916,
+          "baseline_ns_per_access": 30.371154367923737,
+          "cached_ns_per_access": 5.30951714515686,
+          "cached_over_baseline": 0.17482105160824793,
+          "baseline_first": true
+        },
+        {
+          "episodes": 4096,
+          "baseline_ns": 509626875,
+          "cached_ns": 87926458,
+          "baseline_ns_per_access": 30.3761288523674,
+          "cached_ns_per_access": 5.240825295448303,
+          "cached_over_baseline": 0.17253104636603006,
+          "baseline_first": false
+        },
+        {
+          "episodes": 4096,
+          "baseline_ns": 512749250,
+          "cached_ns": 90753500,
+          "baseline_ns_per_access": 30.56223690509796,
+          "cached_ns_per_access": 5.409330129623413,
+          "cached_over_baseline": 0.17699392051767993,
+          "baseline_first": true
+        },
+        {
+          "episodes": 4096,
+          "baseline_ns": 526061625,
+          "cached_ns": 91295291,
+          "baseline_ns_per_access": 31.355716288089752,
+          "cached_ns_per_access": 5.441623389720917,
+          "cached_over_baseline": 0.17354485988214785,
+          "baseline_first": false
+        },
+        {
+          "episodes": 4096,
+          "baseline_ns": 509600042,
+          "cached_ns": 87721833,
+          "baseline_ns_per_access": 30.374529480934143,
+          "cached_ns_per_access": 5.228628695011139,
+          "cached_over_baseline": 0.1721385906008226,
+          "baseline_first": true
+        },
+        {
+          "episodes": 4096,
+          "baseline_ns": 509508791,
+          "cached_ns": 88109792,
+          "baseline_ns_per_access": 30.369090497493744,
+          "cached_ns_per_access": 5.251752853393555,
+          "cached_over_baseline": 0.17293085724206866,
+          "baseline_first": false
+        },
+        {
+          "episodes": 4096,
+          "baseline_ns": 500131583,
+          "cached_ns": 86143875,
+          "baseline_ns_per_access": 29.810165345668793,
+          "cached_ns_per_access": 5.134575068950653,
+          "cached_over_baseline": 0.17224242165086384,
+          "baseline_first": true
+        },
+        {
+          "episodes": 4096,
+          "baseline_ns": 502018417,
+          "cached_ns": 86133833,
+          "baseline_ns_per_access": 29.922629415988922,
+          "cached_ns_per_access": 5.133976519107819,
+          "cached_over_baseline": 0.1715750460206722,
+          "baseline_first": false
+        },
+        {
+          "episodes": 4096,
+          "baseline_ns": 501099166,
+          "cached_ns": 86093625,
+          "baseline_ns_per_access": 29.8678377866745,
+          "cached_ns_per_access": 5.13157993555069,
+          "cached_over_baseline": 0.1718095555561152,
+          "baseline_first": true
+        }
+      ],
+      "baseline_ns_per_access": {
+        "median": 30.369090497493744,
+        "min": 29.810165345668793,
+        "max": 31.355716288089752,
+        "q1": 30.2927668094635,
+        "q3": 30.38105121254921,
+        "relative_range": 0.05089223671510704
+      },
+      "cached_ns_per_access": {
+        "median": 5.236044526100159,
+        "min": 5.13157993555069,
+        "max": 5.441623389720917,
+        "q1": 5.22693744301796,
+        "q3": 5.273394286632538,
+        "relative_range": 0.05921329595742562
+      },
+      "cached_over_baseline": {
+        "median": 0.17240842921902894,
+        "min": 0.1715750460206722,
+        "max": 0.17699392051767993,
+        "q1": 0.17210919958750098,
+        "q3": 0.17326289144654614,
+        "relative_range": 0.031430449900587826
+      }
+    }
+  ]
+}

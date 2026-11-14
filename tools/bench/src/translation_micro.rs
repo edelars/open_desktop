@@ -4,7 +4,9 @@
 //! capacity-one `TranslationProbeCache` over deterministic working sets,
 //! sequential and random order, rights paths, fault paths and cross-page
 //! accesses. No Linux boot, no JIT, no CPU interpreter: only the translation
-//! API. Every timed batch must reproduce a checksum computed by an independent
+//! API. S4-42b adds the `hit-share` series: sequential runs of 1, 2, 4 and 16
+//! accesses per page over one 256-page set, used to separate the cost of a
+//! cache hit from the cost of a miss. Every timed batch must reproduce a checksum computed by an independent
 //! cache-free table walk written in this file (`oracle`); a mismatching batch
 //! fails the whole run, so no number is produced for a wrong result.
 
@@ -31,6 +33,19 @@ const REGION_PAGES: usize = 4096;
 const REGION_BYTES: u64 = (REGION_PAGES as u64) * 0x1000;
 const PT_PER_REGION: usize = REGION_PAGES / 512;
 const OFFSETS: [u64; 4] = [0, 8, 64, 4088];
+// S4-42b run-length series: k accesses to the same page, evenly spaced and
+// 8-byte aligned, so they never cross a page boundary.
+const RUN_1: [u64; 1] = [0];
+const RUN_2: [u64; 2] = [0, 2048];
+const RUN_4: [u64; 4] = [0, 1024, 2048, 3072];
+const RUN_16: [u64; 16] = [
+    0, 256, 512, 768, 1024, 1280, 1536, 1792, 2048, 2304, 2560, 2816, 3072, 3328, 3584, 3840,
+];
+const HIT_SHARE_RUNS: [&[u64]; 4] = [&RUN_1, &RUN_2, &RUN_4, &RUN_16];
+const HIT_SHARE_WORKING_SETS: [usize; 1] = [256];
+/// S4-42a estimate (formula from sequential and random rows), ns per access.
+const S4_42A_HIT_NS: f64 = 3.3;
+const S4_42A_MISS_NS: f64 = 33.7;
 const CROSS_OFFSET: u64 = 0xffc;
 const CROSS_LEN: u64 = 8;
 const WORKING_SETS: [usize; 3] = [16, 256, 4096];
@@ -97,6 +112,36 @@ struct Scenario {
     region: Region,
     order: Order,
     cross_page: bool,
+    offsets: &'static [u64],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Series {
+    Full,
+    HitShare,
+}
+
+impl Series {
+    fn working_sets(self) -> &'static [usize] {
+        match self {
+            Self::Full => &WORKING_SETS,
+            Self::HitShare => &HIT_SHARE_WORKING_SETS,
+        }
+    }
+
+    fn scenarios(self) -> Vec<Scenario> {
+        match self {
+            Self::Full => scenarios(),
+            Self::HitShare => hit_share_scenarios(),
+        }
+    }
+
+    fn schema(self) -> &'static str {
+        match self {
+            Self::Full => "od-bench-translation-micro-v1",
+            Self::HitShare => "od-bench-translation-hit-share-v1",
+        }
+    }
 }
 
 impl Scenario {
@@ -128,6 +173,7 @@ fn scenarios() -> Vec<Scenario> {
                 region,
                 order,
                 cross_page: false,
+                offsets: &OFFSETS,
             });
         }
     }
@@ -157,6 +203,7 @@ fn scenarios() -> Vec<Scenario> {
             region,
             order: Order::Sequential,
             cross_page: false,
+            offsets: &OFFSETS,
         });
     }
     for order in [Order::Sequential, Order::Random] {
@@ -168,9 +215,34 @@ fn scenarios() -> Vec<Scenario> {
             region: Region::UserRwx,
             order,
             cross_page: true,
+            offsets: &OFFSETS,
         });
     }
     list
+}
+
+/// S4-42b: sequential Read/ring3 over the user RWX region, k accesses per page.
+fn hit_share_scenarios() -> Vec<Scenario> {
+    let names = [
+        "hit-share-run-1",
+        "hit-share-run-2",
+        "hit-share-run-4",
+        "hit-share-run-16",
+    ];
+    HIT_SHARE_RUNS
+        .iter()
+        .zip(names)
+        .map(|(offsets, name)| Scenario {
+            name,
+            group: "hit-share",
+            kind: AccessKind::Read,
+            privilege: PrivilegeLevel::Ring3,
+            region: Region::UserRwx,
+            order: Order::Sequential,
+            cross_page: false,
+            offsets,
+        })
+        .collect()
 }
 
 fn build_requests(scenario: &Scenario, pages: usize) -> Vec<Request> {
@@ -187,7 +259,7 @@ fn build_requests(scenario: &Scenario, pages: usize) -> Vec<Request> {
         }
     } else {
         for page in 0..pages {
-            for offset in OFFSETS {
+            for &offset in scenario.offsets {
                 requests.push(Request {
                     linear: base + (page as u64) * 0x1000 + offset,
                     len: 8,
@@ -517,6 +589,8 @@ struct CellReport {
     region: Region,
     order: Order,
     cross_page: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    accesses_per_page: Option<usize>,
     working_set_pages: usize,
     working_set_bytes: u64,
     counts: EpisodeCounts,
@@ -544,7 +618,134 @@ pub struct TranslationMicroReport {
     batch_floor_ns: u64,
     config: ConfigReport,
     environment: Environment,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hit_share_fit: Option<HitShareFit>,
     cells: Vec<CellReport>,
+}
+
+/// Straight line `cost = at_zero_hit + slope * hit_share` fitted by least squares.
+#[derive(Clone, Copy, Debug, Serialize)]
+struct LineFit {
+    /// Value at hit share 0: the per-access cost of a miss.
+    at_zero_hit: f64,
+    /// Value at hit share 1: the per-access cost of a hit.
+    at_full_hit: f64,
+    slope: f64,
+    r_squared: f64,
+    max_abs_residual: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct HitShareFit {
+    method: &'static str,
+    accesses_per_page: Vec<usize>,
+    hit_share: Vec<f64>,
+    cached_median_ns_per_access: Vec<f64>,
+    uncached_median_ns_per_access: Vec<f64>,
+    cached_fit_on_medians: LineFit,
+    uncached_fit_on_medians: LineFit,
+    /// Per-repetition fits (one OLS fit per repetition index, 4 points each).
+    cached_miss_ns_across_repetition_fits: Stats,
+    cached_hit_ns_across_repetition_fits: Stats,
+    /// Direct measurement: cached median of the 1-access-per-page cell (hit share 0).
+    direct_miss_ns_run_1: f64,
+    /// Hit cost from the 16-access cell given the direct miss cost.
+    hit_ns_from_run_16_and_direct_miss: f64,
+    s4_42a_estimate_hit_ns: f64,
+    s4_42a_estimate_miss_ns: f64,
+}
+
+/// Ordinary least squares over `(hit_share, cost)` points.
+fn fit_line(points: &[(f64, f64)]) -> LineFit {
+    let n = points.len() as f64;
+    let mean_x = points.iter().map(|p| p.0).sum::<f64>() / n;
+    let mean_y = points.iter().map(|p| p.1).sum::<f64>() / n;
+    let sxx = points.iter().map(|p| (p.0 - mean_x).powi(2)).sum::<f64>();
+    let sxy = points
+        .iter()
+        .map(|p| (p.0 - mean_x) * (p.1 - mean_y))
+        .sum::<f64>();
+    let syy = points.iter().map(|p| (p.1 - mean_y).powi(2)).sum::<f64>();
+    let slope = sxy / sxx;
+    let intercept = mean_y - slope * mean_x;
+    let max_abs_residual = points
+        .iter()
+        .map(|p| (p.1 - (intercept + slope * p.0)).abs())
+        .fold(0.0, f64::max);
+    LineFit {
+        at_zero_hit: intercept,
+        at_full_hit: intercept + slope,
+        slope,
+        r_squared: if syy == 0.0 {
+            1.0
+        } else {
+            sxy * sxy / (sxx * syy)
+        },
+        max_abs_residual,
+    }
+}
+
+fn hit_share_fit(cells: &[CellReport]) -> HitShareFit {
+    let share = |cell: &CellReport| cell.counts.cache_hits as f64 / cell.counts.probes as f64;
+    let shares: Vec<f64> = cells.iter().map(share).collect();
+    let cached_medians: Vec<f64> = cells
+        .iter()
+        .map(|c| c.cached_ns_per_access.median)
+        .collect();
+    let uncached_medians: Vec<f64> = cells
+        .iter()
+        .map(|c| c.baseline_ns_per_access.median)
+        .collect();
+    let zip = |ys: &[f64]| -> Vec<(f64, f64)> {
+        shares.iter().copied().zip(ys.iter().copied()).collect()
+    };
+    let repetitions = cells[0].repetitions.len();
+    let per_repetition: Vec<LineFit> = (0..repetitions)
+        .map(|index| {
+            let ys: Vec<f64> = cells
+                .iter()
+                .map(|c| c.repetitions[index].cached_ns_per_access)
+                .collect();
+            fit_line(&zip(&ys))
+        })
+        .collect();
+    // The fit reads the hit-share-0 cell and the 16-accesses cell by position;
+    // check that instead of relying on the order silently.
+    assert!(
+        cells.len() >= 2
+            && cells[0].accesses_per_page == Some(1)
+            && cells[0].counts.cache_hits == 0
+            && cells[cells.len() - 1].accesses_per_page == Some(16),
+        "hit-share cells must start with the 1-access (hit share 0) cell and end with the 16-access cell"
+    );
+    assert!(
+        shares.windows(2).all(|pair| pair[0] < pair[1]),
+        "hit-share cells must be ordered by increasing hit share"
+    );
+    let direct_miss = cells[0].cached_ns_per_access.median;
+    let last = cells.len() - 1;
+    let last_share = shares[last];
+    HitShareFit {
+        method: "ordinary least squares of ns per access against hit share (hit/probes from the preflight counts) over the 4 cells; value at hit share 0 is the miss cost, at hit share 1 the hit cost; fitted on cell medians and, for spread, once per repetition index",
+        accesses_per_page: cells.iter().filter_map(|c| c.accesses_per_page).collect(),
+        hit_share: shares.clone(),
+        cached_median_ns_per_access: cached_medians.clone(),
+        uncached_median_ns_per_access: uncached_medians.clone(),
+        cached_fit_on_medians: fit_line(&zip(&cached_medians)),
+        uncached_fit_on_medians: fit_line(&zip(&uncached_medians)),
+        cached_miss_ns_across_repetition_fits: stats_of(
+            per_repetition.iter().map(|f| f.at_zero_hit).collect(),
+        ),
+        cached_hit_ns_across_repetition_fits: stats_of(
+            per_repetition.iter().map(|f| f.at_full_hit).collect(),
+        ),
+        direct_miss_ns_run_1: direct_miss,
+        hit_ns_from_run_16_and_direct_miss: (cells[last].cached_ns_per_access.median
+            - (1.0 - last_share) * direct_miss)
+            / last_share,
+        s4_42a_estimate_hit_ns: S4_42A_HIT_NS,
+        s4_42a_estimate_miss_ns: S4_42A_MISS_NS,
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -566,6 +767,15 @@ struct Environment {
 }
 
 pub fn run(process_run: u8) -> Result<TranslationMicroReport, BoxError> {
+    run_series(process_run, Series::Full)
+}
+
+/// S4-42b: hit-share series (1, 2, 4, 16 accesses per page, 256 pages).
+pub fn run_hit_share(process_run: u8) -> Result<TranslationMicroReport, BoxError> {
+    run_series(process_run, Series::HitShare)
+}
+
+fn run_series(process_run: u8, series: Series) -> Result<TranslationMicroReport, BoxError> {
     if !(1..=3).contains(&process_run) {
         return Err("--process-run must be in 1..=3".into());
     }
@@ -573,13 +783,13 @@ pub fn run(process_run: u8) -> Result<TranslationMicroReport, BoxError> {
     let config = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER)
         .map_err(|error| format!("invalid paging fixture: {error:?}"))?;
     let fixture_sha256 = hash_memory(&memory)?;
-    let list = scenarios();
+    let list = series.scenarios();
 
     // Preflight for every cell before any timing starts.
     let mut prepared = Vec::new();
     let mut profile_bytes = Vec::new();
     for scenario in &list {
-        for pages in WORKING_SETS {
+        for &pages in series.working_sets() {
             let requests = build_requests(scenario, pages);
             let counts = validate_and_count(&memory, &config, scenario, &requests)?;
             let expected = expected_episode_checksum(&memory, scenario, &requests)?;
@@ -606,8 +816,9 @@ pub fn run(process_run: u8) -> Result<TranslationMicroReport, BoxError> {
         return Err("timed translations changed fixture RAM".into());
     }
     let binary_path = std::env::current_exe()?;
+    let hit_share_fit = (series == Series::HitShare).then(|| hit_share_fit(&cells));
     Ok(TranslationMicroReport {
-        schema: "od-bench-translation-micro-v1",
+        schema: series.schema(),
         process_run,
         fixture: "synthetic-long64-4k-5-regions-32m-v1",
         fixture_sha256,
@@ -635,6 +846,7 @@ pub fn run(process_run: u8) -> Result<TranslationMicroReport, BoxError> {
                 .unwrap_or("unavailable")
                 .to_owned(),
         },
+        hit_share_fit,
         cells,
     })
 }
@@ -694,6 +906,7 @@ fn measure_cell(
         region: scenario.region,
         order: scenario.order,
         cross_page: scenario.cross_page,
+        accesses_per_page: (scenario.group == "hit-share").then_some(scenario.offsets.len()),
         working_set_pages: pages,
         working_set_bytes: (pages as u64) * 4096,
         counts,
@@ -807,6 +1020,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn hit_share_series_has_exact_hit_shares_and_matches_oracle() {
+        let memory = build_memory().unwrap();
+        let config = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let pages = 256;
+        for scenario in hit_share_scenarios() {
+            let run = scenario.offsets.len();
+            let requests = build_requests(&scenario, pages);
+            assert_eq!(requests.len(), pages * run);
+            // Offsets are distinct, 8-aligned and stay inside the page.
+            let mut offsets: Vec<u64> = scenario.offsets.to_vec();
+            offsets.sort_unstable();
+            offsets.dedup();
+            assert_eq!(offsets.len(), run);
+            assert!(offsets.iter().all(|o| o % 8 == 0 && o + 8 <= 4096));
+            let counts = validate_and_count(&memory, &config, &scenario, &requests).unwrap();
+            assert_eq!(counts.faults, 0);
+            assert_eq!(counts.probes, pages * run);
+            assert_eq!(counts.cache_hits, pages * (run - 1), "{}", scenario.name);
+            assert_eq!(counts.cache_walks, pages);
+        }
+    }
+
+    #[test]
+    fn line_fit_recovers_exact_hit_and_miss_cost() {
+        let (hit, miss) = (3.0, 30.0);
+        let points: Vec<(f64, f64)> = [0.0, 0.5, 0.75, 15.0 / 16.0]
+            .iter()
+            .map(|&h| (h, h * hit + (1.0 - h) * miss))
+            .collect();
+        let fit = fit_line(&points);
+        assert!((fit.at_zero_hit - miss).abs() < 1e-9);
+        assert!((fit.at_full_hit - hit).abs() < 1e-9);
+        assert!((fit.r_squared - 1.0).abs() < 1e-12);
+        assert!(fit.max_abs_residual < 1e-9);
     }
 
     #[test]
