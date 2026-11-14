@@ -21269,10 +21269,11 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
 
 /// S4-39f8: whether the ModRM byte of a decoded `REX 8D /r` selects a SIB byte (`mod != 11`,
 /// `rm = 100`). The decoder output does not keep this, and `[%rbx]` through a SIB byte and
-/// through ModRM alone decode to the same operand. Only the shape with REX as the single prefix is
-/// asked (the byte is then at `rip + 2`; the bytes were fetched by the decode a moment ago, so the
-/// fetch cannot fail on a page rule that the decode passed); any other prefix is refused by
-/// [`cpl3_allows`] before this value matters.
+/// through ModRM alone decode to the same operand. The byte is read only for the shape with exactly
+/// one prefix, REX: the decoder keeps just the last of several REX bytes, so the byte at `rip + 2`
+/// is a ModRM only when `rip + 1` holds the opcode `8D`, which no prefix byte can be. The bytes were
+/// fetched by the decode a moment ago. Any other prefix is refused by [`cpl3_allows`] before this
+/// value matters.
 fn lea_modrm_selects_sib(
     memory: &mut impl GuestMemory,
     rip: u64,
@@ -21286,6 +21287,12 @@ fn lea_modrm_selects_sib(
         || prefixes.segment.is_some()
         || prefixes.operand_override
         || prefixes.address_override
+    {
+        return false;
+    }
+    if !memory
+        .fetch(rip.wrapping_add(1), context)
+        .is_ok_and(|opcode| opcode == 0x8d)
     {
         return false;
     }

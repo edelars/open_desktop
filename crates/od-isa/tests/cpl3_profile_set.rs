@@ -910,6 +910,13 @@ fn lea_sib_variants_outside_the_allowed_form_stop_without_change() {
         ("gs segment prefix", &[0x65, 0x49, 0x8d, 0x3c, 0x1e]),
         ("cs segment prefix", &[0x2e, 0x49, 0x8d, 0x3c, 0x1e]),
         ("ds segment prefix", &[0x3e, 0x49, 0x8d, 0x3c, 0x1e]),
+        ("es segment prefix", &[0x26, 0x49, 0x8d, 0x3c, 0x1e]),
+        ("ss segment prefix", &[0x36, 0x49, 0x8d, 0x3c, 0x1e]),
+        // Two REX bytes: the decoder keeps the last one only, so the byte at rip + 2 is not a ModRM.
+        (
+            "two REX prefixes, [rbx] without SIB",
+            &[0x40, 0x40, 0x4c, 0x8d, 0x03],
+        ),
         // Register-base forms without a SIB byte stay outside (S4-39f8 allows the SIB form only).
         ("[rbx] without SIB", &[0x48, 0x8d, 0x03]),
         ("[r14] without SIB", &[0x49, 0x8d, 0x3e]),
