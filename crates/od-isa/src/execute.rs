@@ -21180,6 +21180,16 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// byte, so `lea_sib` is derived from the ModRM byte (see [`lea_modrm_selects_sib`]); the plain
 /// register-base forms (`48 8d 03`, `lea (%rbx), %rax`) stay outside.
 ///
+/// S4-39f10: `[REX] 8A /r` (MOV r8, r/m8) with a memory operand (mod != 11: SIB, disp8/disp32,
+/// RIP-relative; REX.R, REX.X and REX.B reach the destination, the index and the base) with no
+/// prefix other than REX, as in `8a 06` (`movb (%rsi), %al`) of `/init` at `0x40016f`. The CPL0
+/// `Operation::Mov` is reused: the byte load goes through `read_operand` with the CPL3 context (the
+/// U/S check of the paged adapter applies, #PF with U and no register write), the destination is
+/// the byte view (AL..BL, SPL..DIL with any REX, AH..BH without) and only that byte changes; flags
+/// stay. REX.W does not change a byte load and is accepted as for `C6`. The register form
+/// (`8a c0`, mod = 11) and any prefix (66/67/LOCK/REP/segment, including the 2E/3E hints) stay
+/// outside; `88` (MOV r/m8, r8), `8B` and `38` (CMP r/m8, r8) stay outside too.
+///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
 fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: bool) -> bool {
@@ -21265,6 +21275,18 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             instruction.operand_size,
             OperandSize::Dword | OperandSize::Qword
         ),
+        (
+            OpcodeMap::Primary,
+            0x8a,
+            Operation::Mov {
+                dst: Operand::Register(_),
+                src: Operand::Memory(src),
+            },
+        ) => {
+            instruction.operand_size == OperandSize::Byte
+                && src.size == OperandSize::Byte
+                && src.address_size == OperandSize::Qword
+        }
         (OpcodeMap::Primary, 0x8d, Operation::Lea { src, .. }) => {
             instruction.operand_size == OperandSize::Qword
                 && src.address_size == OperandSize::Qword
