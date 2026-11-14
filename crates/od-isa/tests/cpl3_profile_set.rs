@@ -331,9 +331,10 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("lldt ax", &[0x0f, 0x00, 0xd0], 0x00),
         ("invlpg [rax]", &[0x0f, 0x01, 0x38], 0x01),
         ("int3", &[0xcc], 0xcc),
-        // Ordinary forms that `/init` runs after its first syscall stay outside this slice.
-        // S4-39f2: `xor eax, eax` (`31 c0`) is allowed now (register form, dword); the variants
-        // below stay outside: REX.W, a memory operand and the other XOR opcodes.
+        // Forms outside the allow-list. `xor eax, eax` / `xor r10d, r10d` / `xor r8d, r8d` of
+        // `/init` (`31 c0`, `45 31 d2`, `45 31 c0`) are allowed since S4-39f2 (register form,
+        // dword) and `mov $imm32, %rdi` (`48 c7 c7`) since S4-39f3; the variants below stay
+        // outside: XOR with REX.W, a memory operand and the other XOR opcodes.
         ("xor rax, rax (REX.W)", &[0x48, 0x31, 0xc0], 0x31),
         ("xor r10, r10 (REX.W+R+B)", &[0x4d, 0x31, 0xd2], 0x31),
         ("xor [rax], eax (memory)", &[0x31, 0x00], 0x31),
@@ -348,12 +349,68 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("xor eax, ebx (33 /r)", &[0x33, 0xc3], 0x33),
         ("xor eax, imm32 (35)", &[0x35, 1, 0, 0, 0], 0x35),
         ("xor eax, imm8 (83 /6)", &[0x83, 0xf0, 0x01], 0x83),
-        // The form after the second syscall of `/init` (`48 c7 c7`): the S4-39f2 boundary.
+        // S4-39f3: `REX.W C7 /0` in the register form is allowed; the variants below stay outside.
         (
-            "mov rdi, imm32 (C7 /0, REX.W)",
-            &[0x48, 0xc7, 0xc7, 0x9c, 0xff, 0xff, 0xff],
+            "mov edi, imm32 (C7 /0, no REX.W)",
+            &[0xc7, 0xc7, 0x9c, 0xff, 0xff, 0xff],
             0xc7,
         ),
+        (
+            "mov r8d, imm32 (C7 /0, REX.B without W)",
+            &[0x41, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00],
+            0xc7,
+        ),
+        (
+            "mov qword [rax], imm32 (C7 /0, REX.W memory)",
+            &[0x48, 0xc7, 0x00, 0x01, 0x00, 0x00, 0x00],
+            0xc7,
+        ),
+        (
+            "mov dword [rax], imm32 (C7 /0, memory, no REX.W)",
+            &[0xc7, 0x00, 0x01, 0x00, 0x00, 0x00],
+            0xc7,
+        ),
+        (
+            "mov qword [rip+0], imm32 (C7 /0, REX.W RIP-relative)",
+            &[0x48, 0xc7, 0x05, 0, 0, 0, 0, 0x01, 0x00, 0x00, 0x00],
+            0xc7,
+        ),
+        (
+            "mov ax, imm16 (66 C7 /0)",
+            &[0x66, 0xc7, 0xc0, 0x01, 0x00],
+            0xc7,
+        ),
+        (
+            "mov rdi, imm32 with 0x66 (66 REX.W C7 /0)",
+            &[0x66, 0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00],
+            0xc7,
+        ),
+        (
+            "mov rdi, imm32 with fs prefix",
+            &[0x64, 0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00],
+            0xc7,
+        ),
+        (
+            "mov rdi, imm32 with address-size prefix",
+            &[0x67, 0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00],
+            0xc7,
+        ),
+        (
+            "mov rdi, imm32 with rep prefix",
+            &[0xf3, 0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00],
+            0xc7,
+        ),
+        ("mov bl, imm8 (C6 /0)", &[0xc6, 0xc3, 0x01], 0xc6),
+        // C7 with the other /digit values is not MOV (XABORT/XBEGIN family): decoder refusal.
+        ("c7 /1", &[0x48, 0xc7, 0xc8, 0x01, 0x00, 0x00, 0x00], 0xc7),
+        // Register-form XOR with prefixes (S4-39f2 review gap): every prefix other than REX
+        // keeps `31 c0` outside the allow-list.
+        ("fs xor eax, eax", &[0x64, 0x31, 0xc0], 0x31),
+        ("gs xor eax, eax", &[0x65, 0x31, 0xc0], 0x31),
+        ("addr32 xor eax, eax", &[0x67, 0x31, 0xc0], 0x31),
+        ("repne xor eax, eax", &[0xf2, 0x31, 0xc0], 0x31),
+        ("rep xor eax, eax", &[0xf3, 0x31, 0xc0], 0x31),
+        ("lock xor eax, eax (register)", &[0xf0, 0x31, 0xc0], 0x31),
         ("mov rbx, rax", &[0x48, 0x89, 0xc3], 0x89),
         // Prefixed variants of the allowed forms and a different operand size.
         (
@@ -704,7 +761,8 @@ fn xor_r32_leaves_the_other_registers_and_non_arithmetic_flags_unchanged() {
 }
 
 /// `/init` after the first `SYSCALL` (`mkdir`) up to the second one (`mount`, 165), taken from
-/// `work/stage4/initramfs/init` at `0x4000c3`:
+/// the `/init` ELF (`work/stage4/initramfs/init.elf`, the same file as `/init` inside
+/// `work/stage4/initramfs/initramfs.cpio`) at `0x4000c3`:
 /// `lea 0x18c(%rip), %rdi; lea 0x17f(%rip), %rsi; lea 0x17e(%rip), %rdx; xor %r10d, %r10d;
 /// xor %r8d, %r8d; mov $0xa5, %eax; syscall`.
 const INIT_MOUNT_PATH: [u8; 33] = [
@@ -739,16 +797,128 @@ fn init_path_after_mkdir_runs_in_ring3_up_to_the_mount_syscall() {
     assert_eq!(memory.accesses, 0);
 }
 
+// ---- S4-39f3: `REX.W C7 /0 id` (MOV r/m64, imm32), register form, and the path to `openat` ----
+
 #[test]
-fn the_form_after_the_mount_syscall_is_still_outside_the_allow_list() {
-    // `/init` at `0x4000e5`: `mov $-0x64, %rdi` (`48 c7 c7 9c ff ff ff`, C7 /0 with REX.W).
+fn mov_r64_imm32_sign_extends_and_leaves_everything_else_unchanged() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    // (name, bytes, destination register index, expected value)
+    let cases: &[(&str, &[u8], usize, u64)] = &[
+        // `/init` at 0x4000e5: movq $-0x64, %rdi.
+        (
+            "48 c7 c7 9c ff ff ff",
+            &[0x48, 0xc7, 0xc7, 0x9c, 0xff, 0xff, 0xff],
+            7,
+            0xffff_ffff_ffff_ff9c,
+        ),
+        ("movq $0, %rax", &[0x48, 0xc7, 0xc0, 0, 0, 0, 0], 0, 0),
+        (
+            "movq $0x7fffffff, %rcx",
+            &[0x48, 0xc7, 0xc1, 0xff, 0xff, 0xff, 0x7f],
+            1,
+            0x0000_0000_7fff_ffff,
+        ),
+        (
+            "movq $0x80000000 (as imm32), %rdx",
+            &[0x48, 0xc7, 0xc2, 0x00, 0x00, 0x00, 0x80],
+            2,
+            0xffff_ffff_8000_0000,
+        ),
+        (
+            "movq $-1, %rsp",
+            &[0x48, 0xc7, 0xc4, 0xff, 0xff, 0xff, 0xff],
+            4,
+            u64::MAX,
+        ),
+        // REX.W + REX.B: r8..r15.
+        (
+            "49 c7 c0 imm32 (r8)",
+            &[0x49, 0xc7, 0xc0, 0x9c, 0xff, 0xff, 0xff],
+            8,
+            0xffff_ffff_ffff_ff9c,
+        ),
+        (
+            "49 c7 c7 imm32 (r15)",
+            &[0x49, 0xc7, 0xc7, 0x78, 0x56, 0x34, 0x12],
+            15,
+            0x0000_0000_1234_5678,
+        ),
+        // REX.W + REX.R (ignored by /0: ModRM.reg is the opcode extension) + REX.B.
+        (
+            "4d c7 c2 imm32 (REX.WRB, r10)",
+            &[0x4d, 0xc7, 0xc2, 0x00, 0x00, 0x00, 0xf0],
+            10,
+            0xffff_ffff_f000_0000,
+        ),
+    ];
+    for (name, bytes, dst, expected) in cases {
+        let mut state = user_state();
+        for (index, value) in state.gpr.iter_mut().enumerate() {
+            *value = 0x1111_1111_1111_1111_u64.wrapping_mul(index as u64 + 1);
+        }
+        // The arithmetic flags are all set before: MOV must not touch any flag.
+        state.rflags |= ARITH;
+        let mut expected_state = state.clone();
+        expected_state.gpr[*dst] = *expected;
+        expected_state.rip = RIP + bytes.len() as u64;
+        assert_eq!(bytes.len(), 7, "{name}");
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{name}");
+        assert_eq!(state, expected_state, "{name}");
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS, "{name}");
+        assert_eq!(memory.accesses, 0, "{name}");
+    }
+}
+
+#[test]
+fn mov_r64_imm32_refusals_keep_the_state_when_a_later_form_is_forbidden() {
+    // The allowed C7 form retires, the memory form that follows stops the run before any write.
     let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let mut state = user_state();
-    // `xor %r10d, %r10d` first: it retires, then the REX.W C7 form stops the run.
-    let mut memory = Memory::code(&[0x45, 0x31, 0xd2, 0x48, 0xc7, 0xc7, 0x9c, 0xff, 0xff, 0xff]);
+    let mut memory = Memory::code(&[
+        0x48, 0xc7, 0xc3, 0x05, 0x00, 0x00, 0x00, 0x48, 0xc7, 0x00, 0x01, 0x00, 0x00, 0x00,
+    ]);
     let result = run3(&mut state, &mut memory, &set, 8).unwrap();
     assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xc7 });
     assert_eq!(result.instructions_executed, 1);
-    assert_eq!(state.rip, RIP + 3);
-    assert_eq!(state.gpr[Register::Rdi as usize], 0);
+    assert_eq!(state.rip, RIP + 7);
+    assert_eq!(state.gpr[Register::Rbx as usize], 5);
+    assert_eq!(memory.accesses, 0);
+}
+
+/// `/init` at `0x4000e5` up to the `openat` syscall at `0x4000fd` (`init.elf`, `objdump -d`):
+/// `movq $-0x64, %rdi; leaq 0x168(%rip), %rsi; xorl %edx, %edx; xorl %r10d, %r10d;
+/// movl $0x101, %eax`, then `syscall`.
+const INIT_OPENAT_PATH: [u8; 26] = [
+    0x48, 0xc7, 0xc7, 0x9c, 0xff, 0xff, 0xff, 0x48, 0x8d, 0x35, 0x68, 0x01, 0x00, 0x00, 0x31, 0xd2,
+    0x45, 0x31, 0xd2, 0xb8, 0x01, 0x01, 0x00, 0x00, 0x0f, 0x05,
+];
+
+#[test]
+fn init_path_after_mount_runs_in_ring3_up_to_the_openat_syscall() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let mut state = user_state();
+    state.gpr[Register::Rdx as usize] = 0xdead_beef;
+    state.gpr[10] = 0xdead_beef_dead_beef;
+    state.rflags |= ARITH;
+    let mut memory = Memory::code(&INIT_OPENAT_PATH);
+    let result = run3(&mut state, &mut memory, &set, 64).unwrap();
+    // Without the `with_syscall` member the loop stops at `SYSCALL` (`Unsupported 0x05`).
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x05 });
+    assert_eq!(result.instructions_executed, 5);
+    assert_eq!(state.rip, RIP + 24);
+    assert_eq!(state.gpr[Register::Rdi as usize], 0xffff_ffff_ffff_ff9c);
+    assert_eq!(state.gpr[Register::Rsi as usize], RIP + 14 + 0x168);
+    assert_eq!(state.gpr[Register::Rdx as usize], 0);
+    assert_eq!(state.gpr[10], 0);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x101);
+    assert_eq!(state.rflags & (CF | OF | SF), 0);
+    assert_eq!(state.rflags & (ZF | PF), ZF | PF);
+    assert_eq!(memory.accesses, 0);
 }
