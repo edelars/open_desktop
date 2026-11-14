@@ -65,9 +65,9 @@ final class MachineFrameSession {
             let changed = reader.pump(
                 timeoutMs: 100,
                 copy: { screen, pixels, frame in
-                    guard screen == 0 else { return } // the other screens are the remainder of S10-15
-                    uploaded = true
-                    presenter.upload(pixels: pixels, frame: frame)
+                    guard screen == 0 else { return false } // the other screens are the remainder of S10-15
+                    uploaded = presenter.upload(pixels: pixels, frame: frame)
+                    return uploaded
                 },
                 cursorCopy: { pixels, cursor in
                     cursorUploaded = true

@@ -129,7 +129,8 @@ package final class MetalPresenter {
     // MARK: Frame upload (reader thread)
 
     /// Reader thread, inside the seqlock window: copies the slot into a staging texture. The frame is not shown yet.
-    package func upload(pixels: UnsafeRawPointer, frame: AcceptedFrame) {
+    @discardableResult
+    package func upload(pixels: UnsafeRawPointer, frame: AcceptedFrame) -> Bool {
         lock.lock()
         var texture: MTLTexture?
         spares.removeAll { $0.width != frame.width || $0.height != frame.height } // other sizes are stale
@@ -144,7 +145,7 @@ package final class MetalPresenter {
             descriptor.storageMode = .shared
             texture = device.makeTexture(descriptor: descriptor)
         }
-        guard let texture else { return }
+        guard let texture else { return false }
         texture.replace(
             region: MTLRegionMake2D(0, 0, frame.width, frame.height),
             mipmapLevel: 0, withBytes: pixels, bytesPerRow: frame.stride)
@@ -153,6 +154,7 @@ package final class MetalPresenter {
         staging = texture
         frameUploadCount += 1
         lock.unlock()
+        return true
     }
 
     // MARK: Cursor (reader thread uploads, main thread draws)

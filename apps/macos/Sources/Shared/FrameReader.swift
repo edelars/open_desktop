@@ -92,7 +92,8 @@ public typealias CursorCopy = (_ pixels: UnsafeRawPointer, _ cursor: AcceptedCur
 
 /// Called between `g1` and `g2` (section 5.2, step 5) with the screen index, a pointer to `stride * height` bytes of the
 /// slot and the frame. The copy must go to private storage that is not shown until the reader accepts the frame.
-public typealias FrameCopy = (_ screen: Int, _ pixels: UnsafeRawPointer, _ frame: AcceptedFrame) -> Void
+/// Returns false when the consumer could not stage the frame; that generation is then left unaccepted.
+public typealias FrameCopy = (_ screen: Int, _ pixels: UnsafeRawPointer, _ frame: AcceptedFrame) -> Bool
 
 private struct ProtocolFailure: Error {
     let reason: String
@@ -523,7 +524,7 @@ public final class ScreenReader {
     // MARK: Slot read (section 5.2)
 
     func readSlot(_ notification: (generation: UInt64, modeChangeCount: UInt64, slot: Int),
-                  copy: (UnsafeRawPointer, AcceptedFrame) -> Void) throws {
+                  copy: (UnsafeRawPointer, AcceptedFrame) -> Bool) throws {
         guard let header = headerMap, let data = dataMap, let mode = lastMode else { return }
         let slot = notification.slot
         let n = notification.generation
@@ -568,12 +569,13 @@ public final class ScreenReader {
             && mode.active && width == mode.width && height == mode.height
 
         var accepted: AcceptedFrame?
+        var copied = false
         if valid {
             let frame = AcceptedFrame(
                 generation: g1, modeChangeCount: mcc, width: width, height: height, stride: stride)
             // 5. the copy uses only the local values; the frame is not shown yet.
             let slotBase = UnsafeRawPointer(data + (ScreenReader.slotsOffset - ScreenReader.granule) + slot * slotSize)
-            copy(slotBase, frame)
+            copied = copy(slotBase, frame)
             accepted = frame
         }
         // 6. fence(acquire), then g2 with a relaxed load.
@@ -583,6 +585,7 @@ public final class ScreenReader {
         guard let frame = accepted else {
             throw ProtocolFailure("slot descriptor violates the protocol while the generation is stable")
         }
+        guard copied else { return } // The consumer could not stage it; do not claim this generation as shown.
         lastFrame = frame
         acceptedCount += 1
         shownOnce = true
