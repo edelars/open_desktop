@@ -555,6 +555,9 @@ pub struct LinuxStopRecord {
     /// S4-39c: instructions retired in CPL3 (through the CPL3 entry); part of `retired`. `0`
     /// without `user_mode` and while CPL3 was not reached.
     pub cpl3_retired: u64,
+    /// S4-39f: the last system calls of a user-mode run (a ring of
+    /// [`SYSCALL_JOURNAL_CAPACITY`] entries); empty without `user_mode`.
+    pub syscall_journal: SyscallJournal,
     /// S4-38L5c: how many guest `#PF` exceptions the CPL0 set board delivered through the guest
     /// IDT in this run (0 on the `paged_probe` path). A delivery is not a retired instruction.
     pub exceptions_delivered: u64,
@@ -573,6 +576,61 @@ pub struct LinuxStopRecord {
     /// ([`LinuxCpl0SetMembers::diagnostic_past_c7`]): the CPUID boundary was off, so the result is
     /// diagnostic only and is NOT counted. `false` on every other run.
     pub diagnostic_past_c7: bool,
+}
+
+/// S4-39f: how many system calls the journal of a stop record keeps (the last ones).
+pub const SYSCALL_JOURNAL_CAPACITY: usize = 32;
+
+/// S4-39f: one system call of a user-mode run: the number (RAX at `SYSCALL`), the return address
+/// (RCX at `SYSCALL`) and the result (RAX at the `SYSRETQ` that returned; `None` while the call has
+/// not returned, for example at the stop).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SyscallJournalEntry {
+    pub nr: u64,
+    pub rip: u64,
+    pub rax_return: Option<u64>,
+}
+
+/// S4-39f: the ring of the last [`SYSCALL_JOURNAL_CAPACITY`] system calls of a user-mode run, oldest
+/// first, with the totals. Written at `SYSCALL` (entry) and `SYSRETQ` (exit) only.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SyscallJournal {
+    pub entries: std::collections::VecDeque<SyscallJournalEntry>,
+    /// `SYSCALL` instructions retired in the run (not capped).
+    pub entered: u64,
+    /// `SYSRETQ` instructions retired in the run (not capped).
+    pub returned: u64,
+}
+
+impl SyscallJournal {
+    pub(crate) fn record(&mut self, event: crate::paged_memory_adapter::SyscallEvent) {
+        use crate::paged_memory_adapter::SyscallEvent;
+        match event {
+            SyscallEvent::Enter { nr, rip } => {
+                if self.entries.len() == SYSCALL_JOURNAL_CAPACITY {
+                    self.entries.pop_front();
+                }
+                self.entries.push_back(SyscallJournalEntry {
+                    nr,
+                    rip,
+                    rax_return: None,
+                });
+                self.entered += 1;
+            }
+            SyscallEvent::Exit { rax } => {
+                // The return belongs to the latest call that has not returned yet.
+                if let Some(entry) = self
+                    .entries
+                    .iter_mut()
+                    .rev()
+                    .find(|entry| entry.rax_return.is_none())
+                {
+                    entry.rax_return = Some(rax);
+                }
+                self.returned += 1;
+            }
+        }
+    }
 }
 
 fn exit_kind(exit: &PagedProbeExit) -> &'static str {
@@ -624,6 +682,7 @@ pub fn run_linux_direct_board(
             user_entry: None,
             user_mode: false,
             cpl3_retired: 0,
+            syscall_journal: SyscallJournal::default(),
             exceptions_delivered: 0,
             irq: IrqCounters::default(),
             diagnostic_past_c7: false,
@@ -641,6 +700,7 @@ struct SetExtras<'a> {
     user_entry: Option<IretqUserEntry>,
     user_mode: bool,
     cpl3_retired: u64,
+    syscall_journal: SyscallJournal,
     exceptions_delivered: u64,
     irq: IrqCounters,
     diagnostic_past_c7: bool,
@@ -723,6 +783,7 @@ fn stop_record(
         user_entry: extras.user_entry,
         user_mode: extras.user_mode,
         cpl3_retired: extras.cpl3_retired,
+        syscall_journal: extras.syscall_journal,
         exceptions_delivered: extras.exceptions_delivered,
         irqs_delivered: extras.irq.irqs_delivered,
         irq0_edges: extras.irq.irq0_edges,
@@ -1184,6 +1245,7 @@ fn run_linux_direct_board_set_with(
             user_entry: report.user_entry,
             user_mode,
             cpl3_retired: report.cpl3_retired,
+            syscall_journal: report.syscall_journal,
             exceptions_delivered: report.exceptions_delivered,
             irq: report.irq,
             diagnostic_past_c7: members.diagnostic_past_c7,
@@ -11077,6 +11139,92 @@ mod tests {
             &record.set_members[record.set_members.len() - 2..],
             ["user_mode", "syscall"]
         );
+    }
+
+    /// S4-39f: user `mov eax, 0x53; syscall; mov eax, 7; syscall`; the kernel at LSTAR is
+    /// `mov eax, 0x2a; sysretq`, so every call returns 0x2a to the instruction after its `syscall`.
+    fn syscall_round_trip_board() -> (LinuxDirectBoot, Vec<u8>) {
+        let (mut boot, file) = user_mode_board(
+            &[
+                0xb8, 0x53, 0, 0, 0, 0x0f, 0x05, 0xb8, 0x07, 0, 0, 0, 0x0f, 0x05,
+            ],
+            true,
+        );
+        write_phys(
+            &mut boot,
+            SYSCALL_KERNEL_AT,
+            &[0xb8, 0x2a, 0, 0, 0, 0x48, 0x0f, 0x07],
+        );
+        (boot, file)
+    }
+
+    #[test]
+    fn user_mode_facade_sysretq_returns_to_cpl3_and_the_journal_records_both_ends() {
+        // `IRETQ`, then two rounds of user `mov`, `syscall`, kernel `mov`, `sysretq`: 1 + 2 * 4 = 9.
+        let (mut boot, file) = syscall_round_trip_board();
+        let record = run_syscall_facade(&mut boot, &file, 9, 0xd01);
+        assert_eq!(record.exit_kind, "budget_exhausted", "{record:?}");
+        assert_eq!((record.retired, record.cpl3_retired, record.cpl), (9, 4, 3));
+        // Back at the user instruction after the second `syscall`, RSP untouched, RAX the result,
+        // RFLAGS the ones SYSCALL saved in R11 (IF).
+        assert_eq!(record.rip, USER_CODE_AT + 14);
+        assert_eq!(record.gpr[Register::Rax as usize], 0x2a);
+        assert_eq!(record.gpr[Register::Rsp as usize], ENTRY + 0x800);
+        assert_eq!(record.rflags, 0x202);
+        let state = boot.board.state();
+        assert_eq!(
+            (state.cs_selector, state.ss_selector),
+            (Some(0x33), Some(0x2b))
+        );
+        let journal = &record.syscall_journal;
+        assert_eq!((journal.entered, journal.returned), (2, 2));
+        assert_eq!(
+            journal.entries.iter().copied().collect::<Vec<_>>(),
+            [
+                SyscallJournalEntry {
+                    nr: 0x53,
+                    rip: USER_CODE_AT + 7,
+                    rax_return: Some(0x2a),
+                },
+                SyscallJournalEntry {
+                    nr: 7,
+                    rip: USER_CODE_AT + 14,
+                    rax_return: Some(0x2a),
+                },
+            ]
+        );
+        // A run that stops inside the second call has the entry without a result.
+        let (mut boot, file) = syscall_round_trip_board();
+        let record = run_syscall_facade(&mut boot, &file, 8, 0xd01);
+        assert_eq!(record.cpl, 0, "{record:?}");
+        let journal = &record.syscall_journal;
+        assert_eq!((journal.entered, journal.returned), (2, 1));
+        assert_eq!(journal.entries.len(), 2);
+        assert_eq!(journal.entries[1].nr, 7);
+        assert_eq!(journal.entries[1].rax_return, None);
+        // Without the user mode there is no journal.
+        let (mut boot, file) = boot_with_entry(&[0x90]);
+        let record = run_set_facade(&mut boot, &file, 1, LinuxCpl0SetMembers::minimal());
+        assert_eq!(record.syscall_journal, SyscallJournal::default());
+    }
+
+    #[test]
+    fn syscall_journal_is_a_ring_and_an_iretq_return_is_not_a_system_call() {
+        let mut journal = SyscallJournal::default();
+        for nr in 0..(SYSCALL_JOURNAL_CAPACITY as u64 + 3) {
+            journal.record(crate::paged_memory_adapter::SyscallEvent::Enter { nr, rip: nr + 1 });
+            journal.record(crate::paged_memory_adapter::SyscallEvent::Exit { rax: nr + 2 });
+        }
+        assert_eq!(journal.entries.len(), SYSCALL_JOURNAL_CAPACITY);
+        assert_eq!(journal.entered, SYSCALL_JOURNAL_CAPACITY as u64 + 3);
+        assert_eq!(journal.returned, journal.entered);
+        assert_eq!(journal.entries[0].nr, 3);
+        assert_eq!(journal.entries[0].rax_return, Some(5));
+        // The committed `IRETQ` into CPL3 of a user-mode run (no `SYSRETQ`) leaves no entry.
+        let (mut boot, file) = user_mode_board(&[0xb8, 0x53, 0, 0, 0], true);
+        let record = run_syscall_facade(&mut boot, &file, 2, 0xd01);
+        assert_eq!(record.cpl3_retired, 1);
+        assert_eq!(record.syscall_journal, SyscallJournal::default());
     }
 
     #[test]

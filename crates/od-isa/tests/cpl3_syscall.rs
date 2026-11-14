@@ -657,3 +657,370 @@ fn an_msr_profile_does_not_change_the_instruction() {
     assert_eq!(result.instructions_executed, 1);
     assert_eq!(state.rip, LSTAR);
 }
+
+// ---------------------------------------------------------------------------------------------
+// S4-39f: SYSRETQ (`48 0F 07`) from CPL0 back to CPL3, and ISSUE-087 (the CPL3 loop leaves at the
+// first CPL change). Semantics from memory of the SDM, see CPU_CONTRACT S4-39f.
+// ---------------------------------------------------------------------------------------------
+
+const SYSRETQ: [u8; 3] = [0x48, 0x0f, 0x07];
+/// The user return address of the first `/init` system call and its RFLAGS (IF, bit 1).
+const USER_RIP: u64 = 0x40_00c3;
+const USER_RFLAGS: u64 = 0x202;
+
+/// The kernel-side state at the SYSRET: CS 0x10 / SS 0x18 (DPL 0), the user stack in RSP.
+fn kernel_state() -> LongModeState {
+    let mut state = user_state();
+    state.cs_selector = Some(0x10);
+    state.cs_cache = Some(CodeSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0x9b,
+        flags: 0xa,
+    });
+    state.ss_selector = Some(0x18);
+    state.ss_cache = Some(DataSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0x93,
+        flags: 0xc,
+    });
+    state.rflags = 2;
+    state.gpr[Register::Rcx as usize] = USER_RIP;
+    state.gpr[Register::R11 as usize] = USER_RFLAGS;
+    state
+}
+
+fn run0(
+    state: &mut LongModeState,
+    memory: &mut Memory,
+    set: &Cpl0ProfileSet<'_>,
+    budget: u64,
+) -> Result<Cpl0ProfileSetResult, Cpl0ProfileSetInputError> {
+    run_with_cpl0_profile_set(
+        state,
+        memory,
+        config(PrivilegeLevel::Ring0, budget),
+        2,
+        set,
+        None,
+        || false,
+    )
+}
+
+#[test]
+fn sysret_returns_to_cpl3_through_star_without_touching_rsp() {
+    let cells = Cells::linux();
+    let set = cells.set();
+    let mut state = kernel_state();
+    let before = state.clone();
+    let mut memory = Memory::code(&SYSRETQ);
+    let result = run0(&mut state, &mut memory, &set, 5).unwrap();
+    // The retired SYSRET ends the CPL0 run before any fetch, like a committed IRETQ to CPL3.
+    assert_eq!(
+        result.exit,
+        Cpl0ProfileSetExit::UserModeEntered(od_isa::IretqUserEntry {
+            rip: USER_RIP,
+            cs: 0x33,
+            rflags: USER_RFLAGS,
+            rsp: 0x7ffc_886f_cfa0,
+            ss: 0x2b,
+        })
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, USER_RIP);
+    assert_eq!(state.rflags, USER_RFLAGS);
+    // CS = (STAR[63:48] + 16) | 3, SS = (STAR[63:48] + 8) | 3: 0x23 + 16 = 0x33, 0x23 + 8 = 0x2b.
+    assert_eq!(state.cs_selector, Some(0x33));
+    assert_eq!(state.ss_selector, Some(0x2b));
+    assert_eq!(
+        state.cs_cache,
+        Some(CodeSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0xfb,
+            flags: 0xa,
+        })
+    );
+    assert_eq!(
+        state.ss_cache,
+        Some(DataSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0xf3,
+            flags: 0xc,
+        })
+    );
+    assert!(!state.ss_unusable);
+    // RSP, RCX, R11 and the rest stay.
+    assert_eq!(state.gpr, before.gpr);
+    assert_eq!(state.gpr[Register::Rsp as usize], 0x7ffc_886f_cfa0);
+    assert_eq!(memory.accesses, 0);
+    assert_eq!(cells.snapshot(), [EFER_SCE, STAR, LSTAR, FMASK]);
+    // The state is one the CPL3 entry admits.
+    let again = run_with_cpl3_profile_set(
+        &mut state,
+        &mut Memory::code(&[]),
+        config(PrivilegeLevel::Ring3, 0),
+        2,
+        &set,
+        None,
+        || false,
+    );
+    assert!(again.is_ok(), "{again:?}");
+}
+
+#[test]
+fn sysret_loads_rflags_through_the_sdm_mask_from_r11() {
+    // The SDM mask from memory: RFLAGS = (R11 and 0x3C7FD7) | 2. TF, VIF and VIP are inside it
+    // but not modelled (refused below), so they are cleared in the input here.
+    let all_but_unmodelled = u64::MAX & !((1 << 8) | (1 << 19) | (1 << 20));
+    let cells = Cells::linux();
+    let set = cells.set();
+    let mut state = kernel_state();
+    // RF (bit 16) and VM (bit 17): VM is refused, so only RF is set; the high half is dropped.
+    state.gpr[Register::R11 as usize] = (all_but_unmodelled & !(1 << 17)) | (1 << 16);
+    let r11 = state.gpr[Register::R11 as usize];
+    let mut memory = Memory::code(&SYSRETQ);
+    let result = run0(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rflags, (r11 & 0x3c_7fd7) | 2);
+    assert_eq!(state.rflags & (1 << 16), 0);
+    assert_eq!(state.rflags & (1 << 17), 0);
+    assert_eq!(state.rflags >> 32, 0);
+    // IF comes from R11, not from the kernel's value (IF clear before).
+    assert_ne!(state.rflags & (1 << 9), 0);
+    // The loaded status flags are defined.
+    assert_eq!(result.rflags_defined, od_isa::POPFQ_INTEGER_FLAGS | 2);
+}
+
+#[test]
+fn sysret_refuses_unmodelled_r11_flags_and_selectors_without_a_change() {
+    for r11 in [
+        USER_RFLAGS | (1 << 8),  // TF
+        USER_RFLAGS | (1 << 17), // VM
+        USER_RFLAGS | (1 << 19), // VIF
+        USER_RFLAGS | (1 << 20), // VIP
+    ] {
+        let cells = Cells::linux();
+        let set = cells.set();
+        let mut state = kernel_state();
+        state.gpr[Register::R11 as usize] = r11;
+        let before = state.clone();
+        let mut memory = Memory::code(&SYSRETQ);
+        let result = run0(&mut state, &mut memory, &set, 5).unwrap();
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode: 0x07 }),
+            "R11 {r11:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+    // STAR[63:48] + 16 overflows the selector.
+    let cells = Cells::linux();
+    cells.star.set(0xfff8_0010_0000_0000);
+    let set = cells.set();
+    let mut state = kernel_state();
+    let before = state.clone();
+    let result = run0(&mut state, &mut Memory::code(&SYSRETQ), &set, 5).unwrap();
+    assert_eq!(
+        result.exit,
+        Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode: 0x07 })
+    );
+    assert_eq!(state, before);
+}
+
+#[test]
+fn sysret_without_rex_w_or_with_any_other_prefix_is_refused() {
+    let cases: [&[u8]; 9] = [
+        &[0x0f, 0x07], // SYSRETL
+        &[0x40, 0x0f, 0x07],
+        &[0x49, 0x0f, 0x07],
+        &[0x66, 0x48, 0x0f, 0x07],
+        &[0x48, 0x66, 0x0f, 0x07],
+        &[0x67, 0x48, 0x0f, 0x07],
+        &[0xf0, 0x48, 0x0f, 0x07],
+        &[0xf3, 0x48, 0x0f, 0x07],
+        &[0x2e, 0x48, 0x0f, 0x07],
+    ];
+    for code in cases {
+        let cells = Cells::linux();
+        let set = cells.set();
+        let mut state = kernel_state();
+        let before = state.clone();
+        let result = run0(&mut state, &mut Memory::code(code), &set, 5).unwrap();
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode: 0x07 }),
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
+#[test]
+fn sysret_without_the_member_keeps_its_refusal() {
+    let cells = Cells::linux();
+    let set = cells.cells_only();
+    let mut state = kernel_state();
+    let before = state.clone();
+    let result = run0(&mut state, &mut Memory::code(&SYSRETQ), &set, 5).unwrap();
+    assert_eq!(
+        result.exit,
+        Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode: 0x07 })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn sysret_with_sce_clear_is_ud_without_a_change() {
+    for efer in [0xd00, 0x500, 0] {
+        let cells = Cells::linux();
+        cells.efer.set(efer);
+        let set = cells.set();
+        let mut state = kernel_state();
+        let before = state.clone();
+        let result = run0(&mut state, &mut Memory::code(&SYSRETQ), &set, 5).unwrap();
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            })),
+            "EFER {efer:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(cells.snapshot(), [efer, STAR, LSTAR, FMASK]);
+    }
+}
+
+#[test]
+fn sysret_with_a_non_canonical_rcx_is_gp0_without_a_change() {
+    let cells = Cells::linux();
+    let set = cells.set();
+    let mut state = kernel_state();
+    state.gpr[Register::Rcx as usize] = 0x0000_8000_0000_0000;
+    let before = state.clone();
+    let result = run0(&mut state, &mut Memory::code(&SYSRETQ), &set, 5).unwrap();
+    assert_eq!(
+        result.exit,
+        Cpl0ProfileSetExit::Run(RunExit::Fault(ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None,
+        }))
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    // A canonical high-half RCX is taken.
+    let mut state = kernel_state();
+    state.gpr[Register::Rcx as usize] = 0xffff_8000_0000_1000;
+    let result = run0(&mut state, &mut Memory::code(&SYSRETQ), &set, 5).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, 0xffff_8000_0000_1000);
+}
+
+#[test]
+fn sysret_at_cpl3_keeps_its_refusal() {
+    let cells = Cells::linux();
+    let set = cells.set();
+    let mut state = user_state();
+    state.gpr[Register::Rcx as usize] = USER_RIP;
+    state.gpr[Register::R11 as usize] = USER_RFLAGS;
+    let before = state.clone();
+    let result = run3(&mut state, &mut Memory::code(&SYSRETQ), &set, 5, 2).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x07 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn only_the_exact_rex_w_form_decodes_as_sysret() {
+    let decode_bytes = |bytes: &[u8]| {
+        let mut memory = Memory::code(bytes);
+        decode(&mut memory, RIP, AccessContext::default())
+    };
+    let instruction = decode_bytes(&SYSRETQ).unwrap();
+    assert_eq!(instruction.operation, Operation::Sysret);
+    assert_eq!(instruction.length, 3);
+    for code in [
+        &[0x0f, 0x07][..],
+        &[0x40, 0x0f, 0x07],
+        &[0x49, 0x0f, 0x07],
+        &[0x66, 0x48, 0x0f, 0x07],
+        &[0xf0, 0x48, 0x0f, 0x07],
+    ] {
+        assert!(
+            matches!(decode_bytes(code), Err(DecodeError::Unsupported { .. })),
+            "{code:02x?}"
+        );
+    }
+}
+
+#[test]
+fn the_cpl3_loop_stops_at_the_cpl_change_of_syscall() {
+    // ISSUE-087: `syscall` enters the kernel at LSTAR (here a low canonical address with a
+    // `mov $1, %eax` on it). With budget 3 the second and third instructions must not run in
+    // Ring3: the run ends right after the SYSCALL, with a Run exit and no Unsupported.
+    let cells = Cells::linux();
+    cells.lstar.set(RIP + 2);
+    let set = cells.set();
+    let mut state = user_state();
+    let mut memory = Memory::code(&[0x0f, 0x05, 0xb8, 0x01, 0, 0, 0, 0x90]);
+    let result = run3(&mut state, &mut memory, &set, 3, 2).unwrap();
+    assert_eq!(exit(&result), &RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 2);
+    assert_eq!(state.cs_selector, Some(0x10));
+    assert_eq!(state.gpr[Register::Rcx as usize], RIP + 2);
+    // The kernel's `mov $1, %eax` did not execute.
+    assert_eq!(
+        state.gpr[Register::Rax as usize],
+        0x1111_0000_0000_0000 + Register::Rax as u64
+    );
+    // With the budget spent by the SYSCALL itself the exit stays the budget one (S4-39e).
+    let mut state = user_state();
+    let result = run3(&mut state, &mut memory, &set, 1, 2).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+}
+
+#[test]
+fn syscall_then_sysret_round_trips_to_cpl3_at_rcx() {
+    // User: `syscall` at RIP; the kernel: SYSRETQ at RIP + 0x20 (LSTAR); back at RCX = RIP + 2:
+    // `mov $7, %eax`.
+    let cells = Cells::linux();
+    cells.lstar.set(RIP + 0x20);
+    let set = cells.set();
+    let mut code = vec![0u8; 0x23];
+    code[0..2].copy_from_slice(&SYSCALL);
+    code[2..7].copy_from_slice(&[0xb8, 7, 0, 0, 0]);
+    code[0x20..0x23].copy_from_slice(&SYSRETQ);
+    let mut memory = Memory::code(&code);
+    let mut state = user_state();
+    let user_rflags = state.rflags;
+    let rsp = state.gpr[Register::Rsp as usize];
+    let first = run3(&mut state, &mut memory, &set, 10, 2).unwrap();
+    assert_eq!(exit(&first), &RunExit::StopAddress);
+    assert_eq!(state.cs_selector, Some(0x10));
+    assert_eq!(state.rip, RIP + 0x20);
+    let second = run0(&mut state, &mut memory, &set, 10).unwrap();
+    assert!(
+        matches!(second.exit, Cpl0ProfileSetExit::UserModeEntered(_)),
+        "{second:?}"
+    );
+    // CPL3 again, RIP = RCX (the instruction after `syscall`), RFLAGS = the saved ones (R11).
+    assert_eq!(state.cs_selector, Some(0x33));
+    assert_eq!(state.ss_selector, Some(0x2b));
+    assert_eq!(state.rip, RIP + 2);
+    assert_eq!(state.rflags, (user_rflags & 0x3c_7fd7) | 2);
+    assert_eq!(state.gpr[Register::Rsp as usize], rsp);
+    let third = run3(&mut state, &mut memory, &set, 1, 2).unwrap();
+    assert_eq!(exit(&third), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.gpr[Register::Rax as usize], 7);
+    assert_eq!(state.rip, RIP + 7);
+}

@@ -650,6 +650,23 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
     if record.user_mode {
         stop["user_mode"] = json!(true);
         stop["cpl3_retired"] = json!(record.cpl3_retired);
+        // S4-39f: the last system calls (`SYSCALL` nr / return address, `SYSRETQ` result); an
+        // entry that has not returned has `rax_return: null`. Only under `--user-mode`.
+        stop["syscall_journal"] = json!({
+            "capacity": od_machine::SYSCALL_JOURNAL_CAPACITY,
+            "entered": record.syscall_journal.entered,
+            "returned": record.syscall_journal.returned,
+            "entries": record
+                .syscall_journal
+                .entries
+                .iter()
+                .map(|entry| json!({
+                    "nr": entry.nr,
+                    "rip": hex64(entry.rip),
+                    "rax_return": entry.rax_return.map(hex64),
+                }))
+                .collect::<Vec<_>>(),
+        });
     }
     // S4-38L8b: the counters of the board interrupt hook; all 0 while the board has no source.
     stop["irqs_delivered"] = json!(record.irqs_delivered);
@@ -2030,6 +2047,16 @@ mod tests {
         assert_eq!(stop["cpl"], 3);
         assert_eq!(stop["user_mode"], true);
         assert_eq!(stop["cpl3_retired"], 0);
+        // S4-39f: the syscall journal exists under `--user-mode` (empty here: no system call).
+        assert_eq!(stop["syscall_journal"]["entered"], 0);
+        assert_eq!(stop["syscall_journal"]["returned"], 0);
+        assert_eq!(stop["syscall_journal"]["capacity"], 32);
+        assert!(
+            stop["syscall_journal"]["entries"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(stop["rip"], "0x1000");
         assert_eq!(stop["retired"], 13, "{value:#}");
         assert!(stop.get("user_entry").is_none(), "{value:#}");
@@ -2054,6 +2081,7 @@ mod tests {
         assert_eq!(stop["cpl"], 0);
         assert!(stop.get("user_mode").is_none(), "{value:#}");
         assert!(stop.get("cpl3_retired").is_none(), "{value:#}");
+        assert!(stop.get("syscall_journal").is_none(), "{value:#}");
         assert!(
             !stop["set_members"]
                 .as_array()
