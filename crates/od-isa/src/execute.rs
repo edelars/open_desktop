@@ -21202,7 +21202,8 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// S4-39f12: `REX.W FF /0` (INC r/m64, `incq %rbx` = `48 ff c3` of `/init` at `0x40017f`), register
 /// form only (mod = 11). The CPL0 `Operation::Arithmetic { kind: Inc, src: Immediate(1) }` is
 /// reused: the 64-bit register is written whole, OF/SF/ZF/AF/PF are those of `reg + 1` and CF is
-/// kept. Without REX.W (dword INC), the memory form, `FF /1` (DEC) and `FF /2..7` stay outside
+/// kept. Without REX.W (dword INC), the memory form and `FF /2..7` stay outside; `FF /1` (DEC r/m32,
+/// register form) joined in S4-39f15
 /// (`FE` has opcode byte `0xfe` and never matches).
 ///
 /// S4-39f13: the short `EB cb` (JMP rel8, `eb c1` = `jmp 0x400145` of `/init` at `0x400182`)
