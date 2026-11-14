@@ -408,7 +408,10 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
-        if matches!(name, "--run" | "--set-cpl0" | "--diagnostic-past-c7") {
+        if matches!(
+            name,
+            "--run" | "--set-cpl0" | "--diagnostic-past-c7" | "--user-mode"
+        ) {
             forwarded.push(name.to_string());
             index += 1;
             continue;
@@ -1414,6 +1417,43 @@ mod tests {
             .unwrap();
         wrong_scenario[marker] = "B_FILE".into();
         assert!(parse_series_args(&wrong_scenario).is_err());
+    }
+
+    #[test]
+    fn series_cli_forwards_user_mode_as_a_flag_without_consuming_the_next_option() {
+        let args = vec![
+            "--test-runs".into(),
+            "1".into(),
+            "--series-id".into(),
+            "user-mode01".into(),
+            "--scenario-id".into(),
+            "stage4-init-nonce".into(),
+            "--expected-stop-kind".into(),
+            "budget_exhausted".into(),
+            "--out".into(),
+            "work/stage5/user-mode01/series.json".into(),
+            "--run".into(),
+            "--set-cpl0".into(),
+            "--user-mode".into(),
+            "--cpuid-profile".into(),
+            "stage4a".into(),
+            "--budget".into(),
+            "3000000000".into(),
+        ];
+
+        let parsed = parse_series_args(&args).unwrap();
+        assert!(
+            parsed
+                .forwarded
+                .iter()
+                .any(|argument| argument == "--user-mode")
+        );
+        assert!(
+            parsed
+                .forwarded
+                .windows(2)
+                .any(|pair| pair == ["--cpuid-profile", "stage4a"])
+        );
     }
 
     #[test]
