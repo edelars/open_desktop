@@ -1,6 +1,6 @@
 # Этап 6. Несколько CPU и модель памяти x86 — пошаговый план реализации
 
-Статус: **этап в работе**. S6-04…09 приняты; S6-10 и зависимые задачи остаются заблокированными указанными ниже предусловиями. Исходное состояние плана проверено 2026-11-13 на `main`, коммит `8625699`. Наличие каталога, пустого модуля или успешной сборки само по себе не закрывает задачу.
+Статус: **этап в работе**. S6-00…09 и S6-26 приняты после независимого ревью; S6-10 и зависимые задачи остаются заблокированными указанными ниже предусловиями. Исходное состояние плана проверено 2026-11-13 на `main`, коммит `8625699`. Наличие каталога, пустого модуля или успешной сборки само по себе не закрывает задачу.
 
 Нормативный объём — [этап 6 дорожной карты](../ROADMAP.md#этап-6-несколько-cpu-и-модель-памяти-x86). Обязательные границы задают [архитектура](../ARCHITECTURE.md) (раздел 5: «JIT runtime», «Память и MMU», «Планирование и устройства»; раздел о снимках), [карта проекта](../PROJECT_LAYOUT.md), [контракт CPU](../specs/CPU_CONTRACT.md), [контракт машины](../specs/MACHINE_CONTRACT.md), [контракт JIT](../specs/JIT_CONTRACT.md), [виртуальная плата](../specs/VIRTUAL_BOARD.md) и [политика зависимостей](../policies/DEPENDENCIES.md). Это план выполнения, а не вторая архитектура и не спецификация: спецификации создаются отдельными задачами ниже.
 
@@ -282,7 +282,7 @@
 
 ### S6-00. Зафиксировать область, решения владельца и завести отчёт
 
-- [ ] Принято после архитектурного ревью.
+- [x] Принято после архитектурного ревью.
 - **Текущий статус (2026-11-13):** принято после независимого ревью `gpt-6.1-sol` / `high`; документационный срез, код машины не менялся. Коммит [`38f4c81`](https://github.com/edelars/open_desktop/commit/38f4c81); [отчёт S6](../reports/STAGE_6_REPORT.md#1-сводка-задач). `check_layout.py`: 46 ошибок на базовом `7f5546c`, 45 после среза, новых нет; локальные ссылки и `git diff --check` чисты.
 - **Где:** `docs/reports/STAGE_6_REPORT.md` (новый), раздел 11 этого плана, `docs/PROJECT_LAYOUT.md`, `docs/specs/VIRTUAL_BOARD.md` (строки «CPU / vCPU», «Прерывания и таймер», «Не включено»), `docs/specs/VM_STATE.md` (строки «Архитектурный CPU state» и «vCPU lifecycle»).
 - **Сделать:**
@@ -298,7 +298,7 @@
 
 ### S6-01. Написать методику проверки
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью.
 - **Текущий статус (2026-11-13):** методика S6-01 принята после независимого ревью `gpt-6.1-sol` / `high` и коммита [`5183584`](https://github.com/edelars/open_desktop/commit/5183584); см. [методику](../testing/SMP.md) и [отчёт](../reports/STAGE_6_REPORT.md#1-сводка-задач). Numeric budgets остаются provisional для владельцев, которые их ещё не измерили; S6-05 уже измерила и зафиксировала ceiling в 1,000,000 complete schedules и seeds 0…9,999 (см. данные в отчёте). S6-19 использует принятые значения в режиме чередования, S6-08/09 калибруют native/physical runs, S6-36 владеет parallel-mode budget, S6-34/35/37 калибруют соответствующие сценарии. Эти downstream measurements не блокируют приёмку методики S6-01.
 - **Где:** `docs/testing/SMP.md` (новый).
 - **Сделать:**
@@ -314,7 +314,7 @@
 
 ### S6-02. Установить факты о старте дополнительных процессоров
 
-- [ ] Принято после архитектурного ревью.
+- [x] Принято после архитектурного ревью.
 - Текущий статус: частичный evidence-срез по Linux 7.0.0-38.38 записывает provenance, MADT wakeup selection, INIT/SIPI, APIC destination/shorthand, topology CPUID и статические NMI paths в [`STAGE_6_REPORT.md`](../reports/STAGE_6_REPORT.md) и [`ap-start-inventory.json`](../reports/data/stage6/ap-start-inventory.json). Полный linked-byte inventory из staged image повторно декодирован на физическом x86; все 149 trampoline rows и обе common-entry инструкции совпали, независимые evidence и архитектурное ревью пройдены. Для reference CPU profile `OpenDesktop` с APIC=1/X2APIC=0 статический выбор Linux на target 2/4 vCPU — physical-flat xAPIC и native INIT/SIPI; текущая исполняемая Stage4A плата всё ещё однопроцессорная и APIC-clear. S6-02 принят только как статический target-path evidence; runtime и AP execution не заявляются. Windows CPU-06 остаётся гипотезой до трассы этапа 8, как разрешает шаг 5 этой задачи.
 - **Где:** раздел в `docs/reports/STAGE_6_REPORT.md`, данные `docs/reports/data/stage6/ap-start-inventory.json`.
 - **Сделать:**
@@ -330,7 +330,7 @@
 
 ### S6-03. Описать контракт нескольких процессоров
 
-- [ ] Принято после архитектурного ревью.
+- [x] Принято после архитектурного ревью.
 - Текущий статус: [`SMP_CONTRACT.md`](../specs/SMP_CONTRACT.md) прошёл независимое архитектурное ревью `gpt-6.1-sol/high`. Контракт содержит vCPU state transitions, bounded xAPIC ICR matrix с Linux-required delivery и S6-12 Fixed shorthands (с сохранением S4-25c Self), INIT/SIPI state, IOAPIC/NMI, CPUID/MADT и границы остановки. Время явно открыто до принятия S4-22/S4-23; topology domains OpenDesktop переданы S6-18. Реализация SMP не заявляется.
 - **Где:** `docs/specs/SMP_CONTRACT.md` (новый); ссылки из `MACHINE_CONTRACT.md` и `VIRTUAL_BOARD.md`.
 - **Сделать:**
@@ -352,7 +352,7 @@
 
 ### S6-04. Описать контракт модели памяти и владения гостевой RAM
 
-- [ ] Принято после архитектурного ревью.
+- [x] Принято после архитектурного ревью.
 - **Текущий статус (2026-11-13):** документный срез прошёл независимое архитектурное ревью; коммит [`4d65fbc`](https://github.com/edelars/open_desktop/commit/4d65fbc); спецификация, проверки и границы реализации зафиксированы в [отчёте S6](../reports/STAGE_6_REPORT.md#1-сводка-задач). Реализацию и выбор host primitive этот срез не закрывает.
 - **Где:** `docs/specs/MEMORY_MODEL.md` (новый); ссылки из `CPU_CONTRACT.md` и `ARCHITECTURE.md`.
 - **Сделать:**
@@ -370,7 +370,7 @@
 
 ### S6-05. Собрать корпус litmus-тестов и генератор
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью.
 - **Статус (2026-11-13):** принято после независимого ревью `gpt-6.1-sol/high` без оставшихся замечаний. Приняты 15 конечных fixtures плюс один JSON formula counter group, exact instruction/event validation и measured gates для 1,000,000 complete schedules и seeds `0…9,999`; результаты — в [отчёте S6-05](../reports/STAGE_6_REPORT.md#s6-05--accepted-litmus-corpus-and-calibration).
 - **Где:** `tools/build/build_stage6_litmus.py` и `tools/build/test_build_stage6_litmus.py` (новые, только стандартная библиотека Python), `tests/fixtures/guest/stage6/litmus/` с `README.md`.
 - **Сделать:**
@@ -385,7 +385,7 @@
 
 ### S6-06. Измерить кандидатов host-примитивов
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью.
 - **Статус (2026-11-13):** принято после независимого ревью `gpt-6.1-sol/high` без оставшихся замечаний. Полная ordinary/RMW матрица измерена на Apple M3 Max с 128-байтовыми cache lines; выбор и данные — в [отчёте S6-06](../reports/STAGE_6_REPORT.md#s6-06--accepted-host-primitive-measurements) и [raw summary](../reports/data/stage6/s6-06-host-summary.md). Выбор ограничен достаточными кандидатами S6-04; реализации в коде машины ещё нет.
 - **Где:** новый модуль в `tools/bench/src/` (перед началом прочитать `tools/AGENTS.md` и [BENCHMARKS.md](../testing/BENCHMARKS.md)), данные `docs/reports/data/stage6/`, раздел «Выбор по замеру» в `MEMORY_MODEL.md`.
 - **Сделать:**
@@ -400,7 +400,7 @@
 
 ### S6-07. Перечислить однопроцессорные допущения в коде
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью.
 - **Текущий статус (2026-11-13):** полный inventory прошёл независимое ревью; коммит [`8b19597`](https://github.com/edelars/open_desktop/commit/8b19597); 233 primary hits покрыты строка-в-строку, secondary ownership counts и focused paths записаны в [отчёте S6](../reports/STAGE_6_REPORT.md#s6-07--inventory-однопроцессорных-допущений). Код не менялся; production assumptions без владельца не найдены.
 - **Где:** таблица в `docs/reports/STAGE_6_REPORT.md`. Код не меняется.
 - **Сделать:**
@@ -414,8 +414,8 @@
 
 ### S6-08. Добавить нативный многопоточный режим litmus
 
-- [ ] Принято после ревью.
-- **Текущий статус (2026-11-13):** принято после независимого code review; implementation commit `fa74b1c`; Linux x86_64 tests passed (**9 library + 258 runner**), all 18 corpus cases executed at 10,000 rounds/process ×3, histograms conserved and no forbidden outcomes; physical SB `00` appeared once. Ordinary `--fixture` regression passed. Calibration and raw evidence: [`s6-08-native-calibration.md`](../reports/data/stage6/s6-08-native-calibration.md). Full standard physical budget is S6-09. The acceptance checkbox remains unchanged per the user's instruction.
+- [x] Принято после ревью.
+- **Текущий статус (2026-11-13):** принято после независимого code review; implementation commit `fa74b1c`; Linux x86_64 tests passed (**9 library + 258 runner**), all 18 corpus cases executed at 10,000 rounds/process ×3, histograms conserved and no forbidden outcomes; physical SB `00` appeared once. Ordinary `--fixture` regression passed. Calibration and raw evidence: [`s6-08-native-calibration.md`](../reports/data/stage6/s6-08-native-calibration.md). Full standard physical budget is S6-09. Checkbox оставался открытым по прежней просьбе владельца; отмечен по его запросу 2026-11-14 после ревью.
 - **Где:** `tools/x86-runner/` (перед изменением прочитать его [README](../../tools/x86-runner/README.md) и `tools/AGENTS.md`), раздел в `docs/testing/SMP.md`.
 - **Сделать:**
   1. Сначала записать, что сегодня умеет `od-x86-runner`: супервизор дочернего процесса, допуск инструкций через декодер `od-isa`, лимиты CPU и памяти, один поток. Решить и записать в `SMP.md`: проходят ли байты litmus-тестов существующий допуск (в том числе `MFENCE` и `LOCK`-формы) и какие лимиты времени нужны для числа итераций из S6-01.
@@ -427,8 +427,8 @@
 
 ### S6-09. Прогнать корпус на физическом x86
 
-- [ ] Принято после ревью.
-- **Текущий статус (2026-11-13):** принято после независимого evidence review; полный физический прогон завершился с exit 0 на 500,000 rounds/test/process ×3 для 18 случаев (27,000,000 rounds); все process и aggregate histograms сошлись, запрещённых исходов нет, SB `00` наблюдался 19 раз; суммарный child elapsed 519.593 s. См. [`s6-09-native-physical.md`](../reports/data/stage6/s6-09-native-physical.md). Acceptance checkbox оставлен без изменений по инструкции пользователя.
+- [x] Принято после ревью.
+- **Текущий статус (2026-11-13):** принято после независимого evidence review; полный физический прогон завершился с exit 0 на 500,000 rounds/test/process ×3 для 18 случаев (27,000,000 rounds); все process и aggregate histograms сошлись, запрещённых исходов нет, SB `00` наблюдался 19 раз; суммарный child elapsed 519.593 s. См. [`s6-09-native-physical.md`](../reports/data/stage6/s6-09-native-physical.md). Checkbox оставался открытым по прежней просьбе владельца; отмечен по его запросу 2026-11-14 после ревью.
 - **Где:** данные `docs/reports/data/stage6/`, раздел в `STAGE_6_REPORT.md`.
 - **Сделать:** прогнать весь корпус S6-05 режимом S6-08 на физическом x86 из [STAND.md](../testing/STAND.md) с числом итераций из `SMP.md`; сохранить гистограммы, версию корпуса (хеши) и конфигурацию машины.
 - **Проверить:** ни одного запрещённого исхода ни в одном тесте; в SB «интересный» исход («оба прочитали 0») наблюдён хотя бы раз — если нет, исправлять синхронизацию старта потоков в S6-08, а не множество; счётчик с `LOCK INC` точен; счётчик `INC [x]` без `LOCK` теряет обновления.
@@ -653,7 +653,7 @@
 
 ### S6-26. Определить контракт побочных записей дескрипторов
 
-- [ ] Принято после архитектурного ревью. Зависит от точного inventory descriptor-writing forms в S6-07.
+- [x] Принято после архитектурного ревью. Зависит от точного inventory descriptor-writing forms в S6-07.
 - **Где:** `docs/specs/MEMORY_MODEL.md`, `docs/specs/CPU_CONTRACT.md`, `docs/reports/STAGE_6_REPORT.md`.
 - **Сделать:**
   1. По S6-07 перечислить поддерживаемые instruction paths, которые меняют descriptor access byte, TSS busy bit или другой descriptor state; не смешивать их с page-table A/D writes и обычным operand store.

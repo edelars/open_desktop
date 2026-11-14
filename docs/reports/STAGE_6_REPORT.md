@@ -4,7 +4,7 @@
 
 ## 1. Сводка задач
 
-`not_started` означает, что задача не принята после ревью. `blocked` указывает внешние незакрытые предпосылки; эти блокировки наследуются зависимыми задачами по [плану S6](../plans/STAGE_6.md#6-задачи-и-минимальные-зависимости). S6-00 подготовлен этим срезом, но до независимого ревью остаётся `not_started`.
+`not_started` означает, что задача не принята после ревью. `blocked` указывает внешние незакрытые предпосылки; эти блокировки наследуются зависимыми задачами по [плану S6](../plans/STAGE_6.md#6-задачи-и-минимальные-зависимости). S6-00 принят после независимого ревью; его evidence и статус приведены в таблице ниже.
 
 Правило D5 о согласовании с линией S4-38 относится только к задачам и зависимым цепочкам, меняющим `od-isa`; оно не блокирует документные задачи S6-00…09 или S6-40.
 
@@ -198,7 +198,7 @@ that this KVM host executes a small real-mode guest and that the oracle reports
 state. It does not execute the Linux AP trampoline, implement AP execution, or
 accept S6-14 as a whole; S6-14c and later remain separate work.
 
-### S6-07 — inventory однопроцессорных допущений (in progress)
+### S6-07 — inventory однопроцессорных допущений (accepted)
 
 Код не менялся. Перед поиском выполнен Graphify query. Основной поиск выполнен ровно командой из плана; raw hit count **233**, число строк таблицы **233**. Сверка `file:line` охватывает весь raw hit set. Дополнительные буквальные поиски по `crates/od-machine/src` и `crates/od-host/src`: `&mut PhysicalMemory` — **25**, `&mut [u8]` — **218**, `Rc<` — **7**, `RefCell<` — **6**; overlap с основным поиском — **0** строк для каждого. Эти counts — raw `rg` результаты по src paths, включая inline unit-test blocks; отдельные `tests/` files отмечены как fixture evidence.
 

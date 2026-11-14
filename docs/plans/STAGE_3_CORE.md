@@ -152,7 +152,7 @@ Compiled instructions, helper calls и interpreter steps считаются ра
 
 ### S3-50. Завести отчёт линии и инвентарь дублирования
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью.
 - **Где:** `docs/reports/STAGE_3_CORE_REPORT.md` (новый). Ссылки на этот план из [ROADMAP.md](../ROADMAP.md) и [STAGE_3.md](STAGE_3.md) уже добавлены вместе с планом.
 - **Сделать:**
   1. Создать отчёт по образцу [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md): шапка со статусом «промежуточный, этап 3 не принят, линия доработки ядра», таблица задач `S3-50…S3-57` со статусом `not_started`, пустые разделы по задачам.
@@ -166,7 +166,7 @@ Compiled instructions, helper calls и interpreter steps считаются ра
 
 ### S3-51. Описать единые правила допуска и полный перечень отказов
 
-- [ ] Принято после архитектурного ревью.
+- [x] Принято после архитектурного ревью.
 - **Где:** [JIT_CONTRACT.md](../specs/JIT_CONTRACT.md), новый раздел «Единые правила допуска регистрового набора» после раздела 3 «Формы за пределами среза».
 - **Сделать:**
   1. Описать вход допуска: декодированная инструкция `od_isa::long_decode::Instruction`, её класс операции, операнды, `operand_size`, `address_size`, префиксы (включая конкретный байт REX), длина; границы инструкций блока и цели переходов.
@@ -181,7 +181,7 @@ Compiled instructions, helper calls и interpreter steps считаются ра
 
 ### S3-52. Свести допуск к одному механизму и доказать эквивалентность
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью.
 - **Где:** [block.rs](../../crates/od-jit/src/block.rs); потребители `admits_*` — [dispatch.rs](../../crates/od-jit/src/dispatch.rs), [lowering.rs](../../crates/od-jit/src/lowering.rs), `block_compile.rs`, `block_emitter.rs`; новый раздел в [docs/testing/JIT.md](../testing/JIT.md).
 - **Сделать:**
   1. Обобщить существующие представления, а не добавлять новое: `BlockBuildProfile`, `DecodedInstruction`, `DecodeBoundary`, `AdmittedInstructionBoundaries`, `is_s0_09_form` и поформенные предикаты. Ввести одну таблицу правил из `S3-51`, применяемую к декодированной инструкции.
@@ -196,7 +196,7 @@ Compiled instructions, helper calls и interpreter steps считаются ра
 
 ### S3-53. Свести точки входа диспетчера регистрового пути к одной
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью.
 - **Где:** [dispatch.rs](../../crates/od-jit/src/dispatch.rs).
 - **Сделать:**
   1. Ввести одну точку входа, которая принимает профиль допуска (`S3-52`) и режим флагов (обычный либо demand) параметрами.
@@ -210,7 +210,7 @@ Compiled instructions, helper calls и interpreter steps считаются ра
 
 ### S3-54. Вывести generic путь на multi-entry кеш
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью.
 - **Где:** [dispatch.rs](../../crates/od-jit/src/dispatch.rs), `crates/od-host/src/`.
 - **Сделать:**
   1. Подключить generic точку входа к существующему `MultiEntryBlockCache` через `MultiBlockCachedBackend`, не меняя устройство кеша и состав `TranslationKey`.
@@ -224,7 +224,7 @@ Compiled instructions, helper calls и interpreter steps считаются ра
 
 ### S3-55. Interpreter fallback на generic пути
 
-- [ ] Принято после ревью. Закрывает пункты 1–4 задачи `S3-16` основного плана на generic пути; production owner integration и общий Stage 2 fallback остаются открытыми.
+- [x] Принято после ревью. Закрывает пункты 1–4 задачи `S3-16` основного плана на generic пути; production owner integration и общий Stage 2 fallback остаются открытыми.
 - **Где:** [dispatch.rs](../../crates/od-jit/src/dispatch.rs).
 - **Сделать:**
   1. На форме, которой механизм допуска отказал, материализовать состояние и вызвать `od_isa::execute::step` — тот же вход интерпретатора, что использует существующий fallback, с fetch-only memory-видом в один байт. Если форма требует явного `ExecutionProfiles` или иного входа — остановиться и записать blocker, не расширяя `od-isa`.
