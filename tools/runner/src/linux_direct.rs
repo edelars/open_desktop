@@ -2811,4 +2811,376 @@ mod tests {
         // CPL0 is admitted and the members list gains `popf_cpl0`. The stop-record checks of the
         // S2-49..S4-38L4a runs do not apply while the run is refused (see above).
     }
+
+    // ---- S4-41: lifecycle of the headless runner for the linux-direct machine ----
+    //
+    // The lifecycle of this machine is "load, run to the first stop, report"; a stop is final for
+    // the run. There is no pause/resume API on the Linux board (it exists only on the diagnostic
+    // and paged vCPU sessions); a second `run_linux_direct_board*` call on the same board continues
+    // from the stop, which is what the budget-slice test below exercises.
+
+    /// Everything one load needs; the board borrows nothing from it after `load`.
+    struct Session {
+        vmlinuz: Vec<u8>,
+        initramfs: Vec<u8>,
+        cmdline: String,
+    }
+
+    impl Session {
+        fn new(code: &[u8]) -> Self {
+            Self {
+                vmlinuz: bzimage_with_entry(code),
+                initramfs: vec![0xAB; 4688],
+                cmdline: cmdline("N0nce-1"),
+            }
+        }
+
+        fn input(&self) -> LinuxDirectInput<'_> {
+            LinuxDirectInput {
+                bzimage: &self.vmlinuz,
+                initrd: &self.initramfs,
+                cmdline: self.cmdline.as_bytes(),
+                acpi_blob: BLOB,
+                expected_acpi_manifest_hash: board_manifest_hash(),
+                ram_bytes: 128 * MIB,
+            }
+        }
+    }
+
+    /// Loads a board and runs it once per budget; each call continues from the previous stop.
+    fn run_slices(code: &[u8], budgets: &[u64], set_cpl0: bool) -> Vec<LinuxStopRecord> {
+        let session = Session::new(code);
+        let input = session.input();
+        let mut boot = load_linux_direct_board(&input).expect("load");
+        budgets
+            .iter()
+            .map(|&budget| {
+                if set_cpl0 {
+                    run_linux_direct_board_set(
+                        &mut boot,
+                        &input,
+                        budget,
+                        LinuxCpl0SetMembers::linux_default(),
+                    )
+                } else {
+                    run_linux_direct_board(&mut boot, &input, budget)
+                }
+                .expect("run")
+            })
+            .collect()
+    }
+
+    /// MOV AL,'X'; MOV DX,0x3F8; OUT DX,AL; HLT (4 instructions, writes `X` to COM1).
+    const COM1_X: [u8; 8] = [0xb0, b'X', 0x66, 0xba, 0xf8, 0x03, 0xee, 0xf4];
+    /// MOV DX,0x604; MOV AL,0x34; OUT DX,AL (SLP_TYP=S5, SLP_EN: the guest's own STOP); HLT.
+    const ACPI_S5: [u8; 8] = [0x66, 0xBA, 0x05, 0x06, 0xB0, 0x34, 0xEE, 0xF4];
+
+    #[test]
+    fn lifecycle_refusals_with_run_never_start_the_guest() {
+        // Every invalid configuration is refused before the machine runs, also when the run was
+        // asked for: no `stop` object, `guest_started` false, `retired` 0, and a stable exit code
+        // (3 unreadable input, 4 refused).
+        type Break = fn(&mut Case);
+        let cases: [(&str, Break, u8, &str); 7] = [
+            (
+                "vmlinuz-missing",
+                |c| c.options.vmlinuz = c.dir.join("nope").to_string_lossy().into_owned(),
+                3,
+                "invalid_input",
+            ),
+            (
+                "initramfs-missing",
+                |c| c.options.initramfs = c.dir.join("nope").to_string_lossy().into_owned(),
+                3,
+                "invalid_input",
+            ),
+            (
+                "acpi-missing",
+                |c| c.options.acpi_blob = c.dir.join("nope").to_string_lossy().into_owned(),
+                3,
+                "invalid_input",
+            ),
+            (
+                "vmlinuz-sha",
+                |c| c.options.expected_vmlinuz_sha256 = "0".repeat(64),
+                4,
+                "vmlinuz_sha256_mismatch",
+            ),
+            (
+                "initramfs-sha",
+                |c| c.options.expected_initramfs_sha256 = "0".repeat(64),
+                4,
+                "initramfs_sha256_mismatch",
+            ),
+            (
+                "acpi-manifest",
+                |c| c.options.expected_acpi_manifest_hash[0] ^= 1,
+                4,
+                "acpi_manifest_mismatch",
+            ),
+            (
+                "initrd-too-large",
+                |c| c.options.ram_mib = 1,
+                4,
+                "initrd_too_large",
+            ),
+        ];
+        for (name, break_it, exit_code, code) in cases {
+            // The initramfs is 2 MiB so that `ram_mib = 1` makes it too large.
+            let mut case = Case::new(
+                name,
+                &bzimage_with_entry(&COM1_X),
+                &vec![0xAB; 2 << 20],
+                BLOB,
+            );
+            case.options.budget = Some(100);
+            case.options.set_cpl0 = true;
+            // The control: the same case, unbroken, does run the guest.
+            if name == "vmlinuz-missing" {
+                let (value, exit) = evaluate(&case.options);
+                assert_eq!(
+                    (exit, &value["guest_started"]),
+                    (0, &json!(true)),
+                    "{value:#}"
+                );
+            }
+            break_it(&mut case);
+            let (value, exit) = evaluate(&case.options);
+            assert_eq!(exit, exit_code, "{name}: {value:#}");
+            assert_eq!(value["error"]["code"], code, "{name}: {value:#}");
+            assert_eq!(value["guest_started"], false, "{name}");
+            assert_eq!(value["retired"], 0, "{name}");
+            assert!(value.get("stop").is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn lifecycle_argument_refusals_are_exit_3_and_never_reach_the_machine() {
+        // `run` prints an `invalid_input` JSON and returns exit 3 before any file is read: an
+        // unknown CPUID profile name, `--user-mode` with the diagnostic profile or without
+        // `--set-cpl0`, a malformed nonce.
+        let out = std::env::temp_dir().join(format!("od-runner-s441-{}.json", std::process::id()));
+        let out = out.to_string_lossy().into_owned();
+        let hash = "a".repeat(64);
+        let base = |extra: &[&str]| -> Vec<String> {
+            let mut args: Vec<String> = [
+                "--vmlinuz",
+                "/nonexistent/vmlinuz",
+                "--initramfs",
+                "/nonexistent/initramfs",
+                "--acpi-blob",
+                "/nonexistent/acpi",
+                "--nonce",
+                "n1",
+                "--expected-vmlinuz-sha256",
+                hash.as_str(),
+                "--expected-acpi-manifest-hash",
+                hash.as_str(),
+                "--expected-initramfs-sha256",
+                hash.as_str(),
+                "--ram-mib",
+                "128",
+                "--out",
+                out.as_str(),
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            args.extend(extra.iter().map(|s| s.to_string()));
+            args
+        };
+        // Positive control: the base arguments parse, and the pipeline then reaches the files
+        // (the unreadable kernel is a stage after `parse`, so `parse` accepted everything else).
+        let good = parse(&base(&["--run", "--budget", "1"])).unwrap();
+        assert_eq!(good.budget, Some(1));
+        let (value, exit) = evaluate(&good);
+        assert_eq!(exit, 3, "{value:#}");
+        assert_eq!(code_of(&value), ("invalid_input", "vmlinuz_file"));
+        assert!(
+            parse(&base(&[
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--cpuid-profile",
+                "stage4a",
+                "--user-mode"
+            ]))
+            .unwrap()
+            .user_mode
+        );
+
+        let set_run = ["--run", "--budget", "1", "--set-cpl0"];
+        let user_mode_needs = "--user-mode needs --run, --set-cpl0 and --cpuid-profile stage4a";
+        let cases: [(Vec<&str>, &str); 7] = [
+            // Unknown profile name.
+            (
+                [&set_run[..], &["--cpuid-profile", "nope"]].concat(),
+                "invalid --cpuid-profile 'nope'",
+            ),
+            // `--user-mode` with the diagnostic profile: the `profile != stage4a` branch.
+            (
+                [
+                    &set_run[..],
+                    &["--cpuid-profile", "diagnostic", "--user-mode"],
+                ]
+                .concat(),
+                user_mode_needs,
+            ),
+            // `--user-mode` without `--set-cpl0` and without a profile: the default profile is
+            // diagnostic, so it is the same `profile != stage4a` branch.
+            (
+                vec!["--run", "--budget", "1", "--user-mode"],
+                user_mode_needs,
+            ),
+            // A profile without `--set-cpl0` is refused first, by its own branch.
+            (
+                vec![
+                    "--run",
+                    "--budget",
+                    "1",
+                    "--cpuid-profile",
+                    "stage4a",
+                    "--user-mode",
+                ],
+                "--cpuid-profile needs --run and --set-cpl0",
+            ),
+            // A duplicated `--nonce` (the base already has one).
+            (
+                vec!["--run", "--budget", "1", "--nonce", "again"],
+                "duplicate option --nonce",
+            ),
+            // `--run` without a budget.
+            (vec!["--run"], "--run needs --budget"),
+            // A trailing flag without a value.
+            (
+                vec!["--run", "--budget", "1", "--nonce"],
+                "флаг --nonce требует значение",
+            ),
+        ];
+        let exit_3 = format!("{:?}", ExitCode::from(3));
+        for (extra, message) in cases {
+            let args = base(&extra);
+            let error = parse(&args).unwrap_err();
+            assert!(error.contains(message), "{extra:?}: {error}");
+            assert_eq!(format!("{:?}", run(&args)), exit_3, "{extra:?}");
+        }
+        // The malformed nonce `a b` is a case of its own: it replaces the base nonce.
+        let mut args = base(&["--run", "--budget", "1"]);
+        let at = args.iter().position(|a| a == "--nonce").unwrap() + 1;
+        args[at] = "a b".to_string();
+        assert!(parse(&args).unwrap_err().starts_with("invalid --nonce"));
+        assert_eq!(format!("{:?}", run(&args)), exit_3);
+        // Nothing was written to `--out` (there is no evidence file for a bad argument).
+        assert!(!std::path::Path::new(&out).exists());
+    }
+
+    #[test]
+    fn lifecycle_guest_fault_is_a_reported_stop_and_leaves_no_state_behind() {
+        // CLI; then the REX filler after the code has no opcode: #GP(0) is the stop `fault`.
+        let fault_case = |name: &str| {
+            let mut case = Case::new(name, &bzimage_with_entry(&[0xFA]), &[0xAB; 4688], BLOB);
+            case.options.budget = Some(64);
+            case.options.set_cpl0 = true;
+            case
+        };
+        let good = |name: &str| {
+            let mut case = Case::new(name, &bzimage_with_entry(&COM1_X), &[0xAB; 4688], BLOB);
+            case.options.budget = Some(64);
+            case
+        };
+        let baseline = evaluate(&good("fault-baseline").options);
+        assert_eq!(baseline.1, 0, "{:#}", baseline.0);
+        assert_eq!(baseline.0["stop"]["exit_kind"], "halted");
+
+        let (value, exit) = evaluate(&fault_case("fault-run").options);
+        // A fault is a result, not a failure of the runner: exit 0, `loaded`, no panic.
+        assert_eq!(exit, 0, "{value:#}");
+        assert_eq!(value["status"], "loaded");
+        assert_eq!(value["guest_started"], true);
+        assert_eq!(value["stop"]["exit_kind"], "fault", "{value:#}");
+        assert!(value["stop"]["retired"].as_u64().unwrap() >= 1, "{value:#}");
+        assert!(
+            value["stop"]["exit_detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("Fault(ArchitecturalFault { vector: 13")
+        );
+
+        // The next session in the same process is a fresh board: same result as the baseline.
+        let again = evaluate(&good("fault-after").options);
+        let normalize = |mut v: Value| {
+            v["inputs"] = Value::Null;
+            v
+        };
+        assert_eq!(normalize(again.0), normalize(baseline.0));
+        assert_eq!(again.1, baseline.1);
+    }
+
+    #[test]
+    fn lifecycle_repeated_session_in_one_process_gives_the_same_evidence() {
+        // Two sessions in a row in the same process on the same inputs (a counted-profile user
+        // mode run) must produce identical evidence: nothing persists between loads (no cache,
+        // counter or device state carried over).
+        let mut case = Case::new(
+            "repeat",
+            &bzimage_with_entry(&iretq_to_cpl3_program()),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(100);
+        case.options.set_cpl0 = true;
+        case.options.cpuid_profile = CpuidProfile::X8664V1Stage4A;
+        case.options.user_mode = true;
+        let first = evaluate(&case.options);
+        let second = evaluate(&case.options);
+        assert_eq!(first.1, 0, "{:#}", first.0);
+        // The run is a guest fault in CPL3 (the board page is supervisor-only), a stop like any other.
+        assert_eq!(first.0["stop"]["exit_kind"], "user_mode_fault");
+        assert_eq!(first.0["stop"]["retired"], 13);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn lifecycle_stop_is_prompt_final_and_idempotent() {
+        // STOP by budget: 0 stops before the first fetch, nothing retired.
+        let zero = run_slices(&COM1_X, &[0], false);
+        assert_eq!(zero[0].exit_kind, "budget_exhausted");
+        assert_eq!(zero[0].retired, 0);
+        // STOP by the guest (PM1_CNT S5): the machine reports `stopped` with a shutdown reason.
+        let stopped = run_slices(&ACPI_S5, &[100, 100], true);
+        assert_eq!(stopped[0].exit_kind, "stopped");
+        assert_eq!(stopped[0].stop_reason, Some(MachineStopReason::Shutdown));
+        // A second call after the STOP does not run the guest further: same stop, same RIP.
+        assert_eq!(
+            stopped[1].exit_kind, "stopped",
+            "{:?}",
+            stopped[1].exit_detail
+        );
+        assert_eq!(stopped[1].rip, stopped[0].rip);
+        assert_eq!(stopped[1].retired, 0, "the guest did not run after STOP");
+        assert_eq!(stopped[1].com1, stopped[0].com1);
+    }
+
+    #[test]
+    fn lifecycle_budget_slices_continue_the_same_board_like_one_run() {
+        // The Linux board has no pause/resume API; a budget stop followed by another call is the
+        // closest thing (there is no asynchronous pause from outside). The slices are compared with
+        // the whole run by `rip`, `gpr`, `rflags` and COM1; guest RAM is not compared.
+        let whole = run_slices(&COM1_X, &[100], false);
+        let sliced = run_slices(&COM1_X, &[2, 100], false);
+        assert_eq!(whole[0].exit_kind, "halted");
+        assert_eq!(sliced[0].exit_kind, "budget_exhausted");
+        // `retired` counts one call: 2 + 2 = the 4 of the whole run.
+        assert_eq!(sliced[0].retired, 2);
+        assert_eq!(sliced[1].retired, 2);
+        assert_eq!(whole[0].retired, 4);
+        assert!(sliced[0].com1.is_empty(), "OUT not yet executed");
+        assert_eq!(sliced[1].exit_kind, "halted");
+        assert_eq!(sliced[1].rip, whole[0].rip);
+        assert_eq!(sliced[1].gpr, whole[0].gpr);
+        assert_eq!(sliced[1].rflags, whole[0].rflags);
+        assert_eq!(sliced[1].com1, b"X");
+        assert_eq!(sliced[1].com1, whole[0].com1);
+    }
 }
