@@ -21033,7 +21033,11 @@ pub fn run_with_cpl3_profile_set(
         let boundary = retired == config.instruction_budget || config.stop_rip == Some(state.rip);
         if !boundary
             && let Ok(instruction) = long_decode::decode(memory, state.rip, config.context)
-            && !cpl3_allows(&instruction, set.syscall)
+            && !cpl3_allows(
+                &instruction,
+                set.syscall,
+                lea_modrm_selects_sib(memory, state.rip, config.context, &instruction),
+            )
         {
             return Ok(Cpl0ProfileSetResult {
                 exit: Cpl0ProfileSetExit::Run(RunExit::Unsupported {
@@ -21164,9 +21168,17 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// rel8). `JMP` (`EB`/`E9`), `CALL`, `LOOP`/`JRCXZ` (`E0`..`E3`) and Jcc with REX or a prefix stay
 /// outside.
 ///
+/// S4-39f8: `REX.W 8D /r` (LEA r64, m) with a SIB operand (ModRM.mod != 11, rm = 100; REX.X and
+/// REX.B reach the index and the base, REX.R the destination), as in `49 8d 3c 1e`
+/// (`leaq (%r14,%rbx), %rdi`) of `/init` at `0x400162`. The CPL0 `Operation::Lea` is reused: the
+/// address is computed by `MemoryOperand::effective_address` (no memory access, no canonical
+/// check, flags stay). The decoder does not record whether a register-based operand came from a SIB
+/// byte, so `lea_sib` is derived from the ModRM byte (see [`lea_modrm_selects_sib`]); the plain
+/// register-base forms (`48 8d 03`, `lea (%rbx), %rax`) stay outside.
+///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
-fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool) -> bool {
+fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: bool) -> bool {
     let prefixes = instruction.prefixes;
     if prefixes.group1.is_some()
         || prefixes.segment.is_some()
@@ -21248,12 +21260,45 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool) -> bool {
         ) => instruction.operand_size == OperandSize::Qword,
         (OpcodeMap::Primary, 0x8d, Operation::Lea { src, .. }) => {
             instruction.operand_size == OperandSize::Qword
-                && src.base == AddressBase::NextRip
-                && src.index.is_none()
                 && src.address_size == OperandSize::Qword
+                && (lea_sib || (src.base == AddressBase::NextRip && src.index.is_none()))
         }
         _ => false,
     }
+}
+
+/// S4-39f8: whether the ModRM byte of a decoded `REX 8D /r` selects a SIB byte (`mod != 11`,
+/// `rm = 100`). The decoder output does not keep this, and `[%rbx]` through a SIB byte and
+/// through ModRM alone decode to the same operand. The byte is read only for the shape with exactly
+/// one prefix, REX: the decoder keeps just the last of several REX bytes, so the byte at `rip + 2`
+/// is a ModRM only when `rip + 1` holds the opcode `8D`, which no prefix byte can be. The bytes were
+/// fetched by the decode a moment ago. Any other prefix is refused by [`cpl3_allows`] before this
+/// value matters.
+fn lea_modrm_selects_sib(
+    memory: &mut impl GuestMemory,
+    rip: u64,
+    context: AccessContext,
+    instruction: &long_decode::Instruction,
+) -> bool {
+    let prefixes = instruction.prefixes;
+    if !matches!(instruction.operation, Operation::Lea { .. })
+        || prefixes.rex.is_none()
+        || prefixes.group1.is_some()
+        || prefixes.segment.is_some()
+        || prefixes.operand_override
+        || prefixes.address_override
+    {
+        return false;
+    }
+    if !memory
+        .fetch(rip.wrapping_add(1), context)
+        .is_ok_and(|opcode| opcode == 0x8d)
+    {
+        return false;
+    }
+    memory
+        .fetch(rip.wrapping_add(2), context)
+        .is_ok_and(|modrm| modrm >> 6 != 3 && modrm & 7 == 4)
 }
 
 /// What an `IRETQ` to CPL3 left in the cell of a set run (S4-38L9H boundary, S4-39b commit).
