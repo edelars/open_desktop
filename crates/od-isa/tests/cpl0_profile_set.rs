@@ -18074,14 +18074,14 @@ fn segment_inc_read_fault_leaves_everything_unchanged() {
 
 #[test]
 fn segment_inc_forms_outside_the_slice_are_refused_with_the_exact_opcode() {
-    let cases: [(&[u8], u8); 31] = [
+    let cases: [(&[u8], u8); 30] = [
         // The other FF group members with a segment base (CALL, far CALL, JMP, far JMP, PUSH, /7)
         // stay outside this slice (DEC, /1, is S4-38L7q).
         (&[0x65, 0xff, 0x13], 0xff),
         (&[0x65, 0xff, 0x1b], 0xff),
         (&[0x64, 0xff, 0x23], 0xff),
         (&[0x64, 0xff, 0x2b], 0xff),
-        (&[0x65, 0xff, 0x33], 0xff),
+        // S4-39f1: `65 ff 33` (PUSH m64 with GS) is executed now (see the S4-39f1 tests).
         (&[0x65, 0xff, 0x3b], 0xff),
         // LOCK (S4-38L7l does not take a segment prefix), REP, REPNE.
         (&[0xf0, 0x65, 0xff, 0x03], 0xff),
@@ -18741,7 +18741,7 @@ fn segment_dec_forms_outside_the_slice_are_refused_with_the_exact_opcode() {
         (&[0x65, 0xff, 0x1b], 0xff),
         (&[0x64, 0xff, 0x23], 0xff),
         (&[0x64, 0xff, 0x2b], 0xff),
-        (&[0x65, 0xff, 0x33], 0xff),
+        // S4-39f1: `65 ff 33` (PUSH m64 with GS) is executed now (see the S4-39f1 tests).
         (&[0x65, 0xff, 0x3b], 0xff),
         // LOCK with a segment prefix (plain LOCK DEC is S4-38L7bn), REP, REPNE.
         (&[0xf0, 0x65, 0xff, 0x0b], 0xff),
@@ -53445,6 +53445,288 @@ fn verw_memory_form_stays_unsupported_outside_the_set_and_is_not_reachable_from_
     let mut state = verw_state();
     let before = state.clone();
     let mut memory = verw_memory(&VERW_RIP, 0x10);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+// ---- S4-39f1: FS/GS-based `PUSH m64` (`[64|65] [REX] FF /6`, memory operand; SDM Vol.2 PUSH: the
+// source is read before RSP changes, then RSP -= 8 and the qword is stored at the new RSP; no flag
+// changes; Vol.3 3.4.4 FS/GS base; from memory, not re-checked against the SDM text). The kernel's
+// `entry_SYSCALL_64` pushes `%gs:<per-cpu>(%rip)` (the S4-39f boundary, 7 bytes long). ----
+
+/// `push %gs:0x3409f64(%rip)` (the S4-39f boundary bytes).
+const GS_PUSH_BOUNDARY: [u8; 7] = [0x65, 0xff, 0x35, 0x64, 0x9f, 0x40, 0x03];
+/// `push %fs:0x1234(%rip)`.
+const FS_PUSH_RIP: [u8; 7] = [0x64, 0xff, 0x35, 0x34, 0x12, 0x00, 0x00];
+/// `push %gs:0x58(%rbx)`.
+const GS_PUSH_RBX_58: [u8; 4] = [0x65, 0xff, 0x73, 0x58];
+/// `push %fs:(%rbx,%rcx,4)`.
+const FS_PUSH_SIB: [u8; 4] = [0x64, 0xff, 0x34, 0x8b];
+/// `push %gs:0x8(%rsp)` (the stack pointer is the base: the pre-instruction RSP is used).
+const GS_PUSH_RSP_8: [u8; 5] = [0x65, 0xff, 0x74, 0x24, 0x08];
+
+const PUSH_RSP: u64 = 0x30_0000;
+const PUSH_VALUE: u64 = 0x1122_3344_5566_7788;
+
+fn push_state() -> LongModeState {
+    let mut state = board_state();
+    state.gs_base = INC_GS_BASE;
+    state.fs_base = 0xffff_8880_4321_0000;
+    state.gpr[Register::Rsp as usize] = PUSH_RSP;
+    state.rflags |= FLAG_CF | FLAG_ZF | FLAG_SF | FLAG_OF | FLAG_PF | FLAG_AF | (1 << 10);
+    state
+}
+
+#[test]
+fn gs_push_boundary_form_reads_gs_base_plus_next_rip_and_pushes_the_qword() {
+    let mut state = push_state();
+    let mut expected = state.clone();
+    let at = INC_GS_BASE + RIP + 7 + 0x0340_9f64;
+    let mut memory = BitsMemory::new(&GS_PUSH_BOUNDARY);
+    memory.set_qword(at, PUSH_VALUE);
+    let result = run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(at, 8)]);
+    assert_eq!(
+        memory.writes,
+        vec![(PUSH_RSP - 8, PUSH_VALUE.to_le_bytes().to_vec())]
+    );
+    assert_eq!(memory.qword(PUSH_RSP - 8), PUSH_VALUE);
+    expected.rip += 7;
+    expected.gpr[Register::Rsp as usize] = PUSH_RSP - 8;
+    assert_eq!(state, expected, "only RSP and RIP change (flags kept)");
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+}
+
+#[test]
+fn fs_push_rip_relative_uses_the_fs_base_and_ignores_gs() {
+    let mut state = push_state();
+    let mut expected = state.clone();
+    let at = state.fs_base + RIP + 7 + 0x1234;
+    let mut memory = BitsMemory::new(&FS_PUSH_RIP);
+    memory.set_qword(at, PUSH_VALUE);
+    let result = run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(at, 8)]);
+    assert_eq!(memory.qword(PUSH_RSP - 8), PUSH_VALUE);
+    expected.rip += 7;
+    expected.gpr[Register::Rsp as usize] = PUSH_RSP - 8;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn segment_push_with_base_register_disp8_sib_and_rex_forms() {
+    // disp8 with a base register.
+    let mut state = push_state();
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    let mut expected = state.clone();
+    let at = INC_GS_BASE + 0x20_0058;
+    let mut memory = BitsMemory::new(&GS_PUSH_RBX_58);
+    memory.set_qword(at, PUSH_VALUE);
+    run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(at, 8)]);
+    assert_eq!(memory.qword(PUSH_RSP - 8), PUSH_VALUE);
+    expected.rip += 4;
+    expected.gpr[Register::Rsp as usize] = PUSH_RSP - 8;
+    assert_eq!(state, expected);
+    // SIB with an index and a scale (FS).
+    let mut state = push_state();
+    state.gpr[Register::Rbx as usize] = 0x1000;
+    state.gpr[Register::Rcx as usize] = 3;
+    let at = state.fs_base + 0x1000 + 12;
+    let mut memory = BitsMemory::new(&FS_PUSH_SIB);
+    memory.set_qword(at, PUSH_VALUE);
+    run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(at, 8)]);
+    assert_eq!(memory.qword(PUSH_RSP - 8), PUSH_VALUE);
+    assert_eq!(state.rip, RIP + 4);
+    // REX.W (no effect) and REX.B (base R9): `push %gs:0x10(%r9)` = 65 49 ff 71 10.
+    let mut state = push_state();
+    state.gpr[Register::R9 as usize] = 0x2000;
+    let at = INC_GS_BASE + 0x2010;
+    let mut memory = BitsMemory::new(&[0x65, 0x49, 0xff, 0x71, 0x10]);
+    memory.set_qword(at, PUSH_VALUE);
+    run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(at, 8)]);
+    assert_eq!(memory.qword(PUSH_RSP - 8), PUSH_VALUE);
+    assert_eq!(state.rip, RIP + 5);
+}
+
+#[test]
+fn segment_push_with_rsp_base_reads_with_the_pre_instruction_rsp() {
+    let mut state = push_state();
+    let at = INC_GS_BASE + PUSH_RSP + 8;
+    let mut memory = BitsMemory::new(&GS_PUSH_RSP_8);
+    memory.set_qword(at, PUSH_VALUE);
+    run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(at, 8)]);
+    assert_eq!(memory.qword(PUSH_RSP - 8), PUSH_VALUE);
+    assert_eq!(state.gpr[Register::Rsp as usize], PUSH_RSP - 8);
+}
+
+#[test]
+fn segment_push_read_fault_leaves_the_state_and_memory_unchanged() {
+    let at = INC_GS_BASE + RIP + 7 + 0x0340_9f64;
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(at),
+    };
+    let mut state = push_state();
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&GS_PUSH_BOUNDARY);
+    memory.read_fault = Some(fault.clone());
+    let result = run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::Fault(fault));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn segment_push_write_fault_leaves_rsp_rip_flags_and_memory_unchanged() {
+    let at = INC_GS_BASE + RIP + 7 + 0x0340_9f64;
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x3),
+        linear_address: Some(PUSH_RSP - 8),
+    };
+    let mut state = push_state();
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&GS_PUSH_BOUNDARY);
+    memory.set_qword(at, PUSH_VALUE);
+    memory.write_fault = Some(fault.clone());
+    memory.write_fault_range = Some(PUSH_RSP - 8..PUSH_RSP);
+    let result = run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::Fault(fault));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.writes.is_empty());
+    assert_eq!(memory.qword(PUSH_RSP - 8), 0);
+}
+
+#[test]
+fn segment_push_non_canonical_source_or_stack_is_a_fault_without_mutation_or_write() {
+    // Non-canonical source: the start, or the last byte of the qword, is outside the canonical range.
+    for segment_base in [
+        0x0000_8000_0000_0000u64,
+        0x0000_7fff_ffff_fffc,
+        0xffff_7fff_ffff_ff00,
+    ] {
+        let mut state = push_state();
+        state.gs_base = segment_base;
+        state.fs_base = segment_base;
+        state.gpr[Register::Rbx as usize] = 0;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(&GS_PUSH_RBX_58);
+        let result = run_inc_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{segment_base:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+    // Non-canonical new RSP: the source is read, the stack write is refused before any write.
+    let mut state = push_state();
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    state.gpr[Register::Rsp as usize] = 0x0000_8000_0000_0000 + 4;
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&GS_PUSH_RBX_58);
+    memory.set_qword(INC_GS_BASE + 0x20_0058, PUSH_VALUE);
+    let result = run_inc_set(&mut state, &mut memory).unwrap();
+    assert!(matches!(exit(&result), RunExit::Fault(_)), "{result:?}");
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn segment_push_refused_forms_keep_the_exact_opcode_and_change_nothing() {
+    let cases: &[(&[u8], u8)] = &[
+        // The register form (mod = 11) is not part of this slice.
+        (&[0x65, 0xff, 0xf3], 0xff),
+        (&[0x64, 0xff, 0xf0], 0xff),
+        // LOCK, REP, REPNE, 0x66, 0x67 and a second segment prefix.
+        (&[0xf0, 0x65, 0xff, 0x33], 0xff),
+        (&[0x65, 0xf0, 0xff, 0x33], 0xff),
+        (&[0xf3, 0x65, 0xff, 0x33], 0xff),
+        (&[0xf2, 0x64, 0xff, 0x33], 0xff),
+        (&[0x66, 0x65, 0xff, 0x33], 0xff),
+        (&[0x65, 0x66, 0xff, 0x33], 0xff),
+        (&[0x65, 0x67, 0xff, 0x33], 0xff),
+        (&[0x64, 0x65, 0xff, 0x33], 0xff),
+        // A stale REX (not immediately before the opcode).
+        (&[0x48, 0x65, 0xff, 0x33], 0xff),
+        (&[0x48, 0x65, 0x48, 0xff, 0x33], 0xff),
+    ];
+    for (code, opcode) in cases {
+        let mut state = push_state();
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_inc_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: *opcode },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn plain_push_memory_without_a_segment_prefix_keeps_ignoring_the_segment_bases() {
+    // `push (%rbx)` = ff 33 reads at RBX, not at RBX + GS base.
+    let mut state = push_state();
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    let mut memory = BitsMemory::new(&[0xff, 0x33]);
+    memory.set_qword(0x20_0000, PUSH_VALUE);
+    let result = run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(0x20_0000, 8)]);
+    assert_eq!(memory.qword(PUSH_RSP - 8), PUSH_VALUE);
+}
+
+#[test]
+fn segment_push_stays_unsupported_outside_the_set() {
+    for code in [&GS_PUSH_BOUNDARY[..], &FS_PUSH_RIP[..]] {
+        let mut state = legacy_state();
+        state.gs_base = INC_GS_BASE;
+        state.fs_base = INC_GS_BASE;
+        state.gpr[Register::Rsp as usize] = PUSH_RSP;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xff });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn segment_push_is_not_reachable_from_cpl3() {
+    let mut state = push_state();
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&GS_PUSH_BOUNDARY);
     let error = run_with_cpl0_profile_set(
         &mut state,
         &mut memory,

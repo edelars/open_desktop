@@ -36807,6 +36807,9 @@ fn step_configured(
         // S4-38L9x: and for the FS/GS-based XADD m8/m16/m32, r.
         | Operation::XaddFsMem { .. }
         | Operation::XaddGsMem { .. }
+        // S4-39f1: and for the FS/GS-based PUSH m64.
+        | Operation::PushFsMem { .. }
+        | Operation::PushGsMem { .. }
         // S4-38L7k: and for LOCK CMPXCHG m64, r64.
         | Operation::LockCmpxchgMem { .. }
         // S4-38L7l: and for LOCK INC m32/m64.
@@ -50887,6 +50890,9 @@ fn step_configured(
         // S4-38L9x: and for the FS/GS-based XADD m8/m16/m32, r.
         | Operation::XaddFsMem { .. }
         | Operation::XaddGsMem { .. }
+        // S4-39f1: and for the FS/GS-based PUSH m64.
+        | Operation::PushFsMem { .. }
+        | Operation::PushGsMem { .. }
         | Operation::LockCmpxchgMem { .. }
         | Operation::LockIncMem { .. }
         | Operation::LockDecMem { .. }
@@ -57243,6 +57249,23 @@ fn transfer(
             let address =
                 destination.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
             xadd_at(state, memory, context, address, destination.size, source)?;
+        }
+        Operation::PushFsMem { source } => {
+            // S4-39f1: the qword is read from FS base + effective address (RIP-relative is
+            // relative to the end of the instruction) with the pre-instruction state (RSP may be
+            // the base), then pushed: the stack address (RSP - 8) is checked and written before RSP
+            // changes. A non-canonical start or last byte of either access is a fault with the
+            // state and memory untouched. The flags are not touched.
+            let address =
+                source.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let value = memory.read_integer(address, context, OperandSize::Qword)?;
+            push_stack_value(state, memory, context, value, OperandSize::Qword)?;
+        }
+        Operation::PushGsMem { source } => {
+            let address =
+                source.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let value = memory.read_integer(address, context, OperandSize::Qword)?;
+            push_stack_value(state, memory, context, value, OperandSize::Qword)?;
         }
         // S4-38L9k: and the bare memory form (CPL0 set only; one vCPU, LOCK changes nothing).
         Operation::LockCmpxchgMem {
