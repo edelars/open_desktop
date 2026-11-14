@@ -20836,6 +20836,7 @@ pub fn run_with_cpl0_profile_set(
         rdtsc_source,
         None,
         stop_requested,
+        PrivilegeLevel::Ring0,
     )?;
     // A pending effect means the run loop stopped right after the retired
     // MOV CR3; its placeholder exit is replaced by the typed one. A pending
@@ -20883,6 +20884,7 @@ pub fn run_with_cpl0_profile_set_and_pio<P: crate::PortIo>(
         rdtsc_source,
         Some(&mut capture),
         stop_requested,
+        PrivilegeLevel::Ring0,
     )?;
     // The failed instruction did not retire, so a port error, a user entry and a CR3 effect
     // cannot be pending together.
@@ -20897,6 +20899,150 @@ pub fn run_with_cpl0_profile_set_and_pio<P: crate::PortIo>(
         instructions_executed: result.instructions_executed,
         rflags_defined: result.rflags_defined,
     })
+}
+
+/// S4-39a: the CPL3 entry of the profile set. Executes user code (`config.context.privilege`
+/// must be `Ring3`) one instruction at a time through the same `step_configured` as the CPL0
+/// entry, with the same set object. It is not wired to any board: no member of the set selects it.
+///
+/// Admission is the CPL0 admission with Ring3 in place of Ring0, plus the Ring3 state check:
+/// the CS selector has RPL 3 and a loaded CS cache with DPL 3 and L = 1, and the SS selector has
+/// RPL 3 over a loaded SS cache (the state an `IRETQ` to CPL3 leaves, S4-38L9H). A failure is
+/// [`Cpl0ProfileSetInputError::WrongPrivilege`] with nothing fetched or changed. The CPL0 entries
+/// keep refusing a Ring3 context with the same error.
+///
+/// Before every instruction the decoded form is checked against a fixed allow-list (see
+/// [`cpl3_allows`]); any other form ends the run with `Unsupported` before it executes: no
+/// architectural change, no retire, no #GP. This is an honest stop, not guest-visible behavior.
+/// A decode failure or a fetch error skips the allow-list: the step reports it identically and
+/// executes nothing. The run uses single-instruction steps of the CPL0 loop, so the STOP
+/// callback is polled up to twice per instruction boundary; `IN`/`OUT`, the CR3 effect and the
+/// `IRETQ` boundary are never reached because they are not allow-listed.
+pub fn run_with_cpl3_profile_set(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    initial_rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc_source: Option<&mut dyn FnMut() -> u64>,
+    mut stop_requested: impl FnMut() -> bool,
+) -> Result<Cpl0ProfileSetResult, Cpl0ProfileSetInputError> {
+    if config.context.privilege != PrivilegeLevel::Ring3 || !ring3_state_admitted(state) {
+        return Err(Cpl0ProfileSetInputError::WrongPrivilege);
+    }
+    let mut rdtsc_source = rdtsc_source;
+    let mut retired = 0u64;
+    let mut rflags_defined = initial_rflags_defined;
+    loop {
+        let boundary = retired == config.instruction_budget || config.stop_rip == Some(state.rip);
+        if !boundary
+            && let Ok(instruction) = long_decode::decode(memory, state.rip, config.context)
+            && !cpl3_allows(&instruction)
+        {
+            return Ok(Cpl0ProfileSetResult {
+                exit: Cpl0ProfileSetExit::Run(RunExit::Unsupported {
+                    // The opcode byte as the decoder reports it (the byte after `0F` for the
+                    // two-byte map), like the `Unsupported` of an undecodable form.
+                    opcode: instruction.opcode.byte,
+                }),
+                instructions_executed: retired,
+                rflags_defined,
+            });
+        }
+        let step_config = RunConfig {
+            instruction_budget: u64::from(!boundary),
+            ..config
+        };
+        let source = rdtsc_source
+            .as_mut()
+            .map(|source| &mut **source as &mut dyn FnMut() -> u64);
+        let inner = run_cpl0_profile_set_inner(
+            state,
+            memory,
+            step_config,
+            rflags_defined,
+            set,
+            source,
+            None,
+            &mut stop_requested,
+            PrivilegeLevel::Ring3,
+        );
+        let Ok((result, cr3_effect, user_entry)) = inner else {
+            // Only reachable after a retired instruction changed an admitted input; the state has
+            // already moved, so a typed admission error would misreport it.
+            return Ok(Cpl0ProfileSetResult {
+                exit: Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode: 0x0f }),
+                instructions_executed: retired,
+                rflags_defined,
+            });
+        };
+        retired += result.instructions_executed;
+        rflags_defined = result.rflags_defined;
+        let exit = if cr3_effect.is_some() || user_entry.is_some() {
+            // Unreachable: MOV CR3 and IRETQ are not allow-listed.
+            RunExit::Unsupported { opcode: 0x0f }
+        } else {
+            result.exit
+        };
+        if exit != RunExit::InstructionBudgetExhausted || retired >= config.instruction_budget {
+            return Ok(Cpl0ProfileSetResult {
+                exit: Cpl0ProfileSetExit::Run(exit),
+                instructions_executed: retired,
+                rflags_defined,
+            });
+        }
+    }
+}
+
+/// S4-39a Ring3 admission by the cached state: CS selector RPL 3 over a CS cache with DPL 3 and
+/// L = 1, SS selector RPL 3 over a loaded SS cache.
+fn ring3_state_admitted(state: &LongModeState) -> bool {
+    let (Some(cs_selector), Some(cs), Some(ss_selector), Some(_)) = (
+        state.cs_selector,
+        state.cs_cache,
+        state.ss_selector,
+        state.ss_cache,
+    ) else {
+        return false;
+    };
+    cs_selector & 3 == 3 && (cs.access >> 5) & 3 == 3 && cs.flags & 0x2 != 0 && ss_selector & 3 == 3
+}
+
+/// S4-39a CPL3 allow-list: the forms `/init` executes before its first `SYSCALL`
+/// (`tests/fixtures/guest/stage4/initramfs/init.S`: `lea disp(%rip), %rdi; mov $imm32, %esi;
+/// mov $imm32, %eax`), as form classes without prefixes other than REX:
+/// `B8+r imm32` (MOV r32, imm32) and `REX.W 8D /r` with a RIP-relative operand (LEA r64).
+/// Everything else, including `SYSCALL`, is outside (S4-39e and later slices extend it).
+fn cpl3_allows(instruction: &long_decode::Instruction) -> bool {
+    let prefixes = instruction.prefixes;
+    if prefixes.group1.is_some()
+        || prefixes.segment.is_some()
+        || prefixes.operand_override
+        || prefixes.address_override
+    {
+        return false;
+    }
+    match (
+        instruction.opcode.map,
+        instruction.opcode.byte,
+        instruction.operation,
+    ) {
+        (
+            OpcodeMap::Primary,
+            0xb8..=0xbf,
+            Operation::MovImmediate {
+                dst: Operand::Register(_),
+                ..
+            },
+        ) => instruction.operand_size == OperandSize::Dword,
+        (OpcodeMap::Primary, 0x8d, Operation::Lea { src, .. }) => {
+            instruction.operand_size == OperandSize::Qword
+                && src.base == AddressBase::NextRip
+                && src.index.is_none()
+                && src.address_size == OperandSize::Qword
+        }
+        _ => false,
+    }
 }
 
 /// Erases the port error type for the run loop and keeps the real error for
@@ -20956,6 +21102,7 @@ fn run_cpl0_profile_set_inner(
     rdtsc_source: Option<&mut dyn FnMut() -> u64>,
     pio: Option<&mut dyn crate::PortIo<Error = ()>>,
     mut stop_requested: impl FnMut() -> bool,
+    required_privilege: PrivilegeLevel,
 ) -> Result<
     (
         RunResult,
@@ -20972,7 +21119,7 @@ fn run_cpl0_profile_set_inner(
     if config.context.mode != InstructionMode::Long64 {
         return Err(Error::WrongMode);
     }
-    if config.context.privilege != PrivilegeLevel::Ring0 {
+    if config.context.privilege != required_privilege {
         return Err(Error::WrongPrivilege);
     }
     if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
