@@ -674,6 +674,9 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
     stop["irq_refused_masked"] = json!(record.irq_refused_masked);
     stop["irq_refused_shadow"] = json!(record.irq_refused_shadow);
     stop["quantum_cut_by_deadline"] = json!(record.quantum_cut_by_deadline);
+    // S4-39g: the wake of a CPU halted by HLT (IF = 1) by the PIT -> 8259 source.
+    stop["halt_wakes"] = json!(record.halt_wakes);
+    stop["halt_idle_ns"] = json!(record.halt_idle_ns);
     // S4-38L7f: the guest-visible IA32_EFER (`efer` is the walker's); set apart from the
     // literal above to stay under the `json!` macro recursion limit.
     stop["guest_efer"] = json!(hex64(record.guest_efer));
@@ -1645,6 +1648,8 @@ mod tests {
             "irq_refused_masked",
             "irq_refused_shadow",
             "quantum_cut_by_deadline",
+            "halt_wakes",
+            "halt_idle_ns",
         ] {
             assert_eq!(stop[counter], 0, "{counter}");
         }

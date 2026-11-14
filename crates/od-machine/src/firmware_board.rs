@@ -1094,8 +1094,8 @@ pub struct LoadedFirmwareBoard {
     /// it, the `run_boot` stop predicate reads it and `run_boot` clears it.
     rdtsc_tick: Option<Arc<AtomicBool>>,
     /// The source of maskable external interrupts (S4-38L8b). [`NoIrqSource`] (never a vector,
-    /// never a deadline) until a later slice gives the board a controller; consulted only by the
-    /// CPL0-set loop and only when the run asks for the hook (`irq` member).
+    /// never a deadline) until [`Self::enable_pit_pic_irq`] (S4-39g, user-mode run) installs the
+    /// PIT -> 8259 source; consulted only by the CPL0-set loop and only when the run asks for the hook (`irq` member).
     irq_source: Box<dyn BoardIrqSource>,
     /// Handle of the 8259 master chip (S4-39g); `Some` under `linux_profile` (the PIC is bound
     /// there).
@@ -1150,9 +1150,9 @@ impl LoadedFirmwareBoard {
         self.nvme.clone()
     }
 
-    /// Replaces the board's interrupt source (S4-38L8b). Nothing in production code calls it
-    /// yet: the board has [`NoIrqSource`] by default and the runner has no flag for a source
-    /// (S4-38L8c).
+    /// Replaces the board's interrupt source (S4-38L8b). Only tests call it; production code
+    /// installs the PIT -> 8259 source through [`Self::enable_pit_pic_irq`] (S4-39g, user-mode
+    /// run). The board has [`NoIrqSource`] by default.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_irq_source(&mut self, source: Box<dyn BoardIrqSource>) {
         self.irq_source = source;
@@ -1583,8 +1583,10 @@ impl LoadedFirmwareBoard {
     /// instruction boundary (`deliver_pending_irq` of the loop), a quantum is never longer than
     /// the instructions left until the source's `next_deadline_ns` (at least one; each cut is
     /// counted and resumed), a guest write to the PIT ports ends the quantum when the source asks
-    /// for it, and the counters of the report are filled. The board has [`NoIrqSource`] unless a
-    /// test installs another, so the hook changes no result today.
+    /// for it, and the counters of the report are filled. The board has [`NoIrqSource`] until
+    /// [`Self::enable_pit_pic_irq`] (user-mode run, S4-39g) or a test installs another source; with
+    /// [`NoIrqSource`] the hook changes no result. Under the PIT -> 8259 source a halted CPU is
+    /// woken (see the idle wake in the loop).
     pub(crate) fn run_linux_boot_cpl0_set(
         &mut self,
         instruction_budget: u64,

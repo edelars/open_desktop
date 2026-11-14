@@ -24,10 +24,10 @@
 //! to [`isa_irq_vector`] of the chip (master `0x30`, slave `0x38`), ICW3 `0x04`
 //! on the master and `0x02` on the slave, ICW4 `0x01`. The master also
 //! accepts ICW4 `0x03` (AEOI, S4-29a2; Linux `check_timer`): the flag is stored
-//! and has no effect, the slave refuses it. Single mode, level
+//! and, since S4-39g, an INTA cycle then sets no ISR bit; the slave refuses it. Single mode, level
 //! trigger, special fully nested mode, buffered mode and the MCS-80 mode are
-//! refused. ExtINT/LINT0 delivery, IRQ lines and the poll command are not part
-//! of this model. ELCR (`0x4D0/0x4D1`, S4-38L7bs) is a separate two-port device
+//! refused. ExtINT/LINT0 delivery, the slave's input lines, the cascade and the poll command are
+//! not part of this model (the master's lines are driven since S4-39g, see above). ELCR (`0x4D0/0x4D1`, S4-38L7bs) is a separate two-port device
 //! ([`Pic8259Elcr`]) whose two bytes are only stored and read back under the
 //! masks `0xF8` (master) and `0xDE` (slave), the standard PIIX-compatible layout
 //! from memory, not checked against the primary source.
@@ -64,7 +64,7 @@ pub const PIC_SLAVE_ICW3: u8 = 2;
 pub const PIC_ICW1_ACCEPTED: u8 = 0x11;
 /// The ICW4 accepted by both chips: 8086 mode, normal EOI, not buffered, not SFNM.
 pub const PIC_ICW4_ACCEPTED: u8 = 0x01;
-/// ICW4 with AEOI (S4-29a2): accepted by the master only, stored without effect.
+/// ICW4 with AEOI (S4-29a2): accepted by the master only; with it an INTA cycle sets no ISR bit (S4-39g).
 pub const PIC_ICW4_MASTER_AEOI: u8 = 0x03;
 
 const ICW1_IC4: u8 = 1 << 0;
@@ -227,14 +227,13 @@ impl Pic8259Handle {
     }
 
     /// Whether an edge on `line` raised now would be delivered at once (the chip is initialised,
-    /// the line is unmasked and no line of the same or a higher priority is in service; a request
-    /// of a higher priority already waiting would be delivered first, which is irrelevant for
-    /// the one line of the board). S4-39g.
+    /// the line is unmasked and no line of the same or a higher priority is in service, and no
+    /// higher-priority request is waiting that would be delivered first). S4-39g.
     pub fn would_deliver(&self, line: u8) -> bool {
         assert!(line < 8, "a chip has eight input lines");
         let mut state = *self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.irr |= 1 << line;
-        Self::deliverable_line(&state).is_some()
+        Self::deliverable_line(&state) == Some(line)
     }
 
     /// The INTA cycle for `vector`: `true` only when `vector` is the one `pending_vector`
@@ -466,7 +465,7 @@ impl Pic8259 {
                 }
                 // S4-29a2: Linux `check_timer` runs `init_8259A(1)`, which writes
                 // ICW4 `0x03` (AEOI) to the master and `0x01` to the slave. AEOI
-                // is stored on the master and has no effect; the slave refuses it.
+                // is stored on the master (an INTA then sets no ISR bit); the slave refuses it.
                 let aeoi = value & ICW4_AEOI != 0;
                 if aeoi && self.role != Pic8259Role::Master {
                     return Err(DeviceError::UnsupportedConfiguration);
