@@ -37329,7 +37329,7 @@ fn step_configured(
         // S4-38L7n/S4-38L7t: and for LOCK BTS/BTR m64, r64.
         | Operation::LockBitMem { .. }
         // S4-38L7bi: and for LOCK BTS m32/m64, imm8.
-        | Operation::LockBtsMemImm { .. } => {
+        | Operation::LockBitMemImm { .. } => {
             control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
         }
         // S4-38L7u: MOV r/m, Sreg exists only in the CPL0 set, and only when the visible
@@ -51406,7 +51406,7 @@ fn step_configured(
         | Operation::XaddDsMem { .. }
         | Operation::LockAndMem { .. }
         | Operation::LockBitMem { .. }
-        | Operation::LockBtsMemImm { .. }
+        | Operation::LockBitMemImm { .. }
         | Operation::MovSregStore { .. }
         | Operation::MovFsSelectorToRax
         | Operation::MovGsSelectorToRax
@@ -58024,7 +58024,14 @@ fn transfer(
             memory.write_integer(address, context, element.size, new)?;
             state.rflags = (state.rflags & !crate::CF) | u64::from(old & mask != 0);
         }
-        Operation::LockBtsMemImm { destination, bit } => {
+        Operation::LockBitMemImm {
+            kind,
+            destination,
+            bit,
+        } => {
+            // S4-39g1: the same path serves LOCK BTR (`F0 [REX] 0F BA /6 ib`, `BitKind::Reset`):
+            // the bit is cleared instead of set; CF is the original bit; the destination is
+            // written back even when the bit was already clear.
             // S4-38L7bi: one vCPU, so read -> write needs no bus lock. The immediate is a bit
             // index inside the operand, not a bit-string offset: it is taken modulo the operand
             // width (Intel SDM Vol.2A, BTS: an imm8 offset on a memory operand addresses a bit
@@ -58039,7 +58046,14 @@ fn transfer(
             let width = destination.size.bytes() * 8;
             let mask = 1u64 << (u64::from(bit) % width as u64);
             let old = memory.read_integer(address, context, destination.size)?;
-            memory.write_integer(address, context, destination.size, old | mask)?;
+            let new = match kind {
+                BitKind::Set => old | mask,
+                BitKind::Reset => old & !mask,
+                BitKind::Test | BitKind::Complement => {
+                    unreachable!("LockBitMemImm decodes only BTS and BTR")
+                }
+            };
+            memory.write_integer(address, context, destination.size, new)?;
             state.rflags = (state.rflags & !crate::CF) | u64::from(old & mask != 0);
         }
         Operation::MovFsStore { dst, src } => {
