@@ -53046,6 +53046,358 @@ fn fxrstor64_at_cpl3_is_refused_at_entry_without_mutation() {
     assert_eq!(*cell.borrow(), before_cell);
 }
 
+// ---- S4-39f22: FXSAVE64 (`48 0F AE 40 40`, `fxsave64 0x40(%rax)`) in the FP member ----
+//
+// Oracles (by hand, Intel SDM from memory, the layout of the FXRSTOR64 tests above): the Long64
+// image has FCW at 0, FSW at 2, the abridged FTW at 4 (one bit per nonempty physical register), FOP
+// at 6, FIP (8 bytes) at 8, FDP (8 bytes) at 16, MXCSR at 24, MXCSR_MASK at 28 (0xFFBF for this
+// target), ST0-7 (logical order from TOP) in 16-byte slots from 32 (10 bytes each) and XMM0-15 from
+// 160. Bytes 5, 14..16 and 22..24 are inside the 64-bit fields or reserved; the 6 high bytes of every
+// ST slot, 416..512 and the bytes between the fields are not written (the sentinel stays). FXSAVE
+// faults with #GP(0) on an area that is not 16-byte aligned or whose 512 bytes leave the canonical
+// range. The CPU state changes only by the RIP; the FP cell is not changed.
+
+const FXSAVE64_RAX_DISP8: [u8; 5] = [0x48, 0x0f, 0xae, 0x40, 0x40];
+
+fn run_fxsave64_at(
+    cell: &RefCell<GuestFpState>,
+    cr0: u64,
+    cr4: u64,
+    code: &[u8],
+    area: u64,
+) -> (LongModeState, LongModeState, FpMemory, Cpl0ProfileSetResult) {
+    let set = fp_set(cell);
+    let mut state = fp_state(cr0, cr4);
+    state.gpr[Register::Rax as usize] = fp_rbx_for(area); // `0x40(%rax)` is `area`
+    let before = state.clone();
+    let mut memory = FpMemory::new(code);
+    let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+    (before, state, memory, result)
+}
+
+/// A hand-chosen state: TOP = 3, physical 0 a valid number, physical 2 a zero, the rest empty,
+/// 64-bit FIP/FDP above 2^32, FOP with all 11 bits, MXCSR with FZ.
+fn fxsave64_source_state() -> GuestFpState {
+    let mut fp = dirty_fp_state();
+    fp.x87.control_word = 0x037a;
+    fp.x87.status_word = 0x1800 | 0x0021;
+    fp.x87.tag_word = 0xffdc;
+    for (physical, register) in fp.x87.registers.iter_mut().enumerate() {
+        for (byte, value) in register.iter_mut().enumerate() {
+            *value = (physical * 16 + byte) as u8 ^ 0x3c;
+        }
+    }
+    fp.x87.registers[0] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f];
+    fp.x87.registers[2] = [0; 10];
+    fp.x87.instruction_pointer = 0x1122_3344_5566_7788;
+    fp.x87.data_pointer = 0x8877_6655_4433_2211;
+    fp.x87.last_opcode = 0x07ff;
+    fp.sse.mxcsr = 0x0000_9fa0;
+    fp
+}
+
+#[test]
+fn fxsave64_stores_the_exact_image_and_nothing_else() {
+    let cell = RefCell::new(fxsave64_source_state());
+    let before_cell = cell.borrow().clone();
+    let (before, state, memory, result) =
+        run_fxsave64_at(&cell, CR0_BASE, CR4_FP, &FXSAVE64_RAX_DISP8, FP_AREA);
+    assert_eq!(result.instructions_executed, 1);
+    assert!(memory.reads.is_empty());
+    // Hand-built expected image over the sentinel.
+    let mut expected = [FP_SENTINEL; 512];
+    expected[0..2].copy_from_slice(&0x037au16.to_le_bytes()); // FCW
+    expected[2..4].copy_from_slice(&0x1821u16.to_le_bytes()); // FSW, TOP = 3
+    expected[4] = 0b0000_0101; // abridged FTW: physical 0 and 2 nonempty
+    expected[6..8].copy_from_slice(&0x07ffu16.to_le_bytes()); // FOP
+    expected[8..16].copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes()); // FIP
+    expected[16..24].copy_from_slice(&0x8877_6655_4433_2211u64.to_le_bytes()); // FDP
+    expected[24..28].copy_from_slice(&0x0000_9fa0u32.to_le_bytes()); // MXCSR
+    expected[28..32].copy_from_slice(&0x0000_ffbfu32.to_le_bytes()); // MXCSR_MASK
+    for logical in 0..8usize {
+        let physical = (3 + logical) & 7;
+        let source = before_cell.x87.registers[physical];
+        expected[32 + 16 * logical..42 + 16 * logical].copy_from_slice(&source);
+    }
+    // ST(5) is physical 0 and ST(7) is physical 2 (the hand-chosen valid number and zero).
+    assert_eq!(
+        expected[32 + 16 * 5..42 + 16 * 5],
+        [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f]
+    );
+    assert_eq!(expected[32 + 16 * 7..42 + 16 * 7], [0; 10]);
+    for (register, lane) in before_cell.sse.xmm.iter().enumerate() {
+        expected[160 + 16 * register..176 + 16 * register].copy_from_slice(lane);
+    }
+    assert_eq!(memory.area(FP_AREA), &expected[..]);
+    // Outside the 512 bytes nothing changed: the code bytes and everything up to the buffer end.
+    let pristine = FpMemory::new(&FXSAVE64_RAX_DISP8);
+    let area_offset = (FP_AREA - RIP) as usize;
+    assert_eq!(memory.bytes[..area_offset], pristine.bytes[..area_offset]);
+    assert_eq!(
+        memory.bytes[area_offset + 512..],
+        pristine.bytes[area_offset + 512..]
+    );
+    // The stores: ascending, 1/2/4/8 bytes each, exactly the 6 defined fields
+    // (5 + 10 + 8 + 8 + 8 * 10 + 256 = 367 bytes), ending at the end of XMM15.
+    let mut last_end = FP_AREA;
+    let mut total = 0;
+    for &(address, len) in &memory.writes {
+        assert!([1, 2, 4, 8].contains(&len), "{address:#x}+{len}");
+        assert!(address >= last_end, "ascending, no overlap: {address:#x}");
+        last_end = address + len as u64;
+        total += len;
+    }
+    assert_eq!(total, 367);
+    assert_eq!(last_end, FP_AREA + 416);
+    // The cell is not changed; only RIP (+5: REX.W, 0F, AE, ModRM, disp8) moved in the CPU state.
+    assert_eq!(*cell.borrow(), before_cell);
+    let mut expected_state = before.clone();
+    expected_state.rip += 5;
+    assert_eq!(state, expected_state);
+}
+
+#[test]
+fn fxsave64_of_the_initial_state_writes_the_architectural_defaults() {
+    let cell = RefCell::new(GuestFpState::initial());
+    let (_, state, memory, result) =
+        run_fxsave64_at(&cell, CR0_BASE, CR4_FP, &FXSAVE64_RAX_DISP8, FP_AREA);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 5);
+    let image = memory.area(FP_AREA);
+    assert_eq!(image[0..2], [0x7f, 0x03], "FCW 0x037F");
+    assert_eq!(image[2..4], [0, 0], "FSW 0");
+    assert_eq!(image[4], 0, "all eight registers empty");
+    assert_eq!(image[6..8], [0, 0], "FOP");
+    assert_eq!(image[8..16], [0; 8], "FIP");
+    assert_eq!(image[16..24], [0; 8], "FDP");
+    assert_eq!(image[24..28], [0x80, 0x1f, 0, 0], "MXCSR 0x1F80");
+    assert_eq!(image[28..32], [0xbf, 0xff, 0, 0], "MXCSR_MASK 0xFFBF");
+    assert_eq!(
+        image[416..512],
+        [FP_SENTINEL; 96],
+        "416..512 is not written"
+    );
+}
+
+#[test]
+fn fxsave64_then_fxrstor64_round_trips_the_fp_state() {
+    let saved = round_trip_fp_state();
+    // 64-bit FIP/FDP (the plain FXSAVE could only keep 32 bits of them).
+    let mut saved = saved;
+    saved.x87.instruction_pointer = 0x0123_4567_89ab_cdef;
+    saved.x87.data_pointer = 0xfedc_ba98_7654_3210;
+    // Run 1: FXSAVE64 of `saved` into the area.
+    let cell = RefCell::new(saved.clone());
+    let (_, state, first, result) =
+        run_fxsave64_at(&cell, CR0_BASE, CR4_FP, &FXSAVE64_RAX_DISP8, FP_AREA);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 5);
+    let image: [u8; 512] = first.area(FP_AREA).try_into().unwrap();
+    // Run 2: FXRSTOR64 of that image into a cell that starts from the initial state.
+    let restored = RefCell::new(GuestFpState::initial());
+    let (_, state, memory, result) = run_fxrstor_at(
+        &restored,
+        CR0_BASE,
+        CR4_FP,
+        &FXRSTOR64_RBX_DISP8,
+        FP_AREA,
+        |m| write_image(m, FP_AREA, &image),
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 5);
+    assert!(memory.writes.is_empty());
+    assert_eq!(*restored.borrow(), saved);
+}
+
+#[test]
+fn fxsave64_misaligned_area_is_gp0_with_no_write_and_no_state_change() {
+    for area in [FP_AREA + 1, FP_AREA + 8, FP_AREA + 15] {
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let (before, state, memory, result) =
+            run_fxsave64_at(&cell, CR0_BASE, CR4_FP, &FXSAVE64_RAX_DISP8, area);
+        assert_eq!(exit(&result), &gp0(), "{area:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{area:#x}"
+        );
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), before_cell);
+    }
+    // 16-byte alignment is enough.
+    let cell = RefCell::new(dirty_fp_state());
+    let (_, state, memory, result) =
+        run_fxsave64_at(&cell, CR0_BASE, CR4_FP, &FXSAVE64_RAX_DISP8, FP_AREA + 16);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 5);
+    assert_eq!(
+        memory.area(FP_AREA + 16)[0..2],
+        cell.borrow().x87.control_word.to_le_bytes()
+    );
+    // The 16 bytes before the area are untouched.
+    assert_eq!(
+        memory.bytes[(FP_AREA - RIP) as usize..][..16],
+        [FP_SENTINEL; 16]
+    );
+}
+
+#[test]
+fn fxsave64_wrapping_or_non_canonical_area_is_gp0_with_no_write() {
+    // 0xFFFF_FFFF_FFFF_FFF0 is aligned and canonical but its 512-byte area overflows; the others
+    // start non-canonical or start canonical and end (start + 511) non-canonical.
+    for area in [
+        0xffff_ffff_ffff_fff0u64,
+        0x0001_0000_0000_0000,
+        0x0000_7fff_ffff_ff00,
+    ] {
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let (before, state, memory, result) =
+            run_fxsave64_at(&cell, CR0_BASE, CR4_FP, &FXSAVE64_RAX_DISP8, area);
+        assert_eq!(exit(&result), &gp0(), "{area:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert!(memory.writes.is_empty(), "{area:#x}");
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), before_cell);
+    }
+}
+
+#[test]
+fn fxsave64_write_failure_does_not_retire_and_keeps_the_cell() {
+    // The area 0x1f00..0x2100 runs past the buffer (end 0x2000): the earlier field stores are not
+    // rolled back (the image store is not a transaction), the RIP and the cell stay.
+    let cell = RefCell::new(dirty_fp_state());
+    let before_cell = cell.borrow().clone();
+    let (before, state, memory, result) =
+        run_fxsave64_at(&cell, CR0_BASE, CR4_FP, &FXSAVE64_RAX_DISP8, 0x1f00);
+    assert!(
+        matches!(
+            exit(&result),
+            RunExit::MemoryError(MemoryError::Unmapped { .. })
+        ),
+        "{:?}",
+        result.exit
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert!(!memory.writes.is_empty());
+    assert!(memory.writes.iter().all(|&(address, _)| address < 0x2000));
+    assert_eq!(state, before);
+    assert_eq!(*cell.borrow(), before_cell);
+}
+
+#[test]
+fn fxsave64_follows_the_fxsave_gates_ts_em_and_osfxsr() {
+    for cr0 in [
+        CR0_BASE | CR0_TS,
+        CR0_BASE | CR0_EM,
+        CR0_BASE | CR0_TS | CR0_EM,
+    ] {
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let (before, state, memory, result) =
+            run_fxsave64_at(&cell, cr0, CR4_FP, &FXSAVE64_RAX_DISP8, FP_AREA);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 7,
+                error_code: None,
+                linear_address: None,
+            }),
+            "cr0 {cr0:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert!(memory.writes.is_empty());
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), before_cell);
+    }
+    for cr4 in [CR4_BASE, CR4_BASE | (1 << 10)] {
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let (before, state, memory, result) =
+            run_fxsave64_at(&cell, CR0_BASE, cr4, &FXSAVE64_RAX_DISP8, FP_AREA);
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xae });
+        assert_eq!(result.instructions_executed, 0);
+        assert!(memory.writes.is_empty());
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), before_cell);
+    }
+}
+
+#[test]
+fn fxsave64_outside_the_member_is_unsupported_with_its_opcode() {
+    // Without the FP member (CPUID declared, no `with_fp_state`).
+    let set = base().with_cpuid(&CpuidProfile::X8664V1Stage4A);
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    state.gpr[Register::Rax as usize] = fp_rbx_for(FP_AREA);
+    let before = state.clone();
+    let mut memory = FpMemory::new(&FXSAVE64_RAX_DISP8);
+    let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xae });
+    assert_eq!(result.instructions_executed, 0);
+    assert!(memory.writes.is_empty());
+    assert_eq!(state, before);
+    // With the member, every other encoding of the group stays refused and changes nothing.
+    for code in [
+        &[0x0f, 0xae, 0x40, 0x40][..],             // FXSAVE32 (no REX.W)
+        &[0x48, 0x0f, 0xae, 0x40, 0x41][..],       // another displacement
+        &[0x48, 0x0f, 0xae, 0x41, 0x40][..],       // another ModRM (RCX base)
+        &[0x48, 0x0f, 0xae, 0x00][..],             // no displacement
+        &[0x64, 0x48, 0x0f, 0xae, 0x40, 0x40][..], // FS segment prefix
+        &[0x66, 0x48, 0x0f, 0xae, 0x40, 0x40][..], // operand-size prefix
+        &[0x48, 0x0f, 0xae, 0xc0][..],             // mod = 11
+        &[0x49, 0x0f, 0xae, 0x40, 0x40][..],       // REX.W + REX.B
+        &[0x4c, 0x0f, 0xae, 0x40, 0x40][..],       // REX.W + REX.R
+        &[0x67, 0x48, 0x0f, 0xae, 0x40, 0x40][..], // address-size prefix
+        &[0xf3, 0x48, 0x0f, 0xae, 0x40, 0x40][..], // REP prefix
+        &[0xf0, 0x48, 0x0f, 0xae, 0x40, 0x40][..], // LOCK prefix
+    ] {
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let (before, state, memory, result) =
+            run_fxsave64_at(&cell, CR0_BASE, CR4_FP, code, FP_AREA);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0xae },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{code:02x?}"
+        );
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), before_cell);
+    }
+}
+
+#[test]
+fn fxsave64_at_cpl3_is_refused_at_entry_without_mutation() {
+    let cell = RefCell::new(dirty_fp_state());
+    let before_cell = cell.borrow().clone();
+    let set = fp_set(&cell);
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    state.gpr[Register::Rax as usize] = fp_rbx_for(FP_AREA);
+    let before = state.clone();
+    let mut memory = FpMemory::new(&FXSAVE64_RAX_DISP8);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        None,
+        || false,
+    );
+    assert!(
+        matches!(result, Err(Cpl0ProfileSetInputError::WrongPrivilege)),
+        "{result:?}"
+    );
+    assert!(memory.writes.is_empty());
+    assert_eq!(state, before);
+    assert_eq!(*cell.borrow(), before_cell);
+}
+
 // ---- S4-38L9G: `VERW m16` (`0F 00 /5`, memory operand, no prefix or a lone REX without W) in the CPL0
 // set. The 16-bit selector is read from the effective address (exactly two bytes, DS base 0 in
 // Long64); ZF is set when the selector (TI = 0, GDT) names a writable data segment reachable at CPL 0

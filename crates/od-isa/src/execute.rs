@@ -34653,13 +34653,17 @@ fn step_configured(
         });
     }
     let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
-    // S4-38L9d/E: the FP member of the CPL0 set owns `FNINIT`, the plain `FXSAVE` and `FXRSTOR64`; its
-    // state lives in the member's cell, so these three never reach the `state.x87`/`state.sse` paths below.
+    // S4-38L9d/E, S4-39f22: the FP member of the CPL0 set owns `FNINIT`, the plain `FXSAVE`, `FXSAVE64`
+    // and `FXRSTOR64`; its state lives in the member's cell, so these four never reach the
+    // `state.x87`/`state.sse` paths below.
     if let Some(fp_cell) = fp_cpl0
         && control_policy.is_some()
         && matches!(
             instruction.operation,
-            Operation::Fninit | Operation::FxsaveRipRelative(_) | Operation::Fxrstor64RbxDisp8(_)
+            Operation::Fninit
+                | Operation::FxsaveRipRelative(_)
+                | Operation::Fxsave64RaxDisp8(_)
+                | Operation::Fxrstor64RbxDisp8(_)
         )
     {
         return step_cpl0_fp(state, memory, context, &instruction, next_rip, fp_cell);
@@ -56649,6 +56653,49 @@ fn step_cpl0_fp(
                 context,
                 address,
                 FxsaveLayout::Plain,
+                // The paged adapter of the board stores 1/2/4/8 bytes per call.
+                true,
+            ) {
+                return report_memory_error(error);
+            }
+            state.rip = next_rip;
+            Ok(StepOutcome::Advanced)
+        }
+        Operation::Fxsave64RaxDisp8(area) => {
+            // S4-39f22: `48 0F AE 40 40` (`fxsave64 0x40(%rax)`, the kernel's FP-state save).
+            // The mirror of the FXRSTOR64 arm below: the same encoding checks and CR4/CR0 gates,
+            // only the REX.W form with the fixed base (`rax`) and displacement exists. The image
+            // is the Long64 layout (64-bit FIP/FDP, XMM0-15); the selectors are not part of it, so
+            // they need not be modeled. The cell is not changed; only the RIP.
+            if instruction.opcode.map != OpcodeMap::Escape0f
+                || instruction.opcode.byte != 0xae
+                || instruction.length != 5
+                || instruction.prefixes
+                    != (Prefixes {
+                        rex: Some(0x48),
+                        ..Prefixes::default()
+                    })
+                || instruction.address_size != OperandSize::Qword
+                || area.base != AddressBase::Register(Register::Rax)
+                || area.index.is_some()
+                || area.displacement != 0x40
+                || area.size != OperandSize::Qword
+                || cr4 & (1 << 9) == 0
+            {
+                return unsupported;
+            }
+            if cr0 & 0xc != 0 {
+                return device_not_available;
+            }
+            let address = area.effective_address(state, next_rip);
+            let fp = cell.borrow();
+            if let Err(error) = fxsave(
+                &fp.x87,
+                &fp.sse,
+                memory,
+                context,
+                address,
+                FxsaveLayout::Long64,
                 // The paged adapter of the board stores 1/2/4/8 bytes per call.
                 true,
             ) {
