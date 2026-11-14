@@ -24,14 +24,24 @@ enum VMHostExitStatus {
     static let failed: Int32 = 6
 }
 
+/// A profile that cannot do the requested operation (S4-41b: pause and resume of the Linux direct-boot board, which has no such API).
+/// The state machine answers `unsupported` and leaves the state alone; it is not a failure of the session.
+struct ProfileUnsupportedError: Error, CustomStringConvertible, Equatable {
+    let operation: String
+    var description: String { "\(operation) is not supported by this profile" }
+}
+
 /// The machine behind the state machine. For test-only profiles this is a display session that is polled; it is not a guest.
+/// The `linux-direct` profile (S4-41b, `LinuxDirectProfileRunner`) is a child process of the runner and is not reachable over control v2 yet.
 protocol ProfileRunner: AnyObject {
     /// Creates the profile session and everything it needs. A throw means resources are in an unknown state (`failed`).
     func start(profile: UInt32, screens: Int) throws
     /// Stops polling and publishing; the last published frame stays in its slot. Resources are kept.
-    func pause()
+    /// Throws `ProfileUnsupportedError` when the profile has no pause: nothing changed and the answer is `unsupported`.
+    func pause() throws
     /// Starts polling again. `reason` is where the TIME_SYNC hook of S11-22 will look (no guest clock exists yet).
-    func resume(reason: ControlV2Reason)
+    /// Throws `ProfileUnsupportedError` like `pause`.
+    func resume(reason: ControlV2Reason) throws
     /// Destroys the session. A throw means resources are in an unknown state (`failed`).
     func stop() throws
 }
@@ -376,7 +386,13 @@ final class Lifecycle {
             return reject(ControlV2ValueError(.invalidArgument, aux0: 0, detail: "PAUSE reason"), kind: .pause, requestID: requestID)
         }
         // The safe point is immediate: polling is only a flag of the I/O loop, so `pause_timeout` cannot occur here.
-        runner.pause()
+        do {
+            try runner.pause()
+        } catch let error as ProfileUnsupportedError {
+            return reject(ControlV2ValueError(.unsupported, detail: "\(error)"), kind: .pause, requestID: requestID)
+        } catch {
+            return failure(kind: .pause, requestID: requestID, detail: "profile session could not be paused: \(error)")
+        }
         return accept(.pause, requestID: requestID, after: transition(to: .paused, reason: pauseReason, requestID: requestID))
     }
 
@@ -385,7 +401,13 @@ final class Lifecycle {
         guard let resumeReason = ControlV2Reason(rawValue: reason), [.user, .systemWake].contains(resumeReason) else {
             return reject(ControlV2ValueError(.invalidArgument, aux0: 0, detail: "RESUME reason"), kind: .resume, requestID: requestID)
         }
-        runner.resume(reason: resumeReason)
+        do {
+            try runner.resume(reason: resumeReason)
+        } catch let error as ProfileUnsupportedError {
+            return reject(ControlV2ValueError(.unsupported, detail: "\(error)"), kind: .resume, requestID: requestID)
+        } catch {
+            return failure(kind: .resume, requestID: requestID, detail: "profile session could not be resumed: \(error)")
+        }
         return accept(.resume, requestID: requestID, after: transition(to: .running, reason: resumeReason, requestID: requestID))
     }
 

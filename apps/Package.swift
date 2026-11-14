@@ -39,7 +39,7 @@ let package = Package(
             path: "vmhost/Sources",
             exclude: ["ODHostABI", ".gitkeep"],
             sources: [
-                "InputChannel.swift", "FrameTransport.swift", "BundleLock.swift", "Lifecycle.swift", "ControlV2Host.swift", "VMHostMain.swift",
+                "InputChannel.swift", "FrameTransport.swift", "BundleLock.swift", "Lifecycle.swift", "LinuxDirectRunner.swift", "ControlV2Host.swift", "VMHostMain.swift",
             ],
             linkerSettings: [
                 .unsafeFlags([hostLibrary("debug")], .when(configuration: .debug)),
