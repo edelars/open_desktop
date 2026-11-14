@@ -21006,6 +21006,14 @@ pub fn run_with_cpl0_profile_set_and_pio<P: crate::PortIo>(
 /// callback is polled up to twice per instruction boundary; `IN`/`OUT`, the CR3 effect and the
 /// `IRETQ` boundary are never reached because they are not allow-listed.
 ///
+/// S4-39f20: the one exception to the single-instruction steps is `F3 A4` (REP MOVSB, DF = 0): it
+/// bypasses the step of the set and runs in [`cpl3_rep_movsb`], one iteration per unit of the
+/// instruction budget (and of `instructions_executed`), with the STOP callback polled once before
+/// each iteration. The admission of the step is checked first by a zero-budget run of the same
+/// inner entry; a state that fails it refuses the form with `Unsupported { opcode: 0xa4 }`. A stop
+/// in the middle of a string (budget, STOP, #PF, #GP) leaves RIP on the instruction, so a count
+/// above zero means progress, not a completed instruction.
+///
 /// S4-39f (ISSUE-087): when a retired instruction leaves CPL3 (`SYSCALL`: CS RPL 0), the run ends
 /// right after it with `Run(StopAddress)` while budget is left; the caller continues with the CPL0
 /// entry on the same state.
@@ -21035,7 +21043,36 @@ pub fn run_with_cpl3_profile_set(
         {
             // S4-39f20: `F3 A4` (REP MOVSB) runs iteration by iteration here, not through the
             // step: the set's REP path ignores the instruction budget inside a string.
-            if cpl3_is_rep_movsb(&instruction) && state.rflags & (1 << 10) == 0 {
+            // The string path never enters the step, so the admission the step makes (flags
+            // defined, CR0/CR4/CR3 and policy, FP state, activity, STI shadow, RFLAGS.VM and
+            // bit 1, HLT/STI preconditions) is made here by a zero-budget run of the same inner
+            // entry: it checks the admission and then stops before any fetch. A state that does
+            // not pass is refused like any other unadmitted `F3 A4` (`Unsupported { 0xa4 }`
+            // from the allow-list), with no read, write or register change.
+            if cpl3_is_rep_movsb(&instruction)
+                && state.rflags & (1 << 10) == 0
+                && run_cpl0_profile_set_inner(
+                    state,
+                    memory,
+                    RunConfig {
+                        instruction_budget: 0,
+                        stop_rip: None,
+                        ..config
+                    },
+                    rflags_defined,
+                    set,
+                    None,
+                    None,
+                    || false,
+                    PrivilegeLevel::Ring3,
+                )
+                .is_ok_and(|(probe, cr3_effect, user_entry)| {
+                    probe.exit == RunExit::InstructionBudgetExhausted
+                        && probe.instructions_executed == 0
+                        && cr3_effect.is_none()
+                        && user_entry.is_none()
+                })
+            {
                 let next_rip = state.rip.wrapping_add(instruction.length as u64);
                 if let Some(exit) = cpl3_rep_movsb(
                     state,
@@ -21089,8 +21126,10 @@ pub fn run_with_cpl3_profile_set(
             PrivilegeLevel::Ring3,
         );
         let Ok((result, cr3_effect, user_entry)) = inner else {
-            // Only reachable after a retired instruction changed an admitted input; the state has
-            // already moved, so a typed admission error would misreport it.
+            // An admission error of the step: after a retired instruction changed an admitted
+            // input, or already at the first step (the entry checks only the Ring3 state and the
+            // syscall cells). Reported as `Unsupported` with the state as it is, not as a typed
+            // error, because earlier instructions may have moved it.
             return Ok(Cpl0ProfileSetResult {
                 exit: Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode: 0x0f }),
                 instructions_executed: retired,

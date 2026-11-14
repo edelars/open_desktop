@@ -5898,3 +5898,84 @@ fn rep_movsb_refusals_and_neighbouring_string_opcodes_stay_outside() {
         assert!(memory.writes.is_empty(), "{name}");
     }
 }
+
+#[test]
+fn rep_movsb_is_refused_on_a_state_the_step_would_not_admit() {
+    // (name, state change, initial rflags_defined)
+    type Change = fn(&mut LongModeState);
+    let cases: &[(&str, Change, u64)] = &[
+        (
+            "activity Halted",
+            |state| state.activity = Some(CpuActivity::Halted),
+            od_isa::INTEGER_FLAGS,
+        ),
+        (
+            "sti_shadow Blocking with IF = 1",
+            |state| state.sti_shadow = Some(StiShadow::Blocking),
+            od_isa::INTEGER_FLAGS,
+        ),
+        (
+            "cr0 missing",
+            |state| state.cr0 = None,
+            od_isa::INTEGER_FLAGS,
+        ),
+        (
+            "cr4 missing",
+            |state| state.cr4 = None,
+            od_isa::INTEGER_FLAGS,
+        ),
+        (
+            "RFLAGS bit 1 clear",
+            |state| state.rflags &= !2,
+            od_isa::INTEGER_FLAGS,
+        ),
+        (
+            "RFLAGS.VM set",
+            |state| state.rflags |= 1 << 17,
+            od_isa::INTEGER_FLAGS,
+        ),
+        (
+            "initial rflags_defined outside the integer flags",
+            |_| {},
+            od_isa::INTEGER_FLAGS | (1 << 9),
+        ),
+    ];
+    for (name, change, defined) in cases {
+        let mut state = rep_state(3);
+        change(&mut state);
+        let before = state.clone();
+        let mut memory = rep_memory(&[0xf3, 0xa4]);
+        let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+        let result = run_with_cpl3_profile_set(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring3, 10),
+            *defined,
+            &set,
+            None,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0xa4 },
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert_eq!(state, before, "{name}");
+        assert_eq!(memory.reads, 0, "{name}");
+        assert!(memory.writes.is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn rep_movsb_with_rcx_zero_stops_on_a_stop_request_before_retiring() {
+    let mut state = rep_state(0);
+    let before = state.clone();
+    let mut memory = rep_memory(&[0xf3, 0xa4]);
+    let result = run3_data_stop(&mut state, &mut memory, 10, || true);
+    assert_eq!(exit(&result), &RunExit::StopRequested);
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(state.rip, RIP);
+}
