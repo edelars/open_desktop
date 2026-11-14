@@ -508,6 +508,14 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("addr32 jne rel8", &[0x67, 0x75, 0x00], 0x75),
         ("fs jne rel8", &[0x64, 0x75, 0x00], 0x75),
         ("repne jne rel8", &[0xf2, 0x75, 0x00], 0x75),
+        // S4-39f7 review: LOOP/LOOPE/LOOPNE/JRCXZ rel8 and the branch hints before a short Jcc stay outside.
+        ("loopne rel8 (E0)", &[0xe0, 0x00], 0xe0),
+        ("loope rel8 (E1)", &[0xe1, 0x00], 0xe1),
+        ("loop rel8 (E2)", &[0xe2, 0x00], 0xe2),
+        ("jrcxz rel8 (E3)", &[0xe3, 0x00], 0xe3),
+        ("cs-hint jne rel8", &[0x2e, 0x75, 0x00], 0x75),
+        ("ds-hint je rel8", &[0x3e, 0x74, 0x00], 0x74),
+        ("lock je rel8", &[0xf0, 0x74, 0x00], 0x74),
         // S4-39f7: CMP r/m64, r64 is allowed only as `[REX.W] 39 /r` with mod = 11 and no prefix.
         ("cmp ebx, r13d (REX.R 39 /r)", &[0x44, 0x39, 0xeb], 0x39),
         ("cmp ebx, ecx (39 /r)", &[0x39, 0xcb], 0x39),
