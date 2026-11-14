@@ -109,6 +109,57 @@ final class HostConditionsSleepXCTests: XCTestCase {
         XCTAssertEqual(b.launches, 0, "a machine without a process gets nothing")
     }
 
+    func testSleepDuringStartPausesAfterStartCompletes() {
+        let launcher = HCLauncher()
+        let machine = makeMachine(launcher)
+        machine.start()
+        launcher.emit(.ready)
+        launcher.session.ack("configure", kind: .configure, state: .stopped)
+        let host = conditions([machine])
+
+        host.handleWillSleep()
+        launcher.emit(changed(.stopped, .running))
+        XCTAssertEqual(launcher.session.calls, [], "do not overlap PAUSE with START")
+        launcher.session.ack("start", kind: .start, state: .running)
+
+        XCTAssertEqual(launcher.session.calls, ["pause"])
+        XCTAssertEqual(launcher.session.reasons, [.systemSleep])
+    }
+
+    func testSleepDuringResumePausesAfterResumeCompletes() {
+        let launcher = HCLauncher()
+        let machine = makeMachine(launcher)
+        runToRunning(machine, launcher)
+        machine.pause()
+        pausedBy(.user, machine, launcher)
+        machine.resume()
+        let host = conditions([machine])
+
+        host.handleWillSleep()
+        launcher.emit(changed(.paused, .running, reason: .user))
+        XCTAssertEqual(launcher.session.calls, ["pause", "resume"], "do not overlap PAUSE with RESUME")
+        launcher.session.ack("resume", kind: .resume, state: .running)
+
+        XCTAssertEqual(launcher.session.calls, ["pause", "resume", "pause"])
+        XCTAssertEqual(launcher.session.reasons, [.user, .user, .systemSleep])
+    }
+
+    func testSleepDuringRefusedDiskPauseRetriesAsSystemPause() {
+        let launcher = HCLauncher()
+        let machine = makeMachine(launcher)
+        runToRunning(machine, launcher)
+        machine.availableSpace = { _ in 0 }
+        machine.checkDiskSpace()
+        let host = conditions([machine])
+
+        host.handleWillSleep()
+        XCTAssertEqual(launcher.session.calls, ["pause"], "wait for the disk-space PAUSE already in flight")
+        launcher.session.refuse("pause", code: .pauseTimeout, kind: .pause, state: .running)
+
+        XCTAssertEqual(launcher.session.calls, ["pause", "pause"])
+        XCTAssertEqual(launcher.session.reasons, [.diskSpace, .systemSleep])
+    }
+
     func testWakeResumesAMachinePausedForTheSleepWithTheWakeReason() {
         let launcher = HCLauncher()
         let machine = makeMachine(launcher)

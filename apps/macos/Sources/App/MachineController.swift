@@ -303,6 +303,8 @@ final class MachineController: ObservableObject, Identifiable {
     private var asleep = false
     /// The `PAUSE` of the sleep was sent and is not answered yet.
     private var sleepPauseInFlight = false
+    /// The machine became running during sleep while another lifecycle request was still in flight.
+    private var sleepPausePending = false
     /// A disk-space `PAUSE` is in flight: a sleep during it must not be reported as a skipped pause.
     private var diskPauseInFlight = false
     /// The Mac woke before the pause of the sleep landed (or while another request was in flight): the resume follows as soon as it can.
@@ -440,13 +442,24 @@ final class MachineController: ObservableObject, Identifiable {
         sleepNotices = []
         wakeResumePending = false
         guard session != nil, runState == .running else { return }
-        guard allows(.pause), let session else {
-            // A request is in flight: if it is the disk-space pause, the machine is paused anyway and nothing is skipped.
-            if !diskPauseInFlight {
+        guard allows(.pause) else {
+            if diskPauseInFlight {
+                // The disk-space PAUSE can be refused. Preserve the sleep intent and retry it after that request completes.
+                sleepPausePending = true
+            } else {
                 sleepNotices.append(.plain(ErrorPresentation.host(.sleepPauseSkipped, context: errorContext())))
             }
             return
         }
+        sleepPausePending = true
+        flushSystemSleepPause()
+    }
+
+    /// A START or RESUME can finish after `willSleep`. Defer the system PAUSE until the lifecycle request no longer owns the slot.
+    private func flushSystemSleepPause() {
+        guard asleep, sleepPausePending, runState == .running, let session else { return }
+        guard allows(.pause) else { return }
+        sleepPausePending = false
         sleepPauseInFlight = true
         send(
             operation: "Пауза перед сном", onRefusal: { [weak self] line in self?.recordSleepNotice(line) },
@@ -458,6 +471,7 @@ final class MachineController: ObservableObject, Identifiable {
     /// that the application paused for the sleep, and only to it. A machine that is paused by the user stays paused.
     func resumeAfterSystemWake() {
         asleep = false
+        sleepPausePending = false
         if !sleepNotices.isEmpty {
             var line = sleepNotices[0]
             let rest = sleepNotices.dropFirst().map { [$0.text, $0.details].compactMap { $0 }.joined(separator: "\n") }
@@ -622,6 +636,7 @@ final class MachineController: ObservableObject, Identifiable {
             }
             // `connectionClosed` and the like: the process is going away, `exited` follows with the real reason.
             completed?()
+            self.flushSystemSleepPause()
             self.flushWakeResume()
         }
     }
@@ -642,8 +657,11 @@ final class MachineController: ObservableObject, Identifiable {
         case .stateChanged(_, let to, let reason, _):
             runState = MachineRunState(to)
             pauseReason = to == .paused ? ControlV2Reason(rawValue: reason) : nil
+            if asleep, to == .running, !sleepPauseInFlight { sleepPausePending = true }
+            if to != .running { sleepPausePending = false }
             if to != .paused { wakeResumePending = false }
             windowHost?.machine(self, didChange: runState)
+            flushSystemSleepPause()
             if to == .failed {
                 // The VMHost sent no `ERROR` here: the state came from `STATE_CHANGED`, so the entry is the catalog's and the details say so.
                 var line = MachineNotice.plain(
@@ -693,6 +711,7 @@ final class MachineController: ObservableObject, Identifiable {
         session = nil
         requestInFlight = false
         sleepPauseInFlight = false
+        sleepPausePending = false
         wakeResumePending = false
         diskWarningShown = false
         pauseReason = nil
@@ -749,6 +768,7 @@ final class MachineController: ObservableObject, Identifiable {
                     guard let self, self.generation == current else { return }
                     self.requestInFlight = false
                     if case .failure(let error) = result { self.startSequenceFailed(error, session: session) }
+                    self.flushSystemSleepPause()
                 }
             case .failure(let error):
                 self.requestInFlight = false
