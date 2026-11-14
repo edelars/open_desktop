@@ -25,7 +25,7 @@ from typing import Any, Callable
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_DIR = ROOT / "tests/fixtures/guest/stage4/kvm_method"
 RUNNER_SOURCE = ROOT / "tools/kvm-runner/kvm_runner.c"
-DEFAULT_OUTPUT = ROOT / "docs/reports/data/stage4/s4-34a-kvm-method.json"
+DEFAULT_OUTPUT = ROOT / "docs/reports/data/stage4/s4-34b-kvm-repeatability.json"
 DEFAULT_HOST = "senya@192.168.1.14"
 DEFAULT_REMOTE_DIR = "/home/senya/od-kvm"
 GCC_FLAGS = ["-O2", "-Wall", "-Wextra", "-Werror", "-std=c11"]
@@ -52,7 +52,16 @@ EXPECTED_EXITS = [
     {"kind": "io", "port": EXPECTED_UART_PORT, "size": 1, "dir": "out", "data": "0x0a"},
     {"kind": "hlt"},
 ]
+EXPECTED_NO_HLT_EXITS = EXPECTED_EXITS[:-1]
+EXPECTED_WRONG_STRING_EXITS = [
+    {"kind": "io", "port": EXPECTED_UART_PORT, "size": 1, "dir": "out", "data": "0x4e"},
+    {"kind": "io", "port": EXPECTED_UART_PORT, "size": 1, "dir": "out", "data": "0x4f"},
+    {"kind": "io", "port": EXPECTED_UART_PORT, "size": 1, "dir": "out", "data": "0x0a"},
+    {"kind": "hlt"},
+]
 EXPECTED_KVM_API = 12
+CPUID_MAX_ENTRIES = 256
+CPUID_MODEL_FIELDS = {"function", "index", "flags", "eax", "ebx", "ecx", "edx"}
 
 # case name -> (clang defines, remote image name, expectation)
 CASES: dict[str, dict[str, Any]] = {
@@ -60,6 +69,8 @@ CASES: dict[str, dict[str, Any]] = {
         "defines": [],
         "expect_exit": "hlt",
         "expect_uart": EXPECTED_UART,
+        "expect_uart_hex": "4f4b0a",
+        "expect_exits": EXPECTED_EXITS,
         "injection": False,
         "description": "OK\\n then HLT",
     },
@@ -67,6 +78,8 @@ CASES: dict[str, dict[str, Any]] = {
         "defines": ["INJECT_NO_HLT"],
         "expect_exit": "budget",
         "expect_uart": EXPECTED_UART,
+        "expect_uart_hex": "4f4b0a",
+        "expect_exits": EXPECTED_NO_HLT_EXITS,
         "injection": True,
         "description": "injection (a): OK\\n then jmp $, no HLT",
     },
@@ -74,6 +87,8 @@ CASES: dict[str, dict[str, Any]] = {
         "defines": ["INJECT_WRONG_STR"],
         "expect_exit": "hlt",
         "expect_uart": "NO\n",
+        "expect_uart_hex": "4e4f0a",
+        "expect_exits": EXPECTED_WRONG_STRING_EXITS,
         "injection": True,
         "description": "injection (b): NO\\n then HLT",
     },
@@ -129,35 +144,89 @@ def normalize_exits(exits: Any) -> Any:
     return out
 
 
+def uart_bytes_from_exits(exits: Any) -> bytes | None:
+    if not isinstance(exits, list):
+        return None
+    data = bytearray()
+    for exit_rec in exits:
+        if not isinstance(exit_rec, dict):
+            return None
+        if exit_rec.get("kind") == "hlt":
+            continue
+        if exit_rec.get("kind") != "io" or exit_rec.get("dir") != "out" or _num(exit_rec.get("size")) != 1:
+            return None
+        port = exit_rec.get("port")
+        try:
+            port_number = int(port, 16) if isinstance(port, str) else port
+        except ValueError:
+            return None
+        if type(port_number) is not int or port_number != int(EXPECTED_UART_PORT, 16):
+            return None
+        value = exit_rec.get("data")
+        try:
+            value = int(value, 16) if isinstance(value, str) else value
+        except ValueError:
+            return None
+        if type(value) is not int or not 0 <= value <= 0xFF:
+            return None
+        data.append(value)
+    return bytes(data)
+
+
 def evaluate_main_checks(
     result: dict[str, Any],
     *,
     local_image_sha: str,
     remote_image_sha: str,
+    case: str = "main",
 ) -> list[dict[str, Any]]:
     """Acceptance checks of the primary run (S4-34a plan, item 3)."""
+    spec = CASES[case]
     entry = result.get("entry") if isinstance(result.get("entry"), dict) else {}
     checks: list[dict[str, Any]] = []
 
     def add(name: str, expected: Any, actual: Any) -> None:
         checks.append({"name": name, "expected": expected, "actual": actual, "ok": expected == actual})
 
-    add("exit", "hlt", result.get("exit"))
-    add("uart_text", EXPECTED_UART, result.get("uart_text"))
+    add("exit", spec["expect_exit"], result.get("exit"))
+    add("uart_text", spec["expect_uart"], result.get("uart_text"))
+    add("uart_hex", spec["expect_uart_hex"], result.get("uart_hex"))
     add("entry.rip", EXPECTED_ENTRY["rip"], _num(entry.get("rip")))
     add("entry.cr3", EXPECTED_ENTRY["cr3"], _num(entry.get("cr3")))
     add("entry.cr4", EXPECTED_ENTRY["cr4"], _num(entry.get("cr4")))
     add("entry.efer", EXPECTED_ENTRY["efer"], _num(entry.get("efer")))
     for field in ("cs_selector", "cr0", "cs_l", "cs_db", "cs_dpl", "rsp", "ss_selector"):
         add(f"entry.{field}", EXPECTED_ENTRY[field], _num(entry.get(field)))
-    expected_exits = normalize_exits(EXPECTED_EXITS)
+    expected_exits = normalize_exits(spec["expect_exits"])
     actual_exits = normalize_exits(result.get("exits"))
     checks.append(
         {
             "name": "exits_sequence",
-            "expected": EXPECTED_EXITS,
+            "expected": spec["expect_exits"],
             "actual": result.get("exits"),
             "ok": expected_exits == actual_exits,
+        }
+    )
+    io_bytes = uart_bytes_from_exits(result.get("exits"))
+    try:
+        trace_text = io_bytes.decode("utf-8") if io_bytes is not None else None
+    except UnicodeDecodeError:
+        trace_text = None
+    checks.append(
+        {
+            "name": "uart_trace_consistent",
+            "expected": {"hex": spec["expect_uart_hex"], "text": spec["expect_uart"]},
+            "actual": {
+                "hex": io_bytes.hex() if io_bytes is not None else None,
+                "text": trace_text,
+                "runner_hex": result.get("uart_hex"),
+                "runner_text": result.get("uart_text"),
+            },
+            "ok": io_bytes is not None
+            and io_bytes.hex() == spec["expect_uart_hex"]
+            and trace_text == spec["expect_uart"]
+            and result.get("uart_hex") == io_bytes.hex()
+            and result.get("uart_text") == trace_text,
         }
     )
     add("exits_dropped", 0, _num(result.get("exits_dropped")))
@@ -180,18 +249,28 @@ def classify_case(
     result differs from the accepted one in the intended way (exit/uart).
     """
     spec = CASES[name]
-    checks = evaluate_main_checks(result, local_image_sha=local_image_sha, remote_image_sha=remote_image_sha)
-    status = "accepted" if all(c["ok"] for c in checks) else "rejected"
-    verdict: dict[str, Any] = {"status": status, "checks": checks}
+    reference_checks = evaluate_main_checks(result, local_image_sha=local_image_sha, remote_image_sha=remote_image_sha)
+    expected_case_checks = evaluate_main_checks(
+        result, local_image_sha=local_image_sha, remote_image_sha=remote_image_sha, case=name
+    )
+    reference_pass = all(c["ok"] for c in reference_checks)
+    expected_case_pass = all(c["ok"] for c in expected_case_checks)
+    status = "accepted" if reference_pass else "rejected"
+    verdict: dict[str, Any] = {
+        "status": status,
+        "checks": reference_checks if spec["injection"] else expected_case_checks,
+        "integrity_ok": expected_case_pass,
+    }
     if spec["injection"]:
-        intended = result.get("exit") == spec["expect_exit"] and result.get("uart_text") == spec["expect_uart"]
         verdict["expected_status"] = "rejected"
-        verdict["distinguished"] = bool(status == "rejected" and intended)
+        verdict["expected_case_checks"] = expected_case_checks
+        verdict["distinguished"] = bool(status == "rejected" and expected_case_pass)
         verdict["expect_exit"] = spec["expect_exit"]
         verdict["expect_uart_text"] = spec["expect_uart"]
     else:
         verdict["expected_status"] = "accepted"
-        verdict["distinguished"] = status == "accepted"
+        verdict["distinguished"] = expected_case_pass
+        verdict["status"] = "accepted" if expected_case_pass else "rejected"
     return verdict
 
 
@@ -204,6 +283,82 @@ def overall_status(verdicts: dict[str, dict[str, Any]]) -> str:
         if name != "main" and not verdict.get("distinguished"):
             return "rejected"
     return "accepted"
+
+
+def cpuid_model_hash(model: Any) -> str | None:
+    if not isinstance(model, list) or not 2 <= len(model) <= CPUID_MAX_ENTRIES:
+        return None
+    keys: set[tuple[int, int]] = set()
+    for row in model:
+        if not isinstance(row, dict) or set(row) != CPUID_MODEL_FIELDS:
+            return None
+        if any(type(row[field]) is not int or not 0 <= row[field] <= 0xFFFFFFFF for field in CPUID_MODEL_FIELDS):
+            return None
+        keys.add((row["function"], row["index"]))
+    if not {(0, 0), (1, 0)}.issubset(keys):
+        return None
+    canonical = json.dumps(model, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return sha256(canonical)
+
+
+def cpuid_model_identity_hash(model: Any) -> str | None:
+    """Hash stable CPUID identity after removing per-logical-processor APIC IDs.
+
+    The raw model remains separately hashed and preserved for every invocation.
+    """
+    if cpuid_model_hash(model) is None:
+        return None
+    stable = [dict(row) for row in model]
+    for row in stable:
+        if row["function"] == 1 and row["index"] == 0:
+            row["ebx"] &= 0x00FFFFFF  # CPUID.1:EBX[31:24], initial APIC ID
+        elif row["function"] == 0xB:
+            row["edx"] = 0  # CPUID.0B:EDX, current logical processor's x2APIC ID
+    canonical = json.dumps(stable, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return sha256(canonical)
+
+
+def attempt_signature(result: dict[str, Any]) -> tuple[Any, ...]:
+    """Fields that must agree across repeated executions of one guest image.
+
+    run_count and intr_count are scheduling observations and can vary without
+    changing guest behavior; stop, UART, entry state, and exit sequence cannot.
+    """
+    return tuple(
+        json.dumps(result.get(key), sort_keys=True, separators=(",", ":"))
+        for key in ("exit", "stop_reason", "uart_hex", "uart_text", "entry", "exits", "exits_dropped")
+    )
+
+
+def hardware_identity(result: dict[str, Any]) -> dict[str, Any]:
+    cpuid = result.get("guest_cpuid_model")
+    return {
+        key: result.get(key)
+        for key in ("hostname", "uname", "cpu_model", "host_microcode", "vmx", "kvm_api")
+    } | {
+        "guest_cpuid_model_sha256": cpuid_model_hash(cpuid),
+        "guest_cpuid_identity_sha256": cpuid_model_identity_hash(cpuid),
+        "guest_cpuid_model": cpuid,
+    }
+
+
+def hardware_identity_complete(identity: dict[str, Any]) -> bool:
+    required_text = ("hostname", "uname", "cpu_model", "host_microcode")
+    if any(not isinstance(identity.get(field), str) or not identity[field].strip() for field in required_text):
+        return False
+    return (
+        identity.get("vmx") is True
+        and type(identity.get("kvm_api")) is int
+        and identity["kvm_api"] == EXPECTED_KVM_API
+        and identity.get("guest_cpuid_model_sha256") is not None
+        and identity.get("guest_cpuid_identity_sha256") is not None
+    )
+
+
+def stable_hardware_identity(identity: dict[str, Any]) -> dict[str, Any]:
+    stable = {key: value for key, value in identity.items() if key not in ("guest_cpuid_model", "guest_cpuid_model_sha256")}
+    stable["guest_cpuid_model_sha256"] = identity.get("guest_cpuid_identity_sha256")
+    return stable
 
 
 def parse_runner_stdout(stdout: str) -> dict[str, Any]:
@@ -401,8 +556,11 @@ def orchestrate(
     cases: list[str],
     workdir: Path,
     *,
+    repeats: int = 1,
     image_builder: Callable[[str, Path], tuple[bytes, dict[str, str]]] = build_image,
 ) -> dict[str, Any]:
+    if isinstance(repeats, bool) or not isinstance(repeats, int) or repeats < 1 or repeats > 100:
+        raise BuildError("repeat count must be in 1..100")
     images: dict[str, bytes] = {}
     tools: dict[str, Any] = {}
     for case in cases:
@@ -412,6 +570,10 @@ def orchestrate(
     remote.scp(RUNNER_SOURCE, "kvm_runner.c")
     runner_local_sha = sha256_file(RUNNER_SOURCE)
     runner_remote_sha = remote.remote_sha("kvm_runner.c")
+    if runner_remote_sha != runner_local_sha:
+        raise BuildError(
+            f"remote KVM runner source hash mismatch: local {runner_local_sha}, remote {runner_remote_sha}"
+        )
     gcc_version = remote.compile_runner()
     runner_binary_sha = remote.remote_sha("kvm_runner")
 
@@ -425,29 +587,133 @@ def orchestrate(
         local_sha = sha256(images[case])
         remote.scp(local_path, name)
         remote_sha = remote.remote_sha(name)
-        result = remote.run_image(name)
-        if not identity:
-            identity = {
-                k: result.get(k) for k in ("hostname", "uname", "cpu_model", "vmx", "kvm_api")
-            }
-        verdict = classify_case(case, result, local_image_sha=local_sha, remote_image_sha=remote_sha)
-        verdicts[case] = verdict
+        if remote_sha != local_sha:
+            raise BuildError(
+                f"remote image hash mismatch before execution for {name}: local {local_sha}, remote {remote_sha}"
+            )
+        results: list[dict[str, Any]] = []
+        attempts: list[dict[str, Any]] = []
+        attempt_verdicts: list[dict[str, Any]] = []
+        for repeat in range(1, repeats + 1):
+            runner_sha_before = remote.remote_sha("kvm_runner")
+            if runner_sha_before != runner_binary_sha:
+                raise BuildError(
+                    f"remote KVM runner changed before repeat {repeat}: "
+                    f"expected {runner_binary_sha}, got {runner_sha_before}"
+                )
+            remote_sha_before = remote.remote_sha(name)
+            if remote_sha_before != local_sha:
+                raise BuildError(
+                    f"remote image changed before repeat {repeat} for {name}: "
+                    f"expected {local_sha}, got {remote_sha_before}"
+                )
+            result = remote.run_image(name)
+            runner_sha_after = remote.remote_sha("kvm_runner")
+            if runner_sha_after != runner_binary_sha:
+                raise BuildError(
+                    f"remote KVM runner changed during repeat {repeat}: "
+                    f"expected {runner_binary_sha}, got {runner_sha_after}"
+                )
+            remote_sha_after = remote.remote_sha(name)
+            if remote_sha_after != local_sha:
+                raise BuildError(
+                    f"remote image changed during repeat {repeat} for {name}: "
+                    f"expected {local_sha}, got {remote_sha_after}"
+                )
+            results.append(result)
+            current_identity = hardware_identity(result)
+            if not identity:
+                identity = current_identity
+            identity_stable = stable_hardware_identity(current_identity) == stable_hardware_identity(identity)
+            verdict = classify_case(case, result, local_image_sha=local_sha, remote_image_sha=remote_sha)
+            identity_complete = hardware_identity_complete(current_identity)
+            if not identity_complete:
+                verdict["checks"].append(
+                    {
+                        "name": "hardware_identity_complete",
+                        "expected": "microcode and configured guest CPUID model",
+                        "actual": {
+                            "host_microcode": current_identity.get("host_microcode"),
+                            "guest_cpuid_model_valid": current_identity.get("guest_cpuid_model_sha256") is not None,
+                            "guest_cpuid_model_sha256": current_identity.get("guest_cpuid_model_sha256"),
+                        },
+                        "ok": False,
+                    }
+                )
+                verdict["status"] = "rejected"
+                verdict["distinguished"] = False
+            if not identity_stable:
+                verdict["checks"].append(
+                    {"name": "hardware_identity_stable", "expected": identity, "actual": current_identity, "ok": False}
+                )
+                verdict["status"] = "rejected"
+                verdict["distinguished"] = False
+            attempt_verdicts.append(verdict)
+            attempts.append({
+                "repeat": repeat,
+                "run_count": result.get("run_count"),
+                "intr_count": result.get("intr_count"),
+                "exit": result.get("exit"),
+                "stop_reason": result.get("stop_reason"),
+                "uart_hex": result.get("uart_hex"),
+                "uart_text": result.get("uart_text"),
+                "entry": result.get("entry"),
+                "exits": result.get("exits"),
+                "exits_dropped": result.get("exits_dropped"),
+                "guest_cpuid_model_sha256": current_identity["guest_cpuid_model_sha256"],
+                "guest_cpuid_identity_sha256": current_identity["guest_cpuid_identity_sha256"],
+                "guest_cpuid_model": current_identity["guest_cpuid_model"],
+                "image_sha256_before": remote_sha_before,
+                "image_sha256_after": remote_sha_after,
+                "runner_binary_sha256_before": runner_sha_before,
+                "runner_binary_sha256_after": runner_sha_after,
+                "hardware_identity_complete": identity_complete,
+                "hardware_identity_stable": identity_stable,
+                "verdict": verdict,
+            })
+        stable = len({attempt_signature(result) for result in results}) == 1
+        if not stable:
+            for verdict in attempt_verdicts:
+                verdict["checks"].append(
+                    {"name": "repeat_behavior_stable", "expected": "identical guest behavior", "actual": "varied", "ok": False}
+                )
+                verdict["status"] = "rejected"
+                verdict["distinguished"] = False
+            for attempt in attempts:
+                attempt["verdict"] = attempt_verdicts[attempt["repeat"] - 1]
+        all_correct = all(
+            v["status"] == "accepted" if not CASES[case]["injection"] else v.get("distinguished")
+            for v in attempt_verdicts
+        )
+        aggregate = {
+            "status": "accepted" if stable and all_correct else "rejected",
+            "expected_status": "rejected" if CASES[case]["injection"] else "accepted",
+            "distinguished": stable and all_correct,
+            "stable": stable,
+            "repeat_count": repeats,
+            "attempts": attempt_verdicts,
+        }
+        verdicts[case] = aggregate
+        first = results[0]
         runs[case] = {
             "description": CASES[case]["description"],
             "image_name": name,
             "image_size": len(images[case]),
             "image_sha256_local": local_sha,
             "image_sha256_remote": remote_sha,
-            "run_count": result.get("run_count"),
-            "intr_count": result.get("intr_count"),
-            "exit": result.get("exit"),
-            "stop_reason": result.get("stop_reason"),
-            "uart_hex": result.get("uart_hex"),
-            "uart_text": result.get("uart_text"),
-            "entry": result.get("entry"),
-            "exits": result.get("exits"),
-            "exits_dropped": result.get("exits_dropped"),
-            "verdict": verdict,
+            "run_count": first.get("run_count"),
+            "intr_count": first.get("intr_count"),
+            "exit": first.get("exit"),
+            "stop_reason": first.get("stop_reason"),
+            "uart_hex": first.get("uart_hex"),
+            "uart_text": first.get("uart_text"),
+            "entry": first.get("entry"),
+            "exits": first.get("exits"),
+            "exits_dropped": first.get("exits_dropped"),
+            "repeat_count": repeats,
+            "stable": stable,
+            "attempts": attempts,
+            "verdict": aggregate,
         }
 
     return {
@@ -466,17 +732,18 @@ def orchestrate(
     }
 
 
-def build_evidence(remote: Remote, cases: list[str], workdir: Path) -> dict[str, Any]:
-    body = orchestrate(remote, cases, workdir)
+def build_evidence(remote: Remote, cases: list[str], workdir: Path, *, repeats: int = 3) -> dict[str, Any]:
+    body = orchestrate(remote, cases, workdir, repeats=repeats)
     main = body["runs"].get("main", {})
     return {
-        "slice": "S4-34a",
+        "slice": "S4-34b",
         "method": "kvm_host_runner",
         "environment": "real Intel VT-x via /dev/kvm on the Mac mini (Linux); no own MMU/CPU involved",
-        "boundary": "single image, no interrupts, not S4-34 acceptance, no Linux, no reboot",
+        "boundary": "same KVM method fixtures repeated on one host session; no interrupts, architectural system cases, Linux, reboot, or bare-metal claim",
         "generated_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "method_status": body["status"],
         "s4_34": "not_accepted",
+        "repeat_count_per_case": repeats,
         "hardware_identity": body["identity"],
         "remote": {"host": remote.host, "dir": remote.remote_dir},
         "artifact_hashes": {
@@ -504,7 +771,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--remote-dir", default=DEFAULT_REMOTE_DIR)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--workdir", type=Path, default=ROOT / "work/stage4/kvm_method")
+    parser.add_argument("--workdir", type=Path, default=ROOT / "work/stage4/kvm_repeatability")
+    parser.add_argument("--repeats", type=int, default=3, help="independent KVM invocations per case (1..100)")
     parser.add_argument(
         "--cases",
         nargs="+",
@@ -515,7 +783,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     cases = ["main"] + [c for c in args.cases if c != "main"]
     try:
-        evidence = build_evidence(Remote(args.host, args.remote_dir), cases, args.workdir)
+        evidence = build_evidence(Remote(args.host, args.remote_dir), cases, args.workdir, repeats=args.repeats)
     except (BuildError, subprocess.TimeoutExpired, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -525,8 +793,8 @@ def main(argv: list[str] | None = None) -> int:
     for case in cases:
         run = evidence["runs"][case]
         print(
-            f"  {case}: exit={run['exit']} uart={run['uart_text']!r} run_count={run['run_count']} "
-            f"intr_count={run['intr_count']} "
+            f"  {case}: repeats={run['repeat_count']} stable={run['stable']} exit={run['exit']} "
+            f"uart={run['uart_text']!r} run_count={run['run_count']} intr_count={run['intr_count']} "
             f"verdict={run['verdict']['status']}"
         )
     return 0 if evidence["method_status"] == "accepted" else 1

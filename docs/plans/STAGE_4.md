@@ -1934,6 +1934,17 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Граница:** один гостевой образ, без прерываний, без нашего MMU-кейса; это метод, а не приёмка S4-34 целиком; без Linux, без reboot и без изменения загрузки; `/dev/kvm` доступ — группа `kvm` (выбран вариант 1, выполнен на хосте 2026-11-09).
 - **Готово:** реальное исполнение зафиксировано в evidence с hardware identity и hash'ами; инъекция различима; методика для S4-34b (наши кейсы на KVM) описана.
 
+#### S4-34b. Повторяемость KVM cases и фиксация CPU identity
+
+- [ ] Реализация и трёхкратный прогон каждого method case завершены; независимое ревью ожидается. Родительский S4-34 остаётся открытым.
+- **Где:** `tools/kvm-runner/kvm_runner.c`, `tools/build/build_stage4_kvm_method.py`, focused builder tests; evidence — `docs/reports/data/stage4/s4-34b-kvm-repeatability.json` только после физического прогона.
+- **Сделано локально:** runner serializes the exact CPUID entries passed to `KVM_SET_CPUID2` from `KVM_GET_SUPPORTED_CPUID` and reads host microcode from `/proc/cpuinfo`; builder strictly validates CPUID structure and required host identity, supports bounded 1–100 invocations per case, preserves each invocation's raw CPUID model/hash, compares CPUID identities after clearing only CPUID.1:EBX[31:24] and CPUID.0B:EDX (per-logical-processor APIC IDs), validates injection-specific exact I/O/HLT traces against UART text/hex, rejects unstable guest behavior/identity, checks runner source hash before compilation, and verifies image and compiled-runner hashes before and after every run.
+- **Физическая проверка:** на `senya@192.168.1.14:/home/senya/od-kvm` собран и выполнен runner для трёх существующих method images, по 3 повтора каждого. Все cases стабильны: `main` — HLT/`OK\n`; `no_hlt` — wall deadline/`OK\n`; `wrong_str` — HLT/`NO\n`. Raw CPUID entries и hashes сохранены для каждой попытки. CPUID identity сравнивается после маскирования только per-CPU APIC ID в CPUID.1:EBX[31:24] и CPUID.0B:EDX; все 9 normalized hashes совпали, хотя raw hashes в нескольких повторах различались. Host: Intel Core i5-3210M, microcode `0x21`, KVM API 12, VMX enabled. Образы совпали по SHA-256 до/после каждой попытки; source hash перед компиляцией совпал с локальным файлом; runner binary hash совпал между before/after каждой попытки, локального binary comparison не было.
+- **Проверки:** `python3 tools/build/test_build_stage4_kvm_method.py` — 41 tests passed; `python3 -m py_compile ...`, `git diff --check` passed. `graphify update .` выполнен после изменений кода. Local C syntax check is unavailable because this macOS host has no `linux/kvm.h`.
+- **Ограничение:** это повторяемость в одной KVM-сессии, не проверка после reboot и не bare-metal. S4-34b ждёт независимого ревью; родительский S4-34 не принят.
+- **Отчёт:** [S4-34b status report](../reports/STAGE_4_S4-34B_2026-11-14.md).
+- **Следующий шаг:** завершить независимое ревью. Page-walk/rights/A/D/CR2, CR transitions, descriptors and interrupt cases remain separate S4-34 work.
+
 ### S4-34. Подготовить и выполнить независимые системные hardware cases
 
 - [ ] Методика/harness приняты; физический запуск принят отдельно.
