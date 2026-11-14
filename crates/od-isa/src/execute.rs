@@ -21148,7 +21148,7 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// S4-39f5: `0F 80`..`0F 8F` (Jcc rel32) without REX and without any prefix (`0f 88 ..` = `js` of
 /// `/init` at `0x400102`): the CPL0 `Operation::Branch` is reused (the condition is evaluated on
 /// RFLAGS, a taken branch goes to `next_rip + rel32`, a non-canonical target is #GP, flags stay).
-/// The short `7x` Jcc, `JMP` and `CALL` stay outside. `[REX.W] 89 /r` (MOV r/m64, r64) in the
+/// The short `7x` Jcc, `JMP` and `CALL` stay outside (`EB` joined in S4-39f13). `[REX.W] 89 /r` (MOV r/m64, r64) in the
 /// register form (mod = 11; REX.R and REX.B select r8..r15) with REX.W mandatory, as in `49 89 c4`
 /// / `4c 89 e7` of `/init`: the CPL0 `Operation::Mov` is reused (64-bit write, flags stay). `89`
 /// without REX.W (MOV r/m32, r32), a memory operand and `88`/`8B` stay outside.

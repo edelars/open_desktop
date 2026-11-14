@@ -3917,9 +3917,10 @@ fn jmp_forms_outside_the_short_jmp_are_refused_without_change() {
 }
 
 #[test]
-fn init_loop_tail_jumps_back_and_stops_at_the_movzbl() {
-    // `/init` from 0x400182: `eb c1` (jmp 0x400145). The synthetic block jumps over one `hlt`
-    // to a `41 0f b6 04 08` (movzbl (%r8,%rcx),%eax), the next boundary: it is outside.
+fn jmp_rel8_then_an_outside_form_stops_at_that_form() {
+    // Synthetic block modelled on the `/init` loop tail: `eb 01` jumps over one `hlt` to a
+    // `41 0f b6 04 08` (movzbl (%r8,%rcx),%eax), which is outside; the test checks the fetch after
+    // a jump, not the real next boundary of `/init` (that is `80 /7` at 0x400153).
     let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let mut state = user_state();
     let mut memory = Memory::code(&[0xeb, 0x01, 0xf4, 0x41, 0x0f, 0xb6, 0x04, 0x08]);
