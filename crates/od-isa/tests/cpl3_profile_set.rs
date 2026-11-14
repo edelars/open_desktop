@@ -4259,8 +4259,9 @@ fn cmpb_imm8_refusals_stop_as_unsupported_80_without_change() {
 
 #[test]
 fn init_cmpb_imm8_then_jne_then_leaq_then_decl_stops_at_ff_c9() {
-    // `/init` from 0x400153: `cmpb $0x20, -1(%r14,%rbx); jne +0x24; leaq 0x107(%rip), %rsi;
-    // decl %ecx` (`ff c9`, FF /1, outside the slice). The byte equals 0x20, so `jne` is not taken.
+    // Synthetic chain modelled on `/init` from 0x400153: `cmpb $0x20, -1(%r14,%rbx); jne +0x24;
+    // leaq 0x107(%rip), %rsi; decl %ecx` (`ff c9`, FF /1, outside the slice). The intermediate
+    // instructions of the real path are omitted here. The byte equals 0x20, so `jne` is not taken.
     let bytes = [
         0x41, 0x80, 0x7c, 0x1e, 0xff, 0x20, 0x75, 0x24, 0x48, 0x8d, 0x35, 0x07, 0x01, 0x00, 0x00,
         0xff, 0xc9,
