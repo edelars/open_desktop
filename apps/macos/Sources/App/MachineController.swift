@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import ODShared
 
 // State of one machine row of the library (S11-06b). The rule of stage 11 (STAGE_11.md 4.1): the state of a machine is what the events of
@@ -256,6 +257,8 @@ let defaultMachineLauncher: MachineLauncher = { launch, handler in
 // MARK: controller
 
 final class MachineController: ObservableObject, Identifiable {
+    private static let sleepPauseLogger = Logger(subsystem: "dev.opendesk.OpenDesktop", category: "MachineLifecycle")
+
     let entry: CatalogEntry
     var id: String { entry.id }
 
@@ -280,6 +283,7 @@ final class MachineController: ObservableObject, Identifiable {
     private let vmhost: VMHostLocation
     private let launcher: MachineLauncher
     private let hostMemoryBytes: UInt64
+    private let sleepPauseAudit: (UInt32) -> Void
     private var session: MachineSession?
     /// Opens the window of the machine (S11-10). Weak: the application owns the host.
     weak var windowHost: MachineWindowHost?
@@ -317,13 +321,17 @@ final class MachineController: ObservableObject, Identifiable {
     init(
         entry: CatalogEntry, status: CatalogBundleStatus, vmhost: VMHostLocation,
         launcher: @escaping MachineLauncher = defaultMachineLauncher,
-        hostMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
+        hostMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
+        sleepPauseAudit: ((UInt32) -> Void)? = nil
     ) {
         self.entry = entry
         self.bundleStatus = status
         self.vmhost = vmhost
         self.launcher = launcher
         self.hostMemoryBytes = hostMemoryBytes
+        self.sleepPauseAudit = sleepPauseAudit ?? { code in
+            Self.sleepPauseLogger.error("system_sleep_pause_refused code=\(code, privacy: .public)")
+        }
     }
 
     var hasSession: Bool { session != nil }
@@ -462,7 +470,10 @@ final class MachineController: ObservableObject, Identifiable {
         sleepPausePending = false
         sleepPauseInFlight = true
         send(
-            operation: "Пауза перед сном", onRefusal: { [weak self] line in self?.recordSleepNotice(line) },
+            operation: "Пауза перед сном", onRefusal: { [weak self] line, report in
+                self?.sleepPauseAudit(report.code)
+                self?.recordSleepNotice(line)
+            },
             completed: { [weak self] in self?.sleepPauseInFlight = false }
         ) { completion in session.requestPause(reason: .systemSleep, completion: completion) }
     }
@@ -494,7 +505,7 @@ final class MachineController: ObservableObject, Identifiable {
         if isPausedBySystemSleep {
             guard allows(.resume) else { return } // a request is in flight: its completion comes back here
             wakeResumePending = false
-            send(operation: "Продолжение после сна", onRefusal: { [weak self] line in self?.notice = line }) { completion in
+            send(operation: "Продолжение после сна", onRefusal: { [weak self] line, _ in self?.notice = line }) { completion in
                 session.requestResume(reason: .systemWake, completion: completion)
             }
         } else if !sleepPauseInFlight && !requestInFlight {
@@ -619,7 +630,7 @@ final class MachineController: ObservableObject, Identifiable {
     /// `onRefusal` (S11-12): a request of the system (the sleep, the wake) does not clear the line of the row and tells its refusal to
     /// the caller instead of the row. `completed` runs after every answer of this request, before the next deferred request is sent.
     private func send(
-        operation: String, isStop: Bool = false, onRefusal: ((MachineNotice) -> Void)? = nil, completed: (() -> Void)? = nil,
+        operation: String, isStop: Bool = false, onRefusal: ((MachineNotice, ControlV2ErrorReport) -> Void)? = nil, completed: (() -> Void)? = nil,
         _ body: (@escaping ControlClientV2.Completion) -> Void
     ) {
         let current = generation
@@ -632,7 +643,7 @@ final class MachineController: ObservableObject, Identifiable {
                 if isStop { self.endRequested = false } // the process was not asked to end after all
                 // The state does not change by a refusal (7.2): the row stays what the last event made it.
                 let line = MachineNotice.refused(report, operation: operation, context: self.errorContext())
-                if let onRefusal { onRefusal(line) } else { self.notice = line }
+                if let onRefusal { onRefusal(line, report) } else { self.notice = line }
             }
             // `connectionClosed` and the like: the process is going away, `exited` follows with the real reason.
             completed?()

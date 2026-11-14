@@ -62,11 +62,13 @@ private final class HCLauncher {
 
 private let hostVMHost = VMHostLocation(url: URL(fileURLWithPath: "/x/od-vmhost"), source: .argument, isExecutable: true)
 
-private func makeMachine(_ launcher: HCLauncher, name: String = "Тест", bundle: URL? = nil) -> MachineController {
+private func makeMachine(
+    _ launcher: HCLauncher, name: String = "Тест", bundle: URL? = nil, sleepPauseAudit: @escaping (UInt32) -> Void = { _ in }
+) -> MachineController {
     let entry = CatalogEntry(bundleURL: bundle ?? URL(fileURLWithPath: "/x/\(name).odvm"))
     let machine = MachineController(
         entry: entry, status: .config(.valid(BundleConfig(name: name))), vmhost: hostVMHost, launcher: launcher.launcher,
-        hostMemoryBytes: 64 << 30)
+        hostMemoryBytes: 64 << 30, sleepPauseAudit: sleepPauseAudit)
     // Plenty of space unless a test says otherwise: no test depends on the disk of the machine that runs it.
     machine.availableSpace = { _ in 100 << 30 }
     return machine
@@ -254,6 +256,21 @@ final class HostConditionsSleepXCTests: XCTestCase {
         XCTAssertTrue(notice.text.contains(ErrorPresentation.lowercasedFirst(ErrorCatalog.entry(for: ControlV2ErrorCode.pauseTimeout).title)), notice.text)
         XCTAssertTrue(notice.details?.contains("pause_timeout") == true, "the details name the code")
         XCTAssertEqual(launcher.session.calls, ["pause"], "nothing to resume: the machine never paused")
+    }
+
+    func testSystemPauseRefusalIsAuditedWithoutMachineDetails() throws {
+        let launcher = HCLauncher()
+        var auditedCodes: [UInt32] = []
+        let machine = makeMachine(launcher, name: "Private machine name", sleepPauseAudit: { auditedCodes.append($0) })
+        runToRunning(machine, launcher)
+        let host = conditions([machine])
+        host.handleWillSleep()
+        launcher.session.refuse("pause", code: .pauseTimeout, kind: .pause, state: .running)
+
+        XCTAssertEqual(auditedCodes, [ControlV2ErrorCode.pauseTimeout.rawValue])
+        XCTAssertNil(machine.notice, "the refusal is still presented after wake")
+        host.handleDidWake()
+        XCTAssertNotNil(machine.notice, "the refusal is still shown after wake")
     }
 
     func testAPauseRefusalThatArrivesAfterTheWakeIsShownAtOnce() throws {
