@@ -24,10 +24,11 @@
 //! `exitcode=0x00000000` in the panic line (for `exit(n)` the kernel prints `(n & 0xff) << 8`),
 //! and an entry that does carry an `rdi` field must have `0x0`.
 //!
-//! `acceptance`: the runner marks every `--cpuid-profile stage4a` run (the only profile with
-//! `--user-mode`) as `diagnostic_not_counted`, so today a real report can never be `counted` and
-//! the gate says FAIL for it. `--allow-diagnostic-acceptance` relaxes only this check: the verdict
-//! is then `PASS_DIAGNOSTIC_NOT_COUNTED` (exit 6, `counted: false`), never `PASS`.
+//! `acceptance`: since S4-39j the runner marks a `--cpuid-profile stage4a` run without
+//! `--diagnostic-past-c7` as `counted`, so such a report can get `PASS`; a run with the flag stays
+//! `diagnostic_not_counted` and the gate says FAIL for it. `--allow-diagnostic-acceptance` relaxes
+//! only this check: the verdict is then `PASS_DIAGNOSTIC_NOT_COUNTED` (exit 6, `counted: false`),
+//! never `PASS`.
 //!
 //! Run ID: SHA-256 of `od-run-id-v1\nnonce=..\nvmlinuz=..\ninitramfs=..\nacpi_manifest=..\n
 //! report=<sha256 of the report file bytes>\n` over the EXPECTED values; no time, no paths.
