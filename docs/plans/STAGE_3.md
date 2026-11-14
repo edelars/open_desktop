@@ -318,8 +318,8 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-26 | Порядок side effects и memory classes | S3-19, S3-24 |
 | [ ] | S3-27 | Точные fault exits и восстановление state | S3-12, S3-21, S3-26 |
 | [ ] | S3-28 | STOP/events и безопасные точки | S3-15, S3-16, S3-27 |
-| [ ] | S3-28a | Cooperative event yield на границах register dispatcher | S3-15, S3-16, S3-27 |
-| [ ] | S3-28b | Cooperative event yield на bounded checked-memory dispatcher | S3-15, S3-20, S3-28a |
+| [x] | S3-28a | Cooperative event yield на границах register dispatcher | S3-15, S3-16, S3-27 |
+| [x] | S3-28b | Cooperative event yield на bounded checked-memory dispatcher | S3-15, S3-20, S3-28a |
 | [ ] | S3-29 | Flags по потребности и сравнение стратегий | S3-01, S3-27, S3-28 |
 | [x] | S3-29g | Cached NativeRegisterV1 eager/candidate full-dispatch comparison | S3-29f, S3-38b/c |
 | [partial] | S3-30 | Ограниченное allocator comparison; выбор по более широким workloads открыт | S3-01, S3-29 |
