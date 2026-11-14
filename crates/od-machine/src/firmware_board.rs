@@ -1189,6 +1189,8 @@ impl LoadedFirmwareBoard {
         let (Some(pit), Some(pic)) = (self.pit.clone(), self.pic_master.clone()) else {
             return false;
         };
+        // S4-39g2: the kernel's clockevent writes channel 0 control word 0x38 (mode 4).
+        pit.enable_software_strobe();
         let source = PitPicIrqSource::new(pit, pic, self.clock.clone());
         self.irq_source = Box::new(source.clone());
         self.pit_pic_source = Some(source);
