@@ -29,6 +29,8 @@ struct VmHostSmoke {
                     exit(VMHostExitStatus.usage)
                 }
             }
+            // S4-41b: the Linux direct-boot machine as a child process of VMHost (`od-runner linux-direct`); explicit flag only.
+            if args.first == "--linux-direct" { exit(LinuxDirectCommand.run(args)) }
             // TEST-ONLY display smoke (S10-06): selected only by the explicit flag, never implicitly.
             if let smoke = try DisplaySmokeOptions.parse(args) {
                 socketFD = smoke.socketFD
