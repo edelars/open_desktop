@@ -21199,6 +21199,12 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// and is accepted as for `8A`/`C6`. The register form (`38 c0`, mod = 11), any prefix
 /// (66/67/LOCK/REP/segment) and the other CMP opcodes (`3A`..`3D`, `80`/`81`/`83 /7`) stay outside.
 ///
+/// S4-39f12: `REX.W FF /0` (INC r/m64, `incq %rbx` = `48 ff c3` of `/init` at `0x40017f`), register
+/// form only (mod = 11). The CPL0 `Operation::Arithmetic { kind: Inc, src: Immediate(1) }` is
+/// reused: the 64-bit register is written whole, OF/SF/ZF/AF/PF are those of `reg + 1` and CF is
+/// kept. Without REX.W (dword INC), the memory form, `FF /1` (DEC) and `FF /2..7` stay outside
+/// (`FE` has opcode byte `0xfe` and never matches).
+///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
 fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: bool) -> bool {
@@ -21309,6 +21315,15 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 && dst.size == OperandSize::Byte
                 && dst.address_size == OperandSize::Qword
         }
+        (
+            OpcodeMap::Primary,
+            0xff,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Inc,
+                dst: Operand::Register(_),
+                ..
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
         (OpcodeMap::Primary, 0x8d, Operation::Lea { src, .. }) => {
             instruction.operand_size == OperandSize::Qword
                 && src.address_size == OperandSize::Qword
