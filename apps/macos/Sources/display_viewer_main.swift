@@ -236,9 +236,10 @@ private final class ViewerSession {
         let changed = reader.pump(
             timeoutMs: timeoutMs,
             copy: { screen, pixels, frame in
-                guard screen < presentersNow.count else { return }
-                uploaded[screen] = true
-                presentersNow[screen].upload(pixels: pixels, frame: frame)
+                guard screen < presentersNow.count else { return false }
+                let succeeded = presentersNow[screen].upload(pixels: pixels, frame: frame)
+                uploaded[screen] = succeeded
+                return succeeded
             },
             cursorCopy: { [presenter] pixels, cursor in
                 cursorUploaded = true

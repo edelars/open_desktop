@@ -85,7 +85,7 @@ private final class Rig {
     /// Flush the writer queue and let the reader process what arrived.
     func pump(copy: @escaping (UnsafeRawPointer, AcceptedCursor) -> Void = { _, _ in }) {
         try? writer.flush(fd: hostFD)
-        reader.pump(timeoutMs: 50, copy: { _, _, _ in }, cursorCopy: { [unowned self] pixels, cursor in
+        reader.pump(timeoutMs: 50, copy: { _, _, _ in true }, cursorCopy: { [unowned self] pixels, cursor in
             uploads += 1
             lastUpload = Array(UnsafeRawBufferPointer(start: pixels, count: cursor.width * cursor.height * 4))
             copy(pixels, cursor)
@@ -422,7 +422,7 @@ struct CursorTransportTests {
         Darwin.close(fd)
         // The viewer pumps in a loop; a fake ANNOUNCE needs two passes (header, then the 24-byte payload).
         for _ in 0..<4 where reader.state == .connecting {
-            reader.pump(timeoutMs: 100, copy: { _, _, _ in })
+            reader.pump(timeoutMs: 100, copy: { _, _, _ in true })
         }
         let state = reader.state
         reader.teardown()
