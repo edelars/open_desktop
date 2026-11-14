@@ -559,7 +559,8 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
             &[0x48, 0x83, 0xfb, 0x01],
             0x83,
         ),
-        ("cmpb $imm8, [rbx] (80 /7)", &[0x80, 0x3b, 0x20], 0x80),
+        // S4-39f14: `80 /7` with a memory operand executes; the register form stays refused.
+        ("cmpb $imm8, bl (80 /7 mod = 11)", &[0x80, 0xfb, 0x20], 0x80),
         ("jmp rel32 (E9)", &[0xe9, 0, 0, 0, 0], 0xe9),
         ("call rel32 (E8)", &[0xe8, 0, 0, 0, 0], 0xe8),
         ("rex.w je rel32", &[0x48, 0x0f, 0x84, 0, 0, 0, 0], 0x84),
@@ -3450,13 +3451,13 @@ fn cmpb_refusals_stop_as_unsupported_38_without_change() {
 
 #[test]
 fn neighbouring_compare_opcodes_stay_outside_after_cmpb() {
-    // The other CMP forms with a memory operand are not part of S4-39f11.
+    // The other CMP forms with a memory operand are not part of S4-39f11 (`80 /7` joined in
+    // S4-39f14).
     let forms: &[(&str, &[u8], u8)] = &[
         ("3a 03 cmpb (%rbx), %al", &[0x3a, 0x03], 0x3a),
         ("3b 03 cmpl (%rbx), %eax", &[0x3b, 0x03], 0x3b),
         ("3c 05 cmpb $5, %al", &[0x3c, 0x05], 0x3c),
         ("3d 00 00 00 00 cmpl $0, %eax", &[0x3d, 0, 0, 0, 0], 0x3d),
-        ("80 3b 20 cmpb $0x20, (%rbx)", &[0x80, 0x3b, 0x20], 0x80),
         (
             "81 3b 00 00 00 00 cmpl $0, (%rbx)",
             &[0x81, 0x3b, 0, 0, 0, 0],
@@ -3928,4 +3929,354 @@ fn jmp_rel8_then_an_outside_form_stops_at_that_form() {
     assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xb6 });
     assert_eq!(result.instructions_executed, 1);
     assert_eq!(state.rip, RIP + 3);
+}
+
+// ---- S4-39f14: `[REX] 80 /7 ib` (CMP r/m8, imm8) with a memory operand ----
+
+/// The arithmetic flags of `a - b` at byte size per the SDM (SUB/CMP): CF borrow, OF signed
+/// overflow, SF, ZF, PF of the low byte, AF borrow from bit 4.
+fn cmp8_flags(a: u8, b: u8) -> u64 {
+    let result = a.wrapping_sub(b);
+    let mut flags = 0;
+    if a < b {
+        flags |= CF;
+    }
+    if (a ^ b) & (a ^ result) & 0x80 != 0 {
+        flags |= OF;
+    }
+    if result & 0x80 != 0 {
+        flags |= SF;
+    }
+    if result == 0 {
+        flags |= ZF;
+    }
+    if result.count_ones() % 2 == 0 {
+        flags |= PF;
+    }
+    if (a & 0xf) < (b & 0xf) {
+        flags |= AF;
+    }
+    flags
+}
+
+#[test]
+fn cmp8_flags_helper_matches_known_values() {
+    // Literal flags of `byte - 0x20`, so that the helper itself is checked. (byte, flags)
+    let cases: &[(u8, u64)] = &[
+        // 0x00 - 0x20 = 0xe0: three set bits, PF clear.
+        (0x00, CF | SF),
+        (0x20, ZF | PF),
+        (0x7f, PF),
+        (0x80, OF | PF),
+        // 0xff - 0x20 = 0xdf: seven set bits, PF clear.
+        (0xff, SF),
+    ];
+    for (byte, flags) in cases {
+        assert_eq!(cmp8_flags(*byte, 0x20), *flags, "{byte:#x}");
+    }
+}
+
+#[test]
+fn init_cmpb_imm8_with_rex_b_sib_disp8_compares_the_byte_with_0x20() {
+    // `41 80 7c 1e ff 20` of `/init` at 0x400153: `cmpb $0x20, -0x1(%r14,%rbx)`.
+    let target = DATA + 0x100 + 3 - 1;
+    for byte in [0x00_u8, 0x1f, 0x20, 0x21, 0x7f, 0x80, 0xa0, 0xff] {
+        for initial in [0, ARITH] {
+            let mut state = mov_byte_state();
+            state.gpr[Register::Rbx as usize] = 3;
+            state.rflags |= initial;
+            let expected = after_cmpb(&state, 6, cmp8_flags(byte, 0x20));
+            let mut memory = DataMemory::new(&[0x41, 0x80, 0x7c, 0x1e, 0xff, 0x20])
+                .with_user(target, byte)
+                .with_user(target - 1, 0x11)
+                .with_user(target + 1, 0x22);
+            let result = run3_data(&mut state, &mut memory, 1).unwrap();
+            assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(state, expected, "{byte:#x}");
+            assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+            assert_eq!(memory.reads, 1);
+            assert!(memory.writes.is_empty());
+            assert_eq!(memory.user[&target], byte);
+        }
+    }
+}
+
+#[test]
+fn cmpb_imm8_forms_compare_the_addressed_byte_with_the_immediate() {
+    // (name, bytes, effective address). The addressed byte is 0x31 and the immediate 0x31:
+    // ZF | PF only when the right byte is read.
+    let forms: &[(&str, &[u8], u64)] = &[
+        ("80 3b 31 (%rbx)", &[0x80, 0x3b, 0x31], DATA),
+        (
+            "41 80 3e 31 (%r14)",
+            &[0x41, 0x80, 0x3e, 0x31],
+            DATA + 0x100,
+        ),
+        (
+            "42 80 3c 2b 31 (%rbx,%r13)",
+            &[0x42, 0x80, 0x3c, 0x2b, 0x31],
+            DATA + 3,
+        ),
+        (
+            "43 80 3c 2e 31 (%r14,%r13)",
+            &[0x43, 0x80, 0x3c, 0x2e, 0x31],
+            DATA + 0x100 + 3,
+        ),
+        (
+            "41 80 3c 5e 31 (%r14,%rbx,2)",
+            &[0x41, 0x80, 0x3c, 0x5e, 0x31],
+            DATA + 0x100 + 2 * DATA,
+        ),
+        ("80 7b 05 31 5(%rbx)", &[0x80, 0x7b, 0x05, 0x31], DATA + 5),
+        ("80 7b fe 31 -2(%rbx)", &[0x80, 0x7b, 0xfe, 0x31], DATA - 2),
+        (
+            "80 bb 00 01 00 00 31 0x100(%rbx)",
+            &[0x80, 0xbb, 0x00, 0x01, 0x00, 0x00, 0x31],
+            DATA + 0x100,
+        ),
+        (
+            "80 3c dd 00 10 60 00 31 0x601000(,%rbx,8)",
+            &[0x80, 0x3c, 0xdd, 0x00, 0x10, 0x60, 0x00, 0x31],
+            0x60_1000 + 8 * DATA,
+        ),
+        // RIP-relative: the base is the end of the instruction, imm8 included.
+        (
+            "80 3d 10 00 00 00 31 0x10(%rip)",
+            &[0x80, 0x3d, 0x10, 0x00, 0x00, 0x00, 0x31],
+            RIP + 7 + 0x10,
+        ),
+        (
+            "41 80 3d 10 00 00 00 31 REX.B on rip-relative",
+            &[0x41, 0x80, 0x3d, 0x10, 0x00, 0x00, 0x00, 0x31],
+            RIP + 8 + 0x10,
+        ),
+        // REX.W does not change a byte compare.
+        ("48 80 3b 31 (%rbx) REX.W", &[0x48, 0x80, 0x3b, 0x31], DATA),
+        // REX.R does not extend the group selector (/7 stays CMP).
+        ("44 80 3b 31 (%rbx) REX.R", &[0x44, 0x80, 0x3b, 0x31], DATA),
+    ];
+    for (name, bytes, target) in forms {
+        for initial in [0, ARITH] {
+            let mut state = mov_byte_state();
+            state.rflags |= initial;
+            let expected = after_cmpb(&state, bytes.len(), ZF | PF);
+            let mut memory = DataMemory::new(bytes)
+                .with_user(*target, 0x31)
+                .with_user(target - 1, 0x11)
+                .with_user(target + 1, 0x22);
+            let result = run3_data(&mut state, &mut memory, 1).unwrap();
+            assert_eq!(
+                exit(&result),
+                &RunExit::InstructionBudgetExhausted,
+                "{name}"
+            );
+            assert_eq!(result.instructions_executed, 1, "{name}");
+            assert_eq!(state, expected, "{name}");
+            assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS, "{name}");
+            assert_eq!(memory.reads, 1, "{name}");
+            assert!(memory.writes.is_empty(), "{name}");
+            assert_eq!(memory.user[target], 0x31, "{name}");
+        }
+    }
+}
+
+#[test]
+fn cmpb_imm8_sib_with_rex_x_or_without_a_base_uses_the_decoded_registers() {
+    // `42 80 3c 23 31`: REX.X makes the index r12 (base rbx).
+    let mut state = mov_byte_state();
+    state.gpr[Register::R12 as usize] = 0x40;
+    let target = DATA + 0x40;
+    let expected = after_cmpb(&state, 5, ZF | PF);
+    let mut memory = DataMemory::new(&[0x42, 0x80, 0x3c, 0x23, 0x31]).with_user(target, 0x31);
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(state, expected);
+    assert_eq!(memory.reads, 1);
+
+    // `41 80 3c 25 disp32 31`: SIB base 101 with mod 00 has no base even with REX.B.
+    let mut state = mov_byte_state();
+    let expected = after_cmpb(&state, 9, ZF | PF);
+    let mut memory = DataMemory::new(&[0x41, 0x80, 0x3c, 0x25, 0x00, 0x10, 0x60, 0x00, 0x31])
+        .with_user(DATA, 0x31);
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(state, expected);
+    assert_eq!(memory.reads, 1);
+}
+
+#[test]
+fn cmpb_imm8_from_a_supervisor_page_is_a_user_read_page_fault_without_a_state_change() {
+    for bytes in [
+        &[0x80, 0x3b, 0x20][..],
+        &[0x41, 0x80, 0x7c, 0x1e, 0xff, 0x20][..],
+    ] {
+        let mut state = mov_byte_state();
+        state.gpr[Register::Rbx as usize] = if bytes.len() == 3 { DATA } else { 3 };
+        state.rflags |= ARITH;
+        let before = state.clone();
+        let fault_at = if bytes.len() == 3 { DATA } else { DATA + 0x102 };
+        let mut memory = DataMemory::new(bytes).with_supervisor(fault_at, 0xcc);
+        let result = run3_data(&mut state, &mut memory, 4).unwrap();
+        // P (the page is present) | U (a CPL3 access), no W: a read.
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x5),
+                linear_address: Some(fault_at),
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.writes.is_empty());
+        assert_eq!(memory.supervisor[&fault_at], 0xcc);
+    }
+}
+
+#[test]
+fn cmpb_imm8_from_a_page_without_p_is_a_not_present_user_page_fault() {
+    let mut state = mov_byte_state();
+    state.rflags |= ARITH;
+    let before = state.clone();
+    let mut memory = DataMemory::new(&[0x80, 0x3b, 0x20]).with_absent(DATA);
+    let result = run3_data(&mut state, &mut memory, 4).unwrap();
+    // U only: not present, a read by CPL3.
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x4),
+            linear_address: Some(DATA),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn cmpb_imm8_at_a_non_canonical_address_is_a_general_protection_fault() {
+    let mut state = mov_byte_state();
+    state.gpr[Register::Rbx as usize] = 0x0000_8000_0000_0000;
+    state.rflags |= ARITH;
+    let before = state.clone();
+    let mut memory = DataMemory::new(&[0x80, 0x3b, 0x20]);
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert!(
+        matches!(exit(&result), RunExit::Fault(fault) if fault.vector == 13 && fault.error_code == Some(0)),
+        "{:?}",
+        exit(&result)
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.reads, 0);
+}
+
+#[test]
+fn cmpb_imm8_at_a_non_canonical_stack_base_is_a_stack_fault() {
+    // `80 3c 24 20`: `cmpb $0x20, (%rsp)` and `80 7d 00 20`: `cmpb $0x20, 0(%rbp)`; RSP and RBP as
+    // the base go through SS, so the fault is #SS(0).
+    for (bytes, register) in [
+        (&[0x80, 0x3c, 0x24, 0x20][..], Register::Rsp),
+        (&[0x80, 0x7d, 0x00, 0x20][..], Register::Rbp),
+    ] {
+        let mut state = mov_byte_state();
+        state.gpr[register as usize] = 0x0000_8000_0000_0000;
+        state.rflags |= ARITH;
+        let before = state.clone();
+        let mut memory = DataMemory::new(bytes);
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert!(
+            matches!(exit(&result), RunExit::Fault(fault) if fault.vector == 12 && fault.error_code == Some(0)),
+            "{:?}",
+            exit(&result)
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.reads, 0);
+    }
+}
+
+#[test]
+fn cmpb_imm8_refusals_stop_as_unsupported_80_without_change() {
+    let forms: &[(&str, &[u8])] = &[
+        ("80 fb 20 cmp bl, 0x20 (mod = 11)", &[0x80, 0xfb, 0x20]),
+        (
+            "41 80 f8 20 cmp r8b, 0x20 (mod = 11)",
+            &[0x41, 0x80, 0xf8, 0x20],
+        ),
+        ("48 80 f8 20 REX.W mod = 11", &[0x48, 0x80, 0xf8, 0x20]),
+        ("80 03 05 addb $5, (%rbx) (/0)", &[0x80, 0x03, 0x05]),
+        ("80 0b 05 orb $5, (%rbx) (/1)", &[0x80, 0x0b, 0x05]),
+        ("80 13 05 adcb $5, (%rbx) (/2)", &[0x80, 0x13, 0x05]),
+        ("80 1b 05 sbbb $5, (%rbx) (/3)", &[0x80, 0x1b, 0x05]),
+        ("80 23 05 andb $5, (%rbx) (/4)", &[0x80, 0x23, 0x05]),
+        ("80 2b 05 subb $5, (%rbx) (/5)", &[0x80, 0x2b, 0x05]),
+        ("80 33 05 xorb $5, (%rbx) (/6)", &[0x80, 0x33, 0x05]),
+        ("80 c0 05 addb $5, %al (/0 mod = 11)", &[0x80, 0xc0, 0x05]),
+        ("66 80 3b 20", &[0x66, 0x80, 0x3b, 0x20]),
+        ("67 80 3b 20", &[0x67, 0x80, 0x3b, 0x20]),
+        ("f0 80 3b 20 LOCK", &[0xf0, 0x80, 0x3b, 0x20]),
+        ("f2 80 3b 20 REPNE", &[0xf2, 0x80, 0x3b, 0x20]),
+        ("f3 80 3b 20 REP", &[0xf3, 0x80, 0x3b, 0x20]),
+        ("64 80 3b 20 FS", &[0x64, 0x80, 0x3b, 0x20]),
+        ("65 80 3b 20 GS", &[0x65, 0x80, 0x3b, 0x20]),
+        ("26 80 3b 20 ES", &[0x26, 0x80, 0x3b, 0x20]),
+        ("2e 80 3b 20 CS", &[0x2e, 0x80, 0x3b, 0x20]),
+        ("36 80 3b 20 SS", &[0x36, 0x80, 0x3b, 0x20]),
+        ("3e 80 3b 20 DS", &[0x3e, 0x80, 0x3b, 0x20]),
+        (
+            "66 41 80 7c 1e ff 20",
+            &[0x66, 0x41, 0x80, 0x7c, 0x1e, 0xff, 0x20],
+        ),
+        (
+            "67 41 80 7c 1e ff 20",
+            &[0x67, 0x41, 0x80, 0x7c, 0x1e, 0xff, 0x20],
+        ),
+        (
+            "2e 41 80 7c 1e ff 20",
+            &[0x2e, 0x41, 0x80, 0x7c, 0x1e, 0xff, 0x20],
+        ),
+    ];
+    for (name, bytes) in forms {
+        let mut state = mov_byte_state();
+        state.rflags |= ARITH;
+        let before = state.clone();
+        let mut memory = DataMemory::new(bytes).with_user(DATA, 0xee);
+        let result = run3_data(&mut state, &mut memory, 4).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x80 },
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert_eq!(state, before, "{name}");
+        assert!(memory.writes.is_empty(), "{name}");
+        assert_eq!(memory.reads, 0, "{name}");
+    }
+}
+
+#[test]
+fn init_cmpb_imm8_then_jne_then_leaq_then_decl_stops_at_ff_c9() {
+    // Synthetic chain modelled on `/init` from 0x400153: `cmpb $0x20, -1(%r14,%rbx); jne +0x24;
+    // leaq 0x107(%rip), %rsi; decl %ecx` (`ff c9`, FF /1, outside the slice). The intermediate
+    // instructions of the real path are omitted here. The byte equals 0x20, so `jne` is not taken.
+    let bytes = [
+        0x41, 0x80, 0x7c, 0x1e, 0xff, 0x20, 0x75, 0x24, 0x48, 0x8d, 0x35, 0x07, 0x01, 0x00, 0x00,
+        0xff, 0xc9,
+    ];
+    let mut state = mov_byte_state();
+    state.gpr[Register::Rbx as usize] = 3;
+    let mut expected = state.clone();
+    expected.rip = RIP + 15;
+    expected.rflags = (expected.rflags & !ARITH) | ZF | PF;
+    expected.gpr[Register::Rsi as usize] = RIP + 15 + 0x107;
+    let mut memory = DataMemory::new(&bytes).with_user(DATA + 0x102, 0x20);
+    let result = run3_data(&mut state, &mut memory, 8).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xff });
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(state, expected);
+    assert_eq!(memory.reads, 1);
+    assert!(memory.writes.is_empty());
 }

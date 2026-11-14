@@ -21322,6 +21322,21 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 && dst.size == OperandSize::Byte
                 && dst.address_size == OperandSize::Qword
         }
+        // S4-39f14: `[REX] 80 /7 ib` (CMP r/m8, imm8) with a memory operand only; the register
+        // form (mod = 11) decodes to a register destination and stays refused with `0x80`.
+        (
+            OpcodeMap::Primary,
+            0x80,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Memory(dst),
+                src: Operand::Immediate(_),
+            },
+        ) => {
+            instruction.operand_size == OperandSize::Byte
+                && dst.size == OperandSize::Byte
+                && dst.address_size == OperandSize::Qword
+        }
         (
             OpcodeMap::Primary,
             0xff,
