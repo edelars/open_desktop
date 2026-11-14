@@ -2747,6 +2747,11 @@ mod tests {
             .read_physical(GuestPhysicalAddress::new(0x9000), AccessWidth::Qword)
             .unwrap();
         assert_eq!(value, 0xaabb_ccdd_1122_3344);
+        // S4-39f7: a refused write leaves the dirty bit (bit 6) of the leaf clear.
+        let leaf = bus
+            .read_physical(GuestPhysicalAddress::new(0x5000), AccessWidth::Qword)
+            .unwrap();
+        assert_eq!(leaf & 0x40, 0, "dirty bit after a refused write");
 
         // A user leaf without W (P, U): the CPL3 write is refused with the same code 0x7.
         let mut bus = self::bus(0x9005);
@@ -2771,6 +2776,11 @@ mod tests {
             .read_physical(GuestPhysicalAddress::new(0x9000), AccessWidth::Qword)
             .unwrap();
         assert_eq!(value, 0xaabb_ccdd_1122_3344);
+        // S4-39f7: a refused write leaves the dirty bit (bit 6) of the leaf clear.
+        let leaf = bus
+            .read_physical(GuestPhysicalAddress::new(0x5000), AccessWidth::Qword)
+            .unwrap();
+        assert_eq!(leaf & 0x40, 0, "dirty bit after a refused write");
 
         let mut bus = self::bus(0x9007);
         put(&mut bus, 0x9000, 0xaabb_ccdd_1122_3344);
@@ -2784,6 +2794,11 @@ mod tests {
             .read_physical(GuestPhysicalAddress::new(0x9000), AccessWidth::Qword)
             .unwrap();
         assert_eq!(value, 0xaabb_ccdd_1122_0044);
+        // S4-39f7: the successful write sets the dirty bit of the leaf (the accessed bit too).
+        let leaf = bus
+            .read_physical(GuestPhysicalAddress::new(0x5000), AccessWidth::Qword)
+            .unwrap();
+        assert_eq!(leaf & 0x60, 0x60, "accessed and dirty bits after a write");
     }
 
     #[test]
