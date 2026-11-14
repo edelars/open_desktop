@@ -37,6 +37,15 @@ pub(crate) trait BoardIrqSource {
     fn irq0_edges(&self) -> u64 {
         0
     }
+
+    /// S4-39g: the absolute virtual time (ns, the board clock) at which a CPU halted by `HLT`
+    /// with IF = 1 can next be woken: the time of now when a vector is deliverable now, the time
+    /// of the next edge when that edge would be deliverable, `None` when nothing can wake it
+    /// (the line is masked or in service, no edge is scheduled). `None` by default: a source that
+    /// does not model the wake keeps a halted CPU halted (the run ends as `halted`, as before).
+    fn wake_ns(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// The source of a board without any interrupt controller: never a vector, never a deadline.
@@ -70,6 +79,11 @@ pub(crate) struct IrqCounters {
     pub(crate) quantum_cut_by_deadline: u64,
     /// Quanta that ended on a guest write to the PIT ports (only for a source that asked for it).
     pub(crate) pit_write_quantum_ends: u64,
+    /// S4-39g: times a halted CPU (`HLT`, IF = 1) was woken by the source (`wake_ns`): the clock
+    /// moved to the wake time and the CPU went back to `Running`.
+    pub(crate) halt_wakes: u64,
+    /// S4-39g: virtual nanoseconds the clock skipped while the CPU was halted.
+    pub(crate) halt_idle_ns: u64,
 }
 
 /// The hook the set loop gets for one call: the source, the counters and whether the first
@@ -108,6 +122,8 @@ mod tests {
                 irq_refused_shadow: 0,
                 quantum_cut_by_deadline: 0,
                 pit_write_quantum_ends: 0,
+                halt_wakes: 0,
+                halt_idle_ns: 0,
             }
         );
     }

@@ -13,6 +13,7 @@ use crate::paged_memory_adapter::{
 };
 use crate::paged_probe::run_paged_probe_2m_ram;
 use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
+use crate::pit_pic_irq_source::PitPicIrqSource;
 use crate::{
     ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AbsentPortRegion, AbsentPorts,
     AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError, DISPLAY_FRAMEBUFFER_BASE,
@@ -26,10 +27,10 @@ use crate::{
     PCI_CONF1_PORT_BYTES, PCI_ECAM_DESCRIPTOR, PIC_ELCR_BASE_PORT, PIC_ELCR_PORT_BYTES,
     PIC_MASTER_BASE_PORT, PIC_PORT_BYTES, PIC_SLAVE_BASE_PORT, PIT_BASE_PORT, PIT_PORT_B,
     PIT_PORT_B_BYTES, PIT_PORT_BYTES, PagedProbeExit, PagedProbeIntegrationError,
-    PagedProbeQuantumReport, PagedProbeRejection, PciEcam, Pic8259Pair, Pit8254Devices,
-    Pit8254Handle, PortAddress, PortRange, PortRegionBinding, RamLimits, TrackedAccessError,
-    Uart16550Handle, Uart16550PollingTx, VirtualClock, VirtualClockError, VirtualClockHandle,
-    run_paged_probe, run_paged_probe_with_rdtsc,
+    PagedProbeQuantumReport, PagedProbeRejection, PciEcam, Pic8259Handle, Pic8259Pair,
+    Pit8254Devices, Pit8254Handle, PortAddress, PortRange, PortRegionBinding, RamLimits,
+    TrackedAccessError, Uart16550Handle, Uart16550PollingTx, VirtualClock, VirtualClockError,
+    VirtualClockHandle, run_paged_probe, run_paged_probe_with_rdtsc,
 };
 use od_isa::execute::{Cpl0ProfileSet, GuestFpState, RunExit, TranslationContextChange};
 use od_isa::memory::{
@@ -1093,9 +1094,14 @@ pub struct LoadedFirmwareBoard {
     /// it, the `run_boot` stop predicate reads it and `run_boot` clears it.
     rdtsc_tick: Option<Arc<AtomicBool>>,
     /// The source of maskable external interrupts (S4-38L8b). [`NoIrqSource`] (never a vector,
-    /// never a deadline) until a later slice gives the board a controller; consulted only by the
-    /// CPL0-set loop and only when the run asks for the hook (`irq` member).
+    /// never a deadline) until [`Self::enable_pit_pic_irq`] (S4-39g, user-mode run) installs the
+    /// PIT -> 8259 source; consulted only by the CPL0-set loop and only when the run asks for the hook (`irq` member).
     irq_source: Box<dyn BoardIrqSource>,
+    /// Handle of the 8259 master chip (S4-39g); `Some` under `linux_profile` (the PIC is bound
+    /// there).
+    pic_master: Option<Pic8259Handle>,
+    /// The PIT -> 8259 IR0 source once [`Self::enable_pit_pic_irq`] installed it (S4-39g).
+    pit_pic_source: Option<PitPicIrqSource>,
     /// Test injection (S4-37a2): `run_boot` drops the queued PM timer ticks
     /// instead of applying them. Never set in production code.
     #[cfg(test)]
@@ -1144,9 +1150,9 @@ impl LoadedFirmwareBoard {
         self.nvme.clone()
     }
 
-    /// Replaces the board's interrupt source (S4-38L8b). Nothing in production code calls it
-    /// yet: the board has [`NoIrqSource`] by default and the runner has no flag for a source
-    /// (S4-38L8c).
+    /// Replaces the board's interrupt source (S4-38L8b). Only tests call it; production code
+    /// installs the PIT -> 8259 source through [`Self::enable_pit_pic_irq`] (S4-39g, user-mode
+    /// run). The board has [`NoIrqSource`] by default.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_irq_source(&mut self, source: Box<dyn BoardIrqSource>) {
         self.irq_source = source;
@@ -1170,6 +1176,35 @@ impl LoadedFirmwareBoard {
             self.lapic.clone(),
             self.clock.clone(),
         ))
+    }
+
+    /// S4-39g: install the PIT channel 0 -> 8259 master IR0 source as the board's interrupt
+    /// source (once; a second call keeps the installed one and its state). `false` and nothing
+    /// installed without the Linux-profile PIT and PIC. Called by the user-mode run of the
+    /// Linux board only; the default board keeps [`NoIrqSource`].
+    pub(crate) fn enable_pit_pic_irq(&mut self) -> bool {
+        if self.pit_pic_source.is_some() {
+            return true;
+        }
+        let (Some(pit), Some(pic)) = (self.pit.clone(), self.pic_master.clone()) else {
+            return false;
+        };
+        let source = PitPicIrqSource::new(pit, pic, self.clock.clone());
+        self.irq_source = Box::new(source.clone());
+        self.pit_pic_source = Some(source);
+        true
+    }
+
+    /// Handle of the 8259 master chip (S4-39g); `None` without the Linux profile.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn pic_master(&self) -> Option<Pic8259Handle> {
+        self.pic_master.clone()
+    }
+
+    /// The installed PIT -> 8259 source (a second handle on it), if any.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn pit_pic_source(&self) -> Option<PitPicIrqSource> {
+        self.pit_pic_source.clone()
     }
 
     /// True under `linux_profile`: the RDTSC time source (and with it the tick) exists only
@@ -1548,8 +1583,10 @@ impl LoadedFirmwareBoard {
     /// instruction boundary (`deliver_pending_irq` of the loop), a quantum is never longer than
     /// the instructions left until the source's `next_deadline_ns` (at least one; each cut is
     /// counted and resumed), a guest write to the PIT ports ends the quantum when the source asks
-    /// for it, and the counters of the report are filled. The board has [`NoIrqSource`] unless a
-    /// test installs another, so the hook changes no result today.
+    /// for it, and the counters of the report are filled. The board has [`NoIrqSource`] until
+    /// [`Self::enable_pit_pic_irq`] (user-mode run, S4-39g) or a test installs another source; with
+    /// [`NoIrqSource`] the hook changes no result. Under the PIT -> 8259 source a halted CPU is
+    /// woken (see the idle wake in the loop).
     pub(crate) fn run_linux_boot_cpl0_set(
         &mut self,
         instruction_budget: u64,
@@ -1710,6 +1747,31 @@ impl LoadedFirmwareBoard {
                 }
             }
             let stop_reason = acpi_pm.as_ref().and_then(AcpiPmHandle::stop_request);
+            // S4-39g: a halted CPU (`HLT`) with IF = 1 and a source that can wake it: the clock
+            // skips to the wake time (the board has nothing else to run), the CPU is `Running`
+            // again, and the next boundary delivers the vector. The `HLT` itself retired (its
+            // instruction and 1 ns are counted above). IF = 0, a source without a wake time
+            // (`None`: the line is masked or in service, no edge) or a PM stop request leave the
+            // exit as it was: the run ends as `halted`. Each wake costs one unit of the budget,
+            // so a source that wakes the CPU without ever giving a vector cannot loop forever.
+            if irq_hook
+                && stop_reason.is_none()
+                && remaining > 0
+                && matches!(report.exit, PagedCpl0SetExit::Run(RunExit::Halted))
+                && self.state.rflags & (1 << 9) != 0
+                && let Some(wake) = self.irq_source.wake_ns()
+            {
+                let idle = wake.saturating_sub(self.clock.snapshot().now_ns());
+                if let Err(error) = self.advance_time_ns(idle) {
+                    break Err(failure(error));
+                }
+                irq_counters.halt_wakes += 1;
+                irq_counters.halt_idle_ns += idle;
+                self.state.activity = Some(CpuActivity::Running);
+                remaining -= 1;
+                partial_rep = false;
+                continue;
+            }
             let cpuid_divergence_leaf = match report.exit {
                 PagedCpl0SetExit::CpuidDivergence { leaf } => Some(leaf),
                 _ => None,
@@ -1925,6 +1987,7 @@ pub(crate) struct AssembledBoard {
     nvme: Option<NvmeHandle>,
     acpi_pm: Option<AcpiPmHandle>,
     pit: Option<Pit8254Handle>,
+    pic_master: Option<Pic8259Handle>,
     lapic: LocalApicHandle,
     clock: VirtualClockHandle,
     /// Handoff block bytes, to be written at [`FIRMWARE_HANDOFF_GPA`].
@@ -2066,6 +2129,7 @@ pub(crate) fn assemble_board(
     // The PM timer reads the board's clock; the board stays its only advancer.
     let mut acpi_pm = None;
     let mut pit_handle = None;
+    let mut pic_master_handle = None;
     if config.acpi_pm {
         let (device, handle) = AcpiPm::new_with_handle(clock.clone());
         ports.push(PortRegionBinding {
@@ -2096,6 +2160,7 @@ pub(crate) fn assemble_board(
         bind(PIT_BASE_PORT, PIT_PORT_BYTES, Box::new(pit.pit))?;
         bind(PIT_PORT_B, PIT_PORT_B_BYTES, Box::new(pit.port_b))?;
         let pair = Pic8259Pair::new();
+        pic_master_handle = Some(pair.master_handle.clone());
         bind(PIC_MASTER_BASE_PORT, PIC_PORT_BYTES, Box::new(pair.master))?;
         bind(PIC_SLAVE_BASE_PORT, PIC_PORT_BYTES, Box::new(pair.slave))?;
         bind(PIC_ELCR_BASE_PORT, PIC_ELCR_PORT_BYTES, Box::new(pair.elcr))?;
@@ -2132,6 +2197,7 @@ pub(crate) fn assemble_board(
         nvme,
         acpi_pm,
         pit: pit_handle,
+        pic_master: pic_master_handle,
         lapic: lapic_handle,
         clock,
         handoff,
@@ -2174,6 +2240,7 @@ impl AssembledBoard {
             nvme,
             acpi_pm,
             pit,
+            pic_master,
             lapic,
             clock,
             handoff,
@@ -2246,6 +2313,8 @@ impl AssembledBoard {
             com1_log: Vec::new(),
             rdtsc_tick,
             irq_source: Box::new(NoIrqSource),
+            pic_master,
+            pit_pic_source: None,
             #[cfg(test)]
             suppress_pm_tick: false,
             #[cfg(test)]
@@ -2277,6 +2346,7 @@ impl AssembledBoard {
             nvme,
             acpi_pm,
             pit,
+            pic_master,
             lapic,
             clock,
             rdtsc_tick,
@@ -2311,6 +2381,8 @@ impl AssembledBoard {
             com1_log: Vec::new(),
             rdtsc_tick,
             irq_source: Box::new(NoIrqSource),
+            pic_master,
+            pit_pic_source: None,
             #[cfg(test)]
             suppress_pm_tick: false,
             #[cfg(test)]
