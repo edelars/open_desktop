@@ -1095,6 +1095,9 @@ fn run_linux_direct_board_set_with(
     // `DiagnosticV1`, the base probe) keeps the board as it was.
     let mut members = members;
     if user_mode && boot.board.enable_pit_pic_irq() {
+        // S4-39i: the UART THRE line goes to master IR4, so the kernel's 8250 driver can send
+        // `tty` output (it writes THR from the THRE interrupt).
+        boot.board.enable_uart_irq4();
         members.halt = true;
         members.irq = true;
     }
@@ -12922,6 +12925,137 @@ mod tests {
             assert_eq!((record.irqs_delivered, record.halt_wakes), (0, 0));
             assert!(!record.set_members.iter().any(|member| member == "halt"));
             assert!(boot.board.pit_pic_source().is_none());
+        }
+    }
+
+    /// S4-39i: the UART THRE line to master IR4 under the user-mode facade. The guest enables
+    /// THRE and spins; its handler at vector `0x34` is the 8250 driver's shape: read IIR, send
+    /// one byte of a table to THR (nothing at the NUL end), EOI, `IRETQ`. Every byte of COM1 is
+    /// written by the handler, so without the wire to IR4 the transcript stays empty.
+    mod uart_irq4 {
+        use super::irq_hook::{IRQ_HANDLER_AT, IRQ_IDT_AT, irq_board};
+        use super::*;
+
+        const SPIN: [u8; 2] = [0xEB, 0xFE];
+        const TABLE: u64 = DATA + 0x3000;
+        const VECTOR: u8 = 0x34;
+        const NONCE: &[u8] = b"OD_NONCE=s4-38l4a\n";
+
+        /// `MOV AL, value; MOV DX, port; OUT DX, AL`.
+        fn outb(port: u16, value: u8) -> Vec<u8> {
+            vec![0xB0, value, 0x66, 0xBA, port as u8, (port >> 8) as u8, 0xEE]
+        }
+
+        /// `init_8259A` of the master (ICW2 `0x30`, so IR4 is vector `0x34`), IMR = 0.
+        fn pic_init() -> Vec<u8> {
+            [
+                outb(0x20, 0x11),
+                outb(0x21, 0x30),
+                outb(0x21, 0x04),
+                outb(0x21, 0x01),
+                outb(0x21, 0x00),
+            ]
+            .concat()
+        }
+
+        /// The guest: PIC, MCR OUT2, IER = THRE, spin.
+        fn program() -> Vec<u8> {
+            [
+                pic_init(),
+                outb(0x3FC, 0x08),
+                outb(0x3F9, 0x02),
+                SPIN.to_vec(),
+            ]
+            .concat()
+        }
+
+        /// IIR read, `AL = [RSI]`, a NUL ends the output, else the byte goes to THR and RSI
+        /// moves on; then EOI and `IRETQ`.
+        fn handler() -> Vec<u8> {
+            [
+                vec![0x66, 0xBA, 0xFA, 0x03, 0xEC],
+                vec![0x8A, 0x06, 0x84, 0xC0, 0x74, 0x08],
+                vec![0x66, 0xBA, 0xF8, 0x03, 0xEE, 0x48, 0xFF, 0xC6],
+                outb(0x20, 0x20),
+                vec![0x48, 0xCF],
+            ]
+            .concat()
+        }
+
+        fn board() -> (LinuxDirectBoot, Vec<u8>) {
+            let (mut boot, file) = irq_board(&program());
+            write_phys(&mut boot, IRQ_HANDLER_AT, &handler());
+            let mut table = NONCE.to_vec();
+            table.push(0);
+            write_phys(&mut boot, TABLE, &table);
+            // The gate of vector 0x34 is the gate of the board's IRQ vector, at the same handler.
+            let mut gate = [0u8; 16];
+            gate[0..2].copy_from_slice(&(IRQ_HANDLER_AT as u16).to_le_bytes());
+            gate[2..4].copy_from_slice(&0x10u16.to_le_bytes());
+            gate[5] = 0x8E;
+            gate[6..8].copy_from_slice(&((IRQ_HANDLER_AT >> 16) as u16).to_le_bytes());
+            write_phys(&mut boot, IRQ_IDT_AT + u64::from(VECTOR) * 16, &gate);
+            boot.board.state_mut().gpr[Register::Rsi as usize] = TABLE;
+            (boot, file)
+        }
+
+        fn members() -> LinuxCpl0SetMembers {
+            LinuxCpl0SetMembers {
+                pio_u8: true,
+                sti: true,
+                ..LinuxCpl0SetMembers::minimal()
+            }
+        }
+
+        #[test]
+        fn the_user_mode_run_sends_the_nonce_line_to_com1_from_the_thre_interrupt() {
+            let (mut boot, file) = board();
+            let record = run_linux_direct_board_set_user_mode(
+                &mut boot,
+                &input(&file, &[], BLOB, board_hash()),
+                4000,
+                members(),
+            )
+            .expect("runs");
+            assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+            assert_eq!(record.com1, NONCE, "{record:?}");
+            // One interrupt for the IER enable and one after each byte (the last finds the NUL).
+            assert_eq!(record.irqs_delivered, NONCE.len() as u64 + 1, "{record:?}");
+            let source = boot.board.uart_irq_source().expect("installed");
+            assert_eq!(source.uart_edges(), NONCE.len() as u64 + 1);
+            // The handler's EOI cleared ISR; the last IIR read left nothing pending.
+            let pic = boot.board.pic_master().expect("the PIC exists").snapshot();
+            assert_eq!((pic.irr, pic.isr), (0, 0));
+            assert_eq!(boot.board.uart().peek_iir(), 0x01);
+            assert_eq!(boot.board.state().gpr[Register::Rsi as usize], TABLE + 18);
+        }
+
+        #[test]
+        fn without_the_user_mode_the_uart_line_reaches_nothing_and_com1_stays_empty() {
+            let (mut boot, file) = board();
+            let record = run_set_facade(&mut boot, &file, 4000, members());
+            assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+            assert!(record.com1.is_empty(), "{record:?}");
+            assert_eq!(record.irqs_delivered, 0, "{record:?}");
+            assert!(boot.board.uart_irq_source().is_none());
+            // The UART holds the condition (IIR shows THRE), nothing took it.
+            assert_eq!(boot.board.uart().peek_iir(), 0x02);
+        }
+
+        #[test]
+        fn the_uart_source_needs_the_pit_source_first_and_is_installed_once() {
+            let (mut boot, _) = board();
+            assert!(boot.board.enable_pit_pic_irq());
+            assert!(boot.board.enable_uart_irq4());
+            assert!(
+                boot.board.enable_uart_irq4(),
+                "a second call keeps the source"
+            );
+            assert!(boot.board.pit_pic_source().is_some());
+            // Without the PIT source first the UART source is refused.
+            let (mut fresh, _) = board();
+            assert!(!fresh.board.enable_uart_irq4());
+            assert!(fresh.board.uart_irq_source().is_none());
         }
     }
 

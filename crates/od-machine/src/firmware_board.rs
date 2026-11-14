@@ -14,6 +14,7 @@ use crate::paged_memory_adapter::{
 use crate::paged_probe::run_paged_probe_2m_ram;
 use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
 use crate::pit_pic_irq_source::PitPicIrqSource;
+use crate::uart_pic_irq_source::UartPicIrqSource;
 use crate::{
     ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AbsentPortRegion, AbsentPorts,
     AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError, DISPLAY_FRAMEBUFFER_BASE,
@@ -1102,6 +1103,8 @@ pub struct LoadedFirmwareBoard {
     pic_master: Option<Pic8259Handle>,
     /// The PIT -> 8259 IR0 source once [`Self::enable_pit_pic_irq`] installed it (S4-39g).
     pit_pic_source: Option<PitPicIrqSource>,
+    /// The UART THRE -> 8259 IR4 source once [`Self::enable_uart_irq4`] installed it (S4-39i).
+    uart_irq_source: Option<UartPicIrqSource>,
     /// Test injection (S4-37a2): `run_boot` drops the queued PM timer ticks
     /// instead of applying them. Never set in production code.
     #[cfg(test)]
@@ -1195,6 +1198,30 @@ impl LoadedFirmwareBoard {
         self.irq_source = Box::new(source.clone());
         self.pit_pic_source = Some(source);
         true
+    }
+
+    /// S4-39i: wrap the installed PIT -> IR0 source with the UART interrupt output -> 8259 master
+    /// IR4 (once; a second call keeps the installed one). `false` and nothing changed unless
+    /// [`Self::enable_pit_pic_irq`] installed the PIT source first (so the PIC exists). Called by
+    /// the user-mode run of the Linux board only; without it the UART line reaches nothing.
+    pub(crate) fn enable_uart_irq4(&mut self) -> bool {
+        if self.uart_irq_source.is_some() {
+            return true;
+        }
+        let (Some(pit_pic), Some(pic)) = (self.pit_pic_source.clone(), self.pic_master.clone())
+        else {
+            return false;
+        };
+        let source = UartPicIrqSource::new(pit_pic, self.uart.clone(), pic);
+        self.irq_source = Box::new(source.clone());
+        self.uart_irq_source = Some(source);
+        true
+    }
+
+    /// The installed UART -> IR4 source (a second handle on it), if any.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn uart_irq_source(&self) -> Option<UartPicIrqSource> {
+        self.uart_irq_source.clone()
     }
 
     /// Handle of the 8259 master chip (S4-39g); `None` without the Linux profile.
@@ -1716,10 +1743,19 @@ impl LoadedFirmwareBoard {
             }
             retired += report.instructions_executed;
             remaining = remaining.saturating_sub(report.instructions_executed);
+            // S4-39i: a THR write clears the THRE condition and the pump below raises it again
+            // before the next instruction boundary; the source samples the level on both sides
+            // so that the fall and the rise are both seen (one edge on IR4 per byte).
+            if let Some(source) = &self.uart_irq_source {
+                source.sample();
+            }
             while uart.transfer_holding_to_shift() {
                 if let Some(byte) = uart.complete_transmission() {
                     self.com1_log.push(byte);
                 }
+            }
+            if let Some(source) = &self.uart_irq_source {
+                source.sample();
             }
             let failure = |error| LinuxRunFailure { error, retired };
             if let Err(error) = self.advance_time_ns(report.instructions_executed) {
@@ -2317,6 +2353,7 @@ impl AssembledBoard {
             irq_source: Box::new(NoIrqSource),
             pic_master,
             pit_pic_source: None,
+            uart_irq_source: None,
             #[cfg(test)]
             suppress_pm_tick: false,
             #[cfg(test)]
@@ -2385,6 +2422,7 @@ impl AssembledBoard {
             irq_source: Box::new(NoIrqSource),
             pic_master,
             pit_pic_source: None,
+            uart_irq_source: None,
             #[cfg(test)]
             suppress_pm_tick: false,
             #[cfg(test)]
