@@ -2862,13 +2862,65 @@ fn movb_load_from_a_non_canonical_address_is_a_general_protection_fault() {
     let mut memory = DataMemory::new(&[0x8a, 0x03]);
     let result = run3_data(&mut state, &mut memory, 1).unwrap();
     assert!(
-        matches!(exit(&result), RunExit::Fault(fault) if fault.vector == 13),
+        matches!(exit(&result), RunExit::Fault(fault) if fault.vector == 13 && fault.error_code == Some(0)),
         "{:?}",
         exit(&result)
     );
     assert_eq!(result.instructions_executed, 0);
     assert_eq!(state, before);
     assert_eq!(memory.reads, 0);
+}
+
+#[test]
+fn movb_load_from_a_non_canonical_stack_base_is_a_stack_fault() {
+    // `8a 04 24`: `movb (%rsp), %al`; RSP as the base goes through SS, so the fault is #SS(0).
+    let mut state = mov_byte_state();
+    state.gpr[Register::Rsp as usize] = 0x0000_8000_0000_0000;
+    let before = state.clone();
+    let mut memory = DataMemory::new(&[0x8a, 0x04, 0x24]);
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert!(
+        matches!(exit(&result), RunExit::Fault(fault) if fault.vector == 12 && fault.error_code == Some(0)),
+        "{:?}",
+        exit(&result)
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.reads, 0);
+}
+
+#[test]
+fn movb_load_sib_with_rex_x_or_without_a_base_uses_the_decoded_registers() {
+    // `42 8a 04 23`: REX.X makes the index r12 (base rbx): the byte at rbx + r12.
+    let mut state = mov_byte_state();
+    state.gpr[Register::R12 as usize] = 0x40;
+    let target = DATA + 0x40;
+    let mut expected = with_byte(&state, Register::Rax, 0, 0x9c);
+    expected.rip = RIP + 4;
+    let mut memory = DataMemory::new(&[0x42, 0x8a, 0x04, 0x23])
+        .with_user(target, 0x9c)
+        .with_user(target - 1, 0x11)
+        .with_user(target + 1, 0x22);
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state, expected);
+    assert_eq!(memory.reads, 1);
+
+    // `41 8a 04 25 disp32`: SIB base 101 with mod 00 has no base even with REX.B (r13 is not used).
+    let state_before = mov_byte_state();
+    let mut state = state_before.clone();
+    let mut expected = with_byte(&state, Register::Rax, 0, 0x9c);
+    expected.rip = RIP + 8;
+    let mut memory = DataMemory::new(&[0x41, 0x8a, 0x04, 0x25, 0x00, 0x10, 0x60, 0x00])
+        .with_user(DATA, 0x9c)
+        .with_user(DATA - 1, 0x11)
+        .with_user(DATA + 1, 0x22);
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state, expected);
+    assert_eq!(memory.reads, 1);
 }
 
 #[test]
