@@ -21165,7 +21165,7 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// r8..r15) with no prefix other than REX, as in `4c 39 eb` (`cmpq %r13, %rbx`) of `/init` at
 /// `0x400145`. The CPL0 `Operation::Arithmetic { kind: Cmp }` is reused (flags as `dst - src`, the
 /// result is not written). `39` without REX.W (CMP r/m32, r32), a memory operand and the other CMP
-/// opcodes (`38`, `3A`..`3D`, `80`/`81`/`83 /7`) stay outside.
+/// opcodes (`3A`..`3D`, `80`/`81`/`83 /7`) stay outside; `38` with a memory operand is S4-39f11.
 ///
 /// S4-39f7 (continued): the short `7x rel8` Jcc (`74 08` = `je` of `/init` at `0x400151`) without
 /// REX and without any prefix: the same `Operation::Branch` as `0F 8x` (the decoder sign-extends
@@ -21188,7 +21188,16 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// the byte view (AL..BL, SPL..DIL with any REX, AH..BH without) and only that byte changes; flags
 /// stay. REX.W does not change a byte load and is accepted as for `C6`. The register form
 /// (`8a c0`, mod = 11) and any prefix (66/67/LOCK/REP/segment, including the 2E/3E hints) stay
-/// outside; `88` (MOV r/m8, r8), `8B` and `38` (CMP r/m8, r8) stay outside too.
+/// outside; `88` (MOV r/m8, r8) and `8B` stay outside too.
+///
+/// S4-39f11: `[REX] 38 /r` (CMP r/m8, r8) with a memory operand (mod != 11: SIB, disp8/disp32,
+/// RIP-relative; REX.R, REX.X and REX.B reach the register, the index and the base) with no prefix
+/// other than REX, as in `38 07` (`cmpb %al, (%rdi)`) of `/init` at `0x400171`. The CPL0
+/// `Operation::Arithmetic { kind: Cmp }` is reused: the byte is read through `read_operand` with
+/// the CPL3 context (the U/S check applies, #PF with U and no state change), the flags are those of
+/// `memory - register` at byte size and nothing is written. REX.W does not change a byte compare
+/// and is accepted as for `8A`/`C6`. The register form (`38 c0`, mod = 11), any prefix
+/// (66/67/LOCK/REP/segment) and the other CMP opcodes (`3A`..`3D`, `80`/`81`/`83 /7`) stay outside.
 ///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
@@ -21286,6 +21295,19 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             instruction.operand_size == OperandSize::Byte
                 && src.size == OperandSize::Byte
                 && src.address_size == OperandSize::Qword
+        }
+        (
+            OpcodeMap::Primary,
+            0x38,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Memory(dst),
+                src: Operand::Register(_),
+            },
+        ) => {
+            instruction.operand_size == OperandSize::Byte
+                && dst.size == OperandSize::Byte
+                && dst.address_size == OperandSize::Qword
         }
         (OpcodeMap::Primary, 0x8d, Operation::Lea { src, .. }) => {
             instruction.operand_size == OperandSize::Qword
