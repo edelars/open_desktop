@@ -27,6 +27,8 @@ use serde::{Deserialize, Serialize};
 
 pub mod calibration_report;
 pub mod page_walk_compare;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod stage6_host_memory;
 
 pub const MAX_INPUTS: usize = 1_010;
 pub const MAX_CODE_BYTES_PER_INPUT: usize = 4 * 1024;

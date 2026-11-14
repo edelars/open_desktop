@@ -9,7 +9,7 @@
 ## 1. Граница контракта
 
 - Это **собственный документированный boot entry** платы (`firmware/AGENTS.md`: «явно фиксировать boot entry, CPU state»). Машина передаёт управление прошивке сразу в Long64, как flat probe S4-32a.
-- Reset vector `0xFFFF_FFF0`, real mode, 16/32-битные режимы не реализуются и не имитируются: в `od-isa` есть только `LongModeState`, а `CPU_CONTRACT.md` фиксирует, что real-mode entry выбранным handoff не требуется. Положение ROM в верхних байтах 4 GiB — соглашение карты, а не исполняемый reset path.
+- Плата передаёт управление прошивке сразу в Long64; этот контракт не реализует reset vector `0xFFFF_FFF0`, ROM reset path или BIOS и не требует real/protected-mode входа для firmware handoff. Это не исключает отдельный AP startup path: выбранный для S6 Linux target запускает AP через INIT/SIPI и ограниченный real→protected→long-mode trampoline из [SMP contract](SMP_CONTRACT.md) и [S6-14a CPU profile](CPU_CONTRACT.md#s6-14a--bounded-ap-startup-trampoline-profile). Тот профиль относится только к AP startup и не создаёт общего обещания поддержки real/protected mode или исполнения этих режимов прошивкой.
 - Карту платы назначает `od-machine`; прошивка её не меняет и не содержит других констант адресов, кроме перечисленных в разделе 2 как архитектурные константы платы.
 
 ## 2. Карта адресов firmware board v1

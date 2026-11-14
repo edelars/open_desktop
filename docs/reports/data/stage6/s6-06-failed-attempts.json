@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "experiment": "stage6-host-memory-matrix-failed-attempts",
+  "note": "Failed diagnostic runs and superseded raw reports are preserved separately and excluded from the three-process scored aggregate.",
+  "attempts": [
+    {
+      "attempt": 1,
+      "process_run": 1,
+      "status": "failed_no_report_written",
+      "command": "cargo run --release --offline -p od-bench -- stage6-host-memory --process-run 1 --output docs/reports/data/stage6/s6-06-host-1.json",
+      "error": "Error: ordinary measurement could not meet 200 ms per side within 8 calibration restarts",
+      "cause": "Timer was started after releasing the worker barrier; a short batch could finish before timing began.",
+      "binary_sha256": "00a224d0dfd195cbfed1041af23e1457e420155511c2f596c94b799449c34d1c",
+      "source_sha256": "not captured; failed process does not write its report"
+    },
+    {
+      "attempt": 2,
+      "process_run": 2,
+      "status": "failed_no_report_written",
+      "command": "cargo run --release --offline -p od-bench -- stage6-host-memory --process-run 2 --output docs/reports/data/stage6/s6-06-host-2.json",
+      "error": "ordinary measurement could not meet 200 ms per side: access=load width=1 threads=4 placement=separate_cache_lines candidate=arm_ldr_dmb_ishld reps_per_thread=72926208 baseline_total_ns=79724168 candidate_total_ns=311742209 restarts=9",
+      "cause": "Fixed twofold retry growth stopped after the faster baseline side remained below the per-side floor.",
+      "binary_sha256": "01fb93a6b892eea84da7d0f18fe43a0d4b532ca01006dc6b3e51a0635b5700f9",
+      "source_sha256": "0bddc66a41be969fa4c585c5cbfc1001d4237945e8b0e955553e93e1d8a32a56"
+    },
+    {
+      "attempt": 3,
+      "process_run": 1,
+      "status": "failed_preflight_no_report_written",
+      "command": "cargo run --release --offline -p od-bench -- stage6-host-memory --process-run 1 --output docs/reports/data/stage6/s6-06-host-1.json",
+      "error": "ordinary preflight failed: width=1 store=arm_str_dmb_ishst load=rust_atomic_relaxed_load_baseline expected=90 observed=0",
+      "cause": "The store barrier branch emitted LDRB instead of STRB because the macro selected its load mnemonic. Fixed to select STRB/STRH/STR; a correctness preflight now checks every candidate before timing.",
+      "binary_sha256": "eb63c677554f7ff5de1a9857a2c59866ecc7aa0f62c3ccaf33dc4f0cc26abf25",
+      "source_sha256": "not captured; failed process does not write its report"
+    },
+    {
+      "attempt": 4,
+      "process_run": 2,
+      "status": "canceled_no_report_written",
+      "command": "target/release/od-bench stage6-host-memory --process-run 2 --output docs/reports/data/stage6/s6-06-host-2.json",
+      "error": "Canceled before completion; the first corrected-layout run barely cleared the 200 ms floor, within timer noise, so internal per-sample target was raised from 12 ms to 15 ms and all captures must be regenerated.",
+      "source_sha256": "005faa49ba8c14f48d5c9e181d6ecc07f2303a796c767e7430f2596a06fc180d",
+      "binary_sha256": "260d93e93fcc3321c3f930415c58587948a309c55eaeef0a5f93493a8dcc7416"
+    },
+    {
+      "attempt": 5,
+      "process_run": 2,
+      "status": "canceled_no_report_written",
+      "command": "target/release/od-bench stage6-host-memory --process-run 2 --output docs/reports/data/stage6/s6-06-host-2.json",
+      "error": "Canceled before completion. The 15 ms target was applied to each of 20 retained pairs but the one-shot 2,048-operation calibration underestimated sample duration; process 1 minimum side was 205,457,378 ns. Raised target to 22 ms and discarded the entire 15 ms-source series.",
+      "source_sha256": "ff9cf3f3f926d6d6894efbf8a7165ef92a6b0f431a9b555c902e18df136cb8ba",
+      "binary_sha256": "f6155d532c0d41fed61907b11d5126ee560c02b2f18088f072fedd5d4f34616e"
+    }
+  ],
+  "superseded_runs": [
+    {
+      "files": [
+        "s6-06-host-superseded-pre-disassembly-1.json",
+        "s6-06-host-superseded-fixed-timer-1.json",
+        "s6-06-host-superseded-preflight-1.json",
+        "s6-06-host-superseded-preflight-2.json",
+        "s6-06-host-superseded-preflight-3.json"
+      ],
+      "status": "valid_timing_but_excluded",
+      "reason": "These earlier captures predate the deterministic correctness preflight or final instruction-attribution build; none are part of the accepted three-process aggregate."
+    },
+    {
+      "files": [
+        "s6-06-host-superseded-cacheline-1.json",
+        "s6-06-host-superseded-cacheline-2.json",
+        "s6-06-host-superseded-cacheline-3.json"
+      ],
+      "status": "valid_timing_but_excluded",
+      "reason": "These correctness-preflight captures used 64-byte spacing on a host with 128-byte cache lines, so their separate_cache_lines rows shared lines. They are excluded from all aggregates."
+    },
+    {
+      "files": [
+        "s6-06-host-superseded-target-15ms-1.json"
+      ],
+      "status": "valid_timing_but_excluded",
+      "reason": "This corrected-placement capture used the intermediate 15 ms per-pair target and is excluded because the final source uses a 300 ms per-side acceptance target."
+    },
+    {
+      "files": [
+        "s6-06-host-superseded-target-22ms-1.json"
+      ],
+      "status": "valid_timing_but_excluded",
+      "reason": "This run passed placement and correctness preflights but shared-repetition comparisons with a much faster candidate still produced a minimum side total of 200,325,668 ns. The final harness now requires at least 300 ms on both sides and scales toward 375 ms."
+    }
+  ]
+}

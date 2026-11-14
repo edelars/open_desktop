@@ -1,0 +1,129 @@
+S6-06 Apple Silicon atomic helper disassembly
+Command: xcrun llvm-objdump --disassemble --demangle target/release/od-bench
+Binary SHA-256: edd9d696afd0545cb0221f2b600de4a36e0c6f1a8274f15e2196005a80c81c48
+Build command: cargo build --release -p od-bench --offline
+Rust: rustc 1.99.0 (b940084d7 2026-09-28) | binary: rustc | commit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4 | commit-date: 2026-09-28 | host: aarch64-apple-darwin | release: 1.99.0 | LLVM version: 23.1.1 |
+RUSTFLAGS: unset; Cargo release profile defaults
+
+Ordinary Rust SeqCst atomic accesses observed in the optimized timed worker
+closure `std::sys::backtrace::__rust_begin_short_backtrace::<od_bench::stage6_host_memory::access_batch<...>>`:
+AtomicU8: `LDARB W` load, `STLRB W` store.
+AtomicU16: `LDARH W` load, `STLRH W` store.
+AtomicU32: `LDAR W` load, `STLR W` store.
+AtomicU64: `LDAR X` load, `STLR X` store.
+The same closure contains relaxed `LDR/STR` and explicit assembly candidates;
+the symbols below isolate the Rust SeqCst RMW and explicit atomic helper paths.
+Source SHA-256: 58fe77309fbc107bc09876386e8553398580d11d9783f3af5fc1870865e530aa
+
+
+
+
+0000000100280a6c <od_bench::stage6_host_memory::pair_casp_add>:
+100280a6c: d5033bbf    	dmb	ish
+100280a70: a9402408    	ldp	x8, x9, [x0]
+100280a74: aa0803ec    	mov	x12, x8
+100280a78: aa0903ed    	mov	x13, x9
+100280a7c: b100050a    	adds	x10, x8, #0x1
+100280a80: 9a1f012b    	adc	x11, x9, xzr
+100280a84: 4868fc0a    	caspal	x8, x9, x10, x11, [x0]
+100280a88: eb0c011f    	cmp	x8, x12
+100280a8c: fa4d0120    	ccmp	x9, x13, #0x0, eq
+100280a90: 54ffff21    	b.ne	0x100280a74 <od_bench::stage6_host_memory::pair_casp_add+0x8>
+100280a94: aa0a03e8    	mov	x8, x10
+100280a98: aa0b03e9    	mov	x9, x11
+100280a9c: d5033bbf    	dmb	ish
+100280aa0: d65f03c0    	ret
+
+0000000100280aa4 <od_bench::stage6_host_memory::pair_llsc_add>:
+100280aa4: d5033bbf    	dmb	ish
+100280aa8: c87fac0a    	ldaxp	x10, x11, [x0]
+100280aac: b100054a    	adds	x10, x10, #0x1
+100280ab0: 9a1f016b    	adc	x11, x11, xzr
+100280ab4: c82cac0a    	stlxp	w12, x10, x11, [x0]
+100280ab8: 35ffff8c    	cbnz	w12, 0x100280aa8 <od_bench::stage6_host_memory::pair_llsc_add+0x4>
+100280abc: d5033bbf    	dmb	ish
+100280ac0: d65f03c0    	ret
+
+0000000100280e88 <od_bench::stage6_host_memory::lse_atomic_add_u8>:
+100280e88: 52800028    	mov	w8, #0x1                ; =1
+100280e8c: d5033bbf    	dmb	ish
+100280e90: 38e8001f    	ldaddalb	w8, wzr, [x0]           ; acquire semantics dropped since destination is zero
+100280e94: d5033bbf    	dmb	ish
+100280e98: d65f03c0    	ret
+
+0000000100280e9c <od_bench::stage6_host_memory::std_atomic_add_u8>:
+100280e9c: 52800028    	mov	w8, #0x1                ; =1
+100280ea0: 38e80008    	ldaddalb	w8, w8, [x0]
+100280ea4: d65f03c0    	ret
+
+0000000100280ea8 <od_bench::stage6_host_memory::llsc_atomic_add_u8>:
+100280ea8: d5033bbf    	dmb	ish
+100280eac: 085ffc08    	ldaxrb	w8, [x0]
+100280eb0: 11000508    	add	w8, w8, #0x1
+100280eb4: 0809fc08    	stlxrb	w9, w8, [x0]
+100280eb8: 35ffffa9    	cbnz	w9, 0x100280eac <od_bench::stage6_host_memory::llsc_atomic_add_u8+0x4>
+100280ebc: d5033bbf    	dmb	ish
+100280ec0: d65f03c0    	ret
+
+0000000100280ec4 <od_bench::stage6_host_memory::lse_atomic_add_u16>:
+100280ec4: 52800028    	mov	w8, #0x1                ; =1
+100280ec8: d5033bbf    	dmb	ish
+100280ecc: 78e8001f    	ldaddalh	w8, wzr, [x0]           ; acquire semantics dropped since destination is zero
+100280ed0: d5033bbf    	dmb	ish
+100280ed4: d65f03c0    	ret
+
+0000000100280f00 <od_bench::stage6_host_memory::std_atomic_add_u16>:
+100280f00: 52800028    	mov	w8, #0x1                ; =1
+100280f04: 78e80008    	ldaddalh	w8, w8, [x0]
+100280f08: d65f03c0    	ret
+
+0000000100280f24 <od_bench::stage6_host_memory::llsc_atomic_add_u16>:
+100280f24: d5033bbf    	dmb	ish
+100280f28: 485ffc08    	ldaxrh	w8, [x0]
+100280f2c: 11000508    	add	w8, w8, #0x1
+100280f30: 4809fc08    	stlxrh	w9, w8, [x0]
+100280f34: 35ffffa9    	cbnz	w9, 0x100280f28 <od_bench::stage6_host_memory::llsc_atomic_add_u16+0x4>
+100280f38: d5033bbf    	dmb	ish
+100280f3c: d65f03c0    	ret
+
+0000000100280ed8 <od_bench::stage6_host_memory::lse_atomic_add_u32>:
+100280ed8: 52800028    	mov	w8, #0x1                ; =1
+100280edc: d5033bbf    	dmb	ish
+100280ee0: b8e8001f    	ldaddal	w8, wzr, [x0]           ; acquire semantics dropped since destination is zero
+100280ee4: d5033bbf    	dmb	ish
+100280ee8: d65f03c0    	ret
+
+0000000100280f0c <od_bench::stage6_host_memory::std_atomic_add_u32>:
+100280f0c: 52800028    	mov	w8, #0x1                ; =1
+100280f10: b8e80008    	ldaddal	w8, w8, [x0]
+100280f14: d65f03c0    	ret
+
+0000000100280f40 <od_bench::stage6_host_memory::llsc_atomic_add_u32>:
+100280f40: d5033bbf    	dmb	ish
+100280f44: 885ffc08    	ldaxr	w8, [x0]
+100280f48: 11000508    	add	w8, w8, #0x1
+100280f4c: 8809fc08    	stlxr	w9, w8, [x0]
+100280f50: 35ffffa9    	cbnz	w9, 0x100280f44 <od_bench::stage6_host_memory::llsc_atomic_add_u32+0x4>
+100280f54: d5033bbf    	dmb	ish
+100280f58: d65f03c0    	ret
+
+0000000100280eec <od_bench::stage6_host_memory::lse_atomic_add_u64>:
+100280eec: 52800028    	mov	w8, #0x1                ; =1
+100280ef0: d5033bbf    	dmb	ish
+100280ef4: f8e8001f    	ldaddal	x8, xzr, [x0]           ; acquire semantics dropped since destination is zero
+100280ef8: d5033bbf    	dmb	ish
+100280efc: d65f03c0    	ret
+
+0000000100280f18 <od_bench::stage6_host_memory::std_atomic_add_u64>:
+100280f18: 52800028    	mov	w8, #0x1                ; =1
+100280f1c: f8e80008    	ldaddal	x8, x8, [x0]
+100280f20: d65f03c0    	ret
+
+0000000100280f5c <od_bench::stage6_host_memory::llsc_atomic_add_u64>:
+100280f5c: d5033bbf    	dmb	ish
+100280f60: c85ffc08    	ldaxr	x8, [x0]
+100280f64: 91000508    	add	x8, x8, #0x1
+100280f68: c809fc08    	stlxr	w9, x8, [x0]
+100280f6c: 35ffffa9    	cbnz	w9, 0x100280f60 <od_bench::stage6_host_memory::llsc_atomic_add_u64+0x4>
+100280f70: d5033bbf    	dmb	ish
+100280f74: d65f03c0    	ret

@@ -590,7 +590,7 @@ S5-21 residual handoff (2026-11-13): both rootfs and E-inclusive exact inventori
 
 - **Дата обнаружения:** 2026-10-23.
 - **Компонент:** `od-isa::GuestMemory`, S2-21f `LOCK XADD qword [memory], register` и S2-21h explicit `LOCK XCHG qword [memory], register`.
-- **Статус:** открыта; S2-21f/h ограничены private synchronous RAM при последовательном исполнении. Shared/asynchronous memory, DMA, MMIO и SMP use остаются вне контракта.
+- **Статус:** открыта; контракт записан в [MEMORY_MODEL.md](specs/MEMORY_MODEL.md), но ещё не реализован и не принят. ISSUE-017 остаётся открытой до реализации и acceptance S6-31; shared/asynchronous memory, DMA, MMIO и SMP use нельзя считать поддержанными по одному факту наличия спецификации.
 - **Суть и последствия:** `atomic_fetch_add_integer` задаёт один backend вызов, wrapping update и no-mutation-on-error, но не задаёт полного x86 LOCK ordering, alignment/split-lock policy и не проверяет capability backend. Это достаточно только при отсутствии внешних конкурентных читателей/писателей и отложенных эффектов; generic `GuestMemory` не может динамически гарантировать это precondition. Unaligned local fixture проверяет backend bytes, но не hardware `#AC`/split-lock behavior.
 - **Уточнение S2-21g:** обязательный `GuestMemory::mfence` completion call покрывает только явный MFENCE для opt-in private synchronous RAM. Он не служит ordering boundary для LOCK XADD и не закрывает эту проблему; S2-21f остаётся под тем же integration precondition.
 - **Уточнение S2-21h:** явный `F0 + effective REX.W + 87 /r` qword memory XCHG повторно использует один `atomic_exchange_integer` backend call и принимается только для serial interpreter execution на private synchronous `FlatMemory`. XCHG с memory уже implicitly locked по Intel SDM revision 093 Vol.2D; этот local profile не подтверждает full LOCK ordering, backend capability, SMP или hardware atomicity. Native admission остаётся закрытым.
@@ -598,7 +598,8 @@ S5-21 residual handoff (2026-11-13): both rootfs and E-inclusive exact inventori
 - **Уточнение S2-22h/i:** тот же узкий A=0 byte write добавлен только для bare `MOV GS, AX` на CPL3 в отдельном local-only GDT profile; S2-22i добавил один local-only последовательный data read через загруженную GS.base. Оба сохраняют private synchronous RAM и serial-execution preconditions и не закрывают общий LOCK ordering или SMP semantics.
 - **Основание:** архитектурный анализ S2-21f сопоставил [memory trait](../crates/od-isa/src/memory.rs), [архитектурный контракт памяти](ARCHITECTURE.md) и Intel SDM revision 093 LOCK/XADD semantics. `FlatMemory` тестирует local split-region behavior, но не подтверждает межпоточную, DMA, MMIO или hardware атомарность.
 - **Воспроизведение/условие:** использовать S2-21f `F0 48 0F C1 /r` или S2-21h `F0 48 87 /r` через `GuestMemory`, который имеет concurrent readers/writers, shared aliases, DMA, MMIO или отложенные writes; interpreter не проверит backend capability и не обеспечивает требуемый ordering.
-- **Следующий шаг:** до подключения такого backend определить memory ownership/capability и complete x86 LOCK ordering contract, затем добавить concurrent/ordering tests и отдельную native/physical acceptance. До этого сохранять S2-21f и S2-22g/h/i memory ownership preconditions; не расширять LOCK формы или descriptor-write profile на shared, asynchronous, MMIO или SMP memory.
+- **Уточнение S6-04:** контракт x86-TSO, доступов, host-кандидатов, atomicity и Rust RAM ownership теперь зафиксирован в [MEMORY_MODEL.md](specs/MEMORY_MODEL.md). Он не выбирает быструю реализацию и не снимает ограничения действующего backend.
+- **Следующий шаг:** реализовать общий атомарный memory path и подтвердить его проверками/acceptance по S6-31; до этого сохранять S2-21f и S2-22g/h/i ownership preconditions, не расширять LOCK формы или descriptor-write profile на shared/asynchronous/MMIO/SMP memory и не считать контракт реализацией.
 
 ### ISSUE-015 — Разногласие SDM по NT для POPF word на CPL3/IOPL0
 
@@ -2252,3 +2253,14 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Суть и последствия:** [CPU_CONTRACT.md:21069–21071](specs/CPU_CONTRACT.md#L21069) attributes the PREFETCH semantics to the Intel SDM from memory without an independently checked source. S5-21 added candidate metadata only and does not verify source provenance or establish architecture-wide semantics.
 - **Основание:** [S4-38L6a plan entry](plans/STAGE_4.md#L2152) and the [S5-21 PREFETCH report](reports/STAGE_5_REPORT.md#s5-21-cpl0-candidate-follow-up-prefetchnta--prefetcht0-2026-11-13).
 - **Следующий шаг:** verify the applicable Intel SDM edition and record its exact citation in the CPU contract and Stage 4 result; preserve the current provenance boundary until verified.
+
+<a id="issue-086-s9-26-wrong-uefi-stage-reference"></a>
+
+### ISSUE-086 — S9-26 names the wrong UEFI stage
+
+- **Дата обнаружения:** 2026-11-13, при подготовке S6-00.
+- **Компонент:** `docs/reports/STAGE_9_REPORT.md`, запись S9-26.
+- **Статус:** открыта; подтверждённая документальная ошибка, не дефект реализации.
+- **Суть и последствия:** запись S9-26 указывает, что UEFI firmware отсутствует на этапах 6/8. UEFI принадлежит этапу 7. Текущая формулировка ошибочно распределяет владельца и может привести к неправильному планированию блокеров.
+- **Основание:** строка S9-26 в отчёте этапа 9 сопоставлена с планом этапа 7 и картой этапов; та же находка описана в [отчёте этапа 6](reports/STAGE_6_REPORT.md#4-документные-расхождения-и-передача).
+- **Следующий шаг:** владелец этапа 9 исправляет ссылку на этап 7 в `STAGE_9_REPORT.md`; до исправления сохранять эту запись открытой.

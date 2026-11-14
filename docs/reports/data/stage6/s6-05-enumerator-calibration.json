@@ -1,0 +1,399 @@
+{
+  "calibration_commands": {
+    "complete_schedule_gate": "python3 tools/build/build_stage6_litmus.py --calibrate --calibration-limit 1000000",
+    "seed_range_gate": "same command; seeds 0..9999 repeated three times after excluded 0..99 warm-up"
+  },
+  "candidate_gate": {
+    "complete_order_preserving_schedules": 1000000,
+    "repetitions": 3
+  },
+  "complete_schedule_gate_basis": {
+    "actual_model": "enumerate_model(interleaving_instruction_atomic)",
+    "candidate_schedules": 1000000,
+    "finite_fixture_sampling": "No finite fixture is sampled: every fixture schedule count is <= 1,000,000 and all stored outcome sets are exhaustive.",
+    "path_mode": "deduplicate=False; execute every successor path, retain unique-state set and DFS pending frontier, count terminal complete paths, stop exactly at candidate count",
+    "seed_range_selected_inclusive": [
+      0,
+      9999
+    ],
+    "seed_rule": "Python random.Random(seed) shuffles available instruction-step successors; deterministic by seed, not a confidence claim.",
+    "threshold_selected": 1000000,
+    "unit": "complete order-preserving schedules, not expanded states",
+    "why_no_lower_candidate": "All three exact 1,000,000-path runs remained below 2 GiB and 120 s; a lower schedule threshold was unnecessary.",
+    "workload_input_sha256": "7bf5cf658f10e30e38f29fd5967a8279a38b1b60956f3246b9ab9cc8843b16f5",
+    "workload_total_schedules": 2704156
+  },
+  "conclusion": "The complete-path 1,000,000 schedule threshold and seeds 0..9999 passed measured 2-GiB/120-second budgets. The threshold uses complete schedule count; expanded-state and TSO costs are supplemental historical measurements. Finite fixtures are exhaustively enumerated with no sampled coverage. S6-05 remains pending independent review.",
+  "corpus_acceptance": "not_accepted_pending_independent_review",
+  "date": "2026-11-13",
+  "environment": {
+    "cpu_model": "Apple M3 Max, 14 cores (10 performance, 4 efficiency)",
+    "implementation": "CPython",
+    "kernel_fingerprint": "Darwin Kernel Version 25.6.0: Tue Aug 18 17:51:35 PDT 2026; root:xnu-12377.161.15.700.19~2/RELEASE_ARM64_T6031",
+    "machine": "arm64",
+    "machine_model": "MacBook Pro, Mac15,11",
+    "memory_gib": 36,
+    "memory_limit_bytes": 2147483648,
+    "memory_metric": "ru_maxrss converted to bytes",
+    "platform": "macOS-26.7.1-arm64-arm-64bit-Mach-O",
+    "processor": "arm",
+    "python": "3.15.2 (main, Oct 25 2026, 16:57:51) [Clang 21.0.0 (clang-2100.3.34.2)]",
+    "runtime_flags": "default CPython flags; no optional flags",
+    "system_release": "25.6.0",
+    "time_limit_seconds": 120,
+    "warmups_excluded_from_measured_runs": true
+  },
+  "proposed_policy": {
+    "corpus_acceptance": "schedule threshold and seed budget measured; S6-05 implementation pending independent review",
+    "exhaustive_complete_schedule_threshold": 1000000,
+    "large_runtime_sampling_seed_range_inclusive": [
+      0,
+      9999
+    ],
+    "seed_range_basis": "measured actual interleaver one complete path for every seed in three 0..9999 runs"
+  },
+  "runs": [
+    {
+      "completed_schedule_paths": 1000000,
+      "elapsed_seconds": 10.279255333996844,
+      "expanded_states": 3851199,
+      "input_sha256": "7bf5cf658f10e30e38f29fd5967a8279a38b1b60956f3246b9ab9cc8843b16f5",
+      "partial_outcome_count": 1,
+      "peak_rss_bytes": 27672576,
+      "pending_frontier_states": 12,
+      "run": 1,
+      "terminal_outcome_states": 1000000,
+      "unique_states_stored": 149
+    },
+    {
+      "completed_schedule_paths": 1000000,
+      "elapsed_seconds": 10.477215584018268,
+      "expanded_states": 3851199,
+      "input_sha256": "7bf5cf658f10e30e38f29fd5967a8279a38b1b60956f3246b9ab9cc8843b16f5",
+      "partial_outcome_count": 1,
+      "peak_rss_bytes": 27607040,
+      "pending_frontier_states": 12,
+      "run": 2,
+      "terminal_outcome_states": 1000000,
+      "unique_states_stored": 149
+    },
+    {
+      "completed_schedule_paths": 1000000,
+      "elapsed_seconds": 10.56371587497415,
+      "expanded_states": 3851199,
+      "input_sha256": "7bf5cf658f10e30e38f29fd5967a8279a38b1b60956f3246b9ab9cc8843b16f5",
+      "partial_outcome_count": 1,
+      "peak_rss_bytes": 27705344,
+      "pending_frontier_states": 12,
+      "run": 3,
+      "terminal_outcome_states": 1000000,
+      "unique_states_stored": 149
+    }
+  ],
+  "schema": "od.stage6-litmus-calibration.v4",
+  "seed_sampling_calibration": {
+    "candidate_seed_range_inclusive": [
+      0,
+      9999
+    ],
+    "method": "For each seed, run the actual instruction-atomic interleaver with deterministic seeded successor shuffling and stop at one completed schedule. Each worker retains real model states and executes instructions; one worker handles a whole seed range so ru_maxrss covers the full repeat.",
+    "repetitions": 3,
+    "runs": [
+      {
+        "completed_schedule_paths": 10000,
+        "elapsed_seconds": 1.1164447080227546,
+        "expanded_states": 250000,
+        "input_sha256": "7bf5cf658f10e30e38f29fd5967a8279a38b1b60956f3246b9ab9cc8843b16f5",
+        "peak_rss_bytes": 27770880,
+        "pending_frontier_states_sum": 201163,
+        "run": 1,
+        "seed_end": 9999,
+        "seed_start": 0,
+        "seeds": 10000,
+        "unique_states_stored_sum": 451163
+      },
+      {
+        "completed_schedule_paths": 10000,
+        "elapsed_seconds": 1.097443500009831,
+        "expanded_states": 250000,
+        "input_sha256": "7bf5cf658f10e30e38f29fd5967a8279a38b1b60956f3246b9ab9cc8843b16f5",
+        "peak_rss_bytes": 27623424,
+        "pending_frontier_states_sum": 201163,
+        "run": 2,
+        "seed_end": 9999,
+        "seed_start": 0,
+        "seeds": 10000,
+        "unique_states_stored_sum": 451163
+      },
+      {
+        "completed_schedule_paths": 10000,
+        "elapsed_seconds": 1.0969337080023251,
+        "expanded_states": 250000,
+        "input_sha256": "7bf5cf658f10e30e38f29fd5967a8279a38b1b60956f3246b9ab9cc8843b16f5",
+        "peak_rss_bytes": 27607040,
+        "pending_frontier_states_sum": 201163,
+        "run": 3,
+        "seed_end": 9999,
+        "seed_start": 0,
+        "seeds": 10000,
+        "unique_states_stored_sum": 451163
+      }
+    ],
+    "status": "measured_within_budget",
+    "summary": {
+      "max_peak_rss_bytes": 27770880,
+      "max_seconds": 1.1164447080227546,
+      "mean_seconds": 1.1036073053449702,
+      "median_seconds": 1.097443500009831,
+      "min_seconds": 1.0969337080023251,
+      "relative_range": 0.017679295820111178
+    },
+    "warmup": {
+      "elapsed_excluded": true,
+      "range_inclusive": [
+        0,
+        99
+      ],
+      "result": {
+        "completed_schedule_paths": 100,
+        "elapsed_seconds": 0.011100999952759594,
+        "expanded_states": 2500,
+        "input_sha256": "7bf5cf658f10e30e38f29fd5967a8279a38b1b60956f3246b9ab9cc8843b16f5",
+        "peak_rss_bytes": 27721728,
+        "pending_frontier_states_sum": 2031,
+        "seed_end": 99,
+        "seed_start": 0,
+        "seeds": 100,
+        "unique_states_stored_sum": 4531
+      }
+    }
+  },
+  "source": {
+    "fixture_generator_output_sha256": "8468b1ed735038c679d3954e15f3b2056b0e70fc24e29bc82c1c7ecb6ade4972",
+    "path": "tools/build/build_stage6_litmus.py",
+    "sha256": "6acef5dddf320bc53ec7bda7a67e7195ad246a0549e2f7cc633658cb363e50e2"
+  },
+  "summary": {
+    "max_peak_rss_bytes": 27705344,
+    "max_seconds": 10.56371587497415,
+    "mean_seconds": 10.440062264329754,
+    "median_seconds": 10.477215584018268,
+    "min_seconds": 10.279255333996844,
+    "relative_range": 0.027247015752886305
+  },
+  "superseded_expanded_state_measurements_not_schedule_basis": {
+    "candidate_1000000": {
+      "conclusion": "Actual instruction-interleaving model expanded 1,000,000 states, retaining 1,000,129 unique states and 129 pending frontier states; peak RSS was 2.811 GB, above the 2 GiB bound. This candidate is rejected as S6-05 schedule-budget basis.",
+      "runs": [
+        {
+          "elapsed_seconds": 31.13320687500527,
+          "expanded_states": 1000000,
+          "input_sha256": "b49df74dfee71eef70acf918ecb1b67d8019f54d0b297ba78ba1525f1020b284",
+          "partial_outcome_count": 1,
+          "peak_rss_bytes": 2811183104,
+          "pending_frontier_states": 129,
+          "run": 1,
+          "terminal_outcome_states": 1,
+          "unique_states_stored": 1000129
+        },
+        {
+          "elapsed_seconds": 30.925255458045285,
+          "expanded_states": 1000000,
+          "input_sha256": "b49df74dfee71eef70acf918ecb1b67d8019f54d0b297ba78ba1525f1020b284",
+          "partial_outcome_count": 1,
+          "peak_rss_bytes": 2811297792,
+          "pending_frontier_states": 129,
+          "run": 2,
+          "terminal_outcome_states": 1,
+          "unique_states_stored": 1000129
+        },
+        {
+          "elapsed_seconds": 30.855137083039153,
+          "expanded_states": 1000000,
+          "input_sha256": "b49df74dfee71eef70acf918ecb1b67d8019f54d0b297ba78ba1525f1020b284",
+          "partial_outcome_count": 1,
+          "peak_rss_bytes": 2811232256,
+          "pending_frontier_states": 129,
+          "run": 3,
+          "terminal_outcome_states": 1,
+          "unique_states_stored": 1000129
+        }
+      ],
+      "status": "rejected_exceeds_memory_bound",
+      "summary": {
+        "max_peak_rss_bytes": 2811297792,
+        "max_seconds": 31.13320687500527,
+        "mean_seconds": 30.971199805363238,
+        "median_seconds": 30.925255458045285,
+        "min_seconds": 30.855137083039153,
+        "relative_range": 0.008978334507982638
+      }
+    },
+    "measured_lower_100000": {
+      "conclusion": "Actual instruction-interleaving model expanded 100,000 states; maximum RSS was 307,396,608 bytes, median time 2.478s, and relative time range 2.42%. Propose 100,000 expanded states as exhaustive threshold.",
+      "runs": [
+        {
+          "elapsed_seconds": 2.499034042004496,
+          "expanded_states": 100000,
+          "input_sha256": "b49df74dfee71eef70acf918ecb1b67d8019f54d0b297ba78ba1525f1020b284",
+          "partial_outcome_count": 1,
+          "peak_rss_bytes": 307347456,
+          "pending_frontier_states": 188,
+          "run": 1,
+          "terminal_outcome_states": 1,
+          "unique_states_stored": 100188
+        },
+        {
+          "elapsed_seconds": 2.477962125034537,
+          "expanded_states": 100000,
+          "input_sha256": "b49df74dfee71eef70acf918ecb1b67d8019f54d0b297ba78ba1525f1020b284",
+          "partial_outcome_count": 1,
+          "peak_rss_bytes": 307101696,
+          "pending_frontier_states": 188,
+          "run": 2,
+          "terminal_outcome_states": 1,
+          "unique_states_stored": 100188
+        },
+        {
+          "elapsed_seconds": 2.4392808750271797,
+          "expanded_states": 100000,
+          "input_sha256": "b49df74dfee71eef70acf918ecb1b67d8019f54d0b297ba78ba1525f1020b284",
+          "partial_outcome_count": 1,
+          "peak_rss_bytes": 307396608,
+          "pending_frontier_states": 188,
+          "run": 3,
+          "terminal_outcome_states": 1,
+          "unique_states_stored": 100188
+        }
+      ],
+      "status": "proposed_threshold_only",
+      "summary": {
+        "max_peak_rss_bytes": 307396608,
+        "max_seconds": 2.499034042004496,
+        "mean_seconds": 2.4720923473554044,
+        "median_seconds": 2.477962125034537,
+        "min_seconds": 2.4392808750271797,
+        "relative_range": 0.024171090146061454
+      },
+      "warmup_elapsed_seconds_excluded": 0.006276832951698452
+    },
+    "schedule_gate_basis": {
+      "candidate_state_expansion_cap": 1000000,
+      "model": "interleaving_instruction_atomic",
+      "warmup": {
+        "elapsed_seconds_excluded": 0.00642704195342958,
+        "expanded_states": 729,
+        "workload": "3x8 shared loads"
+      },
+      "workload": {
+        "description": "8x8 shared loads in a deterministic state-graph enumeration; constant load values make cursor positions distinguish scheduler states. The real seen set and pending frontier are retained; equivalent states are deduplicated.",
+        "full_unique_cursor_states": 43046721,
+        "order_preserving_schedules": 18165723931630806756964027928179555634194028454000000,
+        "shared_cells": 1,
+        "shared_loads_per_thread": 8,
+        "threads": 8
+      }
+    },
+    "supplemental_tso_state_cost_not_threshold_basis": {
+      "100000": {
+        "note": "Supplemental TSO state cost only; does not determine S6-19 schedule threshold.",
+        "runs": [
+          {
+            "elapsed_seconds": 1.8952809580368921,
+            "expanded_states": 100000,
+            "peak_rss_bytes": 392052736,
+            "pending_frontier_states": 84,
+            "run": 1,
+            "unique_states_stored": 100084
+          },
+          {
+            "elapsed_seconds": 1.9064366249949671,
+            "expanded_states": 100000,
+            "peak_rss_bytes": 392151040,
+            "pending_frontier_states": 84,
+            "run": 2,
+            "unique_states_stored": 100084
+          },
+          {
+            "elapsed_seconds": 1.8889750000089407,
+            "expanded_states": 100000,
+            "peak_rss_bytes": 392085504,
+            "pending_frontier_states": 84,
+            "run": 3,
+            "unique_states_stored": 100084
+          }
+        ],
+        "summary": {
+          "max_peak_rss_bytes": 392151040,
+          "max_seconds": 1.9064366249949671,
+          "mean_seconds": 1.8968975276802666,
+          "median_seconds": 1.8952809580368921,
+          "min_seconds": 1.8889750000089407,
+          "relative_range": 0.009205360190110225
+        }
+      },
+      "candidate_1000000": {
+        "note": "Actual x86-TSO model state storage; supplemental only, not the instruction-schedule threshold basis.",
+        "runs": [
+          {
+            "elapsed_seconds": 24.923394292010926,
+            "expanded_states": 1000000,
+            "peak_rss_bytes": 3692838912,
+            "pending_frontier_states": 18,
+            "run": 1,
+            "unique_states_stored": 1000018
+          },
+          {
+            "elapsed_seconds": 24.676357458985876,
+            "expanded_states": 1000000,
+            "peak_rss_bytes": 3708895232,
+            "pending_frontier_states": 18,
+            "run": 2,
+            "unique_states_stored": 1000018
+          },
+          {
+            "elapsed_seconds": 24.829136957996525,
+            "expanded_states": 1000000,
+            "peak_rss_bytes": 3708928000,
+            "pending_frontier_states": 18,
+            "run": 3,
+            "unique_states_stored": 1000018
+          }
+        ],
+        "summary": {
+          "max_peak_rss_bytes": 3708928000,
+          "max_seconds": 24.923394292010926,
+          "mean_seconds": 24.80962956966444,
+          "median_seconds": 24.829136957996525,
+          "min_seconds": 24.676357458985876,
+          "relative_range": 0.009957296312360486
+        }
+      },
+      "workload": {
+        "distinct_cells": 39,
+        "distinct_stores_per_thread": 13,
+        "full_instruction_schedules": 84478098072866400,
+        "threads": 3
+      }
+    }
+  },
+  "warmup": {
+    "completed_schedule_cap": 100,
+    "elapsed_seconds_excluded_from_runs": 0.0010202499688602984,
+    "state_metrics": {
+      "completed_schedule_paths": 100,
+      "expanded_states": 370,
+      "pending_frontier_states": 4,
+      "terminal_outcome_states": 100,
+      "unique_states_stored": 30
+    },
+    "workload": "2x5 shared loads"
+  },
+  "workload": {
+    "distinct_write_back_cells": 1,
+    "loads_per_thread": 12,
+    "method": "Actual enumerate_model(interleaving_instruction_atomic), deduplicate=False; execute each branch and count terminal complete schedule paths. The unique-state set and DFS frontier are retained for measured storage; no expected-outcome pruning.",
+    "order_preserving_instruction_schedules": 2704156,
+    "threads": 2
+  }
+}

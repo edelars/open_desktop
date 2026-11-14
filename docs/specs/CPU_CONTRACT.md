@@ -14,8 +14,10 @@
 | Режимы и привилегии | Для Windows boot потребуется определить long mode, CPL, сегменты, control registers, paging и переходы firmware/loader. Точный минимум ожидает анализа выбранного ISO и S0-05. |
 | Адреса | В целевой модели различать guest virtual/linear, guest physical и host address. Для Ubuntu reference target CPUID задаёт 48-bit linear и 36-bit physical widths; canonicality и выбор соответствующего CPU fault принадлежат CPU-контракту. Перевод linear → physical и MMIO остаются machine/MMU boundaries. |
 | Исключения/events | Каждый реализованный instruction form должен задавать decode faults, architectural faults и состояние на exit. Отображение в guest exception нельзя заменять host panic или общим перехватом. Приоритеты для незаданного набора инструкций не утверждаются этим черновиком. |
-| Память и атомарность | SMP/атомарные операции, fences и memory ordering вне прототипа. Для будущего многопоточного профиля нужен отдельный контракт и проверки соответствующей модели памяти x86. |
+| Память и атомарность | Прототип остаётся последовательным. Целевая модель SMP, классы RAM/MMIO доступов, атомарность, fences и host-кандидаты описаны в [контракте модели памяти S6-04](MEMORY_MODEL.md); этот документ не объявляет их реализованными. |
 | JIT state | На каждом наблюдаемом exit должны материализоваться определённые архитектурные регистры/флаги и guest instruction offset. Восстановление после исключений и асинхронных событий остаётся отдельной задачей. |
+
+Для всех новых CPU memory-ordering решений использовать [контракт модели памяти гостя x86](MEMORY_MODEL.md). Архитектурные гарантии и границы реализации не выводятся из текущего одно-поточного прототипа.
 
 ### Bounded CPU-to-paged-RAM profile `PagedMovLong64V1` (S4-06b)
 
@@ -651,6 +653,100 @@ The CPUID.0 vendor bytes in architectural EBX/EDX/ECX order form `OpenDesktop ` 
 For CPUID, the input ECX is ignored for every listed function in this profile; unlisted EAX function numbers return four zero registers irrespective of ECX. XSAVE/XRSTOR and XGETBV/XSETBV are outside this target; CR4.OSXSAVE must remain clear. Legacy x87/MMX/XMM state and FXSAVE/FXRSTOR remain in scope as required by the selected Linux startup path. SEP=0; the explicit S2-26d `SepDisabledV1` local policy raises CPU-side `#UD` for exact bare SYSENTER/SYSEXIT after complete fetch. It does not model exception delivery or settle Linux behavior. Linux 7.0's `idt_syscall_init` calls `wrmsrq_safe` for IA32_SYSENTER_CS/ESP/EIP (`0x174..0x176`) in both `ia32_enabled()` branches, without guarding those writes on SEP; the calls are listed in authenticated Ubuntu `arch/x86/kernel/cpu/common.c:2265–2285` ([upstream v7.0 source](https://github.com/torvalds/linux/blob/v7.0/arch/x86/kernel/cpu/common.c#L2121-L2141)). The exact Ubuntu config has `CONFIG_PARAVIRT_XXL=y`: `arch/x86/include/asm/paravirt.h:159–161,186–188` routes the safe write through its MSR operation, and the default `pv_ops` table in `arch/x86/kernel/paravirt.c:116` binds that operation to `native_write_msr_safe` ([paravirt.h](https://github.com/torvalds/linux/blob/v7.0/arch/x86/include/asm/paravirt.h#L149-L176), [paravirt.c](https://github.com/torvalds/linux/blob/v7.0/arch/x86/kernel/paravirt.c#L98-L108)). The native wrapper installs `EX_TYPE_WRMSR_SAFE` in the exception table (`arch/x86/include/asm/msr.h:144–156`); `EX_TYPE_WRMSR_SAFE` identifies the `-EIO` failure result, and `arch/x86/mm/extable.c:188–191,346–347` sets that result and resumes at the fixup IP ([msr.h](https://github.com/torvalds/linux/blob/v7.0/arch/x86/include/asm/msr.h#L134-L146), [extable_fixup_types.h](https://github.com/torvalds/linux/blob/v7.0/arch/x86/include/asm/extable_fixup_types.h#L40), [extable.c](https://github.com/torvalds/linux/blob/v7.0/arch/x86/mm/extable.c#L154-L178)). For this synthetic target, the selected CPU-side policy for RDMSR/WRMSR to those indices is a `#GP(0)` decision without state change, as specified by the `SysenterProbeV1` profile above. This is not a statement about all x86 CPUs, guest `#GP` delivery, or execution of Linux safe-write fixup. Static source reachability does not show that the call or fixup was observed at runtime. The bounded S2-26c `GsBaseV1` and S2-26f `FsBaseV1` local profiles cover individual FS/GS-base operations only. The broader MSR set (including EFER, STAR/LSTAR/SFMASK, CSTAR and conditional startup probes), initial control/segment/table/FPU state, alternatives, initramfs and boot success milestone still require a versioned execution manifest and implementation checks.
 
 The choice uses the exact Ubuntu 7.0.0-38.38 source/binary mapping in [S2-00 Linux profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#exact-source-to-binary-mapping--28-октября-2026); static evidence does not prove any runtime branch or guest boot. Windows CPU profile remains unselected. The x86-64-v1 baseline decision and its evidence are described in [GUEST_REQUIREMENTS.md](GUEST_REQUIREMENTS.md).
+
+### S6-14a — bounded AP startup trampoline profile
+
+This is the CPU profile for one statically selected AP startup path of Ubuntu
+Generic `amd64` package `7.0.0-38.38`. It is an AP-only extension to
+`od-x86-64-v1-neutral-v0.1`; it does not change the firmware entry contract.
+The evidence is the linked `real_mode_blob` extracted from the staged image,
+re-decoded on a physical x86 host, and recorded in the
+[S6-02 inventory](../reports/data/stage6/ap-start-inventory.json) and
+[physical decode report](../reports/data/stage6/s6-02-x86-reverification.md).
+The byte-level decode rows that define the closed instruction-form allowlist
+are preserved in the report's [real-16](../reports/data/stage6/s6-02-x86/16bit-objdump.txt),
+[protected-32](../reports/data/stage6/s6-02-x86/32bit-objdump.txt),
+[long-mode trampoline](../reports/data/stage6/s6-02-x86/64bit-objdump.txt),
+and the [common verify](../reports/data/stage6/s6-02-x86/common-verify-objdump.txt)
+and [common no-verify](../reports/data/stage6/s6-02-x86/common-no-verify-objdump.txt)
+outputs. The table below selects the instruction rows by the stated control-flow
+and target predicates; the raw outputs also contain unselected branches and
+alignment bytes, which are not thereby admitted to this profile.
+The static inventory establishes instruction bytes and control-flow targets,
+not a signed upstream source-to-binary chain, runtime AP execution, or the
+runtime-selected Linux callback. `setup_real_mode()` copies the linked blob to
+low memory and applies segment and linear relocations; the runtime copy's
+absolute operands therefore depend on its allocation base.
+
+The selected entry is native physical xAPIC INIT/SIPI. The first SIPI enters
+`pa_trampoline_start` at blob offset `0x1000` in real mode. The architectural
+AP state and SIPI vector address are defined by
+[`SMP_CONTRACT.md` §§3–4](SMP_CONTRACT.md#3-состояния-vcpu-и-переходы). For
+this profile, vector `v` is represented by the canonical real-mode entry
+`CS.selector = v << 8`, `CS.base = v << 12`, `IP = 0`, yielding physical
+address `v << 12` as specified for AP startup by Intel SDM Vol. 3A
+§11.4.3 step 6 and §11.4.4.1 step 10; the canonical selector/base pair
+follows the real-address segment-base rule in §12.1.4. See the
+[official Intel SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+The `0x1000` here is an offset in the extracted blob, not a claim about its
+runtime physical copy base. The bounded path is:
+
+| Order | Blob location | Execution mode / decode defaults | Profile path |
+|---|---|---|---|
+| 1 | `0x1000`–`0x1024` | real-address, 16-bit defaults | `CLI`, `WBINVD`, real-mode far jump, CS-to-AX and AX-to-DS/ES/SS moves, `LOCK BTS` startup lock with its `JAE`/`PAUSE`/back-edge loop, 32-bit stack-pointer load, then `CALL verify_cpu` at `0x1024`. |
+| 2 | `0x1080`–`0x11a8` | real-address, 16-bit defaults | `verify_cpu` checks RFLAGS.ID/CPUID; probes leaves 0, 1, `0x80000000`, and `0x80000001`; validates feature masks. The `OpenDesktop ` vendor selects neither AMD nor Intel vendor-specific branches, and target features satisfy long-mode and SSE/SSE2 checks. The selected success path returns zero at `0x11a4`–`0x11a8`; the alternate failure return is at `0x119b`–`0x11a2`. AMD/Intel-specific MSR paths are not selected. |
+| 3 | `0x1027`–`0x102b` | real-address, 16-bit defaults | After return, `TEST EAX,EAX` at `0x1027` and `JNE 0x104c` at `0x102a` select the success continuation for this target. A nonzero failure result branches to the terminal `HLT`/back-edge loop at `0x104c`–`0x104d`; that conditional failure path is not taken by the selected target. The `NOP` at `0x104f` is unreachable padding. |
+| 4 | `0x102c`–`0x1041` | real-address, 16-bit defaults through the CR0 write | On successful verification, `LIDT` and `LGDT` read the real-mode tables through DS; DX is loaded with the flat data selector; `MOV CR0,EAX` at `0x1041` sets PE while paging remains clear. |
+| 5 | `0x1044` | protected mode, 16-bit transition state | The single required 16-bit protected-mode instruction is the far jump to selector `0x08`, offset `0x2000`; it enters the flat 32-bit code segment. No general 16-bit protected-mode execution is included. |
+| 6 | `0x2000`–`0x2062` | protected mode, 32-bit defaults through the CR0 write | The flat data selector is loaded into SS/DS/ES/FS/GS. The target's non-encrypted branch skips the optional AMD SME MSR sequence. CR4 is loaded from the trampoline header, CR3 receives the trampoline page-table root, EFER is read and conditionally updated from the header, then `MOV CR0,EAX` at `0x2062` enables paging and IA-32e mode. |
+| 7 | `0x2065` | IA-32e compatibility mode, 32-bit decode | The single transition-state far jump targets selector `0x10`, offset `0x20f0`, entering 64-bit code. No general compatibility-mode execution is included. |
+| 8 | `0x20f0` | 64-bit mode | One RIP-relative indirect `JMP` reads the target at blob offset `0x5000` and transfers to `secondary_startup_64`. The separately inventoried common-entry bytes are `CALL verify_cpu` at `0xffffffff8139c090` and the aliased no-verify entry `XOR R15D,R15D` at `0xffffffff8139c095`; they are evidence for the handoff boundary, not an extension to general Long64 support. |
+
+The real-mode decode has 16-bit default operand and address sizes. An observed
+`0x66` selects a 32-bit operand for forms such as `PUSHFD`/`POPFD` and the
+32-bit register forms that encode it; it does not change the 16-bit address
+size. Fixed-width system forms retain their architectural operands: for
+example, the unprefixed `0F 22 C0` is `MOV CR0,EAX`, and `CPUID`/`RDMSR` use
+their defined EAX/EDX register operands. `LOCK` is admitted only on the
+inventoried `BTS m32, imm8`; `F3` only on the inventoried `PAUSE`. There is no
+address-size override in the selected real-mode rows. Real-mode addresses use
+`segment.base = selector << 4`; a 16-bit effective offset wraps at 16 bits
+before adding that base. Instruction fetch uses CS, implicit stack accesses use
+SS, and the inventoried explicit data references use DS. SS's 16-bit stack
+address size means the path uses SP even when `0x66` makes a PUSH/POP operand
+32-bit; the 32-bit load of ESP at `0x101e` leaves its upper half zero. The
+real-mode IDT/GDT pseudo-descriptor loads use their recorded operand-size
+override with a 16-bit effective address. No general-purpose real-mode
+segmentation API is implied.
+
+The protected-mode transition uses a GDT loaded by the real-mode path. Selector
+`0x08` names the flat 32-bit code segment; selector `0x18` names the flat data
+segment used by the startup code. The far jump to selector `0x10` enters the
+64-bit code segment after CR4.PAE, the trampoline CR3, EFER.LME and CR0.PG are
+configured from the selected header. The target profile excludes memory
+encryption and SNP/Hyper-V/UV overrides, so the optional AMD encrypted-memory
+branch is outside the executed path.
+
+The inventory also contains the separate real-mode entry at blob offset
+`0x1050` (`sev_es_trampoline_start`). It is not selected for this target because
+the accepted profile excludes SEV-ES/SNP; its segment/lock setup is therefore
+not an admitted alternative SIPI entry. The profile similarly excludes the
+conditional AMD SME branch and vendor-specific AMD/Intel checks that are not
+selected by the `OpenDesktop ` CPUID vendor string.
+
+This allowlist is closed over the linked instruction rows and the stated branch
+conditions; it does not admit arbitrary code in real or protected mode. An
+instruction not present in these rows, a different prefix/addressing form, or
+an unselected optional path is outside this profile and must return an explicit
+unsupported result in later implementation slices. It does not add BIOS,
+reset-vector, v8086, general 16-bit protected mode, general IA-32e compatibility
+mode, interrupt-delivery, or general real-mode support. Windows CPU-06 remains
+a separate unverified hypothesis.
+
+S6-02's x86 repeat matched 119 real-mode rows (excluding three alignment-byte
+decodes), 29 protected-mode rows, one long-mode trampoline row, and two common
+entry instructions. It did not execute the guest. The profile and its limits
+are recorded in the [S6-14a report](../reports/STAGE_6_REPORT.md#s6-14a--ap-startup-trampoline-profile).
 
 ### S2-39a — Legacy FXSAVE/FXRSTOR contract (evidence-only)
 
@@ -25320,6 +25416,32 @@ CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, г�
 **Вывод.** В наборе CPL0 `VERW m16` (`0F 00 /5`, mod ≠ 3, без префиксов или с одним `REX` без `W`) исполняется: читается слово-селектор, ZF — по записываемому сегменту данных GDT, остальные флаги не меняются, очистка буферов — no-op; граница `verw -0x1179(%rip)` в диагностике больше не наблюдается. Граница ушла на `iretq` в `native_irq_return_iret` (`0xffffffff81001268`), retired 2311329339.
 
 **Открыто.** (1) Следующая граница — `iretq` (`48 CF`) в `native_irq_return_iret`; `Operation::IretQ` набора CPL0 по комментарию к `iretq_cpl0` (`S4-38L5b`) моделирует возврат CPL0 -> CPL0 (какое именно условие отказало, по коду не проверялось); возврат в пользовательский режим меняет CS/SS/RSP и привилегию — решение о срезе не принималось. (2) ZF для TI = 1 не моделируется (LDT нет). (3) Что именно делает `VERW` на железе (очистка буферов MDS), по SDM — по памяти, первоисточник не сверялся. Проверка Present: по памяти SDM VERW её не выполняет; модель её не проверяет (согласовано с `VerwGdt`). (4) Решение по префиксам: допускается `REX` без `W` (правило `LTR`/`LLDT`), хотя компиляторы его для `verw` не выдают; по памяти SDM такие кодировки допустимы. (5) Идентификатор среза `S4-38L9G` совпадает с `S4-38L9g` (`XADD`, раздел `…(S4-38L9g)`) без учёта регистра; имя ветки и файла JSON различаются (`verw`), раздел — отдельный. (6) Остальные `0F 00 /n` образа (`sldt` с памятью, `str`, `ltr` x2, `lldt` x2) не менялись; регистровые формы `ltr`/`lldt` уже исполняются.
+
+
+## S6-26: descriptor side effects в bounded profiles
+
+Выполняемые наборы `LRETQ`, `IRETQ`, segment-register loads, `LTR`, bounded
+interrupt/trap delivery и bounded `#PF/#DF` delivery могут менять descriptor Accessed
+bit или TSS Busy state. Пути, проверки, логическая ширина `GuestMemory` write,
+точка commit CPU entry state и последствия позднего отказа перечислены в
+[контракте модели памяти](MEMORY_MODEL.md#побочные-записи-дескрипторов-s6-26).
+Этот список задаёт только доступные профили проекта.
+
+Сверка с Intel SDM revision 093: implicit Accessed-bit update имеет `LOCK`
+semantics (Vol. 3A §11.1.2.1); `LTR` выполняет locked RMW всего TSS descriptor
+и в 64-bit mode работает с 16-byte descriptor (Vol. 2A, `LTR`). Указанная в
+таблице ширина записи — наша эмуляционная transaction boundary, а не
+утверждение о физической ширине bus access. Page-walk A/D writes остаются
+отдельными commit effects по S6-25; они могут пережить более поздний fault.
+Текущий paged adapter может разбить cross-page logical qword write на
+последовательные byte backing writes после page preflight; это может породить
+несколько callbacks/generation bumps и позднюю partial descriptor mutation.
+При входе в `#PF` CR2 обновляется до проверок и записей frame; поздний entry
+failure не откатывает CR2. `#DF` сам его не меняет, хотя secondary `#PF` может.
+Descriptor effects не используют guest `LOCK` API и не объявляются SMP-safe,
+пока S6-30/S6-31 не реализуют shared transaction с сохранением
+instruction-specific checks, descriptor snapshot/translation, all-or-nothing
+grouped physical spans and post-commit callbacks.
 
 ### IRETQ в пользовательский режим (CPL3) как проверенная граница `user_entry` в наборе CPL0 (S4-38L9H, iretq-user)
 

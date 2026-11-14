@@ -2097,6 +2097,7 @@ fn state(regs: &libc::user_regs_struct) -> LongModeState {
         sse: None,
         sti_shadow: None,
         es_cache: None,
+        ..LongModeState::default()
     }
 }
 
