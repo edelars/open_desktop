@@ -2041,7 +2041,10 @@ mod tests {
             "{value:#}"
         );
         let members = stop["set_members"].as_array().unwrap();
-        assert_eq!(members.last().unwrap(), "user_mode");
+        // S4-39e: the stage4a members carry the EFER, STAR, LSTAR and SYSCALL_MASK cells, so the
+        // user-mode set also has the `syscall` member, listed right after `user_mode`.
+        assert_eq!(members.last().unwrap(), "syscall");
+        assert_eq!(members[members.len() - 2], "user_mode");
         // The same program without the flag stops at the boundary and has none of the new keys.
         case.options.user_mode = false;
         let (value, exit) = evaluate(&case.options);

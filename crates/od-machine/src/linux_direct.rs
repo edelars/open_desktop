@@ -1001,7 +1001,9 @@ pub fn run_linux_direct_board_set(
 /// `cpl3_retired`, and a stop in CPL3 is `user_mode_fault` / `user_mode_unsupported`. Fault
 /// delivery and interrupts from CPL3 are refused by the CPU delivery (S4-39d, S4-39g), which ends
 /// the run as an `ExceptionDeliveryFailed` fault (`set_exit_detail`). Without the user mode the
-/// `IRETQ` stops at the `user_entry` boundary as before.
+/// `IRETQ` stops at the `user_entry` boundary as before. S4-39e: a user-mode set that carries
+/// the EFER (`msr`), STAR, LSTAR and SYSCALL_MASK members also gets `with_syscall` (named
+/// `syscall` in `set_members`), so `SYSCALL` from CPL3 enters the kernel at LSTAR.
 pub fn run_linux_direct_board_set_user_mode(
     boot: &mut LinuxDirectBoot,
     input: &LinuxDirectInput<'_>,
@@ -1134,6 +1136,13 @@ fn run_linux_direct_board_set_with(
     if user_mode {
         set = set.with_user_mode();
         names.push("user_mode".into());
+        // S4-39e: `SYSCALL` from CPL3 consumes the EFER, STAR, LSTAR and SYSCALL_MASK cells; the
+        // member joins only a user-mode set that carries all four (the stage4a members do).
+        // Without one of them `SYSCALL` keeps stopping the run as `user_mode_unsupported`.
+        if members.msr && members.msr_star && members.msr_lstar && members.msr_syscall_mask {
+            set = set.with_syscall();
+            names.push("syscall".into());
+        }
     }
     let result = boot.board.run_linux_boot_cpl0_set(
         instruction_budget,
@@ -11007,6 +11016,88 @@ mod tests {
         assert_eq!(record.user_entry, None);
         assert_eq!(record.set_members, ["cli", "cpu_owned_cr3", "user_mode"]);
         assert_eq!(record.path, "cpl0_set");
+    }
+
+    const SYSCALL_KERNEL_AT: u64 = ENTRY + 0x600;
+
+    /// S4-39e: the `msr` (EFER cell), STAR, LSTAR and SYSCALL_MASK members that give a user-mode
+    /// set the `syscall` member.
+    fn syscall_members() -> LinuxCpl0SetMembers {
+        LinuxCpl0SetMembers {
+            msr: true,
+            msr_star: true,
+            msr_lstar: true,
+            msr_syscall_mask: true,
+            ..LinuxCpl0SetMembers::minimal()
+        }
+    }
+
+    fn run_syscall_facade(
+        boot: &mut LinuxDirectBoot,
+        file: &[u8],
+        budget: u64,
+        efer: u64,
+    ) -> LinuxStopRecord {
+        boot.board.set_guest_efer(efer);
+        boot.board.set_guest_star(0x0023_0010_0000_0000);
+        boot.board.set_guest_lstar(SYSCALL_KERNEL_AT);
+        boot.board.set_guest_syscall_mask(0x25_7fd5);
+        run_linux_direct_board_set_user_mode(
+            boot,
+            &input(file, &[], BLOB, board_hash()),
+            budget,
+            syscall_members(),
+        )
+        .expect("runs")
+    }
+
+    #[test]
+    fn user_mode_facade_syscall_enters_the_kernel_at_lstar_and_recomputes_the_cpl() {
+        // `IRETQ` (CPL0), `mov eax, 0x53; syscall` (CPL3), then two NOPs at LSTAR through the CPL0
+        // entry: the budget of 5 ends in CPL0 (CS 0x10 from STAR[47:32]).
+        let (mut boot, file) = user_mode_board(&[0xb8, 0x53, 0, 0, 0, 0x0f, 0x05], true);
+        write_phys(&mut boot, SYSCALL_KERNEL_AT, &[0x90, 0x90]);
+        let record = run_syscall_facade(&mut boot, &file, 5, 0xd01);
+        assert_eq!(record.exit_kind, "budget_exhausted", "{record:?}");
+        assert_eq!(record.cpl, 0, "{record:?}");
+        assert_eq!((record.retired, record.cpl3_retired), (5, 2), "{record:?}");
+        assert_eq!(record.rip, SYSCALL_KERNEL_AT + 2);
+        assert_eq!(record.gpr[Register::Rax as usize], 0x53);
+        assert_eq!(record.gpr[Register::Rcx as usize], USER_CODE_AT + 7);
+        assert_eq!(record.gpr[Register::R11 as usize], 0x202);
+        // RSP is the user one: the kernel switches stacks itself.
+        assert_eq!(record.gpr[Register::Rsp as usize], ENTRY + 0x800);
+        let state = boot.board.state();
+        assert_eq!(
+            (state.cs_selector, state.ss_selector),
+            (Some(0x10), Some(0x18))
+        );
+        assert_eq!(state.rflags, 2, "IF is in FMASK");
+        assert_eq!(
+            &record.set_members[record.set_members.len() - 2..],
+            ["user_mode", "syscall"]
+        );
+    }
+
+    #[test]
+    fn user_mode_facade_syscall_with_sce_clear_is_a_ud_stop_in_cpl3() {
+        let (mut boot, file) = user_mode_board(&[0xb8, 0x53, 0, 0, 0, 0x0f, 0x05], true);
+        let record = run_syscall_facade(&mut boot, &file, 8, 0xd00);
+        assert_eq!(record.exit_kind, "user_mode_fault", "{record:?}");
+        assert!(record.exit_detail.contains("vector: 6"), "{record:?}");
+        assert_eq!(record.cpl, 3);
+        assert_eq!((record.retired, record.cpl3_retired), (2, 1), "{record:?}");
+        assert_eq!(record.rip, USER_CODE_AT + 5);
+        assert_eq!(boot.board.state().cs_selector, Some(0x13));
+    }
+
+    #[test]
+    fn user_mode_facade_syscall_member_needs_the_four_cells() {
+        // The stage4a-less minimal members have no cells: `SYSCALL` stays the honest stop.
+        let (mut boot, file) = user_mode_board(&[0x0f, 0x05], true);
+        let record = run_user_facade(&mut boot, &file, 8);
+        assert_eq!(record.exit_kind, "user_mode_unsupported", "{record:?}");
+        assert!(!record.set_members.iter().any(|name| name == "syscall"));
     }
 
     #[test]
