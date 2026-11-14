@@ -1,0 +1,2044 @@
+{
+  "slice": "S6-02",
+  "status": "accepted_for_documented_s6_target_profile",
+  "acceptance": "accepted",
+  "evidence_date": "2026-11-13",
+  "artifact": {
+    "manifest": "docs/reports/data/stage4/s4-35-linux-artifact.json",
+    "distribution": "Ubuntu",
+    "package_version": "7.0.0-38.38",
+    "kernel_release": "7.0.0-38-generic",
+    "architecture": "amd64 generic",
+    "manifest_status": "staged (content hash verified; provenance not authenticated)",
+    "source_to_binary_authenticated": false,
+    "artifact_root": "/Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38",
+    "artifact_root_note": "The complete ignored input was already present in the main checkout. It was copied into the codex worktree, and all 10 manifest entries in both locations were re-hashed without modifying main.",
+    "worktree_search": {
+      "registered_worktrees_checked": 127,
+      "worktrees_with_complete_s4_35_directory": 11,
+      "preexisting_stage6_inventory_found_before_this_slice": false
+    },
+    "codex_copy_root": "work/stage4/linux-7.0.0-38.38",
+    "copy_verification": "All 10 S4-35 manifest entries matched their expected SHA-256 in both main and codex (20/20 file checks; zero mismatches).",
+    "files": [
+      {
+        "role": "boot_image",
+        "path": "vmlinuz-7.0.0-38-generic",
+        "sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e"
+      },
+      {
+        "role": "vmlinux",
+        "path": "vmlinux-7.0.0-38-generic",
+        "sha256": "ccaf590465e4e3bc6117efa8ac7cfe87ba0b348188e2608731961527dd05034f"
+      },
+      {
+        "role": "debug_vmlinux",
+        "path": "vmlinux-debug-7.0.0-38-generic",
+        "sha256": "7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f",
+        "build_id": "338e542e384c46228f7a378babc0f9bb2b6a5997"
+      },
+      {
+        "role": "config",
+        "path": "source/extracted/config",
+        "sha256": "6cb18717c6914d4947489eedf8cb69ac23db3faa8ef9b9f563ff02c346dcd32d"
+      },
+      {
+        "role": "source_package",
+        "path": "source/linux-source-7.0.0_7.0.0-38.38_all.deb",
+        "sha256": "997a13a0c7fd0172a93b0c1ae9a4ffc7d3cbbf91d2fdd91d85334193580687de",
+        "retrieval_url": "https://repo.huaweicloud.com/ubuntu/ubuntu/pool/main/l/linux/linux-source-7.0.0_7.0.0-38.38_all.deb",
+        "signed_repository_provenance": false
+      },
+      {
+        "role": "source_tree_archive_from_ubuntu_package",
+        "path": "source/linux-source-7.0.0.tar.bz2",
+        "sha256": "1610ed026817da29c6be30c2d9c639287ea472d5b805a1f23e2d576be6be6222"
+      }
+    ],
+    "provenance_limits": [
+      "S4-35 confirms content hashes but not signatures or source-to-binary mapping.",
+      "The extracted config comes from the staged Ubuntu buildinfo data; the signed APT source chain is not present."
+    ]
+  },
+  "config_facts": {
+    "CONFIG_X86_64": "y",
+    "CONFIG_SMP": "y",
+    "CONFIG_X86_X2APIC": "y",
+    "CONFIG_ACPI_MADT_WAKEUP": "y",
+    "CONFIG_AMD_MEM_ENCRYPT": "y",
+    "CONFIG_ACPI_SLEEP": "y",
+    "CONFIG_HOTPLUG_CPU": "y",
+    "CONFIG_IRQ_REMAP": "y",
+    "CONFIG_KGDB": "y",
+    "CONFIG_HARDLOCKUP_DETECTOR": "y",
+    "CONFIG_HARDLOCKUP_DETECTOR_PERF": "y",
+    "CONFIG_NMI_CHECK_CPU": "y",
+    "interpretation": "These options show compiled support; they do not prove which runtime APIC or wakeup path a guest selects."
+  },
+  "linux_source": {
+    "version_label": "Ubuntu linux-source package 7.0.0-38.38; archive linux-source-7.0.0.tar.bz2 shipped inside that package. Upstream provenance is not authenticated.",
+    "files": [
+      {
+        "path": "arch/x86/kernel/smpboot.c",
+        "sha256": "3043525f974c18a291da3add96ed05266fa9cb2371288982041d5437b84bd547",
+        "areas": "cpu_init_udelay, send_init_sequence, wakeup_secondary_cpu_via_init, do_boot_cpu, announce_cpu"
+      },
+      {
+        "path": "arch/x86/kernel/acpi/boot.c",
+        "sha256": "27a4abcf333626a1acd4c79da79a153fe6857a5662c1813d7ad3aaa034d271d5",
+        "areas": "MADT type ACPI_MADT_TYPE_MULTIPROC_WAKEUP parser registration"
+      },
+      {
+        "path": "arch/x86/kernel/acpi/madt_wakeup.c",
+        "sha256": "7e2fd5ce26da48ea1fcde21a8c71224c5170760358a816b9804be89b15f9d4af",
+        "areas": "ACPI mailbox wakeup callback and apic_update_callback"
+      },
+      {
+        "path": "arch/x86/realmode/rm/trampoline_64.S",
+        "sha256": "73d487d3ac2169c5261be0aca88c6c22fc589ddf579672035f8c5b07b314e5b7",
+        "areas": "real-mode trampoline, protected-mode startup_32, 64-bit startup_64 and direct 64-bit trampoline"
+      },
+      {
+        "path": "arch/x86/realmode/rm/header.S",
+        "sha256": "0291d4d6fe7a6bab6f60ccb00c234d2f7e57d7abdea985b7e2f26d532d41d5c9",
+        "areas": "real_mode_header entry offsets"
+      },
+      {
+        "path": "kernel/smp.c",
+        "sha256": "5aeeff9ad5744a14d5acd213282e457ea2b73ec80ed1e3295ef5b56ef720dbc4",
+        "areas": "Brought up log string"
+      },
+      {
+        "path": "arch/x86/lib/delay.c",
+        "sha256": "add079434c31c66ad2e1e72cf87d06c9333d10fde740f122de38e41710872a32",
+        "areas": "udelay implementation; loop delay versus TSC delay selection"
+      },
+      {
+        "path": "arch/x86/kernel/tsc.c",
+        "sha256": "3d981edd334db41c7ed2ba46764d60ada55dae67b92ea9ba72d77b3b4381fa01",
+        "areas": "TSC delay selection"
+      },
+      {
+        "path": "Documentation/ABI/testing/sysfs-devices-system-cpu",
+        "sha256": "832331404b4ff9b89378ccb3bad73b115484bd4a8c0e245ed87ddc354eedf89e",
+        "areas": "online, possible and present CPU sysfs paths"
+      },
+      {
+        "path": "arch/x86/kernel/cpu/proc.c",
+        "sha256": "632af015bc00dac562b8ce5f9f4fdf425b737b1e9b34590d1875aa7b5892b0fc",
+        "areas": "/proc/cpuinfo processor enumeration"
+      },
+      {
+        "path": "arch/x86/kernel/cpu/topology_ext.c",
+        "sha256": "e7e53991d07a4186e5d9d5dfc71ec148e7e124a5994f8dcdae87f1b52bef5ae6",
+        "areas": "Intel CPUID leaf 0x1f; AMD extended 0x80000026; fallback leaf 0x0b"
+      },
+      {
+        "path": "arch/x86/kernel/cpu/topology_amd.c",
+        "sha256": "e2f46fa8705fd70f35cf3fb3dccf972a8f90ecf928ba10d0f838a263369457bb",
+        "areas": "AMD topology leaf selection and fallbacks 0x80000008 / 0x8000001e"
+      },
+      {
+        "path": "arch/x86/kernel/apic/apic.c",
+        "sha256": "2093f0e0e7bd056a54e68959d33fd4a6a54481523ec1ea3f8530e0649ae62c9b",
+        "areas": "x2APIC enablement conditions and local APIC mode"
+      },
+      {
+        "path": "arch/x86/kernel/apic/apic_flat_64.c",
+        "sha256": "212001086303d6e631fd0903b8727dde49b6ee57007b8f9ff6e97919ee6192ee",
+        "areas": "default x86_64 physical-flat APIC operations and destination mode"
+      },
+      {
+        "path": "arch/x86/kernel/apic/io_apic.c",
+        "sha256": "2a13e108c2d7f185d25379cf8440efc2d39a7cddd8486a79a7edd03d795d685d",
+        "areas": "IOAPIC route destination mode fields"
+      },
+      {
+        "path": "arch/x86/kernel/apic/ipi.c",
+        "sha256": "d141c9df0c0c3da87aeee11b940077ed83c842e52184cbd7058889f3be346bc7",
+        "areas": "IPI shorthand helpers and targeted physical IPI delivery"
+      },
+      {
+        "path": "arch/x86/kernel/apic/x2apic_phys.c",
+        "sha256": "7df23116c8d29fab3030281355b55bc223ccdeb288fe891b4e94f8e755afc921",
+        "areas": "x2APIC physical mode, MSR ICR writes and shorthand"
+      },
+      {
+        "path": "arch/x86/kernel/apic/x2apic_cluster.c",
+        "sha256": "43b1e4dd3b6c7e2f72a489886624256359b5b70ee1e618855b05ef8bc1024d3c",
+        "areas": "conditional x2APIC cluster/logical destination mode"
+      },
+      {
+        "path": "arch/x86/include/asm/apic.h",
+        "sha256": "8576b135f0fd1642318b8c3b0765acb2f6f0c9c3eb7c81ecac864762e8ec0c5c",
+        "areas": "xAPIC MMIO versus x2APIC MSR register access interfaces"
+      },
+      {
+        "path": "arch/x86/kernel/smp.c",
+        "sha256": "cea24fd83e26f2336f70bdf6448d1af2ca7b49c8035be9d5af18d70e5a4537fe",
+        "areas": "stop_other_cpus NMI fallback"
+      },
+      {
+        "path": "arch/x86/kernel/reboot.c",
+        "sha256": "61c417b7a5afcde09b28a3b91305fc1a5a3812ad440152a97502dc4dc6ec7b15",
+        "areas": "restart-time NMI CPU shootdown"
+      },
+      {
+        "path": "arch/x86/kernel/crash.c",
+        "sha256": "555fcf07823735b815a38f0f9c53f9dcd2b91952f0e69632e54e95570e943509",
+        "areas": "crash/kdump NMI stop-other-CPUs path"
+      },
+      {
+        "path": "arch/x86/kernel/kgdb.c",
+        "sha256": "5662aa591b9ac1691c207f4317e931cb348235f6519c5cd365181a1fb36835ef",
+        "areas": "KGDB NMI roundup on SMP"
+      },
+      {
+        "path": "arch/x86/kernel/apic/hw_nmi.c",
+        "sha256": "2c336b4d133c8fd8f96869323c1770d45073ea13ae6d1a8242b514f742b7efee",
+        "areas": "hardware NMI watchdog IPIs"
+      },
+      {
+        "path": "kernel/panic.c",
+        "sha256": "b38b7a5c044a2fe8d58810e0827163c0142b146b08c1db4a26529f565a6e586a",
+        "areas": "panic crash-stop invocation"
+      },
+      {
+        "path": "arch/x86/kernel/cpu/topology_common.c",
+        "sha256": "6fe9cc811e421377ca24362aa5f9acb371992682e6205c10a688af5d7863d96b",
+        "areas": "leaf 1 APIC ID/logical processor count; legacy leaf 4 core count; Intel legacy topology fallback and leaf 0x1a CPU type"
+      },
+      {
+        "path": "arch/x86/kernel/verify_cpu.S",
+        "sha256": "22320d8173ea69334d3f7ed75e2c6c9d67e06709785a64786a2fcc6f68060dd6",
+        "areas": "verify_cpu CPUID/vendor/SSE checks and conditional MSR side effects"
+      },
+      {
+        "path": "arch/x86/realmode/init.c",
+        "sha256": "7ae65fe7307e6eef115e772ceb6b379009ed385031abb2834fc25417d9cd238e",
+        "areas": "real-mode blob copy, 16-bit and 32-bit relocations, trampoline header target selection, CR4/EFER/PGD setup"
+      },
+      {
+        "path": "arch/x86/kernel/head_64.S",
+        "sha256": "d50a35df410be7b4813a3860d07f10d9bcb8ba0caadff01f1b53292c980f4c10",
+        "areas": "secondary_startup_64 and secondary_startup_64_no_verify common 64-bit entry targets"
+      },
+      {
+        "path": "arch/x86/include/asm/cpufeatures.h",
+        "sha256": "c582c182aefadee0dcb49edfb6a70f38534774f1e0bebeb09652096e617fc683",
+        "areas": "XMM/SSE and XMM2/SSE2 feature-bit definitions referenced by verify_cpu.S"
+      },
+      {
+        "path": "arch/x86/kernel/apic/local.h",
+        "sha256": "02119a4a41bfb35c4ed50fc66bf2e8e821015763a5c01df3fd214e482f0240c2",
+        "areas": "__prepare_ICR encodings for fixed, NMI, INIT, and startup IPIs"
+      }
+    ]
+  },
+  "wakeup_selection": {
+    "firmware_alternative": {
+      "name": "ACPI MADT Multiprocessor Wakeup",
+      "madt_type": "0x10",
+      "linux_support_compiled": true,
+      "selection_condition": "A valid MADT type 0x10 entry is one path that installs acpi_wakeup_cpu as wakeup_secondary_cpu_64 callback. Other APIC/platform code can also install wakeup_secondary_cpu_64 or wakeup_secondary_cpu callbacks.",
+      "entry_mode": "The ACPI 6.6 Intel mailbox WakeupVector contract enters with long mode and paging enabled, identity mapped page, and IF=0."
+    },
+    "selected_project_path": {
+      "name": "INIT/SIPI",
+      "basis": [
+        "The current Stage4A board MADT contains one enabled Processor Local APIC entry for UID/APIC ID 0 and no Multiprocessor Wakeup type 0x10; the current executable profile is not SMP-capable.",
+        "The S6 first SMP target extends reference od-x86-64-v1-neutral-v0.1 with CPUID APIC=1, X2APIC=0, hypervisor-present=0, xAPIC APIC_BASE state, 2/4 APIC IDs 0..N-1 and matching MADT type 0 entries.",
+        "Linux dispatch order is wakeup_secondary_cpu_64, then wakeup_secondary_cpu, then wakeup_secondary_cpu_via_init. Under the target profile there is no valid type 0x10 entry or active platform callback override, so the selected static target path is native INIT/SIPI."
+      ],
+      "status": "statically_resolved_for_s6_target_and_architecturally_accepted",
+      "apic_mode_limit": "The S6 target selects physical-flat xAPIC with physical destinations. Current Stage4A execution remains one-vCPU/APIC-clear; the target is a contract, not implemented runtime.",
+      "avoid_publishing_madt_type_0x10": "Publishing the entry would install the firmware mailbox callback, a different AP handoff contract that the current VM board does not implement; other overrides must also be checked."
+    }
+  },
+  "init_sipi_sequence": {
+    "source_function": "arch/x86/kernel/smpboot.c:send_init_sequence and wakeup_secondary_cpu_via_init",
+    "destination": "phys_apicid target argument; under the S6 target profile CPUID.X2APIC=0 selects physical-flat xAPIC and physical destination mode. The current executable Stage4A profile cannot start APs.",
+    "init_assert": "ICR = LEVEL_TRIGGER | ASSERT | DELIVERY_INIT; wait for ICR idle.",
+    "init_delay": {
+      "default_modern_cpu": "0 microseconds for Intel family/model >= Pentium Pro, AMD family >= 0x0f, or Hygon family >= 0x18.",
+      "legacy_cpu": "10 milliseconds.",
+      "override": "cpu_init_udelay= kernel command-line option.",
+      "default_for_s6_target": "10,000 microseconds: the OpenDesktop vendor string does not match Linux Intel/AMD/Hygon zero-delay predicates; cpu_init_udelay= remains an explicit override."
+    },
+    "delay_provider": {
+      "mechanism": "The source calls udelay(); arch/x86/lib/delay.c converts this using loops_per_jiffy and the configured delay_fn. The kernel can select TSC-based delay (use_tsc_delay) or other delay providers.",
+      "runtime_provider": "Pending: S4-35 pins no guest CPU feature set/boot log showing which provider the final VM uses.",
+      "target_init_delay": "The source-selected INIT delay is 10 ms for the reference OpenDesktop target. udelay() uses loops_per_jiffy and configured delay_fn; exact runtime provider remains unobserved."
+    },
+    "init_deassert": "ICR = LEVEL_TRIGGER | DELIVERY_INIT with ASSERT clear; wait for ICR idle.",
+    "sipi": {
+      "count": "Two attempts when the boot APIC is integrated; zero if it is not integrated.",
+      "icr": "DELIVERY_STARTUP | (start_ip >> 12), destination physical APIC ID.",
+      "delay_when_init_delay_zero": "10 microseconds after send, wait for ICR idle, then 10 microseconds before reading ESR.",
+      "delay_when_init_delay_nonzero": "300 microseconds after send, wait for ICR idle, then 200 microseconds before reading ESR.",
+      "retry": "The loop stops on send or APIC delivery error; otherwise it may issue the second SIPI."
+    },
+    "caveat": "For the documented OpenDesktop S6 target, Linux selects the 10 ms INIT branch and, absent cpu_init_udelay=, the nonzero-delay SIPI waits. The current S4-35 artifact does not execute or runtime-confirm this target."
+  },
+  "trampoline_image_evidence": {
+    "source_image": "vmlinux-debug-7.0.0-38-generic",
+    "elf_section": ".init.data",
+    "embedded_blob_symbol": "real_mode_blob",
+    "embedded_blob_vma": "0xffffffff83ff6000",
+    "embedded_blob_size": 25188,
+    "extracted_blob_sha256": "d48c472d9051f65d62efdb34bdabdb3fb261aefbb7873a3637860ecc4c80573f",
+    "extraction": "Read the ELF64 section table and symbol table; extracted symbol bytes from .init.data to /private/tmp/s6-02-real_mode_blob.bin. Extraction was read-only against the staged artifact.",
+    "header_offsets": {
+      "pa_text_start": "0x1000",
+      "pa_ro_end": "0x215e",
+      "pa_trampoline_start": "0x1000",
+      "pa_trampoline_header": "0x5000",
+      "pa_sev_es_trampoline_start": "0x1050",
+      "pa_trampoline_start64": "0x2100",
+      "pa_trampoline_pgd": "0x4000",
+      "pa_wakeup_start": "0x1200",
+      "pa_wakeup_header": "0x3010"
+    },
+    "path_for_project_INIT_SIPI": [
+      "SIPI vector enters pa_trampoline_start at blob offset 0x1000 in real mode.",
+      "Generic entry initializes segments and a serialized low-memory stack, runs verify_cpu, loads IDT/GDT, enables protected mode through CR0, and far-jumps to startup_32 at offset 0x2000.",
+      "startup_32 loads CR4/CR3, programs EFER from the trampoline header, enables paging/long mode in CR0, and far-jumps to startup_64 at offset 0x20f0.",
+      "startup_64 indirect-jumps through tr_start at offset 0x5000 to secondary_startup_64; SEV-ES configures secondary_startup_64_no_verify and bypasses verify_cpu.",
+      "The transfer into the kernel is established by static source and bytes; runtime callback selection remains unverified."
+    ],
+    "disassembly_status": "complete_for_native_init_sipi_trampoline_entry_through_indirect_secondary_startup_64_handoff",
+    "disassembly_tools": {
+      "host": "macOS arm64 (initial extraction and cross-disassembly; physical x86 repeat recorded below)",
+      "container_image": "ubuntu@sha256:86eb1bc1059720a19a777ba5a109e9ee3690d5dfe3e319871a6d6beb86fb7f85",
+      "tool": "GNU Binutils for Ubuntu 2.46 (binutils 2.46-3ubuntu2; x86_64-linux-gnu-objdump)",
+      "input_provenance": {
+        "boot_image": "work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic",
+        "compressed_payload": "Zstandard frame at zero-based file offset 0x52cc (decimal 21196); host zstd output SHA-256 equals staged vmlinux exactly.",
+        "decompressed_vmlinux_sha256": "ccaf590465e4e3bc6117efa8ac7cfe87ba0b348188e2608731961527dd05034f",
+        "decompressed_vmlinux_size": 71005544,
+        "init_data_section": {
+          "file_offset": "0x31d2000",
+          "size": 2131144,
+          "sha256": "c800d40be3077334a658cddf19fb31762aa62d159eb55f58e9a998f446ae3f77",
+          "matches_vmlinux_debug_section_byte_for_byte": true
+        },
+        "real_mode_blob": {
+          "source_elf": "ELF extracted from the staged vmlinuz payload",
+          "file_offset": "0x31f6000",
+          "size_bytes": 25188,
+          "sha256": "d48c472d9051f65d62efdb34bdabdb3fb261aefbb7873a3637860ecc4c80573f"
+        },
+        "source_to_binary_authentication": "S4-35 content hashes and byte comparisons establish identity of staged artifacts; signed upstream source-to-binary provenance is not present.",
+        "text_section": {
+          "size": 24408304,
+          "sha256": "5dec4d30f388386c69c39474841b80ceef957d7a0a3aa2eb2561cb64703e9961",
+          "matches_vmlinux_debug_section_byte_for_byte": true
+        }
+      },
+      "decode_modes": {
+        "decode_16": "i386 decoder in 16-bit address/data mode (`-m i386 -M intel,addr16,data16`); records decode width, not by itself the current architectural mode.",
+        "decode_32": "i386 decoder in 32-bit address/data mode (`-m i386 -M intel,addr32,data32`).",
+        "decode_64": "x86-64 decoder (`-m i386:x86-64 -M intel`)."
+      },
+      "reproduction_commands": [
+        "tail -c +21197 work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic | zstd -dc > /private/tmp/s6-02-vmlinux",
+        "python3 -c 'from pathlib import Path; p=Path(\"/private/tmp/s6-02-vmlinux\").read_bytes(); Path(\"real_mode_blob.bin\").write_bytes(p[0x31f6000:0x31f6000+0x6264])'",
+        "shasum -a 256 real_mode_blob.bin  # d48c472d9051f65d62efdb34bdabdb3fb261aefbb7873a3637860ecc4c80573f",
+        "Extract .init.data real_mode_blob at file offset 0x31f6000, size 0x6264, from that ELF; verify SHA-256 d48c472d9051f65d62efdb34bdabdb3fb261aefbb7873a3637860ecc4c80573f.",
+        "x86_64-linux-gnu-objdump -D -b binary -m i386 -M intel,addr16,data16 --insn-width=16 --start-address=0x1000 --stop-address=0x11a9 real_mode_blob.bin",
+        "x86_64-linux-gnu-objdump -D -b binary -m i386 -M intel,addr32,data32 --insn-width=16 --start-address=0x2000 --stop-address=0x206c real_mode_blob.bin",
+        "x86_64-linux-gnu-objdump -D -b binary -m i386:x86-64 -M intel --insn-width=16 --start-address=0x20f0 --stop-address=0x20f6 real_mode_blob.bin",
+        "x86_64-linux-gnu-objdump -d --disassemble=secondary_startup_64 vmlinux-debug",
+        "x86_64-linux-gnu-objdump -d --disassemble=secondary_startup_64_no_verify vmlinux-debug"
+      ],
+      "instruction_counts": {
+        "total": 149,
+        "common_64_target_entry_instructions": 2,
+        "total_including_common_64_target_entry": 151,
+        "real_16_unreachable_padding_or_trap_rows": 2,
+        "real_16_non_padding_code_rows": 117,
+        "trampoline_non_padding_code_rows": 147,
+        "decode_16_rows": 119,
+        "decode_32_rows": 29,
+        "decode_64_trampoline_rows": 1
+      },
+      "instruction_bytes": {
+        "real_16": [
+          {
+            "offset": "0x1000",
+            "bytes": "fa",
+            "assembly": "cli",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1001",
+            "bytes": "0f 09",
+            "assembly": "wbinvd",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1003",
+            "bytes": "ea 08 10 00 00",
+            "assembly": "jmp    0x0:0x1008",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1008",
+            "bytes": "8c c8",
+            "assembly": "mov    ax,cs",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x100a",
+            "bytes": "8e d8",
+            "assembly": "mov    ds,ax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x100c",
+            "bytes": "8e c0",
+            "assembly": "mov    es,ax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x100e",
+            "bytes": "8e d0",
+            "assembly": "mov    ss,ax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1010",
+            "bytes": "66 f0 0f ba 2e 18 50 00",
+            "assembly": "lock bts DWORD PTR ds:0x5018,0x0",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1018",
+            "bytes": "73 04",
+            "assembly": "jae    0x101e",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x101a",
+            "bytes": "f3 90",
+            "assembly": "pause",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x101c",
+            "bytes": "eb f2",
+            "assembly": "jmp    0x1010",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x101e",
+            "bytes": "66 bc 20 60 00 00",
+            "assembly": "mov    esp,0x6020",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1024",
+            "bytes": "e8 59 00",
+            "assembly": "call   0x1080",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1027",
+            "bytes": "66 85 c0",
+            "assembly": "test   eax,eax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x102a",
+            "bytes": "75 20",
+            "assembly": "jne    0x104c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x102c",
+            "bytes": "66 0f 01 1e 60 00",
+            "assembly": "lidtd  ds:0x60",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": [
+              "IDTR <- descriptor at DS:0x60 (LIDT)."
+            ]
+          },
+          {
+            "offset": "0x1032",
+            "bytes": "66 0f 01 16 30 00",
+            "assembly": "lgdtd  ds:0x30",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": [
+              "GDTR <- descriptor at DS:0x30 (LGDT)."
+            ]
+          },
+          {
+            "offset": "0x1038",
+            "bytes": "ba 18 00",
+            "assembly": "mov    dx,0x18",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x103b",
+            "bytes": "66 b8 33 00 05 00",
+            "assembly": "mov    eax,0x50033",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1041",
+            "bytes": "0f 22 c0",
+            "assembly": "mov    cr0,eax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": [
+              "CR0 <- EAX=0x00050033; sets PE while PG remains clear, entering protected mode."
+            ],
+            "mode_transition": "real_16 -> protected_mode"
+          },
+          {
+            "offset": "0x1044",
+            "bytes": "66 ea 00 20 00 00 08 00",
+            "assembly": "jmp    0x8:0x2000",
+            "decode_mode": "real_16",
+            "execution_mode": "protected_16_transition",
+            "control_state_effects": [
+              "Far control transfer to selector 0x0008 and linked offset 0x2000; the far-pointer offset fixup at blob offset 0x1046 adds phys_base, so the runtime target is selector 0x0008:phys_base+0x2000."
+            ],
+            "mode_transition": "protected_mode with 16-bit CS default -> startup_32 protected code segment"
+          },
+          {
+            "offset": "0x104c",
+            "bytes": "f4",
+            "assembly": "hlt",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x104d",
+            "bytes": "eb fd",
+            "assembly": "jmp    0x104c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x104f",
+            "bytes": "90",
+            "assembly": "nop",
+            "reachability": "unreachable padding: follows the HLT self-loop at 0x104c–0x104d",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1050",
+            "bytes": "fa",
+            "assembly": "cli",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1051",
+            "bytes": "ea 56 10 00 00",
+            "assembly": "jmp    0x0:0x1056",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1056",
+            "bytes": "8c c8",
+            "assembly": "mov    ax,cs",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1058",
+            "bytes": "8e d8",
+            "assembly": "mov    ds,ax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x105a",
+            "bytes": "8e c0",
+            "assembly": "mov    es,ax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x105c",
+            "bytes": "8e d0",
+            "assembly": "mov    ss,ax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x105e",
+            "bytes": "66 f0 0f ba 2e 18 50 00",
+            "assembly": "lock bts DWORD PTR ds:0x5018,0x0",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1066",
+            "bytes": "73 04",
+            "assembly": "jae    0x106c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1068",
+            "bytes": "f3 90",
+            "assembly": "pause",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x106a",
+            "bytes": "eb f2",
+            "assembly": "jmp    0x105e",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x106c",
+            "bytes": "66 bc 20 60 00 00",
+            "assembly": "mov    esp,0x6020",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1072",
+            "bytes": "eb b8",
+            "assembly": "jmp    0x102c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1080",
+            "bytes": "9c",
+            "assembly": "pushf",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1081",
+            "bytes": "6a 00",
+            "assembly": "push   0x0",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1083",
+            "bytes": "9d",
+            "assembly": "popf",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1084",
+            "bytes": "66 9c",
+            "assembly": "pushfd",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1086",
+            "bytes": "66 58",
+            "assembly": "pop    eax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1088",
+            "bytes": "66 89 c3",
+            "assembly": "mov    ebx,eax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x108b",
+            "bytes": "66 35 00 00 20 00",
+            "assembly": "xor    eax,0x200000",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1091",
+            "bytes": "66 50",
+            "assembly": "push   eax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1093",
+            "bytes": "66 9d",
+            "assembly": "popfd",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1095",
+            "bytes": "66 9c",
+            "assembly": "pushfd",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1097",
+            "bytes": "66 58",
+            "assembly": "pop    eax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1099",
+            "bytes": "66 39 c3",
+            "assembly": "cmp    ebx,eax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x109c",
+            "bytes": "0f 84 fb 00",
+            "assembly": "je     0x119b",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10a0",
+            "bytes": "66 b8 00 00 00 00",
+            "assembly": "mov    eax,0x0",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10a6",
+            "bytes": "0f a2",
+            "assembly": "cpuid",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10a8",
+            "bytes": "66 83 f8 01",
+            "assembly": "cmp    eax,0x1",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10ac",
+            "bytes": "0f 82 eb 00",
+            "assembly": "jb     0x119b",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10b0",
+            "bytes": "31 ff",
+            "assembly": "xor    di,di",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10b2",
+            "bytes": "66 81 fb 41 75 74 68",
+            "assembly": "cmp    ebx,0x68747541",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10b9",
+            "bytes": "75 17",
+            "assembly": "jne    0x10d2",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10bb",
+            "bytes": "66 81 fa 65 6e 74 69",
+            "assembly": "cmp    edx,0x69746e65",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10c2",
+            "bytes": "75 0e",
+            "assembly": "jne    0x10d2",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10c4",
+            "bytes": "66 81 f9 63 41 4d 44",
+            "assembly": "cmp    ecx,0x444d4163",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10cb",
+            "bytes": "75 05",
+            "assembly": "jne    0x10d2",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10cd",
+            "bytes": "bf 01 00",
+            "assembly": "mov    di,0x1",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10d0",
+            "bytes": "eb 5a",
+            "assembly": "jmp    0x112c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10d2",
+            "bytes": "66 81 fb 47 65 6e 75",
+            "assembly": "cmp    ebx,0x756e6547",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10d9",
+            "bytes": "75 51",
+            "assembly": "jne    0x112c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10db",
+            "bytes": "66 81 fa 69 6e 65 49",
+            "assembly": "cmp    edx,0x49656e69",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10e2",
+            "bytes": "75 48",
+            "assembly": "jne    0x112c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10e4",
+            "bytes": "66 81 f9 6e 74 65 6c",
+            "assembly": "cmp    ecx,0x6c65746e",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10eb",
+            "bytes": "75 3f",
+            "assembly": "jne    0x112c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10ed",
+            "bytes": "66 b8 01 00 00 00",
+            "assembly": "mov    eax,0x1",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10f3",
+            "bytes": "0f a2",
+            "assembly": "cpuid",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10f5",
+            "bytes": "66 89 c1",
+            "assembly": "mov    ecx,eax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10f8",
+            "bytes": "66 25 00 0f f0 0f",
+            "assembly": "and    eax,0xff00f00",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10fe",
+            "bytes": "66 c1 e8 08",
+            "assembly": "shr    eax,0x8",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1102",
+            "bytes": "66 83 f8 06",
+            "assembly": "cmp    eax,0x6",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1106",
+            "bytes": "77 13",
+            "assembly": "ja     0x111b",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1108",
+            "bytes": "72 22",
+            "assembly": "jb     0x112c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x110a",
+            "bytes": "66 81 e1 f0 00 0f 00",
+            "assembly": "and    ecx,0xf00f0",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1111",
+            "bytes": "66 c1 e9 04",
+            "assembly": "shr    ecx,0x4",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1115",
+            "bytes": "66 83 f9 0d",
+            "assembly": "cmp    ecx,0xd",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1119",
+            "bytes": "72 11",
+            "assembly": "jb     0x112c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x111b",
+            "bytes": "66 b9 a0 01 00 00",
+            "assembly": "mov    ecx,0x1a0",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1121",
+            "bytes": "0f 32",
+            "assembly": "rdmsr",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": [
+              "RDMSR reads MSR 0x000001a0 (IA32_MISC_ENABLE) into EDX:EAX."
+            ]
+          },
+          {
+            "offset": "0x1123",
+            "bytes": "66 0f ba f2 02",
+            "assembly": "btr    edx,0x2",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1128",
+            "bytes": "73 02",
+            "assembly": "jae    0x112c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x112a",
+            "bytes": "0f 30",
+            "assembly": "wrmsr",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": [
+              "WRMSR writes EDX:EAX to MSR 0x000001a0 after conditionally clearing EDX bit 2 (XD_DISABLE)."
+            ]
+          },
+          {
+            "offset": "0x112c",
+            "bytes": "66 b8 01 00 00 00",
+            "assembly": "mov    eax,0x1",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1132",
+            "bytes": "0f a2",
+            "assembly": "cpuid",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1134",
+            "bytes": "66 81 e2 61 81 00 07",
+            "assembly": "and    edx,0x7008161",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x113b",
+            "bytes": "66 81 f2 61 81 00 07",
+            "assembly": "xor    edx,0x7008161",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1142",
+            "bytes": "75 57",
+            "assembly": "jne    0x119b",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1144",
+            "bytes": "66 b8 00 00 00 80",
+            "assembly": "mov    eax,0x80000000",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x114a",
+            "bytes": "0f a2",
+            "assembly": "cpuid",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x114c",
+            "bytes": "66 3d 01 00 00 80",
+            "assembly": "cmp    eax,0x80000001",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1152",
+            "bytes": "72 47",
+            "assembly": "jb     0x119b",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1154",
+            "bytes": "66 b8 01 00 00 80",
+            "assembly": "mov    eax,0x80000001",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x115a",
+            "bytes": "0f a2",
+            "assembly": "cpuid",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x115c",
+            "bytes": "66 81 e2 00 00 00 20",
+            "assembly": "and    edx,0x20000000",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1163",
+            "bytes": "66 81 f2 00 00 00 20",
+            "assembly": "xor    edx,0x20000000",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x116a",
+            "bytes": "75 2f",
+            "assembly": "jne    0x119b",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x116c",
+            "bytes": "66 b8 01 00 00 00",
+            "assembly": "mov    eax,0x1",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1172",
+            "bytes": "0f a2",
+            "assembly": "cpuid",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1174",
+            "bytes": "66 81 e2 00 00 00 06",
+            "assembly": "and    edx,0x6000000",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x117b",
+            "bytes": "66 81 fa 00 00 00 06",
+            "assembly": "cmp    edx,0x6000000",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1182",
+            "bytes": "74 20",
+            "assembly": "je     0x11a4",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1184",
+            "bytes": "85 ff",
+            "assembly": "test   di,di",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1186",
+            "bytes": "74 13",
+            "assembly": "je     0x119b",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1188",
+            "bytes": "66 b9 15 00 01 c0",
+            "assembly": "mov    ecx,0xc0010015",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x118e",
+            "bytes": "0f 32",
+            "assembly": "rdmsr",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": [
+              "RDMSR reads MSR 0xc0010015 (MSR_K7_HWCR) into EDX:EAX."
+            ]
+          },
+          {
+            "offset": "0x1190",
+            "bytes": "66 0f ba f0 0f",
+            "assembly": "btr    eax,0xf",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1195",
+            "bytes": "0f 30",
+            "assembly": "wrmsr",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": [
+              "WRMSR writes EDX:EAX to MSR 0xc0010015 after conditionally clearing EAX bit 15 (SSE disable)."
+            ]
+          },
+          {
+            "offset": "0x1197",
+            "bytes": "31 ff",
+            "assembly": "xor    di,di",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1199",
+            "bytes": "eb d1",
+            "assembly": "jmp    0x116c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x119b",
+            "bytes": "9d",
+            "assembly": "popf",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x119c",
+            "bytes": "66 b8 01 00 00 00",
+            "assembly": "mov    eax,0x1",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x11a2",
+            "bytes": "c3",
+            "assembly": "ret",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x11a3",
+            "bytes": "cc",
+            "assembly": "int3",
+            "reachability": "unreachable trap/padding: failure path returns at 0x11a2 and success branch targets 0x11a4",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x11a4",
+            "bytes": "9d",
+            "assembly": "popf",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x11a5",
+            "bytes": "66 31 c0",
+            "assembly": "xor    eax,eax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x11a8",
+            "bytes": "c3",
+            "assembly": "ret",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          }
+        ],
+        "protected_32": [
+          {
+            "offset": "0x2000",
+            "bytes": "8e d2",
+            "assembly": "mov    ss,edx",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2002",
+            "bytes": "81 c4 00 00 00 00",
+            "assembly": "add    esp,0x0",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2008",
+            "bytes": "8e da",
+            "assembly": "mov    ds,edx",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x200a",
+            "bytes": "8e c2",
+            "assembly": "mov    es,edx",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x200c",
+            "bytes": "8e e2",
+            "assembly": "mov    fs,edx",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x200e",
+            "bytes": "8e ea",
+            "assembly": "mov    gs,edx",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2010",
+            "bytes": "0f ba 25 14 50 00 00 00",
+            "assembly": "bt     DWORD PTR ds:0x5014,0x0",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2018",
+            "bytes": "73 0f",
+            "assembly": "jae    0x2029",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x201a",
+            "bytes": "b9 10 00 01 c0",
+            "assembly": "mov    ecx,0xc0010010",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x201f",
+            "bytes": "0f 32",
+            "assembly": "rdmsr",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": [
+              "RDMSR reads MSR 0xc0010010 (MSR_AMD64_SYSCFG) into EDX:EAX on the conditional SME path."
+            ]
+          },
+          {
+            "offset": "0x2021",
+            "bytes": "0f ba e8 17",
+            "assembly": "bts    eax,0x17",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2025",
+            "bytes": "72 02",
+            "assembly": "jb     0x2029",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2027",
+            "bytes": "0f 30",
+            "assembly": "wrmsr",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": [
+              "WRMSR writes EDX:EAX to MSR 0xc0010010 after conditionally setting EAX bit 23 (SME enable)."
+            ]
+          },
+          {
+            "offset": "0x2029",
+            "bytes": "a1 10 50 00 00",
+            "assembly": "mov    eax,ds:0x5010",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x202e",
+            "bytes": "0f 22 e0",
+            "assembly": "mov    cr4,eax",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": [
+              "CR4 <- value from relocated trampoline header field pa_tr_cr4."
+            ]
+          },
+          {
+            "offset": "0x2031",
+            "bytes": "b8 00 40 00 00",
+            "assembly": "mov    eax,0x4000",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2036",
+            "bytes": "0f 22 d8",
+            "assembly": "mov    cr3,eax",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": [
+              "CR3 <- phys_base + 0x4000; linked immediate is 0x4000 and the 32-bit linear relocation at blob offset 0x2032 adds phys_base."
+            ]
+          },
+          {
+            "offset": "0x2039",
+            "bytes": "b9 80 00 00 c0",
+            "assembly": "mov    ecx,0xc0000080",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x203e",
+            "bytes": "0f 32",
+            "assembly": "rdmsr",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": [
+              "RDMSR reads EFER MSR 0xc0000080 into EDX:EAX."
+            ]
+          },
+          {
+            "offset": "0x2040",
+            "bytes": "3b 05 08 50 00 00",
+            "assembly": "cmp    eax,DWORD PTR ds:0x5008",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2046",
+            "bytes": "75 08",
+            "assembly": "jne    0x2050",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2048",
+            "bytes": "3b 15 0c 50 00 00",
+            "assembly": "cmp    edx,DWORD PTR ds:0x500c",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x204e",
+            "bytes": "74 0d",
+            "assembly": "je     0x205d",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2050",
+            "bytes": "a1 08 50 00 00",
+            "assembly": "mov    eax,ds:0x5008",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2055",
+            "bytes": "8b 15 0c 50 00 00",
+            "assembly": "mov    edx,DWORD PTR ds:0x500c",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x205b",
+            "bytes": "0f 30",
+            "assembly": "wrmsr",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": [
+              "WRMSR writes the EFER value loaded from the trampoline header (BSP EFER with LMA masked off during setup)."
+            ]
+          },
+          {
+            "offset": "0x205d",
+            "bytes": "b8 33 00 05 80",
+            "assembly": "mov    eax,0x80050033",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2062",
+            "bytes": "0f 22 c0",
+            "assembly": "mov    cr0,eax",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": [
+              "CR0 <- EAX=0x80050033; enables paging with EFER.LME set and enters IA-32e compatibility mode."
+            ],
+            "mode_transition": "protected_32 -> IA-32e compatibility mode (EFER.LME already set)"
+          },
+          {
+            "offset": "0x2065",
+            "bytes": "ea f0 20 00 00 10 00",
+            "assembly": "jmp    0x10:0x20f0",
+            "decode_mode": "protected_32",
+            "execution_mode": "ia32e_compat_32",
+            "control_state_effects": [
+              "Far control transfer to selector 0x0010 and linked offset 0x20f0; the far-pointer offset fixup at blob offset 0x2066 adds phys_base, so the runtime target is selector 0x0010:phys_base+0x20f0."
+            ],
+            "mode_transition": "IA-32e compatibility_32 -> long_64"
+          }
+        ],
+        "long_64": [
+          {
+            "offset": "0x20f0",
+            "bytes": "ff 25 0a 2f 00 00",
+            "assembly": "jmp    QWORD PTR [rip+0x2f0a]        # 0x5000",
+            "decode_mode": "long_64",
+            "execution_mode": "long_64",
+            "control_state_effects": [
+              "Indirect near jump through the 64-bit pointer slot at blob offset 0x5000 (runtime address phys_base+0x5000)."
+            ]
+          }
+        ]
+      },
+      "control_effects": [
+        {
+          "path": "native INIT/SIPI real-mode entry at 0x1000",
+          "effects": "CLI; WBINVD; load CS into DS/ES/SS; lock BTS serializes the shared low-memory trampoline stack slot at blob offset 0x5018 (runtime phys_base+0x5018); set ESP to linked stack offset 0x6020, relocated by phys_base at runtime; call verify_cpu; load IDTR from 0x60 and GDTR from 0x30; load DX=0x18; write EAX=0x00050033 to CR0; far jump to selector 0x8:offset 0x2000. Failed verify_cpu returns to HLT loop at 0x104c.",
+          "source_files": [
+            "arch/x86/realmode/rm/trampoline_64.S",
+            "arch/x86/realmode/rm/header.S"
+          ]
+        },
+        {
+          "path": "verify_cpu at 0x1080",
+          "effects": "Uses CPUID leaves 0, 1, 0x80000000 and 0x80000001; checks CPUID support and detects the vendor for conditional AMD/Intel MSR workarounds (other vendors are not rejected solely for their vendor string), REQUIRED_MASK0 (observed immediate mask 0x07008161), REQUIRED_MASK1 (0x20000000), and SSE/SSE2 mask (0x06000000). On qualifying Intel family/model reads MSR 0x1a0 and clears EDX bit 2 (XD_DISABLE), writing only when changed. If AMD lacks SSE/SSE2, reads MSR 0xc0010015, clears EAX bit 15, writes it, then retries once. Returns EAX=0 on success, EAX=1 on failure; restores saved flags.",
+          "source_files": [
+            "arch/x86/kernel/verify_cpu.S",
+            "arch/x86/include/asm/cpufeatures.h"
+          ]
+        },
+        {
+          "path": "SEV-ES alternate 16-bit entry at 0x1050",
+          "effects": "CLI; loads CS into DS/ES/SS; serializes and sets the shared stack with lock BTS and ESP=0x6020; skips verify_cpu and jumps into the shared protected-mode setup at 0x102c. Linux source sets the trampoline header target to secondary_startup_64_no_verify for guest-state encryption and installs the AP jump table.",
+          "source_files": [
+            "arch/x86/realmode/rm/trampoline_64.S",
+            "arch/x86/realmode/init.c"
+          ]
+        },
+        {
+          "path": "protected-mode startup_32 at 0x2000",
+          "effects": "Loads SS/DS/ES/FS/GS from EDX and adds the real-mode base to ESP. Conditional SME path reads MSR 0xc0010010 and may set EAX bit 23 before WRMSR. Loads CR4 from the trampoline header field at 0x5010; loads the linked pa_trampoline_pgd immediate 0x4000 into CR3; the 32-bit relocation at blob offset 0x2032 adds the runtime low-memory base, so runtime CR3 is phys_base + 0x4000; reads EFER MSR 0xc0000080, compares against the saved header value at 0x5008/0x500c, and conditionally WRMSR; writes CR0=0x80050033 (paging and long-mode activation); far jumps to selector 0x10:offset 0x20f0.",
+          "source_files": [
+            "arch/x86/realmode/rm/trampoline_64.S",
+            "arch/x86/realmode/init.c"
+          ]
+        },
+        {
+          "path": "long-mode startup_64 at 0x20f0",
+          "effects": "Indirect near jump through the 64-bit pointer at trampoline header address 0x5000 (RIP-relative displacement 0x2f0a). setup_real_mode initializes this pointer to secondary_startup_64; SEV-ES changes it to secondary_startup_64_no_verify. The first target instruction is CALL verify_cpu (bytes e8 6b 01 00 00); the SEV-ES no-verify target begins XOR R15D,R15D (bytes 45 31 ff).",
+          "source_files": [
+            "arch/x86/realmode/rm/trampoline_64.S",
+            "arch/x86/realmode/init.c",
+            "arch/x86/kernel/head_64.S"
+          ]
+        }
+      ],
+      "execution_scope": "The decoded path is the native INIT/SIPI trampoline path selected by do_boot_cpu when no wakeup_secondary_cpu_64 or wakeup_secondary_cpu callback is installed. The static inventory does not prove which callback the staged guest selects at runtime. The direct 64-bit startup trampoline is a distinct callback path and is not the selected D2 recommendation.",
+      "runtime_relocation_caveat": "instruction_bytes records the bytes linked into real_mode_blob in the staged ELF. setup_real_mode() copies the blob into a low-memory allocation and applies 16-bit segment relocations and 32-bit linear relocations before AP execution. Therefore relocation-bearing operands can differ in the runtime copy; the selected low-memory base is not pinned by S4-35 and no guest runtime trace is available. The 32-bit linear relocation at blob offset 0x2032 patches the immediate operand of the MOV at 0x2031 for pa_trampoline_pgd: linked value 0x4000 becomes runtime CR3 = phys_base + 0x4000. Other transition targets are also runtime-relocated: far-jump operand fixups at 0x1046 and 0x2066 add phys_base to the linked offsets 0x2000 and 0x20f0, respectively.",
+      "pending": "The linked-image instruction inventory and physical x86 repeat passed independent evidence review. The static Linux startup/APIC target path and D2 are accepted by independent architecture review for the documented S6 first-SMP target profile. Current executable Stage4A remains one-vCPU/APIC-clear; no runtime implementation or AP execution is claimed. Windows CPU-06 remains an unverified hypothesis reserved for the Stage 8 trace, as permitted by the S6-02 plan.",
+      "common_64_entry_instructions": [
+        {
+          "path": "tr_start -> secondary_startup_64",
+          "address": "0xffffffff8139c090",
+          "mode": "long_64",
+          "bytes": "e8 6b 01 00 00",
+          "assembly": "call ffffffff8139c200 <verify_cpu>",
+          "source_elf": "vmlinux-debug .text; byte-identical to staged vmlinuz extracted ELF .text",
+          "decode_mode_bits": 64,
+          "execution_mode": "long_64",
+          "control_state_effects": []
+        },
+        {
+          "path": "SEV-ES tr_start -> secondary_startup_64_no_verify",
+          "address": "0xffffffff8139c095",
+          "mode": "long_64",
+          "bytes": "45 31 ff",
+          "assembly": "xor r15d,r15d",
+          "source_elf": "vmlinux-debug .text; byte-identical to staged vmlinuz extracted ELF .text",
+          "decode_mode_bits": 64,
+          "execution_mode": "long_64",
+          "control_state_effects": []
+        }
+      ],
+      "execution_modes": {
+        "real_16": "Before CR0.PE is set; includes verify_cpu and the native real-mode entry.",
+        "protected_16_transition": "The far jump at 0x1044 executes after CR0.PE is set while CS still has a 16-bit default; the target descriptor enters startup_32.",
+        "protected_32": "startup_32 instructions before CR0.PG is set.",
+        "ia32e_compat_32": "The far jump at 0x2065 executes after CR0.PG and EFER.LME activate IA-32e, while the current CS is still 32-bit compatibility.",
+        "long_64": "startup_64 at 0x20f0 and the common secondary startup targets."
+      },
+      "instruction_inventory_note": "Each row records decode_mode, execution_mode, exact linked-image bytes, Intel-syntax mnemonic and control_state_effects (empty where the instruction does not touch control state or MSRs). The linked 16/32-bit decode width and active architectural mode differ at the mode-switch far jumps.",
+      "physical_x86_verification": {
+        "date": "2026-11-13",
+        "host": {
+          "architecture": "x86_64",
+          "os": "Linux 7.0.0-42-generic",
+          "cpu": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "tool": "GNU objdump (GNU Binutils for Ubuntu) 2.46",
+          "metadata_file": {
+            "path": "docs/reports/data/stage6/s6-02-x86/host-info.txt",
+            "bytes": 297,
+            "sha256": "ad48d05b522e12944f7031d0c8962327133bd58b71059b4591249504a7112bff"
+          }
+        },
+        "isolated_remote_directory": "~/projects/open_desktop-s6-08-fa74b1c/work/stage6/s6-02-x86-repeat",
+        "transferred_bytes": 25196,
+        "inputs": [
+          {
+            "path": "work/stage6/s6-02-disassembly/real_mode_blob-from-vmlinuz.bin",
+            "size_bytes": 25188,
+            "sha256": "d48c472d9051f65d62efdb34bdabdb3fb261aefbb7873a3637860ecc4c80573f"
+          },
+          {
+            "path": "work/stage6/s6-02-disassembly/common64-entry.bin",
+            "size_bytes": 8,
+            "sha256": "8b2bf191b2ccd5e35785621387dd8354b3158cbdc2d0d04aded99f34c2a461e7",
+            "source": "First eight bytes of secondary_startup_64 at 0xffffffff8139c090 in staged vmlinux-debug; its SHA-256 is 7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f."
+          }
+        ],
+        "commands": [
+          "x86_64-linux-gnu-objdump -D -b binary -m i386 -M intel,addr16,data16 --insn-width=16 --start-address=0x1000 --stop-address=0x11a9 real_mode_blob.bin",
+          "x86_64-linux-gnu-objdump -D -b binary -m i386 -M intel,addr32,data32 --insn-width=16 --start-address=0x2000 --stop-address=0x206c real_mode_blob.bin",
+          "x86_64-linux-gnu-objdump -D -b binary -m i386:x86-64 -M intel --insn-width=16 --start-address=0x20f0 --stop-address=0x20f6 real_mode_blob.bin",
+          "x86_64-linux-gnu-objdump -D -b binary -m i386:x86-64 -M intel --insn-width=16 --adjust-vma=0xffffffff8139c090 --start-address=0xffffffff8139c090 --stop-address=0xffffffff8139c095 common64-entry.bin",
+          "tail -c +6 common64-entry.bin > common64-no-verify.bin",
+          "x86_64-linux-gnu-objdump -D -b binary -m i386:x86-64 -M intel --insn-width=16 --adjust-vma=0xffffffff8139c095 common64-no-verify.bin"
+        ],
+        "comparison": {
+          "real_16": {
+            "json_rows": 119,
+            "raw_objdump_rows": 122,
+            "matched_rows": 119,
+            "excluded_alignment_decode_rows": 3,
+            "excluded_byte_range": "[0x1074,0x1080)",
+            "missing": 0,
+            "mismatched": 0,
+            "unexplained_extra": 0
+          },
+          "protected_32": {
+            "json_rows": 29,
+            "raw_objdump_rows": 29,
+            "matched_rows": 29,
+            "missing": 0,
+            "mismatched": 0,
+            "extra": 0
+          },
+          "long_64": {
+            "json_rows": 1,
+            "raw_objdump_rows": 1,
+            "matched_rows": 1,
+            "missing": 0,
+            "mismatched": 0,
+            "extra": 0
+          },
+          "common_64_entries": [
+            {
+              "path": "tr_start -> secondary_startup_64",
+              "address": "0xffffffff8139c090",
+              "bytes": "e8 6b 01 00 00",
+              "matched": true
+            },
+            {
+              "path": "SEV-ES tr_start -> secondary_startup_64_no_verify",
+              "address": "0xffffffff8139c095",
+              "bytes": "45 31 ff",
+              "matched": true
+            }
+          ]
+        },
+        "stdout_files": [
+          {
+            "path": "docs/reports/data/stage6/s6-02-x86/16bit-objdump.txt",
+            "bytes": 9000,
+            "sha256": "ecf7df9ee7f039ba8a4dace1517520a62135aacbc1e573cd6b039c3e86355ba1"
+          },
+          {
+            "path": "docs/reports/data/stage6/s6-02-x86/32bit-objdump.txt",
+            "bytes": 2308,
+            "sha256": "ed4fbac2eadeed6fbca3f04190995a516b2050db9c2d271afafc28d22cc617b4"
+          },
+          {
+            "path": "docs/reports/data/stage6/s6-02-x86/64bit-objdump.txt",
+            "bytes": 215,
+            "sha256": "018dacb8587c74ab00d5f79f3d58c272b7bbd5f914d373c18c5227de3228d0c3"
+          },
+          {
+            "path": "docs/reports/data/stage6/s6-02-x86/common-verify-objdump.txt",
+            "bytes": 196,
+            "sha256": "820e67b4eeb9854596af5b35a4b15dd91b26227d2f97843159a4970a5f2270f8"
+          },
+          {
+            "path": "docs/reports/data/stage6/s6-02-x86/common-no-verify-objdump.txt",
+            "bytes": 191,
+            "sha256": "d9821e72ad14cf29d54cefaa5ab2809562f701f7a118e462c851f3b77c4c8861"
+          },
+          {
+            "path": "docs/reports/data/stage6/s6-02-x86/host-info.txt",
+            "bytes": 297,
+            "sha256": "ad48d05b522e12944f7031d0c8962327133bd58b71059b4591249504a7112bff"
+          }
+        ],
+        "scope_limit": "Physical x86 disassembly confirms byte decoding only; it does not establish runtime AP callback/APIC selection or guest AP execution."
+      }
+    },
+    "source_unpack_command": "tar -xjf work/stage4/linux-7.0.0-38.38/source/linux-source-7.0.0.tar.bz2 -C /private/tmp/s6-02-src",
+    "extraction_command": "dd if=work/stage4/linux-7.0.0-38.38/vmlinux-debug-7.0.0-38-generic of=/private/tmp/s6-02-real_mode_blob.bin bs=1 skip=$((0x31f6000)) count=$((0x6264)) 2>/dev/null",
+    "extraction_command_basis": "ELF .init.data file offset 0x31d2000 + (real_mode_blob VMA 0xffffffff83ff6000 - section VMA 0xffffffff83fd2000) = 0x31f6000; symbol size 0x6264. dd output was byte-compared with the ELF64 parser extraction."
+  },
+  "board_firmware": {
+    "current_madt": "One enabled Processor Local APIC record: Processor UID 0, APIC ID 0. No MADT type 0x10 Multiprocessor Wakeup record.",
+    "smp_requirement": "For an n-vCPU APIC board, ACPI 6.6 requires one enabled Local APIC record per vCPU and a matching processor device object in the DSDT (§5.2.12.2; x2APIC: §5.2.12.12). Device objects use the \\_SB namespace, _HID=ACPI0007 and matching _UID (§8.4)."
+  },
+  "windows": {
+    "CPU_06": "hypothesis_unverified",
+    "INIT_SIPI_real_mode_trampoline": "No Microsoft source found that establishes this as the generic Windows x64 AP startup path; retain the planned stage 8 trace check.",
+    "processor_objects": {
+      "ACPI_6_6": "For the APIC interrupt model, each processor has a Processor Local APIC MADT entry and corresponding processor device object in the DSDT (§5.2.12.2); the x2APIC model also requires its processor device object in DSDT (§5.2.12.12). ACPI 6.6 §8.4 specifies the processor Device under \\_SB with _HID ACPI0007 and _UID matching MADT.",
+      "Microsoft_scope": "The Microsoft processor-identification page found here is scoped to SoC-based platforms; it does not establish a generic client Windows x64 requirement or absence behavior.",
+      "result": "Keep generic Windows-specific absence behavior open for stage 8 trace; emit conforming ACPI 6.6 processor namespace objects in the project's current DSDT."
+    }
+  },
+  "linux_runtime_visibility": {
+    "boot_log_format_strings": [
+      {
+        "format": "x86: Booting SMP configuration:\n",
+        "source": "arch/x86/kernel/smpboot.c:announce_cpu"
+      },
+      {
+        "format": "\n",
+        "source": "arch/x86/kernel/smpboot.c:announce_cpu when changing node"
+      },
+      {
+        "format": ".... node %*s#%d, CPUs:  ",
+        "source": "arch/x86/kernel/smpboot.c:announce_cpu"
+      },
+      {
+        "format": "%*s#%d",
+        "source": "arch/x86/kernel/smpboot.c:announce_cpu (per-CPU list continuation)"
+      },
+      {
+        "format": "Booting Node %d Processor %d APIC 0x%x\n",
+        "source": "arch/x86/kernel/smpboot.c:announce_cpu when system_state >= SYSTEM_RUNNING"
+      },
+      {
+        "format": "Bringing up secondary CPUs ...\n",
+        "source": "kernel/smp.c"
+      },
+      {
+        "format": "Brought up %d node%s, %d CPU%s\n",
+        "source": "kernel/smp.c"
+      }
+    ],
+    "online_cpu_count_paths": [
+      {
+        "path": "/sys/devices/system/cpu/online",
+        "meaning": "Online CPUs; documented in Documentation/ABI/testing/sysfs-devices-system-cpu. Requires sysfs mounted."
+      },
+      {
+        "path": "/sys/devices/system/cpu/present",
+        "meaning": "CPUs present in the system; same ABI document."
+      },
+      {
+        "path": "/sys/devices/system/cpu/possible",
+        "meaning": "CPUs allocated as possible/hotpluggable; same ABI document."
+      },
+      {
+        "path": "/proc/cpuinfo",
+        "meaning": "Per-processor records from arch/x86/kernel/cpu/proc.c; requires procfs mounted."
+      }
+    ]
+  },
+  "apic_and_cpu_topology": {
+    "runtime_mode_selection": {
+      "two_or_four_vcpus_with_apic_ids_0_to_n_minus_1": "xAPIC physical addressing supports these IDs and remains sufficient; vCPU count alone does not require x2APIC.",
+      "xapic_candidate": "The default x86_64 APIC driver in this build is physical-flat: APIC IDs are physical, dest_mode_logical=false, and normal APIC register access uses xAPIC MMIO.",
+      "x2apic_conditions": "CONFIG_X86_X2APIC=y is only build support. Runtime requires CPUID.X2APIC and x2APIC enabled in APIC_BASE or enabled by Linux. Without interrupt remapping, Linux also requires hypervisor x2APIC availability; it then uses physical destination mode and limits APIC ID to 255, or 32767 if virtual extended MSI destinations are available. With interrupt remapping, x2APIC selection/physical-vs-cluster driver depends on the remapper and platform ops.",
+      "actual_two_four_cpu_choice": "For the S6 first SMP target profile (APIC=1, X2APIC=0, APIC_BASE xAPIC state, no platform override), static Linux selection is physical-flat xAPIC; current executable Stage4A remains one-vCPU/APIC-clear, so runtime selection has not occurred.",
+      "target_profile_source": "docs/specs/CPU_CONTRACT.md:631-656 defines reference vendor OpenDesktop, APIC=1, X2APIC=0, hypervisor-present=0; S6 requires a 2/4-vCPU cardinality and matching APIC IDs/MADT rows."
+    },
+    "destination_modes": {
+      "xapic_physical_flat": {
+        "ioapic": "Physical destination (dest_mode_logical=false). IOAPIC route construction propagates the selected APIC mode.",
+        "msi": "Physical destination (dest_mode_logical=false); destination APIC ID comes from irq_cfg.",
+        "apic_ids_0_to_3": "Directly addressable."
+      },
+      "x2apic_physical": "Physical destination mode; same 0..3 addresses for a two/four-vCPU guest.",
+      "x2apic_cluster": "Logical cluster destination mode is a conditional alternative with interrupt-remapping/APIC driver selection; not selected by the project's current xAPIC candidate."
+    },
+    "register_access": {
+      "xapic": "MMIO local APIC page; ICR low/high are offsets 0x300/0x310, as implemented by the project LAPIC.",
+      "x2apic": "APIC register operations become x2APIC MSR accesses, including the 64-bit ICR; the x2APIC physical driver uses MSR writes with the required WRMSR fence.",
+      "runtime_use": "No x2APIC MSR access is expected if the final guest exposes only xAPIC; actual Linux mode remains unverified."
+    },
+    "ipi_shorthand": {
+      "all_including_self": "APIC_DEST_ALLINC",
+      "all_but_self": "APIC_DEST_ALLBUT",
+      "self": "APIC_DEST_SELF on xAPIC; x2APIC physical mode uses the self-IPI register.",
+      "targeted_ipi": "Per-CPU destinations carry the APIC ID in ICR destination fields and use physical destination mode on the physical-flat/x2APIC-physical drivers.",
+      "ap_start": "Startup INIT/SIPI sequence is targeted to phys_apicid; it does not use shorthand."
+    },
+    "topology_cpuid_leaves": {
+      "common_selection": "cpu_parse_topology_ext() tries leaves 0x1f, 0x80000026, then 0x0b when called. topology_common.c calls it only in the Intel vendor branch; leaf presence alone does not establish that the helper runs for another vendor.",
+      "intel": "The Intel path uses the shared extended-leaf order; if none parses, it falls back to legacy topology. Leaf 1 EBX supplies the initial APIC ID and logical-processor count used by the legacy parser; leaf 4 subleaf 0 supplies the legacy core count when available. If CPUID level is at least 0x1a, Linux also reads leaf 0x1a for CPU type.",
+      "amd_hygon": "AMD/Hygon path tries the shared extended-leaf order; if unavailable, AMD falls back to leaf 0x80000008. When the extended topology path or legacy 0x80000008 path succeeds, Linux also tries leaf 0x8000001e for additional SMT/APIC/node information, then falls back to the Fam10h node-ID MSR when that leaf is unavailable. AMD HTR cores may also read leaf 0x80000026 EBX for CPU type.",
+      "other_legacy": "Centaur/Zhaoxin use the legacy parser. Its core/thread topology uses leaf 1 EBX logical-processor count and leaf 4 subleaf 0 core count when supported.",
+      "runtime_leaf_values": "The reference profile max leaves exclude 0x1f, 0x80000026, and 0x0b. Independently, OpenDesktop is an unknown vendor to the pinned topology_common.c vendor switch, so no topology parser is selected; no runtime Linux boot/log confirms CPU enumeration.",
+      "unknown_vendor": "For reference vendor OpenDesktop (classified as unknown by this Linux source), topology_common.c reads CPUID.1 EBX initial APIC ID and derives ebx1_nproc_shift, then has no vendor switch branch to call cpu_parse_topology_ext() or parse_legacy(). Defaults remain one logical CPU and zero topology shifts. This does not establish N-core/package topology.",
+      "linux_fallback": "No generic legacy topology fallback is selected for the OpenDesktop vendor. The common setup reads CPUID.1 EBX initial APIC ID and logical-count shift, but the vendor switch only calls AMD/Hygon, Centaur/Zhaoxin, or Intel topology parsers. The target must keep CPUID.1 APIC ID, MADT IDs, and cpu_count consistent; full package/core topology is unestablished and deferred to S6-18.",
+      "s6_2_or_4_vcpu_requirement": "Expose CPUID.1 EBX logical-processor count N and current APIC ID 0..N-1 consistently with MADT type 0 entries. This is a board consistency requirement, not proof Linux classifies OpenDesktop as an N-core package; topology_common.c leaves unknown-vendor topology domains at their one-CPU defaults. Resolve package/core domains in S6-18."
+    },
+    "expected_madt_and_namespace": {
+      "xapic_2_vcpus": "Processor Local APIC (MADT type 0) entries for UID/APIC ID 0 and 1, both enabled.",
+      "xapic_4_vcpus": "Processor Local APIC (MADT type 0) entries for UID/APIC IDs 0 through 3, all enabled.",
+      "x2apic": "Use x2APIC processor structures (MADT type 9) if the final board enables x2APIC; APIC IDs remain 0..n-1.",
+      "mp_wakeup": "Do not add MADT type 0x10 while selecting INIT/SIPI; it changes Linux's wakeup callback to a firmware mailbox contract.",
+      "processor_namespace": "For each APIC processor entry, ACPI 6.6 requires the matching processor device object in DSDT (§5.2.12.2 for Local APIC; §5.2.12.12 for x2APIC). The processor device is declared under \\_SB with _HID=ACPI0007 and matching _UID (§8.4). The project currently emits these objects in DSDT."
+    }
+  },
+  "nmi_paths": {
+    "ap_start": "The Linux INIT/SIPI AP startup functions inspected do not send NMI.",
+    "reboot_shutdown_stop": "native_stop_other_cpus first broadcasts REBOOT_VECTOR to all-but-self and waits; it sends targeted NMI IPIs only to CPUs still outstanding after timeout. Kernel option nonmi_ipi disables this NMI fallback.",
+    "panic_kdump": "panic invokes panic_other_cpus_shutdown(crash_kexec_post_notifiers): with crash_kexec_post_notifiers=false it uses smp_send_stop(); with true it uses crash_smp_send_stop(), whose x86 crash-stop callback kdump_nmi_shootdown_cpus sends NMI IPIs. The ordinary smp_send_stop path can also reach the conditional NMI fallback after timeout; actual execution depends on panic configuration and runtime.",
+    "restart": "The x86 restart path has nmi_shootdown_cpus_on_restart for stopping other CPUs with NMI.",
+    "hung_cpu_diagnostics": "CONFIG_HARDLOCKUP_DETECTOR=y and CONFIG_HARDLOCKUP_DETECTOR_PERF=y compile perf hard-lockup detection using local PMU NMI; actual activation still depends on guest PMU support and runtime settings.",
+    "debug_roundup": "CONFIG_KGDB=y; kgdb_roundup_cpus sends all-but-self NMI IPIs when that debug path is used.",
+    "runtime_gates": "NMI execution depends on panic/reboot/kdump/debug paths, CPU PMU capabilities, and nonmi_ipi/runtime configuration; source inventory does not prove these paths ran in the VM."
+  },
+  "not_yet_inventoried": [
+    "Runtime confirmation that the future S6 2/4-vCPU implementation exposes the specified APIC CPUID/APIC_BASE state and xAPIC selection; current Stage4A remains one-vCPU/APIC-clear.",
+    "Linux CPU-topology enumeration and package/core-domain behavior for the unknown OpenDesktop vendor; CPUID.1 EBX, MADT, and cpu_count consistency remains a target requirement.",
+    "Runtime observation of the calibrated udelay delay_fn; source-selected INIT delay for the neutral OpenDesktop target is 10,000 microseconds unless overridden."
+  ],
+  "sources": [
+    {
+      "id": "linux-s4-35",
+      "description": "S4-35 artifact manifest and its hash/provenance limits",
+      "path": "docs/reports/data/stage4/s4-35-linux-artifact.json"
+    },
+    {
+      "id": "linux-source",
+      "description": "Ubuntu source package 7.0.0-38.38; packaged source tree archive SHA-256 1610ed026817da29c6be30c2d9c639287ea472d5b805a1f23e2d576be6be6222; upstream provenance unauthenticated",
+      "path": "work/stage4/linux-7.0.0-38.38/source/linux-source-7.0.0.tar.bz2"
+    },
+    {
+      "id": "acpi-6.6-madt",
+      "description": "ACPI 6.6 §5.2.12.2 Processor Local APIC structure",
+      "url": "https://uefi.org/specs/ACPI/6.6/05_ACPI_Software_Programming_Model.html#processor-local-apic-structure"
+    },
+    {
+      "id": "acpi-6.6-multiprocessor-wakeup",
+      "description": "ACPI 6.6 §5.2.12.19 Multiprocessor Wakeup structure and mailbox; Tables 5.45–5.46",
+      "url": "https://uefi.org/specs/ACPI/6.6/05_ACPI_Software_Programming_Model.html#multiprocessor-wakeup-structure"
+    },
+    {
+      "id": "acpi-6.6-processor-namespace",
+      "description": "ACPI 6.6 §8.4 processor Device, _HID ACPI0007 and _UID declarations",
+      "url": "https://uefi.org/specs/ACPI/6.6/08_Processor_Configuration_and_Control.html#declaring-processors"
+    },
+    {
+      "id": "microsoft-namespace",
+      "description": "Other ACPI namespace objects: processor identification objects (SoC platform scope)",
+      "url": "https://learn.microsoft.com/en-us/windows-hardware/drivers/bringup/other-acpi-namespace-objects#processor-identification-objects"
+    },
+    {
+      "id": "microsoft-tlfs-vsm",
+      "description": "VTL interrupt management documents INIT/startup IPIs only in the Hyper-V/VSM scope",
+      "url": "https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/vsm#vtl-interrupt-management"
+    }
+  ],
+  "smp_target_profile": {
+    "status": "accepted_by_independent_architecture_review",
+    "reference_cpu_profile": "docs/specs/CPU_CONTRACT.md#ubuntu-generic-amd64-od-x86-64-v1-neutral-v01",
+    "reference_vendor": "OpenDesktop ",
+    "reference_cpuid1": {
+      "edx": "0x0781A379",
+      "apic": 1,
+      "ecx": "0x00000000",
+      "x2apic": 0,
+      "hypervisor_present": 0,
+      "ebx": "0x00000100",
+      "logical_processors": 1,
+      "apic_id": 0
+    },
+    "current_executable_stage4a": {
+      "cpuid1_edx": "0x01000011",
+      "apic": 0,
+      "cpuid1_ecx": "0x00000000",
+      "ebx": "0x00000100",
+      "logical_processors": 1,
+      "apic_id": 0,
+      "madt_enabled_lapic_count": 1,
+      "smp_capable": false
+    },
+    "required_s6_two_or_four_vcpu_extension": {
+      "logical_processors": [
+        2,
+        4
+      ],
+      "apic_ids": "0 through N-1 in CPUID.1 EBX and matching enabled MADT type 0 entries",
+      "cpuid_apic": 1,
+      "cpuid_x2apic": 0,
+      "cpuid_hypervisor_present": 0,
+      "apic_base": "LAPIC globally enabled; x2APIC enable bit clear (xAPIC MMIO state)",
+      "command_line": "No apic=, nolapic, or cpu_init_udelay= override for this target",
+      "firmware": "No MADT Multiprocessor Wakeup type 0x10; publish one enabled Local APIC structure per APIC ID 0..N-1",
+      "platform_exposure": "No SEV-SNP, Hyper-V SNP/VTL, Numachip, or UV override path for the neutral reference target and current ODFWAPIC/OPNDSK board identity"
+    },
+    "static_linux_selection_under_required_target": {
+      "apic_driver": "apic_flat_64 physical-flat xAPIC; dest_mode_logical=false; xAPIC MMIO operations; x2APIC is disabled by CPUID.X2APIC=0 regardless of remapping/hypervisor predicates",
+      "startup_callback": "No valid MADT type 0x10 callback and no active platform callback override; apic_flat_64 leaves both wakeup callbacks unset; smpboot falls through to wakeup_secondary_cpu_via_init",
+      "ipi_destination": "phys_apicid in physical destination mode; AP startup is targeted and uses no shorthand",
+      "ioapic_msi_destination": "Physical destination mode under the physical-flat xAPIC driver",
+      "addressability": "xAPIC addresses APIC IDs 0..3 for both 2-vCPU and 4-vCPU target configurations"
+    },
+    "delay_under_required_target": {
+      "init_delay_us": 10000,
+      "reason": "OpenDesktop is not Intel, AMD, or Hygon, so Linux takes the legacy/default 10 ms branch unless cpu_init_udelay= overrides it",
+      "sipi_delay": "Because init delay is nonzero: 300 us after SIPI, wait for ICR idle, then 200 us before ESR; at most two SIPI attempts for an integrated APIC",
+      "mechanism": "smpboot calls udelay(); delay accounting uses loops_per_jiffy and the configured delay_fn. The reference target advertises TSC, but the exact runtime delay_fn is not yet observed."
+    },
+    "source_refs": [
+      "Ubuntu linux-source 7.0.0-38.38: arch/x86/kernel/smpboot.c:805-821 (INIT delay vendor/family predicates), :1005 and :1051-1056 (callback order and INIT fallback)",
+      "arch/x86/kernel/acpi/madt_wakeup.c:212-246 (MADT type 0x10 callback)",
+      "arch/x86/kernel/apic/apic.h:244-246 and apic/apic.c:1866-1877 (X2APIC_DISABLED when CPUID.X2APIC is clear)",
+      "arch/x86/kernel/apic/apic_flat_64.c:22-67 (physical-flat xAPIC driver and unset wakeup callbacks)",
+      "arch/x86/kernel/coco/sev/core.c:888-898 and arch/x86/kernel/cpu/mshyperv.c:410-423 (SEV-SNP and Hyper-V SNP callbacks); CONFIG_HYPERV_VTL_MODE is disabled in staged config",
+      "docs/specs/CPU_CONTRACT.md reference target; current executable CPUID in crates/od-isa/src/cpuid.rs:41-70; current single-LAPIC MADT in crates/od-machine/src/madt.rs:37,58-59,239-276",
+      "arch/x86/kernel/cpu/topology_common.c:112-177 (unknown vendor keeps one-CPU topology defaults; reads CPUID.1 EBX but dispatches topology parsers only for known vendors); arch/x86/kernel/cpu/topology_ext.c:133-145 (leaf parser called from vendor paths, not universal)"
+    ],
+    "scope_limit": "The static future target path and D2 are accepted by independent architecture review. This does not claim current Stage4A implementation, APIC_BASE wiring, multi-LAPIC MADT, AP execution, or 2/4-vCPU runtime are implemented or observed.",
+    "topology_selection": {
+      "reference_max_basic_leaf": "0x00000001",
+      "reference_max_extended_leaf": "0x80000008",
+      "available_topology_leaves": [],
+      "absent_leaves": [
+        "0x0b",
+        "0x1f",
+        "0x80000026"
+      ],
+      "linux_fallback": "For OpenDesktop, the unknown-vendor switch branch is absent: Linux reads CPUID.1 EBX initial APIC ID and derives the logical-count shift, but invokes neither parse_legacy() nor cpu_parse_topology_ext(). Default domains remain one logical CPU with zero shifts; an N-core package is not established. Keep APIC ID, CPUID count and MADT entries consistent, and resolve topology domains in S6-18.",
+      "s6_2_or_4_vcpu_requirement": "Expose CPUID.1 EBX count N and current APIC ID 0..N-1 consistently with enabled MADT type 0 entries. This is a consistency requirement, not evidence of Linux N-core topology classification for unknown vendor OpenDesktop; resolve in S6-18."
+    },
+    "d2_architecture_decision": {
+      "owner_response": "No answer recorded in STAGE_6.md as of 2026-11-13; use the documented default.",
+      "decision_for_review": "Accepted default: native INIT/SIPI startup from real16, then protected32, then long64, under the defined OpenDesktop xAPIC target profile.",
+      "basis": "The staged Linux 7.0.0-38.38 native callback path under the specified target falls through to wakeup_secondary_cpu_via_init; Windows CPU-06 remains an unverified Stage 8 hypothesis and is not generalized.",
+      "status": "accepted_by_independent_architecture_review"
+    }
+  },
+  "deferred_hypotheses": [
+    "Windows CPU-06 remains an unverified hypothesis reserved for the Stage 8 trace; this is explicitly permitted by S6-02 step 5."
+  ]
+}

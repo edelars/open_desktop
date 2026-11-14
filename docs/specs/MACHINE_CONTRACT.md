@@ -4,8 +4,9 @@
 подтверждение MMU, устройств, загрузки Linux или JIT-интеграции.
 
 Нормативная карта платы и будущие boot reservations остаются в
-[VIRTUAL_BOARD.md](VIRTUAL_BOARD.md) и в принятом manifest S4-00. Этот документ
-фиксирует уже реализованные bounded-срезы S4-02—S4-09.
+[VIRTUAL_BOARD.md](VIRTUAL_BOARD.md) и в принятом manifest S4-00. Целевой контракт
+нескольких процессоров описан в [SMP_CONTRACT.md](SMP_CONTRACT.md); разделы ниже
+фиксируют отдельные bounded-срезы машины и не означают, что SMP wiring реализован.
 
 ## Адреса и карта
 

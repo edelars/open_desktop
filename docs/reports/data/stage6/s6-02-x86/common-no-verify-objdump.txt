@@ -1,0 +1,8 @@
+
+common64-no-verify.bin:     file format binary
+
+
+Disassembly of section .data:
+
+ffffffff8139c095 <.data>:
+ffffffff8139c095:	45 31 ff                                        	xor    r15d,r15d

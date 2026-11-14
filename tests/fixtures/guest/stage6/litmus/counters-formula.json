@@ -1,0 +1,482 @@
+{
+  "cases": [
+    {
+      "derived_by": "build_stage6_litmus.py/1",
+      "formula_oracle": {
+        "interleaving_instruction_atomic": {
+          "complete": true,
+          "kind": "exact_singleton",
+          "value": "N*K"
+        },
+        "sc": {
+          "complete": true,
+          "kind": "exact_singleton",
+          "value": "N*K"
+        },
+        "x86_tso": {
+          "complete": true,
+          "kind": "exact_singleton",
+          "value": "N*K"
+        }
+      },
+      "id": "LOCK-INC",
+      "initial_memory": {
+        "cells": [
+          {
+            "address": "0x00001000",
+            "alias": null,
+            "initial": 0,
+            "kind": "write_back_ram",
+            "name": "x",
+            "size_bits": 32
+          }
+        ],
+        "width_bits": 32
+      },
+      "observe": {
+        "excluded": [
+          "all CPU registers after loop termination"
+        ],
+        "fields": [
+          "mem.x"
+        ]
+      },
+      "outcome_evaluation": "closed_form_only; no schedule or outcome enumeration",
+      "parameters": {
+        "K": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "N": {
+          "minimum": 2,
+          "type": "integer"
+        },
+        "constraint": "N*K <= 2^32-1; all arithmetic remains within the 32-bit counter width"
+      },
+      "schedule_metadata": {
+        "memory_touching_instructions_per_thread": "1*K",
+        "oracle_schedules": "exhaustive closed-form oracle; no sampling",
+        "order_preserving_instruction_schedules": {
+          "formula": "multinomial(N*M*K; M*K, ..., M*K)",
+          "unit": "complete schedules"
+        },
+        "runtime_interleaving": {
+          "exhaustive_schedule_threshold": 1000000,
+          "owner": "S6-19",
+          "policy_status": "measured_by_S6-05; runtime use and result recording belong to S6-19",
+          "sampling_seed_range_inclusive": [
+            0,
+            9999
+          ],
+          "seed_rule": "Python random.Random(seed) shuffles available instruction-step successors; deterministic by seed, not a confidence claim",
+          "status": "not_run_by_S6-05"
+        }
+      },
+      "sources": [
+        {
+          "author": "Intel",
+          "edition": "v093",
+          "section": "Vol. 3A, §8.2; instruction entries for MFENCE, XCHG, XADD, CMPXCHG",
+          "title": "Intel 64 and IA-32 Architectures Software Developer’s Manual",
+          "url": "https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html"
+        }
+      ],
+      "thread_template": {
+        "code_base": "0x2000 + 0x1000*i",
+        "code_region": {
+          "size_bytes": 10,
+          "start_formula": "0x2000 + 0x1000*i"
+        },
+        "cpu": "i where 0 <= i < N",
+        "initial_registers": {
+          "eax": 0,
+          "rcx": "K"
+        },
+        "instructions": [
+          {
+            "abstract_operation": "locked_rmw",
+            "asm": "lock inc dword ptr [0x00001000]",
+            "atomic": true,
+            "bytes": "f0 ff 04 25 00 10 00 00",
+            "instruction_boundary": true,
+            "label": ".loop",
+            "length": 8,
+            "memory_events": [
+              {
+                "argument": 1,
+                "kind": "atomic_rmw",
+                "location": "x",
+                "operation": "add",
+                "result": null
+              }
+            ],
+            "op": "locked_rmw",
+            "operands": {
+              "address": "0x00001000",
+              "implicit_lock": false,
+              "location": "[x]"
+            }
+          },
+          {
+            "abstract_operation": "loop",
+            "asm": "loop .loop",
+            "bytes": "e2 f6",
+            "instruction_boundary": true,
+            "length": 2,
+            "memory_events": [],
+            "op": "loop",
+            "operands": {
+              "counter": "rcx",
+              "decrement_then_branch": "rcx != 0",
+              "relative_displacement": -10,
+              "target": ".loop"
+            }
+          }
+        ],
+        "loop_body_instruction_count": 1,
+        "loop_label": ".loop",
+        "loop_semantics": "Start at .loop; after the body, LOOP decrements RCX and branches to .loop iff RCX != 0. K >= 1."
+      }
+    },
+    {
+      "derived_by": "build_stage6_litmus.py/1",
+      "formula_oracle": {
+        "interleaving_instruction_atomic": {
+          "complete": true,
+          "kind": "exact_singleton",
+          "value": "N*K"
+        },
+        "sc": {
+          "complete": true,
+          "kind": "exact_integer_range",
+          "lost_updates_possible": true,
+          "maximum": "N*K",
+          "minimum": "1 if K == 1 else 2",
+          "step": 1
+        },
+        "x86_tso": {
+          "complete": true,
+          "kind": "exact_integer_range",
+          "lost_updates_possible": true,
+          "maximum": "N*K",
+          "minimum": "1 if K == 1 else 2",
+          "step": 1
+        }
+      },
+      "id": "UNLOCKED-INC",
+      "initial_memory": {
+        "cells": [
+          {
+            "address": "0x00001000",
+            "alias": null,
+            "initial": 0,
+            "kind": "write_back_ram",
+            "name": "x",
+            "size_bits": 32
+          }
+        ],
+        "width_bits": 32
+      },
+      "observe": {
+        "excluded": [
+          "all CPU registers after loop termination"
+        ],
+        "fields": [
+          "mem.x"
+        ]
+      },
+      "outcome_evaluation": "closed_form_only; no schedule or outcome enumeration",
+      "parameters": {
+        "K": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "N": {
+          "minimum": 2,
+          "type": "integer"
+        },
+        "constraint": "N*K <= 2^32-1; all arithmetic remains within the 32-bit counter width"
+      },
+      "schedule_metadata": {
+        "memory_touching_instructions_per_thread": "1*K",
+        "oracle_schedules": "exhaustive closed-form oracle; no sampling",
+        "order_preserving_instruction_schedules": {
+          "formula": "multinomial(N*M*K; M*K, ..., M*K)",
+          "unit": "complete schedules"
+        },
+        "runtime_interleaving": {
+          "exhaustive_schedule_threshold": 1000000,
+          "owner": "S6-19",
+          "policy_status": "measured_by_S6-05; runtime use and result recording belong to S6-19",
+          "sampling_seed_range_inclusive": [
+            0,
+            9999
+          ],
+          "seed_rule": "Python random.Random(seed) shuffles available instruction-step successors; deterministic by seed, not a confidence claim",
+          "status": "not_run_by_S6-05"
+        }
+      },
+      "sources": [
+        {
+          "author": "Intel",
+          "edition": "v093",
+          "section": "Vol. 3A, §8.2; instruction entries for MFENCE, XCHG, XADD, CMPXCHG",
+          "title": "Intel 64 and IA-32 Architectures Software Developer’s Manual",
+          "url": "https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html"
+        }
+      ],
+      "thread_template": {
+        "code_base": "0x2000 + 0x1000*i",
+        "code_region": {
+          "size_bytes": 9,
+          "start_formula": "0x2000 + 0x1000*i"
+        },
+        "cpu": "i where 0 <= i < N",
+        "initial_registers": {
+          "eax": 0,
+          "rcx": "K"
+        },
+        "instructions": [
+          {
+            "abstract_operation": "rmw",
+            "asm": "inc dword ptr [0x00001000]",
+            "bytes": "ff 04 25 00 10 00 00",
+            "instruction_boundary": true,
+            "label": ".loop",
+            "length": 7,
+            "memory_events": [
+              {
+                "kind": "rmw_read",
+                "location": "x",
+                "result": "old"
+              },
+              {
+                "kind": "rmw_write",
+                "location": "x",
+                "value": {
+                  "add": "old",
+                  "delta": 1
+                }
+              }
+            ],
+            "op": "rmw",
+            "operands": {
+              "address": "0x00001000",
+              "delta": 1,
+              "location": "x"
+            }
+          },
+          {
+            "abstract_operation": "loop",
+            "asm": "loop .loop",
+            "bytes": "e2 f7",
+            "instruction_boundary": true,
+            "length": 2,
+            "memory_events": [],
+            "op": "loop",
+            "operands": {
+              "counter": "rcx",
+              "decrement_then_branch": "rcx != 0",
+              "relative_displacement": -9,
+              "target": ".loop"
+            }
+          }
+        ],
+        "loop_body_instruction_count": 1,
+        "loop_label": ".loop",
+        "loop_semantics": "Start at .loop; after the body, LOOP decrements RCX and branches to .loop iff RCX != 0. K >= 1."
+      }
+    },
+    {
+      "derived_by": "build_stage6_litmus.py/1",
+      "formula_oracle": {
+        "interleaving_instruction_atomic": {
+          "complete": true,
+          "kind": "exact_integer_range",
+          "lost_updates_possible": true,
+          "maximum": "N*K",
+          "minimum": "1 if K == 1 else 2",
+          "step": 1
+        },
+        "sc": {
+          "complete": true,
+          "kind": "exact_integer_range",
+          "lost_updates_possible": true,
+          "maximum": "N*K",
+          "minimum": "1 if K == 1 else 2",
+          "step": 1
+        },
+        "x86_tso": {
+          "complete": true,
+          "kind": "exact_integer_range",
+          "lost_updates_possible": true,
+          "maximum": "N*K",
+          "minimum": "1 if K == 1 else 2",
+          "step": 1
+        }
+      },
+      "id": "THREE-INSN-COUNTER",
+      "initial_memory": {
+        "cells": [
+          {
+            "address": "0x00001000",
+            "alias": null,
+            "initial": 0,
+            "kind": "write_back_ram",
+            "name": "x",
+            "size_bits": 32
+          }
+        ],
+        "width_bits": 32
+      },
+      "observe": {
+        "excluded": [
+          "all CPU registers after loop termination"
+        ],
+        "fields": [
+          "mem.x"
+        ]
+      },
+      "outcome_evaluation": "closed_form_only; no schedule or outcome enumeration",
+      "parameters": {
+        "K": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "N": {
+          "minimum": 2,
+          "type": "integer"
+        },
+        "constraint": "N*K <= 2^32-1; all arithmetic remains within the 32-bit counter width"
+      },
+      "schedule_metadata": {
+        "memory_touching_instructions_per_thread": "2*K",
+        "oracle_schedules": "exhaustive closed-form oracle; no sampling",
+        "order_preserving_instruction_schedules": {
+          "formula": "multinomial(N*M*K; M*K, ..., M*K)",
+          "unit": "complete schedules"
+        },
+        "runtime_interleaving": {
+          "exhaustive_schedule_threshold": 1000000,
+          "owner": "S6-19",
+          "policy_status": "measured_by_S6-05; runtime use and result recording belong to S6-19",
+          "sampling_seed_range_inclusive": [
+            0,
+            9999
+          ],
+          "seed_rule": "Python random.Random(seed) shuffles available instruction-step successors; deterministic by seed, not a confidence claim",
+          "status": "not_run_by_S6-05"
+        }
+      },
+      "sources": [
+        {
+          "author": "Intel",
+          "edition": "v093",
+          "section": "Vol. 3A, §8.2; instruction entries for MFENCE, XCHG, XADD, CMPXCHG",
+          "title": "Intel 64 and IA-32 Architectures Software Developer’s Manual",
+          "url": "https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html"
+        }
+      ],
+      "thread_template": {
+        "code_base": "0x2000 + 0x1000*i",
+        "code_region": {
+          "size_bytes": 19,
+          "start_formula": "0x2000 + 0x1000*i"
+        },
+        "cpu": "i where 0 <= i < N",
+        "initial_registers": {
+          "eax": 0,
+          "rcx": "K"
+        },
+        "instructions": [
+          {
+            "abstract_operation": "load",
+            "asm": "mov eax, dword ptr [0x00001000]",
+            "bytes": "8b 04 25 00 10 00 00",
+            "instruction_boundary": true,
+            "label": ".loop",
+            "length": 7,
+            "memory_events": [
+              {
+                "kind": "read",
+                "location": "x",
+                "result": "eax"
+              }
+            ],
+            "op": "load",
+            "operands": {
+              "address": "0x00001000",
+              "destination": "eax",
+              "source": "[x]"
+            }
+          },
+          {
+            "abstract_operation": "register_alu",
+            "asm": "add eax, 1",
+            "bytes": "83 c0 01",
+            "instruction_boundary": true,
+            "length": 3,
+            "memory_events": [],
+            "op": "register_alu",
+            "operands": {
+              "destination": "eax",
+              "source": 1
+            }
+          },
+          {
+            "abstract_operation": "register_store",
+            "asm": "mov dword ptr [0x00001000], eax",
+            "bytes": "89 04 25 00 10 00 00",
+            "instruction_boundary": true,
+            "length": 7,
+            "memory_events": [
+              {
+                "kind": "write",
+                "location": "x",
+                "value": "$eax"
+              }
+            ],
+            "op": "register_store",
+            "operands": {
+              "address": "0x00001000",
+              "location": "x",
+              "source": "eax"
+            }
+          },
+          {
+            "abstract_operation": "loop",
+            "asm": "loop .loop",
+            "bytes": "e2 ed",
+            "instruction_boundary": true,
+            "length": 2,
+            "memory_events": [],
+            "op": "loop",
+            "operands": {
+              "counter": "rcx",
+              "decrement_then_branch": "rcx != 0",
+              "relative_displacement": -19,
+              "target": ".loop"
+            }
+          }
+        ],
+        "loop_body_instruction_count": 3,
+        "loop_label": ".loop",
+        "loop_semantics": "Start at .loop; after the body, LOOP decrements RCX and branches to .loop iff RCX != 0. K >= 1."
+      }
+    }
+  ],
+  "derived_by": "build_stage6_litmus.py/1",
+  "description": "Parameterized finite x86 instruction loops; only the final counter outcome is evaluated by formula.",
+  "id": "COUNTERS-FORMULA",
+  "kind": "formula_counter_group",
+  "schema": "od.smp-litmus.v1",
+  "sources": [
+    {
+      "author": "Intel",
+      "edition": "v093",
+      "section": "Vol. 3A, §8.2; instruction entries for MFENCE, XCHG, XADD, CMPXCHG",
+      "title": "Intel 64 and IA-32 Architectures Software Developer’s Manual",
+      "url": "https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html"
+    }
+  ]
+}

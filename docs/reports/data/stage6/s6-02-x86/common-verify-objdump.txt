@@ -1,0 +1,8 @@
+
+common64-entry.bin:     file format binary
+
+
+Disassembly of section .data:
+
+ffffffff8139c090 <.data>:
+ffffffff8139c090:	e8 6b 01 00 00                                  	call   0xffffffff8139c200

@@ -36051,6 +36051,8 @@ fn step_configured(
         | Operation::OutImm8Al { .. }
         | Operation::InDx { .. }
         | Operation::OutDx { .. }
+        // S6-08 currently admits LOOP for corpus boundary validation only.
+        | Operation::Loop { .. }
         // S4-38L9e: INT3 commits in its own gated path before this point.
         | Operation::Int3 => false,
         Operation::Swapgs => true,
@@ -51677,6 +51679,11 @@ fn step_configured(
                 state.rip = target;
                 return Ok(StepOutcome::Branched);
             }
+        }
+        Operation::Loop { .. } => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
         }
         Operation::Jump { displacement } => {
             let target = next_rip.wrapping_add_signed(i64::from(displacement));

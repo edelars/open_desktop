@@ -1,0 +1,328 @@
+{
+  "derived_by": "build_stage6_litmus.py/1",
+  "id": "SB-XCHG",
+  "interesting": [],
+  "memory": {
+    "cells": [
+      {
+        "address": "0x00001000",
+        "alias": null,
+        "initial": 0,
+        "kind": "write_back_ram",
+        "name": "x",
+        "size_bits": 32
+      },
+      {
+        "address": "0x00001004",
+        "alias": null,
+        "initial": 0,
+        "kind": "write_back_ram",
+        "name": "y",
+        "size_bits": 32
+      },
+      {
+        "address": "0x00001010",
+        "alias": null,
+        "initial": 0,
+        "kind": "write_back_ram",
+        "name": "lock",
+        "size_bits": 32
+      }
+    ],
+    "code_regions": [
+      {
+        "cpu": 0,
+        "size_bytes": 25,
+        "start": "0x00002000"
+      },
+      {
+        "cpu": 1,
+        "size_bytes": 25,
+        "start": "0x00003000"
+      }
+    ],
+    "initial": {
+      "lock": 0,
+      "x": 0,
+      "y": 0
+    },
+    "kind": "write_back_ram",
+    "register_namespace": "per_cpu_register_files_disjoint_from_guest_memory",
+    "width_bits": 32
+  },
+  "observe": {
+    "excluded": [
+      "all registers and memory cells not listed above"
+    ],
+    "fields": [
+      "cpu0.eax",
+      "cpu1.ebx",
+      "mem.x",
+      "mem.y",
+      "mem.lock"
+    ]
+  },
+  "outcomes": {
+    "interleaving_instruction_atomic": {
+      "derived_by": "build_stage6_litmus.py/1",
+      "input_sha256": "19fab1bca8f077b6933263c57c20d8291aed2b30ebae6e3763e0dbbcf153bcce",
+      "state_count": 22,
+      "values": [
+        [
+          0,
+          1,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          0,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          0
+        ]
+      ]
+    },
+    "sc": {
+      "derived_by": "build_stage6_litmus.py/1",
+      "input_sha256": "19fab1bca8f077b6933263c57c20d8291aed2b30ebae6e3763e0dbbcf153bcce",
+      "state_count": 22,
+      "values": [
+        [
+          0,
+          1,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          0,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          0
+        ]
+      ]
+    },
+    "x86_tso": {
+      "derived_by": "build_stage6_litmus.py/1",
+      "input_sha256": "19fab1bca8f077b6933263c57c20d8291aed2b30ebae6e3763e0dbbcf153bcce",
+      "state_count": 31,
+      "values": [
+        [
+          0,
+          1,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          0,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          0
+        ]
+      ]
+    }
+  },
+  "schedule_metadata": {
+    "memory_touching_instructions_per_thread": [
+      3,
+      3
+    ],
+    "oracle_schedules": "exhaustive; no sampling",
+    "order_preserving_instruction_schedules": 20,
+    "runtime_interleaving": {
+      "exhaustive_schedule_threshold": 1000000,
+      "owner": "S6-19",
+      "policy_status": "measured_by_S6-05; runtime use and result recording belong to S6-19",
+      "sampling_seed_range_inclusive": [
+        0,
+        9999
+      ],
+      "seed_rule": "Python random.Random(seed) shuffles available instruction-step successors; deterministic by seed, not a confidence claim",
+      "status": "not_run_by_S6-05"
+    }
+  },
+  "schema": "od.smp-litmus.v1",
+  "sources": [
+    {
+      "author": "Intel",
+      "edition": "v093",
+      "section": "Vol. 3A, §8.2; instruction entries for MFENCE, XCHG, XADD, CMPXCHG",
+      "title": "Intel 64 and IA-32 Architectures Software Developer’s Manual",
+      "url": "https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html"
+    }
+  ],
+  "threads": [
+    {
+      "cpu": 0,
+      "initial_registers": {
+        "eax": 0,
+        "ebx": 0,
+        "ecx": 0,
+        "edx": 0
+      },
+      "instructions": [
+        {
+          "abstract_operation": "store",
+          "asm": "mov dword ptr [0x00001000], 1",
+          "bytes": "c7 04 25 00 10 00 00 01 00 00 00",
+          "instruction_boundary": true,
+          "length": 11,
+          "memory_events": [
+            {
+              "kind": "write",
+              "location": "x",
+              "value": 1
+            }
+          ],
+          "op": "store",
+          "operands": {
+            "address": "0x00001000",
+            "destination": "[x]",
+            "value": 1
+          }
+        },
+        {
+          "abstract_operation": "implicit_locked_rmw",
+          "asm": "xchg dword ptr [0x00001010], eax",
+          "atomic": true,
+          "bytes": "87 04 25 10 10 00 00",
+          "instruction_boundary": true,
+          "length": 7,
+          "memory_events": [
+            {
+              "kind": "atomic_xchg",
+              "location": "lock",
+              "register": "eax"
+            }
+          ],
+          "op": "implicit_locked_rmw",
+          "operands": {
+            "address": "0x00001010",
+            "implicit_lock": true,
+            "location": "[lock]",
+            "register": "eax"
+          }
+        },
+        {
+          "abstract_operation": "load",
+          "asm": "mov eax, dword ptr [0x00001004]",
+          "bytes": "8b 04 25 04 10 00 00",
+          "instruction_boundary": true,
+          "length": 7,
+          "memory_events": [
+            {
+              "kind": "read",
+              "location": "y",
+              "result": "eax"
+            }
+          ],
+          "op": "load",
+          "operands": {
+            "address": "0x00001004",
+            "destination": "eax",
+            "source": "[y]"
+          }
+        }
+      ]
+    },
+    {
+      "cpu": 1,
+      "initial_registers": {
+        "eax": 0,
+        "ebx": 0,
+        "ecx": 0,
+        "edx": 0
+      },
+      "instructions": [
+        {
+          "abstract_operation": "store",
+          "asm": "mov dword ptr [0x00001004], 1",
+          "bytes": "c7 04 25 04 10 00 00 01 00 00 00",
+          "instruction_boundary": true,
+          "length": 11,
+          "memory_events": [
+            {
+              "kind": "write",
+              "location": "y",
+              "value": 1
+            }
+          ],
+          "op": "store",
+          "operands": {
+            "address": "0x00001004",
+            "destination": "[y]",
+            "value": 1
+          }
+        },
+        {
+          "abstract_operation": "implicit_locked_rmw",
+          "asm": "xchg dword ptr [0x00001010], eax",
+          "atomic": true,
+          "bytes": "87 04 25 10 10 00 00",
+          "instruction_boundary": true,
+          "length": 7,
+          "memory_events": [
+            {
+              "kind": "atomic_xchg",
+              "location": "lock",
+              "register": "eax"
+            }
+          ],
+          "op": "implicit_locked_rmw",
+          "operands": {
+            "address": "0x00001010",
+            "implicit_lock": true,
+            "location": "[lock]",
+            "register": "eax"
+          }
+        },
+        {
+          "abstract_operation": "load",
+          "asm": "mov ebx, dword ptr [0x00001000]",
+          "bytes": "8b 1c 25 00 10 00 00",
+          "instruction_boundary": true,
+          "length": 7,
+          "memory_events": [
+            {
+              "kind": "read",
+              "location": "x",
+              "result": "ebx"
+            }
+          ],
+          "op": "load",
+          "operands": {
+            "address": "0x00001000",
+            "destination": "ebx",
+            "source": "[x]"
+          }
+        }
+      ]
+    }
+  ]
+}
