@@ -86,6 +86,11 @@ fn missing_and_foreign_inputs_never_start_the_guest_and_repeat_identically() {
         (&false.into(), &0.into())
     );
     assert!(value.get("stop").is_none());
+    // Unreadable input is still a result of `evaluate`: the evidence file is written and is the
+    // document that was printed (only bad arguments leave no file, see the test above).
+    let written: Value =
+        serde_json::from_str(&std::fs::read_to_string(scratch.path("out.json")).unwrap()).unwrap();
+    assert_eq!(written, value);
 
     // A kernel whose hash is not the pinned one: refused, exit 4, still no guest.
     std::fs::write(scratch.path("vmlinuz"), b"not a kernel").unwrap();

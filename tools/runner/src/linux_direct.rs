@@ -2989,34 +2989,88 @@ mod tests {
             args.extend(extra.iter().map(|s| s.to_string()));
             args
         };
+        // Positive control: the base arguments parse, and the pipeline then reaches the files
+        // (the unreadable kernel is a stage after `parse`, so `parse` accepted everything else).
+        let good = parse(&base(&["--run", "--budget", "1"])).unwrap();
+        assert_eq!(good.budget, Some(1));
+        let (value, exit) = evaluate(&good);
+        assert_eq!(exit, 3, "{value:#}");
+        assert_eq!(code_of(&value), ("invalid_input", "vmlinuz_file"));
+        assert!(
+            parse(&base(&[
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--cpuid-profile",
+                "stage4a",
+                "--user-mode"
+            ]))
+            .unwrap()
+            .user_mode
+        );
+
         let set_run = ["--run", "--budget", "1", "--set-cpl0"];
-        for extra in [
-            [&set_run[..], &["--cpuid-profile", "nope"]].concat(),
-            [
-                &set_run[..],
-                &["--cpuid-profile", "diagnostic", "--user-mode"],
-            ]
-            .concat(),
-            vec!["--run", "--budget", "1", "--user-mode"],
-            vec!["--run", "--budget", "1", "--nonce", "again"],
-            vec!["--run"],
-        ] {
+        let user_mode_needs = "--user-mode needs --run, --set-cpl0 and --cpuid-profile stage4a";
+        let cases: [(Vec<&str>, &str); 7] = [
+            // Unknown profile name.
+            (
+                [&set_run[..], &["--cpuid-profile", "nope"]].concat(),
+                "invalid --cpuid-profile 'nope'",
+            ),
+            // `--user-mode` with the diagnostic profile: the `profile != stage4a` branch.
+            (
+                [
+                    &set_run[..],
+                    &["--cpuid-profile", "diagnostic", "--user-mode"],
+                ]
+                .concat(),
+                user_mode_needs,
+            ),
+            // `--user-mode` without `--set-cpl0` and without a profile: the default profile is
+            // diagnostic, so it is the same `profile != stage4a` branch.
+            (
+                vec!["--run", "--budget", "1", "--user-mode"],
+                user_mode_needs,
+            ),
+            // A profile without `--set-cpl0` is refused first, by its own branch.
+            (
+                vec![
+                    "--run",
+                    "--budget",
+                    "1",
+                    "--cpuid-profile",
+                    "stage4a",
+                    "--user-mode",
+                ],
+                "--cpuid-profile needs --run and --set-cpl0",
+            ),
+            // A duplicated `--nonce` (the base already has one).
+            (
+                vec!["--run", "--budget", "1", "--nonce", "again"],
+                "duplicate option --nonce",
+            ),
+            // `--run` without a budget.
+            (vec!["--run"], "--run needs --budget"),
+            // A trailing flag without a value.
+            (
+                vec!["--run", "--budget", "1", "--nonce"],
+                "флаг --nonce требует значение",
+            ),
+        ];
+        let exit_3 = format!("{:?}", ExitCode::from(3));
+        for (extra, message) in cases {
             let args = base(&extra);
-            assert!(parse(&args).is_err(), "{extra:?}");
-            assert_eq!(
-                format!("{:?}", run(&args)),
-                format!("{:?}", ExitCode::from(3)),
-                "{extra:?}"
-            );
+            let error = parse(&args).unwrap_err();
+            assert!(error.contains(message), "{extra:?}: {error}");
+            assert_eq!(format!("{:?}", run(&args)), exit_3, "{extra:?}");
         }
-        // A bad nonce in the base arguments is also exit 3.
+        // The malformed nonce `a b` is a case of its own: it replaces the base nonce.
         let mut args = base(&["--run", "--budget", "1"]);
         let at = args.iter().position(|a| a == "--nonce").unwrap() + 1;
         args[at] = "a b".to_string();
-        assert_eq!(
-            format!("{:?}", run(&args)),
-            format!("{:?}", ExitCode::from(3))
-        );
+        assert!(parse(&args).unwrap_err().starts_with("invalid --nonce"));
+        assert_eq!(format!("{:?}", run(&args)), exit_3);
         // Nothing was written to `--out` (there is no evidence file for a bad argument).
         assert!(!std::path::Path::new(&out).exists());
     }
@@ -3085,11 +3139,6 @@ mod tests {
         assert_eq!(first.0["stop"]["exit_kind"], "user_mode_fault");
         assert_eq!(first.0["stop"]["retired"], 13);
         assert_eq!(first, second);
-        // Same bytes on disk, same serialized evidence: the hash of the text is the run identity.
-        assert_eq!(
-            sha256_hex(format!("{:#}", first.0).as_bytes()),
-            sha256_hex(format!("{:#}", second.0).as_bytes())
-        );
     }
 
     #[test]
@@ -3116,7 +3165,8 @@ mod tests {
     #[test]
     fn lifecycle_budget_slices_continue_the_same_board_like_one_run() {
         // The Linux board has no pause/resume API; a budget stop followed by another call is the
-        // closest thing, and it must leave CPU, RAM and devices unchanged between the calls.
+        // closest thing (there is no asynchronous pause from outside). The slices are compared with
+        // the whole run by `rip`, `gpr`, `rflags` and COM1; guest RAM is not compared.
         let whole = run_slices(&COM1_X, &[100], false);
         let sliced = run_slices(&COM1_X, &[2, 100], false);
         assert_eq!(whole[0].exit_kind, "halted");
