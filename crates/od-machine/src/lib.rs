@@ -37,6 +37,7 @@ mod pic_8259;
 mod pio_step;
 mod pit_8254;
 mod pit_ioapic_irq_source;
+mod pit_pic_irq_source;
 mod stage4_alias_probe;
 mod stage4_cpl3_syscall_probe;
 mod stage4_cr3_mixed_probe;
@@ -59,6 +60,7 @@ mod stage4_uart_irq_probe;
 #[cfg(feature = "experimental-translation-probe-cache")]
 mod translation_probe_cache;
 mod uart16550;
+mod uart_pic_irq_source;
 mod uart_rx_events;
 mod virtual_clock;
 

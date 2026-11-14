@@ -151,6 +151,12 @@ pub fn next_out0_rising_tick(channel: &PitChannelSnapshot, after_tick: u64) -> O
             let edge = run.start_tick + u64::from(run.reload);
             (edge > after_tick).then_some(edge)
         }
+        PitMode::SoftwareStrobe => {
+            // OUT is low for the one tick `start + reload` and rises one tick later; a single
+            // edge per count (S4-39g2).
+            let edge = run.start_tick + u64::from(run.reload) + 1;
+            (edge > after_tick).then_some(edge)
+        }
         PitMode::RateGenerator => {
             let PitRun {
                 reload,
@@ -658,6 +664,19 @@ mod tests {
         );
         assert_eq!(
             next_out0_rising_tick(&PitChannelSnapshot::default(), 0),
+            None
+        );
+    }
+
+    #[test]
+    fn mode4_has_one_edge_one_tick_after_the_strobe_and_no_count_has_none() {
+        // Count 50 loaded at tick 10: OUT low at tick 60, rising at tick 61 (S4-39g2).
+        let ch = channel(PitMode::SoftwareStrobe, run(50, 10, None));
+        assert_eq!(next_out0_rising_tick(&ch, 10), Some(61));
+        assert_eq!(next_out0_rising_tick(&ch, 60), Some(61));
+        assert_eq!(next_out0_rising_tick(&ch, 61), None);
+        assert_eq!(
+            next_out0_rising_tick(&channel(PitMode::SoftwareStrobe, None), 0),
             None
         );
     }

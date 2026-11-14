@@ -1,22 +1,33 @@
 //! Minimal pair of 8259A interrupt controllers (S4-29a): master on ports
 //! `0x20/0x21`, slave on `0xA0/0xA1`.
 //!
-//! The pair has no input lines and no `INTR` output: it delivers nothing. It
-//! exists so that a Linux guest can run `probe_8259A` (write `IMR`, read it
-//! back) and `init_8259A` (ICW1..ICW4) without a bus error. Everything the
+//! The pair exists so that a Linux guest can run `probe_8259A` (write `IMR`, read
+//! it back) and `init_8259A` (ICW1..ICW4) without a bus error. Everything the
 //! guest can configure is either stored (`IMR`, the register select of OCW3) or
-//! accepted without effect (OCW2). Configurations the model cannot honour are
-//! refused with [`DeviceError`] before any state changes.
+//! accepted without effect (rotation, set priority). Configurations the model
+//! cannot honour are refused with [`DeviceError`] before any state changes.
+//!
+//! S4-39g: the master chip has an IRR and an ISR. A board source raises an
+//! edge on an input line ([`Pic8259Handle::raise_irq`]: IRR bit, latched even
+//! when the line is masked); [`Pic8259Handle::pending_vector`] is the `INTR`
+//! output (the highest-priority unmasked request that no equal or higher
+//! priority line has in service, fixed priority, IR0 highest, vector = ICW2 + line);
+//! [`Pic8259Handle::acknowledge`] is the INTA cycle (IRR bit -> ISR bit, with
+//! AEOI no ISR bit); OCW2 non-specific (`0x20`) and specific (`0x60 | n`) EOI
+//! (and their rotate forms, with the rotation ignored) clear ISR bits; OCW3 reads
+//! return IRR or ISR. The slave chip and the cascade input IR2 are not driven
+//! (no source raises a slave line); priority rotation, special mask mode, level
+//! trigger and the poll command are not modelled.
 //!
 //! Accepted initialisation (what Linux writes in `init_8259A`, 8086 mode, normal
 //! EOI): ICW1 `0x11` (bits 7:5 and bit 2 are ignored in 8086 mode), ICW2 equal
 //! to [`isa_irq_vector`] of the chip (master `0x30`, slave `0x38`), ICW3 `0x04`
 //! on the master and `0x02` on the slave, ICW4 `0x01`. The master also
 //! accepts ICW4 `0x03` (AEOI, S4-29a2; Linux `check_timer`): the flag is stored
-//! and has no effect, the slave refuses it. Single mode, level
+//! and, since S4-39g, an INTA cycle then sets no ISR bit; the slave refuses it. Single mode, level
 //! trigger, special fully nested mode, buffered mode and the MCS-80 mode are
-//! refused. ExtINT/LINT0 delivery, IRQ lines and the poll command are not part
-//! of this model. ELCR (`0x4D0/0x4D1`, S4-38L7bs) is a separate two-port device
+//! refused. ExtINT/LINT0 delivery, the slave's input lines, the cascade and the poll command are
+//! not part of this model (the master's lines are driven since S4-39g, see above). ELCR (`0x4D0/0x4D1`, S4-38L7bs) is a separate two-port device
 //! ([`Pic8259Elcr`]) whose two bytes are only stored and read back under the
 //! masks `0xF8` (master) and `0xDE` (slave), the standard PIIX-compatible layout
 //! from memory, not checked against the primary source.
@@ -53,7 +64,7 @@ pub const PIC_SLAVE_ICW3: u8 = 2;
 pub const PIC_ICW1_ACCEPTED: u8 = 0x11;
 /// The ICW4 accepted by both chips: 8086 mode, normal EOI, not buffered, not SFNM.
 pub const PIC_ICW4_ACCEPTED: u8 = 0x01;
-/// ICW4 with AEOI (S4-29a2): accepted by the master only, stored without effect.
+/// ICW4 with AEOI (S4-29a2): accepted by the master only; with it an INTA cycle sets no ISR bit (S4-39g).
 pub const PIC_ICW4_MASTER_AEOI: u8 = 0x03;
 
 const ICW1_IC4: u8 = 1 << 0;
@@ -73,6 +84,8 @@ const OCW3_POLL: u8 = 1 << 2;
 const OCW3_SMM: u8 = 1 << 5;
 const OCW3_ESMM: u8 = 1 << 6;
 const OCW3_BIT7: u8 = 1 << 7;
+const OCW2_SPECIFIC: u8 = 1 << 6;
+const OCW2_EOI: u8 = 1 << 5;
 
 /// First port of the ELCR pair: `0x4D0` master (IRQ0..7), `0x4D1` slave (IRQ8..15).
 pub const PIC_ELCR_BASE_PORT: u16 = 0x4D0;
@@ -145,9 +158,13 @@ pub struct Pic8259Snapshot {
     pub icw3: Option<u8>,
     /// OCW3 read-register select: `true` reads ISR, `false` reads IRR.
     pub read_isr: bool,
-    /// ICW4 AEOI bit (S4-29a2): accepted on the master only and stored as a
-    /// flag. It has no effect: the pair has no `INTR` output and no ISR.
+    /// ICW4 AEOI bit (S4-29a2): accepted on the master only. S4-39g: with it
+    /// an INTA cycle ([`Pic8259Handle::acknowledge`]) sets no ISR bit.
     pub aeoi: bool,
+    /// Interrupt request register (S4-39g): edges latched by `raise_irq`.
+    pub irr: u8,
+    /// In-service register (S4-39g): set by INTA, cleared by EOI.
+    pub isr: u8,
 }
 
 impl Pic8259Snapshot {
@@ -158,6 +175,8 @@ impl Pic8259Snapshot {
         icw3: None,
         read_isr: false,
         aeoi: false,
+        irr: 0,
+        isr: 0,
     };
 }
 
@@ -170,6 +189,70 @@ pub struct Pic8259Handle {
 impl Pic8259Handle {
     pub fn snapshot(&self) -> Pic8259Snapshot {
         *self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// An edge on input line `line` (`0..8`): the IRR bit is set whether or not the line is
+    /// masked (a set bit stays set: edges coalesce). S4-39g.
+    pub fn raise_irq(&self, line: u8) {
+        assert!(line < 8, "a chip has eight input lines");
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.irr |= 1 << line;
+    }
+
+    /// The input line of the highest-priority request that can be delivered: unmasked, in IRR,
+    /// and not blocked by an in-service line of the same or a higher priority (fixed priority,
+    /// IR0 highest). `None` before the chip is initialised (no vector base).
+    fn deliverable_line(state: &Pic8259Snapshot) -> Option<u8> {
+        if state.phase != Pic8259InitPhase::Initialized || state.icw2.is_none() {
+            return None;
+        }
+        let requests = state.irr & !state.imr;
+        (0..8u8)
+            .find_map(|line| {
+                let bit = 1u8 << line;
+                if state.isr & bit != 0 {
+                    // The lines after an in-service one have a lower priority: blocked.
+                    return Some(None);
+                }
+                (requests & bit != 0).then_some(Some(line))
+            })
+            .flatten()
+    }
+
+    /// The vector of the `INTR` output now (`ICW2 + line`), without acknowledging it. S4-39g.
+    pub fn pending_vector(&self) -> Option<u8> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let line = Self::deliverable_line(&state)?;
+        Some(state.icw2?.wrapping_add(line))
+    }
+
+    /// Whether an edge on `line` raised now would be delivered at once (the chip is initialised,
+    /// the line is unmasked and no line of the same or a higher priority is in service, and no
+    /// higher-priority request is waiting that would be delivered first). S4-39g.
+    pub fn would_deliver(&self, line: u8) -> bool {
+        assert!(line < 8, "a chip has eight input lines");
+        let mut state = *self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.irr |= 1 << line;
+        Self::deliverable_line(&state) == Some(line)
+    }
+
+    /// The INTA cycle for `vector`: `true` only when `vector` is the one `pending_vector`
+    /// gives. The IRR bit is cleared and, without AEOI, the ISR bit is set. `false` changes
+    /// nothing. S4-39g.
+    pub fn acknowledge(&self, vector: u8) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(line) = Self::deliverable_line(&state) else {
+            return false;
+        };
+        if state.icw2.map(|base| base.wrapping_add(line)) != Some(vector) {
+            return false;
+        }
+        let bit = 1u8 << line;
+        state.irr &= !bit;
+        if !state.aeoi {
+            state.isr |= bit;
+        }
+        true
     }
 }
 
@@ -321,6 +404,8 @@ impl Pic8259 {
                 icw3: None,
                 read_isr: false,
                 aeoi: false,
+                irr: 0,
+                isr: 0,
             };
             return Ok(());
         }
@@ -339,8 +424,21 @@ impl Pic8259 {
             }
             return Ok(());
         }
-        // OCW2 (EOI, rotate, set priority): no interrupt is in service, no effect.
+        // OCW2. Bits 7:5 are R, SL, EOI; bits 2:0 the line of a specific command.
         debug_assert_eq!(value & OCW_SELECT_MASK, 0);
+        if value & OCW2_EOI != 0 {
+            let line = if value & OCW2_SPECIFIC != 0 {
+                // Specific EOI (also the rotate form; the rotation is ignored).
+                value & 7
+            } else if let Some(line) = (0..8u8).find(|line| state.isr & (1 << line) != 0) {
+                // Non-specific EOI: the highest-priority line in service.
+                line
+            } else {
+                return Ok(());
+            };
+            state.isr &= !(1 << line);
+        }
+        // Rotation, set priority and no-operation forms: no effect (priority stays fixed).
         Ok(())
     }
 
@@ -367,7 +465,7 @@ impl Pic8259 {
                 }
                 // S4-29a2: Linux `check_timer` runs `init_8259A(1)`, which writes
                 // ICW4 `0x03` (AEOI) to the master and `0x01` to the slave. AEOI
-                // is stored on the master and has no effect; the slave refuses it.
+                // is stored on the master (an INTA then sets no ISR bit); the slave refuses it.
                 let aeoi = value & ICW4_AEOI != 0;
                 if aeoi && self.role != Pic8259Role::Master {
                     return Err(DeviceError::UnsupportedConfiguration);
@@ -391,8 +489,13 @@ impl BusDevice for Pic8259 {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             return Ok(u64::from(state.imr));
         }
-        // IRR or ISR, selected by OCW3. No line and no service state exist.
-        Ok(0)
+        // IRR or ISR, selected by OCW3.
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(u64::from(if state.read_isr {
+            state.isr
+        } else {
+            state.irr
+        }))
     }
 
     fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
@@ -411,6 +514,9 @@ impl BusDevice for Pic8259 {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod irq_tests;
 
 #[cfg(test)]
 mod tests {
@@ -468,6 +574,8 @@ mod tests {
                     icw3: None,
                     read_isr: false,
                     aeoi: false,
+                    irr: 0,
+                    isr: 0,
                 },
                 "{role:?}"
             );

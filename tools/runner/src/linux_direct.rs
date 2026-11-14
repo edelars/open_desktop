@@ -333,13 +333,17 @@ fn evaluate(options: &Options) -> (Value, u8) {
 /// The marker follows the request of the flag, not its effect.
 ///
 /// S4-38L9a: with `--cpuid-profile stage4a` the CPUID boundary is off by the profile (it declares
-/// a subset of the target: TSC, since S4-38L9d also FPU and FXSR) and the result is not counted either: `acceptance` is
-/// `diagnostic_not_counted` and `cpuid_profile` says `X8664V1Stage4A` (the key is absent for the
-/// default profile, so its evidence is unchanged). `diagnostic_past_c7` still follows its flag.
+/// a subset of the target: TSC, since S4-38L9d also FPU and FXSR) and `cpuid_profile` says
+/// `X8664V1Stage4A` (the key is absent for the default profile, so its evidence is unchanged).
+/// `diagnostic_past_c7` still follows its flag.
+///
+/// S4-39j: the profile alone no longer makes the result not counted. Stage4a is the counted
+/// profile of the plan: `acceptance` is `counted` without `--diagnostic-past-c7` for both
+/// profiles and `diagnostic_not_counted` with it; the board and `exit_kind` do not depend on it.
 fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool, cpuid_profile: CpuidProfile) {
     let subset = cpuid_profile != CpuidProfile::DiagnosticV1;
     evidence["diagnostic_past_c7"] = json!(diagnostic_past_c7);
-    evidence["acceptance"] = json!(if diagnostic_past_c7 || subset {
+    evidence["acceptance"] = json!(if diagnostic_past_c7 {
         "diagnostic_not_counted"
     } else {
         "counted"
@@ -365,8 +369,12 @@ fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool, cpuid_profile
         });
     }
     if !parts.is_empty() {
-        evidence["diagnostic_note"] =
-            json!(format!("{}; the result is NOT counted", parts.join("; ")));
+        let verdict = if diagnostic_past_c7 {
+            "the result is NOT counted"
+        } else {
+            "the result is counted (stage4a is the counted profile)"
+        };
+        evidence["diagnostic_note"] = json!(format!("{}; {verdict}", parts.join("; ")));
     }
 }
 
@@ -674,6 +682,9 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
     stop["irq_refused_masked"] = json!(record.irq_refused_masked);
     stop["irq_refused_shadow"] = json!(record.irq_refused_shadow);
     stop["quantum_cut_by_deadline"] = json!(record.quantum_cut_by_deadline);
+    // S4-39g: the wake of a CPU halted by HLT (IF = 1) by the PIT -> 8259 source.
+    stop["halt_wakes"] = json!(record.halt_wakes);
+    stop["halt_idle_ns"] = json!(record.halt_idle_ns);
     // S4-38L7f: the guest-visible IA32_EFER (`efer` is the walker's); set apart from the
     // literal above to stay under the `json!` macro recursion limit.
     stop["guest_efer"] = json!(hex64(record.guest_efer));
@@ -1645,6 +1656,8 @@ mod tests {
             "irq_refused_masked",
             "irq_refused_shadow",
             "quantum_cut_by_deadline",
+            "halt_wakes",
+            "halt_idle_ns",
         ] {
             assert_eq!(stop[counter], 0, "{counter}");
         }
@@ -2342,7 +2355,7 @@ mod tests {
     }
 
     #[test]
-    fn stage4a_runs_leaf_1_without_the_c7_stop_and_marks_the_result_not_counted() {
+    fn stage4a_runs_leaf_1_without_the_c7_stop_and_marks_the_result_counted() {
         // CLI; MOV EAX, 1; CPUID; HLT, no --diagnostic-past-c7.
         let code = [0xFA, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x0F, 0xA2, 0xF4];
         let mut case = Case::new(
@@ -2369,8 +2382,8 @@ mod tests {
             stop["retired"], 3,
             "CLI, MOV, CPUID; HLT is outside the set"
         );
-        // The profile is a subset of the target: not counted; the flag itself follows the request.
-        assert_eq!(value["acceptance"], "diagnostic_not_counted", "{value:#}");
+        // S4-39j: stage4a without --diagnostic-past-c7 is counted; the flag follows the request.
+        assert_eq!(value["acceptance"], "counted", "{value:#}");
         assert_eq!(value["cpuid_profile"], "X8664V1Stage4A");
         assert_eq!(value["diagnostic_past_c7"], false);
         assert_eq!(stop["diagnostic_past_c7"], false);
@@ -2575,9 +2588,33 @@ mod tests {
         assert!(both.contains("NOT counted"), "{both}");
         let subset = note(false, CpuidProfile::X8664V1Stage4A).expect("note");
         assert!(subset.contains("subset") && !subset.contains("--diagnostic-past-c7"));
+        assert!(
+            subset.contains("is counted") && !subset.contains("NOT counted"),
+            "{subset}"
+        );
         let diag = note(true, CpuidProfile::DiagnosticV1).expect("note");
         assert!(diag.contains("DiagnosticV1 answers CPUID leaf 1"), "{diag}");
         assert_eq!(note(false, CpuidProfile::DiagnosticV1), None);
+    }
+
+    #[test]
+    fn acceptance_is_counted_for_both_profiles_without_the_flag_and_not_with_it() {
+        let acceptance = |past_c7: bool, profile: CpuidProfile| {
+            let mut evidence = json!({});
+            mark_acceptance(&mut evidence, past_c7, profile);
+            evidence["acceptance"].as_str().unwrap().to_string()
+        };
+        assert_eq!(acceptance(false, CpuidProfile::X8664V1Stage4A), "counted");
+        assert_eq!(
+            acceptance(true, CpuidProfile::X8664V1Stage4A),
+            "diagnostic_not_counted"
+        );
+        // The default profile keeps its earlier marking: counted without the flag, not with it.
+        assert_eq!(acceptance(false, CpuidProfile::DiagnosticV1), "counted");
+        assert_eq!(
+            acceptance(true, CpuidProfile::DiagnosticV1),
+            "diagnostic_not_counted"
+        );
     }
 
     #[test]

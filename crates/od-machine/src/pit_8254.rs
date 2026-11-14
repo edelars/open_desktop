@@ -22,7 +22,19 @@
 //!   (`1..=N`), `OUT` is high except for one input tick, when the counter is
 //!   `1` (`p = N - 1`), just before the reload.
 //!
-//! Only binary counting, modes 0 and 2, channels 0 and 2, access modes
+//! * Mode 4 (software triggered strobe, S4-39g2; channel 0 only, and only after
+//!   [`Pit8254Handle::enable_software_strobe`]): the control word leaves `OUT` high
+//!   with no count; a completed count starts counting at its tick (the same
+//!   convention as mode 0: the extra clock of the chip before loading is not
+//!   modelled), the counter reads `(N - e) mod 65536`, `OUT` is low only for the one
+//!   tick `e = N` and high otherwise (it does not strobe again after the counter
+//!   wraps). The first byte of an LSB+MSB count does not stop a count in progress
+//!   (mode 0 does stop); the second byte replaces the count and restarts it. The
+//!   facts of the mode are the 8254 datasheet read from memory, not re-checked
+//!   against the primary source.
+//!
+//! Only binary counting, modes 0 and 2 (mode 4 on channel 0 under the user-mode
+//! board), channels 0 and 2, access modes
 //! LSB/MSB/LSB+MSB, counter latch and the channel 0 read-back command are
 //! modelled. A control word with BCD, another mode, channel 1 or any other
 //! read-back command is refused with [`DeviceError::UnsupportedConfiguration`]
@@ -179,6 +191,10 @@ pub enum PitMode {
     TerminalCount,
     /// Mode 2: rate generator.
     RateGenerator,
+    /// Mode 4: software triggered strobe (S4-39g2). Channel 0 only, and only after
+    /// [`Pit8254Handle::enable_software_strobe`] (the user-mode board); never programmed
+    /// otherwise.
+    SoftwareStrobe,
 }
 
 /// Read/write access mode (`RW1:RW0` of the control word).
@@ -307,7 +323,11 @@ impl PitChannelSnapshot {
     fn out(&self, tick: u64) -> bool {
         match (self.mode, self.segment(tick)) {
             (None, _) | (Some(PitMode::TerminalCount), None) => false,
-            (Some(PitMode::RateGenerator), None) => true,
+            (Some(PitMode::RateGenerator | PitMode::SoftwareStrobe), None) => true,
+            (Some(PitMode::SoftwareStrobe), Some((reload, start))) => {
+                // The strobe: low for the one tick where the counter reads zero.
+                tick - start != u64::from(reload)
+            }
             (Some(PitMode::TerminalCount), Some((reload, start))) => {
                 tick - start >= u64::from(reload)
             }
@@ -325,7 +345,9 @@ impl PitChannelSnapshot {
         let (reload, start) = self.segment(tick)?;
         let e = tick - start;
         Some(match self.mode? {
-            PitMode::TerminalCount => (u64::from(reload).wrapping_sub(e) & 0xFFFF) as u16,
+            PitMode::TerminalCount | PitMode::SoftwareStrobe => {
+                (u64::from(reload).wrapping_sub(e) & 0xFFFF) as u16
+            }
             PitMode::RateGenerator => (u64::from(reload) - e % u64::from(reload)) as u16,
         })
     }
@@ -355,6 +377,7 @@ impl PitChannelSnapshot {
         let mode_bits = match mode {
             PitMode::TerminalCount => 0b000,
             PitMode::RateGenerator => 0b010,
+            PitMode::SoftwareStrobe => 0b100,
         };
         Some(
             u8::from(self.out(tick)) << 7
@@ -392,7 +415,7 @@ impl PitChannelSnapshot {
 
     fn complete(&mut self, mode: PitMode, reload: u32, tick: u64) -> Result<(), DeviceError> {
         match mode {
-            PitMode::TerminalCount => {
+            PitMode::TerminalCount | PitMode::SoftwareStrobe => {
                 self.run = Some(PitRun {
                     reload,
                     start_tick: tick,
@@ -497,7 +520,7 @@ impl PitSnapshot {
     }
 
     /// The control word at port `0x43`, validated completely before it applies.
-    fn write_control(&mut self, word: u8, tick: u64) -> Result<(), DeviceError> {
+    fn write_control(&mut self, word: u8, tick: u64, strobe: bool) -> Result<(), DeviceError> {
         let channel = match word >> 6 {
             0 => PitChannel::Channel0,
             2 => PitChannel::Channel2,
@@ -535,6 +558,8 @@ impl PitSnapshot {
         let mode = match (word >> 1) & 7 {
             0 => PitMode::TerminalCount,
             2 => PitMode::RateGenerator,
+            // Mode 4 (S4-39g2): channel 0, and only when the board enabled it.
+            4 if strobe && channel == PitChannel::Channel0 => PitMode::SoftwareStrobe,
             _ => return Err(DeviceError::UnsupportedConfiguration),
         };
         // A control word resets the channel: no count, no latch, flip-flops cleared.
@@ -623,6 +648,9 @@ struct Shared {
     port_tick: Mutex<PortTick>,
     /// Whether a channel 2 counter read queues a port tick (S4-37a3).
     counter_tick: AtomicBool,
+    /// Whether a channel 0 control word for mode 4 is accepted (S4-39g2). Off unless the
+    /// user-mode board turns it on; not cleared by a machine reset (board configuration).
+    software_strobe: AtomicBool,
     clock: VirtualClockHandle,
 }
 
@@ -688,6 +716,14 @@ impl Pit8254Handle {
         self.shared.counter_tick.store(enabled, Ordering::Relaxed);
     }
 
+    /// S4-39g2: accepts a channel 0 control word for mode 4 (software triggered strobe) from
+    /// now on. Called by the user-mode run of the Linux board only; without it the word stays
+    /// refused with [`DeviceError::UnsupportedConfiguration`], as before. A machine reset does
+    /// not switch it off.
+    pub(crate) fn enable_software_strobe(&self) {
+        self.shared.software_strobe.store(true, Ordering::Relaxed);
+    }
+
     /// Takes the virtual time queued by port B reads and, when enabled, by
     /// channel 2 counter reads (the port tick), leaving zero. The clock owner
     /// advances its clock by the returned amount.
@@ -741,6 +777,7 @@ impl Pit8254Devices {
             state: Mutex::new(PitSnapshot::default()),
             port_tick: Mutex::new(PortTick::default()),
             counter_tick: AtomicBool::new(counter_tick),
+            software_strobe: AtomicBool::new(false),
             clock,
         });
         Self {
@@ -815,7 +852,11 @@ impl BusDevice for Pit8254 {
                     .write_data(byte, tick)?
             }
             1 => return Err(DeviceError::UnsupportedConfiguration),
-            _ => next.write_control(byte, tick)?,
+            _ => next.write_control(
+                byte,
+                tick,
+                self.shared.software_strobe.load(Ordering::Relaxed),
+            )?,
         }
         *state = next;
         Ok(())

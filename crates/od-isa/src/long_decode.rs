@@ -1049,8 +1049,10 @@ pub enum Operation {
     /// S4-38L7bi: `F0 [REX] 0F BA /5 ib` (LOCK BTS m32, imm8, or m64, imm8 with REX.W), memory
     /// destination only. The bit index is `bit` modulo the operand width (the immediate never
     /// selects another element); executed only in the CPL0 set, and the destination is always
-    /// written back.
-    LockBtsMemImm {
+    /// written back. S4-39g1: also `F0 [REX] 0F BA /6 ib` (LOCK BTR, `kind` = `BitKind::Reset`);
+    /// only BTS (`Set`) and BTR (`Reset`) are ever decoded.
+    LockBitMemImm {
+        kind: BitKind,
         destination: MemoryOperand,
         bit: u8,
     },
@@ -2566,7 +2568,7 @@ impl Instruction {
             },
             // S4-38L7n/S4-38L7t: as the plain BTS/BTR (`Operation::Bit`): CF defined, OF/SF/AF/PF
             // undefined (and left unchanged by the executor), ZF not affected.
-            Operation::LockBitMem { .. } | Operation::LockBtsMemImm { .. } => FlagEffects {
+            Operation::LockBitMem { .. } | Operation::LockBitMemImm { .. } => FlagEffects {
                 defined: crate::CF,
                 undefined: crate::PF | crate::AF | crate::SF | crate::OF,
             },
@@ -9025,17 +9027,22 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 if prefixes.group1 == Some(0xf0) {
-                    // S4-38L7bi: LOCK is admitted for the memory BTS (/5) alone, as the dword and
-                    // qword (REX.W) forms. BT/BTR/BTC (/4, /6, /7), the register form, 0x66, 0x67,
-                    // a segment prefix and a REX byte that is not immediately before the opcode
-                    // keep the refusal with this opcode. Repeated LOCK/REP prefixes are refused by
-                    // the shared check above.
+                    // S4-38L7bi: LOCK is admitted for the memory BTS (/5), as the dword and
+                    // qword (REX.W) forms. S4-39g1: and for the memory BTR (/6) alone. BT/BTC
+                    // (/4, /7), the register form (LOCK with a register operand is #UD in the
+                    // SDM), 0x66, 0x67, a segment prefix and a REX byte that is not immediately
+                    // before the opcode keep the refusal with this opcode. Repeated LOCK/REP
+                    // prefixes are refused by the shared check above.
                     let stale_rex = prefix_bytes[..prefix_count]
                         .iter()
                         .enumerate()
                         .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
-                    if (modrm >> 3) & 7 != 5
-                        || modrm >> 6 == 3
+                    let kind = match (modrm >> 3) & 7 {
+                        5 => BitKind::Set,
+                        6 => BitKind::Reset,
+                        _ => return Err(self.unsupported(opcode)),
+                    };
+                    if modrm >> 6 == 3
                         || stale_rex
                         || !matches!(size, OperandSize::Dword | OperandSize::Qword)
                         || prefixes.operand_override
@@ -9055,7 +9062,11 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         prefixes,
                         operand_size: size,
                         address_size: OperandSize::Qword,
-                        operation: Operation::LockBtsMemImm { destination, bit },
+                        operation: Operation::LockBitMemImm {
+                            kind,
+                            destination,
+                            bit,
+                        },
                     });
                 }
                 let dst = self.rm_operand(modrm, prefixes, size)?;
@@ -26912,7 +26923,7 @@ mod tests {
         );
         assert!(matches!(
             decoded.operation,
-            Operation::LockBtsMemImm { destination, bit: 0 }
+            Operation::LockBitMemImm { kind: BitKind::Set, destination, bit: 0 }
                 if destination.base == AddressBase::Register(Register::R12)
                     && destination.size == OperandSize::Qword
         ));
@@ -26922,16 +26933,21 @@ mod tests {
         assert_eq!(decoded.length, 9);
         assert!(matches!(
             decoded.operation,
-            Operation::LockBtsMemImm { destination, bit: 0x45 }
+            Operation::LockBitMemImm { kind: BitKind::Set, destination, bit: 0x45 }
                 if destination.size == OperandSize::Dword
         ));
-        // BT, BTR, BTC, the register form, 0x66, 0x67, a segment prefix and a stale REX are
-        // refused with the same opcode.
+        // BT, BTC, the register form, 0x66, 0x67, a segment prefix and a stale REX are refused
+        // with the same opcode (the memory BTR `/6` is S4-39g1, see the next test).
         for bytes in [
             &[0xf0, 0x48, 0x0f, 0xba, 0x23, 0x05][..],
-            &[0xf0, 0x48, 0x0f, 0xba, 0x33, 0x05][..],
             &[0xf0, 0x48, 0x0f, 0xba, 0x3b, 0x05][..],
             &[0xf0, 0x48, 0x0f, 0xba, 0xeb, 0x05][..],
+            &[0xf0, 0x48, 0x0f, 0xba, 0xf3, 0x05][..], // LOCK BTR with a register operand
+            &[0xf0, 0x66, 0x0f, 0xba, 0x33, 0x05][..],
+            &[0xf0, 0x67, 0x0f, 0xba, 0x33, 0x05][..],
+            &[0xf0, 0x65, 0x0f, 0xba, 0x33, 0x05][..],
+            &[0xf0, 0x48, 0x66, 0x0f, 0xba, 0x33, 0x05][..],
+            &[0xf3, 0x0f, 0xba, 0x33, 0x05][..],
             &[0xf0, 0x66, 0x0f, 0xba, 0x2b, 0x05][..],
             &[0xf0, 0x67, 0x0f, 0xba, 0x2b, 0x05][..],
             &[0xf0, 0x65, 0x0f, 0xba, 0x2b, 0x05][..],
@@ -26954,6 +26970,46 @@ mod tests {
             Operation::Bit {
                 kind: BitKind::Set,
                 offset: BitOffset::Immediate(5),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn lock_btr_imm_decodes_the_memory_form() {
+        // S4-39g1: the diagnostic boundary `lock btrq $0x0, 0xe0(%rax)`.
+        let mut memory = Memory::new(&[0xf0, 0x48, 0x0f, 0xba, 0xb0, 0xe0, 0, 0, 0, 0x00]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 10);
+        assert_eq!(decoded.operand_size, OperandSize::Qword);
+        assert_eq!(decoded.flag_effects().defined, crate::CF);
+        assert_eq!(
+            decoded.flag_effects().undefined,
+            crate::PF | crate::AF | crate::SF | crate::OF
+        );
+        assert!(matches!(
+            decoded.operation,
+            Operation::LockBitMemImm { kind: BitKind::Reset, destination, bit: 0 }
+                if destination.base == AddressBase::Register(Register::Rax)
+                    && destination.displacement == 0xe0
+                    && destination.size == OperandSize::Qword
+        ));
+        // The dword form (no REX.W) keeps the immediate in the length.
+        let mut memory = Memory::new(&[0xf0, 0x0f, 0xba, 0x33, 0x45]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 5);
+        assert!(matches!(
+            decoded.operation,
+            Operation::LockBitMemImm { kind: BitKind::Reset, destination, bit: 0x45 }
+                if destination.size == OperandSize::Dword
+        ));
+        // Without LOCK the plain `Operation::Bit` decode is unchanged.
+        let mut memory = Memory::new(&[0x48, 0x0f, 0xba, 0xb0, 0xe0, 0, 0, 0, 0x00]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::Bit {
+                kind: BitKind::Reset,
+                offset: BitOffset::Immediate(0),
                 ..
             }
         ));
@@ -27055,8 +27111,9 @@ mod tests {
             (&[0xf0, 0x2e, 0x48, 0x0f, 0xb3, 0x13][..], 0xb3),
             // REX not directly before the opcode.
             (&[0xf0, 0x48, 0x66, 0x0f, 0xb3, 0x13][..], 0xb3),
-            // The immediate form and the other LOCK bit-test forms stay outside the slice.
-            (&[0xf0, 0x48, 0x0f, 0xba, 0x33, 0x05][..], 0xba),
+            // The immediate form's register operand (the memory `/6 ib` is S4-39g1) and the other
+            // LOCK bit-test forms stay outside the slice.
+            (&[0xf0, 0x48, 0x0f, 0xba, 0xf3, 0x05][..], 0xba),
             (&[0xf0, 0x48, 0x0f, 0xa3, 0x13][..], 0xa3),
             (&[0xf0, 0x48, 0x0f, 0xbb, 0x13][..], 0xbb),
         ] {

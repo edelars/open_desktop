@@ -17,7 +17,8 @@
  * one final immediate-exit re-entry to complete pending I/O may exceed it by one.
  *
  * Build: gcc -O2 -Wall -Wextra -Werror -std=c11 -o kvm_runner kvm_runner.c
- * Usage: kvm_runner <image.bin> [--real-mode CS:IP] [--budget N] [--deadline-ms MS]
+ * Usage: kvm_runner <image.bin> [--real-mode CS:IP] [--capture-final-state]
+ *        [--result-block GPA:SIZE] [--inject-after-hlt VECTOR] [--budget N] [--deadline-ms MS]
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -48,6 +49,10 @@
 #define MAX_UART 4096u
 #define MAX_EXITS 256u
 #define CPUID_MAX_ENT 256u
+#define RESULT_BLOCK_MAX 512u
+#define RESULT_BLOCK_MAGIC 0x314d564b57483453ull
+#define RESULT_BLOCK_VERSION 1u
+#define RESULT_BLOCK_COMPLETE 0x434f4d50u
 
 #define CR0_VALUE 0x80000033u /* PG | NE | ET | MP | PE */
 #define CR4_VALUE 0x20u       /* PAE */
@@ -69,6 +74,23 @@ static unsigned char uart[MAX_UART];
 static unsigned uart_len;
 static struct kvm_cpuid_entry2 guest_cpuid[CPUID_MAX_ENT];
 static unsigned guest_cpuid_count;
+static int capture_final_state;
+static int result_block_requested;
+static int result_block_captured;
+static uint64_t result_block_gpa;
+static unsigned result_block_size;
+static unsigned char result_block_bytes[RESULT_BLOCK_MAX];
+static int inject_after_hlt_requested;
+static uint32_t inject_vector;
+static unsigned inject_attempts;
+static int inject_ioctl_result;
+static int inject_ioctl_errno;
+static uint32_t inject_event_count_before;
+static uint32_t inject_event_count_after;
+static uint32_t inject_case_id;
+static int inject_event_count_before_valid;
+static int inject_event_count_after_valid;
+static int inject_delivery_observed;
 
 static void on_alarm(int sig)
 {
@@ -190,6 +212,19 @@ struct final_state {
     struct kvm_sregs sregs;
 };
 
+static struct final_state pre_injection_state;
+static int pre_injection_state_valid;
+
+struct result_block_header {
+    uint64_t magic;
+    uint32_t version;
+    uint32_t case_id;
+    uint32_t completion;
+    uint32_t observation_words;
+    uint32_t event_count;
+    uint32_t reserved;
+};
+
 static void set_real_seg(struct kvm_segment *s, uint16_t selector, uint64_t base, uint8_t type)
 {
     memset(s, 0, sizeof(*s));
@@ -232,6 +267,83 @@ static int parse_cs_ip(const char *text, uint16_t *cs, uint16_t *ip)
         return -1;
     *cs = (uint16_t)selector;
     *ip = (uint16_t)offset;
+    return 0;
+}
+
+static int parse_u64(const char *text, uint64_t *value)
+{
+    char *end;
+    unsigned long long parsed;
+
+    if (!text || !*text || *text == '-' || *text == '+')
+        return -1;
+    errno = 0;
+    parsed = strtoull(text, &end, 0);
+    if (errno || end == text || *end)
+        return -1;
+    *value = (uint64_t)parsed;
+    return 0;
+}
+
+static int parse_vector(const char *text, uint32_t *vector)
+{
+    char *end;
+    unsigned long parsed;
+    int base = 10;
+
+    if (!text || !*text || *text == '-' || *text == '+')
+        return -1;
+    if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X'))
+        base = 16;
+    errno = 0;
+    parsed = strtoul(text, &end, base);
+    if (errno || end == text || *end || parsed < 32 || parsed > 255)
+        return -1;
+    *vector = (uint32_t)parsed;
+    return 0;
+}
+
+static int parse_gpa_size(const char *text, uint64_t *gpa, unsigned *size)
+{
+    uint64_t parsed_gpa, parsed_size;
+    const char *colon = strchr(text, ':');
+    char gpa_text[32];
+    size_t gpa_len;
+
+    if (!colon || colon == text || colon[1] == '\0')
+        return -1;
+    gpa_len = (size_t)(colon - text);
+    if (gpa_len >= sizeof(gpa_text))
+        return -1;
+    memcpy(gpa_text, text, gpa_len);
+    gpa_text[gpa_len] = '\0';
+    if (parse_u64(gpa_text, &parsed_gpa) != 0 ||
+        parse_u64(colon + 1, &parsed_size) != 0 ||
+        parsed_size == 0 || parsed_size > RESULT_BLOCK_MAX)
+        return -1;
+    *gpa = parsed_gpa;
+    *size = (unsigned)parsed_size;
+    return 0;
+}
+
+static int read_result_header(const uint8_t *ram, struct result_block_header *header)
+{
+    if (!result_block_requested || result_block_size < sizeof(*header))
+        return -1;
+    memcpy(header, ram + result_block_gpa, sizeof(*header));
+    if (header->magic != RESULT_BLOCK_MAGIC || header->version != RESULT_BLOCK_VERSION ||
+        header->case_id == 0 || header->reserved != 0 ||
+        header->observation_words > (result_block_size - sizeof(*header)) / sizeof(uint64_t))
+        return -1;
+    return 0;
+}
+
+static int capture_result_block(const uint8_t *ram)
+{
+    if (!result_block_requested)
+        return 0;
+    memcpy(result_block_bytes, ram + result_block_gpa, result_block_size);
+    result_block_captured = 1;
     return 0;
 }
 
@@ -309,6 +421,32 @@ static int drain_pending_io(int vcpu, struct kvm_run *run, unsigned *run_count,
     return -2;
 }
 
+static void print_pre_state_json(const struct final_state *state)
+{
+    const struct kvm_regs *r = &state->regs;
+    const struct kvm_sregs *s = &state->sregs;
+
+    printf("{\"gpr\":{\"rax\":%llu,\"rbx\":%llu,\"rcx\":%llu,\"rdx\":%llu,"
+           "\"rsi\":%llu,\"rdi\":%llu,\"rbp\":%llu,\"rsp\":%llu,\"r8\":%llu,\"r9\":%llu,"
+           "\"r10\":%llu,\"r11\":%llu,\"r12\":%llu,\"r13\":%llu,\"r14\":%llu,\"r15\":%llu},"
+           "\"rip\":%llu,\"rflags\":%llu,\"cs_selector\":%u,\"cs_l\":%u,\"cs_db\":%u,"
+           "\"cs_dpl\":%u,\"ss_selector\":%u,\"cr0\":%llu,\"cr2\":%llu,\"cr3\":%llu,"
+           "\"cr4\":%llu,\"cr8\":%llu,\"efer\":%llu}",
+           (unsigned long long)r->rax, (unsigned long long)r->rbx,
+           (unsigned long long)r->rcx, (unsigned long long)r->rdx,
+           (unsigned long long)r->rsi, (unsigned long long)r->rdi,
+           (unsigned long long)r->rbp, (unsigned long long)r->rsp,
+           (unsigned long long)r->r8, (unsigned long long)r->r9,
+           (unsigned long long)r->r10, (unsigned long long)r->r11,
+           (unsigned long long)r->r12, (unsigned long long)r->r13,
+           (unsigned long long)r->r14, (unsigned long long)r->r15,
+           (unsigned long long)r->rip, (unsigned long long)r->rflags,
+           s->cs.selector, s->cs.l, s->cs.db, s->cs.dpl, s->ss.selector,
+           (unsigned long long)s->cr0, (unsigned long long)s->cr2,
+           (unsigned long long)s->cr3, (unsigned long long)s->cr4,
+           (unsigned long long)s->cr8, (unsigned long long)s->efer);
+}
+
 static void print_json(const char *exit_kind, const char *error, const struct entry_state *en,
                        int kvm_api, unsigned run_count, unsigned intr_count,
                        const char *stop_reason, const struct final_state *final, int real_mode)
@@ -369,7 +507,7 @@ static void print_json(const char *exit_kind, const char *error, const struct en
                en->ss_selector);
     else
         printf(",\"entry\":null");
-    if (real_mode && final) {
+    if ((real_mode || capture_final_state || inject_after_hlt_requested) && final) {
         const struct kvm_regs *r = &final->regs;
         const struct kvm_sregs *s = &final->sregs;
         printf(",\"final_state\":{\"gpr\":{\"rax\":%llu,\"rbx\":%llu,\"rcx\":%llu,\"rdx\":%llu,"
@@ -405,8 +543,41 @@ static void print_json(const char *exit_kind, const char *error, const struct en
                (unsigned long long)s->cr8,
                (unsigned long long)s->efer);
     }
-    else if (real_mode)
+    else if (real_mode || capture_final_state || inject_after_hlt_requested)
         printf(",\"final_state\":null");
+    if (inject_after_hlt_requested) {
+        printf(",\"injection\":{\"requested\":true,\"vector\":%u,\"attempts\":%u,"
+               "\"ioctl_result\":%d,\"ioctl_errno\":%d,\"event_count_before\":",
+               inject_vector, inject_attempts, inject_ioctl_result, inject_ioctl_errno);
+        if (inject_event_count_before_valid)
+            printf("%u", inject_event_count_before);
+        else
+            printf("null");
+        printf(",\"event_count_after\":");
+        if (inject_event_count_after_valid)
+            printf("%u", inject_event_count_after);
+        else
+            printf("null");
+        printf(",\"delivery_observed\":%s,\"pre_state\":",
+               inject_delivery_observed ? "true" : "false");
+        if (pre_injection_state_valid)
+            print_pre_state_json(&pre_injection_state);
+        else
+            printf("null");
+        putchar('}');
+    } else if (capture_final_state)
+        printf(",\"injection\":null");
+    if (result_block_requested) {
+        printf(",\"result_block_gpa\":%llu,\"result_block_size\":%u,\"result_block_hex\":",
+               (unsigned long long)result_block_gpa, result_block_size);
+        if (result_block_captured) {
+            putchar('"');
+            for (i = 0; i < result_block_size; i++)
+                printf("%02x", result_block_bytes[i]);
+            putchar('"');
+        } else
+            printf("null");
+    }
     printf(",\"kvm_api\":%d,\"run_count\":%u,\"intr_count\":%u,\"stop_reason\":", kvm_api,
            run_count, intr_count);
     json_string(stop_reason);
@@ -456,6 +627,7 @@ int main(int argc, char **argv)
     int cpuid_leaf1_found = 0;
     int io_pending = 0;
     int final_state_valid = 0;
+    int snapshot_safe = 1;
     const char *final_error = NULL;
     unsigned run_count = 0; /* KVM_RUN returns that carried a real exit */
     unsigned intr_count = 0; /* KVM_RUN returns with EINTR / KVM_EXIT_INTR (SIGALRM) */
@@ -473,6 +645,25 @@ int main(int argc, char **argv)
             budget = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (strcmp(argv[i], "--deadline-ms") == 0 && i + 1 < argc)
             deadline_ms = (unsigned)strtoul(argv[++i], NULL, 10);
+        else if (strcmp(argv[i], "--capture-final-state") == 0)
+            capture_final_state = 1;
+        else if (strcmp(argv[i], "--result-block") == 0 && i + 1 < argc) {
+            if (result_block_requested || parse_gpa_size(argv[++i], &result_block_gpa,
+                                                         &result_block_size) != 0) {
+                fprintf(stderr, "invalid --result-block GPA:SIZE (size must be 1..512 bytes)\n");
+                return 2;
+            }
+            result_block_requested = 1;
+            capture_final_state = 1;
+        }
+        else if (strcmp(argv[i], "--inject-after-hlt") == 0 && i + 1 < argc) {
+            if (inject_after_hlt_requested || parse_vector(argv[++i], &inject_vector) != 0) {
+                fprintf(stderr, "invalid --inject-after-hlt VECTOR (expected decimal or hex 32..255)\n");
+                return 2;
+            }
+            inject_after_hlt_requested = 1;
+            capture_final_state = 1;
+        }
         else if (strcmp(argv[i], "--real-mode") == 0 && i + 1 < argc) {
             if (real_mode || parse_cs_ip(argv[++i], &real_cs, &real_ip) != 0) {
                 fprintf(stderr, "invalid --real-mode CS:IP (expected 16-bit selector:offset)\n");
@@ -483,12 +674,24 @@ int main(int argc, char **argv)
         else if (!image_path)
             image_path = argv[i];
         else {
-            fprintf(stderr, "usage: %s <image.bin> [--real-mode CS:IP] [--budget N] [--deadline-ms MS]\n", argv[0]);
+            fprintf(stderr, "usage: %s <image.bin> [--real-mode CS:IP] [--capture-final-state] [--result-block GPA:SIZE] [--inject-after-hlt VECTOR] [--budget N] [--deadline-ms MS]\n", argv[0]);
             return 2;
         }
     }
     if (!image_path) {
-        fprintf(stderr, "usage: %s <image.bin> [--real-mode CS:IP] [--budget N] [--deadline-ms MS]\n", argv[0]);
+        fprintf(stderr, "usage: %s <image.bin> [--real-mode CS:IP] [--capture-final-state] [--result-block GPA:SIZE] [--inject-after-hlt VECTOR] [--budget N] [--deadline-ms MS]\n", argv[0]);
+        return 2;
+    }
+    if (result_block_requested &&
+        (result_block_gpa > GUEST_RAM_SIZE ||
+         result_block_size > GUEST_RAM_SIZE - result_block_gpa)) {
+        fprintf(stderr, "--result-block GPA:SIZE must lie within guest RAM\n");
+        return 2;
+    }
+    if (inject_after_hlt_requested &&
+        (real_mode || !result_block_requested || result_block_gpa != 0x18000u ||
+         result_block_size < sizeof(struct result_block_header))) {
+        fprintf(stderr, "--inject-after-hlt requires Long64 and --result-block 0x18000:SIZE with a 32-byte header\n");
         return 2;
     }
 
@@ -531,7 +734,7 @@ int main(int argc, char **argv)
         fail("internal", "unexpected KVM_GET_API_VERSION", NULL, api, 0);
         return 2;
     }
-    if (real_mode)
+    if (real_mode || capture_final_state || result_block_requested)
         immediate_exit_supported = ioctl(kvm, KVM_CHECK_EXTENSION, KVM_CAP_IMMEDIATE_EXIT) > 0;
     vm = ioctl(kvm, KVM_CREATE_VM, 0);
     if (vm < 0) {
@@ -729,7 +932,7 @@ int main(int argc, char **argv)
             run_count++;
             exit_kind = "internal";
             stop_reason = "kvm_run_ioctl_failed";
-            if (real_mode)
+            if (real_mode || capture_final_state)
                 final_error = "KVM_RUN ioctl failed; final CPU state omitted";
             break;
         }
@@ -746,6 +949,74 @@ int main(int argc, char **argv)
             continue;
         case KVM_EXIT_HLT:
             add_exit("hlt");
+            if (inject_after_hlt_requested && inject_attempts == 0) {
+                struct result_block_header header;
+                struct kvm_interrupt interrupt_request;
+
+                if (ioctl(vcpu, KVM_GET_SREGS, &pre_injection_state.sregs) < 0 ||
+                    ioctl(vcpu, KVM_GET_REGS, &pre_injection_state.regs) < 0) {
+                    exit_kind = "internal";
+                    stop_reason = "pre_injection_state_failed";
+                    final_error = "KVM_GET_SREGS or KVM_GET_REGS failed before injection";
+                    goto done;
+                }
+                pre_injection_state_valid = 1;
+                /* KVM_INTERRUPT is only supported here for the runner's Long64 CPL0 setup. */
+                if (pre_injection_state.sregs.cs.l != 1 ||
+                    pre_injection_state.sregs.cs.db != 0 ||
+                    pre_injection_state.sregs.cs.dpl != 0 ||
+                    (pre_injection_state.sregs.cs.selector & 3u) != 0 ||
+                    (pre_injection_state.sregs.cr0 & 0x80000000u) == 0 ||
+                    (pre_injection_state.sregs.efer & 0x400u) == 0) {
+                    exit_kind = "internal";
+                    stop_reason = "unsupported_injection_state";
+                    final_error = "--inject-after-hlt requires a Long64 CPL0 state (CS.L=1, CS.DB=0, DPL/RPL=0, CR0.PG=1, EFER.LMA=1)";
+                    goto done;
+                }
+                if (read_result_header(ram, &header) != 0 ||
+                    header.completion == RESULT_BLOCK_COMPLETE) {
+                    exit_kind = "internal";
+                    stop_reason = "result_block_invalid_before_injection";
+                    final_error = "result block header invalid or already complete before injection";
+                    goto done;
+                }
+                inject_case_id = header.case_id;
+                inject_event_count_before = header.event_count;
+                inject_event_count_before_valid = 1;
+                memset(&interrupt_request, 0, sizeof(interrupt_request));
+                interrupt_request.irq = inject_vector;
+                inject_attempts++;
+                inject_ioctl_result = ioctl(vcpu, KVM_INTERRUPT, &interrupt_request);
+                if (inject_ioctl_result < 0) {
+                    inject_ioctl_errno = errno;
+                    exit_kind = "internal";
+                    stop_reason = "interrupt_injection_failed";
+                    final_error = "KVM_INTERRUPT failed; userspace injection was not accepted";
+                    goto done;
+                }
+                continue;
+            }
+            if (inject_after_hlt_requested && inject_attempts == 1) {
+                struct result_block_header header;
+
+                if (read_result_header(ram, &header) != 0) {
+                    exit_kind = "internal";
+                    stop_reason = "result_block_invalid_after_injection";
+                    final_error = "result block header invalid after interrupt injection";
+                    goto done;
+                }
+                inject_event_count_after = header.event_count;
+                inject_event_count_after_valid = 1;
+                if (header.case_id != inject_case_id ||
+                    header.completion != RESULT_BLOCK_COMPLETE ||
+                    header.event_count != inject_event_count_before + 1u) {
+                    exit_kind = "internal";
+                    stop_reason = "interrupt_not_delivered";
+                    final_error = "injected vector did not produce exactly one completed guest event";
+                    goto done;
+                }
+                inject_delivery_observed = 1;
+            }
             exit_kind = "hlt";
             stop_reason = "guest_hlt";
             goto done;
@@ -758,39 +1029,51 @@ int main(int argc, char **argv)
             add_exit("fail_entry");
             exit_kind = "fail_entry";
             stop_reason = "vm_entry_failed";
-            if (real_mode)
+            if (real_mode || capture_final_state)
                 final_error = "KVM_EXIT_FAIL_ENTRY; final CPU state omitted";
             goto done;
         case KVM_EXIT_INTERNAL_ERROR:
             add_exit("internal");
             exit_kind = "internal";
             stop_reason = "kvm_internal_error";
-            if (real_mode)
+            if (real_mode || capture_final_state)
                 final_error = "KVM_EXIT_INTERNAL_ERROR; final CPU state omitted";
             goto done;
         case KVM_EXIT_MMIO:
             add_exit(real_mode ? "mmio" : "other");
             exit_kind = "internal";
             stop_reason = real_mode ? "unsupported_mmio_exit" : "unexpected_exit_reason";
-            if (real_mode)
+            if (real_mode || capture_final_state)
                 final_error = "KVM_EXIT_MMIO is unsupported; final CPU state omitted";
             goto done;
         default:
             add_exit("other");
             exit_kind = "internal";
             stop_reason = "unexpected_exit_reason";
-            if (real_mode)
+            if (real_mode || capture_final_state)
                 final_error = "unsupported KVM exit; final CPU state omitted";
             goto done;
         }
     }
 done:
+    if (inject_after_hlt_requested && !inject_delivery_observed &&
+        strcmp(stop_reason, "interrupt_injection_failed") != 0 &&
+        strcmp(stop_reason, "interrupt_not_delivered") != 0 &&
+        strcmp(stop_reason, "result_block_invalid_before_injection") != 0 &&
+        strcmp(stop_reason, "pre_injection_state_failed") != 0 &&
+        strcmp(stop_reason, "unsupported_injection_state") != 0) {
+        exit_kind = "internal";
+        stop_reason = "interrupt_not_delivered";
+        if (!final_error)
+            final_error = "guest stopped before one completed interrupt event was observed";
+    }
     memset(&tv, 0, sizeof(tv));
     setitimer(ITIMER_REAL, &tv, NULL);
-    if (real_mode && io_pending) {
+    if ((real_mode || capture_final_state || result_block_requested) && io_pending) {
         int drain_result = drain_pending_io(vcpu, run, &run_count, &intr_count,
                                             immediate_exit_supported);
         if (drain_result != 0) {
+            snapshot_safe = 0;
             exit_kind = "internal";
             stop_reason = "pending_io_drain_failed";
             if (!final_error && drain_result == -1)
@@ -801,12 +1084,15 @@ done:
                 final_error = "KVM_CAP_IMMEDIATE_EXIT unavailable for pending-I/O drain";
         }
     }
-    if (real_mode && !final_error) {
+    if (snapshot_safe && result_block_requested)
+        (void)capture_result_block(ram);
+    if (snapshot_safe && ((real_mode && !final_error) || capture_final_state)) {
         if (ioctl(vcpu, KVM_GET_SREGS, &final.sregs) < 0 ||
             ioctl(vcpu, KVM_GET_REGS, &final.regs) < 0) {
             exit_kind = "internal";
             stop_reason = "read_final_state_failed";
-            final_error = "KVM_GET_SREGS or KVM_GET_REGS failed";
+            if (!final_error)
+                final_error = "KVM_GET_SREGS or KVM_GET_REGS failed";
         } else {
             final_state_valid = 1;
         }

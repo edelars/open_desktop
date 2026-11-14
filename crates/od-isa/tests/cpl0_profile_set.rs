@@ -16058,7 +16058,7 @@ fn lock_bts_write_fault_leaves_cf_rip_registers_and_memory_unchanged() {
 
 #[test]
 fn lock_bts_forms_outside_the_slice_are_refused_with_the_exact_opcode_without_mutation() {
-    let cases: [(&[u8], u8); 25] = [
+    let cases: [(&[u8], u8); 24] = [
         // No REX.W (dword), REX without W, REX.R without W.
         (&[0xf0, 0x0f, 0xab, 0x03], 0xab),
         (&[0xf0, 0x40, 0x0f, 0xab, 0x03], 0xab),
@@ -16084,11 +16084,11 @@ fn lock_bts_forms_outside_the_slice_are_refused_with_the_exact_opcode_without_mu
         // REX not directly before the opcode loses its W bit.
         (&[0xf0, 0x48, 0x66, 0x0f, 0xab, 0x03], 0xab),
         // The immediate form (`0F BA /4..7 ib`) except the memory BTS (`/5`, admitted by
-        // S4-38L7bi; its register form stays refused) and the other LOCK bit-test forms stay
-        // outside (LOCK BTR `0F B3` was admitted by S4-38L7t).
+        // S4-38L7bi; its register form stays refused) and the memory BTR (`/6`, admitted by
+        // S4-39g1) and the other LOCK bit-test forms stay outside (LOCK BTR `0F B3` was admitted
+        // by S4-38L7t).
         (&[0xf0, 0x48, 0x0f, 0xba, 0xeb, 0x05], 0xba),
         (&[0xf0, 0x48, 0x0f, 0xba, 0x23, 0x05], 0xba),
-        (&[0xf0, 0x48, 0x0f, 0xba, 0x33, 0x05], 0xba),
         (&[0xf0, 0x48, 0x0f, 0xba, 0x3b, 0x05], 0xba),
         (&[0xf0, 0x48, 0x0f, 0xa3, 0x03], 0xa3),
         (&[0xf0, 0x48, 0x0f, 0xbb, 0x03], 0xbb),
@@ -16511,7 +16511,7 @@ fn lock_btr_write_fault_leaves_cf_rip_registers_and_memory_unchanged() {
 
 #[test]
 fn lock_btr_forms_outside_the_slice_are_refused_with_the_exact_opcode_without_mutation() {
-    let cases: [(&[u8], u8); 22] = [
+    let cases: [(&[u8], u8); 21] = [
         // No REX.W (dword), REX without W, REX.R without W.
         (&[0xf0, 0x0f, 0xb3, 0x03], 0xb3),
         (&[0xf0, 0x40, 0x0f, 0xb3, 0x03], 0xb3),
@@ -16536,8 +16536,8 @@ fn lock_btr_forms_outside_the_slice_are_refused_with_the_exact_opcode_without_mu
         (&[0xf0, 0x2e, 0x48, 0x0f, 0xb3, 0x03], 0xb3),
         // REX not directly before the opcode loses its W bit.
         (&[0xf0, 0x48, 0x66, 0x0f, 0xb3, 0x03], 0xb3),
-        // The immediate form (`0F BA /6 ib`) and the neighbouring LOCK bit-test forms.
-        (&[0xf0, 0x48, 0x0f, 0xba, 0x33, 0x05], 0xba),
+        // The neighbouring LOCK bit-test forms (the memory `0F BA /6 ib` is S4-39g1; its register
+        // form stays refused, see `lock_btr_imm_forms_outside_the_slice_...`).
         (&[0xf0, 0x48, 0x0f, 0xa3, 0x03], 0xa3),
         (&[0xf0, 0x48, 0x0f, 0xbb, 0x03], 0xbb),
         (&[0xf0, 0x4c, 0x0f, 0xbb, 0x03], 0xbb),
@@ -38923,13 +38923,16 @@ fn lock_bts_imm_read_fault_leaves_state_and_memory_unchanged() {
 
 #[test]
 fn lock_bts_imm_forms_outside_the_slice_are_refused_with_the_exact_opcode_without_mutation() {
-    let cases: [(&[u8], u8); 30] = [
-        // BT, BTR and BTC with LOCK (BT with LOCK is #UD architecturally; here all stay refused).
+    let cases: [(&[u8], u8); 31] = [
+        // BT and BTC with LOCK (BT with LOCK is #UD architecturally; here both stay refused; the
+        // memory BTR `/6` is S4-39g1).
         (&[0xf0, 0x48, 0x0f, 0xba, 0x23, 0x05], 0xba),
-        (&[0xf0, 0x48, 0x0f, 0xba, 0x33, 0x05], 0xba),
         (&[0xf0, 0x48, 0x0f, 0xba, 0x3b, 0x05], 0xba),
-        (&[0xf0, 0x0f, 0xba, 0x33, 0x05], 0xba),
-        (&[0xf0, 0x49, 0x0f, 0xba, 0x34, 0x24, 0x00], 0xba),
+        (&[0xf0, 0x0f, 0xba, 0x3b, 0x05], 0xba),
+        (&[0xf0, 0x49, 0x0f, 0xba, 0x3c, 0x24, 0x00], 0xba),
+        // LOCK BTR with a register operand (S4-39g1: #UD in the SDM, stays refused).
+        (&[0xf0, 0x48, 0x0f, 0xba, 0xf3, 0x05], 0xba),
+        (&[0xf0, 0x0f, 0xba, 0xf0, 0x05], 0xba),
         // The other `0F BA` selectors (/0../3) are no instruction.
         (&[0xf0, 0x48, 0x0f, 0xba, 0x03, 0x05], 0xba),
         (&[0xf0, 0x48, 0x0f, 0xba, 0x1b, 0x05], 0xba),
@@ -39082,6 +39085,466 @@ fn lock_bts_imm_is_not_reachable_from_cpl3() {
     let mut state = board_state();
     let before = state.clone();
     let mut memory = BitsMemory::new(&LOCK_BTS_IMM_BOUNDARY);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+// ---- S4-39g1: `F0 [REX] 0F BA /6 ib` (LOCK BTR m32/m64, imm8; memory operand only). Hand-written
+// expectations (from memory of the SDM, not re-checked against its text): the immediate is a bit
+// index inside the operand, taken modulo the operand width; CF = the old bit, the bit is cleared;
+// OF/SF/AF/PF are undefined and ZF is not affected, and all of them are left unchanged here. The
+// destination is always written back. LOCK with a register operand is #UD in the SDM and stays
+// refused with the opcode 0xba. ----
+
+/// The S4-39g diagnostic boundary: `lock btrq $0x0, 0xe0(%rax)` (disp32 0xe0).
+const LOCK_BTR_IMM_BOUNDARY: [u8; 10] = [0xf0, 0x48, 0x0f, 0xba, 0xb0, 0xe0, 0, 0, 0, 0x00];
+/// `lock btrq $imm, (%rbx)`; the immediate is the last byte.
+const LOCK_BTR_IMM_QWORD_RBX: [u8; 6] = [0xf0, 0x48, 0x0f, 0xba, 0x33, 0x00];
+/// `lock btrl $imm, (%rbx)`.
+const LOCK_BTR_IMM_DWORD_RBX: [u8; 5] = [0xf0, 0x0f, 0xba, 0x33, 0x00];
+
+/// RAX is chosen so that RAX + 0xe0 = 0x20_0000, RBX = 0x20_0000.
+fn btr_imm_state() -> LongModeState {
+    let mut state = board_state();
+    state.gpr[Register::Rax as usize] = 0x20_0000 - 0xe0;
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    state
+}
+
+#[test]
+fn lock_btr_imm_boundary_clears_bit_0_of_the_qword_at_rax_plus_0xe0() {
+    for (old, cf) in [
+        (0x1122_3344_5566_7788u64, 0u64),
+        (0x1122_3344_5566_7789u64, FLAG_CF),
+    ] {
+        let neighbour = 0xa5a5_5a5a_dead_beefu64;
+        let mut state = btr_imm_state();
+        // The initial CF is the opposite of the expected one, so a stale CF cannot pass.
+        state.rflags = (state.rflags & !ARITH) | if cf == 0 { FLAG_CF } else { 0 };
+        let mut expected = state.clone();
+        let mut memory = BitsMemory::new(&LOCK_BTR_IMM_BOUNDARY);
+        memory.set_qword(0x20_0000, old);
+        memory.set_qword(0x20_0008, neighbour);
+        memory.set_qword(0x1f_fff8, neighbour);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1, "{old:#x}");
+        assert_eq!(memory.reads, vec![(0x20_0000, 8)], "{old:#x}");
+        // The new value is written even when the bit was already clear.
+        assert_eq!(
+            memory.writes,
+            vec![(0x20_0000, 0x1122_3344_5566_7788u64.to_le_bytes().to_vec())],
+            "{old:#x}"
+        );
+        assert_eq!(memory.qword(0x20_0000), 0x1122_3344_5566_7788);
+        assert_eq!(memory.qword(0x20_0008), neighbour);
+        assert_eq!(memory.qword(0x1f_fff8), neighbour);
+        expected.rip += 10;
+        expected.rflags = (expected.rflags & !FLAG_CF) | cf;
+        assert_eq!(state, expected, "{old:#x}: only RIP and CF change");
+    }
+}
+
+#[test]
+fn lock_btr_imm_qword_sweeps_every_immediate_with_the_index_modulo_64() {
+    for imm in 0u8..=255 {
+        for old_bit in [0u64, 1] {
+            let bit = u32::from(imm) % 64;
+            let mut code = LOCK_BTR_IMM_QWORD_RBX;
+            code[5] = imm;
+            let mut state = btr_imm_state();
+            let mut expected = state.clone();
+            let mut memory = BitsMemory::new(&code);
+            let old = (0xf0f0_0f0f_edcb_a987u64 & !(1u64 << bit)) | (old_bit << bit);
+            memory.set_qword(0x20_0000, old);
+            memory.set_qword(0x20_0008, !old);
+            let result = run_bts_set(&mut state, &mut memory).unwrap();
+            assert_eq!(result.instructions_executed, 1, "imm {imm:#x}");
+            assert_eq!(memory.reads, vec![(0x20_0000, 8)], "imm {imm:#x}");
+            // The mask spelled as a rotation of 1, not through the implementation's expression.
+            let new = old & !1u64.rotate_left(u32::from(imm));
+            assert_eq!(
+                memory.writes,
+                vec![(0x20_0000, new.to_le_bytes().to_vec())],
+                "imm {imm:#x}"
+            );
+            assert_eq!(new, old & !(1u64 << bit));
+            assert_eq!(
+                (old ^ new).count_ones(),
+                old_bit as u32,
+                "exactly the selected bit changes, and only when it was set"
+            );
+            assert_eq!(
+                memory.qword(0x20_0008),
+                !old,
+                "the next qword is not reached"
+            );
+            expected.rip += 6;
+            expected.rflags = (expected.rflags & !FLAG_CF) | old_bit;
+            assert_eq!(state, expected, "imm {imm:#x}");
+        }
+    }
+}
+
+#[test]
+fn lock_btr_imm_dword_sweeps_every_immediate_with_the_index_modulo_32() {
+    for imm in 0u8..=255 {
+        for old_bit in [0u32, 1] {
+            let bit = u32::from(imm) % 32;
+            let mut code = LOCK_BTR_IMM_DWORD_RBX;
+            code[4] = imm;
+            let mut state = btr_imm_state();
+            let mut expected = state.clone();
+            let mut memory = BitsMemory::new(&code);
+            let old = (0x89ab_cdefu32 & !(1u32 << bit)) | (old_bit << bit);
+            memory.set_qword(0x20_0000, 0xffff_ffff_0000_0000 | u64::from(old));
+            memory.set_qword(0x20_0004, 0x5555_aaaa_ffff_ffff);
+            let result = run_bts_set(&mut state, &mut memory).unwrap();
+            assert_eq!(result.instructions_executed, 1, "imm {imm:#x}");
+            assert_eq!(memory.reads, vec![(0x20_0000, 4)], "imm {imm:#x}");
+            let new = old & !1u32.rotate_left(u32::from(imm));
+            assert_eq!(
+                memory.writes,
+                vec![(0x20_0000, new.to_le_bytes().to_vec())],
+                "imm {imm:#x}"
+            );
+            assert_eq!(
+                memory.qword(0x20_0004),
+                0x5555_aaaa_ffff_ffff,
+                "the bytes above the dword are not touched"
+            );
+            expected.rip += 5;
+            expected.rflags = (expected.rflags & !FLAG_CF) | u64::from(old_bit);
+            assert_eq!(state, expected, "imm {imm:#x}");
+        }
+    }
+}
+
+#[test]
+fn lock_btr_imm_named_examples_clear_the_most_significant_bit_of_the_operand() {
+    // (code, old, expected new, cf)
+    for (code, old, new, cf) in [
+        // imm 63 on a qword: the most significant bit.
+        (
+            &[0xf0u8, 0x48, 0x0f, 0xba, 0x33, 0x3f][..],
+            0xffff_ffff_ffff_ffffu64,
+            0x7fff_ffff_ffff_ffffu64,
+            FLAG_CF,
+        ),
+        (
+            &[0xf0, 0x48, 0x0f, 0xba, 0x33, 0x3f][..],
+            0x7fff_ffff_ffff_ffff,
+            0x7fff_ffff_ffff_ffff,
+            0,
+        ),
+        // imm 0x40 wraps to bit 0 of the qword; imm 0xff wraps to bit 63.
+        (&[0xf0, 0x48, 0x0f, 0xba, 0x33, 0x40][..], 0x3, 0x2, FLAG_CF),
+        (
+            &[0xf0, 0x48, 0x0f, 0xba, 0x33, 0xff][..],
+            0x8000_0000_0000_0000,
+            0,
+            FLAG_CF,
+        ),
+        // imm 31 on a dword: the most significant bit; the dword form wraps 0x20 to bit 0.
+        (
+            &[0xf0, 0x0f, 0xba, 0x33, 0x1f][..],
+            0x8000_0001,
+            0x1,
+            FLAG_CF,
+        ),
+        (&[0xf0, 0x0f, 0xba, 0x33, 0x20][..], 0x3, 0x2, FLAG_CF),
+    ] {
+        let mut state = btr_imm_state();
+        let mut memory = BitsMemory::new(code);
+        memory.set_qword(0x20_0000, old);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(memory.qword(0x20_0000), new, "{code:02x?}");
+        assert_eq!(state.rflags & FLAG_CF, cf, "{code:02x?}");
+        assert_eq!(state.rip, RIP + code.len() as u64, "{code:02x?}");
+    }
+}
+
+#[test]
+fn lock_btr_imm_leaves_every_flag_but_cf_unchanged() {
+    for old in [0u64, 1] {
+        for flags in [0u64, ARITH, FLAG_ZF | FLAG_SF, FLAG_OF | FLAG_PF | FLAG_AF] {
+            let mut state = btr_imm_state();
+            state.rflags = (state.rflags & !ARITH) | flags;
+            let mut expected = state.clone();
+            let mut memory = BitsMemory::new(&LOCK_BTR_IMM_BOUNDARY);
+            memory.set_qword(0x20_0000, old);
+            run_bts_set(&mut state, &mut memory).unwrap();
+            expected.rip += 10;
+            expected.rflags = (expected.rflags & !FLAG_CF) | old;
+            assert_eq!(state, expected, "old {old} flags {flags:#x}");
+        }
+    }
+}
+
+#[test]
+fn lock_btr_imm_addressing_forms() {
+    // (code, absolute address of the qword).
+    for (code, address) in [
+        (
+            &[0xf0u8, 0x48, 0x0f, 0xba, 0x73, 0x10, 0x07][..],
+            0x20_0010u64,
+        ),
+        (
+            &[0xf0, 0x48, 0x0f, 0xba, 0xb3, 0x00, 0x01, 0x00, 0x00, 0x07],
+            0x20_0100,
+        ),
+        (
+            // `lock btrq $7, 0x1234(%rip)`: relative to the end of the instruction (10 bytes).
+            &[0xf0, 0x48, 0x0f, 0xba, 0x35, 0x34, 0x12, 0x00, 0x00, 0x07],
+            RIP + 10 + 0x1234,
+        ),
+        (
+            // `lock btrq $7, 0x10(%rbx,%rcx,4)` with rcx = 0.
+            &[0xf0, 0x48, 0x0f, 0xba, 0x74, 0x8b, 0x10, 0x07],
+            0x20_0010,
+        ),
+    ] {
+        let mut state = btr_imm_state();
+        state.gpr[Register::Rcx as usize] = 0;
+        let mut memory = BitsMemory::new(code);
+        memory.set_qword(address, 0xff);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(memory.reads, vec![(address, 8)], "{code:02x?}");
+        assert_eq!(memory.qword(address), 0x7f, "{code:02x?}");
+        assert_eq!(state.rip, RIP + code.len() as u64, "{code:02x?}");
+        assert_eq!(state.rflags & FLAG_CF, FLAG_CF, "{code:02x?}");
+    }
+}
+
+#[test]
+fn lock_btr_imm_non_canonical_address_is_gp0_without_mutation_or_access() {
+    for (base, code) in [
+        (0x0000_8000_0000_0000u64, &LOCK_BTR_IMM_QWORD_RBX[..]),
+        (0xffff_7fff_ffff_ffff, &LOCK_BTR_IMM_QWORD_RBX[..]),
+        (0x0000_7fff_ffff_fffc, &LOCK_BTR_IMM_QWORD_RBX[..]),
+        (0x0000_7fff_ffff_fffd, &LOCK_BTR_IMM_DWORD_RBX[..]),
+    ] {
+        let mut state = board_state();
+        state.gpr[Register::Rbx as usize] = base;
+        state.rflags |= FLAG_CF;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{base:#x} {code:02x?}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{base:#x} {code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+    // The boundary form with a non-canonical RAX (the base plus 0xe0 stays in the hole).
+    let mut state = board_state();
+    state.gpr[Register::Rax as usize] = 0x0000_8000_0000_0000;
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&LOCK_BTR_IMM_BOUNDARY);
+    let result = run_bts_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::Fault(GP0));
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn lock_btr_imm_write_fault_leaves_cf_rip_registers_and_memory_unchanged() {
+    // A read-only page: the always-performed write faults, even when the bit was already clear.
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x3),
+        linear_address: Some(0x20_0000),
+    };
+    for (code, old, cf) in [
+        (&LOCK_BTR_IMM_BOUNDARY[..], 0u64, FLAG_CF),
+        (&LOCK_BTR_IMM_BOUNDARY[..], 1, 0),
+        (&LOCK_BTR_IMM_BOUNDARY[..], 1, FLAG_CF),
+        (&LOCK_BTR_IMM_DWORD_RBX[..], 1, FLAG_CF),
+    ] {
+        let mut state = btr_imm_state();
+        state.rflags = (state.rflags & !ARITH) | cf | FLAG_ZF | FLAG_OF;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        memory.set_qword(0x20_0000, old);
+        memory.write_fault = Some(fault.clone());
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(fault.clone()), "{old:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{old:#x}");
+        assert_eq!(memory.qword(0x20_0000), old);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn lock_btr_imm_read_fault_leaves_state_and_memory_unchanged() {
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x2),
+        linear_address: Some(0x20_0000),
+    };
+    let mut state = btr_imm_state();
+    state.rflags |= FLAG_CF | FLAG_ZF;
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&LOCK_BTR_IMM_BOUNDARY);
+    memory.set_qword(0x20_0000, 0x77);
+    memory.read_fault = Some(fault.clone());
+    let result = run_bts_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::Fault(fault));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.qword(0x20_0000), 0x77);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn lock_btr_imm_forms_outside_the_slice_are_refused_with_the_exact_opcode_without_mutation() {
+    let cases: [(&[u8], u8); 15] = [
+        // LOCK with a register operand (mod = 11) is #UD in the SDM; with and without REX.B/W.
+        (&[0xf0, 0x48, 0x0f, 0xba, 0xf3, 0x05], 0xba),
+        (&[0xf0, 0x0f, 0xba, 0xf0, 0x05], 0xba),
+        (&[0xf0, 0x49, 0x0f, 0xba, 0xf4, 0x05], 0xba),
+        // 0x66 (word) and 0x67.
+        (&[0x66, 0xf0, 0x0f, 0xba, 0x33, 0x05], 0xba),
+        (&[0xf0, 0x66, 0x0f, 0xba, 0x33, 0x05], 0xba),
+        (&[0xf0, 0x67, 0x48, 0x0f, 0xba, 0x33, 0x05], 0xba),
+        // REP/REPNE instead of LOCK, alongside it, and a repeated LOCK.
+        (&[0xf3, 0x48, 0x0f, 0xba, 0x33, 0x05], 0xba),
+        (&[0xf0, 0xf3, 0x48, 0x0f, 0xba, 0x33, 0x05], 0xba),
+        (&[0xf0, 0xf0, 0x48, 0x0f, 0xba, 0x33, 0x05], 0xba),
+        // Segment prefixes.
+        (&[0xf0, 0x64, 0x48, 0x0f, 0xba, 0x33, 0x05], 0xba),
+        (&[0xf0, 0x65, 0x48, 0x0f, 0xba, 0x33, 0x05], 0xba),
+        (&[0x65, 0xf0, 0x48, 0x0f, 0xba, 0x33, 0x05], 0xba),
+        // A REX byte that is not directly before the opcode (stale).
+        (&[0xf0, 0x48, 0x66, 0x0f, 0xba, 0x33, 0x05], 0xba),
+        (&[0x48, 0xf0, 0x0f, 0xba, 0x33, 0x05], 0xba),
+        // BTC with LOCK stays refused next to it.
+        (&[0xf0, 0x48, 0x0f, 0xba, 0x3b, 0x05], 0xba),
+    ];
+    for (code, opcode) in cases {
+        let mut state = board_state();
+        state.gpr[Register::Rax as usize] = 5;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn lock_btr_imm_with_a_truncated_modrm_displacement_or_immediate_is_refused_without_mutation() {
+    for code in [
+        &[0xf0u8, 0x0f, 0xba][..],
+        &[0xf0, 0x48, 0x0f, 0xba, 0xb0][..],
+        &[0xf0, 0x48, 0x0f, 0xba, 0xb0, 0xe0, 0, 0][..],
+        &[0xf0, 0x48, 0x0f, 0xba, 0xb0, 0xe0, 0, 0, 0][..],
+        &[0xf0, 0x48, 0x0f, 0xba, 0x33][..],
+    ] {
+        let mut state = btr_imm_state();
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}: {result:?}");
+        assert_ne!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn plain_btr_imm_without_lock_keeps_its_existing_path_in_the_set() {
+    // S4-39g1 touches the LOCK form only: the non-LOCK `0F BA /6` memory form (the boundary bytes
+    // without the LOCK prefix) keeps executing through `Operation::Bit`.
+    for (old, cf) in [(0x10u64, 0u64), (0x11, FLAG_CF)] {
+        let mut state = btr_imm_state();
+        let mut memory = BitsMemory::new(&LOCK_BTR_IMM_BOUNDARY[1..]);
+        memory.set_qword(0x20_0000, old);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{old:#x}");
+        assert_eq!(memory.qword(0x20_0000), 0x10, "{old:#x}");
+        assert_eq!(state.rflags & FLAG_CF, cf, "{old:#x}");
+        assert_eq!(state.rip, RIP + 9, "{old:#x}");
+    }
+}
+
+#[test]
+fn lock_btr_imm_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`): the LOCK form is refused without mutation.
+    for code in [&LOCK_BTR_IMM_BOUNDARY[..], &LOCK_BTR_IMM_DWORD_RBX[..]] {
+        let mut state = legacy_state();
+        state.gpr[Register::Rax as usize] = 0x20_0000 - 0xe0;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xba });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn lock_btr_imm_is_refused_by_the_bare_step_entry_point() {
+    let mut state = legacy_state();
+    state.gpr[Register::Rax as usize] = 0x20_0000 - 0xe0;
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&LOCK_BTR_IMM_BOUNDARY);
+    let result = od_isa::execute::step(
+        &mut state,
+        &mut memory,
+        AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        },
+    );
+    assert_eq!(
+        result,
+        Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0xba })
+    );
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn lock_btr_imm_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&LOCK_BTR_IMM_BOUNDARY);
     let error = run_with_cpl0_profile_set(
         &mut state,
         &mut memory,
@@ -53042,6 +53505,358 @@ fn fxrstor64_at_cpl3_is_refused_at_entry_without_mutation() {
         "{result:?}"
     );
     assert!(memory.reads.is_empty());
+    assert_eq!(state, before);
+    assert_eq!(*cell.borrow(), before_cell);
+}
+
+// ---- S4-39f22: FXSAVE64 (`48 0F AE 40 40`, `fxsave64 0x40(%rax)`) in the FP member ----
+//
+// Oracles (by hand, Intel SDM from memory, the layout of the FXRSTOR64 tests above): the Long64
+// image has FCW at 0, FSW at 2, the abridged FTW at 4 (one bit per nonempty physical register), FOP
+// at 6, FIP (8 bytes) at 8, FDP (8 bytes) at 16, MXCSR at 24, MXCSR_MASK at 28 (0xFFBF for this
+// target), ST0-7 (logical order from TOP) in 16-byte slots from 32 (10 bytes each) and XMM0-15 from
+// 160. Bytes 5, 14..16 and 22..24 are inside the 64-bit fields or reserved; the 6 high bytes of every
+// ST slot, 416..512 and the bytes between the fields are not written (the sentinel stays). FXSAVE
+// faults with #GP(0) on an area that is not 16-byte aligned or whose 512 bytes leave the canonical
+// range. The CPU state changes only by the RIP; the FP cell is not changed.
+
+const FXSAVE64_RAX_DISP8: [u8; 5] = [0x48, 0x0f, 0xae, 0x40, 0x40];
+
+fn run_fxsave64_at(
+    cell: &RefCell<GuestFpState>,
+    cr0: u64,
+    cr4: u64,
+    code: &[u8],
+    area: u64,
+) -> (LongModeState, LongModeState, FpMemory, Cpl0ProfileSetResult) {
+    let set = fp_set(cell);
+    let mut state = fp_state(cr0, cr4);
+    state.gpr[Register::Rax as usize] = fp_rbx_for(area); // `0x40(%rax)` is `area`
+    let before = state.clone();
+    let mut memory = FpMemory::new(code);
+    let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+    (before, state, memory, result)
+}
+
+/// A hand-chosen state: TOP = 3, physical 0 a valid number, physical 2 a zero, the rest empty,
+/// 64-bit FIP/FDP above 2^32, FOP with all 11 bits, MXCSR with FZ.
+fn fxsave64_source_state() -> GuestFpState {
+    let mut fp = dirty_fp_state();
+    fp.x87.control_word = 0x037a;
+    fp.x87.status_word = 0x1800 | 0x0021;
+    fp.x87.tag_word = 0xffdc;
+    for (physical, register) in fp.x87.registers.iter_mut().enumerate() {
+        for (byte, value) in register.iter_mut().enumerate() {
+            *value = (physical * 16 + byte) as u8 ^ 0x3c;
+        }
+    }
+    fp.x87.registers[0] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f];
+    fp.x87.registers[2] = [0; 10];
+    fp.x87.instruction_pointer = 0x1122_3344_5566_7788;
+    fp.x87.data_pointer = 0x8877_6655_4433_2211;
+    fp.x87.last_opcode = 0x07ff;
+    fp.sse.mxcsr = 0x0000_9fa0;
+    fp
+}
+
+#[test]
+fn fxsave64_stores_the_exact_image_and_nothing_else() {
+    let cell = RefCell::new(fxsave64_source_state());
+    let before_cell = cell.borrow().clone();
+    let (before, state, memory, result) =
+        run_fxsave64_at(&cell, CR0_BASE, CR4_FP, &FXSAVE64_RAX_DISP8, FP_AREA);
+    assert_eq!(result.instructions_executed, 1);
+    assert!(memory.reads.is_empty());
+    // Hand-built expected image over the sentinel.
+    let mut expected = [FP_SENTINEL; 512];
+    expected[0..2].copy_from_slice(&0x037au16.to_le_bytes()); // FCW
+    expected[2..4].copy_from_slice(&0x1821u16.to_le_bytes()); // FSW, TOP = 3
+    expected[4] = 0b0000_0101; // abridged FTW: physical 0 and 2 nonempty
+    expected[6..8].copy_from_slice(&0x07ffu16.to_le_bytes()); // FOP
+    expected[8..16].copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes()); // FIP
+    expected[16..24].copy_from_slice(&0x8877_6655_4433_2211u64.to_le_bytes()); // FDP
+    expected[24..28].copy_from_slice(&0x0000_9fa0u32.to_le_bytes()); // MXCSR
+    expected[28..32].copy_from_slice(&0x0000_ffbfu32.to_le_bytes()); // MXCSR_MASK
+    for logical in 0..8usize {
+        let physical = (3 + logical) & 7;
+        let source = before_cell.x87.registers[physical];
+        expected[32 + 16 * logical..42 + 16 * logical].copy_from_slice(&source);
+    }
+    // ST(5) is physical 0 and ST(7) is physical 2 (the hand-chosen valid number and zero).
+    assert_eq!(
+        expected[32 + 16 * 5..42 + 16 * 5],
+        [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f]
+    );
+    assert_eq!(expected[32 + 16 * 7..42 + 16 * 7], [0; 10]);
+    for (register, lane) in before_cell.sse.xmm.iter().enumerate() {
+        expected[160 + 16 * register..176 + 16 * register].copy_from_slice(lane);
+    }
+    assert_eq!(memory.area(FP_AREA), &expected[..]);
+    // Outside the 512 bytes nothing changed: the code bytes and everything up to the buffer end.
+    let pristine = FpMemory::new(&FXSAVE64_RAX_DISP8);
+    let area_offset = (FP_AREA - RIP) as usize;
+    assert_eq!(memory.bytes[..area_offset], pristine.bytes[..area_offset]);
+    assert_eq!(
+        memory.bytes[area_offset + 512..],
+        pristine.bytes[area_offset + 512..]
+    );
+    // The stores: ascending, 1/2/4/8 bytes each, exactly the 6 defined fields
+    // (5 + 10 + 8 + 8 + 8 * 10 + 256 = 367 bytes), ending at the end of XMM15.
+    let mut last_end = FP_AREA;
+    let mut total = 0;
+    for &(address, len) in &memory.writes {
+        assert!([1, 2, 4, 8].contains(&len), "{address:#x}+{len}");
+        assert!(address >= last_end, "ascending, no overlap: {address:#x}");
+        last_end = address + len as u64;
+        total += len;
+    }
+    assert_eq!(total, 367);
+    assert_eq!(last_end, FP_AREA + 416);
+    // The cell is not changed; only RIP (+5: REX.W, 0F, AE, ModRM, disp8) moved in the CPU state.
+    assert_eq!(*cell.borrow(), before_cell);
+    let mut expected_state = before.clone();
+    expected_state.rip += 5;
+    assert_eq!(state, expected_state);
+}
+
+#[test]
+fn fxsave64_of_the_initial_state_writes_the_architectural_defaults() {
+    let cell = RefCell::new(GuestFpState::initial());
+    let (_, state, memory, result) =
+        run_fxsave64_at(&cell, CR0_BASE, CR4_FP, &FXSAVE64_RAX_DISP8, FP_AREA);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 5);
+    let image = memory.area(FP_AREA);
+    assert_eq!(image[0..2], [0x7f, 0x03], "FCW 0x037F");
+    assert_eq!(image[2..4], [0, 0], "FSW 0");
+    assert_eq!(image[4], 0, "all eight registers empty");
+    assert_eq!(image[6..8], [0, 0], "FOP");
+    assert_eq!(image[8..16], [0; 8], "FIP");
+    assert_eq!(image[16..24], [0; 8], "FDP");
+    assert_eq!(image[24..28], [0x80, 0x1f, 0, 0], "MXCSR 0x1F80");
+    assert_eq!(image[28..32], [0xbf, 0xff, 0, 0], "MXCSR_MASK 0xFFBF");
+    assert_eq!(
+        image[416..512],
+        [FP_SENTINEL; 96],
+        "416..512 is not written"
+    );
+}
+
+#[test]
+fn fxsave64_then_fxrstor64_round_trips_the_fp_state() {
+    let saved = round_trip_fp_state();
+    // 64-bit FIP/FDP (the plain FXSAVE could only keep 32 bits of them).
+    let mut saved = saved;
+    saved.x87.instruction_pointer = 0x0123_4567_89ab_cdef;
+    saved.x87.data_pointer = 0xfedc_ba98_7654_3210;
+    // Run 1: FXSAVE64 of `saved` into the area.
+    let cell = RefCell::new(saved.clone());
+    let (_, state, first, result) =
+        run_fxsave64_at(&cell, CR0_BASE, CR4_FP, &FXSAVE64_RAX_DISP8, FP_AREA);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 5);
+    let image: [u8; 512] = first.area(FP_AREA).try_into().unwrap();
+    // Run 2: FXRSTOR64 of that image into a cell that starts from the initial state.
+    let restored = RefCell::new(GuestFpState::initial());
+    let (_, state, memory, result) = run_fxrstor_at(
+        &restored,
+        CR0_BASE,
+        CR4_FP,
+        &FXRSTOR64_RBX_DISP8,
+        FP_AREA,
+        |m| write_image(m, FP_AREA, &image),
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 5);
+    assert!(memory.writes.is_empty());
+    assert_eq!(*restored.borrow(), saved);
+}
+
+#[test]
+fn fxsave64_misaligned_area_is_gp0_with_no_write_and_no_state_change() {
+    for area in [FP_AREA + 1, FP_AREA + 8, FP_AREA + 15] {
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let (before, state, memory, result) =
+            run_fxsave64_at(&cell, CR0_BASE, CR4_FP, &FXSAVE64_RAX_DISP8, area);
+        assert_eq!(exit(&result), &gp0(), "{area:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{area:#x}"
+        );
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), before_cell);
+    }
+    // 16-byte alignment is enough.
+    let cell = RefCell::new(dirty_fp_state());
+    let (_, state, memory, result) =
+        run_fxsave64_at(&cell, CR0_BASE, CR4_FP, &FXSAVE64_RAX_DISP8, FP_AREA + 16);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 5);
+    assert_eq!(
+        memory.area(FP_AREA + 16)[0..2],
+        cell.borrow().x87.control_word.to_le_bytes()
+    );
+    // The 16 bytes before the area are untouched.
+    assert_eq!(
+        memory.bytes[(FP_AREA - RIP) as usize..][..16],
+        [FP_SENTINEL; 16]
+    );
+}
+
+#[test]
+fn fxsave64_wrapping_or_non_canonical_area_is_gp0_with_no_write() {
+    // 0xFFFF_FFFF_FFFF_FFF0 is aligned and canonical but its 512-byte area overflows; the others
+    // start non-canonical or start canonical and end (start + 511) non-canonical.
+    for area in [
+        0xffff_ffff_ffff_fff0u64,
+        0x0001_0000_0000_0000,
+        0x0000_7fff_ffff_ff00,
+    ] {
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let (before, state, memory, result) =
+            run_fxsave64_at(&cell, CR0_BASE, CR4_FP, &FXSAVE64_RAX_DISP8, area);
+        assert_eq!(exit(&result), &gp0(), "{area:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert!(memory.writes.is_empty(), "{area:#x}");
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), before_cell);
+    }
+}
+
+#[test]
+fn fxsave64_write_failure_does_not_retire_and_keeps_the_cell() {
+    // The area 0x1f00..0x2100 runs past the buffer (end 0x2000): the earlier field stores are not
+    // rolled back (the image store is not a transaction), the RIP and the cell stay.
+    let cell = RefCell::new(dirty_fp_state());
+    let before_cell = cell.borrow().clone();
+    let (before, state, memory, result) =
+        run_fxsave64_at(&cell, CR0_BASE, CR4_FP, &FXSAVE64_RAX_DISP8, 0x1f00);
+    assert!(
+        matches!(
+            exit(&result),
+            RunExit::MemoryError(MemoryError::Unmapped { .. })
+        ),
+        "{:?}",
+        result.exit
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert!(!memory.writes.is_empty());
+    assert!(memory.writes.iter().all(|&(address, _)| address < 0x2000));
+    assert_eq!(state, before);
+    assert_eq!(*cell.borrow(), before_cell);
+}
+
+#[test]
+fn fxsave64_follows_the_fxsave_gates_ts_em_and_osfxsr() {
+    for cr0 in [
+        CR0_BASE | CR0_TS,
+        CR0_BASE | CR0_EM,
+        CR0_BASE | CR0_TS | CR0_EM,
+    ] {
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let (before, state, memory, result) =
+            run_fxsave64_at(&cell, cr0, CR4_FP, &FXSAVE64_RAX_DISP8, FP_AREA);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 7,
+                error_code: None,
+                linear_address: None,
+            }),
+            "cr0 {cr0:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert!(memory.writes.is_empty());
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), before_cell);
+    }
+    for cr4 in [CR4_BASE, CR4_BASE | (1 << 10)] {
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let (before, state, memory, result) =
+            run_fxsave64_at(&cell, CR0_BASE, cr4, &FXSAVE64_RAX_DISP8, FP_AREA);
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xae });
+        assert_eq!(result.instructions_executed, 0);
+        assert!(memory.writes.is_empty());
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), before_cell);
+    }
+}
+
+#[test]
+fn fxsave64_outside_the_member_is_unsupported_with_its_opcode() {
+    // Without the FP member (CPUID declared, no `with_fp_state`).
+    let set = base().with_cpuid(&CpuidProfile::X8664V1Stage4A);
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    state.gpr[Register::Rax as usize] = fp_rbx_for(FP_AREA);
+    let before = state.clone();
+    let mut memory = FpMemory::new(&FXSAVE64_RAX_DISP8);
+    let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xae });
+    assert_eq!(result.instructions_executed, 0);
+    assert!(memory.writes.is_empty());
+    assert_eq!(state, before);
+    // With the member, every other encoding of the group stays refused and changes nothing.
+    for code in [
+        &[0x0f, 0xae, 0x40, 0x40][..],             // FXSAVE32 (no REX.W)
+        &[0x48, 0x0f, 0xae, 0x40, 0x41][..],       // another displacement
+        &[0x48, 0x0f, 0xae, 0x41, 0x40][..],       // another ModRM (RCX base)
+        &[0x48, 0x0f, 0xae, 0x00][..],             // no displacement
+        &[0x64, 0x48, 0x0f, 0xae, 0x40, 0x40][..], // FS segment prefix
+        &[0x66, 0x48, 0x0f, 0xae, 0x40, 0x40][..], // operand-size prefix
+        &[0x48, 0x0f, 0xae, 0xc0][..],             // mod = 11
+        &[0x49, 0x0f, 0xae, 0x40, 0x40][..],       // REX.W + REX.B
+        &[0x4c, 0x0f, 0xae, 0x40, 0x40][..],       // REX.W + REX.R
+        &[0x67, 0x48, 0x0f, 0xae, 0x40, 0x40][..], // address-size prefix
+        &[0xf3, 0x48, 0x0f, 0xae, 0x40, 0x40][..], // REP prefix
+        &[0xf0, 0x48, 0x0f, 0xae, 0x40, 0x40][..], // LOCK prefix
+    ] {
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let (before, state, memory, result) =
+            run_fxsave64_at(&cell, CR0_BASE, CR4_FP, code, FP_AREA);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0xae },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{code:02x?}"
+        );
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), before_cell);
+    }
+}
+
+#[test]
+fn fxsave64_at_cpl3_is_refused_at_entry_without_mutation() {
+    let cell = RefCell::new(dirty_fp_state());
+    let before_cell = cell.borrow().clone();
+    let set = fp_set(&cell);
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    state.gpr[Register::Rax as usize] = fp_rbx_for(FP_AREA);
+    let before = state.clone();
+    let mut memory = FpMemory::new(&FXSAVE64_RAX_DISP8);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        None,
+        || false,
+    );
+    assert!(
+        matches!(result, Err(Cpl0ProfileSetInputError::WrongPrivilege)),
+        "{result:?}"
+    );
+    assert!(memory.writes.is_empty());
     assert_eq!(state, before);
     assert_eq!(*cell.borrow(), before_cell);
 }

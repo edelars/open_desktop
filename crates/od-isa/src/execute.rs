@@ -21006,6 +21006,14 @@ pub fn run_with_cpl0_profile_set_and_pio<P: crate::PortIo>(
 /// callback is polled up to twice per instruction boundary; `IN`/`OUT`, the CR3 effect and the
 /// `IRETQ` boundary are never reached because they are not allow-listed.
 ///
+/// S4-39f20: the one exception to the single-instruction steps is `F3 A4` (REP MOVSB, DF = 0): it
+/// bypasses the step of the set and runs in [`cpl3_rep_movsb`], one iteration per unit of the
+/// instruction budget (and of `instructions_executed`), with the STOP callback polled once before
+/// each iteration. The admission of the step is checked first by a zero-budget run of the same
+/// inner entry; a state that fails it refuses the form with `Unsupported { opcode: 0xa4 }`. A stop
+/// in the middle of a string (budget, STOP, #PF, #GP) leaves RIP on the instruction, so a count
+/// above zero means progress, not a completed instruction.
+///
 /// S4-39f (ISSUE-087): when a retired instruction leaves CPL3 (`SYSCALL`: CS RPL 0), the run ends
 /// right after it with `Run(StopAddress)` while budget is left; the caller continues with the CPL0
 /// entry on the same state.
@@ -21031,23 +21039,73 @@ pub fn run_with_cpl3_profile_set(
     let mut rflags_defined = initial_rflags_defined;
     loop {
         let boundary = retired == config.instruction_budget || config.stop_rip == Some(state.rip);
-        if !boundary
-            && let Ok(instruction) = long_decode::decode(memory, state.rip, config.context)
-            && !cpl3_allows(
+        if !boundary && let Ok(instruction) = long_decode::decode(memory, state.rip, config.context)
+        {
+            // S4-39f20: `F3 A4` (REP MOVSB) runs iteration by iteration here, not through the
+            // step: the set's REP path ignores the instruction budget inside a string.
+            // The string path never enters the step, so the admission the step makes (flags
+            // defined, CR0/CR4/CR3 and policy, FP state, activity, STI shadow, RFLAGS.VM and
+            // bit 1, HLT/STI preconditions) is made here by a zero-budget run of the same inner
+            // entry: it checks the admission and then stops before any fetch. A state that does
+            // not pass is refused like any other unadmitted `F3 A4` (`Unsupported { 0xa4 }`
+            // from the allow-list), with no read, write or register change.
+            if cpl3_is_rep_movsb(&instruction)
+                && state.rflags & (1 << 10) == 0
+                && run_cpl0_profile_set_inner(
+                    state,
+                    memory,
+                    RunConfig {
+                        instruction_budget: 0,
+                        stop_rip: None,
+                        ..config
+                    },
+                    rflags_defined,
+                    set,
+                    None,
+                    None,
+                    || false,
+                    PrivilegeLevel::Ring3,
+                )
+                .is_ok_and(|(probe, cr3_effect, user_entry)| {
+                    probe.exit == RunExit::InstructionBudgetExhausted
+                        && probe.instructions_executed == 0
+                        && cr3_effect.is_none()
+                        && user_entry.is_none()
+                })
+            {
+                let next_rip = state.rip.wrapping_add(instruction.length as u64);
+                if let Some(exit) = cpl3_rep_movsb(
+                    state,
+                    memory,
+                    config.context,
+                    next_rip,
+                    &mut retired,
+                    config.instruction_budget,
+                    &mut stop_requested,
+                ) {
+                    return Ok(Cpl0ProfileSetResult {
+                        exit: Cpl0ProfileSetExit::Run(exit),
+                        instructions_executed: retired,
+                        rflags_defined,
+                    });
+                }
+                continue;
+            }
+            if !cpl3_allows(
                 &instruction,
                 set.syscall,
                 lea_modrm_selects_sib(memory, state.rip, config.context, &instruction),
-            )
-        {
-            return Ok(Cpl0ProfileSetResult {
-                exit: Cpl0ProfileSetExit::Run(RunExit::Unsupported {
-                    // The opcode byte as the decoder reports it (the byte after `0F` for the
-                    // two-byte map), like the `Unsupported` of an undecodable form.
-                    opcode: instruction.opcode.byte,
-                }),
-                instructions_executed: retired,
-                rflags_defined,
-            });
+            ) {
+                return Ok(Cpl0ProfileSetResult {
+                    exit: Cpl0ProfileSetExit::Run(RunExit::Unsupported {
+                        // The opcode byte as the decoder reports it (the byte after `0F` for the
+                        // two-byte map), like the `Unsupported` of an undecodable form.
+                        opcode: instruction.opcode.byte,
+                    }),
+                    instructions_executed: retired,
+                    rflags_defined,
+                });
+            }
         }
         let step_config = RunConfig {
             instruction_budget: u64::from(!boundary),
@@ -21068,8 +21126,10 @@ pub fn run_with_cpl3_profile_set(
             PrivilegeLevel::Ring3,
         );
         let Ok((result, cr3_effect, user_entry)) = inner else {
-            // Only reachable after a retired instruction changed an admitted input; the state has
-            // already moved, so a typed admission error would misreport it.
+            // An admission error of the step: after a retired instruction changed an admitted
+            // input, or already at the first step (the entry checks only the Ring3 state and the
+            // syscall cells). Reported as `Unsupported` with the state as it is, not as a typed
+            // error, because earlier instructions may have moved it.
             return Ok(Cpl0ProfileSetResult {
                 exit: Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode: 0x0f }),
                 instructions_executed: retired,
@@ -21103,6 +21163,97 @@ pub fn run_with_cpl3_profile_set(
             });
         }
     }
+}
+
+/// S4-39f20: whether the decoded form is exactly `F3 A4` (REP MOVSB): no REX, no other prefix, two
+/// bytes, 64-bit address size. `F3 A5`, `A4` without REP, REX/66/67/F2/segment forms are not.
+fn cpl3_is_rep_movsb(instruction: &long_decode::Instruction) -> bool {
+    instruction.opcode.map == OpcodeMap::Primary
+        && instruction.opcode.byte == 0xa4
+        && instruction.operation
+            == (Operation::RepMovs {
+                size: OperandSize::Byte,
+            })
+        && instruction.length == 2
+        && instruction.address_size == OperandSize::Qword
+        && instruction.prefixes
+            == (Prefixes {
+                group1: Some(0xf3),
+                ..Prefixes::default()
+            })
+}
+
+/// S4-39f20: `F3 A4` at CPL3, one iteration per unit of the instruction budget. Returns `None`
+/// when the instruction retired (RIP advanced) and the exit otherwise. The caller guarantees DF = 0
+/// and that the budget and STOP address were checked before the first iteration.
+///
+/// Before the first iteration the STOP request is polled; before each later one the STOP request,
+/// then the budget (`retired` counts iterations, as the budget counts them). A stop in the middle
+/// leaves the finished iterations in `rsi`/`rdi`/`rcx` and RIP on the instruction. Each iteration
+/// reads `ds:[rsi]` then writes `es:[rdi]` (flat 64-bit, CPL3 access context); a fault (#GP(0) for a
+/// non-canonical address, #PF from the memory) leaves the state of the start of that iteration.
+/// `rcx = 0` retires the instruction as a no-op (one unit). Flags are never touched.
+fn cpl3_rep_movsb(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    retired: &mut u64,
+    budget: u64,
+    stop_requested: &mut impl FnMut() -> bool,
+) -> Option<RunExit> {
+    if stop_requested() {
+        return Some(RunExit::StopRequested);
+    }
+    if state.gpr[Register::Rcx as usize] == 0 {
+        state.rip = next_rip;
+        *retired += 1;
+        return None;
+    }
+    let mut first = true;
+    while state.gpr[Register::Rcx as usize] != 0 {
+        if !first {
+            if stop_requested() {
+                return Some(RunExit::StopRequested);
+            }
+            if *retired >= budget {
+                return Some(RunExit::InstructionBudgetExhausted);
+            }
+        }
+        first = false;
+        let source = Operand::Memory(MemoryOperand {
+            base: AddressBase::Register(Register::Rsi),
+            index: None,
+            scale: 1,
+            displacement: 0,
+            address_size: OperandSize::Qword,
+            size: OperandSize::Byte,
+        });
+        let destination = Operand::Memory(MemoryOperand {
+            base: AddressBase::Register(Register::Rdi),
+            index: None,
+            scale: 1,
+            displacement: 0,
+            address_size: OperandSize::Qword,
+            size: OperandSize::Byte,
+        });
+        let value = match read_operand(state, memory, context, next_rip, source) {
+            Ok(value) => value,
+            Err(MemoryError::Architectural(fault)) => return Some(RunExit::Fault(fault)),
+            Err(error) => return Some(RunExit::MemoryError(error)),
+        };
+        match write_operand(state, memory, context, next_rip, destination, value) {
+            Ok(()) => {}
+            Err(MemoryError::Architectural(fault)) => return Some(RunExit::Fault(fault)),
+            Err(error) => return Some(RunExit::MemoryError(error)),
+        }
+        state.gpr[Register::Rsi as usize] = state.gpr[Register::Rsi as usize].wrapping_add(1);
+        state.gpr[Register::Rdi as usize] = state.gpr[Register::Rdi as usize].wrapping_add(1);
+        state.gpr[Register::Rcx as usize] -= 1;
+        *retired += 1;
+    }
+    state.rip = next_rip;
+    None
 }
 
 /// S4-39a Ring3 admission by the cached state: CS selector RPL 3 over a CS cache with DPL 3 and
@@ -21212,6 +21363,41 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// changes, flags and memory are untouched. `E9` (JMP rel32; it decodes to the same operation, so
 /// the opcode byte is part of the match), `E8`, `FF /4` and the far forms stay outside.
 ///
+/// S4-39f16: `[REX] 0F B6 /r` (MOVZX r32, r/m8, `movzbl (%r8,%rcx), %eax` = `41 0f b6 04 08` of
+/// `/init` at `0x400189`) with a memory source only (mod != 11), no REX.W and no prefix other than
+/// REX. The CPL0 `Operation::Extend { signed: false }` is reused: the byte is read through
+/// `read_operand` with the CPL3 context (U/S check, #PF with U and no register write), the 32-bit
+/// destination is written with the upper half cleared, flags stay.
+///
+/// S4-39f17: `[REX] 84 /r` (TEST r/m8, r8, `testb %al, %al` = `84 c0` of `/init` at `0x40018e`) in
+/// the register form only (mod = 11) with no prefix other than REX. The CPL0
+/// `Operation::Logic { kind: Test }` at byte size is reused: CF = OF = 0, SF/ZF/PF of the byte
+/// `rm & reg`, AF undefined, nothing is written. REX.W does not change a byte test and is accepted
+/// as for `8A`/`38`/`C6`. The memory form, `A8` (TEST AL, imm8) and `F6 /0` stay outside.
+///
+/// S4-39f18: `3C ib` (CMP AL, imm8, `cmpb $0x20, %al` = `3c 20` of `/init` at `0x400192`) with no
+/// REX and no prefix. The CPL0 `Operation::Arithmetic { kind: Cmp }` at byte size is reused: the
+/// flags are those of `al - imm8` (SUB rules), nothing is written. `3D` (CMP eAX, imm32), `3A`/`3B`,
+/// `A8` (TEST AL, imm8) and `80 /7` with a register operand stay outside.
+///
+/// S4-39f19: `REX.W 81 /7 id` (CMP r/m64, imm32, `cmpq $0x80, %rcx` = `48 81 f9 80 00 00 00` of
+/// `/init` at `0x40019d`) in the register form only (mod = 11; REX.B reaches r8..r15). The CPL0
+/// `Operation::Arithmetic { kind: Cmp }` at qword size is reused: the imm32 is sign-extended to 64
+/// bits by the decoder, the flags are those of `reg - imm` (SUB rules, 64-bit), nothing is written.
+/// The memory form, the dword form (no REX.W), `81 /0..6`, `83 /7` and `3D` stay outside.
+///
+/// S4-39f20: `F3 A4` (REP MOVSB, `rep movsb` at `0x4001c1` of `/init`) is not matched here (the
+/// prefix check above refuses it): the run loop recognizes it with [`cpl3_is_rep_movsb`] and
+/// executes it in [`cpl3_rep_movsb`], one iteration per unit of the instruction budget, with
+/// DF = 1 refused as `Unsupported { opcode: 0xa4 }`.
+///
+/// S4-39f21: `REX.W 29 /r` (SUB r/m64, r64, `subq %rsi, %rdx` = `48 29 f2` of `/init` at
+/// `0x4001db`) in the register form only (mod = 11; REX.R reaches the source r8..r15, REX.B the
+/// destination). The CPL0 `Operation::Arithmetic { kind: Sub }` at qword size is reused:
+/// `dst = dst - src` is written back in full and CF/OF/SF/ZF/PF/AF are those of the 64-bit SUB.
+/// The memory form, the dword form (no REX.W), `28`/`2A`/`2B`/`2C`/`2D`, `81 /5` and `83 /5` stay
+/// outside.
+///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
 fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: bool) -> bool {
@@ -21286,6 +21472,18 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 src: Operand::Register(_),
             },
         ) => instruction.operand_size == OperandSize::Qword,
+        // S4-39f21: `REX.W 29 /r` (SUB r/m64, r64) in the register form only (both operands are
+        // registers; the memory form decodes to a memory destination and stays refused with
+        // `0x29`). REX.W is required: the dword form (`29 /r` without REX.W) stays refused.
+        (
+            OpcodeMap::Primary,
+            0x29,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Sub,
+                dst: Operand::Register(_),
+                src: Operand::Register(_),
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
         (
             OpcodeMap::Primary,
             0x85,
@@ -21298,6 +21496,44 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             instruction.operand_size,
             OperandSize::Dword | OperandSize::Qword
         ),
+        // S4-39f17: `[REX] 84 /r` (TEST r/m8, r8) in the register form only (both operands are
+        // registers; the memory form decodes to a memory destination and stays refused with
+        // `0x84`). The byte views follow the decoder (AH..BH without REX, SPL..DIL with any REX).
+        (
+            OpcodeMap::Primary,
+            0x84,
+            Operation::Logic {
+                kind: LogicKind::Test,
+                dst: Operand::Register(_),
+                src: Operand::Register(_),
+            },
+        ) => instruction.operand_size == OperandSize::Byte,
+        // S4-39f18: `3C ib` (CMP AL, imm8) with no REX and no prefix. The decoder names it
+        // `Arithmetic { Cmp, dst: Register(AL), src: Immediate }` at byte size; `3D` (CMP eAX,
+        // imm32), `3A`/`3B` and `A8` have their own opcode bytes and stay outside.
+        (
+            OpcodeMap::Primary,
+            0x3c,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Register(_),
+                src: Operand::Immediate(_),
+            },
+        ) => prefixes.rex.is_none() && instruction.operand_size == OperandSize::Byte,
+        // S4-39f19: `REX.W 81 /7 id` (CMP r/m64, imm32) in the register form only. The decoder
+        // names it `Arithmetic { Cmp, dst: Register, src: Immediate }` at qword size with the
+        // imm32 sign-extended to 64 bits; the memory form decodes to a memory destination, the
+        // dword form (no REX.W) to `Dword`, and `81 /0..6`, `83 /7` and `3D` to other operations
+        // or opcode bytes: all of them stay refused.
+        (
+            OpcodeMap::Primary,
+            0x81,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Register(_),
+                src: Operand::Immediate(_),
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
         (
             OpcodeMap::Primary,
             0x8a,
@@ -21359,6 +21595,22 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 ..
             },
         ) => instruction.operand_size == OperandSize::Dword,
+        // S4-39f16: `[REX] 0F B6 /r` (MOVZX r32, r/m8) with a memory source only, no REX.W; the
+        // register form decodes to a register source and stays refused with `0xb6`, as do
+        // `REX.W 0F B6` (MOVZX r64, r/m8), `0F B7` (word source) and `0F BE`/`BF` (MOVSX).
+        (
+            OpcodeMap::Escape0f,
+            0xb6,
+            Operation::Extend {
+                src: Operand::Memory(src),
+                signed: false,
+                ..
+            },
+        ) => {
+            instruction.operand_size == OperandSize::Dword
+                && src.size == OperandSize::Byte
+                && src.address_size == OperandSize::Qword
+        }
         (OpcodeMap::Primary, 0x8d, Operation::Lea { src, .. }) => {
             instruction.operand_size == OperandSize::Qword
                 && src.address_size == OperandSize::Qword
@@ -34401,13 +34653,17 @@ fn step_configured(
         });
     }
     let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
-    // S4-38L9d/E: the FP member of the CPL0 set owns `FNINIT`, the plain `FXSAVE` and `FXRSTOR64`; its
-    // state lives in the member's cell, so these three never reach the `state.x87`/`state.sse` paths below.
+    // S4-38L9d/E, S4-39f22: the FP member of the CPL0 set owns `FNINIT`, the plain `FXSAVE`, `FXSAVE64`
+    // and `FXRSTOR64`; its state lives in the member's cell, so these four never reach the
+    // `state.x87`/`state.sse` paths below.
     if let Some(fp_cell) = fp_cpl0
         && control_policy.is_some()
         && matches!(
             instruction.operation,
-            Operation::Fninit | Operation::FxsaveRipRelative(_) | Operation::Fxrstor64RbxDisp8(_)
+            Operation::Fninit
+                | Operation::FxsaveRipRelative(_)
+                | Operation::Fxsave64RaxDisp8(_)
+                | Operation::Fxrstor64RbxDisp8(_)
         )
     {
         return step_cpl0_fp(state, memory, context, &instruction, next_rip, fp_cell);
@@ -37073,7 +37329,7 @@ fn step_configured(
         // S4-38L7n/S4-38L7t: and for LOCK BTS/BTR m64, r64.
         | Operation::LockBitMem { .. }
         // S4-38L7bi: and for LOCK BTS m32/m64, imm8.
-        | Operation::LockBtsMemImm { .. } => {
+        | Operation::LockBitMemImm { .. } => {
             control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
         }
         // S4-38L7u: MOV r/m, Sreg exists only in the CPL0 set, and only when the visible
@@ -51150,7 +51406,7 @@ fn step_configured(
         | Operation::XaddDsMem { .. }
         | Operation::LockAndMem { .. }
         | Operation::LockBitMem { .. }
-        | Operation::LockBtsMemImm { .. }
+        | Operation::LockBitMemImm { .. }
         | Operation::MovSregStore { .. }
         | Operation::MovFsSelectorToRax
         | Operation::MovGsSelectorToRax
@@ -56405,6 +56661,49 @@ fn step_cpl0_fp(
             state.rip = next_rip;
             Ok(StepOutcome::Advanced)
         }
+        Operation::Fxsave64RaxDisp8(area) => {
+            // S4-39f22: `48 0F AE 40 40` (`fxsave64 0x40(%rax)`, the kernel's FP-state save).
+            // The mirror of the FXRSTOR64 arm below: the same encoding checks and CR4/CR0 gates,
+            // only the REX.W form with the fixed base (`rax`) and displacement exists. The image
+            // is the Long64 layout (64-bit FIP/FDP, XMM0-15); the selectors are not part of it, so
+            // they need not be modeled. The cell is not changed; only the RIP.
+            if instruction.opcode.map != OpcodeMap::Escape0f
+                || instruction.opcode.byte != 0xae
+                || instruction.length != 5
+                || instruction.prefixes
+                    != (Prefixes {
+                        rex: Some(0x48),
+                        ..Prefixes::default()
+                    })
+                || instruction.address_size != OperandSize::Qword
+                || area.base != AddressBase::Register(Register::Rax)
+                || area.index.is_some()
+                || area.displacement != 0x40
+                || area.size != OperandSize::Qword
+                || cr4 & (1 << 9) == 0
+            {
+                return unsupported;
+            }
+            if cr0 & 0xc != 0 {
+                return device_not_available;
+            }
+            let address = area.effective_address(state, next_rip);
+            let fp = cell.borrow();
+            if let Err(error) = fxsave(
+                &fp.x87,
+                &fp.sse,
+                memory,
+                context,
+                address,
+                FxsaveLayout::Long64,
+                // The paged adapter of the board stores 1/2/4/8 bytes per call.
+                true,
+            ) {
+                return report_memory_error(error);
+            }
+            state.rip = next_rip;
+            Ok(StepOutcome::Advanced)
+        }
         Operation::Fxrstor64RbxDisp8(area) => {
             // S4-38L9E: `48 0F AE 4B 40` (`fxrstor64 0x40(%rbx)`, the kernel's
             // `restore_fpregs_from_fpstate`). The same encoding checks and CR4/CR0 gates as the
@@ -57725,7 +58024,14 @@ fn transfer(
             memory.write_integer(address, context, element.size, new)?;
             state.rflags = (state.rflags & !crate::CF) | u64::from(old & mask != 0);
         }
-        Operation::LockBtsMemImm { destination, bit } => {
+        Operation::LockBitMemImm {
+            kind,
+            destination,
+            bit,
+        } => {
+            // S4-39g1: the same path serves LOCK BTR (`F0 [REX] 0F BA /6 ib`, `BitKind::Reset`):
+            // the bit is cleared instead of set; CF is the original bit; the destination is
+            // written back even when the bit was already clear.
             // S4-38L7bi: one vCPU, so read -> write needs no bus lock. The immediate is a bit
             // index inside the operand, not a bit-string offset: it is taken modulo the operand
             // width (Intel SDM Vol.2A, BTS: an imm8 offset on a memory operand addresses a bit
@@ -57740,7 +58046,14 @@ fn transfer(
             let width = destination.size.bytes() * 8;
             let mask = 1u64 << (u64::from(bit) % width as u64);
             let old = memory.read_integer(address, context, destination.size)?;
-            memory.write_integer(address, context, destination.size, old | mask)?;
+            let new = match kind {
+                BitKind::Set => old | mask,
+                BitKind::Reset => old & !mask,
+                BitKind::Test | BitKind::Complement => {
+                    unreachable!("LockBitMemImm decodes only BTS and BTR")
+                }
+            };
+            memory.write_integer(address, context, destination.size, new)?;
             state.rflags = (state.rflags & !crate::CF) | u64::from(old & mask != 0);
         }
         Operation::MovFsStore { dst, src } => {

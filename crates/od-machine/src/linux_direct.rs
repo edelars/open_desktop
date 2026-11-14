@@ -572,6 +572,11 @@ pub struct LinuxStopRecord {
     pub irq_refused_shadow: u64,
     /// S4-38L8b: quanta the board shortened to the deadline of the interrupt source.
     pub quantum_cut_by_deadline: u64,
+    /// S4-39g: times the board woke a CPU halted by `HLT` (IF = 1) from the source's wake time;
+    /// `0` without a source that models the wake.
+    pub halt_wakes: u64,
+    /// S4-39g: virtual nanoseconds the board clock skipped while the CPU was halted.
+    pub halt_idle_ns: u64,
     /// S4-38L7: the run was made with the diagnostic mode past C7
     /// ([`LinuxCpl0SetMembers::diagnostic_past_c7`]): the CPUID boundary was off, so the result is
     /// diagnostic only and is NOT counted. `false` on every other run.
@@ -790,6 +795,8 @@ fn stop_record(
         irq_refused_masked: extras.irq.irq_refused_masked,
         irq_refused_shadow: extras.irq.irq_refused_shadow,
         quantum_cut_by_deadline: extras.irq.quantum_cut_by_deadline,
+        halt_wakes: extras.irq.halt_wakes,
+        halt_idle_ns: extras.irq.halt_idle_ns,
         diagnostic_past_c7: extras.diagnostic_past_c7,
         cr3_changes: extras.changes.len() as u64,
         // The set loop records `MOV CR3` only; anything else it stops on as an integration error.
@@ -1081,6 +1088,19 @@ fn run_linux_direct_board_set_with(
     members: LinuxCpl0SetMembers,
     user_mode: bool,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
+    // S4-39g: only the user-mode run of a board with the Linux-profile PIT and 8259 gets the
+    // timer line: the PIT -> 8259 IR0 source becomes the board source, and the set carries `halt`
+    // (an idle `sti; hlt` ends the quantum and the board wakes the CPU at the next timer edge)
+    // and the interrupt hook. Every other run (also `--diagnostic-past-c7` without the flag,
+    // `DiagnosticV1`, the base probe) keeps the board as it was.
+    let mut members = members;
+    if user_mode && boot.board.enable_pit_pic_irq() {
+        // S4-39i: the UART THRE line goes to master IR4, so the kernel's 8250 driver can send
+        // `tty` output (it writes THR from the THRE interrupt).
+        boot.board.enable_uart_irq4();
+        members.halt = true;
+        members.irq = true;
+    }
     let cli = CliProfile::NonPviLong64V1;
     let cpuid = members.cpuid_profile;
     // The profile only names the member and seeds nothing under the cell, so it carries the
@@ -11076,7 +11096,11 @@ mod tests {
         assert_eq!(record.gpr[Register::Rsp as usize], ENTRY + 0x800);
         assert!(record.user_mode);
         assert_eq!(record.user_entry, None);
-        assert_eq!(record.set_members, ["cli", "cpu_owned_cr3", "user_mode"]);
+        // S4-39g: a user-mode run of the Linux-profile board also carries the idle wake members.
+        assert_eq!(
+            record.set_members,
+            ["cli", "cpu_owned_cr3", "halt", "irq", "user_mode"]
+        );
         assert_eq!(record.path, "cpl0_set");
     }
 
@@ -12636,6 +12660,405 @@ mod tests {
     /// Local APIC or the IOAPIC (the set loop has RAM, ports and the ECAM window only, S4-38L9s), so the host writes entry 2
     /// and SVR before the run and the EOI between the chunks of the run, through the same device
     /// registers a guest store would reach.
+    /// S4-39g: `STI; HLT` woken by the PIT through the 8259 master (IR0, vector `0x30`), the guest
+    /// EOI (port `0x20`) and the INTA of the board loop. The guest programs the PIC and the PIT
+    /// with its own `OUT`s; the handler is `[OUT 0x20, 0x20;] IRETQ`.
+    mod pic_wake {
+        use super::irq_hook::{IRQ_HANDLER_AT, IRQ_VECTOR, irq_board};
+        use super::*;
+        use crate::{AccessWidth, PortAddress};
+        use od_isa::StiProfile;
+
+        const IRETQ: [u8; 2] = [0x48, 0xCF];
+        const SPIN: [u8; 2] = [0xEB, 0xFE];
+        const STI_HLT: [u8; 2] = [0xFB, 0xF4];
+        const CLI_HLT: [u8; 2] = [0xFA, 0xF4];
+        /// `MOV AL, 0x5A`: the marker of the instruction after the first `HLT`.
+        const MARK: [u8; 2] = [0xB0, 0x5A];
+        /// `MOV AL, 0x77`: the marker after the second `HLT`.
+        const MARK2: [u8; 2] = [0xB0, 0x77];
+
+        /// `MOV AL, value; MOV DX, port; OUT DX, AL`.
+        fn outb(port: u16, value: u8) -> Vec<u8> {
+            vec![0xB0, value, 0x66, 0xBA, port as u8, (port >> 8) as u8, 0xEE]
+        }
+
+        /// `init_8259A` of the master as Linux writes it (ICW1..ICW4) and the mask `imr`.
+        fn pic_init(imr: u8) -> Vec<u8> {
+            [
+                outb(0x20, 0x11),
+                outb(0x21, 0x30),
+                outb(0x21, 0x04),
+                outb(0x21, 0x01),
+                outb(0x21, imr),
+            ]
+            .concat()
+        }
+
+        /// PIT channel 0, LSB+MSB, mode 2, reload `n`.
+        fn pit_program(n: u16) -> Vec<u8> {
+            [
+                outb(0x43, 0x34),
+                outb(0x40, n as u8),
+                outb(0x40, (n >> 8) as u8),
+            ]
+            .concat()
+        }
+
+        /// The handler with the EOI of the guest, and the handler without it.
+        fn eoi_handler() -> Vec<u8> {
+            [outb(0x20, 0x20), IRETQ.to_vec()].concat()
+        }
+
+        fn program(imr: u8, tail: &[&[u8]]) -> Vec<u8> {
+            let mut code = pic_init(imr);
+            code.extend(pit_program(10));
+            for part in tail {
+                code.extend_from_slice(part);
+            }
+            code
+        }
+
+        /// A board with the IDT of `irq_board`, `handler` at the vector, and (with `wake`) the
+        /// PIT -> 8259 source installed.
+        fn board(code: &[u8], handler: &[u8], wake: bool) -> (LinuxDirectBoot, Vec<u8>) {
+            let (mut boot, file) = irq_board(code);
+            write_phys(&mut boot, IRQ_HANDLER_AT, handler);
+            if wake {
+                assert!(
+                    boot.board.enable_pit_pic_irq(),
+                    "the Linux board has PIT and PIC"
+                );
+            }
+            (boot, file)
+        }
+
+        fn run(
+            boot: &mut LinuxDirectBoot,
+            budget: u64,
+        ) -> crate::firmware_board::LinuxSetRunReport {
+            let cli = CliProfile::NonPviLong64V1;
+            let sti = StiProfile::NonPviLong64V1;
+            let halt = HaltProfile::Long64V1;
+            let set = minimal_set(&cli)
+                .with_pio_u8()
+                .with_sti(&sti)
+                .with_halt(&halt);
+            boot.board
+                .run_linux_boot_cpl0_set(budget, &set, false, false, true)
+                .expect("runs")
+        }
+
+        fn rax_low(boot: &LinuxDirectBoot) -> u8 {
+            boot.board.state().gpr[Register::Rax as usize] as u8
+        }
+
+        fn pic(boot: &LinuxDirectBoot) -> (u8, u8) {
+            let snapshot = boot.board.pic_master().expect("the PIC exists").snapshot();
+            (snapshot.irr, snapshot.isr)
+        }
+
+        fn out_port(boot: &mut LinuxDirectBoot, port: u16, value: u8) {
+            boot.board
+                .bus_mut()
+                .write_port(PortAddress::new(port), AccessWidth::Byte, u32::from(value))
+                .expect("the port accepts the write");
+        }
+
+        #[test]
+        fn an_idle_sti_hlt_is_woken_by_ir0_and_returns_to_the_instruction_after_the_hlt() {
+            let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
+            let (mut boot, _) = board(&code, &eoi_handler(), true);
+            let rsp = boot.board.state().gpr[Register::Rsp as usize];
+            let report = run(&mut boot, 300);
+            assert_eq!(
+                report.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            assert_eq!(report.irq.halt_wakes, 1, "{report:?}");
+            // The clock skipped from the HLT (a few dozen ns) to the edge at 8381 ns.
+            assert!(
+                (8000..8381).contains(&report.irq.halt_idle_ns),
+                "{}",
+                report.irq.halt_idle_ns
+            );
+            assert!(report.run.virtual_ns >= 8381, "{}", report.run.virtual_ns);
+            // The wake is one unit of the budget: 299 instructions retired.
+            assert_eq!(report.run.retired, 299);
+            // The handler ran its EOI and IRETQ; the instruction after the HLT ran next.
+            assert_eq!(pic(&boot), (0, 0), "the EOI of the guest cleared ISR");
+            assert_eq!(rax_low(&boot), 0x5A);
+            let state = boot.board.state();
+            assert_eq!(state.rip, ENTRY + code.len() as u64 - 2, "the spin loop");
+            assert_ne!(state.rflags & (1 << 9), 0, "IRETQ restored IF");
+            assert_eq!(state.gpr[Register::Rsp as usize], rsp);
+            assert_eq!(state.activity, Some(CpuActivity::Running));
+            assert_eq!(IRQ_VECTOR, 0x30);
+        }
+
+        #[test]
+        fn without_the_eoi_isr_stays_set_and_the_next_edge_waits() {
+            let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
+            let (mut boot, _) = board(&code, &IRETQ, true);
+            let first = run(&mut boot, 300);
+            assert_eq!(first.irq.irqs_delivered, 1, "{first:?}");
+            assert_eq!(pic(&boot), (0, 1), "INTA set ISR, the handler sent no EOI");
+            // The second edge (16762 ns) comes while the spin loop runs with IF = 1.
+            let second = run(&mut boot, 10_000);
+            assert_eq!(
+                second.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{second:?}"
+            );
+            assert_eq!(second.irq.irqs_delivered, 0, "{second:?}");
+            assert_eq!(pic(&boot), (1, 1), "the second edge waits in IRR");
+            // The EOI of the host delivers the one waiting request.
+            out_port(&mut boot, 0x20, 0x20);
+            assert_eq!(pic(&boot), (1, 0));
+            let third = run(&mut boot, 100);
+            assert_eq!(third.irq.irqs_delivered, 1, "{third:?}");
+            assert_eq!(pic(&boot), (0, 1));
+        }
+
+        #[test]
+        fn a_second_hlt_with_ir0_in_service_stays_halted() {
+            let code = program(0x00, &[&STI_HLT, &MARK, &STI_HLT, &MARK2, &SPIN]);
+            let (mut boot, _) = board(&code, &IRETQ, true);
+            let report = run(&mut boot, 400);
+            assert_eq!(report.run.exit, PagedProbeExit::Halted, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            assert_eq!(report.irq.halt_wakes, 1, "{report:?}");
+            assert_eq!(
+                rax_low(&boot),
+                0x5A,
+                "the instruction after the second HLT did not run"
+            );
+            assert_eq!(boot.board.state().activity, Some(CpuActivity::Halted));
+            assert_eq!(pic(&boot).1, 1);
+        }
+
+        #[test]
+        fn hlt_without_if_is_not_woken() {
+            let code = program(0x00, &[&CLI_HLT, &MARK, &SPIN]);
+            let (mut boot, _) = board(&code, &eoi_handler(), true);
+            let report = run(&mut boot, 300);
+            assert_eq!(report.run.exit, PagedProbeExit::Halted, "{report:?}");
+            assert_eq!(report.irq.halt_wakes, 0, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 0, "{report:?}");
+            assert_eq!(
+                rax_low(&boot),
+                0x00,
+                "no instruction ran after the HLT (AL is still the last OUT value)"
+            );
+            let state = boot.board.state();
+            assert_eq!(state.rflags & (1 << 9), 0);
+            assert_eq!(state.activity, Some(CpuActivity::Halted));
+            assert_eq!(
+                state.rip,
+                ENTRY + code.len() as u64 - 4,
+                "right after the HLT"
+            );
+        }
+
+        #[test]
+        fn hlt_with_ir0_masked_is_not_woken() {
+            let code = program(0x01, &[&STI_HLT, &MARK, &SPIN]);
+            let (mut boot, _) = board(&code, &eoi_handler(), true);
+            let report = run(&mut boot, 300);
+            assert_eq!(report.run.exit, PagedProbeExit::Halted, "{report:?}");
+            assert_eq!(report.irq.halt_wakes, 0, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 0, "{report:?}");
+            assert_eq!(boot.board.state().activity, Some(CpuActivity::Halted));
+        }
+
+        #[test]
+        fn without_the_source_hlt_ends_the_run_as_before() {
+            let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
+            let (mut boot, _) = board(&code, &eoi_handler(), false);
+            let report = run(&mut boot, 300);
+            assert_eq!(report.run.exit, PagedProbeExit::Halted, "{report:?}");
+            assert_eq!(report.irq.halt_wakes, 0, "{report:?}");
+            assert_eq!(report.run.retired, 26, "15 + 9 + STI + HLT");
+        }
+
+        #[test]
+        fn the_user_mode_facade_wakes_and_the_other_facade_leaves_hlt_unsupported() {
+            let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
+            let members = LinuxCpl0SetMembers {
+                pio_u8: true,
+                sti: true,
+                ..LinuxCpl0SetMembers::minimal()
+            };
+            let (mut boot, file) = board(&code, &eoi_handler(), false);
+            let record = run_linux_direct_board_set_user_mode(
+                &mut boot,
+                &input(&file, &[], BLOB, board_hash()),
+                300,
+                members,
+            )
+            .expect("runs");
+            assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+            assert_eq!(
+                (record.irqs_delivered, record.halt_wakes),
+                (1, 1),
+                "{record:?}"
+            );
+            assert!(record.halt_idle_ns >= 8000, "{record:?}");
+            for name in ["halt", "irq", "user_mode"] {
+                assert!(
+                    record.set_members.iter().any(|member| member == name),
+                    "{name}: {:?}",
+                    record.set_members
+                );
+            }
+            // Without the user mode neither the source nor `halt` is switched on: the HLT
+            // stays outside the set, as it was.
+            let (mut boot, file) = board(&code, &eoi_handler(), false);
+            let record = run_set_facade(&mut boot, &file, 300, members);
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode: 0xF4 },
+                "{record:?}"
+            );
+            assert_eq!((record.irqs_delivered, record.halt_wakes), (0, 0));
+            assert!(!record.set_members.iter().any(|member| member == "halt"));
+            assert!(boot.board.pit_pic_source().is_none());
+        }
+    }
+
+    /// S4-39i: the UART THRE line to master IR4 under the user-mode facade. The guest enables
+    /// THRE and spins; its handler at vector `0x34` is the 8250 driver's shape: read IIR, send
+    /// one byte of a table to THR (nothing at the NUL end), EOI, `IRETQ`. Every byte of COM1 is
+    /// written by the handler, so without the wire to IR4 the transcript stays empty.
+    mod uart_irq4 {
+        use super::irq_hook::{IRQ_HANDLER_AT, IRQ_IDT_AT, irq_board};
+        use super::*;
+
+        const SPIN: [u8; 2] = [0xEB, 0xFE];
+        const TABLE: u64 = DATA + 0x3000;
+        const VECTOR: u8 = 0x34;
+        const NONCE: &[u8] = b"OD_NONCE=s4-38l4a\n";
+
+        /// `MOV AL, value; MOV DX, port; OUT DX, AL`.
+        fn outb(port: u16, value: u8) -> Vec<u8> {
+            vec![0xB0, value, 0x66, 0xBA, port as u8, (port >> 8) as u8, 0xEE]
+        }
+
+        /// `init_8259A` of the master (ICW2 `0x30`, so IR4 is vector `0x34`), IMR = 0.
+        fn pic_init() -> Vec<u8> {
+            [
+                outb(0x20, 0x11),
+                outb(0x21, 0x30),
+                outb(0x21, 0x04),
+                outb(0x21, 0x01),
+                outb(0x21, 0x00),
+            ]
+            .concat()
+        }
+
+        /// The guest: PIC, MCR OUT2, IER = THRE, spin.
+        fn program() -> Vec<u8> {
+            [
+                pic_init(),
+                outb(0x3FC, 0x08),
+                outb(0x3F9, 0x02),
+                SPIN.to_vec(),
+            ]
+            .concat()
+        }
+
+        /// IIR read, `AL = [RSI]`, a NUL ends the output, else the byte goes to THR and RSI
+        /// moves on; then EOI and `IRETQ`.
+        fn handler() -> Vec<u8> {
+            [
+                vec![0x66, 0xBA, 0xFA, 0x03, 0xEC],
+                vec![0x8A, 0x06, 0x84, 0xC0, 0x74, 0x08],
+                vec![0x66, 0xBA, 0xF8, 0x03, 0xEE, 0x48, 0xFF, 0xC6],
+                outb(0x20, 0x20),
+                vec![0x48, 0xCF],
+            ]
+            .concat()
+        }
+
+        fn board() -> (LinuxDirectBoot, Vec<u8>) {
+            let (mut boot, file) = irq_board(&program());
+            write_phys(&mut boot, IRQ_HANDLER_AT, &handler());
+            let mut table = NONCE.to_vec();
+            table.push(0);
+            write_phys(&mut boot, TABLE, &table);
+            // The gate of vector 0x34 is the gate of the board's IRQ vector, at the same handler.
+            let mut gate = [0u8; 16];
+            gate[0..2].copy_from_slice(&(IRQ_HANDLER_AT as u16).to_le_bytes());
+            gate[2..4].copy_from_slice(&0x10u16.to_le_bytes());
+            gate[5] = 0x8E;
+            gate[6..8].copy_from_slice(&((IRQ_HANDLER_AT >> 16) as u16).to_le_bytes());
+            write_phys(&mut boot, IRQ_IDT_AT + u64::from(VECTOR) * 16, &gate);
+            boot.board.state_mut().gpr[Register::Rsi as usize] = TABLE;
+            (boot, file)
+        }
+
+        fn members() -> LinuxCpl0SetMembers {
+            LinuxCpl0SetMembers {
+                pio_u8: true,
+                sti: true,
+                ..LinuxCpl0SetMembers::minimal()
+            }
+        }
+
+        #[test]
+        fn the_user_mode_run_sends_the_nonce_line_to_com1_from_the_thre_interrupt() {
+            let (mut boot, file) = board();
+            let record = run_linux_direct_board_set_user_mode(
+                &mut boot,
+                &input(&file, &[], BLOB, board_hash()),
+                4000,
+                members(),
+            )
+            .expect("runs");
+            assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+            assert_eq!(record.com1, NONCE, "{record:?}");
+            // One interrupt for the IER enable and one after each byte (the last finds the NUL).
+            assert_eq!(record.irqs_delivered, NONCE.len() as u64 + 1, "{record:?}");
+            let source = boot.board.uart_irq_source().expect("installed");
+            assert_eq!(source.uart_edges(), NONCE.len() as u64 + 1);
+            // The handler's EOI cleared ISR; the last IIR read left nothing pending.
+            let pic = boot.board.pic_master().expect("the PIC exists").snapshot();
+            assert_eq!((pic.irr, pic.isr), (0, 0));
+            assert_eq!(boot.board.uart().peek_iir(), 0x01);
+            assert_eq!(boot.board.state().gpr[Register::Rsi as usize], TABLE + 18);
+        }
+
+        #[test]
+        fn without_the_user_mode_the_uart_line_reaches_nothing_and_com1_stays_empty() {
+            let (mut boot, file) = board();
+            let record = run_set_facade(&mut boot, &file, 4000, members());
+            assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+            assert!(record.com1.is_empty(), "{record:?}");
+            assert_eq!(record.irqs_delivered, 0, "{record:?}");
+            assert!(boot.board.uart_irq_source().is_none());
+            // The UART holds the condition (IIR shows THRE), nothing took it.
+            assert_eq!(boot.board.uart().peek_iir(), 0x02);
+        }
+
+        #[test]
+        fn the_uart_source_needs_the_pit_source_first_and_is_installed_once() {
+            let (mut boot, _) = board();
+            assert!(boot.board.enable_pit_pic_irq());
+            assert!(boot.board.enable_uart_irq4());
+            assert!(
+                boot.board.enable_uart_irq4(),
+                "a second call keeps the source"
+            );
+            assert!(boot.board.pit_pic_source().is_some());
+            // Without the PIT source first the UART source is refused.
+            let (mut fresh, _) = board();
+            assert!(!fresh.board.enable_uart_irq4());
+            assert!(fresh.board.uart_irq_source().is_none());
+        }
+    }
+
     mod irq_pit_source {
         use super::irq_hook::{CLD, IRQ_HANDLER_AT, IRQ_VECTOR, irq_board};
         use super::*;
