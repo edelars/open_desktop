@@ -21212,6 +21212,12 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// changes, flags and memory are untouched. `E9` (JMP rel32; it decodes to the same operation, so
 /// the opcode byte is part of the match), `E8`, `FF /4` and the far forms stay outside.
 ///
+/// S4-39f16: `[REX] 0F B6 /r` (MOVZX r32, r/m8, `movzbl (%r8,%rcx), %eax` = `41 0f b6 04 08` of
+/// `/init` at `0x400189`) with a memory source only (mod != 11), no REX.W and no prefix other than
+/// REX. The CPL0 `Operation::Extend { signed: false }` is reused: the byte is read through
+/// `read_operand` with the CPL3 context (U/S check, #PF with U and no register write), the 32-bit
+/// destination is written with the upper half cleared, flags stay.
+///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
 fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: bool) -> bool {
@@ -21359,6 +21365,22 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 ..
             },
         ) => instruction.operand_size == OperandSize::Dword,
+        // S4-39f16: `[REX] 0F B6 /r` (MOVZX r32, r/m8) with a memory source only, no REX.W; the
+        // register form decodes to a register source and stays refused with `0xb6`, as do
+        // `REX.W 0F B6` (MOVZX r64, r/m8), `0F B7` (word source) and `0F BE`/`BF` (MOVSX).
+        (
+            OpcodeMap::Escape0f,
+            0xb6,
+            Operation::Extend {
+                src: Operand::Memory(src),
+                signed: false,
+                ..
+            },
+        ) => {
+            instruction.operand_size == OperandSize::Dword
+                && src.size == OperandSize::Byte
+                && src.address_size == OperandSize::Qword
+        }
         (OpcodeMap::Primary, 0x8d, Operation::Lea { src, .. }) => {
             instruction.operand_size == OperandSize::Qword
                 && src.address_size == OperandSize::Qword
