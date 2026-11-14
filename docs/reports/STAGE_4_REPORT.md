@@ -694,17 +694,18 @@ periodic timer or Linux acceptance is claimed. See the
 [S4-28a3 report](STAGE_4_S4-28A3_2026-11-07.md) and
 [evidence](data/stage4/s4-28a3-hlt-timer.json).
 
-## S4-34b — KVM identity and repeatability (physical run complete; review pending)
+## S4-34b — KVM identity and repeatability (accepted after independent review)
 
 The isolated `codex` worktree has a repeatable KVM method runner that records
 the configured guest CPUID model and host microcode, retains every invocation,
 and rejects malformed CPU identity, unstable outcomes, injection trace/UART
 mismatches, runner source/binary changes, or image hash changes. Forty-one offline
-builder tests pass. On the Mini, three repeats of each of the three existing
+builder tests pass. The slice was accepted after independent `gpt-6.1-sol/high`
+review and merged to `main` in `1203ba7`. On the Mini, three repeats of each of the three existing
 cases were stable after masking only per-CPU APIC identifiers in the CPUID
 identity comparison; raw CPUID models/hashes remain recorded for every
 invocation. All cases passed their exact expected exit and UART checks, and
-runner/image integrity hashes matched. S4-34b awaits independent review;
-S4-34 remains open because architectural system cases are still missing. See
+runner/image integrity hashes matched. Host reboot repeatability remains
+unverified. S4-34 remains open because architectural system cases are still missing. See
 the [S4-34b report](STAGE_4_S4-34B_2026-11-14.md) and
 [repeatability evidence](data/stage4/s4-34b-kvm-repeatability.json).
