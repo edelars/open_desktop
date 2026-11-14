@@ -21126,6 +21126,11 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// first `SYSCALL`). REX.W (qword), a memory operand and the other XOR opcodes (`30`, `32`, `33`,
 /// `34`, `35`, `80`/`81`/`83 /6`) stay outside.
 ///
+/// S4-39f3: `REX.W C7 /0 id` (MOV r/m64, imm32 sign-extended to 64 bits) in the register form
+/// (mod = 11; REX.B selects r8..r15) with no prefix other than REX, as in `48 c7 c7 9c ff ff ff`
+/// (`movq $-0x64, %rdi`) of `/init` after its second `SYSCALL`. `C7 /0` without REX.W (MOV r/m32,
+/// imm32), a memory operand and `C6 /0` (MOV r/m8, imm8) stay outside.
+///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
 fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool) -> bool {
@@ -21151,6 +21156,14 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool) -> bool {
             },
         ) => instruction.operand_size == OperandSize::Dword,
         (OpcodeMap::Escape0f, 0x05, Operation::Syscall) => syscall,
+        (
+            OpcodeMap::Primary,
+            0xc7,
+            Operation::MovImmediate {
+                dst: Operand::Register(_),
+                ..
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
         (
             OpcodeMap::Primary,
             0x31,
