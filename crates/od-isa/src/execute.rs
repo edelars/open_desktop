@@ -21133,8 +21133,17 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 ///
 /// S4-39f4: `REX.W 85 /r` (TEST r/m64, r64) in the register form (mod = 11; REX.R and REX.B select
 /// r8..r15) with no prefix other than REX, as in `48 85 c0` (`testq %rax, %rax`) of `/init` after
-/// its `read` `SYSCALL`. `85` without REX.W (TEST r/m32, r32), a memory operand, `84`
-/// (TEST r/m8, r8) and `A8`/`A9`/`F6`/`F7 /0` stay outside.
+/// its `openat` `SYSCALL` (the `read` `SYSCALL` follows at `0x40011f`). `85` without REX.W
+/// (TEST r/m32, r32), a memory operand, `84` (TEST r/m8, r8) and `A8`/`A9`/`F6`/`F7 /0` stay
+/// outside.
+///
+/// S4-39f5: `0F 80`..`0F 8F` (Jcc rel32) without REX and without any prefix (`0f 88 ..` = `js` of
+/// `/init` at `0x400102`): the CPL0 `Operation::Branch` is reused (the condition is evaluated on
+/// RFLAGS, a taken branch goes to `next_rip + rel32`, a non-canonical target is #GP, flags stay).
+/// The short `7x` Jcc, `JMP` and `CALL` stay outside. `[REX.W] 89 /r` (MOV r/m64, r64) in the
+/// register form (mod = 11; REX.R and REX.B select r8..r15) with REX.W mandatory, as in `49 89 c4`
+/// / `4c 89 e7` of `/init`: the CPL0 `Operation::Mov` is reused (64-bit write, flags stay). `89`
+/// without REX.W (MOV r/m32, r32), a memory operand and `88`/`8B` stay outside.
 ///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
@@ -21161,6 +21170,15 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool) -> bool {
             },
         ) => instruction.operand_size == OperandSize::Dword,
         (OpcodeMap::Escape0f, 0x05, Operation::Syscall) => syscall,
+        (OpcodeMap::Escape0f, 0x80..=0x8f, Operation::Branch { .. }) => prefixes.rex.is_none(),
+        (
+            OpcodeMap::Primary,
+            0x89,
+            Operation::Mov {
+                dst: Operand::Register(_),
+                src: Operand::Register(_),
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
         (
             OpcodeMap::Primary,
             0xc7,

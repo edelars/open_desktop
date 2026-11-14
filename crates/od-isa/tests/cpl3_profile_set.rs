@@ -430,7 +430,7 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
             0x85,
         ),
         (
-            "test ax, ax (66 REX.W 85 /r)",
+            "test rax, rax with 66 prefix (66 REX.W 85 /r)",
             &[0x66, 0x48, 0x85, 0xc0],
             0x85,
         ),
@@ -462,7 +462,59 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
             &[0xf0, 0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00],
             0xc7,
         ),
-        ("mov rbx, rax", &[0x48, 0x89, 0xc3], 0x89),
+        // S4-39f4 review gap: `F7 /0` (TEST r/m64, imm32) and `A8` (TEST AL, imm8) stay outside.
+        (
+            "test rax, imm32 (REX.W F7 /0)",
+            &[0x48, 0xf7, 0xc0, 1, 0, 0, 0],
+            0xf7,
+        ),
+        ("test al, imm8 (A8)", &[0xa8, 1], 0xa8),
+        // S4-39f5: `[REX.W] 89 /r` in the register form is allowed; the variants below stay outside.
+        ("mov ebx, eax (89 /r, no REX.W)", &[0x89, 0xc3], 0x89),
+        (
+            "mov r12d, r8d (89 /r, REX.RB without W)",
+            &[0x45, 0x89, 0xc4],
+            0x89,
+        ),
+        (
+            "mov [rbx], rax (REX.W 89 /r, memory)",
+            &[0x48, 0x89, 0x03],
+            0x89,
+        ),
+        (
+            "mov [rip+0], rax (REX.W 89 /r, RIP-relative)",
+            &[0x48, 0x89, 0x05, 0, 0, 0, 0],
+            0x89,
+        ),
+        (
+            "mov bx, ax (66 REX.W 89 /r)",
+            &[0x66, 0x48, 0x89, 0xc3],
+            0x89,
+        ),
+        ("lock mov rbx, rax", &[0xf0, 0x48, 0x89, 0xc3], 0x89),
+        ("fs mov rbx, rax", &[0x64, 0x48, 0x89, 0xc3], 0x89),
+        ("gs mov rbx, rax", &[0x65, 0x48, 0x89, 0xc3], 0x89),
+        ("addr32 mov rbx, rax", &[0x67, 0x48, 0x89, 0xc3], 0x89),
+        ("repne mov rbx, rax", &[0xf2, 0x48, 0x89, 0xc3], 0x89),
+        ("rep mov rbx, rax", &[0xf3, 0x48, 0x89, 0xc3], 0x89),
+        ("mov bl, al (88 /r)", &[0x88, 0xc3], 0x88),
+        ("mov rbx, rax (REX.W 8B /r)", &[0x48, 0x8b, 0xd8], 0x8b),
+        // S4-39f5: Jcc rel32 is allowed without any prefix and without REX; the rest stays outside.
+        ("jne rel8 (75)", &[0x75, 0x00], 0x75),
+        ("jmp rel32 (E9)", &[0xe9, 0, 0, 0, 0], 0xe9),
+        ("call rel32 (E8)", &[0xe8, 0, 0, 0, 0], 0xe8),
+        ("rex.w je rel32", &[0x48, 0x0f, 0x84, 0, 0, 0, 0], 0x84),
+        ("rex je rel32", &[0x40, 0x0f, 0x84, 0, 0, 0, 0], 0x84),
+        (
+            "operand-size je rel32",
+            &[0x66, 0x0f, 0x84, 0, 0, 0, 0],
+            0x84,
+        ),
+        ("addr32 je rel32", &[0x67, 0x0f, 0x84, 0, 0, 0, 0], 0x84),
+        ("fs je rel32", &[0x64, 0x0f, 0x84, 0, 0, 0, 0], 0x84),
+        ("repne je rel32", &[0xf2, 0x0f, 0x84, 0, 0, 0, 0], 0x84),
+        ("rep je rel32", &[0xf3, 0x0f, 0x84, 0, 0, 0, 0], 0x84),
+        ("lock je rel32", &[0xf0, 0x0f, 0x84, 0, 0, 0, 0], 0x84),
         // Prefixed variants of the allowed forms and a different operand size.
         (
             "mov rax, imm64",
@@ -990,7 +1042,8 @@ fn test_r64_register_form_sets_flags_and_writes_no_result() {
     // The flags are those of `first & second`; CF = OF = 0.
     #[allow(clippy::type_complexity)]
     let cases: &[(&str, &[u8], usize, u64, usize, u64, u64)] = &[
-        // `/init` at 0x4000ff: testq %rax, %rax with a negative value (read returned -errno).
+        // `/init` at 0x4000ff: testq %rax, %rax right after the `openat` `SYSCALL` (the `read`
+        // `SYSCALL` is at 0x40011f), here with a negative value (`openat` returned -errno).
         (
             "48 85 c0 negative",
             &[0x48, 0x85, 0xc0],
@@ -1092,15 +1145,235 @@ fn test_r64_register_form_sets_flags_and_writes_no_result() {
 
 #[test]
 fn test_r64_allowed_then_forbidden_form_keeps_the_retired_state() {
-    // `testq %rax, %rax` retires, `js rel32` (`0f 88`, a conditional jump) stops the run.
+    // `testq %rax, %rax` retires, the taken `js rel32` (S4-39f5: allowed) skips one byte and lands
+    // on `mov [rbx], rax` (memory form, still outside), which stops the run.
     let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let mut state = user_state();
     state.gpr[Register::Rax as usize] = 0xffff_ffff_ffff_fff2;
-    let mut memory = Memory::code(&[0x48, 0x85, 0xc0, 0x0f, 0x88, 0x0c, 0x01, 0x00, 0x00]);
+    let mut memory = Memory::code(&[
+        0x48, 0x85, 0xc0, 0x0f, 0x88, 0x01, 0x00, 0x00, 0x00, 0x90, 0x48, 0x89, 0x03,
+    ]);
     let result = run3(&mut state, &mut memory, &set, 8).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x88 });
-    assert_eq!(result.instructions_executed, 1);
-    assert_eq!(state.rip, RIP + 3);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x89 });
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.rip, RIP + 10);
     assert_eq!(state.rflags & (SF | ZF | CF | OF), SF);
     assert_eq!(memory.accesses, 0);
+}
+
+#[test]
+fn test_r64_with_rex_x_in_the_register_form_executes() {
+    // `4a 85 c0`: REX.WX; with mod = 11 there is no SIB, REX.X is ignored (SDM from memory).
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let mut state = user_state();
+    state.gpr[Register::Rax as usize] = 0x8000_0000_0000_0000;
+    state.rflags |= ARITH;
+    let mut memory = Memory::code(&[0x4a, 0x85, 0xc0]);
+    let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 3);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x8000_0000_0000_0000);
+    assert_eq!(state.rflags & ARITH & (CF | OF | SF | ZF | PF), SF | PF);
+    assert_eq!(memory.accesses, 0);
+}
+
+// ---- S4-39f5: Jcc rel32 and `[REX.W] 89 /r` (MOV r/m64, r64), register form ----
+
+/// The condition of `0F 80+cc` on RFLAGS, written out per the SDM table (independent of the
+/// decoder's `ConditionCode::evaluate`).
+fn jcc_expected(cc: u8, flags: u64) -> bool {
+    let (cf, pf, zf, sf, of) = (
+        flags & CF != 0,
+        flags & PF != 0,
+        flags & ZF != 0,
+        flags & SF != 0,
+        flags & OF != 0,
+    );
+    match cc {
+        0 => of,
+        1 => !of,
+        2 => cf,
+        3 => !cf,
+        4 => zf,
+        5 => !zf,
+        6 => cf || zf,
+        7 => !cf && !zf,
+        8 => sf,
+        9 => !sf,
+        10 => pf,
+        11 => !pf,
+        12 => sf != of,
+        13 => sf == of,
+        14 => zf || sf != of,
+        15 => !zf && sf == of,
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn jcc_rel32_follows_every_condition_over_all_flag_combinations() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    for cc in 0..16u8 {
+        for combination in 0..32u64 {
+            let mut flags = 0;
+            for (bit, mask) in [CF, PF, ZF, SF, OF].into_iter().enumerate() {
+                if combination & (1 << bit) != 0 {
+                    flags |= mask;
+                }
+            }
+            for rel in [0x10_i32, -0x20, 0] {
+                let mut state = user_state();
+                state.rflags = 2 | (1 << 9) | flags;
+                for (index, value) in state.gpr.iter_mut().enumerate() {
+                    *value = 0x1111_1111_1111_1111_u64.wrapping_mul(index as u64 + 1);
+                }
+                let before = state.clone();
+                let mut bytes = vec![0x0f, 0x80 | cc];
+                bytes.extend_from_slice(&rel.to_le_bytes());
+                let mut memory = Memory::code(&bytes);
+                let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+                let name = format!("cc {cc:#x} flags {flags:#x} rel {rel}");
+                assert_eq!(
+                    exit(&result),
+                    &RunExit::InstructionBudgetExhausted,
+                    "{name}"
+                );
+                assert_eq!(result.instructions_executed, 1, "{name}");
+                let next = RIP + 6;
+                let expected_rip = if jcc_expected(cc, flags) {
+                    next.wrapping_add_signed(i64::from(rel))
+                } else {
+                    next
+                };
+                assert_eq!(state.rip, expected_rip, "{name}");
+                // Flags, registers and everything else stay.
+                assert_eq!(state.rflags, before.rflags, "{name}");
+                assert_eq!(state.gpr, before.gpr, "{name}");
+                assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS, "{name}");
+                assert_eq!(memory.accesses, 0, "{name}");
+            }
+        }
+    }
+}
+
+#[test]
+fn js_and_je_take_the_branch_only_on_sf_and_zf() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    // (opcode second byte, RFLAGS, taken). 0x206 = IF | PF | bit 1 (SF and ZF clear, as after
+    // `testq %rax, %rax` with rax = 3 in `/init`), 0x246 adds ZF, 0x286 adds SF instead.
+    let cases: &[(u8, u64, bool)] = &[
+        (0x88, 0x206, false),
+        (0x88, 0x286, true),
+        (0x88, 0x246, false),
+        (0x84, 0x246, true),
+        (0x84, 0x206, false),
+        (0x84, 0x286, false),
+        (0x85, 0x206, true),
+        (0x85, 0x246, false),
+        (0x89, 0x206, true),
+        (0x89, 0x286, false),
+        (0x8a, 0x206, true),
+    ];
+    for (second, rflags, taken) in cases {
+        let mut state = user_state();
+        state.rflags = *rflags | (1 << 9);
+        let mut memory = Memory::code(&[0x0f, *second, 0x0c, 0x01, 0x00, 0x00]);
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        let name = format!("0f {second:02x} rflags {rflags:#x}");
+        assert_eq!(result.instructions_executed, 1, "{name}");
+        let expected = if *taken { RIP + 6 + 0x10c } else { RIP + 6 };
+        assert_eq!(state.rip, expected, "{name}");
+        assert_eq!(state.rflags, *rflags | (1 << 9), "{name}");
+    }
+}
+
+#[test]
+fn mov_r64_register_form_copies_all_64_bits_and_leaves_flags_alone() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    // (name, bytes, destination index, source index)
+    let cases: &[(&str, &[u8], usize, usize)] = &[
+        ("48 89 c3 mov rbx, rax", &[0x48, 0x89, 0xc3], 3, 0),
+        ("49 89 c4 mov r12, rax (REX.WB)", &[0x49, 0x89, 0xc4], 12, 0),
+        ("4c 89 e7 mov rdi, r12 (REX.WR)", &[0x4c, 0x89, 0xe7], 7, 12),
+        ("4d 89 c7 mov r15, r8 (REX.WRB)", &[0x4d, 0x89, 0xc7], 15, 8),
+        ("48 89 c0 mov rax, rax", &[0x48, 0x89, 0xc0], 0, 0),
+        ("4a 89 c3 mov rbx, rax (REX.WX)", &[0x4a, 0x89, 0xc3], 3, 0),
+    ];
+    for (name, bytes, dst, src) in cases {
+        for flags in [0, ARITH] {
+            let mut state = user_state();
+            for (index, value) in state.gpr.iter_mut().enumerate() {
+                *value = 0x1111_1111_1111_1111_u64.wrapping_mul(index as u64 + 1);
+            }
+            state.gpr[*src] = 0xfedc_ba98_7654_3210;
+            state.rflags |= flags;
+            let mut expected = state.clone();
+            expected.gpr[*dst] = 0xfedc_ba98_7654_3210;
+            expected.rip = RIP + bytes.len() as u64;
+            let mut memory = Memory::code(bytes);
+            let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+            assert_eq!(
+                exit(&result),
+                &RunExit::InstructionBudgetExhausted,
+                "{name}"
+            );
+            assert_eq!(result.instructions_executed, 1, "{name}");
+            assert_eq!(state, expected, "{name}");
+            assert_eq!(state.rip, RIP + 3, "{name}");
+            assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS, "{name}");
+            assert_eq!(memory.accesses, 0, "{name}");
+        }
+    }
+}
+
+/// `/init` from `0x4000ff` to the `read` `SYSCALL` at `0x40011f` (`init.elf`, `objdump -d`):
+/// `testq %rax, %rax; js 0x400214; movq %rax, %r12; movq %r12, %rdi; leaq 0xeeb(%rip), %rsi;
+/// movl $0xfff, %edx; movl $0, %eax`, then `syscall` (`0f 05`).
+const INIT_READ_PATH: [u8; 33] = [
+    0x48, 0x85, 0xc0, 0x0f, 0x88, 0x0c, 0x01, 0x00, 0x00, 0x49, 0x89, 0xc4, 0x4c, 0x89, 0xe7, 0x48,
+    0x8d, 0x35, 0xeb, 0x0e, 0x00, 0x00, 0xba, 0xff, 0x0f, 0x00, 0x00, 0xb8, 0x00, 0x00, 0x00, 0x00,
+    0x0f,
+];
+
+#[test]
+fn init_path_after_openat_runs_in_ring3_up_to_the_read_syscall() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let mut bytes = INIT_READ_PATH.to_vec();
+    bytes.push(0x05);
+    let mut state = user_state();
+    // The `openat` result: fd 3 (`js` is not taken).
+    state.gpr[Register::Rax as usize] = 3;
+    let mut memory = Memory::code(&bytes);
+    let result = run3(&mut state, &mut memory, &set, 64).unwrap();
+    // Without the `with_syscall` member the loop stops at `SYSCALL` (`Unsupported 0x05`).
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x05 });
+    assert_eq!(result.instructions_executed, 7);
+    assert_eq!(state.rip, RIP + 32);
+    assert_eq!(state.gpr[Register::R12 as usize], 3);
+    assert_eq!(state.gpr[Register::Rdi as usize], 3);
+    assert_eq!(state.gpr[Register::Rsi as usize], RIP + 22 + 0xeeb);
+    assert_eq!(state.gpr[Register::Rdx as usize], 0xfff);
+    assert_eq!(state.gpr[Register::Rax as usize], 0);
+    // `testq %rax, %rax` with rax = 3: SF = ZF = 0, PF = 1 (two bits set).
+    assert_eq!(state.rflags & ARITH, PF);
+    assert_eq!(memory.accesses, 0);
+}
+
+#[test]
+fn init_path_with_a_negative_openat_result_takes_the_js_to_the_error_exit() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    // The `js` target `0x400214` is `0x115` bytes past `0x4000ff`: a `SYSCALL` stands there.
+    let mut bytes = vec![0u8; 0x117];
+    bytes[..9].copy_from_slice(&INIT_READ_PATH[..9]);
+    bytes[0x115] = 0x0f;
+    bytes[0x116] = 0x05;
+    let mut state = user_state();
+    state.gpr[Register::Rax as usize] = 0xffff_ffff_ffff_fff2;
+    let mut memory = Memory::code(&bytes);
+    let result = run3(&mut state, &mut memory, &set, 64).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x05 });
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.rip, RIP + 0x115);
+    assert_eq!(state.rflags & (SF | ZF), SF);
 }
