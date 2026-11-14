@@ -5158,7 +5158,7 @@ fn cmp_al_imm8_sets_the_byte_sub_flags_and_writes_nothing() {
         ("3c 20 al=7f", &[0x3c, 0x20], 0x7f, PF),
         ("3c 20 al=80", &[0x3c, 0x20], 0x80, OF | PF),
         ("3c 20 al=ff", &[0x3c, 0x20], 0xff, SF),
-        // `/init` at 0x4001a0 (after the first `je`): `cmpb $0x0a, %al`.
+        // `/init` at 0x400196 (after the `je` that follows the first `cmpb`).
         ("3c 0a al=0a", &[0x3c, 0x0a], 0x0a, ZF | PF),
         ("3c 0a al=20", &[0x3c, 0x0a], 0x20, AF),
         ("3c 0a al=00", &[0x3c, 0x0a], 0x00, CF | SF | PF | AF),
