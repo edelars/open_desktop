@@ -1061,6 +1061,8 @@ pub struct FirmwareRunReport {
     pub tsc_hz: u64,
     /// Successful guest RDTSC reads in this call; `None` without the Linux-profile source.
     pub rdtsc_reads: Option<u64>,
+    /// Successful guest RDTSC reads by CPL ring 0..3; `None` without the Linux-profile source.
+    pub rdtsc_reads_by_cpl: Option<[u64; 4]>,
     /// Successful guest reads of PIT port B (`0x61`) during this call; `None` without a PIT.
     pub pit_port_b_reads: Option<u64>,
     /// Successful guest reads of PIT channel 2 (`0x42`) during this call; `None` without a PIT.
@@ -1825,6 +1827,7 @@ impl LoadedFirmwareBoard {
         let pit_port_b_reads_before = pit.as_ref().map(Pit8254Handle::port_b_reads);
         let pit_counter_port_reads_before = pit.as_ref().map(Pit8254Handle::counter_port_reads);
         let mut rdtsc_reads = 0u64;
+        let mut rdtsc_reads_by_cpl = [0u64; 4];
         if let Some(pm) = &acpi_pm {
             pm.take_timer_tick_ns();
         }
@@ -1974,6 +1977,11 @@ impl LoadedFirmwareBoard {
                 && flag.swap(false, Ordering::Relaxed)
             {
                 rdtsc_reads = rdtsc_reads.saturating_add(1);
+                let cpl = self
+                    .state
+                    .cs_selector
+                    .map_or(0, |selector| (selector & 3) as usize);
+                rdtsc_reads_by_cpl[cpl] = rdtsc_reads_by_cpl[cpl].saturating_add(1);
                 let tick_ns = RDTSC_TICK_NS;
                 #[cfg(test)]
                 let tick_ns = if self.suppress_rdtsc_tick { 0 } else { tick_ns };
@@ -2058,6 +2066,7 @@ impl LoadedFirmwareBoard {
                 virtual_ns: self.clock().now_ns(),
                 tsc_hz: self.clock().tsc_hz(),
                 rdtsc_reads: rdtsc_tick.as_ref().map(|_| rdtsc_reads),
+                rdtsc_reads_by_cpl: rdtsc_tick.as_ref().map(|_| rdtsc_reads_by_cpl),
                 pit_port_b_reads: pit_port_b_reads_before
                     .zip(pit.as_ref().map(Pit8254Handle::port_b_reads))
                     .map(|(before, after)| after.saturating_sub(before)),
@@ -2107,6 +2116,7 @@ impl LoadedFirmwareBoard {
         let pit_port_b_reads_before = pit.as_ref().map(Pit8254Handle::port_b_reads);
         let pit_counter_port_reads_before = pit.as_ref().map(Pit8254Handle::counter_port_reads);
         let mut rdtsc_reads = 0u64;
+        let mut rdtsc_reads_by_cpl = [0u64; 4];
         // Ticks queued before this run came from the host, not from the guest.
         if let Some(pm) = &acpi_pm {
             pm.take_timer_tick_ns();
@@ -2174,6 +2184,11 @@ impl LoadedFirmwareBoard {
                 && flag.swap(false, Ordering::Relaxed)
             {
                 rdtsc_reads = rdtsc_reads.saturating_add(1);
+                let cpl = self
+                    .state
+                    .cs_selector
+                    .map_or(0, |selector| (selector & 3) as usize);
+                rdtsc_reads_by_cpl[cpl] = rdtsc_reads_by_cpl[cpl].saturating_add(1);
                 let tick_ns = RDTSC_TICK_NS;
                 #[cfg(test)]
                 let tick_ns = if self.suppress_rdtsc_tick { 0 } else { tick_ns };
@@ -2199,6 +2214,7 @@ impl LoadedFirmwareBoard {
                 virtual_ns: self.clock().now_ns(),
                 tsc_hz: self.clock().tsc_hz(),
                 rdtsc_reads: rdtsc_tick.as_ref().map(|_| rdtsc_reads),
+                rdtsc_reads_by_cpl: rdtsc_tick.as_ref().map(|_| rdtsc_reads_by_cpl),
                 pit_port_b_reads: pit_port_b_reads_before
                     .zip(pit.as_ref().map(Pit8254Handle::port_b_reads))
                     .map(|(before, after)| after.saturating_sub(before)),
@@ -5042,6 +5058,7 @@ mod tests {
         assert_eq!(report.exit, PagedProbeExit::Halted);
         assert_eq!(report.retired, 101);
         assert_eq!(report.rdtsc_reads, Some(100));
+        assert_eq!(report.rdtsc_reads_by_cpl, Some([100, 0, 0, 0]));
         assert_eq!(report.pit_port_b_reads, Some(0));
         assert_eq!(report.pit_counter_port_reads, Some(0));
         assert_eq!(report.virtual_ns, 100 * 1_000 + 101);
@@ -5069,6 +5086,7 @@ mod tests {
         assert_eq!(report.retired, 0, "Unsupported on the first instruction");
         assert_eq!(report.virtual_ns, 0, "no tick without the profile");
         assert_eq!(report.rdtsc_reads, None);
+        assert_eq!(report.rdtsc_reads_by_cpl, None);
         assert_eq!(report.pit_port_b_reads, None);
         assert_eq!(report.pit_counter_port_reads, None);
     }

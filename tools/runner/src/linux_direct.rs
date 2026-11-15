@@ -745,6 +745,7 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
     stop["machine_stop_reason"] = machine_stop_reason_json(record.stop_reason);
     stop["pm_timer_reads"] = json!(record.pm_timer_reads);
     stop["rdtsc_reads"] = json!(record.rdtsc_reads);
+    stop["rdtsc_reads_by_cpl"] = json!(record.rdtsc_reads_by_cpl);
     stop["pit_port_b_reads"] = json!(record.pit_port_b_reads);
     stop["pit_counter_port_reads"] = json!(record.pit_counter_port_reads);
     // Keep the vector breakdown outside the large literal to stay under `json!`'s recursion limit.
@@ -1857,6 +1858,7 @@ mod tests {
         assert_eq!(value["stop"]["unsupported_opcode"], "0xf4");
         assert_eq!(value["stop"]["pm_timer_reads"], 1);
         assert_eq!(value["stop"]["rdtsc_reads"], 1);
+        assert_eq!(value["stop"]["rdtsc_reads_by_cpl"], json!([1, 0, 0, 0]));
         assert_eq!(value["stop"]["pit_port_b_reads"], 1);
         assert_eq!(value["stop"]["pit_counter_port_reads"], 1);
     }

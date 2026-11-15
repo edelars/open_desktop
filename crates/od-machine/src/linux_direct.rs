@@ -515,6 +515,8 @@ pub struct LinuxStopRecord {
     pub pm_timer_reads: Option<u64>,
     /// Successful guest RDTSC reads during this run; `None` without the Linux-profile source.
     pub rdtsc_reads: Option<u64>,
+    /// Successful guest RDTSC reads by CPL ring 0..3; `None` without the Linux-profile source.
+    pub rdtsc_reads_by_cpl: Option<[u64; 4]>,
     /// Successful guest reads of PIT port B (`0x61`) during this run; `None` without a PIT.
     pub pit_port_b_reads: Option<u64>,
     /// Successful guest reads of PIT channel 2 (`0x42`) during this run; `None` without a PIT.
@@ -792,6 +794,7 @@ fn stop_record(
         virtual_ns: report.virtual_ns,
         pm_timer_reads,
         rdtsc_reads: report.rdtsc_reads,
+        rdtsc_reads_by_cpl: report.rdtsc_reads_by_cpl,
         pit_port_b_reads: report.pit_port_b_reads,
         pit_counter_port_reads: report.pit_counter_port_reads,
         tsc_hz: report.tsc_hz,
@@ -1816,6 +1819,7 @@ mod tests {
         program_pit_channel_2(&mut boot);
         let check = |record: &LinuxStopRecord| {
             assert_eq!(record.rdtsc_reads, Some(1));
+            assert_eq!(record.rdtsc_reads_by_cpl, Some([1, 0, 0, 0]));
             assert_eq!(record.pit_port_b_reads, Some(1));
             assert_eq!(record.pit_counter_port_reads, Some(1));
             assert_eq!(record.pm_timer_reads, Some(1));
@@ -11204,6 +11208,28 @@ mod tests {
             ["cli", "cpu_owned_cr3", "halt", "irq", "user_mode"]
         );
         assert_eq!(record.path, "cpl0_set");
+    }
+
+    #[test]
+    fn unsupported_cpl3_rdtsc_does_not_increment_read_counts() {
+        let (mut boot, file) = user_mode_board(&[0x0f, 0x31, 0x0f, 0x05], true);
+        let members = LinuxCpl0SetMembers {
+            rdtsc: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let record = run_linux_direct_board_set_user_mode(
+            &mut boot,
+            &input(&file, &[], BLOB, board_hash()),
+            8,
+            members,
+        )
+        .expect("runs");
+
+        assert_eq!(record.exit_kind, "user_mode_unsupported", "{record:?}");
+        assert_eq!(record.cpl, 3);
+        assert_eq!(record.cpl3_retired, 0);
+        assert_eq!(record.rdtsc_reads, Some(0));
+        assert_eq!(record.rdtsc_reads_by_cpl, Some([0, 0, 0, 0]));
     }
 
     const SYSCALL_KERNEL_AT: u64 = ENTRY + 0x600;
