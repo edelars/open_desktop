@@ -28,6 +28,9 @@ pub const ACPI_BLOB_RSDP_SLOT_BYTES: u32 = 0x40;
 pub const ACPI_RSDP_BYTES: usize = 36;
 /// Length of the FACS segment (ACPI Table 5.13, version 2).
 pub const ACPI_FACS_BYTES: u32 = 64;
+/// Offset and value of the FACS `Version` byte (2 for ACPI 5.0 and later; the firmware writes 2).
+const FACS_VERSION_OFFSET: usize = 32;
+const ACPI_FACS_VERSION: u8 = 2;
 /// Tables and the payload start are 16-aligned.
 pub const ACPI_BLOB_ALIGN: u32 = 16;
 /// Length of a System Description Table header (ACPI Table 5.4).
@@ -98,7 +101,8 @@ pub enum AcpiBlobError {
     FacsAddressMismatch {
         found: u64,
     },
-    /// `facs_len` is not 64, or the FACS bytes have a wrong signature or `Length` field.
+    /// `facs_len` is not 64, or the FACS bytes differ from what the firmware writes (signature,
+    /// `Length`, version 2, all other bytes zero).
     BadFacs,
     /// A byte between the end of the directory and `payload_offset` is not zero.
     NonZeroHeaderGap {
@@ -665,9 +669,16 @@ fn check_rsdp_and_references(blob: &[u8], info: &ValidatedAcpiBlob) -> Result<()
         }
     }
 
-    // FACS: signature and Length (it has no checksum).
+    // FACS (no checksum): exactly the bytes the firmware serializer writes - signature, Length,
+    // version 2 at offset 32, every other byte (hardware signature, vectors, Global Lock, flags,
+    // reserved, OSPM flags) zero.
     let facs = info.facs_bytes(blob);
-    if facs[..4] != *b"FACS" || le32(facs, 4) != ACPI_FACS_BYTES {
+    if facs[..4] != *b"FACS"
+        || le32(facs, 4) != ACPI_FACS_BYTES
+        || facs[FACS_VERSION_OFFSET] != ACPI_FACS_VERSION
+        || facs[8..FACS_VERSION_OFFSET].iter().any(|&b| b != 0)
+        || facs[FACS_VERSION_OFFSET + 1..].iter().any(|&b| b != 0)
+    {
         return Err(AcpiBlobError::BadFacs);
     }
     Ok(())

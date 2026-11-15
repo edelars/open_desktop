@@ -976,6 +976,9 @@ fn the_facs_segment_is_checked() {
     assert_eq!(with(&|b| put32(b, 0x54, 128)), Err(AcpiBlobError::BadFacs));
     let facs = le32(&good(), 0x50) as usize;
     assert_eq!(with(&|b| b[facs] = b'X'), Err(AcpiBlobError::BadFacs));
+    // The version byte (offset 32) and a reserved byte (offset 33) are checked too.
+    assert_eq!(with(&|b| b[facs + 32] = 1), Err(AcpiBlobError::BadFacs));
+    assert_eq!(with(&|b| b[facs + 33] = 1), Err(AcpiBlobError::BadFacs));
     assert_eq!(
         with(&|b| put32(b, facs + 4, 128)),
         Err(AcpiBlobError::BadFacs)
@@ -1019,8 +1022,8 @@ fn every_corrupted_header_field_and_byte_of_the_fixture_is_refused() {
             "payload byte {i:#x}"
         );
     }
-    // The FACS has no checksum; its signature and length are checked, the rest is data.
-    for i in 0..8 {
+    // The FACS has no checksum; every byte is pinned (signature, length, version 2, the rest zero).
+    for i in 0..64 {
         let mut blob = FIXTURE.to_vec();
         blob[info.facs_offset + i] ^= 0x01;
         assert!(
