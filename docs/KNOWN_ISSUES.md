@@ -252,7 +252,7 @@
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d39`.
 - **Статус:** решена только для exact bare `55` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
 - **Результат и проверка:** существующий stack helper записывает qword RBP на `[RSP-8]`, затем обновляет RSP/RIP только при успешной записи. `paged_probe_profile` — 207 passed: full state/RSP/qword bytes, stack #PF/#SS, fetch fault, соседние opcode/prefix формы, CPL3 и другие profiles.
-- **Runner:** после 33 retired инструкций достиг [ISSUE-133](#issue-133-s7-04-rust-helper-push-r15-unsupported); этот blocker теперь решён. Runner retired 38 инструкций и остановился на [ISSUE-136](#issue-136-s7-04-rust-helper-sub-rsp-imm8-0x38-unsupported).
+- **Runner:** после 33 retired инструкций достиг [ISSUE-133](#issue-133-s7-04-rust-helper-push-r15-unsupported); этот blocker теперь решён. Runner retired 39 инструкций и остановился на [ISSUE-137](#issue-137-s7-04-rust-helper-movzx-edi-word-rsi-plus-8-unsupported).
 - **Основание:** образ `/private/tmp/od-fw-s7-push-rbp.bin`; `od -An -tx1 -j 0xd3a -N12` показывает `41 57 41 56 41 55 41 54 53 48 83 ec`; runner с бюджетом 10000.
 
 <a id="issue-133-s7-04-rust-helper-push-r15-unsupported"></a>
@@ -284,10 +284,18 @@
 ### ISSUE-136 — S7-04: Rust helper `SUB RSP,0x38` (`48 83 EC 38`) остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `PUSH R12`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d43`.
+- **Статус:** решена только для exact `48 83 EC 38` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Результат и проверка:** exact qword register-only `SUB RSP,0x38` переиспользует существующую arithmetic SUB semantics рядом с `SUB RSP,0x58`; обновляет RSP и arithmetic flags/definedness, не обращаясь к памяти и не проверяя canonicality результата. `paged_probe_profile` — 228 passed: flags/full state, noncanonical result without memory access, immediate fetch-fault atomicity, neighbors, CPL3 и other-profile isolation.
+- **Runner:** образ `/private/tmp/od-fw-s7-sub-rsp-38.bin` (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). После 39 retired инструкций остановился на `0F B7 7E 08` (`MOVZX EDI,word ptr [RSI+8]`, opcode byte `0xB7`) при `RIP=0x200d47`, `Unsupported { opcode: 183 }`; COM1 пуст. Следующий blocker — [ISSUE-137](#issue-137-s7-04-rust-helper-movzx-edi-word-rsi-plus-8-unsupported).
+
+<a id="issue-137-s7-04-rust-helper-movzx-edi-word-rsi-plus-8-unsupported"></a>
+### ISSUE-137 — S7-04: Rust helper `MOVZX EDI,word ptr [RSI+8]` (`0F B7 7E 08`) остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `SUB RSP,0x38`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d47`.
 - **Статус:** открыта.
-- **Суть и последствия:** exact bytes `48 83 EC 38` выполняют qword `SUB RSP,0x38`; runner returns `Unsupported { opcode: 131 }`, `retired=38`, `RIP=0x200d43`; COM1 пуст.
-- **Основание:** образ `/private/tmp/od-fw-s7-push-r12.bin`; `od -An -tx1 -j 0xd43 -N12` показывает `48 83 ec 38 0f b7 7e 08 0f b7 5e 0a`; runner с бюджетом 10000.
-- **Следующий шаг:** оценить exact immediate SUB RSP form с сохранением существующих arithmetic flags и profile isolation.
+- **Суть и последствия:** firmware reads a 16-bit handoff field at `[RSI+8]`, zero-extends it into EDI and therefore RDI; runner returns `Unsupported { opcode: 183 }` (`0xB7`), `retired=39`, `RIP=0x200d47`; COM1 пуст.
+- **Основание:** образ `/private/tmp/od-fw-s7-sub-rsp-38.bin`; `od -An -tx1 -j 0xd47 -N12` показывает `0f b7 7e 08 0f b7 5e 0a 66 83 ff 01`; runner с бюджетом 10000.
+- **Следующий шаг:** изучить точную memory MOVZX operand форму и сохранение fault/commit semantics, не расширяя лишние адресации и профили.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки

@@ -394,8 +394,8 @@ Long64 CPL0 allowlist: `48 8B 03` (`MOV RAX,[RBX]`), `48 89 0B`
 `F4` (`HLT`); S7-03 extends it with `B0+r ib` and `66 B8+r iw`, and S7-04 adds
 bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`,
 `75 24`/`75 38`/`75 77` (the exact firmware/helper JNZ rel8 forms), `77 0E` (exact helper JA/JNBE rel8), `49 89 F8`,
-`E8 83 01 00 00` and `E8 8D 02 00 00` (the two exact `CALL rel32` forms), `48 83 EC 58`
-(`SUB RSP,0x58`), `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`), `48 81 FA 9F 00 00 00` (`CMP RDX,0x9f`), and
+`E8 83 01 00 00` and `E8 8D 02 00 00` (the two exact `CALL rel32` forms), `48 83 EC 58`/`48 83 EC 38`
+(`SUB RSP,0x58`/`SUB RSP,0x38`), `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`), `48 81 FA 9F 00 00 00` (`CMP RDX,0x9f`), and
 `48 8D 7C 24 08` (`LEA RDI,[RSP+8]`), `BE 00 00 10 00`
 (`MOV ESI,0x00100000`), `BA 00 00 01 00` (`MOV EDX,0x00010000`), and
 `31 C9` (`XOR ECX,ECX`), `41 56`/`41 57`/`41 55`/`41 54` (`PUSH R14`/`PUSH R15`/`PUSH R13`/`PUSH R12`), and bare `53`/`55` (`PUSH RBX`/`PUSH RBP`; see the extensions below). The CPU entry validates its profile admission and
@@ -515,9 +515,9 @@ Tests проверяют только изменение RDI/RIP, full state, ex
 
 Tests проверяют полный CPU state/return-address store всех трех targets, flags/definedness, соседние displacement и CALL/JMP формы, CPL3/other-profile isolation, fetch fault и stack #SS/#PF atomicity, включая #GP priority перед stack access. Runner retired 26 инструкций, выполнил helper CALL на `0x200d10` и остановился на `48 89 F8` (`MOV RAX,RDI`, ISSUE-126, RIP `0x200d10`).
 
-#### Расширение S7-04: точный Rust-entry `SUB RSP,0x58`
+#### Расширение S7-04: exact Rust-entry/helper `SUB RSP,imm8`
 
-В base `PagedCpl0ProbeV1` допускается только `48 83 EC 58`: Primary opcode `83`, длина 4, qword, ровно REX.W `0x48`, операция SUB, destination RSP и sign-extended immediate `0x58`. Используется существующая `arithmetic_result` семантика: RSP получает полное 64-битное значение `RSP - 0x58`, шесть арифметических flags обновляются по SUB, остальные flags сохраняются, и эти шесть bits становятся defined. При входном RSP после firmware CALL `0x14fff8` результат равен `0x14ffa0`. Это исключительно арифметика регистров: команда не читает/пишет стек, не проверяет canonicality результата и не может вызвать stack/page fault; дальнейшее обращение к стеку проверит соответствующий адрес по обычным правилам. Fault при fetch любого байта инструкции оставляет CPU неизменным. Другие destination/immediate/opcode/width/prefix forms, CPL3 и остальные paged profiles не допускаются.
+В base `PagedCpl0ProbeV1` допускаются только точные `48 83 EC 58` и helper `48 83 EC 38`: Primary opcode `83`, длина 4, qword, ровно REX.W `0x48`, операция SUB, destination RSP и sign-extended immediate строго `0x58` либо `0x38`. Используется существующая `arithmetic_result` семантика: RSP получает полное 64-битное значение `RSP - immediate`, шесть арифметических flags обновляются по SUB, остальные flags сохраняются, и эти шесть bits становятся defined. При входном RSP после firmware CALL `0x14fff8` форма `0x58` даёт `0x14ffa0`, а форма `0x38` — `0x14ffc0`. Это исключительно арифметика регистров: команда не читает/пишет стек, не проверяет canonicality результата и не может вызвать stack/page fault; дальнейшее обращение к стеку проверит соответствующий адрес по обычным правилам. Fault при fetch любого байта инструкции оставляет CPU неизменным. Другие destination/immediate/opcode/width/prefix forms, CPL3 и остальные paged profiles не допускаются.
 
 Tests проверяют полный CPU state и точные flags/definedness, noncanonical result без fault и data-memory access, immediate fetch fault через границу страницы, соседние forms, CPL3 и stack/CR3/CR0.WP profiles. Firmware runner retired 13 инструкций и остановился на `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`, ISSUE-113, RIP `0x2001f4`).
 
@@ -599,7 +599,7 @@ Tests проверяют полный state/RSP, восемь записанны
 
 В base `PagedCpl0ProbeV1` допускается только `41 54`: REX `0x41`, opcode `0x54`, длина 2 и qword `StackRegister { push: true, register: R12 }`. Переиспользуется `push_stack_value`: qword R12 записывается на `[RSP-8]`, RSP/RIP коммитятся после успешной записи, flags и остальные GPR сохраняются. Stack #PF/#SS и fetch fault не коммитят CPU state; соседние registers/encodings, CPL3 и остальные profiles остаются вне allowlist.
 
-Tests проверяют полный state/RSP, восемь записанных bytes, stack #PF/#SS, fetch fault на opcode byte после REX и CPL3/other-profile isolation. Runner retired 38 инструкций и остановился на `48 83 EC 38` (`SUB RSP,0x38`, ISSUE-136, RIP `0x200d43`).
+Tests проверяют полный state/RSP, восемь записанных bytes, stack #PF/#SS, fetch fault на opcode byte после REX и CPL3/other-profile isolation. Runner после 38 retired инструкций исполнил этот helper SUB и после 39 остановился на `0F B7 7E 08` (`MOVZX EDI,word ptr [RSI+8]`, ISSUE-137, RIP `0x200d47`).
 
 #### Расширение S7-04: exact Rust-helper `SUB RSP,0xb8`
 
