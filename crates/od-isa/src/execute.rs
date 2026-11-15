@@ -21120,8 +21120,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.rip = next_rip;
         }
         // S7-04: the Rust helper reads exact handoff fields with MOVZX Word at
-        // +8/+0xA and `8B 4E 0C`/`8B 4E 10` (MOV ECX,dword ptr [RSI+0xC/+0x10]).
-        // Reuse the faulting read and 32-bit write; other load forms remain unsupported.
+        // +8/+0xA, `8B 4E 0C`/`8B 4E 10` (MOV ECX,dword ptr [RSI+0xC/+0x10]),
+        // and `8B 7E 14` (MOV EDI,dword ptr [RSI+0x14]). Reuse the tracked
+        // faulting read and 32-bit write; other load forms remain unsupported.
         Operation::Extend {
             dst: destination,
             src: Operand::Memory(source),
@@ -21162,11 +21163,13 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             && instruction.length == 3
             && instruction.operand_size == OperandSize::Dword
             && instruction.prefixes == Prefixes::default()
-            && destination == RegisterView::low(Register::Rcx, OperandSize::Dword)
+            && ((destination == RegisterView::low(Register::Rcx, OperandSize::Dword)
+                && matches!(source.displacement, 0x0c | 0x10))
+                || (destination == RegisterView::low(Register::Rdi, OperandSize::Dword)
+                    && source.displacement == 0x14))
             && source.base == AddressBase::Register(Register::Rsi)
             && source.index.is_none()
             && source.scale == 1
-            && matches!(source.displacement, 0x0c | 0x10)
             && source.address_size == OperandSize::Qword
             && source.size == OperandSize::Dword =>
         {

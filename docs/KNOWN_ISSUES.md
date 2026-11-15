@@ -537,13 +537,23 @@
 - **Ссылка:** [CPU profile contract](specs/CPU_CONTRACT.md#s7-04-exact-rust-helper-mov-r8-imm64).
 
 <a id="issue-164-s7-04-rust-helper-mov-edi-dword-rsi-14-unsupported"></a>
-### ISSUE-164 — S7-04: Rust helper `MOV EDI,dword ptr [RSI+0x14]` (`8B 7E 14`) remains outside paged CPU profile
+### ISSUE-164 — S7-04: exact Rust-helper `MOV EDI,dword ptr [RSI+0x14]` profile slice
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `MOV R8,imm64`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200def`.
+- **Статус:** решена только для exact encoding `8B 7E 14` in base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Суть и последствия:** exact dword read uses RSI as base plus disp8 `0x14`, writes EDI with architectural zero-extension to RDI, preserves flags, and performs no memory write. Other register, displacement, width, prefix and addressing forms remain outside this slice.
+- **Основание:** firmware image `/private/tmp/od-fw-s7-mov-edi-dword-rsi-14.bin`; runner с бюджетом 10000.
+- **Результат и проверка:** `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_mov_edi_dword -- --nocapture` — 5 passed; all 338 `paged_probe_profile` tests pass. `cargo test --offline -p od-machine --test paged_probe_quantum paged_probe_handoff_field_reads_use_tracked_page_walk_and_zero_extend_registers -- --nocapture` and `... paged_probe_mov_edi_dword_rsi_disp8_uses_tracked_four_level_walk -- --nocapture` pass. Tests cover exact address/width/destination, zero-extension, no flag change, injected read fault, noncanonical effective address, neighbors, CPL3 and other-profile isolation; the four-level integration verifies tracked PTE A bits. Runner retired 67 instructions and stopped at `41 B9 FF FF FF FF` (`MOV R9D,0xffffffff`, ISSUE-165), `RIP=0x200df2`, `Unsupported { opcode: 185 }`, `com1_bytes=0`.
+- **Ссылка:** [CPU profile contract](specs/CPU_CONTRACT.md#s7-04-exact-rust-helper-mov-edi-dword-rsi-14).
+
+<a id="issue-165-s7-04-rust-helper-mov-r9d-imm32-unsupported"></a>
+### ISSUE-165 — S7-04: Rust helper `MOV R9D,0xffffffff` (`41 B9 FF FF FF FF`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `MOV EDI,dword ptr [RSI+0x14]`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200df2`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retires 66 instructions, then stops at `8B 7E 14` (`MOV EDI,dword ptr [RSI+0x14]`), `Unsupported { opcode: 139 }`, `RIP=0x200def`; COM1 remains empty.
-- **Основание:** firmware image `/private/tmp/od-fw-s7-mov-r8-imm64.bin`; `od -An -tx1 -j 0xdef -N20` shows `8b 7e 14 41 b9 ff ff ff ff 45 31 d2 45 31 db 66 90 46 0f b6`; runner с бюджетом 10000.
-- **Следующий шаг:** inspect the exact dword load source/destination and existing tracked-memory semantics, then consider only the observed form.
+- **Суть и последствия:** runner retires 67 instructions, then stops at `41 B9 FF FF FF FF` (`MOV R9D,0xffffffff`), `Unsupported { opcode: 185 }`, `RIP=0x200df2`; COM1 remains empty.
+- **Основание:** firmware image `/private/tmp/od-fw-s7-mov-edi-dword-rsi-14.bin`; `od -An -tx1 -j 0xdf2 -N24` shows `41 b9 ff ff ff ff 45 31 d2 45 31 db 66 90 46 0f b6 34 1e 4d 89 df 4d 21`; runner с бюджетом 10000.
+- **Следующий шаг:** inspect the exact R9 dword immediate form and existing zero-extending MOV-immediate semantics, then consider only the observed instruction.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.

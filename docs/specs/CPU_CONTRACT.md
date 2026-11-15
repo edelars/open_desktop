@@ -790,6 +790,13 @@ Base `PagedCpl0ProbeV1` admits only `0F B7 CB`: opcode map `0F`, opcode `B7`, no
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_movzx_ecx_bx -- --nocapture` — 4 passed; full `paged_probe_profile` — 329 passed. Tests cover high-RCX zero-extension, full-state/flags retention, unsupported neighbors, fetch fault at ModRM, CPL3 and other-profile isolation. Firmware image `/private/tmp/od-fw-s7-movzx-ecx-bx.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 65 instructions and stopped at `49 B8 FC FF FF FF FF FF FF 7F` (`MOV R8,0x7ffffffffffffffc`, ISSUE-163), `RIP=0x200de5`, `Unsupported { opcode: 184 }`, `com1_bytes=0`; full handoff validation remains incomplete.
 
+<a id="s7-04-exact-rust-helper-mov-edi-dword-rsi-14"></a>
+#### Расширение S7-04: exact Rust-helper `MOV EDI,dword ptr [RSI+0x14]`
+
+Base `PagedCpl0ProbeV1` adds only `8B 7E 14`: primary opcode `8B`, ModRM `7E` (dword destination EDI, memory base RSI, disp8 mode), signed displacement byte `0x14`, instruction length 3, no prefixes. It reuses the tracked dword read and dword register write: the 32-bit value zero-extends into RDI, flags are preserved, and the data memory is read only. The tracked read performs the existing four-level translation/accessed-bit path; no broader MOV memory form is admitted.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_mov_edi_dword -- --nocapture` — 5 passed; full `paged_probe_profile` — 338 passed. Synthetic tests cover exact address/width/destination, zero-extension, flags, injected read fault, noncanonical effective address, neighboring forms, CPL3 and other profiles. Two machine integration checks pass: the handoff-field sequence includes this read, and `paged_probe_mov_edi_dword_rsi_disp8_uses_tracked_four_level_walk` separately executes the exact load and verifies the page-table Accessed bits. Firmware image `/private/tmp/od-fw-s7-mov-edi-dword-rsi-14.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 67 instructions and stopped at `41 B9 FF FF FF FF` (`MOV R9D,0xffffffff`, ISSUE-165), `RIP=0x200df2`, `Unsupported { opcode: 185 }`, `com1_bytes=0`; full handoff validation remains incomplete.
+
 <a id="s7-04-exact-rust-helper-mov-r8-imm64"></a>
 #### Расширение S7-04: exact Rust-helper `MOV R8,imm64`
 
