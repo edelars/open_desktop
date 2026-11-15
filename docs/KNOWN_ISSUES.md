@@ -27,7 +27,7 @@
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `CLD`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
 - **Владелец:** S7-04 совместно с владельцем CPU profile.
-- **Статус:** решена в узком смысле exact entry формы `MOV RAX,imm32`; runner остаётся заблокирован на следующем startup instruction (ISSUE-102).
+- **Статус:** решена в узком смысле exact entry формы `MOV RAX,imm32` (код `d5d6e22`); runner остаётся заблокирован на следующем startup instruction (ISSUE-102).
 - **Суть и последствия:** после успешно исполненного `CLD` runner отклонял `C7` (`MOV RAX,imm32`, bytes `48 C7 C0 00 00 10 00`) на `RIP=0x200041`. Narrow profile slice теперь принимает только этот REX.W C7 /0 register encoding для RAX. До Rust entry прошивка пока не доходит; handoff parser и COM1 остаются непроверенными в машине.
 - **Основание:** на образе `/private/tmp/od-fw-s7-04.bin` команда `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04.bin --com1-out /private/tmp/od-fw-s7-04-after-cld.com1 --budget 10000` вернула `status=error`, `exit=unsupported`, `Unsupported { opcode: 199 }`, `retired=1`, `RIP=0x200041`, `com1_bytes=0`. Образ SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 - **Результат:** базовый `PagedCpl0ProbeV1` исполняет exact `48 C7 C0 id`, sign-extends immediate dword, изменяет только RAX и RIP, без guest data access; другие widths/registers/memory forms и paged profiles отклоняются. Runner retired 2 инструкции (`CLD`, C7) и теперь отклоняет `48 39 C7` (`CMP RDI,RAX`, unsupported opcode 57 decimal = `0x39`) на `RIP=0x200048`; см. ISSUE-102.
