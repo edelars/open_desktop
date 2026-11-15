@@ -60,8 +60,10 @@ const RSS_GROWTH_LIMIT: u64 = 5 * 1024 * 1024;
 const LIVE_HEAP_GROWTH_LIMIT: i64 = 64 * 1024;
 /// Peak live heap above the pre-run level allowed during any phase.
 const PEAK_HEAP_LIMIT: u64 = 2 * RAM_BYTES + 512 * 1024;
-/// Minimum share of iterations that must observe a stale resident entry before
-/// invalidation; proves the invalidation checks are sensitive.
+/// Minimum share of iterations in which the pre-invalidation lookup is a
+/// resident hit whose answer differs from the post-write oracle (truly stale).
+/// A guard that the workload exercises such cases at all, not a proof of
+/// sensitivity (the control runs in the report provide that).
 const MIN_STALE_HIT_PERCENT: usize = 20;
 
 const ROOT: u64 = 0x1000;
@@ -349,7 +351,10 @@ struct Counters {
     epochs: u64,
     segments: u64,
     probes_compared: u64,
-    stale_resident_hits_before_invalidation: u64,
+    /// Hits on the resident entry before invalidation (any hit).
+    resident_hits_before_invalidation: u64,
+    /// Resident hits whose answer differs from the post-write oracle (truly stale).
+    stale_hits_before_invalidation: u64,
     invlpg_invalidations: u64,
     mov_cr3_invalidations: u64,
     /// Unmap, Map, Remap, ReadOnly, Supervisor, NoExecute.
@@ -533,15 +538,21 @@ fn run_segment(memory: &mut PhysicalMemory, args: SegmentArgs<'_>) {
         put(&mut session, mirror, log, pte, new_leaf);
 
         // Contract: before invalidation a matching resident entry may stay
-        // stale. It must then be exactly the pre-write answer, never another.
-        let (stale_hit, stale_value) =
+        // in the cache. Every such hit must be exactly the pre-write answer,
+        // never another. A hit is only `stale` when the post-write oracle
+        // answer differs from it (the write really changed this key's result).
+        let (resident_hit, resident_value) =
             probe(&mut session, target_linear, warm_combo.0, warm_combo.1);
-        if stale_hit {
-            counters.stale_resident_hits_before_invalidation += 1;
+        if resident_hit {
+            counters.resident_hits_before_invalidation += 1;
             assert_eq!(
-                stale_value, warm_before.1,
+                resident_value, warm_before.1,
                 "resident entry before invalidation must be the pre-write answer"
             );
+            let after_write = oracle(mirror, cr0, target_linear, warm_combo.0, warm_combo.1);
+            if resident_value != after_write {
+                counters.stale_hits_before_invalidation += 1;
+            }
         }
 
         // Invalidate: even iterations INVLPG, odd iterations MOV CR3 (same root).
@@ -575,8 +586,9 @@ fn run_segment(memory: &mut PhysicalMemory, args: SegmentArgs<'_>) {
             "invalidation must empty the cache"
         );
 
-        // After invalidation every answer equals the oracle and the first
-        // lookups of distinct keys must walk.
+        // After invalidation every answer equals the oracle. Only the first
+        // lookup is a real check that the cache was emptied; the later Walk
+        // results follow from the capacity-one cache and distinct keys.
         let mut last = (false, 0);
         for &(kind, context) in &all {
             let (hit, value) = probe(&mut session, target_linear, kind, context);
@@ -1059,9 +1071,8 @@ fn translation_churn_reset_and_bounds() {
     assert!(c.code_remaps > 0 && c.code_garbage_writes > 0 && c.code_rewrites > 0);
     assert!(c.invlpg_invalidations > 0 && c.mov_cr3_invalidations > 0);
     assert!(
-        c.stale_resident_hits_before_invalidation as usize * 100
-            >= MIN_STALE_HIT_PERCENT * MAIN_ITERATIONS,
-        "too few stale resident entries observed: invalidation checks would be weak"
+        c.stale_hits_before_invalidation as usize * 100 >= MIN_STALE_HIT_PERCENT * MAIN_ITERATIONS,
+        "too few truly stale hits observed before invalidation"
     );
     assert_eq!(c.full_resets_checked, c.epochs);
     assert!(c.max_writes_in_one_iteration as usize <= MAX_WRITES_PER_ITERATION);
