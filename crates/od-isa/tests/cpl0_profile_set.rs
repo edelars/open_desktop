@@ -42143,6 +42143,94 @@ fn rdmsr_tdx_keyid_partitioning_at_cpl3_is_not_answered() {
     assert_eq!(state, before);
 }
 
+// ---- S4-38L8g: RDMSR/WRMSR of IA32_APIC_BASE (0x1B) ----
+//
+// Oracle (hand-written, Intel SDM 10.4.4 from memory): the BSP with the Local APIC enabled at the
+// default base reads base 0xFEE00000 | BSP (bit 8) | EN (bit 11) = 0xFEE00900.
+
+const APIC_BASE_MSR: u64 = 0x1b;
+
+#[test]
+fn rdmsr_apic_base_returns_base_bsp_en_and_changes_only_rip_rax_rdx() {
+    let set = base().with_msr_apic_base();
+    let (state, before, result) = run_star(
+        &set,
+        &RDMSR,
+        (APIC_BASE_MSR, 0xffff_ffff_dead_beef, 0xffff_ffff_8000_0001),
+        1,
+    );
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    let mut expected = before.clone();
+    expected.rip += 2;
+    expected.gpr[0] = 0xfee0_0900;
+    expected.gpr[2] = 0;
+    assert_eq!(state, expected, "only RIP, RAX and RDX change");
+}
+
+#[test]
+fn wrmsr_apic_base_accepts_only_the_matching_value() {
+    let set = base().with_msr_apic_base();
+    let (state, before, result) = run_star(&set, &WRMSR, (APIC_BASE_MSR, 0xfee0_0900, 0), 1);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    let mut expected = before.clone();
+    expected.rip += 2;
+    assert_eq!(state, expected, "only RIP changes");
+    // Another base, EN or BSP clear, a reserved bit, an upper half: refused, no change.
+    for (eax, edx) in [
+        (0xfee0_1900u64, 0u64),
+        (0xfee0_0800, 0),
+        (0xfee0_0100, 0),
+        (0xfee0_0000, 0),
+        (0xfee0_0901, 0),
+        (0xfee0_0d00, 0),
+        (0xfee0_0900, 1),
+        (0, 0),
+    ] {
+        let (state, before, result) = run_star(&set, &WRMSR, (APIC_BASE_MSR, eax, edx), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x30 },
+            "{eax:#x}:{edx:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn apic_base_without_the_member_keeps_the_previous_answer() {
+    // No member: RDMSR is the refusal of the set (0x32), WRMSR is Unsupported (0x30).
+    let set = base();
+    let (state, before, result) = run_star(&set, &RDMSR, (APIC_BASE_MSR, 5, 6), 1);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x32 });
+    assert_eq!(state, before);
+    let (state, before, result) = run_star(&set, &WRMSR, (APIC_BASE_MSR, 0xfee0_0900, 0), 1);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x30 });
+    assert_eq!(state, before);
+}
+
+#[test]
+fn apic_base_with_prefixes_is_unsupported_without_mutation() {
+    let set = base().with_msr_apic_base();
+    for code in [
+        &[0x66u8, 0x0f, 0x32][..],
+        &[0x48, 0x0f, 0x32],
+        &[0xf3, 0x0f, 0x32],
+        &[0x66, 0x0f, 0x30],
+        &[0x48, 0x0f, 0x30],
+    ] {
+        let (state, before, result) = run_star(&set, code, (APIC_BASE_MSR, 0xfee0_0900, 0), 1);
+        assert!(
+            matches!(exit(&result), RunExit::Unsupported { .. }),
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
 // ---- S4-38L9d: FP state (FNINIT, plain FXSAVE) and MOV CR0, RDI in the set ----
 //
 // Oracles (written by hand from the Intel SDM, from memory, and from the kernel source, not from

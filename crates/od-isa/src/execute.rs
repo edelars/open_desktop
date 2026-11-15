@@ -1913,6 +1913,7 @@ pub struct Cpl0ProfileSet<'a> {
     msr_syscall_mask: Option<&'a Cell<u64>>,
     msr_kernel_gs_base: Option<&'a Cell<u64>>,
     msr_tdx_keyid_partitioning_read: bool,
+    msr_apic_base: bool,
     halt: Option<&'a crate::HaltProfile>,
     cpu_owned_cr3: bool,
     pio_u8: bool,
@@ -1943,6 +1944,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             msr_syscall_mask: None,
             msr_kernel_gs_base: None,
             msr_tdx_keyid_partitioning_read: false,
+            msr_apic_base: false,
             halt: None,
             cpu_owned_cr3: false,
             pio_u8: false,
@@ -2140,6 +2142,22 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// covers `0x87`, so the member is never overridden.
     pub const fn with_msr_tdx_keyid_partitioning_read(mut self) -> Self {
         self.msr_tdx_keyid_partitioning_read = true;
+        self
+    }
+
+    /// S4-38L8g: admit `RDMSR`/`WRMSR` of IA32_APIC_BASE (`0x1B`) at CPL0 under Long64, for the
+    /// board whose Local APIC is enabled at the default base (the APIC profile). `RDMSR` returns
+    /// the constant `EDX:EAX = 0:0xFEE00900` (base `0xFEE00000`, BSP bit 8, EN bit 11,
+    /// [`crate::msr::ApicBaseCpu::ENABLED`]). `WRMSR` is accepted only with exactly that value
+    /// (what the kernel writes at start; nothing changes, so the write is a no-op that advances
+    /// RIP); any other value (another base, EN or BSP clear, a reserved bit, x2APIC) keeps the
+    /// refusal of the index (`Unsupported`) before any state change. No cell. Only the bare
+    /// two-byte forms `0F 32` / `0F 30` are admitted. Without the member `RDMSR` of `0x1B` is the
+    /// `#GP(0)` of an unmodelled index and `WRMSR` of it stays `Unsupported` (stage4a).
+    ///
+    /// Precedence: an MSR profile that handles the index would keep it; today none covers `0x1B`.
+    pub const fn with_msr_apic_base(mut self) -> Self {
+        self.msr_apic_base = true;
         self
     }
 
@@ -2528,6 +2546,8 @@ struct GuestMsrCells<'a> {
     kernel_gs_base: Option<&'a Cell<u64>>,
     /// S4-38L9c: `RDMSR` of IA32_MKTME_KEYID_PARTITIONING (`0x87`) returns `0:0`; no cell.
     tdx_keyid_partitioning_read: bool,
+    /// S4-38L8g: `RDMSR`/`WRMSR` of IA32_APIC_BASE (`0x1B`) with the constant `0xFEE00900`; no cell.
+    apic_base: bool,
     /// S4-39e: the set carries `with_syscall`; `SYSCALL` consumes the EFER cell of the profiles
     /// and the STAR, LSTAR and SYSCALL_MASK cells above.
     syscall: bool,
@@ -21853,6 +21873,7 @@ fn run_cpl0_profile_set_inner(
                 || set.msr_syscall_mask.is_some()
                 || set.msr_kernel_gs_base.is_some()
                 || set.msr_tdx_keyid_partitioning_read
+                || set.msr_apic_base
                 || set.syscall
             {
                 Some(GuestMsrCells {
@@ -21865,6 +21886,7 @@ fn run_cpl0_profile_set_inner(
                     syscall_mask: set.msr_syscall_mask,
                     kernel_gs_base: set.msr_kernel_gs_base,
                     tdx_keyid_partitioning_read: set.msr_tdx_keyid_partitioning_read,
+                    apic_base: set.msr_apic_base,
                     syscall: set.syscall,
                 })
             } else {
@@ -28582,7 +28604,8 @@ fn matching_paged_mov_profiles(cr0: Option<Cr0Profile>, cr4: Option<Cr4Profile>)
 /// S4-38L9v: every MSR index some MSR member or profile of the set names (EFER, FS_BASE, GS_BASE,
 /// KERNEL_GS_BASE, STAR, LSTAR, CSTAR, SYSCALL_MASK, SYSENTER_CS/ESP/EIP and the `0x87` read),
 /// whether or not the set configures that member. `RDMSR` of any other index raises `#GP(0)` in
-/// a set that models an MSR file.
+/// a set that models an MSR file. IA32_APIC_BASE (`0x1B`, S4-38L8g) is not listed: it is
+/// handled by its own branch above this check, only in a set with `with_msr_apic_base`.
 const fn is_set_member_msr_index(index: u32) -> bool {
     matches!(
         index,
@@ -35367,6 +35390,37 @@ fn step_configured(
             state.gpr[Register::Rdx as usize] = 0;
             state.rip = next_rip;
             return Ok(StepOutcome::Advanced);
+        }
+        // S4-38L8g: IA32_APIC_BASE (`0x1B`) with the set's member: `RDMSR` gives the constant
+        // `0xFEE00900` (base | EN | BSP) and `WRMSR` accepts exactly that value (no state
+        // changes but RIP). Same conditions as the other cells. Every other `WRMSR` value falls
+        // through to the existing refusal (`Unsupported`) before any change; without the member
+        // both forms keep their previous answer (stage4a: `#GP(0)` / `Unsupported`).
+        if matches!(
+            instruction.operation,
+            Operation::ReadMsr | Operation::WriteMsr
+        ) && msr_index == 0x1b
+            && guest_msr_cells.is_some_and(|cells| cells.apic_base)
+            && !msr_profile.is_some_and(|profile| profile.handles_index(0x1b))
+            && control_policy.is_some()
+            && context.privilege == PrivilegeLevel::Ring0
+            && context.mode.eq(&InstructionMode::Long64)
+            && instruction.length == 2
+            && instruction.prefixes == Prefixes::default()
+        {
+            const APIC_BASE: u64 = crate::msr::ApicBaseCpu::ENABLED;
+            if instruction.operation == Operation::ReadMsr {
+                state.gpr[Register::Rax as usize] = APIC_BASE & 0xffff_ffff;
+                state.gpr[Register::Rdx as usize] = APIC_BASE >> 32;
+                state.rip = next_rip;
+                return Ok(StepOutcome::Advanced);
+            }
+            let value = (u64::from(state.gpr[Register::Rdx as usize] as u32) << 32)
+                | u64::from(state.gpr[Register::Rax as usize] as u32);
+            if value == APIC_BASE {
+                state.rip = next_rip;
+                return Ok(StepOutcome::Advanced);
+            }
         }
         // S4-38L9v: `RDMSR` of an index no MSR member of the set names raises `#GP(0)`, the
         // architectural answer for an MSR the CPU does not implement (the kernel's `rdmsr_safe`
