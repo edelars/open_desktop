@@ -1,0 +1,48 @@
+# S5-07 original startup-stack write post-IRET page walk — 2026-11-15
+
+## Scope and provenance
+
+One counted diagnostic run used schema-v5 execution observations with zero-based delivered-#PF ordinal 30. This is a single-run observation, not an N=2 series and not comparator evidence. It used `linux-direct --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode --execution-observations-out ... --execution-observations-post-iret-index 30`, 128 MiB RAM, and nonce `od5postiretstack20261115c`. The guest loaded Linux, emitted its exact nonce, and reached the instruction-budget stop at `retired=2,999,999,998`.
+
+Source revision: `ca7f6b234aa2da58953e98dc3c0db021345a9e73`.
+
+Release runner SHA-256: `c3467f73ed5f5e2d8ac50593ceccd545d3f220eb796c86e47bca996e47ad3917`.
+
+Inputs matched the preceding S5-07 diagnostics:
+
+- kernel: `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`
+- initramfs: `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`
+- ACPI blob: `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`
+- ACPI manifest: `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`
+
+Host: macOS/aarch64. Raw output is in ignored `work/stage5/stage5-s5-07-post-iret-stack-store-20261115-c/`.
+
+| Artifact | SHA-256 |
+|---|---|
+| runner JSON | `ac259305d5ae23ca0a2f92560528eaeacdb1e9530cbd6b6f3d1ebb30f7db37df` |
+| execution sidecar | `ae2c68cff9bfc44aa8085a3e207ff1c3cd7c72c4e88284475733a4dfc24ac1e0` |
+
+## Observed event
+
+Ordinal 30 is the CPL0 write at RIP `0xffffffff8271a9c1` (`rep_movs_alternative+0x11`), CR2/RDI `0x7ffc939c4169`, RCX `7`, RSI `0xffffffff82fdeb8f`, error code `0x00000002`. The original guest walk was `NotPresent { level: Pt }`; its PT leaf was physical entry address `0x649ae20`, index 452, value `0x0`.
+
+After the selected event's successful IRETQ, the sidecar captured the matching context: CR3 `0x648e000`, CS `0x0010`, CPL0, RIP `0xffffffff8271a9c1`, RSP `0xffffc9000000fc80`. CR3 and the physical PT-entry address were unchanged. The post-IRET leaf at `0x649ae20` was `0x39fe867`, and the same virtual address translated to `0x39fe169`. The diagnostic walk is read-only and does not set guest A/D bits.
+
+Thus, in this run, the original startup-stack write saw a not-present leaf and the matching IRET return boundary saw that leaf present in the same CR3. This is consistent with Linux handling the fault and installing the mapping before retry. It does not establish that the retried REP instruction retired or prove TLB contents. The single observation is not a repeatability claim. This run had 35 delivered #PF, one #GP(0), zero omitted PF records, and the instruction-budget stop. Earlier schema-v4 pair runs independently observed the same REP-store signature and a zero PT leaf before delivery.
+
+## Command template
+
+```sh
+target/release/od-runner linux-direct \
+  --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs /Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --nonce od5postiretstack20261115c --ram-mib 128 \
+  --out work/stage5/stage5-s5-07-post-iret-stack-store-20261115-c/run.json \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --execution-observations-out work/stage5/stage5-s5-07-post-iret-stack-store-20261115-c/execution-observations.json \
+  --execution-observations-post-iret-index 30
+```
