@@ -762,6 +762,13 @@ Base `PagedCpl0ProbeV1` admits only `40 F6 C5 07`: bare REX `40`, opcode `F6`, B
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_test_bpl_imm8 -- --nocapture` — 4 passed; full `paged_probe_profile` — 312 passed. Coverage includes multiple BPL inputs and expected flags, AF initially defined then undefined, full register retention, immediate fetch-fault atomicity, neighboring register/immediate/opcode/REX/prefix/memory forms, CPL3 and other-profile isolation. Firmware image `/private/tmp/od-fw-s7-test-bpl-7.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 61 instructions then stopped at `40 0F 94 C7` (`SETZ DIL`, ISSUE-159), `RIP=0x200dd5`, `Unsupported { opcode: 148 }`, `com1_bytes=0`; full handoff validation remains incomplete.
 
+<a id="s7-04-exact-rust-helper-setz-dil"></a>
+#### Расширение S7-04: exact Rust-helper `SETZ DIL`
+
+Base `PagedCpl0ProbeV1` admits only `40 0F 94 C7`: bare REX `40`, `ConditionCode::Equal`, raw ModRM `C7`, and DIL. Shared SETcc evaluates ZF, writes only DIL while preserving upper RDI and all flags; flag-definedness is unchanged even when ZF is undefined.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_setz_dil -- --nocapture` — 4 passed; full `paged_probe_profile` — 316 passed. Tests cover both ZF values with defined and undefined metadata, register/flag preservation, exact REX and ignored ModRM.reg, final ModRM fetch-fault atomicity, neighboring forms, CPL3 and other paged profiles. Firmware image `/private/tmp/od-fw-s7-setz-dil.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 62 instructions then stopped at `41 84 F8` (`TEST R8B,DIL`, ISSUE-160), `RIP=0x200dd9`, `Unsupported { opcode: 132 }`, `com1_bytes=0`; full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции
