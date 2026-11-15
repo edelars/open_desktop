@@ -687,6 +687,12 @@ Base `PagedCpl0ProbeV1` admits only `40 08 CF`, requiring bare REX `40`, byte `O
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_or_dil_cl -- --nocapture` — 4 passed, covering 8-bit results and status flags, AF initially defined then undefined, full-state preservation, fetch-fault atomicity, unprefixed BH neighbor and other REX/operation/direction/register/width forms, CPL3 and other paged profiles. Runner retired 48 instructions and stopped at `74 3B` (`JZ +0x3B`, ISSUE-146, RIP `0x200d66`); full handoff validation remains incomplete.
 
+#### Расширение S7-04: exact Rust-helper `JZ +0x3B`
+
+Base `PagedCpl0ProbeV1` additionally admits only the tuple `74 3B`, decoded as short `ConditionCode::Equal` with displacement `+0x3B`. It reuses shared branch behavior: ZF controls taken/fall-through, flags and their definedness remain unchanged, and canonicality is checked only for a taken target.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_jz_rel8 -- --nocapture` — 5 passed, including both ZF values with ZF defined and undefined, taken-target #GP versus deferred noncanonical fall-through, rel8 fetch-fault atomicity, neighboring opcodes/displacements/prefixes, and CPL3. Runner retired 49 instructions; JZ was taken to `0x200da3` and stopped at `8B 4E 0C` (`MOV ECX,dword ptr [RSI+0xC]`, ISSUE-147). Full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции

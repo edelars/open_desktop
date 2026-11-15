@@ -367,13 +367,22 @@
 - **Runner:** image `/private/tmp/od-fw-s7-or-dil-cl.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retired 48 instructions, then stopped at `74 3B` (`JZ +0x3B`) with `Unsupported { opcode: 116 }`, `RIP=0x200d66`, `com1_bytes=0`; see [ISSUE-146](#issue-146-s7-04-rust-helper-jz-plus-0x3b-unsupported).
 
 <a id="issue-146-s7-04-rust-helper-jz-plus-0x3b-unsupported"></a>
-### ISSUE-146 — S7-04: Rust helper `JZ +0x3B` (`74 3B`) остаётся вне paged CPU profile
+### ISSUE-146 — S7-04: точная форма Rust helper `JZ +0x3B` (`74 3B`) admitted
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `OR DIL,CL`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d66`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner stops at `74 3B` (`JZ +0x3B`), `Unsupported { opcode: 116 }`, `retired=48`, `RIP=0x200d66`; COM1 пуст. This conditional branch follows the byte-result combination.
+- **Статус:** решена только для exact `74 3B` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Результат и проверка:** exact JZ tuple reuses shared Equal-condition branch execution. Tests cover taken/not-taken with defined and undefined ZF, unchanged flags/definedness, taken-only noncanonical-target #GP, deferred noncanonical fall-through, rel8 fetch-fault atomicity, neighbors and CPL3/other-profile isolation.
 - **Основание:** образ `/private/tmp/od-fw-s7-or-dil-cl.bin`; `od -An -tx1 -j 0xd66 -N16` показывает `74 3b c7 40 08 02 00 01 00 eb 18 66 c7 40 08 01`; runner с бюджетом 10000.
-- **Следующий шаг:** проверить exact short JZ displacement, taken/fall-through behavior, flags-definedness and target canonicality in base profile.
+- **Runner:** image `/private/tmp/od-fw-s7-jz-3b.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retired 49 instructions; JZ was taken to `RIP=0x200da3`, where `8B 4E 0C` (`MOV ECX,dword ptr [RSI+0xC]`) stopped with `Unsupported { opcode: 139 }`, `com1_bytes=0`; see [ISSUE-147](#issue-147-s7-04-rust-helper-mov-ecx-dword-rsi-plus-0xc-unsupported).
+
+<a id="issue-147-s7-04-rust-helper-mov-ecx-dword-rsi-plus-0xc-unsupported"></a>
+### ISSUE-147 — S7-04: Rust helper `MOV ECX,dword ptr [RSI+0xC]` (`8B 4E 0C`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact JZ `+0x3B`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200da3`.
+- **Статус:** открыта.
+- **Суть и последствия:** the taken JZ reaches `8B 4E 0C` (`MOV ECX,dword ptr [RSI+0xC]`), `Unsupported { opcode: 139 }`, `retired=49`, `RIP=0x200da3`; COM1 пуст.
+- **Основание:** образ `/private/tmp/od-fw-s7-jz-3b.bin`; `od -An -tx1 -j 0xda3 -N16` показывает `8b 4e 0c 81 f9 a0 00 00 00 0f 85 d6 00 00 00 8b`; runner с бюджетом 10000.
+- **Следующий шаг:** проверить exact dword load from `[RSI+0xC]`, 32-bit zero-extension and tracked paged-memory read semantics before admitting the narrow form.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.
