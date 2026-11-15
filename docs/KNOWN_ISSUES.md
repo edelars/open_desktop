@@ -12,15 +12,105 @@
 
 ## Записи
 
-<a id="issue-090-stage4-uart-echo-cli-test-exit-code-mismatch"></a>
+<a id="issue-100-stage4-uart-echo-cli-test-exit-code-mismatch"></a>
 
-### ISSUE-090 — S4 UART echo CLI test: exit-code assertion mismatch
+### ISSUE-100 — S4 UART echo CLI test: exit-code assertion mismatch
 
 - **Дата обнаружения:** 2026-11-14, при проверке `cargo test -p od-runner --offline`.
 - **Компонент:** `tools/runner/tests/stage4_probe_cli.rs` (`uart_echo_profile_checks_rx_expectation_budgets_and_stop`) и exit mapping Stage 4 UART echo probe.
 - **Статус:** открыта; причина несовпадения test expectation и CLI exit mapping не установлена.
 - **Основание и последствия:** полный `od-runner` test run останавливается на assertion, ожидающем exit code `6` для `--stage4-uart-echo-probe --expect-byte 1`, тогда как текущий runner возвращает `5`. Повтор того же теста отдельно воспроизводит несовпадение. Тест прерывается на проверке кода и не подтверждает последующие JSON assertions. Это не связано с изменениями S5 build provenance.
 - **Следующий шаг:** проверить контракт exit codes и реализацию pio-error path; затем исправить реализацию или expectation на основании подтверждённого контракта и повторить тест.
+
+### ISSUE-099 — S4-39j: правило зачётности `counted` для stage4a принято решением пользователя без записанного ревью
+
+- **Дата обнаружения:** 2026-11-15, итоговое ревью S4-45.
+- **Компонент:** `tools/runner/src/linux_direct.rs` (значение `acceptance`), `docs/specs/CPU_CONTRACT.md` (раздел «Правило зачётности `acceptance` (S4-39j)»).
+- **Владелец:** владелец этапа 4 (пользователь); исполнитель — следующий срез гейта (S4-44/S4-46 или этап 5).
+- **Статус:** открыта.
+- **Суть и последствия:** до решения прогоны `stage4a` были `diagnostic_not_counted`; в день PASS S4-39j пользователь решил считать stage4a зачётной конфигурацией (без `--diagnostic-past-c7`). Независимое ревью этого решения не записано. Профиль stage4a урезан (нет APIC и SSE/SSE2), поэтому `PASS` не означает поддержку Linux в профиле по умолчанию.
+- **Следующий шаг:** записать ревью решения о зачётности либо пересмотреть его; указывать в итогах, что `PASS` относится к stage4a.
+
+### ISSUE-098 — S4-39j: гейт не проверяет `exit_kind`, `cpuid_profile` и timer IRQ
+
+- **Дата обнаружения:** 2026-11-15, итоговое ревью S4-45.
+- **Компонент:** `tools/runner/src/linux_gate.rs`.
+- **Владелец:** владелец гейта S4-39j; срез не назначен (кандидат — S4-44 или этап 5).
+- **Статус:** открыта.
+- **Суть и последствия:** гейт принимает `budget_exhausted` как конец прогона (строка паники и журнал syscall), а не `user_exit`; `exit_kind` и `cpuid_profile` не проверяются, `acceptance` берётся из отчёта; работающий timer interrupt и продолжение user code после него не проверяются. Отчёт, самосогласованный по JSON, но с иным профилем или причиной останова, не отвергается. Пробелы негативов S4-40: отключённая IRQ-маршрутизация, запрещённый overlap, порча артефакта кроме хешей.
+- **Следующий шаг:** добавить проверки `exit_kind`, `cpuid_profile` и timer evidence либо явно ограничить гейт; добавить негативы S4-40.
+
+### ISSUE-097 — S4-44: Mac mini bare-metal не выполнен (KVM-прогон выполнен)
+
+- **Дата обнаружения:** 2026-11-15, итоговое ревью S4-45.
+- **Компонент:** `docs/testing/MACHINE.md` (S4-44), `docs/reports/data/stage4/s4-44b-local-set.json`.
+- **Владелец:** владелец стенда Mac mini и hardware gate; S4-44.
+- **Статус:** открыта для bare-metal (blocked); KVM-часть выполнена.
+- **Суть и последствия:** KVM-прогоны на Mini выполнены (S4-34a, S4-34b, S4-34cde; VT-x guest execution под Linux/KVM, не bare-metal, наш CPU/MMU не участвует). Bare-metal hardware cases не выполнены (стенд и владелец). В локальный набор S4-44 hardware не входит.
+- **Следующий шаг:** получить стенд и выполнить выбранные bare-metal cases в рамках S4-44; до этого не называть KVM-прогон физическим hardware-подтверждением нашего CPU.
+
+### ISSUE-096 — S4-43/S4-44: лимиты ресурсов и stress не реализованы
+
+- **Дата обнаружения:** 2026-11-15, итоговое ревью S4-45 (передача остатков S4-43).
+- **Компонент:** `tests/system/` (runner stress mode), `crates/od-jit/src/dispatch.rs` (executable cache), runner (`--reboot-cycles`), guest RAM.
+- **Владелец:** S4-44; далее `docs/plans/STAGE_7.md` (S7-26) для boot/STOP/reset и `--reboot-cycles`.
+- **Статус:** открыта.
+- **Суть и последствия:** не сделаны runner stress mode, `--reboot-cycles`, явный лимит guest RAM (проверены только host heap/RSS, RAM фиксирована 1 MiB в тестах S4-43; Linux-плата использует 128 MiB) и лимит executable cache. Повторные STOP/boot в runner, timer reprogramming и старые IRQ/handles после reset не проверены. Все пункты записаны в NOT RUN сводки S4-44b.
+- **Следующий шаг:** S4-44 назначает исполнителя по каждому пункту; остаток до STAGE_7.
+
+### ISSUE-095 — Linux direct boot не запускался с JIT (0 %)
+
+- **Дата обнаружения:** 2026-11-15, итоговое ревью S4-45.
+- **Компонент:** `crates/od-jit/`, `od-runner linux-direct`.
+- **Владелец:** S4-42 (остаток: JIT cold/warm на одинаково поддержанном сценарии).
+- **Статус:** открыта.
+- **Суть и последствия:** все Linux-прогоны идут на интерпретаторе; JIT memory integration на реальном ядре и сравнение interpreter/JIT не выполнены. Ограничение S4-39 «JIT coverage указывается отдельно» выполнено указанием 0 %.
+- **Следующий шаг:** срез S4-42 для JIT на одинаково поддержанном сценарии либо перенос на этап 5.
+
+### ISSUE-094 — S4-41: живой serial и доставка `od-runner` в бандле не сделаны
+
+- **Дата обнаружения:** 2026-11-15, итоговое ревью S4-45.
+- **Компонент:** `apps/vmhost/Sources/LinuxDirectRunner.swift`, бандл приложения.
+- **Владелец:** S4-41c (расширение протокола; не выбран).
+- **Статус:** открыта.
+- **Суть и последствия:** serial и статус во время прогона не выводятся (только итоговый JSON-отчёт); `od-runner` не доставляется рядом с VMHost; реальный прогон ядра через VMHost не запускался; утечки RAM и handles внутри раннера не проверялись.
+- **Следующий шаг:** решение по S4-41c; до него VMHost-запуск Linux не считать работоспособным.
+
+### ISSUE-093 — control v2 не запускает Linux-плату; pause/resume и STOP для неё отсутствуют
+
+- **Дата обнаружения:** 2026-11-15, итоговое ревью S4-45 (по S4-41b).
+- **Компонент:** control v2 (`ControlV2Configure.validate`, `ControlV2Connection`), `od-runner linux-direct`.
+- **Владелец:** S4-41c (расширение протокола; не выбран).
+- **Статус:** открыта.
+- **Суть и последствия:** CONFIGURE не несёт путь к ядру и принимает только профили 1 и 4, поэтому Linux-профиль недостижим по протоколу; pause/resume возвращают `unsupported` (нет асинхронной паузы); STOP по control v2 для Linux-платы не подключён.
+- **Следующий шаг:** решение владельца о расширении протокола (с версией ABI и единым нормативным источником) или об отказе от него.
+
+### ISSUE-092 — nonce S4-39j фиксированный (`s4-38l4a`)
+
+- **Дата обнаружения:** 2026-11-15, итоговое ревью S4-45.
+- **Компонент:** `tools/runner/src/linux_direct.rs`, `tools/runner/src/linux_gate.rs`, прогоны S4-39j.
+- **Владелец:** S4-46/S4-44 (новый nonce на каждый прогон).
+- **Статус:** открыта.
+- **Суть и последствия:** план S4-39 требует новый nonce; оба холодных прогона и `PASS` S4-39j использовали `s4-38l4a`. Фиксированный nonce не позволяет отличить новый запуск от повторного использования старого вывода: гейт сверяет nonce с отчётом, но не свежесть. Smoke-серия со свежим nonce для Stage 5 описана в ISSUE-081 и закрытием S4-39j не является.
+- **Следующий шаг:** запускать S4-39j с новым nonce на прогон и фиксировать его в отчёте; повторить два холодных прогона.
+
+### ISSUE-091 — профиль stage4a без APIC и SSE/SSE2 (Linux на 8259)
+
+- **Дата обнаружения:** 2026-11-15, итоговое ревью S4-45.
+- **Компонент:** CPUID-профиль `X8664V1Stage4A`, плата Linux direct-boot.
+- **Владелец:** этап 5.
+- **Статус:** открыта.
+- **Суть и последствия:** `PASS` S4-39j получен под профилем, где APIC и SSE/SSE2 в CPUID не объявлены, прерывания идут через 8259 PIC. Работа Linux с APIC и в профиле по умолчанию не подтверждена; результат нельзя переносить на другие профили.
+- **Следующий шаг:** этап 5 решает, нужны ли APIC и SSE/SSE2 для рабочего Linux, и повторяет S4-39j под новым профилем.
+
+### ISSUE-090 — внешнее IRQ из CPL3 не поддержано (`run_failed`)
+
+- **Дата обнаружения:** 2026-11-15, итоговое ревью S4-45 (по S4-39h).
+- **Компонент:** `run_with_cpl3_profile_set` (`crates/od-isa`), плата Linux direct-boot с `--user-mode`.
+- **Владелец:** этап 5; срез S4-39h пропущен.
+- **Статус:** открыта.
+- **Суть и последствия:** внешнее прерывание, пришедшее при исполнении CPL3, даёт `run_failed`. Сценарий `/init` проходит, потому что `/init` завершается после сна, а таймерные пробуждения доставлялись в CPL0. Любой userspace, исполняемый в CPL3 при тиках таймера, на этой плате не поддержан; «timer interrupt и продолжение user code после него» из плана S4-39 не доказаны.
+- **Следующий шаг:** реализовать вход IRQ из CPL3 (S4-39h или срез этапа 5) и проверить на нагрузке в CPL3.
 
 <a id="issue-081-s5-07-series-evidence-prepared-but-stand-blocked"></a>
 
@@ -32,11 +122,11 @@
 - **Статус:** открыта; implementation slice одобрен независимым ревью. Counted live nonce marker уже получен в A/B, но common-ID N=2 series C завершилась `failed` из-за отказа external IRQ на run 1; полная S5-07 остаётся `blocked/unaccepted`, checkbox пустой, до диагностики отказа и успешной серии. Numeric gate S5-01 не блокирует S5-07.
 - **Основание и последствия:** добавлен явный smoke-series path с per-run nonce, collision-refusing evidence directories, raw runner JSON, stop record, runner-recorded COM1 bytes/hash/count, manifests и ordered marker validation. Fixture comparator сохранён; `--linux-stage5` добавляет schema comparison. Stop record теперь переносит типизированную причину ACPI PM (`reset`/`shutdown`/`null`) из `FirmwareRunReport`; отсутствующее поле в старом JSON трактуется как ненаблюдавшееся. Series повторно выводит поле из raw JSON, проверяет целостность и сравнивает причины отдельно от `exit_kind`; наличие причины само по себе не ставит сценарий в pass. Синтетические и runner tests проверяют передачу/сравнение. Выполнен один live `smoke_not_acceptance` run с nonce `OD518e74b980609c9e800003ecc00000000`, budget 1,200,000,000 и `diagnostic_past_c7=false`: `guest_started=true`, ожидаемый и фактический stop — `cpuid_divergence` leaf `0x1`, `retired=1,137,476,410`, wall elapsed 422.901293667 s, `machine_stop_reason=null`. COM1 содержал 0 bytes, exact `OD_NONCE=<nonce>` marker отсутствовал; поэтому scenario/series outcome `failed`, `/init` не достигнут, S5-07 не принят. Host из manifest — macOS/aarch64, runner 0.1.0, source revision отсутствует. Kernel из sibling main worktree, прочитан read-only, SHA-256 `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`; initramfs оттуда же, SHA-256 `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`; ACPI blob из codex worktree, SHA-256 `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`, manifest hash `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`. Raw evidence в ignored `work/stage5/stage4-c7-live-20261112-02/`: series SHA-256 `080108859b67a964d3c1eec8247b6d8155f01ef1e18ad7aef1d89a916661d194`, run manifest SHA-256 `d708f5f57cd71c795a10d51443a72a42ac2767f190e42ec5d16c9e30f69f3962`, raw runner JSON SHA-256 `6bff397201eaafc0836aeb6dbddfa6577d4844cc4601c5680ed827b3d51eeb7c`. Предыдущий debug run `stage4-c7-live-20261112-01` был технически отменён SIGINT (exit 130) после 20 минут CPU-bound вычисления до записи run evidence; это не сценарный отказ. Текущий COM1 источник — stop-scoped `linux_direct_run_boot_com1`, а не независимая streaming UART capture. `loaded` не означает guest scenario pass; Stage 5 A–G остаются `not_run`, поскольку scripts ещё не вызываются boot runner. Отсутствие host/user CPU measurements, `N` или soak budget относится к Numeric gate для S5-15/16, а не к блокеру S5-07.
 - **Диагностический срез (2026-11-15):** `FirmwareBoardError::ExternalInterruptDelivery` передаёт vector, Debug-представление typed refusal, `RIP` и `CS selector` в `run_failed`; unit и facade tests это проверяют. Live series C была записана до изменения, поэтому причина её run-0001 всё ещё не локализована.
-- **Следующий шаг:** выполнить свежую counted серию с теми же артефактами и конфигурацией, чтобы получить полный IRQ detail и состояние CPU на отказе; затем отдельно разобрать результат относительно незакрытого S4-39h. Сохранить aggregate outcome без выборочного отбрасывания run. После локализации выполнить полный общий N-run series и comparator. Интеграция A–G остаётся отдельной задачей S5-08 и требует фактического гостевого запуска.
+- **Следующий шаг:** выполнить свежую counted серию с теми же артефактами и конфигурацией, чтобы получить полный IRQ detail и состояние CPU на отказе; ISSUE-090 фиксирует общий разрыв внешнего IRQ из CPL3, но это не локализует старый C/run-0001; сопоставить свежие `RIP`/`CS selector` с этим gate. Сохранить aggregate outcome без выборочного отбрасывания run. После локализации выполнить полный общий N-run series и comparator. Интеграция A–G остаётся отдельной задачей S5-08 и требует фактического гостевого запуска.
 
 - **Обновление (2026-11-14):** новые runner builds фиксируют Git revision и dirty state production source inputs, а S5 series writer выдаёт schema v2; reader сохраняет совместимость с v1, где отсутствующее `source_dirty` остаётся unobserved. Dirty bool не является fingerprint исходников. Live guest run по-прежнему не имеет nonce marker; это обновление не снимает блокировку S5-07.
 
-- **Обновление (2026-11-15):** counted серии A и B (по одному run, одинаковые Stage 4 artifact hashes) прошли: обе имеют точную `OD_NONCE`, `guest_started=true`, `budget_exhausted`, `retired=2,999,999,998`; comparator A/B вернул `matches=true`, `unexplained_differences=[]`. Затем выполнена общая серия C с `requested_runs=2`: run 1 завершился `failed`/`run_failed` при `retired=2,320,063,581` с ошибкой `an external interrupt of the board source was refused by the CPU delivery`, без stop record и UART bytes; run 2 прошёл с новым nonce и ожидаемым stop. Aggregate series outcome `failed`, поэтому S5-07 остаётся blocked/unaccepted. Независимый разбор подтвердил наблюдаемый отказ, но не установил его точную причину: generic runner error не сохраняет vector, refusal detail или CPL/RIP. `ISSUE-088` о syscall queue не относится к этому событию. Подробные hashes и comparator — в [S5-07 evidence log](reports/data/stage5/s5-07-stage4a-nonce-20261114.log); полная граница и вывод — в [отчёте этапа](reports/STAGE_5_REPORT.md#s5-07-counted-nonce-series-follow-up-2026-11-15).
+- **Обновление (2026-11-15):** counted серии A и B (по одному run, одинаковые Stage 4 artifact hashes) прошли: обе имеют точную `OD_NONCE`, `guest_started=true`, `budget_exhausted`, `retired=2,999,999,998`; comparator A/B вернул `matches=true`, `unexplained_differences=[]`. Затем выполнена общая серия C с `requested_runs=2`: run 1 завершился `failed`/`run_failed` при `retired=2,320,063,581` с ошибкой `an external interrupt of the board source was refused by the CPU delivery`, без stop record и UART bytes; run 2 прошёл с новым nonce и ожидаемым stop. Aggregate series outcome `failed`, поэтому S5-07 остаётся blocked/unaccepted. Независимый разбор подтвердил наблюдаемый отказ, но не установил его точную причину: эта сборка runner не сохраняла vector, refusal detail или CPL/RIP. Позднее Stage 4 review добавил [ISSUE-090](#issue-090-внешнее-irq-из-cpl3-не-поддержано-run_failed), описывающую общий CPL3 IRQ gap; это согласуется с гипотезой, но не доказывает CPL3 для данного run. `ISSUE-088` о syscall queue не относится к этому событию. Подробные hashes и comparator — в [S5-07 evidence log](reports/data/stage5/s5-07-stage4a-nonce-20261114.log); полная граница и вывод — в [отчёте этапа](reports/STAGE_5_REPORT.md#s5-07-counted-nonce-series-follow-up-2026-11-15).
 
 <a id="issue-080-s5-06-guest-suite-unverified-and-f-endpoint-blocked"></a>
 
@@ -2299,6 +2389,7 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Статус:** открыта; на стенде не проявляется (один вход SYSCALL), проявится в S4-39g и далее.
 - **Суть и последствия:** события одного вызова адаптера ограничены 64 и вытесняются из очереди; `entered`/`returned` считаются по уцелевшим событиям. При квантах больше 32 пар SYSCALL/SYSRET счётчики занижены; осиротевший Exit может привязаться к чужой незакрытой записи.
 - **Следующий шаг:** счётчики вести в отчёте платы отдельно от очереди; при вытеснении отбрасывать Exit без пары. Срок — до S4-39g; S4-39g принят (`2ddec59`), срок не закрыт: ISSUE-088 переносится на S4-39j (гейт), пока счётчики журнала при больших квантах не проверены прогоном.
+- **Обновление S4-46 (2026-11-15):** остаётся открытой. В зачётном прогоне S4-39j журнал совпал с ожидаемой последовательностью (9 записей, `entered` 9, `returned` 8, ёмкость 32), занижения не наблюдалось, но сценарий не содержит более 32 пар SYSCALL/SYSRET за квант, поэтому проверка при больших квантах не выполнена и гейт её не делает. Владелец: этап 5 (устойчивые workloads) либо срез гейта (см. ISSUE-098); срок «до S4-39j» не закрыт, а снят с S4-39j и не назначен.
 
 <a id="issue-089-s11-12-sleep-pause-refusal-not-persisted"></a>
 

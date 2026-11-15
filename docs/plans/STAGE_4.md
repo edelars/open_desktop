@@ -2221,11 +2221,18 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-39. Подтвердить Linux userspace
 
-- [ ] Принято после ревью.
+- [x] Принято с ограничениями (пометка S4-46: узкий сценарий `/init` на пути интерпретатора под CPUID-профилем stage4a; критерии плана выполнены не полностью, отклонения перечислены ниже в «Пометки S4-46 к S4-39»; не «полная приёмка Linux userspace»).
 - **Где:** `tests/system/`, init fixture, report/data.
 - **Сделать:** запустить точный kernel+initramfs с новым nonce. Зафиксировать выполнение `/init` в CPL3, syscall entry/return, вывод nonce через guest console/UART, работающий timer interrupt и продолжение user code после него.
 - **Проверка:** минимум повторный запуск после reset; ожидаемые markers и machine observations связаны с одним run ID и artifact hashes. Timeout, guest panic, shutdown до init, неподдержанная инструкция и неправильный nonce не проходят gate.
 - **Готово:** реальный Linux userspace подтверждён на interpreter path; JIT coverage указывается отдельно. Нельзя выдать полностью fallback-run за доказательство работы JIT memory integration.
+- **Пометки S4-46 к S4-39 (отклонения от плана; статусы подсрезов ниже не менялись).**
+  - Конец прогона: гейт `linux-direct-gate` принимает `budget_exhausted` как конец (строка паники и журнал syscall), а не терминальный стоп `user_exit` на `rax=60`, как задумано в декомпозиции; `exit_kind` и `cpuid_profile` гейт не проверяет. Работающий timer interrupt и продолжение user code после него гейтом не проверяются (в отчёте `halt_wakes` 2, но проверки на него нет).
+  - Nonce фиксированный `s4-38l4a`, а не новый на прогон (план: «с новым nonce»). Два холодных прогона S4-39j используют один и тот же nonce.
+  - S4-39h (внешнее IRQ из CPL3) пропущен по решению; внешнее IRQ из CPL3 даёт `run_failed`. `/init` проходит, потому что завершается после сна.
+  - Правило зачётности `counted` для stage4a (`acceptance` = `counted` без `--diagnostic-past-c7`) получено решением пользователя в день PASS S4-39j; независимое ревью этого решения не записано. До этого решения прогоны stage4a были `diagnostic_not_counted`.
+  - Профиль stage4a без APIC и SSE/SSE2 (8259); JIT не запускался (0 %); vmlinuz и initramfs не хранятся в репозитории (воспроизведение — `docs/testing/MACHINE.md`, раздел «Воспроизведение Linux direct boot (S4-39j)»).
+  - Записи в `docs/KNOWN_ISSUES.md`: ISSUE-088 (статус обновлён), ISSUE-090…ISSUE-099.
 
 **Декомпозиция S4-39 (решения по умолчанию, план Opus, ноябрь 2026).**
 - Архитектура B: набор CPL0 не расширяется; отдельный вход `run_with_cpl3_profile_set` с белым списком CPL3 и членом `with_user_mode()`, флаг раннера `--user-mode` только со stage4a. Без члена поведение прежнее (`UserEntry`).
@@ -2284,10 +2291,11 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Сделать:** отрицательные cases: отсутствующий init, неверный nonce, corrupted boot artifact, запрещённый overlap, отключённая необходимая IRQ route, timeout/STOP до completion. Различать invalid configuration, guest failure и external cancellation.
 - **Проверка:** каждый case действительно падает с ожидаемым классом результата; старый serial log не принимается за новый запуск; text marker без CPL3/syscall evidence недостаточен.
 - **Готово:** boot success означает только полностью выполненный положительный сценарий S4-39.
+- **Пометка S4-46:** чекбокс не отмечен. Негативы гейта выполнены с пробелами (статус S4-40 выше): нет отключённой IRQ-маршрутизации, запрещённого overlap и порчи артефакта кроме хешей; гейт не проверяет `exit_kind` и `cpuid_profile`.
 
 ### S4-41. Подключить машину к headless runner и VMHost
 
-- [ ] Принято после ревью.
+- [x] Закрыт по решению пользователя с ограничением (пометка S4-46: S4-41a и S4-41b приняты с замечаниями после ревью Opus; план не выполнен полностью — control v2 не несёт путь к ядру, pause/resume и STOP по control v2 для Linux-платы, живой статус/serial и доставка `od-runner` в бандле не сделаны, реальный прогон ядра через VMHost не запускался; расширение протокола S4-41c не выбрано).
 - **Где:** `tools/runner/src/`, `apps/vmhost/Sources/`, `od-host`; публичные headers/protocols только при реальной необходимости.
 - **Сделать:** передавать validated config/artifact paths, запускать реальную machine, получать serial/events и завершать её через существующий lifecycle. Не встраивать MMU/CPU в Swift. При изменении ABI соблюдать версию и единственный нормативный header/wire source.
 - **Проверка:** start/stop, pause/resume, invalid config, guest fault и повторная сессия; subprocess/FFI lifecycle без утечки RAM/executable handles и dangling callbacks.
@@ -2300,10 +2308,11 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Сделать:** сравнить uncached/cached translations, последовательные/случайные accesses, rights/fault paths, cross-page, working sets, IRQ/timer overhead и ограниченный Linux boot. Interpreter/JIT сравнивать на одинаково поддержанном сценарии, отдельно cold/warm.
 - **Проверка:** повторные прогоны, variance, host/guest page sizes, CPU/OS/toolchain/build flags, artifact hashes, memory consumption и одинаковая correctness. Не выводить «ускорение MMU» только из уменьшения Linux boot time.
 - **Готово:** есть воспроизводимые числа и вывод, включая отсутствие доказанного выигрыша. Усложнения TLB/event queue принимаются только при измеренной необходимости.
+- **Пометка S4-46:** чекбокс не отмечен: подсрезы S4-42a/b/c приняты с замечаниями (Opus high), родитель S4-42 открыт — не измерены 2 MiB, A/D, JIT cold/warm, IRQ/timer overhead, ограниченный Linux boot, Mac mini. JIT для Linux не запускался (0 %); лимит executable cache передан сюда из S4-43 и не сделан.
 
 ### S4-43. Проверить reset, churn и ограниченные ресурсы
 
-- [ ] Принято после ревью.
+- [x] Закрыт с ограничением (пометка S4-46: ограниченная проверка трансляций, кэша и очередей, S4-43a/b/c приняты с замечаниями; не выполнены runner stress mode, `--reboot-cycles`, явный лимит guest RAM, лимит executable cache, timer reprogramming и Linux boot; долговременная надёжность не подтверждена).
 - **Где:** `tests/system/`, runner stress mode без production semantics.
 - **Сделать:** многократные boot/STOP/reset, remap/rights changes, code writes/invalidation, timer reprogramming и bounded cache churn. Установить явные лимиты RAM, pending events, executable cache и объёма trace.
 - **Проверка:** отсутствие stale translations, старых IRQ/handles после reset, runaway host allocation и зависания STOP; сравнить корректное освобождение с baseline после повторений.
@@ -2316,6 +2325,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Сделать:** одним документированным набором собрать host и отдельные guest/firmware artifacts, выполнить local contracts, kernel system suite, Linux positive/negative boot, lifecycle/stress и выбранные hardware cases на Mac mini. Не копировать CPU-семантику в orchestration.
 - **Проверка:** каждый case содержит `passed`/`failed`/`not_run`/`blocked`, причину, environment, artifact identity и log reference. Hardware gate этапа 3 остаётся в его собственном scope; не требовать полного physical roundtrip после каждого локального opcode patch.
 - **Готово:** итоговые обязательные проверки действительно выполнены; недоступный hardware run остаётся видимым препятствием полной доказательной приёмке, но не обнуляет завершённые локальные milestones.
+- **Пометка S4-46:** чекбокс не отмечен: локальный набор зелёный (S4-44a/b), но NOT RUN остаются Linux positive/negative boot и `linux-direct-gate` на настоящем ядре, сборка guest/firmware artifacts, VMHost smokes, runner stress mode, `--reboot-cycles`, явный лимит guest RAM, лимит executable cache; Mac mini — KVM-прогон выполнен (S4-34a/b/cde, не bare-metal), bare-metal blocked.
 
 ### S4-45. Независимое итоговое ревью
 
@@ -2323,6 +2333,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Кто:** `gpt-6.1-sol`, reasoning `high`; архитектурные спорные вопросы — `gpt-6-astra`, `high`.
 - **Проверить:** diff/затронутые контракты, memory lifetime и unsafe/FFI, fault ordering/A/D, CPU transitions, TLB invalidation, active-code invalidation, IRQ/time, Linux evidence и соответствие physical scope. Сверить, что тесты не подтверждают лишь собственные заглушки.
 - **Готово:** конкретные замечания исправлены с повторной проверкой; остаточные ограничения отражены в реестре и support matrix. Если независимое ревью недоступно, явно записать это, не заявляя выполненное ревью.
+- **Статус S4-45 (запись S4-46):** ревью проведено моделью Opus с уровнем high, read-only, по всему этапу 4. Внешние модели `gpt-6.1-sol` и `gpt-6-astra` недоступны в среде и ревью не проводили. Заявления «ревью Sol/Astra» в ранних срезах этого плана не относятся к ревью S4-45, их происхождение не проверялось; см. [STAGE_4_REPORT.md](../reports/STAGE_4_REPORT.md), раздел «S4-45». Чекбокс не отмечен: остаточные ограничения не закрыты, а переданы в `docs/KNOWN_ISSUES.md`.
 
 ### S4-46. Зафиксировать результат и передать зависимости этапу 5
 
@@ -2331,6 +2342,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Сделать:** записать реально поддержанные modes/features/devices, entry/boot command, exact artifacts, тесты и measurements, host configurations, physical limits, review result. Отдельно перечислить, что потребуется этапу 5: storage/network и устойчивые workloads; этапу 6 — SMP/ordering.
 - **Проверка:** ссылки, layout, непротиворечивые статусы документов; все незакрытые выявленные проблемы имеют владельца/следующий шаг. Не называть provisional факт final и не заменять отчёт сообщением в чате.
 - **Готово:** другой исполнитель воспроизводит выбранный Linux userspace из документации и видит точные границы результата.
+- **Статус S4-46 (частичный итог):** выполнен как частичное закрытие, чекбокс не отмечен. Итог и вопрос владельцу — `docs/reports/STAGE_4_REPORT.md`, раздел «S4-46 — итог этапа 4 (частичный)». Воспроизведение Linux — `docs/testing/MACHINE.md`; ссылки из `ROADMAP.md`, `PROJECT_LAYOUT.md`, `ARCHITECTURE.md` в этом срезе не обновлялись, передача зависимостей этапам 5 и 6 не оформлена.
 
 ## 8. Приёмка и основания для остановки конкретного среза
 
