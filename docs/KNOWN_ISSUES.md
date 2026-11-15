@@ -82,10 +82,18 @@
 ### ISSUE-113 — S7-04: Rust entry `CMP RDI,imm32` остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после допуска stack-frame adjustment.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust entry prologue (`firmware/uefi/src/start.S`).
-- **Статус:** открыта; первый Rust stack adjustment исполнился, но проверка handoff pointer не исполнилась.
-- **Суть и последствия:** `RIP=0x2001f4` содержит `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`); paged profile возвращает `Unsupported { opcode: 129 }`. COM1 пуст, handoff parser в машине пока не достигнут.
-- **Основание:** образ `/private/tmp/od-fw-s7-sub-rsp.bin`, байты подтверждены `od -An -tx1 -j 0x1f4 -N16` (`48 81 ff 00 00 10 00 75 77 48 8d 7c 24 08 be 00`); runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=13`, `RIP=0x2001f4`, `com1_bytes=0`.
-- **Следующий шаг:** ограничить exact immediate CMP форму с существующей арифметикой flags и profile isolation.
+- **Статус:** решена узко для `48 81 FF 00 00 10 00`; runner остановился на ISSUE-114.
+- **Суть и результат:** base `PagedCpl0ProbeV1` допускает только qword `CMP RDI,0x00100000`, REX.W, длину 7 и sign-extended imm32. Используется существующая CMP арифметика; GPR не меняются, arithmetic flags/definedness обновляются, data memory не затрагивается. Другие CMP forms и profiles остаются вне допуска.
+- **Проверка:** `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 137 passed; full state, equal operands (ZF+PF), arithmetic flags/definedness, neighbors, immediate fetch fault и CPL3/other-profile isolation. Образ SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner retired 14 инструкций, `RIP=0x2001fb`, следующий stop `Unsupported { opcode: 117 }` (`0x75`), COM1 пуст.
+
+<a id="issue-114-s7-04-rust-entry-jnz-rel8-0x77-unsupported"></a>
+### ISSUE-114 — S7-04: Rust entry `JNZ +0x77` остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после допуска handoff CMP.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust entry prologue (`firmware/uefi/src/start.S`).
+- **Статус:** открыта; сравнение handoff GPA прошло, но проверяющая ветвь не исполнилась.
+- **Суть и последствия:** `RIP=0x2001fb` содержит `75 77` (`JNZ rel8`, target displacement `+0x77`); paged profile возвращает `Unsupported { opcode: 117 }`. COM1 пуст, handoff parser в машине пока не достигнут.
+- **Основание:** образ `/private/tmp/od-fw-s7-cmp-imm.bin`, байты подтверждены `od -An -tx1 -j 0x1fb -N16` (`75 77 48 8d 7c 24 08 be 00 00 10 00 ba 00 00 01`); runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=14`, `RIP=0x2001fb`, `com1_bytes=0`.
+- **Следующий шаг:** рассмотреть exact JNZ encoding с корректной taken/not-taken веткой, флагами, canonical target check и profile isolation.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки

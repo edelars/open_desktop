@@ -393,8 +393,8 @@ Long64 CPL0 allowlist: `48 8B 03` (`MOV RAX,[RBX]`), `48 89 0B`
 (`MOV [RBX],RCX`), bare `EC` (`IN AL,DX`), bare `EE` (`OUT DX,AL`) and bare
 `F4` (`HLT`); S7-03 extends it with `B0+r ib` and `66 B8+r iw`, and S7-04 adds
 bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`,
-`75 24`, `49 89 F8`, `E8 83 01 00 00` (`CALL rel32`), and `48 83 EC 58`
-(`SUB RSP,0x58`; see the extensions below). The CPU entry validates its
+`75 24`, `49 89 F8`, `E8 83 01 00 00` (`CALL rel32`), `48 83 EC 58`
+(`SUB RSP,0x58`), and `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`; see the extensions below). The CPU entry validates its
 profile admission and CR0/CR4 before fetch. It receives page-aware `GuestMemory`;
 CR3/EFER validation and selecting the four-level 4 KiB paging context belong
 to the machine entry.
@@ -516,6 +516,12 @@ Tests проверяют полный CPU state/return-address store, target, fl
 В base `PagedCpl0ProbeV1` допускается только `48 83 EC 58`: Primary opcode `83`, длина 4, qword, ровно REX.W `0x48`, операция SUB, destination RSP и sign-extended immediate `0x58`. Используется существующая `arithmetic_result` семантика: RSP получает полное 64-битное значение `RSP - 0x58`, шесть арифметических flags обновляются по SUB, остальные flags сохраняются, и эти шесть bits становятся defined. При входном RSP после firmware CALL `0x14fff8` результат равен `0x14ffa0`. Это исключительно арифметика регистров: команда не читает/пишет стек, не проверяет canonicality результата и не может вызвать stack/page fault; дальнейшее обращение к стеку проверит соответствующий адрес по обычным правилам. Fault при fetch любого байта инструкции оставляет CPU неизменным. Другие destination/immediate/opcode/width/prefix forms, CPL3 и остальные paged profiles не допускаются.
 
 Tests проверяют полный CPU state и точные flags/definedness, noncanonical result без fault и data-memory access, immediate fetch fault через границу страницы, соседние forms, CPL3 и stack/CR3/CR0.WP profiles. Firmware runner retired 13 инструкций и остановился на `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`, ISSUE-113, RIP `0x2001f4`).
+
+#### Расширение S7-04: точный Rust-entry `CMP RDI,0x00100000`
+
+В base `PagedCpl0ProbeV1` допускается только `48 81 FF 00 00 10 00`: Primary opcode `81`, длина 7, qword, ровно REX.W `0x48`, operation Cmp, destination RDI и sign-extended imm32 `0x00100000`. Переиспользуется `arithmetic_result` для qword `RDI - 0x00100000`; RDI и остальные GPR не меняются, все шесть arithmetic flags обновляются и становятся defined, прочие RFLAGS сохраняются. При равенстве устанавливаются ZF и PF. Данных памяти и I/O инструкция не касается. Fault при fetch immediate не коммитит CPU state. Остальные immediate/opcode/width/prefix/operand формы, CPL3 и прочие paged profiles остаются вне допуска.
+
+Tests проверяют full state, сравнение равного handoff GPA (ZF/PF), flags/definedness, соседние формы и fetch fault imm32 через границу страницы, а также CPL3 и stack/CR3/CR0.WP profiles. Runner retired 14 инструкций и остановился на `75 77` (`JNZ rel8`, ISSUE-114, RIP `0x2001fb`).
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
