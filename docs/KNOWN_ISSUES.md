@@ -340,13 +340,22 @@
 - **Runner:** image `/private/tmp/od-fw-s7-seta-cl.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retired 45 instructions, then stopped at `66 83 FB 03` (`CMP BX,3`) with `Unsupported { opcode: 131 }`, `RIP=0x200d5b`, `com1_bytes=0`; see [ISSUE-143](#issue-143-s7-04-rust-helper-cmp-bx-imm8-3-unsupported).
 
 <a id="issue-143-s7-04-rust-helper-cmp-bx-imm8-3-unsupported"></a>
-### ISSUE-143 — S7-04: Rust helper `CMP BX,3` (`66 83 FB 03`) остаётся вне paged CPU profile
+### ISSUE-143 — S7-04: точная форма Rust helper `CMP BX,3` (`66 83 FB 03`) admitted
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `SETA CL`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d5b`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner stops at `66 83 FB 03` (`CMP BX,3`), `Unsupported { opcode: 131 }`, `retired=45`, `RIP=0x200d5b`; COM1 пуст. Это следующая инструкция helper после `SETA CL`.
+- **Статус:** решена только для exact `66 83 FB 03` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Результат и проверка:** base profile admits only CMP of low-word BX with sign-extended imm8 3. Shared 16-bit `ArithmeticKind::Cmp` updates arithmetic flags/definedness without changing registers. Four focused tests passed (BX less/equal/greater than 3, upper RBX ignored, immediate fetch fault, neighbors including negative sign-extension, CPL3/other-profile isolation).
 - **Основание:** образ `/private/tmp/od-fw-s7-seta-cl.bin`; `od -An -tx1 -j 0xd5b -N16` показывает `66 83 fb 03 40 0f 93 c7 40 08 cf 74 3b c7 40 08`; runner с бюджетом 10000.
-- **Следующий шаг:** проверить точную 16-bit CMP BX, sign-extended imm8 и разрешить только `66 83 FB 03` в base profile с тестами flags/definedness и профильной изоляции.
+- **Runner:** image `/private/tmp/od-fw-s7-cmp-bx-3.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retired 46 instructions, then stopped at `40 0F 93 C7` (`SETAE DIL`) with `Unsupported { opcode: 147 }`, `RIP=0x200d5f`, `com1_bytes=0`; see [ISSUE-144](#issue-144-s7-04-rust-helper-setae-dil-unsupported).
+
+<a id="issue-144-s7-04-rust-helper-setae-dil-unsupported"></a>
+### ISSUE-144 — S7-04: Rust helper `SETAE DIL` (`40 0F 93 C7`) остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `CMP BX,3`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d5f`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner stops at `40 0F 93 C7` (`SETAE DIL`), `Unsupported { opcode: 147 }`, `retired=46`, `RIP=0x200d5f`; COM1 пуст. Эта условная byte-register операция следует за проверкой BX.
+- **Основание:** образ `/private/tmp/od-fw-s7-cmp-bx-3.bin`; `od -An -tx1 -j 0xd5f -N16` показывает `40 0f 93 c7 40 08 cf 74 3b c7 40 08 02 00 01 00`; runner с бюджетом 10000.
+- **Следующий шаг:** проверить exact `SETAE DIL` (condition AboveOrEqual), low-byte register alias и REX prefix boundaries в base profile.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.

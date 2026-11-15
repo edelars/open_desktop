@@ -669,6 +669,12 @@ Tests покрывают точное сравнение magic, flags/definednes
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_seta_cl -- --nocapture` — 4 passed; decoder tests `setcc_decodes_byte_registers_memory_addresses_and_ignored_modrm_reg` и `setcc_prefix_boundaries_and_fetch_faults_are_explicit` passed. Матрица включает CF/ZF truth table при undefined CF/ZF, full state, fault на последнем байте, neighboring forms, в том числе `0F 97 C9`, CPL3 и другие paged profiles. Runner retired 45 инструкций, затем остановился на `66 83 FB 03` (`CMP BX,3`, ISSUE-143, RIP `0x200d5b`); полная проверка handoff не завершена.
 
+#### Расширение S7-04: exact Rust-helper `CMP BX,3`
+
+Base `PagedCpl0ProbeV1` additionally admits only `66 83 FB 03` for this pairing, alongside prior `66 83 FF 01` (`CMP DI,1`). The decoder sign-extends imm8 to the 16-bit operand; the exact guard couples immediate 3 only with BX. Shared `ArithmeticKind::Cmp` updates arithmetic flags and their definedness, reads only BX's low word, and does not write registers.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_cmp_bx_imm8 -- --nocapture` — 4 passed: BX below/equal/above 3 with nonzero upper RBX, full-state preservation, flags/definedness, immediate-byte fetch fault, negative sign-extension and neighboring forms, CPL3/other-profile isolation. Runner retired 46 instructions and stopped at `40 0F 93 C7` (`SETAE DIL`, ISSUE-144, RIP `0x200d5f`); full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции

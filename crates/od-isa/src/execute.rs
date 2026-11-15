@@ -20955,13 +20955,13 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
-        // S7-04: the Rust helper checks the first handoff field with exactly
-        // `66 83 FF 01` (CMP DI,1). The imm8 is sign-extended by the decoder;
-        // keep this 16-bit register/immediate pair exact in the base profile.
+        // S7-04: the Rust helper checks handoff fields with exact `66 83 FF 01`
+        // (CMP DI,1) and `66 83 FB 03` (CMP BX,3). The imm8 is sign-extended by
+        // the decoder; keep both 16-bit register/immediate pairs exact here.
         Operation::Arithmetic {
             kind: ArithmeticKind::Cmp,
             dst: Operand::Register(destination),
-            src: Operand::Immediate(1),
+            src: Operand::Immediate(immediate @ (1 | 3)),
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x83
@@ -20972,11 +20972,19 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     operand_override: true,
                     ..Prefixes::default()
                 })
-            && destination == RegisterView::low(Register::Rdi, OperandSize::Word) =>
+            && ((immediate == 1
+                && destination == RegisterView::low(Register::Rdi, OperandSize::Word))
+                || (immediate == 3
+                    && destination == RegisterView::low(Register::Rbx, OperandSize::Word))) =>
         {
             let lhs = state.read(destination);
-            let (_, flags) =
-                arithmetic_result(OperandSize::Word, ArithmeticKind::Cmp, lhs, 1, state.rflags);
+            let (_, flags) = arithmetic_result(
+                OperandSize::Word,
+                ArithmeticKind::Cmp,
+                lhs,
+                immediate,
+                state.rflags,
+            );
             state.rflags = flags;
             state.rip = next_rip;
             return PagedProbeResult {
