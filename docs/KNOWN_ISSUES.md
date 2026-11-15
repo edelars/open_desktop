@@ -617,10 +617,19 @@
 ### ISSUE-172 — S7-04: Rust helper `MOV R12D,R9D` remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска exact register AND.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e0b`.
+- **Статус:** решена узко для exact `45 89 CC` в base `PagedCpl0ProbeV1`.
+- **Результат:** допускается только dword `MOV R12D,R9D` с exact REX/opcode/ModRM/length; используемая запись в R12D обнуляет верхние 32 бита R12. Флаги и остальные регистры остаются без изменений.
+- **Проверка:** четыре focused `rust_helper_mov_r12d_r9d` tests, other-profile isolation, all 368 `paged_probe_profile` tests, `cargo check --offline -p od-isa --all-targets`, scoped rustfmt and `git diff --check` passed. Image `/private/tmp/od-fw-s7-04-issue172.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`); runner retired 75 instructions and stopped at `41 C1 EC 08` (`SHR R12D,8`, ISSUE-173), `RIP=0x200e0e`, `Unsupported { opcode: 193 }`, `com1_bytes=0`. Full handoff validation remains incomplete.
+- **Ссылка:** [paged CPU-profile contract](specs/CPU_CONTRACT.md#s7-04-exact-rust-helper-mov-r12d-r9d).
+
+<a id="issue-173-s7-04-rust-helper-shr-r12d-8-unsupported"></a>
+### ISSUE-173 — S7-04: Rust helper `SHR R12D,8` remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact dword register MOV.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e0e`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 74 instructions, then stops at `45 89 CC` (`MOV R12D,R9D`), `Unsupported { opcode: 137 }`, `RIP=0x200e0b`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue171.bin`; bytes at offset `0xe0b` are `45 89 cc`; runner budget 10000.
-- **Следующий шаг:** inspect the exact dword register tuple and existing MOV zero-extension behavior, then consider only this form in the base paged profile.
+- **Суть и последствия:** runner retired 75 instructions, then stops at `41 C1 EC 08` (`SHR R12D,8`), `Unsupported { opcode: 193 }`, `RIP=0x200e0e`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue172.bin`; bytes at offset `0xe0e` are `41 c1 ec 08`; runner budget 10000.
+- **Следующий шаг:** inspect existing shift semantics and admit only this exact dword immediate-count form if bounded safely.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.

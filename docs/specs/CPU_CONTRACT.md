@@ -853,6 +853,13 @@ Base `PagedCpl0ProbeV1` admits only `4D 21 C7`: primary opcode `21`, exact REX `
 
 Checks: four focused `rust_helper_and_r15_r8` tests and other-profile isolation passed; all 364 `paged_probe_profile` tests passed. Coverage includes qword result vectors, complete state, flags and AF-definedness, fetch fault at ModRM, neighboring forms and CPL/profile isolation. Firmware image `/private/tmp/od-fw-s7-04-issue171.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 74 instructions then stopped at `45 89 CC` (`MOV R12D,R9D`, ISSUE-172), `RIP=0x200e0b`, `Unsupported { opcode: 137 }`, `com1_bytes=0`; full handoff validation remains incomplete.
 
+<a id="s7-04-exact-rust-helper-mov-r12d-r9d"></a>
+#### Расширение S7-04: exact Rust-helper `MOV R12D,R9D`
+
+Base `PagedCpl0ProbeV1` admits only `45 89 CC`: primary opcode `89`, exact REX `45` (R/B), ModRM `CC`, dword operands, destination R12D, source R9D, and length 3. Existing register MOV semantics write R12D and zero-extend into R12; flags and all other registers remain unchanged. Fetch faults do not commit CPU state. Neighboring register pairs, direction, width, extra/different prefixes, memory forms, CPL3 and other paged profiles remain unsupported.
+
+Checks: four focused `rust_helper_mov_r12d_r9d` tests and other-profile isolation passed; all 368 `paged_probe_profile` tests passed. Coverage includes high-source bits ignored, destination zero-extension, full-state/flag preservation, ModRM fetch fault, neighbors and CPL/profile isolation. Firmware image `/private/tmp/od-fw-s7-04-issue172.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 75 instructions then stopped at `41 C1 EC 08` (`SHR R12D,8`, ISSUE-173), `RIP=0x200e0e`, `Unsupported { opcode: 193 }`, `com1_bytes=0`; full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции
