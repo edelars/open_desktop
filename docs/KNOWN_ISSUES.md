@@ -13,14 +13,24 @@
 ## Записи
 
 <a id="issue-100-s7-04-paged-cpu-profile-does-not-admit-cld-at-firmware-entry"></a>
+<a id="issue-101-s7-04-paged-cpu-profile-does-not-admit-c7-mov-imm32-at-entry"></a>
+### ISSUE-101 — S7-04: paged CPU profile не допускает `C7 MOV` из entry прошивки
+- **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `CLD`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
+- **Владелец:** S7-04 совместно с владельцем CPU profile.
+- **Статус:** открыта; runtime-проверка S7-04 останавливается после первого startup instruction.
+- **Суть и последствия:** после успешно исполненного `CLD` runner отклоняет `C7` (`MOV RAX,imm32`, bytes `48 C7 C0 00 00 10 00`) на `RIP=0x200041`. До Rust entry не доходят; handoff parser и COM1 остаются непроверенными в машине.
+- **Основание:** на образе `/private/tmp/od-fw-s7-04.bin` команда `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04.bin --com1-out /private/tmp/od-fw-s7-04-after-cld.com1 --budget 10000` вернула `status=error`, `exit=unsupported`, `Unsupported { opcode: 199 }`, `retired=1`, `RIP=0x200041`, `com1_bytes=0`. Образ SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+- **Следующий шаг:** определить точный profile contract для используемой startup-формы `C7`, реализовать её семантику с узкой admission и тестами либо изменить startup только при сохранении handoff-контракта; повторить полный runner-прогон.
+
+<a id="issue-100-s7-04-paged-cpu-profile-does-not-admit-cld-at-firmware-entry"></a>
 ### ISSUE-100 — S7-04: paged CPU profile не допускает `CLD` в entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон собранного образа S7-04.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
-- **Владелец:** CPU profile; снять после реализации/приёмки семантики инструкции в соответствующем paged-профиле.
-- **Статус:** открыта; runtime-проверка S7-04 заблокирована.
-- **Суть и последствия:** загрузчик отклоняет первый `CLD` (`0xFC`) до исполнения Rust entry. Handoff parser, stop-коды и COM1 success/error path не могут быть проверены в машине, хотя прошивка компилируется и образ собирается.
-- **Основание:** `python3 tools/build/build_firmware.py --out /private/tmp/od-fw-s7-04.bin`, затем `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04.bin --com1-out /private/tmp/od-fw-s7-04.com1 --budget 10000` вернул `status=error`, `exit=unsupported`, `Unsupported { opcode: 252 }`, `RIP=0x200040`, `retired=0`, `com1_bytes=0`. Это подтверждает только отказ текущего paged-профиля на первой инструкции, а не отсутствие `CLD` во всех CPU профилях.
-- **Следующий шаг:** определить профильный контракт и тесты `CLD` (clear DF) для paged исполнения; после допуска инструкции повторить runner-прогон и проверить дальнейшие ограничения entry отдельно.
+- **Владелец:** CPU profile.
+- **Статус:** решена в узком смысле допуска bare `CLD` (`6553d56`); это не означает, что entry прошивки целиком исполняется.
+- **Результат:** `PagedCpl0ProbeV1` исполняет только bare `FC`: очищает DF, помечает его defined и продвигает RIP на 1. Соседние профили и STD/префиксные формы остаются отклонёнными. Runner теперь retires одну инструкцию и останавливается на отдельной `C7` форме (ISSUE-101).
+- **Проверка и документация:** `cargo test --offline -p od-isa --quiet` — 4174 passed; `cargo test --offline -p od-runner --test firmware_boot_cli --quiet` — 5 passed; runner evidence и полный профильный контракт — [S7-04 отчёт](reports/STAGE_7_REPORT.md#s7-04-cpu-profile-cld).
 
 ### ISSUE-099 — S4-39j: правило зачётности `counted` для stage4a принято решением пользователя без записанного ревью
 
