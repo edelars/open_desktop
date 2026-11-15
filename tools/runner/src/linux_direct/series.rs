@@ -1177,7 +1177,7 @@ fn compare_run(
         && normalize_uart(&left_uart, &left.nonce) != normalize_uart(&right_uart, &right.nonce)
     {
         explained.push(format!(
-            "{prefix}.stage4-init-nonce UART timestamps, memory availability, sched_clock calibration, or terminal panic snapshot differ"
+            "{prefix}.stage4-init-nonce UART timestamps, memory availability, sched_clock calibration, init/nonce console order, audit initialization timestamp, or terminal panic snapshot differ"
         ));
     }
     if left.runner.guest_started != right.runner.guest_started
@@ -1350,12 +1350,37 @@ fn normalize_stage4_init_nonce_uart(bytes: &[u8], nonce: &str) -> Vec<u8> {
         .split_inclusive('\n')
         .map(normalize_stage4_init_nonce_uart_line)
         .collect::<Vec<_>>();
+    normalize_stage4_init_nonce_marker_order(&mut lines);
     if let Some((start, end)) = terminal_stage4_panic_snapshot(&lines)
         && let Some(normalized) = normalize_stage4_panic_snapshot(&lines[start..=end])
     {
         lines.splice(start..end + 1, normalized);
     }
     lines.concat().into_bytes()
+}
+
+fn normalize_stage4_init_nonce_marker_order(lines: &mut [String]) {
+    const NONCE_MARKER: &str = "OD_NONCE=<nonce>";
+    const INIT_LOG: &str = "Run /init as init process";
+    let marker = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| (uart_line_message(line) == NONCE_MARKER).then_some(index))
+        .collect::<Vec<_>>();
+    let init_log = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| (uart_line_message(line) == INIT_LOG).then_some(index))
+        .collect::<Vec<_>>();
+    let ([marker], [init_log]) = (marker.as_slice(), init_log.as_slice()) else {
+        return;
+    };
+    // Linux may defer a printk console write while another context holds the console lock.
+    // Normalize only this unique adjacent pair; the guest nonce and all other line ordering
+    // remain part of the strict comparison.
+    if marker.abs_diff(*init_log) == 1 && marker < init_log {
+        lines.swap(*marker, *init_log);
+    }
 }
 
 fn terminal_stage4_panic_snapshot(lines: &[String]) -> Option<(usize, usize)> {
@@ -1399,7 +1424,34 @@ fn normalize_stage4_init_nonce_uart_line(line: &str) -> String {
     };
     let message = normalize_memory_available(message);
     let message = normalize_sched_clock_calibration(&message);
+    let message = normalize_stage4_audit_init_timestamp(&message);
     format!("{prefix}{message}{ending}")
+}
+
+fn normalize_stage4_audit_init_timestamp(line: &str) -> String {
+    const PREFIX: &str = "audit: type=2000 audit(";
+    const SUFFIX: &str = "): state=initialized audit_enabled=0 res=1";
+    let Some(timestamp) = line
+        .strip_prefix(PREFIX)
+        .and_then(|value| value.strip_suffix(SUFFIX))
+    else {
+        return line.to_string();
+    };
+    let Some((time, serial)) = timestamp.split_once(':') else {
+        return line.to_string();
+    };
+    let Some((seconds, fraction)) = time.split_once('.') else {
+        return line.to_string();
+    };
+    if serial != "1"
+        || seconds.is_empty()
+        || fraction.is_empty()
+        || !seconds.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return line.to_string();
+    }
+    format!("{PREFIX}<event-time>:1{SUFFIX}")
 }
 
 fn kernel_timestamp_message(line: &str) -> Option<&str> {
@@ -2103,7 +2155,7 @@ mod tests {
     ) -> RunManifest {
         let dynamic = matches!(
             variant,
-            "timing" | "failed" | "no-panic" | "optional-pid-frame"
+            "timing" | "failed" | "no-panic" | "optional-pid-frame" | "nonce-order"
         );
         let marker_nonce = if matches!(variant, "marker" | "failed") {
             "wrongMarkerNonce"
@@ -2124,6 +2176,10 @@ mod tests {
                 if dynamic { 61632 } else { 62064 }
             ),
             format!(
+                "[{time}] audit: type=2000 audit({}): state=initialized audit_enabled=0 res=1",
+                if dynamic { "0.141:1" } else { "0.140:1" }
+            ),
+            format!(
                 "[{time}] sched_clock: Marking stable ({}, {})->({}, {})",
                 if dynamic { 727401607 } else { 727600823 },
                 if dynamic { 1447693312 } else { 1447617526 },
@@ -2131,6 +2187,7 @@ mod tests {
                 if dynamic { "-413537" } else { "-213836" }
             ),
             format!("OD_NONCE={marker_nonce}"),
+            format!("[{time}] Run /init as init process"),
             format!(
                 "[{time}] Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000"
             ),
@@ -2139,6 +2196,9 @@ mod tests {
             ),
             format!("[{time}] Call Trace:"),
         ];
+        if variant != "nonce-order" {
+            lines.swap(3, 4);
+        }
         if variant == "warning" {
             lines.push(format!(
                 "[{time}] WARNING: unexpected condition in panic trace"
@@ -2604,6 +2664,11 @@ mod tests {
                 .iter()
                 .any(|item| item.contains("UART timestamps"))
         );
+        assert!(
+            explained
+                .iter()
+                .any(|item| item.contains("audit initialization timestamp"))
+        );
 
         let optional_pid_frame = stage4_nonce_comparison_run(
             base.clone(),
@@ -2633,6 +2698,41 @@ mod tests {
             explained
                 .iter()
                 .any(|item| item.contains("UART timestamps"))
+        );
+        assert!(
+            explained
+                .iter()
+                .any(|item| item.contains("audit initialization timestamp"))
+        );
+
+        let nonce_order = stage4_nonce_comparison_run(
+            base.clone(),
+            &right_root,
+            "nonceStage4Order01",
+            "nonce-order",
+        );
+        let mut explained = Vec::new();
+        let mut unexplained = Vec::new();
+        compare_run(
+            0,
+            &left_path,
+            &right_path,
+            &left,
+            &nonce_order,
+            &mut explained,
+            &mut unexplained,
+        )
+        .unwrap();
+        assert!(unexplained.is_empty(), "{unexplained:?}");
+        assert!(
+            explained
+                .iter()
+                .any(|item| item.contains("UART timestamps"))
+        );
+        assert!(
+            explained
+                .iter()
+                .any(|item| item.contains("init/nonce console order"))
         );
 
         for (variant, expected) in [
@@ -2703,6 +2803,54 @@ mod tests {
         );
         let malformed = "sched_clock: Marking stable (1)->(3)";
         assert_eq!(normalize_sched_clock_calibration(malformed), malformed);
+    }
+
+    #[test]
+    fn stage4_nonce_normalizes_only_the_exact_audit_init_event_time() {
+        assert_eq!(
+            normalize_stage4_init_nonce_uart_line(
+                "[    1.588849] audit: type=2000 audit(0.140:1): state=initialized audit_enabled=0 res=1\r\n"
+            ),
+            "[<kernel-time>] audit: type=2000 audit(<event-time>:1): state=initialized audit_enabled=0 res=1\r\n"
+        );
+        let unrelated = "audit: type=1300 audit(0.140:1): op=USER_LOGIN";
+        assert_eq!(normalize_stage4_audit_init_timestamp(unrelated), unrelated);
+        let malformed = "audit: type=2000 audit(0.140:2): state=initialized audit_enabled=0 res=1";
+        assert_eq!(normalize_stage4_audit_init_timestamp(malformed), malformed);
+    }
+
+    #[test]
+    fn stage4_nonce_reorders_only_a_unique_adjacent_init_marker_pair() {
+        let mut adjacent = vec![
+            "OD_NONCE=<nonce>\r\n".to_string(),
+            "[<kernel-time>] Run /init as init process\r\n".to_string(),
+        ];
+        normalize_stage4_init_nonce_marker_order(&mut adjacent);
+        assert_eq!(
+            adjacent,
+            [
+                "[<kernel-time>] Run /init as init process\r\n",
+                "OD_NONCE=<nonce>\r\n"
+            ]
+        );
+
+        let mut separated = vec![
+            "OD_NONCE=<nonce>\r\n".to_string(),
+            "unrelated output\r\n".to_string(),
+            "[<kernel-time>] Run /init as init process\r\n".to_string(),
+        ];
+        let original = separated.clone();
+        normalize_stage4_init_nonce_marker_order(&mut separated);
+        assert_eq!(separated, original);
+
+        let mut duplicate = vec![
+            "OD_NONCE=<nonce>\r\n".to_string(),
+            "[<kernel-time>] Run /init as init process\r\n".to_string(),
+            "OD_NONCE=<nonce>\r\n".to_string(),
+        ];
+        let original = duplicate.clone();
+        normalize_stage4_init_nonce_marker_order(&mut duplicate);
+        assert_eq!(duplicate, original);
     }
 
     #[test]
