@@ -904,6 +904,13 @@ pub struct LinuxCpl0SetMembers {
     /// [`Self::linux_default`] (so a default run is unchanged); the runner turns it on only with
     /// `--cpuid-profile stage4a`. Independent of [`Self::msr`] and the other MSR members.
     pub msr_tdx_keyid_partitioning_read: bool,
+    /// `with_msr_apic_base` (S4-38L8g): `RDMSR` of IA32_APIC_BASE (`0x1B`) at CPL0 returns
+    /// `EDX:EAX = 0:0xFEE00900` (base `0xFEE00000`, EN, BSP); `WRMSR` accepts exactly that value and
+    /// refuses every other one (`Unsupported`) before any change. `false` in [`Self::minimal`] and
+    /// [`Self::linux_default`]; `run_linux_direct_board_set_observed` turns it on only for the APIC
+    /// profile (`X8664V1Stage4AApic`), whose board has the Local APIC enabled at that base, so the
+    /// member list of `stage4a` and of the default run does not change.
+    pub msr_apic_base: bool,
     /// `with_fp_state` (S4-38L9d): the FP member of the set: `FNINIT`, the plain RIP-relative
     /// `FXSAVE` and `MOV CR0, RDI` (the `fpu__init_system` path of the kernel), with the guest FP
     /// state kept in the board between runs (`guest_fp`). It needs a CPUID profile that declares
@@ -995,6 +1002,7 @@ impl LinuxCpl0SetMembers {
             msr_syscall_mask: false,
             msr_kernel_gs_base: false,
             msr_tdx_keyid_partitioning_read: false,
+            msr_apic_base: false,
             fp_state: false,
             int3: false,
             halt: false,
@@ -1036,6 +1044,7 @@ impl LinuxCpl0SetMembers {
             msr_syscall_mask: true,
             msr_kernel_gs_base: true,
             msr_tdx_keyid_partitioning_read: false,
+            msr_apic_base: false,
             fp_state: false,
             int3: false,
             fetch_cache: true,
@@ -1164,6 +1173,9 @@ fn run_linux_direct_board_set_with(
         members.halt = true;
         members.irq = true;
         members.clock_owner = true;
+        // S4-38L8g: the kernel reads IA32_APIC_BASE (the Local APIC is enabled at the default
+        // base; without the member the read is `#GP`, "BSP APIC 0 is not marked in APICBASE MSR").
+        members.msr_apic_base = true;
     } else if user_mode && boot.board.enable_pit_pic_irq() {
         // S4-39i: the UART THRE line goes to master IR4, so the kernel's 8250 driver can send
         // `tty` output (it writes THR from the THRE interrupt).
@@ -1251,6 +1263,10 @@ fn run_linux_direct_board_set_with(
     if members.msr_tdx_keyid_partitioning_read {
         set = set.with_msr_tdx_keyid_partitioning_read();
         names.push("msr:tdx_keyid_partitioning_read".into());
+    }
+    if members.msr_apic_base {
+        set = set.with_msr_apic_base();
+        names.push("msr:apic_base".into());
     }
     if members.fp_state {
         set = set.with_fp_state(&fp_cell);
@@ -14876,6 +14892,104 @@ mod tests {
             assert!(boot.board.pit_ioapic_source().is_none());
             assert!(!boot.board.clock_owner_enabled());
             assert!(boot.board.com1_transcript().is_empty());
+        }
+
+        /// S4-38L8g: `MOV ECX, 0x1B; MOV EDX, 0x66; <body>; HLT`.
+        fn apic_base_guest(body: &[u8]) -> Vec<u8> {
+            let mut code = mov32(1, 0x1B);
+            code.extend(mov32(2, 0x66));
+            code.extend_from_slice(body);
+            code.push(0xF4);
+            code
+        }
+
+        /// `MOV EAX, eax; MOV EDX, edx; WRMSR` (the guest's ECX is 0x1B from the prologue).
+        fn wrmsr_apic_base(eax: u32, edx: u32) -> Vec<u8> {
+            let mut code = mov32(0, eax);
+            code.extend(mov32(2, edx));
+            code.extend([0x0F, 0x30]);
+            code
+        }
+
+        #[test]
+        fn rdmsr_0x1b_returns_the_apic_base_with_bsp_and_en_under_the_apic_profile() {
+            let (mut boot, file) = boot_with_entry(&apic_base_guest(&[0x0F, 0x32]));
+            let record = run_set_facade(
+                &mut boot,
+                &file,
+                64,
+                members(CpuidProfile::X8664V1Stage4AApic),
+            );
+            assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+            // Oracle (SDM, by hand): base 0xFEE00000 | BSP (bit 8) | EN (bit 11) = 0xFEE00900.
+            assert_eq!(record.gpr[Register::Rax as usize], 0xFEE0_0900);
+            assert_eq!(record.gpr[Register::Rdx as usize], 0);
+            assert_eq!(record.gpr[Register::Rcx as usize], 0x1B);
+            assert!(record.set_members.iter().any(|m| m == "msr:apic_base"));
+        }
+
+        #[test]
+        fn wrmsr_0x1b_accepts_only_the_matching_fields_and_refuses_the_rest_unchanged() {
+            let apic = || members(CpuidProfile::X8664V1Stage4AApic);
+            // The kernel's own value is accepted, and the read after it is the same constant.
+            let mut body = wrmsr_apic_base(0xFEE0_0900, 0);
+            body.extend([0x0F, 0x32]);
+            let (mut boot, file) = boot_with_entry(&apic_base_guest(&body));
+            let record = run_set_facade(&mut boot, &file, 64, apic());
+            assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+            assert_eq!(record.gpr[Register::Rax as usize], 0xFEE0_0900);
+            assert_eq!(record.gpr[Register::Rdx as usize], 0);
+            // Another base, EN or BSP clear, an upper half: a typed refusal before the write.
+            for (eax, edx) in [
+                (0xFEE0_1900u32, 0u32),
+                (0xFEE0_0800, 0),
+                (0xFEE0_0100, 0),
+                (0xFEE0_0900, 1),
+            ] {
+                let (mut boot, file) =
+                    boot_with_entry(&apic_base_guest(&wrmsr_apic_base(eax, edx)));
+                let record = run_set_facade(&mut boot, &file, 64, apic());
+                assert_eq!(
+                    record.exit,
+                    PagedProbeExit::Unsupported { opcode: 0x30 },
+                    "{eax:#x}:{edx:#x} {record:?}"
+                );
+                assert_eq!(record.retired, 4, "MOV ECX, MOV EDX, MOV EAX, MOV EDX");
+                assert_eq!(record.gpr[Register::Rax as usize], u64::from(eax));
+                assert_eq!(record.gpr[Register::Rdx as usize], u64::from(edx));
+            }
+        }
+
+        #[test]
+        fn stage4a_and_the_default_keep_the_0x1b_msr_access_refused() {
+            for profile in [CpuidProfile::X8664V1Stage4A, CpuidProfile::DiagnosticV1] {
+                let (mut boot, file) = boot_with_entry(&apic_base_guest(&[0x0F, 0x32]));
+                let record = run_set_facade(&mut boot, &file, 64, members(profile));
+                // Unchanged since S4-38L9v: the read of an unmodelled index is `#GP(0)` (no IDT
+                // here, so the run ends with the fault), RAX and RDX as the MOVs left them.
+                assert_eq!(
+                    record.exit,
+                    PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+                        vector: 13,
+                        error_code: Some(0),
+                        linear_address: None,
+                    }),
+                    "{record:?}"
+                );
+                assert_eq!(record.retired, 2, "MOV ECX, MOV EDX; the RDMSR faults");
+                assert_eq!(record.gpr[Register::Rdx as usize], 0x66);
+                assert!(!record.set_members.iter().any(|m| m == "msr:apic_base"));
+                let (mut boot, file) =
+                    boot_with_entry(&apic_base_guest(&wrmsr_apic_base(0xFEE0_0900, 0)));
+                let record = run_set_facade(&mut boot, &file, 64, members(profile));
+                assert_eq!(
+                    record.exit,
+                    PagedProbeExit::Unsupported { opcode: 0x30 },
+                    "{record:?}"
+                );
+            }
+            assert!(!LinuxCpl0SetMembers::minimal().msr_apic_base);
+            assert!(!LinuxCpl0SetMembers::linux_default().msr_apic_base);
         }
     }
 
