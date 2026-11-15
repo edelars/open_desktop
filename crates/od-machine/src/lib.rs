@@ -5,6 +5,7 @@ mod acpi_blob;
 mod acpi_pm;
 mod apic_pair;
 mod bus;
+mod clock_owner;
 mod diagnostic_vcpu;
 mod display_device;
 mod dma_page;
