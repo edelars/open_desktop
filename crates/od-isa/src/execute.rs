@@ -20203,6 +20203,42 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.rip = target;
             return result(PagedProbeExit::Retired, 1);
         }
+        // S7-04: the Rust entry prologue reserves exactly 0x58 bytes with
+        // `48 83 EC 58`. This is register arithmetic only: no stack access or
+        // canonical-address check occurs until a later instruction uses RSP.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Sub,
+            dst: Operand::Register(destination),
+            src: Operand::Immediate(0x58),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x83
+            && instruction.length == 4
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x48),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rsp, OperandSize::Qword) =>
+        {
+            let lhs = state.read(destination);
+            let (value, flags) = arithmetic_result(
+                OperandSize::Qword,
+                ArithmeticKind::Sub,
+                lhs,
+                0x58,
+                state.rflags,
+            );
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: the validated handoff pointer is copied from RDI to R8 by
         // exactly `49 89 F8`. Keep all other register MOV forms unsupported.
         Operation::Mov {

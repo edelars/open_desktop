@@ -3401,6 +3401,147 @@ fn firmware_entry_call_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn rust_entry_sub_rsp_imm8_reserves_exact_stack_frame_and_updates_flags() {
+    let code = [0x48, 0x83, 0xec, 0x58]; // SUB RSP,0x58
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsp as usize] = 0x14_fff8;
+    cpu.rflags = 0x8d7;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED | 0x8d5);
+    let mut expected = before;
+    expected.gpr[Register::Rsp as usize] = 0x14_ffa0;
+    expected.rip = RIP + code.len() as u64;
+    // 0x14_fff8 - 0x58 = 0x14_ffa0: PF is set; other arithmetic flags clear.
+    expected.rflags = (expected.rflags & !0x8d5) | (1 << 2);
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(memory.write_addresses.is_empty());
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_entry_sub_rsp_imm8_does_not_validate_noncanonical_result() {
+    let code = [0x48, 0x83, 0xec, 0x58];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::Rsp as usize] = 0x0000_8000_0000_0058;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED | 0x8d5);
+    let mut expected = before;
+    expected.gpr[Register::Rsp as usize] = 0x0000_8000_0000_0000;
+    expected.rip = RIP + code.len() as u64;
+    expected.rflags = (expected.rflags & !0x8d5) | (1 << 2);
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(memory.write_addresses.is_empty());
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_entry_sub_rsp_imm8_fetch_fault_is_atomic() {
+    let mut memory = Memory::new(&[]);
+    memory.bytes[CODE_PHYSICAL + 0xffd..CODE_PHYSICAL + 0x1000]
+        .copy_from_slice(&[0x48, 0x83, 0xec]);
+    let mut cpu = state();
+    cpu.rip = RIP + 0xffd;
+    cpu.gpr[Register::Rsp as usize] = 0x14_fff8;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    memory.fail_fetch_at = Some((cpu.rip + 3, page_fault(0x10, cpu.rip + 3)));
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(RIP + 0x1000),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(memory.write_addresses.is_empty());
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_entry_sub_rsp_imm8_neighbours_stay_unsupported_without_mutation() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x48, 0x83, 0xec, 0x57], 0x83),          // different immediate
+        (&[0x48, 0x83, 0xec, 0x59], 0x83),          // different immediate
+        (&[0x48, 0x83, 0xc4, 0x58], 0x83),          // ADD RSP,0x58
+        (&[0x48, 0x83, 0xfc, 0x58], 0x83),          // CMP RSP,0x58
+        (&[0x48, 0x83, 0xed, 0x58], 0x83),          // SUB RBP,0x58
+        (&[0x83, 0xec, 0x58], 0x83),                // dword SUB ESP,0x58
+        (&[0x48, 0x81, 0xec, 0x58, 0, 0, 0], 0x81), // immediate dword form
+        (&[0x48, 0x29, 0xec], 0x29),                // SUB RSP,RBP
+        (&[0x48, 0x83, 0x6c, 0x24, 0x58, 0x58], 0x83), // memory destination
+        (&[0x66, 0x48, 0x83, 0xec, 0x58], 0x83),    // operand-size prefix
+        (&[0x67, 0x48, 0x83, 0xec, 0x58], 0x83),    // address-size prefix
+        (&[0xf3, 0x48, 0x83, 0xec, 0x58], 0x83),    // REP prefix
+        (&[0x2e, 0x48, 0x83, 0xec, 0x58], 0x83),    // segment prefix
+        (&[0x4c, 0x83, 0xec, 0x58], 0x83),          // different REX
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = 0x14_fff8;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "{bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0), "{bytes:02x?}");
+        assert!(memory.write_addresses.is_empty());
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_entry_sub_rsp_imm8_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x48, 0x83, 0xec, 0x58];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    let before = cpu.clone();
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x83 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn firmware_entry_lea_rdi_rip_disp32_sets_exact_target_only() {
     let code = [0x48, 0x8d, 0x3d, 0x09, 0x2b, 0, 0];
     let mut memory = Memory::new(&code);
@@ -3643,6 +3784,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0xf3, 0xaa][..], 0xaa),
         (&[0x4c, 0x89, 0xc7][..], 0x89),
         (&[0xe8, 0x83, 0x01, 0, 0][..], 0xe8),
+        (&[0x48, 0x83, 0xec, 0x58][..], 0x83),
     ] {
         for profile in ["stack", "cr3", "cr0wp"] {
             let mut memory = Memory::new(bytes);

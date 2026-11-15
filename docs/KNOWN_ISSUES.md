@@ -74,10 +74,18 @@
 ### ISSUE-112 — S7-04: Rust entry `SUB RSP,imm8` остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после точечного допуска firmware CALL.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust entry (`firmware/uefi/src/start.S`).
-- **Статус:** открыта; runner достиг target `od_fw_main`, но первый Rust prologue instruction не исполнился.
-- **Суть и последствия:** `RIP=0x2001f0` содержит `48 83 EC 58` (`SUB RSP,0x58`, точка входа в Rust prologue); paged profile возвращает `Unsupported { opcode: 131 }`. COM1 пуст, handoff parser в машине пока не достигнут.
-- **Основание:** образ `/private/tmp/od-fw-s7-call.bin`, байты подтверждены `od -An -tx1 -j 0x1f0 -N16` (`48 83 ec 58 48 81 ff 00 00 10 00 75 77 48 8d 7c`); runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=12`, `RIP=0x2001f0`, `com1_bytes=0`.
-- **Следующий шаг:** определить и ограничить безопасный Rust-prologue instruction slice для stack adjustment; сохранить fault atomicity и profile isolation.
+- **Статус:** решена узко для `48 83 EC 58`; runner исполнил stack adjustment и остановился на ISSUE-113.
+- **Суть и результат:** base `PagedCpl0ProbeV1` допускает только qword `SUB RSP,0x58` без префиксов. Это register arithmetic, не обращается к стековой памяти и не проверяет canonicality результата; arithmetic flags/definedness используют существующую SUB семантику. Все соседние формы и остальные paged profiles остаются вне допуска.
+- **Проверка:** `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 133 passed; full state/flags, noncanonical result без fault, fetch fault на immediate, neighbors и CPL3/stack/CR3/CR0.WP isolation. Runner собрал образ SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, retired 13 инструкций и остановился на `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`) при `RIP=0x2001f4`; COM1 пуст.
+
+<a id="issue-113-s7-04-rust-entry-cmp-rdi-imm32-unsupported"></a>
+### ISSUE-113 — S7-04: Rust entry `CMP RDI,imm32` остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после допуска stack-frame adjustment.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust entry prologue (`firmware/uefi/src/start.S`).
+- **Статус:** открыта; первый Rust stack adjustment исполнился, но проверка handoff pointer не исполнилась.
+- **Суть и последствия:** `RIP=0x2001f4` содержит `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`); paged profile возвращает `Unsupported { opcode: 129 }`. COM1 пуст, handoff parser в машине пока не достигнут.
+- **Основание:** образ `/private/tmp/od-fw-s7-sub-rsp.bin`, байты подтверждены `od -An -tx1 -j 0x1f4 -N16` (`48 81 ff 00 00 10 00 75 77 48 8d 7c 24 08 be 00`); runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=13`, `RIP=0x2001f4`, `com1_bytes=0`.
+- **Следующий шаг:** ограничить exact immediate CMP форму с существующей арифметикой flags и profile isolation.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки

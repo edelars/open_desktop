@@ -393,7 +393,8 @@ Long64 CPL0 allowlist: `48 8B 03` (`MOV RAX,[RBX]`), `48 89 0B`
 (`MOV [RBX],RCX`), bare `EC` (`IN AL,DX`), bare `EE` (`OUT DX,AL`) and bare
 `F4` (`HLT`); S7-03 extends it with `B0+r ib` and `66 B8+r iw`, and S7-04 adds
 bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`,
-`75 24`, `49 89 F8`, and `E8 83 01 00 00` (`CALL rel32`; see the extensions below). The CPU entry validates its
+`75 24`, `49 89 F8`, `E8 83 01 00 00` (`CALL rel32`), and `48 83 EC 58`
+(`SUB RSP,0x58`; see the extensions below). The CPU entry validates its
 profile admission and CR0/CR4 before fetch. It receives page-aware `GuestMemory`;
 CR3/EFER validation and selecting the four-level 4 KiB paging context belong
 to the machine entry.
@@ -509,6 +510,12 @@ Tests проверяют только изменение RDI/RIP, full state, ex
 В base `PagedCpl0ProbeV1` допускается только `E8 83 01 00 00`: Primary opcode `E8`, длина 5, Qword, без префиксов и displacement `+0x183`. Вычисленный target проверяется на canonicality до stack write; существующий CALL helper записывает return RIP (`next_rip`) по `[RSP-8]` и меняет RSP только после успешной записи. Затем RIP устанавливается в `next_rip + 0x183`. Для текущего образа CALL на `0x200068` входит в Rust entry `0x2001f0`, return RIP равен `0x20006d`, а начальный stack store идёт по `0x14fff8`. Fetch fault, #SS из-за noncanonical stack и stack #PF не меняют CPU state. Другие displacement/opcode/prefix формы и остальные paged profiles остаются вне allowlist.
 
 Tests проверяют полный CPU state/return-address store, target, flags/definedness, изменённые displacement и соседние CALL/JMP формы, CPL3/other-profile isolation, fetch fault и stack #SS/#PF atomicity. Firmware runner retired 12 инструкций и достиг `0x2001f0`; следующая точная блокировка — `48 83 EC 58` (`SUB RSP,0x58`, ISSUE-112).
+
+#### Расширение S7-04: точный Rust-entry `SUB RSP,0x58`
+
+В base `PagedCpl0ProbeV1` допускается только `48 83 EC 58`: Primary opcode `83`, длина 4, qword, ровно REX.W `0x48`, операция SUB, destination RSP и sign-extended immediate `0x58`. Используется существующая `arithmetic_result` семантика: RSP получает полное 64-битное значение `RSP - 0x58`, шесть арифметических flags обновляются по SUB, остальные flags сохраняются, и эти шесть bits становятся defined. При входном RSP после firmware CALL `0x14fff8` результат равен `0x14ffa0`. Это исключительно арифметика регистров: команда не читает/пишет стек, не проверяет canonicality результата и не может вызвать stack/page fault; дальнейшее обращение к стеку проверит соответствующий адрес по обычным правилам. Fault при fetch любого байта инструкции оставляет CPU неизменным. Другие destination/immediate/opcode/width/prefix forms, CPL3 и остальные paged profiles не допускаются.
+
+Tests проверяют полный CPU state и точные flags/definedness, noncanonical result без fault и data-memory access, immediate fetch fault через границу страницы, соседние forms, CPL3 и stack/CR3/CR0.WP profiles. Firmware runner retired 13 инструкций и остановился на `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`, ISSUE-113, RIP `0x2001f4`).
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
