@@ -28,8 +28,10 @@ pub struct Handoff<'a> {
 pub enum HandoffError {
     TruncatedHeader,
     BadMagic,
-    UnsupportedMajor(u16),
-    UnsupportedMinor(u16),
+    UnsupportedVersion {
+        major: u16,
+        minor: u16,
+    },
     InvalidHeaderSize(u32),
     InvalidTotalSize(u32),
     MisalignedOffset {
@@ -125,6 +127,62 @@ pub enum HandoffError {
         stored: u32,
         computed: u32,
     },
+}
+
+impl HandoffError {
+    /// Maps a parser failure to the firmware stop code and its diagnostic detail.
+    /// The groups and detail values follow FIRMWARE_BOOT.md §12.
+    pub fn stop_code_detail(self) -> (u8, u64) {
+        use crate::stop::*;
+
+        match self {
+            Self::TruncatedHeader => (STOP_HANDOFF_SIZE, 0),
+            Self::BadMagic => (STOP_HANDOFF_MAGIC, 0),
+            Self::UnsupportedVersion { major, minor } => (
+                STOP_HANDOFF_VERSION,
+                (u64::from(major) << 16) | u64::from(minor),
+            ),
+            Self::InvalidHeaderSize(size) => (STOP_HANDOFF_SIZE, u64::from(size)),
+            Self::InvalidTotalSize(size) => (STOP_HANDOFF_SIZE, u64::from(size)),
+            Self::BadCrc { stored, .. } => (STOP_HANDOFF_CRC, u64::from(stored)),
+            Self::MisalignedOffset { offset, .. } => (STOP_HANDOFF_TABLE, u64::from(offset)),
+            Self::OverlappingTables => (STOP_HANDOFF_TABLE, 0),
+            Self::InvalidTableCount { count, .. } => (STOP_HANDOFF_TABLE, u64::from(count)),
+            Self::InvalidTableEntrySize { actual, .. } => (STOP_HANDOFF_SIZE, u64::from(actual)),
+            Self::TableOutOfBounds { table } => (
+                STOP_HANDOFF_TABLE,
+                if table == "region" { 0x30 } else { 0x3C },
+            ),
+            Self::InvalidDeviceCountForVersion { count, .. } => {
+                (STOP_HANDOFF_DEVICE, u64::from(count))
+            }
+            Self::InvalidRegionType { index, .. }
+            | Self::InvalidRegionAttributes { index, .. }
+            | Self::InvalidRegionRange { index }
+            | Self::InvalidRegionOwner { index, .. }
+            | Self::NonZeroRegionReserved { index }
+            | Self::RegionsUnsortedOrOverlapping { index } => (STOP_HANDOFF_REGION, index as u64),
+            Self::InvalidDeviceType { index, .. }
+            | Self::DuplicateDeviceType { index, .. }
+            | Self::InvalidDeviceFlags { index, .. }
+            | Self::InvalidDeviceIrqFlags { index, .. }
+            | Self::InvalidDeviceRange { index }
+            | Self::InvalidDeviceVersion { index, .. }
+            | Self::RequiredDeviceNotPresent { index, .. } => (STOP_HANDOFF_DEVICE, index as u64),
+            Self::MissingDeviceType { kind } => (STOP_HANDOFF_DEVICE, u64::from(kind)),
+            Self::InvalidHeaderFlags(flags) => (STOP_HANDOFF_SIZE, u64::from(flags)),
+            Self::InvalidBoardProfile(profile) => (STOP_HANDOFF_REGION, u64::from(profile)),
+            Self::InvalidCpuCount(count) => (STOP_HANDOFF_CPU_COUNT, u64::from(count)),
+            Self::InvalidTscFrequency(hz) => (STOP_HANDOFF_TSC, hz),
+            Self::InvalidSerialLength(length) => (STOP_HANDOFF_SERIAL, u64::from(length)),
+            Self::InvalidSerial => (STOP_HANDOFF_SERIAL, 0),
+            Self::NonZeroHeaderReserved { offset } => (STOP_HANDOFF_SIZE, offset as u64),
+            Self::InvalidBootReservation { kind: 9 } => (STOP_HANDOFF_SHADOW, 9),
+            Self::InvalidBootReservation { kind } => (STOP_HANDOFF_REGION, u64::from(kind)),
+            Self::InvalidAcpiReservations => (STOP_HANDOFF_REGION, 0),
+            Self::InvalidBootPageTableSize { actual, .. } => (STOP_HANDOFF_REGION, actual),
+        }
+    }
 }
 
 fn u16_at(bytes: &[u8], offset: usize) -> u16 {
@@ -389,12 +447,12 @@ impl<'a> Handoff<'a> {
             return Err(HandoffError::BadMagic);
         }
         let major = u16_at(bytes, 0x08);
-        if major != 1 {
-            return Err(HandoffError::UnsupportedMajor(major));
-        }
         let minor = u16_at(bytes, 0x0A);
+        if major != 1 {
+            return Err(HandoffError::UnsupportedVersion { major, minor });
+        }
         if minor > supported_minor_max || minor > 2 {
-            return Err(HandoffError::UnsupportedMinor(minor));
+            return Err(HandoffError::UnsupportedVersion { major, minor });
         }
         let header_size = u32_at(bytes, 0x0C);
         if header_size as usize != HEADER_SIZE {
@@ -851,6 +909,56 @@ mod tests {
     }
 
     #[test]
+    fn maps_handoff_errors_to_documented_stop_codes() {
+        use crate::stop::*;
+
+        assert_eq!(
+            HandoffError::BadMagic.stop_code_detail(),
+            (STOP_HANDOFF_MAGIC, 0)
+        );
+        assert_eq!(
+            HandoffError::UnsupportedVersion { major: 2, minor: 3 }.stop_code_detail(),
+            (STOP_HANDOFF_VERSION, 0x0002_0003)
+        );
+        assert_eq!(
+            HandoffError::InvalidHeaderSize(0x80).stop_code_detail(),
+            (STOP_HANDOFF_SIZE, 0x80)
+        );
+        assert_eq!(
+            HandoffError::BadCrc {
+                stored: 0x1234,
+                computed: 0x5678
+            }
+            .stop_code_detail(),
+            (STOP_HANDOFF_CRC, 0x1234)
+        );
+        assert_eq!(
+            HandoffError::TableOutOfBounds { table: "device" }.stop_code_detail(),
+            (STOP_HANDOFF_TABLE, 0x3C)
+        );
+        assert_eq!(
+            HandoffError::InvalidCpuCount(2).stop_code_detail(),
+            (STOP_HANDOFF_CPU_COUNT, 2)
+        );
+        assert_eq!(
+            HandoffError::InvalidTscFrequency(0).stop_code_detail(),
+            (STOP_HANDOFF_TSC, 0)
+        );
+        assert_eq!(
+            HandoffError::InvalidSerialLength(65).stop_code_detail(),
+            (STOP_HANDOFF_SERIAL, 65)
+        );
+        assert_eq!(
+            HandoffError::InvalidBootReservation { kind: 9 }.stop_code_detail(),
+            (STOP_HANDOFF_SHADOW, 9)
+        );
+        assert_eq!(
+            HandoffError::InvalidBootReservation { kind: 7 }.stop_code_detail(),
+            (STOP_HANDOFF_REGION, 7)
+        );
+    }
+
+    #[test]
     fn accepts_canonical_v1_block_with_48_byte_device_records() {
         let b = sample();
         let parsed = Handoff::parse(&b, 2).unwrap();
@@ -869,13 +977,13 @@ mod tests {
         b[8] = 2;
         assert_eq!(
             Handoff::parse(&b, 2),
-            Err(HandoffError::UnsupportedMajor(2))
+            Err(HandoffError::UnsupportedVersion { major: 2, minor: 0 })
         );
         let mut b = sample();
         b[10] = 3;
         assert_eq!(
             Handoff::parse(&b, 2),
-            Err(HandoffError::UnsupportedMinor(3))
+            Err(HandoffError::UnsupportedVersion { major: 1, minor: 3 })
         );
         let mut b = sample();
         b[12] = 0;

@@ -4,6 +4,28 @@
 
 /// `RDI` at entry is not the handoff block address.
 pub const STOP_INVALID_RDI: u8 = 0x01;
+/// Handoff block magic does not match `ODHANDOF`.
+pub const STOP_HANDOFF_MAGIC: u8 = 0x02;
+/// Handoff version is not supported by this image.
+pub const STOP_HANDOFF_VERSION: u8 = 0x03;
+/// Handoff header or record sizes are invalid.
+pub const STOP_HANDOFF_SIZE: u8 = 0x04;
+/// Handoff CRC does not match.
+pub const STOP_HANDOFF_CRC: u8 = 0x05;
+/// Handoff table bounds or offsets are invalid.
+pub const STOP_HANDOFF_TABLE: u8 = 0x06;
+/// Handoff region or board memory metadata is invalid.
+pub const STOP_HANDOFF_REGION: u8 = 0x07;
+/// Handoff device metadata is invalid.
+pub const STOP_HANDOFF_DEVICE: u8 = 0x08;
+/// Handoff CPU count is invalid.
+pub const STOP_HANDOFF_CPU_COUNT: u8 = 0x09;
+/// Handoff TSC frequency is invalid.
+pub const STOP_HANDOFF_TSC: u8 = 0x0A;
+/// Handoff serial number is invalid.
+pub const STOP_HANDOFF_SERIAL: u8 = 0x0B;
+/// Firmware shadow reservation does not match the linked image range.
+pub const STOP_HANDOFF_SHADOW: u8 = 0x0C;
 /// Internal firmware error (panic handler).
 pub const STOP_INTERNAL: u8 = 0x30;
 

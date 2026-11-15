@@ -1,28 +1,25 @@
-//! Binary of the firmware image. S7-01: proof that the freestanding build works, not firmware.
-//!
-//! It initialises COM1 (FIRMWARE_BOOT.md, section 11), prints one line and stops. The entry
-//! `_start` is in `start.S`; the handoff block is not parsed, only its address is checked and kept.
-//! The panic handler prints the stop line with code `0x30` (section 12) and halts.
+//! Binary of the firmware image. The S7-04 entry parses and validates the boot handoff, then
+//! reports that result on COM1 and stops. Own page tables, allocators and UEFI services are not
+//! implemented yet. The entry `_start` is in `start.S`; the panic handler reports stop code `0x30`.
 
 #![no_std]
 #![no_main]
 
 use core::arch::asm;
 use core::panic::PanicInfo;
-use core::sync::atomic::{AtomicU64, Ordering};
 
+use od_firmware::handoff::{Handoff, HANDOFF_WINDOW_SIZE};
+use od_firmware::stop::{format_stop_line, STOP_INTERNAL, STOP_INVALID_RDI};
 use od_firmware::HANDOFF_GPA;
-use od_firmware::stop::{STOP_INTERNAL, STOP_INVALID_RDI, format_stop_line};
 
 const COM1_BASE: u16 = 0x3F8;
 const LSR_THRE: u8 = 0x20;
 /// Polling limit before a byte is dropped (FIRMWARE_BOOT.md, section 11).
 const TX_POLL_LIMIT: u32 = 65536;
 
-const BUILD_PROOF_LINE: &[u8] = b"OD-FW S7-01 build proof (not a firmware)\r\n";
-
-/// GPA of the handoff block as received in `RDI`. Not parsed in S7-01.
-static HANDOFF_BLOCK: AtomicU64 = AtomicU64::new(0);
+// Keep this equal to the image header's handoff_minor_max in build_firmware.py.
+const HANDOFF_MINOR_MAX: u16 = 0;
+const HANDOFF_VALIDATED_LINE: &[u8] = b"OD-FW S7-04 handoff validated\r\n";
 
 /// # Safety
 /// Port I/O: the caller must be at CPL0 (or have I/O permission) and `port` must be a real device
@@ -80,12 +77,24 @@ fn stop(code: u8, detail: u64) -> ! {
 /// Rust entry point, called by `_start` with `RDI` as the first argument.
 #[unsafe(no_mangle)]
 pub extern "C" fn od_fw_main(handoff_gpa: u64) -> ! {
-    HANDOFF_BLOCK.store(handoff_gpa, Ordering::Relaxed);
     if handoff_gpa != HANDOFF_GPA {
         stop(STOP_INVALID_RDI, handoff_gpa);
     }
+
+    // SAFETY: the firmware entry contract guarantees the fixed 64 KiB handoff window is
+    // identity-mapped, readable RAM at HANDOFF_GPA for the duration of firmware execution.
+    let bytes =
+        unsafe { core::slice::from_raw_parts(handoff_gpa as *const u8, HANDOFF_WINDOW_SIZE) };
+    let _handoff = match Handoff::parse_for_boot(bytes, HANDOFF_MINOR_MAX) {
+        Ok(handoff) => handoff,
+        Err(error) => {
+            let (code, detail) = error.stop_code_detail();
+            stop(code, detail);
+        }
+    };
+
     com1_init();
-    com1_write(BUILD_PROOF_LINE);
+    com1_write(HANDOFF_VALIDATED_LINE);
     halt_forever()
 }
 
