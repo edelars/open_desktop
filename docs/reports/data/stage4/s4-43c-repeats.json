@@ -1,0 +1,521 @@
+{
+ "schema": "s4-43c-repeats-v1",
+ "scope": "Межпроцессное подтверждение стабильности S4-43a и S4-43b: по 3 отдельных процесса на тест-бинарь, без cargo test; ограниченный stress, не long-run",
+ "source_commit": "208bbf4",
+ "os": "macos",
+ "arch": "aarch64",
+ "profile": "debug (test)",
+ "how_run": "тест-бинарь запускается напрямую с --nocapture и S4_43A_JSON_OUT / S4_43B_JSON_OUT; wall_s измерено снаружи (python time.time)",
+ "raw_runs_dir": "docs/reports/data/stage4/s4-43c-runs/",
+ "runs": [
+  {
+   "test": "s4_43a_translation_churn",
+   "process": 1,
+   "passed": true,
+   "tests_passed": 1,
+   "tests_failed": 0,
+   "test_finished_in_s": 0.38,
+   "wall_s": 0.383,
+   "test_binary_sha256": "7b299da5e9c9f22ac1d34b87d86b8bf49ee90435eac07315c124cb57d58c76e5",
+   "total_elapsed_ms": 167,
+   "rss_growth_bytes": 1310720,
+   "watchdog_self_test_timed_out": true,
+   "key": {
+    "probes_compared_main": 33200,
+    "probes_compared_baseline": 3320,
+    "resident_hits": 1479,
+    "stale_hits": 963,
+    "invlpg": 1000,
+    "mov_cr3": 1000,
+    "total_committed_writes": 3860,
+    "max_writes_in_one_iteration": 8,
+    "live_heap_growth_main_vs_baseline_bytes": 0,
+    "peak_heap_above_before_bytes": 1053752,
+    "main_elapsed_ms": 105,
+    "rss_after_warmup_bytes": 4734976,
+    "rss_after_main_bytes": 6045696,
+    "code_garbage_writes": 200,
+    "code_rewrites": 200,
+    "code_remaps": 200,
+    "session_resets_checked": 80,
+    "full_resets_checked": 20,
+    "cache_type_clear_checks": 20
+   }
+  },
+  {
+   "test": "s4_43a_translation_churn",
+   "process": 2,
+   "passed": true,
+   "tests_passed": 1,
+   "tests_failed": 0,
+   "test_finished_in_s": 0.38,
+   "wall_s": 0.385,
+   "test_binary_sha256": "7b299da5e9c9f22ac1d34b87d86b8bf49ee90435eac07315c124cb57d58c76e5",
+   "total_elapsed_ms": 171,
+   "rss_growth_bytes": 1310720,
+   "watchdog_self_test_timed_out": true,
+   "key": {
+    "probes_compared_main": 33200,
+    "probes_compared_baseline": 3320,
+    "resident_hits": 1479,
+    "stale_hits": 963,
+    "invlpg": 1000,
+    "mov_cr3": 1000,
+    "total_committed_writes": 3860,
+    "max_writes_in_one_iteration": 8,
+    "live_heap_growth_main_vs_baseline_bytes": 0,
+    "peak_heap_above_before_bytes": 1053752,
+    "main_elapsed_ms": 105,
+    "rss_after_warmup_bytes": 4718592,
+    "rss_after_main_bytes": 6029312,
+    "code_garbage_writes": 200,
+    "code_rewrites": 200,
+    "code_remaps": 200,
+    "session_resets_checked": 80,
+    "full_resets_checked": 20,
+    "cache_type_clear_checks": 20
+   }
+  },
+  {
+   "test": "s4_43a_translation_churn",
+   "process": 3,
+   "passed": true,
+   "tests_passed": 1,
+   "tests_failed": 0,
+   "test_finished_in_s": 0.37,
+   "wall_s": 0.373,
+   "test_binary_sha256": "7b299da5e9c9f22ac1d34b87d86b8bf49ee90435eac07315c124cb57d58c76e5",
+   "total_elapsed_ms": 159,
+   "rss_growth_bytes": 1310720,
+   "watchdog_self_test_timed_out": true,
+   "key": {
+    "probes_compared_main": 33200,
+    "probes_compared_baseline": 3320,
+    "resident_hits": 1479,
+    "stale_hits": 963,
+    "invlpg": 1000,
+    "mov_cr3": 1000,
+    "total_committed_writes": 3860,
+    "max_writes_in_one_iteration": 8,
+    "live_heap_growth_main_vs_baseline_bytes": 0,
+    "peak_heap_above_before_bytes": 1053752,
+    "main_elapsed_ms": 104,
+    "rss_after_warmup_bytes": 4718592,
+    "rss_after_main_bytes": 6029312,
+    "code_garbage_writes": 200,
+    "code_rewrites": 200,
+    "code_remaps": 200,
+    "session_resets_checked": 80,
+    "full_resets_checked": 20,
+    "cache_type_clear_checks": 20
+   }
+  },
+  {
+   "test": "s4_43b_bounded_queues",
+   "process": 1,
+   "passed": true,
+   "tests_passed": 1,
+   "tests_failed": 0,
+   "test_finished_in_s": 0.99,
+   "wall_s": 0.999,
+   "test_binary_sha256": "16de7f138633fcbe8696e8e93aead83d03fd1174491de3b61a63f6a8a18d817d",
+   "total_elapsed_ms": 784,
+   "rss_growth_bytes": 131072,
+   "watchdog_self_test_timed_out": true,
+   "key": {
+    "queues": {
+     "EventQueue": {
+      "declared_capacity": 8,
+      "max_len_seen": 8,
+      "overflow_attempts": 272,
+      "overflow_refused_explicitly": 272,
+      "resets": 40,
+      "empty_after_reset_checks": 40,
+      "oracle_comparisons": 8000,
+      "retained_heap_main_vs_baseline_bytes": 0,
+      "growth_after_creation_bytes": 0,
+      "leaked_after_drop_bytes": 0,
+      "peak_above_before_bytes": 384,
+      "main_elapsed_ms": 2
+     },
+     "UartRxEventPump": {
+      "declared_capacity": 8,
+      "max_len_seen": 8,
+      "overflow_attempts": 921,
+      "overflow_refused_explicitly": 921,
+      "resets": 80,
+      "empty_after_reset_checks": 80,
+      "oracle_comparisons": 20833,
+      "retained_heap_main_vs_baseline_bytes": 0,
+      "growth_after_creation_bytes": 64,
+      "leaked_after_drop_bytes": 280,
+      "peak_above_before_bytes": 968,
+      "main_elapsed_ms": 8
+     },
+     "InterruptPump": {
+      "declared_capacity": 16,
+      "max_len_seen": 16,
+      "overflow_attempts": 910,
+      "overflow_refused_explicitly": 910,
+      "resets": 80,
+      "empty_after_reset_checks": 80,
+      "oracle_comparisons": 27792,
+      "retained_heap_main_vs_baseline_bytes": 0,
+      "growth_after_creation_bytes": 9496,
+      "leaked_after_drop_bytes": 280,
+      "peak_above_before_bytes": 57101,
+      "main_elapsed_ms": 370,
+      "trace_events_recorded": 49917,
+      "trace_events_dropped": 49853,
+      "trace_max_len": 64,
+      "interrupts_delivered": 8073,
+      "irq_events_accepted": 17623,
+      "cancelled": 483,
+      "irq_events_dropped_by_reset": 776
+     },
+     "Display": {
+      "declared_capacity": 16,
+      "max_len_seen": 1,
+      "overflow_attempts": 0,
+      "overflow_refused_explicitly": 0,
+      "resets": 60,
+      "empty_after_reset_checks": 60,
+      "oracle_comparisons": 6000,
+      "retained_heap_main_vs_baseline_bytes": 0,
+      "growth_after_creation_bytes": 0,
+      "leaked_after_drop_bytes": 280,
+      "peak_above_before_bytes": 37913936,
+      "main_elapsed_ms": 97
+     }
+    },
+    "bounded_trace_check": {
+     "limit": 512,
+     "iterations_to_limit": 7,
+     "trace_len_at_limit": 512,
+     "trace_dropped": 0,
+     "trace_next_seq": 512,
+     "exit": "Rejected(TraceLimit)",
+     "second_run_exit": "Rejected(TraceLimit)",
+     "ring_zero_rejected": true,
+     "mode_change_after_record_rejected": true,
+     "irq_queue_len_at_rejection": 9,
+     "irq_queue_len_after_reset": 0
+    },
+    "rss_after_warmup_bytes": 42696704,
+    "rss_after_main_bytes": 42827776
+   }
+  },
+  {
+   "test": "s4_43b_bounded_queues",
+   "process": 2,
+   "passed": true,
+   "tests_passed": 1,
+   "tests_failed": 0,
+   "test_finished_in_s": 1.0,
+   "wall_s": 1.001,
+   "test_binary_sha256": "16de7f138633fcbe8696e8e93aead83d03fd1174491de3b61a63f6a8a18d817d",
+   "total_elapsed_ms": 787,
+   "rss_growth_bytes": 131072,
+   "watchdog_self_test_timed_out": true,
+   "key": {
+    "queues": {
+     "EventQueue": {
+      "declared_capacity": 8,
+      "max_len_seen": 8,
+      "overflow_attempts": 272,
+      "overflow_refused_explicitly": 272,
+      "resets": 40,
+      "empty_after_reset_checks": 40,
+      "oracle_comparisons": 8000,
+      "retained_heap_main_vs_baseline_bytes": 0,
+      "growth_after_creation_bytes": 0,
+      "leaked_after_drop_bytes": 0,
+      "peak_above_before_bytes": 384,
+      "main_elapsed_ms": 2
+     },
+     "UartRxEventPump": {
+      "declared_capacity": 8,
+      "max_len_seen": 8,
+      "overflow_attempts": 921,
+      "overflow_refused_explicitly": 921,
+      "resets": 80,
+      "empty_after_reset_checks": 80,
+      "oracle_comparisons": 20833,
+      "retained_heap_main_vs_baseline_bytes": 0,
+      "growth_after_creation_bytes": 64,
+      "leaked_after_drop_bytes": 280,
+      "peak_above_before_bytes": 968,
+      "main_elapsed_ms": 8
+     },
+     "InterruptPump": {
+      "declared_capacity": 16,
+      "max_len_seen": 16,
+      "overflow_attempts": 910,
+      "overflow_refused_explicitly": 910,
+      "resets": 80,
+      "empty_after_reset_checks": 80,
+      "oracle_comparisons": 27792,
+      "retained_heap_main_vs_baseline_bytes": 0,
+      "growth_after_creation_bytes": 9496,
+      "leaked_after_drop_bytes": 280,
+      "peak_above_before_bytes": 57101,
+      "main_elapsed_ms": 379,
+      "trace_events_recorded": 49917,
+      "trace_events_dropped": 49853,
+      "trace_max_len": 64,
+      "interrupts_delivered": 8073,
+      "irq_events_accepted": 17623,
+      "cancelled": 483,
+      "irq_events_dropped_by_reset": 776
+     },
+     "Display": {
+      "declared_capacity": 16,
+      "max_len_seen": 1,
+      "overflow_attempts": 0,
+      "overflow_refused_explicitly": 0,
+      "resets": 60,
+      "empty_after_reset_checks": 60,
+      "oracle_comparisons": 6000,
+      "retained_heap_main_vs_baseline_bytes": 0,
+      "growth_after_creation_bytes": 0,
+      "leaked_after_drop_bytes": 280,
+      "peak_above_before_bytes": 37913936,
+      "main_elapsed_ms": 96
+     }
+    },
+    "bounded_trace_check": {
+     "limit": 512,
+     "iterations_to_limit": 7,
+     "trace_len_at_limit": 512,
+     "trace_dropped": 0,
+     "trace_next_seq": 512,
+     "exit": "Rejected(TraceLimit)",
+     "second_run_exit": "Rejected(TraceLimit)",
+     "ring_zero_rejected": true,
+     "mode_change_after_record_rejected": true,
+     "irq_queue_len_at_rejection": 9,
+     "irq_queue_len_after_reset": 0
+    },
+    "rss_after_warmup_bytes": 42696704,
+    "rss_after_main_bytes": 42827776
+   }
+  },
+  {
+   "test": "s4_43b_bounded_queues",
+   "process": 3,
+   "passed": true,
+   "tests_passed": 1,
+   "tests_failed": 0,
+   "test_finished_in_s": 0.95,
+   "wall_s": 0.955,
+   "test_binary_sha256": "16de7f138633fcbe8696e8e93aead83d03fd1174491de3b61a63f6a8a18d817d",
+   "total_elapsed_ms": 740,
+   "rss_growth_bytes": 131072,
+   "watchdog_self_test_timed_out": true,
+   "key": {
+    "queues": {
+     "EventQueue": {
+      "declared_capacity": 8,
+      "max_len_seen": 8,
+      "overflow_attempts": 272,
+      "overflow_refused_explicitly": 272,
+      "resets": 40,
+      "empty_after_reset_checks": 40,
+      "oracle_comparisons": 8000,
+      "retained_heap_main_vs_baseline_bytes": 0,
+      "growth_after_creation_bytes": 0,
+      "leaked_after_drop_bytes": 0,
+      "peak_above_before_bytes": 384,
+      "main_elapsed_ms": 2
+     },
+     "UartRxEventPump": {
+      "declared_capacity": 8,
+      "max_len_seen": 8,
+      "overflow_attempts": 921,
+      "overflow_refused_explicitly": 921,
+      "resets": 80,
+      "empty_after_reset_checks": 80,
+      "oracle_comparisons": 20833,
+      "retained_heap_main_vs_baseline_bytes": 0,
+      "growth_after_creation_bytes": 64,
+      "leaked_after_drop_bytes": 280,
+      "peak_above_before_bytes": 968,
+      "main_elapsed_ms": 8
+     },
+     "InterruptPump": {
+      "declared_capacity": 16,
+      "max_len_seen": 16,
+      "overflow_attempts": 910,
+      "overflow_refused_explicitly": 910,
+      "resets": 80,
+      "empty_after_reset_checks": 80,
+      "oracle_comparisons": 27792,
+      "retained_heap_main_vs_baseline_bytes": 0,
+      "growth_after_creation_bytes": 9496,
+      "leaked_after_drop_bytes": 280,
+      "peak_above_before_bytes": 57101,
+      "main_elapsed_ms": 370,
+      "trace_events_recorded": 49917,
+      "trace_events_dropped": 49853,
+      "trace_max_len": 64,
+      "interrupts_delivered": 8073,
+      "irq_events_accepted": 17623,
+      "cancelled": 483,
+      "irq_events_dropped_by_reset": 776
+     },
+     "Display": {
+      "declared_capacity": 16,
+      "max_len_seen": 1,
+      "overflow_attempts": 0,
+      "overflow_refused_explicitly": 0,
+      "resets": 60,
+      "empty_after_reset_checks": 60,
+      "oracle_comparisons": 6000,
+      "retained_heap_main_vs_baseline_bytes": 0,
+      "growth_after_creation_bytes": 0,
+      "leaked_after_drop_bytes": 280,
+      "peak_above_before_bytes": 37913936,
+      "main_elapsed_ms": 97
+     }
+    },
+    "bounded_trace_check": {
+     "limit": 512,
+     "iterations_to_limit": 7,
+     "trace_len_at_limit": 512,
+     "trace_dropped": 0,
+     "trace_next_seq": 512,
+     "exit": "Rejected(TraceLimit)",
+     "second_run_exit": "Rejected(TraceLimit)",
+     "ring_zero_rejected": true,
+     "mode_change_after_record_rejected": true,
+     "irq_queue_len_at_rejection": 9,
+     "irq_queue_len_after_reset": 0
+    },
+    "rss_after_warmup_bytes": 42647552,
+    "rss_after_main_bytes": 42778624
+   }
+  }
+ ],
+ "aggregates": {
+  "s4_43a": {
+   "wall_s": {
+    "min": 0.373,
+    "median": 0.383,
+    "max": 0.385
+   },
+   "main_elapsed_ms": {
+    "min": 104,
+    "median": 105,
+    "max": 105
+   },
+   "rss_growth_main_vs_warmup_bytes": {
+    "min": 1310720,
+    "median": 1310720,
+    "max": 1310720
+   },
+   "rss_after_main_bytes": {
+    "min": 6029312,
+    "median": 6029312,
+    "max": 6045696
+   },
+   "deterministic_counters_identical_across_processes": true
+  },
+  "s4_43b": {
+   "wall_s": {
+    "min": 0.955,
+    "median": 0.999,
+    "max": 1.001
+   },
+   "rss_growth_bytes": {
+    "min": 131072,
+    "median": 131072,
+    "max": 131072
+   },
+   "rss_after_main_bytes": {
+    "min": 42778624,
+    "median": 42827776,
+    "max": 42827776
+   },
+   "pump_main_elapsed_ms": {
+    "min": 370,
+    "median": 370,
+    "max": 379
+   },
+   "deterministic_counters_identical_across_processes": true
+  }
+ },
+ "invariants": {
+  "s4_43a": {
+   "all_passed": true,
+   "stale_hit_percent": [
+    48.1,
+    48.1,
+    48.1
+   ],
+   "stale_hits_ge_20_percent": true,
+   "live_heap_growth_main_vs_baseline_bytes": [
+    0,
+    0,
+    0
+   ],
+   "rss_growth_below_5mib": true,
+   "max_writes_in_one_iteration_le_8": true,
+   "watchdog_self_test_timed_out": true,
+   "oracle_mismatches": "0 (утверждение теста: любое расхождение роняет тест; тесты прошли во всех процессах)"
+  },
+  "s4_43b": {
+   "all_passed": true,
+   "queues": {
+    "EventQueue": {
+     "max_len_le_capacity": true,
+     "overflow_attempts_equal_explicit_refusals": true,
+     "resets_equal_empty_after_reset_checks": true,
+     "retained_heap_main_vs_baseline_zero": true
+    },
+    "UartRxEventPump": {
+     "max_len_le_capacity": true,
+     "overflow_attempts_equal_explicit_refusals": true,
+     "resets_equal_empty_after_reset_checks": true,
+     "retained_heap_main_vs_baseline_zero": true
+    },
+    "InterruptPump": {
+     "max_len_le_capacity": true,
+     "overflow_attempts_equal_explicit_refusals": true,
+     "resets_equal_empty_after_reset_checks": true,
+     "retained_heap_main_vs_baseline_zero": true
+    },
+    "Display": {
+     "max_len_le_capacity": true,
+     "overflow_attempts_equal_explicit_refusals": true,
+     "resets_equal_empty_after_reset_checks": true,
+     "retained_heap_main_vs_baseline_zero": true
+    }
+   },
+   "bounded_trace_same_in_all": true,
+   "bounded_trace_irq_queue_after_reset_zero": true,
+   "bounded_trace_len_in_0_16": true,
+   "rss_growth_below_5mib": true
+  }
+ },
+ "differences_between_processes": "Совпадают все счётчики, кучи и длины очередей (сравнено по всем плоским полям JSON). Различаются только время и RSS (в пределах 16-48 KiB).",
+ "differences_vs_committed_json": "Счётчики те же, что в s4-43a-churn.json / s4-43b-queues.json. Отличаются: RSS (иной момент/способ запуска), live_heap на 45 байт больше в прежнем JSON у 43a (14913 против 14958 до прогрева, вероятно длина пути в env), rss_growth_main_vs_warmup_bytes у 43a 1 310 720 против 245 760 (рост приходится на фазу baseline: +1 114 112 байт, главный прогон +196 608 как и прежде).",
+ "manual_fields": [
+  "source_commit",
+  "os",
+  "arch",
+  "profile",
+  "how_run",
+  "raw_runs_dir",
+  "runs[].passed",
+  "runs[].tests_passed",
+  "runs[].tests_failed",
+  "runs[].test_finished_in_s",
+  "runs[].wall_s",
+  "runs[].test_binary_sha256",
+  "runs[].key (выборка из JSON процесса)",
+  "aggregates",
+  "invariants",
+  "differences_between_processes",
+  "differences_vs_committed_json"
+ ]
+}
