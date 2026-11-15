@@ -1939,10 +1939,11 @@ permits the request to enter IRR but blocks eligibility/acknowledge;
 global APIC disable rejects ICR MMIO, and reset/global disable clears both ICR
 halves.
 
-Only the Fixed Self edge combination is supported. Other delivery modes,
-shorthands, level trigger, invalid vector/reserved bits and invalid widths or
-alignment fail without mutation through the local `DeviceError` contract,
-not guest exception delivery. No IPI bus, external destination, ESR, CPU
+This paragraph is the S4-25c state; since S6-12a the ICR accepts the wider set
+of [Доставка IPI (S6-12a)](#доставка-ipi-s6-12a), of which Fixed Self with
+`(Level, Trigger) = (1,0)` is one row. Everything else, and invalid widths or
+alignment, fails without mutation through the local `DeviceError` contract,
+not guest exception delivery. No ESR, CPU
 interrupt acceptance, handler delivery or HLT wakeup is modeled. Behavior is
 based on Intel [SDM release 093, Volume 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190),
 §§13.6.1–13.6.2.3, Table 13-3 and §§13.8.3–13.8.5. See the [S4-25c report](../reports/STAGE_4_S4-25C_2026-11-07.md)
@@ -3815,4 +3816,26 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 
 **IOAPIC.** Окно `0xFEC0_0000` одно на плату. Старший dword любой записи перенаправления: биты 31:24 — physical APIC ID, остальные зарезервированы (≠ 0 — `UnsupportedConfiguration`). APIC ID, которого нет среди vCPU, — `UnsupportedConfiguration` до любого изменения, для любого входа, в том числе без линии и под маской. Значение читается обратно. INTIN4 (edge/level) и INTIN2 (edge) доставляют запрос в LAPIC с APIC ID своей записи (после reset — 0). Остальные правила — прежние: Fixed, physical (бит 11 = 0), active-high, edge/level, Remote IRR, EOI; lowest priority, logical, NMI и прочие режимы по-прежнему отклоняются при записи low dword. Резервирование вектора level-входа против edge и против LVT Timer действует в том LAPIC, куда адресован вход (одинаковый вектор в разных LAPIC допустим). Смена APIC ID у level-входа отказывается, пока линия высока, ожидается EOI, вектор занят (IRR/ISR) в старом или новом LAPIC, либо вектор совпадёт с LVT Timer или входом 2 нового LAPIC; смена у edge-входа INTIN4 свободна; смена INTIN2 отказывается, если его вектор окажется зарезервированным level-вектором INTIN4 в новом LAPIC. EOI не от LAPIC-адресата Remote IRR не снимает.
 
-**Не входит.** IPI (ICR остаётся self-IPI одного LAPIC, S6-12), INIT/SIPI и NMI между процессорами (S6-12/S6-13), logical destination, MSI, x2APIC, расширение MADT/CPUID/handoff до `N` (S6-15/S7-02, SMP_CONTRACT §2), исполнение AP, потоки и блокировки сверх прежнего `Mutex`.
+**Не входит.** IPI между процессорами — [S6-12a](#доставка-ipi-s6-12a); INIT/SIPI (S6-13) и NMI (остаток S6-12), logical destination, MSI, x2APIC, расширение MADT/CPUID/handoff до `N` (S6-15/S7-02, SMP_CONTRACT §2), исполнение AP, потоки и блокировки сверх прежнего `Mutex`.
+
+## Доставка IPI (S6-12a)
+Реализация: `local_apic.rs` (`decode_icr`, запись `ICR_LOW`), `apic_pair.rs` (`PairState::edge_all`). Источник — матрица [SMP_CONTRACT.md](SMP_CONTRACT.md) §5. Срез S6-12a: NMI из S6-12 не сделан (см. ниже).
+
+**Доставляется.** Запись aligned Dword в `ICR_LOW` (`0x300`) vCPU-отправителя ставит запрос Fixed edge в IRR адресатов под тем же замком, что остальное состояние пары; запись в `ICR_HIGH` по-прежнему только хранит байт адресата. Строки:
+
+| Delivery | Shorthand | Destination mode | Вектор | `(Level, Trigger)` | Адресаты |
+|---|---|---|---|---|---|
+| Fixed | нет | physical | `0x10–0xFF` | `(0,0)` | vCPU с APIC ID = `ICR_HIGH[31:24]` отправителя |
+| Fixed | Self | игнорируется | `0x10–0xFF` | `(0,0)` или `(1,0)` | отправитель |
+| Fixed | All including self | игнорируется | `0x10–0xFF` | `(0,0)` | все vCPU |
+| Fixed | All-but-self | игнорируется | `0x10–0xFF` | `(0,0)` | все, кроме отправителя (при одном vCPU — никто, запись принимается) |
+
+С shorthand байт адресата и Destination Mode игнорируются. Запрос — тот же edge, что у `request_fixed_edge` и IOAPIC: тот же IRR, те же правила резервирования вектора level-входа в LAPIC адресата; одинаковые векторы сливаются в IRR. Адресат выполняет запрос на своей границе исполнения (запуск AP — S6-13), отправитель синхронного исполнения не ждёт.
+
+**Ошибка устройства (`UnsupportedConfiguration`) до любого изменения состояния.** Всё, что не строка таблицы: зарезервированные биты (13, 17:16, 31:20; бит 12 игнорируется), Delivery mode кроме Fixed (Lowest Priority, SMI, зарезервированные 011 и 111), вектор `< 0x10`, logical destination без shorthand, APIC ID, которого нет среди vCPU (включая broadcast `0xFF`, которого в матрице нет), неуказанные пары `(Level, Trigger)` для строки, широкая запись больше 32 бит. Если запрос отказывает любой адресат (LAPIC глобально выключен или вектор зарезервирован level-входом IOAPIC), отказывает вся IPI: ни один LAPIC не меняется (`edge_all` сначала проверяет всех). Строки NMI, INIT и SIPI матрицы SMP_CONTRACT §5 в этом срезе **не реализованы** и тоже дают эту ошибку, а не молчаливый пропуск; INIT/SIPI — S6-13.
+
+**Delivery Status** (бит 12) — read-only: при записи игнорируется, читается Idle, потому что доставка в IRR завершена до возврата из записи. Idle означает «отправка закончена», а не «процессор принял прерывание». Хранимое значение `ICR_LOW` — записанное без бита 12; отказанная запись его не меняет.
+
+**Изменение ожиданий S4-25c.** Self с `(Level, Trigger) = (0,0)` раньше отклонялся, теперь принимается: так требует матрица SMP_CONTRACT §5 (кодировка Linux `__prepare_ICR`). `(1,0)` принимается как прежде. Один vCPU: все прочие ожидания self-IPI прежние.
+
+**NMI — не реализован (blocked).** Доставка через вектор 2, блокировка до `IRET` и один запомненный NMI требуют правки `crates/od-isa/src/state.rs`; линия S4-38 там активна, решение владельца D5 не получено ([STAGE_6.md](../plans/STAGE_6.md), S6-12).
