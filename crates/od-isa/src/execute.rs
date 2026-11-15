@@ -19943,6 +19943,32 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             }
             state.rip = next_rip;
         }
+        // S7-04: the Rust helper saves R14 with only `41 56`. Keep this
+        // qword push to the base profile and exact REX.B opcode form.
+        Operation::StackRegister {
+            push: true,
+            register: Register::R14,
+        } if base_profile
+            && instruction.length == 2
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x56
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x41),
+                    ..Prefixes::default()
+                })
+            && instruction.operand_size == OperandSize::Qword =>
+        {
+            let value = state.gpr[Register::R14 as usize];
+            if let Err(error) = push_stack_value(state, memory, context, value, OperandSize::Qword)
+            {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+        }
         Operation::StackRegister {
             push: false,
             register: Register::Rax,

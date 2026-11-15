@@ -398,7 +398,7 @@ bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`,
 (`SUB RSP,0x58`), `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`), and
 `48 8D 7C 24 08` (`LEA RDI,[RSP+8]`), `BE 00 00 10 00`
 (`MOV ESI,0x00100000`), `BA 00 00 01 00` (`MOV EDX,0x00010000`), and
-`31 C9` (`XOR ECX,ECX`; see the extensions below). The CPU entry validates its profile admission and
+`31 C9` (`XOR ECX,ECX`), and `41 56` (`PUSH R14`; see the extensions below). The CPU entry validates its profile admission and
 CR0/CR4 before fetch. It receives page-aware `GuestMemory`;
 CR3/EFER validation and selecting the four-level 4 KiB paging context belong
 to the machine entry.
@@ -556,6 +556,12 @@ Tests проверяют full state с ненулевыми старшими 32 
 В base `PagedCpl0ProbeV1` к exact `31 C0` добавлена только форма `31 C9`: Primary opcode `31`, ModRM `C9`, длина 2, dword, без префиксов, destination/source ECX. Переиспользуются `LogicKind::Xor` и `logic_result`; результат записывается через ECX и zero-extends в RCX. CF/OF очищаются, ZF/PF устанавливаются для нулевого результата, SF очищается, AF concrete bit сохраняется, но AF definedness удаляется. Остальное состояние сохраняется. Другие register/opcode/width/prefix/memory forms, CPL3 и прочие paged profiles остаются вне allowlist.
 
 Tests проверяют full state, zero-extension, arithmetic flags и definedness с исходно defined AF, neighbors, fetch fault при получении ModRM без commit, CPL3 и stack/CR3/CR0.WP isolation. Runner retired 19 инструкций и остановился на `E8 8D 02 00 00` (`CALL rel32`, ISSUE-119, RIP `0x20020e`, target `0x2004a0`).
+
+#### Расширение S7-04: точный Rust-helper `PUSH R14`
+
+В base `PagedCpl0ProbeV1` допускается только `41 56`: Primary opcode `56`, length 2, ровно REX.B `0x41`, qword `StackRegister { push: true, register: R14 }`. Переиспользуется `push_stack_value`: значение R14 читается до изменения RSP, записывается целиком на `[RSP-8]`, а RSP и RIP продвигаются только после успешной записи. Флаги и остальные регистры сохраняются. Noncanonical stack address даёт #SS, write page fault и fetch fault оставляют CPU state без изменений. Соседние register/width/prefix forms, CPL3 и остальные paged profiles остаются вне allowlist.
+
+Tests проверяют full state/RSP и все восемь qword bytes, PF/SS/fetch atomicity, соседние формы и profile/CPL3 isolation. Runner retired 21 инструкцию и остановился на `53` (`PUSH RBX`, ISSUE-121, RIP `0x2004a2`).
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 

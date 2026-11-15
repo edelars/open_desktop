@@ -142,10 +142,19 @@
 ### ISSUE-120 — S7-04: Rust entry `PUSH R14` остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после допуска второго exact CALL rel32 displacement.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware target `0x2004a0`.
-- **Статус:** открыта; second CALL достигает helper, его первый stack-save не исполнился.
-- **Суть и последствия:** target `0x2004a0` начинается с `41 56` (`PUSH R14`), который возвращает `Unsupported { opcode: 86 }`. COM1 пуст; последующий prologue helper не исполняется.
+- **Статус:** решена узко для exact `41 56` в base `PagedCpl0ProbeV1`.
+- **Суть и результат:** exact qword `PUSH R14` сохраняет исходный R14 на `[RSP-8]` и меняет RSP только после успешной write. Stack #PF/#SS и fetch fault сохраняют CPU state; соседние registers/prefixes, CPL3 и прочие paged profiles остаются unsupported.
 - **Основание:** образ `/private/tmp/od-fw-s7-call-rust.bin`; байты подтверждены `od -An -tx1 -j 0x4a0 -N16` как `41 56 53 48 81 ec b8 00 00 00 48 89 fb 48 8d 7c`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=20`, `RIP=0x2004a0`, `com1_bytes=0`.
-- **Следующий шаг:** изучить exact push encoding, stack and paging fault behavior, и безопасные ограничения profile admission.
+- **Проверка решения:** `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 161 passed; full state/RSP, qword stack bytes, stack #PF/#SS, fetch fault на opcode `56` после префикса REX `41`, neighboring registers/prefixes и CPL3/stack/CR3/CR0.WP isolation. Образ `/private/tmp/od-fw-s7-push-r14.bin` собран (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 21 инструкцию и остановился на следующем `53` (`PUSH RBX`), `RIP=0x2004a2`, `Unsupported { opcode: 83 }`, `com1_bytes=0`.
+
+<a id="issue-121-s7-04-rust-entry-push-rbx-unsupported"></a>
+### ISSUE-121 — S7-04: Rust helper `PUSH RBX` остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после допуска exact `41 56` (`PUSH R14`).
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware target `0x2004a0`.
+- **Статус:** открыта; `PUSH R14` выполнился, следующий register save не исполнился.
+- **Суть и последствия:** `RIP=0x2004a2` содержит `53` (`PUSH RBX`), который возвращает `Unsupported { opcode: 83 }`. COM1 пуст; последующая функция ещё не исполняется.
+- **Основание:** образ `/private/tmp/od-fw-s7-push-r14.bin`; байты подтверждены `od -An -tx1 -j 0x4a2 -N16` как `53 48 81 ec b8 00 00 00 48 89 fb 48 8d 7c 24 50`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=21`, `RIP=0x2004a2`, `com1_bytes=0`.
+- **Следующий шаг:** исследовать bounded exact `PUSH RBX` допуск и обычные stack fault semantics.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
