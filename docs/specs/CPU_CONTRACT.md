@@ -394,7 +394,7 @@ Long64 CPL0 allowlist: `48 8B 03` (`MOV RAX,[RBX]`), `48 89 0B`
 `F4` (`HLT`); S7-03 extends it with `B0+r ib` and `66 B8+r iw`, and S7-04 adds
 bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`,
 `75 24`/`75 77` (the two exact firmware JNZ rel8 forms), `49 89 F8`,
-`E8 83 01 00 00` (`CALL rel32`), `48 83 EC 58`
+`E8 83 01 00 00` and `E8 8D 02 00 00` (the two exact `CALL rel32` forms), `48 83 EC 58`
 (`SUB RSP,0x58`), `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`), and
 `48 8D 7C 24 08` (`LEA RDI,[RSP+8]`), `BE 00 00 10 00`
 (`MOV ESI,0x00100000`), `BA 00 00 01 00` (`MOV EDX,0x00010000`), and
@@ -511,9 +511,9 @@ Tests проверяют только изменение RDI/RIP, full state, ex
 
 #### Расширение S7-04: точный firmware `CALL rel32`
 
-В base `PagedCpl0ProbeV1` допускается только `E8 83 01 00 00`: Primary opcode `E8`, длина 5, Qword, без префиксов и displacement `+0x183`. Вычисленный target проверяется на canonicality до stack write; существующий CALL helper записывает return RIP (`next_rip`) по `[RSP-8]` и меняет RSP только после успешной записи. Затем RIP устанавливается в `next_rip + 0x183`. Для текущего образа CALL на `0x200068` входит в Rust entry `0x2001f0`, return RIP равен `0x20006d`, а начальный stack store идёт по `0x14fff8`. Fetch fault, #SS из-за noncanonical stack и stack #PF не меняют CPU state. Другие displacement/opcode/prefix формы и остальные paged profiles остаются вне allowlist.
+В base `PagedCpl0ProbeV1` допускаются только `E8 83 01 00 00` (displacement `+0x183`) и `E8 8D 02 00 00` (displacement `+0x28d`): Primary opcode `E8`, длина 5, Qword, без префиксов. Вычисленный target проверяется на canonicality до stack write; существующий CALL helper записывает return RIP (`next_rip`) по `[RSP-8]` и меняет RSP только после успешной записи. Для firmware CALL на `0x200068` target — `0x2001f0`, return RIP — `0x20006d`, stack store — `0x14fff8`; второй CALL на `0x20020e` переходит на `0x2004a0`, сохраняет return RIP `0x200213`. Fetch fault, #SS из-за noncanonical stack и stack #PF не меняют CPU state. Другие displacement/opcode/prefix формы и остальные paged profiles остаются вне allowlist.
 
-Tests проверяют полный CPU state/return-address store, target, flags/definedness, изменённые displacement и соседние CALL/JMP формы, CPL3/other-profile isolation, fetch fault и stack #SS/#PF atomicity. Firmware runner retired 12 инструкций и достиг `0x2001f0`; следующая точная блокировка — `48 83 EC 58` (`SUB RSP,0x58`, ISSUE-112).
+Tests проверяют полный CPU state/return-address store обоих target, flags/definedness, соседние displacement и CALL/JMP формы, CPL3/other-profile isolation, fetch fault и stack #SS/#PF atomicity, включая #GP priority перед stack access. Runner retired 20 инструкций, достиг `0x2004a0` и остановился на `41 56` (`PUSH R14`, ISSUE-120).
 
 #### Расширение S7-04: точный Rust-entry `SUB RSP,0x58`
 

@@ -133,10 +133,19 @@
 ### ISSUE-119 — S7-04: Rust entry `CALL rel32` остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после допуска точного `XOR ECX,ECX`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust entry (`firmware/uefi/src/start.S`).
-- **Статус:** открыта; регистры handoff подготовлены, но вызываемая функция ещё не запущена.
-- **Суть и последствия:** `RIP=0x20020e` содержит `E8 8D 02 00 00` (`CALL rel32`), target `0x2004a0`. Runner возвращает `Unsupported { opcode: 232 }`; COM1 пуст, следующий firmware code не исполнился.
+- **Статус:** решена узко для двух точных displacement `+0x183` и `+0x28d` в base `PagedCpl0ProbeV1`.
+- **Суть и результат:** переиспользована существующая CALL семантика: обе формы проверяют canonicality target до push, записывают return RIP на `[RSP-8]`, уменьшают RSP только после успешной stack write и переходят на target. Stack/#PF/#SS ошибки не коммитят CPU state; другие displacement и profiles не допущены.
 - **Основание:** образ `/private/tmp/od-fw-s7-xor-ecx.bin`; байты после blocker подтверждены `od -An -tx1 -j 0x20e -N16` как `e8 8d 02 00 00 48 83 7c 24 08 00 74 66 66 ba fb`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=19`, `RIP=0x20020e`, `com1_bytes=0`.
-- **Следующий шаг:** исследовать exact call target, return address и стековые/paging fault эффекты, затем оценить безопасную точечную форму.
+- **Проверка решения:** `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 155 passed; проверены target `0x2004a0`, pushed return RIP `0x200213`, stack write PF, noncanonical RSP (#SS), noncanonical target priority over bad stack (#GP), fetch fault, neighbor displacements и CPL3/stack/CR3/CR0.WP isolation. Образ `/private/tmp/od-fw-s7-call-rust.bin` собран (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 20 инструкций и остановился на `41 56` (`PUSH R14`) при `RIP=0x2004a0`, `Unsupported { opcode: 86 }`, `com1_bytes=0`.
+
+<a id="issue-120-s7-04-rust-entry-push-r14-unsupported"></a>
+### ISSUE-120 — S7-04: Rust entry `PUSH R14` остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после допуска второго exact CALL rel32 displacement.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware target `0x2004a0`.
+- **Статус:** открыта; second CALL достигает helper, его первый stack-save не исполнился.
+- **Суть и последствия:** target `0x2004a0` начинается с `41 56` (`PUSH R14`), который возвращает `Unsupported { opcode: 86 }`. COM1 пуст; последующий prologue helper не исполняется.
+- **Основание:** образ `/private/tmp/od-fw-s7-call-rust.bin`; байты подтверждены `od -An -tx1 -j 0x4a0 -N16` как `41 56 53 48 81 ec b8 00 00 00 48 89 fb 48 8d 7c`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=20`, `RIP=0x2004a0`, `com1_bytes=0`.
+- **Следующий шаг:** изучить exact push encoding, stack and paging fault behavior, и безопасные ограничения profile admission.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
