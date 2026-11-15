@@ -1,0 +1,215 @@
+{
+  "acceptance": "diagnostic_not_counted",
+  "checks": [
+    {
+      "detail": "guest_started=true, stop is object: true",
+      "name": "guest_started",
+      "ok": true
+    },
+    {
+      "detail": "stop.user_mode=true",
+      "name": "user_mode",
+      "ok": true
+    },
+    {
+      "detail": "cpuid_profile=\"X8664V1Stage4AApic\", expected \"X8664V1Stage4AApic\"",
+      "name": "cpuid_profile",
+      "ok": true
+    },
+    {
+      "detail": "journal has 9 BIOS-e820 ranges, report.e820 has 9; equal (order, bounds, type): true",
+      "name": "e820_journal",
+      "ok": true
+    },
+    {
+      "detail": "matching journal lines: 1, expected at least 1",
+      "name": "marker:command_line",
+      "ok": true
+    },
+    {
+      "detail": "matching journal lines: 1, expected at least 1",
+      "name": "marker:ecam",
+      "ok": true
+    },
+    {
+      "detail": "matching journal lines: 1, expected at least 1",
+      "name": "marker:pnp0c02_ecam",
+      "ok": true
+    },
+    {
+      "detail": "matching journal lines: 1, expected at least 1",
+      "name": "marker:rsdp",
+      "ok": true
+    },
+    {
+      "detail": "matching journal lines: 1, expected at least 1",
+      "name": "marker:present_cpus",
+      "ok": true
+    },
+    {
+      "detail": "matching journal lines: 1, expected at least 1",
+      "name": "marker:brought_up_one_cpu",
+      "ok": true
+    },
+    {
+      "detail": "matching journal lines: 1, expected at least 1",
+      "name": "marker:ioapic0",
+      "ok": true
+    },
+    {
+      "detail": "matching journal lines: 1, expected at least 1",
+      "name": "marker:int_src_ovr_irq0_gsi2",
+      "ok": true
+    },
+    {
+      "detail": "matching journal lines: 1, expected at least 1",
+      "name": "marker:int_src_ovr_irq9_gsi9_low_level",
+      "ok": true
+    },
+    {
+      "detail": "matching journal lines: 1, expected at least 1",
+      "name": "marker:using_ioapic_routing",
+      "ok": true
+    },
+    {
+      "detail": "matching journal lines: 1, expected at least 1",
+      "name": "marker:ttys0_irq4",
+      "ok": true
+    },
+    {
+      "detail": "matching journal lines: 1, expected at least 1",
+      "name": "marker:timer_pin1_2",
+      "ok": true
+    },
+    {
+      "detail": "matching journal lines: 1, expected at least 1",
+      "name": "marker:fast_tsc_pit",
+      "ok": true
+    },
+    {
+      "detail": "matching journal lines: 1, expected at least 1",
+      "name": "marker:tsc_detected",
+      "ok": true
+    },
+    {
+      "detail": "matching journal lines: 1, expected at least 1",
+      "name": "marker:run_init",
+      "ok": true
+    },
+    {
+      "detail": "\"RDMSR from 0x1b\" does not occur",
+      "name": "forbidden:rdmsr_apicbase",
+      "ok": true
+    },
+    {
+      "detail": "\"APICBASE\" does not occur",
+      "name": "forbidden:apicbase",
+      "ok": true
+    },
+    {
+      "detail": "\"Firmware Bug\" does not occur",
+      "name": "forbidden:firmware_bug",
+      "ok": true
+    },
+    {
+      "detail": "\"Limiting to one CPU\" does not occur",
+      "name": "forbidden:limiting_to_one_cpu",
+      "ok": true
+    },
+    {
+      "detail": "\"MP-BIOS bug\" does not occur",
+      "name": "forbidden:mp_bios_bug",
+      "ok": true
+    },
+    {
+      "detail": "\"IO-APIC + timer doesn't work\" does not occur",
+      "name": "forbidden:io_apic_timer",
+      "ok": true
+    },
+    {
+      "detail": "\"through the 8259A\" does not occur",
+      "name": "forbidden:through_8259a",
+      "ok": true
+    },
+    {
+      "detail": "\"APIC timer disabled\" does not occur",
+      "name": "forbidden:apic_timer_disabled",
+      "ok": true
+    },
+    {
+      "detail": "\"Disabling APIC timer\" does not occur",
+      "name": "forbidden:disabling_apic_timer",
+      "ok": true
+    },
+    {
+      "detail": "\"APIC frequency too slow, disabling apic timer\" does not occur",
+      "name": "forbidden:apic_frequency_too_slow",
+      "ok": true
+    },
+    {
+      "detail": "\"Fast TSC calibration failed\" does not occur",
+      "name": "forbidden:fast_tsc_failed",
+      "ok": true
+    },
+    {
+      "detail": "\"Marking TSC unstable\" does not occur",
+      "name": "forbidden:tsc_unstable",
+      "ok": true
+    },
+    {
+      "detail": "\"Spurious LAPIC timer interrupt\" does not occur",
+      "name": "forbidden:spurious_lapic_timer",
+      "ok": true
+    },
+    {
+      "detail": "\"spurious APIC interrupt\" does not occur",
+      "name": "forbidden:spurious_apic_interrupt",
+      "ok": true
+    },
+    {
+      "detail": "\"unexpected IRQ trap\" does not occur",
+      "name": "forbidden:unexpected_irq_trap",
+      "ok": true
+    },
+    {
+      "detail": "\"No irq handler for vector\" does not occur",
+      "name": "forbidden:no_irq_handler",
+      "ok": true
+    },
+    {
+      "detail": "\"WARNING:\" does not occur",
+      "name": "forbidden:kernel_warning",
+      "ok": true
+    },
+    {
+      "detail": "\"BUG:\" does not occur",
+      "name": "forbidden:kernel_bug",
+      "ok": true
+    },
+    {
+      "detail": "\"Oops\" does not occur",
+      "name": "forbidden:kernel_oops",
+      "ok": true
+    },
+    {
+      "detail": "no Kernel panic other than \"Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000\"",
+      "name": "forbidden:kernel_panic",
+      "ok": true
+    },
+    {
+      "detail": "C13 -> C14 -> C16 -> C17 reached in order: [(\"C13\", 1547026238), (\"C14\", 2072822955), (\"C16\", 2320644462), (\"C17\", 2320901822)]",
+      "name": "checkpoint_order",
+      "ok": true
+    }
+  ],
+  "counted": false,
+  "cpuid_profile": "X8664V1Stage4AApic",
+  "exit_kind": "backend",
+  "failures": [],
+  "gate": "s4-38l9j-discovery",
+  "observations": {
+    "refined_tsc_lines": []
+  },
+  "report_sha256": "78a62bdbb2859053986425c615905781e71277c77fdefea7922da7e996ebdc24",
+  "verdict": "PASS_DIAGNOSTIC_NOT_COUNTED"
+}
