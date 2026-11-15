@@ -398,7 +398,7 @@ bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`,
 (`SUB RSP,0x58`/`SUB RSP,0x38`), `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`), `48 81 FA 9F 00 00 00` (`CMP RDX,0x9f`), and
 `48 8D 7C 24 08` (`LEA RDI,[RSP+8]`), `BE 00 00 10 00`
 (`MOV ESI,0x00100000`), `BA 00 00 01 00` (`MOV EDX,0x00010000`), and
-`0F B7 7E 08`/`0F B7 5E 0A` (`MOVZX EDI,word ptr [RSI+8]`/`MOVZX EBX,word ptr [RSI+0xA]`), `31 C9` (`XOR ECX,ECX`), `41 56`/`41 57`/`41 55`/`41 54` (`PUSH R14`/`PUSH R15`/`PUSH R13`/`PUSH R12`), and bare `53`/`55` (`PUSH RBX`/`PUSH RBP`; see the extensions below). The CPU entry validates its profile admission and
+`0F B7 7E 08`/`0F B7 5E 0A` (`MOVZX EDI,word ptr [RSI+8]`/`MOVZX EBX,word ptr [RSI+0xA]`), exact helper `66 83 FF 01` (`CMP DI,1`), `31 C9` (`XOR ECX,ECX`), `41 56`/`41 57`/`41 55`/`41 54` (`PUSH R14`/`PUSH R15`/`PUSH R13`/`PUSH R12`), and bare `53`/`55` (`PUSH RBX`/`PUSH RBP`; see the extensions below). The CPU entry validates its profile admission and
 CR0/CR4 before fetch. It receives page-aware `GuestMemory`;
 CR3/EFER validation and selecting the four-level 4 KiB paging context belong
 to the machine entry.
@@ -649,7 +649,13 @@ Tests покрывают точное сравнение magic, flags/definednes
 
 В base `PagedCpl0ProbeV1` допускаются только `0F B7 7E 08` (dword destination EDI, word source `[RSI+8]`) и `0F B7 5E 0A` (dword destination EBX, word source `[RSI+0xA]`): Escape0f opcode `B7`, длина 4, без префиксов, обе формы строго фиксируют destination и displacement. Переиспользуются `read_operand` и unsigned `Operation::Extend`: успешное чтение zero-extends word в EDI/RDI или EBX/RBX, обнуляя верхние 32 бита соответствующего 64-bit регистра; flags не меняются. Адрес проходит обычную canonicality проверку, memory fault до записи оставляет CPU state неизменным. В `PagedProbeMemory` добавлена поддержка tracked Word read; другие word-read instructions остаются заблокированы точным CPU-profile admission.
 
-`paged_probe_profile` — 238 passed: оба zero-extended destination, full state, flags/definedness, injected GuestMemory read fault (этот fixture не проверяет page walk или cross-page behavior), noncanonical #GP, fetch fault (первая форма), neighboring forms и CPL3/other-profile isolation. `paged_probe_quantum` исполнил обе word-загрузки через реальный 4-level page walk и проверил A bits верхних уровней и leaf PTE кода/данных; тест не пересекает страницу. Runner retired 41 инструкцию и остановился на `66 83 FF 01` (`CMP DI,1`, ISSUE-139, RIP `0x200d4f`). Полная проверка handoff ещё не завершена.
+`paged_probe_profile` — 238 passed: оба zero-extended destination, full state, flags/definedness, injected GuestMemory read fault (этот fixture не проверяет page walk или cross-page behavior), noncanonical #GP, fetch fault (первая форма), neighboring forms и CPL3/other-profile isolation. `paged_probe_quantum` исполнил обе word-загрузки через реальный 4-level page walk и проверил A bits верхних уровней и leaf PTE кода/данных; тест не пересекает страницу. Runner retired 42 инструкции, исполнил exact `66 83 FF 01` (`CMP DI,1`) и остановился на `75 2A` (`JNZ +0x2A`, ISSUE-140, RIP `0x200d53`). Полная проверка handoff ещё не завершена.
+
+#### Расширение S7-04: exact Rust-helper `CMP DI,1`
+
+В base `PagedCpl0ProbeV1` допускается только `66 83 FF 01`: Primary opcode `83`, длина 4, operand-size override, word destination DI и знаково расширенный imm8 `1`. Admission также требует `ArithmeticKind::Cmp`; другие регистры, immediate, ширины, операции и префиксы остаются unsupported. Переиспользуется существующая 16-bit CMP semantics: верхние 48 бит RDI не участвуют, регистры не меняются, арифметические flags и их definedness обновляются, RIP продвигается на 4.
+
+`paged_probe_profile` — 242 passed: сравнение DI при произвольных верхних битах RDI, полный state и flags/definedness, fetch fault на immediate byte, signed-imm8 соседняя форма и другие neighbors, CPL3/other-profile isolation. Runner retired 42 инструкции и остановился на `75 2A` (`JNZ +0x2A`, ISSUE-140, RIP `0x200d53`). Полная проверка handoff ещё не завершена.
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 

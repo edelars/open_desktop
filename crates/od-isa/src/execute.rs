@@ -20900,6 +20900,36 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: the Rust helper checks the first handoff field with exactly
+        // `66 83 FF 01` (CMP DI,1). The imm8 is sign-extended by the decoder;
+        // keep this 16-bit register/immediate pair exact in the base profile.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Cmp,
+            dst: Operand::Register(destination),
+            src: Operand::Immediate(1),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x83
+            && instruction.length == 4
+            && instruction.operand_size == OperandSize::Word
+            && instruction.prefixes
+                == (Prefixes {
+                    operand_override: true,
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rdi, OperandSize::Word) =>
+        {
+            let lhs = state.read(destination);
+            let (_, flags) =
+                arithmetic_result(OperandSize::Word, ArithmeticKind::Cmp, lhs, 1, state.rflags);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: the firmware entry uses exactly `48 C7 C0 id` to load the
         // handoff GPA into RAX. Admit only REX.W C7 /0 with a register destination;
         // memory destinations, other widths/prefixes, and other registers stay
