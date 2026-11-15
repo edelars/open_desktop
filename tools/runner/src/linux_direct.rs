@@ -69,8 +69,8 @@
 use od_isa::cpuid::CpuidProfile;
 use od_machine::{
     LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput, LinuxStopRecord,
-    MachineStopReason, load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
-    run_linux_direct_board_set_user_mode,
+    MachineStopReason, load_linux_direct_board, run_linux_direct_board,
+    run_linux_direct_board_set_observed,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -78,11 +78,15 @@ use std::fs::File;
 use std::io::Read;
 use std::process::ExitCode;
 
+#[cfg(test)]
+use od_machine::run_linux_direct_board_set;
+
+mod checkpoints;
 pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a] [--user-mode]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a] [--user-mode] [--checkpoint-table <oracle.json>]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -121,6 +125,9 @@ struct Options {
     /// `--user-mode` (S4-39c, only with `--set-cpl0 --cpuid-profile stage4a`): a committed `IRETQ`
     /// to CPL3 continues with the CPL3 entry instead of stopping at `user_entry`.
     user_mode: bool,
+    /// `--checkpoint-table <s4-38l2-oracle.json>` (S4-38L4i, only with `--run --set-cpl0`): record
+    /// the checkpoints C0..C17 (observation only) and add the `checkpoints` key.
+    checkpoint_table: Option<String>,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -242,6 +249,29 @@ fn evaluate(options: &Options) -> (Value, u8) {
         );
     }
 
+    // S4-38L4i: the oracle table of the checkpoints, checked against the kernel that runs, before
+    // anything is loaded or started.
+    let checkpoint_setup = match options.checkpoint_table.as_deref() {
+        Some(path) => match checkpoints::load(path, &vmlinuz_sha, &initramfs) {
+            Ok(setup) => Some(setup),
+            Err(checkpoints::TableError::Invalid(detail)) => {
+                return io_failure(evidence, "checkpoint_table", detail);
+            }
+            Err(checkpoints::TableError::VmlinuzMismatch(detail)) => {
+                return (
+                    refusal(
+                        "checkpoint_table_vmlinuz_mismatch",
+                        "checkpoint_table",
+                        detail,
+                        evidence,
+                    ),
+                    4,
+                );
+            }
+        },
+        None => None,
+    };
+
     let acpi_blob = match read_capped(&options.acpi_blob, 1 << 20) {
         Ok(bytes) => bytes,
         Err(detail) => return io_failure(evidence, "acpi_blob_file", detail),
@@ -270,13 +300,8 @@ fn evaluate(options: &Options) -> (Value, u8) {
         Ok(mut boot) => {
             describe(&mut evidence, &boot, &cmdline, &vmlinuz, &initramfs_sha);
             if let Some(budget) = options.budget {
-                let run_set = if options.user_mode {
-                    run_linux_direct_board_set_user_mode
-                } else {
-                    run_linux_direct_board_set
-                };
                 let result = if options.set_cpl0 {
-                    run_set(
+                    run_linux_direct_board_set_observed(
                         &mut boot,
                         &machine_input,
                         budget,
@@ -301,6 +326,8 @@ fn evaluate(options: &Options) -> (Value, u8) {
                             int3: options.cpuid_profile == CpuidProfile::X8664V1Stage4A,
                             ..LinuxCpl0SetMembers::linux_default()
                         },
+                        options.user_mode,
+                        checkpoint_setup.as_ref().map(|setup| setup.table.clone()),
                     )
                 } else {
                     run_linux_direct_board(&mut boot, &machine_input, budget)
@@ -310,6 +337,9 @@ fn evaluate(options: &Options) -> (Value, u8) {
                         evidence["guest_started"] = json!(true);
                         evidence["retired"] = json!(record.retired);
                         evidence["stop"] = describe_stop(&record, budget);
+                        if let Some(setup) = &checkpoint_setup {
+                            evidence["checkpoints"] = checkpoints::evidence(setup, &record);
+                        }
                     }
                     Err(error) => return (run_failure(&error, evidence), 4),
                 }
@@ -739,6 +769,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut user_mode = false;
     let mut budget = None;
     let mut cpuid_profile_text: Option<String> = None;
+    let mut checkpoint_table: Option<String> = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -790,6 +821,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--out" => &mut out,
             "--budget" => &mut budget,
             "--cpuid-profile" => &mut cpuid_profile_text,
+            "--checkpoint-table" => &mut checkpoint_table,
             other => {
                 return Err(format!("unexpected option {other}; usage: {USAGE}"));
             }
@@ -825,6 +857,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
     if cpuid_profile_text.is_some() && !set_cpl0 {
         return Err(format!(
             "--cpuid-profile needs --run and --set-cpl0; usage: {USAGE}"
+        ));
+    }
+    if checkpoint_table.is_some() && !set_cpl0 {
+        return Err(format!(
+            "--checkpoint-table needs --run and --set-cpl0; usage: {USAGE}"
         ));
     }
     let cpuid_profile = match cpuid_profile_text.as_deref() {
@@ -891,6 +928,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         diagnostic_past_c7,
         cpuid_profile,
         user_mode,
+        checkpoint_table,
     })
 }
 
@@ -1015,6 +1053,7 @@ mod tests {
                 diagnostic_past_c7: false,
                 cpuid_profile: CpuidProfile::DiagnosticV1,
                 user_mode: false,
+                checkpoint_table: None,
             };
             Self { dir, options }
         }
@@ -2649,6 +2688,7 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
+            checkpoint_table: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -2692,6 +2732,7 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
+            checkpoint_table: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -2742,6 +2783,7 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
+            checkpoint_table: None,
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");
@@ -3182,5 +3224,250 @@ mod tests {
         assert_eq!(sliced[1].rflags, whole[0].rflags);
         assert_eq!(sliced[1].com1, b"X");
         assert_eq!(sliced[1].com1, whole[0].com1);
+    }
+
+    // ---- S4-38L4i: --checkpoint-table ----
+
+    /// `CLI; MOV EAX, 0; CPUID; MOV EAX, 1; CPUID`: DiagnosticV1 answers leaf 0 (C6) and stops
+    /// before leaf 1 (C7) at `ENTRY + 13`.
+    const CPUID_PROGRAM: [u8; 15] = [
+        0xFA, 0xB8, 0, 0, 0, 0, 0x0F, 0xA2, 0xB8, 1, 0, 0, 0, 0x0F, 0xA2,
+    ];
+    const ORACLE_ENTRY: u64 = 0x0100_0200;
+
+    /// A synthetic oracle with the keys the runner reads: the vmlinuz hash, the relocated copy and
+    /// the rows. `cpuid1` is at `cpuid1_pa` (the rest are addresses the program never reaches).
+    fn synthetic_oracle(vmlinuz_sha: &str, cpuid1_pa: u64) -> Value {
+        let row = |name: &str, pa: u64, bytes_16: &str| json!({"name": name, "va": 0xffff_ffff_8000_0000u64 + pa, "pa": pa, "bytes_16": bytes_16});
+        let mut rows = vec![
+            row("e_entry", 0x3f2_53e0, "4989f7488d255eebadffb9010100c031"),
+            row("cpuid1", cpuid1_pa, "0fa2"),
+        ];
+        for (index, name) in [
+            "x86_64_start_kernel",
+            "start_kernel",
+            "setup_arch",
+            "tsc_init",
+            "apic_intr_mode_init",
+            "check_timer",
+            "populate_rootfs",
+            "run_init_process",
+            "kernel_execve",
+        ]
+        .iter()
+        .enumerate()
+        {
+            rows.push(row(name, 0x200_0000 + 0x1000 * index as u64, "00"));
+        }
+        json!({
+            "inputs": {"vmlinuz": {"sha256": vmlinuz_sha}},
+            "relocated_copy": {"relocated_rip_first_fetch": 0x541_b9c0},
+            "checkpoints": {"rows": rows},
+        })
+    }
+
+    fn write_oracle(case: &Case, oracle: &Value) -> String {
+        let path = case.dir.join("oracle.json");
+        std::fs::write(&path, serde_json::to_vec(oracle).unwrap()).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    fn checkpoint_case(name: &str) -> Case {
+        let mut case = Case::new(
+            name,
+            &bzimage_with_entry(&CPUID_PROGRAM),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(64);
+        case.options.set_cpl0 = true;
+        case
+    }
+
+    fn checkpoint<'a>(value: &'a Value, id: &str) -> &'a Value {
+        value["checkpoints"]["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["id"] == id)
+            .unwrap_or_else(|| panic!("no {id} in {value:#}"))
+    }
+
+    #[test]
+    fn without_the_flag_the_report_has_no_checkpoints_key() {
+        let case = checkpoint_case("cp-none");
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        assert!(value.get("checkpoints").is_none(), "{value:#}");
+        assert!(value["stop"].get("checkpoints").is_none());
+    }
+
+    #[test]
+    fn the_flag_records_the_checkpoints_and_changes_nothing_else() {
+        let mut case = checkpoint_case("cp-table");
+        let (plain, _) = evaluate(&case.options);
+        let sha = case.options.expected_vmlinuz_sha256.clone();
+        let oracle = synthetic_oracle(&sha, ORACLE_ENTRY + 13);
+        case.options.checkpoint_table = Some(write_oracle(&case, &oracle));
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        assert_eq!(value["stop"]["exit_kind"], "cpuid_divergence");
+        let c0 = checkpoint(&value, "C0");
+        assert_eq!(
+            (&c0["status"], &c0["retired"], &c0["rip"]),
+            (&json!("reached"), &json!(0), &json!("0x1000200"))
+        );
+        let c6 = checkpoint(&value, "C6");
+        assert_eq!(
+            (&c6["status"], &c6["retired"]),
+            (&json!("reached"), &json!(2))
+        );
+        assert_eq!(c6["rip"], "0x1000206");
+        let c7 = checkpoint(&value, "C7");
+        assert_eq!(c7["status"], "reached");
+        assert_eq!(c7["rip"], "0x100020d");
+        // The boundary of the stop: the counters are the ones of the stop record.
+        assert_eq!(c7["retired"], value["stop"]["retired"]);
+        assert_eq!(c7["quanta"], value["stop"]["quanta"]);
+        assert_eq!(c7["gpa"], "0x100020d");
+        assert_eq!(c7["bytes_match_oracle"], true);
+        // The others are listed, with a reason.
+        for id in ["C1", "C2", "C3", "C4", "C5", "C8", "C13", "C15"] {
+            let record = checkpoint(&value, id);
+            assert_eq!(record["status"], "not_reached", "{id}");
+            assert!(
+                record["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("cpuid_divergence")
+            );
+        }
+        let c16 = checkpoint(&value, "C16");
+        assert!(
+            c16["reason"].as_str().unwrap().contains("after C15"),
+            "{c16}"
+        );
+        let c17 = checkpoint(&value, "C17");
+        assert!(c17["reason"].as_str().unwrap().contains("/init"), "{c17}");
+        assert_eq!(
+            value["checkpoints"]["records"].as_array().unwrap().len(),
+            18
+        );
+        assert_eq!(value["checkpoints"]["table"]["vmlinuz_sha256"], sha);
+        assert_eq!(
+            value["checkpoints"]["table"]["vmlinuz_sha256_matches_the_run"],
+            true
+        );
+        // Observation only: without the key the report is the report of the run without the flag
+        // (the table path is the only other thing that differs: it is not in the report).
+        let mut stripped = value.clone();
+        stripped.as_object_mut().unwrap().remove("checkpoints");
+        assert_eq!(stripped, plain);
+    }
+
+    #[test]
+    fn a_shifted_address_is_not_reached() {
+        let mut case = checkpoint_case("cp-shifted");
+        let sha = case.options.expected_vmlinuz_sha256.clone();
+        let oracle = synthetic_oracle(&sha, ORACLE_ENTRY + 13 + 1);
+        case.options.checkpoint_table = Some(write_oracle(&case, &oracle));
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        assert_eq!(checkpoint(&value, "C7")["status"], "not_reached");
+        assert_eq!(checkpoint(&value, "C6")["status"], "reached");
+    }
+
+    #[test]
+    fn an_oracle_of_another_kernel_is_refused_before_the_guest_starts() {
+        let mut case = checkpoint_case("cp-foreign");
+        let oracle = synthetic_oracle(&"0".repeat(64), ORACLE_ENTRY + 13);
+        case.options.checkpoint_table = Some(write_oracle(&case, &oracle));
+        let (value, exit) = evaluate(&case.options);
+        assert_refused(
+            &value,
+            exit,
+            "checkpoint_table_vmlinuz_mismatch",
+            "checkpoint_table",
+        );
+    }
+
+    #[test]
+    fn an_unreadable_or_incomplete_table_is_invalid_input() {
+        let mut case = checkpoint_case("cp-invalid");
+        case.options.checkpoint_table = Some("/nonexistent/oracle.json".to_string());
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 3, "{value:#}");
+        assert_eq!(code_of(&value), ("invalid_input", "checkpoint_table"));
+        let sha = case.options.expected_vmlinuz_sha256.clone();
+        let mut oracle = synthetic_oracle(&sha, ORACLE_ENTRY + 13);
+        oracle["checkpoints"]["rows"] = json!([]);
+        case.options.checkpoint_table = Some(write_oracle(&case, &oracle));
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 3, "{value:#}");
+        assert_eq!(code_of(&value), ("invalid_input", "checkpoint_table"));
+    }
+
+    #[test]
+    fn the_flag_needs_run_and_set_cpl0() {
+        let base = |extra: &[&str]| -> Vec<String> {
+            let mut args: Vec<String> = [
+                "--vmlinuz",
+                "k",
+                "--initramfs",
+                "i",
+                "--acpi-blob",
+                "b",
+                "--nonce",
+                "n",
+                "--expected-vmlinuz-sha256",
+                &"a".repeat(64),
+                "--expected-acpi-manifest-hash",
+                &"b".repeat(64),
+                "--expected-initramfs-sha256",
+                &"c".repeat(64),
+                "--ram-mib",
+                "128",
+                "--out",
+                "o",
+            ]
+            .iter()
+            .map(|a| a.to_string())
+            .collect();
+            args.extend(extra.iter().map(|a| a.to_string()));
+            args
+        };
+        let ok = parse(&base(&[
+            "--run",
+            "--budget",
+            "1",
+            "--set-cpl0",
+            "--checkpoint-table",
+            "t.json",
+        ]))
+        .unwrap();
+        assert_eq!(ok.checkpoint_table.as_deref(), Some("t.json"));
+        assert_eq!(
+            parse(&base(&["--run", "--budget", "1", "--set-cpl0"]))
+                .unwrap()
+                .checkpoint_table,
+            None
+        );
+        for bad in [
+            vec!["--checkpoint-table", "t.json"],
+            vec!["--run", "--budget", "1", "--checkpoint-table", "t.json"],
+            vec![
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--checkpoint-table",
+                "a",
+                "--checkpoint-table",
+                "b",
+            ],
+            vec!["--run", "--budget", "1", "--set-cpl0", "--checkpoint-table"],
+        ] {
+            assert!(parse(&base(&bad)).is_err(), "{bad:?}");
+        }
     }
 }

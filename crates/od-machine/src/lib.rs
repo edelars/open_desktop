@@ -21,6 +21,7 @@ mod io_apic;
 mod irq_source;
 mod linux_boot;
 mod linux_boot_params;
+mod linux_checkpoints;
 mod linux_direct;
 mod linux_load;
 mod linux_placement;
@@ -148,12 +149,16 @@ pub use stage4_interrupt_pump_paged_probe::{
 };
 
 pub use linux_boot::{LinuxBzImageHeader, LinuxHeaderError, parse_linux_bzimage_header};
+pub use linux_checkpoints::{
+    LINUX_CHECKPOINT_COUNT, LinuxCheckpointRecord, LinuxCheckpointTable, LinuxCheckpointTableError,
+    LinuxCheckpointTarget,
+};
 pub use linux_direct::{
     LINUX_STOP_RIP_BYTES, LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectE820,
     LinuxDirectEntryState, LinuxDirectError, LinuxDirectInput, LinuxDirectZone, LinuxStopInputs,
     LinuxStopRecord, SYSCALL_JOURNAL_CAPACITY, SyscallJournal, SyscallJournalEntry,
     load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
-    run_linux_direct_board_set_user_mode,
+    run_linux_direct_board_set_observed, run_linux_direct_board_set_user_mode,
 };
 
 pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEvent};

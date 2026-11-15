@@ -7,11 +7,15 @@
 //! hands over a `LongModeState`. It is not a reset vector and not real mode.
 
 use crate::clock_owner::{ClockOwner, ClockOwnerError, IdleOutcome};
+use crate::fetch_translation_cache::FetchCacheInvalidation;
 use crate::idle_arbiter::{SchedActivity, WakeView};
 use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters, NoIrqSource};
+use crate::linux_checkpoints::{
+    CheckpointRecorder, LinuxCheckpointRecord, LinuxCheckpointTable, LinuxCheckpointTableError,
+};
 use crate::page_walk::translate_long64_2m_ram_read_only;
 use crate::paged_memory_adapter::{
-    IrqDeliveryFailure, PagedCpl0SetExit, run_cpl0_set_paged_2m_ram_with_cpuid_boundary,
+    IrqDeliveryFailure, PagedCpl0SetExit, run_cpl0_set_paged_2m_ram_observed,
 };
 use crate::paged_probe::run_paged_probe_2m_ram;
 use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
@@ -1105,6 +1109,9 @@ pub struct LoadedFirmwareBoard {
     /// byte-for-byte the S4-37/38 behaviour) or a [`ClockOwner`] that [`Self::enable_clock_owner`]
     /// installed. Never `Owned` unless that call succeeded.
     clock_driver: BoardClock,
+    /// The opt-in checkpoint recorder of the CPL0-set loop (S4-38L4i, observation only). `None`
+    /// until [`Self::enable_checkpoints`]; then the loop shows it every instruction boundary.
+    checkpoints: Option<CheckpointRecorder>,
     /// True when the assembly was given a PIT or LAPIC-timer clock other than the board clock
     /// (a test injection of S4-37a1/a4): their deadlines are in another time domain, so the
     /// clock owner is refused.
@@ -1236,6 +1243,24 @@ impl LoadedFirmwareBoard {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn uart_irq_source(&self) -> Option<UartPicIrqSource> {
         self.uart_irq_source.clone()
+    }
+
+    /// S4-38L4i: install the checkpoint recorder of the CPL0-set loop (replaces a previous one).
+    /// It only observes: the run with it retires the same instructions in the same quanta as the
+    /// run without it. Off by default.
+    /// A table that [`LinuxCheckpointTable::validate`] refuses leaves the board as it was.
+    pub(crate) fn enable_checkpoints(
+        &mut self,
+        table: LinuxCheckpointTable,
+    ) -> Result<(), LinuxCheckpointTableError> {
+        self.checkpoints = Some(CheckpointRecorder::new(table)?);
+        Ok(())
+    }
+
+    /// S4-38L4i: the checkpoints recorded so far (in id order) and the recorder removed; `None`
+    /// when none was enabled.
+    pub(crate) fn take_checkpoints(&mut self) -> Option<Vec<LinuxCheckpointRecord>> {
+        self.checkpoints.take().map(|recorder| recorder.records())
     }
 
     /// S4-23j: opt in to the single clock owner for the CPL0-set loop. The owner claims the board
@@ -1866,7 +1891,14 @@ impl LoadedFirmwareBoard {
                     irq_counters.quantum_cut_by_deadline += 1;
                 }
             }
-            let report = run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
+            // S4-38L4i: the recorder (opt-in, observation only) learns where the quantum starts.
+            if self.checkpoints.is_some() {
+                let ns_at_start = self.clock.snapshot().now_ns();
+                if let Some(recorder) = self.checkpoints.as_mut() {
+                    recorder.begin_call(retired, quanta + 1, ns_at_start);
+                }
+            }
+            let report = run_cpl0_set_paged_2m_ram_observed(
                 &mut self.vcpus[BOOT_VCPU_INDEX].state,
                 &mut self.bus,
                 self.page_table_root,
@@ -1881,12 +1913,13 @@ impl LoadedFirmwareBoard {
                 stop,
                 |_| {},
                 cpuid_boundary,
-                fetch_cache,
+                fetch_cache.then_some(FetchCacheInvalidation::WriteWatch),
                 irq_hook.then(|| IrqBoundaryHook {
                     source: &mut *self.irq_source,
                     counters: &mut irq_counters,
                     skip_first_boundary: partial_rep,
                 }),
+                self.checkpoints.as_mut(),
             );
             quanta += 1;
             partial_rep = matches!(
@@ -2515,6 +2548,7 @@ impl AssembledBoard {
             pit_pic_source: None,
             uart_irq_source: None,
             clock_driver: BoardClock::Standalone,
+            checkpoints: None,
             foreign_timer_clock,
             #[cfg(test)]
             suppress_pm_tick: false,
@@ -2576,6 +2610,7 @@ impl AssembledBoard {
             pit_pic_source: None,
             uart_irq_source: None,
             clock_driver: BoardClock::Standalone,
+            checkpoints: None,
             foreign_timer_clock,
             #[cfg(test)]
             suppress_pm_tick: false,

@@ -4,6 +4,7 @@ use crate::fetch_translation_cache::{
     FetchCacheInvalidation, FetchCacheStats, FetchTranslationCache,
 };
 use crate::irq_source::IrqBoundaryHook;
+use crate::linux_checkpoints::{BoundaryView, CheckpointRecorder};
 use crate::page_walk::translate_long64_2m_ram_read_only_with_tables;
 use crate::{
     GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, Long64ProbeConfig, MachineBus,
@@ -599,6 +600,40 @@ fn cpuid_leaf_at_rip(
     }
 }
 
+/// The fetch translation of RIP for the checkpoint recorder (S4-38L4i): the physical address and
+/// up to 16 bytes there, each translated like an instruction fetch through the read-only walk
+/// (no accessed/dirty bit), RAM only. Shorter bytes when one does not translate.
+fn observed_fetch_view(
+    rip: u64,
+    bus: &mut MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+) -> (Option<u64>, Vec<u8>) {
+    let (memory, _) = bus.split_for_pio_step();
+    let mut first = None;
+    let mut bytes = Vec::with_capacity(16);
+    for offset in 0..16u64 {
+        let Ok(physical) = crate::page_walk::translate_long64_2m_ram_read_only(
+            memory,
+            paging,
+            rip,
+            GuestLinearAddress::new(rip.wrapping_add(offset)),
+            context,
+            od_isa::memory::AccessKind::Fetch,
+        ) else {
+            break;
+        };
+        if offset == 0 {
+            first = Some(physical.get());
+        }
+        let Ok(byte) = memory.read_u8(physical) else {
+            break;
+        };
+        bytes.push(byte);
+    }
+    (first, bytes)
+}
+
 /// Whether the instruction at RIP is exactly `IRETQ` (`48 CF`). Same read-only walk as
 /// [`cpuid_leaf_at_rip`] (no accessed/dirty bit, RAM only); an untranslatable byte is `false`.
 /// Used for the RF rule of S4-38L5c: `IRETQ` loads RF from its own frame, so the board must not
@@ -817,6 +852,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
 /// [`deliver_pending_irq`]. Without it, or with a source that never has a vector, the loop is
 /// what it was.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
     state: &mut LongModeState,
     bus: &mut MachineBus,
@@ -860,7 +896,56 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
 /// stops the run, a rejection, a `#GP` delivery) keeps the cache. The cache still lives in this
 /// call only.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn run_cpl0_set_paged_2m_ram_with_policy(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    cpuid_boundary: bool,
+    fetch_cache: Option<FetchCacheInvalidation>,
+    irq: Option<IrqBoundaryHook<'_>>,
+) -> PagedCpl0SetReport {
+    run_cpl0_set_paged_2m_ram_observed(
+        state,
+        bus,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        set,
+        rdtsc,
+        stop,
+        committed_write,
+        cpuid_boundary,
+        fetch_cache,
+        irq,
+        None,
+    )
+}
+
+/// [`run_cpl0_set_paged_2m_ram_with_policy`] with the opt-in checkpoint recorder of S4-38L4i.
+/// With `checkpoints` each instruction boundary (after the stop, budget and interrupt checks,
+/// before the CPUID boundary and the step) is shown to the recorder, which only observes: it gets
+/// the RIP, the CPL, the CR3 and the IDTR of the boundary and the EAX of a `CPUID` at RIP, and
+/// is told of a retired `MOV CR3` and of a delivered `#PF`. The CPUID peek is shared with the
+/// CPUID boundary (made once per boundary when either is on). The peek reads no accessed/dirty
+/// bit and writes nothing to the guest, but with the fetch cache it calls
+/// `FetchTranslationCache::lookup`, which moves the cache's `recent` entry and its hit/miss
+/// statistics. They are visible only in `PagedCpl0SetReport::fetch_cache_stats` (read by tests
+/// of this module, not by the board), so `LinuxSetRunReport` and the run do not change (the
+/// cache only speeds up translations that give the same answer). With `None` the
+/// loop is the one of [`run_cpl0_set_paged_2m_ram_with_policy`], instruction for instruction.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
     state: &mut LongModeState,
     bus: &mut MachineBus,
     cr3: u64,
@@ -875,6 +960,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_policy(
     cpuid_boundary: bool,
     fetch_cache: Option<FetchCacheInvalidation>,
     mut irq: Option<IrqBoundaryHook<'_>>,
+    mut checkpoints: Option<&mut CheckpointRecorder>,
 ) -> PagedCpl0SetReport {
     let context = AccessContext {
         origin: od_isa::memory::AccessOrigin::Explicit,
@@ -984,8 +1070,28 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_policy(
         {
             break failed;
         }
+        // S4-38L4i: one peek serves the CPUID boundary and the recorder (no guest state is
+        // written; the cache statistics move, see the doc of this function).
+        let cpuid_leaf = if cpuid_boundary || checkpoints.is_some() {
+            cpuid_leaf_at_rip(state, bus, &paging, context, cache.as_ref())
+        } else {
+            None
+        };
+        if let Some(recorder) = checkpoints.as_deref_mut() {
+            let view = BoundaryView {
+                rip: state.rip,
+                cpl: state.cs_selector.map_or(0, |selector| (selector & 3) as u8),
+                cr3: reported_cr3,
+                call_retired: instructions_executed,
+                idtr: state.idtr.map(|idtr| (idtr.base, idtr.limit)),
+                cpuid_leaf,
+            };
+            recorder.boundary(&view, &mut || {
+                observed_fetch_view(state.rip, bus, &paging, context)
+            });
+        }
         if cpuid_boundary
-            && let Some(leaf) = cpuid_leaf_at_rip(state, bus, &paging, context, cache.as_ref())
+            && let Some(leaf) = cpuid_leaf
             && is_cpuid_divergence_leaf(leaf)
         {
             break (PagedCpl0SetExit::CpuidDivergence { leaf }, None, None);
@@ -1107,6 +1213,9 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_policy(
                         }
                         delivered_exceptions += 1;
                         deliveries_without_retirement += 1;
+                        if let Some(recorder) = checkpoints.as_deref_mut() {
+                            recorder.note_page_fault_delivered();
+                        }
                         continue;
                     }
                     Some(failure) => {
@@ -1211,6 +1320,13 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_policy(
             && let Some(cache) = &cache
         {
             cache.flush();
+        }
+        if matches!(
+            result.exit,
+            Cpl0ProfileSetExit::TranslationContextChange(TranslationContextChange::Cr3Write { .. })
+        ) && let Some(recorder) = checkpoints.as_deref_mut()
+        {
+            recorder.note_cr3_write();
         }
         // S4-14h: a retired `INVLPG` and a change of CR0/CR4 flush the whole cache (`GuestOnly`).
         if guest_only && let Some(cache) = &cache {
