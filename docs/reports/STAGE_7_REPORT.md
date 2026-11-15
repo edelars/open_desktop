@@ -24,7 +24,7 @@
 | S7-01 | in_progress | `426c98a` | — | Сборка прошивки и EFI-приложений, host-side тесты, методика (выполнено исполнителем, ревью пройдено, замечания исправлены, коммита на момент записи нет; каркас основного образа и доказательство сборки PE32+ probe; тестовые EFI-приложения — S7-06, боевой RT-образ и размещение в FV — S7-11) |
 | S7-02 | in_progress | `68cca38` | — | Контракт входа: окна, handoff, manifest платы, ABI/состояние вызова, таймеры, ROM, RT relocation (выполнено, ожидает ревью, коммита нет) |
 | S7-03 | in_progress | — | — | ROM backing/shadow, загрузчик образа, handoff block, профиль платы и runner (выполнено исполнителем, ожидает ревью, коммита нет; blocker снят реализацией решения архитектора — допуск `B0+r ib` и `66 B8+r iw` в `PagedCpl0ProbeV1`; образ `--smoke` в машине: выход 0, `halted`, `retired = 4`, COM1 ровно `X`, см. раздел 5 и раздел S7-03) |
-| S7-04 | in_progress | `e1ef0f1`, `6553d56`, `d5d6e22`, `b219d0e`, `7bb0108`, `dd57771`, `717fed3`, `e32436b`, `9439e93` | все предыдущие срезы reviewed; SUB-срез прошёл независимое ревью | handoff parser подключён; paged profile исполняет bare `CLD`, точные entry C7/CMP/JNZ/MOV/LEA/SUB, runner останавливается на `XOR EAX,EAX` (ISSUE-108) |
+| S7-04 | in_progress | `e1ef0f1`, `6553d56`, `d5d6e22`, `b219d0e`, `7bb0108`, `dd57771`, `717fed3`, `e32436b`, `9439e93` | все предыдущие срезы reviewed; SUB-срез прошёл независимое ревью | handoff parser подключён; paged profile исполняет bare `CLD` и узкие C7/CMP/JNZ/MOV/LEA/SUB/XOR entry forms; runner останавливается на `REP STOSB` (ISSUE-109) |
 | S7-05 | not_started | — | — | System Table, Boot Services, база протоколов, события, `ExitBootServices` |
 | S7-06 | not_started | — | — | PE/COFF loader, Authenticode-дайджест, `LoadImage`/`StartImage`/`Exit`, Loaded Image, Device Path |
 | S7-07 | not_started | — | — | Консоль: Simple Text Output/Input на COM1, ConIn/ConOut/StdErr |
@@ -535,3 +535,11 @@ git diff --check
 В базовый paged CPL0 профиль допущены только `48 29 F9`. Однозначно: Intel order `SUB RCX,RDI` (`RCX := RCX - RDI`); AT&T assembler spelling `subq %rdi,%rcx`. Реализация использует существующий `ArithmeticKind::Sub`. Тесты проверяют результат, полный набор арифметических flags и definedness, сохранение остальных регистров/state, альтернативные opcode/регистры/ширины/префиксы/память, fetch fault и profile/CPL3 isolation.
 
 Проверки: `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 105 passed. Firmware image `/private/tmp/od-fw-s7-04-sub.bin` собрана успешно (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner returned `status=error`, `exit=unsupported`, `Unsupported { opcode: 49 }`, `retired=8`, `RIP=0x200061`, `com1_bytes=0`. Байты по offset `0x61`: `31 C0` (`XOR EAX,EAX`), следующий blocker [ISSUE-108](../KNOWN_ISSUES.md#issue-108-s7-04-paged-cpu-profile-does-not-admit-xor-eax-eax-at-firmware-entry). Slice ожидает независимого ревью.
+
+
+<a id="s7-04-cpu-profile-xor"></a>
+#### S7-04 CPU-profile slice: exact entry `XOR EAX,EAX`
+
+В base `PagedCpl0ProbeV1` допущено только `31 C0`. Существующий `LogicKind::Xor` рассчитывает результат/flags; write в EAX обнуляет верхние 32 бита RAX. CF/OF очищаются, ZF/PF/SF определяются, concrete AF остается прежним, но AF исключается из definedness как undefined по контракту логических операций. Соседние формы, profile/CPL3 isolation и fetch fault проверены.
+
+Проверки: `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 109 passed. Firmware image `/private/tmp/od-fw-s7-04-xor.bin` собрана успешно (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner вернул `status=error`, `exit=unsupported`, `Unsupported { opcode: 170 }`, `retired=9`, `RIP=0x200063`, `com1_bytes=0`. Байты по offset `0x63`: `F3 AA` (`REP STOSB`), следующий blocker [ISSUE-109](../KNOWN_ISSUES.md#issue-109-s7-04-paged-cpu-profile-does-not-admit-rep-stosb-at-firmware-entry). Срез ожидает независимого ревью.

@@ -20245,6 +20245,35 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(dst, src.effective_address(state, next_rip));
             state.rip = next_rip;
         }
+        // S7-04: `_start` clears EAX with exactly `31 C0` (XOR EAX,EAX).
+        // The 32-bit register write zero-extends into RAX; AF remains concrete
+        // but architecturally undefined per the existing logical-XOR semantics.
+        Operation::Logic {
+            kind: LogicKind::Xor,
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x31
+            && instruction.length == 2
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes == Prefixes::default()
+            && destination == RegisterView::low(Register::Rax, OperandSize::Dword)
+            && source == RegisterView::low(Register::Rax, OperandSize::Dword) =>
+        {
+            let lhs = state.read(destination);
+            let rhs = state.read(source);
+            let (value, flags) =
+                logic_result(OperandSize::Dword, LogicKind::Xor, lhs, rhs, state.rflags);
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
         // S7-04: preserve the firmware's exact `48 29 F9` form. Intel order is
         // SUB RCX,RDI (AT&T: `subq %rdi,%rcx`); no other SUB form is admitted.
         Operation::Arithmetic {

@@ -42,10 +42,18 @@
 ### ISSUE-108 — S7-04: paged CPU profile не допускает `XOR EAX,EAX` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `SUB RCX,RDI`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
-- **Статус:** открыта; runner исполнил восемь startup-инструкций, до Rust entry не дошёл.
-- **Суть и последствия:** runner отклоняет `31 C0` (`XOR EAX,EAX`) при `RIP=0x200061`; COM1 пуст, handoff parser в машине не проверен.
-- **Основание:** `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-sub.bin --com1-out /private/tmp/od-fw-s7-04-sub.com1 --budget 10000` вернул `status=error`, `exit=unsupported`, `Unsupported { opcode: 49 }` (decimal = `0x31`), `retired=8`, `RIP=0x200061`, `com1_bytes=0`. Байты подтверждены `od -An -tx1 -j 0x61 -N16`: `31 c0 f3 aa 4c 89 c7 ...`.
-- **Следующий шаг:** рассмотреть точную форму `31 C0` с учетом 32-bit write zero-extension и логических флагов.
+- **Статус:** решена узко для точной формы `31 C0`; runner остановился на `F3 AA` (`REP STOSB`, ISSUE-109).
+- **Суть:** только `XOR EAX,EAX` (`31 C0`) добавлена в базовый `PagedCpl0ProbeV1`; dword запись обнуляет старшую половину RAX, логическая семантика сохраняет конкретный AF, но снимает его definedness.
+- **Результат и проверка:** `paged_probe_profile` — 109 passed; проверены полное состояние, zero-extension, CF/OF/SZP и AF definedness, соседние encodings, fetch fault на ModRM через границу страницы, CPL3 и stack/CR3/CR0.WP isolation. Runner retired 9 инструкций и остановился на `F3 AA` при `RIP=0x200063`; см. [S7-04 отчёт](reports/STAGE_7_REPORT.md#s7-04-cpu-profile-xor).
+
+<a id="issue-109-s7-04-paged-cpu-profile-does-not-admit-rep-stosb-at-firmware-entry"></a>
+### ISSUE-109 — S7-04: paged CPU profile не допускает `REP STOSB` из entry прошивки
+- **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `XOR EAX,EAX`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
+- **Статус:** открыта; runner исполнил девять startup-инструкций, до Rust entry не дошёл.
+- **Суть и последствия:** runner отклоняет `F3 AA` (`REP STOSB`) при `RIP=0x200063`; COM1 пуст, firmware BSS initialization и handoff parser в машине не проверены.
+- **Основание:** `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-xor.bin --com1-out /private/tmp/od-fw-s7-04-xor.com1 --budget 10000` вернул `status=error`, `exit=unsupported`, `Unsupported { opcode: 170 }` (decimal = `0xaa`), `retired=9`, `RIP=0x200063`, `com1_bytes=0`. Байты подтверждены `od -An -tx1 -j 0x63 -N16`: `f3 aa 4c 89 c7 e8 83 01 00 00 ...`.
+- **Следующий шаг:** рассмотреть узкую `REP STOSB` форму с проверкой памяти, счётчика, direction flag и fault/partial-retirement semantics.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
