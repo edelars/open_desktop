@@ -21099,6 +21099,26 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: the Rust helper zero-extends the exact register pair in
+        // `0F B7 CB` (MOVZX ECX,BX). Keep the opcode, dword destination and
+        // word source exact; the existing register read/write semantics apply.
+        Operation::Extend {
+            dst: destination,
+            src: Operand::Register(source),
+            signed: false,
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0xb7
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes == Prefixes::default()
+            && destination == RegisterView::low(Register::Rcx, OperandSize::Dword)
+            && source == RegisterView::low(Register::Rbx, OperandSize::Word) =>
+        {
+            let value = state.read(source);
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: the Rust helper reads exact handoff fields with MOVZX Word at
         // +8/+0xA and `8B 4E 0C`/`8B 4E 10` (MOV ECX,dword ptr [RSI+0xC/+0x10]).
         // Reuse the faulting read and 32-bit write; other load forms remain unsupported.

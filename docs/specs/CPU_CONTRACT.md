@@ -783,6 +783,13 @@ Base `PagedCpl0ProbeV1` admits only `0F 84 B4 00 00 00` for this near JZ. It reu
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_jz_rel32 -- --nocapture` — 5 passed; full `paged_probe_profile` — 325 passed. Tests cover taken/fall-through with defined and undefined ZF, noncanonical taken target and noncanonical fall-through, last-displacement-byte fetch-fault atomicity, neighboring forms, CPL3 and other paged profiles. Firmware image `/private/tmp/od-fw-s7-jz-rel32-b4.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 64 instructions; with ZF clear it fell through and stopped at `0F B7 CB` (`MOVZX ECX,BX`, ISSUE-162), `RIP=0x200de2`, `Unsupported { opcode: 183 }`, `com1_bytes=0`; full handoff validation remains incomplete.
 
+<a id="s7-04-exact-rust-helper-movzx-ecx-bx"></a>
+#### Расширение S7-04: exact Rust-helper `MOVZX ECX,BX`
+
+Base `PagedCpl0ProbeV1` admits only `0F B7 CB`: opcode map `0F`, opcode `B7`, no prefixes, length 3, destination ECX and source BX. It reuses the existing unsigned `Operation::Extend` register semantics: BX[15:0] is zero-extended by the dword write into RCX, all other registers and RFLAGS/definedness remain unchanged, and memory is untouched. Other register pairs, widths, prefixes and memory forms remain outside this profile slice.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_movzx_ecx_bx -- --nocapture` — 4 passed; full `paged_probe_profile` — 329 passed. Tests cover high-RCX zero-extension, full-state/flags retention, unsupported neighbors, fetch fault at ModRM, CPL3 and other-profile isolation. Firmware image `/private/tmp/od-fw-s7-movzx-ecx-bx.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 65 instructions and stopped at `49 B8 FC FF FF FF FF FF FF 7F` (`MOV R8,0x7ffffffffffffffc`, ISSUE-163), `RIP=0x200de5`, `Unsupported { opcode: 184 }`, `com1_bytes=0`; full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции
