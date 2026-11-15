@@ -832,6 +832,13 @@ Base `PagedCpl0ProbeV1` admits only `49 B8 FC FF FF FF FF FF FF 7F`: primary-map
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_mov_r8_imm64 -- --nocapture` — 4 passed; full `paged_probe_profile` — 333 passed. Tests cover the exact value and destination, full-state/flags retention, neighboring forms, final-immediate fetch-fault atomicity, CPL3 and other-profile isolation. Firmware image `/private/tmp/od-fw-s7-mov-r8-imm64.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 66 instructions and stopped at `8B 7E 14` (`MOV EDI,dword ptr [RSI+0x14]`, ISSUE-164), `RIP=0x200def`, `Unsupported { opcode: 139 }`, `com1_bytes=0`; full handoff validation remains incomplete.
 
+<a id="s7-04-exact-rust-helper-movzx-r14d-byte-rsi-r11"></a>
+#### Расширение S7-04: exact Rust-helper `MOVZX R14D,byte ptr [RSI+R11]`
+
+Base `PagedCpl0ProbeV1` admits only bytes `46 0F B6 34 1E`: opcode `0F B6`, exact REX `46`, ModRM/SIB selecting R14D and `[RSI+R11]`, scale 1, no displacement, byte source, dword destination, and instruction length 5. The existing unsigned `Operation::Extend` and `read_operand` path are reused. The tracked byte read translates through the paged-probe adapter; the dword write zero-extends into R14 and leaves flags unchanged. On a read/fetch fault, the instruction does not commit CPU state. Address calculation uses RSI+R11; no memory is read at decode/admission time. Neighboring addressing tuples, widths, prefixes, CPL3 and other paged profiles remain unsupported.
+
+Checks: all 356 `paged_probe_profile` tests passed. New focused coverage verifies zero-extension and complete state/flags retention, one-byte read width, injected read fault, noncanonical address, SIB fetch-fault atomicity, neighboring forms and CPL/profile isolation. `paged_probe_movzx_r14d_byte_rsi_r11_uses_tracked_four_level_walk` passed and checks the relevant paging Accessed bits including the data leaf PTE. No cross-page claim is made. Firmware image `/private/tmp/od-fw-s7-04-issue169.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 72 instructions and stopped at `4D 89 DF` (`MOV R15,R11`, ISSUE-170), `RIP=0x200e05`, `Unsupported { opcode: 137 }`, `com1_bytes=0`; full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции

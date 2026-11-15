@@ -21191,6 +21191,42 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: the helper reads one byte through R14D with exact
+        // `46 0F B6 34 1E` (MOVZX R14D,byte ptr [RSI+R11]). Reuse the tracked
+        // faulting byte read and dword write; no neighboring MOVZX form is admitted.
+        Operation::Extend {
+            dst: destination,
+            src: Operand::Memory(source),
+            signed: false,
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0xb6
+            && instruction.length == 5
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x46),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R14, OperandSize::Dword)
+            && source.base == AddressBase::Register(Register::Rsi)
+            && source.index == Some(Register::R11)
+            && source.scale == 1
+            && source.displacement == 0
+            && source.address_size == OperandSize::Qword
+            && source.size == OperandSize::Byte =>
+        {
+            let value =
+                match read_operand(state, memory, context, next_rip, Operand::Memory(source)) {
+                    Ok(value) => value,
+                    Err(MemoryError::Architectural(fault)) => {
+                        return result(PagedProbeExit::Fault(fault), 0);
+                    }
+                    Err(error) => return result(PagedProbeExit::Backend(error), 0),
+                };
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         Operation::Mov {
             dst: Operand::Register(destination),
             src: Operand::Memory(source),

@@ -590,10 +590,19 @@
 ### ISSUE-169 — S7-04: Rust helper `MOVZX R14D,byte ptr [RSI+R11]` remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после допуска exact operand-size-prefixed NOP.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200e00`.
+- **Статус:** решена узко для exact `46 0F B6 34 1E` в base `PagedCpl0ProbeV1`.
+- **Результат:** допускается только `MOVZX R14D,byte ptr [RSI+R11]`: dword write zero-extends R14D, preserves flags, reads one byte through the tracked paged-probe adapter, and preserves unrelated state. Other addresses/registers, widths, prefixes, CPL3 and other profiles remain unsupported.
+- **Проверка:** все `paged_probe_profile` — 356 passed, включая injected read fault, noncanonical address, fetch fault at SIB, neighbors and profile/CPL isolation. `paged_probe_movzx_r14d_byte_rsi_r11_uses_tracked_four_level_walk` passed; the real four-level fixture verifies A bits including the leaf PTE for this byte read. `cargo check --offline -p od-isa -p od-machine --all-targets` and rustfmt on the four changed Rust files passed. `cargo fmt --all -- --check` reports an unrelated existing formatting diff in `crates/od-host/src/storage_abi_v1.rs:139`; that file was not changed. Image `/private/tmp/od-fw-s7-04-issue169.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`); runner retired 72 instructions and stopped at `4D 89 DF` (`MOV R15,R11`, ISSUE-170), `RIP=0x200e05`, `Unsupported { opcode: 137 }`, `com1_bytes=0`. Full handoff validation remains incomplete.
+- **Ссылка:** [paged CPU-profile contract](specs/CPU_CONTRACT.md#s7-04-exact-rust-helper-movzx-r14d-byte-rsi-r11).
+
+<a id="issue-170-s7-04-rust-helper-mov-r15-r11-unsupported"></a>
+### ISSUE-170 — S7-04: Rust helper `MOV R15,R11` remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска exact byte MOVZX.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200e05`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 71 instructions, then stops at raw bytes `46 0F B6 34 1E` (`MOVZX R14D,byte ptr [RSI+R11]`), `Unsupported { opcode: 182 }`, `RIP=0x200e00`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue168.bin`; bytes at offset `0xe00` begin `46 0f b6 34 1e 4d 89 df 4d 21 c7 45 89 cc`; runner budget 10000.
-- **Следующий шаг:** verify the exact byte-load tuple, existing address/read semantics, and real page-walk effects before considering this narrow form.
+- **Суть и последствия:** runner retired 72 instructions, then stops at raw bytes `4D 89 DF` (`MOV R15,R11`), `Unsupported { opcode: 137 }`, `RIP=0x200e05`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue169.bin`; bytes at offset `0xe05` are `4d 89 df`; runner budget 10000.
+- **Следующий шаг:** inspect the exact MOV register tuple and existing register-write semantics, then consider only this encoding in the base paged profile.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.
