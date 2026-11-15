@@ -187,10 +187,19 @@
 ### ISSUE-125 — S7-04: Rust helper `CALL rel32` остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `LEA RDI,[RSP+0x50]`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware target `0x2004a0`.
-- **Статус:** открыта; локальный RDI вычислен, следующий call target ещё не исполняется.
-- **Суть и последствия:** `RIP=0x2004b2` содержит `E8 59 08 00 00` (`CALL rel32` на `0x200d10`). Runner возвращает `Unsupported { opcode: 232 }`; COM1 пуст, handoff parser ещё не достигнут.
+- **Статус:** решена узко для точной формы `E8 59 08 00 00` (displacement `+0x859`) в base `PagedCpl0ProbeV1`, наряду с двумя ранее допущенными firmware CALL.
+- **Суть и результат:** CALL проверяет canonical target до stack push, записывает return RIP qword на `[RSP-8]`, затем обновляет RSP/RIP. Stack write #PF, #SS и fetch fault сохраняют CPU state; другие displacements и профили остаются unsupported.
 - **Основание:** образ `/private/tmp/od-fw-s7-lea-rdi-rsp50.bin`; `od -An -tx1 -j 0x4b2 -N16` показывает `e8 59 08 00 00 4c 8b 74 24 50 48 8b 44 24 58 48`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=25`, `RIP=0x2004b2`, `com1_bytes=0`.
-- **Следующий шаг:** исследовать целевой Rust helper и bounded stack/canonicality effects для exact CALL.
+- **Проверка решения:** `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 178 passed; target/return push, stack #PF/#SS, noncanonical target #GP priority over invalid stack, fetch fault, neighboring displacements, CPL3 и stack/CR3/CR0.WP isolation. Образ `/private/tmp/od-fw-s7-call-859.bin` собран (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 26 инструкций, выполнил CALL на `0x200d10` и остановился на `48 89 F8` (`MOV RAX,RDI`) при `RIP=0x200d10`, `Unsupported { opcode: 137 }`, `com1_bytes=0`.
+
+<a id="issue-126-s7-04-rust-helper-mov-rax-rdi-unsupported"></a>
+### ISSUE-126 — S7-04: Rust helper `MOV RAX,RDI` остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `CALL rel32` на helper `0x200d10`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware target `0x200d10`.
+- **Статус:** открыта; call target достигнут, передача аргумента в RAX ещё не исполняется.
+- **Суть и последствия:** `RIP=0x200d10` содержит `48 89 F8` (`MOV RAX,RDI`). Runner возвращает `Unsupported { opcode: 137 }`; COM1 пуст, handoff parser ещё не достигнут.
+- **Основание:** образ `/private/tmp/od-fw-s7-call-859.bin`; `od -An -tx1 -j 0xd10 -N16` показывает `48 89 f8 48 81 fa 9f 00 00 00 77 0e 66 c7 40 08`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=26`, `RIP=0x200d10`, `com1_bytes=0`.
+- **Следующий шаг:** определить узкую bounded форму `MOV RAX,RDI`, проверить state/flags и profile isolation.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
