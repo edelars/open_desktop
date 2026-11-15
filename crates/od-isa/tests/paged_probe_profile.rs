@@ -2494,6 +2494,139 @@ fn firmware_helper_mov_rdi_handoff_magic_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn rust_helper_mov_r8_imm64_sets_only_r8() {
+    let bytes = [0x49, 0xb8, 0xfc, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f];
+    let value = 0x7fff_ffff_ffff_fffc;
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    let mut expected = before;
+    expected.gpr[Register::R8 as usize] = value;
+    expected.rip += bytes.len() as u64;
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_helper_mov_r8_imm64_neighbours_stay_unsupported_without_mutation() {
+    let cases: &[(&[u8], u8)] = &[
+        (
+            &[0x49, 0xb8, 0xfb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
+            0xb8,
+        ), // adjacent immediate
+        (
+            &[0x48, 0xb8, 0xfc, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
+            0xb8,
+        ), // RAX
+        (
+            &[0x49, 0xb9, 0xfc, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
+            0xb9,
+        ), // R9
+        (&[0x41, 0xb8, 0xfc, 0xff, 0xff, 0xff], 0xb8), // dword R8
+        (
+            &[0x4d, 0xb8, 0xfc, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
+            0xb8,
+        ), // other REX
+        (
+            &[
+                0x66, 0x49, 0xb8, 0xfc, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f,
+            ],
+            0xb8,
+        ), // operand-size prefix
+        (
+            &[
+                0xf3, 0x49, 0xb8, 0xfc, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f,
+            ],
+            0xb8,
+        ), // REP prefix
+        (&[0x49, 0xc7, 0xc0, 0xfc, 0xff, 0xff, 0xff], 0xc7), // sign-extended imm32 form
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "bytes {bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "bytes {bytes:02x?}");
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "bytes {bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_mov_r8_imm64_fetch_fault_is_atomic() {
+    let bytes = [0x49, 0xb8, 0xfc, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f];
+    let rip = RIP + 0xff7;
+    let mut memory = Memory::new(&[]);
+    memory.bytes[CODE_PHYSICAL + 0xff7..CODE_PHYSICAL + 0x1000].copy_from_slice(&bytes[..9]);
+    memory.fail_fetch_at = Some((rip + 9, page_fault(0x10, rip + 9)));
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 9),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_helper_mov_r8_imm64_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x49, 0xb8, 0xfc, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x49 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn firmware_entry_c7_sets_only_rax_and_retires_once() {
     let bytes = [0x48, 0xc7, 0xc0, 0x00, 0x00, 0x10, 0x00];
     let mut memory = Memory::new(&bytes);
@@ -9809,6 +9942,10 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (
             &[0x48, 0xbf, 0x4f, 0x44, 0x48, 0x41, 0x4e, 0x44, 0x4f, 0x46][..],
             0xbf,
+        ),
+        (
+            &[0x49, 0xb8, 0xfc, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f][..],
+            0xb8,
         ),
         (&[0xbe, 0, 0, 0x10, 0][..], 0xbe),
         (&[0xba, 0, 0, 1, 0][..], 0xba),

@@ -527,13 +527,23 @@
 - **Ссылка:** [CPU profile contract](specs/CPU_CONTRACT.md#s7-04-exact-rust-helper-movzx-ecx-bx).
 
 <a id="issue-163-s7-04-rust-helper-mov-r8-imm64-unsupported"></a>
-### ISSUE-163 — S7-04: Rust helper `MOV R8,imm64` (`49 B8 FC FF FF FF FF FF FF 7F`) remains outside paged CPU profile
+### ISSUE-163 — S7-04: exact Rust-helper `MOV R8,imm64` profile slice
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `MOVZX ECX,BX`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200de5`.
+- **Статус:** решена только для exact encoding `49 B8 FC FF FF FF FF FF FF 7F` in base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Суть и последствия:** exact MOV-immediate form writes `0x7ffffffffffffffc` to R8; other destination, immediate, width and prefix forms remain outside this slice. RFLAGS and all other state are preserved.
+- **Основание:** firmware image `/private/tmp/od-fw-s7-mov-r8-imm64.bin`; runner с бюджетом 10000.
+- **Результат и проверка:** `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_mov_r8_imm64 -- --nocapture` — 4 passed; all 333 `paged_probe_profile` tests pass. Coverage includes full-state retention, exact immediate/destination, neighbors, final-immediate fetch-fault atomicity, CPL3 and other-profile isolation. Runner retired 66 instructions and stopped at `8B 7E 14` (`MOV EDI,dword ptr [RSI+0x14]`, ISSUE-164), `RIP=0x200def`, `Unsupported { opcode: 139 }`, `com1_bytes=0`.
+- **Ссылка:** [CPU profile contract](specs/CPU_CONTRACT.md#s7-04-exact-rust-helper-mov-r8-imm64).
+
+<a id="issue-164-s7-04-rust-helper-mov-edi-dword-rsi-14-unsupported"></a>
+### ISSUE-164 — S7-04: Rust helper `MOV EDI,dword ptr [RSI+0x14]` (`8B 7E 14`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `MOV R8,imm64`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200def`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retires 65 instructions, then stops at the exact observed `MOV R8,0x7ffffffffffffffc`, `Unsupported { opcode: 184 }`, `RIP=0x200de5`; COM1 remains empty.
-- **Основание:** firmware image `/private/tmp/od-fw-s7-movzx-ecx-bx.bin`; `od -An -tx1 -j 0xde5 -N24` shows `49 b8 fc ff ff ff ff ff ff 7f 8b 7e 14 41 b9 ff ff ff ff 45 31 d2 45 31`; runner с бюджетом 10000.
-- **Следующий шаг:** inspect the exact R8 immediate encoding/value and shared MOV-immediate semantics, then consider only that observed form.
+- **Суть и последствия:** runner retires 66 instructions, then stops at `8B 7E 14` (`MOV EDI,dword ptr [RSI+0x14]`), `Unsupported { opcode: 139 }`, `RIP=0x200def`; COM1 remains empty.
+- **Основание:** firmware image `/private/tmp/od-fw-s7-mov-r8-imm64.bin`; `od -An -tx1 -j 0xdef -N20` shows `8b 7e 14 41 b9 ff ff ff ff 45 31 d2 45 31 db 66 90 46 0f b6`; runner с бюджетом 10000.
+- **Следующий шаг:** inspect the exact dword load source/destination and existing tracked-memory semantics, then consider only the observed form.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.
