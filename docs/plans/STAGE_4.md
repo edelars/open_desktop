@@ -1296,6 +1296,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Сделать:** простая bounded очередь для одного CPU, порядок одинаковых deadlines, cancel/reschedule, поколение reset. Пробуждение HLT и ожидание host реализовать без бесконечного polling.
 - **Проверка:** одинаковые deadlines, cancel уже готового события, repeated reset, событие при pause/STOP, timer storm. Переполнение — явный результат согласно контракту.
 - **Готово:** событие не теряется и не применяется к новой машине после reset; выбор структуры подтверждать замерами при оптимизации.
+- **Текущий статус (2026-11-15):** срез S4-23f: добавлен чистый детерминированный арбитр простоя для N vCPU `crates/od-machine/src/idle_arbiter.rs` (`decide`/`apply`, `SchedActivity`, `WakeView`); порядок проверок STOP, Running, eligible (Halted, IF=1, вектор доступен), минимум полезных сроков; ничьи по индексу vCPU, сроки платы не зависят от IF, заблокированный ISR/TPR вектор не ждётся (ISSUE-070). 15 unit-тестов, включая сверку на одном vCPU с `InterruptPump::idle_advance`. Арбитр не подключён к `firmware_board.rs`, pump и `virtual_clock.rs`; NMI/INIT/SIPI, host wait и решение D7 не затронуты. S4-23 остаётся открытым; чекбокс не отмечен. Подробности в [отчёте](../reports/STAGE_4_REPORT.md) (раздел S4-23f).
 
 #### S4-23a. Bounded очередь одноразовых deadlines
 
