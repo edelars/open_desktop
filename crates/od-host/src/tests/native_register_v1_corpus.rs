@@ -2493,12 +2493,99 @@ fn observe_repeated(input: &Input) -> (BackendRuns, Vec<String>) {
     )
 }
 
+/// Single source of the observation corpus: every generated input is admitted,
+/// digested and run twice on all backends (about one second). Used by
+/// `generated_corpus_runs_twice_across_all_backends` and by every test that
+/// needs the corpus fixture.
+fn generate_corpus_observations() -> CorpusObservationsEnvelope {
+    let mut code_digest = 0xcbf2_9ce4_8422_2325u64;
+    let mut cases = Vec::with_capacity(SEEDS.len() * CASES_PER_SEED);
+    for seed in SEEDS {
+        for index in 0..CASES_PER_SEED {
+            let input = generate_case(seed, index);
+            validate_input(&input)
+                .unwrap_or_else(|error| panic!("seed={seed:#x} index={index}: {error}"));
+            for byte in &canonical_input(&input) {
+                code_digest = (code_digest ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3);
+            }
+            let backend_runs = run_repeated(&input);
+            cases.push(CorpusObservation {
+                input,
+                backend_runs,
+            });
+        }
+    }
+    let mut envelope = CorpusObservationsEnvelope {
+        version: ENVELOPE_VERSION,
+        profile: PROFILE.into(),
+        inputs_digest: format!("fnv1a64:{code_digest:016x}"),
+        cases,
+        envelope_digest: String::new(),
+    };
+    envelope.envelope_digest = corpus_observations_digest(
+        envelope.version,
+        &envelope.profile,
+        &envelope.inputs_digest,
+        &envelope.cases,
+    );
+    envelope
+}
+
+/// The saved case is the first generated input with its observations.
+fn saved_case_from_corpus(corpus: &CorpusObservationsEnvelope, dir: &Path) -> SavedCase {
+    let first = &corpus.cases[0];
+    SavedCase {
+        input: first.input.clone(),
+        backend_runs: first.backend_runs.clone(),
+        failure_signature: None,
+        reproduction_command: format!(
+            "OD_JIT_NATIVE_REGISTER_V1_CORPUS_DIR={} OD_JIT_NATIVE_REGISTER_V1_REPLAY_CASE={} cargo test --offline -p od-host --lib {REPLAY_GATE} -- --exact --test-threads=1",
+            dir.display(),
+            dir.join("native-register-v1-saved-case.json").display()
+        ),
+    }
+}
+
+/// Returns the observation corpus fixture. The ignored `work/` artifact is used
+/// when it exists; otherwise the corpus is generated deterministically and
+/// saved, so tests do not depend on test order or on files left by an earlier
+/// run. Fixture consumers must call this before reading the artifact directory.
+fn load_or_generate_corpus_observations() -> CorpusObservationsEnvelope {
+    let corpus_path = artifact_dir().join("native-register-v1-observations.json");
+    let corpus = match fs::read(&corpus_path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .unwrap_or_else(|error| panic!("source corpus observations malformed: {error}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let corpus = generate_corpus_observations();
+            write_json(&corpus_path, &corpus);
+            corpus
+        }
+        Err(error) => panic!("source corpus observations unreadable: {error}"),
+    };
+    validate_corpus_observations(&corpus).unwrap();
+    corpus
+}
+
+/// Returns the saved-case path: an explicit environment path is used as is
+/// (it must exist); the default `work/` artifact is generated when missing.
+fn saved_case_path(env_name: &str) -> PathBuf {
+    if let Some(path) = std::env::var_os(env_name) {
+        return PathBuf::from(path);
+    }
+    let dir = artifact_dir();
+    let path = dir.join("native-register-v1-saved-case.json");
+    if !path.exists() {
+        let corpus = load_or_generate_corpus_observations();
+        write_json(&path, &saved_case_from_corpus(&corpus, &dir));
+    }
+    path
+}
+
 #[test]
 fn generated_corpus_runs_twice_across_all_backends() {
     let _guard = jit_test_lock();
     let mut unique = std::collections::BTreeSet::new();
     let mut form_counts = [0usize; 13];
-    let mut code_digest = 0xcbf2_9ce4_8422_2325u64;
     let mut anchor_taken = 0usize;
     let mut anchor_fallthrough = 0usize;
     let mut code_end_exits = 0usize;
@@ -2509,64 +2596,39 @@ fn generated_corpus_runs_twice_across_all_backends() {
     let mut bounded_loop_inputs = 0usize;
     let mut zero_budget_inputs = 0usize;
     let dir = artifact_dir();
-    let mut saved_sample = None;
-    let mut corpus_observations = Vec::with_capacity(SEEDS.len() * CASES_PER_SEED);
-    for seed in SEEDS {
-        for index in 0..CASES_PER_SEED {
-            let input = generate_case(seed, index);
-            if index != 0 && index % 8 == 0 {
-                bounded_loop_inputs += 1;
+    let corpus_envelope = generate_corpus_observations();
+    for (position, case) in corpus_envelope.cases.iter().enumerate() {
+        let (seed, index) = (SEEDS[position / CASES_PER_SEED], position % CASES_PER_SEED);
+        let (input, runs) = (&case.input, &case.backend_runs);
+        if index != 0 && index % 8 == 0 {
+            bounded_loop_inputs += 1;
+        }
+        if input.budget == 0 {
+            zero_budget_inputs += 1;
+        }
+        assert!(
+            unique.insert(canonical_input(input)),
+            "duplicate full generated input seed={seed:#x} index={index}"
+        );
+        for form in 0..13 {
+            if contains_form(&input.code, form) {
+                form_counts[form] += 1;
             }
-            if input.budget == 0 {
-                zero_budget_inputs += 1;
-            }
-            validate_input(&input)
-                .unwrap_or_else(|error| panic!("seed={seed:#x} index={index}: {error}"));
-            let bytes = canonical_input(&input);
-            assert!(
-                unique.insert(bytes.clone()),
-                "duplicate full generated input seed={seed:#x} index={index}"
-            );
-            for byte in &bytes {
-                code_digest = (code_digest ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3);
-            }
-            for form in 0..13 {
-                if contains_form(&input.code, form) {
-                    form_counts[form] += 1;
-                }
-            }
-            let runs = run_repeated(&input);
-            corpus_observations.push(CorpusObservation {
-                input: input.clone(),
-                backend_runs: runs.clone(),
-            });
-            let first = runs.interpreter[0].as_ref().unwrap();
-            match first.exit.as_str() {
-                "CodeEnd" => code_end_exits += 1,
-                "BudgetExhausted" => budget_exits += 1,
-                "StopAddress" => stop_address_exits += 1,
-                "StopRequested" => stop_requested_exits += 1,
-                other => panic!("unexpected expected exit {other}"),
-            }
-            fallback_retired += first.retired_interpreter;
-            if index == 0 {
-                if runs.interpreter[0].as_ref().unwrap().gpr[0] != 0x1122_3344_5566_7788 {
-                    anchor_taken += 1;
-                } else {
-                    anchor_fallthrough += 1;
-                }
-            }
-            if saved_sample.is_none() {
-                saved_sample = Some(SavedCase {
-                    input: input.clone(),
-                    backend_runs: runs.clone(),
-                    failure_signature: None,
-                    reproduction_command: format!(
-                        "OD_JIT_NATIVE_REGISTER_V1_CORPUS_DIR={} OD_JIT_NATIVE_REGISTER_V1_REPLAY_CASE={} cargo test --offline -p od-host --lib {REPLAY_GATE} -- --exact --test-threads=1",
-                        dir.display(),
-                        dir.join("native-register-v1-saved-case.json").display()
-                    ),
-                });
+        }
+        let first = runs.interpreter[0].as_ref().unwrap();
+        match first.exit.as_str() {
+            "CodeEnd" => code_end_exits += 1,
+            "BudgetExhausted" => budget_exits += 1,
+            "StopAddress" => stop_address_exits += 1,
+            "StopRequested" => stop_requested_exits += 1,
+            other => panic!("unexpected expected exit {other}"),
+        }
+        fallback_retired += first.retired_interpreter;
+        if index == 0 {
+            if first.gpr[0] != 0x1122_3344_5566_7788 {
+                anchor_taken += 1;
+            } else {
+                anchor_fallthrough += 1;
             }
         }
     }
@@ -2575,21 +2637,10 @@ fn generated_corpus_runs_twice_across_all_backends() {
         form_counts.iter().all(|count| *count > 0),
         "form coverage {form_counts:?}"
     );
-    let sample = saved_sample.unwrap();
-    write_json(&dir.join("native-register-v1-saved-case.json"), &sample);
-    let inputs_digest = format!("fnv1a64:{code_digest:016x}");
-    let mut corpus_envelope = CorpusObservationsEnvelope {
-        version: ENVELOPE_VERSION,
-        profile: PROFILE.into(),
-        inputs_digest,
-        cases: corpus_observations,
-        envelope_digest: String::new(),
-    };
-    corpus_envelope.envelope_digest = corpus_observations_digest(
-        corpus_envelope.version,
-        &corpus_envelope.profile,
-        &corpus_envelope.inputs_digest,
-        &corpus_envelope.cases,
+    let inputs_digest = corpus_envelope.inputs_digest.clone();
+    write_json(
+        &dir.join("native-register-v1-saved-case.json"),
+        &saved_case_from_corpus(&corpus_envelope, &dir),
     );
     validate_corpus_observations(&corpus_envelope).unwrap();
     write_json(
@@ -2641,7 +2692,7 @@ fn generated_corpus_runs_twice_across_all_backends() {
             zero_budget_inputs,
             rip_predecessor_lengths: [3, 4, 7],
             form_counts,
-            canonical_inputs_digest: format!("fnv1a64:{code_digest:016x}"),
+            canonical_inputs_digest: inputs_digest.clone(),
         },
     );
     assert!(anchor_taken > 0 && anchor_fallthrough > 0);
@@ -2653,7 +2704,7 @@ fn generated_corpus_runs_twice_across_all_backends() {
             && stop_requested_exits > 0
     );
     eprintln!(
-        "S3-34n corpus: profile={PROFILE} unique=1200 seeds={SEEDS:?} repeats=2 forms={form_counts:?} canonical_digest=fnv1a64:{code_digest:016x}"
+        "S3-34n corpus: profile={PROFILE} unique=1200 seeds={SEEDS:?} repeats=2 forms={form_counts:?} canonical_digest={inputs_digest}"
     );
 }
 
@@ -2880,62 +2931,6 @@ fn retained_hit_segment(
         strategy: strategy.into(),
         steps,
     })
-}
-
-/// Builds the observation corpus the same way as
-/// `generated_corpus_runs_twice_across_all_backends` (about one second).
-fn generate_corpus_observations() -> CorpusObservationsEnvelope {
-    let mut code_digest = 0xcbf2_9ce4_8422_2325u64;
-    let mut cases = Vec::with_capacity(SEEDS.len() * CASES_PER_SEED);
-    for seed in SEEDS {
-        for index in 0..CASES_PER_SEED {
-            let input = generate_case(seed, index);
-            validate_input(&input)
-                .unwrap_or_else(|error| panic!("seed={seed:#x} index={index}: {error}"));
-            for byte in &canonical_input(&input) {
-                code_digest = (code_digest ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3);
-            }
-            let backend_runs = run_repeated(&input);
-            cases.push(CorpusObservation {
-                input,
-                backend_runs,
-            });
-        }
-    }
-    let mut envelope = CorpusObservationsEnvelope {
-        version: ENVELOPE_VERSION,
-        profile: PROFILE.into(),
-        inputs_digest: format!("fnv1a64:{code_digest:016x}"),
-        cases,
-        envelope_digest: String::new(),
-    };
-    envelope.envelope_digest = corpus_observations_digest(
-        envelope.version,
-        &envelope.profile,
-        &envelope.inputs_digest,
-        &envelope.cases,
-    );
-    envelope
-}
-
-/// Returns the observation corpus for the cached-trace tests. The ignored
-/// `work/` artifact is used when it exists; otherwise the corpus is generated
-/// deterministically and saved, so these tests do not depend on test order or
-/// on files left by an earlier run.
-fn load_or_generate_corpus_observations() -> CorpusObservationsEnvelope {
-    let corpus_path = artifact_dir().join("native-register-v1-observations.json");
-    let corpus = match fs::read(&corpus_path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .unwrap_or_else(|error| panic!("source corpus observations malformed: {error}")),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let corpus = generate_corpus_observations();
-            write_json(&corpus_path, &corpus);
-            corpus
-        }
-        Err(error) => panic!("source corpus observations unreadable: {error}"),
-    };
-    validate_corpus_observations(&corpus).unwrap();
-    corpus
 }
 
 fn build_cache_trace(corpus: &CorpusObservationsEnvelope) -> CacheTraceEnvelope {
@@ -3228,6 +3223,7 @@ fn retained_hit_failure_reducer_and_selfcheck() {
         baseline.signature.as_deref(),
         Some("interpreter_mismatch:gpr")
     );
+    load_or_generate_corpus_observations();
     let source = load_source_observations().unwrap();
     let inputs = retained_hit_inputs();
     let mut failure = CacheTraceFailureEnvelope {
@@ -3475,9 +3471,7 @@ fn contains_form(code: &[u8], form: usize) -> bool {
 #[test]
 fn saved_case_round_trip_and_replay() {
     let _guard = jit_test_lock();
-    let path = std::env::var_os("OD_JIT_NATIVE_REGISTER_V1_REPLAY_CASE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| artifact_dir().join("native-register-v1-saved-case.json"));
+    let path = saved_case_path("OD_JIT_NATIVE_REGISTER_V1_REPLAY_CASE");
     let original: SavedCase = serde_json::from_slice(
         &fs::read(&path)
             .unwrap_or_else(|error| panic!("saved case missing at {}: {error}", path.display())),
@@ -3653,9 +3647,7 @@ fn local_fault_injection_fixture() -> Input {
 #[test]
 fn reduce_saved_native_register_v1_case() {
     let _guard = jit_test_lock();
-    let path = std::env::var_os("OD_JIT_NATIVE_REGISTER_V1_REDUCE_CASE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| artifact_dir().join("native-register-v1-saved-case.json"));
+    let path = saved_case_path("OD_JIT_NATIVE_REGISTER_V1_REDUCE_CASE");
     let source: SavedCase = serde_json::from_slice(&fs::read(&path).unwrap_or_else(|error| {
         panic!(
             "saved reducer source missing at {}: {error}",
