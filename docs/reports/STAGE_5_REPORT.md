@@ -354,7 +354,15 @@ Raw UART показывает, что в run 0001 nonce marker располож�
 
 Форматирование и focused comparator test прошли; полное сравнение и hashes приведены в [vector-count evidence log](data/stage5/s5-07-stage4a-vector-counts-20261115.log).
 
-Точные run/series/manifest/runner/UART SHA-256, host/source revisions и comparator JSON записаны в [S5-07 evidence log](data/stage5/s5-07-stage4a-nonce-20261114.log). Runner COM1 в этих данных — stop-scoped `linux_direct_run_boot_com1`, не независимый streaming UART; user CPU time не измерен. Ни один A–G сценарий S5-06 не запускался в Linux guest; полный этап 5 и S5-07 остаются **blocked/unaccepted**.
+Точные run/series/manifest/runner/UART SHA-256, host/source revisions и comparator JSON для серии 2026-11-14 записаны в [предыдущем S5-07 evidence log](data/stage5/s5-07-stage4a-nonce-20261114.log). В этой серии COM1 был stop-scoped `linux_direct_run_boot_com1`, не независимым streaming UART; user CPU time не измерялся. Ни один A–G сценарий S5-06 не запускался в Linux guest; полный этап 5 и S5-07 остаются **blocked/unaccepted**.
+
+### S5-07 automatic series CLI comparison follow-up (2026-11-15)
+
+После `2804942` выполнен новый release `linux-direct --test-runs 2` вызов на тех же kernel/initramfs/ACPI inputs и counted Stage 4 init-nonce профиле. Оба запуска завершились `passed`, каждый выдал exact nonce, `budget_exhausted`, `retired=2,999,999,998`; `exceptions_delivered=35` (34 `#PF` + 1 `#GP(0)`). Команда одной операцией создала серию из двух run evidence наборов и `comparison.json`, подтвердив sidecar persistence.
+
+Автоматический strict comparator вернул `matches=false`: `run[1].machine_observations differs` и `run[1].ordered_uart_bytes differs after nonce normalization`. IRQ0 edges — 34,781/34,816, delivered IRQs — 34,786/34,821, refused masked IRQs — 1,509,240/954,250. В terminal panic trace первого запуска присутствуют optional scheduler/PSI frames (`update_cfs_rq_load_avg`, `update_load_avg`, `update_curr`, `dequeue_entity`, `psi_group_change`, `psi_task_switch`, `schedule`); второго — `handle_mm_fault`. Несколько optional frames первого trace не входят в allowlist, поэтому terminal snapshot normalization не принимает весь trace и специальная volatile-observation comparison не становится eligible. Это объясняет строгое поведение comparator, но не подтверждает безвредность underlying variation. Allowlist и normalization после этого запуска не менялись. S5-07 остаётся **blocked/unaccepted**: one-command persistence проверена, но strict-clean repeatability не достигнута.
+
+Оба guest runs были `passed`, однако сравнение — unmatched; production CLI отображает этот случай в failure exit. Числовой shell exit code не сохранился в session output. Полная команда, hashes и evidence — в [automatic series CLI log](data/stage5/s5-07-auto-series-cli-20261115.log); raw artifacts остаются локальными в ignored `work/stage5/stage5-s5-07-stage4a-auto-compare-20261115-a/`.
 
 ### S5-07 typed stop reason follow-up (2026-11-12)
 

@@ -1,0 +1,87 @@
+# S5-07 automatic within-series comparison, 2026-11-15
+
+Purpose: verify that one `linux-direct --test-runs 2` invocation persists the
+series evidence, automatically writes `comparison.json`, and uses the strict
+comparator for the new Stage 4 init-nonce run pair.
+
+## Invocation and inputs
+
+- Worktree: `codex`; runner source revision
+  `280494280761e8754dabd5917b3ab1a5a3148e69`, `source_dirty=false`.
+- Host: macOS/aarch64; `od-runner` 0.1.0, release build.
+- Kernel SHA-256:
+  `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`.
+- Initramfs SHA-256:
+  `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`.
+- ACPI blob SHA-256:
+  `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`;
+  expected ACPI manifest hash:
+  `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`.
+- Scenario `stage4-init-nonce`, `smoke_not_acceptance`, counted `stage4a`
+  (`--set-cpl0 --user-mode`), 128 MiB RAM, budget 3,000,000,000,
+  expected stop `budget_exhausted`.
+- Full command:
+
+  ```sh
+  target/release/od-runner linux-direct --test-runs 2 --series-id stage5-s5-07-stage4a-auto-compare-20261115-a --scenario-id stage4-init-nonce --expected-stop-kind budget_exhausted --out work/stage5/stage5-s5-07-stage4a-auto-compare-20261115-a/series.json --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic --initramfs /Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 --ram-mib 128 --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode
+  ```
+
+## Outcome
+
+The command produced `series.json`, two run directories, and the new
+`comparison.json` in one invocation. The aggregate scenario outcome was
+`passed`; both runs started the guest, emitted their exact nonce, stopped at
+`budget_exhausted`, and retired 2,999,999,998 instructions.
+
+| Run | Nonce | Exceptions | IRQ0 edges | Delivered IRQs | Quanta | Wall seconds | UART bytes |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 0001 | `OD518e825e3105f3ec0000062ed00000000` | 34 PF + 1 GP | 34,781 | 34,786 | 34,547,130 | 1116.432 | 24,209 |
+| 0002 | `OD518e826e703c80660000062ed00000001` | 34 PF + 1 GP | 34,816 | 34,821 | 34,581,135 | 1113.875 | 23,441 |
+
+The runner printed:
+
+```text
+within-series comparison: matches=false explained=1 unexplained=2 path=work/stage5/stage5-s5-07-stage4a-auto-compare-20261115-a/comparison.json
+unexplained differences: ["run[1].machine_observations differs", "run[1].ordered_uart_bytes differs after nonce normalization"]
+```
+
+Both scenario runs passed, but the series comparison did not. The production
+exit mapping returns exit 1 when a passed scenario has an unmatched strict
+comparison. The session output did not retain the numeric process exit code
+separately. This does **not** meet S5-07 repeatability acceptance.
+
+## Difference analysis
+
+The machine observations include IRQ/quantum variation despite matching
+exception counts: IRQ0 edges are 34,781/34,816, delivered IRQs 34,786/34,821,
+and refused-masked IRQs 1,509,240/954,250. The terminal panic traces also
+differ. Run 0001 contains optional frames including
+`update_cfs_rq_load_avg`, `update_load_avg`, `update_curr`, `dequeue_entity`,
+`psi_group_change`, `psi_task_switch`, and `schedule`; run 0002 contains
+`handle_mm_fault`. The Stage 4 terminal-snapshot normalizer does not allow all
+of these observed optional frames, so the specialized volatile-observation
+comparison is not eligible for this pair. This explains why the comparator
+kept the differences strict; it does not establish that the underlying IRQ or
+stack variation is benign. No allowlist or comparison rule was changed for
+this run.
+
+S5-07 remains blocked/unaccepted. Preserve this passing-but-unrepeatable pair
+as evidence; do not overwrite the prior failed common-ID series.
+
+## Evidence hashes
+
+- `series.json`:
+  `8baee2b3eeda0aa5e2fa21270ef89de754979294bd745e09d567c8b5d6b41258`
+- `comparison.json`:
+  `989064d1f1ec9b4732e55fb44c4f28eb73dd41a9422163b0b14af4c5d558654e`
+- Run 0001 manifest / runner JSON / UART:
+  `f8ba598d9b53e03ca79abd3fd79d162e489865914300468d235a71d3f5c8e8f6` /
+  `e8315933d5f31d2887cb36b67e6205d8ec75ac2886ce21c88a9cfe829ff1653b` /
+  `c06389ed1be5b792364330cad573cc735d57f8580e623bb55cccbd00169dde68`
+- Run 0002 manifest / runner JSON / UART:
+  `1f8c79e9654047a54a29976572ec1509fa9d45d9c81d41533ce5d549c04dd3f1` /
+  `148d9c468d8601a3cb97ee1228143c15876b15fd7ef76cc6fa79ba6ed0a17068` /
+  `9c8d4f77bc70b28b57c49ccaaa93afc0d307509cfd315d6f5ff5a35086c07011`
+
+Raw artifacts remain in ignored
+`work/stage5/stage5-s5-07-stage4a-auto-compare-20261115-a/`.
