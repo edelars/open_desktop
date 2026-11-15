@@ -363,11 +363,48 @@ pub(super) fn run(args: &[String]) -> ExitCode {
     if let Err(error) = write_new(&out, &manifest_bytes) {
         return invalid_input(&format!("could not save series manifest: {error}"));
     }
+    let comparison_matches = if cli.requested_runs > 1 {
+        match compare_series_runs(&out) {
+            Ok(comparison) => {
+                let comparison_path = series_dir.join("comparison.json");
+                let comparison_bytes = match serde_json::to_vec_pretty(&comparison) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        return invalid_input(&format!(
+                            "could not serialize series comparison: {error}"
+                        ));
+                    }
+                };
+                if let Err(error) = write_new(&comparison_path, &comparison_bytes) {
+                    return invalid_input(&format!("could not save series comparison: {error}"));
+                }
+                eprintln!(
+                    "within-series comparison: matches={} explained={} unexplained={} path={}",
+                    comparison.matches,
+                    comparison.explained_differences.len(),
+                    comparison.unexplained_differences.len(),
+                    comparison_path.display()
+                );
+                if !comparison.matches {
+                    eprintln!(
+                        "unexplained differences: {:?}",
+                        comparison.unexplained_differences
+                    );
+                }
+                comparison.matches
+            }
+            Err(error) => return invalid_input(&format!("could not compare series runs: {error}")),
+        }
+    } else {
+        eprintln!("within-series comparison skipped: requires at least two runs");
+        true
+    };
     println!("{}", String::from_utf8_lossy(&manifest_bytes));
-    match outcome {
-        ScenarioStatus::Passed => ExitCode::SUCCESS,
-        ScenarioStatus::Failed => ExitCode::from(1),
-        ScenarioStatus::NotRun | ScenarioStatus::Blocked => ExitCode::from(78),
+    match (outcome, comparison_matches) {
+        (ScenarioStatus::Passed, true) => ExitCode::SUCCESS,
+        (ScenarioStatus::Passed, false) => ExitCode::from(1),
+        (ScenarioStatus::Failed, _) => ExitCode::from(1),
+        (ScenarioStatus::NotRun | ScenarioStatus::Blocked, _) => ExitCode::from(78),
     }
 }
 
@@ -862,6 +899,42 @@ pub(crate) fn compare_series_paths(
     Ok(Stage5Comparison {
         schema_version: SERIES_SCHEMA_VERSION,
         comparison: "linux_stage5".into(),
+        matches: unexplained.is_empty(),
+        explained_differences: explained,
+        unexplained_differences: unexplained,
+    })
+}
+
+fn compare_series_runs(series_path: &Path) -> Result<Stage5Comparison, String> {
+    let series = fresh_manifest(series_path)?;
+    let runs = load_series_runs(series_path, &series)?;
+    compare_run_sequence(series_path, &runs)
+}
+
+fn compare_run_sequence(
+    series_path: &Path,
+    runs: &[RunManifest],
+) -> Result<Stage5Comparison, String> {
+    if runs.len() < 2 {
+        return Err("within-series comparison requires at least two runs".into());
+    }
+    let mut unexplained = Vec::new();
+    let mut explained = Vec::new();
+    explained.push("run identity, nonce, raw runner JSON hash, UART hash/path, and wall time are run-specific metadata".into());
+    for (index, run) in runs.iter().enumerate().skip(1) {
+        compare_run(
+            index,
+            series_path,
+            series_path,
+            &runs[0],
+            run,
+            &mut explained,
+            &mut unexplained,
+        )?;
+    }
+    Ok(Stage5Comparison {
+        schema_version: SERIES_SCHEMA_VERSION,
+        comparison: "linux_stage5_within_series".into(),
         matches: unexplained.is_empty(),
         explained_differences: explained,
         unexplained_differences: unexplained,
@@ -2243,8 +2316,8 @@ mod tests {
             .map(|line| format!("{line}\r\n"))
             .collect::<String>()
             .into_bytes();
-        let uart_relative = "runs/nonce/uart.bin";
-        let uart_path = series_root.join(uart_relative);
+        let uart_relative = format!("runs/{nonce}/uart.bin");
+        let uart_path = series_root.join(&uart_relative);
         fs::create_dir_all(uart_path.parent().unwrap()).unwrap();
         fs::write(&uart_path, &uart).unwrap();
 
@@ -2315,7 +2388,7 @@ mod tests {
         run.guest_markers = validate_markers(&uart, nonce, &[]).evidence;
         run.runner.stop = Some(stop.clone());
         run.runner.retired = Some(2999999998);
-        run.uart.path = uart_relative.into();
+        run.uart.path = uart_relative;
         run.uart.sha256 = od_testkit::sha256_hex(&uart);
         run.uart.byte_count = uart.len();
         run.scenario_status = scenario_status(
@@ -2611,6 +2684,54 @@ mod tests {
                 .iter()
                 .any(|value| value.contains("host_environment"))
         );
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn within_series_comparator_compares_each_run_to_the_first() {
+        let temp = std::env::temp_dir().join(format!(
+            "od-runner-stage5-within-series-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let seed = write_test_series(&temp.join("seed"), "seed", "nonceStage5Seed0001", "PASS");
+        let manifest = fresh_manifest(&seed).unwrap();
+        let base = load_run_manifest(&seed, &manifest.runs[0]).unwrap();
+        let series_root = temp.join("within");
+        fs::create_dir_all(&series_root).unwrap();
+        let series_path = series_root.join("series.json");
+        let first = stage4_nonce_comparison_run(
+            base.clone(),
+            &series_root,
+            "nonceStage5First0001",
+            "baseline",
+        );
+        let second =
+            stage4_nonce_comparison_run(base, &series_root, "nonceStage5Second01", "timing");
+        let third = stage4_nonce_comparison_run(
+            load_run_manifest(&seed, &manifest.runs[0]).unwrap(),
+            &series_root,
+            "nonceStage5Third0001",
+            "artifact",
+        );
+
+        let pair = compare_run_sequence(&series_path, &[first.clone(), second.clone()]).unwrap();
+        assert!(pair.matches, "{:?}", pair.unexplained_differences);
+        let comparison =
+            compare_run_sequence(&series_path, &[first.clone(), second, third.clone()]).unwrap();
+        assert!(!comparison.matches);
+        assert!(
+            comparison
+                .unexplained_differences
+                .iter()
+                .any(|item| { item.contains("run[2].artifact_hashes") })
+        );
+        assert_eq!(comparison.comparison, "linux_stage5_within_series");
+        assert!(!comparison.explained_differences.is_empty());
+        assert!(compare_run_sequence(&series_path, &[first]).is_err());
         let _ = fs::remove_dir_all(temp);
     }
 
