@@ -45,6 +45,14 @@ impl IoApicHandle {
             .unwrap_or_else(|e| e.into_inner())
             .set_sci_line(asserted)
     }
+    /// S4-38L8f: the route of INTIN2 as a question that changes nothing: `Some((cpu, vector))`
+    /// when the entry is unmasked (an edge would request `vector` on the Local APIC of vCPU
+    /// `cpu`), `None` when it is masked (an edge is lost).
+    pub(crate) fn intin2_route(&self) -> Option<(usize, u8)> {
+        let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let low = state.route.pins[2];
+        (low & MASK == 0).then(|| (usize::from(state.route.dest[2]), low as u8))
+    }
     /// INTIN2 (GSI 2), edge only (S4-29e). Caller serializes complete device operations.
     pub fn set_intin2(&self, high: bool) -> Result<(), DeviceError> {
         self.0
