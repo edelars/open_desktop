@@ -15,6 +15,7 @@ use crate::paged_probe::run_paged_probe_2m_ram;
 use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
 use crate::pit_pic_irq_source::PitPicIrqSource;
 use crate::uart_pic_irq_source::UartPicIrqSource;
+use crate::vcpu::{BOOT_VCPU_INDEX, Vcpu};
 use crate::{
     ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AbsentPortRegion, AbsentPorts,
     AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError, DISPLAY_FRAMEBUFFER_BASE,
@@ -1028,7 +1029,8 @@ pub struct FirmwareRunReport {
 /// A loaded firmware board: machine, direct-entry CPU state and handoff block.
 pub struct LoadedFirmwareBoard {
     bus: MachineBus,
-    state: LongModeState,
+    /// The set of virtual processors (S6-10): exactly one element, index 0; every path takes it.
+    vcpus: Vec<Vcpu>,
     uart: Uart16550Handle,
     display: DisplayHandle,
     nvme: Option<NvmeHandle>,
@@ -1045,49 +1047,9 @@ pub struct LoadedFirmwareBoard {
     /// `CR3` the paged interpreter walks from (S4-37L4): the board's page-table
     /// root, `FIRMWARE_BOOT_PAGE_TABLES_GPA` for the firmware boot.
     page_table_root: u64,
-    /// The whole CR2 the guest left at the end of the latest `run_linux_boot_cpl0_set`
-    /// (S4-38L5c): the faulting address of the last delivered `#PF`, or any other value the CR2
-    /// took (a guest write of CR2, should the set ever model it). Fed back as CR2 on entry the way
-    /// `page_table_root` is for CR3. `None` until the first CPL0-set run.
-    guest_cr2: Option<u64>,
-    /// The guest-visible `IA32_EFER` (S4-38L7f): `FIRMWARE_EFER` until a guest `WRMSR` of EFER
-    /// changed `SCE` (the only bit the set lets change). The walkers keep using the constant
-    /// [`FIRMWARE_EFER`] (LME/LMA/NXE never change), so [`Self::efer`] stays the walker's EFER.
-    guest_efer: u64,
     /// The guest PCI CONFIG_ADDRESS register (port `0xCF8`, S4-38L7w), kept between CPL0-set runs.
     /// There is no device behind CONFIG_DATA; the value is only stored and read back.
     pci_config_address: u32,
-    /// The guest `IA32_STAR` (S4-38L7ao): `0` until a guest `WRMSR` of it through the CPL0 set.
-    /// Only stored; nothing consumes it (`SYSCALL`/`SYSRET` are not modelled).
-    guest_star: u64,
-    /// The guest `IA32_LSTAR` (S4-38L7ap): `0` until a guest `WRMSR` of it through the CPL0 set.
-    /// Only stored; nothing consumes it (`SYSCALL`/`SYSRET` are not modelled).
-    guest_lstar: u64,
-    /// The guest `IA32_CSTAR` (S4-38L7aq): `0` until a guest `WRMSR` of it through the CPL0 set.
-    /// Only stored; nothing consumes it (`SYSCALL`/`SYSRET` are not modelled).
-    guest_cstar: u64,
-    /// The guest `IA32_SYSENTER_CS` (S4-38L7ar): `0` until a guest `WRMSR` of it through the CPL0 set.
-    /// The full 64-bit value written (the real register holds a 16-bit selector; not modelled as
-    /// such). Only stored; nothing consumes it (`SYSENTER`/`SYSEXIT` are not modelled).
-    guest_sysenter_cs: u64,
-    /// The guest `IA32_SYSENTER_ESP` (S4-38L7as): `0` until a guest `WRMSR` of it through the CPL0
-    /// set. The full 64-bit value written. Only stored; nothing consumes it.
-    guest_sysenter_esp: u64,
-    /// The guest `IA32_SYSENTER_EIP` (S4-38L7as): `0` until a guest `WRMSR` of it through the CPL0
-    /// set. The full 64-bit value written. Only stored; nothing consumes it.
-    guest_sysenter_eip: u64,
-    /// The guest `IA32_SYSCALL_MASK` (S4-38L7at): `0` until a guest `WRMSR` of it through the CPL0
-    /// set. The full 64-bit value written (the flag-clearing behaviour of the real FMASK is not
-    /// modelled). Only stored; nothing consumes it.
-    guest_syscall_mask: u64,
-    /// The guest `IA32_KERNEL_GS_BASE` (S4-38L7au): `0` until a guest `WRMSR` of it through the
-    /// CPL0 set. The full 64-bit value written (no canonical check; `SWAPGS` is not modelled).
-    /// Only stored; nothing consumes it.
-    guest_kernel_gs_base: u64,
-    /// The guest FP state of the CPL0 set's FP member (S4-38L9d): x87 environment and registers,
-    /// MXCSR and XMM. `GuestFpState::initial()` (FCW `0x037F`, MXCSR `0x1F80`, everything else
-    /// zero) until a run with the member changes it; carried between runs like the MSR cells.
-    guest_fp: GuestFpState,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
     /// Pending-tick flag of the guest `RDTSC` (S4-37a6b); `Some` only under
@@ -1116,11 +1078,11 @@ pub struct LoadedFirmwareBoard {
 
 impl LoadedFirmwareBoard {
     pub fn state(&self) -> &LongModeState {
-        &self.state
+        &self.vcpus[BOOT_VCPU_INDEX].state
     }
 
     pub fn state_mut(&mut self) -> &mut LongModeState {
-        &mut self.state
+        &mut self.vcpus[BOOT_VCPU_INDEX].state
     }
 
     /// Owner/host handle of the board LAPIC (S4-38 pump becomes its owner); it can
@@ -1259,13 +1221,13 @@ impl LoadedFirmwareBoard {
 
     /// The guest-visible `IA32_EFER`: the walker EFER, plus `SCE` once the guest wrote it
     /// through the CPL0 set (S4-38L7f).
-    pub const fn guest_efer(&self) -> u64 {
-        self.guest_efer
+    pub fn guest_efer(&self) -> u64 {
+        self.vcpus[BOOT_VCPU_INDEX].guest_efer
     }
 
     /// Stores the guest-visible EFER a CPL0-set run left (S4-38L7f).
     pub(crate) fn set_guest_efer(&mut self, value: u64) {
-        self.guest_efer = value;
+        self.vcpus[BOOT_VCPU_INDEX].guest_efer = value;
     }
 
     /// The guest PCI CONFIG_ADDRESS register (S4-38L7w); `0` until a guest `OUT` to `0xCF8`.
@@ -1280,101 +1242,101 @@ impl LoadedFirmwareBoard {
 
     /// The guest `IA32_STAR` (S4-38L7ao); `0` until a guest `WRMSR` of it. Not readable by the
     /// guest: `RDMSR` of STAR stays refused.
-    pub const fn guest_star(&self) -> u64 {
-        self.guest_star
+    pub fn guest_star(&self) -> u64 {
+        self.vcpus[BOOT_VCPU_INDEX].guest_star
     }
 
     /// Stores the STAR a CPL0-set run left (S4-38L7ao).
     pub(crate) fn set_guest_star(&mut self, value: u64) {
-        self.guest_star = value;
+        self.vcpus[BOOT_VCPU_INDEX].guest_star = value;
     }
 
     /// The guest `IA32_LSTAR` (S4-38L7ap); `0` until a guest `WRMSR` of it. Not readable by the
     /// guest: `RDMSR` of LSTAR stays refused.
-    pub const fn guest_lstar(&self) -> u64 {
-        self.guest_lstar
+    pub fn guest_lstar(&self) -> u64 {
+        self.vcpus[BOOT_VCPU_INDEX].guest_lstar
     }
 
     /// Stores the LSTAR a CPL0-set run left (S4-38L7ap).
     pub(crate) fn set_guest_lstar(&mut self, value: u64) {
-        self.guest_lstar = value;
+        self.vcpus[BOOT_VCPU_INDEX].guest_lstar = value;
     }
 
     /// The guest `IA32_CSTAR` (S4-38L7aq); `0` until a guest `WRMSR` of it. Not readable by the
     /// guest: `RDMSR` of CSTAR stays refused.
-    pub const fn guest_cstar(&self) -> u64 {
-        self.guest_cstar
+    pub fn guest_cstar(&self) -> u64 {
+        self.vcpus[BOOT_VCPU_INDEX].guest_cstar
     }
 
     /// Stores the CSTAR a CPL0-set run left (S4-38L7aq).
     pub(crate) fn set_guest_cstar(&mut self, value: u64) {
-        self.guest_cstar = value;
+        self.vcpus[BOOT_VCPU_INDEX].guest_cstar = value;
     }
 
     /// The guest `IA32_SYSENTER_CS` (S4-38L7ar); `0` until a guest `WRMSR` of it. The full 64-bit
     /// value written. Not readable by the guest: `RDMSR` of SYSENTER_CS stays refused.
-    pub const fn guest_sysenter_cs(&self) -> u64 {
-        self.guest_sysenter_cs
+    pub fn guest_sysenter_cs(&self) -> u64 {
+        self.vcpus[BOOT_VCPU_INDEX].guest_sysenter_cs
     }
 
     /// Stores the SYSENTER_CS a CPL0-set run left (S4-38L7ar).
     pub(crate) fn set_guest_sysenter_cs(&mut self, value: u64) {
-        self.guest_sysenter_cs = value;
+        self.vcpus[BOOT_VCPU_INDEX].guest_sysenter_cs = value;
     }
 
     /// The guest `IA32_SYSENTER_ESP` (S4-38L7as); `0` until a guest `WRMSR` of it. The full 64-bit
     /// value written. Not readable by the guest: `RDMSR` of SYSENTER_ESP stays refused.
-    pub const fn guest_sysenter_esp(&self) -> u64 {
-        self.guest_sysenter_esp
+    pub fn guest_sysenter_esp(&self) -> u64 {
+        self.vcpus[BOOT_VCPU_INDEX].guest_sysenter_esp
     }
 
     /// Stores the SYSENTER_ESP a CPL0-set run left (S4-38L7as).
     pub(crate) fn set_guest_sysenter_esp(&mut self, value: u64) {
-        self.guest_sysenter_esp = value;
+        self.vcpus[BOOT_VCPU_INDEX].guest_sysenter_esp = value;
     }
 
     /// The guest `IA32_SYSENTER_EIP` (S4-38L7as); `0` until a guest `WRMSR` of it. The full 64-bit
     /// value written. Not readable by the guest: `RDMSR` of SYSENTER_EIP stays refused.
-    pub const fn guest_sysenter_eip(&self) -> u64 {
-        self.guest_sysenter_eip
+    pub fn guest_sysenter_eip(&self) -> u64 {
+        self.vcpus[BOOT_VCPU_INDEX].guest_sysenter_eip
     }
 
     /// Stores the SYSENTER_EIP a CPL0-set run left (S4-38L7as).
     pub(crate) fn set_guest_sysenter_eip(&mut self, value: u64) {
-        self.guest_sysenter_eip = value;
+        self.vcpus[BOOT_VCPU_INDEX].guest_sysenter_eip = value;
     }
 
     /// The guest `IA32_SYSCALL_MASK` (S4-38L7at); `0` until a guest `WRMSR` of it. The full 64-bit
     /// value written. Not readable by the guest: `RDMSR` of SYSCALL_MASK stays refused.
-    pub const fn guest_syscall_mask(&self) -> u64 {
-        self.guest_syscall_mask
+    pub fn guest_syscall_mask(&self) -> u64 {
+        self.vcpus[BOOT_VCPU_INDEX].guest_syscall_mask
     }
 
     /// Stores the SYSCALL_MASK a CPL0-set run left (S4-38L7at).
     pub(crate) fn set_guest_syscall_mask(&mut self, value: u64) {
-        self.guest_syscall_mask = value;
+        self.vcpus[BOOT_VCPU_INDEX].guest_syscall_mask = value;
     }
 
     /// The guest `IA32_KERNEL_GS_BASE` (S4-38L7au); `0` until a guest `WRMSR` of it. The full
     /// 64-bit value written. Not readable by the guest: `RDMSR` of KERNEL_GS_BASE stays refused.
-    pub const fn guest_kernel_gs_base(&self) -> u64 {
-        self.guest_kernel_gs_base
+    pub fn guest_kernel_gs_base(&self) -> u64 {
+        self.vcpus[BOOT_VCPU_INDEX].guest_kernel_gs_base
     }
 
     /// Stores the KERNEL_GS_BASE a CPL0-set run left (S4-38L7au).
     pub(crate) fn set_guest_kernel_gs_base(&mut self, value: u64) {
-        self.guest_kernel_gs_base = value;
+        self.vcpus[BOOT_VCPU_INDEX].guest_kernel_gs_base = value;
     }
 
     /// The guest FP state of the CPL0 set's FP member (S4-38L9d); the initial state until a run
     /// with the member changed it.
-    pub const fn guest_fp(&self) -> &GuestFpState {
-        &self.guest_fp
+    pub fn guest_fp(&self) -> &GuestFpState {
+        &self.vcpus[BOOT_VCPU_INDEX].guest_fp
     }
 
     /// Stores the FP state a CPL0-set run left (S4-38L9d).
     pub(crate) fn set_guest_fp(&mut self, value: GuestFpState) {
-        self.guest_fp = value;
+        self.vcpus[BOOT_VCPU_INDEX].guest_fp = value;
     }
 
     /// The exact bytes written to RAM at [`FIRMWARE_HANDOFF_GPA`]. Empty for a Linux board
@@ -1449,7 +1411,7 @@ impl LoadedFirmwareBoard {
                 }
             });
             return run_paged_probe_2m_ram(
-                &mut self.state,
+                &mut self.vcpus[BOOT_VCPU_INDEX].state,
                 &mut self.bus,
                 self.page_table_root,
                 FIRMWARE_EFER,
@@ -1470,7 +1432,7 @@ impl LoadedFirmwareBoard {
                 clock.snapshot().tsc()
             };
             return run_paged_probe_with_rdtsc(
-                &mut self.state,
+                &mut self.vcpus[BOOT_VCPU_INDEX].state,
                 &mut self.bus,
                 self.page_table_root,
                 FIRMWARE_EFER,
@@ -1483,7 +1445,7 @@ impl LoadedFirmwareBoard {
             );
         }
         run_paged_probe(
-            &mut self.state,
+            &mut self.vcpus[BOOT_VCPU_INDEX].state,
             &mut self.bus,
             self.page_table_root,
             FIRMWARE_EFER,
@@ -1510,7 +1472,7 @@ impl LoadedFirmwareBoard {
             origin: AccessOrigin::Explicit,
         };
         let paging = match Long64ProbeConfig::from_cpu_state(
-            &self.state,
+            &self.vcpus[BOOT_VCPU_INDEX].state,
             self.page_table_root,
             FIRMWARE_EFER,
         ) {
@@ -1653,7 +1615,7 @@ impl LoadedFirmwareBoard {
         if let Some(nvme) = &nvme {
             nvme.service(&mut self.bus, |_| {});
         }
-        self.state.cr3 = Some(self.page_table_root);
+        self.vcpus[BOOT_VCPU_INDEX].state.cr3 = Some(self.page_table_root);
         let mut irq_counters = IrqCounters::default();
         // The next call resumes a partial REP: its first boundary is inside the REP.
         let mut partial_rep = false;
@@ -1664,8 +1626,13 @@ impl LoadedFirmwareBoard {
         // `0` (the architectural reset value) until a `#PF` was delivered or the guest wrote
         // it; the CPU state itself carries no CR2 outside this call (the prior value is
         // restored on exit).
-        let prior_cr2 = self.state.cr2;
-        self.state.cr2 = Some(self.guest_cr2.or(prior_cr2).unwrap_or(0));
+        let prior_cr2 = self.vcpus[BOOT_VCPU_INDEX].state.cr2;
+        self.vcpus[BOOT_VCPU_INDEX].state.cr2 = Some(
+            self.vcpus[BOOT_VCPU_INDEX]
+                .guest_cr2
+                .or(prior_cr2)
+                .unwrap_or(0),
+        );
         let result = loop {
             let uart = self.uart.clone();
             let mut source = rdtsc_tick.clone().map(|tick| {
@@ -1704,7 +1671,7 @@ impl LoadedFirmwareBoard {
                 }
             }
             let report = run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
-                &mut self.state,
+                &mut self.vcpus[BOOT_VCPU_INDEX].state,
                 &mut self.bus,
                 self.page_table_root,
                 FIRMWARE_EFER,
@@ -1796,7 +1763,7 @@ impl LoadedFirmwareBoard {
                 && stop_reason.is_none()
                 && remaining > 0
                 && matches!(report.exit, PagedCpl0SetExit::Run(RunExit::Halted))
-                && self.state.rflags & (1 << 9) != 0
+                && self.vcpus[BOOT_VCPU_INDEX].state.rflags & (1 << 9) != 0
                 && let Some(wake) = self.irq_source.wake_ns()
             {
                 let idle = wake.saturating_sub(self.clock.snapshot().now_ns());
@@ -1805,7 +1772,7 @@ impl LoadedFirmwareBoard {
                 }
                 irq_counters.halt_wakes += 1;
                 irq_counters.halt_idle_ns += idle;
-                self.state.activity = Some(CpuActivity::Running);
+                self.vcpus[BOOT_VCPU_INDEX].state.activity = Some(CpuActivity::Running);
                 remaining -= 1;
                 partial_rep = false;
                 continue;
@@ -1865,11 +1832,11 @@ impl LoadedFirmwareBoard {
             .map(|run| (run, set_exit_detail, cpuid_divergence_leaf, user_entry));
         };
         // The CPU state carries no CR3 outside this call, whatever way the loop ended.
-        self.state.cr3 = None;
-        // CR2 moves to the board field (see the entry comment); the CPU state gets back what
-        // it had.
-        self.guest_cr2 = self.state.cr2;
-        self.state.cr2 = prior_cr2;
+        self.vcpus[BOOT_VCPU_INDEX].state.cr3 = None;
+        // CR2 moves to the vCPU's `guest_cr2` cell (see the entry comment); the CPU state gets
+        // back what it had.
+        self.vcpus[BOOT_VCPU_INDEX].guest_cr2 = self.vcpus[BOOT_VCPU_INDEX].state.cr2;
+        self.vcpus[BOOT_VCPU_INDEX].state.cr2 = prior_cr2;
         let (run, set_exit_detail, cpuid_divergence_leaf, user_entry) = result?;
         irq_counters.irq0_edges = self.irq_source.irq0_edges();
         Ok(LinuxSetRunReport {
@@ -2325,7 +2292,7 @@ impl AssembledBoard {
         state.gpr[Register::Rdi as usize] = FIRMWARE_HANDOFF_GPA;
         Ok(LoadedFirmwareBoard {
             bus,
-            state,
+            vcpus: vec![Vcpu::new(BOOT_VCPU_INDEX, state)],
             uart,
             display,
             nvme,
@@ -2336,18 +2303,7 @@ impl AssembledBoard {
             handoff,
             page_table_bytes,
             page_table_root,
-            guest_cr2: None,
-            guest_efer: FIRMWARE_EFER,
             pci_config_address: 0,
-            guest_star: 0,
-            guest_lstar: 0,
-            guest_cstar: 0,
-            guest_sysenter_cs: 0,
-            guest_sysenter_esp: 0,
-            guest_sysenter_eip: 0,
-            guest_syscall_mask: 0,
-            guest_kernel_gs_base: 0,
-            guest_fp: GuestFpState::initial(),
             com1_log: Vec::new(),
             rdtsc_tick,
             irq_source: Box::new(NoIrqSource),
@@ -2394,7 +2350,7 @@ impl AssembledBoard {
         configure_com1(&mut bus)?;
         Ok(LoadedFirmwareBoard {
             bus,
-            state: LongModeState::default(),
+            vcpus: vec![Vcpu::new(BOOT_VCPU_INDEX, LongModeState::default())],
             uart,
             display,
             nvme,
@@ -2405,18 +2361,7 @@ impl AssembledBoard {
             handoff: Vec::new(),
             page_table_bytes,
             page_table_root,
-            guest_cr2: None,
-            guest_efer: FIRMWARE_EFER,
             pci_config_address: 0,
-            guest_star: 0,
-            guest_lstar: 0,
-            guest_cstar: 0,
-            guest_sysenter_cs: 0,
-            guest_sysenter_esp: 0,
-            guest_sysenter_eip: 0,
-            guest_syscall_mask: 0,
-            guest_kernel_gs_base: 0,
-            guest_fp: GuestFpState::initial(),
             com1_log: Vec::new(),
             rdtsc_tick,
             irq_source: Box::new(NoIrqSource),
@@ -2565,6 +2510,23 @@ mod tests {
         }
         assert_eq!(state.activity, Some(CpuActivity::Running));
         assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+    }
+
+    #[test]
+    fn board_has_exactly_one_vcpu_with_index_zero_and_state_is_read_through_it() {
+        let mut board = load(&hlt_image());
+        assert_eq!(board.vcpus.len(), 1);
+        assert_eq!(board.vcpus[0].index, 0);
+        assert_eq!(board.vcpus[0].guest_efer, FIRMWARE_EFER);
+        assert_eq!(board.guest_efer(), FIRMWARE_EFER);
+        assert_eq!(board.vcpus[0].guest_cr2, None);
+        assert_eq!(board.vcpus[0].guest_fp, GuestFpState::initial());
+        // The public accessors read and write element 0.
+        assert!(std::ptr::eq(board.state(), &board.vcpus[0].state));
+        board.set_guest_lstar(0x1234);
+        assert_eq!(board.vcpus[0].guest_lstar, 0x1234);
+        board.state_mut().rip = 0x55;
+        assert_eq!(board.vcpus[0].state.rip, 0x55);
     }
 
     #[test]

@@ -20,7 +20,7 @@
 | S6-07 | `accepted` | Независимое ревью `gpt-6.1-sol/high` прошло; [коммит `8b19597`](https://github.com/edelars/open_desktop/commit/8b19597); Graphify обновлён после inventory commit. Основной inventory: 233/233 совпадений, exact file:line coverage без пропусков; secondary ownership counts 25/218/7/6; все focused paths имеют owner, production assumptions без владельца не обнаружены. `git diff --check` чист; `check_layout.py` сообщает только 45 существующих work-evidence ошибок, S6 links clean. Код не менялся. |
 | S6-08 | `accepted` | Независимые code/doc reviews пройдены; implementation commit `fa74b1c`; Linux tests 9 library + 258 runner, обычный fixture path прошёл; полный corpus 18×10,000 rounds/process ×3, 540,000 суммарных rounds, все гистограммы conservation-valid и observed outcomes допустимы; физический SB `00` зарегистрирован 1 раз. См. [calibration report](data/stage6/s6-08-native-calibration.md) и [raw JSON](data/stage6/s6-08-native-calibration.json). |
 | S6-09 | `accepted` | Независимое evidence review `gpt-6.1-sol/high` пройдено; полный физический прогон завершён с exit 0: 18×500,000 rounds/process ×3 = 27,000,000; 54 process histograms and 18 aggregate histograms conserved; forbidden outcomes 0; SB `00` observed 19 times; summed child elapsed 519.593 s. См. [physical report](data/stage6/s6-09-native-physical.md) и [raw JSON](data/stage6/s6-09-native-physical.json). |
-| S6-10 | `blocked` | S4-21 |
+| S6-10 | `accepted` | S4-21 передан этапу 6 решением владельца 2026-11-15 |
 | S6-11 | `blocked` | S4-21 (через S6-10) |
 | S6-12 | `blocked` | S4-21 (через S6-10) |
 | S6-13 | `blocked` | S4-21; согласование кода `od-isa` по D5/S4-38 |
@@ -84,6 +84,8 @@
 | D7 — воспроизводимость seed | Побайтная воспроизводимость, если S4-22 использует счётчик инструкций; иначе временное поведение ослабляется отдельным решением. Этап 6 свою модель времени не вводит. |
 | D8 — split lock и обычные невыровненные доступы | `LOCK` всегда атомарен; до S6-34 неподдерживаемые split lock дают явную ошибку со счётчиком. Обычные невыровненные доступы могут быть видны по частям; усиление — только по замерам. |
 | D9 — режим по умолчанию | До G5/G8 только режим чередования; более одного vCPU помечается «функционально доступно, без ускорения». После gates параллельный режим по умолчанию, чередование остаётся для диагностики. |
+
+Решение владельца 2026-11-15: остатки S4-21 переданы этапу 6, поэтому S6-10 разблокирован (см. запись S6-10 в плане этапа). Это решение не отвечает на D1–D9.
 
 ## 4. Документные расхождения и передача
 
@@ -197,6 +199,56 @@ descriptor-table state, and preservation of the Long64 behavior. This verifies
 that this KVM host executes a small real-mode guest and that the oracle reports
 state. It does not execute the Linux AP trampoline, implement AP execution, or
 accept S6-14 as a whole; S6-14c and later remain separate work.
+
+### S6-10 — вынос состояния vCPU (реализовано, ожидает ревью)
+
+Основание: решением владельца 2026-11-15 остатки S4-21 переданы этапу 6, S6-10 разблокирован. Чекбокс в плане не отмечен: его ставит ревью.
+
+**Что сделано.**
+- `crates/od-machine/src/vcpu.rs` (новый, зарегистрирован в `lib.rs`): `Vcpu { index, state: LongModeState, guest_cr2, guest_efer, guest_star, guest_lstar, guest_cstar, guest_sysenter_cs, guest_sysenter_esp, guest_sysenter_eip, guest_syscall_mask, guest_kernel_gs_base, guest_fp }`, конструктор `Vcpu::new(index, state)`, константа `BOOT_VCPU_INDEX = 0`. Поля и их значения по умолчанию перенесены с платы без изменения.
+- `LoadedFirmwareBoard`: одиночные поля заменены на `vcpus: Vec<Vcpu>` с одним элементом; оба конструктора платы создают его через `Vcpu::new(BOOT_VCPU_INDEX, …)`. Все пути (`state`, `state_mut`, `guest_*`/`set_guest_*`, `run_boot`, CPL0-цикл) берут элемент `BOOT_VCPU_INDEX`. Публичные сигнатуры сохранены, кроме того, что `guest_*` и `guest_fp` перестали быть `const fn` (индексация `Vec` в `const fn` недоступна); потребителей в константном контексте нет.
+- Сверх списка плана в `Vcpu` вынесены гостевые `CR2` и FP-состояние: это тоже архитектурные ячейки процессора, переносимые между запусками так же, как MSR. На плате оставлены `pci_config_address` (порт `0xCF8`, не процессорный) и `page_table_root`. `page_table_root` — это гостевой CR3: его записывает гость (`MOV CR3`), поэтому он принадлежит процессору и должен переехать в `Vcpu` не позже S6-15; в этом срезе он оставлен на плате, потому что план S6-10 его не перечисляет.
+- Тесты: `vcpu::tests::new_vcpu_has_the_given_index_and_initial_cells` и `firmware_board::tests::board_has_exactly_one_vcpu_with_index_zero_and_state_is_read_through_it` (один элемент, индекс 0, `state()` и `set_guest_lstar` работают через элемент 0). Ожидания существующих тестов не менялись.
+- Поле `Vcpu::index` в нетестовой сборке не читается; оно помечено `cfg_attr(not(test), allow(dead_code))` до S6-11.
+
+**Проверки (команды из корня worktree).**
+- `cargo check --workspace --all-targets --offline` — прошла.
+- `cargo test -p od-machine --offline -- --test-threads=1` — 0 failed; lib: 1153 passed, 6 ignored; остальные наборы (8, 10, 2, 12, 14, 8 passed) без отказов. Полный набор запущен один раз на коде (последующая правка — только атрибут `allow(dead_code)` и комментарий).
+- `cargo fmt -p od-machine -- --check` — прошла. `cargo fmt --all -- --check` не проходит из-за двух файлов вне среза (`crates/od-host/src/storage_abi_v1.rs`, `tools/image-tool/tests/cli.rs`); они не менялись в этом срезе.
+
+**Контрольный прогон до/после.** Release-раннер собран `cargo build --release --locked --offline -p od-runner` на базовом коммите `90e620a` (до) и на изменённом дереве (после). Команда (входы и хеши из раздела «Прогон» в [`MACHINE.md`](../testing/MACHINE.md), артефакты из основного checkout `work/stage4/`, ACPI blob из `tests/fixtures/guest/stage4/acpi_blob/`):
+
+```text
+od-runner linux-direct --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin --nonce s6-10-ctl \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --out <json> --run --budget 300000000 --set-cpl0 --cpuid-profile stage4a --user-mode
+```
+
+Результат: оба запуска exit 0, `stop.exit_kind = budget_exhausted`, `retired = 300000000`; JSON-отчёты (число инструкций, конечные регистры, `rip`, гостевые MSR-ячейки, `memory_sha256` — хеши загруженных образов ядра и initramfs, а не гостевой RAM после прогона, `virtual_ns`) и stdout совпали побайтно (sha256 JSON `09997821afbb332cc135ae5184476f2c9d4cc437af84f76cefcc4d2814524cb6`). Первый одиночный замер: wall 116 s до и 114 s после (дальше заменён серией ниже).
+
+**Замер темпа (серия, чередование сторон).** Тот же запуск (`--budget 300000000`, release), порядок: до, после, до, после, до, после; «до» — раннер, собранный на `90e620a`, «после» — раннер с изменениями S6-10 (собран до правок только комментариев и текста). Время — wall, секунды, разрешение 1 s (`date +%s`); сырые значения в scratchpad исполнителя, не в репозитории. Процессор и нагрузка машины не контролировались, кроме отсутствия параллельных сборок в момент серии. JSON каждого из 6 запусков совпал побайтно с контрольным (sha256 начинается с `09997821afbb332c`).
+
+| № | Сторона | Wall, s |
+|---|---|---|
+| 1 | до | 116 |
+| 2 | после | 116 |
+| 3 | до | 115 |
+| 4 | после | 115 |
+| 5 | до | 115 |
+| 6 | после | 115 |
+
+Итог: до — min 115 / max 116 (разброс 1 s), после — min 115 / max 116 (разброс 1 s); средние 115.33 s и 115.33 s. Разница между сторонами 0 s и укладывается в разброс (1 s) и в разрешение таймера. Вывод ограничен: 3 запуска на сторону при разрешении 1 s способны выявить лишь заметные (порядка процента и больше) отличия темпа.
+
+**Ограничения и открытое.**
+- Хеш гостевой RAM раннер не выдаёт; поле в этом срезе не добавлялось (нет явного решения).
+- При бюджете 300000000 COM1 пуст, поэтому байты COM1 в сравнении тривиальны; полный зачётный бюджет (3000000000, ≈10 минут) не запускался.
+- Замер темпа: серия 3+3 с чередованием, разрешение 1 s, разница 0 s в пределах разброса 1 s; более тонкие отличия темпа (доли процента) серия не различает.
+- `page_table_root` — гостевой CR3, записывается гостем; он остаётся на плате и должен переехать в `Vcpu` не позже S6-15 (иначе второй vCPU разделит CR3 с первым). `pci_config_address` — регистр порта `0xCF8` общей платы, остаётся на плате.
+- Graphify: в worktree графа не было; `GRAPHIFY_MAX_WORKERS=8 graphify update .` построил его заново (46374 узла, 128844 ребра); перед правками `graphify query` не выполнялся (графа не было), код читался по `rg`/строкам.
 
 ### S6-07 — inventory однопроцессорных допущений (accepted)
 
