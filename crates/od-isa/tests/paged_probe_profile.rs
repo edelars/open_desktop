@@ -1645,6 +1645,10 @@ fn adjacent_mov_pio_and_hlt_encodings_are_outside_the_allowlist() {
         &[0x66, 0xf4][..],             // operand-size HLT prefix
         &[0xf3, 0xf4][..],             // REP HLT prefix
         &[0x40, 0xf4][..],             // REX HLT prefix
+        &[0xfd][..],                   // STD
+        &[0xf3, 0xfc][..],             // prefixed CLD
+        &[0x66, 0xfc][..],             // operand-size prefixed CLD
+        &[0x40, 0xfc][..],             // REX-prefixed CLD
     ] {
         let mut memory = Memory::new(bytes);
         let mut cpu = state();
@@ -1663,6 +1667,164 @@ fn adjacent_mov_pio_and_hlt_encodings_are_outside_the_allowlist() {
         assert!(pio.reads.is_empty());
         assert!(pio.writes.is_empty());
     }
+}
+
+#[test]
+fn bare_cld_clears_only_df_in_the_base_profile() {
+    const DF: u64 = 1 << 10;
+
+    let mut memory = Memory::new(&[0xfc]);
+    let mut cpu = state();
+    cpu.rflags |= DF;
+    let mut expected = cpu.clone();
+    expected.rflags &= !DF;
+    expected.rip += 1;
+    let mut pio = Pio::default();
+    let result = execute::step_paged_probe(
+        PagedCpl0ProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        DEFINED & !DF,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(pio.reads.is_empty());
+    assert!(pio.writes.is_empty());
+
+    // The firmware's documented handoff already has DF=0; CLD still retires
+    // without changing that value or any other state.
+    let mut memory = Memory::new(&[0xfc]);
+    let mut cpu = state();
+    let mut expected = cpu.clone();
+    expected.rip += 1;
+    let mut pio = Pio::default();
+    let result = step(
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, expected);
+
+    // The explicit-RDTSC wrapper is the same base profile plus one operation.
+    let mut memory = Memory::new(&[0xfc]);
+    let mut cpu = state();
+    cpu.rflags |= DF;
+    let mut pio = Pio::default();
+    let mut source = || 0;
+    let result = execute::step_paged_probe_with_rdtsc(
+        PagedCpl0ProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        DEFINED,
+        &mut source,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cpu.rflags & DF, 0);
+}
+
+#[test]
+fn cld_fetch_fault_and_non_base_profiles_do_not_commit() {
+    const DF: u64 = 1 << 10;
+
+    let mut memory = Memory::new(&[0xfc]);
+    memory.fail_fetch = Some(page_fault(0x10, RIP));
+    let mut cpu = state();
+    cpu.rflags |= DF;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = step(
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+    );
+    assert!(matches!(result.exit, PagedProbeExit::Fault(_)));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+
+    let mut memory = Memory::new(&[0xfc]);
+    let mut cpu = state();
+    cpu.rflags |= DF;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_stack_probe(
+        PagedCpl0StackProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0xfc });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(cpu, before);
+
+    let mut memory = Memory::new(&[0xfc]);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    cpu.rflags |= DF;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_cr3_probe(
+        PagedCpl0Cr3ProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0xfc });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(cpu, before);
+
+    let mut memory = Memory::new(&[0xfc]);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    cpu.rflags |= DF;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_cr0_wp_probe(
+        PagedCpl0Cr0WpProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0xfc });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(cpu, before);
+
+    let mut memory = Memory::new(&[0xfc]);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    cpu.rflags |= DF;
+    let before = cpu.clone();
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0xfc });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(cpu, before);
 }
 
 #[test]

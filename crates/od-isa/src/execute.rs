@@ -18943,10 +18943,11 @@ pub fn step_paged_pio_u8<P: crate::PortIo>(
 /// Fetch/decode happens exactly once through the supplied guest memory; the
 /// machine remains responsible for selecting and validating CR3/EFER.
 ///
-/// Allowlist (Long64/CPL0): `IN AL,DX`, `OUT DX,AL`, `HLT`, the paged MOV forms
+/// Allowlist (Long64/CPL0): bare `CLD`, `IN AL,DX`, `OUT DX,AL`, `HLT`, the paged MOV forms
 /// of this profile, and (S7-03) `MOV r8, imm8` (`B0+r ib`, no prefixes, only the
 /// target byte changes) and `MOV r16, imm16` (`66 B8+r iw`, exactly one `66`,
-/// bits 63:16 preserved). Other `MOV imm` forms stay `Unsupported`.
+/// bits 63:16 preserved). S7-04 admits only bare `FC` (`CLD`); other direction-flag
+/// forms and other `MOV imm` forms stay `Unsupported`.
 pub fn step_paged_probe<P: crate::PortIo>(
     _profile: PagedCpl0ProbeV1,
     state: &mut LongModeState,
@@ -18976,7 +18977,8 @@ pub fn step_paged_probe<P: crate::PortIo>(
 /// Execute one `PagedCpl0ProbeV1` instruction like [`step_paged_probe`], with
 /// an explicit time source for the exact bare `RDTSC` (`0F 31`, no prefixes).
 /// The source is called exactly once per retired `RDTSC`; it owns the TSC and
-/// the instruction does not advance time. Without a source, or for any other
+/// the instruction does not advance time. This wrapper inherits all base-profile
+/// operations, including the S7-04 bare `CLD`. Without a source, or for any other
 /// `RDTSC` form (`66`, REX, `F2`/`F3`), the result stays `Unsupported`.
 pub fn step_paged_probe_with_rdtsc<P: crate::PortIo>(
     _profile: PagedCpl0ProbeV1,
@@ -20124,6 +20126,23 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.rip = next_rip;
             state.activity = Some(crate::CpuActivity::Halted);
             return result(PagedProbeExit::Halted, 1);
+        }
+        // S7-04: only the exact bare CLD form is admitted by the base probe profile.
+        // It clears DF and makes that flag defined; STD and prefixed forms stay unsupported.
+        Operation::ClearDirectionFlag
+            if base_profile
+                && instruction.length == 1
+                && instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0xfc
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            state.rflags &= !crate::DF;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::DF,
+            };
         }
         // S7-03: `B0+r ib` and `66 B8+r iw` are admitted only in the base
         // `PagedCpl0ProbeV1` profile; every other profile keeps them

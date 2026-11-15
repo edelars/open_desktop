@@ -391,10 +391,11 @@ and [machine verification record](../testing/MACHINE.md#s4-24c-bounded-paged-cpu
 `od_isa::execute::step_paged_probe` admits one instruction from the exact
 Long64 CPL0 allowlist: `48 8B 03` (`MOV RAX,[RBX]`), `48 89 0B`
 (`MOV [RBX],RCX`), bare `EC` (`IN AL,DX`), bare `EE` (`OUT DX,AL`) and bare
-`F4` (`HLT`); S7-03 extends it with `B0+r ib` and `66 B8+r iw` only (see
-«Расширение S7-03» below). The CPU entry validates its profile admission and CR0/CR4 before
-fetch. It receives page-aware `GuestMemory`; CR3/EFER validation and selecting
-the four-level 4 KiB paging context belong to the machine entry.
+`F4` (`HLT`); S7-03 extends it with `B0+r ib` and `66 B8+r iw`, and S7-04 adds
+only bare `FC` (`CLD`) (see the extensions below). The CPU entry validates its
+profile admission and CR0/CR4 before fetch. It receives page-aware `GuestMemory`;
+CR3/EFER validation and selecting the four-level 4 KiB paging context belong
+to the machine entry.
 
 The machine `run_paged_probe` owns a finite execution quantum and performs one
 decode at each instruction boundary. It checks STOP before budget exhaustion,
@@ -431,9 +432,15 @@ vCPU lifecycle. S4-21, S4-24, S4-32 and Stage 4 remain open. See the
 - `66` перед `B0`–`B7`, повторный `66`, `67`, сегментные префиксы, `F2`/`F3` и любые сочетания префиксов, кроме указанных в таблице (допуск проверяет точный набор `Prefixes` и длину 2 или 4); `F0` (LOCK) не допускается и сохраняет классификацию декодера;
 - `C6 /0` и `C7 /0` (`MOV r/m, imm`), любые другие операции с непосредственным операндом (`ADD`, `CMP`, `OR` и т. п.).
 
-Профили, построенные на том же внутреннем шаге, расширение **не** получают: `PagedCpl0Cr3ProbeV1` (S4-12c), `PagedCpl0Cr0WpProbeV1` (S4-12d), стековый профиль `step_paged_stack_probe`, CPL3-профили `step_paged_cpl3_mov`/`step_paged_cpl3_load` и `PagedCpl0PioU8V1` (S4-24c) сохраняют свои allowlist, и `B0`–`BF` в них остаются `Unsupported`. Расширение не добавляет JIT-пути, flat identity-пути, `MOV CR4`, сегментных переходов, `LRETQ`/`IRETQ` или других инструкций, нужных настоящей прошивке: это по-прежнему blocker S7-04 ([FIRMWARE_BOOT.md](FIRMWARE_BOOT.md), раздел 7).
+Профили, построенные на том же внутреннем шаге, расширение **не** получают: `PagedCpl0Cr3ProbeV1` (S4-12c), `PagedCpl0Cr0WpProbeV1` (S4-12d), стековый профиль `step_paged_stack_probe`, CPL3-профили `step_paged_cpl3_mov`/`step_paged_cpl3_load` и `PagedCpl0PioU8V1` (S4-24c) сохраняют свои allowlist, и `B0`–`BF` в них остаются `Unsupported`. S7-04 отдельно добавляет только bare `CLD` в базовый профиль; прочие инструкции настоящей прошивки, включая её `MOV`, compare/branch/call, CR4, сегментные переходы и `LRETQ`/`IRETQ`, остаются вне allowlist ([FIRMWARE_BOOT.md](FIRMWARE_BOOT.md), разделы 5 и 7).
 
 Проверка (обязательна для S7-03): позитивный тест на каждую из 16 форм (значение целевой части, сохранность остальных битов и регистров, `RIP`, флаги), отрицательные тесты на соседние формы из списка выше и на другие профили, fault при fetch непосредственного операнда через границу страницы, мини-образ `build_firmware.py --smoke` в `boot-firmware` печатает `X` в COM1 и останавливается по `HLT`.
+
+#### Расширение S7-04: bare `CLD` в `PagedCpl0ProbeV1`
+
+`step_paged_probe` и wrapper `step_paged_probe_with_rdtsc` принимают ровно одну форму `FC` (`Operation::ClearDirectionFlag`): Primary opcode map, длина 1, без префиксов, Long64/CPL0, после тех же profile/CR0/CR4/activity checks. Она очищает только `RFLAGS.DF`, делает DF определённым, увеличивает RIP на 1 и возвращает `Retired` с одной исполненной инструкцией; память и остальные регистры/флаги не меняются. `STD`, все префиксные варианты CLD и `CLD` в иных paged profiles остаются `Unsupported` без commit. Декодер и общая семантика `CLD` не меняются; расширяется только точная allowlist `PagedCpl0ProbeV1`. Это позволяет сделать первый startup `CLD`, но не заявляет возможность исполнения остального startup или Rust entry.
+
+Проверка: focused `paged_probe_profile` покрывает DF=1 → DF=0, изменение definedness, неизменность прочего CPU state, bare `STD`, prefixed CLD, profile isolation и fetch fault. Полный firmware runner нужен для обнаружения следующего фактического ограничения; результаты S7-04 записываются в [отчёте этапа 7](../reports/STAGE_7_REPORT.md).
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
