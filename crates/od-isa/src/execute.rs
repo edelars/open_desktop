@@ -20642,6 +20642,60 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: the Rust helper compares the qword handoff magic at [RSI]
+        // against RDI with exactly `48 39 3E`. Reuse the potentially faulting
+        // memory read and qword CMP semantics; no other addressing form is admitted.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Cmp,
+            dst: Operand::Memory(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x39
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x48),
+                    ..Prefixes::default()
+                })
+            && destination.base == AddressBase::Register(Register::Rsi)
+            && destination.index.is_none()
+            && destination.scale == 1
+            && destination.displacement == 0
+            && destination.address_size == OperandSize::Qword
+            && destination.size == OperandSize::Qword
+            && source == RegisterView::low(Register::Rdi, OperandSize::Qword) =>
+        {
+            let lhs = match read_operand(
+                state,
+                memory,
+                context,
+                next_rip,
+                Operand::Memory(destination),
+            ) {
+                Ok(value) => value,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            let rhs = state.read(source);
+            let (_, flags) = arithmetic_result(
+                OperandSize::Qword,
+                ArithmeticKind::Cmp,
+                lhs,
+                rhs,
+                state.rflags,
+            );
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: the Rust entry checks the handoff GPA with exactly
         // `48 81 FF 00 00 10 00` (CMP RDI,0x00100000). Reuse the qword CMP
         // flags semantics; the destination register is never written.

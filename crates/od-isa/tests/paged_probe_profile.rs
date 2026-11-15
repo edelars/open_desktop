@@ -22,11 +22,13 @@ struct Memory {
     pages: HashMap<u64, usize>,
     fetches: Vec<(u64, AccessContext)>,
     reads: usize,
+    read_addresses: Vec<(u64, usize)>,
     writes: usize,
     write_addresses: Vec<u64>,
     fail_fetch: Option<MemoryError>,
     fail_fetch_at: Option<(u64, MemoryError)>,
     fail_read: Option<MemoryError>,
+    fail_read_at: Option<(u64, MemoryError)>,
     fail_write: Option<MemoryError>,
     fail_write_on: Option<(usize, MemoryError)>,
 }
@@ -43,11 +45,13 @@ impl Memory {
             pages,
             fetches: Vec::new(),
             reads: 0,
+            read_addresses: Vec::new(),
             writes: 0,
             write_addresses: Vec::new(),
             fail_fetch: None,
             fail_fetch_at: None,
             fail_read: None,
+            fail_read_at: None,
             fail_write: None,
             fail_write_on: None,
         }
@@ -94,8 +98,15 @@ impl GuestMemory for Memory {
         destination: &mut [u8],
     ) -> Result<(), MemoryError> {
         self.reads += 1;
+        self.read_addresses.push((address, destination.len()));
         if let Some(error) = &self.fail_read {
             return Err(error.clone());
+        }
+        if let Some((fault_address, error)) = &self.fail_read_at {
+            let end = address.saturating_add(destination.len() as u64);
+            if address <= *fault_address && *fault_address < end {
+                return Err(error.clone());
+            }
         }
         let physical = self.physical(address)?;
         let source = self
@@ -2340,7 +2351,7 @@ fn firmware_entry_mov_edx_is_unsupported_in_cpl3_profile() {
 #[test]
 fn firmware_helper_mov_rdi_handoff_magic_sets_only_rdi() {
     let bytes = [0x48, 0xbf, 0x4f, 0x44, 0x48, 0x41, 0x4e, 0x44, 0x4f, 0x46];
-    let magic = 0x464f_444e_4148_444f;
+    let magic: u64 = 0x464f_444e_4148_444f;
     let mut memory = Memory::new(&bytes);
     let mut cpu = state();
     cpu.gpr = gpr_patterns();
@@ -2683,6 +2694,192 @@ fn firmware_entry_cmp_is_unsupported_in_cpl3_profile() {
     assert_eq!(result.rflags_defined, DEFINED);
     assert_eq!(cpu, before);
     assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn firmware_helper_cmp_handoff_magic_reads_qword_and_updates_flags() {
+    const CF: u64 = 1 << 0;
+    const PF: u64 = 1 << 2;
+    const AF: u64 = 1 << 4;
+    const ZF: u64 = 1 << 6;
+    const SF: u64 = 1 << 7;
+    const OF: u64 = 1 << 11;
+    const ARITH_FLAGS: u64 = CF | PF | AF | ZF | SF | OF;
+    let code = [0x48, 0x39, 0x3e]; // CMP qword ptr [RSI],RDI
+    let magic: u64 = 0x464f_444e_4148_444f;
+    let mut memory = Memory::new(&code);
+    memory.bytes[DATA_PHYSICAL..DATA_PHYSICAL + 8].copy_from_slice(&magic.to_le_bytes());
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsi as usize] = DATA;
+    cpu.gpr[Register::Rdi as usize] = magic;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let defined = DEFINED & !(CF | AF | ZF);
+
+    let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, defined | ARITH_FLAGS);
+    let mut expected = before;
+    expected.rflags = (expected.rflags & !ARITH_FLAGS) | PF | ZF;
+    expected.rip += code.len() as u64;
+    assert_eq!(cpu, expected);
+    assert_eq!(memory.reads, 1);
+    assert_eq!(memory.read_addresses, [(DATA, 8)]);
+    assert_eq!(memory.writes, 0);
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn firmware_helper_cmp_handoff_magic_read_fault_preserves_state() {
+    let code = [0x48, 0x39, 0x3e];
+    let mut memory = Memory::new(&code);
+    memory.fail_read = Some(page_fault(0x0, DATA));
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsi as usize] = DATA;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x0),
+            linear_address: Some(DATA),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.reads, 1);
+    assert_eq!(memory.read_addresses, [(DATA, 8)]);
+    assert_eq!(memory.writes, 0);
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn firmware_helper_cmp_handoff_magic_noncanonical_pointer_faults_before_read() {
+    let code = [0x48, 0x39, 0x3e];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsi as usize] = 0x0000_8000_0000_0000;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    match result.exit {
+        PagedProbeExit::Fault(fault) => assert_eq!(fault.vector, 13),
+        other => panic!("expected #GP for noncanonical RSI, got {other:?}"),
+    }
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.reads, 0);
+    assert!(memory.read_addresses.is_empty());
+    assert_eq!(memory.writes, 0);
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn firmware_helper_cmp_handoff_magic_injected_guest_memory_read_failure_is_atomic() {
+    let code = [0x48, 0x39, 0x3e];
+    let mut memory = Memory::new(&code);
+    let injected_fault_address = DATA + 4;
+    memory.fail_read_at = Some((
+        injected_fault_address,
+        page_fault(0x0, injected_fault_address),
+    ));
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsi as usize] = DATA;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x0),
+            linear_address: Some(injected_fault_address),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.reads, 1);
+    assert_eq!(memory.read_addresses, [(DATA, 8)]);
+    assert_eq!(memory.writes, 0);
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn firmware_helper_cmp_handoff_magic_neighbours_stay_unsupported() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x48, 0x39, 0x3f], 0x39),       // [RDI],RDI
+        (&[0x48, 0x39, 0x06], 0x39),       // [RSI],RAX
+        (&[0x48, 0x39, 0x7e, 0x00], 0x39), // [RSI+0],RDI
+        (&[0x48, 0x39, 0x3c, 0x24], 0x39), // [RSP],RDI
+        (&[0x4c, 0x39, 0x3e], 0x39),       // [RSI],R14
+        (&[0x39, 0x3e], 0x39),             // dword comparison
+        (&[0x66, 0x48, 0x39, 0x3e], 0x39), // operand-size prefix
+        (&[0x67, 0x48, 0x39, 0x3e], 0x39), // address-size prefix
+        (&[0xf3, 0x48, 0x39, 0x3e], 0x39), // REP prefix
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "bytes {bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "bytes {bytes:02x?}");
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "bytes {bytes:02x?}");
+        assert_eq!(memory.reads, 0);
+        assert_eq!(memory.writes, 0);
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn firmware_helper_cmp_handoff_magic_is_unsupported_in_cpl3_profile() {
+    let code = [0x48, 0x39, 0x3e];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    cpu.gpr[Register::Rsi as usize] = DATA;
+    let before = cpu.clone();
+
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x39 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.reads, 0);
+    assert_eq!(memory.writes, 0);
 }
 
 #[test]
@@ -5778,6 +5975,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x48, 0x89, 0xf8][..], 0x89),
         (&[0x48, 0x81, 0xff, 0, 0, 0x10, 0][..], 0x81),
         (&[0x48, 0x81, 0xfa, 0x9f, 0, 0, 0][..], 0x81),
+        (&[0x48, 0x39, 0x3e][..], 0x39),
     ] {
         for profile in ["stack", "cr3", "cr0wp"] {
             let mut memory = Memory::new(bytes);

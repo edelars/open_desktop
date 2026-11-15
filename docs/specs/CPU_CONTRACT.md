@@ -608,6 +608,13 @@ Tests проверяют truth table всех комбинаций CF/ZF при 
 
 Tests проверяют точное значение и full-state retention, zero/bit-flipped immediate, register/width/prefix neighbors, fetch fault на последнем immediate byte через границу страницы, CPL3 и другие paged profiles. Runner retired 30 инструкций и остановился на `48 39 3E` (`CMP qword ptr [RSI],RDI`, ISSUE-130, RIP `0x200d34`); полная проверка handoff ещё не завершена.
 
+<a id="s7-04-cmp-handoff-magic-at-rsi"></a>
+#### Расширение S7-04: exact Rust-helper `CMP qword ptr [RSI],RDI`
+
+В base `PagedCpl0ProbeV1` допускается только `48 39 3E`: Primary opcode `39`, длина 3, ровно REX.W `0x48`, qword destination `[RSI]` без index/displacement и qword source RDI. Значение читается через `read_operand`, затем применяется существующая qword CMP семантика. Инструкция не записывает data operand или GPR; обычные page-walk A/D side effects остаются под контрактом paged memory path. RFLAGS/definedness и RIP коммитятся только после успешного чтения. Canonicality проверяется до memory read: noncanonical RSI даёт #GP без data read; memory #PF и backend fault не меняют CPU state. Другие адреса, регистры, widths, prefixes, CPL3 и profiles остаются вне allowlist.
+
+Tests покрывают точное сравнение magic, flags/definedness, read #PF, noncanonical #GP, injected GuestMemory read fault без CPU-state commit (тест не моделирует page-walk или cross-page translation), unsupported neighbors и profile isolation. Runner retired 31 инструкцию и остановился на `75 38` (`JNZ rel8`, ISSUE-131, RIP `0x200d37`); полная проверка handoff ещё не завершена.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции

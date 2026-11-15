@@ -225,17 +225,26 @@
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware target `0x200d10`.
 - **Статус:** решена только для exact `48 BF 4F 44 48 41 4E 44 4F 46` в base `PagedCpl0ProbeV1`; полная проверка handoff ещё не завершена.
 - **Результат и проверка:** qword immediate magic записывается в RDI через существующий `MovImmediate`; соседние значения/формы и другие profiles остаются unsupported. Focused `paged_probe_profile` — 195 passed; full state, zero/bit-flipped immediate rejects, fetch-fault atomicity и CPL3/other-profile isolation проверены. Реализация описана в [CPU_CONTRACT.md](specs/CPU_CONTRACT.md#s7-04-mov-rdi-handoff-magic).
-- **Runner:** после 30 retired инструкций продолжил с `RIP=0x200d34` и остановился на `48 39 3E` (`CMP qword ptr [RSI],RDI`), `Unsupported { opcode: 57 }`; COM1 пуст. Следующий blocker — [ISSUE-130](#issue-130-s7-04-rust-helper-cmp-memory-handoff-magic-unsupported).
+- **Runner:** после этого среза runner продолжил с `RIP=0x200d34` и достиг [ISSUE-130](#issue-130-s7-04-rust-helper-cmp-memory-handoff-magic-unsupported); этот blocker теперь решён. После memory CMP runner остановился на [ISSUE-131](#issue-131-s7-04-rust-helper-jnz-plus-0x38-unsupported).
 - **Основание:** образ `/private/tmp/od-fw-s7-ja-rel8.bin`; `od -An -tx1 -j 0xd2a -N16` показывает `48 bf 4f 44 48 41 4e 44 4f 46 48 39 3e 75 38 55`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=29`, `RIP=0x200d2a`, `com1_bytes=0`.
 
 <a id="issue-130-s7-04-rust-helper-cmp-memory-handoff-magic-unsupported"></a>
 ### ISSUE-130 — S7-04: Rust helper `CMP qword ptr [RSI],RDI` остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact загрузки handoff magic в RDI.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d34`.
+- **Статус:** решена только для exact `48 39 3E` в base `PagedCpl0ProbeV1`; полная проверка handoff ещё не завершена.
+- **Результат и проверка:** exact `[RSI]` qword read сравнивается с RDI через существующие `read_operand` и qword CMP flag semantics; data operand не записывается. `paged_probe_profile` — 201 passed: flags/definedness, read #PF, noncanonical #GP, введённая GuestMemory read fault и atomicity CPU state, соседние addressing/operand/prefix формы, CPL3 и другие profiles. Реализация описана в [CPU_CONTRACT.md](specs/CPU_CONTRACT.md#s7-04-cmp-handoff-magic-at-rsi).
+- **Runner:** после 31 retired инструкций остановился на `75 38` (`JNZ +0x38`) при `RIP=0x200d37`, `Unsupported { opcode: 117 }`; COM1 пуст. Следующий blocker — [ISSUE-131](#issue-131-s7-04-rust-helper-jnz-plus-0x38-unsupported).
+- **Основание:** образ `/private/tmp/od-fw-s7-cmp-handoff-magic.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner с бюджетом 10000.
+
+<a id="issue-131-s7-04-rust-helper-jnz-plus-0x38-unsupported"></a>
+### ISSUE-131 — S7-04: Rust helper `JNZ +0x38` остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact CMP handoff magic.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d37`.
 - **Статус:** открыта.
-- **Суть и последствия:** байты `48 39 3E` сравнивают qword handoff magic по адресу RSI с ожидаемым значением RDI; дальше ветка перед полной проверкой полей handoff. Runner возвращает `Unsupported { opcode: 57 }`, `retired=30`, `RIP=0x200d34`; COM1 пуст.
-- **Основание:** образ `/private/tmp/od-fw-s7-mov-rdi-magic.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner с бюджетом 10000.
-- **Следующий шаг:** ограниченно исследовать memory CMP operand/fault semantics и exact profile admission без ослабления общей реализации.
+- **Суть и последствия:** `75 38` проверяет результат сравнения handoff magic перед продолжением полной проверки полей handoff. Runner возвращает `Unsupported { opcode: 117 }`, `retired=31`, `RIP=0x200d37`; COM1 пуст.
+- **Основание:** образ `/private/tmp/od-fw-s7-cmp-handoff-magic.bin`; `od -An -tx1 -j 0xd34 -N12` показывает `48 39 3e 75 38 55 41 57 41 56 41 55`; runner с бюджетом 10000.
+- **Следующий шаг:** установить точное условие/target и безопасные границы profile admission для этой JNZ формы.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
