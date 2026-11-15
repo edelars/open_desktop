@@ -1,0 +1,28 @@
+# S5-07 diagnostic counted series, 2026-11-15
+
+## Invocation and inputs
+
+- Series ID: `stage5-s5-07-stage4a-irq-diagnostic-20261115-a`.
+- Command (full): `target/release/od-runner linux-direct --test-runs 2 --series-id stage5-s5-07-stage4a-irq-diagnostic-20261115-a --scenario-id stage4-init-nonce --expected-stop-kind budget_exhausted --out work/stage5/stage5-s5-07-stage4a-irq-diagnostic-20261115-a/series.json --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic --initramfs /Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 --ram-mib 128 --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode`; the runner generated a fresh nonce for each run.
+- Series schema v2; requested runs 2; aggregate outcome `passed`.
+- Host: macOS/aarch64, runner 0.1.0, source revision `d1269e689087498be20e85902a6f35c36004502d`, `source_dirty=false`.
+- Profile: `smoke_not_acceptance`, counted `stage4a`, `cpl0_set`, `user_mode=true`, 128 MiB, instruction budget 3,000,000,000, `diagnostic_past_c7=false`.
+- Inputs: vmlinuz SHA-256 `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`; initramfs `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`; ACPI blob `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`; ACPI manifest `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`.
+
+## Run results
+
+| Run | Nonce | Scenario | Exit | Retired | CPL3 retired | IRQs delivered | IRQ0 edges |
+|---|---|---|---:|---:|---:|---:|---:|
+| 0001 | `OD518e8180a19102a2000012daf00000000` | `passed`; exact nonce marker valid | 0 | 2,999,999,998 | 1,093 | 34,797 | 34,792 |
+| 0002 | `OD518e8190d5bc9879000012daf00000001` | `passed`; exact nonce marker valid | 0 | 2,999,999,998 | 1,093 | 34,790 | 34,785 |
+
+Both stopped at `budget_exhausted`; neither had a run error. The diagnostic `ExternalInterruptDelivery` branch was not exercised, so this series does not reveal the vector, refusal reason, or CPL/RIP for the older C/run-0001 failure.
+
+## Evidence hashes and comparison
+
+- `series.json`: `0609fe49d708f9eb1b62169c377ca205a9c4c8425d03d57e572f73d0e6f6ba1a`.
+- Run 0001 manifest: `56cd652ce4142aaeed64a0ac8f9042040e8f9359cb77ce1108d18a0563a0d45e`; runner JSON: `f2c5a8fbbc113d959171bca518e8cbe944004c188736c998688e8289f11f4bf7`.
+- Run 0002 manifest: `dd4a3d76c2981e26b212647c442f73dca42218d16d61f03792d5c86f99027502`; runner JSON: `3b4c6c61b1c9cf17cd191aac6dd170cda6eba6882ff581234be6594b1ac96412`.
+- `--compare-results <new-series> <stage5-s5-07-stage4a-nonce-counted-20261114-c/series.json> --linux-stage5 --json` returned `matches=false`. It retained the old failed aggregate and reported run-0001 status, marker, configuration, machine-observation, UART and runner-execution differences as unexplained. This is the expected strict result; the new passing series does not erase the failed C series.
+
+The old failure remains unlocalized: its raw JSON has only the generic `Config("an external interrupt of the board source was refused by the CPU delivery")`, no stop record, and no UART bytes. The new diagnostic release did not reproduce it. S5-07 remains blocked/unaccepted pending explanation of the failure and repeatability acceptance; no A–G guest scenario was run.

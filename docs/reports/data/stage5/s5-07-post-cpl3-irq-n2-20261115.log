@@ -1,0 +1,67 @@
+# S5-07 post-CPL3 IRQ fix counted N=2 series, 2026-11-15
+
+Purpose: re-run the same counted Stage 4 nonce workload after S4-39h added
+external IRQ delivery from CPL3 through TSS.RSP0, and inspect repeatability
+without changing comparator policy.
+
+## Inputs and runner
+
+- Worktree: `codex`; production source revision `d50ddc993cd3817fdca7e9770d9d0e2de69382ee`; `source_dirty=false`.
+- Host: macOS, `aarch64`; `od-runner` 0.1.0, release build.
+- Kernel SHA-256: `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`.
+- Initramfs SHA-256: `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`.
+- ACPI blob SHA-256: `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`.
+- Scenario `stage4-init-nonce`, profile `smoke_not_acceptance`, counted
+  `stage4a --set-cpl0 --user-mode`, RAM 128 MiB, budget 3,000,000,000,
+  expected stop `budget_exhausted`; one series ID, two unique run nonces.
+
+## Run outcomes
+
+Aggregate outcome: `passed`. Both runs started the guest, emitted the exact
+nonce marker, exited 0 at `budget_exhausted`, and retired 2,999,999,998
+instructions; each reported 1,093 CPL3 retired instructions.
+
+| Run | Nonce | Guest exceptions delivered | IRQs / IRQ0 edges | Wall seconds |
+|---|---|---:|---:|---:|
+| 0001 | `OD518e81cb70da22650000064f400000000` | 35 | 34,813 / 34,808 | 1114.1376 |
+| 0002 | `OD518e81dba778fd0b8000064f400000001` | 34 | 34,837 / 34,832 | 1115.6188 |
+
+`exceptions_delivered` counts successful guest `#PF` and `#GP(0)` deliveries
+through the guest IDT; it is not an IRQ count. The run record does not preserve
+the vector breakdown, so the observed totals cannot be attributed to one vector.
+
+## Strict comparisons
+
+- Comparing the two runs from this series: `matches=false`; unexplained
+  differences are `run[0].machine_observations differs` and
+  `run[0].ordered_uart_bytes differs after nonce normalization`.
+- The pre-fix 2026-11-15 diagnostic N=2 series also fails its internal
+  comparison on those same two categories. Thus this run does not show a new
+  comparator failure introduced by the CPL3 IRQ fix, and it does not explain
+  the underlying run-to-run variation.
+- Comparing this series with the earlier failed common-ID C series returns
+  `matches=false`; the old C failure remains historical failed evidence and
+  was not reproduced here.
+- No comparator normalization was broadened: the one-count guest exception
+  difference (without a vector breakdown) and remaining ordered UART difference
+  have not been shown to be benign.
+
+These observations do not satisfy S5-07 acceptance. The old failure was not
+observed in these two runs, but its cause remains unlocalized and strict
+within-series repeatability still fails.
+
+## Evidence hashes
+
+- Series JSON SHA-256:
+  `a46807e525c531412dcd69dcda7a800517fc756a1c6b8179a749362918a99ed5`
+- Run 0001 manifest / runner JSON / UART SHA-256:
+  `7bbc8c3e912de9d050227a13b648effa0f62459885844201bf266fe7ad7c9966` /
+  `ee38ef0cf80fb5d114c2e2a88a1865aa675fb5f00a001594498c7334d8331a66` /
+  `0688965ba96c94d4872129aa5e702d00536f8d3fdb73e34a6780927b6b55a675`
+- Run 0002 manifest / runner JSON / UART SHA-256:
+  `8db237b090c9df5a4cb1cfb6ee2b80cdd70c4dcc50b4f77d2115bc7808792934` /
+  `4397d0c07ed93e4c7079b1945909a84e93a67534e8551b4c750f22d206800832` /
+  `d86410e7958878b91764d8ff8af19d04ffefbc9bacd5b2fe9755ce206b2da043`
+
+Raw run artifacts remain in ignored
+`work/stage5/stage5-s5-07-stage4a-cpl3-irq-fix-20261115-a/`.

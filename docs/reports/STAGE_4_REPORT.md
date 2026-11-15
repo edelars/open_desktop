@@ -26,11 +26,16 @@ Opus, внешние модели gpt-6.1-sol / gpt-6-astra недоступны
   (разделы ниже, S4-42 и S4-43 отдельно).
 - S4-44a/b: локальный воспроизводимый набор зелёный
   (`overall_local` = `passed`), полный S4-44 открыт.
+- S4-39h implementation slice (2026-11-15): CPL3 external IRQ now switches
+  through `TSS.RSP0`; the board loop restarts after delivery and recalculates
+  CPL before executing the handler. Independent review and focused ISA/board
+  tests passed; this is modeled-path evidence, not a live guest run.
 
 **Что НЕ доказано.**
-- Прерывания и таймер в CPL3: внешнее IRQ из CPL3 даёт `run_failed`; S4-39h
-  пропущен. Сценарий `/init` проходит, потому что `/init` завершается после
-  сна, а таймерные пробуждения шли в CPL0.
+- Live прерывания и таймер в CPL3 на Linux-госте не проверены. Синтетический
+  board integration test S4-39h подтверждает IRQ → CPL0 handler → IRETQ → CPL3
+  продолжение; исторический run_failed не установлен как ошибка CPL3 и не
+  локализует отказ C/run-0001 из S5-07.
 - Профиль stage4a — без APIC и без SSE/SSE2 (Linux работает на 8259); работа
   под другим CPUID-профилем и с APIC не подтверждена.
 - Nonce фиксированный (`s4-38l4a`), а не свежий на прогон.
@@ -749,18 +754,19 @@ periodic timer or Linux acceptance is claimed. See the
 [S4-28a3 report](STAGE_4_S4-28A3_2026-11-07.md) and
 [evidence](data/stage4/s4-28a3-hlt-timer.json).
 
-## S4-34b — KVM identity and repeatability (physical run complete; review pending)
+## S4-34b — KVM identity and repeatability (accepted after independent review)
 
 The isolated `codex` worktree has a repeatable KVM method runner that records
 the configured guest CPUID model and host microcode, retains every invocation,
 and rejects malformed CPU identity, unstable outcomes, injection trace/UART
 mismatches, runner source/binary changes, or image hash changes. Forty-one offline
-builder tests pass. On the Mini, three repeats of each of the three existing
+builder tests pass. The slice was accepted after independent `gpt-6.1-sol/high`
+review and merged to `main` in `1203ba7`. On the Mini, three repeats of each of the three existing
 cases were stable after masking only per-CPU APIC identifiers in the CPUID
 identity comparison; raw CPUID models/hashes remain recorded for every
 invocation. All cases passed their exact expected exit and UART checks, and
-runner/image integrity hashes matched. S4-34b awaits independent review;
-S4-34 remains open because architectural system cases are still missing. See
+runner/image integrity hashes matched. Host reboot repeatability remains
+unverified. S4-34 remains open because architectural system cases are still missing. See
 the [S4-34b report](STAGE_4_S4-34B_2026-11-14.md) and
 [repeatability evidence](data/stage4/s4-34b-kvm-repeatability.json).
 
@@ -794,8 +800,10 @@ linux-direct-gate`: оба `PASS`, `counted: true`, `failures` пусты, run I
 - Конец прогона определяется строкой паники и журналом, а не `user_exit`; гейт
   принимает `budget_exhausted`, `exit_kind` и `cpuid_profile` не проверяет.
 - Nonce фиксированный `s4-38l4a`; «новый nonce» плана не выполнен.
-- IRQ из CPL3 не поддержано; S4-39h пропущен. Таймерная проверка гейтом не
-  выполняется (в отчёте `halt_wakes` 2, но гейт его не требует).
+- На момент S4-46 IRQ из CPL3 не поддерживалось; implementation slice S4-39h
+  добавлен 2026-11-15 и покрыт synthetic board test. Live timer/IRQ проверка
+  гейтом по-прежнему не выполняется (в отчёте `halt_wakes` 2, но гейт его не
+  требует).
 - Профиль stage4a: без APIC и SSE/SSE2, 8259 PIC; JIT не использовался.
 - Правило `counted` для stage4a — решение пользователя в день PASS; ревью этого
   решения не записано.
@@ -1716,7 +1724,8 @@ Sol/Astra» в более ранних срезах (например, S4-20e и
   `fmt` — `known_divergence`.
 
 **Что не доказано и не закрыто.**
-- IRQ/timer в CPL3 (внешнее IRQ из CPL3 даёт `run_failed`, S4-39h пропущен);
+- Live IRQ/timer в CPL3 на физическом Linux-госте (S4-39h прошёл только
+  synthetic board integration test);
   stage4a без APIC и SSE/SSE2; nonce фиксированный `s4-38l4a`; JIT на Linux 0 %;
   pause/resume для Linux нет; control v2 не несёт путь к ядру; живой serial и
   доставка `od-runner` в бандле; гейт не проверяет `exit_kind`,

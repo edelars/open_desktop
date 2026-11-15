@@ -23,11 +23,12 @@
 //! then also says `path: cpl0_set`, the set members, the set's own final exit (`set_exit_detail`)
 //! and how many CR3 changes happened
 //! (`cr3_changes`, `last_cr3_change`; a `MOV CR3` that ended the run in an integration error is
-//! counted and `cr3` is its CR3). Since S4-38L5c a guest `#PF` is delivered through the guest IDT
-//! when one is loaded; `exceptions_delivered` counts these (a delivery is not a retired
-//! instruction), and a `#PF` that could not be delivered is still the `fault` stop, with the reason
-//! in `set_exit_detail`. The `paged_probe` path carries the same fields with empty
-//! values; `schema_version` stays 1 (the fields are additive).
+//! counted and `cr3` is its CR3). Since S4-38L5c / S4-38L9v a guest `#PF` or `#GP(0)` is delivered
+//! through the guest IDT when one is loaded; `exceptions_delivered` counts both and the
+//! per-vector fields report their breakdown (a delivery is not a retired instruction). An
+//! exception that could not be delivered is still the `fault` stop, with the reason in
+//! `set_exit_detail`. The `paged_probe` path carries zero counts; `schema_version` stays 1 (the
+//! fields are additive).
 //!
 //! `--diagnostic-past-c7` (S4-38L7, only with `--run --set-cpl0`) is an opt-in DIAGNOSTIC mode:
 //! the `cpuid_divergence` boundary is off, `CPUID` leaf 1 and 0x8000_0001 execute with the
@@ -68,9 +69,11 @@
 
 use od_isa::cpuid::CpuidProfile;
 use od_machine::{
-    LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput, LinuxStopRecord,
-    MachineStopReason, load_linux_direct_board, run_linux_direct_board,
-    run_linux_direct_board_set_observed,
+    LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput,
+    LinuxExecutionObservations, LinuxStopRecord, MachineStopReason, load_linux_direct_board,
+    run_linux_direct_board, run_linux_direct_board_set_observed,
+    run_linux_direct_board_set_user_mode_with_execution_observations,
+    run_linux_direct_board_set_user_mode_with_post_iret_index,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -86,7 +89,7 @@ pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode] [--checkpoint-table <oracle.json>]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-post-iret-index <n>]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -128,6 +131,12 @@ struct Options {
     /// `--checkpoint-table <s4-38l2-oracle.json>` (S4-38L4i, only with `--run --set-cpl0`): record
     /// the checkpoints C0..C17 (observation only) and add the `checkpoints` key.
     checkpoint_table: Option<String>,
+    /// Separate, opt-in sidecar for bounded console-output stack context; single run only.
+    stack_context_out: Option<String>,
+    /// Separate, opt-in sidecar for CPL0 RDTSC sites and delivered #PF events; single user-mode run only.
+    execution_observations_out: Option<String>,
+    /// Zero-based delivered-#PF ordinal for the opt-in post-IRET page-walk snapshot.
+    execution_observations_post_iret_index: Option<u64>,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -147,7 +156,34 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(3);
         }
     };
-    let (value, code) = evaluate(&options);
+    let (mut value, code) = evaluate(&options);
+    let skip_report_write = value
+        .get("_skip_report_write")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if let Some(object) = value.as_object_mut() {
+        object.remove("_skip_report_write");
+    }
+    if skip_report_write {
+        println!("{value}");
+        return ExitCode::from(code);
+    }
+    let sidecar_collides_with_report = options
+        .stack_context_out
+        .as_ref()
+        .into_iter()
+        .chain(options.execution_observations_out.as_ref())
+        .any(|sidecar| match_existing_file_identity(sidecar, &options.out).unwrap_or(true));
+    if sidecar_collides_with_report {
+        let value = refusal(
+            "invalid_input",
+            "stack_context_sidecar",
+            "the sidecar and primary report resolve to the same filesystem object".into(),
+            json!({"retired": 0, "guest_started": false}),
+        );
+        println!("{value}");
+        return ExitCode::from(3);
+    }
     let text = format!("{value:#}\n");
     if let Err(error) = std::fs::write(&options.out, &text) {
         let value = refusal(
@@ -300,39 +336,222 @@ fn evaluate(options: &Options) -> (Value, u8) {
         Ok(mut boot) => {
             describe(&mut evidence, &boot, &cmdline, &vmlinuz, &initramfs_sha);
             if let Some(budget) = options.budget {
-                let result = if options.set_cpl0 {
+                let mut sidecar_file = None;
+                let mut execution_observations_file = None;
+                if let Some(path) = &options.stack_context_out {
+                    let file = match std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(path)
+                    {
+                        Ok(file) => file,
+                        Err(error) => {
+                            let mut value = refusal(
+                                "diagnostic_sidecar_reservation_failed",
+                                "stack_context_sidecar",
+                                format!("{path}: {error}"),
+                                evidence,
+                            );
+                            // Existing files, including dangling symlinks, are preserved when
+                            // destination identity cannot be established.
+                            value["_skip_report_write"] = json!(true);
+                            return (value, 4);
+                        }
+                    };
+                    match file_matches_existing_path(&file, path, &options.out) {
+                        Ok(false) => sidecar_file = Some(file),
+                        Ok(true) => {
+                            let cleanup = discard_sidecar_reservation(path, file);
+                            let mut value = refusal(
+                                "diagnostic_sidecar_path_collision",
+                                "stack_context_sidecar",
+                                "--out resolves to the reserved sidecar file".into(),
+                                evidence,
+                            );
+                            if cleanup.is_err() {
+                                value["_skip_report_write"] = json!(true);
+                            }
+                            return (value, 4);
+                        }
+                        Err(detail) => {
+                            let cleanup = discard_sidecar_reservation(path, file);
+                            let mut value = refusal(
+                                "diagnostic_sidecar_identity_failed",
+                                "stack_context_sidecar",
+                                detail,
+                                evidence,
+                            );
+                            // If identity could not be established, avoid writing through an
+                            // output alias that might refer to the reservation.
+                            value["_skip_report_write"] = json!(true);
+                            let _ = cleanup;
+                            return (value, 4);
+                        }
+                    }
+                    boot.board.enable_console_output_context_diagnostic();
+                }
+                if let Some(path) = &options.execution_observations_out {
+                    let file = match std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(path)
+                    {
+                        Ok(file) => file,
+                        Err(error) => {
+                            let cleanup = cleanup_sidecar_reservation(
+                                options.stack_context_out.as_deref(),
+                                &mut sidecar_file,
+                            );
+                            let mut value = refusal(
+                                "diagnostic_sidecar_reservation_failed",
+                                "execution_observations_sidecar",
+                                format!("{path}: {error}"),
+                                evidence,
+                            );
+                            value["_skip_report_write"] = json!(true);
+                            let _ = cleanup;
+                            return (value, 4);
+                        }
+                    };
+                    match file_matches_existing_path(&file, path, &options.out) {
+                        Ok(false) => execution_observations_file = Some(file),
+                        Ok(true) => {
+                            let cleanup = discard_sidecar_reservation(path, file);
+                            let prior_cleanup = cleanup_sidecar_reservation(
+                                options.stack_context_out.as_deref(),
+                                &mut sidecar_file,
+                            );
+                            let mut value = refusal(
+                                "diagnostic_sidecar_path_collision",
+                                "execution_observations_sidecar",
+                                "--out resolves to the reserved sidecar file".into(),
+                                evidence,
+                            );
+                            if cleanup.is_err() || prior_cleanup.is_err() {
+                                value["_skip_report_write"] = json!(true);
+                            }
+                            return (value, 4);
+                        }
+                        Err(detail) => {
+                            let cleanup = discard_sidecar_reservation(path, file);
+                            let prior_cleanup = cleanup_sidecar_reservation(
+                                options.stack_context_out.as_deref(),
+                                &mut sidecar_file,
+                            );
+                            let mut value = refusal(
+                                "diagnostic_sidecar_identity_failed",
+                                "execution_observations_sidecar",
+                                detail,
+                                evidence,
+                            );
+                            value["_skip_report_write"] = json!(true);
+                            let _ = cleanup;
+                            let _ = prior_cleanup;
+                            return (value, 4);
+                        }
+                    }
+                }
+                let members = LinuxCpl0SetMembers {
+                    // S4-13 diagnostics: `OD_NO_FETCH_CACHE=1` runs without the fetch
+                    // translation cache (same results, more page walks).
+                    fetch_cache: std::env::var_os("OD_NO_FETCH_CACHE").is_none(),
+                    diagnostic_past_c7: options.diagnostic_past_c7,
+                    cpuid_profile: options.cpuid_profile,
+                    // S4-38L9c: with the TSC-only subset the kernel's `tdx_init` reads
+                    // MSR 0x87 (MKTME KeyID partitioning); the member answers 0:0. Off for
+                    // the DiagnosticV1 default, whose run does not get there.
+                    msr_tdx_keyid_partitioning_read: options.cpuid_profile.is_stage4a_family(),
+                    // S4-38L9d: with the subset that declares FPU and FXSR the kernel's
+                    // `fpu__init_system` runs `FNINIT` and `FXSAVE`; the FP member
+                    // implements them. Off for the DiagnosticV1 default.
+                    fp_state: options.cpuid_profile.is_stage4a_family(),
+                    // S4-38L9e: the kernel's `int3_selftest` executes `INT3` and waits for
+                    // `#BP` through the IDT; the INT3 member delivers it. Off for the
+                    // DiagnosticV1 default (its member list stays as it was).
+                    int3: options.cpuid_profile.is_stage4a_family(),
+                    ..LinuxCpl0SetMembers::linux_default()
+                };
+                let result = if let Some(index) = options.execution_observations_post_iret_index {
+                    run_linux_direct_board_set_user_mode_with_post_iret_index(
+                        &mut boot,
+                        &machine_input,
+                        budget,
+                        members,
+                        index,
+                    )
+                } else if options.execution_observations_out.is_some() {
+                    run_linux_direct_board_set_user_mode_with_execution_observations(
+                        &mut boot,
+                        &machine_input,
+                        budget,
+                        members,
+                    )
+                } else if options.set_cpl0 {
                     run_linux_direct_board_set_observed(
                         &mut boot,
                         &machine_input,
                         budget,
-                        LinuxCpl0SetMembers {
-                            // S4-13 diagnostics: `OD_NO_FETCH_CACHE=1` runs without the fetch
-                            // translation cache (same results, more page walks).
-                            fetch_cache: std::env::var_os("OD_NO_FETCH_CACHE").is_none(),
-                            diagnostic_past_c7: options.diagnostic_past_c7,
-                            cpuid_profile: options.cpuid_profile,
-                            // S4-38L9c: with the TSC-only subset the kernel's `tdx_init` reads
-                            // MSR 0x87 (MKTME KeyID partitioning); the member answers 0:0. Off for
-                            // the DiagnosticV1 default, whose run does not get there.
-                            msr_tdx_keyid_partitioning_read: options
-                                .cpuid_profile
-                                .is_stage4a_family(),
-                            // S4-38L9d: with the subset that declares FPU and FXSR the kernel's
-                            // `fpu__init_system` runs `FNINIT` and `FXSAVE`; the FP member
-                            // implements them. Off for the DiagnosticV1 default.
-                            fp_state: options.cpuid_profile.is_stage4a_family(),
-                            // S4-38L9e: the kernel's `int3_selftest` executes `INT3` and waits for
-                            // `#BP` through the IDT; the INT3 member delivers it. Off for the
-                            // DiagnosticV1 default (its member list stays as it was).
-                            int3: options.cpuid_profile.is_stage4a_family(),
-                            ..LinuxCpl0SetMembers::linux_default()
-                        },
+                        members,
                         options.user_mode,
                         checkpoint_setup.as_ref().map(|setup| setup.table.clone()),
                     )
                 } else {
                     run_linux_direct_board(&mut boot, &machine_input, budget)
                 };
+                if let Some(path) = &options.stack_context_out {
+                    let snapshots = boot.board.take_console_output_context_diagnostic();
+                    let uart_diagnostic = boot.board.take_uart_output_context_diagnostic();
+                    let write_error = match sidecar_file.as_mut() {
+                        Some(file) => write_stack_context_sidecar(
+                            file,
+                            path,
+                            &snapshots,
+                            uart_diagnostic.as_ref(),
+                        )
+                        .err(),
+                        None => Some("sidecar reservation is missing".into()),
+                    };
+                    evidence["stack_context_sidecar"] = json!({
+                        "path": path,
+                        "capture_scope": "console-output and bounded UART byte context",
+                        "unwind_context": false,
+                        "snapshots": snapshots.len(),
+                        "uart_provenance_samples": uart_diagnostic.as_ref().map_or(0, |capture| capture.samples.len()),
+                        "uart_provenance_end": uart_diagnostic.as_ref().map(|capture| uart_context_end_name(capture.end)),
+                        "write_error": write_error,
+                    });
+                }
+                if let Some(path) = &options.execution_observations_out {
+                    let write_error = if result.is_err() {
+                        let cleanup_error = execution_observations_file
+                            .take()
+                            .and_then(|file| discard_sidecar_reservation(path, file).err());
+                        Some(cleanup_error.unwrap_or_else(|| {
+                            "run failed before observations were complete".into()
+                        }))
+                    } else {
+                        match (result.as_ref().ok(), execution_observations_file.as_mut()) {
+                            (Some(record), Some(file)) => {
+                                match record.execution_observations.as_ref() {
+                                    Some(observations) => write_execution_observations_sidecar(
+                                        file,
+                                        path,
+                                        observations,
+                                    )
+                                    .err(),
+                                    None => Some("run returned no execution observations".into()),
+                                }
+                            }
+                            (_, None) => Some("sidecar reservation is missing".into()),
+                            (None, _) => Some("run result is unavailable".into()),
+                        }
+                    };
+                    evidence["execution_observations_sidecar"] = json!({
+                        "path": path,
+                        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events",
+                        "write_error": write_error,
+                    });
+                }
                 match result {
                     Ok(record) => {
                         evidence["guest_started"] = json!(true);
@@ -681,6 +900,14 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
         },
     });
     stop["machine_stop_reason"] = machine_stop_reason_json(record.stop_reason);
+    stop["pm_timer_reads"] = json!(record.pm_timer_reads);
+    stop["rdtsc_reads"] = json!(record.rdtsc_reads);
+    stop["rdtsc_reads_by_cpl"] = json!(record.rdtsc_reads_by_cpl);
+    stop["pit_port_b_reads"] = json!(record.pit_port_b_reads);
+    stop["pit_counter_port_reads"] = json!(record.pit_counter_port_reads);
+    // Keep the vector breakdown outside the large literal to stay under `json!`'s recursion limit.
+    stop["page_faults_delivered"] = json!(record.page_faults_delivered);
+    stop["general_protection_faults_delivered"] = json!(record.general_protection_faults_delivered);
     // S4-38L9I: the validated frame of the `IRETQ` the run stopped at (`exit_kind`
     // `user_entry`). The key exists only then, so the stop record of every other run (the base
     // DiagnosticV1 run included) is unchanged. The IRETQ did not retire: `rip` is on it. Set
@@ -782,6 +1009,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut budget = None;
     let mut cpuid_profile_text: Option<String> = None;
     let mut checkpoint_table: Option<String> = None;
+    let mut stack_context_out = None;
+    let mut execution_observations_out = None;
+    let mut execution_observations_post_iret_index = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -834,6 +1064,25 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--budget" => &mut budget,
             "--cpuid-profile" => &mut cpuid_profile_text,
             "--checkpoint-table" => &mut checkpoint_table,
+            "--stack-context-out" => &mut stack_context_out,
+            "--execution-observations-out" => &mut execution_observations_out,
+            "--execution-observations-post-iret-index" => {
+                let parsed = value
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|_| !value.starts_with('+'))
+                    .ok_or_else(|| {
+                        format!("invalid --execution-observations-post-iret-index '{value}'")
+                    })?;
+                if execution_observations_post_iret_index
+                    .replace(parsed)
+                    .is_some()
+                {
+                    return Err(format!("duplicate option {name}; usage: {USAGE}"));
+                }
+                index += 2;
+                continue;
+            }
             other => {
                 return Err(format!("unexpected option {other}; usage: {USAGE}"));
             }
@@ -895,6 +1144,33 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--user-mode needs --run, --set-cpl0 and --cpuid-profile stage4a (not stage4a-apic); usage: {USAGE}"
         ));
     }
+    if stack_context_out.is_some() && !(run && set_cpl0) {
+        return Err(format!(
+            "--stack-context-out needs --run and --set-cpl0; usage: {USAGE}"
+        ));
+    }
+    if execution_observations_out.is_some() && !(run && set_cpl0 && user_mode) {
+        return Err(format!(
+            "--execution-observations-out needs --run, --set-cpl0 and --user-mode; usage: {USAGE}"
+        ));
+    }
+    if execution_observations_post_iret_index.is_some() && execution_observations_out.is_none() {
+        return Err(format!(
+            "--execution-observations-post-iret-index needs --execution-observations-out; usage: {USAGE}"
+        ));
+    }
+    // The execution-observation runs of od-machine do not take a checkpoint table (the S4
+    // recorder and the S5 collector were built apart); refuse the pair rather than drop one.
+    if execution_observations_out.is_some() && checkpoint_table.is_some() {
+        return Err(format!(
+            "--execution-observations-out cannot be combined with --checkpoint-table; usage: {USAGE}"
+        ));
+    }
+    if stack_context_out.is_some()
+        && stack_context_out.as_ref() == execution_observations_out.as_ref()
+    {
+        return Err("diagnostic sidecar paths must be distinct".into());
+    }
     let nonce = required(nonce, "--nonce")?;
     if nonce.is_empty()
         || nonce.chars().count() > MAX_NONCE_CHARS
@@ -944,7 +1220,287 @@ fn parse(args: &[String]) -> Result<Options, String> {
         cpuid_profile,
         user_mode,
         checkpoint_table,
+        stack_context_out,
+        execution_observations_out,
+        execution_observations_post_iret_index,
     })
+}
+
+fn match_existing_file_identity(first: &str, second: &str) -> Result<bool, String> {
+    let first_metadata = match std::fs::metadata(first) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("could not inspect {first}: {error}")),
+    };
+    let second_metadata = match std::fs::metadata(second) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("could not inspect {second}: {error}")),
+    };
+    metadata_is_same_file(&first_metadata, &second_metadata, first, second)
+}
+
+fn file_matches_existing_path(
+    file: &File,
+    reservation_path: &str,
+    path: &str,
+) -> Result<bool, String> {
+    let reserved_metadata = file.metadata().map_err(|error| {
+        format!("could not inspect reserved sidecar {reservation_path}: {error}")
+    })?;
+    let reservation_path_metadata = std::fs::metadata(reservation_path).map_err(|error| {
+        format!("could not inspect reserved sidecar path {reservation_path}: {error}")
+    })?;
+    if !metadata_is_same_file(
+        &reserved_metadata,
+        &reservation_path_metadata,
+        reservation_path,
+        reservation_path,
+    )? {
+        return Err("sidecar reservation path changed after it was opened".into());
+    }
+    match_existing_file_identity(reservation_path, path)
+}
+
+#[cfg(unix)]
+fn metadata_is_same_file(
+    first: &std::fs::Metadata,
+    second: &std::fs::Metadata,
+    _first_path: &str,
+    _second_path: &str,
+) -> Result<bool, String> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(first.dev() == second.dev() && first.ino() == second.ino())
+}
+
+#[cfg(not(unix))]
+fn metadata_is_same_file(
+    _first: &std::fs::Metadata,
+    _second: &std::fs::Metadata,
+    first_path: &str,
+    second_path: &str,
+) -> Result<bool, String> {
+    let first = std::fs::canonicalize(first_path)
+        .map_err(|error| format!("could not resolve {first_path}: {error}"))?;
+    let second = std::fs::canonicalize(second_path)
+        .map_err(|error| format!("could not resolve {second_path}: {error}"))?;
+    Ok(first == second)
+}
+
+fn discard_sidecar_reservation(path: &str, file: File) -> Result<(), String> {
+    if !file_matches_existing_path(&file, path, path)? {
+        return Err("sidecar reservation path identity changed".into());
+    }
+    drop(file);
+    std::fs::remove_file(path).map_err(|error| format!("could not remove {path}: {error}"))
+}
+
+fn cleanup_sidecar_reservation(path: Option<&str>, file: &mut Option<File>) -> Result<(), String> {
+    let Some(reserved_file) = file.take() else {
+        return Ok(());
+    };
+    let path = path.ok_or_else(|| "sidecar reservation has no path".to_string())?;
+    discard_sidecar_reservation(path, reserved_file)
+}
+
+fn write_stack_context_sidecar(
+    file: &mut File,
+    path: &str,
+    snapshots: &[od_machine::ConsoleOutputContextSnapshot],
+    uart_diagnostic: Option<&od_machine::UartOutputContextDiagnostic>,
+) -> Result<(), String> {
+    let value = json!({
+        "schema_version": 2,
+        "capture_scope": "console-output and bounded UART byte context",
+        "unwind_context": false,
+        "limits": {
+            "snapshots": 4,
+            "line_bytes": 192,
+            "frame_links": 32,
+            "stack_window_bytes": 4096
+        },
+        "snapshots": snapshots.iter().map(|snapshot| json!({
+            "trigger": match snapshot.trigger {
+                od_machine::ConsoleContextTrigger::CallTraceLine => "call_trace_line",
+                od_machine::ConsoleContextTrigger::OptionalFrameLine => "optional_frame_line",
+            },
+            "rip": hex64(snapshot.rip),
+            "rbp": hex64(snapshot.rbp),
+            "cr3": hex64(snapshot.cr3),
+            "frames": snapshot.frames.iter().map(|frame| json!({
+                "frame_pointer": hex64(frame.frame_pointer),
+                "return_address": hex64(frame.return_address),
+            })).collect::<Vec<_>>(),
+            "ended": frame_chain_end_name(snapshot.ended),
+        })).collect::<Vec<_>>(),
+        "uart_provenance": uart_diagnostic.map(|capture| json!({
+            "trigger": "first_OD_NONCE_equals",
+            "marker_offset": capture.marker_offset,
+            "marker_prefix_before_trigger_unobserved": capture.marker_prefix_before_trigger_unobserved,
+            "end": uart_context_end_name(capture.end),
+            "byte_limit": od_machine::MAX_UART_PROVENANCE_BYTES,
+            "samples": capture.samples.iter().map(|sample| json!({
+                "offset": sample.offset,
+                "byte": sample.byte,
+                "retired": sample.retired,
+                "rip_phase": "post_out_instruction_boundary",
+                "rip": hex64(sample.rip),
+                "rsp": hex64(sample.rsp),
+                "rbp": hex64(sample.rbp),
+                "cr3": hex64(sample.cr3),
+                "cs_selector": sample.cs_selector.map(|selector| format!("0x{selector:04x}")),
+                "cpl": sample.cs_selector.map(|selector| selector & 3),
+                "frames": sample.frames.iter().map(|frame| json!({
+                    "frame_pointer": hex64(frame.frame_pointer),
+                    "return_address": hex64(frame.return_address),
+                })).collect::<Vec<_>>(),
+                "ended": frame_chain_end_name(sample.ended),
+            })).collect::<Vec<_>>(),
+        })),
+    });
+    file_matches_existing_path(file, path, path)?;
+    let bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
+    use std::io::Write;
+    if let Err(error) = file.write_all(&bytes).and_then(|()| file.write_all(b"\n")) {
+        let cleanup = match file_matches_existing_path(file, path, path) {
+            Ok(true) => {
+                std::fs::remove_file(path).map_err(|cleanup_error| cleanup_error.to_string())
+            }
+            Ok(false) => Err("reservation path identity changed".into()),
+            Err(cleanup_error) => Err(cleanup_error),
+        };
+        return Err(match cleanup {
+            Ok(()) => format!("{path}: {error}"),
+            Err(cleanup_error) => {
+                format!("{path}: {error}; partial sidecar cleanup failed: {cleanup_error}")
+            }
+        });
+    }
+    Ok(())
+}
+
+fn write_execution_observations_sidecar(
+    file: &mut File,
+    path: &str,
+    observations: &LinuxExecutionObservations,
+) -> Result<(), String> {
+    let value = json!({
+        "schema_version": 5,
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, and an optional selected post-IRET page-walk snapshot",
+        "limits": {
+            "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
+            "page_fault_events": od_machine::LINUX_PAGE_FAULT_EVENT_CAPACITY,
+            "frame_links_per_page_fault": od_machine::LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY,
+            "page_walk_entries_per_fault": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
+            "post_iret_page_walk_entries": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
+        },
+        "rdtsc_cpl0_sites": observations.rdtsc_cpl0_sites.iter().map(|site| json!({
+            "rip": hex64(site.rip),
+            "reads": site.reads,
+        })).collect::<Vec<_>>(),
+        "rdtsc_cpl0_unattributed_reads": observations.rdtsc_cpl0_unattributed_reads,
+        "rdtsc_cpl0_site_overflow_reads": observations.rdtsc_cpl0_site_overflow_reads,
+        "page_faults_delivered": observations.page_faults_delivered,
+        "page_fault_events": observations.page_fault_events.iter().map(|event| json!({
+            "rip": hex64(event.rip),
+            "cr2": hex64(event.cr2),
+            "error_code": format!("0x{:08x}", event.error_code),
+            "access": event.access,
+            "cpl": event.cpl,
+            "faulting_context": {
+                "cr3": hex64(event.faulting_context.cr3),
+                "rsp": hex64(event.faulting_context.rsp),
+                "rbp": hex64(event.faulting_context.rbp),
+                "rcx": hex64(event.faulting_context.rcx),
+                "rsi": hex64(event.faulting_context.rsi),
+                "rdi": hex64(event.faulting_context.rdi),
+                "cs_selector": event.faulting_context.cs_selector.map(|selector| format!("0x{selector:04x}")),
+                "frame_chain": event.faulting_context.frame_chain.iter().map(|frame| json!({
+                    "frame_pointer": hex64(frame.frame_pointer),
+                    "return_address": hex64(frame.return_address),
+                })).collect::<Vec<_>>(),
+                "frame_chain_end": format!("{:?}", event.faulting_context.frame_chain_end),
+                "page_walk": event.faulting_context.page_walk.as_ref().map(|walk| json!({
+                    "source": "original_faulting_guest_access",
+                    "entry_values": "raw_before_accessed_dirty_updates",
+                    "reason": format!("{:?}", walk.reason),
+                    "entries": walk.entries.iter().map(|entry| json!({
+                        "level": format!("{:?}", entry.level),
+                        "index": entry.index,
+                        "entry_address": hex64(entry.entry_address.get()),
+                        "entry_value": hex64(entry.entry_value),
+                    })).collect::<Vec<_>>(),
+                })),
+            },
+        })).collect::<Vec<_>>(),
+        "page_fault_events_omitted": observations.page_fault_events_omitted,
+        "post_iret_selected_ordinal": observations.post_iret_selected_ordinal,
+        "post_iret_page_walk_status": observations.post_iret_page_walk_status,
+        "post_iret_page_walk": observations.post_iret_page_walk.as_ref().map(|snapshot| json!({
+            "event_ordinal": snapshot.event_ordinal,
+            "fault_rip": hex64(snapshot.fault_rip),
+            "fault_cr2": hex64(snapshot.fault_cr2),
+            "fault_access": snapshot.fault_access,
+            "fault_cpl": snapshot.fault_cpl,
+            "post_iret_context": {
+                "rip": hex64(snapshot.post_iret_rip),
+                "cs": snapshot.post_iret_cs.map(|selector| format!("0x{selector:04x}")),
+                "cpl": snapshot.post_iret_cpl,
+                "rsp": hex64(snapshot.post_iret_rsp),
+                "cr3": hex64(snapshot.post_iret_cr3),
+            },
+            "translation_status": snapshot.translation_status,
+            "translated_physical": snapshot.translated_physical.map(hex64),
+            "translation_error": snapshot.translation_error,
+            "entries": snapshot.entries.iter().map(|entry| json!({
+                "level": format!("{:?}", entry.level),
+                "index": entry.index,
+                "entry_address": hex64(entry.entry_address.get()),
+                "entry_value": hex64(entry.entry_value),
+            })).collect::<Vec<_>>(),
+        })),
+    });
+    file_matches_existing_path(file, path, path)?;
+    let bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
+    use std::io::Write;
+    if let Err(error) = file.write_all(&bytes).and_then(|()| file.write_all(b"\n")) {
+        let cleanup = match file_matches_existing_path(file, path, path) {
+            Ok(true) => {
+                std::fs::remove_file(path).map_err(|cleanup_error| cleanup_error.to_string())
+            }
+            Ok(false) => Err("reservation path identity changed".into()),
+            Err(cleanup_error) => Err(cleanup_error),
+        };
+        return Err(match cleanup {
+            Ok(()) => format!("{path}: {error}"),
+            Err(cleanup_error) => {
+                format!("{path}: {error}; partial sidecar cleanup failed: {cleanup_error}")
+            }
+        });
+    }
+    Ok(())
+}
+
+fn uart_context_end_name(end: od_machine::UartOutputContextEnd) -> &'static str {
+    match end {
+        od_machine::UartOutputContextEnd::MarkerNotFound => "marker_not_found",
+        od_machine::UartOutputContextEnd::RunEnded => "run_end",
+        od_machine::UartOutputContextEnd::ByteLimit => "byte_limit",
+    }
+}
+
+fn frame_chain_end_name(end: od_machine::FrameChainEnd) -> &'static str {
+    match end {
+        od_machine::FrameChainEnd::NullFramePointer => "null_frame_pointer",
+        od_machine::FrameChainEnd::NonCanonicalFramePointer => "non_canonical_frame_pointer",
+        od_machine::FrameChainEnd::UnalignedFramePointer => "unaligned_frame_pointer",
+        od_machine::FrameChainEnd::OutsideStackWindow => "outside_stack_window",
+        od_machine::FrameChainEnd::RepeatedFramePointer => "repeated_frame_pointer",
+        od_machine::FrameChainEnd::NonMonotonicFramePointer => "non_monotonic_frame_pointer",
+        od_machine::FrameChainEnd::ReadFailed => "read_failed",
+        od_machine::FrameChainEnd::NonCanonicalReturnAddress => "non_canonical_return_address",
+        od_machine::FrameChainEnd::FrameLimit => "frame_limit",
+    }
 }
 
 /// A lowercase 64-digit hex string.
@@ -1069,6 +1625,9 @@ mod tests {
                 cpuid_profile: CpuidProfile::DiagnosticV1,
                 user_mode: false,
                 checkpoint_table: None,
+                stack_context_out: None,
+                execution_observations_out: None,
+                execution_observations_post_iret_index: None,
             };
             Self { dir, options }
         }
@@ -1600,6 +2159,33 @@ mod tests {
         assert_eq!(value["stop"]["com1_text"], "X");
         assert_eq!(value["stop"]["com1_hex"], "58");
         assert_eq!(value["retired"], 4);
+    }
+
+    #[test]
+    fn stop_json_reports_per_run_virtual_time_source_reads() {
+        let code = [
+            0x66, 0xba, 0x61, 0x00, 0xb0, 0x01, 0xee, 0x66, 0xba, 0x43, 0x00, 0xb0, 0xa0, 0xee,
+            0x66, 0xba, 0x42, 0x00, 0xb0, 0x10, 0xee, 0x0f, 0x31, 0x66, 0xba, 0x61, 0x00, 0xec,
+            0x66, 0xba, 0x42, 0x00, 0xec, 0x66, 0xba, 0x08, 0x06, 0xec, 0xf4,
+        ];
+        let mut case = Case::new(
+            "run-virtual-time-source-reads",
+            &bzimage_with_entry(&code),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(64);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        assert_eq!(value["status"], "loaded");
+        assert_eq!(value["stop"]["exit_kind"], "unsupported", "{value:#}");
+        assert_eq!(value["stop"]["unsupported_opcode"], "0xf4");
+        assert_eq!(value["stop"]["pm_timer_reads"], 1);
+        assert_eq!(value["stop"]["rdtsc_reads"], 1);
+        assert_eq!(value["stop"]["rdtsc_reads_by_cpl"], json!([1, 0, 0, 0]));
+        assert_eq!(value["stop"]["pit_port_b_reads"], 1);
+        assert_eq!(value["stop"]["pit_counter_port_reads"], 1);
     }
 
     #[test]
@@ -2409,6 +2995,533 @@ mod tests {
     }
 
     #[test]
+    fn stack_context_sidecar_is_single_cpl0_run_only() {
+        let run = ["--run", "--budget", "1", "--set-cpl0"];
+        let accepted =
+            parse_base(&[&run[..], &["--stack-context-out", "context.json"]].concat()).unwrap();
+        assert_eq!(accepted.stack_context_out.as_deref(), Some("context.json"));
+        assert!(parse_base(&["--stack-context-out", "context.json"]).is_err());
+        assert_eq!(
+            parse_base(&[&run[..], &["--stack-context-out", "o"]].concat())
+                .unwrap()
+                .stack_context_out
+                .as_deref(),
+            Some("o")
+        );
+        assert!(
+            parse_base(&[
+                "--run",
+                "--budget",
+                "1",
+                "--stack-context-out",
+                "context.json"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn execution_observations_sidecar_is_restricted_to_one_user_mode_run() {
+        let run = [
+            "--run",
+            "--budget",
+            "1",
+            "--set-cpl0",
+            "--cpuid-profile",
+            "stage4a",
+            "--user-mode",
+        ];
+        let accepted = parse_base(
+            &[
+                &run[..],
+                &["--execution-observations-out", "observations.json"],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(
+            accepted.execution_observations_out.as_deref(),
+            Some("observations.json")
+        );
+        let selected = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-post-iret-index",
+                    "30",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(selected.execution_observations_post_iret_index, Some(30));
+        assert!(parse_base(&["--execution-observations-post-iret-index", "30"]).is_err());
+        assert!(
+            parse_base(
+                &[
+                    &run[..],
+                    &[
+                        "--execution-observations-out",
+                        "observations.json",
+                        "--execution-observations-post-iret-index",
+                        "-1",
+                    ],
+                ]
+                .concat(),
+            )
+            .is_err()
+        );
+        assert!(
+            parse_base(
+                &[
+                    &run[..],
+                    &[
+                        "--execution-observations-out",
+                        "observations.json",
+                        "--execution-observations-post-iret-index",
+                        "30",
+                        "--execution-observations-post-iret-index",
+                        "31",
+                    ],
+                ]
+                .concat(),
+            )
+            .is_err()
+        );
+        assert!(parse_base(&["--execution-observations-out", "observations.json"]).is_err());
+        assert!(parse_base(&[&run[..6], &["--execution-observations-out", "o"]].concat()).is_err());
+        assert!(parse_base(&[&run[..4], &["--execution-observations-out", "o"]].concat()).is_err());
+        assert!(
+            parse_base(
+                &[
+                    &run[..],
+                    &[
+                        "--execution-observations-out",
+                        "o",
+                        "--execution-observations-out",
+                        "o2"
+                    ]
+                ]
+                .concat()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_base(
+                &[
+                    &run[..],
+                    &[
+                        "--stack-context-out",
+                        "same",
+                        "--execution-observations-out",
+                        "same"
+                    ]
+                ]
+                .concat()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn sidecar_collision_guard_uses_filesystem_identity_for_aliases() {
+        let root = std::env::temp_dir().join(format!(
+            "od-runner-stack-context-paths-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let sub = root.join("sub");
+        let real = root.join("real");
+        let alias = root.join("alias");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(&real).unwrap();
+        let ordinary = root.join("out.json");
+        let dotdot = sub.join("../out.json");
+        let ordinary_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&ordinary)
+            .unwrap();
+        assert!(
+            file_matches_existing_path(
+                &ordinary_file,
+                ordinary.to_str().unwrap(),
+                dotdot.to_str().unwrap()
+            )
+            .unwrap()
+        );
+
+        let case_alias = root.join("OUT.JSON");
+        let same_case_alias = file_matches_existing_path(
+            &ordinary_file,
+            ordinary.to_str().unwrap(),
+            case_alias.to_str().unwrap(),
+        )
+        .unwrap();
+        if same_case_alias {
+            assert!(std::fs::metadata(&case_alias).is_ok());
+        } else {
+            // On a case-sensitive volume this is a distinct future destination.
+            let _case_file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&case_alias)
+                .unwrap();
+            assert!(
+                !file_matches_existing_path(
+                    &ordinary_file,
+                    ordinary.to_str().unwrap(),
+                    case_alias.to_str().unwrap()
+                )
+                .unwrap()
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            let dangling = root.join("dangling.json");
+            std::os::unix::fs::symlink(root.join("missing-target.json"), &dangling).unwrap();
+            assert!(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&dangling)
+                    .is_err()
+            );
+
+            std::os::unix::fs::symlink(&real, &alias).unwrap();
+            let sidecar_path = real.join("sidecar.json");
+            let sidecar_file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&sidecar_path)
+                .unwrap();
+            assert!(
+                file_matches_existing_path(
+                    &sidecar_file,
+                    sidecar_path.to_str().unwrap(),
+                    alias.join("sidecar.json").to_str().unwrap()
+                )
+                .unwrap()
+            );
+        }
+        drop(ordinary_file);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cleanup_sidecar_reservation_removes_only_the_reserved_file() {
+        let root =
+            std::env::temp_dir().join(format!("od-runner-sidecar-cleanup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let owned_path = root.join("owned.json");
+        let mut owned = Some(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&owned_path)
+                .unwrap(),
+        );
+        cleanup_sidecar_reservation(Some(owned_path.to_str().unwrap()), &mut owned).unwrap();
+        assert!(owned.is_none());
+        assert!(!owned_path.exists());
+
+        let replaced_path = root.join("replaced.json");
+        let mut replaced = Some(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&replaced_path)
+                .unwrap(),
+        );
+        std::fs::remove_file(&replaced_path).unwrap();
+        std::fs::write(&replaced_path, b"replacement").unwrap();
+        assert!(
+            cleanup_sidecar_reservation(Some(replaced_path.to_str().unwrap()), &mut replaced)
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&replaced_path).unwrap(), b"replacement");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stack_context_sidecar_serializes_as_separate_console_context_evidence() {
+        let path = std::env::temp_dir().join(format!(
+            "od-runner-stack-context-{}-{}.json",
+            std::process::id(),
+            1
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        write_stack_context_sidecar(&mut file, path.to_str().unwrap(), &[], None).unwrap();
+        let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            value["capture_scope"],
+            "console-output and bounded UART byte context"
+        );
+        assert_eq!(value["unwind_context"], false);
+        assert_eq!(value["snapshots"].as_array().unwrap().len(), 0);
+        assert!(value["uart_provenance"].is_null());
+        assert!(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .is_err()
+        );
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn execution_observations_sidecar_serializes_bounded_counts_and_pf_metadata() {
+        let path = std::env::temp_dir().join(format!(
+            "od-runner-execution-observations-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let observations = LinuxExecutionObservations {
+            rdtsc_cpl0_sites: vec![od_machine::RdtscSiteCount {
+                rip: 0xffff_ffff_8100_1234,
+                reads: 19,
+            }],
+            rdtsc_cpl0_unattributed_reads: 2,
+            rdtsc_cpl0_site_overflow_reads: 3,
+            page_faults_delivered: 5,
+            page_fault_events: vec![od_machine::DeliveredPageFaultObservation {
+                rip: 0xffff_ffff_8100_5678,
+                cr2: 0x0000_0000_0040_2000,
+                error_code: 7,
+                access: "Write".into(),
+                cpl: 3,
+                faulting_context: od_machine::FaultingPageFaultContext {
+                    cr3: 0x1000,
+                    rsp: 0x2000,
+                    rbp: 0x3000,
+                    rcx: 0x4000,
+                    rsi: 0x5000,
+                    rdi: 0x6000,
+                    cs_selector: Some(0x23),
+                    frame_chain: vec![od_machine::ConsoleContextFrame {
+                        frame_pointer: 0x7000,
+                        return_address: 0xffff_ffff_8100_7000,
+                    }],
+                    frame_chain_end: od_machine::FrameChainEnd::NullFramePointer,
+                    page_walk: Some(od_machine::FaultingPageWalkContext {
+                        entries: vec![od_machine::WalkEntry {
+                            level: od_machine::PageTableLevel::Pd,
+                            index: 4,
+                            entry_address: od_machine::GuestPhysicalAddress::new(0x3020),
+                            entry_value: 0x4007,
+                        }],
+                        reason: od_machine::PageFaultReason::NotPresent {
+                            level: od_machine::PageTableLevel::Pt,
+                        },
+                    }),
+                },
+            }],
+            page_fault_events_omitted: 4,
+            post_iret_selected_ordinal: Some(3),
+            post_iret_page_walk_status: Some("captured"),
+            post_iret_page_walk: Some(od_machine::PostIretPageWalkSnapshot {
+                event_ordinal: 3,
+                fault_rip: 0xffff_ffff_8100_5678,
+                fault_cr2: 0x0000_0000_0040_2000,
+                fault_access: "Write".into(),
+                fault_cpl: 3,
+                post_iret_rip: 0xffff_ffff_8100_5678,
+                post_iret_cs: Some(0x23),
+                post_iret_cpl: 3,
+                post_iret_rsp: 0x2000,
+                post_iret_cr3: 0x1000,
+                entries: vec![od_machine::WalkEntry {
+                    level: od_machine::PageTableLevel::Pd,
+                    index: 4,
+                    entry_address: od_machine::GuestPhysicalAddress::new(0x3020),
+                    entry_value: 0x4007,
+                }],
+                translation_status: "translated",
+                translated_physical: Some(0x4_2000),
+                translation_error: None,
+            }),
+        };
+        write_execution_observations_sidecar(&mut file, path.to_str().unwrap(), &observations)
+            .unwrap();
+        let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["schema_version"], 5);
+        assert_eq!(value["post_iret_selected_ordinal"], 3);
+        assert_eq!(value["post_iret_page_walk_status"], "captured");
+        assert_eq!(
+            value["post_iret_page_walk"]["translation_status"],
+            "translated"
+        );
+        assert_eq!(
+            value["post_iret_page_walk"]["entries"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            value["limits"]["rdtsc_cpl0_sites"],
+            od_machine::LINUX_RDTSC_SITE_CAPACITY
+        );
+        assert_eq!(
+            value["limits"]["page_fault_events"],
+            od_machine::LINUX_PAGE_FAULT_EVENT_CAPACITY
+        );
+        assert_eq!(
+            value["limits"]["frame_links_per_page_fault"],
+            od_machine::LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY
+        );
+        assert_eq!(
+            value["limits"]["page_walk_entries_per_fault"],
+            od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY
+        );
+        assert_eq!(value["rdtsc_cpl0_sites"][0]["rip"], "0xffffffff81001234");
+        assert_eq!(value["rdtsc_cpl0_sites"][0]["reads"], 19);
+        assert_eq!(value["rdtsc_cpl0_site_overflow_reads"], 3);
+        assert_eq!(value["page_faults_delivered"], 5);
+        assert_eq!(value["page_fault_events"][0]["rip"], "0xffffffff81005678");
+        assert_eq!(value["page_fault_events"][0]["cr2"], "0x402000");
+        assert_eq!(value["page_fault_events"][0]["error_code"], "0x00000007");
+        assert_eq!(value["page_fault_events"][0]["access"], "Write");
+        assert_eq!(value["page_fault_events"][0]["cpl"], 3);
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["cr3"],
+            "0x1000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["rsp"],
+            "0x2000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["rbp"],
+            "0x3000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["rcx"],
+            "0x4000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["rsi"],
+            "0x5000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["rdi"],
+            "0x6000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["frame_chain"][0]["frame_pointer"],
+            "0x7000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["frame_chain"][0]["return_address"],
+            "0xffffffff81007000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["frame_chain_end"],
+            "NullFramePointer"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["page_walk"]["source"],
+            "original_faulting_guest_access"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["page_walk"]["entry_values"],
+            "raw_before_accessed_dirty_updates"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["page_walk"]["reason"],
+            "NotPresent { level: Pt }"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["page_walk"]["entries"][0]["level"],
+            "Pd"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["page_walk"]["entries"][0]["entry_address"],
+            "0x3020"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["page_walk"]["entries"][0]["entry_value"],
+            "0x4007"
+        );
+        assert_eq!(value["page_fault_events_omitted"], 4);
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn stack_context_sidecar_serializes_bounded_uart_byte_provenance() {
+        let path = std::env::temp_dir().join(format!(
+            "od-runner-uart-context-{}-{}.json",
+            std::process::id(),
+            1
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let capture = od_machine::UartOutputContextDiagnostic {
+            marker_offset: Some(10),
+            marker_prefix_before_trigger_unobserved: true,
+            end: od_machine::UartOutputContextEnd::RunEnded,
+            samples: vec![od_machine::UartOutputByteContextSnapshot {
+                offset: 18,
+                byte: b'=',
+                retired: 99,
+                rip: 0x1234,
+                rsp: 0x8000,
+                rbp: 0x8100,
+                cr3: 0x6000,
+                cs_selector: Some(0x1b),
+                frames: vec![od_machine::ConsoleContextFrame {
+                    frame_pointer: 0x8100,
+                    return_address: 0xffff_ffff_8100_1234,
+                }],
+                ended: od_machine::FrameChainEnd::NullFramePointer,
+            }],
+        };
+        write_stack_context_sidecar(&mut file, path.to_str().unwrap(), &[], Some(&capture))
+            .unwrap();
+        let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["schema_version"], 2);
+        let provenance = &value["uart_provenance"];
+        assert_eq!(provenance["marker_offset"], 10);
+        assert_eq!(provenance["marker_prefix_before_trigger_unobserved"], true);
+        assert_eq!(provenance["end"], "run_end");
+        assert_eq!(provenance["samples"][0]["offset"], 18);
+        assert_eq!(
+            provenance["samples"][0]["rip_phase"],
+            "post_out_instruction_boundary"
+        );
+        assert_eq!(provenance["samples"][0]["byte"], b'=' as u64);
+        assert_eq!(provenance["samples"][0]["cpl"], 3);
+        assert_eq!(
+            provenance["samples"][0]["frames"].as_array().unwrap().len(),
+            1
+        );
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn stage4a_runs_leaf_1_without_the_c7_stop_and_marks_the_result_counted() {
         // CLI; MOV EAX, 1; CPUID; HLT, no --diagnostic-past-c7.
         let code = [0xFA, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x0F, 0xA2, 0xF4];
@@ -2815,6 +3928,9 @@ mod tests {
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
             checkpoint_table: None,
+            stack_context_out: None,
+            execution_observations_out: None,
+            execution_observations_post_iret_index: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -2859,6 +3975,9 @@ mod tests {
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
             checkpoint_table: None,
+            stack_context_out: None,
+            execution_observations_out: None,
+            execution_observations_post_iret_index: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -2907,6 +4026,9 @@ mod tests {
             cpuid_profile: CpuidProfile::X8664V1Stage4AApic,
             user_mode: false,
             checkpoint_table: Some(path("docs/reports/data/stage4/s4-38l2-oracle.json")),
+            stack_context_out: None,
+            execution_observations_out: None,
+            execution_observations_post_iret_index: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -2976,6 +4098,9 @@ mod tests {
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
             checkpoint_table: None,
+            stack_context_out: None,
+            execution_observations_out: None,
+            execution_observations_post_iret_index: None,
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");

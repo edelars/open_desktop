@@ -1,0 +1,67 @@
+Stage 5 S5-07 — bounded UART stack-context diagnostic, live N=2 evidence
+Date: 2026-11-15
+
+Purpose
+=======
+Exercise the opt-in `--stack-context-out` diagnostic on the saved stage4a
+`--set-cpl0 --user-mode` profile and determine whether its samples correlate
+with the Linux panic trace. These are two separate single-run invocations;
+the diagnostic is forbidden in series mode, and these runs were not passed to
+the series comparator. They do not constitute S5-07 acceptance.
+
+Inputs and invocation profile
+=============================
+Kernel SHA-256:    9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e
+Initramfs SHA-256: ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588
+ACPI blob SHA-256: b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf
+ACPI manifest SHA-256: 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2
+
+Both runs used `stage4a --set-cpl0 --user-mode`, 128 MiB RAM, counted mode,
+retirement budget 3,000,000,000, expected stop `budget_exhausted`, and
+`diagnostic_past_c7=false`. The release runner was built from clean commit
+`79fa6ad1c00295d89a31d11bc772894af8a78596` on macOS/aarch64. The standalone
+runner JSON does not include source revision. Each run used a different nonce.
+
+Results
+=======
+
+| Run | Nonce suffix | Retired | Stop | #PF | #GP(0) | IRQ0 edges / total IRQ deliveries | UART bytes | Samples | Write error |
+|---|---:|---:|---|---:|---:|---:|---:|---:|---|
+| 0001 | 001 | 2,999,999,998 | budget_exhausted | 34 | 1 | 34,810 / 34,815 | 23,775 | 4 | null |
+| 0002 | 002 | 2,999,999,998 | budget_exhausted | 33 | 1 | 34,815 / 34,820 | 23,803 | 4 | null |
+
+Each run reached the guest, emitted its exact nonce marker once, and produced
+four snapshots. Every snapshot contained 10 reliable symbol+offset trace
+frames whose addresses exactly matched captured frame-pointer return
+addresses. No optional `?` frame matched. Each sidecar's first-trigger chain
+contained the same 23 addresses; each chain ended at `null_frame_pointer`.
+The sidecar is explicitly `capture_scope=console-output context` and
+`unwind_context=false`; this is correlation evidence, not a full unwinder.
+
+The debug ELF used for symbol correlation was
+`/Users/senya/projects/open_desktop/work/vms/s2-00-ubuntu-26.04.1/vmlinux-debug-7.0.0-38-generic`,
+SHA-256 `7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f`,
+BuildID `338e542e384c46228f7a378babc0f9bb2b6a5997`. Its `.text` and the exact
+decompressed kernel payload `.text` were both 24,408,304 bytes with SHA-256
+`5dec4d30f388386c69c39474841b80ceef957d7a0a3aa2eb2561cb64703e9961`.
+All 10 reliable frames resolved against that ELF. The optional candidates
+were not in the sampled active chain in these snapshots; this does not prove
+that all optional frames are invalid or safe to ignore.
+
+Hashes of ignored raw artifacts under
+`work/stage5/stage5-s5-07-console-context-20261115-a/`:
+
+| Run | runner.json SHA-256 | stack-context sidecar SHA-256 |
+|---|---|---|
+| 0001 | `cdf2f6ed34f08ba1e083467eff0660f392491f67c73928d8783b4ef31db870aa` | `ad9da8ed50038795bab0b5ce25d2379fc6234f1c62493937293aef08178fd5dd` |
+| 0002 | `856cac7cffde6b0eaf0717262bd26f0754efdbe7ae2c2a44f7ca6237eb81dc65` | `43397ece79b3e713296f05307db3e8d939bbdf8bbcb09bc2ec6894fa3f2df819` |
+
+Interpretation and limits
+=========================
+The two successful budget stops still differ by one delivered #PF, five IRQ0
+edges and five total IRQ deliveries, and 28 UART bytes. The diagnostic made reliable-frame
+correlation possible but did not explain these machine/UART differences.
+The strict comparator was not run on these standalone artifacts and remains
+unchanged. No claim is made about wall-time overhead or physical Linux
+acceptance. S5-07 remains blocked/unaccepted pending strict-clean counted
+series evidence and resolution of remaining differences.

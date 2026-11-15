@@ -1,0 +1,84 @@
+# S5-07 Stage 4 nonce vector-count series, 2026-11-15
+
+Purpose: verify the new per-vector guest exception counters in a counted N=2
+Stage 4 nonce series and identify why strict run comparison still fails.
+
+## Inputs and run profile
+
+- Worktree: `codex`; source revision `2ec744efdb2be75ccd934e3927129db86ea6189c`, clean when the release runner was built.
+- Host: macOS `aarch64`; release `od-runner` 0.1.0.
+- Scenario: `stage4-init-nonce`; `run_profile=smoke_not_acceptance`; counted; `--set-cpl0 --user-mode`; `cpu_path=cpl0_set`; 128 MiB RAM; budget `3,000,000,000`; expected stop `budget_exhausted`.
+- Kernel SHA-256: `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`.
+- Initramfs SHA-256: `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`.
+- ACPI blob SHA-256: `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`.
+- ACPI manifest SHA-256: `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`.
+
+## Outcomes
+
+Series outcome: `passed` for the configured smoke scenario; this is not Stage 5
+acceptance. Both runs started the guest, emitted the exact run nonce, exited 0
+at the expected `budget_exhausted` stop, retired `2,999,999,998` instructions,
+and reported `cpl3_retired=1,093`.
+
+| Run | Nonce | #PF | #GP(0) | Total exceptions | IRQs / IRQ0 edges | Wall seconds |
+|---|---|---:|---:|---:|---:|---:|
+| 0001 | `OD518e821171ce304b800010e6b00000000` | 33 | 1 | 34 | 34,821 / 34,816 | 1114.782702 |
+| 0002 | `OD518e8221aabef00e000010e6b00000001` | 33 | 1 | 34 | 34,825 / 34,820 | 1114.283230 |
+
+The per-vector counts match. IRQ delivery and IRQ0 edge counts differ by four.
+The UART files are runner-recorded stop-scoped `linux_direct_run_boot_com1`
+captures, not independent streaming captures.
+
+## Strict comparison and diagnosis
+
+`od-runner --compare-results compare-run-0001.json compare-run-0002.json
+--linux-stage5 --json` returned `matches=false`, with unexplained
+`run[0].machine_observations differs` and
+`run[0].ordered_uart_bytes differs after nonce normalization`.
+
+Run 0001's terminal Linux panic trace contains the optional frame
+`? __task_pid_nr_ns+0x6c/0x120`; run 0002's trace does not. The symbol is not in
+`optional_panic_frame` in `tools/runner/src/linux_direct/series.rs`. As a result,
+`normalize_stage4_panic_snapshot` rejects run 0001's snapshot,
+`stage4_nonce_variation_eligible` is false for the pair, and the comparator
+does not apply its Stage 4 nonce volatile-observation normalization. This
+explains why the IRQ and panic-stack differences remain strict failures. It does
+not establish whether the frame may safely be ignored or explain the underlying
+run-to-run IRQ variation. The allowlist was not changed.
+
+The old S5-07 C/run-0001 external-IRQ failure was not reproduced or explained.
+No A-G guest scenario was run. S5-07 stays blocked/unaccepted.
+
+## Evidence hashes
+
+- Series JSON: `efe4e613468db284b5c0f9f6f0284534e1f7071b76034d012390f8cd1c285396`.
+- Run 0001 manifest / runner JSON / UART:
+  `a7454b26551444c2510088ffab78b1fbd00c63d1bcaddd98565cf78200a2419e` /
+  `c46dc5ef47e9f6bee7bb97f0ace50852aae482662b9f388dfb0fc4f1499afffd` /
+  `3b76cc36483e2e90ad914b69c5bdf2f628aecceda91a4f662cd5e2443d9a7078`.
+- Run 0002 manifest / runner JSON / UART:
+  `83be9bb37294c4bb5915df40f2ecf28df8ee1983640659d89931350ed9cec1fc` /
+  `5f9ea1cdd31913ee4159019a43ad6651a4c013ac246f84b9fb36bfb804264ad1` /
+  `b863e50c3643cc38624684f0ee4fcdf8d4cb0d4b137b1c14d933a9f7cb838090`.
+
+Raw run artifacts remain in ignored
+`work/stage5/stage5-s5-07-stage4a-vector-counts-20261115-a/`.
+
+## Re-evaluation after optional-frame comparator slice
+
+After commit `3d15e1a`, a clean release build re-compared the same run
+artifacts; no new guest run was performed. The result remains `matches=false`.
+Machine observations moved to `explained_differences`; the only unexplained
+difference is `run[0].ordered_uart_bytes differs after nonce normalization`.
+
+The remaining raw UART differences include:
+
+- Run 0001 emits `OD_NONCE=<nonce>` before `Run /init as init process`; run 0002
+  emits those lines in the opposite order.
+- The embedded audit value is `audit(0.140:1)` in run 0001 and
+  `audit(0.141:1)` in run 0002. The comparator normalizes the outer printk
+  timestamp but not the embedded audit timestamp.
+
+These remain strict because neither ordering nor embedded audit-time variation
+has been established as benign. Thus the optional-frame slice explains the
+machine observation difference but does not make S5-07 strict-clean.

@@ -6,10 +6,12 @@ mod acpi_pm;
 mod apic_pair;
 mod bus;
 mod clock_owner;
+mod console_output_context;
 mod diagnostic_vcpu;
 mod display_device;
 mod dma_page;
 mod event_queue;
+mod execution_observations;
 mod fetch_translation_cache;
 mod firmware_board;
 mod identity_memory_adapter;
@@ -97,6 +99,12 @@ pub use bus::{
     PortRange, PortRegionBinding, TrackedCodePatchError, TrackedCodeSnapshot,
     TrackedCodeSnapshotError,
 };
+
+pub use console_output_context::{
+    ConsoleContextFrame, ConsoleContextTrigger, ConsoleOutputContextSnapshot, FrameChainEnd,
+    LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY, MAX_UART_PROVENANCE_BYTES, UartOutputByteContextSnapshot,
+    UartOutputContextDiagnostic, UartOutputContextEnd,
+};
 pub use dma_page::{DMA_PAGE_0_PORT, DMA_PAGE_0_PORT_BYTES, DmaPage0};
 pub use pic_8259::{
     ISA_IRQ_VECTOR_BASE, PIC_ELCR_BASE_PORT, PIC_ELCR_MASTER_MASK, PIC_ELCR_PORT_BYTES,
@@ -160,10 +168,18 @@ pub use linux_direct::{
     LinuxStopRecord, SYSCALL_JOURNAL_CAPACITY, SyscallJournal, SyscallJournalEntry,
     load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
     run_linux_direct_board_set_observed, run_linux_direct_board_set_user_mode,
+    run_linux_direct_board_set_user_mode_with_execution_observations,
+    run_linux_direct_board_set_user_mode_with_post_iret_index,
 };
 
 pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEvent};
 
+pub use execution_observations::{
+    DeliveredPageFaultObservation, FaultingPageFaultContext, FaultingPageWalkContext,
+    LINUX_PAGE_FAULT_EVENT_CAPACITY, LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
+    LINUX_RDTSC_SITE_CAPACITY, LinuxExecutionObservations, PostIretPageWalkSnapshot,
+    RdtscSiteCount,
+};
 pub use firmware_board::{
     FIRMWARE_ACPI_FACS_BASE, FIRMWARE_ACPI_FACS_BYTES, FIRMWARE_ACPI_TABLES_BASE,
     FIRMWARE_ACPI_TABLES_BYTES, FIRMWARE_BOOT_PAGE_TABLES_GPA, FIRMWARE_BOOT_STACK_BASE,

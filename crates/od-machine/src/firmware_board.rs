@@ -7,6 +7,14 @@
 //! hands over a `LongModeState`. It is not a reset vector and not real mode.
 
 use crate::clock_owner::{ClockOwner, ClockOwnerError, IdleOutcome};
+use crate::console_output_context::{
+    ConsoleContextTrigger, ConsoleLineTrigger, ConsoleOutputContextSnapshot, MAX_CAPTURE_COUNT,
+    UartOutputByteContextSnapshot, UartOutputContextCapture, UartOutputContextDiagnostic,
+    capture_frame_chain,
+};
+use crate::execution_observations::{
+    LinuxExecutionObservationCollector, LinuxExecutionObservations,
+};
 use crate::fetch_translation_cache::FetchCacheInvalidation;
 use crate::idle_arbiter::{SchedActivity, WakeView};
 use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters, NoIrqSource};
@@ -278,6 +286,14 @@ pub enum FirmwareBoardError {
     BusBuild(BusBuildError),
     Bus(BusAccessError),
     Clock(VirtualClockError),
+    /// An external interrupt could not be delivered during a Linux run. Keep the original
+    /// typed failure's Debug form and the guest execution point for the host evidence record.
+    ExternalInterruptDelivery {
+        vector: u8,
+        failure: String,
+        rip: u64,
+        cs_selector: Option<u16>,
+    },
 }
 
 impl fmt::Display for FirmwareBoardError {
@@ -897,9 +913,15 @@ pub(crate) struct LinuxSetRunReport {
     /// The system calls of this call (S4-39f, `with_user_mode`): `SYSCALL` entries and `SYSRETQ`
     /// returns, as a ring of the last entries. Empty for a set without the member.
     pub(crate) syscall_journal: crate::linux_direct::SyscallJournal,
-    /// `#PF` exceptions delivered to the guest through its IDT in this call (S4-38L5c); a
+    /// `#PF` and `#GP(0)` exceptions delivered to the guest through its IDT in this call; a
     /// delivery is not a retired instruction.
     pub(crate) exceptions_delivered: u64,
+    /// Successfully delivered guest `#PF` exceptions in this call.
+    pub(crate) page_faults_delivered: u64,
+    /// Successfully delivered guest `#GP(0)` exceptions in this call.
+    pub(crate) general_protection_faults_delivered: u64,
+    /// Present only for a one-shot opt-in execution-observation run.
+    pub(crate) execution_observations: Option<LinuxExecutionObservations>,
     /// What the interrupt hook counted in this call (S4-38L8b); all zero without a source or
     /// without the hook.
     pub(crate) irq: IrqCounters,
@@ -961,9 +983,34 @@ fn resumes_deadline_cut(
 /// ([`resumes_set_exit`]); it reaches this function only when the run ends on it anyway (a stop
 /// the guest asked for, or no budget left) and is then expressed like the quantum stop
 /// (`Stopped`), which the loop turns into `BudgetExhausted` once the budget is spent.
+#[derive(Debug, Eq, PartialEq)]
+enum SetExitMappingError {
+    Integration(&'static str),
+    ExternalInterrupt {
+        vector: u8,
+        failure: IrqDeliveryFailure,
+    },
+}
+
+impl SetExitMappingError {
+    fn into_board_error(self, state: &LongModeState) -> FirmwareBoardError {
+        match self {
+            Self::Integration(detail) => FirmwareBoardError::Config(detail),
+            Self::ExternalInterrupt { vector, failure } => {
+                FirmwareBoardError::ExternalInterruptDelivery {
+                    vector,
+                    failure: format!("{failure:?}"),
+                    rip: state.rip,
+                    cs_selector: state.cs_selector,
+                }
+            }
+        }
+    }
+}
+
 fn set_exit_to_probe_exit(
     exit: PagedCpl0SetExit,
-) -> Result<(PagedProbeExit, String), &'static str> {
+) -> Result<(PagedProbeExit, String), SetExitMappingError> {
     let detail = format!("{exit:?}");
     let mapped = match exit {
         PagedCpl0SetExit::Run(run) => match run {
@@ -976,7 +1023,9 @@ fn set_exit_to_probe_exit(
             RunExit::Unsupported { opcode } => PagedProbeExit::Unsupported { opcode },
             RunExit::MemoryError(error) => PagedProbeExit::Backend(error),
             RunExit::StopAddress => {
-                return Err("the CPL0 set returned an exit the board never asks for");
+                return Err(SetExitMappingError::Integration(
+                    "the CPL0 set returned an exit the board never asks for",
+                ));
             }
         },
         PagedCpl0SetExit::Rejected(error) => {
@@ -1018,20 +1067,15 @@ fn set_exit_to_probe_exit(
         // report's `user_entry` frame.
         PagedCpl0SetExit::UserEntry(_) => PagedProbeExit::Stopped,
         PagedCpl0SetExit::UnknownSetExit => {
-            return Err("the CPL0 set returned an exit variant the board does not know");
+            return Err(SetExitMappingError::Integration(
+                "the CPL0 set returned an exit variant the board does not know",
+            ));
         }
         // S4-38L8b: an interrupt of the board source that could not be delivered is an error of
         // the run, never a quiet stop; the vector and the reason are in the `Debug` text of the
         // set exit.
-        PagedCpl0SetExit::IrqDeliveryFailed { failure, .. } => {
-            return Err(match failure {
-                IrqDeliveryFailure::Refused(_) => {
-                    "an external interrupt of the board source was refused by the CPU delivery"
-                }
-                IrqDeliveryFailure::Aborted { .. } => {
-                    "an external interrupt of the board source aborted on a memory access"
-                }
-            });
+        PagedCpl0SetExit::IrqDeliveryFailed { vector, failure } => {
+            return Err(SetExitMappingError::ExternalInterrupt { vector, failure });
         }
     };
     Ok((mapped, detail))
@@ -1049,6 +1093,14 @@ pub struct FirmwareRunReport {
     pub com1: Vec<u8>,
     pub virtual_ns: u64,
     pub tsc_hz: u64,
+    /// Successful guest RDTSC reads in this call; `None` without the Linux-profile source.
+    pub rdtsc_reads: Option<u64>,
+    /// Successful guest RDTSC reads by CPL ring 0..3; `None` without the Linux-profile source.
+    pub rdtsc_reads_by_cpl: Option<[u64; 4]>,
+    /// Successful guest reads of PIT port B (`0x61`) during this call; `None` without a PIT.
+    pub pit_port_b_reads: Option<u64>,
+    /// Successful guest reads of PIT channel 2 (`0x42`) during this call; `None` without a PIT.
+    pub pit_counter_port_reads: Option<u64>,
     /// Set when the guest asked the PM block to stop the machine (S5 or reset,
     /// S7-14a); `exit` is then `Stopped`. Always `None` without `acpi_pm`.
     pub stop_reason: Option<MachineStopReason>,
@@ -1091,6 +1143,11 @@ pub struct LoadedFirmwareBoard {
     pci_config_address: u32,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
+    /// Disabled by default. Diagnostic snapshots are sampled only at completed COM1 lines.
+    console_context_parser: Option<ConsoleLineTrigger>,
+    console_context_snapshots: Vec<ConsoleOutputContextSnapshot>,
+    /// Disabled by default. Captures a bounded window after the first nonce marker.
+    uart_output_context: Option<UartOutputContextCapture>,
     /// Pending-tick flag of the guest `RDTSC` (S4-37a6b); `Some` only under
     /// `linux_profile`, where `run` hands the CPU a time source. The source sets
     /// it, the `run_boot` stop predicate reads it and `run_boot` clears it.
@@ -1167,6 +1224,128 @@ impl LoadedFirmwareBoard {
     /// that returned an error (so the runner never loses transcript bytes).
     pub fn com1_transcript(&self) -> &[u8] {
         &self.com1_log
+    }
+
+    /// Enables bounded diagnostic sampling at selected completed console-output lines.
+    /// Sampling reads CPU state and RAM only; the result describes console-output context,
+    /// not the unwind state of a previously printed trace.
+    pub fn enable_console_output_context_diagnostic(&mut self) {
+        self.console_context_parser = Some(ConsoleLineTrigger::default());
+        self.console_context_snapshots.clear();
+        self.uart_output_context = Some(UartOutputContextCapture::default());
+    }
+
+    /// Takes the snapshots produced by the last run, if the diagnostic was enabled.
+    pub fn take_console_output_context_diagnostic(&mut self) -> Vec<ConsoleOutputContextSnapshot> {
+        std::mem::take(&mut self.console_context_snapshots)
+    }
+
+    /// Takes bounded byte-level COM1 provenance, if the diagnostic was enabled.
+    pub fn take_uart_output_context_diagnostic(&mut self) -> Option<UartOutputContextDiagnostic> {
+        self.uart_output_context
+            .take()
+            .map(UartOutputContextCapture::finish)
+    }
+
+    fn sample_console_output_context(&mut self, byte: u8) {
+        if self.console_context_snapshots.len() >= MAX_CAPTURE_COUNT {
+            self.console_context_parser = None;
+            return;
+        }
+        let trigger = self
+            .console_context_parser
+            .as_mut()
+            .and_then(|parser| parser.push(byte));
+        if let Some(trigger) = trigger {
+            self.capture_console_output_context(trigger);
+            if self.console_context_snapshots.len() >= MAX_CAPTURE_COUNT {
+                self.console_context_parser = None;
+            }
+        }
+    }
+
+    fn sample_uart_output_context(&mut self, byte: u8, offset: u64, retired: u64) {
+        let should_capture = self
+            .uart_output_context
+            .as_mut()
+            .is_some_and(|capture| capture.observe_byte(byte, offset));
+        if !should_capture {
+            return;
+        }
+
+        let rip = self.state().rip;
+        let rbp = self.state().gpr[Register::Rbp as usize];
+        let rsp = self.state().gpr[Register::Rsp as usize];
+        let cr3 = self.page_table_root;
+        let (frames, ended) = self.capture_console_frame_chain(rip, rbp, cr3);
+        let snapshot = UartOutputByteContextSnapshot {
+            offset,
+            byte,
+            retired,
+            rip,
+            rsp,
+            rbp,
+            cr3,
+            cs_selector: self.state().cs_selector,
+            frames,
+            ended,
+        };
+        if let Some(capture) = self.uart_output_context.as_mut() {
+            capture.push_snapshot(snapshot);
+        }
+    }
+
+    fn capture_console_output_context(&mut self, trigger: ConsoleContextTrigger) {
+        let rip = self.state().rip;
+        let rbp = self.state().gpr[Register::Rbp as usize];
+        let cr3 = self.page_table_root;
+        let (frames, ended) = self.capture_console_frame_chain(rip, rbp, cr3);
+        self.console_context_snapshots
+            .push(ConsoleOutputContextSnapshot {
+                trigger,
+                rip,
+                rbp,
+                cr3,
+                frames,
+                ended,
+            });
+    }
+
+    fn capture_console_frame_chain(
+        &mut self,
+        rip: u64,
+        rbp: u64,
+        cr3: u64,
+    ) -> (Vec<crate::ConsoleContextFrame>, crate::FrameChainEnd) {
+        const CR0_LONG_PAGING: u64 = (1 << 31) | (1 << 16) | (1 << 4) | 1;
+        const CR4_PAE: u64 = 1 << 5;
+        let paging = Long64ProbeConfig::new(
+            self.state().cr0.unwrap_or(CR0_LONG_PAGING),
+            cr3,
+            self.state().cr4.unwrap_or(CR4_PAE),
+            FIRMWARE_EFER,
+        );
+        let (frames, ended) = match paging {
+            Ok(paging) => capture_frame_chain(rbp, |frame_pointer| {
+                let mut bytes = [0; 16];
+                self.bus
+                    .read_virtual_ram_diagnostic(
+                        &paging,
+                        rip,
+                        GuestLinearAddress::new(frame_pointer),
+                        AccessContext {
+                            mode: InstructionMode::Long64,
+                            privilege: PrivilegeLevel::Ring0,
+                            origin: AccessOrigin::Explicit,
+                        },
+                        &mut bytes,
+                    )
+                    .map(|()| bytes)
+                    .map_err(|_| ())
+            }),
+            Err(_) => (Vec::new(), crate::FrameChainEnd::ReadFailed),
+        };
+        (frames, ended)
     }
 
     pub fn uart(&self) -> Uart16550Handle {
@@ -1899,6 +2078,46 @@ impl LoadedFirmwareBoard {
         fetch_cache: bool,
         irq_hook: bool,
     ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
+        self.run_linux_boot_cpl0_set_with_observations(
+            instruction_budget,
+            set,
+            cpuid_boundary,
+            fetch_cache,
+            irq_hook,
+            false,
+        )
+    }
+
+    pub(crate) fn run_linux_boot_cpl0_set_with_observations(
+        &mut self,
+        instruction_budget: u64,
+        set: &Cpl0ProfileSet<'_>,
+        cpuid_boundary: bool,
+        fetch_cache: bool,
+        irq_hook: bool,
+        capture_execution_observations: bool,
+    ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
+        self.run_linux_boot_cpl0_set_with_post_iret_index(
+            instruction_budget,
+            set,
+            cpuid_boundary,
+            fetch_cache,
+            irq_hook,
+            capture_execution_observations,
+            None,
+        )
+    }
+
+    pub(crate) fn run_linux_boot_cpl0_set_with_post_iret_index(
+        &mut self,
+        instruction_budget: u64,
+        set: &Cpl0ProfileSet<'_>,
+        cpuid_boundary: bool,
+        fetch_cache: bool,
+        irq_hook: bool,
+        capture_execution_observations: bool,
+        selected_post_iret_ordinal: Option<u64>,
+    ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
         let context = AccessContext {
             mode: InstructionMode::Long64,
             privilege: PrivilegeLevel::Ring0,
@@ -1909,13 +2128,29 @@ impl LoadedFirmwareBoard {
         let mut quanta = 0u64;
         let mut changes: Vec<TranslationContextChange> = Vec::new();
         let mut exceptions_delivered = 0u64;
+        let mut page_faults_delivered = 0u64;
+        let mut general_protection_faults_delivered = 0u64;
+        let mut execution_observations = capture_execution_observations.then(|| {
+            LinuxExecutionObservationCollector::with_post_iret_ordinal(selected_post_iret_ordinal)
+        });
         let mut cpl3_retired = 0u64;
         let mut syscall_journal = crate::linux_direct::SyscallJournal::default();
         self.com1_log.clear();
+        self.console_context_snapshots.clear();
+        if self.console_context_parser.is_some() {
+            self.console_context_parser = Some(ConsoleLineTrigger::default());
+        }
+        if self.uart_output_context.is_some() {
+            self.uart_output_context = Some(UartOutputContextCapture::default());
+        }
         let nvme = self.nvme.clone();
         let acpi_pm = self.acpi_pm.clone();
         let pit = self.pit.clone();
         let rdtsc_tick = self.rdtsc_tick.clone();
+        let pit_port_b_reads_before = pit.as_ref().map(Pit8254Handle::port_b_reads);
+        let pit_counter_port_reads_before = pit.as_ref().map(Pit8254Handle::counter_port_reads);
+        let mut rdtsc_reads = 0u64;
+        let mut rdtsc_reads_by_cpl = [0u64; 4];
         if let Some(pm) = &acpi_pm {
             pm.take_timer_tick_ns();
         }
@@ -2032,6 +2267,7 @@ impl LoadedFirmwareBoard {
                     skip_first_boundary: partial_rep,
                 }),
                 self.checkpoints.as_mut(),
+                execution_observations.as_mut(),
             );
             quanta += 1;
             partial_rep = matches!(
@@ -2042,6 +2278,8 @@ impl LoadedFirmwareBoard {
             self.page_table_root = report.cr3;
             changes.extend(report.translation_context_changes.iter().copied());
             exceptions_delivered += report.delivered_exceptions;
+            page_faults_delivered += report.delivered_page_faults;
+            general_protection_faults_delivered += report.delivered_general_protection_faults;
             cpl3_retired += report.cpl3_retired;
             for event in &report.syscall_events {
                 syscall_journal.record(*event);
@@ -2063,6 +2301,16 @@ impl LoadedFirmwareBoard {
             while uart.transfer_holding_to_shift() {
                 if let Some(byte) = uart.complete_transmission() {
                     self.com1_log.push(byte);
+                    if self.console_context_parser.is_some() {
+                        self.sample_console_output_context(byte);
+                    }
+                    if self.uart_output_context.is_some() {
+                        self.sample_uart_output_context(
+                            byte,
+                            self.com1_log.len() as u64 - 1,
+                            retired,
+                        );
+                    }
                 }
             }
             if let Some(source) = &self.uart_irq_source {
@@ -2091,6 +2339,17 @@ impl LoadedFirmwareBoard {
             if let Some(flag) = &rdtsc_tick
                 && flag.swap(false, Ordering::Relaxed)
             {
+                rdtsc_reads = rdtsc_reads.saturating_add(1);
+                let cpl = self
+                    .state()
+                    .cs_selector
+                    .map_or(0, |selector| (selector & 3) as usize);
+                rdtsc_reads_by_cpl[cpl] = rdtsc_reads_by_cpl[cpl].saturating_add(1);
+                if cpl == 0
+                    && let Some(observations) = execution_observations.as_mut()
+                {
+                    observations.record_cpl0_rdtsc(report.last_instruction_rip);
+                }
                 let tick_ns = RDTSC_TICK_NS;
                 #[cfg(test)]
                 let tick_ns = if self.suppress_rdtsc_tick { 0 } else { tick_ns };
@@ -2152,7 +2411,7 @@ impl LoadedFirmwareBoard {
             }
             let (exit, set_exit_detail) = match set_exit_to_probe_exit(report.exit) {
                 Ok(exit) => exit,
-                Err(detail) => break Err(failure(FirmwareBoardError::Config(detail))),
+                Err(error) => break Err(failure(error.into_board_error(self.state()))),
             };
             let exit = match exit {
                 PagedProbeExit::Stopped
@@ -2174,6 +2433,14 @@ impl LoadedFirmwareBoard {
                 com1: self.com1_log.clone(),
                 virtual_ns: self.clock().now_ns(),
                 tsc_hz: self.clock().tsc_hz(),
+                rdtsc_reads: rdtsc_tick.as_ref().map(|_| rdtsc_reads),
+                rdtsc_reads_by_cpl: rdtsc_tick.as_ref().map(|_| rdtsc_reads_by_cpl),
+                pit_port_b_reads: pit_port_b_reads_before
+                    .zip(pit.as_ref().map(Pit8254Handle::port_b_reads))
+                    .map(|(before, after)| after.saturating_sub(before)),
+                pit_counter_port_reads: pit_counter_port_reads_before
+                    .zip(pit.as_ref().map(Pit8254Handle::counter_port_reads))
+                    .map(|(before, after)| after.saturating_sub(before)),
                 stop_reason,
             })
             .map(|run| (run, set_exit_detail, cpuid_divergence_leaf, user_entry));
@@ -2195,6 +2462,10 @@ impl LoadedFirmwareBoard {
             cpl3_retired,
             syscall_journal,
             exceptions_delivered,
+            page_faults_delivered,
+            general_protection_faults_delivered,
+            execution_observations: execution_observations
+                .map(LinuxExecutionObservationCollector::finish),
             irq: irq_counters,
         })
     }
@@ -2212,6 +2483,10 @@ impl LoadedFirmwareBoard {
         let acpi_pm = self.acpi_pm.clone();
         let pit = self.pit.clone();
         let rdtsc_tick = self.rdtsc_tick.clone();
+        let pit_port_b_reads_before = pit.as_ref().map(Pit8254Handle::port_b_reads);
+        let pit_counter_port_reads_before = pit.as_ref().map(Pit8254Handle::counter_port_reads);
+        let mut rdtsc_reads = 0u64;
+        let mut rdtsc_reads_by_cpl = [0u64; 4];
         // Ticks queued before this run came from the host, not from the guest.
         if let Some(pm) = &acpi_pm {
             pm.take_timer_tick_ns();
@@ -2278,6 +2553,12 @@ impl LoadedFirmwareBoard {
             if let Some(flag) = &rdtsc_tick
                 && flag.swap(false, Ordering::Relaxed)
             {
+                rdtsc_reads = rdtsc_reads.saturating_add(1);
+                let cpl = self
+                    .state()
+                    .cs_selector
+                    .map_or(0, |selector| (selector & 3) as usize);
+                rdtsc_reads_by_cpl[cpl] = rdtsc_reads_by_cpl[cpl].saturating_add(1);
                 let tick_ns = RDTSC_TICK_NS;
                 #[cfg(test)]
                 let tick_ns = if self.suppress_rdtsc_tick { 0 } else { tick_ns };
@@ -2302,6 +2583,14 @@ impl LoadedFirmwareBoard {
                 com1: self.com1_log.clone(),
                 virtual_ns: self.clock().now_ns(),
                 tsc_hz: self.clock().tsc_hz(),
+                rdtsc_reads: rdtsc_tick.as_ref().map(|_| rdtsc_reads),
+                rdtsc_reads_by_cpl: rdtsc_tick.as_ref().map(|_| rdtsc_reads_by_cpl),
+                pit_port_b_reads: pit_port_b_reads_before
+                    .zip(pit.as_ref().map(Pit8254Handle::port_b_reads))
+                    .map(|(before, after)| after.saturating_sub(before)),
+                pit_counter_port_reads: pit_counter_port_reads_before
+                    .zip(pit.as_ref().map(Pit8254Handle::counter_port_reads))
+                    .map(|(before, after)| after.saturating_sub(before)),
                 stop_reason,
             });
         }
@@ -2660,6 +2949,9 @@ impl AssembledBoard {
             page_table_root,
             pci_config_address: 0,
             com1_log: Vec::new(),
+            console_context_parser: None,
+            console_context_snapshots: Vec::new(),
+            uart_output_context: None,
             rdtsc_tick,
             irq_source: Box::new(NoIrqSource),
             pic_master,
@@ -2724,6 +3016,9 @@ impl AssembledBoard {
             page_table_root,
             pci_config_address: 0,
             com1_log: Vec::new(),
+            console_context_parser: None,
+            console_context_snapshots: Vec::new(),
+            uart_output_context: None,
             rdtsc_tick,
             irq_source: Box::new(NoIrqSource),
             pic_master,
@@ -4990,6 +5285,9 @@ mod tests {
         assert_eq!(report.retired, 5, "MOV, 3 x IN, HLT");
         assert_eq!(board.pit.as_ref().unwrap().counter_port_reads(), 3);
         assert_eq!(board.pit.as_ref().unwrap().port_b_reads(), 0);
+        assert_eq!(report.rdtsc_reads, Some(0));
+        assert_eq!(report.pit_port_b_reads, Some(0));
+        assert_eq!(report.pit_counter_port_reads, Some(3));
         assert_eq!(report.virtual_ns, 5 + 3 * 1_000);
         assert_eq!(board.clock().now_ns(), report.virtual_ns);
     }
@@ -5005,6 +5303,9 @@ mod tests {
         assert_eq!(report.retired, 8, "2 x MOV, 5 x IN, HLT");
         assert_eq!(board.pit.as_ref().unwrap().port_b_reads(), 2);
         assert_eq!(board.pit.as_ref().unwrap().counter_port_reads(), 3);
+        assert_eq!(report.rdtsc_reads, Some(0));
+        assert_eq!(report.pit_port_b_reads, Some(2));
+        assert_eq!(report.pit_counter_port_reads, Some(3));
         assert_eq!(report.virtual_ns, 8 + 5 * 1_000);
     }
 
@@ -5140,6 +5441,10 @@ mod tests {
         let report = board.run_boot(1_000).unwrap();
         assert_eq!(report.exit, PagedProbeExit::Halted);
         assert_eq!(report.retired, 101);
+        assert_eq!(report.rdtsc_reads, Some(100));
+        assert_eq!(report.rdtsc_reads_by_cpl, Some([100, 0, 0, 0]));
+        assert_eq!(report.pit_port_b_reads, Some(0));
+        assert_eq!(report.pit_counter_port_reads, Some(0));
         assert_eq!(report.virtual_ns, 100 * 1_000 + 101);
         // The 100th RDTSC saw 99 earlier (1 ns + 1 us) steps; tsc_hz is 1 GHz.
         assert_eq!(edx_eax(&board), 99 * 1_001);
@@ -5164,6 +5469,10 @@ mod tests {
         assert_eq!(report.exit, PagedProbeExit::Unsupported { opcode: 0x31 });
         assert_eq!(report.retired, 0, "Unsupported on the first instruction");
         assert_eq!(report.virtual_ns, 0, "no tick without the profile");
+        assert_eq!(report.rdtsc_reads, None);
+        assert_eq!(report.rdtsc_reads_by_cpl, None);
+        assert_eq!(report.pit_port_b_reads, None);
+        assert_eq!(report.pit_counter_port_reads, None);
     }
 
     #[test]
@@ -5652,12 +5961,31 @@ mod tests {
     fn irq_delivery_failure_is_an_error_of_the_run_and_a_deadline_cut_resumes() {
         use crate::paged_memory_adapter::IrqDeliveryFailure;
         use od_isa::Cpl0ExternalInterruptRefusal;
-        assert!(
-            set_exit_to_probe_exit(PagedCpl0SetExit::IrqDeliveryFailed {
+        let mapping_error = set_exit_to_probe_exit(PagedCpl0SetExit::IrqDeliveryFailed {
+            vector: 0x30,
+            failure: IrqDeliveryFailure::Refused(Cpl0ExternalInterruptRefusal::GateNotPresent),
+        })
+        .expect_err("a refused external IRQ remains a run error");
+        assert_eq!(
+            mapping_error,
+            SetExitMappingError::ExternalInterrupt {
                 vector: 0x30,
-                failure: IrqDeliveryFailure::Refused(Cpl0ExternalInterruptRefusal::GateNotPresent),
-            })
-            .is_err()
+                failure: IrqDeliveryFailure::Refused(Cpl0ExternalInterruptRefusal::GateNotPresent,),
+            }
+        );
+        let state = LongModeState {
+            rip: 0xffff_ffff_8159_1b14,
+            cs_selector: Some(0x33),
+            ..LongModeState::default()
+        };
+        assert_eq!(
+            mapping_error.into_board_error(&state),
+            FirmwareBoardError::ExternalInterruptDelivery {
+                vector: 0x30,
+                failure: "Refused(GateNotPresent)".to_string(),
+                rip: 0xffff_ffff_8159_1b14,
+                cs_selector: Some(0x33),
+            }
         );
         let budget = PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted);
         assert!(resumes_deadline_cut(&budget, true, false, 5, 3));
@@ -5682,12 +6010,16 @@ mod tests {
     fn set_exit_without_a_probe_counterpart_is_an_integration_error_of_the_board() {
         assert_eq!(
             set_exit_to_probe_exit(PagedCpl0SetExit::UnknownSetExit),
-            Err("the CPL0 set returned an exit variant the board does not know")
+            Err(SetExitMappingError::Integration(
+                "the CPL0 set returned an exit variant the board does not know",
+            ))
         );
         // The loop passes no stop address.
         assert_eq!(
             set_exit_to_probe_exit(PagedCpl0SetExit::Run(RunExit::StopAddress)),
-            Err("the CPL0 set returned an exit the board never asks for")
+            Err(SetExitMappingError::Integration(
+                "the CPL0 set returned an exit the board never asks for",
+            ))
         );
     }
 
