@@ -8,19 +8,20 @@ pub const HANDOFF_WINDOW_SIZE: usize = 0x1_0000;
 const MAGIC: &[u8; 8] = b"ODHANDOF";
 const HEADER_SIZE: usize = 0xA0;
 const CRC_OFFSET: usize = 0x14;
+const NO_OWNER: u32 = u32::MAX;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Handoff<'a> {
     bytes: &'a [u8],
-    pub version_minor: u16,
-    pub tsc_hz: u64,
-    pub board_profile: u32,
-    pub region_table_offset: usize,
-    pub region_count: usize,
-    pub region_entry_size: usize,
-    pub device_table_offset: usize,
-    pub device_count: usize,
-    pub device_entry_size: usize,
+    version_minor: u16,
+    tsc_hz: u64,
+    board_profile: u32,
+    region_table_offset: usize,
+    region_count: usize,
+    region_entry_size: usize,
+    device_table_offset: usize,
+    device_count: usize,
+    device_entry_size: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,6 +106,14 @@ pub enum HandoffError {
     NonZeroHeaderReserved {
         offset: usize,
     },
+    InvalidBootReservation {
+        kind: u32,
+    },
+    InvalidAcpiReservations,
+    InvalidBootPageTableSize {
+        expected: u64,
+        actual: u64,
+    },
     InvalidTableEntrySize {
         table: &'static str,
         actual: u32,
@@ -169,6 +178,44 @@ fn table_fits(offset: u32, count: u32, entry_size: u32, total: usize) -> bool {
 
 fn table_end(offset: u32, count: u32, entry_size: u32) -> usize {
     offset as usize + count as usize * entry_size as usize
+}
+
+#[derive(Clone, Copy)]
+struct RegionRecord {
+    kind: u32,
+    attrs: u32,
+    base: u64,
+    length: u64,
+    owner: u32,
+}
+
+fn region_at(bytes: &[u8], table_offset: usize, index: usize) -> RegionRecord {
+    let at = table_offset + index * 0x20;
+    RegionRecord {
+        kind: u32_at(bytes, at),
+        attrs: u32_at(bytes, at + 4),
+        base: u64_at(bytes, at + 8),
+        length: u64_at(bytes, at + 16),
+        owner: u32_at(bytes, at + 24),
+    }
+}
+
+fn mapped_block_count(bytes: &[u8], offset: usize, count: usize, shift: u32) -> u64 {
+    let mut next_unseen = 0u64;
+    let mut total = 0u64;
+    for index in 0..count {
+        let region = region_at(bytes, offset, index);
+        if region.kind == 2 {
+            continue;
+        }
+        let first = region.base >> shift;
+        let end_exclusive = ((region.base + region.length - 1) >> shift) + 1;
+        if end_exclusive > next_unseen {
+            total += end_exclusive - first.max(next_unseen);
+            next_unseen = end_exclusive;
+        }
+    }
+    total
 }
 
 fn validate_regions(
@@ -454,8 +501,108 @@ impl<'a> Handoff<'a> {
         })
     }
 
+    /// Parses and validates the block for use as this board's firmware boot handoff.
+    pub fn parse_for_boot(bytes: &'a [u8], supported_minor_max: u16) -> Result<Self, HandoffError> {
+        let handoff = Self::parse(bytes, supported_minor_max)?;
+        handoff.validate_boot_reservations()?;
+        Ok(handoff)
+    }
+
     pub fn bytes(&self) -> &'a [u8] {
         self.bytes
+    }
+
+    pub const fn version_minor(&self) -> u16 {
+        self.version_minor
+    }
+
+    pub const fn tsc_hz(&self) -> u64 {
+        self.tsc_hz
+    }
+
+    pub const fn board_profile(&self) -> u32 {
+        self.board_profile
+    }
+
+    pub const fn region_count(&self) -> usize {
+        self.region_count
+    }
+
+    pub const fn device_count(&self) -> usize {
+        self.device_count
+    }
+
+    /// Checks the fixed boot reservations and the temporary page-table reservation against the
+    /// board contract. The caller invokes this after parsing the block and before using its map.
+    pub fn validate_boot_reservations(&self) -> Result<(), HandoffError> {
+        let get_one = |kind: u32| -> Result<RegionRecord, HandoffError> {
+            let mut found = None;
+            for index in 0..self.region_count {
+                let region = region_at(self.bytes, self.region_table_offset, index);
+                if region.kind == kind {
+                    if found.is_some() {
+                        return Err(HandoffError::InvalidBootReservation { kind });
+                    }
+                    found = Some(region);
+                }
+            }
+            found.ok_or(HandoffError::InvalidBootReservation { kind })
+        };
+        let check = |kind: u32, base: u64, length: u64| -> Result<RegionRecord, HandoffError> {
+            let region = get_one(kind)?;
+            if region.base != base
+                || region.length != length
+                || region.attrs != 0
+                || region.owner != NO_OWNER
+            {
+                return Err(HandoffError::InvalidBootReservation { kind });
+            }
+            Ok(region)
+        };
+
+        check(7, 0x0010_0000, 0x1_0000)?;
+        check(8, 0x0011_0000, 0x4_0000)?;
+        check(9, 0x0020_0000, 0x40_0000)?;
+        let page_tables = get_one(10)?;
+        let expected_pages =
+            mapped_block_count(self.bytes, self.region_table_offset, self.region_count, 21)
+                + mapped_block_count(self.bytes, self.region_table_offset, self.region_count, 30)
+                + mapped_block_count(self.bytes, self.region_table_offset, self.region_count, 39)
+                + 1;
+        let expected_bytes = expected_pages * 0x1000;
+        if page_tables.base != 0x0060_0000
+            || page_tables.length != expected_bytes
+            || page_tables.owner != NO_OWNER
+        {
+            return Err(HandoffError::InvalidBootPageTableSize {
+                expected: expected_bytes,
+                actual: page_tables.length,
+            });
+        }
+
+        let acpi_tables = self.region_count_by_kind(11);
+        let acpi_nvs = self.region_count_by_kind(12);
+        let mut acpi_device_present = false;
+        for index in 0..self.device_count {
+            let at = self.device_table_offset + index * self.device_entry_size;
+            if u32_at(self.bytes, at) == 9 && u32_at(self.bytes, at + 4) & 1 != 0 {
+                acpi_device_present = true;
+            }
+        }
+        if (acpi_tables == 1) != acpi_device_present || acpi_tables != acpi_nvs {
+            return Err(HandoffError::InvalidAcpiReservations);
+        }
+        if acpi_device_present {
+            check(11, 0x000E_0000, 0xF000)?;
+            check(12, 0x000E_F000, 0x1000)?;
+        }
+        Ok(())
+    }
+
+    fn region_count_by_kind(&self, kind: u32) -> usize {
+        (0..self.region_count)
+            .filter(|&index| region_at(self.bytes, self.region_table_offset, index).kind == kind)
+            .count()
     }
 }
 
@@ -534,6 +681,161 @@ mod tests {
         b[extension + 4..extension + 8].copy_from_slice(&1u32.to_le_bytes());
         b[extension + 8..extension + 16].copy_from_slice(&0xFC00_1000u64.to_le_bytes());
         b[extension + 16..extension + 24].copy_from_slice(&0x2000u64.to_le_bytes());
+        seal(&mut b);
+        b
+    }
+
+    fn sample_board_map(acpi: bool) -> Vec<u8> {
+        let mut regions: Vec<(u32, u64, u64)> = Vec::new();
+        if acpi {
+            regions.extend([
+                (1u32, 0, 0xE_0000),
+                (11, 0xE_0000, 0xF000),
+                (12, 0xE_F000, 0x1000),
+                (1, 0xF_0000, 0x1_0000),
+            ]);
+        } else {
+            regions.push((1u32, 0, 0x10_0000));
+        }
+        regions.extend([
+            (7, 0x10_0000, 0x1_0000),
+            (8, 0x11_0000, 0x4_0000),
+            (1, 0x15_0000, 0xB_0000),
+            (9, 0x20_0000, 0x40_0000),
+            (10, 0x60_0000, 0x4_3000),
+            (1, 0x64_3000, 128 * 1024 * 1024 - 0x64_3000),
+        ]);
+        let device_count = if acpi { 8 } else { 7 };
+        let region_offset = HEADER_SIZE;
+        let device_offset = region_offset + regions.len() * 0x20;
+        let total = device_offset + device_count * 0x30;
+        let mut b = vec![0u8; total];
+        b[..8].copy_from_slice(MAGIC);
+        b[0x08..0x0A].copy_from_slice(&1u16.to_le_bytes());
+        b[0x0A..0x0C].copy_from_slice(&(if acpi { 2u16 } else { 0u16 }).to_le_bytes());
+        b[0x0C..0x10].copy_from_slice(&(HEADER_SIZE as u32).to_le_bytes());
+        b[0x10..0x14].copy_from_slice(&(total as u32).to_le_bytes());
+        b[0x1C..0x20].copy_from_slice(&1u32.to_le_bytes());
+        b[0x20..0x28].copy_from_slice(&1_000_000_000u64.to_le_bytes());
+        b[0x28..0x2C].copy_from_slice(&1u32.to_le_bytes());
+        b[0x30..0x34].copy_from_slice(&(region_offset as u32).to_le_bytes());
+        b[0x34..0x38].copy_from_slice(&(regions.len() as u32).to_le_bytes());
+        b[0x38..0x3C].copy_from_slice(&0x20u32.to_le_bytes());
+        b[0x3C..0x40].copy_from_slice(&(device_offset as u32).to_le_bytes());
+        b[0x40..0x44].copy_from_slice(&(device_count as u32).to_le_bytes());
+        b[0x44..0x48].copy_from_slice(&0x30u32.to_le_bytes());
+        for (index, (kind, base, length)) in regions.iter().enumerate() {
+            let at = region_offset + index * 0x20;
+            b[at..at + 4].copy_from_slice(&kind.to_le_bytes());
+            b[at + 8..at + 16].copy_from_slice(&base.to_le_bytes());
+            b[at + 16..at + 24].copy_from_slice(&length.to_le_bytes());
+            b[at + 24..at + 28].copy_from_slice(&u32::MAX.to_le_bytes());
+        }
+        for index in 0..7 {
+            let at = device_offset + index * 0x30;
+            b[at..at + 4].copy_from_slice(&((index + 1) as u32).to_le_bytes());
+        }
+        if acpi {
+            let at = device_offset + 7 * 0x30;
+            b[at..at + 4].copy_from_slice(&9u32.to_le_bytes());
+            b[at + 4..at + 8].copy_from_slice(&3u32.to_le_bytes());
+            b[at + 8..at + 16].copy_from_slice(&0x600u64.to_le_bytes());
+            b[at + 16..at + 24].copy_from_slice(&0x10u64.to_le_bytes());
+            b[at + 0x18..at + 0x1C].copy_from_slice(&9u32.to_le_bytes());
+            b[at + 0x1C..at + 0x20].copy_from_slice(&3u32.to_le_bytes());
+        }
+        seal(&mut b);
+        b
+    }
+
+    fn sample_sparse_board_map() -> Vec<u8> {
+        use std::collections::BTreeSet;
+
+        const LOW_END: u64 = 0xF400_0000;
+        let mapped = [
+            (0u64, LOW_END),
+            (0xF400_0000, 0x0240_0000),
+            (0xF800_0000, 0x0240_0000),
+            (0xFC00_0000, 0x1000),
+            (0xFEC0_0000, 0x1000),
+            (0xFEE0_0000, 0x1000),
+            (0xFFC0_0000, 0x0040_0000),
+            (0x1_0000_0000, 0x0800_0000),
+        ];
+        let mut pt = BTreeSet::new();
+        let mut pd = BTreeSet::new();
+        let mut pdpt = BTreeSet::new();
+        for (base, length) in mapped {
+            let end = base + length - 1;
+            pt.extend(base >> 21..=end >> 21);
+            pd.extend(base >> 30..=end >> 30);
+            pdpt.extend(base >> 39..=end >> 39);
+        }
+        let page_table_bytes = (pt.len() + pd.len() + pdpt.len() + 1) as u64 * 0x1000;
+        let mut regions: Vec<(u32, u64, u64, u32, u32)> = vec![
+            (1u32, 0, 0x10_0000, 0, u32::MAX),
+            (7, 0x10_0000, 0x1_0000, 0, u32::MAX),
+            (8, 0x11_0000, 0x4_0000, 0, u32::MAX),
+            (1, 0x15_0000, 0xB_0000, 0, u32::MAX),
+            (9, 0x20_0000, 0x40_0000, 0, u32::MAX),
+            (10, 0x60_0000, page_table_bytes, 0, u32::MAX),
+            (
+                1,
+                0x60_0000 + page_table_bytes,
+                LOW_END - (0x60_0000 + page_table_bytes),
+                0,
+                u32::MAX,
+            ),
+            (6, 0xF400_0000, 0x0240_0000, 1, 3),
+            (6, 0xF800_0000, 0x0240_0000, 0, 3),
+            (3, 0xFC00_0000, 0x1000, 0, 3),
+            (2, 0xFC00_3000, 0x1000, 0, u32::MAX),
+            (3, 0xFEC0_0000, 0x1000, 0, 2),
+            (3, 0xFEE0_0000, 0x1000, 0, 1),
+            (4, 0xFFC0_0000, 0x0040_0000, 0, u32::MAX),
+            (1, 0x1_0000_0000, 0x0800_0000, 0, u32::MAX),
+        ];
+        regions.sort_by_key(|region| region.1);
+        let region_offset = HEADER_SIZE;
+        let device_offset = region_offset + regions.len() * 0x20;
+        let total = device_offset + 7 * 0x30;
+        let mut b = vec![0u8; total];
+        b[..8].copy_from_slice(MAGIC);
+        b[0x08..0x0A].copy_from_slice(&1u16.to_le_bytes());
+        b[0x0A..0x0C].copy_from_slice(&0u16.to_le_bytes());
+        b[0x0C..0x10].copy_from_slice(&(HEADER_SIZE as u32).to_le_bytes());
+        b[0x10..0x14].copy_from_slice(&(total as u32).to_le_bytes());
+        b[0x1C..0x20].copy_from_slice(&1u32.to_le_bytes());
+        b[0x20..0x28].copy_from_slice(&1_000_000_000u64.to_le_bytes());
+        b[0x28..0x2C].copy_from_slice(&1u32.to_le_bytes());
+        b[0x30..0x34].copy_from_slice(&(region_offset as u32).to_le_bytes());
+        b[0x34..0x38].copy_from_slice(&(regions.len() as u32).to_le_bytes());
+        b[0x38..0x3C].copy_from_slice(&0x20u32.to_le_bytes());
+        b[0x3C..0x40].copy_from_slice(&(device_offset as u32).to_le_bytes());
+        b[0x40..0x44].copy_from_slice(&7u32.to_le_bytes());
+        b[0x44..0x48].copy_from_slice(&0x30u32.to_le_bytes());
+        for (index, (kind, base, length, attrs, owner)) in regions.iter().enumerate() {
+            let at = region_offset + index * 0x20;
+            b[at..at + 4].copy_from_slice(&kind.to_le_bytes());
+            b[at + 4..at + 8].copy_from_slice(&attrs.to_le_bytes());
+            b[at + 8..at + 16].copy_from_slice(&base.to_le_bytes());
+            b[at + 16..at + 24].copy_from_slice(&length.to_le_bytes());
+            b[at + 24..at + 28].copy_from_slice(&owner.to_le_bytes());
+        }
+        for index in 0..7 {
+            let at = device_offset + index * 0x30;
+            b[at..at + 4].copy_from_slice(&((index + 1) as u32).to_le_bytes());
+        }
+        for (kind, base, length) in [
+            (2usize, 0xFEE0_0000u64, 0x1000u64),
+            (3, 0xFEC0_0000, 0x1000),
+            (4, 0xFC00_0000, 0x1000),
+        ] {
+            let at = device_offset + (kind - 1) * 0x30;
+            b[at + 4..at + 8].copy_from_slice(&1u32.to_le_bytes());
+            b[at + 8..at + 16].copy_from_slice(&base.to_le_bytes());
+            b[at + 16..at + 24].copy_from_slice(&length.to_le_bytes());
+        }
         seal(&mut b);
         b
     }
@@ -902,5 +1204,38 @@ mod tests {
         b[0x61] = b'X';
         seal(&mut b);
         assert_eq!(Handoff::parse(&b, 2), Err(HandoffError::InvalidSerial));
+    }
+
+    #[test]
+    fn validates_fixed_boot_reservations_page_tables_and_acpi_split() {
+        for acpi in [false, true] {
+            let bytes = sample_board_map(acpi);
+            assert!(Handoff::parse_for_boot(&bytes, 2).is_ok());
+        }
+
+        let mut bytes = sample_board_map(false);
+        let page_table_region = HEADER_SIZE + 5 * 0x20;
+        bytes[page_table_region + 16..page_table_region + 24]
+            .copy_from_slice(&0x42_000u64.to_le_bytes());
+        seal(&mut bytes);
+        assert!(matches!(
+            Handoff::parse_for_boot(&bytes, 2),
+            Err(HandoffError::InvalidBootPageTableSize { .. })
+        ));
+
+        let mut bytes = sample_board_map(true);
+        let acpi_region = HEADER_SIZE + 0x20;
+        bytes[acpi_region..acpi_region + 4].copy_from_slice(&1u32.to_le_bytes());
+        seal(&mut bytes);
+        assert_eq!(
+            Handoff::parse_for_boot(&bytes, 2),
+            Err(HandoffError::InvalidAcpiReservations)
+        );
+    }
+
+    #[test]
+    fn page_table_size_matches_sparse_mmio_rom_and_high_ram_map() {
+        let bytes = sample_sparse_board_map();
+        assert!(Handoff::parse_for_boot(&bytes, 2).is_ok());
     }
 }
