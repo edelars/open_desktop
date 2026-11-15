@@ -20174,6 +20174,35 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             }
             return result(PagedProbeExit::Retired, 1);
         }
+        // S7-04: `_start` calls the Rust entry with the exact rel32 bytes
+        // `E8 83 01 00 00`. Reuse CALL's canonical-target and push semantics.
+        Operation::Call { displacement }
+            if base_profile
+                && instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0xe8
+                && instruction.length == 5
+                && instruction.operand_size == OperandSize::Qword
+                && instruction.prefixes == Prefixes::default()
+                && displacement == 0x183 =>
+        {
+            let target = next_rip.wrapping_add_signed(i64::from(displacement));
+            if !canonical(target) {
+                let MemoryError::Architectural(fault) = general_protection() else {
+                    unreachable!()
+                };
+                return result(PagedProbeExit::Fault(fault), 0);
+            }
+            if let Err(error) =
+                push_stack_value(state, memory, context, next_rip, OperandSize::Qword)
+            {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = target;
+            return result(PagedProbeExit::Retired, 1);
+        }
         // S7-04: the validated handoff pointer is copied from RDI to R8 by
         // exactly `49 89 F8`. Keep all other register MOV forms unsupported.
         Operation::Mov {

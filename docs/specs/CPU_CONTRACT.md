@@ -393,7 +393,7 @@ Long64 CPL0 allowlist: `48 8B 03` (`MOV RAX,[RBX]`), `48 89 0B`
 (`MOV [RBX],RCX`), bare `EC` (`IN AL,DX`), bare `EE` (`OUT DX,AL`) and bare
 `F4` (`HLT`); S7-03 extends it with `B0+r ib` and `66 B8+r iw`, and S7-04 adds
 bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`,
-`75 24`, and `49 89 F8` (see the extensions below). The CPU entry validates its
+`75 24`, `49 89 F8`, and `E8 83 01 00 00` (`CALL rel32`; see the extensions below). The CPU entry validates its
 profile admission and CR0/CR4 before fetch. It receives page-aware `GuestMemory`;
 CR3/EFER validation and selecting the four-level 4 KiB paging context belong
 to the machine entry.
@@ -503,6 +503,12 @@ Tests подтверждают zero/positive count, DF обеих сторон, 
 В base `PagedCpl0ProbeV1` допускается только `4C 89 C7`: Primary opcode `89`, длина 3, qword register destination RDI и source R8, ровно REX `0x4c` (W+R), без прочих префиксов. Существующая MOV семантика копирует R8 в RDI; остальные GPR, RFLAGS и definedness сохраняются, RIP увеличивается на 3. Другие directions/opcodes/registers/widths/prefixes/memory forms, CPL3 и соседние profiles остаются Unsupported; fetch fault на ModRM не коммитит состояние.
 
 Tests проверяют только изменение RDI/RIP, full state, exact encoding, соседей, CPL3/other profiles и fault при fetch ModRM через границу страницы. Runner retired 11 инструкций и остановился на `E8 83 01 00 00` (`CALL rel32`, ISSUE-111, RIP `0x200068`).
+
+#### Расширение S7-04: точный firmware `CALL rel32`
+
+В base `PagedCpl0ProbeV1` допускается только `E8 83 01 00 00`: Primary opcode `E8`, длина 5, Qword, без префиксов и displacement `+0x183`. Вычисленный target проверяется на canonicality до stack write; существующий CALL helper записывает return RIP (`next_rip`) по `[RSP-8]` и меняет RSP только после успешной записи. Затем RIP устанавливается в `next_rip + 0x183`. Для текущего образа CALL на `0x200068` входит в Rust entry `0x2001f0`, return RIP равен `0x20006d`, а начальный stack store идёт по `0x14fff8`. Fetch fault, #SS из-за noncanonical stack и stack #PF не меняют CPU state. Другие displacement/opcode/prefix формы и остальные paged profiles остаются вне allowlist.
+
+Tests проверяют полный CPU state/return-address store, target, flags/definedness, изменённые displacement и соседние CALL/JMP формы, CPL3/other-profile isolation, fetch fault и stack #SS/#PF atomicity. Firmware runner retired 12 инструкций и достиг `0x2001f0`; следующая точная блокировка — `48 83 EC 58` (`SUB RSP,0x58`, ISSUE-112).
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 

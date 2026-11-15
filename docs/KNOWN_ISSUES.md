@@ -66,10 +66,18 @@
 ### ISSUE-111 — S7-04: paged CPU profile не допускает `CALL rel32` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после допуска `MOV RDI,R8`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
-- **Статус:** открыта; runner исполнил одиннадцать startup-инструкций, Rust entry не достигнут.
-- **Суть и последствия:** runner отклоняет `E8 83 01 00 00` (`CALL rel32`) при `RIP=0x200068`; COM1 пуст, handoff parser в машине не проверен.
-- **Основание:** `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-mov-rdi-r8.bin --com1-out /private/tmp/od-fw-s7-04-mov-rdi-r8.com1 --budget 10000` вернул `status=error`, `exit=unsupported`, `Unsupported { opcode: 232 }` (decimal = `0xe8`), `retired=11`, `RIP=0x200068`, `com1_bytes=0`. Байты подтверждены `od -An -tx1 -j 0x68 -N16`: `e8 83 01 00 00 fa f4 eb fc ...`.
-- **Следующий шаг:** проверить точную CALL target, stack/return-address semantics и paging-profile boundary.
+- **Статус:** решена узко для `E8 83 01 00 00`; runner достиг Rust entry и остановился на ISSUE-112.
+- **Суть и результат:** базовый `PagedCpl0ProbeV1` допускает только CALL rel32 без префиксов, длины 5, Qword и displacement `+0x183`. Target проверяется на canonicality до stack write; успешный CALL сохраняет next RIP по `[RSP-8]`, уменьшает RSP на 8 и переходит на target. Stack #SS/#PF и fetch fault сохраняют CPU state; прочие CALL формы и профили не расширены.
+- **Проверка:** `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 127 passed. Образ SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner `retired=12`, `RIP=0x2001f0`, то есть CALL at `0x200068` targeted Rust entry `0x2001f0` and pushed return RIP `0x20006d` at boot stack address `0x14fff8`; next stop is `Unsupported { opcode: 131 }` (`0x83`), `com1_bytes=0`. Следующий blocker — [ISSUE-112](#issue-112-s7-04-rust-entry-sub-rsp-imm8-unsupported).
+
+<a id="issue-112-s7-04-rust-entry-sub-rsp-imm8-unsupported"></a>
+### ISSUE-112 — S7-04: Rust entry `SUB RSP,imm8` остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после точечного допуска firmware CALL.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust entry (`firmware/uefi/src/start.S`).
+- **Статус:** открыта; runner достиг target `od_fw_main`, но первый Rust prologue instruction не исполнился.
+- **Суть и последствия:** `RIP=0x2001f0` содержит `48 83 EC 58` (`SUB RSP,0x58`, точка входа в Rust prologue); paged profile возвращает `Unsupported { opcode: 131 }`. COM1 пуст, handoff parser в машине пока не достигнут.
+- **Основание:** образ `/private/tmp/od-fw-s7-call.bin`, байты подтверждены `od -An -tx1 -j 0x1f0 -N16` (`48 83 ec 58 48 81 ff 00 00 10 00 75 77 48 8d 7c`); runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=12`, `RIP=0x2001f0`, `com1_bytes=0`.
+- **Следующий шаг:** определить и ограничить безопасный Rust-prologue instruction slice для stack adjustment; сохранить fault atomicity и profile isolation.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
