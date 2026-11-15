@@ -349,13 +349,22 @@
 - **Runner:** image `/private/tmp/od-fw-s7-cmp-bx-3.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retired 46 instructions, then stopped at `40 0F 93 C7` (`SETAE DIL`) with `Unsupported { opcode: 147 }`, `RIP=0x200d5f`, `com1_bytes=0`; see [ISSUE-144](#issue-144-s7-04-rust-helper-setae-dil-unsupported).
 
 <a id="issue-144-s7-04-rust-helper-setae-dil-unsupported"></a>
-### ISSUE-144 — S7-04: Rust helper `SETAE DIL` (`40 0F 93 C7`) остаётся вне paged CPU profile
+### ISSUE-144 — S7-04: точная форма Rust helper `SETAE DIL` (`40 0F 93 C7`) admitted
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `CMP BX,3`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d5f`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner stops at `40 0F 93 C7` (`SETAE DIL`), `Unsupported { opcode: 147 }`, `retired=46`, `RIP=0x200d5f`; COM1 пуст. Эта условная byte-register операция следует за проверкой BX.
+- **Статус:** решена только для exact `40 0F 93 C7` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Результат и проверка:** exact guard requires REX `40`, SETAE condition, raw ModRM `C7`, and DIL. The shared condition reads CF and writes only DIL; all other RDI bytes, flags, and flags-definedness are preserved. Four focused tests passed, including both CF outcomes, undefined CF, neighbors/ignored ModRM.reg, fetch-fault atomicity, CPL3 and other paged profiles.
 - **Основание:** образ `/private/tmp/od-fw-s7-cmp-bx-3.bin`; `od -An -tx1 -j 0xd5f -N16` показывает `40 0f 93 c7 40 08 cf 74 3b c7 40 08 02 00 01 00`; runner с бюджетом 10000.
-- **Следующий шаг:** проверить exact `SETAE DIL` (condition AboveOrEqual), low-byte register alias и REX prefix boundaries в base profile.
+- **Runner:** image `/private/tmp/od-fw-s7-setae-dil.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retired 47 instructions, then stopped at `40 08 CF` (`OR DIL,CL`) with `Unsupported { opcode: 8 }`, `RIP=0x200d63`, `com1_bytes=0`; see [ISSUE-145](#issue-145-s7-04-rust-helper-or-dil-cl-unsupported).
+
+<a id="issue-145-s7-04-rust-helper-or-dil-cl-unsupported"></a>
+### ISSUE-145 — S7-04: Rust helper `OR DIL,CL` (`40 08 CF`) остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `SETAE DIL`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d63`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner stops at `40 08 CF` (`OR DIL,CL`), `Unsupported { opcode: 8 }`, `retired=47`, `RIP=0x200d63`; COM1 пуст. The helper now combines the byte results held in DIL and CL.
+- **Основание:** образ `/private/tmp/od-fw-s7-setae-dil.bin`; `od -An -tx1 -j 0xd63 -N16` показывает `40 08 cf 74 3b c7 40 08 02 00 01 00 eb 18 66 c7`; runner с бюджетом 10000.
+- **Следующий шаг:** проверить bounded byte-register OR semantics and admit only this exact DIL,CL encoding in the base profile.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.

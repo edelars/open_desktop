@@ -675,6 +675,12 @@ Base `PagedCpl0ProbeV1` additionally admits only `66 83 FB 03` for this pairing,
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_cmp_bx_imm8 -- --nocapture` — 4 passed: BX below/equal/above 3 with nonzero upper RBX, full-state preservation, flags/definedness, immediate-byte fetch fault, negative sign-extension and neighboring forms, CPL3/other-profile isolation. Runner retired 46 instructions and stopped at `40 0F 93 C7` (`SETAE DIL`, ISSUE-144, RIP `0x200d5f`); full handoff validation remains incomplete.
 
+#### Расширение S7-04: exact Rust-helper `SETAE DIL`
+
+Base `PagedCpl0ProbeV1` admits only `40 0F 93 C7`: bare REX `40`, `SETAE` (`CF=0`), raw ModRM `C7`, and destination DIL. The retained raw ModRM is needed because SETcc ignores its reg field architecturally, while this profile admits one byte-exact form. Execution reuses the shared condition evaluation, writes only DIL, preserves the upper 56 bits of RDI and all RFLAGS, and leaves flag-definedness unchanged.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_setae_dil -- --nocapture` — 4 passed, covering CF true/false with CF undefined in metadata, full-state preservation, final-byte fetch fault atomicity, neighboring conditions/registers/prefixes and ignored ModRM.reg, CPL3 and other paged profiles. Runner retired 47 instructions and stopped at `40 08 CF` (`OR DIL,CL`, ISSUE-145, RIP `0x200d63`); full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции
