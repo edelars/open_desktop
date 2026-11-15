@@ -58,10 +58,18 @@
 ### ISSUE-110 — S7-04: paged CPU profile не допускает `MOV RDI,R8` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `REP STOSB`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
-- **Статус:** открыта; runner исполнил десять startup-инструкций и до Rust entry не дошёл.
-- **Суть и последствия:** runner отклоняет `4C 89 C7` (`MOV RDI,R8`) при `RIP=0x200065`; COM1 пуст, handoff parser в машине не проверен.
-- **Основание:** `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-rep-stosb.bin --com1-out /private/tmp/od-fw-s7-04-rep-stosb.com1 --budget 10000` вернул `status=error`, `exit=unsupported`, `Unsupported { opcode: 137 }` (decimal = `0x89`), `retired=10`, `RIP=0x200065`, `com1_bytes=0`. Байты подтверждены `od -An -tx1 -j 0x65 -N16`: `4c 89 c7 e8 83 01 00 00 ...`.
-- **Следующий шаг:** проверить точный register direction/REX and existing MOV semantics, then rerun runner.
+- **Статус:** решена узко для точного `4C 89 C7`; runner остановился на `CALL rel32` (ISSUE-111).
+- **Суть и результат:** Intel order `MOV RDI,R8`; exact REX.W+R, ModRM `C7`, qword register-register. Базовый `PagedCpl0ProbeV1` копирует R8 в RDI, сохраняя остальные state и flags.
+- **Проверка:** `paged_probe_profile` — 121 passed; full state, exact register selection, neighbors, CPL3/stack/CR3/CR0.WP isolation, fetch fault across page boundary. Runner retired 11 instructions and stopped at `E8 83 01 00 00` (`CALL rel32`) at `RIP=0x200068`; see [S7-04 report](reports/STAGE_7_REPORT.md#s7-04-cpu-profile-mov-rdi-r8).
+
+<a id="issue-111-s7-04-paged-cpu-profile-does-not-admit-call-rel32-at-firmware-entry"></a>
+### ISSUE-111 — S7-04: paged CPU profile не допускает `CALL rel32` из entry прошивки
+- **Дата обнаружения:** 2026-11-15, runner-прогон после допуска `MOV RDI,R8`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
+- **Статус:** открыта; runner исполнил одиннадцать startup-инструкций, Rust entry не достигнут.
+- **Суть и последствия:** runner отклоняет `E8 83 01 00 00` (`CALL rel32`) при `RIP=0x200068`; COM1 пуст, handoff parser в машине не проверен.
+- **Основание:** `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-mov-rdi-r8.bin --com1-out /private/tmp/od-fw-s7-04-mov-rdi-r8.com1 --budget 10000` вернул `status=error`, `exit=unsupported`, `Unsupported { opcode: 232 }` (decimal = `0xe8`), `retired=11`, `RIP=0x200068`, `com1_bytes=0`. Байты подтверждены `od -An -tx1 -j 0x68 -N16`: `e8 83 01 00 00 fa f4 eb fc ...`.
+- **Следующий шаг:** проверить точную CALL target, stack/return-address semantics и paging-profile boundary.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
