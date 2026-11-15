@@ -252,7 +252,7 @@
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d39`.
 - **Статус:** решена только для exact bare `55` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
 - **Результат и проверка:** существующий stack helper записывает qword RBP на `[RSP-8]`, затем обновляет RSP/RIP только при успешной записи. `paged_probe_profile` — 207 passed: full state/RSP/qword bytes, stack #PF/#SS, fetch fault, соседние opcode/prefix формы, CPL3 и другие profiles.
-- **Runner:** после 33 retired инструкций достиг [ISSUE-133](#issue-133-s7-04-rust-helper-push-r15-unsupported); этот blocker теперь решён. Runner retired 40 инструкций и остановился на [ISSUE-138](#issue-138-s7-04-rust-helper-movzx-ebx-word-rsi-plus-0xa-unsupported).
+- **Runner:** после 33 retired инструкций достиг [ISSUE-133](#issue-133-s7-04-rust-helper-push-r15-unsupported); этот blocker теперь решён. Runner retired 41 инструкцию и остановился на [ISSUE-139](#issue-139-s7-04-rust-helper-cmp-di-imm8-1-unsupported).
 - **Основание:** образ `/private/tmp/od-fw-s7-push-rbp.bin`; `od -An -tx1 -j 0xd3a -N12` показывает `41 57 41 56 41 55 41 54 53 48 83 ec`; runner с бюджетом 10000.
 
 <a id="issue-133-s7-04-rust-helper-push-r15-unsupported"></a>
@@ -292,18 +292,26 @@
 ### ISSUE-137 — S7-04: Rust helper `MOVZX EDI,word ptr [RSI+8]` (`0F B7 7E 08`) остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `SUB RSP,0x38`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d47`.
-- **Статус:** решена только для exact `0F B7 7E 08` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
-- **Результат и проверка:** exact memory `MOVZX EDI,word ptr [RSI+8]` переиспользует `read_operand` и `Operation::Extend`: успешное чтение word zero-extends EDI into RDI, сохраняет flags и продвигает RIP; read fault не коммитит CPU state. `paged_probe_profile` — 234 passed: zero-extension/full state, flags preservation, injected GuestMemory read fault (не page-walk/cross-page test), noncanonical-address #GP, fetch fault, neighbors и CPL3/other-profile isolation. `paged_probe_quantum` дополнительно прошёл реальный tracked 4-level page-walk read и проверил A bits; тест не пересекает страницу.
-- **Runner:** образ `/private/tmp/od-fw-s7-movzx-handoff-field.bin` (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). После 40 retired инструкций остановился на `0F B7 5E 0A` (`MOVZX EBX,word ptr [RSI+0xA]`, opcode byte `0xB7`) при `RIP=0x200d4b`, `Unsupported { opcode: 183 }`; COM1 пуст. Следующий blocker — [ISSUE-138](#issue-138-s7-04-rust-helper-movzx-ebx-word-rsi-plus-0xa-unsupported).
+- **Статус:** решена только для точных `0F B7 7E 08` и `0F B7 5E 0A` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Результат и проверка:** обе exact memory forms переиспользуют `read_operand` и unsigned `Operation::Extend`: word zero-extends в EDI/RDI или EBX/RBX; flags сохраняются, read fault не коммитит CPU state. `paged_probe_profile` — 238 passed: оба destination/field, zero-extension/full state, flags, injected GuestMemory read fault (не page-walk/cross-page test), noncanonical #GP, fetch fault, neighbors и CPL3/other-profile isolation. `paged_probe_quantum` прошёл реальный tracked 4-level page walk для обоих полей и проверил A bits верхних уровней и leaf PTE кода/данных; тест не пересекает страницу.
+- **Runner:** образ `/private/tmp/od-fw-s7-movzx-handoff-field.bin` (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). После 41 retired инструкции остановился на `66 83 FF 01` (`CMP DI,1`, opcode byte `0x83`) при `RIP=0x200d4f`, `Unsupported { opcode: 131 }`; COM1 пуст. Следующий blocker — [ISSUE-139](#issue-139-s7-04-rust-helper-cmp-di-imm8-1-unsupported).
 
 <a id="issue-138-s7-04-rust-helper-movzx-ebx-word-rsi-plus-0xa-unsupported"></a>
 ### ISSUE-138 — S7-04: Rust helper `MOVZX EBX,word ptr [RSI+0xA]` (`0F B7 5E 0A`) остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `MOVZX EDI,word ptr [RSI+8]`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d4b`.
+- **Статус:** решена только для exact `0F B7 5E 0A` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Результат и проверка:** exact `MOVZX EBX,word ptr [RSI+0xA]` использует общий faulting word-read/zero-extension path и коммитит EBX/RBX только после успешного чтения; flags сохраняются. `paged_probe_profile` — 238 passed с injected GuestMemory read fault отдельно от page-walk; real `paged_probe_quantum` тест исполняет оба поля через 4-level tables и проверяет accessed bits для обеих leaf PTEs.
+- **Runner:** после 41 retired инструкции остановился на `66 83 FF 01` (`CMP DI,1`) при `RIP=0x200d4f`, `Unsupported { opcode: 131 }`; COM1 пуст. Следующий blocker — [ISSUE-139](#issue-139-s7-04-rust-helper-cmp-di-imm8-1-unsupported).
+
+<a id="issue-139-s7-04-rust-helper-cmp-di-imm8-1-unsupported"></a>
+### ISSUE-139 — S7-04: Rust helper `CMP DI,1` (`66 83 FF 01`) остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `MOVZX EBX,word ptr [RSI+0xA]`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d4f`.
 - **Статус:** открыта.
-- **Суть и последствия:** helper читает word из `[RSI+0xA]` и zero-extends его в EBX/RBX; runner возвращает `Unsupported { opcode: 183 }` (`0xB7`), `retired=40`, `RIP=0x200d4b`; COM1 пуст.
-- **Основание:** образ `/private/tmp/od-fw-s7-movzx-handoff-field.bin`; `od -An -tx1 -j 0xd4b -N12` показывает `0f b7 5e 0a 66 83 ff 01 75 2a 66 39`; runner с бюджетом 10000.
-- **Следующий шаг:** исследовать exact MOVZX destination/displacement form с теми же fault and profile-isolation boundaries.
+- **Суть и последствия:** exact bytes `66 83 FF 01` compare 16-bit DI with 1; runner returns `Unsupported { opcode: 131 }` (`0x83`), `retired=41`, `RIP=0x200d4f`; COM1 пуст.
+- **Основание:** образ `/private/tmp/od-fw-s7-movzx-handoff-field.bin`; `od -An -tx1 -j 0xd4f -N12` показывает `66 83 ff 01 75 2a 66 39 cb 0f 97 c1`; runner с бюджетом 10000.
+- **Следующий шаг:** исследовать exact 16-bit immediate CMP semantics and flag-definedness, preserving profile isolation.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки

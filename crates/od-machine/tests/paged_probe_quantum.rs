@@ -579,28 +579,34 @@ fn unsupported_and_paged_fetch_fault_are_distinct_nonretiring_exits() {
 }
 
 #[test]
-fn paged_probe_movzx_word_read_uses_tracked_page_walk_and_zero_extends_edi() {
+fn paged_probe_movzx_word_reads_use_tracked_page_walk_and_zero_extend_registers() {
     let (mut bus, _) = fixture();
-    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x0f, 0xb7, 0x7e, 0x08]);
-    put(&mut bus, DATA_PHYSICAL + 8, 0xfeed_face_cafe_1234);
+    put_bytes_at(
+        &mut bus,
+        CODE_PHYSICAL,
+        &[0x0f, 0xb7, 0x7e, 0x08, 0x0f, 0xb7, 0x5e, 0x0a],
+    );
+    put(&mut bus, DATA_PHYSICAL + 8, 0xfeed_face_2468_1234);
     let mut state = initial_state(0);
     state.gpr[Register::Rsi as usize] = DATA_LINEAR;
     state.gpr[Register::Rdi as usize] = 0xaabb_ccdd_eeff_0011;
+    state.gpr[Register::Rbx as usize] = 0x1122_3344_5566_7788;
     let before_flags = state.rflags;
     let mut writes = Vec::new();
 
-    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+    let result = run(&mut state, &mut bus, 2, || false, &mut writes);
 
     assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
-    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.instructions_executed, 2);
     assert_eq!(result.page_fault, None);
     assert_eq!(result.memory_error, None);
-    assert_eq!(state.rip, CODE_LINEAR + 4);
+    assert_eq!(state.rip, CODE_LINEAR + 8);
     assert_eq!(state.gpr[Register::Rdi as usize], 0x1234);
+    assert_eq!(state.gpr[Register::Rbx as usize], 0x2468);
     assert_eq!(state.rflags, before_flags);
     assert_eq!(
         qword(&mut bus, DATA_PHYSICAL + 8),
-        0xfeed_face_cafe_1234,
+        0xfeed_face_2468_1234,
         "the MOVZX performs no data write"
     );
     assert_eq!(qword(&mut bus, ROOT), ROOT + 0x1007 | (1 << 5));
