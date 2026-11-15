@@ -558,8 +558,9 @@ pub struct LinuxStopRecord {
     /// S4-39f: the last system calls of a user-mode run (a ring of
     /// [`SYSCALL_JOURNAL_CAPACITY`] entries); empty without `user_mode`.
     pub syscall_journal: SyscallJournal,
-    /// S4-38L5c: how many guest `#PF` exceptions the CPL0 set board delivered through the guest
-    /// IDT in this run (0 on the `paged_probe` path). A delivery is not a retired instruction.
+    /// S4-38L5c: how many guest `#PF` or `#GP(0)` exceptions the CPL0 set board delivered through
+    /// the guest IDT in this run (0 on the `paged_probe` path). A delivery is not a retired
+    /// instruction.
     pub exceptions_delivered: u64,
     /// S4-38L8b: external interrupts the CPL0 set board delivered through the guest IDT in this
     /// run. `0` while the board has no interrupt source (and on the `paged_probe` path).
