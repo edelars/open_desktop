@@ -393,7 +393,7 @@ Long64 CPL0 allowlist: `48 8B 03` (`MOV RAX,[RBX]`), `48 89 0B`
 (`MOV [RBX],RCX`), bare `EC` (`IN AL,DX`), bare `EE` (`OUT DX,AL`) and bare
 `F4` (`HLT`); S7-03 extends it with `B0+r ib` and `66 B8+r iw`, and S7-04 adds
 bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`,
-`75 24`/`75 38`/`75 77` (the exact firmware/helper JNZ rel8 forms), `77 0E` (exact helper JA/JNBE rel8), `49 89 F8`,
+`75 24`/`75 2A`/`75 38`/`75 77` (the exact firmware/helper JNZ rel8 forms), `77 0E` (exact helper JA/JNBE rel8), `49 89 F8`,
 `E8 83 01 00 00` and `E8 8D 02 00 00` (the two exact `CALL rel32` forms), `48 83 EC 58`/`48 83 EC 38`
 (`SUB RSP,0x58`/`SUB RSP,0x38`), `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`), `48 81 FA 9F 00 00 00` (`CMP RDX,0x9f`), and
 `48 8D 7C 24 08` (`LEA RDI,[RSP+8]`), `BE 00 00 10 00`
@@ -649,13 +649,13 @@ Tests покрывают точное сравнение magic, flags/definednes
 
 В base `PagedCpl0ProbeV1` допускаются только `0F B7 7E 08` (dword destination EDI, word source `[RSI+8]`) и `0F B7 5E 0A` (dword destination EBX, word source `[RSI+0xA]`): Escape0f opcode `B7`, длина 4, без префиксов, обе формы строго фиксируют destination и displacement. Переиспользуются `read_operand` и unsigned `Operation::Extend`: успешное чтение zero-extends word в EDI/RDI или EBX/RBX, обнуляя верхние 32 бита соответствующего 64-bit регистра; flags не меняются. Адрес проходит обычную canonicality проверку, memory fault до записи оставляет CPU state неизменным. В `PagedProbeMemory` добавлена поддержка tracked Word read; другие word-read instructions остаются заблокированы точным CPU-profile admission.
 
-`paged_probe_profile` — 238 passed: оба zero-extended destination, full state, flags/definedness, injected GuestMemory read fault (этот fixture не проверяет page walk или cross-page behavior), noncanonical #GP, fetch fault (первая форма), neighboring forms и CPL3/other-profile isolation. `paged_probe_quantum` исполнил обе word-загрузки через реальный 4-level page walk и проверил A bits верхних уровней и leaf PTE кода/данных; тест не пересекает страницу. Runner retired 42 инструкции, исполнил exact `66 83 FF 01` (`CMP DI,1`) и остановился на `75 2A` (`JNZ +0x2A`, ISSUE-140, RIP `0x200d53`). Полная проверка handoff ещё не завершена.
+`paged_probe_profile` — 238 passed: оба zero-extended destination, full state, flags/definedness, injected GuestMemory read fault (этот fixture не проверяет page walk или cross-page behavior), noncanonical #GP, fetch fault (первая форма), neighboring forms и CPL3/other-profile isolation. `paged_probe_quantum` исполнил обе word-загрузки через реальный 4-level page walk и проверил A bits верхних уровней и leaf PTE кода/данных; тест не пересекает страницу. Runner retired 43 инструкции, исполнил not-taken `75 2A` и остановился на `66 39 CB` (`CMP BX,CX`, ISSUE-141, RIP `0x200d55`). Полная проверка handoff ещё не завершена.
 
 #### Расширение S7-04: exact Rust-helper `CMP DI,1`
 
 В base `PagedCpl0ProbeV1` допускается только `66 83 FF 01`: Primary opcode `83`, длина 4, operand-size override, word destination DI и знаково расширенный imm8 `1`. Admission также требует `ArithmeticKind::Cmp`; другие регистры, immediate, ширины, операции и префиксы остаются unsupported. Переиспользуется существующая 16-bit CMP semantics: верхние 48 бит RDI не участвуют, регистры не меняются, арифметические flags и их definedness обновляются, RIP продвигается на 4.
 
-`paged_probe_profile` — 242 passed: сравнение DI при произвольных верхних битах RDI, полный state и flags/definedness, fetch fault на immediate byte, signed-imm8 соседняя форма и другие neighbors, CPL3/other-profile isolation. Runner retired 42 инструкции и остановился на `75 2A` (`JNZ +0x2A`, ISSUE-140, RIP `0x200d53`). Полная проверка handoff ещё не завершена.
+`paged_probe_profile` — 242 passed: сравнение DI при произвольных верхних битах RDI, полный state и flags/definedness, fetch fault на immediate byte, signed-imm8 соседняя форма и другие neighbors, CPL3/other-profile isolation. Runner retired 43 инструкции и остановился на `66 39 CB` (`CMP BX,CX`, ISSUE-141, RIP `0x200d55`). Полная проверка handoff ещё не завершена.
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 

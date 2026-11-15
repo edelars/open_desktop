@@ -20292,7 +20292,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::DF,
             };
         }
-        // S7-04: startup/helper use only four literal short conditional
+        // S7-04: startup/helper use only five literal short conditional
         // branch encodings; other branches stay outside the bounded profile.
         Operation::Branch {
             condition,
@@ -20303,7 +20303,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             && instruction.prefixes == Prefixes::default()
             && matches!(
                 (condition, instruction.opcode.byte, displacement),
-                (ConditionCode::NotEqual, 0x75, 0x24 | 0x38 | 0x77)
+                (ConditionCode::NotEqual, 0x75, 0x24 | 0x2a | 0x38 | 0x77)
                     | (ConditionCode::Above, 0x77, 0x0e)
             ) =>
         {

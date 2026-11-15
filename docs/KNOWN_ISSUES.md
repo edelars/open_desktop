@@ -252,7 +252,7 @@
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d39`.
 - **Статус:** решена только для exact bare `55` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
 - **Результат и проверка:** существующий stack helper записывает qword RBP на `[RSP-8]`, затем обновляет RSP/RIP только при успешной записи. `paged_probe_profile` — 207 passed: full state/RSP/qword bytes, stack #PF/#SS, fetch fault, соседние opcode/prefix формы, CPL3 и другие profiles.
-- **Runner:** после 33 retired инструкций достиг [ISSUE-133](#issue-133-s7-04-rust-helper-push-r15-unsupported); этот blocker теперь решён. Runner retired 42 инструкции и остановился на [ISSUE-140](#issue-140-s7-04-rust-helper-jnz-plus-0x2a-unsupported) (`75 2A`, RIP `0x200d53`).
+- **Runner:** после 33 retired инструкций достиг [ISSUE-133](#issue-133-s7-04-rust-helper-push-r15-unsupported); этот blocker теперь решён. Текущий runner retired 43 инструкции и остановился на [ISSUE-141](#issue-141-s7-04-rust-helper-cmp-bx-cx-unsupported) (`66 39 CB`, RIP `0x200d55`).
 - **Основание:** образ `/private/tmp/od-fw-s7-push-rbp.bin`; `od -An -tx1 -j 0xd3a -N12` показывает `41 57 41 56 41 55 41 54 53 48 83 ec`; runner с бюджетом 10000.
 
 <a id="issue-133-s7-04-rust-helper-push-r15-unsupported"></a>
@@ -294,7 +294,7 @@
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d47`.
 - **Статус:** решена только для точных `0F B7 7E 08` и `0F B7 5E 0A` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
 - **Результат и проверка:** обе exact memory forms переиспользуют `read_operand` и unsigned `Operation::Extend`: word zero-extends в EDI/RDI или EBX/RBX; flags сохраняются, read fault не коммитит CPU state. `paged_probe_profile` — 238 passed: оба destination/field, zero-extension/full state, flags, injected GuestMemory read fault (не page-walk/cross-page test), noncanonical #GP, fetch fault, neighbors и CPL3/other-profile isolation. `paged_probe_quantum` прошёл реальный tracked 4-level page walk для обоих полей и проверил A bits верхних уровней и leaf PTE кода/данных; тест не пересекает страницу.
-- **Runner:** образ `/private/tmp/od-fw-s7-cmp-di.bin` (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). После 42 retired инструкций остановился на `75 2A` (`JNZ +0x2A`, opcode byte `0x75`) при `RIP=0x200d53`, `Unsupported { opcode: 117 }`; COM1 пуст. Следующий blocker — [ISSUE-140](#issue-140-s7-04-rust-helper-jnz-plus-0x2a-unsupported).
+- **Runner:** latest image `/private/tmp/od-fw-s7-jnz-2a.bin`; after 43 retired instructions stopped at `66 39 CB` (`CMP BX,CX`) at `RIP=0x200d55`, `Unsupported { opcode: 57 }`; COM1 пуст. Следующий blocker — [ISSUE-141](#issue-141-s7-04-rust-helper-cmp-bx-cx-unsupported).
 
 <a id="issue-138-s7-04-rust-helper-movzx-ebx-word-rsi-plus-0xa-unsupported"></a>
 ### ISSUE-138 — S7-04: Rust helper `MOVZX EBX,word ptr [RSI+0xA]` (`0F B7 5E 0A`) остаётся вне paged CPU profile
@@ -302,7 +302,7 @@
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d4b`.
 - **Статус:** решена только для exact `0F B7 5E 0A` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
 - **Результат и проверка:** exact `MOVZX EBX,word ptr [RSI+0xA]` использует общий faulting word-read/zero-extension path и коммитит EBX/RBX только после успешного чтения; flags сохраняются. `paged_probe_profile` — 238 passed с injected GuestMemory read fault отдельно от page-walk; real `paged_probe_quantum` тест исполняет оба поля через 4-level tables и проверяет accessed bits для обеих leaf PTEs.
-- **Runner:** после 42 retired инструкций остановился на `75 2A` (`JNZ +0x2A`) при `RIP=0x200d53`, `Unsupported { opcode: 117 }`; COM1 пуст. Следующий blocker — [ISSUE-140](#issue-140-s7-04-rust-helper-jnz-plus-0x2a-unsupported).
+- **Runner:** после 43 retired инструкций остановился на `66 39 CB` (`CMP BX,CX`) при `RIP=0x200d55`, `Unsupported { opcode: 57 }`; COM1 пуст. Следующий blocker — [ISSUE-141](#issue-141-s7-04-rust-helper-cmp-bx-cx-unsupported).
 
 <a id="issue-139-s7-04-rust-helper-cmp-di-imm8-1-unsupported"></a>
 ### ISSUE-139 — S7-04: Rust helper `CMP DI,1` (`66 83 FF 01`) остаётся вне paged CPU profile
@@ -310,19 +310,26 @@
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d4f`.
 - **Статус:** решена только для exact `66 83 FF 01` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
 - **Результат и проверка:** переиспользуется `ArithmeticKind::Cmp` на 16-bit DI и знаково расширенном imm8 1; верхние биты RDI игнорируются, регистры не записываются. Четыре focused CMP tests passed; полный `paged_probe_profile` — 242 passed, включая zero-extended flags-definedness, fetch fault, immediate/sign-extension and neighboring-form rejects, CPL3/other-profile isolation.
-- **Runner:** после 42 retired инструкций исполнил exact `66 83 FF 01` и остановился на `75 2A` (`JNZ +0x2A`) при `RIP=0x200d53`, `Unsupported { opcode: 117 }`; COM1 пуст. Следующий blocker — [ISSUE-140](#issue-140-s7-04-rust-helper-jnz-plus-0x2a-unsupported).
-- **Основание:** образ `/private/tmp/od-fw-s7-movzx-handoff-field.bin`; `od -An -tx1 -j 0xd4f -N12` показывает `66 83 ff 01 75 2a 66 39 cb 0f 97 c1`; runner с бюджетом 10000.
+- **Runner:** после 43 retired инструкций исполнил exact `66 83 FF 01` и остановился на `66 39 CB` (`CMP BX,CX`) при `RIP=0x200d55`, `Unsupported { opcode: 57 }`; COM1 пуст. Следующий blocker — [ISSUE-141](#issue-141-s7-04-rust-helper-cmp-bx-cx-unsupported).
 - **Основание:** образ `/private/tmp/od-fw-s7-cmp-di.bin`; `od -An -tx1 -j 0xd4f -N12` показывает `66 83 ff 01 75 2a 66 39 cb 0f 97 c1`; runner с бюджетом 10000.
 
 <a id="issue-140-s7-04-rust-helper-jnz-plus-0x2a-unsupported"></a>
 ### ISSUE-140 — S7-04: Rust helper `JNZ +0x2A` (`75 2A`) остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `CMP DI,1`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d53`.
-- **Статус:** открыта.
-- **Суть и последствия:** exact bytes `75 2A` encode short `JNZ` with displacement +0x2a; runner returns `Unsupported { opcode: 117 }` (`0x75`), `retired=42`, `RIP=0x200d53`; COM1 пуст.
-- **Основание:** образ `/private/tmp/od-fw-s7-cmp-di.bin`; `od -An -tx1 -j 0xd53 -N12` показывает `75 2a 66 39 cb 0f 97 c1 66 83 fb 03`; runner с бюджетом 10000.
-- **Следующий шаг:** исследовать exact JNZ displacement and preserve existing flag-definedness and taken-target canonicality semantics.
+- **Статус:** решена только для exact `75 2A` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Результат и проверка:** reuses shared JNZ semantics. Tests cover taken/not-taken, unchanged flags and undefined-ZF definedness, taken-only target canonicality, rel8 fetch fault atomicity, adjacent displacements, other branches, CPL3 and other paged profiles.
+- **Основание:** образ `/private/tmp/od-fw-s7-jnz-2a.bin`; `od -An -tx1 -j 0xd53 -N12` показывает `75 2a 66 39 cb 0f 97 c1 66 83 fb 03`; runner с бюджетом 10000.
+- **Runner:** после 43 retired инструкций исполнил not-taken `75 2A` и остановился на `66 39 CB` (`CMP BX,CX`) при `RIP=0x200d55`, `Unsupported { opcode: 57 }`; COM1 пуст. Следующий blocker — [ISSUE-141](#issue-141-s7-04-rust-helper-cmp-bx-cx-unsupported).
 
+<a id="issue-141-s7-04-rust-helper-cmp-bx-cx-unsupported"></a>
+### ISSUE-141 — S7-04: Rust helper `CMP BX,CX` (`66 39 CB`) остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `JNZ +0x2A`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d55`.
+- **Статус:** открыта.
+- **Суть и последствия:** exact bytes `66 39 CB` encode `CMP BX,CX` (opcode `39`, destination r/m16 BX, source reg16 CX); runner returns `Unsupported { opcode: 57 }`, `retired=43`, `RIP=0x200d55`; COM1 пуст.
+- **Основание:** образ `/private/tmp/od-fw-s7-jnz-2a.bin`; `od -An -tx1 -j 0xd55 -N12` показывает `66 39 cb 0f 97 c1 66 83 fb 03 40 0f`; runner с бюджетом 10000.
+- **Следующий шаг:** исследовать exact 16-bit register CMP operand order, flags/definedness, and profile isolation.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.

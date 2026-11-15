@@ -3423,7 +3423,7 @@ fn firmware_entry_rep_stosb_is_unsupported_in_cpl3_profile() {
 #[test]
 fn firmware_entry_jnz_taken_and_not_taken_preserve_flags_and_definedness() {
     let defined = DEFINED & !(1 << 6);
-    for displacement in [0x24u8, 0x38, 0x77] {
+    for displacement in [0x24u8, 0x2a, 0x38, 0x77] {
         let code = [0x75, displacement];
         for (zero, expected_rip) in [(false, RIP + 2 + u64::from(displacement)), (true, RIP + 2)] {
             let mut memory = Memory::new(&code);
@@ -3454,7 +3454,7 @@ fn firmware_entry_jnz_taken_and_not_taken_preserve_flags_and_definedness() {
 #[test]
 fn firmware_entry_jnz_checks_canonicality_only_when_taken() {
     let start = 0x0000_7fff_ffff_fffe;
-    for displacement in [0x24u8, 0x38, 0x77] {
+    for displacement in [0x24u8, 0x2a, 0x38, 0x77] {
         let code = [0x75, displacement];
         let mut memory = Memory::new(&[]);
         memory.pages.insert(start & !0xfff, CODE_PHYSICAL);
@@ -3504,7 +3504,7 @@ fn firmware_entry_jnz_checks_canonicality_only_when_taken() {
 #[test]
 fn firmware_entry_jnz_fetch_fault_on_rel8_does_not_commit() {
     // Put the opcode at the last byte of a mapped code page so every admitted rel8 faults.
-    for displacement in [0x24u8, 0x38, 0x77] {
+    for displacement in [0x24u8, 0x2a, 0x38, 0x77] {
         let mut memory = Memory::new(&[]);
         memory.bytes[CODE_PHYSICAL + 0xfff] = 0x75;
         let mut cpu = state();
@@ -3544,6 +3544,8 @@ fn firmware_entry_jnz_fetch_fault_on_rel8_does_not_commit() {
 fn firmware_entry_jnz_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
         (&[0x75, 0x23], 0x75),                // different displacement
+        (&[0x75, 0x29], 0x75),                // neighbor below +0x2a
+        (&[0x75, 0x2b], 0x75),                // neighbor above +0x2a
         (&[0x75, 0x37], 0x75),                // neighbor below +0x38
         (&[0x75, 0x39], 0x75),                // neighbor above +0x38
         (&[0x75, 0x76], 0x75),                // neighboring displacement
@@ -3578,7 +3580,7 @@ fn firmware_entry_jnz_neighbours_stay_unsupported_without_mutation() {
 
 #[test]
 fn firmware_entry_jnz_is_unsupported_in_cpl3_profile() {
-    for displacement in [0x24u8, 0x38, 0x77] {
+    for displacement in [0x24u8, 0x2a, 0x38, 0x77] {
         let bytes = [0x75, displacement];
         let mut memory = Memory::new(&bytes);
         let mut cpu = state();
@@ -7169,6 +7171,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0xba, 0, 0, 1, 0][..], 0xba),
         (&[0x48, 0x39, 0xc7][..], 0x39),
         (&[0x75, 0x24][..], 0x75),
+        (&[0x75, 0x2a][..], 0x75),
         (&[0x75, 0x38][..], 0x75),
         (&[0x75, 0x77][..], 0x75),
         (&[0x77, 0x0e][..], 0x77),
