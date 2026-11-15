@@ -455,3 +455,9 @@ git diff --check
 Статус: реализован в коммите `47e205d`, прошёл независимое ревью; S7-04 целиком не закрыта. Парсер проверяет допустимые типы регионов, включая ACPI types только с handoff minor 2, атрибуты (framebuffer screen number — 8 бит), 4 KiB alignment, ненулевую длину, checked end до `2^36`, owner index, reserved=0, сортировку и отсутствие пересечений. Проверяется число регионов `1..=128` и device_count по версиям (v1.0 — 7, v1.1 — 8, v1.2 — 8 или 9); схема minor выше 2 пока не поддерживается.
 
 Проверки: `cargo test --manifest-path firmware/uefi/Cargo.toml --offline` — 160 passed; `cargo check --manifest-path firmware/uefi/Cargo.toml --target x86_64-unknown-none --offline` — успешно; `rustfmt --check firmware/uefi/src/handoff.rs` и `git diff --check` — чисто. Ревьюер gpt-6.1-sol / high: блокирующих замечаний нет.
+
+#### S7-04. Срез: проверка таблицы устройств и фиксированных полей заголовка
+
+Статус: реализован в коммите `e1a7b16` и прошёл независимое ревью; S7-04 целиком не закрыта. Проверяются уникальность обязательных device types 1–7, допустимые типы расширений для minor 1/2 и их `PRESENT`, маски flags/irq_flags, PIO/MMIO ranges и нулевые адреса отсутствующих устройств. Header validation проверяет board profile, `cpu_count = 1`, ненулевой `tsc_hz`, serial length/ASCII/padding и reserved/flags. Для minor 0/1/2 проверяется ожидаемое число и наличие расширенных устройств. Device-specific `param0/param1`, ожидаемые адреса всей платы и точное покрытие карты памяти пока не сверяются.
+
+Проверки: `cargo test --manifest-path firmware/uefi/Cargo.toml --offline` — 162 passed; `cargo check --manifest-path firmware/uefi/Cargo.toml --target x86_64-unknown-none --offline` — успешно; `rustfmt --check firmware/uefi/src/handoff.rs` и `git diff --check` — чисто. Ревьюер gpt-6.1-sol / high: дефект `PRESENT` для расширений 8/9 исправлен, блокирующих замечаний нет.
