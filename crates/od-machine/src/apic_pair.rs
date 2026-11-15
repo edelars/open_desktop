@@ -240,17 +240,33 @@ impl PairState {
         }
         Ok(())
     }
-    pub fn edge(&mut self, cpu: usize, vector: u8) -> Result<(), DeviceError> {
-        if vector < 16
+    fn edge_refused(&self, cpu: usize, vector: u8) -> bool {
+        vector < 16
             || !self.cpus[cpu].local.global_enabled
             || self.level_vector_reserved(cpu, vector)
-        {
-            return Err(DeviceError::UnsupportedConfiguration);
-        }
+    }
+    fn raise_edge(&mut self, cpu: usize, vector: u8) {
         let (i, bit) = Self::bit(vector);
         let local = &mut self.cpus[cpu].local;
         local.irr[i] |= bit;
         local.tmr[i] &= !bit;
+    }
+    pub fn edge(&mut self, cpu: usize, vector: u8) -> Result<(), DeviceError> {
+        if self.edge_refused(cpu, vector) {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
+        self.raise_edge(cpu, vector);
+        Ok(())
+    }
+    /// One IPI (S6-12): the same edge request in every LAPIC of `targets`, all or none. A target
+    /// that would refuse the request refuses the whole IPI before any LAPIC changes.
+    pub fn edge_all(&mut self, targets: &[usize], vector: u8) -> Result<(), DeviceError> {
+        if targets.iter().any(|&cpu| self.edge_refused(cpu, vector)) {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
+        for &cpu in targets {
+            self.raise_edge(cpu, vector);
+        }
         Ok(())
     }
     pub fn level(&mut self) -> Result<(), DeviceError> {

@@ -466,6 +466,7 @@
 ### S6-12. Доставлять межпроцессорные прерывания
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-15):** реализовано, ожидает ревью — срез S6-12a (без NMI, blocked: D5/S4-38 для od-isa/state.rs). Запись в `ICR_LOW` доставляет Fixed edge по матрице [SMP_CONTRACT.md](../specs/SMP_CONTRACT.md) §5: физический адресат, Self, All including self, All-but-self; всё прочее, включая строки NMI/INIT/SIPI, — явная ошибка устройства до изменения состояния; Delivery Status всегда Idle. Контракт: [MACHINE_CONTRACT.md](../specs/MACHINE_CONTRACT.md#доставка-ipi-s6-12a), факты и проверки: [отчёт S6](../reports/STAGE_6_REPORT.md) (S6-12a). Пункт 2 «Сделать» (NMI) не выполнен.
 - **Где:** `crates/od-machine/src/local_apic.rs`; доставка в процессор — рядом с существующей `deliver_pending_irq` в `crates/od-machine/src/paged_memory_adapter.rs`; состояние блокировки NMI — в `crates/od-isa/src/state.rs` (владелец — `od-isa`); разделы в `MACHINE_CONTRACT.md` и `CPU_CONTRACT.md`.
 - **Сделать:**
   1. Запись в ICR выполняется строго по матрице S6-03: Fixed — выставить запрос у каждого адресата; shorthand «self», «все», «все кроме себя»; физический адресат.

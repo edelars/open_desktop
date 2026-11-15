@@ -22,7 +22,7 @@
 | S6-09 | `accepted` | Независимое evidence review `gpt-6.1-sol/high` пройдено; полный физический прогон завершён с exit 0: 18×500,000 rounds/process ×3 = 27,000,000; 54 process histograms and 18 aggregate histograms conserved; forbidden outcomes 0; SB `00` observed 19 times; summed child elapsed 519.593 s. См. [physical report](data/stage6/s6-09-native-physical.md) и [raw JSON](data/stage6/s6-09-native-physical.json). |
 | S6-10 | `accepted` | S4-21 передан этапу 6 решением владельца 2026-11-15 |
 | S6-11 | `accepted` | Реализовано 2026-11-15, ожидает независимого ревью; раздел S6-11 ниже |
-| S6-12 | `blocked` | S4-21 (через S6-10) |
+| S6-12 | `in_progress` | Срез S6-12a (Fixed IPI, shorthand, физический адресат) реализован 2026-11-15, ожидает ревью; NMI открыт (blocked: D5/S4-38 для `od-isa/state.rs`); раздел S6-12a ниже |
 | S6-13 | `blocked` | S4-21; согласование кода `od-isa` по D5/S4-38 |
 | S6-14 | `in_progress` | S6-14a AP startup profile и S6-14b real-mode KVM oracle приняты по результатам отдельных ревью; см. ниже. Код S6-14c+ остаётся ограничен S4-21 и согласованием с S4-38 по D5. |
 | S6-15 | `blocked` | S4-21, S4-22, S4-23 |
@@ -277,6 +277,47 @@ od-runner linux-direct --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-
 - Риск для S6-15 (решить в S6-15): при N > 1 смена affinity level-входа записью «старший dword, потом младший» отказывается `set_dest`, если вход ждёт EOI или линия высока (SMP affinity в Linux меняет адресат уже работающего входа); отказ — фатальная ошибка MMIO.
 - Риск для S6-13/S6-15 (провести до запуска AP): индекс vCPU не проводится от `Vcpu` на рабочих путях MMIO — `SetStepMmio` (CPL0-цикл), `read_physical`/`write_physical` и `AdapterBus::RamMmio` всегда обслуживают процессор 0; индекс несёт только `AdapterBus::Machine(bus, vcpu)`, и пока его создаёт лишь тест.
 - Graphify: перед правками `graphify query` не выполнялся (в worktree графа не было); после правок `GRAPHIFY_MAX_WORKERS=8 graphify update .` выполнен (46426 узлов, 129065 рёбер).
+
+### S6-12a — доставка IPI (Fixed, shorthand, физический адресат)
+
+Реализовано 2026-11-15, ожидает независимого ревью; статус S6-12 — `in_progress`, NMI открыт. Чекбокс в плане не отмечен. Контракт: [`MACHINE_CONTRACT.md`](../specs/MACHINE_CONTRACT.md#доставка-ipi-s6-12a); источник — матрица [`SMP_CONTRACT.md`](../specs/SMP_CONTRACT.md) §5.
+
+**Что сделано.**
+- `local_apic.rs`: запись в `ICR_LOW` разобрана функцией `decode_icr` по матрице: Fixed physical без shorthand `(0,0)`, Self `(0,0)`/`(1,0)`, All including self `(0,0)`, All-but-self `(0,0)`, вектор `0x10–0xFF`. Остальное (зарезервированные биты, режимы кроме Fixed, вектор `< 0x10`, logical без shorthand, несуществующий APIC ID включая `0xFF`, неуказанные пары Level/Trigger) — `UnsupportedConfiguration` до изменения состояния. Delivery Status всегда Idle, в хранимое значение не попадает.
+- `apic_pair.rs`: `PairState::edge_all` — один запрос в IRR каждого адресата, всё или ничего (сначала проверка всех адресатов, потом запись); `edge` разложен на `edge_refused` + `raise_edge`, поведение `edge` не менялось.
+- Нового замка, потока или параметра числа процессоров нет; используется существующий `vcpu_count` и один `Mutex` пары.
+- `crates/od-isa/src/` не тронут.
+
+**По строкам матрицы SMP_CONTRACT §5.**
+| Строка | Состояние |
+|---|---|
+| Fixed, physical, без shorthand, `(0,0)` | доставляется |
+| Fixed, Self, `(0,0)` или `(1,0)` | доставляется |
+| Fixed, All including self, `(0,0)` | доставляется |
+| Fixed, All-but-self, `(0,0)` | доставляется (при одном vCPU — никому, запись принимается) |
+| NMI physical / All-but-self | **не реализовано**, явная ошибка устройства; NMI blocked: D5 / S4-38 для `od-isa/state.rs` |
+| INIT assert/deassert | **не реализовано**, явная ошибка устройства (S6-13) |
+| SIPI | **не реализовано**, явная ошибка устройства (S6-13) |
+| все прочие значения | явная ошибка устройства, состояние всех vCPU прежнее |
+
+**Тесты** (`local_apic.rs`, 12 новых; двенадцатый — физический адресат с выключенным LAPIC, добавлен после ревью): запись ICR vCPU 0 делает вектор ожидающим на vCPU 1 и не на vCPU 0 (и acknowledge у адресата); граничные векторы `0x10…0xFF` физического адресата; Self обоими кодированиями с двух отправителей; All и All-but-self для трёх vCPU и одного vCPU; Delivery Status; неверные пары Level/Trigger для каждой строки; каждая ошибочная клетка (logical, несуществующий APIC ID, вектор `< 0x10`, режимы 1/2/3/7, NMI/INIT/SIPI вне и внутри строк матрицы, зарезервированные биты) без изменения состояния; отказ одного адресата отменяет всю IPI; прочие регистры LAPIC IPI не меняет.
+
+**Изменено ожидание существующего теста.** В `icr_rejections_are_atomic_and_global_reset_clears_registers` убран случай `0x4_0000 | 0x60` (Self с `(0,0)`, «deassert»): матрица SMP_CONTRACT §5 требует принимать Self с `(0,0)` (кодировка Linux `__prepare_ICR`). Остальные ожидания self-IPI, в том числе `icr_self_ipi_delivery_retrigger_and_priority`, не менялись.
+
+**Проверки (однократно на финальном коде).**
+- `cargo fmt -p od-machine -- --check` — прошла. `cargo fmt --all -- --check` падает на двух файлах вне среза (`crates/od-host/src/storage_abi_v1.rs`, `tools/image-tool/tests/cli.rs`), они не менялись.
+- `cargo check --workspace --all-targets --offline` — прошла.
+- `cargo test -p od-machine --offline -- --test-threads=1` — 0 failed; lib: 1181 passed (1170 прежних + 11 новых), 6 ignored; остальные наборы без отказов. После ревью добавлен ещё один тест и исправлены комментарии и тексты: полный набор не перезапускался, прогнан модуль `local_apic`.
+- Контрольный прогон `linux-direct` не делался: меняется только путь записи ICR, Linux на одном vCPU пишет в ICR редко, а другие пути не затронуты; покрытие — unit-тесты.
+- Graphify: в worktree графа не было, `graphify query` до правок не выполнялся; после правок `GRAPHIFY_MAX_WORKERS=8 graphify update .` выполнен (46464 узла, 129180 рёбер).
+
+**Ограничения и открытое.**
+- NMI (пункт 2 плана S6-12) не сделан: блокировка NMI до `IRET` требует правки `crates/od-isa/src/state.rs`, линия S4-38 там активна, решение D5 владельца не получено. Тест «второй NMI доставляется после `IRET`, третий теряется» открыт.
+- Доставка в IRR есть, исполнение запроса адресатом на своей границе — нет: AP не запускаются (S6-13), `deliver_pending_irq` обслуживает процессор 0. Путь MMIO цикла по-прежнему не несёт индекс vCPU (риск S6-11 остаётся).
+- IPI на несуществующий APIC ID (в том числе broadcast `0xFF`) отклоняется ошибкой устройства, как и в IOAPIC; на реальном железе broadcast `0xFF` допустим, матрица его не содержит. Риск для S6-13/S6-15: если Linux при остановке или старте шлёт physical broadcast, потребуется строка матрицы.
+- Адресат, у которого LAPIC глобально выключен, отклоняет всю IPI (как `edge` раньше); software-disabled LAPIC запрос принимает в IRR.
+- Для владельца (а): изменено ожидание существующего теста `icr_rejections_are_atomic_and_global_reset_clears_registers` (Self с `(0,0)` теперь принимается). Это следствие SMP_CONTRACT §5 / S6-03; владельцу подтвердить, что оно заменяет пункт плана «существующие тесты self-IPI проходят без изменений» (остальные ожидания self-IPI не менялись).
+- Для владельца (б): если любой адресат (физический, All или All-but-self) имеет глобально выключенный LAPIC или вектор зарезервирован level-входом IOAPIC в его LAPIC, отказывает вся IPI без изменения состояния. Это консервативное решение исполнителя, в §5 его нет; тесты: отказ одного адресата при shorthand и при физическом адресате.
 
 ### S6-07 — inventory однопроцессорных допущений (accepted)
 
