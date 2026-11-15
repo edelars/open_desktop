@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
-# Stage 4, S4-44a: documented reproducible LOCAL check set.
+# Stage 4, S4-44a/S4-44b: documented reproducible LOCAL check set.
 #
 # Only calls existing commands (cargo fmt/check/test); no CPU semantics live here.
 # It does NOT boot Linux, does NOT touch the Mac mini and does NOT build guest/firmware
 # artifacts: those are printed and recorded as `not_run` / `blocked` (see NOT_RUN below).
 #
 # Output:
-#   logs      work/stage4/s4-44a/<step>.log      (ignored by Git)
-#   summary   docs/reports/data/stage4/s4-44a-local-set.json   (override: STAGE4_SUMMARY)
+#   logs      work/stage4/s4-44b/<step>.log      (ignored by Git)
+#   summary   docs/reports/data/stage4/s4-44b-local-set.json   (override: STAGE4_SUMMARY)
 #
 # Step statuses: passed | failed | known_divergence | timeout.
 #   known_divergence: `cargo fmt --check` fails ONLY on files listed in KNOWN_FMT_FILES.
+# Every `cargo test` step runs with --no-fail-fast: a failing test target does not stop the
+# other targets of the step, and the summary lists the result of EACH target (`targets`:
+# binary, status, counts, names of failed tests) parsed from the cargo log.
 # A failed/timeout step never stops the set silently: it is recorded, the remaining steps
 # still run, and the script exits 1 at the end. Exit 2 = setup error.
 #
 # Environment:
 #   STAGE4_STEP_TIMEOUT   per-step timeout in seconds (default 1200)
-#   STAGE4_LOG_DIR        log directory (default work/stage4/s4-44a)
+#   STAGE4_LOG_DIR        log directory (default work/stage4/s4-44b)
 #   STAGE4_SUMMARY        summary path
 set -u
 
@@ -24,8 +27,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT" || exit 2
 
 STEP_TIMEOUT="${STAGE4_STEP_TIMEOUT:-1200}"
-LOG_DIR="${STAGE4_LOG_DIR:-$ROOT/work/stage4/s4-44a}"
-SUMMARY="${STAGE4_SUMMARY:-$ROOT/docs/reports/data/stage4/s4-44a-local-set.json}"
+LOG_DIR="${STAGE4_LOG_DIR:-$ROOT/work/stage4/s4-44b}"
+SUMMARY="${STAGE4_SUMMARY:-$ROOT/docs/reports/data/stage4/s4-44b-local-set.json}"
 # Known pre-existing rustfmt divergences (not new errors); matched by path suffix.
 KNOWN_FMT_FILES="crates/od-host/src/storage_abi_v1.rs tools/image-tool/tests/cli.rs"
 
@@ -37,13 +40,13 @@ TSV="$LOG_DIR/steps.tsv"
 STEPS=(
   "fmt|cargo fmt --all -- --check"
   "check-workspace|cargo check --workspace --all-targets --locked --offline"
-  "test-od-isa|cargo test -p od-isa --locked --offline"
-  "test-od-machine|cargo test -p od-machine --locked --offline"
-  "test-od-jit|cargo test -p od-jit --locked --offline"
-  "test-od-host|cargo test -p od-host --locked --offline"
-  "test-od-runner|cargo test -p od-runner --locked --offline"
-  "test-od-bench|cargo test -p od-bench --locked --offline"
-  "test-rest-of-workspace|cargo test --workspace --exclude od-isa --exclude od-machine --exclude od-jit --exclude od-host --exclude od-runner --exclude od-bench --locked --offline"
+  "test-od-isa|cargo test -p od-isa --no-fail-fast --locked --offline"
+  "test-od-machine|cargo test -p od-machine --no-fail-fast --locked --offline"
+  "test-od-jit|cargo test -p od-jit --no-fail-fast --locked --offline"
+  "test-od-host|cargo test -p od-host --no-fail-fast --locked --offline"
+  "test-od-runner|cargo test -p od-runner --no-fail-fast --locked --offline"
+  "test-od-bench|cargo test -p od-bench --no-fail-fast --locked --offline"
+  "test-rest-of-workspace|cargo test --workspace --exclude od-isa --exclude od-machine --exclude od-jit --exclude od-host --exclude od-runner --exclude od-bench --no-fail-fast --locked --offline"
 )
 
 # NOT RUN: id|status|what|requires
@@ -51,7 +54,7 @@ NOT_RUN=(
   "linux-boot-positive-negative|not_run|Linux positive/negative boot|vmlinuz, initramfs and ACPI manifest/blob (guest artifacts, not in the repository)"
   "linux-direct-gate-real-kernel|not_run|od-runner linux-direct-gate on a real kernel|real vmlinuz + initramfs + ACPI manifest passed to linux-direct-gate"
   "mac-mini-hardware-cases|blocked|Mac mini hardware cases (physical Hypervisor.framework / KVM-method cases)|the Mac mini stand and its owner; stage 3 hardware gate stays in its own scope"
-  "guest-firmware-artifacts-build|not_run|guest/firmware artifacts build (tools/build/*.py, firmware/uefi, tools/build/test_*.py)|x86_64-unknown-none/uefi toolchain run as a separate build job (S4-44b); the outputs are inputs of the boot cases above"
+  "guest-firmware-artifacts-build|not_run|guest/firmware artifacts build (tools/build/*.py, firmware/uefi, tools/build/test_*.py)|x86_64-unknown-none/uefi toolchain run as a separate build job; the outputs are inputs of the boot cases above"
   "vmhost-system-smokes|not_run|tests/system Python/Swift/C smokes of the VMHost app (macOS app bundle)|built VMHost app bundle and a desktop session; stage 3 scope"
 )
 
@@ -128,14 +131,53 @@ from datetime import datetime, timezone
 def sha(p):
     return hashlib.sha256(open(p, "rb").read()).hexdigest()
 
+def targets_of(log):
+    """Per-target results of a `cargo test` log: one entry per Running/Doc-tests block."""
+    import re
+    out, cur = [], None
+    run = re.compile(r"^\s+Running (.+?)(?: \((.+)\))?$")
+    doc = re.compile(r"^\s+Doc-tests (\S+)")
+    res = re.compile(r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored")
+    bad = re.compile(r"^test (.+) \.\.\. FAILED$")
+    for line in open(log, encoding="utf-8", errors="replace"):
+        line = line.rstrip("\n")
+        m = run.match(line)
+        if m:
+            binary = os.path.basename(m.group(2) or "").rsplit("-", 1)[0]
+            cur = {"target": m.group(1), "binary": binary, "status": "no_result",
+                   "passed": 0, "failed": 0, "ignored": 0, "failed_tests": []}
+            out.append(cur)
+            continue
+        m = doc.match(line)
+        if m:
+            cur = {"target": "Doc-tests " + m.group(1), "binary": m.group(1), "status": "no_result",
+                   "passed": 0, "failed": 0, "ignored": 0, "failed_tests": []}
+            out.append(cur)
+            continue
+        if cur is None:
+            continue
+        m = bad.match(line)
+        if m and m.group(1) not in cur["failed_tests"]:
+            cur["failed_tests"].append(m.group(1))
+        m = res.match(line)
+        if m:
+            cur["status"] = "passed" if m.group(1) == "ok" else "failed"
+            cur["passed"], cur["failed"], cur["ignored"] = (int(m.group(i)) for i in (2, 3, 4))
+            cur = None
+    return out
+
 steps = []
 for line in open(os.environ["TSV"], encoding="utf-8"):
     sid, cmd, status, rc, dur, log, note = line.rstrip("\n").split("\t")
+    targets = targets_of(log) if cmd.startswith("cargo test") else None
     steps.append({
         "id": sid, "command": cmd, "status": status, "returncode": int(rc),
         "duration_seconds": int(dur),
         "log": os.path.relpath(log, os.environ["ROOT"]), "log_sha256": sha(log),
         "note": note,
+        **({"targets": targets, "targets_total": len(targets),
+            "targets_failed": sum(1 for t in targets if t["status"] != "passed")}
+           if targets is not None else {}),
     })
 not_run = []
 for line in os.environ["NOT_RUN_LINES"].splitlines():
@@ -143,7 +185,7 @@ for line in os.environ["NOT_RUN_LINES"].splitlines():
     not_run.append({"id": nid, "status": status, "what": what, "requires": req})
 count = lambda s: sum(1 for x in steps if x["status"] == s)
 doc = {
-    "schema": "od.stage4.s4-44a.local-set.v1",
+    "schema": "od.stage4.s4-44b.local-set.v2",
     "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "environment": {
         "git_head": os.environ["GIT_HEAD"], "git_branch": os.environ["GIT_BRANCH"],
