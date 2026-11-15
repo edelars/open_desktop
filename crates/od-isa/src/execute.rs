@@ -19995,6 +19995,32 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             }
             state.rip = next_rip;
         }
+        // S7-04: the Rust helper saves R13 with exactly `41 55` (REX.B + PUSH R13).
+        // Reuse the stack helper and keep this qword form limited to the base profile.
+        Operation::StackRegister {
+            push: true,
+            register: Register::R13,
+        } if base_profile
+            && instruction.length == 2
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x55
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x41),
+                    ..Prefixes::default()
+                })
+            && instruction.operand_size == OperandSize::Qword =>
+        {
+            let value = state.gpr[Register::R13 as usize];
+            if let Err(error) = push_stack_value(state, memory, context, value, OperandSize::Qword)
+            {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+        }
         // S7-04: the firmware helper also saves RBX with only the bare `53`
         // encoding. Keep this qword push separate from other opcode registers.
         Operation::StackRegister {

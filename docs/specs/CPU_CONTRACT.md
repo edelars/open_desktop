@@ -398,7 +398,7 @@ bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`,
 (`SUB RSP,0x58`), `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`), `48 81 FA 9F 00 00 00` (`CMP RDX,0x9f`), and
 `48 8D 7C 24 08` (`LEA RDI,[RSP+8]`), `BE 00 00 10 00`
 (`MOV ESI,0x00100000`), `BA 00 00 01 00` (`MOV EDX,0x00010000`), and
-`31 C9` (`XOR ECX,ECX`), `41 56`/`41 57` (`PUSH R14`/`PUSH R15`), and bare `53`/`55` (`PUSH RBX`/`PUSH RBP`; see the extensions below). The CPU entry validates its profile admission and
+`31 C9` (`XOR ECX,ECX`), `41 56`/`41 57`/`41 55` (`PUSH R14`/`PUSH R15`/`PUSH R13`), and bare `53`/`55` (`PUSH RBX`/`PUSH RBP`; see the extensions below). The CPU entry validates its profile admission and
 CR0/CR4 before fetch. It receives page-aware `GuestMemory`;
 CR3/EFER validation and selecting the four-level 4 KiB paging context belong
 to the machine entry.
@@ -588,6 +588,12 @@ Tests проверяют полный state, RSP, все восемь stack byte
 В base `PagedCpl0ProbeV1` допускается только `41 57`: REX `0x41`, opcode `0x57`, длина 2 и qword `StackRegister { push: true, register: R15 }`. Переиспользуется `push_stack_value`: qword R15 записывается на `[RSP-8]`, RSP/RIP коммитятся после успешной записи, flags и остальные GPR сохраняются. Stack #PF/#SS и fetch fault не коммитят CPU state; соседние registers/encodings, CPL3 и остальные profiles остаются вне allowlist.
 
 Tests проверяют полный state/RSP, восемь записанных bytes, stack #PF/#SS, fetch fault на opcode byte после REX и CPL3/other-profile isolation. Runner retired 35 инструкций и остановился на `41 55` (`PUSH R13`, ISSUE-134, RIP `0x200d3e`).
+
+#### Расширение S7-04: exact Rust-helper `PUSH R13`
+
+В base `PagedCpl0ProbeV1` допускается только `41 55`: REX `0x41`, opcode `0x55`, длина 2 и qword `StackRegister { push: true, register: R13 }`. Переиспользуется `push_stack_value`: qword R13 записывается на `[RSP-8]`, RSP/RIP коммитятся после успешной записи, flags и остальные GPR сохраняются. Stack #PF/#SS и fetch fault не коммитят CPU state; соседние registers/encodings, CPL3 и остальные profiles остаются вне allowlist.
+
+Tests проверяют полный state/RSP, восемь записанных bytes, stack #PF/#SS, fetch fault на opcode byte после REX и CPL3/other-profile isolation. Runner retired 36 инструкций и остановился на `41 54` (`PUSH R12`, ISSUE-135, RIP `0x200d40`).
 
 #### Расширение S7-04: exact Rust-helper `SUB RSP,0xb8`
 
