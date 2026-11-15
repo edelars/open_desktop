@@ -1,0 +1,22 @@
+# S5-06 physical stand reachability probe, 2026-11-15
+
+Purpose: verify SSH reachability before sending `guest/linux/tests/` and
+`tests/fixtures/guest/stage5/` to the authorized temporary directory on the
+physical Linux stand.
+
+Worktree: `codex`, source revision `994d522`.
+Target temporary directory: `/tmp/open-desktop-stage5-s5-06-994d522`.
+
+Command:
+
+```sh
+ssh -o ConnectTimeout=6 -o BatchMode=yes senya@192.168.1.14 \
+  'mkdir -p /tmp/open-desktop-stage5-s5-06-994d522'
+```
+
+Result: exit 255, `ssh: connect to host 192.168.1.14 port 22: Operation timed out`.
+The connection did not reach SSH authentication or execute the remote command.
+No files were transferred and no S5-06 physical checks were run by this attempt.
+
+Next step: retry the authorized transfer/preflight when the stand or network route
+is reachable. This probe is not guest-run or scenario acceptance evidence.
