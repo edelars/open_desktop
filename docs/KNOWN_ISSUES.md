@@ -196,10 +196,19 @@
 ### ISSUE-126 — S7-04: Rust helper `MOV RAX,RDI` остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `CALL rel32` на helper `0x200d10`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware target `0x200d10`.
-- **Статус:** открыта; call target достигнут, передача аргумента в RAX ещё не исполняется.
-- **Суть и последствия:** `RIP=0x200d10` содержит `48 89 F8` (`MOV RAX,RDI`). Runner возвращает `Unsupported { opcode: 137 }`; COM1 пуст, handoff parser ещё не достигнут.
+- **Статус:** решена узко для exact `48 89 F8` в base `PagedCpl0ProbeV1`.
+- **Суть и результат:** qword register MOV копирует RDI в RAX, продвигает RIP и сохраняет flags, definedness и остальные registers. Другие directions/registers/widths/prefixes, CPL3 и другие profiles остаются unsupported.
 - **Основание:** образ `/private/tmp/od-fw-s7-call-859.bin`; `od -An -tx1 -j 0xd10 -N16` показывает `48 89 f8 48 81 fa 9f 00 00 00 77 0e 66 c7 40 08`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=26`, `RIP=0x200d10`, `com1_bytes=0`.
-- **Следующий шаг:** определить узкую bounded форму `MOV RAX,RDI`, проверить state/flags и profile isolation.
+- **Проверка решения:** `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 182 passed; full state, flags/definedness, cross-page fetch-fault atomicity, neighbors и CPL3/stack/CR3/CR0.WP isolation. Образ `/private/tmp/od-fw-s7-mov-rax-rdi.bin` собран (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 27 инструкций и остановился на `48 81 FA 9F 00 00 00` (`CMP RDX,0x9f`) при `RIP=0x200d13`, `Unsupported { opcode: 129 }`, `com1_bytes=0`.
+
+<a id="issue-127-s7-04-rust-helper-cmp-rdx-imm32-unsupported"></a>
+### ISSUE-127 — S7-04: Rust helper `CMP RDX,imm32` остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `MOV RAX,RDI`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware target `0x200d10`.
+- **Статус:** открыта; RDI скопирован в RAX, следующий length check не исполняется.
+- **Суть и последствия:** `RIP=0x200d13` содержит `48 81 FA 9F 00 00 00` (`CMP RDX,0x9f`). Runner возвращает `Unsupported { opcode: 129 }`; COM1 пуст, handoff parser ещё не достигнут.
+- **Основание:** образ `/private/tmp/od-fw-s7-mov-rax-rdi.bin`; `od -An -tx1 -j 0xd13 -N16` показывает `48 81 fa 9f 00 00 00 77 0e 66 c7 40 08 00 00 48`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=27`, `RIP=0x200d13`, `com1_bytes=0`.
+- **Следующий шаг:** проверить exact qword immediate compare semantics и ограниченный профильный допуск.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки

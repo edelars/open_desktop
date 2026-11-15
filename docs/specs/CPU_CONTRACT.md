@@ -583,6 +583,12 @@ Tests проверяют full state, flags/definedness, noncanonical RSP result,
 
 Tests проверяют полный state, сохранение flags/definedness, cross-page fetch-fault atomicity, соседние кодировки и CPL3/stack/CR3/CR0.WP isolation. Runner retired 24 инструкции и остановился на `48 8D 7C 24 50` (`LEA RDI,[RSP+0x50]`, ISSUE-124, RIP `0x2004ad`).
 
+#### Расширение S7-04: exact Rust-helper `MOV RAX,RDI`
+
+В base `PagedCpl0ProbeV1` допускается только `48 89 F8`: Primary opcode `89`, длина 3, qword operand size, ровно REX.W `0x48`, назначение RAX и источник RDI. Существующая MOV-семантика копирует только RDI в RAX, продвигает RIP и сохраняет RFLAGS/definedness и остальные registers. Fetch fault на ModRM не коммитит состояние; соседние register/direction/width/prefix/memory forms, CPL3 и другие paged profiles остаются вне allowlist.
+
+Tests проверяют full state, flags/definedness, cross-page ModRM fetch-fault atomicity, neighbors и CPL3/stack/CR3/CR0.WP isolation. Runner retired 27 инструкций и остановился на `48 81 FA 9F 00 00 00` (`CMP RDX,0x9f`, ISSUE-127, RIP `0x200d13`).
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции
