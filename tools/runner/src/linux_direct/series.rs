@@ -445,10 +445,10 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
-        if name == "--stack-context-out" {
-            return Err(
-                "--stack-context-out is available only for a single linux-direct run".into(),
-            );
+        if matches!(name, "--stack-context-out" | "--execution-observations-out") {
+            return Err(format!(
+                "{name} is available only for a single linux-direct run"
+            ));
         }
         if matches!(
             name,
@@ -2045,6 +2045,13 @@ mod tests {
         let mut diagnostic = base.clone();
         diagnostic.extend(["--stack-context-out".into(), "context.json".into()]);
         assert!(parse_series_args(&diagnostic).is_err());
+        let mut execution_observations = base.clone();
+        execution_observations.extend([
+            "--execution-observations-out".into(),
+            "observations.json".into(),
+        ]);
+        let error = parse_series_args(&execution_observations).unwrap_err();
+        assert!(error.contains("--execution-observations-out"), "{error}");
 
         let mut wrong_scenario = base.clone();
         let marker = wrong_scenario

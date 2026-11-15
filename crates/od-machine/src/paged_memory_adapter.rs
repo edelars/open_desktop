@@ -1,5 +1,8 @@
 //! Opt-in one-instruction Long64 bridge through the uncached RAM walker.
 
+use crate::execution_observations::{
+    DeliveredPageFaultObservation, LinuxExecutionObservationCollector,
+};
 use crate::fetch_translation_cache::{FetchCacheStats, FetchTranslationCache};
 use crate::irq_source::IrqBoundaryHook;
 use crate::page_walk::translate_long64_2m_ram_read_only_with_tables;
@@ -704,6 +707,8 @@ pub(crate) struct PagedCpl0SetReport {
     pub(crate) cpl3_retired: u64,
     /// S4-39f: the `SYSCALL` / `SYSRETQ` pairs of this call, in order (only with `with_user_mode`).
     pub(crate) syscall_events: Vec<SyscallEvent>,
+    /// Last instruction boundary reached when opt-in execution observations were enabled.
+    pub(crate) last_instruction_rip: Option<u64>,
 }
 
 /// Run the CPL0 profile set through the RAM-only 4 KiB/2 MiB tracked walker,
@@ -777,12 +782,49 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
     instruction_budget: u64,
     rflags_defined: u64,
     set: &Cpl0ProfileSet<'_>,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    cpuid_boundary: bool,
+    fetch_cache: bool,
+    irq: Option<IrqBoundaryHook<'_>>,
+) -> PagedCpl0SetReport {
+    run_cpl0_set_paged_2m_ram_with_execution_observations(
+        state,
+        bus,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        set,
+        rdtsc,
+        stop,
+        committed_write,
+        cpuid_boundary,
+        fetch_cache,
+        irq,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
     mut rdtsc: Option<&mut dyn FnMut() -> u64>,
     mut stop: impl FnMut() -> bool,
     mut committed_write: impl FnMut(GuestPhysicalRange),
     cpuid_boundary: bool,
     fetch_cache: bool,
     mut irq: Option<IrqBoundaryHook<'_>>,
+    mut execution_observations: Option<&mut LinuxExecutionObservationCollector>,
 ) -> PagedCpl0SetReport {
     let context = AccessContext {
         origin: od_isa::memory::AccessOrigin::Explicit,
@@ -815,6 +857,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                 fetch_cache_stats: None,
                 cpl3_retired: 0,
                 syscall_events: Vec::new(),
+                last_instruction_rip: None,
             };
         }
     };
@@ -834,6 +877,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
     let mut delivered_general_protection_faults = 0u64;
     // Deliveries since the last retired instruction (see `MAX_DELIVERIES_WITHOUT_RETIREMENT`).
     let mut deliveries_without_retirement = 0u64;
+    let mut last_instruction_rip = None;
     // S4-38L8b: a retired guest write to a PIT port ends the quantum (only when the source
     // depends on the PIT), so that the board asks the source for its deadline again.
     let pit_write_ends_quantum = irq
@@ -904,6 +948,9 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
             break (PagedCpl0SetExit::CpuidDivergence { leaf }, None, None);
         }
         let instruction_rip = state.rip;
+        if execution_observations.is_some() {
+            last_instruction_rip = Some(instruction_rip);
+        }
         // S4-38L5c: RF set before the instruction (a restarted instruction after a `#PF`
         // frame came back through `IRETQ`) is cleared once the instruction retires, except
         // when that instruction is itself an `IRETQ`: it loads RF from its own frame (SDM, from
@@ -1006,6 +1053,24 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                     None => {
                         delivered_exceptions += 1;
                         delivered_page_faults += 1;
+                        if let Some(observations) = execution_observations.as_deref_mut() {
+                            observations.record_page_fault(DeliveredPageFaultObservation {
+                                rip: original_record
+                                    .as_ref()
+                                    .map_or(instruction_rip, |record| record.saved_rip()),
+                                cr2: original_record
+                                    .as_ref()
+                                    .map_or(fault.linear_address.unwrap_or(0), |record| {
+                                        record.cr2_value()
+                                    }),
+                                error_code: fault.error_code.unwrap_or_default(),
+                                access: original_record.as_ref().map_or_else(
+                                    || "unknown".to_string(),
+                                    |record| format!("{:?}", record.access()),
+                                ),
+                                cpl: u8::from(cpl3) * 3,
+                            });
+                        }
                         deliveries_without_retirement += 1;
                         continue;
                     }
@@ -1139,6 +1204,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         fetch_cache_stats: cache.as_ref().map(FetchTranslationCache::stats),
         cpl3_retired,
         syscall_events: syscall_events.into_iter().collect(),
+        last_instruction_rip,
     }
 }
 

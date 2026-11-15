@@ -46,7 +46,7 @@ use crate::linux_boot::{LinuxBzImageHeader, LinuxHeaderError, parse_linux_bzimag
 use crate::linux_boot_params::{LINUX_E820_MAX_ENTRIES, LinuxBootParamsError};
 use crate::linux_load::{LinuxLoadError, LinuxLoadInput, load_linux_direct};
 use crate::linux_placement::LinuxPlacementError;
-use crate::{GuestPhysicalAddress, MachineStopReason};
+use crate::{GuestPhysicalAddress, LinuxExecutionObservations, MachineStopReason};
 use od_isa::cpuid::CpuidProfile;
 use od_isa::execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, MovCr3Long64V1, TranslationContextChange,
@@ -517,6 +517,8 @@ pub struct LinuxStopRecord {
     pub rdtsc_reads: Option<u64>,
     /// Successful guest RDTSC reads by CPL ring 0..3; `None` without the Linux-profile source.
     pub rdtsc_reads_by_cpl: Option<[u64; 4]>,
+    /// Present only when requested by the one-shot execution-observations diagnostic.
+    pub execution_observations: Option<LinuxExecutionObservations>,
     /// Successful guest reads of PIT port B (`0x61`) during this run; `None` without a PIT.
     pub pit_port_b_reads: Option<u64>,
     /// Successful guest reads of PIT channel 2 (`0x42`) during this run; `None` without a PIT.
@@ -707,6 +709,7 @@ pub fn run_linux_direct_board(
             exceptions_delivered: 0,
             page_faults_delivered: 0,
             general_protection_faults_delivered: 0,
+            execution_observations: None,
             irq: IrqCounters::default(),
             diagnostic_past_c7: false,
         },
@@ -727,6 +730,7 @@ struct SetExtras<'a> {
     exceptions_delivered: u64,
     page_faults_delivered: u64,
     general_protection_faults_delivered: u64,
+    execution_observations: Option<LinuxExecutionObservations>,
     irq: IrqCounters,
     diagnostic_past_c7: bool,
 }
@@ -795,6 +799,7 @@ fn stop_record(
         pm_timer_reads,
         rdtsc_reads: report.rdtsc_reads,
         rdtsc_reads_by_cpl: report.rdtsc_reads_by_cpl,
+        execution_observations: extras.execution_observations,
         pit_port_b_reads: report.pit_port_b_reads,
         pit_counter_port_reads: report.pit_counter_port_reads,
         tsc_hz: report.tsc_hz,
@@ -1089,7 +1094,7 @@ pub fn run_linux_direct_board_set(
     instruction_budget: u64,
     members: LinuxCpl0SetMembers,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
-    run_linux_direct_board_set_with(boot, input, instruction_budget, members, false)
+    run_linux_direct_board_set_with(boot, input, instruction_budget, members, false, false)
 }
 
 /// [`run_linux_direct_board_set`] with the user mode of the board (S4-39c): the set is built
@@ -1110,7 +1115,18 @@ pub fn run_linux_direct_board_set_user_mode(
     instruction_budget: u64,
     members: LinuxCpl0SetMembers,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
-    run_linux_direct_board_set_with(boot, input, instruction_budget, members, true)
+    run_linux_direct_board_set_with(boot, input, instruction_budget, members, true, false)
+}
+
+/// One-shot user-mode CPL0-set run with bounded RDTSC-site and delivered-#PF observations.
+/// The diagnostic fields are absent from ordinary runs and do not alter guest-visible state.
+pub fn run_linux_direct_board_set_user_mode_with_execution_observations(
+    boot: &mut LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    instruction_budget: u64,
+    members: LinuxCpl0SetMembers,
+) -> Result<LinuxStopRecord, LinuxDirectError> {
+    run_linux_direct_board_set_with(boot, input, instruction_budget, members, true, true)
 }
 
 fn run_linux_direct_board_set_with(
@@ -1119,6 +1135,7 @@ fn run_linux_direct_board_set_with(
     instruction_budget: u64,
     members: LinuxCpl0SetMembers,
     user_mode: bool,
+    capture_execution_observations: bool,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
     let pm_timer_reads_before = boot.board.acpi_pm().map(|pm| pm.timer_reads());
     // S4-39g: only the user-mode run of a board with the Linux-profile PIT and 8259 gets the
@@ -1258,7 +1275,7 @@ fn run_linux_direct_board_set_with(
             names.push("syscall".into());
         }
     }
-    let result = boot.board.run_linux_boot_cpl0_set(
+    let result = boot.board.run_linux_boot_cpl0_set_with_observations(
         instruction_budget,
         &set,
         // The C7 boundary exists for the made-up DiagnosticV1 identity only (S4-38L9a): a
@@ -1266,6 +1283,7 @@ fn run_linux_direct_board_set_with(
         members.cpuid && !members.diagnostic_past_c7 && cpuid == CpuidProfile::DiagnosticV1,
         members.fetch_cache,
         members.irq,
+        capture_execution_observations,
     );
     // The EFER the guest left stays whatever way the run ended.
     boot.board.set_guest_efer(efer_cell.get());
@@ -1303,6 +1321,7 @@ fn run_linux_direct_board_set_with(
             exceptions_delivered: report.exceptions_delivered,
             page_faults_delivered: report.page_faults_delivered,
             general_protection_faults_delivered: report.general_protection_faults_delivered,
+            execution_observations: report.execution_observations,
             irq: report.irq,
             diagnostic_past_c7: members.diagnostic_past_c7,
         },
@@ -1960,8 +1979,10 @@ mod tests {
     }
     // ---- S2-45f: the CPL0 profile set through the board walker ----
 
+    use crate::execution_observations::LinuxExecutionObservationCollector;
     use crate::paged_memory_adapter::{
         PagedCpl0SetExit, PagedCpl0SetReport, run_cpl0_set_paged_2m_ram,
+        run_cpl0_set_paged_2m_ram_with_execution_observations,
     };
     use od_isa::execute::{
         ControlRegisterPolicy, Cpl0ProfileSet, MovCr3Long64V1, RunExit, TranslationContextChange,
@@ -1996,10 +2017,20 @@ mod tests {
         budget: u64,
         set: &Cpl0ProfileSet<'_>,
     ) -> (LongModeState, PagedCpl0SetReport) {
+        run_set_with_observations(boot, owned_cr3, budget, set, None)
+    }
+
+    fn run_set_with_observations(
+        boot: &mut LinuxDirectBoot,
+        owned_cr3: bool,
+        budget: u64,
+        set: &Cpl0ProfileSet<'_>,
+        observations: Option<&mut LinuxExecutionObservationCollector>,
+    ) -> (LongModeState, PagedCpl0SetReport) {
         let (cr3, efer) = (boot.board.cr3(), boot.board.efer());
         let mut state = boot.board.state().clone();
         state.cr3 = owned_cr3.then_some(cr3);
-        let report = run_cpl0_set_paged_2m_ram(
+        let report = run_cpl0_set_paged_2m_ram_with_execution_observations(
             &mut state,
             boot.board.bus_mut(),
             cr3,
@@ -2011,6 +2042,10 @@ mod tests {
             None,
             || false,
             |_| {},
+            false,
+            false,
+            None,
+            observations,
         );
         (state, report)
     }
@@ -10501,7 +10536,14 @@ mod tests {
         let rsp = boot.board.state().gpr[Register::Rsp as usize];
         // The store faults, the frame is pushed, six handler instructions retire and IRETQ is
         // the last of them: the store is back at RIP and RF is set (it came from the frame).
-        let (state, report) = run_set(&mut boot, true, 6, &minimal_set(&cli));
+        let mut observations = LinuxExecutionObservationCollector::default();
+        let (state, report) = run_set_with_observations(
+            &mut boot,
+            true,
+            6,
+            &minimal_set(&cli),
+            Some(&mut observations),
+        );
         assert_eq!(
             report.exit,
             PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
@@ -10513,6 +10555,19 @@ mod tests {
         assert_eq!(state.gpr[Register::Rsp as usize], rsp);
         assert_eq!(state.gpr[Register::Rax as usize], PF_VA + 0x20, "CR2 read");
         assert_eq!(state.cr2, Some(PF_VA + 0x20));
+        let observations = observations.finish();
+        assert_eq!(observations.page_faults_delivered, 1);
+        assert_eq!(observations.page_fault_events_omitted, 0);
+        assert_eq!(
+            observations.page_fault_events,
+            [crate::DeliveredPageFaultObservation {
+                rip: ENTRY,
+                cr2: PF_VA + 0x20,
+                error_code: 2,
+                access: "Write".into(),
+                cpl: 0,
+            }]
+        );
         assert_ne!(
             state.rflags & (1 << 16),
             0,
@@ -10546,6 +10601,35 @@ mod tests {
         read(&mut boot.board, DATA + 0x20, &mut byte).expect("read");
         assert_eq!(byte[0], 0x5A);
         assert_eq!((report.page_fault, report.memory_error), (None, None));
+    }
+
+    #[test]
+    fn opt_in_execution_observations_attribute_rdtsc_to_exact_instruction_rip() {
+        let cli = CliProfile::NonPviLong64V1;
+        let code = [0x0F, 0x31, 0xF4]; // RDTSC; HLT
+        let (mut boot, _) = boot_with_entry(&code);
+        let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+            .with_cli(&cli)
+            .with_cpu_owned_cr3(MovCr3Long64V1)
+            .with_rdtsc();
+        let report = boot
+            .board
+            .run_linux_boot_cpl0_set_with_observations(2, &set, false, false, false, true)
+            .expect("board run");
+
+        assert_eq!(report.run.retired, 1, "{report:?}");
+        let observations = report
+            .execution_observations
+            .expect("opt-in report is present");
+        assert_eq!(
+            observations.rdtsc_cpl0_sites,
+            [crate::RdtscSiteCount {
+                rip: ENTRY,
+                reads: 1,
+            }]
+        );
+        assert_eq!(observations.rdtsc_cpl0_unattributed_reads, 0);
+        assert_eq!(observations.rdtsc_cpl0_site_overflow_reads, 0);
     }
 
     #[test]

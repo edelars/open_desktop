@@ -10,6 +10,7 @@ mod diagnostic_vcpu;
 mod display_device;
 mod dma_page;
 mod event_queue;
+mod execution_observations;
 mod fetch_translation_cache;
 mod firmware_board;
 mod identity_memory_adapter;
@@ -156,10 +157,15 @@ pub use linux_direct::{
     LinuxStopRecord, SYSCALL_JOURNAL_CAPACITY, SyscallJournal, SyscallJournalEntry,
     load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
     run_linux_direct_board_set_user_mode,
+    run_linux_direct_board_set_user_mode_with_execution_observations,
 };
 
 pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEvent};
 
+pub use execution_observations::{
+    DeliveredPageFaultObservation, LINUX_PAGE_FAULT_EVENT_CAPACITY, LINUX_RDTSC_SITE_CAPACITY,
+    LinuxExecutionObservations, RdtscSiteCount,
+};
 pub use firmware_board::{
     FIRMWARE_ACPI_FACS_BASE, FIRMWARE_ACPI_FACS_BYTES, FIRMWARE_ACPI_TABLES_BASE,
     FIRMWARE_ACPI_TABLES_BYTES, FIRMWARE_BOOT_PAGE_TABLES_GPA, FIRMWARE_BOOT_STACK_BASE,

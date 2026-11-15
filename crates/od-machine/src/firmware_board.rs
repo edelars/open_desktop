@@ -11,10 +11,13 @@ use crate::console_output_context::{
     UartOutputByteContextSnapshot, UartOutputContextCapture, UartOutputContextDiagnostic,
     capture_frame_chain,
 };
+use crate::execution_observations::{
+    LinuxExecutionObservationCollector, LinuxExecutionObservations,
+};
 use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters, NoIrqSource};
 use crate::page_walk::translate_long64_2m_ram_read_only;
 use crate::paged_memory_adapter::{
-    IrqDeliveryFailure, PagedCpl0SetExit, run_cpl0_set_paged_2m_ram_with_cpuid_boundary,
+    IrqDeliveryFailure, PagedCpl0SetExit, run_cpl0_set_paged_2m_ram_with_execution_observations,
 };
 use crate::paged_probe::run_paged_probe_2m_ram;
 use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
@@ -888,6 +891,8 @@ pub(crate) struct LinuxSetRunReport {
     pub(crate) page_faults_delivered: u64,
     /// Successfully delivered guest `#GP(0)` exceptions in this call.
     pub(crate) general_protection_faults_delivered: u64,
+    /// Present only for a one-shot opt-in execution-observation run.
+    pub(crate) execution_observations: Option<LinuxExecutionObservations>,
     /// What the interrupt hook counted in this call (S4-38L8b); all zero without a source or
     /// without the hook.
     pub(crate) irq: IrqCounters,
@@ -1798,6 +1803,25 @@ impl LoadedFirmwareBoard {
         fetch_cache: bool,
         irq_hook: bool,
     ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
+        self.run_linux_boot_cpl0_set_with_observations(
+            instruction_budget,
+            set,
+            cpuid_boundary,
+            fetch_cache,
+            irq_hook,
+            false,
+        )
+    }
+
+    pub(crate) fn run_linux_boot_cpl0_set_with_observations(
+        &mut self,
+        instruction_budget: u64,
+        set: &Cpl0ProfileSet<'_>,
+        cpuid_boundary: bool,
+        fetch_cache: bool,
+        irq_hook: bool,
+        capture_execution_observations: bool,
+    ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
         let context = AccessContext {
             mode: InstructionMode::Long64,
             privilege: PrivilegeLevel::Ring0,
@@ -1810,6 +1834,8 @@ impl LoadedFirmwareBoard {
         let mut exceptions_delivered = 0u64;
         let mut page_faults_delivered = 0u64;
         let mut general_protection_faults_delivered = 0u64;
+        let mut execution_observations =
+            capture_execution_observations.then(LinuxExecutionObservationCollector::default);
         let mut cpl3_retired = 0u64;
         let mut syscall_journal = crate::linux_direct::SyscallJournal::default();
         self.com1_log.clear();
@@ -1890,7 +1916,7 @@ impl LoadedFirmwareBoard {
                     irq_counters.quantum_cut_by_deadline += 1;
                 }
             }
-            let report = run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
+            let report = run_cpl0_set_paged_2m_ram_with_execution_observations(
                 &mut self.state,
                 &mut self.bus,
                 self.page_table_root,
@@ -1911,6 +1937,7 @@ impl LoadedFirmwareBoard {
                     counters: &mut irq_counters,
                     skip_first_boundary: partial_rep,
                 }),
+                execution_observations.as_mut(),
             );
             quanta += 1;
             partial_rep = matches!(
@@ -1982,6 +2009,11 @@ impl LoadedFirmwareBoard {
                     .cs_selector
                     .map_or(0, |selector| (selector & 3) as usize);
                 rdtsc_reads_by_cpl[cpl] = rdtsc_reads_by_cpl[cpl].saturating_add(1);
+                if cpl == 0
+                    && let Some(observations) = execution_observations.as_mut()
+                {
+                    observations.record_cpl0_rdtsc(report.last_instruction_rip);
+                }
                 let tick_ns = RDTSC_TICK_NS;
                 #[cfg(test)]
                 let tick_ns = if self.suppress_rdtsc_tick { 0 } else { tick_ns };
@@ -2096,6 +2128,8 @@ impl LoadedFirmwareBoard {
             exceptions_delivered,
             page_faults_delivered,
             general_protection_faults_delivered,
+            execution_observations: execution_observations
+                .map(LinuxExecutionObservationCollector::finish),
             irq: irq_counters,
         })
     }

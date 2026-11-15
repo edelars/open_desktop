@@ -69,9 +69,10 @@
 
 use od_isa::cpuid::CpuidProfile;
 use od_machine::{
-    LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput, LinuxStopRecord,
-    MachineStopReason, load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
-    run_linux_direct_board_set_user_mode,
+    LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput,
+    LinuxExecutionObservations, LinuxStopRecord, MachineStopReason, load_linux_direct_board,
+    run_linux_direct_board, run_linux_direct_board_set, run_linux_direct_board_set_user_mode,
+    run_linux_direct_board_set_user_mode_with_execution_observations,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -83,7 +84,7 @@ pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a] [--user-mode] [--stack-context-out <json>]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a] [--user-mode] [--stack-context-out <json>] [--execution-observations-out <json>]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -124,6 +125,8 @@ struct Options {
     user_mode: bool,
     /// Separate, opt-in sidecar for bounded console-output stack context; single run only.
     stack_context_out: Option<String>,
+    /// Separate, opt-in sidecar for CPL0 RDTSC sites and delivered #PF events; single user-mode run only.
+    execution_observations_out: Option<String>,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -158,7 +161,9 @@ pub fn run(args: &[String]) -> ExitCode {
     let sidecar_collides_with_report = options
         .stack_context_out
         .as_ref()
-        .is_some_and(|sidecar| match_existing_file_identity(sidecar, &options.out).unwrap_or(true));
+        .into_iter()
+        .chain(options.execution_observations_out.as_ref())
+        .any(|sidecar| match_existing_file_identity(sidecar, &options.out).unwrap_or(true));
     if sidecar_collides_with_report {
         let value = refusal(
             "invalid_input",
@@ -299,6 +304,7 @@ fn evaluate(options: &Options) -> (Value, u8) {
             describe(&mut evidence, &boot, &cmdline, &vmlinuz, &initramfs_sha);
             if let Some(budget) = options.budget {
                 let mut sidecar_file = None;
+                let mut execution_observations_file = None;
                 if let Some(path) = &options.stack_context_out {
                     let file = match std::fs::OpenOptions::new()
                         .write(true)
@@ -351,38 +357,102 @@ fn evaluate(options: &Options) -> (Value, u8) {
                     }
                     boot.board.enable_console_output_context_diagnostic();
                 }
+                if let Some(path) = &options.execution_observations_out {
+                    let file = match std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(path)
+                    {
+                        Ok(file) => file,
+                        Err(error) => {
+                            let cleanup = cleanup_sidecar_reservation(
+                                options.stack_context_out.as_deref(),
+                                &mut sidecar_file,
+                            );
+                            let mut value = refusal(
+                                "diagnostic_sidecar_reservation_failed",
+                                "execution_observations_sidecar",
+                                format!("{path}: {error}"),
+                                evidence,
+                            );
+                            value["_skip_report_write"] = json!(true);
+                            let _ = cleanup;
+                            return (value, 4);
+                        }
+                    };
+                    match file_matches_existing_path(&file, path, &options.out) {
+                        Ok(false) => execution_observations_file = Some(file),
+                        Ok(true) => {
+                            let cleanup = discard_sidecar_reservation(path, file);
+                            let prior_cleanup = cleanup_sidecar_reservation(
+                                options.stack_context_out.as_deref(),
+                                &mut sidecar_file,
+                            );
+                            let mut value = refusal(
+                                "diagnostic_sidecar_path_collision",
+                                "execution_observations_sidecar",
+                                "--out resolves to the reserved sidecar file".into(),
+                                evidence,
+                            );
+                            if cleanup.is_err() || prior_cleanup.is_err() {
+                                value["_skip_report_write"] = json!(true);
+                            }
+                            return (value, 4);
+                        }
+                        Err(detail) => {
+                            let cleanup = discard_sidecar_reservation(path, file);
+                            let prior_cleanup = cleanup_sidecar_reservation(
+                                options.stack_context_out.as_deref(),
+                                &mut sidecar_file,
+                            );
+                            let mut value = refusal(
+                                "diagnostic_sidecar_identity_failed",
+                                "execution_observations_sidecar",
+                                detail,
+                                evidence,
+                            );
+                            value["_skip_report_write"] = json!(true);
+                            let _ = cleanup;
+                            let _ = prior_cleanup;
+                            return (value, 4);
+                        }
+                    }
+                }
                 let run_set = if options.user_mode {
                     run_linux_direct_board_set_user_mode
                 } else {
                     run_linux_direct_board_set
                 };
-                let result = if options.set_cpl0 {
-                    run_set(
+                let members = LinuxCpl0SetMembers {
+                    // S4-13 diagnostics: `OD_NO_FETCH_CACHE=1` runs without the fetch
+                    // translation cache (same results, more page walks).
+                    fetch_cache: std::env::var_os("OD_NO_FETCH_CACHE").is_none(),
+                    diagnostic_past_c7: options.diagnostic_past_c7,
+                    cpuid_profile: options.cpuid_profile,
+                    // S4-38L9c: with the TSC-only subset the kernel's `tdx_init` reads
+                    // MSR 0x87 (MKTME KeyID partitioning); the member answers 0:0. Off for
+                    // the DiagnosticV1 default, whose run does not get there.
+                    msr_tdx_keyid_partitioning_read: options.cpuid_profile
+                        == CpuidProfile::X8664V1Stage4A,
+                    // S4-38L9d: with the subset that declares FPU and FXSR the kernel's
+                    // `fpu__init_system` runs `FNINIT` and `FXSAVE`; the FP member
+                    // implements them. Off for the DiagnosticV1 default.
+                    fp_state: options.cpuid_profile == CpuidProfile::X8664V1Stage4A,
+                    // S4-38L9e: the kernel's `int3_selftest` executes `INT3` and waits for
+                    // `#BP` through the IDT; the INT3 member delivers it. Off for the
+                    // DiagnosticV1 default (its member list stays as it was).
+                    int3: options.cpuid_profile == CpuidProfile::X8664V1Stage4A,
+                    ..LinuxCpl0SetMembers::linux_default()
+                };
+                let result = if options.execution_observations_out.is_some() {
+                    run_linux_direct_board_set_user_mode_with_execution_observations(
                         &mut boot,
                         &machine_input,
                         budget,
-                        LinuxCpl0SetMembers {
-                            // S4-13 diagnostics: `OD_NO_FETCH_CACHE=1` runs without the fetch
-                            // translation cache (same results, more page walks).
-                            fetch_cache: std::env::var_os("OD_NO_FETCH_CACHE").is_none(),
-                            diagnostic_past_c7: options.diagnostic_past_c7,
-                            cpuid_profile: options.cpuid_profile,
-                            // S4-38L9c: with the TSC-only subset the kernel's `tdx_init` reads
-                            // MSR 0x87 (MKTME KeyID partitioning); the member answers 0:0. Off for
-                            // the DiagnosticV1 default, whose run does not get there.
-                            msr_tdx_keyid_partitioning_read: options.cpuid_profile
-                                == CpuidProfile::X8664V1Stage4A,
-                            // S4-38L9d: with the subset that declares FPU and FXSR the kernel's
-                            // `fpu__init_system` runs `FNINIT` and `FXSAVE`; the FP member
-                            // implements them. Off for the DiagnosticV1 default.
-                            fp_state: options.cpuid_profile == CpuidProfile::X8664V1Stage4A,
-                            // S4-38L9e: the kernel's `int3_selftest` executes `INT3` and waits for
-                            // `#BP` through the IDT; the INT3 member delivers it. Off for the
-                            // DiagnosticV1 default (its member list stays as it was).
-                            int3: options.cpuid_profile == CpuidProfile::X8664V1Stage4A,
-                            ..LinuxCpl0SetMembers::linux_default()
-                        },
+                        members,
                     )
+                } else if options.set_cpl0 {
+                    run_set(&mut boot, &machine_input, budget, members)
                 } else {
                     run_linux_direct_board(&mut boot, &machine_input, budget)
                 };
@@ -406,6 +476,37 @@ fn evaluate(options: &Options) -> (Value, u8) {
                         "snapshots": snapshots.len(),
                         "uart_provenance_samples": uart_diagnostic.as_ref().map_or(0, |capture| capture.samples.len()),
                         "uart_provenance_end": uart_diagnostic.as_ref().map(|capture| uart_context_end_name(capture.end)),
+                        "write_error": write_error,
+                    });
+                }
+                if let Some(path) = &options.execution_observations_out {
+                    let write_error = if result.is_err() {
+                        let cleanup_error = execution_observations_file
+                            .take()
+                            .and_then(|file| discard_sidecar_reservation(path, file).err());
+                        Some(cleanup_error.unwrap_or_else(|| {
+                            "run failed before observations were complete".into()
+                        }))
+                    } else {
+                        match (result.as_ref().ok(), execution_observations_file.as_mut()) {
+                            (Some(record), Some(file)) => {
+                                match record.execution_observations.as_ref() {
+                                    Some(observations) => write_execution_observations_sidecar(
+                                        file,
+                                        path,
+                                        observations,
+                                    )
+                                    .err(),
+                                    None => Some("run returned no execution observations".into()),
+                                }
+                            }
+                            (_, None) => Some("sidecar reservation is missing".into()),
+                            (None, _) => Some("run result is unavailable".into()),
+                        }
+                    };
+                    evidence["execution_observations_sidecar"] = json!({
+                        "path": path,
+                        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events",
                         "write_error": write_error,
                     });
                 }
@@ -852,6 +953,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut budget = None;
     let mut cpuid_profile_text: Option<String> = None;
     let mut stack_context_out = None;
+    let mut execution_observations_out = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -904,6 +1006,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--budget" => &mut budget,
             "--cpuid-profile" => &mut cpuid_profile_text,
             "--stack-context-out" => &mut stack_context_out,
+            "--execution-observations-out" => &mut execution_observations_out,
             other => {
                 return Err(format!("unexpected option {other}; usage: {USAGE}"));
             }
@@ -962,6 +1065,16 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--stack-context-out needs --run and --set-cpl0; usage: {USAGE}"
         ));
     }
+    if execution_observations_out.is_some() && !(run && set_cpl0 && user_mode) {
+        return Err(format!(
+            "--execution-observations-out needs --run, --set-cpl0 and --user-mode; usage: {USAGE}"
+        ));
+    }
+    if stack_context_out.is_some()
+        && stack_context_out.as_ref() == execution_observations_out.as_ref()
+    {
+        return Err("diagnostic sidecar paths must be distinct".into());
+    }
     let nonce = required(nonce, "--nonce")?;
     if nonce.is_empty()
         || nonce.chars().count() > MAX_NONCE_CHARS
@@ -1011,6 +1124,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         cpuid_profile,
         user_mode,
         stack_context_out,
+        execution_observations_out,
     })
 }
 
@@ -1083,6 +1197,14 @@ fn discard_sidecar_reservation(path: &str, file: File) -> Result<(), String> {
     std::fs::remove_file(path).map_err(|error| format!("could not remove {path}: {error}"))
 }
 
+fn cleanup_sidecar_reservation(path: Option<&str>, file: &mut Option<File>) -> Result<(), String> {
+    let Some(reserved_file) = file.take() else {
+        return Ok(());
+    };
+    let path = path.ok_or_else(|| "sidecar reservation has no path".to_string())?;
+    discard_sidecar_reservation(path, reserved_file)
+}
+
 fn write_stack_context_sidecar(
     file: &mut File,
     path: &str,
@@ -1137,6 +1259,55 @@ fn write_stack_context_sidecar(
                 "ended": frame_chain_end_name(sample.ended),
             })).collect::<Vec<_>>(),
         })),
+    });
+    file_matches_existing_path(file, path, path)?;
+    let bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
+    use std::io::Write;
+    if let Err(error) = file.write_all(&bytes).and_then(|()| file.write_all(b"\n")) {
+        let cleanup = match file_matches_existing_path(file, path, path) {
+            Ok(true) => {
+                std::fs::remove_file(path).map_err(|cleanup_error| cleanup_error.to_string())
+            }
+            Ok(false) => Err("reservation path identity changed".into()),
+            Err(cleanup_error) => Err(cleanup_error),
+        };
+        return Err(match cleanup {
+            Ok(()) => format!("{path}: {error}"),
+            Err(cleanup_error) => {
+                format!("{path}: {error}; partial sidecar cleanup failed: {cleanup_error}")
+            }
+        });
+    }
+    Ok(())
+}
+
+fn write_execution_observations_sidecar(
+    file: &mut File,
+    path: &str,
+    observations: &LinuxExecutionObservations,
+) -> Result<(), String> {
+    let value = json!({
+        "schema_version": 1,
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events",
+        "limits": {
+            "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
+            "page_fault_events": od_machine::LINUX_PAGE_FAULT_EVENT_CAPACITY,
+        },
+        "rdtsc_cpl0_sites": observations.rdtsc_cpl0_sites.iter().map(|site| json!({
+            "rip": hex64(site.rip),
+            "reads": site.reads,
+        })).collect::<Vec<_>>(),
+        "rdtsc_cpl0_unattributed_reads": observations.rdtsc_cpl0_unattributed_reads,
+        "rdtsc_cpl0_site_overflow_reads": observations.rdtsc_cpl0_site_overflow_reads,
+        "page_faults_delivered": observations.page_faults_delivered,
+        "page_fault_events": observations.page_fault_events.iter().map(|event| json!({
+            "rip": hex64(event.rip),
+            "cr2": hex64(event.cr2),
+            "error_code": format!("0x{:08x}", event.error_code),
+            "access": event.access,
+            "cpl": event.cpl,
+        })).collect::<Vec<_>>(),
+        "page_fault_events_omitted": observations.page_fault_events_omitted,
     });
     file_matches_existing_path(file, path, path)?;
     let bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
@@ -1303,6 +1474,7 @@ mod tests {
                 cpuid_profile: CpuidProfile::DiagnosticV1,
                 user_mode: false,
                 stack_context_out: None,
+                execution_observations_out: None,
             };
             Self { dir, options }
         }
@@ -2696,6 +2868,64 @@ mod tests {
     }
 
     #[test]
+    fn execution_observations_sidecar_is_restricted_to_one_user_mode_run() {
+        let run = [
+            "--run",
+            "--budget",
+            "1",
+            "--set-cpl0",
+            "--cpuid-profile",
+            "stage4a",
+            "--user-mode",
+        ];
+        let accepted = parse_base(
+            &[
+                &run[..],
+                &["--execution-observations-out", "observations.json"],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(
+            accepted.execution_observations_out.as_deref(),
+            Some("observations.json")
+        );
+        assert!(parse_base(&["--execution-observations-out", "observations.json"]).is_err());
+        assert!(parse_base(&[&run[..6], &["--execution-observations-out", "o"]].concat()).is_err());
+        assert!(parse_base(&[&run[..4], &["--execution-observations-out", "o"]].concat()).is_err());
+        assert!(
+            parse_base(
+                &[
+                    &run[..],
+                    &[
+                        "--execution-observations-out",
+                        "o",
+                        "--execution-observations-out",
+                        "o2"
+                    ]
+                ]
+                .concat()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_base(
+                &[
+                    &run[..],
+                    &[
+                        "--stack-context-out",
+                        "same",
+                        "--execution-observations-out",
+                        "same"
+                    ]
+                ]
+                .concat()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn sidecar_collision_guard_uses_filesystem_identity_for_aliases() {
         let root = std::env::temp_dir().join(format!(
             "od-runner-stack-context-paths-{}",
@@ -2782,6 +3012,43 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_sidecar_reservation_removes_only_the_reserved_file() {
+        let root =
+            std::env::temp_dir().join(format!("od-runner-sidecar-cleanup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let owned_path = root.join("owned.json");
+        let mut owned = Some(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&owned_path)
+                .unwrap(),
+        );
+        cleanup_sidecar_reservation(Some(owned_path.to_str().unwrap()), &mut owned).unwrap();
+        assert!(owned.is_none());
+        assert!(!owned_path.exists());
+
+        let replaced_path = root.join("replaced.json");
+        let mut replaced = Some(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&replaced_path)
+                .unwrap(),
+        );
+        std::fs::remove_file(&replaced_path).unwrap();
+        std::fs::write(&replaced_path, b"replacement").unwrap();
+        assert!(
+            cleanup_sidecar_reservation(Some(replaced_path.to_str().unwrap()), &mut replaced)
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&replaced_path).unwrap(), b"replacement");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn stack_context_sidecar_serializes_as_separate_console_context_evidence() {
         let path = std::env::temp_dir().join(format!(
             "od-runner-stack-context-{}-{}.json",
@@ -2810,6 +3077,61 @@ mod tests {
                 .open(&path)
                 .is_err()
         );
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn execution_observations_sidecar_serializes_bounded_counts_and_pf_metadata() {
+        let path = std::env::temp_dir().join(format!(
+            "od-runner-execution-observations-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let observations = LinuxExecutionObservations {
+            rdtsc_cpl0_sites: vec![od_machine::RdtscSiteCount {
+                rip: 0xffff_ffff_8100_1234,
+                reads: 19,
+            }],
+            rdtsc_cpl0_unattributed_reads: 2,
+            rdtsc_cpl0_site_overflow_reads: 3,
+            page_faults_delivered: 5,
+            page_fault_events: vec![od_machine::DeliveredPageFaultObservation {
+                rip: 0xffff_ffff_8100_5678,
+                cr2: 0x0000_0000_0040_2000,
+                error_code: 7,
+                access: "Write".into(),
+                cpl: 3,
+            }],
+            page_fault_events_omitted: 4,
+        };
+        write_execution_observations_sidecar(&mut file, path.to_str().unwrap(), &observations)
+            .unwrap();
+        let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(
+            value["limits"]["rdtsc_cpl0_sites"],
+            od_machine::LINUX_RDTSC_SITE_CAPACITY
+        );
+        assert_eq!(
+            value["limits"]["page_fault_events"],
+            od_machine::LINUX_PAGE_FAULT_EVENT_CAPACITY
+        );
+        assert_eq!(value["rdtsc_cpl0_sites"][0]["rip"], "0xffffffff81001234");
+        assert_eq!(value["rdtsc_cpl0_sites"][0]["reads"], 19);
+        assert_eq!(value["rdtsc_cpl0_site_overflow_reads"], 3);
+        assert_eq!(value["page_faults_delivered"], 5);
+        assert_eq!(value["page_fault_events"][0]["rip"], "0xffffffff81005678");
+        assert_eq!(value["page_fault_events"][0]["cr2"], "0x402000");
+        assert_eq!(value["page_fault_events"][0]["error_code"], "0x00000007");
+        assert_eq!(value["page_fault_events"][0]["access"], "Write");
+        assert_eq!(value["page_fault_events"][0]["cpl"], 3);
+        assert_eq!(value["page_fault_events_omitted"], 4);
         drop(file);
         std::fs::remove_file(path).unwrap();
     }
@@ -3166,6 +3488,7 @@ mod tests {
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
             stack_context_out: None,
+            execution_observations_out: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -3210,6 +3533,7 @@ mod tests {
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
             stack_context_out: None,
+            execution_observations_out: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -3261,6 +3585,7 @@ mod tests {
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
             stack_context_out: None,
+            execution_observations_out: None,
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");
