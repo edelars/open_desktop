@@ -1342,6 +1342,19 @@ fn run_linux_direct_board_set_with(
         error.retired = Some(0);
         return Err(error);
     }
+    // S4-38 (UART -> INTIN4): the UART interrupt output goes to IOAPIC INTIN4 on top of the timer
+    // source above (the 8259 variant `enable_uart_irq4` is the stage4a user-mode one).
+    if members.cpuid_profile == CpuidProfile::X8664V1Stage4AApic
+        && !boot.board.enable_uart_ioapic_irq4()
+    {
+        let mut error = LinuxDirectError::text(
+            "run_failed",
+            "run",
+            "the X8664V1Stage4AApic profile could not install the IOAPIC UART source".to_string(),
+        );
+        error.retired = Some(0);
+        return Err(error);
+    }
     let result = boot.board.run_linux_boot_cpl0_set(
         instruction_budget,
         &set,
@@ -14831,6 +14844,27 @@ mod tests {
                 "the IOAPIC source is installed"
             );
             assert!(!boot.board.enable_uart_irq4(), "no 8259 source to wrap");
+            // S4-38 (UART -> INTIN4): the IOAPIC UART source needs the IOAPIC PIT source and
+            // excludes the 8259 variant in both directions.
+            assert!(boot.board.enable_uart_ioapic_irq4());
+            assert!(
+                boot.board.enable_uart_ioapic_irq4(),
+                "a second call keeps the source"
+            );
+            assert!(boot.board.uart_ioapic_source().is_some());
+            assert!(boot.board.uart_irq_source().is_none());
+            let (mut boot, _) = boot_with_entry(&[CLD]);
+            assert!(
+                !boot.board.enable_uart_ioapic_irq4(),
+                "no IOAPIC PIT source to wrap"
+            );
+            assert!(boot.board.enable_pit_pic_irq());
+            assert!(
+                !boot.board.enable_uart_ioapic_irq4(),
+                "the 8259 source is installed"
+            );
+            assert!(boot.board.enable_uart_irq4());
+            assert!(boot.board.uart_ioapic_source().is_none());
         }
 
         fn members(profile: CpuidProfile) -> LinuxCpl0SetMembers {
@@ -14857,6 +14891,7 @@ mod tests {
             assert!(!record.set_members.iter().any(|m| m == "user_mode"));
             assert!(boot.board.clock_owner_enabled());
             assert!(boot.board.pit_ioapic_source().is_some());
+            assert!(boot.board.uart_ioapic_source().is_some());
 
             let (mut boot, file) = boot_with_entry(&com1_program(b'X'));
             let record =
@@ -14874,6 +14909,289 @@ mod tests {
             );
             assert!(!boot.board.clock_owner_enabled());
             assert!(boot.board.pit_ioapic_source().is_none());
+            assert!(boot.board.uart_ioapic_source().is_none());
+        }
+
+        // S4-38 (UART -> INTIN4). The guest programs the Local APIC (SVR) and redirection entry 4
+        // (IOREGSEL 0x18), enables OUT2 and the RDA interrupt of the UART, and sets IF. The
+        // receive byte is injected before the run (the S4-23c RX event of the host). The handler
+        // at `IRQ_HANDLER_AT` (vector `IRQ_VECTOR`) counts in RSI, optionally reads RBR (which
+        // clears the RDA condition), writes the Local APIC EOI and returns.
+
+        const ENTRY4_EDGE: u32 = IRQ_VECTOR as u32;
+        const ENTRY4_LEVEL: u32 = (1 << 15) | IRQ_VECTOR as u32;
+        const ENTRY4_MASKED: u32 = (1 << 16) | IRQ_VECTOR as u32;
+
+        /// `MOV AL, value; MOV DX, port; OUT DX, AL`.
+        fn outb(port: u16, value: u8) -> Vec<u8> {
+            vec![0xB0, value, 0x66, 0xBA, port as u8, (port >> 8) as u8, 0xEE]
+        }
+
+        /// SVR := 0x1FF, IOREGSEL := 0x18, IOWIN := `entry4`, MCR := OUT2, IER := RDA.
+        fn uart_setup(entry4: u32) -> Vec<u8> {
+            uart_setup_with(entry4, 0x1FF, 0x01)
+        }
+
+        /// The same with the SVR value `svr` and the IER value `ier`.
+        fn uart_setup_with(entry4: u32, svr: u32, ier: u8) -> Vec<u8> {
+            let mut code = mov32(3, LOCAL_APIC_MMIO_BASE as u32);
+            code.extend(mov32(1, IO_APIC_MMIO_BASE as u32));
+            code.extend(mov32(0, svr));
+            code.extend([0x89, 0x83, 0xF0, 0x00, 0x00, 0x00]); // MOV [RBX+0xF0], EAX
+            code.extend(mov32(0, 0x18));
+            code.extend([0x89, 0x01]); // MOV [RCX], EAX
+            code.extend(mov32(0, entry4));
+            code.extend([0x89, 0x41, 0x10]); // MOV [RCX+0x10], EAX
+            code.extend(outb(0x3FC, 0x08));
+            code.extend(outb(0x3F9, ier));
+            code
+        }
+
+        /// `INC RSI`, `[MOV DX, 0x3F8; IN AL, DX]` with `read_rbr`, `XOR EAX, EAX`, the EOI, `IRETQ`.
+        fn uart_handler(read_rbr: bool) -> Vec<u8> {
+            let mut code = vec![0x48, 0xFF, 0xC6];
+            if read_rbr {
+                code.extend([0x66, 0xBA, 0xF8, 0x03, 0xEC]);
+            }
+            code.extend([0x31, 0xC0]); // XOR EAX, EAX (the EOI register takes 0)
+            code.extend([0x89, 0x83, 0xB0, 0x00, 0x00, 0x00]); // MOV [RBX+0xB0], EAX
+            code.extend([0x48, 0xCF]);
+            code
+        }
+
+        /// An APIC-profile board (IOAPIC PIT source and UART source installed) running `code`
+        /// with a received byte waiting in the UART.
+        fn uart_board(code: &[u8], read_rbr: bool) -> LinuxDirectBoot {
+            let boot = uart_board_empty(code, read_rbr);
+            boot.board.uart().inject_received_byte(b'A').unwrap();
+            boot
+        }
+
+        /// The same board with nothing received yet.
+        fn uart_board_empty(code: &[u8], read_rbr: bool) -> LinuxDirectBoot {
+            let mut boot = apic_board(code, true);
+            write_phys(&mut boot, IRQ_HANDLER_AT, &uart_handler(read_rbr));
+            assert!(boot.board.enable_uart_ioapic_irq4());
+            boot.board.state_mut().gpr[Register::Rsi as usize] = 0;
+            boot
+        }
+
+        /// `uart_setup`, `STI`, spin.
+        fn uart_guest(entry4: u32) -> Vec<u8> {
+            let mut code = uart_setup(entry4);
+            code.push(0xFB);
+            code.extend([0xEB, 0xFE]);
+            code
+        }
+
+        /// UART RX event -> INTIN4 (edge form) -> Local APIC IRR -> guest IDT -> handler -> EOI.
+        #[test]
+        fn a_uart_rx_event_reaches_the_guest_through_intin4_and_the_local_apic() {
+            let mut boot = uart_board(&uart_guest(ENTRY4_EDGE), true);
+            let rsp = boot.board.state().gpr[Register::Rsp as usize];
+            let report = run_set(&mut boot, 300);
+            assert_eq!(
+                report.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            let state = boot.board.state();
+            assert_eq!(state.gpr[Register::Rsi as usize], 1, "the handler ran once");
+            assert_eq!(state.gpr[Register::Rsp as usize], rsp, "IRETQ balanced");
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false),
+                "the guest EOI cleared ISR"
+            );
+            // The handler's RBR read took the byte and the condition.
+            assert_eq!(boot.board.uart().received_byte(), None);
+            assert_eq!(boot.board.uart().peek_iir(), 0x01);
+            let source = boot.board.uart_ioapic_source().expect("installed");
+            assert_eq!((source.uart_edges(), source.uart_refused()), (1, 0));
+            assert_eq!(source.pit_source().stats().acknowledged, 1);
+        }
+
+        /// The same through the board's installed source, with the PIC untouched.
+        #[test]
+        fn the_uart_intin4_run_leaves_the_8259_alone() {
+            let mut boot = uart_board(&uart_guest(ENTRY4_EDGE), true);
+            let report = run_set(&mut boot, 300);
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            let pic = boot.board.pic_master().expect("the PIC exists").snapshot();
+            assert_eq!((pic.irr, pic.isr), (0, 0));
+            assert!(boot.board.uart_irq_source().is_none());
+        }
+
+        /// A masked entry 4: the line rises, nothing reaches the Local APIC.
+        #[test]
+        fn a_masked_intin4_gives_no_delivery() {
+            let mut boot = uart_board(&uart_guest(ENTRY4_MASKED), true);
+            let report = run_set(&mut boot, 300);
+            assert_eq!(
+                report.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(report.irq.irqs_delivered, 0, "{report:?}");
+            assert_eq!(boot.board.state().gpr[Register::Rsi as usize], 0);
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false)
+            );
+            // The byte is still waiting: nothing took it.
+            assert_eq!(boot.board.uart().received_byte(), Some(b'A'));
+            let source = boot.board.uart_ioapic_source().expect("installed");
+            assert_eq!(source.uart_edges(), 1, "the line rose");
+        }
+
+        /// Level form, the handler does not read RBR: the line stays high, so the guest EOI
+        /// redelivers the vector (Remote IRR semantics of INTIN4), again and again.
+        #[test]
+        fn a_level_intin4_with_the_line_still_active_is_redelivered_after_the_eoi() {
+            let mut boot = uart_board(&uart_guest(ENTRY4_LEVEL), false);
+            let report = run_set(&mut boot, 400);
+            assert!(report.irq.irqs_delivered >= 2, "{report:?}");
+            assert_eq!(
+                boot.board.state().gpr[Register::Rsi as usize],
+                report.irq.irqs_delivered
+            );
+            assert_eq!(boot.board.uart().received_byte(), Some(b'A'));
+        }
+
+        /// Level form, the handler reads RBR: the line falls inside the handler, so exactly one
+        /// delivery happens and the EOI redelivers nothing.
+        #[test]
+        fn a_level_intin4_with_the_line_cleared_is_delivered_once() {
+            let mut boot = uart_board(&uart_guest(ENTRY4_LEVEL), true);
+            let report = run_set(&mut boot, 400);
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            assert_eq!(boot.board.state().gpr[Register::Rsi as usize], 1);
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false)
+            );
+        }
+
+        /// Edge form, the handler does not read RBR: the EOI redelivers nothing (no new edge),
+        /// so the vector comes once however long the line stays high.
+        #[test]
+        fn an_edge_intin4_with_the_line_still_active_is_delivered_once() {
+            let mut boot = uart_board(&uart_guest(ENTRY4_EDGE), false);
+            let report = run_set(&mut boot, 400);
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            assert_eq!(boot.board.uart().received_byte(), Some(b'A'));
+        }
+
+        /// `uart_setup`, `STI`, `HLT`, a mark (`MOV AL, 0x5A`) and a spin.
+        fn uart_halt_guest(entry4: u32) -> Vec<u8> {
+            let mut code = uart_setup(entry4);
+            code.extend(STI_HLT_MARK_SPIN);
+            code
+        }
+
+        /// A halted CPU (`STI; HLT`) with a UART byte already waiting is woken (the sample before
+        /// `wake_ns` puts the request in IRR) and the vector goes through the guest IDT.
+        #[test]
+        fn a_halted_cpu_is_woken_by_a_waiting_uart_rx_byte() {
+            let mut boot = uart_board(&uart_halt_guest(ENTRY4_EDGE), true);
+            // IF = 0 until the guest's `STI`, so the vector waits for the `HLT`.
+            boot.board.state_mut().rflags &= !(1 << 9);
+            let report = run_set(&mut boot, 400);
+            assert_eq!(
+                report.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(report.irq.halt_wakes, 1, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            assert_eq!(boot.board.state().gpr[Register::Rax as usize] as u8, 0x5A);
+            assert_eq!(boot.board.state().gpr[Register::Rsi as usize], 1);
+        }
+
+        /// With nothing received the line stays low: `STI; HLT` ends the run as `halted`, no
+        /// wake and no delivery (the UART source gives a wake only for a live request).
+        #[test]
+        fn a_halted_cpu_with_a_quiet_uart_is_not_woken() {
+            let mut boot = uart_board_empty(&uart_halt_guest(ENTRY4_EDGE), true);
+            boot.board.state_mut().rflags &= !(1 << 9);
+            let report = run_set(&mut boot, 400);
+            assert_eq!(report.run.exit, PagedProbeExit::Halted, "{report:?}");
+            assert_eq!(report.irq.halt_wakes, 0, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 0, "{report:?}");
+            assert_eq!(boot.board.state().activity, Some(CpuActivity::Halted));
+        }
+
+        /// A level request refused by a software-disabled Local APIC (SVR bit 8 clear) is not
+        /// lost: the source keeps trying, and once the guest enables the SVR the vector is
+        /// delivered, exactly once (one accepted rise, one refused rise).
+        #[test]
+        fn a_refused_intin4_rise_is_retried_after_the_local_apic_is_enabled() {
+            let mut code = uart_setup_with(ENTRY4_LEVEL, 0x0FF, 0x01);
+            code.extend(mov32(0, 0x1FF));
+            code.extend([0x89, 0x83, 0xF0, 0x00, 0x00, 0x00]); // MOV [RBX+0xF0], EAX
+            code.push(0xFB); // STI
+            code.extend([0xEB, 0xFE]);
+            let mut boot = uart_board(&code, true);
+            // IF = 0 until the guest's `STI`, after the SVR enable.
+            boot.board.state_mut().rflags &= !(1 << 9);
+            let report = run_set(&mut boot, 400);
+            assert_eq!(
+                report.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            assert_eq!(boot.board.state().gpr[Register::Rsi as usize], 1);
+            let source = boot.board.uart_ioapic_source().expect("installed");
+            assert_eq!((source.uart_refused(), source.uart_edges()), (1, 1));
+            assert_eq!(boot.board.uart().received_byte(), None);
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false)
+            );
+        }
+
+        /// The THRE interrupt through INTIN4 (edge form): the handler writes the next byte of a
+        /// table to THR (the THRE condition drops) and the loop's pump raises it again, one edge
+        /// per byte; the NUL at the end writes nothing. N bytes give N + 1 deliveries (the IER
+        /// enable is the first) and the N bytes reach COM1.
+        #[test]
+        fn the_thre_interrupt_through_intin4_sends_one_byte_per_delivery() {
+            const TABLE: u64 = DATA + 0x3000;
+            const MESSAGE: &[u8] = b"OD_NONCE=s4-38\n";
+            let mut code = uart_setup_with(ENTRY4_EDGE, 0x1FF, 0x02);
+            code.push(0xFB); // STI
+            code.extend([0xEB, 0xFE]);
+            let mut boot = uart_board_empty(&code, true);
+            // `MOV AL, [RSI]; TEST AL, AL; JZ +8; MOV DX, 0x3F8; OUT DX, AL; INC RSI;
+            // XOR EAX, EAX; MOV [RBX+0xB0], EAX; IRETQ`.
+            let handler = [
+                vec![0x8A, 0x06, 0x84, 0xC0, 0x74, 0x08],
+                vec![0x66, 0xBA, 0xF8, 0x03, 0xEE, 0x48, 0xFF, 0xC6],
+                vec![0x31, 0xC0, 0x89, 0x83, 0xB0, 0x00, 0x00, 0x00, 0x48, 0xCF],
+            ]
+            .concat();
+            write_phys(&mut boot, IRQ_HANDLER_AT, &handler);
+            let mut table = MESSAGE.to_vec();
+            table.push(0);
+            write_phys(&mut boot, TABLE, &table);
+            boot.board.state_mut().gpr[Register::Rsi as usize] = TABLE;
+            let report = run_set(&mut boot, 1500);
+            assert_eq!(
+                report.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(boot.board.com1_transcript(), MESSAGE, "{report:?}");
+            assert_eq!(
+                report.irq.irqs_delivered,
+                MESSAGE.len() as u64 + 1,
+                "{report:?}"
+            );
+            let source = boot.board.uart_ioapic_source().expect("installed");
+            assert_eq!(source.uart_edges(), MESSAGE.len() as u64 + 1);
+            assert_eq!(source.uart_refused(), 0);
         }
 
         #[test]

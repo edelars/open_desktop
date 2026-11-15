@@ -20,6 +20,7 @@ use crate::paged_memory_adapter::{
 use crate::paged_probe::run_paged_probe_2m_ram;
 use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
 use crate::pit_pic_irq_source::PitPicIrqSource;
+use crate::uart_ioapic_irq_source::UartIoapicIrqSource;
 use crate::uart_pic_irq_source::UartPicIrqSource;
 use crate::vcpu::{BOOT_VCPU_INDEX, MAX_VCPUS, Vcpu, vcpu_set};
 use crate::{
@@ -1105,6 +1106,10 @@ pub struct LoadedFirmwareBoard {
     pit_pic_source: Option<PitPicIrqSource>,
     /// The UART THRE -> 8259 IR4 source once [`Self::enable_uart_irq4`] installed it (S4-39i).
     uart_irq_source: Option<UartPicIrqSource>,
+    /// The UART interrupt output -> IOAPIC INTIN4 source (wrapping the PIT -> INTIN2 source) once
+    /// [`Self::enable_uart_ioapic_irq4`] installed it; exclusive with `uart_irq_source` (it needs the
+    /// IOAPIC PIT source, which excludes the 8259 one).
+    uart_ioapic_source: Option<UartIoapicIrqSource>,
     /// The PIT OUT0 -> IOAPIC INTIN2 -> Local APIC source once [`Self::enable_pit_ioapic_irq`]
     /// installed it (S4-38L8d); exclusive with `pit_pic_source`.
     pit_ioapic_source: Option<PitIoapicIrqSource>,
@@ -1281,6 +1286,32 @@ impl LoadedFirmwareBoard {
         self.irq_source = Box::new(source.clone());
         self.uart_irq_source = Some(source);
         true
+    }
+
+    /// S4-38 (UART -> INTIN4): wrap the installed PIT -> IOAPIC INTIN2 source with the UART
+    /// interrupt output -> IOAPIC INTIN4 (once; a second call keeps the installed one). `false` and
+    /// nothing changed unless [`Self::enable_pit_ioapic_irq`] installed the PIT source first (so the
+    /// IOAPIC and the Local APIC windows are open). The 8259 variant ([`Self::enable_uart_irq4`])
+    /// cannot coexist: it needs the 8259 PIT source, which excludes the IOAPIC one. Called by the
+    /// `X8664V1Stage4AApic` run of the Linux board only.
+    pub(crate) fn enable_uart_ioapic_irq4(&mut self) -> bool {
+        if self.uart_ioapic_source.is_some() {
+            return true;
+        }
+        let Some(pit_ioapic) = self.pit_ioapic_source.clone() else {
+            return false;
+        };
+        let io_apic = IoApic::new(self.lapic.clone()).handle();
+        let source = UartIoapicIrqSource::new(pit_ioapic, self.uart.clone(), io_apic);
+        self.irq_source = Box::new(source.clone());
+        self.uart_ioapic_source = Some(source);
+        true
+    }
+
+    /// The installed UART -> INTIN4 source (a second handle on it), if any.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn uart_ioapic_source(&self) -> Option<UartIoapicIrqSource> {
+        self.uart_ioapic_source.clone()
     }
 
     /// The installed UART -> IR4 source (a second handle on it), if any.
@@ -1989,12 +2020,18 @@ impl LoadedFirmwareBoard {
             if let Some(source) = &self.uart_irq_source {
                 source.sample();
             }
+            if let Some(source) = &self.uart_ioapic_source {
+                source.sample();
+            }
             while uart.transfer_holding_to_shift() {
                 if let Some(byte) = uart.complete_transmission() {
                     self.com1_log.push(byte);
                 }
             }
             if let Some(source) = &self.uart_irq_source {
+                source.sample();
+            }
+            if let Some(source) = &self.uart_ioapic_source {
                 source.sample();
             }
             let failure = |error| LinuxRunFailure { error, retired };
@@ -2591,6 +2628,7 @@ impl AssembledBoard {
             pic_master,
             pit_pic_source: None,
             uart_irq_source: None,
+            uart_ioapic_source: None,
             pit_ioapic_source: None,
             clock_driver: BoardClock::Standalone,
             checkpoints: None,
@@ -2654,6 +2692,7 @@ impl AssembledBoard {
             pic_master,
             pit_pic_source: None,
             uart_irq_source: None,
+            uart_ioapic_source: None,
             pit_ioapic_source: None,
             clock_driver: BoardClock::Standalone,
             checkpoints: None,
