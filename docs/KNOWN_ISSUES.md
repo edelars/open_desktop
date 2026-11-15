@@ -27,7 +27,7 @@
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска entry `C7`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
 - **Владелец:** S7-04 совместно с владельцем CPU profile.
-- **Статус:** решена в точной форме `48 39 C7` (CMP-срез прошёл ревью; commit pending); runner заблокирован на следующем startup instruction (ISSUE-103).
+- **Статус:** решена в точной форме `48 39 C7` (код `b219d0e` прошёл независимое ревью); runner заблокирован на следующем startup instruction (ISSUE-103).
 - **Суть и последствия:** после `CLD` и `48 C7 C0 00 00 10 00` runner отклоняет байты `48 39 C7` (`CMP RDI,RAX`) на `RIP=0x200048`. В сообщении `Unsupported { opcode: 57 }` число 57 десятичное (`0x39`), а не hex `0x57`; handoff parser и COM1 остаются непроверенными в машине.
 - **Основание:** образ `/private/tmp/od-fw-s7-04-c7.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-c7.bin --com1-out /private/tmp/od-fw-s7-04-c7.com1 --budget 10000` вернул `status=error`, `exit=unsupported`, `Unsupported { opcode: 57 }` (decimal; `0x39`), `retired=2`, `RIP=0x200048`, `com1_bytes=0`.
 - **Результат:** базовый paged profile принимает только `48 39 C7`, переиспользует существующий `ArithmeticKind::Cmp` и меняет только арифметические флаги и RIP; соседние формы, CPL3 и прочие paged profiles отклоняются. Runner теперь retires три инструкции и останавливается на ISSUE-103.
