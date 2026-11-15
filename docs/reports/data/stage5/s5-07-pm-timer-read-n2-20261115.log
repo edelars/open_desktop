@@ -1,0 +1,85 @@
+# S5-07 PM timer read diagnostic and automatic N=2 series, 2026-11-15
+
+Purpose: expose successful PM timer read counts in per-run stop evidence and
+measure whether those reads explain the virtual-time variation in the latest
+strict N=2 series. This is diagnostic evidence only; S5-07 remains unaccepted.
+
+## Source and inputs
+
+- Worktree: `codex`; source revision `49ec74e2833e0bd11b9454dccfef8b12a27108d8`, `source_dirty=false`.
+- Host: macOS/aarch64; release `od-runner` 0.1.0.
+- Kernel SHA-256: `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`.
+- Initramfs SHA-256: `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`.
+- ACPI blob SHA-256: `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`.
+- Expected ACPI manifest SHA-256: `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`.
+- Profile: counted `stage4a`, `--set-cpl0 --user-mode`, 128 MiB, budget `3,000,000,000`, expected stop `budget_exhausted`.
+
+## Command
+
+```sh
+target/release/od-runner linux-direct --test-runs 2 \
+  --series-id stage5-s5-07-stage4a-pm-reads-20261115-d \
+  --scenario-id stage4-init-nonce \
+  --expected-stop-kind budget_exhausted \
+  --out work/stage5/stage5-s5-07-stage4a-pm-reads-20261115-d/series.json \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs /Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --run --budget 3000000000 --set-cpl0 \
+  --cpuid-profile stage4a --user-mode
+```
+
+## Results
+
+Both runs started the guest and reached `retired=2,999,999,998`,
+`budget_exhausted`. Run 0001's strict nonce marker was fused with the next
+printk and failed validation; run 0002's marker was valid. The automatic series
+therefore ended `outcome=failed`, exit code 1, `matches=false`, with unexplained
+`run[1].scenario_status`, `run[1].marker_validation`,
+`run[1].machine_observations`, and
+`run[1].ordered_uart_bytes differs after nonce normalization`.
+
+| Run | Marker status | #PF | #GP(0) | PM timer reads | Halt idle ns | Virtual ns | Quanta | IRQ0 edges / delivered |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 0001 | invalid: fused | 34 | 1 | 230 | 1,902,227 | 37,473,362,225 | 34,580,429 | 34,816 / 34,821 |
+| 0002 | valid | 34 | 1 | 230 | 1,823,440 | 37,448,686,438 | 34,556,348 | 34,791 / 34,796 |
+
+Run 0001 contains the single UART line
+`OD_NONCE=OD518e83b7f6953264800000d7e00000000[    2.271144] Run /init as init process`.
+Run 0002 prints `[    2.271112] Run /init as init process` before its intact
+nonce line. Thus this N=2 pair again observes both the fused failure and the
+reverse order of two otherwise complete lines. The earlier byte-context
+singles localize these lines to distinct serial writer paths but do not prove
+the interleaving cause.
+
+## Virtual-time accounting
+
+The runner's board clock adds one nanosecond per retired instruction, one
+microsecond per successful PM timer read, one microsecond per successful PIT
+time-port read (`0x61` or `0x42`), one microsecond per guest RDTSC, and explicit
+halt idle time. After subtracting `retired`, `halt_idle_ns`, and
+`pm_timer_reads × 1,000 ns`, the residuals are:
+
+- Run 0001: `34,471,230,000 ns`.
+- Run 0002: `34,446,633,000 ns`.
+- Difference: `24,597,000 ns` = 24,597 combined RDTSC/PIT time-port ticks.
+
+Both runs have exactly 230 PM timer reads, so PM timer activity contributes
+230,000 ns per run and cannot explain this difference. The remaining counts
+are not currently distinguished between RDTSC and PIT port reads. Quanta
+differ by 24,081 and IRQ0 edges/deliveries by 25. These correlations do not
+establish whether one source or guest scheduling caused the variation. Do not
+normalize any of these values.
+
+## Evidence hashes
+
+Raw artifacts are under ignored
+`work/stage5/stage5-s5-07-stage4a-pm-reads-20261115-d/`.
+
+- `series.json`: `1ed28b187f63d4f38480d725edbfca273482571c01dfa6a1ad7d7aa47120534f`.
+- `comparison.json`: `a007d5cdb605a819d03e3b0aad59b53baca9113fb939d7936309cda434436fbe`.
+- Run 0001 manifest / runner JSON / UART: `1e6ed50b91d1c8a25e40426ed55aeb6c186ebc7dffeeab09f537ca6479734f31` / `6cdab706bbb9a31dd9b6166a6b3f6c21a8cc148a876de128b4df9d323d2d3775` / `06f39aa72067b6536bb6ddc5f466ff966c937072e176f54c5c79627e8f99f59a`.
+- Run 0002 manifest / runner JSON / UART: `11618251816e98283b35f33cf643f426d989acc240dd553fbd6e3445df431ec3` / `833dd257ae6e7f04628155257208bca7aa1dac543f94a1f5e36e8f3ac977fef0` / `39735d158960f762bbc338fc631b073348cc78edf765d843659ab04d188ff1fc`.
