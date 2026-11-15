@@ -718,6 +718,12 @@ Base `PagedCpl0ProbeV1` admits only `89 CD`: unprefixed dword `MOV r/m32,r32`, w
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_mov_ebp_ecx -- --nocapture` — 4 passed: nonzero upper RCX with its low dword copied, RBP zero-extension, full-state/flags, ModRM-byte fetch-fault atomicity, neighboring register/direction/width/prefix/memory forms and CPL3. The other-paged-profile matrix also rejects `89 CD`. Runner retired 54 instructions and stopped at `8D B9 60 FF FF FF` (`LEA EDI,[RCX-0xA0]`, ISSUE-152, RIP `0x200db7`). Full handoff validation remains incomplete.
 
+#### Расширение S7-04: exact Rust-helper `LEA EDI,[RCX-0xA0]`
+
+Base `PagedCpl0ProbeV1` admits only `8D B9 60 FF FF FF`. This is an unprefixed dword LEA with RCX base and signed disp32 `-0xA0`. Shared effective-address calculation supplies the address, and writing EDI truncates to 32 bits then zero-extends into RDI. LEA performs no data-memory access and does not fault on a noncanonical 64-bit effective address.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_lea_edi_rcx_minus_a0 -- --nocapture` — 4 passed, covering signed arithmetic/wrap, full state and flags/definedness, a noncanonical computed address without memory access, final disp32-byte fetch-fault atomicity, neighboring encodings, CPL3 and other-profile isolation. Runner retired 55 instructions, then stopped at `81 FF 61 FF 00 00` (`CMP EDI,0xff61`, ISSUE-153, RIP `0x200dbd`). Full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции

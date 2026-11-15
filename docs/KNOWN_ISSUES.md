@@ -422,13 +422,22 @@
 - **Результат и проверка:** `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_mov_ebp_ecx -- --nocapture` — 4 passed: nonzero high RCX with expected EBP low dword, RBP zero-extension, full-state/flags, ModRM fetch-fault atomicity, neighboring forms and CPL3; the existing other-profile matrix also rejects `89 CD`. Runner retired 54 instructions and stopped at `8D B9 60 FF FF FF` (`LEA EDI,[RCX-0xA0]`, `RIP=0x200db7`); see [ISSUE-152](#issue-152-s7-04-rust-helper-lea-edi-rcx-minus-0xa0-unsupported).
 
 <a id="issue-152-s7-04-rust-helper-lea-edi-rcx-minus-0xa0-unsupported"></a>
-### ISSUE-152 — S7-04: Rust helper `LEA EDI,[RCX-0xA0]` (`8D B9 60 FF FF FF`) remains outside paged CPU profile
+### ISSUE-152 — S7-04: exact Rust helper `LEA EDI,[RCX-0xA0]` (`8D B9 60 FF FF FF`) profile slice
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `MOV EBP,ECX`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200db7`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner stops at `8D B9 60 FF FF FF` (`LEA EDI,[RCX-0xA0]`), `Unsupported { opcode: 141 }`, `retired=54`, `RIP=0x200db7`; COM1 пуст.
+- **Статус:** решена только для exact 32-bit LEA encoding `8D B9 60 FF FF FF` in base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Суть и последствия:** the exact form computes RCX minus `0xA0`, writes the low 32-bit effective address to EDI (zero-extending RDI), and preserves flags. It does not access memory or require the computed address to be canonical.
 - **Основание:** image `/private/tmp/od-fw-s7-mov-ebp-ecx.bin`; `od -An -tx1 -j 0xdb7 -N16` показывает `8d b9 60 ff ff ff 81 ff 61 ff 00 00 40 0f 92 c7`; runner с бюджетом 10000.
-- **Следующий шаг:** inspect the exact 32-bit LEA source/destination tuple and sign-extended disp32, then admit only this observed form in the base profile if bounded.
+- **Результат и проверка:** focused LEA tests and all 288 `paged_probe_profile` tests pass, covering signed disp32 arithmetic, EDI zero-extension, full state/flags, noncanonical computed address without memory access, final displacement-byte fetch-fault atomicity, neighbors, CPL3 and other-profile isolation. Runner retired 55 instructions, then stopped at `81 FF 61 FF 00 00` (`CMP EDI,0xff61`, ISSUE-153), `RIP=0x200dbd`, `Unsupported { opcode: 129 }`, `com1_bytes=0`.
+
+<a id="issue-153-s7-04-rust-helper-cmp-edi-0xff61-unsupported"></a>
+### ISSUE-153 — S7-04: Rust helper `CMP EDI,0xff61` (`81 FF 61 FF 00 00`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `LEA EDI,[RCX-0xA0]`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200dbd`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner stops at `81 FF 61 FF 00 00` (`CMP EDI,0xff61`), `Unsupported { opcode: 129 }`, `retired=55`, `RIP=0x200dbd`; COM1 пуст.
+- **Основание:** image `/private/tmp/od-fw-s7-lea-edi-rcx.bin`; `od -An -tx1 -j 0xdbd -N16` shows `81 ff 61 ff 00 00 40 0f 92 c7 48 39 ea 41 0f 93 c0`; runner с бюджетом 10000.
+- **Следующий шаг:** inspect exact dword CMP destination/immediate semantics and admit only this observed form in the base profile if bounded.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.

@@ -20662,6 +20662,28 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(dst, src.effective_address(state, next_rip));
             state.rip = next_rip;
         }
+        // S7-04: this helper computes the effective address with exact
+        // `8D B9 60 FF FF FF` (LEA EDI,[RCX-0xA0]). Calculate the 64-bit EA,
+        // then truncate on the EDI write (which zero-extends into RDI). LEA
+        // does not access memory or check canonicality.
+        Operation::Lea { dst, src }
+            if base_profile
+                && instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0x8d
+                && instruction.length == 6
+                && instruction.operand_size == OperandSize::Dword
+                && instruction.prefixes == Prefixes::default()
+                && dst == RegisterView::low(Register::Rdi, OperandSize::Dword)
+                && src.base == AddressBase::Register(Register::Rcx)
+                && src.index.is_none()
+                && src.scale == 1
+                && src.displacement == -0xa0
+                && src.address_size == OperandSize::Qword
+                && src.size == OperandSize::Dword =>
+        {
+            state.write(dst, src.effective_address(state, next_rip));
+            state.rip = next_rip;
+        }
         // S7-04: `_start` loads __bss_end into RCX with exactly
         // `48 8D 0D 02 2B 00 00` (LEA RCX,[RIP+0x2b02]).
         Operation::Lea { dst, src }
