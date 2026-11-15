@@ -1275,7 +1275,8 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-22. Virtual clock и TSC
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью (с переносом остатков, решение владельца 2026-11-15).
+- **Итог (2026-11-15):** закрыт с переносом остатков. Принято: один владелец часов (ClockOwner) и политика D7 (retired × 1 нс, простой прыжком к сроку, побайтная воспроизводимость); подключение к рабочему циклу Linux-платы как opt-in (S4-23j, `7a74a80`). Остатки переданы: включение флага в runner и зачётный прогон, Linux-видимые частота и поля времени, тики PM/PIT/RDTSC как поля времени — S4-38; N vCPU, квант и seed — S6-15. Запись в `docs/KNOWN_ISSUES.md` (ISSUE-104).
 - **Где:** `od-machine`, TSC instruction/MSR semantics `od-isa`, machine contract.
 - **Сделать:** один источник virtual time, conversion/overflow policy, pause/resume, HLT progression и выбранное отношение к host monotonic time. RDTSC/RDTSCP/related MSR/CPUID предоставлять только в принятом профиле.
 - **Проверка:** монотонность, переход через большие значения, pause, delayed host scheduling, HLT и STOP; одинаковые scheduled events в deterministic test mode.
@@ -1298,7 +1299,8 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-23. Очередь событий и deadlines
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью (с переносом остатков, решение владельца 2026-11-15).
+- **Итог (2026-11-15):** закрыт с переносом остатков. Принято: очередь (deadline, seq, поколения, replace_single), арбитр простоя для N vCPU (S4-23f), владелец часов с бюджетом шага к ближайшему сроку (S4-23g/h), сквозной HLT-цикл без polling (S4-23i), opt-in подключение к Linux-циклу (S4-23j). Остатки переданы: LAPIC как источник пробуждения, типизированные отказы вместо FirmwareBoardError::Config — S4-38; N vCPU, квант и seed — S6-15. Запись в `docs/KNOWN_ISSUES.md` (ISSUE-104).
 - **Где:** `od-machine`, system tests.
 - **Сделать:** простая bounded очередь для одного CPU, порядок одинаковых deadlines, cancel/reschedule, поколение reset. Пробуждение HLT и ожидание host реализовать без бесконечного polling.
 - **Проверка:** одинаковые deadlines, cancel уже готового события, repeated reset, событие при pause/STOP, timer storm. Переполнение — явный результат согласно контракту.
