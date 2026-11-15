@@ -392,7 +392,7 @@ and [machine verification record](../testing/MACHINE.md#s4-24c-bounded-paged-cpu
 Long64 CPL0 allowlist: `48 8B 03` (`MOV RAX,[RBX]`), `48 89 0B`
 (`MOV [RBX],RCX`), bare `EC` (`IN AL,DX`), bare `EE` (`OUT DX,AL`) and bare
 `F4` (`HLT`); S7-03 extends it with `B0+r ib` and `66 B8+r iw`, and S7-04 adds
-only bare `FC` (`CLD`) (see the extensions below). The CPU entry validates its
+bare `FC` (`CLD`) and the exact entry form `48 C7 C0 id` (see the extensions below). The CPU entry validates its
 profile admission and CR0/CR4 before fetch. It receives page-aware `GuestMemory`;
 CR3/EFER validation and selecting the four-level 4 KiB paging context belong
 to the machine entry.
@@ -430,9 +430,9 @@ vCPU lifecycle. S4-21, S4-24, S4-32 and Stage 4 remain open. See the
 - `B8+r id` без `66` (`MOV r32, imm32`, например `BA F8 03 00 00`);
 - любая форма с REX: `40`–`4F` перед `B0`–`BF` (`SPL/BPL/SIL/DIL`, `R8B`–`R15B`, `R8W`–`R15W`, `MOV r64, imm64` — `48 B8 io`);
 - `66` перед `B0`–`B7`, повторный `66`, `67`, сегментные префиксы, `F2`/`F3` и любые сочетания префиксов, кроме указанных в таблице (допуск проверяет точный набор `Prefixes` и длину 2 или 4); `F0` (LOCK) не допускается и сохраняет классификацию декодера;
-- `C6 /0` и `C7 /0` (`MOV r/m, imm`), любые другие операции с непосредственным операндом (`ADD`, `CMP`, `OR` и т. п.).
+- `C6 /0` и `C7 /0` (`MOV r/m, imm`), любые другие операции с непосредственным операндом (`ADD`, `CMP`, `OR` и т. п.); исключение для одной точной entry-формы `48 C7 C0 id` описано в расширении S7-04 ниже.
 
-Профили, построенные на том же внутреннем шаге, расширение **не** получают: `PagedCpl0Cr3ProbeV1` (S4-12c), `PagedCpl0Cr0WpProbeV1` (S4-12d), стековый профиль `step_paged_stack_probe`, CPL3-профили `step_paged_cpl3_mov`/`step_paged_cpl3_load` и `PagedCpl0PioU8V1` (S4-24c) сохраняют свои allowlist, и `B0`–`BF` в них остаются `Unsupported`. S7-04 отдельно добавляет только bare `CLD` в базовый профиль; прочие инструкции настоящей прошивки, включая её `MOV`, compare/branch/call, CR4, сегментные переходы и `LRETQ`/`IRETQ`, остаются вне allowlist ([FIRMWARE_BOOT.md](FIRMWARE_BOOT.md), разделы 5 и 7).
+Профили, построенные на том же внутреннем шаге, расширение **не** получают: `PagedCpl0Cr3ProbeV1` (S4-12c), `PagedCpl0Cr0WpProbeV1` (S4-12d), стековый профиль `step_paged_stack_probe`, CPL3-профили `step_paged_cpl3_mov`/`step_paged_cpl3_load` и `PagedCpl0PioU8V1` (S4-24c) сохраняют свои allowlist, и `B0`–`BF` в них остаются `Unsupported`. S7-04 отдельно добавляет bare `CLD` и одну точную форму `48 C7 C0 id` в базовый профиль; остальные инструкции прошивки, включая compare/branch/call, CR4, сегментные переходы и `LRETQ`/`IRETQ`, остаются вне allowlist ([FIRMWARE_BOOT.md](FIRMWARE_BOOT.md), разделы 5 и 7).
 
 Проверка (обязательна для S7-03): позитивный тест на каждую из 16 форм (значение целевой части, сохранность остальных битов и регистров, `RIP`, флаги), отрицательные тесты на соседние формы из списка выше и на другие профили, fault при fetch непосредственного операнда через границу страницы, мини-образ `build_firmware.py --smoke` в `boot-firmware` печатает `X` в COM1 и останавливается по `HLT`.
 
@@ -441,6 +441,12 @@ vCPU lifecycle. S4-21, S4-24, S4-32 and Stage 4 remain open. See the
 `step_paged_probe` и wrapper `step_paged_probe_with_rdtsc` принимают ровно одну форму `FC` (`Operation::ClearDirectionFlag`): Primary opcode map, длина 1, без префиксов, Long64/CPL0, после тех же profile/CR0/CR4/activity checks. Она очищает только `RFLAGS.DF`, делает DF определённым, увеличивает RIP на 1 и возвращает `Retired` с одной исполненной инструкцией; память и остальные регистры/флаги не меняются. `STD`, все префиксные варианты CLD и `CLD` в иных paged profiles остаются `Unsupported` без commit. Декодер и общая семантика `CLD` не меняются; расширяется только точная allowlist `PagedCpl0ProbeV1`. Это позволяет сделать первый startup `CLD`, но не заявляет возможность исполнения остального startup или Rust entry.
 
 Проверка: focused `paged_probe_profile` покрывает DF=1 → DF=0, изменение definedness, неизменность прочего CPU state, bare `STD`, prefixed CLD, profile isolation и fetch fault. Полный firmware runner нужен для обнаружения следующего фактического ограничения; результаты S7-04 записываются в [отчёте этапа 7](../reports/STAGE_7_REPORT.md).
+
+#### Расширение S7-04: `MOV RAX,imm32` из entry прошивки
+
+`step_paged_probe` принимает ровно `48 C7 C0 id` длиной 7 байт: Primary `C7`, точный префикс `REX.W`, регистровый `/0` operand `RAX` и immediate dword. Декодер уже возвращает sign-extended значение для этой операции; расширяется только allowlist базового `PagedCpl0ProbeV1`. Выполнение записывает значение в `RAX`, увеличивает RIP на 7 и возвращает одну `Retired`; прочие регистры, flags, definedness, память и порты не меняются. Memory destination, другие регистры, ширины и префиксы остаются `Unsupported`, как и этот C7 в соседних paged profiles. Ошибка fetch любого байта доходит до caller без commit состояния CPU.
+
+Проверка в `paged_probe_profile`: firmware encoding `48 C7 C0 00 00 10 00`, sign extension `imm32 = -1`, отклонение соседних ширин/регистров/memory destination и соседних profiles, fault на первом байте immediate без commit. Runner подтвердил продвижение после `CLD` и C7 (2 retired, RIP `0x200048`), затем остановился на `57`; это следующий blocker S7-04, ISSUE-102. Это не подтверждает достижение Rust entry или работу parser/COM1 в машине.
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 

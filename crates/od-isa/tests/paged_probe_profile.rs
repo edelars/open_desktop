@@ -24,6 +24,7 @@ struct Memory {
     reads: usize,
     writes: usize,
     fail_fetch: Option<MemoryError>,
+    fail_fetch_at: Option<(u64, MemoryError)>,
     fail_read: Option<MemoryError>,
     fail_write: Option<MemoryError>,
 }
@@ -42,6 +43,7 @@ impl Memory {
             reads: 0,
             writes: 0,
             fail_fetch: None,
+            fail_fetch_at: None,
             fail_read: None,
             fail_write: None,
         }
@@ -63,6 +65,11 @@ impl Memory {
 impl GuestMemory for Memory {
     fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
         self.fetches.push((address, context));
+        if let Some((fail_address, error)) = &self.fail_fetch_at {
+            if address == *fail_address {
+                return Err(error.clone());
+            }
+        }
         if let Some(error) = &self.fail_fetch {
             return Err(error.clone());
         }
@@ -2054,6 +2061,10 @@ fn paged_probe_mov_immediate_neighbours_stay_unsupported() {
         (&[0xc6, 0xc0, 0x58], 0xc6),             // MOV r/m8,imm8
         (&[0x66, 0xc7, 0xc2, 0xf8, 0x03], 0xc7), // MOV r/m16,imm16
         (&[0xc7, 0xc2, 0xf8, 0x03, 0x00, 0x00], 0xc7), // MOV r/m32,imm32
+        (&[0xc7, 0xc0, 0, 0, 0, 0], 0xc7),       // MOV EAX,imm32
+        (&[0x48, 0xc7, 0xc1, 0, 0, 0, 0], 0xc7), // MOV RCX,imm32
+        (&[0x49, 0xc7, 0xc0, 0, 0, 0, 0], 0xc7), // MOV R8,imm32
+        (&[0x48, 0xc7, 0x00, 0, 0, 0, 0], 0xc7), // MOV [RAX],imm32
     ];
     for (bytes, opcode) in cases {
         let mut memory = Memory::new(bytes);
@@ -2076,11 +2087,85 @@ fn paged_probe_mov_immediate_neighbours_stay_unsupported() {
 }
 
 #[test]
+fn firmware_entry_c7_sets_only_rax_and_retires_once() {
+    let bytes = [0x48, 0xc7, 0xc0, 0x00, 0x00, 0x10, 0x00];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.rflags |= 1 << 10;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    let mut expected = before;
+    expected.gpr[Register::Rax as usize] = 0x0010_0000;
+    expected.rip += bytes.len() as u64;
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+
+    // The same exact shape sign-extends the immediate as REX.W C7 /0 requires.
+    let bytes = [0x48, 0xc7, 0xc0, 0xff, 0xff, 0xff, 0xff];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    let mut expected = before;
+    expected.gpr[Register::Rax as usize] = u64::MAX;
+    expected.rip += bytes.len() as u64;
+    assert_eq!(cpu, expected);
+}
+
+#[test]
+fn firmware_entry_c7_fault_fetching_immediate_does_not_commit() {
+    // Place the encoding so fetching its first immediate byte faults.
+    let mut memory = Memory::new(&[]);
+    let mut cpu = state();
+    cpu.rip = RIP + 0xffd;
+    memory.bytes[CODE_PHYSICAL + 0xffd..CODE_PHYSICAL + 0x1000]
+        .copy_from_slice(&[0x48, 0xc7, 0xc0]);
+    memory.fail_fetch_at = Some((RIP + 0x1000, page_fault(0x10, RIP + 0x1000)));
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(RIP + 0x1000),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(
+        memory
+            .fetches
+            .iter()
+            .any(|(address, _)| *address == RIP + 0x1000)
+    );
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
 fn other_paged_profiles_keep_mov_immediate_unsupported() {
     use od_isa::execute::{PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1, PagedCpl0StackProbeV1};
     for (bytes, opcode) in [
         (&[0xb0u8, 0x58][..], 0xb0u8),
         (&[0x66, 0xba, 0xf8, 0x03][..], 0xba),
+        (&[0x48, 0xc7, 0xc0, 0, 0, 0x10, 0][..], 0xc7),
     ] {
         for profile in ["stack", "cr3", "cr0wp"] {
             let mut memory = Memory::new(bytes);

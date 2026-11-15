@@ -20144,6 +20144,28 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::DF,
             };
         }
+        // S7-04: the firmware entry uses exactly `48 C7 C0 id` to load the
+        // handoff GPA into RAX. Admit only REX.W C7 /0 with a register destination;
+        // memory destinations, other widths/prefixes, and other registers stay
+        // outside this bounded boot profile.
+        Operation::MovImmediate {
+            dst: Operand::Register(destination),
+            value,
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xc7
+            && instruction.length == 7
+            && instruction.operand_size == OperandSize::Qword
+            && destination == RegisterView::low(Register::Rax, OperandSize::Qword)
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x48),
+                    ..Prefixes::default()
+                }) =>
+        {
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-03: `B0+r ib` and `66 B8+r iw` are admitted only in the base
         // `PagedCpl0ProbeV1` profile; every other profile keeps them
         // unsupported. RFLAGS is not touched.
