@@ -1392,16 +1392,21 @@ impl LoadedFirmwareBoard {
         }
     }
 
-    /// The idle skip of a halted CPU (IF = 1) to the wake time `wake` of the board source: returns
+    /// The idle skip of a halted CPU (IF = 1) to the wake time `wake` (of the board source, or the
+    /// earlier Local APIC timer under the IOAPIC source, `idle_wake_ns`): returns
     /// the nanoseconds skipped. Standalone: the board advances by `wake - now` (0 when the time
     /// has come), exactly as before. Owned (S4-23j): a wake time that is not after `now` skips
     /// nothing; otherwise the arbiter decides through [`ClockOwner::idle_step`] (the boot CPU
     /// `Halted` with IF = 1, every other vCPU waiting for a SIPI) and the clock jumps to `wake`;
     /// it ends in `NoProgress` with the skip above 0, because the deadline of the board is then
     /// due and the loop consumes it itself. A Local APIC timer due earlier is dispatched on the
-    /// way. A Local APIC vector that would wake the CPU is refused: the loop delivers the board
-    /// source only, so the guest would pass its `HLT` with no interrupt.
+    /// way. A Local APIC vector that would wake the CPU is refused (`Config`), except under the
+    /// IOAPIC source (S4-38L8i): its `pending_vector` is the highest eligible Local APIC vector,
+    /// so the loop delivers a Local APIC timer vector through the IDT. There `idle_to` returns, the
+    /// CPU is `Running` again and the next boundary delivers the vector. Under any other source the
+    /// loop delivers the board source only, so the guest would pass its `HLT` with no interrupt.
     fn idle_to(&mut self, wake: u64) -> Result<u64, FirmwareBoardError> {
+        let delivers_lapic_vectors = self.pit_ioapic_source.is_some();
         let BoardClock::Owned(owner) = &mut self.clock_driver else {
             let idle = wake.saturating_sub(self.clock.snapshot().now_ns());
             self.advance_time_ns(idle)?;
@@ -1435,6 +1440,7 @@ impl LoadedFirmwareBoard {
             match step.outcome {
                 IdleOutcome::NoProgress if step.idle_ns > 0 => return Ok(idle),
                 IdleOutcome::Advanced(_) if step.idle_ns > 0 => {}
+                IdleOutcome::Woken(_) if delivers_lapic_vectors => return Ok(idle),
                 IdleOutcome::Woken(_) => {
                     return Err(FirmwareBoardError::Config(
                         "clock owner: a Local APIC vector would wake the CPU, but the loop \
@@ -1447,6 +1453,37 @@ impl LoadedFirmwareBoard {
                     ));
                 }
             }
+        }
+    }
+
+    /// S4-38L8i: the virtual time at which the Local APIC timer of the boot CPU can wake a halted
+    /// CPU with IF = 1 under the APIC profile: now when a Local APIC vector is deliverable now,
+    /// else the deadline of the armed timer when its LVT is unmasked and its vector would be
+    /// accepted (Local APIC enabled, class above the processor priority), else `None`. Only with
+    /// the clock owner (it dispatches the timers; S4-23j) and the IOAPIC source (it delivers the
+    /// Local APIC's vectors); otherwise `None`, as before.
+    fn lapic_timer_wake_ns(&self) -> Option<u64> {
+        if self.pit_ioapic_source.is_none() || !matches!(self.clock_driver, BoardClock::Owned(_)) {
+            return None;
+        }
+        let lapic = self.lapic.for_cpu(BOOT_VCPU_INDEX)?;
+        let now = self.clock.snapshot().now_ns();
+        if lapic.eligible().is_some() {
+            return Some(now);
+        }
+        let deadline = lapic.next_timer_deadline()?;
+        let vector = lapic.timer_vector()?;
+        (lapic.would_accept(vector) && deadline > now).then_some(deadline)
+    }
+
+    /// The wake time of a halted CPU: the earlier of the board source's and the Local APIC timer's.
+    /// The `min` is not observable on its own: `idle_to` hands the time to the arbiter, which jumps
+    /// to the earliest of its Local APIC timer deadlines and this time either way; what this
+    /// function adds is the wake time when the source has none (`None`).
+    fn idle_wake_ns(&self) -> Option<u64> {
+        match (self.irq_source.wake_ns(), self.lapic_timer_wake_ns()) {
+            (Some(source), Some(timer)) => Some(source.min(timer)),
+            (source, timer) => source.or(timer),
         }
     }
 
@@ -2074,7 +2111,7 @@ impl LoadedFirmwareBoard {
                 && remaining > 0
                 && matches!(report.exit, PagedCpl0SetExit::Run(RunExit::Halted))
                 && self.vcpus[BOOT_VCPU_INDEX].state.rflags & (1 << 9) != 0
-                && let Some(wake) = self.irq_source.wake_ns()
+                && let Some(wake) = self.idle_wake_ns()
             {
                 let idle = match self.idle_to(wake) {
                     Ok(idle) => idle,

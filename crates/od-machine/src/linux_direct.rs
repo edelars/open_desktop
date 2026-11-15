@@ -14746,6 +14746,220 @@ mod tests {
             assert_eq!(report.irq.irqs_delivered, 0, "{report:?}");
         }
 
+        /// LVT Timer bits: periodic mode, mask.
+        const LVT_PERIODIC: u32 = 1 << 17;
+        const LVT_MASKED: u32 = 1 << 16;
+
+        /// Instructions of `apic_setup` (9) and of `lapic_timer_setup` (7) before `STI; HLT`, and
+        /// the `STI` and `HLT` themselves: the clock reads 18 ns at the `HLT` (one ns each).
+        const RETIRED_AT_HLT: u64 = 18;
+
+        /// After `apic_setup` (the PIT entry masked, so the PIT is no source): divide by 1 (DCR
+        /// `0xB`), the LVT Timer `lvt`, the initial count `count` (100 MHz: one count is 10 ns);
+        /// then `EAX = 0` (the handler's EOI writes it).
+        fn lapic_timer_setup(lvt: u32, count: u32) -> Vec<u8> {
+            let mut code = apic_setup(MASKED | u32::from(IRQ_VECTOR));
+            code.extend(lapic_timer_program(lvt, count));
+            code
+        }
+
+        /// The timer registers only (`RBX` = the Local APIC base, as `apic_setup` leaves it);
+        /// 7 instructions, `EAX = 0` afterwards.
+        fn lapic_timer_program(lvt: u32, count: u32) -> Vec<u8> {
+            let mut code = Vec::new();
+            code.extend(mov32(0, 0xB));
+            code.extend([0x89, 0x83, 0xE0, 0x03, 0x00, 0x00]); // MOV [RBX+0x3E0], EAX
+            code.extend(mov32(0, lvt));
+            code.extend([0x89, 0x83, 0x20, 0x03, 0x00, 0x00]); // MOV [RBX+0x320], EAX
+            code.extend(mov32(0, count));
+            code.extend([0x89, 0x83, 0x80, 0x03, 0x00, 0x00]); // MOV [RBX+0x380], EAX
+            code.extend(mov32(0, 0));
+            code
+        }
+
+        fn lapic_timer_guest(lvt: u32, count: u32) -> Vec<u8> {
+            let mut code = lapic_timer_setup(lvt, count);
+            code.extend(STI_HLT_MARK_SPIN);
+            code
+        }
+
+        /// A board with the APIC profile's timer line and the clock owner (the owner dispatches
+        /// the Local APIC timers; the APIC-profile run enables it, S4-23j).
+        fn owned_apic_board(code: &[u8]) -> LinuxDirectBoot {
+            let mut boot = apic_board(code, true);
+            boot.board.enable_clock_owner().expect("the board can");
+            boot
+        }
+
+        /// S4-38L8i: a one-shot Local APIC timer wakes a halted CPU with IF = 1 at its deadline
+        /// (the clock owner and the arbiter, no PIT, no 8259), the vector goes through the Local
+        /// APIC IRR and the guest IDT, the guest EOIs, and the code after the `HLT` runs.
+        #[test]
+        fn an_idle_sti_hlt_is_woken_by_a_one_shot_lapic_timer() {
+            // 100 counts of 10 ns: the timer starts at 0 ns, its deadline is 1000 ns.
+            let mut boot = owned_apic_board(&lapic_timer_guest(u32::from(IRQ_VECTOR), 100));
+            let rsp = boot.board.state().gpr[Register::Rsp as usize];
+            let report = run_set(&mut boot, 300);
+            assert_eq!(
+                report.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(report.irq.halt_wakes, 1, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            // The clock jumped from the `HLT` to the deadline, not past it.
+            assert_eq!(report.irq.halt_idle_ns, 1000 - RETIRED_AT_HLT, "{report:?}");
+            // Only retired instructions and the idle jump moved it: it stood on the deadline when
+            // the vector was delivered.
+            assert_eq!(
+                report.run.virtual_ns,
+                report.run.retired + report.irq.halt_idle_ns,
+                "{report:?}"
+            );
+            assert_eq!(boot.board.state().gpr[Register::Rax as usize] as u8, 0x5A);
+            let state = boot.board.state();
+            assert_eq!(state.gpr[Register::Rsp as usize], rsp, "IRETQ balanced");
+            assert_ne!(state.rflags & (1 << 9), 0, "IRETQ restored IF");
+            assert_eq!(state.activity, Some(CpuActivity::Running));
+            let lapic = boot.board.local_apic();
+            assert_eq!(lapic.vector_state(IRQ_VECTOR), (false, false), "EOI");
+            assert_eq!(lapic.next_timer_deadline(), None, "one-shot: fired once");
+        }
+
+        /// S4-38L8i: a periodic Local APIC timer wakes the halted CPU on every period: the guest
+        /// loops `HLT; INC EDX; JMP HLT`, every period is one wake and one vector.
+        #[test]
+        fn an_idle_hlt_loop_is_woken_on_every_period_of_a_periodic_lapic_timer() {
+            let mut code = lapic_timer_setup(LVT_PERIODIC | u32::from(IRQ_VECTOR), 100);
+            // STI; HLT; INC EDX; JMP -5 (back to the HLT).
+            code.extend([0xFB, 0xF4, 0xFF, 0xC2, 0xEB, 0xFB]);
+            let mut boot = owned_apic_board(&code);
+            let report = run_set(&mut boot, 300);
+            // Every wake costs one unit of the budget: the run ends in a `HLT` with nothing left.
+            assert_eq!(report.run.exit, PagedProbeExit::Halted, "{report:?}");
+            assert_eq!(
+                report.run.retired + report.irq.halt_wakes,
+                300,
+                "{report:?}"
+            );
+            let wakes = report.irq.halt_wakes;
+            assert!(wakes >= 3, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, wakes, "{report:?}");
+            // The setup and the first `STI; HLT` retire 18 instructions; every wake then runs the
+            // handler (EOI, `IRETQ`), `INC EDX`, `JMP` and the next `HLT`: 5 more.
+            assert_eq!(report.run.retired, RETIRED_AT_HLT + 5 * wakes, "{report:?}");
+            // Each period is 1000 ns and the clock stands on every deadline: after the last wake
+            // only its 5 instructions have run. The idle skips are the rest.
+            assert_eq!(report.run.virtual_ns, 1000 * wakes + 5, "{report:?}");
+            assert_eq!(
+                report.irq.halt_idle_ns,
+                report.run.virtual_ns - report.run.retired,
+                "{report:?}"
+            );
+            assert_eq!(
+                boot.board.state().gpr[Register::Rdx as usize] & 0xFFFF_FFFF,
+                report.irq.halt_wakes,
+                "{report:?}"
+            );
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false)
+            );
+        }
+
+        /// S4-38L8i: a masked LVT Timer gives no wake time (a masked expiry raises nothing): the
+        /// run ends as `halted`, no false deadline, no vector.
+        #[test]
+        fn hlt_with_a_masked_lapic_timer_is_not_woken() {
+            let mut boot =
+                owned_apic_board(&lapic_timer_guest(LVT_MASKED | u32::from(IRQ_VECTOR), 100));
+            let report = run_set(&mut boot, 300);
+            assert_eq!(report.run.exit, PagedProbeExit::Halted, "{report:?}");
+            assert_eq!(report.irq.halt_wakes, 0, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 0, "{report:?}");
+            assert_eq!(boot.board.state().activity, Some(CpuActivity::Halted));
+            assert_ne!(boot.board.state().gpr[Register::Rax as usize] as u8, 0x5A);
+        }
+
+        /// S4-38L8i: stage4a is unchanged: the Local APIC window is not served by its set loop, so
+        /// the guest's first Local APIC register WRITE (SVR; the read path is the test above) is
+        /// the typed `DeviceUnavailable` error, the guest never reaches the timer registers or
+        /// its `HLT`, and no timer is armed.
+        #[test]
+        fn stage4a_lapic_timer_programming_is_a_typed_write_error_and_arms_nothing() {
+            let (boot, run) = run_guest_code(&lapic_timer_guest(u32::from(IRQ_VECTOR), 100), false);
+            assert!(
+                matches!(
+                    run.memory_error,
+                    Some(crate::TrackedAccessError::DeviceUnavailable { address })
+                        if address.get() == LOCAL_APIC_MMIO_BASE + 0xF0
+                ),
+                "{run:?}"
+            );
+            assert_ne!(run.exit, PagedProbeExit::Halted);
+            assert!(!boot.board.clock_owner_enabled());
+            assert_eq!(boot.board.local_apic().next_timer_deadline(), None);
+        }
+
+        /// S4-38L8i: a vector the Local APIC would not accept (TPR class not below the vector's
+        /// class) gives no wake time, although the LVT Timer is unmasked and armed: the run ends
+        /// as `halted`, the clock does not skip (the vector would sit in IRR and the CPU would
+        /// pass its `HLT` with no interrupt).
+        #[test]
+        fn hlt_with_a_timer_vector_blocked_by_the_tpr_is_not_woken() {
+            let mut code = lapic_timer_setup(u32::from(IRQ_VECTOR), 100);
+            code.extend(mov32(0, u32::from(IRQ_VECTOR & 0xF0)));
+            code.extend([0x89, 0x83, 0x80, 0x00, 0x00, 0x00]); // MOV [RBX+0x80], EAX: TPR
+            code.extend(mov32(0, 0));
+            code.extend(STI_HLT_MARK_SPIN);
+            let mut boot = owned_apic_board(&code);
+            let report = run_set(&mut boot, 300);
+            assert_eq!(report.run.exit, PagedProbeExit::Halted, "{report:?}");
+            assert_eq!(report.irq.halt_wakes, 0, "{report:?}");
+            assert_eq!(report.irq.halt_idle_ns, 0, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 0, "{report:?}");
+            assert_eq!(boot.board.state().activity, Some(CpuActivity::Halted));
+            assert_ne!(boot.board.state().gpr[Register::Rax as usize] as u8, 0x5A);
+            let lapic = boot.board.local_apic();
+            assert_eq!(lapic.vector_state(IRQ_VECTOR), (false, false));
+            assert!(lapic.next_timer_deadline().is_some(), "armed, never fired");
+        }
+
+        /// S4-38L8i: the PIT line is open (entry 2 unmasked on another vector, a count of 255
+        /// ticks: the first edge is about 213 us away) and the Local APIC timer is due at 1000
+        /// ns: the halted CPU is woken by the timer, not by the PIT.
+        #[test]
+        fn an_earlier_lapic_timer_wakes_the_cpu_before_the_pit_edge() {
+            let mut code = apic_setup(u32::from(IRQ_VECTOR + 0x10));
+            code.extend(pit_program(0x34, 255));
+            code.extend(lapic_timer_program(u32::from(IRQ_VECTOR), 100));
+            code.extend(STI_HLT_MARK_SPIN);
+            let mut boot = owned_apic_board(&code);
+            let report = run_set(&mut boot, 300);
+            assert_eq!(
+                report.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(report.irq.halt_wakes, 1, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            assert_eq!(
+                report.run.virtual_ns,
+                report.run.retired + report.irq.halt_idle_ns,
+                "{report:?}"
+            );
+            assert!(
+                (900..1000).contains(&report.irq.halt_idle_ns),
+                "idle up to the LAPIC deadline, not the PIT edge: {report:?}"
+            );
+            assert_eq!(boot.board.state().gpr[Register::Rax as usize] as u8, 0x5A);
+            let source = boot.board.pit_ioapic_source().expect("installed");
+            assert_eq!(source.stats().edges, 0, "the PIT edge has not come");
+            let lapic = boot.board.local_apic();
+            assert_eq!(lapic.vector_state(IRQ_VECTOR), (false, false));
+            assert_eq!(lapic.vector_state(IRQ_VECTOR + 0x10), (false, false));
+        }
+
         #[test]
         fn without_a_guest_eoi_the_second_irq_is_not_delivered() {
             let n = 10u8;
