@@ -392,7 +392,8 @@ and [machine verification record](../testing/MACHINE.md#s4-24c-bounded-paged-cpu
 Long64 CPL0 allowlist: `48 8B 03` (`MOV RAX,[RBX]`), `48 89 0B`
 (`MOV [RBX],RCX`), bare `EC` (`IN AL,DX`), bare `EE` (`OUT DX,AL`) and bare
 `F4` (`HLT`); S7-03 extends it with `B0+r ib` and `66 B8+r iw`, and S7-04 adds
-bare `FC` (`CLD`) and the exact entry form `48 C7 C0 id` (see the extensions below). The CPU entry validates its
+bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`, and
+`75 24` (see the extensions below). The CPU entry validates its
 profile admission and CR0/CR4 before fetch. It receives page-aware `GuestMemory`;
 CR3/EFER validation and selecting the four-level 4 KiB paging context belong
 to the machine entry.
@@ -432,7 +433,7 @@ vCPU lifecycle. S4-21, S4-24, S4-32 and Stage 4 remain open. See the
 - `66` перед `B0`–`B7`, повторный `66`, `67`, сегментные префиксы, `F2`/`F3` и любые сочетания префиксов, кроме указанных в таблице (допуск проверяет точный набор `Prefixes` и длину 2 или 4); `F0` (LOCK) не допускается и сохраняет классификацию декодера;
 - `C6 /0` и `C7 /0` (`MOV r/m, imm`), любые другие операции с непосредственным операндом (`ADD`, `CMP`, `OR` и т. п.); исключение для одной точной entry-формы `48 C7 C0 id` описано в расширении S7-04 ниже.
 
-Профили, построенные на том же внутреннем шаге, расширение **не** получают: `PagedCpl0Cr3ProbeV1` (S4-12c), `PagedCpl0Cr0WpProbeV1` (S4-12d), стековый профиль `step_paged_stack_probe`, CPL3-профили `step_paged_cpl3_mov`/`step_paged_cpl3_load` и `PagedCpl0PioU8V1` (S4-24c) сохраняют свои allowlist, и `B0`–`BF` в них остаются `Unsupported`. S7-04 отдельно добавляет bare `CLD`, точные формы `48 C7 C0 id` и `48 39 C7` в базовый профиль; прочие `CMP`, branches/calls, CR4, сегментные переходы и `LRETQ`/`IRETQ` остаются вне allowlist ([FIRMWARE_BOOT.md](FIRMWARE_BOOT.md), разделы 5 и 7).
+Профили, построенные на том же внутреннем шаге, расширение **не** получают: `PagedCpl0Cr3ProbeV1` (S4-12c), `PagedCpl0Cr0WpProbeV1` (S4-12d), стековый профиль `step_paged_stack_probe`, CPL3-профили `step_paged_cpl3_mov`/`step_paged_cpl3_load` и `PagedCpl0PioU8V1` (S4-24c) сохраняют свои allowlist, и `B0`–`BF` в них остаются `Unsupported`. S7-04 отдельно добавляет bare `CLD`, точные формы `48 C7 C0 id`, `48 39 C7` и `75 24` в базовый профиль; прочие `CMP`, branches/calls, CR4, сегментные переходы и `LRETQ`/`IRETQ` остаются вне allowlist ([FIRMWARE_BOOT.md](FIRMWARE_BOOT.md), разделы 5 и 7).
 
 Проверка (обязательна для S7-03): позитивный тест на каждую из 16 форм (значение целевой части, сохранность остальных битов и регистров, `RIP`, флаги), отрицательные тесты на соседние формы из списка выше и на другие профили, fault при fetch непосредственного операнда через границу страницы, мини-образ `build_firmware.py --smoke` в `boot-firmware` печатает `X` в COM1 и останавливается по `HLT`.
 
@@ -453,6 +454,12 @@ vCPU lifecycle. S4-21, S4-24, S4-32 and Stage 4 remain open. See the
 `step_paged_probe` принимает только Primary `48 39 C7` длиной 3: ровно REX `0x48`, qword, регистровый `RDI` destination и `RAX` source, только в базовом `PagedCpl0ProbeV1`. Переиспользуется `ArithmeticKind::Cmp`: вычисляется `RDI - RAX`, меняются только арифметические RFLAGS, эти флаги становятся defined, GPR и прочее состояние сохраняются, RIP продвигается на 3. Декодер не менялся; другие CMP opcode/операнды/префиксы и прочие paged profiles остаются `Unsupported`. Fetch fault до полного decode не фиксирует состояние.
 
 Проверки в `paged_probe_profile`: равенство, borrow, signed overflow, флаги/definedness и сохранность состояния; соседние формы, fetch fault на ModRM через границу страницы, CPL3 и другие paged profiles отклоняются без commit. Runner retired 3 инструкции и остановился на `75 24` (`JNZ rel8`, ISSUE-103, RIP `0x20004b`); Rust entry, parser и COM1 в машине ещё не достигнуты.
+
+#### Расширение S7-04: точный `JNZ rel8` из entry прошивки
+
+`step_paged_probe` принимает только Primary `75 24` (`JNZ`/`JNE rel8`): длина 2, ровно displacement `+0x24`, без префиксов, только в базовом `PagedCpl0ProbeV1`. Переиспользуется существующий метод `ConditionCode::evaluate` с условием `NotEqual`: при ZF=0 RIP становится `next_rip + 0x24`, при ZF=1 — `next_rip`; успешное исполнение продвигает одну инструкцию и сохраняет RFLAGS и `rflags_defined`. Canonicality проверяется только для взятой ветви, как в общем interpreter branch path; невзятая ветвь устанавливает fall-through RIP, даже если он non-canonical (следующий fetch выдаст fault). Остальные Jcc/JMP формы, displacement, префиксы и соседние profiles остаются `Unsupported`. Fetch fault на displacement до commit возвращается без изменения CPU state.
+
+Проверки в `paged_probe_profile`: taken/not-taken targets и сохранение state/flags/definedness; fault при fetch rel8 через границу страницы; соседние Jcc, near JNZ, JMP, префиксные формы, прочие paged profiles и CPL3 отвергаются без commit. Runtime после трёх предшествующих instructions исполнил `75 24` без взятия (RDI=RAX) и остановился на `49 89 F8` (`MOV R8,RDI`, ISSUE-104, RIP `0x20004d`). Rust entry и parser остаются непроверенными в машине.
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 

@@ -6,8 +6,8 @@ use std::cell::{Cell, RefCell};
 use crate::binary_float::{Binary32, Binary64, BinaryClass};
 use crate::cpuid::CpuidProfile;
 use crate::long_decode::{
-    self, AddressBase, ArithmeticKind, BitKind, BitOffset, BitScanKind, DecodeError, LogicKind,
-    MemoryOperand, OpcodeMap, Operand, Operation, Prefixes, ShiftKind, canonical,
+    self, AddressBase, ArithmeticKind, BitKind, BitOffset, BitScanKind, ConditionCode, DecodeError,
+    LogicKind, MemoryOperand, OpcodeMap, Operand, Operation, Prefixes, ShiftKind, canonical,
     general_protection,
 };
 use crate::memory::{
@@ -20143,6 +20143,36 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 instructions_executed: 1,
                 rflags_defined: initial_rflags_defined | crate::DF,
             };
+        }
+        // S7-04: startup uses one short JNE to stop on an invalid handoff GPA.
+        // Keep this to the literal firmware encoding; all other branches stay
+        // outside the bounded paged boot profile.
+        Operation::Branch {
+            condition,
+            displacement,
+        } if base_profile
+            && condition == ConditionCode::NotEqual
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x75
+            && instruction.length == 2
+            && instruction.prefixes == Prefixes::default()
+            && displacement == 0x24 =>
+        {
+            if condition.evaluate(state.rflags) {
+                let target = next_rip.wrapping_add_signed(i64::from(displacement));
+                if !canonical(target) {
+                    let MemoryError::Architectural(fault) = general_protection() else {
+                        unreachable!()
+                    };
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                state.rip = target;
+            } else {
+                // Fall-through RIP is checked only by the next instruction
+                // fetch. A not-taken conditional branch does not validate it.
+                state.rip = next_rip;
+            }
+            return result(PagedProbeExit::Retired, 1);
         }
         // S7-04: the firmware entry compares the handoff GPA in RDI with the
         // expected value loaded into RAX. Admit only `48 39 C7`; all other CMP

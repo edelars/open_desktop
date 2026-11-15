@@ -12,15 +12,25 @@
 
 ## Записи
 
+<a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
+### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
+- **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
+- **Владелец:** S7-04 совместно с владельцем CPU profile.
+- **Статус:** открыта; runner проходит четыре startup-инструкции, но до Rust entry не доходит.
+- **Суть и последствия:** после `CLD`, `48 C7 C0 00 00 10 00`, `48 39 C7` и невзятого `75 24` runner отклоняет `49 89 F8` (`MOV R8,RDI`) на `RIP=0x20004d`. COM1 пуст; handoff parser и firmware entry не проверены в машине.
+- **Основание:** образ `/private/tmp/od-fw-s7-04-jnz.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; команда `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-jnz.bin --com1-out /private/tmp/od-fw-s7-04-jnz.com1 --budget 10000` вернула `Unsupported { opcode: 137 }` (decimal = `0x89`), `retired=4`, `RIP=0x20004d`, `com1_bytes=0`.
+- **Следующий шаг:** определить точную форму `MOV R8,RDI` и проверить REX register selection, сохранность состояния и профильную изоляцию; повторить runner-прогон.
+
 <a id="issue-103-s7-04-paged-cpu-profile-does-not-admit-jcc-jne-at-firmware-entry"></a>
 ### ISSUE-103 — S7-04: paged CPU profile не допускает `JNZ` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `CMP RDI,RAX`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
 - **Владелец:** S7-04 совместно с владельцем CPU profile.
-- **Статус:** открыта; runner проходит три startup-инструкции, но до Rust entry не доходит.
-- **Суть и последствия:** после `CLD`, `48 C7 C0 00 00 10 00` и `48 39 C7` runner отклоняет `75 24` (`JNZ rel8`) на `RIP=0x20004b`. Вывод COM1 пуст; handoff parser и firmware entry не проверены в машине.
+- **Статус:** решена узко для точной формы `75 24` (`JNZ rel8`); runner остаётся заблокирован на следующей startup-инструкции (ISSUE-104).
+- **Суть и последствия:** после `CLD`, `48 C7 C0 00 00 10 00` и `48 39 C7` runner отклонял `75 24` на `RIP=0x20004b`. Базовый `PagedCpl0ProbeV1` теперь исполняет только short JNZ с displacement `+0x24`, сохраняя RFLAGS и их definedness. До Rust entry runner пока не дошёл; вывод COM1 пуст, handoff parser в машине не проверен.
 - **Основание:** образ `/private/tmp/od-fw-s7-04-cmp.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; команда `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-cmp.bin --com1-out /private/tmp/od-fw-s7-04-cmp.com1 --budget 10000` вернула `Unsupported { opcode: 117 }` (decimal = `0x75`), `retired=3`, `RIP=0x20004b`, `com1_bytes=0`.
-- **Следующий шаг:** определить точный контракт для `JNZ rel8` из firmware entry, включая taken/not-taken RIP и атомарность fetch; повторить runner-прогон.
+- **Результат и проверка:** `paged_probe_profile` проверяет taken/not-taken target RIP, сохранение CPU state/RFLAGS/definedness, fetch fault на rel8 через границу страницы, соседние ветви и префиксы, остальные paged profiles и CPL3. Runner retired четыре инструкции (`CLD`, `MOV`, `CMP`, невзятый `JNZ`) и теперь останавливается на `49 89 F8` (`MOV R8,RDI`, opcode `0x89`) на `RIP=0x20004d`; см. ISSUE-104. Реализация узкой формы ждёт независимого ревью.
 
 <a id="issue-102-s7-04-paged-cpu-profile-does-not-admit-cmp-rdi-rax-at-firmware-entry"></a>
 ### ISSUE-102 — S7-04: paged CPU profile не допускает `CMP RDI,RAX` из entry прошивки
