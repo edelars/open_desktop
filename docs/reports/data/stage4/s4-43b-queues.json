@@ -1,0 +1,572 @@
+{
+  "schema": "s4-43b-queues-v1",
+  "scope": "machine-layer event queues, pump trace and display event queue; bounded stress, not long-run reliability",
+  "not_covered": [
+    "Linux boot",
+    "IRQ and timer on a real kernel",
+    "executable (JIT) cache and its limit",
+    "SMP",
+    "long-run reliability",
+    "PIT IRQ-source queues (private, capacity 4)",
+    "NVMe queues (guest-sized, bounded by MAX_QUEUE_ENTRIES)",
+    "runner trace and journal outside od-machine"
+  ],
+  "os": "macos",
+  "arch": "aarch64",
+  "limits": {
+    "main_iterations": 2000,
+    "baseline_iterations": 200,
+    "warmup_iterations": 100,
+    "ops_per_iteration_event_queue": 4,
+    "eq_capacity": 8,
+    "uart_capacity": 8,
+    "ring_capacity": 64,
+    "pump_max_events_per_iteration": 20,
+    "watchdog_seconds": 120,
+    "scenario_budget_seconds": 30,
+    "rss_growth_limit_bytes": 5242880,
+    "retained_heap_growth_limit_bytes": 1024,
+    "leak_after_drop_limit_bytes": 512,
+    "pump_run_budget": 100000
+  },
+  "queues": [
+    {
+      "queue": "EventQueue (standalone)",
+      "source": "crates/od-machine/src/event_queue.rs",
+      "declared_capacity": 8,
+      "overflow_behavior": "error: EventQueueError::Full; queue unchanged",
+      "overflow_reachable_through_public_api": true,
+      "has_generation_tokens": true,
+      "fixed_heap_bytes": 0,
+      "peak_margin_bytes": 1024,
+      "max_growth_bytes": 64,
+      "phases": [
+        {
+          "phase": "warmup",
+          "iterations": 100,
+          "outcome": {
+            "counters": {
+              "iterations": 100,
+              "operations": 400,
+              "oracle_comparisons": 400,
+              "max_len_seen": 8,
+              "overflow_attempts": 9,
+              "overflow_refused_explicitly": 9,
+              "resets": 2,
+              "empty_after_reset_checks": 2,
+              "stale_token_refusals": 10,
+              "extra": {}
+            },
+            "retained_initial_bytes": 384,
+            "retained_alive_bytes": 384,
+            "growth_after_creation_bytes": 0,
+            "leaked_after_drop_bytes": 0,
+            "peak_above_before_bytes": 384,
+            "allocations": 2,
+            "elapsed_ms": 0
+          }
+        },
+        {
+          "phase": "baseline",
+          "iterations": 200,
+          "outcome": {
+            "counters": {
+              "iterations": 200,
+              "operations": 800,
+              "oracle_comparisons": 800,
+              "max_len_seen": 8,
+              "overflow_attempts": 18,
+              "overflow_refused_explicitly": 18,
+              "resets": 4,
+              "empty_after_reset_checks": 4,
+              "stale_token_refusals": 20,
+              "extra": {}
+            },
+            "retained_initial_bytes": 384,
+            "retained_alive_bytes": 384,
+            "growth_after_creation_bytes": 0,
+            "leaked_after_drop_bytes": 0,
+            "peak_above_before_bytes": 384,
+            "allocations": 2,
+            "elapsed_ms": 0
+          }
+        },
+        {
+          "phase": "main",
+          "iterations": 2000,
+          "outcome": {
+            "counters": {
+              "iterations": 2000,
+              "operations": 8000,
+              "oracle_comparisons": 8000,
+              "max_len_seen": 8,
+              "overflow_attempts": 272,
+              "overflow_refused_explicitly": 272,
+              "resets": 40,
+              "empty_after_reset_checks": 40,
+              "stale_token_refusals": 200,
+              "extra": {}
+            },
+            "retained_initial_bytes": 384,
+            "retained_alive_bytes": 384,
+            "growth_after_creation_bytes": 0,
+            "leaked_after_drop_bytes": 0,
+            "peak_above_before_bytes": 384,
+            "allocations": 2,
+            "elapsed_ms": 2
+          }
+        }
+      ],
+      "retained_heap_main_vs_baseline_bytes": 0
+    },
+    {
+      "queue": "UartRxEventPump events + payloads",
+      "source": "crates/od-machine/src/uart_rx_events.rs",
+      "declared_capacity": 8,
+      "overflow_behavior": "error: EventQueueError::Full from schedule; payload list not extended",
+      "overflow_reachable_through_public_api": true,
+      "has_generation_tokens": true,
+      "fixed_heap_bytes": 0,
+      "peak_margin_bytes": 2048,
+      "max_growth_bytes": 96,
+      "phases": [
+        {
+          "phase": "warmup",
+          "iterations": 100,
+          "outcome": {
+            "counters": {
+              "iterations": 100,
+              "operations": 516,
+              "oracle_comparisons": 978,
+              "max_len_seen": 8,
+              "overflow_attempts": 57,
+              "overflow_refused_explicitly": 57,
+              "resets": 4,
+              "empty_after_reset_checks": 4,
+              "stale_token_refusals": 8,
+              "extra": {
+                "bytes_delivered": 424,
+                "events_dropped_by_reset": 20,
+                "non_delivering_exits_checked": 86
+              }
+            },
+            "retained_initial_bytes": 904,
+            "retained_alive_bytes": 968,
+            "growth_after_creation_bytes": 64,
+            "leaked_after_drop_bytes": 280,
+            "peak_above_before_bytes": 968,
+            "allocations": 6,
+            "elapsed_ms": 0
+          }
+        },
+        {
+          "phase": "baseline",
+          "iterations": 200,
+          "outcome": {
+            "counters": {
+              "iterations": 200,
+              "operations": 1083,
+              "oracle_comparisons": 2060,
+              "max_len_seen": 8,
+              "overflow_attempts": 105,
+              "overflow_refused_explicitly": 105,
+              "resets": 8,
+              "empty_after_reset_checks": 8,
+              "stale_token_refusals": 16,
+              "extra": {
+                "bytes_delivered": 895,
+                "events_dropped_by_reset": 50,
+                "non_delivering_exits_checked": 178
+              }
+            },
+            "retained_initial_bytes": 904,
+            "retained_alive_bytes": 968,
+            "growth_after_creation_bytes": 64,
+            "leaked_after_drop_bytes": 280,
+            "peak_above_before_bytes": 968,
+            "allocations": 6,
+            "elapsed_ms": 0
+          }
+        },
+        {
+          "phase": "main",
+          "iterations": 2000,
+          "outcome": {
+            "counters": {
+              "iterations": 2000,
+              "operations": 10813,
+              "oracle_comparisons": 20833,
+              "max_len_seen": 8,
+              "overflow_attempts": 921,
+              "overflow_refused_explicitly": 921,
+              "resets": 80,
+              "empty_after_reset_checks": 80,
+              "stale_token_refusals": 160,
+              "extra": {
+                "bytes_delivered": 9132,
+                "events_dropped_by_reset": 396,
+                "non_delivering_exits_checked": 1781
+              }
+            },
+            "retained_initial_bytes": 904,
+            "retained_alive_bytes": 968,
+            "growth_after_creation_bytes": 64,
+            "leaked_after_drop_bytes": 280,
+            "peak_above_before_bytes": 968,
+            "allocations": 6,
+            "elapsed_ms": 8
+          }
+        }
+      ],
+      "retained_heap_main_vs_baseline_bytes": 0
+    },
+    {
+      "queue": "InterruptPump IRQ event queue + Ring trace",
+      "source": "crates/od-machine/src/interrupt_pump.rs (INTERRUPT_PUMP_QUEUE_CAPACITY)",
+      "declared_capacity": 16,
+      "overflow_behavior": "error: PumpQueueError::Queue(Full); due merge counted in coalesced_irqs",
+      "overflow_reachable_through_public_api": true,
+      "has_generation_tokens": true,
+      "fixed_heap_bytes": 0,
+      "peak_margin_bytes": 81920,
+      "max_growth_bytes": 12288,
+      "phases": [
+        {
+          "phase": "warmup",
+          "iterations": 100,
+          "outcome": {
+            "counters": {
+              "iterations": 100,
+              "operations": 972,
+              "oracle_comparisons": 1372,
+              "max_len_seen": 16,
+              "overflow_attempts": 40,
+              "overflow_refused_explicitly": 40,
+              "resets": 4,
+              "empty_after_reset_checks": 4,
+              "stale_token_refusals": 8,
+              "extra": {
+                "cancelled": 22,
+                "interrupts_delivered": 402,
+                "irq_events_accepted": 879,
+                "irq_events_dropped_by_reset": 31,
+                "stop_checks": 1,
+                "trace_events_dropped": 2425,
+                "trace_events_recorded": 2489,
+                "trace_max_len": 64
+              }
+            },
+            "retained_initial_bytes": 46531,
+            "retained_alive_bytes": 56027,
+            "growth_after_creation_bytes": 9496,
+            "leaked_after_drop_bytes": 280,
+            "peak_above_before_bytes": 57101,
+            "allocations": 5776,
+            "elapsed_ms": 20
+          }
+        },
+        {
+          "phase": "baseline",
+          "iterations": 200,
+          "outcome": {
+            "counters": {
+              "iterations": 200,
+              "operations": 2020,
+              "oracle_comparisons": 2820,
+              "max_len_seen": 16,
+              "overflow_attempts": 96,
+              "overflow_refused_explicitly": 96,
+              "resets": 8,
+              "empty_after_reset_checks": 8,
+              "stale_token_refusals": 16,
+              "extra": {
+                "cancelled": 52,
+                "interrupts_delivered": 814,
+                "irq_events_accepted": 1803,
+                "irq_events_dropped_by_reset": 69,
+                "stop_checks": 1,
+                "trace_events_dropped": 4997,
+                "trace_events_recorded": 5061,
+                "trace_max_len": 64
+              }
+            },
+            "retained_initial_bytes": 46531,
+            "retained_alive_bytes": 56027,
+            "growth_after_creation_bytes": 9496,
+            "leaked_after_drop_bytes": 280,
+            "peak_above_before_bytes": 57101,
+            "allocations": 11645,
+            "elapsed_ms": 38
+          }
+        },
+        {
+          "phase": "main",
+          "iterations": 2000,
+          "outcome": {
+            "counters": {
+              "iterations": 2000,
+              "operations": 19792,
+              "oracle_comparisons": 27792,
+              "max_len_seen": 16,
+              "overflow_attempts": 910,
+              "overflow_refused_explicitly": 910,
+              "resets": 80,
+              "empty_after_reset_checks": 80,
+              "stale_token_refusals": 160,
+              "extra": {
+                "cancelled": 483,
+                "interrupts_delivered": 8073,
+                "irq_events_accepted": 17623,
+                "irq_events_dropped_by_reset": 776,
+                "stop_checks": 1,
+                "trace_events_dropped": 49853,
+                "trace_events_recorded": 49917,
+                "trace_max_len": 64
+              }
+            },
+            "retained_initial_bytes": 46531,
+            "retained_alive_bytes": 56027,
+            "growth_after_creation_bytes": 9496,
+            "leaked_after_drop_bytes": 280,
+            "peak_above_before_bytes": 57101,
+            "allocations": 114904,
+            "elapsed_ms": 378
+          }
+        }
+      ],
+      "retained_heap_main_vs_baseline_bytes": 0
+    },
+    {
+      "queue": "Display event queue",
+      "source": "crates/od-machine/src/display_device.rs (DISPLAY_EVENT_CAPACITY)",
+      "declared_capacity": 16,
+      "overflow_behavior": "error: DisplayRequestError::QueueFull (not reachable from the public API: mode requests merge)",
+      "overflow_reachable_through_public_api": false,
+      "has_generation_tokens": false,
+      "fixed_heap_bytes": 37748736,
+      "peak_margin_bytes": 196608,
+      "max_growth_bytes": 256,
+      "phases": [
+        {
+          "phase": "warmup",
+          "iterations": 100,
+          "outcome": {
+            "counters": {
+              "iterations": 100,
+              "operations": 300,
+              "oracle_comparisons": 300,
+              "max_len_seen": 1,
+              "overflow_attempts": 0,
+              "overflow_refused_explicitly": 0,
+              "resets": 3,
+              "empty_after_reset_checks": 3,
+              "stale_token_refusals": 0,
+              "extra": {
+                "events_dropped_by_reset": 3,
+                "events_popped": 49,
+                "no_driver_refusals": 3
+              }
+            },
+            "retained_initial_bytes": 37913808,
+            "retained_alive_bytes": 37913808,
+            "growth_after_creation_bytes": 0,
+            "leaked_after_drop_bytes": 280,
+            "peak_above_before_bytes": 37913936,
+            "allocations": 18,
+            "elapsed_ms": 99
+          }
+        },
+        {
+          "phase": "baseline",
+          "iterations": 200,
+          "outcome": {
+            "counters": {
+              "iterations": 200,
+              "operations": 600,
+              "oracle_comparisons": 600,
+              "max_len_seen": 1,
+              "overflow_attempts": 0,
+              "overflow_refused_explicitly": 0,
+              "resets": 6,
+              "empty_after_reset_checks": 6,
+              "stale_token_refusals": 0,
+              "extra": {
+                "events_dropped_by_reset": 4,
+                "events_popped": 93,
+                "no_driver_refusals": 6
+              }
+            },
+            "retained_initial_bytes": 37913808,
+            "retained_alive_bytes": 37913808,
+            "growth_after_creation_bytes": 0,
+            "leaked_after_drop_bytes": 280,
+            "peak_above_before_bytes": 37913936,
+            "allocations": 19,
+            "elapsed_ms": 97
+          }
+        },
+        {
+          "phase": "main",
+          "iterations": 2000,
+          "outcome": {
+            "counters": {
+              "iterations": 2000,
+              "operations": 6000,
+              "oracle_comparisons": 6000,
+              "max_len_seen": 1,
+              "overflow_attempts": 0,
+              "overflow_refused_explicitly": 0,
+              "resets": 60,
+              "empty_after_reset_checks": 60,
+              "stale_token_refusals": 0,
+              "extra": {
+                "events_dropped_by_reset": 37,
+                "events_popped": 992,
+                "no_driver_refusals": 60
+              }
+            },
+            "retained_initial_bytes": 37913808,
+            "retained_alive_bytes": 37913808,
+            "growth_after_creation_bytes": 0,
+            "leaked_after_drop_bytes": 280,
+            "peak_above_before_bytes": 37913936,
+            "allocations": 37,
+            "elapsed_ms": 98
+          }
+        }
+      ],
+      "retained_heap_main_vs_baseline_bytes": 0
+    }
+  ],
+  "bounded_trace_check": {
+    "limit": 512,
+    "iterations_to_limit": 7,
+    "trace_len_at_limit": 512,
+    "trace_dropped": 0,
+    "trace_next_seq": 512,
+    "exit": "Rejected(TraceLimit)",
+    "second_run_exit": "Rejected(TraceLimit)",
+    "ring_zero_rejected": true,
+    "mode_change_after_record_rejected": true,
+    "irq_queue_len_at_rejection": 9,
+    "irq_queue_len_after_reset": 0
+  },
+  "unexercised_queues": [
+    {
+      "queue": "PIT/PIC and PIT/IOAPIC IRQ-source EventQueue",
+      "source": "crates/od-machine/src/pit_pic_irq_source.rs, pit_ioapic_irq_source.rs",
+      "declared_capacity": "4 (private QUEUE_CAPACITY)",
+      "overflow_behavior": "schedule error counted in stats.queue_faults; source stops scheduling",
+      "why_not_exercised": "private constant and private owner; only reachable through guest PIT programming"
+    },
+    {
+      "queue": "TranslationProbeCache entries",
+      "source": "crates/od-machine/src/translation_probe_cache.rs",
+      "declared_capacity": "single resident entry",
+      "overflow_behavior": "overwrite (cache replacement); no error",
+      "why_not_exercised": "covered by S4-43a"
+    },
+    {
+      "queue": "NVMe submission/completion queues",
+      "source": "crates/od-machine/src/nvme/",
+      "declared_capacity": "2..=MAX_QUEUE_ENTRIES (1024), sized by the guest",
+      "overflow_behavior": "invalid size refused by admin command; ring indices wrap",
+      "why_not_exercised": "needs an NVMe driver workload; not an event queue"
+    }
+  ],
+  "rss_after_warmup_bytes": 42631168,
+  "rss_after_main_bytes": 42762240,
+  "rss_growth_bytes": 131072,
+  "watchdog_self_test_timed_out": true,
+  "total_elapsed_ms": 756,
+  "test": "tools/bench/tests/s4_43b_bounded_queues.rs (cargo test -p od-bench --test s4_43b_bounded_queues, profile test = debug)",
+  "source_commit": "a50a93c",
+  "result": "passed",
+  "control_checks": [
+    {
+      "name": "EventQueue::reset does not clear entries",
+      "where": "crates/od-machine/src/event_queue.rs, temporary edit, reverted with git checkout, not committed",
+      "result": "test failed",
+      "message": "queue after reset (s4_43b_bounded_queues.rs:369 at the time of the run)"
+    },
+    {
+      "name": "EventQueue::schedule capacity check `==` replaced by `>` (queue grows past capacity)",
+      "where": "crates/od-machine/src/event_queue.rs, temporary edit, reverted with git checkout, not committed",
+      "result": "test failed",
+      "message": "schedule key 11: left Ok(()) right Err(Full)"
+    },
+    {
+      "name": "Ring trace does not count dropped events (trace_dropped += 1 removed)",
+      "where": "crates/od-machine/src/interrupt_pump.rs, temporary edit, reverted with git checkout, not committed",
+      "result": "test failed",
+      "message": "every recorded event is retained or counted as dropped: left 64 right 77 (run on the first version of the test)"
+    },
+    {
+      "name": "UartRxEventPump::schedule pushes a payload on a refused (Full) schedule, key reused after reset",
+      "where": "crates/od-machine/src/uart_rx_events.rs, temporary edit, reverted with git checkout, not committed",
+      "result": "test failed",
+      "message": "delivery order: left Some(170) right Some(90) (stale payload found by the reused key 1)"
+    },
+    {
+      "name": "UartRxEventPump::schedule pushes a payload (key !key, never reused) only when the schedule is refused",
+      "where": "crates/od-machine/src/uart_rx_events.rs, temporary edit, reverted with git checkout, not committed",
+      "result": "test failed",
+      "message": "UartRxEventPump events + payloads/warmup: heap grew by 448 bytes after creation (limit 96)"
+    }
+  ],
+  "inventory_added_by_review": [
+    {
+      "queue": "SyscallJournal.entries",
+      "source": "crates/od-machine/src/linux_direct.rs (SYSCALL_JOURNAL_CAPACITY)",
+      "capacity": "32 entries; `entered` and `returned` are u64 totals, not capped",
+      "overflow": "overwrite: pop_front of the oldest entry on Enter, totals keep counting; the return of an evicted call is not attributed",
+      "checked": "no (in-crate unit test only)"
+    },
+    {
+      "queue": "PitIrq0Owner bridge EventQueue",
+      "source": "crates/od-machine/src/stage4_pit_irq0_probe.rs (BRIDGE_QUEUE_CAPACITY)",
+      "capacity": "16; deliver_due handles at most 16 edges per call",
+      "overflow": "queue error propagates as Err(String); the delivery loop is bounded by the constant",
+      "checked": "no"
+    },
+    {
+      "queue": "apic_pair timer EventQueue",
+      "source": "crates/od-machine/src/apic_pair.rs",
+      "capacity": "1 (single timer slot, EventQueue::new(1))",
+      "overflow": "one pending deadline; reprogramming replaces it (replace_single), no growth",
+      "checked": "no"
+    },
+    {
+      "queue": "NVMe ErrorLog",
+      "source": "crates/od-machine/src/nvme/admin.rs (ERROR_LOG_ENTRIES)",
+      "capacity": "64 entries (count is a u64 total)",
+      "overflow": "push_front then truncate: the oldest entry is dropped, the total keeps counting",
+      "checked": "no"
+    },
+    {
+      "queue": "NVMe AerState (outstanding + ready; pending)",
+      "source": "crates/od-machine/src/nvme/admin.rs (AER_LIMIT)",
+      "capacity": "4 outstanding + ready requests; pending events at most one per event type (masked bit, 8 types)",
+      "overflow": "outstanding request over the limit completes with AER_LIMIT_EXCEEDED; a repeated event type is masked",
+      "checked": "no"
+    }
+  ],
+  "findings": [
+    "Display event queue (capacity 16) cannot be filled through the public API: untaken MODE_REQUEST of screen 0 are merged, observed max length 1; QueueFull is covered only by in-crate unit tests.",
+    "InterruptPump trace has no clear: only dropping the pump resets it; trace_next_seq and coalesced_irqs are cumulative by design; reset_irq_queue clears the IRQ queue only.",
+    "Ring(n) capacity is chosen by the caller with no upper limit; only Bounded mode has a fixed limit (512).",
+    "A Bounded-mode trace overflow ends the pump for good (Rejected(TraceLimit), run keeps returning it); the pending IRQ events stay in the queue until reset_irq_queue.",
+    "leaked_after_drop_bytes = 280 for scenarios with a non-empty counters.extra is one BTreeMap leaf of the returned test summary, not a queue leak (comment in the test).",
+    "irq_queue_len_at_rejection (9) is not modelled exactly; the test checks only 0 < len <= 16.",
+    "Display scenario: NoDriver refusals are counted in extra.no_driver_refusals, not in stale_token_refusals (the display queue has no generation token)."
+  ],
+  "manual_fields": [
+    "test",
+    "source_commit",
+    "result",
+    "control_checks",
+    "findings",
+    "inventory_added_by_review",
+    "manual_fields"
+  ]
+}
