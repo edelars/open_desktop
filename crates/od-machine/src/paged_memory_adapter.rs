@@ -1621,7 +1621,7 @@ pub fn step_paged_mov_dword_store(
 /// `Ram` is the physical memory alone, split off from the bus so that the port half of the same
 /// bus can serve `IN`/`OUT` in the same instruction (large-RAM profile only, S4-38L3).
 enum AdapterBus<'a> {
-    Machine(&'a mut MachineBus),
+    Machine(&'a mut MachineBus, usize),
     Ram(&'a mut crate::PhysicalMemory),
     /// `Ram` plus the MMIO dispatch of the set loop (S4-38L9s): an operand in an MMIO region
     /// goes to the board's device, as on the `Machine` form; the rest is the large-RAM walk.
@@ -1633,16 +1633,26 @@ enum AdapterBus<'a> {
 
 impl<'a> From<&'a mut MachineBus> for AdapterBus<'a> {
     fn from(bus: &'a mut MachineBus) -> Self {
-        Self::Machine(bus)
+        Self::Machine(bus, crate::vcpu::BOOT_VCPU_INDEX)
     }
 }
 
 impl AdapterBus<'_> {
+    /// Index of the vCPU that owns this adapter: its MMIO accesses reach the per-processor
+    /// devices (the Local APIC window, S6-11) as that vCPU's. Only the `Machine` form carries
+    /// one; the RAM-only forms serve the boot processor's set loop.
+    fn vcpu(&self) -> usize {
+        match self {
+            Self::Machine(_, vcpu) => *vcpu,
+            Self::Ram(_) | Self::RamMmio(..) => crate::vcpu::BOOT_VCPU_INDEX,
+        }
+    }
+
     /// The whole bus. The `Ram` form is built only for the large-RAM walk, which never asks
     /// for it; if it ever does, that is a typed backend error and not a panic.
     fn machine(&mut self) -> Result<&mut MachineBus, MemoryError> {
         match self {
-            Self::Machine(bus) => Ok(bus),
+            Self::Machine(bus, _) => Ok(bus),
             Self::Ram(_) | Self::RamMmio(..) => Err(MemoryError::Backend(
                 "the RAM-only adapter bus serves the large-RAM walk only".to_string(),
             )),
@@ -1657,7 +1667,7 @@ impl AdapterBus<'_> {
         mmio_allowed: bool,
     ) -> crate::TrackedAccessReport {
         match self {
-            Self::Machine(bus) => bus.access_tracked_2m_ram(paging, request, committed_write),
+            Self::Machine(bus, _) => bus.access_tracked_2m_ram(paging, request, committed_write),
             Self::Ram(memory) => {
                 crate::page_walk::access_long64_2m_ram(memory, paging, request, committed_write)
             }
@@ -1681,14 +1691,14 @@ impl AdapterBus<'_> {
     fn ram_mut(&mut self) -> Option<&mut crate::PhysicalMemory> {
         match self {
             Self::Ram(memory) | Self::RamMmio(memory, _) => Some(memory),
-            Self::Machine(_) => None,
+            Self::Machine(..) => None,
         }
     }
 
     fn ram_ref(&self) -> Option<&crate::PhysicalMemory> {
         match self {
             Self::Ram(memory) | Self::RamMmio(memory, _) => Some(memory),
-            Self::Machine(_) => None,
+            Self::Machine(..) => None,
         }
     }
 }
@@ -1829,6 +1839,7 @@ impl PagedMovMemoryAdapter<'_> {
             context,
             operation,
         };
+        let vcpu = self.bus.vcpu();
         let report = if self.capture_effects {
             let mut writes = Vec::new();
             let report = if self.large_ram_profile {
@@ -1845,7 +1856,7 @@ impl PagedMovMemoryAdapter<'_> {
             } else {
                 self.bus
                     .machine()?
-                    .access_tracked(&self.paging, request, |range| writes.push(range))
+                    .access_tracked(vcpu, &self.paging, request, |range| writes.push(range))
             };
             self.committed_writes
                 .as_mut()
@@ -1875,9 +1886,12 @@ impl PagedMovMemoryAdapter<'_> {
                 &mut *self.committed_write,
             )
         } else {
-            self.bus
-                .machine()?
-                .access_tracked(&self.paging, request, &mut *self.committed_write)
+            self.bus.machine()?.access_tracked(
+                vcpu,
+                &self.paging,
+                request,
+                &mut *self.committed_write,
+            )
         };
         match report.outcome {
             Ok(outcome) => Ok(outcome),
@@ -1992,7 +2006,7 @@ impl PagedMovMemoryAdapter<'_> {
                         &mut *self.committed_write,
                     )
                 }
-                AdapterBus::Machine(_) => return Err(Self::unsupported("cross-page write")),
+                AdapterBus::Machine(..) => return Err(Self::unsupported("cross-page write")),
             };
             if let Err(error) = result {
                 self.access_error = Some(error.clone());
@@ -2302,8 +2316,15 @@ mod tests {
         bus: &'a mut MachineBus,
         callbacks: &'a mut dyn FnMut(GuestPhysicalRange),
     ) -> PagedMovMemoryAdapter<'a> {
+        adapter_on(bus.into(), callbacks)
+    }
+
+    fn adapter_on<'a>(
+        bus: AdapterBus<'a>,
+        callbacks: &'a mut dyn FnMut(GuestPhysicalRange),
+    ) -> PagedMovMemoryAdapter<'a> {
         PagedMovMemoryAdapter {
-            bus: bus.into(),
+            bus,
             paging: Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
             instruction_rip: 0x0040_0000,
             committed_write: callbacks,
@@ -3444,6 +3465,77 @@ mod tests {
         // The whole-bus form hands the bus out.
         let mut adapter_bus = AdapterBus::from(&mut machine);
         assert!(adapter_bus.machine().is_ok());
+    }
+
+    /// RAM with the page tables of `bus()` whose data page maps the Local APIC window, and a
+    /// board of `cpus` Local APICs behind it.
+    fn lapic_bus(cpus: usize) -> (MachineBus, crate::LocalApicHandle) {
+        let window = GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE);
+        let regions = vec![
+            MemoryRegionSpec::new(
+                GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_LEN).unwrap(),
+                MemoryRegionKind::Ram,
+            ),
+            MemoryRegionSpec::new(
+                GuestPhysicalRange::new(window, crate::LOCAL_APIC_MMIO_SIZE).unwrap(),
+                MemoryRegionKind::Mmio,
+            ),
+        ];
+        let map = MachineMemoryMap::new(36, regions).unwrap();
+        let device = crate::LocalApic::with_cpus(cpus).unwrap();
+        let handle = device.handle();
+        let mut bus = MachineBus::new(
+            map,
+            RamLimits::new(RAM_LEN),
+            vec![Box::new(device)],
+            vec![crate::MmioBinding {
+                region_start: window,
+                device_index: 0,
+            }],
+            vec![],
+        )
+        .unwrap();
+        put(&mut bus, 0x1000, 0x2007);
+        put(&mut bus, 0x2000, 0x3007);
+        put(&mut bus, 0x3010, 0x4007);
+        put(&mut bus, 0x3020, 0x5007);
+        put(&mut bus, 0x4000, 0x7007);
+        put(&mut bus, 0x5000, crate::LOCAL_APIC_MMIO_BASE | 7);
+        (bus, handle)
+    }
+
+    #[test]
+    fn a_paged_mmio_access_reaches_the_lapic_of_the_vcpu_that_owns_the_adapter() {
+        let (mut bus, apic) = lapic_bus(2);
+        let mut callback = |_| {};
+        // The APIC ID register reads the owner's index, whichever processor reads it.
+        for vcpu in [1usize, 0] {
+            let mut memory = adapter_on(AdapterBus::Machine(&mut bus, vcpu), &mut callback);
+            memory.cpl0_set_dword_read = true;
+            let mut id = [0xff; 4];
+            memory.read(DATA_LINEAR + 0x20, context(), &mut id).unwrap();
+            assert_eq!(u32::from_le_bytes(id), (vcpu as u32) << 24, "vcpu {vcpu}");
+        }
+        // A write lands in the owner's LAPIC and in no other.
+        let mut memory = adapter_on(AdapterBus::Machine(&mut bus, 1), &mut callback);
+        memory.dword_write_profile = true;
+        memory
+            .write(DATA_LINEAR + 0x80, context(), &0x30u32.to_le_bytes())
+            .unwrap();
+        let pair = apic.0.lock().unwrap();
+        assert_eq!((pair.cpus[0].local.tpr, pair.cpus[1].local.tpr), (0, 0x30));
+        drop(pair);
+        // An adapter built the ordinary way belongs to the boot processor.
+        let mut memory = adapter(&mut bus, &mut callback);
+        memory.dword_write_profile = true;
+        memory
+            .write(DATA_LINEAR + 0x80, context(), &0x40u32.to_le_bytes())
+            .unwrap();
+        let pair = apic.0.lock().unwrap();
+        assert_eq!(
+            (pair.cpus[0].local.tpr, pair.cpus[1].local.tpr),
+            (0x40, 0x30)
+        );
     }
 }
 
