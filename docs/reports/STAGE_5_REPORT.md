@@ -346,6 +346,14 @@ Strict one-run comparison вернул `matches=false`: `machine_observations` �
 
 Полные hashes и параметры приведены в [vector-count evidence log](data/stage5/s5-07-stage4a-vector-counts-20261115.log); ISSUE-081 остаётся открытой.
 
+### Comparator follow-up after optional panic frame (2026-11-15)
+
+После `3d15e1a` отдельный release comparator повторно сравнил те же raw artifacts; нового гостевого запуска не было. `matches=false`: различие `machine_observations` перешло в `explained_differences`, а единственным unexplained difference остался `ordered_uart_bytes`. Первоначальное расхождение machine observations объяснялось volatile IRQ/terminal fields после допуска ровно observed optional frame `__task_pid_nr_ns`; произвольные optional frames по-прежнему не допускаются.
+
+Raw UART показывает, что в run 0001 nonce marker расположен перед `Run /init as init process`, а в run 0002 — после. Кроме того, строка audit содержит `audit(0.140:1)` в run 0001 и `audit(0.141:1)` в run 0002; текущая нормализация снимает внешний kernel printk timestamp, но не это embedded значение. Сравнение порядка marker и embedded audit time оставлено строгим: пока нет основания считать обе разницы безвредными или изменять их нормализацию. S5-07 остаётся **blocked/unaccepted**; причина порядка UART требует дальнейшего разбора.
+
+Форматирование и focused comparator test прошли; полное сравнение и hashes приведены в [vector-count evidence log](data/stage5/s5-07-stage4a-vector-counts-20261115.log).
+
 Точные run/series/manifest/runner/UART SHA-256, host/source revisions и comparator JSON записаны в [S5-07 evidence log](data/stage5/s5-07-stage4a-nonce-20261114.log). Runner COM1 в этих данных — stop-scoped `linux_direct_run_boot_com1`, не независимый streaming UART; user CPU time не измерен. Ни один A–G сценарий S5-06 не запускался в Linux guest; полный этап 5 и S5-07 остаются **blocked/unaccepted**.
 
 ### S5-07 typed stop reason follow-up (2026-11-12)

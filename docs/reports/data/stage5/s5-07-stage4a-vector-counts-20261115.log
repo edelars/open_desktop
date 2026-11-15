@@ -63,3 +63,22 @@ No A-G guest scenario was run. S5-07 stays blocked/unaccepted.
 
 Raw run artifacts remain in ignored
 `work/stage5/stage5-s5-07-stage4a-vector-counts-20261115-a/`.
+
+## Re-evaluation after optional-frame comparator slice
+
+After commit `3d15e1a`, a clean release build re-compared the same run
+artifacts; no new guest run was performed. The result remains `matches=false`.
+Machine observations moved to `explained_differences`; the only unexplained
+difference is `run[0].ordered_uart_bytes differs after nonce normalization`.
+
+The remaining raw UART differences include:
+
+- Run 0001 emits `OD_NONCE=<nonce>` before `Run /init as init process`; run 0002
+  emits those lines in the opposite order.
+- The embedded audit value is `audit(0.140:1)` in run 0001 and
+  `audit(0.141:1)` in run 0002. The comparator normalizes the outer printk
+  timestamp but not the embedded audit timestamp.
+
+These remain strict because neither ordering nor embedded audit-time variation
+has been established as benign. Thus the optional-frame slice explains the
+machine observation difference but does not make S5-07 strict-clean.
