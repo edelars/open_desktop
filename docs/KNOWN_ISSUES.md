@@ -252,17 +252,26 @@
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d39`.
 - **Статус:** решена только для exact bare `55` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
 - **Результат и проверка:** существующий stack helper записывает qword RBP на `[RSP-8]`, затем обновляет RSP/RIP только при успешной записи. `paged_probe_profile` — 207 passed: full state/RSP/qword bytes, stack #PF/#SS, fetch fault, соседние opcode/prefix формы, CPL3 и другие profiles.
-- **Runner:** после 33 retired инструкций остановился на `41 57` (`PUSH R15`, REX.B prefix + opcode `57`) при `RIP=0x200d3a`, `Unsupported { opcode: 87 }`; COM1 пуст. Следующий blocker — [ISSUE-133](#issue-133-s7-04-rust-helper-push-r15-unsupported).
+- **Runner:** после 33 retired инструкций достиг [ISSUE-133](#issue-133-s7-04-rust-helper-push-r15-unsupported); этот blocker теперь решён. Runner retired 35 инструкций и остановился на [ISSUE-134](#issue-134-s7-04-rust-helper-push-r13-unsupported).
 - **Основание:** образ `/private/tmp/od-fw-s7-push-rbp.bin`; `od -An -tx1 -j 0xd3a -N12` показывает `41 57 41 56 41 55 41 54 53 48 83 ec`; runner с бюджетом 10000.
 
 <a id="issue-133-s7-04-rust-helper-push-r15-unsupported"></a>
 ### ISSUE-133 — S7-04: Rust helper `PUSH R15` (`41 57`) остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после bare `PUSH RBP`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d3a`.
+- **Статус:** решена только для exact `41 57` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Результат и проверка:** существующий stack helper записывает qword R15 на `[RSP-8]`, затем обновляет RSP/RIP только после успешной записи. `paged_probe_profile` — 213 passed: full state/RSP/qword bytes, stack #PF/#SS, fetch fault, соседние opcode/prefix forms, CPL3 и другие profiles.
+- **Runner:** после 35 retired инструкций остановился на `41 55` (`PUSH R13`, opcode byte `0x55` после REX `0x41`) при `RIP=0x200d3e`, `Unsupported { opcode: 85 }`; COM1 пуст. Следующий blocker — [ISSUE-134](#issue-134-s7-04-rust-helper-push-r13-unsupported).
+- **Основание:** образ `/private/tmp/od-fw-s7-push-r15.bin`; `od -An -tx1 -j 0xd3e -N12` показывает `41 55 41 54 53 48 83 ec 38 0f b7 7e`; runner с бюджетом 10000.
+
+<a id="issue-134-s7-04-rust-helper-push-r13-unsupported"></a>
+### ISSUE-134 — S7-04: Rust helper `PUSH R13` (`41 55`) остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `PUSH R15`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d3e`.
 - **Статус:** открыта.
-- **Суть и последствия:** `41 57` сохраняет R15 через REX.B qword PUSH. Runner возвращает `Unsupported { opcode: 87 }` (opcode byte `0x57` после REX `0x41`), `retired=33`, `RIP=0x200d3a`; COM1 пуст.
-- **Основание:** образ `/private/tmp/od-fw-s7-push-rbp.bin`; `od -An -tx1 -j 0xd3a -N12` показывает `41 57 41 56 41 55 41 54 53 48 83 ec`; runner с бюджетом 10000.
-- **Следующий шаг:** исследовать exact REX.B `PUSH R15` admission через существующую stack helper semantics и сохранить stack-fault/profile isolation.
+- **Суть и последствия:** `41 55` сохраняет R13 через REX.B qword PUSH. Runner возвращает `Unsupported { opcode: 85 }` (opcode byte `0x55` после REX `0x41`), `retired=35`, `RIP=0x200d3e`; COM1 пуст.
+- **Основание:** образ `/private/tmp/od-fw-s7-push-r15.bin`; `od -An -tx1 -j 0xd3e -N12` показывает `41 55 41 54 53 48 83 ec 38 0f b7 7e`; runner с бюджетом 10000.
+- **Следующий шаг:** исследовать exact REX.B `PUSH R13` admission через существующую stack helper semantics и сохранить stack-fault/profile isolation.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
