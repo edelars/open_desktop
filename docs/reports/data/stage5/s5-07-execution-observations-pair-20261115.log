@@ -98,8 +98,12 @@ omitted). Their event multisets differ by one additional event in `h`: CPL0
 write at RIP `0xffffffff8271a9c1`, CR2 `0x7ffc659bc779`, error code `0x00000002`.
 `nm -n` maps the RIP to `rep_movs_alternative+0x11`; `objdump -d` shows a
 single-byte store through RDI at that instruction. The two runs' other page
-fault events match. This describes the instruction and address, but does not
-explain why this access faulted only in `h`.
+fault events match in sequence: the first 30 records are identical, `h` has
+this one additional event at zero-based index 30, and after removing it the
+remaining event sequence exactly matches `g`. The insertion occurs immediately
+before the same CPL3 instruction-fetch fault (`RIP=CR2=0x4000b0`) in both runs.
+This narrows the difference to one successfully delivered write fault; it does
+not explain why this access faulted only in `h` or establish that it is benign.
 
 UART still differs in strict order: in `g`, the exact nonce line precedes
 `Run /init as init process`; in `h`, the printk precedes the nonce line. The
