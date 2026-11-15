@@ -95,8 +95,8 @@ pub use bus::{
 
 pub use console_output_context::{
     ConsoleContextFrame, ConsoleContextTrigger, ConsoleOutputContextSnapshot, FrameChainEnd,
-    MAX_UART_PROVENANCE_BYTES, UartOutputByteContextSnapshot, UartOutputContextDiagnostic,
-    UartOutputContextEnd,
+    LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY, MAX_UART_PROVENANCE_BYTES, UartOutputByteContextSnapshot,
+    UartOutputContextDiagnostic, UartOutputContextEnd,
 };
 pub use dma_page::{DMA_PAGE_0_PORT, DMA_PAGE_0_PORT_BYTES, DmaPage0};
 pub use pic_8259::{

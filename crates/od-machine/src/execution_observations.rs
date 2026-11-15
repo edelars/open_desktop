@@ -20,6 +20,10 @@ pub struct FaultingPageFaultContext {
     pub rcx: u64,
     pub rsi: u64,
     pub rdi: u64,
+    /// Bounded frame-pointer chain read from guest RAM before exception delivery.
+    pub frame_chain: Vec<crate::ConsoleContextFrame>,
+    /// Why the bounded frame-pointer walk stopped.
+    pub frame_chain_end: crate::FrameChainEnd,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -115,6 +119,8 @@ mod tests {
                 rcx: 0x4000,
                 rsi: 0x5000,
                 rdi: 0x6000,
+                frame_chain: Vec::new(),
+                frame_chain_end: crate::FrameChainEnd::ReadFailed,
             },
         }
     }

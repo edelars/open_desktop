@@ -5,7 +5,8 @@
 
 pub(crate) const MAX_CAPTURE_COUNT: usize = 4;
 const MAX_LINE_BYTES: usize = 192;
-pub(crate) const MAX_FRAME_LINKS: usize = 32;
+pub const LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY: usize = 32;
+pub(crate) const MAX_FRAME_LINKS: usize = LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY;
 pub(crate) const STACK_WINDOW_BYTES: u64 = 4096;
 pub const MAX_UART_PROVENANCE_BYTES: usize = 512;
 

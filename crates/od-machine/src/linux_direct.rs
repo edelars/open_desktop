@@ -10544,9 +10544,15 @@ mod tests {
         let handler = pf_repair_handler(pde_address, (DATA & !(2 * MIB - 1)) | 0x83);
         write_phys(&mut boot, PF_HANDLER_AT, &handler);
         let rsp = boot.board.state().gpr[Register::Rsp as usize];
-        let faulting_rbp = 0x5555;
+        let faulting_rbp = 0x5550;
         let faulting_rsi = 0x6666;
         let faulting_rdi = 0x7777;
+        let mut fault_frames = Vec::new();
+        fault_frames.extend_from_slice(&0x5560u64.to_le_bytes());
+        fault_frames.extend_from_slice(&0xffff_ffff_8100_1000u64.to_le_bytes());
+        fault_frames.extend_from_slice(&0u64.to_le_bytes());
+        fault_frames.extend_from_slice(&0xffff_ffff_8100_2000u64.to_le_bytes());
+        write_phys(&mut boot, faulting_rbp, &fault_frames);
         {
             let state = boot.board.state_mut();
             state.gpr[Register::Rbp as usize] = faulting_rbp;
@@ -10592,6 +10598,17 @@ mod tests {
                     rcx: 0x5A,
                     rsi: faulting_rsi,
                     rdi: faulting_rdi,
+                    frame_chain: vec![
+                        crate::ConsoleContextFrame {
+                            frame_pointer: faulting_rbp,
+                            return_address: 0xffff_ffff_8100_1000,
+                        },
+                        crate::ConsoleContextFrame {
+                            frame_pointer: faulting_rbp + 16,
+                            return_address: 0xffff_ffff_8100_2000,
+                        },
+                    ],
+                    frame_chain_end: crate::FrameChainEnd::NullFramePointer,
                 },
             }]
         );
@@ -11680,6 +11697,8 @@ mod tests {
                 rcx: faulting_rcx,
                 rsi: faulting_rsi,
                 rdi: faulting_rdi,
+                frame_chain: Vec::new(),
+                frame_chain_end: crate::FrameChainEnd::UnalignedFramePointer,
             }
         );
         assert_ne!(

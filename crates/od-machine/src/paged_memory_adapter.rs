@@ -1,5 +1,6 @@
 //! Opt-in one-instruction Long64 bridge through the uncached RAM walker.
 
+use crate::console_output_context::capture_frame_chain;
 use crate::execution_observations::{
     DeliveredPageFaultObservation, FaultingPageFaultContext, LinuxExecutionObservationCollector,
 };
@@ -24,7 +25,8 @@ use od_isa::execute::{
     step_paged_mov_word_read_cross_page_fetch as cpu_step_paged_mov_word_read_cross_page_fetch,
 };
 use od_isa::memory::{
-    AccessContext, ArchitecturalFault, GuestMemory, MemoryError, PageFaultRecord,
+    AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, GuestMemory, InstructionMode,
+    MemoryError, PageFaultRecord, PrivilegeLevel,
 };
 use od_isa::{
     Cpl0ExternalInterruptDelivery, Cpl0ExternalInterruptPhase, Cpl0ExternalInterruptRefusal,
@@ -1028,17 +1030,21 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
                 && fault.vector == 14
                 && state.idtr.is_some()
             {
-                let faulting_context =
-                    execution_observations
-                        .as_ref()
-                        .map(|_| FaultingPageFaultContext {
-                            cr3: reported_cr3,
-                            rsp: state.gpr[od_isa::Register::Rsp as usize],
-                            rbp: state.gpr[od_isa::Register::Rbp as usize],
-                            rcx: state.gpr[od_isa::Register::Rcx as usize],
-                            rsi: state.gpr[od_isa::Register::Rsi as usize],
-                            rdi: state.gpr[od_isa::Register::Rdi as usize],
-                        });
+                let faulting_context = execution_observations.as_ref().map(|_| {
+                    let rbp = state.gpr[od_isa::Register::Rbp as usize];
+                    let (frame_chain, frame_chain_end) =
+                        memory.capture_fault_frame_chain(instruction_rip, rbp);
+                    FaultingPageFaultContext {
+                        cr3: reported_cr3,
+                        rsp: state.gpr[od_isa::Register::Rsp as usize],
+                        rbp,
+                        rcx: state.gpr[od_isa::Register::Rcx as usize],
+                        rsi: state.gpr[od_isa::Register::Rsi as usize],
+                        rdi: state.gpr[od_isa::Register::Rdi as usize],
+                        frame_chain,
+                        frame_chain_end,
+                    }
+                });
                 let fault = fault.clone();
                 let original_record = memory.page_fault.clone();
                 let failure = if deliveries_without_retirement >= MAX_DELIVERIES_WITHOUT_RETIREMENT
@@ -1794,6 +1800,51 @@ impl AdapterBus<'_> {
             Self::Machine(_) => None,
         }
     }
+
+    fn read_virtual_ram_diagnostic(
+        &mut self,
+        paging: &Long64ProbeConfig,
+        rip: u64,
+        linear: GuestLinearAddress,
+        context: AccessContext,
+        output: &mut [u8],
+    ) -> Result<(), ()> {
+        if let Self::Machine(bus) = self {
+            return bus
+                .read_virtual_ram_diagnostic(paging, rip, linear, context, output)
+                .map_err(|_| ());
+        }
+        let memory = self.ram_mut().ok_or(())?;
+        let mut offset = 0usize;
+        while offset < output.len() {
+            let linear_address = linear
+                .get()
+                .checked_add(u64::try_from(offset).map_err(|_| ())?)
+                .ok_or(())?;
+            let bytes_to_page_end = 4096 - (linear_address as usize & 0xfff);
+            let fragment_len = bytes_to_page_end.min(output.len() - offset);
+            let physical = crate::page_walk::translate_long64_2m_ram_read_only(
+                memory,
+                paging,
+                rip,
+                GuestLinearAddress::new(linear_address),
+                context,
+                AccessKind::Read,
+            )
+            .map_err(|_| ())?;
+            if !memory
+                .locate_region_kind(physical, fragment_len as u64)
+                .is_ok_and(|kind| kind == MemoryRegionKind::Ram)
+            {
+                return Err(());
+            }
+            memory
+                .read_bytes(physical, &mut output[offset..offset + fragment_len])
+                .map_err(|_| ())?;
+            offset += fragment_len;
+        }
+        Ok(())
+    }
 }
 
 /// `GuestMemory` view scoped to one instruction attempt; same-page RAM and
@@ -1889,6 +1940,31 @@ pub struct PagedMovMemoryAdapter<'a> {
 }
 
 impl PagedMovMemoryAdapter<'_> {
+    fn capture_fault_frame_chain(
+        &mut self,
+        rip: u64,
+        rbp: u64,
+    ) -> (Vec<crate::ConsoleContextFrame>, crate::FrameChainEnd) {
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring0,
+            origin: AccessOrigin::Explicit,
+        };
+        let paging = self.paging;
+        capture_frame_chain(rbp, |frame_pointer| {
+            let mut bytes = [0; 16];
+            self.bus
+                .read_virtual_ram_diagnostic(
+                    &paging,
+                    rip,
+                    GuestLinearAddress::new(frame_pointer),
+                    context,
+                    &mut bytes,
+                )
+                .map(|()| bytes)
+        })
+    }
+
     fn access(
         &mut self,
         address: u64,
@@ -2432,6 +2508,45 @@ mod tests {
             cpl0_set_cross_page_read: false,
             fetch_cache: None,
         }
+    }
+
+    #[test]
+    fn adapter_diagnostic_frame_read_refuses_mapped_rom() {
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), 0x9000).unwrap();
+        let rom = GuestPhysicalRange::new(GuestPhysicalAddress::new(0x9000), 0x1000).unwrap();
+        let map = MachineMemoryMap::new(
+            36,
+            vec![
+                MemoryRegionSpec::new(ram, MemoryRegionKind::Ram),
+                MemoryRegionSpec::new(rom, MemoryRegionKind::Rom),
+            ],
+        )
+        .unwrap();
+        let mut memory = crate::PhysicalMemory::new(&map, RamLimits::new(0x9000)).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3020, 0x5007),
+            (0x5000, 0x9007),
+        ] {
+            memory
+                .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+        }
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let mut bus = AdapterBus::Ram(&mut memory);
+        let mut bytes = [0xaa; 16];
+        assert_eq!(
+            bus.read_virtual_ram_diagnostic(
+                &paging,
+                0x0040_0000,
+                GuestLinearAddress::new(DATA_LINEAR),
+                context(),
+                &mut bytes,
+            ),
+            Err(())
+        );
+        assert_eq!(bytes, [0xaa; 16]);
     }
 
     fn invlpg_state(target: u64) -> LongModeState {

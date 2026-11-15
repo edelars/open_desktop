@@ -1287,11 +1287,12 @@ fn write_execution_observations_sidecar(
     observations: &LinuxExecutionObservations,
 ) -> Result<(), String> {
     let value = json!({
-        "schema_version": 2,
-        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events with pre-delivery register context",
+        "schema_version": 3,
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events with pre-delivery registers and bounded read-only frame-pointer context",
         "limits": {
             "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
             "page_fault_events": od_machine::LINUX_PAGE_FAULT_EVENT_CAPACITY,
+            "frame_links_per_page_fault": od_machine::LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY,
         },
         "rdtsc_cpl0_sites": observations.rdtsc_cpl0_sites.iter().map(|site| json!({
             "rip": hex64(site.rip),
@@ -1313,6 +1314,11 @@ fn write_execution_observations_sidecar(
                 "rcx": hex64(event.faulting_context.rcx),
                 "rsi": hex64(event.faulting_context.rsi),
                 "rdi": hex64(event.faulting_context.rdi),
+                "frame_chain": event.faulting_context.frame_chain.iter().map(|frame| json!({
+                    "frame_pointer": hex64(frame.frame_pointer),
+                    "return_address": hex64(frame.return_address),
+                })).collect::<Vec<_>>(),
+                "frame_chain_end": format!("{:?}", event.faulting_context.frame_chain_end),
             },
         })).collect::<Vec<_>>(),
         "page_fault_events_omitted": observations.page_fault_events_omitted,
@@ -3122,6 +3128,11 @@ mod tests {
                     rcx: 0x4000,
                     rsi: 0x5000,
                     rdi: 0x6000,
+                    frame_chain: vec![od_machine::ConsoleContextFrame {
+                        frame_pointer: 0x7000,
+                        return_address: 0xffff_ffff_8100_7000,
+                    }],
+                    frame_chain_end: od_machine::FrameChainEnd::NullFramePointer,
                 },
             }],
             page_fault_events_omitted: 4,
@@ -3129,7 +3140,7 @@ mod tests {
         write_execution_observations_sidecar(&mut file, path.to_str().unwrap(), &observations)
             .unwrap();
         let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema_version"], 2);
+        assert_eq!(value["schema_version"], 3);
         assert_eq!(
             value["limits"]["rdtsc_cpl0_sites"],
             od_machine::LINUX_RDTSC_SITE_CAPACITY
@@ -3137,6 +3148,10 @@ mod tests {
         assert_eq!(
             value["limits"]["page_fault_events"],
             od_machine::LINUX_PAGE_FAULT_EVENT_CAPACITY
+        );
+        assert_eq!(
+            value["limits"]["frame_links_per_page_fault"],
+            od_machine::LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY
         );
         assert_eq!(value["rdtsc_cpl0_sites"][0]["rip"], "0xffffffff81001234");
         assert_eq!(value["rdtsc_cpl0_sites"][0]["reads"], 19);
@@ -3170,6 +3185,18 @@ mod tests {
         assert_eq!(
             value["page_fault_events"][0]["faulting_context"]["rdi"],
             "0x6000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["frame_chain"][0]["frame_pointer"],
+            "0x7000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["frame_chain"][0]["return_address"],
+            "0xffffffff81007000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["frame_chain_end"],
+            "NullFramePointer"
         );
         assert_eq!(value["page_fault_events_omitted"], 4);
         drop(file);
