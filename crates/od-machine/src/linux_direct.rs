@@ -14626,6 +14626,97 @@ mod tests {
             );
         }
 
+        /// `STI; HLT`, a mark (`MOV AL, 0x5A`) and a spin: the code after the `HLT` runs only when
+        /// the halted CPU was woken and the vector went through the handler.
+        const STI_HLT_MARK_SPIN: [u8; 6] = [0xFB, 0xF4, 0xB0, 0x5A, 0xEB, 0xFE];
+
+        fn halt_guest(entry2: u32, n: u8) -> Vec<u8> {
+            let mut code = apic_setup(entry2);
+            code.extend(pit_program(0x34, n));
+            code.extend(STI_HLT_MARK_SPIN);
+            code
+        }
+
+        fn run_set(
+            boot: &mut LinuxDirectBoot,
+            budget: u64,
+        ) -> crate::firmware_board::LinuxSetRunReport {
+            let (cli, sti, halt) = (
+                CliProfile::NonPviLong64V1,
+                StiProfile::NonPviLong64V1,
+                HaltProfile::Long64V1,
+            );
+            let set = set(&cli, &sti, &halt);
+            boot.board
+                .run_linux_boot_cpl0_set(budget, &set, false, false, true)
+                .expect("runs")
+        }
+
+        /// S4-38L8f: a halted CPU with IF = 1 under the APIC profile is woken at the PIT edge
+        /// (`wake_ns` of the IOAPIC source), the vector of entry 2 goes through the guest IDT and
+        /// the Local APIC (guest EOI), and the instruction after the `HLT` runs.
+        #[test]
+        fn an_idle_sti_hlt_is_woken_by_the_pit_through_the_ioapic() {
+            let code = halt_guest(u32::from(IRQ_VECTOR), 10);
+            let mut boot = apic_board(&code, true);
+            let rsp = boot.board.state().gpr[Register::Rsp as usize];
+            let report = run_set(&mut boot, 300);
+            assert_eq!(
+                report.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(report.irq.halt_wakes, 1, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            // The clock skipped from the HLT to the first edge after the guest's PIT write.
+            assert!(report.irq.halt_idle_ns > 0, "{report:?}");
+            assert_eq!(boot.board.state().gpr[Register::Rax as usize] as u8, 0x5A);
+            let state = boot.board.state();
+            assert_eq!(state.gpr[Register::Rsp as usize], rsp, "IRETQ balanced");
+            assert_ne!(state.rflags & (1 << 9), 0, "IRETQ restored IF");
+            assert_eq!(state.activity, Some(CpuActivity::Running));
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false),
+                "the guest EOI cleared ISR"
+            );
+            let source = boot.board.pit_ioapic_source().expect("installed");
+            let stats = source.stats();
+            assert_eq!(
+                (stats.acknowledged, stats.edges_refused, stats.ack_refused),
+                (1, 0, 0),
+                "{stats:?}"
+            );
+        }
+
+        /// S4-38L8f: a masked entry 2 gives no wake time: the run ends as `halted`, not woken by
+        /// a false deadline, and no vector reaches the guest.
+        #[test]
+        fn hlt_with_a_masked_entry_is_not_woken_under_the_apic_profile() {
+            let code = halt_guest(MASKED | u32::from(IRQ_VECTOR), 10);
+            let mut boot = apic_board(&code, true);
+            let report = run_set(&mut boot, 300);
+            assert_eq!(report.run.exit, PagedProbeExit::Halted, "{report:?}");
+            assert_eq!(report.irq.halt_wakes, 0, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 0, "{report:?}");
+            assert_eq!(boot.board.state().activity, Some(CpuActivity::Halted));
+            assert_ne!(boot.board.state().gpr[Register::Rax as usize] as u8, 0x5A);
+        }
+
+        /// S4-38L8f: stage4a (no IOAPIC source, no APIC windows) is unchanged: `STI; HLT` with the
+        /// empty source ends the run as `halted`, nothing wakes it.
+        #[test]
+        fn stage4a_hlt_with_if_set_still_ends_the_run_as_halted() {
+            let mut code = pit_program(0x34, 10);
+            code.extend(STI_HLT_MARK_SPIN);
+            let (mut boot, _) = irq_board(&code);
+            assert!(boot.board.pit_ioapic_source().is_none());
+            let report = run_set(&mut boot, 300);
+            assert_eq!(report.run.exit, PagedProbeExit::Halted, "{report:?}");
+            assert_eq!(report.irq.halt_wakes, 0, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 0, "{report:?}");
+        }
+
         #[test]
         fn without_a_guest_eoi_the_second_irq_is_not_delivered() {
             let n = 10u8;

@@ -346,6 +346,14 @@ impl LocalApicHandle {
             (s.irr[index] & bit != 0, s.isr[index] & bit != 0)
         })
     }
+    /// S4-38L8f: whether `vector`, once requested, could be accepted: the Local APIC is enabled
+    /// (global and SVR software enable) and the priority class of `vector` is above the processor
+    /// priority (TPR and ISR). A question that changes nothing; IRR is not looked at.
+    pub(crate) fn would_accept(&self, vector: u8) -> bool {
+        self.with_state(|s| {
+            s.global_enabled && s.svr & 0x100 != 0 && (vector & 0xf0) > (s.ppr() & 0xf0)
+        })
+    }
     /// Observe the highest eligible vector without consuming it.
     pub fn eligible(&self) -> Option<u8> {
         self.with_state(|s| s.eligible())

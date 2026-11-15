@@ -51,6 +51,16 @@
 //! the edge (counted in `edges_refused`); the probe keeps such an event, here a kept event would
 //! stay in the past forever and cut every quantum to one instruction.
 //!
+//! # Wake of a halted CPU (S4-38L8f)
+//!
+//! [`BoardIrqSource::wake_ns`] is the time at which a halted CPU with IF = 1 can next be woken:
+//! now when a vector is deliverable now, else the next OUT0 edge when that edge would be
+//! deliverable (entry 2 unmasked and routed to this Local APIC, the Local APIC enabled, the class
+//! of the vector above the processor priority), else `None`. A masked entry or a vector blocked by
+//! TPR or ISR therefore never wakes the CPU (it would pass its `HLT` with no interrupt, as in
+//! ISSUE-070). The Local APIC timer is not part of this answer: its deadline belongs to the clock
+//! owner (S4-23j).
+//!
 //! The semantics of the IOAPIC and the Local APIC that the repository does not hold are SDM and
 //! datasheet facts from memory (see the section of `CPU_CONTRACT.md`).
 
@@ -272,6 +282,33 @@ impl BoardIrqSource for PitIoapicIrqSource {
 
     fn irq0_edges(&self) -> u64 {
         self.0.borrow().stats.edges
+    }
+
+    /// S4-38L8f: the time a halted CPU with IF = 1 can next be woken, as for the 8259 source: now
+    /// when a vector is deliverable now; else the time of the next OUT0 edge when that edge would
+    /// be deliverable (entry 2 unmasked, routed to this Local APIC, and the vector's class above
+    /// the processor priority); else `None`. A masked entry, a vector blocked by TPR or ISR (no
+    /// EOI yet) or a disabled Local APIC give no wake: the edge would be lost or stay in IRR, and
+    /// the CPU would pass its `HLT` with no interrupt.
+    fn wake_ns(&self) -> Option<u64> {
+        let mut inner = self.0.borrow_mut();
+        inner.catch_up();
+        if inner.lapic.eligible().is_some() {
+            return Some(inner.clock.snapshot().now_ns());
+        }
+        let (cpu, vector) = inner.io_apic.intin2_route()?;
+        if cpu != inner.lapic.cpu_index() || !inner.lapic.would_accept(vector) {
+            return None;
+        }
+        // After a queue fault (never expected) the source has stopped: no wake time.
+        if inner.stats.queue_faults != 0 {
+            return None;
+        }
+        let now = inner.clock.snapshot().now_ns();
+        inner
+            .queue
+            .next_deadline()
+            .filter(|deadline| *deadline > now)
     }
 }
 
@@ -496,6 +533,49 @@ mod tests {
         );
         rig.lapic_write(0x80, 0x20);
         assert_eq!(rig.source.pending_vector(), Some(VECTOR));
+    }
+
+    /// S4-38L8f: an unprogrammed channel has no wake; a programmed one wakes at its next edge;
+    /// a due vector wakes now; the wake asks nothing of the state beyond the catch-up.
+    #[test]
+    fn wake_ns_is_the_next_edge_and_now_when_a_vector_is_deliverable() {
+        let mut rig = Rig::new();
+        assert_eq!(rig.source.wake_ns(), None, "no count loaded");
+        rig.program(0x34, 10);
+        assert_eq!(rig.source.wake_ns(), Some(8381));
+        assert_eq!(rig.source.wake_ns(), Some(8381), "a question, idempotent");
+        // The edge came and nothing took the vector: deliverable now, at the clock.
+        rig.advance_to(9000);
+        assert_eq!(rig.source.wake_ns(), Some(9000));
+        // In service (acknowledged, no EOI): the next edge cannot wake the CPU.
+        rig.source.clone().acknowledge(VECTOR);
+        assert_eq!(rig.source.wake_ns(), None);
+        // The EOI gives the next edge back.
+        rig.eoi();
+        assert_eq!(rig.source.wake_ns(), Some(16762));
+    }
+
+    /// S4-38L8f: a masked entry 2 gives no wake time (the edge would be lost), and unmasking
+    /// gives it back; a vector blocked by TPR gives none either (ISSUE-070 form of the check).
+    #[test]
+    fn wake_ns_is_none_for_a_masked_entry_or_a_vector_blocked_by_the_priority() {
+        let mut rig = Rig::new();
+        rig.entry2(MASKED | u64::from(VECTOR));
+        rig.program(0x34, 10);
+        assert_eq!(rig.source.wake_ns(), None, "masked");
+        rig.entry2(u64::from(VECTOR));
+        assert_eq!(rig.source.wake_ns(), Some(8381), "unmasked");
+        rig.lapic_write(0x80, 0x30);
+        assert_eq!(
+            rig.source.wake_ns(),
+            None,
+            "class 3 is not above TPR class 3"
+        );
+        rig.lapic_write(0x80, 0x20);
+        assert_eq!(rig.source.wake_ns(), Some(8381));
+        // The Local APIC disabled by the software enable bit: nothing is accepted.
+        rig.lapic_write(0xf0, 0xff);
+        assert_eq!(rig.source.wake_ns(), None, "SVR software enable is off");
     }
 
     #[test]
