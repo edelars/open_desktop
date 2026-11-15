@@ -855,6 +855,7 @@ pub(crate) fn compare_series_paths(
             right_path,
             &left_run,
             &right_run,
+            &mut explained,
             &mut unexplained,
         )?;
     }
@@ -1045,6 +1046,7 @@ fn compare_run(
     right_series_path: &Path,
     left: &RunManifest,
     right: &RunManifest,
+    explained: &mut Vec<String>,
     unexplained: &mut Vec<String>,
 ) -> Result<(), String> {
     let prefix = format!("run[{index}]");
@@ -1098,6 +1100,20 @@ fn compare_run(
     if left_config != right_config {
         unexplained.push(format!("{prefix}.configuration differs"));
     }
+    let left_uart_path = safe_relative(
+        left_series_path
+            .parent()
+            .ok_or("left series has no parent")?,
+        &left.uart.path,
+    )?;
+    let right_uart_path = safe_relative(
+        right_series_path
+            .parent()
+            .ok_or("right series has no parent")?,
+        &right.uart.path,
+    )?;
+    let left_uart = fs::read(left_uart_path).map_err(|error| error.to_string())?;
+    let right_uart = fs::read(right_uart_path).map_err(|error| error.to_string())?;
     let left_stop = normalize_nonce(
         &without_uart_and_stop_reason(left.runner.stop.as_ref()),
         &left.nonce,
@@ -1106,8 +1122,27 @@ fn compare_run(
         &without_uart_and_stop_reason(right.runner.stop.as_ref()),
         &right.nonce,
     );
-    if left_stop != right_stop {
+    let stage4_nonce_scenario = stage4_nonce_variation_eligible(left, &left_uart)
+        && stage4_nonce_variation_eligible(right, &right_uart)
+        && left.host == right.host
+        && left.run_profile == right.run_profile
+        && left_config == right_config;
+    let comparable_left_stop = if stage4_nonce_scenario {
+        without_stage4_nonce_volatile_observations(&left_stop)
+    } else {
+        left_stop.clone()
+    };
+    let comparable_right_stop = if stage4_nonce_scenario {
+        without_stage4_nonce_volatile_observations(&right_stop)
+    } else {
+        right_stop.clone()
+    };
+    if comparable_left_stop != comparable_right_stop {
         unexplained.push(format!("{prefix}.machine_observations differs"));
+    } else if stage4_nonce_scenario && left_stop != right_stop {
+        explained.push(format!(
+            "{prefix}.stage4-init-nonce terminal CPU snapshot, timing, IRQ, or quantum observations differ"
+        ));
     }
     let left_lines = left
         .guest_markers
@@ -1124,23 +1159,25 @@ fn compare_run(
     if left_lines != right_lines {
         unexplained.push(format!("{prefix}.ordered_marker_payloads differs"));
     }
-    let left_uart_path = safe_relative(
-        left_series_path
-            .parent()
-            .ok_or("left series has no parent")?,
-        &left.uart.path,
-    )?;
-    let right_uart_path = safe_relative(
-        right_series_path
-            .parent()
-            .ok_or("right series has no parent")?,
-        &right.uart.path,
-    )?;
-    let left_uart = fs::read(left_uart_path).map_err(|error| error.to_string())?;
-    let right_uart = fs::read(right_uart_path).map_err(|error| error.to_string())?;
-    if normalize_uart(&left_uart, &left.nonce) != normalize_uart(&right_uart, &right.nonce) {
+    let left_comparable_uart = if stage4_nonce_scenario {
+        normalize_stage4_init_nonce_uart(&left_uart, &left.nonce)
+    } else {
+        normalize_uart(&left_uart, &left.nonce)
+    };
+    let right_comparable_uart = if stage4_nonce_scenario {
+        normalize_stage4_init_nonce_uart(&right_uart, &right.nonce)
+    } else {
+        normalize_uart(&right_uart, &right.nonce)
+    };
+    if left_comparable_uart != right_comparable_uart {
         unexplained.push(format!(
             "{prefix}.ordered_uart_bytes differs after nonce normalization"
+        ));
+    } else if stage4_nonce_scenario
+        && normalize_uart(&left_uart, &left.nonce) != normalize_uart(&right_uart, &right.nonce)
+    {
+        explained.push(format!(
+            "{prefix}.stage4-init-nonce UART timestamps, memory availability, sched_clock calibration, or terminal panic snapshot differ"
         ));
     }
     if left.runner.guest_started != right.runner.guest_started
@@ -1150,6 +1187,65 @@ fn compare_run(
         unexplained.push(format!("{prefix}.runner_execution differs"));
     }
     Ok(())
+}
+
+fn stage4_nonce_variation_eligible(run: &RunManifest, uart: &[u8]) -> bool {
+    let Some(stop) = run.runner.stop.as_ref() else {
+        return false;
+    };
+    let nonce_line = format!("OD_NONCE={}", run.nonce);
+    let profile = stop["cpu_profile"].as_str().unwrap_or_default();
+    run.scenario_id == "stage4-init-nonce"
+        && run.hardware_status == "loaded"
+        && run.scenario_status == ScenarioStatus::Passed
+        && run.runner.guest_started
+        && run.expected_stop_kind == "budget_exhausted"
+        && stop["exit_kind"] == "budget_exhausted"
+        && stop["user_mode"] == true
+        && stop["path"] == "cpl0_set"
+        && profile.starts_with("Cpl0ProfileSet (S2-45)")
+        && run.configuration["cpu_path"] == "cpl0_set"
+        && run.configuration["cpu_profile"] == profile
+        && run.configuration["acceptance"] == "counted"
+        && run.configuration["diagnostic_past_c7"] == false
+        && run.configuration["budget"] == 3_000_000_000u64
+        && run.guest_markers.valid
+        && run.guest_markers.stage4_nonce_line.as_deref() == Some(nonce_line.as_str())
+        && run.guest_markers.expected_s5_marker_keys.is_empty()
+        && run.guest_markers.ordered_s5_marker_keys.is_empty()
+        && run.guest_markers.errors.is_empty()
+        && has_expected_stage4_nonce_terminal_panic(uart, &run.nonce)
+        && has_s4_39j_syscall_journal(stop)
+}
+
+fn has_s4_39j_syscall_journal(stop: &Value) -> bool {
+    const EXPECTED_SYSCALLS: [u64; 9] = [83, 165, 257, 0, 3, 1, 39, 35, 60];
+    let Some(journal) = stop.get("syscall_journal") else {
+        return false;
+    };
+    let Some(entries) = journal.get("entries").and_then(Value::as_array) else {
+        return false;
+    };
+    journal["entered"] == 9
+        && journal["returned"] == 8
+        && entries.len() == EXPECTED_SYSCALLS.len()
+        && entries
+            .iter()
+            .zip(EXPECTED_SYSCALLS)
+            .all(|(entry, expected)| entry["nr"] == expected)
+        && entries[8].get("rax_return").is_some_and(Value::is_null)
+}
+
+fn has_expected_stage4_nonce_terminal_panic(bytes: &[u8], nonce: &str) -> bool {
+    let normalized = normalize_uart(bytes, nonce);
+    let Ok(text) = String::from_utf8(normalized) else {
+        return false;
+    };
+    let lines = text
+        .split_inclusive('\n')
+        .map(normalize_stage4_init_nonce_uart_line)
+        .collect::<Vec<_>>();
+    terminal_stage4_panic_snapshot(&lines).is_some()
 }
 
 fn without_uart_and_stop_reason(stop: Option<&Value>) -> Value {
@@ -1217,6 +1313,316 @@ fn normalize_uart(bytes: &[u8], nonce: &str) -> Vec<u8> {
     }
     normalized.extend_from_slice(&bytes[cursor..]);
     normalized
+}
+
+fn without_stage4_nonce_volatile_observations(stop: &Value) -> Value {
+    let mut value = stop.clone();
+    if let Some(object) = value.as_object_mut() {
+        for field in [
+            "cr3",
+            "last_cr3_change",
+            "gpr",
+            "rflags",
+            "rip",
+            "rip_bytes",
+            "rip_gpa",
+            "halt_idle_ns",
+            "virtual_ns",
+            "irq0_edges",
+            "irq_refused_masked",
+            "irq_refused_shadow",
+            "irqs_delivered",
+            "quanta",
+            "quantum_cut_by_deadline",
+        ] {
+            object.remove(field);
+        }
+    }
+    value
+}
+
+fn normalize_stage4_init_nonce_uart(bytes: &[u8], nonce: &str) -> Vec<u8> {
+    let nonce_normalized = normalize_uart(bytes, nonce);
+    let Ok(text) = String::from_utf8(nonce_normalized.clone()) else {
+        return nonce_normalized;
+    };
+    let mut lines = text
+        .split_inclusive('\n')
+        .map(normalize_stage4_init_nonce_uart_line)
+        .collect::<Vec<_>>();
+    if let Some((start, end)) = terminal_stage4_panic_snapshot(&lines)
+        && let Some(normalized) = normalize_stage4_panic_snapshot(&lines[start..=end])
+    {
+        lines.splice(start..end + 1, normalized);
+    }
+    lines.concat().into_bytes()
+}
+
+fn terminal_stage4_panic_snapshot(lines: &[String]) -> Option<(usize, usize)> {
+    const PANIC_START: &str =
+        "Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000";
+    const PANIC_END: &str =
+        "---[ end Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000 ]---";
+    let starts = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| (uart_line_message(line) == PANIC_START).then_some(index))
+        .collect::<Vec<_>>();
+    let ends = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| (uart_line_message(line) == PANIC_END).then_some(index))
+        .collect::<Vec<_>>();
+    let ([start], [end]) = (starts.as_slice(), ends.as_slice()) else {
+        return None;
+    };
+    (*start < *end
+        && *end + 1 == lines.len()
+        && *end - *start < 64
+        && lines[*start..=*end].iter().map(String::len).sum::<usize>() <= 8192
+        && normalize_stage4_panic_snapshot(&lines[*start..=*end]).is_some())
+    .then_some((*start, *end))
+}
+
+fn normalize_stage4_init_nonce_uart_line(line: &str) -> String {
+    let (body, ending) = if let Some(body) = line.strip_suffix("\r\n") {
+        (body, "\r\n")
+    } else if let Some(body) = line.strip_suffix('\n') {
+        (body, "\n")
+    } else {
+        (line, "")
+    };
+    let (prefix, message) = if let Some(message) = kernel_timestamp_message(body) {
+        ("[<kernel-time>] ", message)
+    } else {
+        ("", body)
+    };
+    let message = normalize_memory_available(message);
+    let message = normalize_sched_clock_calibration(&message);
+    format!("{prefix}{message}{ending}")
+}
+
+fn kernel_timestamp_message(line: &str) -> Option<&str> {
+    let close = line.strip_prefix('[')?.find("] ")? + 1;
+    let timestamp = line.get(1..close)?;
+    let (seconds, fraction) = timestamp.trim().split_once('.')?;
+    if seconds.is_empty()
+        || fraction.is_empty()
+        || !seconds.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    line.get(close + 2..)
+}
+
+fn normalize_memory_available(line: &str) -> String {
+    let Some(memory) = line.strip_prefix("Memory: ") else {
+        return line.to_string();
+    };
+    let Some(k_slash) = memory.find("K/") else {
+        return line.to_string();
+    };
+    let count = &memory[..k_slash];
+    if count.is_empty() || !count.bytes().all(|byte| byte.is_ascii_digit()) {
+        return line.to_string();
+    }
+    format!("Memory: <available>K/{}", &memory[k_slash + 2..])
+}
+
+fn normalize_sched_clock_calibration(line: &str) -> String {
+    const PREFIX: &str = "sched_clock: Marking stable (";
+    let Some(calibration) = line.strip_prefix(PREFIX) else {
+        return line.to_string();
+    };
+    let Some(calibration) = calibration.strip_suffix(')') else {
+        return line.to_string();
+    };
+    let Some((first, second)) = calibration.split_once(")->(") else {
+        return line.to_string();
+    };
+    if !is_integer_pair(first) || !is_integer_pair(second) {
+        return line.to_string();
+    }
+    format!("{PREFIX}<calibration>)")
+}
+
+fn is_integer_pair(pair: &str) -> bool {
+    let Some((first, second)) = pair.split_once(", ") else {
+        return false;
+    };
+    fn integer(value: &str) -> bool {
+        let digits = value.strip_prefix('-').unwrap_or(value);
+        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+    }
+    integer(first) && integer(second) && !second.contains(", ")
+}
+
+fn normalize_stage4_panic_snapshot(lines: &[String]) -> Option<Vec<String>> {
+    const PANIC_START: &str =
+        "Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000";
+    const PANIC_END: &str =
+        "---[ end Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000 ]---";
+    if lines.len() < 2
+        || uart_line_message(lines.first()?) != PANIC_START
+        || uart_line_message(lines.last()?) != PANIC_END
+    {
+        return None;
+    }
+    let mut normalized = Vec::new();
+    for line in lines {
+        let message = uart_line_message(line);
+        if let Some((symbol, true)) = panic_frame(message) {
+            if optional_panic_frame(symbol) {
+                continue;
+            }
+            return None;
+        }
+        if !panic_snapshot_line_allowed(message) {
+            return None;
+        }
+        if let Some(value) = normalize_panic_rsp(message) {
+            normalized.push(line.replace(message, &value));
+        } else {
+            normalized.push(line.clone());
+        }
+    }
+    Some(normalized)
+}
+
+fn panic_snapshot_line_allowed(line: &str) -> bool {
+    const PANIC_START: &str =
+        "Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000";
+    const PANIC_END: &str =
+        "---[ end Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000 ]---";
+    const SHARED_FRAMES: &[&str] = &[
+        "show_stack",
+        "dump_stack_lvl",
+        "dump_stack",
+        "vpanic",
+        "panic",
+        "do_exit.cold",
+        "__x64_sys_exit",
+        "x64_sys_call",
+        "do_syscall_64",
+        "entry_SYSCALL_64_after_hwframe",
+    ];
+    let content = line.strip_prefix(' ').unwrap_or(line);
+    if matches!(
+        content,
+        PANIC_START | PANIC_END | "Call Trace:" | "<TASK>" | "</TASK>" | "Kernel Offset: disabled"
+    ) {
+        return true;
+    }
+    if content.starts_with(
+        "CPU: 0 UID: 0 PID: 1 Comm: init Not tainted 7.0.0-38-generic #38-Ubuntu PREEMPT(lazy)",
+    ) {
+        return true;
+    }
+    if let Some((symbol, optional)) = panic_frame(line) {
+        return if optional {
+            optional_panic_frame(symbol)
+        } else {
+            SHARED_FRAMES.contains(&symbol)
+        };
+    }
+    if let Some(address) = content.strip_prefix("RIP: 0033:0x") {
+        return is_hex_digits(address);
+    }
+    if let Some(code) = content.strip_prefix("Code: ") {
+        return !code.is_empty()
+            && code
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() || matches!(byte, b' ' | b'<' | b'>'));
+    }
+    if normalize_panic_rsp(content).is_some() {
+        return true;
+    }
+    valid_panic_register_line(content)
+}
+
+fn panic_frame(line: &str) -> Option<(&str, bool)> {
+    let line = line.strip_prefix(' ')?;
+    if line.starts_with(' ') {
+        return None;
+    }
+    let (optional, frame) = if let Some(frame) = line.strip_prefix("? ") {
+        (true, frame)
+    } else {
+        (false, line)
+    };
+    let (symbol, offsets) = frame.split_once('+')?;
+    let (instruction, function) = offsets.split_once('/')?;
+    let valid_offset = |value: &str| value.strip_prefix("0x").is_some_and(is_hex_digits);
+    if symbol.is_empty() || !valid_offset(instruction) || !valid_offset(function) {
+        return None;
+    }
+    Some((symbol, optional))
+}
+
+fn optional_panic_frame(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        "acct_update_integrals"
+            | "ksys_write"
+            | "arch_exit_to_user_mode_prepare.isra.0"
+            | "do_syscall_64"
+            | "exc_page_fault"
+            | "handle_pte_fault"
+            | "__pmd_alloc"
+            | "__handle_mm_fault"
+            | "count_memcg_events"
+            | "handle_mm_fault"
+            | "irqentry_exit"
+    )
+}
+
+fn normalize_panic_rsp(line: &str) -> Option<String> {
+    let fields = line.split_whitespace().collect::<Vec<_>>();
+    if fields.len() != 6
+        || fields[0] != "RSP:"
+        || !fields[1].starts_with("002b:")
+        || !is_hex_digits(fields[1].strip_prefix("002b:")?)
+        || fields[2] != "EFLAGS:"
+        || !is_hex_digits(fields[3])
+        || fields[4] != "ORIG_RAX:"
+        || !is_hex_digits(fields[5])
+    {
+        return None;
+    }
+    Some(format!(
+        "RSP: 002b:<stack> EFLAGS: {} ORIG_RAX: {}",
+        fields[3], fields[5]
+    ))
+}
+
+fn valid_panic_register_line(line: &str) -> bool {
+    const REGISTERS: &[&[&str]] = &[
+        &["RAX:", "RBX:", "RCX:"],
+        &["RDX:", "RSI:", "RDI:"],
+        &["RBP:", "R08:", "R09:"],
+        &["R10:", "R11:", "R12:"],
+        &["R13:", "R14:", "R15:"],
+    ];
+    let fields = line.split_whitespace().collect::<Vec<_>>();
+    REGISTERS.iter().any(|registers| {
+        fields.len() == registers.len() * 2
+            && registers.iter().enumerate().all(|(index, register)| {
+                fields[index * 2] == *register && is_hex_digits(fields[index * 2 + 1])
+            })
+    })
+}
+
+fn is_hex_digits(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn uart_line_message(line: &str) -> &str {
+    let body = line
+        .strip_suffix("\r\n")
+        .or_else(|| line.strip_suffix('\n'))
+        .unwrap_or(line);
+    body.strip_prefix("[<kernel-time>] ").unwrap_or(body)
 }
 
 pub(crate) fn compare_stage5_cli(args: &[String]) -> ExitCode {
@@ -1688,6 +2094,183 @@ mod tests {
         series_path
     }
 
+    fn stage4_nonce_comparison_run(
+        mut run: RunManifest,
+        series_root: &Path,
+        nonce: &str,
+        variant: &str,
+    ) -> RunManifest {
+        let dynamic = matches!(variant, "timing" | "failed" | "no-panic");
+        let marker_nonce = if matches!(variant, "marker" | "failed") {
+            "wrongMarkerNonce"
+        } else {
+            nonce
+        };
+        let time = if dynamic { "2.273117" } else { "2.273241" };
+        let optional_frame = if dynamic {
+            "? handle_pte_fault+0x1cb/0x1f0"
+        } else {
+            "? ksys_write+0x71/0xf0"
+        };
+        let mut lines = vec![
+            format!(
+                "[{time}] Memory: {}K/130360K available (stable)",
+                if dynamic { 61632 } else { 62064 }
+            ),
+            format!(
+                "[{time}] sched_clock: Marking stable ({}, {})->({}, {})",
+                if dynamic { 727401607 } else { 727600823 },
+                if dynamic { 1447693312 } else { 1447617526 },
+                if dynamic { "2175508456" } else { "2175432185" },
+                if dynamic { "-413537" } else { "-213836" }
+            ),
+            format!("OD_NONCE={marker_nonce}"),
+            format!(
+                "[{time}] Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000"
+            ),
+            format!(
+                "[{time}] CPU: 0 UID: 0 PID: 1 Comm: init Not tainted 7.0.0-38-generic #38-Ubuntu PREEMPT(lazy)"
+            ),
+            format!("[{time}] Call Trace:"),
+        ];
+        if variant == "warning" {
+            lines.push(format!(
+                "[{time}] WARNING: unexpected condition in panic trace"
+            ));
+        }
+        if variant == "unknown-frame" {
+            lines.push(format!("[{time}]  ? unexpected_symbol+0x1/0x2"));
+        }
+        if variant != "no-panic" {
+            lines.extend([
+            format!("[{time}]  <TASK>"),
+            format!("[{time}]  show_stack+0x49/0x60"),
+            format!("[{time}]  dump_stack_lvl+0x5f/0x90"),
+            format!("[{time}]  dump_stack+0x10/0x18"),
+            format!("[{time}]  vpanic+0x262/0x4b0"),
+            format!("[{time}]  panic+0x67/0x70"),
+            format!("[{time}]  ? acct_update_integrals+0x5e/0xa0"),
+            format!("[{time}]  do_exit.cold+0x15/0x15"),
+            format!("[{time}]  __x64_sys_exit+0x1b/0x20"),
+            format!("[{time}]  x64_sys_call+0x2384/0x2390"),
+            format!("[{time}]  do_syscall_64+0x105/0x5a0"),
+            format!("[{time}]  {optional_frame}"),
+            format!("[{time}]  entry_SYSCALL_64_after_hwframe+0x76/0x7e"),
+            format!("[{time}] RIP: 0033:0x40024d"),
+            format!("[{time}] Code: 00 00 b8 01 00 00 00 0f 05 <eb> fe"),
+            format!(
+                "[{time}] RSP: 002b:{} EFLAGS: 00000246 ORIG_RAX: 000000000000003c",
+                if dynamic { "00007fff745f12d0" } else { "00007fff22bec9f0" }
+            ),
+            format!("[{time}] RAX: ffffffffffffffda RBX: 0000000000000040 RCX: 000000000040024d"),
+            format!("[{time}] RDX: 000000000000002d RSI: 0000000000000000 RDI: 0000000000000000"),
+            format!("[{time}] RBP: 0000000000000000 R08: 0000000000401049 R09: 0000000000000023"),
+            format!("[{time}] R10: 0000000000000000 R11: 0000000000000246 R12: 0000000000000003"),
+            format!("[{time}] R13: 0000000000000075 R14: 0000000000401000 R15: 0000000000000000"),
+            format!("[{time}]  </TASK>"),
+            format!("[{time}] Kernel Offset: disabled"),
+            format!("[{time}] ---[ end Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000 ]---"),
+            ]);
+        }
+        let uart = lines
+            .into_iter()
+            .map(|line| format!("{line}\r\n"))
+            .collect::<String>()
+            .into_bytes();
+        let uart_relative = "runs/nonce/uart.bin";
+        let uart_path = series_root.join(uart_relative);
+        fs::create_dir_all(uart_path.parent().unwrap()).unwrap();
+        fs::write(&uart_path, &uart).unwrap();
+
+        let exit_kind = if variant == "stop" {
+            "halted"
+        } else {
+            "budget_exhausted"
+        };
+        let stop = json!({
+            "exit_kind":exit_kind,
+            "budget":3000000000u64,
+            "retired":2999999998u64,
+            "path":"cpl0_set",
+            "cpu_profile":"Cpl0ProfileSet (S2-45) of od-isa under Cpl0BaseLong64V1, 2 MiB walk rebuilt on MOV CR3; members in set_members",
+            "user_mode":true,
+            "syscall_journal":{
+                "entered":9,
+                "returned":8,
+            "entries":[
+                {"nr":83},
+                {"nr":165},
+                {"nr":257},
+                {"nr":0},
+                {"nr":3},
+                {"nr":1},
+                {"nr":39},
+                {"nr":35},
+                {"nr":if variant == "journal" {61} else {60},"rax_return":null}
+            ]
+            },
+            "cr3":if dynamic {"0x649c000"} else {"0x64a6000"},
+            "last_cr3_change":if dynamic {"0x649c000"} else {"0x64a6000"},
+            "gpr":if dynamic {json!({"rax":"0x8b8e1fcdb"})} else {json!({"rax":"0x8b98444fc"})},
+            "rflags":if dynamic {"0x287"} else {"0x246"},
+            "rip":if dynamic {"0xffffffff8271b32c"} else {"0xffffffff8271b34d"},
+            "rip_bytes":if dynamic {"65 ff 0d fd 1c d0 01"} else {"0f 31 0f 1f 00"},
+            "rip_gpa":if dynamic {"0x271b32c"} else {"0x271b34d"},
+            "halt_idle_ns":if dynamic {1139468} else {1187773},
+            "virtual_ns":if dynamic {37461557466u64} else {37472192771u64},
+            "irq0_edges":if dynamic {34803} else {34814},
+            "irq_refused_masked":if dynamic {1150205} else {954633},
+            "irqs_delivered":if dynamic {34808} else {34819},
+            "quanta":if dynamic {34569643} else {34579979},
+            "quantum_cut_by_deadline":if dynamic {33170411} else {33180705},
+            "machine_stop_reason":null
+        });
+        run.scenario_id = "stage4-init-nonce".into();
+        run.nonce = nonce.into();
+        run.expected_stop_kind = "budget_exhausted".into();
+        run.configuration = json!({
+            "cmdline":format!("od.nonce={nonce}"),
+            "ram_mib":128,
+            "budget":3000000000u64,
+            "cpu_path":"cpl0_set",
+            "cpu_profile":"Cpl0ProfileSet (S2-45) of od-isa under Cpl0BaseLong64V1, 2 MiB walk rebuilt on MOV CR3; members in set_members",
+            "acceptance":"counted",
+            "diagnostic_past_c7":false
+        });
+        run.artifact_hashes.insert(
+            "vmlinuz".into(),
+            if variant == "artifact" {
+                "vmlinuz-changed"
+            } else {
+                "vmlinuz-stable"
+            }
+            .into(),
+        );
+        run.guest_markers = validate_markers(&uart, nonce, &[]).evidence;
+        run.runner.stop = Some(stop.clone());
+        run.runner.retired = Some(2999999998);
+        run.uart.path = uart_relative.into();
+        run.uart.sha256 = od_testkit::sha256_hex(&uart);
+        run.uart.byte_count = uart.len();
+        run.scenario_status = scenario_status(
+            &run.scenario_id,
+            &run.hardware_status,
+            run.runner.guest_started,
+            &run.guest_markers,
+            Some(&stop),
+            &run.expected_stop_kind,
+        );
+        run.reason = scenario_reason(
+            &run.scenario_id,
+            &run.hardware_status,
+            run.runner.guest_started,
+            &run.guest_markers,
+            Some(&stop),
+            &run.expected_stop_kind,
+        );
+        run
+    }
+
     fn write_crlf_test_series(
         root: &Path,
         series_id: &str,
@@ -1963,6 +2546,127 @@ mod tests {
                 .any(|value| value.contains("host_environment"))
         );
         let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn stage4_nonce_comparator_explains_only_observed_run_variation() {
+        let temp = std::env::temp_dir().join(format!(
+            "od-runner-stage4-nonce-compare-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let seed = write_test_series(&temp.join("seed"), "seed", "nonceStage4Seed0001", "PASS");
+        let manifest = fresh_manifest(&seed).unwrap();
+        let base = load_run_manifest(&seed, &manifest.runs[0]).unwrap();
+        let left_root = temp.join("left");
+        let right_root = temp.join("right");
+        fs::create_dir_all(&left_root).unwrap();
+        fs::create_dir_all(&right_root).unwrap();
+        let left_path = left_root.join("series.json");
+        let right_path = right_root.join("series.json");
+        let left = stage4_nonce_comparison_run(
+            base.clone(),
+            &left_root,
+            "nonceStage4Left0001",
+            "baseline",
+        );
+        let timing =
+            stage4_nonce_comparison_run(base.clone(), &right_root, "nonceStage4Timing01", "timing");
+        let mut explained = Vec::new();
+        let mut unexplained = Vec::new();
+        compare_run(
+            0,
+            &left_path,
+            &right_path,
+            &left,
+            &timing,
+            &mut explained,
+            &mut unexplained,
+        )
+        .unwrap();
+        assert!(unexplained.is_empty(), "{unexplained:?}");
+        assert!(
+            explained
+                .iter()
+                .any(|item| item.contains("terminal CPU snapshot"))
+        );
+        assert!(
+            explained
+                .iter()
+                .any(|item| item.contains("UART timestamps"))
+        );
+
+        for (variant, expected) in [
+            ("artifact", "artifact_hashes"),
+            ("marker", "marker_validation"),
+            ("stop", "machine_observations"),
+            ("journal", "machine_observations"),
+            ("warning", "ordered_uart_bytes"),
+            ("unknown-frame", "ordered_uart_bytes"),
+            ("no-panic", "machine_observations"),
+        ] {
+            let right = stage4_nonce_comparison_run(
+                base.clone(),
+                &right_root,
+                &format!("nonceStage4{}0001", variant),
+                variant,
+            );
+            let mut explained = Vec::new();
+            let mut unexplained = Vec::new();
+            compare_run(
+                0,
+                &left_path,
+                &right_path,
+                &left,
+                &right,
+                &mut explained,
+                &mut unexplained,
+            )
+            .unwrap();
+            assert!(
+                unexplained.iter().any(|item| item.contains(expected)),
+                "{variant}: {unexplained:?}"
+            );
+        }
+
+        let failed = stage4_nonce_comparison_run(
+            base.clone(),
+            &right_root,
+            "nonceStage4Failed0001",
+            "failed",
+        );
+        let mut explained = Vec::new();
+        let mut unexplained = Vec::new();
+        compare_run(
+            0,
+            &left_path,
+            &right_path,
+            &left,
+            &failed,
+            &mut explained,
+            &mut unexplained,
+        )
+        .unwrap();
+        assert!(
+            unexplained
+                .iter()
+                .any(|item| item.contains("machine_observations")),
+            "failed scenario must retain strict stop comparison: {unexplained:?}"
+        );
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn sched_clock_normalization_requires_four_integer_values() {
+        assert_eq!(
+            normalize_sched_clock_calibration("sched_clock: Marking stable (1, 2)->(3, -4)"),
+            "sched_clock: Marking stable (<calibration>)"
+        );
+        let malformed = "sched_clock: Marking stable (1)->(3)";
+        assert_eq!(normalize_sched_clock_calibration(malformed), malformed);
     }
 
     #[test]
