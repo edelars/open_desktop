@@ -124,10 +124,19 @@
 ### ISSUE-118 — S7-04: Rust entry `XOR ECX,ECX` остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после допуска точного `MOV EDX,0x00010000`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust entry prologue (`firmware/uefi/src/start.S`).
-- **Статус:** открыта; handoff GPA и размер блока записаны в RSI и RDX, но zeroing ECX не исполнился.
-- **Суть и последствия:** `RIP=0x20020c` содержит `31 C9` (`XOR ECX,ECX`), которое должно обнулить ECX и тем самым весь RCX. Runner возвращает `Unsupported { opcode: 49 }`; COM1 пуст, handoff parser в машине пока не достигнут.
+- **Статус:** решена узко для точного `31 C9` в base `PagedCpl0ProbeV1`.
+- **Суть и результат:** существующая логическая XOR семантика обнуляет ECX и zero-extends в RCX; CF/OF очищаются, ZF/PF/SF рассчитываются, AF сохраняет concrete bit, но его definedness удаляется. Остальные регистры, флаги вне вычисляемых и состояние сохраняются; другие формы, CPL3 и остальные paged profiles не допущены.
 - **Основание:** образ `/private/tmp/od-fw-s7-mov-edx.bin`; байты после blocker подтверждены `od -An -tx1 -j 0x20c -N12` как `31 c9 e8 8d 02 00 00 48 83 7c 24 08`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=18`, `RIP=0x20020c`, `com1_bytes=0`.
-- **Следующий шаг:** исследовать точную `XOR ECX,ECX` форму и ограничить допуск в base profile с корректными flags/definedness и profile isolation.
+- **Проверка решения:** `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 150 passed; full state и zero-extension, все логические flags/definedness с исходно defined AF, neighbors, fetch fault на ModRM без commit, CPL3 и stack/CR3/CR0.WP isolation. Образ `/private/tmp/od-fw-s7-xor-ecx.bin` собран (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 19 инструкций и остановился на `E8 8D 02 00 00` (`CALL rel32`) при `RIP=0x20020e`, `Unsupported { opcode: 232 }`, `com1_bytes=0`.
+
+<a id="issue-119-s7-04-rust-entry-call-rel32-unsupported"></a>
+### ISSUE-119 — S7-04: Rust entry `CALL rel32` остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после допуска точного `XOR ECX,ECX`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust entry (`firmware/uefi/src/start.S`).
+- **Статус:** открыта; регистры handoff подготовлены, но вызываемая функция ещё не запущена.
+- **Суть и последствия:** `RIP=0x20020e` содержит `E8 8D 02 00 00` (`CALL rel32`), target `0x2004a0`. Runner возвращает `Unsupported { opcode: 232 }`; COM1 пуст, следующий firmware code не исполнился.
+- **Основание:** образ `/private/tmp/od-fw-s7-xor-ecx.bin`; байты после blocker подтверждены `od -An -tx1 -j 0x20e -N16` как `e8 8d 02 00 00 48 83 7c 24 08 00 74 66 66 ba fb`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=19`, `RIP=0x20020e`, `com1_bytes=0`.
+- **Следующий шаг:** исследовать exact call target, return address и стековые/paging fault эффекты, затем оценить безопасную точечную форму.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки

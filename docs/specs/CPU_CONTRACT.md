@@ -397,8 +397,8 @@ bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`,
 `E8 83 01 00 00` (`CALL rel32`), `48 83 EC 58`
 (`SUB RSP,0x58`), `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`), and
 `48 8D 7C 24 08` (`LEA RDI,[RSP+8]`), `BE 00 00 10 00`
-(`MOV ESI,0x00100000`), and `BA 00 00 01 00` (`MOV EDX,0x00010000`; see
-the extensions below). The CPU entry validates its profile admission and
+(`MOV ESI,0x00100000`), `BA 00 00 01 00` (`MOV EDX,0x00010000`), and
+`31 C9` (`XOR ECX,ECX`; see the extensions below). The CPU entry validates its profile admission and
 CR0/CR4 before fetch. It receives page-aware `GuestMemory`;
 CR3/EFER validation and selecting the four-level 4 KiB paging context belong
 to the machine entry.
@@ -493,7 +493,7 @@ Focused tests проверяют равенство, borrow, signed overflow, р
 
 #### Расширение S7-04: точный `XOR EAX,EAX` из entry прошивки
 
-В базовом `PagedCpl0ProbeV1` допускаются только bytes `31 C0`: Primary opcode `31`, длина 2, operand size dword, без префиксов, register destination и source EAX. Переиспользуется `LogicKind::Xor`/`logic_result`; нулевой результат записывается в EAX и архитектурно zero-extends в RAX. CF и OF очищаются, ZF/PF/SF рассчитываются от результата, AF сохраняет конкретный бит по детерминированному общему helper, но его definedness удаляется как undefined; прочие flags/state сохраняются. Только эта форма разрешена в base paged CPL0; другие регистры/opcodes/widths/prefixes/memory, CPL3 и другие profiles остаются вне allowlist. Fault fetching ModRM не коммитит состояние.
+В базовом `PagedCpl0ProbeV1` допускаются только bytes `31 C0`: Primary opcode `31`, длина 2, operand size dword, без префиксов, register destination и source EAX. Переиспользуется `LogicKind::Xor`/`logic_result`; нулевой результат записывается в EAX и архитектурно zero-extends в RAX. CF и OF очищаются, ZF/PF/SF рассчитываются от результата, AF сохраняет конкретный бит по детерминированному общему helper, но его definedness удаляется как undefined; прочие flags/state сохраняются. Вместе с отдельным exact `31 C9` ниже это единственная разрешённая self-XOR форма в base paged CPL0; другие регистры/opcodes/widths/prefixes/memory, CPL3 и другие profiles остаются вне allowlist. Fault fetching ModRM не коммитит состояние.
 
 Tests проверяют full state, zero-extension, concrete logical flags и undefined AF, definedness mask, соседние формы, cross-page fetch fault, CPL3 и stack/CR3/CR0.WP isolation. Runner retired девять инструкций и остановился на `F3 AA` (`REP STOSB`, ISSUE-109, RIP `0x200063`).
 
@@ -550,6 +550,12 @@ Tests проверяют full state с ненулевыми старшими 32 
 В base `PagedCpl0ProbeV1` допускается только `BA 00 00 01 00`: Primary opcode `BA`, длина 5, dword immediate `0x00010000` в EDX, без префиксов. Существующая запись в 32-битный view обнуляет старшую половину RDX; меняются только RDX и RIP, RFLAGS/definedness сохраняются. Инструкция не обращается к памяти или I/O. Остальные immediate/register/width/prefix forms, CPL3 и прочие paged profiles не допускаются этой формой.
 
 Tests проверяют full state с ненулевыми старшими 32 битами исходного RDX, flags/definedness, соседние формы, CPL3 и stack/CR3/CR0.WP isolation, а также fetch fault последнего immediate byte через границу страницы без commit. Runner retired 18 инструкций и остановился на `31 C9` (`XOR ECX,ECX`, ISSUE-118, RIP `0x20020c`).
+
+#### Расширение S7-04: точный Rust-entry `XOR ECX,ECX`
+
+В base `PagedCpl0ProbeV1` к exact `31 C0` добавлена только форма `31 C9`: Primary opcode `31`, ModRM `C9`, длина 2, dword, без префиксов, destination/source ECX. Переиспользуются `LogicKind::Xor` и `logic_result`; результат записывается через ECX и zero-extends в RCX. CF/OF очищаются, ZF/PF устанавливаются для нулевого результата, SF очищается, AF concrete bit сохраняется, но AF definedness удаляется. Остальное состояние сохраняется. Другие register/opcode/width/prefix/memory forms, CPL3 и прочие paged profiles остаются вне allowlist.
+
+Tests проверяют full state, zero-extension, arithmetic flags и definedness с исходно defined AF, neighbors, fetch fault при получении ModRM без commit, CPL3 и stack/CR3/CR0.WP isolation. Runner retired 19 инструкций и остановился на `E8 8D 02 00 00` (`CALL rel32`, ISSUE-119, RIP `0x20020e`, target `0x2004a0`).
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
