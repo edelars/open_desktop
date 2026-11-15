@@ -1,10 +1,13 @@
 //! Single owner of the board clock for N vCPUs (S4-23g).
 //!
 //! The owner claims the clock's one advancer capability for good and is therefore the only thing
-//! that can move virtual time. Time moves in exactly two ways, both decision D7 of S6:
+//! that can move virtual time. Time moves in exactly three ways, all decision D7 of S6 (retired
+//! and idle, plus the device ticks of S4-37/38 that S4-23j adds):
 //!
 //! - retirement: every retired guest instruction costs [`NS_PER_RETIRED`] virtual nanoseconds
 //!   ([`ClockOwner::account_retired`]);
+//! - device ticks: the PM timer, PIT and RDTSC ticks of the board loop are charged as plain
+//!   nanoseconds ([`ClockOwner::account_device_ns`]);
 //! - idle skip: when every vCPU is halted, the clock jumps straight to the earliest useful
 //!   deadline ([`ClockOwner::idle_step`]); no host time is read or waited for.
 //!
@@ -17,17 +20,22 @@
 //! construction. [`IdleOutcome::Woken`] only means that the vCPU may be set to `Running`: its
 //! vector is in the IRR and eligible. Entering the IDT is not done here.
 //!
-//! Limits (not part of this slice): not wired to the board, the pump or a scheduler; no quanta,
-//! seed or schedule (S6-15); no NMI/INIT/SIPI, host wait or PM/PIT/RDTSC ticks. The caller tracks
+//! Wiring (S4-23j): the Linux board loop (`LoadedFirmwareBoard::run_linux_boot_cpl0_set`) takes
+//! the owner on request only (`enable_clock_owner`, the `clock_owner` member of the Linux direct
+//! run); by default the board keeps advancing its clock itself and the owner is never created.
+//!
+//! Limits (not part of this slice): not wired to the pump or a scheduler; no quanta, seed or
+//! schedule (S6-15); no NMI/INIT/SIPI or host wait. The tick sources keep their S4-37/38 cost
+//! model (the Linux-visible frequency is S4-38). The caller tracks
 //! vCPU activity itself and passes it in the views; `state.activity` is not consulted. A timer
 //! dispatch raises at most one request per call, as `LocalApicHandle::dispatch_timer` does: a
 //! periodic timer folds missed periods into one interrupt and keeps its phase, a one-shot fires at
 //! the step boundary. A caller must therefore cap a vCPU's step budget at
 //! `(next_deadline - now) / NS_PER_RETIRED`, or the tick count depends on the quantum size; that
-//! rule is [`ClockOwner::step_budget`] (S4-23h), exercised by the test harness only, still not
-//! wired to a production stepper.
+//! rule is [`ClockOwner::step_budget`] (S4-23h), used by the opt-in board loop (S4-23j) and the
+//! test harness.
 
-// No production caller yet: a later slice wires the owner in; tests exercise it now.
+// The board loop uses the owner opt-in; items only the tests use stay allowed.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use crate::idle_arbiter::{ApplyError, IdleDecision, WakeView, apply, decide};
@@ -181,6 +189,23 @@ impl ClockOwner {
         self.advancer
             .advance_time_ns(delta)
             .map_err(ClockOwnerError::Clock)?;
+        self.dispatch_all()
+    }
+
+    /// Charge `ns` virtual nanoseconds of device time (the PM timer, PIT and RDTSC ticks of the
+    /// board loop, S4-23j) to the clock, then dispatch every LAPIC timer in index order, exactly as
+    /// [`Self::account_retired`] does, but without the per-instruction rate: the caller already
+    /// computed the nanoseconds. If the clock refuses (overflow) nothing changes, queues included.
+    /// `ns == 0` moves nothing and dispatches whatever is due at `now` (idempotent).
+    pub(crate) fn account_device_ns(&mut self, ns: u64) -> Result<Vec<bool>, ClockOwnerError> {
+        self.advancer
+            .advance_time_ns(ns)
+            .map_err(ClockOwnerError::Clock)?;
+        self.dispatch_all()
+    }
+
+    /// One timer dispatch per vCPU of the owner's list, in index order.
+    fn dispatch_all(&self) -> Result<Vec<bool>, ClockOwnerError> {
         let mut fired = Vec::with_capacity(self.apics.len());
         for (cpu, apic) in self.apics.iter().enumerate() {
             let raised = if apic.has_timer() {
@@ -772,6 +797,34 @@ mod tests {
         assert_eq!(h.apic(0).next_timer_deadline(), Some(deadline));
         assert_eq!(h.apic(0).vector_state(VECTOR), (false, false));
         assert_eq!(h.apic(0).pending(), None);
+    }
+
+    #[test]
+    fn device_ns_move_the_clock_without_a_rate_and_dispatch_the_timers() {
+        // S4-23j: the plain nanoseconds of the board ticks (PM, PIT, RDTSC).
+        let mut h = Harness::new(HZ, HZ);
+        h.arm(0, 500);
+        // Not due yet: the clock moves by exactly `ns`, nothing fires, zero is harmless.
+        assert_eq!(h.owner.account_device_ns(499).unwrap(), [false, false]);
+        assert_eq!(h.owner.account_device_ns(0).unwrap(), [false, false]);
+        assert_eq!(h.now(), 499);
+        // The step that reaches the deadline dispatches it at once, as `account_retired` does.
+        assert_eq!(h.owner.account_device_ns(1).unwrap(), [true, false]);
+        assert_eq!(h.now(), 500);
+        assert_eq!(h.apic(0).vector_state(VECTOR), (true, false));
+        // An overflow changes neither the clock nor a queue.
+        let mut h = Harness::new(1_000 * HZ, 1_000);
+        const NEAR_LIMIT: u64 = 18_000_000_000_000_000;
+        h.owner.account_device_ns(NEAR_LIMIT).unwrap();
+        h.arm(0, 4_000_000_000);
+        let (deadline, tsc) = (h.apic(0).next_timer_deadline(), h.clock.snapshot().tsc());
+        assert_eq!(
+            h.owner.account_device_ns(4_000_000_000_000_000),
+            Err(ClockOwnerError::Clock(VirtualClockError::TscOverflow))
+        );
+        assert_eq!(h.now(), NEAR_LIMIT);
+        assert_eq!(h.clock.snapshot().tsc(), tsc);
+        assert_eq!(h.apic(0).next_timer_deadline(), deadline);
     }
 
     #[test]

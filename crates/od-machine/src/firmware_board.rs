@@ -6,6 +6,8 @@
 //! builds the temporary 4 KiB identity page tables and the handoff block, and
 //! hands over a `LongModeState`. It is not a reset vector and not real mode.
 
+use crate::clock_owner::{ClockOwner, ClockOwnerError, IdleOutcome};
+use crate::idle_arbiter::{SchedActivity, WakeView};
 use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters, NoIrqSource};
 use crate::page_walk::translate_long64_2m_ram_read_only;
 use crate::paged_memory_adapter::{
@@ -856,6 +858,16 @@ pub(crate) struct LinuxRunFailure {
     pub(crate) retired: u64,
 }
 
+/// The clock owner's error as the board's (S4-23j).
+fn owner_error(error: ClockOwnerError) -> FirmwareBoardError {
+    match error {
+        ClockOwnerError::Clock(error) => FirmwareBoardError::Clock(error),
+        ClockOwnerError::Dispatch { .. } => {
+            FirmwareBoardError::Config("clock owner: a Local APIC timer dispatch failed")
+        }
+    }
+}
+
 /// Result of [`LoadedFirmwareBoard::run_linux_boot_cpl0_set`] (S4-38L3).
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct LinuxSetRunReport {
@@ -1037,6 +1049,16 @@ pub struct FirmwareRunReport {
     pub stop_reason: Option<MachineStopReason>,
 }
 
+/// Who advances the clock of the CPL0-set loop (S4-23j).
+#[derive(Debug)]
+enum BoardClock {
+    /// The board advances its clock itself (`VirtualClockHandle::advance_standalone`).
+    Standalone,
+    /// The single [`ClockOwner`] holds the clock's advancer for good; every move of time of the
+    /// loop goes through it, and a standalone advance fails with `ClockAlreadyOwned`.
+    Owned(ClockOwner),
+}
+
 /// A loaded firmware board: machine, direct-entry CPU state and handoff block.
 pub struct LoadedFirmwareBoard {
     bus: MachineBus,
@@ -1051,7 +1073,8 @@ pub struct LoadedFirmwareBoard {
     /// Owner/host handle of the LAPIC (the S4-38 pump becomes its owner); it has
     /// a timer on the board clock only under the Linux profile (S4-37a4).
     lapic: LocalApicHandle,
-    /// Shared with the PM timer; this board is the only advancer.
+    /// Shared with the PM timer; this board advances it itself (`Standalone`) unless
+    /// [`Self::enable_clock_owner`] hands the advancer to a [`ClockOwner`].
     clock: VirtualClockHandle,
     handoff: Vec<u8>,
     page_table_bytes: u64,
@@ -1078,6 +1101,14 @@ pub struct LoadedFirmwareBoard {
     pit_pic_source: Option<PitPicIrqSource>,
     /// The UART THRE -> 8259 IR4 source once [`Self::enable_uart_irq4`] installed it (S4-39i).
     uart_irq_source: Option<UartPicIrqSource>,
+    /// Who moves the board clock inside the CPL0-set loop (S4-23j): the board itself (default,
+    /// byte-for-byte the S4-37/38 behaviour) or a [`ClockOwner`] that [`Self::enable_clock_owner`]
+    /// installed. Never `Owned` unless that call succeeded.
+    clock_driver: BoardClock,
+    /// True when the assembly was given a PIT or LAPIC-timer clock other than the board clock
+    /// (a test injection of S4-37a1/a4): their deadlines are in another time domain, so the
+    /// clock owner is refused.
+    foreign_timer_clock: bool,
     /// Test injection (S4-37a2): `run_boot` drops the queued PM timer ticks
     /// instead of applying them. Never set in production code.
     #[cfg(test)]
@@ -1205,6 +1236,129 @@ impl LoadedFirmwareBoard {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn uart_irq_source(&self) -> Option<UartPicIrqSource> {
         self.uart_irq_source.clone()
+    }
+
+    /// S4-23j: opt in to the single clock owner for the CPL0-set loop. The owner claims the board
+    /// clock's advancer for good and takes the LAPICs of all vCPUs in index order; from then on
+    /// every move of time of [`Self::run_linux_boot_cpl0_set`] (retired instructions, the PM, PIT
+    /// and RDTSC ticks, the idle jump of a halted CPU) goes through it, the quantum is cut with
+    /// [`ClockOwner::step_budget`], and `advance_time_ns` (the standalone advance) fails with
+    /// `ClockAlreadyOwned`. A second call keeps the owner and succeeds. Refused (nothing
+    /// changed) when the PIT or the LAPIC timer was assembled on a clock other than the board
+    /// clock (their deadlines would be in another time domain) or when somebody else already
+    /// owns the clock. Without this call the board is exactly as before and never claims the
+    /// clock.
+    ///
+    /// After the call `run_boot`, `run_boot_with` and `run` fail wherever they advance time
+    /// (`advance_time_ns` gives `ClockAlreadyOwned`). This is expected: the Linux paths that use
+    /// the owner call only `run_linux_boot_cpl0_set`, which goes through the owner.
+    ///
+    /// Idle: when the wake time of the board source is not after `now` the jump is 0 and the
+    /// arbiter is not asked, so a Local APIC vector is not checked (`Woken` refusal) in that
+    /// case; the CPU wakes for the board source exactly as in `Standalone`.
+    pub(crate) fn enable_clock_owner(&mut self) -> Result<(), FirmwareBoardError> {
+        if matches!(self.clock_driver, BoardClock::Owned(_)) {
+            return Ok(());
+        }
+        if self.foreign_timer_clock {
+            return Err(FirmwareBoardError::Config(
+                "clock owner: a timer runs on a clock other than the board clock",
+            ));
+        }
+        let apics: Option<Vec<LocalApicHandle>> = (0..self.vcpus.len())
+            .map(|index| self.lapic.for_cpu(index))
+            .collect();
+        let apics = apics.ok_or(FirmwareBoardError::Config(
+            "clock owner: a vCPU has no Local APIC",
+        ))?;
+        let owner = ClockOwner::new(&self.clock, apics).map_err(FirmwareBoardError::Clock)?;
+        self.clock_driver = BoardClock::Owned(owner);
+        Ok(())
+    }
+
+    /// Whether the clock owner drives the clock of the CPL0-set loop (S4-23j).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn clock_owner_enabled(&self) -> bool {
+        matches!(self.clock_driver, BoardClock::Owned(_))
+    }
+
+    /// Move the board clock of the CPL0-set loop by `ns` of device time (the PM, PIT and RDTSC
+    /// ticks): through the board itself, or through the owner (which also dispatches the LAPIC
+    /// timers) once [`Self::enable_clock_owner`] installed it.
+    fn charge_ns(&mut self, ns: u64) -> Result<(), FirmwareBoardError> {
+        match &mut self.clock_driver {
+            BoardClock::Standalone => self.advance_time_ns(ns),
+            BoardClock::Owned(owner) => owner.account_device_ns(ns).map(drop).map_err(owner_error),
+        }
+    }
+
+    /// The idle skip of a halted CPU (IF = 1) to the wake time `wake` of the board source: returns
+    /// the nanoseconds skipped. Standalone: the board advances by `wake - now` (0 when the time
+    /// has come), exactly as before. Owned (S4-23j): a wake time that is not after `now` skips
+    /// nothing; otherwise the arbiter decides through [`ClockOwner::idle_step`] (the boot CPU
+    /// `Halted` with IF = 1, every other vCPU waiting for a SIPI) and the clock jumps to `wake`;
+    /// it ends in `NoProgress` with the skip above 0, because the deadline of the board is then
+    /// due and the loop consumes it itself. A Local APIC timer due earlier is dispatched on the
+    /// way. A Local APIC vector that would wake the CPU is refused: the loop delivers the board
+    /// source only, so the guest would pass its `HLT` with no interrupt.
+    fn idle_to(&mut self, wake: u64) -> Result<u64, FirmwareBoardError> {
+        let BoardClock::Owned(owner) = &mut self.clock_driver else {
+            let idle = wake.saturating_sub(self.clock.snapshot().now_ns());
+            self.advance_time_ns(idle)?;
+            return Ok(idle);
+        };
+        let mut idle = 0u64;
+        loop {
+            if wake <= owner.now_ns() {
+                // Nothing to skip: the wake time has come (first iteration: no jump at all).
+                return Ok(idle);
+            }
+            let views = (0..self.vcpus.len())
+                .map(|index| {
+                    Ok(WakeView {
+                        activity: if index == BOOT_VCPU_INDEX {
+                            SchedActivity::Halted
+                        } else {
+                            SchedActivity::WaitForSipi
+                        },
+                        if_set: true,
+                        apic: self.lapic.for_cpu(index).ok_or(FirmwareBoardError::Config(
+                            "clock owner: a vCPU has no Local APIC",
+                        ))?,
+                    })
+                })
+                .collect::<Result<Vec<_>, FirmwareBoardError>>()?;
+            let step = owner
+                .idle_step(false, &views, &[wake])
+                .map_err(owner_error)?;
+            idle += step.idle_ns;
+            match step.outcome {
+                IdleOutcome::NoProgress if step.idle_ns > 0 => return Ok(idle),
+                IdleOutcome::Advanced(_) if step.idle_ns > 0 => {}
+                IdleOutcome::Woken(_) => {
+                    return Err(FirmwareBoardError::Config(
+                        "clock owner: a Local APIC vector would wake the CPU, but the loop \
+                         delivers the board source only",
+                    ));
+                }
+                _ => {
+                    return Err(FirmwareBoardError::Config(
+                        "clock owner: the idle step did not reach the wake time",
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Charge `retired` instructions to the clock of the CPL0-set loop (one ns each, D7).
+    fn charge_retired(&mut self, retired: u64) -> Result<(), FirmwareBoardError> {
+        match &mut self.clock_driver {
+            BoardClock::Standalone => self.advance_time_ns(retired),
+            BoardClock::Owned(owner) => owner
+                .account_retired(retired)
+                .map(drop)
+                .map_err(owner_error),
+        }
     }
 
     /// Handle of the 8259 master chip (S4-39g); `None` without the Linux profile.
@@ -1377,8 +1531,9 @@ impl LoadedFirmwareBoard {
         self.acpi_pm.clone()
     }
 
-    /// The virtual clock as of now (a snapshot; time moves only through
-    /// [`Self::advance_time_ns`]).
+    /// The virtual clock as of now (a snapshot). Time moves only when somebody advances it: in
+    /// `Standalone` through [`Self::advance_time_ns`], once [`Self::enable_clock_owner`] took
+    /// the clock through the [`ClockOwner`] (`charge_ns`, `charge_retired`, `idle_to`).
     pub fn clock(&self) -> VirtualClock {
         self.clock.snapshot()
     }
@@ -1681,7 +1836,27 @@ impl LoadedFirmwareBoard {
             // after the quantum (one instruction is one ns), so the limit is the time left.
             let mut quantum_budget = remaining;
             let mut cut_by_deadline = false;
-            if irq_hook && let Some(deadline) = self.irq_source.next_deadline_ns() {
+            if let BoardClock::Owned(owner) = &self.clock_driver {
+                // S4-23j: the owner cuts the quantum at the earliest of its LAPIC timers and the
+                // source's deadline (the source is asked only under the hook, once per quantum,
+                // as before, also with nothing left). An empty budget is never handed to the
+                // owner (it would give one) and stays empty.
+                let deadline = if irq_hook {
+                    self.irq_source.next_deadline_ns()
+                } else {
+                    None
+                };
+                if remaining > 0 {
+                    quantum_budget = owner.step_budget(remaining, deadline);
+                    debug_assert!(quantum_budget >= 1 && quantum_budget <= remaining);
+                    if quantum_budget < remaining {
+                        cut_by_deadline = true;
+                        if irq_hook {
+                            irq_counters.quantum_cut_by_deadline += 1;
+                        }
+                    }
+                }
+            } else if irq_hook && let Some(deadline) = self.irq_source.next_deadline_ns() {
                 let limit = deadline
                     .saturating_sub(self.clock.snapshot().now_ns())
                     .max(1);
@@ -1746,19 +1921,19 @@ impl LoadedFirmwareBoard {
                 source.sample();
             }
             let failure = |error| LinuxRunFailure { error, retired };
-            if let Err(error) = self.advance_time_ns(report.instructions_executed) {
+            if let Err(error) = self.charge_retired(report.instructions_executed) {
                 break Err(failure(error));
             }
             if let Some(pm) = &acpi_pm {
                 let tick_ns = pm.take_timer_tick_ns();
                 #[cfg(test)]
                 let tick_ns = if self.suppress_pm_tick { 0 } else { tick_ns };
-                if let Err(error) = self.advance_time_ns(tick_ns) {
+                if let Err(error) = self.charge_ns(tick_ns) {
                     break Err(failure(error));
                 }
             }
             if let Some(pit) = &pit
-                && let Err(error) = self.advance_time_ns(pit.take_port_tick_ns())
+                && let Err(error) = self.charge_ns(pit.take_port_tick_ns())
             {
                 break Err(failure(error));
             }
@@ -1768,7 +1943,7 @@ impl LoadedFirmwareBoard {
                 let tick_ns = RDTSC_TICK_NS;
                 #[cfg(test)]
                 let tick_ns = if self.suppress_rdtsc_tick { 0 } else { tick_ns };
-                if let Err(error) = self.advance_time_ns(tick_ns) {
+                if let Err(error) = self.charge_ns(tick_ns) {
                     break Err(failure(error));
                 }
             }
@@ -1787,10 +1962,10 @@ impl LoadedFirmwareBoard {
                 && self.vcpus[BOOT_VCPU_INDEX].state.rflags & (1 << 9) != 0
                 && let Some(wake) = self.irq_source.wake_ns()
             {
-                let idle = wake.saturating_sub(self.clock.snapshot().now_ns());
-                if let Err(error) = self.advance_time_ns(idle) {
-                    break Err(failure(error));
-                }
+                let idle = match self.idle_to(wake) {
+                    Ok(idle) => idle,
+                    Err(error) => break Err(failure(error)),
+                };
                 irq_counters.halt_wakes += 1;
                 irq_counters.halt_idle_ns += idle;
                 self.vcpus[BOOT_VCPU_INDEX].state.activity = Some(CpuActivity::Running);
@@ -2016,6 +2191,8 @@ pub(crate) struct AssembledBoard {
     pic_master: Option<Pic8259Handle>,
     lapic: LocalApicHandle,
     clock: VirtualClockHandle,
+    /// See `LoadedFirmwareBoard::foreign_timer_clock`.
+    foreign_timer_clock: bool,
     /// Handoff block bytes, to be written at [`FIRMWARE_HANDOFF_GPA`].
     handoff: Vec<u8>,
     /// Temporary identity tables, to be written at `page_table_root`.
@@ -2042,6 +2219,7 @@ pub(crate) fn assemble_board(
 ) -> Result<AssembledBoard, FirmwareBoardError> {
     let devices = configured_board_devices(config);
     validate_config(config)?;
+    let foreign_timer_clock = pit_clock.is_some() || apic_timer_clock.is_some();
 
     let map = board_map(config, &devices)?;
     let table_pages = boot_page_table_count(&map);
@@ -2071,7 +2249,8 @@ pub(crate) fn assemble_board(
 
     let (uart_device, uart) = Uart16550PollingTx::new_with_handle();
     // One clock for the whole board: the PM timer, the PIT and (Linux profile) the
-    // LAPIC timer observe it; the board stays its only advancer.
+    // LAPIC timer observe it; the board advances it itself unless a `ClockOwner` takes it over
+    // (`enable_clock_owner`, S4-23j), in which case the owner is the only advancer.
     let clock = VirtualClockHandle::new(config.tsc_hz).map_err(FirmwareBoardError::Clock)?;
     // Under `linux_profile` the LAPIC has a timer on the board clock (S4-37a4). The
     // timer only reads the clock; delivery of its IRQ is S4-38.
@@ -2154,7 +2333,7 @@ pub(crate) fn assemble_board(
             device_index,
         });
     }
-    // The PM timer reads the board's clock; the board stays its only advancer.
+    // The PM timer reads the board's clock; the board advances it unless a `ClockOwner` took it.
     let mut acpi_pm = None;
     let mut pit_handle = None;
     let mut pic_master_handle = None;
@@ -2228,6 +2407,7 @@ pub(crate) fn assemble_board(
         pic_master: pic_master_handle,
         lapic: lapic_handle,
         clock,
+        foreign_timer_clock,
         handoff,
         tables,
         page_table_bytes,
@@ -2271,6 +2451,7 @@ impl AssembledBoard {
             pic_master,
             lapic,
             clock,
+            foreign_timer_clock,
             handoff,
             tables,
             page_table_bytes,
@@ -2333,6 +2514,8 @@ impl AssembledBoard {
             pic_master,
             pit_pic_source: None,
             uart_irq_source: None,
+            clock_driver: BoardClock::Standalone,
+            foreign_timer_clock,
             #[cfg(test)]
             suppress_pm_tick: false,
             #[cfg(test)]
@@ -2367,6 +2550,7 @@ impl AssembledBoard {
             pic_master,
             lapic,
             clock,
+            foreign_timer_clock,
             rdtsc_tick,
             ..
         } = self;
@@ -2391,6 +2575,8 @@ impl AssembledBoard {
             pic_master,
             pit_pic_source: None,
             uart_irq_source: None,
+            clock_driver: BoardClock::Standalone,
+            foreign_timer_clock,
             #[cfg(test)]
             suppress_pm_tick: false,
             #[cfg(test)]
@@ -5107,6 +5293,58 @@ mod tests {
         assert_eq!(report.exit, PagedProbeExit::Halted);
         assert!(report.virtual_ns > 80_000, "the board clock moved");
         assert_eq!(apic_read(&mut board, TMCCT), Ok(TM_INITIAL));
+    }
+
+    #[test]
+    fn opt_in_refuses_foreign_timer_clock() {
+        // S4-23j: a PIT or LAPIC timer on a clock of its own would have deadlines in another time
+        // domain than the owner's quantum cut; the owner is refused and the board stays as it was.
+        for (pit_clock, apic_clock) in [
+            (Some(VirtualClockHandle::new(1_000_000_000).unwrap()), None),
+            (None, Some(VirtualClockHandle::new(1_000_000_000).unwrap())),
+        ] {
+            let mut board = load_firmware_image_inner(
+                &minor2_image(&[0xf4]),
+                &linux_config(),
+                PciEcam::new(),
+                pit_clock,
+                apic_clock,
+            )
+            .unwrap();
+            assert!(matches!(
+                board.enable_clock_owner(),
+                Err(FirmwareBoardError::Config(text)) if text.contains("other than the board clock")
+            ));
+            assert!(!board.clock_owner_enabled());
+            // The clock was not claimed: the standalone advance still works.
+            board.advance_time_ns(7).unwrap();
+            assert_eq!(board.clock().now_ns(), 7);
+        }
+    }
+
+    #[test]
+    fn opt_in_takes_the_clock_once_and_refuses_when_somebody_owns_it() {
+        let mut board = linux_board();
+        board.enable_clock_owner().unwrap();
+        assert!(board.clock_owner_enabled());
+        // A second call keeps the owner; the clock is claimed and only the owner moves it.
+        board.enable_clock_owner().unwrap();
+        assert_eq!(
+            board.advance_time_ns(1),
+            Err(FirmwareBoardError::Clock(
+                VirtualClockError::ClockAlreadyOwned
+            ))
+        );
+        // A clock somebody else already claimed is refused, nothing changes.
+        let mut other = linux_board();
+        let _foreign_owner = other.clock.claim_advancer().unwrap();
+        assert_eq!(
+            other.enable_clock_owner(),
+            Err(FirmwareBoardError::Clock(
+                VirtualClockError::ClockAlreadyOwned
+            ))
+        );
+        assert!(!other.clock_owner_enabled());
     }
 
     #[test]

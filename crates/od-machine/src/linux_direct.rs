@@ -957,6 +957,16 @@ pub struct LinuxCpl0SetMembers {
     /// the board set: it is listed in `set_members` as `irq`. `false` in [`Self::minimal`], `true`
     /// in [`Self::linux_default`].
     pub irq: bool,
+    /// S4-23j: the single clock owner drives the clock of the set loop (`ClockOwner`, decision D7:
+    /// retired instructions one ns each, device ticks, the idle jump of a halted CPU through the
+    /// idle arbiter, the quantum cut by `ClockOwner::step_budget`). Opt-in: `false` in
+    /// [`Self::minimal`] and [`Self::linux_default`], and the member is named `clock_owner` in
+    /// `set_members` only when it is on, so a default run (and every manifest) is byte-for-byte
+    /// the same. The board claims the clock for good (a later standalone advance fails with
+    /// `ClockAlreadyOwned`); the run is refused as `run_failed` when the board cannot give it
+    /// (a timer on another clock, an owner already present). The Linux-visible frequency and the
+    /// LAPIC timer as a wake source stay S4-38.
+    pub clock_owner: bool,
 }
 
 impl LinuxCpl0SetMembers {
@@ -987,6 +997,7 @@ impl LinuxCpl0SetMembers {
             fetch_cache: false,
             diagnostic_past_c7: false,
             irq: false,
+            clock_owner: false,
         }
     }
 
@@ -1213,6 +1224,13 @@ fn run_linux_direct_board_set_with(
     }
     if members.irq {
         names.push("irq".into());
+    }
+    if members.clock_owner {
+        // S4-23j: before the first instruction, so a refusal leaves the guest untouched.
+        boot.board
+            .enable_clock_owner()
+            .map_err(|error| LinuxDirectError::new("run_failed", "run", error))?;
+        names.push("clock_owner".into());
     }
     if user_mode {
         set = set.with_user_mode();
@@ -13504,6 +13522,281 @@ mod tests {
             assert!(!record.set_members.iter().any(|member| member == "halt"));
             assert!(boot.board.pit_pic_source().is_none());
         }
+
+        /// S4-23j: the opt-in single clock owner in the set loop. The default board never takes
+        /// the clock; with the opt-in the PIT -> IR0 runs above give the same results.
+        mod clock_owner {
+            use super::*;
+            use crate::{FirmwareBoardError, LOCAL_APIC_MMIO_BASE, VirtualClockError};
+
+            /// Everything observable of one run on a board with the PIT -> IR0 source.
+            #[derive(Debug, Eq, PartialEq)]
+            struct Outcome {
+                report: crate::firmware_board::LinuxSetRunReport,
+                state: LongModeState,
+                com1: Vec<u8>,
+                now: u64,
+                pic: (u8, u8),
+            }
+
+            fn outcome(code: &[u8], handler: &[u8], owner: bool, budget: u64) -> Outcome {
+                let (mut boot, _) = board(code, handler, true);
+                if owner {
+                    boot.board.enable_clock_owner().expect("the board can");
+                }
+                assert_eq!(boot.board.clock_owner_enabled(), owner);
+                let report = run(&mut boot, budget);
+                Outcome {
+                    report,
+                    state: boot.board.state().clone(),
+                    com1: boot.board.com1_transcript().to_vec(),
+                    now: boot.board.clock().now_ns(),
+                    pic: pic(&boot),
+                }
+            }
+
+            fn same_with_and_without_owner(code: &[u8], handler: &[u8], budget: u64) -> Outcome {
+                let default = outcome(code, handler, false, budget);
+                let owned = outcome(code, handler, true, budget);
+                assert_eq!(owned, default);
+                default
+            }
+
+            /// The Local APIC register of the board through the bus, as the host (a guest cannot
+            /// reach it from the set loop).
+            fn lapic_write(boot: &mut LinuxDirectBoot, offset: u64, value: u64) {
+                boot.board
+                    .bus_mut()
+                    .write_physical(
+                        GuestPhysicalAddress::new(LOCAL_APIC_MMIO_BASE + offset),
+                        AccessWidth::Dword,
+                        value,
+                        |_| {},
+                    )
+                    .expect("the register accepts the write");
+            }
+
+            /// SVR enabled; a one-shot LVT timer of `vector` that fires `ns` after now (the timer
+            /// runs at 100 MHz and the divider is 1, so one count is 10 ns).
+            fn arm_lapic_timer(boot: &mut LinuxDirectBoot, vector: u64, ns: u64) {
+                lapic_write(boot, 0xF0, 0x1ff);
+                lapic_write(boot, 0x320, vector);
+                lapic_write(boot, 0x3E0, 0xB);
+                lapic_write(boot, 0x380, ns / 10);
+            }
+
+            #[test]
+            fn opt_in_matches_default_for_sti_hlt_woken_by_ir0() {
+                let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
+                // The wake of the first HLT, and then 20000 instructions of the spin loop with
+                // the periodic edge every 8381 ns delivered at its own time.
+                let woken = same_with_and_without_owner(&code, &eoi_handler(), 300);
+                assert_eq!(woken.report.irq.halt_wakes, 1, "{woken:?}");
+                assert!(woken.report.irq.halt_idle_ns >= 8000, "{woken:?}");
+                let spin = same_with_and_without_owner(&code, &eoi_handler(), 20_000);
+                assert!(spin.report.irq.irqs_delivered >= 2, "{spin:?}");
+                assert!(spin.report.irq.quantum_cut_by_deadline >= 1, "{spin:?}");
+                // No EOI: the second HLT stays halted with IR0 in service.
+                let code = program(0x00, &[&STI_HLT, &MARK, &STI_HLT, &MARK2, &SPIN]);
+                let in_service = same_with_and_without_owner(&code, &IRETQ, 400);
+                assert_eq!(in_service.report.run.exit, PagedProbeExit::Halted);
+                // IF = 0: the HLT is not woken.
+                let code = program(0x00, &[&CLI_HLT, &MARK, &SPIN]);
+                let no_if = same_with_and_without_owner(&code, &eoi_handler(), 300);
+                assert_eq!(no_if.report.irq.halt_wakes, 0, "{no_if:?}");
+                assert_eq!(no_if.report.run.exit, PagedProbeExit::Halted);
+                // IR0 masked: the same.
+                let code = program(0x01, &[&STI_HLT, &MARK, &SPIN]);
+                let masked = same_with_and_without_owner(&code, &eoi_handler(), 300);
+                assert_eq!(masked.report.irq.halt_wakes, 0, "{masked:?}");
+                assert_eq!(masked.report.run.exit, PagedProbeExit::Halted);
+            }
+
+            #[test]
+            fn default_never_claims_the_clock() {
+                let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
+                let (mut boot, _) = board(&code, &eoi_handler(), true);
+                let report = run(&mut boot, 300);
+                assert_eq!(report.irq.halt_wakes, 1, "{report:?}");
+                assert!(!boot.board.clock_owner_enabled());
+                // The standalone advance still works: nobody claimed the clock.
+                let now = boot.board.clock().now_ns();
+                boot.board.advance_time_ns(5).expect("not claimed");
+                assert_eq!(boot.board.clock().now_ns(), now + 5);
+            }
+
+            /// Total of `total` instructions in calls of at most `chunk`; the clock, the wakes and
+            /// the deliveries at the end.
+            fn trace(code: &[u8], owner: bool, chunk: u64, total: u64) -> (u64, u64, u64) {
+                let (mut boot, _) = board(code, &eoi_handler(), true);
+                if owner {
+                    boot.board.enable_clock_owner().expect("the board can");
+                }
+                let (mut left, mut wakes, mut irqs) = (total, 0, 0);
+                while left > 0 {
+                    let budget = left.min(chunk);
+                    let report = run(&mut boot, budget);
+                    wakes += report.irq.halt_wakes;
+                    irqs += report.irq.irqs_delivered;
+                    left -= budget;
+                }
+                (boot.board.clock().now_ns(), wakes, irqs)
+            }
+
+            #[test]
+            fn opt_in_quantum_does_not_change_wake_times() {
+                const CHUNK: u64 = 311;
+                let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
+                let whole = trace(&code, true, 30_000, 30_000);
+                assert!(whole.2 >= 3, "{whole:?}");
+                assert_eq!(trace(&code, true, CHUNK, 30_000), whole);
+                assert_eq!(trace(&code, true, 29, 30_000), whole);
+                // The default board gives the same trace in either shape.
+                assert_eq!(trace(&code, false, CHUNK, 30_000), whole);
+                assert_eq!(trace(&code, false, 30_000, 30_000), whole);
+            }
+
+            #[test]
+            fn opt_in_host_armed_lapic_timer_cuts_quantum_and_clock_stays_single() {
+                // The PIT line is masked, so the only deadline is the host-armed Local APIC timer
+                // at 9000 ns (not the 8381 ns of the PIT edge of the other tests).
+                let code = program(0x01, &[&SPIN]);
+                let spin = |owner: bool| {
+                    let (mut boot, _) = board(&code, &eoi_handler(), true);
+                    arm_lapic_timer(&mut boot, 0x40, 9000);
+                    assert_eq!(boot.board.local_apic().next_timer_deadline(), Some(9000));
+                    if owner {
+                        boot.board.enable_clock_owner().expect("the board can");
+                    }
+                    let report = run(&mut boot, 12_000);
+                    (boot, report)
+                };
+                let (mut default, default_report) = spin(false);
+                let (mut owned, owned_report) = spin(true);
+                // The default board never looks at the Local APIC deadline; the owner cuts the
+                // quanta that end before 9000 ns at it (the masked PIT line still has its edge
+                // deadline, which both boards cut at). Retired and the clock are the same.
+                assert!(
+                    owned_report.irq.quantum_cut_by_deadline
+                        > default_report.irq.quantum_cut_by_deadline,
+                    "{owned_report:?} {default_report:?}"
+                );
+                assert!(owned_report.run.quanta > default_report.run.quanta);
+                assert_eq!(owned_report.run.retired, default_report.run.retired);
+                assert_eq!(owned_report.run.virtual_ns, default_report.run.virtual_ns);
+                // The timer fired once (a one-shot) and its vector waits in the IRR; the default
+                // board never dispatched it.
+                let (lapic, plain) = (owned.board.local_apic(), default.board.local_apic());
+                assert_eq!(lapic.next_timer_deadline(), None);
+                assert_eq!(lapic.vector_state(0x40), (true, false));
+                assert_eq!(plain.next_timer_deadline(), Some(9000));
+                // One clock: a standalone advance of the owned board fails, the default is fine.
+                assert!(matches!(
+                    owned.board.advance_time_ns(1),
+                    Err(FirmwareBoardError::Clock(
+                        VirtualClockError::ClockAlreadyOwned
+                    ))
+                ));
+                assert!(default.board.advance_time_ns(1).is_ok());
+            }
+
+            #[test]
+            fn opt_in_refuses_a_lapic_vector_that_would_wake_the_cpu() {
+                // The timer fires at 100 ns and leaves its vector eligible in the LAPIC. The
+                // guest then halts with IF = 1 and the board source has a wake time: the arbiter
+                // would see a LAPIC wake, but the loop delivers the board source only, so the
+                // run is refused instead of letting the guest pass its HLT with no interrupt.
+                let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
+                let (mut boot, _) = board(&code, &eoi_handler(), true);
+                arm_lapic_timer(&mut boot, 0x40, 100);
+                boot.board.enable_clock_owner().expect("the board can");
+                let cli = CliProfile::NonPviLong64V1;
+                let sti = StiProfile::NonPviLong64V1;
+                let halt = HaltProfile::Long64V1;
+                let set = minimal_set(&cli)
+                    .with_pio_u8()
+                    .with_sti(&sti)
+                    .with_halt(&halt);
+                let failure = boot
+                    .board
+                    .run_linux_boot_cpl0_set(300, &set, false, false, true)
+                    .expect_err("refused");
+                assert!(
+                    matches!(
+                        failure.error,
+                        FirmwareBoardError::Config(text) if text.contains("Local APIC vector")
+                    ),
+                    "{failure:?}"
+                );
+                assert_eq!(rax_low(&boot), 0x00, "the HLT was not passed");
+            }
+
+            #[test]
+            fn opt_in_zero_budget_executes_nothing() {
+                let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
+                let zero = same_with_and_without_owner(&code, &eoi_handler(), 0);
+                assert_eq!(zero.report.run.retired, 0, "{zero:?}");
+                assert_eq!(zero.now, 0, "{zero:?}");
+                assert_eq!(zero.report.run.exit, PagedProbeExit::BudgetExhausted);
+            }
+
+            #[test]
+            fn the_set_loop_has_no_local_apic_mmio() {
+                // The owner dispatches the Local APIC timers only; that is sound while the set
+                // loop cannot let a guest write the Local APIC (S4-38L9s): this is the sentinel.
+                use crate::bus::SetStepMmio;
+                let (mut boot, _) = boot_with_entry(&[0xF4]);
+                let (_, io) = boot.board.bus_mut().split_for_set_step();
+                let read = crate::RamAccessOperation::Read {
+                    width: AccessWidth::Dword,
+                };
+                let write = crate::RamAccessOperation::Write {
+                    width: AccessWidth::Dword,
+                    value: 0,
+                };
+                for offset in [0xF0, 0x320, 0x380, 0xB0] {
+                    let address = GuestPhysicalAddress::new(LOCAL_APIC_MMIO_BASE + offset);
+                    assert!(io.dispatch(address, 4, read).is_err(), "{offset:#x}");
+                    assert!(io.dispatch(address, 4, write).is_err(), "{offset:#x}");
+                }
+            }
+
+            #[test]
+            fn the_user_mode_facade_names_the_member_only_when_it_is_on() {
+                let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
+                let members = LinuxCpl0SetMembers {
+                    pio_u8: true,
+                    sti: true,
+                    ..LinuxCpl0SetMembers::minimal()
+                };
+                assert!(!members.clock_owner);
+                assert!(!LinuxCpl0SetMembers::linux_default().clock_owner);
+                let run_record = |clock_owner: bool| {
+                    let (mut boot, file) = board(&code, &eoi_handler(), false);
+                    let record = run_linux_direct_board_set_user_mode(
+                        &mut boot,
+                        &input(&file, &[], BLOB, board_hash()),
+                        20_000,
+                        LinuxCpl0SetMembers {
+                            clock_owner,
+                            ..members
+                        },
+                    )
+                    .expect("runs");
+                    (boot, record)
+                };
+                let (default_boot, default) = run_record(false);
+                let (owned_boot, mut owned) = run_record(true);
+                assert!(!default_boot.board.clock_owner_enabled());
+                assert!(owned_boot.board.clock_owner_enabled());
+                assert!(!default.set_members.iter().any(|name| name == "clock_owner"));
+                assert!(owned.set_members.iter().any(|name| name == "clock_owner"));
+                // Apart from its name the record is the same, byte for byte.
+                owned.set_members.retain(|name| name != "clock_owner");
+                assert_eq!(owned, default);
+                assert!(default.halt_wakes >= 1, "{default:?}");
+            }
+        }
     }
 
     /// S4-39i: the UART THRE line to master IR4 under the user-mode facade. The guest enables
@@ -13606,6 +13899,38 @@ mod tests {
             assert_eq!((pic.irr, pic.isr), (0, 0));
             assert_eq!(boot.board.uart().peek_iir(), 0x01);
             assert_eq!(boot.board.state().gpr[Register::Rsi as usize], TABLE + 18);
+        }
+
+        #[test]
+        fn opt_in_matches_default_for_the_uart_ir4_run() {
+            // S4-23j: the single clock owner changes nothing of the THRE -> IR4 run.
+            let run_record = |clock_owner: bool| {
+                let (mut boot, file) = board();
+                let record = run_linux_direct_board_set_user_mode(
+                    &mut boot,
+                    &input(&file, &[], BLOB, board_hash()),
+                    4000,
+                    LinuxCpl0SetMembers {
+                        clock_owner,
+                        ..members()
+                    },
+                )
+                .expect("runs");
+                (boot, record)
+            };
+            let (default_boot, default) = run_record(false);
+            let (owned_boot, mut owned) = run_record(true);
+            assert!(!default_boot.board.clock_owner_enabled());
+            assert!(owned_boot.board.clock_owner_enabled());
+            assert_eq!(default.com1, NONCE, "{default:?}");
+            assert!(owned.set_members.iter().any(|name| name == "clock_owner"));
+            owned.set_members.retain(|name| name != "clock_owner");
+            assert_eq!(owned, default);
+            assert_eq!(
+                owned_boot.board.clock().now_ns(),
+                default_boot.board.clock().now_ns()
+            );
+            assert_eq!(owned_boot.board.state(), default_boot.board.state());
         }
 
         #[test]
