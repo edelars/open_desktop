@@ -867,6 +867,13 @@ Base `PagedCpl0ProbeV1` admits only `41 C1 EC 08`: primary opcode `C1`, exact RE
 
 Checks: four focused `rust_helper_shr_r12d_8` tests and other-profile isolation passed; all 372 `paged_probe_profile` tests passed. Vectors verify shifted results, carry/result flags, preserved concrete AF/OF with undefined metadata, dword zero-extension, full-state retention, final-immediate fetch-fault atomicity, neighbors and profile/CPL isolation. Firmware image `/private/tmp/od-fw-s7-04-issue173.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 76 instructions then stopped at `49 83 FF 14` (`CMP R15,0x14`, ISSUE-174), `RIP=0x200e12`, `Unsupported { opcode: 131 }`, `com1_bytes=0`; full handoff validation remains incomplete.
 
+<a id="s7-04-exact-rust-helper-cmp-r15-14"></a>
+#### Расширение S7-04: exact Rust-helper `CMP R15,0x14`
+
+Base `PagedCpl0ProbeV1` admits only `49 83 FF 14`: primary opcode `83`, exact REX `49`, ModRM `FF` selecting group `/7` and R15, qword width, sign-extended immediate byte `0x14`, and length 4. Existing qword CMP semantics compare R15 against `0x14`, update arithmetic flags and preserve all registers. Fetch faults do not commit state. Other immediate/register/width/operation/prefix forms, CPL3 and other paged profiles remain unsupported.
+
+Checks: four focused `rust_helper_cmp_r15_imm8` tests passed; all 376 `paged_probe_profile` tests passed. Vectors cover equality, borrow, non-borrow, high qword bits, overflow, flag definedness/full state, final-immediate fetch fault, neighboring encodings and CPL/profile isolation. `cargo check --offline -p od-isa --all-targets`, scoped rustfmt and `git diff --check` passed. Image `/private/tmp/od-fw-s7-04-issue174.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 77 instructions then stopped at `45 0F 44 F2` (`CMOVZ R14D,R10D`, ISSUE-175), `RIP=0x200e16`, `Unsupported { opcode: 68 }`, `com1_bytes=0`; full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции
