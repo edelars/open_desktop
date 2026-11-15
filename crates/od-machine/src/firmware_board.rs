@@ -876,9 +876,13 @@ pub(crate) struct LinuxSetRunReport {
     /// The system calls of this call (S4-39f, `with_user_mode`): `SYSCALL` entries and `SYSRETQ`
     /// returns, as a ring of the last entries. Empty for a set without the member.
     pub(crate) syscall_journal: crate::linux_direct::SyscallJournal,
-    /// `#PF` exceptions delivered to the guest through its IDT in this call (S4-38L5c); a
+    /// `#PF` and `#GP(0)` exceptions delivered to the guest through its IDT in this call; a
     /// delivery is not a retired instruction.
     pub(crate) exceptions_delivered: u64,
+    /// Successfully delivered guest `#PF` exceptions in this call.
+    pub(crate) page_faults_delivered: u64,
+    /// Successfully delivered guest `#GP(0)` exceptions in this call.
+    pub(crate) general_protection_faults_delivered: u64,
     /// What the interrupt hook counted in this call (S4-38L8b); all zero without a source or
     /// without the hook.
     pub(crate) irq: IrqCounters,
@@ -1664,6 +1668,8 @@ impl LoadedFirmwareBoard {
         let mut quanta = 0u64;
         let mut changes: Vec<TranslationContextChange> = Vec::new();
         let mut exceptions_delivered = 0u64;
+        let mut page_faults_delivered = 0u64;
+        let mut general_protection_faults_delivered = 0u64;
         let mut cpl3_retired = 0u64;
         let mut syscall_journal = crate::linux_direct::SyscallJournal::default();
         self.com1_log.clear();
@@ -1764,6 +1770,8 @@ impl LoadedFirmwareBoard {
             self.page_table_root = report.cr3;
             changes.extend(report.translation_context_changes.iter().copied());
             exceptions_delivered += report.delivered_exceptions;
+            page_faults_delivered += report.delivered_page_faults;
+            general_protection_faults_delivered += report.delivered_general_protection_faults;
             cpl3_retired += report.cpl3_retired;
             for event in &report.syscall_events {
                 syscall_journal.record(*event);
@@ -1911,6 +1919,8 @@ impl LoadedFirmwareBoard {
             cpl3_retired,
             syscall_journal,
             exceptions_delivered,
+            page_faults_delivered,
+            general_protection_faults_delivered,
             irq: irq_counters,
         })
     }

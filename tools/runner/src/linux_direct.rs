@@ -23,11 +23,12 @@
 //! then also says `path: cpl0_set`, the set members, the set's own final exit (`set_exit_detail`)
 //! and how many CR3 changes happened
 //! (`cr3_changes`, `last_cr3_change`; a `MOV CR3` that ended the run in an integration error is
-//! counted and `cr3` is its CR3). Since S4-38L5c a guest `#PF` is delivered through the guest IDT
-//! when one is loaded; `exceptions_delivered` counts these (a delivery is not a retired
-//! instruction), and a `#PF` that could not be delivered is still the `fault` stop, with the reason
-//! in `set_exit_detail`. The `paged_probe` path carries the same fields with empty
-//! values; `schema_version` stays 1 (the fields are additive).
+//! counted and `cr3` is its CR3). Since S4-38L5c / S4-38L9v a guest `#PF` or `#GP(0)` is delivered
+//! through the guest IDT when one is loaded; `exceptions_delivered` counts both and the
+//! per-vector fields report their breakdown (a delivery is not a retired instruction). An
+//! exception that could not be delivered is still the `fault` stop, with the reason in
+//! `set_exit_detail`. The `paged_probe` path carries zero counts; `schema_version` stays 1 (the
+//! fields are additive).
 //!
 //! `--diagnostic-past-c7` (S4-38L7, only with `--run --set-cpl0`) is an opt-in DIAGNOSTIC mode:
 //! the `cpuid_divergence` boundary is off, `CPUID` leaf 1 and 0x8000_0001 execute with the
@@ -639,6 +640,9 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
         },
     });
     stop["machine_stop_reason"] = machine_stop_reason_json(record.stop_reason);
+    // Keep the vector breakdown outside the large literal to stay under `json!`'s recursion limit.
+    stop["page_faults_delivered"] = json!(record.page_faults_delivered);
+    stop["general_protection_faults_delivered"] = json!(record.general_protection_faults_delivered);
     // S4-38L9I: the validated frame of the `IRETQ` the run stopped at (`exit_kind`
     // `user_entry`). The key exists only then, so the stop record of every other run (the base
     // DiagnosticV1 run included) is unchanged. The IRETQ did not retire: `rip` is on it. Set

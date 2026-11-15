@@ -558,10 +558,13 @@ pub struct LinuxStopRecord {
     /// S4-39f: the last system calls of a user-mode run (a ring of
     /// [`SYSCALL_JOURNAL_CAPACITY`] entries); empty without `user_mode`.
     pub syscall_journal: SyscallJournal,
-    /// S4-38L5c: how many guest `#PF` or `#GP(0)` exceptions the CPL0 set board delivered through
-    /// the guest IDT in this run (0 on the `paged_probe` path). A delivery is not a retired
-    /// instruction.
+    /// How many guest `#PF` and `#GP(0)` exceptions the CPL0 set board delivered through the guest
+    /// IDT in this run (0 on the `paged_probe` path). A delivery is not a retired instruction.
     pub exceptions_delivered: u64,
+    /// Guest `#PF` exception deliveries in this run (0 on the `paged_probe` path).
+    pub page_faults_delivered: u64,
+    /// Guest `#GP(0)` exception deliveries in this run (0 on the `paged_probe` path).
+    pub general_protection_faults_delivered: u64,
     /// S4-38L8b: external interrupts the CPL0 set board delivered through the guest IDT in this
     /// run. `0` while the board has no interrupt source (and on the `paged_probe` path).
     pub irqs_delivered: u64,
@@ -690,6 +693,8 @@ pub fn run_linux_direct_board(
             cpl3_retired: 0,
             syscall_journal: SyscallJournal::default(),
             exceptions_delivered: 0,
+            page_faults_delivered: 0,
+            general_protection_faults_delivered: 0,
             irq: IrqCounters::default(),
             diagnostic_past_c7: false,
         },
@@ -708,6 +713,8 @@ struct SetExtras<'a> {
     cpl3_retired: u64,
     syscall_journal: SyscallJournal,
     exceptions_delivered: u64,
+    page_faults_delivered: u64,
+    general_protection_faults_delivered: u64,
     irq: IrqCounters,
     diagnostic_past_c7: bool,
 }
@@ -791,6 +798,8 @@ fn stop_record(
         cpl3_retired: extras.cpl3_retired,
         syscall_journal: extras.syscall_journal,
         exceptions_delivered: extras.exceptions_delivered,
+        page_faults_delivered: extras.page_faults_delivered,
+        general_protection_faults_delivered: extras.general_protection_faults_delivered,
         irqs_delivered: extras.irq.irqs_delivered,
         irq0_edges: extras.irq.irq0_edges,
         irq_refused_masked: extras.irq.irq_refused_masked,
@@ -1269,6 +1278,8 @@ fn run_linux_direct_board_set_with(
             cpl3_retired: report.cpl3_retired,
             syscall_journal: report.syscall_journal,
             exceptions_delivered: report.exceptions_delivered,
+            page_faults_delivered: report.page_faults_delivered,
+            general_protection_faults_delivered: report.general_protection_faults_delivered,
             irq: report.irq,
             diagnostic_past_c7: members.diagnostic_past_c7,
         },
@@ -10555,6 +10566,13 @@ mod tests {
         assert_eq!(report.instructions_executed, 4);
         assert_eq!(report.delivered_exceptions, 1);
         assert_eq!(
+            (
+                report.delivered_page_faults,
+                report.delivered_general_protection_faults
+            ),
+            (0, 1)
+        );
+        assert_eq!(
             state.rip,
             ENTRY + 3,
             "RDMSR skipped by the fixup, NOP retired"
@@ -10804,6 +10822,13 @@ mod tests {
         assert_eq!(first.exit, PagedProbeExit::BudgetExhausted, "{first:?}");
         assert_eq!((first.retired, first.exceptions_delivered), (1, 1));
         assert_eq!(
+            (
+                first.page_faults_delivered,
+                first.general_protection_faults_delivered
+            ),
+            (1, 0)
+        );
+        assert_eq!(
             first.rip,
             PF_HANDLER_AT + 7,
             "in the handler, before the CR2 read"
@@ -10813,6 +10838,13 @@ mod tests {
         let second = run_set_facade(&mut boot, &file, 8, members);
         assert_eq!(second.exit, PagedProbeExit::Halted, "{second:?}");
         assert_eq!((second.retired, second.exceptions_delivered), (2, 0));
+        assert_eq!(
+            (
+                second.page_faults_delivered,
+                second.general_protection_faults_delivered
+            ),
+            (0, 0)
+        );
         assert_eq!(second.gpr[Register::Rax as usize], PF_VA + 0x20);
         assert_eq!(boot.board.state().cr2, None);
     }

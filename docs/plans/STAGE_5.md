@@ -364,6 +364,8 @@ Scenario candidate summaries in the compact inventories are derived from exact r
 
 Дополнение 2026-11-15: после S4-39h выполнена новая counted common-ID N=2 серия на revision `d50ddc993cd3817fdca7e9770d9d0e2de69382ee`. Оба запуска дали exact nonce и ожидаемый budget stop, но сравнение run 0001/0002 осталось `matches=false` по machine observations и ordered UART bytes; внутри старой pre-fix diagnostic N=2 серии comparator даёт те же категории. `exceptions_delivered` — агрегат успешных доставок гостевых `#PF` и `#GP(0)`, значения 35/34; vector breakdown не сохранён, допустимость вариации не доказана, comparator не ослаблялся. Старый отказ C/run-0001 в этих двух прогонах не наблюдался, его причина не установлена. S5-07 остаётся `[ ]` / `blocked/unaccepted`; следующий шаг — локализовать или обосновать эти различия и получить strict-clean common-ID series. Evidence: [post-CPL3 IRQ N=2 log](../reports/data/stage5/s5-07-post-cpl3-irq-n2-20261115.log).
 
+Дополнение 2026-11-15: runner machine observations расширены отдельными count полями successful guest `#PF` и `#GP(0)` delivery; aggregate `exceptions_delivered` сохранён. Это additive диагностическое расширение runner stop JSON без изменения schema version. Machine tests and runner all-target check pass; live run с новыми полями ещё не выполнен. Следующий шаг — counted N=2 и проверка per-vector вариации вместе с terminal UART diff.
+
 ### S5-17. Host-side отказы и ограниченные ресурсы
 
 - [x] Принято после независимого ревью. Гостевая часть (гость видит ошибку по контракту) — отдельным шагом, **blocked до `S4-39`**. Пересечение с `S9-18` разрешается решением `S5-00` п.4(а).

@@ -690,9 +690,13 @@ pub(crate) struct PagedCpl0SetReport {
     /// `Cr3EffectMismatch` and `Cr3SnapshotRejected` the instruction retired, so this is
     /// already the new CR3 although the walker was not rebuilt for it.
     pub(crate) cr3: u64,
-    /// `#PF` exceptions the loop delivered through the guest IDT (S4-38L5c). A delivery is not
+    /// `#PF` and `#GP(0)` exceptions the loop delivered through the guest IDT. A delivery is not
     /// a retired instruction: `instructions_executed` does not count it.
     pub(crate) delivered_exceptions: u64,
+    /// Successfully delivered guest `#PF` exceptions in this call.
+    pub(crate) delivered_page_faults: u64,
+    /// Successfully delivered guest `#GP(0)` exceptions in this call.
+    pub(crate) delivered_general_protection_faults: u64,
     /// S4-13: the counters of the call's fetch translation cache (`None` without one).
     pub(crate) fetch_cache_stats: Option<FetchCacheStats>,
     /// S4-39c: instructions retired through the CPL3 entry (`run_with_cpl3_profile_set`) in this
@@ -806,6 +810,8 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                 translation_context_changes: Vec::new(),
                 cr3,
                 delivered_exceptions: 0,
+                delivered_page_faults: 0,
+                delivered_general_protection_faults: 0,
                 fetch_cache_stats: None,
                 cpl3_retired: 0,
                 syscall_events: Vec::new(),
@@ -824,6 +830,8 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
     // whether the walker could be rebuilt for it.
     let mut reported_cr3 = cr3;
     let mut delivered_exceptions = 0u64;
+    let mut delivered_page_faults = 0u64;
+    let mut delivered_general_protection_faults = 0u64;
     // Deliveries since the last retired instruction (see `MAX_DELIVERIES_WITHOUT_RETIREMENT`).
     let mut deliveries_without_retirement = 0u64;
     // S4-38L8b: a retired guest write to a PIT port ends the quantum (only when the source
@@ -997,6 +1005,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                 match failure {
                     None => {
                         delivered_exceptions += 1;
+                        delivered_page_faults += 1;
                         deliveries_without_retirement += 1;
                         continue;
                     }
@@ -1044,6 +1053,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                 match failure {
                     None => {
                         delivered_exceptions += 1;
+                        delivered_general_protection_faults += 1;
                         deliveries_without_retirement += 1;
                         continue;
                     }
@@ -1124,6 +1134,8 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         translation_context_changes: changes,
         cr3: reported_cr3,
         delivered_exceptions,
+        delivered_page_faults,
+        delivered_general_protection_faults,
         fetch_cache_stats: cache.as_ref().map(FetchTranslationCache::stats),
         cpl3_retired,
         syscall_events: syscall_events.into_iter().collect(),
