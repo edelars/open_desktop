@@ -560,10 +560,20 @@
 ### ISSUE-166 — S7-04: Rust helper `XOR R10D,R10D` (`45 31 D2`) remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `MOV R9D,0xffffffff`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200df8`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner retires 68 instructions, then stops at raw bytes `45 31 D2` (`XOR R10D,R10D`), `Unsupported { opcode: 49 }`, `RIP=0x200df8`; COM1 remains empty.
+- **Статус:** решена узко для exact `45 31 D2`; runner перешёл к ISSUE-167.
+- **Суть и результат:** base `PagedCpl0ProbeV1` admits only exact self-XOR `R10D,R10D` with opcode `31`, REX `45`, ModRM `D2`, dword operands and length 3. Existing logical-XOR semantics zero-extend R10D into R10, update arithmetic flags, preserve AF's concrete value while clearing its definedness, and preserve unrelated state.
+- **Проверка:** `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_xor_r10d -- --nocapture` — 2 passed; all 344 `paged_probe_profile` tests passed. Coverage includes result/full state/flags/AF definedness, cross-page ModRM fetch-fault atomicity, neighboring forms, CPL3 and other-profile isolation. Image `/private/tmp/od-fw-s7-04-issue166.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`); runner retired 69 instructions and stopped at `45 31 DB` (`XOR R11D,R11D`, ISSUE-167), `RIP=0x200dfb`, `Unsupported { opcode: 49 }`, `com1_bytes=0`.
 - **Основание:** firmware image `/private/tmp/od-fw-s7-mov-r9d-imm32.bin`; `od -An -tx1 -j 0xdf8 -N24` shows `45 31 d2 45 31 db 66 90 46 0f b6 34 1e 4d 89 df 4d 21 c7 45 89 cc 41 c1`; runner с бюджетом 10000.
-- **Следующий шаг:** inspect the exact 32-bit XOR destination/ModRM and existing logical-XOR definedness semantics, then consider only the observed form.
+- **Ссылка:** [CPU profile contract](specs/CPU_CONTRACT.md#s7-04-exact-rust-helper-xor-r10d-r10d).
+
+<a id="issue-167-s7-04-rust-helper-xor-r11d-r11d-unsupported"></a>
+### ISSUE-167 — S7-04: Rust helper `XOR R11D,R11D` (`45 31 DB`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после допуска exact `XOR R10D,R10D`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200dfb`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner retired 69 instructions, then stops at raw bytes `45 31 DB` (`XOR R11D,R11D`), `Unsupported { opcode: 49 }`, `RIP=0x200dfb`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue166.bin`; bytes at offset `0xdfb` begin `45 31 db 66 90 46 0f b6 34 1e`; runner budget 10000.
+- **Следующий шаг:** inspect exact R11D self-XOR encoding and reuse the existing logical-XOR semantics only for that observed form.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.

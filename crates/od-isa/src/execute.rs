@@ -20870,9 +20870,10 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(dst, src.effective_address(state, next_rip));
             state.rip = next_rip;
         }
-        // S7-04: `_start` clears EAX with `31 C0` and ECX with `31 C9`.
-        // Admit only these exact self-XOR dword forms. The register write
-        // zero-extends; AF remains concrete but undefined per existing logic.
+        // S7-04: `_start` clears EAX (`31 C0`) and ECX (`31 C9`); the Rust
+        // helper clears R10D with `45 31 D2`. Admit only these exact self-XOR
+        // dword forms. The register write zero-extends; AF remains concrete
+        // but undefined per existing logic.
         Operation::Logic {
             kind: LogicKind::Xor,
             dst: Operand::Register(destination),
@@ -20880,13 +20881,24 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x31
-            && instruction.length == 2
+            && (instruction.length == 2 || instruction.length == 3)
             && instruction.operand_size == OperandSize::Dword
-            && instruction.prefixes == Prefixes::default()
-            && ((destination == RegisterView::low(Register::Rax, OperandSize::Dword)
+            && ((instruction.prefixes == Prefixes::default()
+                && instruction.length == 2
+                && destination == RegisterView::low(Register::Rax, OperandSize::Dword)
                 && source == RegisterView::low(Register::Rax, OperandSize::Dword))
-                || (destination == RegisterView::low(Register::Rcx, OperandSize::Dword)
-                    && source == RegisterView::low(Register::Rcx, OperandSize::Dword))) =>
+                || (instruction.prefixes == Prefixes::default()
+                    && instruction.length == 2
+                    && destination == RegisterView::low(Register::Rcx, OperandSize::Dword)
+                    && source == RegisterView::low(Register::Rcx, OperandSize::Dword))
+                || (instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x45),
+                        ..Prefixes::default()
+                    })
+                    && instruction.length == 3
+                    && destination == RegisterView::low(Register::R10, OperandSize::Dword)
+                    && source == RegisterView::low(Register::R10, OperandSize::Dword))) =>
         {
             let lhs = state.read(destination);
             let rhs = state.read(source);
