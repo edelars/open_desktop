@@ -398,7 +398,7 @@ bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`,
 (`SUB RSP,0x58`), `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`), `48 81 FA 9F 00 00 00` (`CMP RDX,0x9f`), and
 `48 8D 7C 24 08` (`LEA RDI,[RSP+8]`), `BE 00 00 10 00`
 (`MOV ESI,0x00100000`), `BA 00 00 01 00` (`MOV EDX,0x00010000`), and
-`31 C9` (`XOR ECX,ECX`), `41 56` (`PUSH R14`), and bare `53` (`PUSH RBX`; see the extensions below). The CPU entry validates its profile admission and
+`31 C9` (`XOR ECX,ECX`), `41 56` (`PUSH R14`), and bare `53`/`55` (`PUSH RBX`/`PUSH RBP`; see the extensions below). The CPU entry validates its profile admission and
 CR0/CR4 before fetch. It receives page-aware `GuestMemory`;
 CR3/EFER validation and selecting the four-level 4 KiB paging context belong
 to the machine entry.
@@ -576,6 +576,12 @@ Tests проверяют full state/RSP и все восемь qword bytes, PF/S
 В base `PagedCpl0ProbeV1` допускается только bare `53`: Primary opcode `53`, длина 1, без префиксов, qword `StackRegister { push: true, register: Rbx }`. Переиспользуется `push_stack_value`: RBX читается до изменения RSP, записывается целым qword на `[RSP-8]`, а RSP/RIP коммитятся только после успешной записи. Flags и другие registers сохраняются. Noncanonical stack даёт #SS; stack #PF и fetch fault не меняют CPU state. REX, другие opcode-registers/widths, CPL3 и прочие paged profiles остаются вне allowlist.
 
 Tests проверяют full state/RSP, все восемь записанных bytes, stack #PF/#SS, fetch fault, соседние REX/opcode/width forms и CPL3/stack/CR3/CR0.WP isolation. Runner retired 22 инструкции и остановился на `48 81 EC B8 00 00 00` (`SUB RSP,0xb8`, ISSUE-122, RIP `0x2004a3`).
+
+#### Расширение S7-04: точный Rust-helper `PUSH RBP`
+
+В base `PagedCpl0ProbeV1` допускается только bare `55`: Primary opcode `55`, длина 1, без префиксов, qword `StackRegister { push: true, register: Rbp }`. Используется `push_stack_value`: RBP записывается как qword на `[RSP-8]`, а RSP/RIP обновляются только после успешной записи. Flags и остальные GPR сохраняются; noncanonical stack даёт #SS, stack #PF и fetch fault оставляют CPU state без изменений. Соседние opcode/register/width/prefix forms, CPL3 и остальные profiles вне allowlist.
+
+Tests проверяют полный state, RSP, все восемь stack bytes, #PF/#SS/fetch atomicity, соседние PUSH forms и CPL3/other-profile isolation. Runner retired 33 инструкции и остановился на `41 57` (`PUSH R15`, ISSUE-133, RIP `0x200d3a`).
 
 #### Расширение S7-04: exact Rust-helper `SUB RSP,0xb8`
 

@@ -5068,6 +5068,186 @@ fn rust_helper_push_rbx_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn rust_helper_push_rbp_stores_qword_and_updates_only_rsp_rip() {
+    let code = [0x55];
+    let rip = 0x200d39;
+    let mut memory = memory_with_code_at(&code, rip);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsp as usize] = DATA + 0x100;
+    cpu.gpr[Register::Rbp as usize] = 0x8877_6655_4433_2211;
+    cpu.rflags = 0xd5a;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    let mut expected = before.clone();
+    expected.gpr[Register::Rsp as usize] = DATA + 0xf8;
+    expected.rip = rip + code.len() as u64;
+    assert_eq!(cpu, expected);
+    assert_eq!(memory.write_addresses, [DATA + 0xf8]);
+    assert_eq!(
+        memory.bytes[DATA_PHYSICAL + 0xf8..DATA_PHYSICAL + 0x100],
+        before.gpr[Register::Rbp as usize].to_le_bytes()
+    );
+    assert_eq!(memory.reads, 0);
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_helper_push_rbp_stack_page_fault_is_atomic() {
+    let code = [0x55];
+    let rip = 0x200d39;
+    let mut memory = memory_with_code_at(&code, rip);
+    memory.fail_write = Some(page_fault(0x2, DATA + 0xf8));
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsp as usize] = DATA + 0x100;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x2),
+            linear_address: Some(DATA + 0xf8),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.write_addresses, [DATA + 0xf8]);
+    assert_eq!(memory.reads, 0);
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_helper_push_rbp_noncanonical_stack_fault_is_atomic() {
+    let code = [0x55];
+    let rip = 0x200d39;
+    let mut memory = memory_with_code_at(&code, rip);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr[Register::Rsp as usize] = 0x0000_8000_0000_0008;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 12,
+            error_code: Some(0),
+            linear_address: None,
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.writes, 0);
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_helper_push_rbp_fetch_fault_does_not_commit() {
+    let rip = RIP + 0xfff;
+    let mut memory = memory_with_code_at(&[0x55], rip);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr[Register::Rsp as usize] = DATA + 0x100;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    memory.fail_fetch_at = Some((rip, page_fault(0x10, rip)));
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.writes, 0);
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_helper_push_rbp_neighbours_stay_unsupported_without_mutation() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x54], 0x54),       // PUSH RSP
+        (&[0x56], 0x56),       // PUSH RSI
+        (&[0x57], 0x57),       // PUSH RDI
+        (&[0x41, 0x55], 0x55), // PUSH R13
+        (&[0x40, 0x55], 0x55), // redundant REX prefix
+        (&[0x66, 0x55], 0x55), // word PUSH BP
+        (&[0x48, 0x55], 0x55), // REX.W prefix
+        (&[0xf3, 0x55], 0x55), // REP prefix
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::Rsp as usize] = DATA + 0x100;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "bytes {bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!(memory.writes, 0);
+        assert_eq!(memory.reads, 0);
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_push_rbp_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x55];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    cpu.gpr[Register::Rsp as usize] = DATA + 0x100;
+    let before = cpu.clone();
+
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x55 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.writes, 0);
+    assert_eq!(memory.reads, 0);
+}
+
+#[test]
 fn rust_entry_sub_rsp_imm8_reserves_exact_stack_frame_and_updates_flags() {
     let code = [0x48, 0x83, 0xec, 0x58]; // SUB RSP,0x58
     let mut memory = Memory::new(&code);
@@ -5977,6 +6157,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0xe8, 0x59, 0x08, 0, 0][..], 0xe8),
         (&[0x41, 0x56][..], 0x56),
         (&[0x53][..], 0x53),
+        (&[0x55][..], 0x55),
         (&[0x48, 0x83, 0xec, 0x58][..], 0x83),
         (&[0x48, 0x81, 0xec, 0xb8, 0, 0, 0][..], 0x81),
         (&[0x48, 0x89, 0xfb][..], 0x89),

@@ -19991,6 +19991,28 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             }
             state.rip = next_rip;
         }
+        // S7-04: the Rust helper saves RBP with only the bare `55` opcode.
+        // Reuse the stack helper and keep this qword push confined to the base profile.
+        Operation::StackRegister {
+            push: true,
+            register: Register::Rbp,
+        } if base_profile
+            && instruction.length == 1
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x55
+            && instruction.prefixes == Prefixes::default()
+            && instruction.operand_size == OperandSize::Qword =>
+        {
+            let value = state.gpr[Register::Rbp as usize];
+            if let Err(error) = push_stack_value(state, memory, context, value, OperandSize::Qword)
+            {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+        }
         Operation::StackRegister {
             push: false,
             register: Register::Rax,
