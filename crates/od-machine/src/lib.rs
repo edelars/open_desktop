@@ -65,6 +65,7 @@ mod stage4_uart_irq_probe;
 #[cfg(feature = "experimental-translation-probe-cache")]
 mod translation_probe_cache;
 mod uart16550;
+mod uart_ioapic_irq_source;
 mod uart_pic_irq_source;
 mod uart_rx_events;
 mod vcpu;
