@@ -2378,10 +2378,13 @@ pub enum Operation {
     Loop {
         displacement: i8,
     },
-    /// SETcc stores one condition result byte into a register or memory.
+    /// SETcc stores one condition result byte into a register or memory. The raw
+    /// ModRM byte is retained because its reg field is ignored architecturally,
+    /// but bounded execution profiles may admit only one exact encoding.
     SetCondition {
         condition: ConditionCode,
         dst: Operand,
+        raw_modrm: u8,
     },
     /// CMOVcc reads its r/m source regardless of the condition result.
     ConditionalMove {
@@ -10363,6 +10366,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::SetCondition {
                     condition: ConditionCode::from_encoding(byte & 0x0f).unwrap(),
                     dst: self.rm_operand(modrm, prefixes, OperandSize::Byte)?,
+                    raw_modrm: modrm,
                 }
             }
             (OpcodeMap::Escape0f, byte @ 0x40..=0x4f) => {
@@ -23484,6 +23488,7 @@ mod tests {
                 Operation::SetCondition {
                     condition: ConditionCode::from_encoding(encoding).unwrap(),
                     dst: Operand::Register(RegisterView::low(Register::Rdx, OperandSize::Byte)),
+                    raw_modrm: 0xd2,
                 }
             );
         }
@@ -23494,6 +23499,7 @@ mod tests {
             Operation::SetCondition {
                 condition: ConditionCode::Equal,
                 dst: Operand::Register(RegisterView::high_byte(Register::Rax, false).unwrap()),
+                raw_modrm: 0xc4,
             }
         );
         let rex_low = Memory::new(&[0x40, 0x0f, 0x94, 0xc4]).decode().unwrap();
@@ -23502,6 +23508,7 @@ mod tests {
             Operation::SetCondition {
                 condition: ConditionCode::Equal,
                 dst: Operand::Register(RegisterView::low(Register::Rsp, OperandSize::Byte)),
+                raw_modrm: 0xc4,
             }
         );
         let extended = Memory::new(&[0x41, 0x0f, 0x95, 0xc7]).decode().unwrap();
@@ -23510,6 +23517,7 @@ mod tests {
             Operation::SetCondition {
                 condition: ConditionCode::NotEqual,
                 dst: Operand::Register(RegisterView::low(Register::R15, OperandSize::Byte)),
+                raw_modrm: 0xc7,
             }
         );
 
@@ -23531,6 +23539,7 @@ mod tests {
                     address_size: OperandSize::Dword,
                     size: OperandSize::Byte,
                 }),
+                raw_modrm: 0x45,
             }
         );
         let rip_relative = Memory::new(&[0x0f, 0x94, 0x05, 0, 0, 0, 0])

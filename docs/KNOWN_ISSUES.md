@@ -331,13 +331,22 @@
 - **Основание:** образ `/private/tmp/od-fw-s7-cmp-bx-cx.bin`; `od -An -tx1 -j 0xd55 -N12` показывает `66 39 cb 0f 97 c1 66 83 fb 03 40 0f`; runner с бюджетом 10000.
 - **Runner:** latest image `/private/tmp/od-fw-s7-cmp-bx-cx.bin`; after 44 retired instructions stopped at `0F 97 C1` (`SETA CL`, opcode byte `0x97`) at `RIP=0x200d58`, `Unsupported { opcode: 151 }`; COM1 пуст. Следующий blocker — [ISSUE-142](#issue-142-s7-04-rust-helper-seta-cl-unsupported).
 <a id="issue-142-s7-04-rust-helper-seta-cl-unsupported"></a>
-### ISSUE-142 — S7-04: Rust helper `SETA CL` (`0F 97 C1`) остаётся вне paged CPU profile
+### ISSUE-142 — S7-04: точная форма Rust helper `SETA CL` (`0F 97 C1`) admitted
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `CMP BX,CX`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d58`.
-- **Статус:** открыта.
-- **Суть и последствия:** exact bytes `0F 97 C1` encode `SETA CL` (opcode `0F 97`, byte destination CL); runner returns `Unsupported { opcode: 151 }` (`0x97`), `retired=44`, `RIP=0x200d58`; COM1 пуст.
+- **Статус:** решена только для exact `0F 97 C1` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Результат и проверка:** base profile admits only opcode `0F 97`, default prefixes, length 3, raw ModRM `C1` and decoded destination CL. Shared SETcc evaluates `Above` (`CF=0 && ZF=0`), writes CL while preserving other RCX bytes and all RFLAGS; input flag-definedness is unchanged. Focused profile tests (4 passed) cover the CF/ZF truth table, undefined flags, full state, fetch-fault atomicity, neighbors including ignored ModRM.reg byte `C9`, CPL3 and other paged profiles. Decoder SETcc unit tests passed.
 - **Основание:** образ `/private/tmp/od-fw-s7-cmp-bx-cx.bin`; `od -An -tx1 -j 0xd58 -N12` показывает `0f 97 c1 66 83 fb 03 40 0f 93 c7 40`; runner с бюджетом 10000.
-- **Следующий шаг:** inspect the precise SETA condition/byte-register semantics, flag definedness, and base-profile boundaries.
+- **Runner:** image `/private/tmp/od-fw-s7-seta-cl.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retired 45 instructions, then stopped at `66 83 FB 03` (`CMP BX,3`) with `Unsupported { opcode: 131 }`, `RIP=0x200d5b`, `com1_bytes=0`; see [ISSUE-143](#issue-143-s7-04-rust-helper-cmp-bx-imm8-3-unsupported).
+
+<a id="issue-143-s7-04-rust-helper-cmp-bx-imm8-3-unsupported"></a>
+### ISSUE-143 — S7-04: Rust helper `CMP BX,3` (`66 83 FB 03`) остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `SETA CL`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d5b`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner stops at `66 83 FB 03` (`CMP BX,3`), `Unsupported { opcode: 131 }`, `retired=45`, `RIP=0x200d5b`; COM1 пуст. Это следующая инструкция helper после `SETA CL`.
+- **Основание:** образ `/private/tmp/od-fw-s7-seta-cl.bin`; `od -An -tx1 -j 0xd5b -N16` показывает `66 83 fb 03 40 0f 93 c7 40 08 cf 74 3b c7 40 08`; runner с бюджетом 10000.
+- **Следующий шаг:** проверить точную 16-bit CMP BX, sign-extended imm8 и разрешить только `66 83 FB 03` в base profile с тестами flags/definedness и профильной изоляции.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.

@@ -20292,6 +20292,25 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::DF,
             };
         }
+        // S7-04: the Rust helper stores the unsigned-greater result only in CL
+        // with exact `0F 97 C1` (SETA CL). Condition evaluation reads CF/ZF but
+        // neither the flags nor their definedness are modified.
+        Operation::SetCondition {
+            condition,
+            dst: Operand::Register(destination),
+            raw_modrm,
+        } if base_profile
+            && condition == ConditionCode::Above
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x97
+            && instruction.length == 3
+            && instruction.prefixes == Prefixes::default()
+            && raw_modrm == 0xc1
+            && destination == RegisterView::low(Register::Rcx, OperandSize::Byte) =>
+        {
+            state.write(destination, u64::from(condition.evaluate(state.rflags)));
+            state.rip = next_rip;
+        }
         // S7-04: startup/helper use only five literal short conditional
         // branch encodings; other branches stay outside the bounded profile.
         Operation::Branch {
@@ -52342,7 +52361,7 @@ fn step_configured(
             Err(MemoryError::Architectural(fault)) => return Ok(StepOutcome::Fault(fault)),
             Err(error) => return Err(error),
         },
-        Operation::SetCondition { condition, dst } => {
+        Operation::SetCondition { condition, dst, .. } => {
             let value = u64::from(condition.evaluate(state.rflags));
             match write_operand(state, memory, context, next_rip, dst, value) {
                 Ok(()) => {}

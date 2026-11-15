@@ -663,6 +663,12 @@ Tests покрывают точное сравнение magic, flags/definednes
 
 `paged_probe_profile` — 247 passed: полное состояние, разные верхние 48 бит BX/CX при равных low words, BX=0/CX=1 operand-order flags, flags/definedness, fetch fault на ModRM, противоположное направление операндов/кодирования, соседние операции/ширины/префиксы и CPL3/other-profile isolation. Runner retired 44 инструкции и остановился на `0F 97 C1` (`SETA CL`, ISSUE-142, RIP `0x200d58`). Полная проверка handoff ещё не завершена.
 
+#### Расширение S7-04: exact Rust-helper `SETA CL`
+
+В base `PagedCpl0ProbeV1` допускаются только байты `0F 97 C1`: SETA/JA condition `Above` (`CF=0 && ZF=0`), destination CL, без префиксов и длиной ровно три байта. Декодер сохраняет raw ModRM byte в `Operation::SetCondition`, потому что архитектурно ignored `ModRM.reg` требуется отличить при exact profile admission; общий SETcc executor и его семантика не меняются. Выполнение читает CF/ZF, записывает только CL, сохраняет остальные байты RCX и все RFLAGS; флаги definedness остаются без изменения.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_seta_cl -- --nocapture` — 4 passed; decoder tests `setcc_decodes_byte_registers_memory_addresses_and_ignored_modrm_reg` и `setcc_prefix_boundaries_and_fetch_faults_are_explicit` passed. Матрица включает CF/ZF truth table при undefined CF/ZF, full state, fault на последнем байте, neighboring forms, в том числе `0F 97 C9`, CPL3 и другие paged profiles. Runner retired 45 инструкций, затем остановился на `66 83 FB 03` (`CMP BX,3`, ISSUE-143, RIP `0x200d5b`); полная проверка handoff не завершена.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции
