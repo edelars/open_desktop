@@ -154,15 +154,21 @@ fn run_inner(args: &[String]) -> Result<(Value, u8), (Value, u8)> {
         "data_gva": format!("0x{STAGE4_FLAT_PROBE_DATA_GVA:016x}"),
     });
 
-    let code = match report.exit {
-        PagedProbeExit::Halted if status == "guest_completed" => 0,
-        PagedProbeExit::PortIo(_) => EXIT_PIO,
-        _ => EXIT_GUEST,
-    };
+    let code = exit_code(&report.exit, status);
     if code == 0 {
         Ok((result, code))
     } else {
         Err((result, code))
+    }
+}
+
+/// Process exit code of a finished probe run: 0 only for a completed halt,
+/// `EXIT_PIO` for a port-I/O error, `EXIT_GUEST` for every other outcome.
+fn exit_code(exit: &PagedProbeExit, status: &str) -> u8 {
+    match exit {
+        PagedProbeExit::Halted if status == "guest_completed" => 0,
+        PagedProbeExit::PortIo(_) => EXIT_PIO,
+        _ => EXIT_GUEST,
     }
 }
 
@@ -385,6 +391,17 @@ mod tests {
             (PagedProbeExit::BudgetExhausted, "work_limit"),
         ] {
             assert_eq!(classify_exit(&exit, None, 0, None, &[]), expected_status);
+            // The CLI cannot reach a real port error: the loader accepts only the
+            // fixed probe code, whose ports (COM1) never fail since S4-38L9z.
+            // The PortIo -> exit 6 mapping is therefore pinned here.
+            assert_eq!(
+                exit_code(&exit, expected_status),
+                if expected_status == "pio_error" {
+                    EXIT_PIO
+                } else {
+                    EXIT_GUEST
+                }
+            );
             assert_eq!(
                 error_details(&exit, None, None)["kind"],
                 match expected_status {
@@ -395,5 +412,10 @@ mod tests {
                 }
             );
         }
+        assert_eq!(exit_code(&PagedProbeExit::Halted, "guest_completed"), 0);
+        assert_eq!(
+            exit_code(&PagedProbeExit::Halted, "completion_mismatch"),
+            EXIT_GUEST
+        );
     }
 }

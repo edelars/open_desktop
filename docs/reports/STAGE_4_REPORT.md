@@ -1469,3 +1469,67 @@ reset, удержанная куча main равна baseline (0), `Bounded` tra
 `docs/reports/data/stage4/s4-43b-queues.json`,
 `docs/reports/data/stage4/s4-43c-repeats.json`,
 `docs/reports/data/stage4/s4-43c-runs/`.
+
+## S4-44 — результат локального прогона
+
+**Статус.** S4-44a (локальный набор) выполнен один раз; результат `failed` (2 шага из 9 с ненулевым кодом, из них один — зависимость от состояния `work/`, один — реальное падение теста). S4-44 в целом открыт: Linux boot, Mac mini и сборка guest/firmware artifacts не выполнялись. Скрипт: `tools/stage4/run_local_set.sh` (sha256 `77d22562d08ce1b9bf6da069f909f54372268db9cb041a2b5a57069445aa7b09`), сводка: `docs/reports/data/stage4/s4-44a-local-set.json`, порядок запуска — `docs/testing/MACHINE.md`, раздел «S4-44 — воспроизводимый локальный набор этапа 4».
+
+**Окружение.** commit `47dd472` (дерево чистое, кроме нового `tools/stage4/`), ветка worktree от main, rustc 1.99.0 (b940084d7 2026-09-28), cargo 1.99.0, macOS 26.7.1, arm64, 2026-11-14. Общая длительность 788 с; шаг-таймаут 1200 с, ни один шаг не исключён.
+
+| шаг | статус | код | длительность, с | log sha256 |
+| --- | --- | --- | --- | --- |
+| `fmt` | known_divergence | 1 | 4 | `cb81c490…` |
+| `check-workspace` | passed | 0 | 15 | `8f7c4d73…` |
+| `test-od-isa` | passed | 0 | 39 | `77188671…` |
+| `test-od-machine` | passed | 0 | 83 | `64717430…` |
+| `test-od-jit` | passed | 0 | 6 | `b1529ead…` |
+| `test-od-host` | failed | 101 | 128 | `87765124…` |
+| `test-od-runner` | failed | 101 | 454 | см. JSON |
+| `test-od-bench` | passed | 0 | 19 | см. JSON |
+| `test-rest-of-workspace` | passed | 0 | 40 | см. JSON |
+
+**Итог:** 6 passed (включая `check-workspace`), 1 known_divergence (`fmt`: только `crates/od-host/src/storage_abi_v1.rs` и `tools/image-tool/tests/cli.rs`), 2 failed, 0 timeout, 0 исключено. `overall_local` = `failed`. Полные sha256 логов — в JSON.
+
+**Разбор двух падений.**
+- `test-od-host`: 376 passed, 3 failed — `tests::native_register_v1_corpus::cached_*` (нет файлов `work/stage3-native-register-v1/manual/native-register-v1-{observations,cache-trace}.json` в свежем worktree). Cargo остановился на lib-цели, остальные цели пакета не запускались. Дополнительный запуск `cargo test -p od-host --locked --offline --no-fail-fast` (вне сводки, лог sha256 `60da8c54…e2e7`): все цели `passed` — lib 379 passed, `stage4_exception_delivery` 39, `stage4_memory_fault` 1, `stage3_dword_store_corpus` 5, `memory_corpus` 22 (2 ignored), `diagnostic_jit_event` 4; при этом файлы в `work/` уже были созданы первым прогоном. Вывод: тесты не гермитичны (зависят от порядка/состояния `work/`); это не регрессия этапа 4, но воспроизводимость на чистом дереве не подтверждена.
+- `test-od-runner`: lib/bin 267 + 589 passed, одна цель упала — `stage4_probe_cli::uart_echo_profile_checks_rx_expectation_budgets_and_stop` (`left: Some(5)`, `right: Some(6)`, `tools/runner/tests/stage4_probe_cli.rs:303`, код выхода `pio_error`). Не дошли три цели; дополнительный запуск `--no-fail-fast --test stage4_stack_build_cli --test stage4_store_load_build_cli --test stage4_uart_irq_cli` (вне сводки, sha256 `383487fe…ec754`): 2 + 1 + 6 passed. Падение `stage4_probe_cli` не исследовано, не исправлено и остаётся открытым (владелец — следующий срез S4-44 / S4-46).
+
+**NOT RUN (не выполнялось, не заменено локальным успехом).**
+- Linux positive/negative boot — нужны vmlinuz, initramfs, ACPI manifest/blob.
+- `od-runner linux-direct-gate` на настоящем ядре — те же артефакты.
+- Mac mini hardware cases (blocked) — стенд и владелец; hardware gate этапа 3 остаётся в своём scope.
+- Сборка guest/firmware artifacts (`tools/build/*.py`, `firmware/uefi`, `tools/build/test_*.py`) — отдельная сборка (S4-44b).
+- `tests/system` smokes VMHost app — app bundle и desktop-сессия, scope этапа 3.
+- Также не выполнялись из плана S4-44: runner stress mode, `--reboot-cycles`, явный лимит guest RAM, лимит executable cache (передано из S4-43).
+
+**Ограничения набора:** нет `--no-fail-fast` (после первого падения цели пакета остаются непроверенными — исправить в S4-44b); сводка JSON отражает только один прогон скрипта, дополнительные запуски описаны выше текстом.
+
+## S4-44b — результат
+
+**Статус.** S4-44b выполнен: локальный набор зелёный (`overall_local` = `passed`: 8 `passed`, 1 `known_divergence` (`fmt`), 0 `failed`, 0 `timeout`). S4-44 в целом остаётся открытым: Linux boot, Mac mini, сборка guest/firmware artifacts, `tests/system` smokes не выполнялись (см. NOT RUN в разделе выше и в сводке). Ветка `s4-44b-fix` от S4-44a (`ba8bfd3`, main `47dd472`). Сводка: `docs/reports/data/stage4/s4-44b-local-set.json` (схема v2, результат по каждой цели), скрипт `tools/stage4/run_local_set.sh` (sha256 `543f9378…6d42`).
+
+**Падение `stage4_probe_cli` (код 5 вместо 6) — вердикт: устаревший тест (не регрессия кода раннера, не окружение).** Доказательство: (1) падение воспроизведено точечно (`cargo test --test stage4_probe_cli uart_echo`): `left: Some(5)`, `right: Some(6)`, строка 303. (2) Ручной запуск `od-runner --stage4-uart-echo-probe <образ> --expect-byte 1` без `--rx-byte` даёт `retired=3`, `rip=0x400003`, `serial_bytes=[0]`, `status=completion_mismatch`, код 5: гость выполнил `in al,dx; out dx,al; hlt` и вывел 0. (3) Причина в ядре: коммит `001b79a` (S4-38L9z, 2026-11-13) осознанно изменил `uart16550.rs` — чтение RBR пустого приёмника возвращает последний принятый байт (0 после сброса), как у настоящего 16550, вместо `DeviceError::WriteOnly` (в диффе `-.ok_or(DeviceError::WriteOnly)`); тесты `od-machine` в том же коммите обновлены, тест раннера `stage4_probe_cli` (последний раз менялся в `fb49c93`, 2026-11-07) — нет. Код раннера (`stage4_probe.rs`: `PortIo` → код 6, иначе 5) корректен и не менялся; ядро не менялось. Тест теперь проверяет актуальное поведение: `--expect-byte 1` → `completion_mismatch`, код 5, `serial_bytes=[0]`; `--expect-byte 0` → `guest_completed`, код 0. Ожидание подогнано не «под результат», а под зафиксированный и задокументированный контракт UART; `git bisect` не потребовался: изменяющий коммит найден по `git log`/diff `uart16550.rs`.
+
+**`od-host` `native_register_v1_corpus` — выбран вариант (а): фикстура воспроизводится в тесте.** Генерация корпуса (1200 входов × все backends) занимает около 1 с (`generated_corpus_runs_twice_across_all_backends`: 1.23 с). Зависимость от `work/` имели не три, а шесть тестов группы: `cached_*` (3), `retained_hit_failure_reducer_and_selfcheck`, `saved_case_round_trip_and_replay`, `reduce_saved_native_register_v1_case` (ревью нашло последние три). Теперь все они при отсутствии `native-register-v1-{observations,cache-trace,saved-case}.json` строят их детерминированно (хелперы `generate_corpus_observations`, `load_or_generate_corpus_observations`, `saved_case_path`, `build_cache_trace`) и сохраняют; существующий файл читается и валидируется, явные пути `OD_JIT_NATIVE_REGISTER_V1_*_CASE` используются как заданы. Цикл генерации корпуса вынесен в один хелпер, общий для `generated_corpus_…` и загрузчиков. Проверено на пустом `OD_JIT_NATIVE_REGISTER_V1_CORPUS_DIR`: все 9 тестов группы проходят и по отдельности, и вместе (14.9 с); без переменной — при удалённом `work/stage3-native-register-v1` два прогона подряд проходят. Вариант (б) (NOT RUN) не понадобился.
+
+**`--no-fail-fast`.** Добавлен во все шаги `cargo test`; сводка содержит `targets[]` по каждой цели (бинарник, статус, счётчики, имена упавших тестов).
+
+**Исправления по ревью (после первой версии отчёта).** (1) Скрытая зависимость от `work/` осталась в трёх тестах (см. выше) — исправлена, проверена на пустом каталоге. (2) Цикл генерации корпуса вынесен в общий хелпер. (3) Покрытие кода 6 (`EXIT_PIO`) на уровне CLI невозможно: загрузчик пробы принимает только фиксированный код (flat: `mov rax,[rbx]; out dx,al; hlt`, echo: `in al,dx; out dx,al; hlt`), чей COM1 с S4-38L9z не отдаёт ошибку порта; произвольный гостевой код (проверено: `mov edx,0x1234; in al,dx; hlt`, неотображённый порт) отвергается загрузчиком как `loader_error` (код 4). Ближайший сценарий — unit-тест `exit_categories_remain_distinct`: решение о коде вынесено в `exit_code()`, тест фиксирует `PortIo` → 6, `Halted`+`guest_completed` → 0, остальное → 5. (4) Абсолютных путей в сводке нет (`grep -c "/Users/"` = 0): пути в `note` и `log` относительны к корню. (5) `known_divergence` для `fmt` теперь сравнивает отпечаток диффа (файлы, число блоков, число и хеш изменённых строк) со списком `KNOWN_FMT_DIFFS`: `storage_abi_v1.rs` 1 блок / 9 строк, `tools/image-tool/tests/cli.rs` 1 блок / 5 строк; новое расхождение внутри известного файла даёт `failed` (проверено подменой хеша: `failed`). Ограничение: хеш привязан к версии rustfmt.
+
+**Прогон.** commit `3e8467d` (дерево чистое на старте), rustc 1.99.0 (b940084d7 2026-09-28), macOS 26.7.1, arm64, 2026-11-15; общая длительность 596 с; один полный прогон после всех правок по ревью. `git_head` в сводке — `3e8467d`, коммит самой сводки идёт следом (HEAD ≠ `git_head` по построению). Более ранние прогоны (`4e6747f`: `fmt` упал на форматировании хелперов; `f118596`: зелёный) в итог не входят.
+
+| шаг | статус | код | длительность, с | целей (упало) | тестов passed | log sha256 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `fmt` | known_divergence | 1 | 5 | — | — | `bf047400…` |
+| `check-workspace` | passed | 0 | 1 | — | — | `9385a919…` |
+| `test-od-isa` | passed | 0 | 12 | 9 (0) | 4172 | `c907607d…` |
+| `test-od-machine` | passed | 0 | 75 | 31 (0) | 1438 | `6b4ba250…` |
+| `test-od-jit` | passed | 0 | 1 | 2 (0) | 455 | `1e7e960c…` |
+| `test-od-host` | passed | 0 | 19 | 7 (0) | 450 | `1bd6e11b…` |
+| `test-od-runner` | passed | 0 | 452 | 28 (0) | 926 | `8b79f891…` |
+| `test-od-bench` | passed | 0 | 6 | 5 (0) | 81 | `c44c726f…` |
+| `test-rest-of-workspace` | passed | 0 | 25 | 16 (0) | 1046 | `efd7b89a…` |
+
+`fmt` — `known_divergence`: отпечаток равен `KNOWN_FMT_DIFFS` (только `crates/od-host/src/storage_abi_v1.rs` и `tools/image-tool/tests/cli.rs`). Короткие длительности сборочных шагов объясняются прогретым `target/`; `test-od-runner` стабильно около 450-470 с (длительность самих тестов).
+
+**Оговорки.** (1) Независимость тестов `native_register_v1_corpus` от `work/` подтверждена отдельным точечным прогоном на пустом `OD_JIT_NATIVE_REGISTER_V1_CORPUS_DIR` (9 тестов: по отдельности и вместе), а не самим набором: в итоговом прогоне `work/stage3-native-register-v1/manual/` в worktree уже существовал. (2) Зелёный локальный набор не закрывает S4-44: NOT RUN-пункты не изменились (Linux positive/negative boot, `linux-direct-gate` на настоящем ядре, Mac mini — blocked, сборка guest/firmware artifacts, VMHost smokes; runner stress mode, `--reboot-cycles`, лимит guest RAM, лимит executable cache). (3) Сводка `s4-44a-local-set.json` сохранена как исторический результат S4-44a. (4) Коммиты `6265daa` и `4e6747f` по отдельности не проходят `cargo fmt --check` (форматирование исправлено позже, `f118596`); дерево на `3e8467d` и позже проходит.

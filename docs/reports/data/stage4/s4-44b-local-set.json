@@ -1,0 +1,1064 @@
+{
+  "schema": "od.stage4.s4-44b.local-set.v2",
+  "generated_utc": "2026-11-15T02:08:52Z",
+  "environment": {
+    "git_head": "3e8467dbee253144561e6fb7ca002bc6da697371",
+    "git_branch": "s4-44b-fix",
+    "git_status_porcelain": [],
+    "script_sha256": "543f937819c6a545f71e75a935be26c5043e1f83fcbaf7dda91cbb64e25c6d42",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
+    "macos": "26.7.1",
+    "arch": "arm64",
+    "step_timeout_seconds": 1200,
+    "known_fmt_diffs": [
+      "crates/od-host/src/storage_abi_v1.rs 1 9 a45ac43961401f05",
+      "tools/image-tool/tests/cli.rs 1 5 98bc3ea4bc4e24e9"
+    ]
+  },
+  "total_duration_seconds": 596,
+  "steps": [
+    {
+      "id": "fmt",
+      "command": "cargo fmt --all -- --check --color never",
+      "status": "known_divergence",
+      "returncode": 1,
+      "duration_seconds": 5,
+      "log": "work/stage4/s4-44b/fmt.log",
+      "log_sha256": "bf04740085f711d7b560f8f87464b85cb07fe9220d4af70075bfd670c7dd2d02",
+      "note": "rustfmt divergences are the known ones (KNOWN_FMT_DIFFS), not new errors; diff fingerprint equals KNOWN_FMT_DIFFS: crates/od-host/src/storage_abi_v1.rs tools/image-tool/tests/cli.rs "
+    },
+    {
+      "id": "check-workspace",
+      "command": "cargo check --workspace --all-targets --locked --offline",
+      "status": "passed",
+      "returncode": 0,
+      "duration_seconds": 1,
+      "log": "work/stage4/s4-44b/check-workspace.log",
+      "log_sha256": "9385a919c7ba92b6df4d995c0908ede2676c5cf9720b421c97f3867f6dbf8193",
+      "note": ""
+    },
+    {
+      "id": "test-od-isa",
+      "command": "cargo test -p od-isa --no-fail-fast --locked --offline",
+      "status": "passed",
+      "returncode": 0,
+      "duration_seconds": 12,
+      "log": "work/stage4/s4-44b/test-od-isa.log",
+      "log_sha256": "c907607df110a38e325595585d8c38061808fc2a77a2ba68d2e5c3a3b94da2c8",
+      "note": "",
+      "targets": [
+        {
+          "target": "unittests src/lib.rs",
+          "binary": "od_isa",
+          "status": "passed",
+          "passed": 2322,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/cpl0_profile_set.rs",
+          "binary": "cpl0_profile_set",
+          "status": "passed",
+          "passed": 1591,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/cpl3_profile_set.rs",
+          "binary": "cpl3_profile_set",
+          "status": "passed",
+          "passed": 126,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/cpl3_syscall.rs",
+          "binary": "cpl3_syscall",
+          "status": "passed",
+          "passed": 29,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/paged_pio_u8_profile.rs",
+          "binary": "paged_pio_u8_profile",
+          "status": "passed",
+          "passed": 6,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/paged_probe_profile.rs",
+          "binary": "paged_probe_profile",
+          "status": "passed",
+          "passed": 76,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/pio_u8_profile.rs",
+          "binary": "pio_u8_profile",
+          "status": "passed",
+          "passed": 7,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/user_mode_commit.rs",
+          "binary": "user_mode_commit",
+          "status": "passed",
+          "passed": 15,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "Doc-tests od_isa",
+          "binary": "od_isa",
+          "status": "passed",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        }
+      ],
+      "targets_total": 9,
+      "targets_failed": 0
+    },
+    {
+      "id": "test-od-machine",
+      "command": "cargo test -p od-machine --no-fail-fast --locked --offline",
+      "status": "passed",
+      "returncode": 0,
+      "duration_seconds": 75,
+      "log": "work/stage4/s4-44b/test-od-machine.log",
+      "log_sha256": "6b4ba25083fe12a34832ba916e036f066a7d6b5b9e73577932a5ebaf98de7f47",
+      "note": "",
+      "targets": [
+        {
+          "target": "unittests src/lib.rs",
+          "binary": "od_machine",
+          "status": "passed",
+          "passed": 1151,
+          "failed": 0,
+          "ignored": 6,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/diagnostic_vcpu_api.rs",
+          "binary": "diagnostic_vcpu_api",
+          "status": "passed",
+          "passed": 8,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/display_device.rs",
+          "binary": "display_device",
+          "status": "passed",
+          "passed": 10,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/event_queue_api.rs",
+          "binary": "event_queue_api",
+          "status": "passed",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/interrupt_pump_flat.rs",
+          "binary": "interrupt_pump_flat",
+          "status": "passed",
+          "passed": 12,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/interrupt_pump_paged.rs",
+          "binary": "interrupt_pump_paged",
+          "status": "passed",
+          "passed": 14,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/interrupt_queue_pump.rs",
+          "binary": "interrupt_queue_pump",
+          "status": "passed",
+          "passed": 8,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/interrupt_timer_pump.rs",
+          "binary": "interrupt_timer_pump",
+          "status": "passed",
+          "passed": 7,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/paged_ltr_step.rs",
+          "binary": "paged_ltr_step",
+          "status": "passed",
+          "passed": 14,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/paged_mov_step.rs",
+          "binary": "paged_mov_step",
+          "status": "passed",
+          "passed": 39,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/paged_pio_u8_step.rs",
+          "binary": "paged_pio_u8_step",
+          "status": "passed",
+          "passed": 7,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/paged_probe_quantum.rs",
+          "binary": "paged_probe_quantum",
+          "status": "passed",
+          "passed": 29,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/paged_segment_mov_step.rs",
+          "binary": "paged_segment_mov_step",
+          "status": "passed",
+          "passed": 14,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/paged_sti_hlt_wake.rs",
+          "binary": "paged_sti_hlt_wake",
+          "status": "passed",
+          "passed": 9,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/pio_u8_step.rs",
+          "binary": "pio_u8_step",
+          "status": "passed",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/pit_irq0_pump.rs",
+          "binary": "pit_irq0_pump",
+          "status": "passed",
+          "passed": 18,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_alias_probe.rs",
+          "binary": "stage4_alias_probe",
+          "status": "passed",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_cpl3_syscall_probe.rs",
+          "binary": "stage4_cpl3_syscall_probe",
+          "status": "passed",
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_cr3_mixed_probe.rs",
+          "binary": "stage4_cr3_mixed_probe",
+          "status": "passed",
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_cross_page_probe.rs",
+          "binary": "stage4_cross_page_probe",
+          "status": "passed",
+          "passed": 12,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_flat_probe_load.rs",
+          "binary": "stage4_flat_probe_load",
+          "status": "passed",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_huge_pages_probe.rs",
+          "binary": "stage4_huge_pages_probe",
+          "status": "passed",
+          "passed": 10,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_paged_irq_probe.rs",
+          "binary": "stage4_paged_irq_probe",
+          "status": "passed",
+          "passed": 9,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_pf_repair_probe.rs",
+          "binary": "stage4_pf_repair_probe",
+          "status": "passed",
+          "passed": 7,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_pit_calibrate_probe.rs",
+          "binary": "stage4_pit_calibrate_probe",
+          "status": "passed",
+          "passed": 8,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_stack_probe.rs",
+          "binary": "stage4_stack_probe",
+          "status": "passed",
+          "passed": 7,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_store_load_probe.rs",
+          "binary": "stage4_store_load_probe",
+          "status": "passed",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_uart_irq_probe.rs",
+          "binary": "stage4_uart_irq_probe",
+          "status": "passed",
+          "passed": 12,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/uart16550_polling.rs",
+          "binary": "uart16550_polling",
+          "status": "passed",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/uart_rx_events.rs",
+          "binary": "uart_rx_events",
+          "status": "passed",
+          "passed": 7,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "Doc-tests od_machine",
+          "binary": "od_machine",
+          "status": "passed",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        }
+      ],
+      "targets_total": 31,
+      "targets_failed": 0
+    },
+    {
+      "id": "test-od-jit",
+      "command": "cargo test -p od-jit --no-fail-fast --locked --offline",
+      "status": "passed",
+      "returncode": 0,
+      "duration_seconds": 1,
+      "log": "work/stage4/s4-44b/test-od-jit.log",
+      "log_sha256": "1e7e960c0984a51357f98a60eefdcc5dbf55bd0e6a1319ef863636ce11445577",
+      "note": "",
+      "targets": [
+        {
+          "target": "unittests src/lib.rs",
+          "binary": "od_jit",
+          "status": "passed",
+          "passed": 455,
+          "failed": 0,
+          "ignored": 2,
+          "failed_tests": []
+        },
+        {
+          "target": "Doc-tests od_jit",
+          "binary": "od_jit",
+          "status": "passed",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        }
+      ],
+      "targets_total": 2,
+      "targets_failed": 0
+    },
+    {
+      "id": "test-od-host",
+      "command": "cargo test -p od-host --no-fail-fast --locked --offline",
+      "status": "passed",
+      "returncode": 0,
+      "duration_seconds": 19,
+      "log": "work/stage4/s4-44b/test-od-host.log",
+      "log_sha256": "1bd6e11b7bbbbf2b76b3705f52dddc8d512b659805b4f127445e1715516fd03f",
+      "note": "",
+      "targets": [
+        {
+          "target": "unittests src/lib.rs",
+          "binary": "od_host",
+          "status": "passed",
+          "passed": 379,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/diagnostic_jit_event.rs",
+          "binary": "diagnostic_jit_event",
+          "status": "passed",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/memory_corpus.rs",
+          "binary": "memory_corpus",
+          "status": "passed",
+          "passed": 22,
+          "failed": 0,
+          "ignored": 2,
+          "failed_tests": []
+        },
+        {
+          "target": "../../tests/cpu/stage3_dword_store_corpus.rs",
+          "binary": "stage3_dword_store_corpus",
+          "status": "passed",
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "../../tests/system/stage4_exception_delivery.rs",
+          "binary": "stage4_exception_delivery",
+          "status": "passed",
+          "passed": 39,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "../../tests/system/stage4_memory_fault.rs",
+          "binary": "stage4_memory_fault",
+          "status": "passed",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "Doc-tests od_host",
+          "binary": "od_host",
+          "status": "passed",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        }
+      ],
+      "targets_total": 7,
+      "targets_failed": 0
+    },
+    {
+      "id": "test-od-runner",
+      "command": "cargo test -p od-runner --no-fail-fast --locked --offline",
+      "status": "passed",
+      "returncode": 0,
+      "duration_seconds": 452,
+      "log": "work/stage4/s4-44b/test-od-runner.log",
+      "log_sha256": "8b79f89158d7d5b1512bebd78f7ca66a0ddb685d0c9db9be4f22a30fe39222a7",
+      "note": "",
+      "targets": [
+        {
+          "target": "unittests src/main.rs",
+          "binary": "od_runner",
+          "status": "passed",
+          "passed": 267,
+          "failed": 0,
+          "ignored": 3,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/firmware_boot_cli.rs",
+          "binary": "firmware_boot_cli",
+          "status": "passed",
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/fixture_v1_jit_block.rs",
+          "binary": "fixture_v1_jit_block",
+          "status": "passed",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/fixture_v1_jit_dispatch.rs",
+          "binary": "fixture_v1_jit_dispatch",
+          "status": "passed",
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/fixture_v2.rs",
+          "binary": "fixture_v2",
+          "status": "passed",
+          "passed": 589,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/linux_direct_lifecycle_cli.rs",
+          "binary": "linux_direct_lifecycle_cli",
+          "status": "passed",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/s2_42g_replay.rs",
+          "binary": "s2_42g_replay",
+          "status": "passed",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/s2_42k_replay.rs",
+          "binary": "s2_42k_replay",
+          "status": "passed",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/s2_42o_replay.rs",
+          "binary": "s2_42o_replay",
+          "status": "passed",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/s2_43a_diagnostic.rs",
+          "binary": "s2_43a_diagnostic",
+          "status": "passed",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_alias_build_cli.rs",
+          "binary": "stage4_alias_build_cli",
+          "status": "passed",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_cpl3_syscall_build_cli.rs",
+          "binary": "stage4_cpl3_syscall_build_cli",
+          "status": "passed",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_cross_page_build_cli.rs",
+          "binary": "stage4_cross_page_build_cli",
+          "status": "passed",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_huge_pages_build_cli.rs",
+          "binary": "stage4_huge_pages_build_cli",
+          "status": "passed",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_interrupt_pump_build_cli.rs",
+          "binary": "stage4_interrupt_pump_build_cli",
+          "status": "passed",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_interrupt_pump_paged_cli.rs",
+          "binary": "stage4_interrupt_pump_paged_cli",
+          "status": "passed",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_interrupt_queue_build_cli.rs",
+          "binary": "stage4_interrupt_queue_build_cli",
+          "status": "passed",
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_interrupt_timer_build_cli.rs",
+          "binary": "stage4_interrupt_timer_build_cli",
+          "status": "passed",
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_paged_irq_build_cli.rs",
+          "binary": "stage4_paged_irq_build_cli",
+          "status": "passed",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_paged_sti_hlt_build_cli.rs",
+          "binary": "stage4_paged_sti_hlt_build_cli",
+          "status": "passed",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_pf_repair_build_cli.rs",
+          "binary": "stage4_pf_repair_build_cli",
+          "status": "passed",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_pit_calibrate_build_cli.rs",
+          "binary": "stage4_pit_calibrate_build_cli",
+          "status": "passed",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_pit_irq0_cli.rs",
+          "binary": "stage4_pit_irq0_cli",
+          "status": "passed",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_probe_build_cli.rs",
+          "binary": "stage4_probe_build_cli",
+          "status": "passed",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_probe_cli.rs",
+          "binary": "stage4_probe_cli",
+          "status": "passed",
+          "passed": 9,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_stack_build_cli.rs",
+          "binary": "stage4_stack_build_cli",
+          "status": "passed",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_store_load_build_cli.rs",
+          "binary": "stage4_store_load_build_cli",
+          "status": "passed",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/stage4_uart_irq_cli.rs",
+          "binary": "stage4_uart_irq_cli",
+          "status": "passed",
+          "passed": 6,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        }
+      ],
+      "targets_total": 28,
+      "targets_failed": 0
+    },
+    {
+      "id": "test-od-bench",
+      "command": "cargo test -p od-bench --no-fail-fast --locked --offline",
+      "status": "passed",
+      "returncode": 0,
+      "duration_seconds": 6,
+      "log": "work/stage4/s4-44b/test-od-bench.log",
+      "log_sha256": "c44c726fab5af63ec22a364435322b04848b7d12c7b7797e7548e80d4374dda1",
+      "note": "",
+      "targets": [
+        {
+          "target": "unittests src/lib.rs",
+          "binary": "od_bench",
+          "status": "passed",
+          "passed": 73,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "unittests src/main.rs",
+          "binary": "od_bench",
+          "status": "passed",
+          "passed": 6,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/s4_43a_translation_churn.rs",
+          "binary": "s4_43a_translation_churn",
+          "status": "passed",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/s4_43b_bounded_queues.rs",
+          "binary": "s4_43b_bounded_queues",
+          "status": "passed",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "Doc-tests od_bench",
+          "binary": "od_bench",
+          "status": "passed",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        }
+      ],
+      "targets_total": 5,
+      "targets_failed": 0
+    },
+    {
+      "id": "test-rest-of-workspace",
+      "command": "cargo test --workspace --exclude od-isa --exclude od-machine --exclude od-jit --exclude od-host --exclude od-runner --exclude od-bench --no-fail-fast --locked --offline",
+      "status": "passed",
+      "returncode": 0,
+      "duration_seconds": 25,
+      "log": "work/stage4/s4-44b/test-rest-of-workspace.log",
+      "log_sha256": "efd7b89ac18013a5e8a0eda5da6dca0a3de91a339918d5254c2ae38d66dbfb4b",
+      "note": "",
+      "targets": [
+        {
+          "target": "unittests src/lib.rs",
+          "binary": "od_image_tool",
+          "status": "passed",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "unittests src/main.rs",
+          "binary": "od_image_tool",
+          "status": "passed",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/cli.rs",
+          "binary": "cli",
+          "status": "passed",
+          "passed": 19,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "unittests src/main.rs",
+          "binary": "od_power_loss",
+          "status": "passed",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "unittests src/lib.rs",
+          "binary": "od_storage",
+          "status": "passed",
+          "passed": 208,
+          "failed": 0,
+          "ignored": 1,
+          "failed_tests": []
+        },
+        {
+          "target": "unittests src/lib.rs",
+          "binary": "od_testkit",
+          "status": "passed",
+          "passed": 524,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/cpl0_set_differential.rs",
+          "binary": "cpl0_set_differential",
+          "status": "passed",
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "tests/s2_42s_rep_checkpoint.rs",
+          "binary": "s2_42s_rep_checkpoint",
+          "status": "passed",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "unittests src/lib.rs",
+          "binary": "od_tpm",
+          "status": "passed",
+          "passed": 264,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "unittests src/lib.rs",
+          "binary": "od_x86_runner",
+          "status": "passed",
+          "passed": 8,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "unittests src/main.rs",
+          "binary": "od_x86_runner",
+          "status": "passed",
+          "passed": 18,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "Doc-tests od_image_tool",
+          "binary": "od_image_tool",
+          "status": "passed",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "Doc-tests od_storage",
+          "binary": "od_storage",
+          "status": "passed",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "Doc-tests od_testkit",
+          "binary": "od_testkit",
+          "status": "passed",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "Doc-tests od_tpm",
+          "binary": "od_tpm",
+          "status": "passed",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        },
+        {
+          "target": "Doc-tests od_x86_runner",
+          "binary": "od_x86_runner",
+          "status": "passed",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0,
+          "failed_tests": []
+        }
+      ],
+      "targets_total": 16,
+      "targets_failed": 0
+    }
+  ],
+  "totals": {
+    "passed": 8,
+    "known_divergence": 1,
+    "failed": 0,
+    "timeout": 0,
+    "excluded_steps": 0,
+    "not_run": 4,
+    "blocked": 1
+  },
+  "not_run": [
+    {
+      "id": "linux-boot-positive-negative",
+      "status": "not_run",
+      "what": "Linux positive/negative boot",
+      "requires": "vmlinuz, initramfs and ACPI manifest/blob (guest artifacts, not in the repository)"
+    },
+    {
+      "id": "linux-direct-gate-real-kernel",
+      "status": "not_run",
+      "what": "od-runner linux-direct-gate on a real kernel",
+      "requires": "real vmlinuz + initramfs + ACPI manifest passed to linux-direct-gate"
+    },
+    {
+      "id": "mac-mini-hardware-cases",
+      "status": "blocked",
+      "what": "Mac mini hardware cases (physical Hypervisor.framework / KVM-method cases)",
+      "requires": "the Mac mini stand and its owner; stage 3 hardware gate stays in its own scope"
+    },
+    {
+      "id": "guest-firmware-artifacts-build",
+      "status": "not_run",
+      "what": "guest/firmware artifacts build (tools/build/*.py, firmware/uefi, tools/build/test_*.py)",
+      "requires": "x86_64-unknown-none/uefi toolchain run as a separate build job; the outputs are inputs of the boot cases above"
+    },
+    {
+      "id": "vmhost-system-smokes",
+      "status": "not_run",
+      "what": "tests/system Python/Swift/C smokes of the VMHost app (macOS app bundle)",
+      "requires": "built VMHost app bundle and a desktop session; stage 3 scope"
+    }
+  ],
+  "overall_local": "passed"
+}
