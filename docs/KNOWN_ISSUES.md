@@ -599,10 +599,19 @@
 ### ISSUE-170 — S7-04: Rust helper `MOV R15,R11` remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска exact byte MOVZX.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200e05`.
+- **Статус:** решена узко для exact `4D 89 DF` в base `PagedCpl0ProbeV1`.
+- **Результат:** разрешён только qword `MOV R15,R11` с точными REX/opcode/ModRM/length; общий MOV decoder и semantics не изменены. Скопирован R11 в R15, RIP продвинут на 3, остальное состояние и флаги сохранены.
+- **Проверка:** четыре focused `rust_helper_mov_r15_r11` tests и isolation from other paged profiles passed; все 360 `paged_probe_profile` tests прошли; `cargo check --offline -p od-isa --all-targets` и scoped rustfmt прошли. Образ `/private/tmp/od-fw-s7-04-issue170.bin` собран, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner retired 73 instructions and stopped at `4D 21 C7` (`AND R15,R8`, ISSUE-171), `RIP=0x200e08`, `Unsupported { opcode: 33 }`, `com1_bytes=0`. Full handoff validation remains incomplete.
+- **Ссылка:** [paged CPU-profile contract](specs/CPU_CONTRACT.md#s7-04-exact-rust-helper-mov-r15-r11).
+
+<a id="issue-171-s7-04-rust-helper-and-r15-r8-unsupported"></a>
+### ISSUE-171 — S7-04: Rust helper `AND R15,R8` remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска exact register MOV.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e08`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 72 instructions, then stops at raw bytes `4D 89 DF` (`MOV R15,R11`), `Unsupported { opcode: 137 }`, `RIP=0x200e05`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue169.bin`; bytes at offset `0xe05` are `4d 89 df`; runner budget 10000.
-- **Следующий шаг:** inspect the exact MOV register tuple and existing register-write semantics, then consider only this encoding in the base paged profile.
+- **Суть и последствия:** runner retired 73 instructions, then stops at bytes `4D 21 C7` (`AND R15,R8`), `Unsupported { opcode: 33 }`, `RIP=0x200e08`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue170.bin`; bytes at offset `0xe08` begin `4d 21 c7`; runner budget 10000.
+- **Следующий шаг:** inspect the exact logical-AND register tuple and existing flag semantics before considering this form in the base paged profile.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.
