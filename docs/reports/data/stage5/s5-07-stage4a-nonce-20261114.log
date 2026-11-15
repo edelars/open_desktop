@@ -1,0 +1,77 @@
+S5-07 counted Stage 4 nonce evidence
+Date: 2026-11-14/15 (America/Argentina/Buenos_Aires)
+Scenario: stage4-init-nonce; run_profile=smoke_not_acceptance
+Guest profile: counted stage4a --user-mode; cpl0_set; diagnostic_past_c7=false
+Requested budget: 3,000,000,000 instructions; RAM=128 MiB
+Artifact SHA-256 (same in every run):
+  vmlinuz       9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e
+  initramfs     ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588
+  ACPI blob     b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf
+  ACPI manifest 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2
+
+Series A: stage5-s5-07-stage4a-nonce-crlf-20261114-a
+  requested_runs=1; outcome=passed
+  host=macOS/aarch64; source_revision=c7d8b961fd84adc59df3d24ccfc4b25b5d5e774a; source_dirty=false
+  run=stage5-s5-07-stage4a-nonce-crlf-20261114-a-run-0001
+  nonce=OD518e80f7a51ab76e800004e7200000000
+  scenario_status=passed; guest_started=true; expected/actual stop=budget_exhausted
+  retired=2,999,999,998; wall_elapsed_seconds=1126.096400708; user CPU time not measured
+  UART scope=linux_direct_run_boot_com1; bytes=23434; complete=true
+  series.json SHA-256=0209b247019fd7ddf8a6b8c686bf8cd4f6d90c2ea23f128a34dd1343b5e3869b
+  manifest SHA-256=dbf0129962f308ed387387c0ac8792d40a55332b34d7f6b5467dd6777a6dfbae
+  raw runner JSON SHA-256=1262a5fd762c356ff519e5242f40385fa23e22c50074bf8f6df4c29094cb0c35
+  UART SHA-256=cef73ce7e95bf2446409ce3b8f332c67995d3cb950607599ccd6188673373751
+
+Series B: stage5-s5-07-stage4a-nonce-crlf-20261114-b
+  requested_runs=1; outcome=passed
+  host=macOS/aarch64; source_revision=c7d8b961fd84adc59df3d24ccfc4b25b5d5e774a; source_dirty=false
+  run=stage5-s5-07-stage4a-nonce-crlf-20261114-b-run-0001
+  nonce=OD518e8109ac0798cb0000079f400000000
+  scenario_status=passed; guest_started=true; expected/actual stop=budget_exhausted
+  retired=2,999,999,998; wall_elapsed_seconds=1122.077524125; user CPU time not measured
+  UART scope=linux_direct_run_boot_com1; bytes=23721; complete=true
+  series.json SHA-256=7769a42a47a4de41b2a1c03b085aee636919b34370732e849e633a2eb0761999
+  manifest SHA-256=db77c16ee5db8e5e36e22c4f128c6043131787d33422059f3d79c887d2833e90
+  raw runner JSON SHA-256=cf6fd341e109f0917bd5d70e4554b5c31ffa6f41c58013aa46caf140ee2f1ab0
+  UART SHA-256=d82559cc90e4542ed0b58b87fb424a302a4b936d3435e9ef6a41231875f84379
+
+Comparison of A vs B (od-runner --compare-results A/series.json B/series.json --linux-stage5 --json):
+  matches=true
+  explained_differences:
+    - series_id, run_id, nonce, raw runner JSON hash, UART hash/path, and wall time are run-specific metadata
+    - run[0].stage4-init-nonce terminal CPU snapshot, timing, IRQ, or quantum observations differ
+    - run[0].stage4-init-nonce UART timestamps, memory availability, sched_clock calibration, or terminal panic snapshot differ
+  unexplained_differences=[]
+  Note: A and B are two separate one-run series. This comparison does not compare C's runs internally.
+
+Series C: stage5-s5-07-stage4a-nonce-counted-20261114-c
+  requested_runs=2; common series_id; outcome=failed
+  host=macOS/aarch64; source_revision=26adcf149b5bb89a0e0bc7529be3b0a7ead975e0; source_dirty=false
+  series.json SHA-256=252b343e33715d887b801004ccf9d679343631c46996fd333370253944ebbc04
+  run 1: stage5-s5-07-stage4a-nonce-counted-20261114-c-run-0001
+    nonce=OD518e813cb31003a5000015b1c00000000
+    hardware_status=refused; scenario_status=failed; guest_started=true; runner exit=4
+    retired=2,320,063,581; wall_elapsed_seconds=944.304794916; no stop record
+    runner error: Config("an external interrupt of the board source was refused by the CPU delivery")
+    marker validation: missing exact OD_NONCE=<run nonce> line
+    UART scope=linux_direct_run_boot_com1; bytes=0; complete=false
+    manifest SHA-256=decaa26d51d40b8d52bbfe78304b19d9f80c40da3fcac77d6e7e8a7a9003fe58
+    raw runner JSON SHA-256=dbb2ab9adb00309eecbbec77997e171a4a20b084021c77fe8ed02b5abc8a9181
+    empty UART SHA-256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+  run 2: stage5-s5-07-stage4a-nonce-counted-20261114-c-run-0002
+    nonce=OD518e814a71093db5000015b1c00000001
+    hardware_status=loaded; scenario_status=passed; guest_started=true
+    expected/actual stop=budget_exhausted; retired=2,999,999,998
+    wall_elapsed_seconds=1186.213791125; user CPU time not measured
+    exact nonce marker present
+    UART scope=linux_direct_run_boot_com1; bytes=23702; complete=true
+    manifest SHA-256=1788b9622574ff14e0c514db5a4051500d6aa761e93cd3214c29423f158c6f03
+    raw runner JSON SHA-256=ab784a4dd155e3753dd6629cb17337c1fce7f1159198605f1b783155d52d3369
+    UART SHA-256=23de9a4cf464f08a0a25a366731f641fafaff4b9b0c25667f3b7c0bf263547a0
+
+Interpretation and limits:
+  - A and B prove counted live /init nonce echo on two independent single-run series and their comparator has no unexplained differences.
+  - C exercises the required common-ID two-run manifest, but aggregate failed because run 1 failed. Run 2 does not erase that result.
+  - Independent triage: firmware_board.rs maps any IrqDeliveryFailure::Refused(_) to a generic error. The captured C/1 evidence lacks vector, detailed refusal, CPL/RIP and stop/UART state, so the exact cause is undetermined. It is consistent with the unverified S4-39h external-IRQ-from-CPL3 boundary, but does not prove that cause. ISSUE-088 (syscall journal queue counters) is unrelated.
+  - The comparator compares two series by matching runs at the same index; the series writer aggregates statuses and validates unique nonces but does not compare runs within one series.
+  - These are runner-recorded stop-scoped COM1 captures, not independent streaming UART traces. S5-06 A-G were not booted or executed as guest scenarios. S5-07 and Stage 5 remain unaccepted.

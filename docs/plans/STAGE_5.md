@@ -176,7 +176,7 @@
 | S5-06 | S5-01 Method gate (reviewed), S5-05 | Гостевой набор сценариев A–G; полный acceptance сохраняет собственные стендовые gates |
 | S5-07 | S5-01 Method gate (reviewed) | Повторяемые прогоны и сбор evidence в команде `linux-direct`; приёмочный `N` для S5-15 пока не задаётся |
 | S5-17 | S5-03 | Host-side отказы: ENOSPC, повреждённый образ, обрыв, второй writer |
-| S5-08 | S5-06, S5-07, S5-01 Method gate; blocked до S4-39 и S4-31 | Сценарий A на initramfs: загрузка → выключение → повторный запуск; calibration boot input возможен только после принятия этого пути |
+| S5-08 | S5-06, S5-07, S5-01 Method gate; S4-39j принят, но parent S4-39 остаётся `[ ]`; blocked до принятия S4-39, успешной S5-07 серии и S4-31 | Сценарий A на initramfs: загрузка → выключение → повторный запуск; calibration boot input возможен только после принятия этого пути |
 | S5-09 | S5-04, S5-08, S5-01 Method gate; blocked до приёмки S7-16, PCI-привязки и маршрута прерываний | Сценарий B: rootfs на диске, запись сохраняется между запусками |
 | S5-10 | S5-09, S5-21, S5-01 Method gate | Сценарий C: архивирование, ФС, контроль целостности; может дать измерение цикла после acceptance |
 | S5-11 | S5-09, S5-21, S5-01 Method gate | Сценарий D: компиляция небольшого проекта в госте; может дать измерение цикла после acceptance |
@@ -358,6 +358,8 @@ Scenario candidate summaries in the compact inventories are derived from exact r
 
 Дополнение 2026-11-14: `od-runner` теперь встраивает Git revision и build-time dirty state для production inputs; новые S5 manifests имеют schema v2, а comparator продолжает читать v1 (для старой схемы dirty state остаётся unobserved). Это улучшает provenance, но не устраняет отсутствие живой функциональной серии; S5-07 остаётся blocked/unaccepted.
 
+Дополнение 2026-11-15: две отдельные counted Stage 4 nonce серии A/B прошли с точным `OD_NONCE`, `retired=2,999,999,998` и одинаковыми входными hashes; `--compare-results A B --linux-stage5 --json` вернул `matches=true`, `unexplained_differences=[]`. Проверочная общая серия C (2 запуска, один series ID, два nonce) завершилась `failed`: run 1 дошёл до `retired=2,320,063,581`, затем runner вернул `run_failed` (`external interrupt ... refused by CPU delivery`), а run 2 прошёл ожидаемый budget stop и nonce marker. Этот отказ не удаляется сравнением A/B и не считается допустимым различием. S5-07 остаётся blocked/unaccepted до разбора отказа и успешного полного общего N-run series; ограниченный live evidence и точные hashes — в [отчёте](../reports/STAGE_5_REPORT.md#s5-07-counted-nonce-series-follow-up-2026-11-15) и [ISSUE-081](../KNOWN_ISSUES.md#issue-081-s5-07-series-evidence-prepared-but-stand-blocked).
+
 ### S5-17. Host-side отказы и ограниченные ресурсы
 
 - [x] Принято после независимого ревью. Гостевая часть (гость видит ошибку по контракту) — отдельным шагом, **blocked до `S4-39`**. Пересечение с `S9-18` разрешается решением `S5-00` п.4(а).
@@ -377,7 +379,7 @@ Scenario candidate summaries in the compact inventories are derived from exact r
 
 ### S5-08. Сценарий A: загрузка, выключение, повторный запуск на initramfs
 
-- [ ] Принято после ревью. **Blocked до `S4-39`** и до `S4-31` (ACPI-таблицы для гостевого выключения).
+- [ ] Принято после ревью. **S4-39j принят, но parent `S4-39` не принят** (S4-39h пропущен); сценарий остаётся blocked до принятия `S4-39`, успешной S5-07 серии и `S4-31` (ACPI-таблицы для гостевого выключения).
 - **Где:** `tests/system/`, команда `linux-direct`, отчёт и evidence. Диск в этом сценарии не участвует.
 - **Сделать:**
   1. Загрузить зафиксированное ядро с initramfs этапа 4, дождаться markers гостя с nonce.
