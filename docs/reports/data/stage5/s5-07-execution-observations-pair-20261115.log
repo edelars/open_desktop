@@ -1,0 +1,123 @@
+# S5-07 execution-observations diagnostic pair, 2026-11-15
+
+Purpose: compare exact CPL0 RDTSC instruction sites and delivered `#PF` event
+metadata across two independent counted Linux runs. These are two single-run
+diagnostics, not an automatic series; no comparator was run and this evidence
+does not accept S5-07.
+
+## Source, host and inputs
+
+- Worktree/branch: `codex`; source `bc46dd0fa5310a23d76f4a4587b953dc78ffbd50`, clean.
+- Host: Darwin arm64. Release `od-runner` 0.1.0 SHA-256:
+  `b68756edc0bd685689e79a8a2326fcdd443150d58f010a35f0837ffb3d2f34c4`.
+- Kernel SHA-256:
+  `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`.
+- Initramfs SHA-256:
+  `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`.
+- ACPI blob SHA-256:
+  `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`;
+  manifest hash `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`.
+- Matching `vmlinux-debug-7.0.0-38-generic` SHA-256:
+  `7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f`.
+- Both runs: 128 MiB, release build, budget `3,000,000,000`, counted `stage4a`,
+  `--set-cpl0 --user-mode`, expected stop `budget_exhausted`.
+
+## Commands
+
+```sh
+target/release/od-runner linux-direct \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs /Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --nonce od5obs20261115g \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 \
+  --out work/stage5/stage5-s5-07-execution-observations-20261115-g/run.json \
+  --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --execution-observations-out work/stage5/stage5-s5-07-execution-observations-20261115-g/execution-observations.json
+
+target/release/od-runner linux-direct \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs /Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --nonce od5obs20261115h \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 \
+  --out work/stage5/stage5-s5-07-execution-observations-20261115-h/run.json \
+  --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --execution-observations-out work/stage5/stage5-s5-07-execution-observations-20261115-h/execution-observations.json
+```
+
+## Results
+
+Both reports say `status=loaded`, `acceptance=counted`, and `guest_started=true`.
+Both reached `retired=2,999,999,998` and `budget_exhausted`; both exact nonce
+markers are present. CPL3 retired `873` instructions in each; the syscall
+journal is identical (`9` entered, `8` returned). PM reads (`230`), PIT `0x61`
+reads (`1`) and PIT `0x42` reads (`16,672`) also match.
+
+| Run | RDTSC reads (all CPL0) | Delivered #PF | IRQ0 edges / delivered | Quanta | Halt idle ns | Virtual ns | Residual ns |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `g` | 34,454,856 | 33 | 34,811 / 34,816 | 34,581,308 | 1,304,120 | 37,473,063,118 | 34,471,529,000 |
+| `h` | 34,446,881 | 34 | 34,803 / 34,808 | 34,572,928 | 1,579,898 | 37,465,363,896 | 34,463,554,000 |
+
+In both runs, the sum of all retained site counts equals the runner's CPL0
+RDTSC total; there are `22` sites, no unattributed reads, and no site overflow.
+The largest site is `0xffffffff8271b34d` (`delay_tsc+0x4d`): 34,062,756 reads
+in `g`, 34,054,713 in `h` (delta `-8,043`). The residual virtual-time delta is
+exactly the total RDTSC/PIT read delta (`-7,975,000 ns`); full `virtual_ns`
+differs by `-7,699,222 ns` because `h` has 275,778 ns more halt idle.
+
+Changed RDTSC-site counts (`h - g`):
+
+| RIP | Matched kernel symbol | g | h | Delta |
+|---|---|---:|---:|---:|
+| `0xffffffff8271b34d` | `delay_tsc+0x4d` | 34,062,756 | 34,054,713 | -8,043 |
+| `0xffffffff8200796e` | `extract_entropy.constprop.0+0xee` | 122,020 | 122,148 | +128 |
+| `0xffffffff8184f2f1` | `__refill_objects_any+0x31` | 964 | 969 | +5 |
+| `0xffffffff8271b31b` | `delay_tsc+0x1b` | 43,940 | 43,932 | -8 |
+| `0xffffffff8200713e` | `add_interrupt_randomness+0xe` | 34,816 | 34,808 | -8 |
+| `0xffffffff82726060` | `native_sched_clock+0x20` | 40,106 | 40,082 | -24 |
+| `0xffffffff813afa20` | `read_tsc` | 138,054 | 138,029 | -25 |
+
+The `delay_tsc` mappings were checked against this kernel's `vmlinux-debug` with
+`nm -n` and `objdump -d`. The `+0x4d` instruction is `RDTSC` in a loop that
+compares elapsed TSC against the requested delay and branches back while the
+target has not elapsed. This localizes most count variation to the kernel delay
+loop, but no call-stack attribution was captured; the data do not establish
+whether it comes from call count, per-call requested delays, interrupt timing,
+or another execution context. The resulting machine observation is not
+classified as benign.
+
+Each sidecar captured every delivered page fault (`33/33` and `34/34`, zero
+omitted). Their event multisets differ by one additional event in `h`: CPL0
+write at RIP `0xffffffff8271a9c1`, CR2 `0x7ffc659bc779`, error code `0x00000002`.
+`nm -n` maps the RIP to `rep_movs_alternative+0x11`; `objdump -d` shows a
+single-byte store through RDI at that instruction. The two runs' other page
+fault events match. This describes the instruction and address, but does not
+explain why this access faulted only in `h`.
+
+UART still differs in strict order: in `g`, the exact nonce line precedes
+`Run /init as init process`; in `h`, the printk precedes the nonce line. The
+terminal panic traces also differ: both contain `schedule`, `do_nanosleep` and
+`hrtimer_nanosleep`, while `g` additionally contains optional frames such as
+`__task_pid_nr_ns`, `handle_pte_fault`, `count_memcg_events`, `handle_mm_fault`
+and `irqentry_exit` that are absent in `h`. The audit line remains after the
+five thermal governor lines in both runs. No comparator was run for these single reports, no
+normalization was changed, and S5-07 remains blocked/unaccepted; the ordered
+UART and other machine differences are not declared benign.
+
+## Artifact hashes
+
+Raw files are under ignored `work/stage5/stage5-s5-07-execution-observations-20261115-{g,h}/`.
+
+- Run `g` report / observations sidecar:
+  `a006842361f2425c20e118136d17afdc47bca5a35b6555741f6880007864a225` /
+  `123258f4296f637c82bcb25bc646fcec3a6aa33a27939f10f298b875dd3cdf4f`.
+- Run `h` report / observations sidecar:
+  `5e4a04a5a7e2d2e2da77f7376d6532abf6812a6405c362daa645eb0395ea9789` /
+  `0b6405b340961ed8e8d3938c50da011afc39360c6e03743044e3c8abd5098e86`.
