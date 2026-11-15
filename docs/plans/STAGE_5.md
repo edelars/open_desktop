@@ -372,6 +372,8 @@ Scenario candidate summaries in the compact inventories are derived from exact r
 
 Перекрёстный просмотр сохранённых N=2 traces нашёл меняющийся набор optional frames: scheduler/PSI, page-fault/mm, task-id. Документация [Linux x86 stack traces](https://kernel.org/doc/html/v6.6/arch/x86/kernel-stacks.html#printing-backtraces-on-x86) определяет `?` как адрес вне ожидаемой frame-pointer chain; он часто указывает на stale stack value, но может быть реальным кадром, если unwinder не распознал цепочку. Нельзя нормализовать все `?` lines как безвредные без разбора фактического kernel build. Следующий шаг — установить, почему меняются эти trace observations и IRQ counts на данном build; до этого оставить их strict.
 
+Raw-stop audit для последнего pair обнаружил 23 изменившихся leaf paths: два UART payload поля (`com1_hex`, `com1_text`) и 21 machine-observation path. Все 21 machine paths покрыты `without_stage4_nonce_volatile_observations`; после исключения этого volatile set прочие machine fields совпадают. Machine observation mismatch возникает потому, что terminal snapshot gate из-за неизвестных optional frames отключает существующее сравнение volatile fields. Это локализует comparator gate, не объясняя семантическую вариацию; UART payload остаётся отдельным strict failure.
+
 ### S5-17. Host-side отказы и ограниченные ресурсы
 
 - [x] Принято после независимого ревью. Гостевая часть (гость видит ошибку по контракту) — отдельным шагом, **blocked до `S4-39`**. Пересечение с `S9-18` разрешается решением `S5-00` п.4(а).
