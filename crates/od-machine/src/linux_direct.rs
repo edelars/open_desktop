@@ -1275,16 +1275,26 @@ fn run_linux_direct_board_set_with(
             names.push("syscall".into());
         }
     }
-    let result = boot.board.run_linux_boot_cpl0_set_with_observations(
-        instruction_budget,
-        &set,
-        // The C7 boundary exists for the made-up DiagnosticV1 identity only (S4-38L9a): a
-        // subset profile answers leaves 1 and 0x8000_0001 for what it declares.
-        members.cpuid && !members.diagnostic_past_c7 && cpuid == CpuidProfile::DiagnosticV1,
-        members.fetch_cache,
-        members.irq,
-        capture_execution_observations,
-    );
+    let cpuid_boundary =
+        members.cpuid && !members.diagnostic_past_c7 && cpuid == CpuidProfile::DiagnosticV1;
+    let result = if capture_execution_observations {
+        boot.board.run_linux_boot_cpl0_set_with_observations(
+            instruction_budget,
+            &set,
+            cpuid_boundary,
+            members.fetch_cache,
+            members.irq,
+            true,
+        )
+    } else {
+        boot.board.run_linux_boot_cpl0_set(
+            instruction_budget,
+            &set,
+            cpuid_boundary,
+            members.fetch_cache,
+            members.irq,
+        )
+    };
     // The EFER the guest left stays whatever way the run ended.
     boot.board.set_guest_efer(efer_cell.get());
     boot.board.set_pci_config_address(pci_cell.get());

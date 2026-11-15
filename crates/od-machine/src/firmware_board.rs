@@ -17,7 +17,8 @@ use crate::execution_observations::{
 use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters, NoIrqSource};
 use crate::page_walk::translate_long64_2m_ram_read_only;
 use crate::paged_memory_adapter::{
-    IrqDeliveryFailure, PagedCpl0SetExit, run_cpl0_set_paged_2m_ram_with_execution_observations,
+    IrqDeliveryFailure, PagedCpl0SetExit, run_cpl0_set_paged_2m_ram_with_cpuid_boundary,
+    run_cpl0_set_paged_2m_ram_with_execution_observations,
 };
 use crate::paged_probe::run_paged_probe_2m_ram;
 use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
@@ -1916,29 +1917,54 @@ impl LoadedFirmwareBoard {
                     irq_counters.quantum_cut_by_deadline += 1;
                 }
             }
-            let report = run_cpl0_set_paged_2m_ram_with_execution_observations(
-                &mut self.state,
-                &mut self.bus,
-                self.page_table_root,
-                FIRMWARE_EFER,
-                context,
-                quantum_budget,
-                INTEGER_FLAGS,
-                set,
-                source
-                    .as_mut()
-                    .map(|source| source as &mut dyn FnMut() -> u64),
-                stop,
-                |_| {},
-                cpuid_boundary,
-                fetch_cache,
-                irq_hook.then(|| IrqBoundaryHook {
-                    source: &mut *self.irq_source,
-                    counters: &mut irq_counters,
-                    skip_first_boundary: partial_rep,
-                }),
-                execution_observations.as_mut(),
-            );
+            let report = if let Some(observations) = execution_observations.as_mut() {
+                run_cpl0_set_paged_2m_ram_with_execution_observations(
+                    &mut self.state,
+                    &mut self.bus,
+                    self.page_table_root,
+                    FIRMWARE_EFER,
+                    context,
+                    quantum_budget,
+                    INTEGER_FLAGS,
+                    set,
+                    source
+                        .as_mut()
+                        .map(|source| source as &mut dyn FnMut() -> u64),
+                    stop,
+                    |_| {},
+                    cpuid_boundary,
+                    fetch_cache,
+                    irq_hook.then(|| IrqBoundaryHook {
+                        source: &mut *self.irq_source,
+                        counters: &mut irq_counters,
+                        skip_first_boundary: partial_rep,
+                    }),
+                    Some(observations),
+                )
+            } else {
+                run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
+                    &mut self.state,
+                    &mut self.bus,
+                    self.page_table_root,
+                    FIRMWARE_EFER,
+                    context,
+                    quantum_budget,
+                    INTEGER_FLAGS,
+                    set,
+                    source
+                        .as_mut()
+                        .map(|source| source as &mut dyn FnMut() -> u64),
+                    stop,
+                    |_| {},
+                    cpuid_boundary,
+                    fetch_cache,
+                    irq_hook.then(|| IrqBoundaryHook {
+                        source: &mut *self.irq_source,
+                        counters: &mut irq_counters,
+                        skip_first_boundary: partial_rep,
+                    }),
+                )
+            };
             quanta += 1;
             partial_rep = matches!(
                 report.exit,
