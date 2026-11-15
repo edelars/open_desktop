@@ -35,18 +35,19 @@
       "iterations": 100,
       "epochs": 1,
       "elapsed_ms": 5,
-      "live_heap_before": 15670,
+      "live_heap_before": 14958,
       "live_heap_after": 15678,
-      "peak_heap_above_before": 1053760,
+      "peak_heap_above_before": 1054472,
       "allocations": 33,
-      "rss_before_bytes": 2686976,
+      "rss_before_bytes": 2703360,
       "rss_after_bytes": 4685824,
       "counters": {
         "iterations": 100,
         "epochs": 1,
         "segments": 4,
         "probes_compared": 1660,
-        "stale_resident_hits_before_invalidation": 70,
+        "resident_hits_before_invalidation": 70,
+        "stale_hits_before_invalidation": 47,
         "invlpg_invalidations": 50,
         "mov_cr3_invalidations": 50,
         "action_counts": [
@@ -84,7 +85,8 @@
         "epochs": 2,
         "segments": 8,
         "probes_compared": 3320,
-        "stale_resident_hits_before_invalidation": 144,
+        "resident_hits_before_invalidation": 144,
+        "stale_hits_before_invalidation": 96,
         "invlpg_invalidations": 100,
         "mov_cr3_invalidations": 100,
         "action_counts": [
@@ -122,7 +124,8 @@
         "epochs": 20,
         "segments": 80,
         "probes_compared": 33200,
-        "stale_resident_hits_before_invalidation": 1479,
+        "resident_hits_before_invalidation": 1479,
+        "stale_hits_before_invalidation": 963,
         "invlpg_invalidations": 1000,
         "mov_cr3_invalidations": 1000,
         "action_counts": [
@@ -148,22 +151,39 @@
   "rss_growth_main_vs_warmup_bytes": 245760,
   "live_heap_growth_main_vs_baseline_bytes": 0,
   "watchdog_self_test_timed_out": true,
-  "total_elapsed_ms": 128,
+  "total_elapsed_ms": 129,
+  "manual_fields": [
+    "test",
+    "source_commit",
+    "result",
+    "control_checks",
+    "manual_fields"
+  ],
   "test": "tools/bench/tests/s4_43a_translation_churn.rs (cargo test -p od-bench --test s4_43a_translation_churn, profile test = debug)",
-  "source_commit": "72180bd",
+  "source_commit": "2397ed9",
   "result": "passed",
   "control_checks": [
     {
       "name": "invalidation disabled (INVLPG consume does not clear)",
-      "where": "temporary edit of crates/od-machine/src/translation_probe_cache.rs, reverted, not committed",
+      "where": "crates/od-machine/src/translation_probe_cache.rs, temporary edit, reverted with git checkout, not committed",
+      "run_against": "test before review remarks (f55e158 test code)",
       "result": "test failed",
       "failure": "invalidation must empty the cache"
     },
     {
       "name": "tag ignores access kind and context",
-      "where": "temporary edit of crates/od-machine/src/translation_probe_cache.rs, reverted, not committed",
+      "where": "crates/od-machine/src/translation_probe_cache.rs, temporary edit, reverted with git checkout, not committed",
+      "run_against": "test before review remarks (f55e158 test code)",
       "result": "test failed",
       "failure": "first probe of page 0 in a new session hit"
+    },
+    {
+      "name": "value control: test mirror not updated for the Remap action",
+      "where": "tools/bench/tests/s4_43a_translation_churn.rs, temporary edit, reverted with git checkout, not committed",
+      "run_against": "test 2397ed9",
+      "result": "test failed",
+      "failure": "post-invalidation target: Read/Ring3 at 0x40c018: cache 0x3f018 != oracle 0x1c018 (stale or wrong translation)",
+      "note": "caught by the value comparison with the oracle; the structural asserts before it passed"
     }
   ]
 }
