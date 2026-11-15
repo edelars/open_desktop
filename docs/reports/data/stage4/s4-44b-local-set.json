@@ -1,32 +1,32 @@
 {
   "schema": "od.stage4.s4-44b.local-set.v2",
-  "generated_utc": "2026-11-15T01:48:44Z",
+  "generated_utc": "2026-11-15T02:08:52Z",
   "environment": {
-    "git_head": "f118596479406fba5c3173995ab88fc92f1e0740",
+    "git_head": "3e8467dbee253144561e6fb7ca002bc6da697371",
     "git_branch": "s4-44b-fix",
     "git_status_porcelain": [],
-    "script_sha256": "ea2e340800815f40cae28e16d6e87655734ee1fb19664c829b5992aa0e7b7ac8",
+    "script_sha256": "543f937819c6a545f71e75a935be26c5043e1f83fcbaf7dda91cbb64e25c6d42",
     "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
     "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
     "macos": "26.7.1",
     "arch": "arm64",
     "step_timeout_seconds": 1200,
-    "known_fmt_files": [
-      "crates/od-host/src/storage_abi_v1.rs",
-      "tools/image-tool/tests/cli.rs"
+    "known_fmt_diffs": [
+      "crates/od-host/src/storage_abi_v1.rs 1 9 a45ac43961401f05",
+      "tools/image-tool/tests/cli.rs 1 5 98bc3ea4bc4e24e9"
     ]
   },
-  "total_duration_seconds": 607,
+  "total_duration_seconds": 596,
   "steps": [
     {
       "id": "fmt",
-      "command": "cargo fmt --all -- --check",
+      "command": "cargo fmt --all -- --check --color never",
       "status": "known_divergence",
       "returncode": 1,
       "duration_seconds": 5,
       "log": "work/stage4/s4-44b/fmt.log",
-      "log_sha256": "7bda54ca1a276a586422e4e95ba349d853d570e4e7ce1ebff4f5a4540af985c2",
-      "note": "rustfmt divergences in KNOWN_FMT_FILES are known, not new errors; files: /Users/senya/projects/open_desktop/.claude/worktrees/agent-a4757b32a7f0ecaa5/crates/od-host/src/storage_abi_v1.rs /Users/senya/projects/open_desktop/.claude/worktrees/agent-a4757b32a7f0ecaa5/tools/image-tool/tests/cli.rs "
+      "log_sha256": "bf04740085f711d7b560f8f87464b85cb07fe9220d4af70075bfd670c7dd2d02",
+      "note": "rustfmt divergences are the known ones (KNOWN_FMT_DIFFS), not new errors; diff fingerprint equals KNOWN_FMT_DIFFS: crates/od-host/src/storage_abi_v1.rs tools/image-tool/tests/cli.rs "
     },
     {
       "id": "check-workspace",
@@ -35,7 +35,7 @@
       "returncode": 0,
       "duration_seconds": 1,
       "log": "work/stage4/s4-44b/check-workspace.log",
-      "log_sha256": "1975e67ea300246bb86ee87e40f0e2a2a3ba3f53e0714f391d12475e5c2577bd",
+      "log_sha256": "9385a919c7ba92b6df4d995c0908ede2676c5cf9720b421c97f3867f6dbf8193",
       "note": ""
     },
     {
@@ -45,7 +45,7 @@
       "returncode": 0,
       "duration_seconds": 12,
       "log": "work/stage4/s4-44b/test-od-isa.log",
-      "log_sha256": "a317c4fe55d283faede6d64d6cbfebb10ff3dce4a0dc1ec3112eb62d8c074c0c",
+      "log_sha256": "c907607df110a38e325595585d8c38061808fc2a77a2ba68d2e5c3a3b94da2c8",
       "note": "",
       "targets": [
         {
@@ -140,7 +140,7 @@
       "returncode": 0,
       "duration_seconds": 75,
       "log": "work/stage4/s4-44b/test-od-machine.log",
-      "log_sha256": "9d5e19dd2b94f39a17c396b9a0e2f3c0ed21cb0445df7d6271bad3cd3d32a6bc",
+      "log_sha256": "6b4ba25083fe12a34832ba916e036f066a7d6b5b9e73577932a5ebaf98de7f47",
       "note": "",
       "targets": [
         {
@@ -433,7 +433,7 @@
       "returncode": 0,
       "duration_seconds": 1,
       "log": "work/stage4/s4-44b/test-od-jit.log",
-      "log_sha256": "2bb7bd44913150261bebef79cbf818edece35836bf585b30c7dcfa9bcd45cbd1",
+      "log_sha256": "1e7e960c0984a51357f98a60eefdcc5dbf55bd0e6a1319ef863636ce11445577",
       "note": "",
       "targets": [
         {
@@ -463,9 +463,9 @@
       "command": "cargo test -p od-host --no-fail-fast --locked --offline",
       "status": "passed",
       "returncode": 0,
-      "duration_seconds": 23,
+      "duration_seconds": 19,
       "log": "work/stage4/s4-44b/test-od-host.log",
-      "log_sha256": "d926fe9d57ae6900fd5ff65a50730f14e1a6c89547fef3219941767bc975be15",
+      "log_sha256": "1bd6e11b7bbbbf2b76b3705f52dddc8d512b659805b4f127445e1715516fd03f",
       "note": "",
       "targets": [
         {
@@ -540,9 +540,9 @@
       "command": "cargo test -p od-runner --no-fail-fast --locked --offline",
       "status": "passed",
       "returncode": 0,
-      "duration_seconds": 458,
+      "duration_seconds": 452,
       "log": "work/stage4/s4-44b/test-od-runner.log",
-      "log_sha256": "a4c562d38d9c84d3c9c2c283654989a50823bdf0106c0898901b40f9462794e0",
+      "log_sha256": "8b79f89158d7d5b1512bebd78f7ca66a0ddb685d0c9db9be4f22a30fe39222a7",
       "note": "",
       "targets": [
         {
@@ -806,9 +806,9 @@
       "command": "cargo test -p od-bench --no-fail-fast --locked --offline",
       "status": "passed",
       "returncode": 0,
-      "duration_seconds": 7,
+      "duration_seconds": 6,
       "log": "work/stage4/s4-44b/test-od-bench.log",
-      "log_sha256": "a705ada0500280fbc1e21e2a311f4d095e1aa7826aa5fb4e5b62a48fe711ad56",
+      "log_sha256": "c44c726fab5af63ec22a364435322b04848b7d12c7b7797e7548e80d4374dda1",
       "note": "",
       "targets": [
         {
@@ -867,7 +867,7 @@
       "returncode": 0,
       "duration_seconds": 25,
       "log": "work/stage4/s4-44b/test-rest-of-workspace.log",
-      "log_sha256": "08cb68ad5949f40c5d7ce51729c03c8147ccda062549e32c9e6cf0028646850f",
+      "log_sha256": "efd7b89ac18013a5e8a0eda5da6dca0a3de91a339918d5254c2ae38d66dbfb4b",
       "note": "",
       "targets": [
         {
