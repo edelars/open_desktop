@@ -588,10 +588,12 @@ fn paged_probe_handoff_field_reads_use_tracked_page_walk_and_zero_extend_registe
             0x0f, 0xb7, 0x7e, 0x08, // MOVZX EDI,word ptr [RSI+8]
             0x0f, 0xb7, 0x5e, 0x0a, // MOVZX EBX,word ptr [RSI+0xA]
             0x8b, 0x4e, 0x0c, // MOV ECX,dword ptr [RSI+0xC]
+            0x8b, 0x4e, 0x10, // MOV ECX,dword ptr [RSI+0x10]
         ],
     );
     put(&mut bus, DATA_PHYSICAL + 8, 0xfeed_face_2468_1234);
     put_bytes_at(&mut bus, DATA_PHYSICAL + 0x0c, &[0xef, 0xcd, 0xab, 0x89]);
+    put(&mut bus, DATA_PHYSICAL + 0x10, 0xcafe_babe_7654_3210);
     let mut state = initial_state(0);
     state.gpr[Register::Rsi as usize] = DATA_LINEAR;
     state.gpr[Register::Rdi as usize] = 0xaabb_ccdd_eeff_0011;
@@ -600,21 +602,26 @@ fn paged_probe_handoff_field_reads_use_tracked_page_walk_and_zero_extend_registe
     let before_flags = state.rflags;
     let mut writes = Vec::new();
 
-    let result = run(&mut state, &mut bus, 3, || false, &mut writes);
+    let result = run(&mut state, &mut bus, 4, || false, &mut writes);
 
     assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
-    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(result.instructions_executed, 4);
     assert_eq!(result.page_fault, None);
     assert_eq!(result.memory_error, None);
-    assert_eq!(state.rip, CODE_LINEAR + 11);
+    assert_eq!(state.rip, CODE_LINEAR + 14);
     assert_eq!(state.gpr[Register::Rdi as usize], 0x1234);
     assert_eq!(state.gpr[Register::Rbx as usize], 0x2468);
-    assert_eq!(state.gpr[Register::Rcx as usize], 0x89ab_cdef);
+    assert_eq!(state.gpr[Register::Rcx as usize], 0x7654_3210);
     assert_eq!(state.rflags, before_flags);
     assert_eq!(
         qword(&mut bus, DATA_PHYSICAL + 8),
         0x89ab_cdef_2468_1234,
         "the handoff field loads perform no data write"
+    );
+    assert_eq!(
+        qword(&mut bus, DATA_PHYSICAL + 0x10),
+        0xcafe_babe_7654_3210,
+        "the second dword handoff load performs no data write"
     );
     assert_eq!(qword(&mut bus, ROOT), ROOT + 0x1007 | (1 << 5));
     assert_eq!(qword(&mut bus, ROOT + 0x1000), ROOT + 0x2007 | (1 << 5));

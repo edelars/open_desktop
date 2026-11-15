@@ -20862,8 +20862,8 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             };
         }
         // S7-04: the Rust helper reads exact handoff fields with MOVZX Word at
-        // +8/+0xA and `8B 4E 0C` (MOV ECX,dword ptr [RSI+0xC]). Reuse the
-        // faulting read and 32-bit write; other load forms remain unsupported.
+        // +8/+0xA and `8B 4E 0C`/`8B 4E 10` (MOV ECX,dword ptr [RSI+0xC/+0x10]).
+        // Reuse the faulting read and 32-bit write; other load forms remain unsupported.
         Operation::Extend {
             dst: destination,
             src: Operand::Memory(source),
@@ -20908,7 +20908,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             && source.base == AddressBase::Register(Register::Rsi)
             && source.index.is_none()
             && source.scale == 1
-            && source.displacement == 0x0c
+            && matches!(source.displacement, 0x0c | 0x10)
             && source.address_size == OperandSize::Qword
             && source.size == OperandSize::Dword =>
         {
