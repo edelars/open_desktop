@@ -569,6 +569,19 @@ fn valid_nonce(nonce: &str) -> bool {
 }
 
 fn validate_markers(bytes: &[u8], nonce: &str, expected_s5: &[String]) -> MarkerCheck {
+    validate_markers_with_crlf(bytes, nonce, expected_s5, true)
+}
+
+fn validate_markers_legacy(bytes: &[u8], nonce: &str, expected_s5: &[String]) -> MarkerCheck {
+    validate_markers_with_crlf(bytes, nonce, expected_s5, false)
+}
+
+fn validate_markers_with_crlf(
+    bytes: &[u8],
+    nonce: &str,
+    expected_s5: &[String],
+    normalize_crlf: bool,
+) -> MarkerCheck {
     let mut errors = Vec::new();
     let mut stage4_nonce_line = None;
     let mut s5_keys = Vec::new();
@@ -584,7 +597,12 @@ fn validate_markers(bytes: &[u8], nonce: &str, expected_s5: &[String]) -> Marker
     };
     for raw in text.split_inclusive('\n') {
         let terminated = raw.ends_with('\n');
-        let line = raw.strip_suffix('\n').unwrap_or(raw);
+        let raw_line = raw.strip_suffix('\n').unwrap_or(raw);
+        let line = if normalize_crlf {
+            raw_line.strip_suffix('\r').unwrap_or(raw_line)
+        } else {
+            raw_line
+        };
         if !line.starts_with("OD_NONCE=") && !line.starts_with("OD_S5_") {
             continue;
         }
@@ -954,14 +972,24 @@ fn load_run_manifest(series_path: &Path, reference: &RunReference) -> Result<Run
     if uart != raw_com1 {
         return Err("saved UART bytes do not match runner stop record".into());
     }
-    let checked = validate_markers(
+    let canonical = validate_markers(
         &uart,
         &manifest.nonce,
         &manifest.guest_markers.expected_s5_marker_keys,
     );
-    if checked.evidence != manifest.guest_markers {
-        return Err("recorded guest marker validation does not match UART bytes".into());
-    }
+    let checked = if canonical.evidence == manifest.guest_markers {
+        canonical
+    } else {
+        let legacy = validate_markers_legacy(
+            &uart,
+            &manifest.nonce,
+            &manifest.guest_markers.expected_s5_marker_keys,
+        );
+        if legacy.evidence != manifest.guest_markers {
+            return Err("recorded guest marker validation does not match UART bytes".into());
+        }
+        legacy
+    };
     let derived_status = scenario_status(
         &manifest.scenario_id,
         &manifest.hardware_status,
@@ -1316,6 +1344,49 @@ mod tests {
     }
 
     #[test]
+    fn crlf_marker_manifests_load_with_legacy_v1_v2_and_canonical_v2_evidence() {
+        let temp = std::env::temp_dir().join(format!(
+            "od-runner-stage5-crlf-compat-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        for (series_id, legacy_marker_evidence, schema_version) in [
+            ("crlf-legacy-v1", true, 1),
+            ("crlf-legacy-v2", true, SERIES_SCHEMA_VERSION),
+            ("crlf-canonical-v2", false, SERIES_SCHEMA_VERSION),
+        ] {
+            let series_path =
+                write_crlf_test_series(&temp, series_id, legacy_marker_evidence, schema_version);
+            let series = fresh_manifest(&series_path).unwrap();
+            let loaded = load_run_manifest(&series_path, &series.runs[0]).unwrap();
+            let root = series_path.parent().unwrap();
+            let uart_path = root.join(&loaded.uart.path);
+            let uart = fs::read(uart_path).unwrap();
+            let expected = if legacy_marker_evidence {
+                validate_markers_legacy(
+                    &uart,
+                    &loaded.nonce,
+                    &loaded.guest_markers.expected_s5_marker_keys,
+                )
+            } else {
+                validate_markers(
+                    &uart,
+                    &loaded.nonce,
+                    &loaded.guest_markers.expected_s5_marker_keys,
+                )
+            };
+            assert_eq!(loaded.schema_version, schema_version);
+            assert_eq!(loaded.guest_markers, expected.evidence);
+        }
+
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
     fn marker_validator_requires_exact_nonce_order_and_no_duplicates() {
         let expected = vec!["A_FILE".to_string(), "A_PASS".to_string()];
         let good = b"kernel: boot\nOD_NONCE=runNonce001\nOD_S5_A_FILE nonce=runNonce001 path=/tmp/a sha256=abc\nOD_S5_A_PASS nonce=runNonce001 result=ok\n";
@@ -1328,9 +1399,34 @@ mod tests {
             b"OD_NONCE=runNonce001\nOD_S5_A_FILE nonce=wrong path=/tmp/a sha256=abc\nOD_S5_A_PASS nonce=runNonce001 result=ok\n".as_slice(),
             b"OD_NONCE=runNonce001\nOD_S5_A_FILE nonce=runNonce001 path=/tmp/a sha256=abc\nOD_S5_A_FILE nonce=runNonce001 path=/tmp/a sha256=abc\nOD_S5_A_PASS nonce=runNonce001 result=ok\n".as_slice(),
             b"OD_NONCE=wrongNonce001\nOD_S5_A_FILE nonce=runNonce001 path=/tmp/a sha256=abc\nOD_S5_A_PASS nonce=runNonce001 result=ok\n".as_slice(),
+            b"OD_NONCE=runNonce001\r\r\nOD_S5_A_FILE nonce=runNonce001 path=/tmp/a sha256=abc\nOD_S5_A_PASS nonce=runNonce001 result=ok\n".as_slice(),
             b"OD_NONCE=runNonce001\nOD_S5_A_PASS nonce=runNonce001 result=ok\nOD_S5_A_FILE nonce=runNonce001 path=/tmp/a sha256=abc\n".as_slice(),
         ] {
             assert!(!validate_markers(bad, "runNonce001", &expected).evidence.valid);
+        }
+    }
+
+    #[test]
+    fn marker_validator_accepts_crlf_nonce_line_without_relaxing_exact_value() {
+        let nonce = "runNonce001";
+        let crlf = format!("OD_NONCE={nonce}\r\n");
+        let check = validate_markers(crlf.as_bytes(), nonce, &[]);
+        assert!(check.evidence.valid, "{:?}", check.evidence.errors);
+        assert_eq!(
+            check.evidence.stage4_nonce_line.as_deref(),
+            Some("OD_NONCE=runNonce001")
+        );
+
+        for malformed in [
+            format!("OD_NONCE={nonce}x\r\n"),
+            format!("OD_NONCE={nonce}\r\r\n"),
+        ] {
+            assert!(
+                !validate_markers(malformed.as_bytes(), nonce, &[])
+                    .evidence
+                    .valid,
+                "accepted malformed marker {malformed:?}"
+            );
         }
     }
 
@@ -1588,6 +1684,79 @@ mod tests {
             runs: vec![reference],
         };
         let series_path = series_dir.join("series.json");
+        fs::write(&series_path, serde_json::to_vec_pretty(&series).unwrap()).unwrap();
+        series_path
+    }
+
+    fn write_crlf_test_series(
+        root: &Path,
+        series_id: &str,
+        legacy_marker_evidence: bool,
+        schema_version: u32,
+    ) -> PathBuf {
+        let nonce = "nonceCompatibility0001";
+        let series_path = write_test_series(root, series_id, nonce, "PASS");
+        let series_dir = series_path.parent().unwrap();
+        let mut series: Value = serde_json::from_slice(&fs::read(&series_path).unwrap()).unwrap();
+        let run_path = series_dir.join(series["runs"][0]["manifest"].as_str().unwrap());
+        let mut run: RunManifest = serde_json::from_slice(&fs::read(&run_path).unwrap()).unwrap();
+        let uart_path = series_dir.join(&run.uart.path);
+        let uart = String::from_utf8(fs::read(&uart_path).unwrap())
+            .unwrap()
+            .replace('\n', "\r\n")
+            .into_bytes();
+        fs::write(&uart_path, &uart).unwrap();
+
+        let raw_path = series_dir.join(&run.runner.raw_json);
+        let mut raw: Value = serde_json::from_slice(&fs::read(&raw_path).unwrap()).unwrap();
+        let com1_hex = uart
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        raw["stop"]["com1_hex"] = json!(com1_hex);
+        raw["stop"]["com1_text"] = json!(String::from_utf8_lossy(&uart).into_owned());
+        let raw_bytes = serde_json::to_vec(&raw).unwrap();
+        fs::write(&raw_path, &raw_bytes).unwrap();
+
+        run.runner.raw_json_sha256 = od_testkit::sha256_hex(&raw_bytes);
+        run.runner.stop = raw.get("stop").cloned();
+        run.uart.sha256 = od_testkit::sha256_hex(&uart);
+        run.uart.byte_count = uart.len();
+        let checked = if legacy_marker_evidence {
+            validate_markers_legacy(&uart, nonce, &run.guest_markers.expected_s5_marker_keys)
+        } else {
+            validate_markers(&uart, nonce, &run.guest_markers.expected_s5_marker_keys)
+        };
+        run.guest_markers = checked.evidence;
+        run.scenario_status = scenario_status(
+            &run.scenario_id,
+            &run.hardware_status,
+            run.runner.guest_started,
+            &run.guest_markers,
+            run.runner.stop.as_ref(),
+            &run.expected_stop_kind,
+        );
+        run.reason = scenario_reason(
+            &run.scenario_id,
+            &run.hardware_status,
+            run.runner.guest_started,
+            &run.guest_markers,
+            run.runner.stop.as_ref(),
+            &run.expected_stop_kind,
+        );
+        let mut run_value = serde_json::to_value(&run).unwrap();
+        run_value["schema_version"] = json!(schema_version);
+        series["schema_version"] = json!(schema_version);
+        if schema_version == 1 {
+            run_value["host"]
+                .as_object_mut()
+                .unwrap()
+                .remove("source_dirty");
+        }
+        let run_bytes = serde_json::to_vec_pretty(&run_value).unwrap();
+        fs::write(&run_path, &run_bytes).unwrap();
+        series["runs"][0]["manifest_sha256"] = json!(od_testkit::sha256_hex(&run_bytes));
+        series["outcome"] = serde_json::to_value(run.scenario_status).unwrap();
         fs::write(&series_path, serde_json::to_vec_pretty(&series).unwrap()).unwrap();
         series_path
     }
