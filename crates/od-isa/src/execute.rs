@@ -20368,21 +20368,26 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     | (crate::ARITHMETIC_FLAGS & !crate::AF),
             };
         }
-        // S7-04: startup/helper use only six literal short conditional
-        // branch encodings; other branches stay outside the bounded profile.
+        // S7-04: startup/helper use only observed literal conditional branch
+        // encodings, including this exact near JNZ; other branches stay outside.
         Operation::Branch {
             condition,
             displacement,
         } if base_profile
-            && instruction.opcode.map == OpcodeMap::Primary
-            && instruction.length == 2
             && instruction.prefixes == Prefixes::default()
-            && matches!(
-                (condition, instruction.opcode.byte, displacement),
-                (ConditionCode::NotEqual, 0x75, 0x24 | 0x2a | 0x38 | 0x77)
-                    | (ConditionCode::Above, 0x77, 0x0e)
-                    | (ConditionCode::Equal, 0x74, 0x3b)
-            ) =>
+            && ((instruction.opcode.map == OpcodeMap::Primary
+                && instruction.length == 2
+                && matches!(
+                    (condition, instruction.opcode.byte, displacement),
+                    (ConditionCode::NotEqual, 0x75, 0x24 | 0x2a | 0x38 | 0x77)
+                        | (ConditionCode::Above, 0x77, 0x0e)
+                        | (ConditionCode::Equal, 0x74, 0x3b)
+                ))
+                || (instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0x85
+                    && instruction.length == 6
+                    && condition == ConditionCode::NotEqual
+                    && displacement == 0xd6)) =>
         {
             if condition.evaluate(state.rflags) {
                 let target = next_rip.wrapping_add_signed(i64::from(displacement));

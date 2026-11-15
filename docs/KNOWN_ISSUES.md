@@ -382,7 +382,7 @@
 - **Статус:** решена только для exact `8B 4E 0C` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
 - **Результат и проверка:** exact MOV reads a dword from `[RSI+0xC]`, zero-extends ECX into RCX, preserves flags, and commits state only after a successful tracked read. Four focused tests pass for full state, injected read-fault atomicity, neighboring forms, CPL3 and other profiles. A real four-level integration test confirms the dword field through tracked page walk, zero-extension and A bits, with no cross-page claim.
 - **Основание:** образ `/private/tmp/od-fw-s7-jz-3b.bin`; `od -An -tx1 -j 0xda3 -N16` показывает `8b 4e 0c 81 f9 a0 00 00 00 0f 85 d6 00 00 00 8b`; runner с бюджетом 10000.
-- **Runner:** image `/private/tmp/od-fw-s7-cmp-ecx-a0.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retired 51 instructions, then stopped at `0F 85 D6 00 00 00` (`JNZ rel32 +0xD6`) with `Unsupported { opcode: 133 }`, `RIP=0x200dac`, `com1_bytes=0`; see [ISSUE-149](#issue-149-s7-04-rust-helper-jnz-rel32-unsupported).
+- **Runner:** image `/private/tmp/od-fw-s7-jcc-near.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retired 52 instructions, then stopped at `8B 4E 10` (`MOV ECX,dword ptr [RSI+0x10]`) with `Unsupported { opcode: 139 }`, `RIP=0x200db2`, `com1_bytes=0`; see [ISSUE-150](#issue-150-s7-04-rust-helper-mov-ecx-dword-rsi-plus-0x10-unsupported).
 
 <a id="issue-148-s7-04-rust-helper-cmp-ecx-0xa0-unsupported"></a>
 ### ISSUE-148 — S7-04: exact Rust-helper `CMP ECX,0xA0` (`81 F9 A0 00 00 00`) profile slice
@@ -392,16 +392,25 @@
 - **Суть и последствия:** точная форма `81 F9 A0 00 00 00` сравнивает low 32 bits ECX с `0xa0`, игнорирует high RCX и меняет только arithmetic flags. Guard сохраняет dword operand width и не допускает соседние register/immediate/prefix/width формы.
 - **Основание:** образ `/private/tmp/od-fw-s7-mov-ecx-dword.bin`; `od -An -tx1 -j 0xda6 -N16` показывает `81 f9 a0 00 00 00 0f 85 d6 00 00 00 8b 4e 10 89`; runner с бюджетом 10000.
 - **Результат и проверка:** `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_cmp_ecx_imm32 -- --nocapture` — 4 passed: high RCX ignored, ECX flags/definedness, immediate/prefix/neighbor rejects, fetch-fault atomicity, CPL3 and other-profile isolation. См. [CPU contract](specs/CPU_CONTRACT.md#s7-04-rust-helper-cmp-ecx-0xa0).
-- **Следующий runner blocker:** после 51 retired instructions runner остановился на `0F 85 D6 00 00 00` по `RIP=0x200dac`; см. [ISSUE-149](#issue-149-s7-04-rust-helper-jnz-rel32-unsupported).
+- **Следующий runner blocker:** after 52 retired instructions, this JNZ falls through to `8B 4E 10` at `RIP=0x200db2`; см. [ISSUE-150](#issue-150-s7-04-rust-helper-mov-ecx-dword-rsi-plus-0x10-unsupported).
 
 <a id="issue-149-s7-04-rust-helper-jnz-rel32-unsupported"></a>
-### ISSUE-149 — S7-04: Rust helper `JNZ rel32` (`0F 85 D6 00 00 00`) remains outside paged CPU profile
+### ISSUE-149 — S7-04: exact Rust-helper `JNZ rel32` (`0F 85 D6 00 00 00`) profile slice
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `CMP ECX,0xa0`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200dac`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner stops at `0F 85 D6 00 00 00` (`JNZ rel32 +0xD6`), `Unsupported { opcode: 133 }`, `retired=51`, `RIP=0x200dac`; COM1 пуст. Если ветка taken, next RIP is `0x200db2` and target is `0x200e88`.
+- **Статус:** решена только для exact `0F 85 D6 00 00 00` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Суть и последствия:** exact near JNZ uses shared `ConditionCode::NotEqual` behavior. ZF determines taken/fall-through, flags and definedness are preserved, the rel32 displacement is signed, and canonicality is checked only for a taken target.
 - **Основание:** образ `/private/tmp/od-fw-s7-cmp-ecx-a0.bin`; `od -An -tx1 -j 0xdac -N16` показывает `0f 85 d6 00 00 00 8b 4e 10 89 cd 8d b9 60 ff ff`; runner с бюджетом 10000.
-- **Следующий шаг:** inspect the exact near conditional-branch tuple and add only this observed JNZ rel32 form to the base paged profile, preserving taken-target canonicality and ZF-definedness rules.
+- **Результат и проверка:** четыре branch tests pass for defined/undefined ZF with both outcomes, taken-only canonicality, last-displacement-byte fetch-fault atomicity and nearby condition/displacement/prefix forms. CPL3 and other paged profiles reject this encoding. Runner retired 52 instructions; this branch was not taken and execution stopped at `8B 4E 10` (`MOV ECX,dword ptr [RSI+0x10]`), RIP `0x200db2`; see [ISSUE-150](#issue-150-s7-04-rust-helper-mov-ecx-dword-rsi-plus-0x10-unsupported).
+
+<a id="issue-150-s7-04-rust-helper-mov-ecx-dword-rsi-plus-0x10-unsupported"></a>
+### ISSUE-150 — S7-04: Rust helper `MOV ECX,dword ptr [RSI+0x10]` (`8B 4E 10`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact near `JNZ`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200db2`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner stops at `8B 4E 10` (`MOV ECX,dword ptr [RSI+0x10]`), `Unsupported { opcode: 139 }`, `retired=52`, `RIP=0x200db2`; COM1 пуст.
+- **Основание:** образ `/private/tmp/od-fw-s7-jcc-near.bin`; `od -An -tx1 -j 0xdb2 -N16` показывает `8b 4e 10 89 cd 8d b9 60 ff ff ff 81 ff 61 ff 00`; runner с бюджетом 10000.
+- **Следующий шаг:** inspect this exact additional dword handoff-field load and admit only the `[RSI+0x10]` ECX form in the base profile, reusing tracked dword reads.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.
