@@ -1563,7 +1563,8 @@ fn panic_frame(line: &str) -> Option<(&str, bool)> {
 fn optional_panic_frame(symbol: &str) -> bool {
     matches!(
         symbol,
-        "acct_update_integrals"
+        "__task_pid_nr_ns"
+            | "acct_update_integrals"
             | "ksys_write"
             | "arch_exit_to_user_mode_prepare.isra.0"
             | "do_syscall_64"
@@ -2100,14 +2101,19 @@ mod tests {
         nonce: &str,
         variant: &str,
     ) -> RunManifest {
-        let dynamic = matches!(variant, "timing" | "failed" | "no-panic");
+        let dynamic = matches!(
+            variant,
+            "timing" | "failed" | "no-panic" | "optional-pid-frame"
+        );
         let marker_nonce = if matches!(variant, "marker" | "failed") {
             "wrongMarkerNonce"
         } else {
             nonce
         };
         let time = if dynamic { "2.273117" } else { "2.273241" };
-        let optional_frame = if dynamic {
+        let optional_frame = if variant == "optional-pid-frame" {
+            "? __task_pid_nr_ns+0x6c/0x120"
+        } else if dynamic {
             "? handle_pte_fault+0x1cb/0x1f0"
         } else {
             "? ksys_write+0x71/0xf0"
@@ -2583,6 +2589,36 @@ mod tests {
             &right_path,
             &left,
             &timing,
+            &mut explained,
+            &mut unexplained,
+        )
+        .unwrap();
+        assert!(unexplained.is_empty(), "{unexplained:?}");
+        assert!(
+            explained
+                .iter()
+                .any(|item| item.contains("terminal CPU snapshot"))
+        );
+        assert!(
+            explained
+                .iter()
+                .any(|item| item.contains("UART timestamps"))
+        );
+
+        let optional_pid_frame = stage4_nonce_comparison_run(
+            base.clone(),
+            &right_root,
+            "nonceStage4OptionalPid01",
+            "optional-pid-frame",
+        );
+        let mut explained = Vec::new();
+        let mut unexplained = Vec::new();
+        compare_run(
+            0,
+            &left_path,
+            &right_path,
+            &left,
+            &optional_pid_frame,
             &mut explained,
             &mut unexplained,
         )
