@@ -370,6 +370,8 @@ Scenario candidate summaries in the compact inventories are derived from exact r
 
 После commit `2804942` новая release N=2 CLI серия подтвердила запись `comparison.json` одной командой. Оба запуска прошли сценарий, получили exact nonce и `budget_exhausted` на `retired=2,999,999,998`, но strict comparison вернул `matches=false` по `machine_observations` и `ordered_uart_bytes`. В первом terminal panic trace несколько optional scheduler/PSI frames отсутствуют в текущем allowlist; поэтому terminal snapshot comparator оставляет эту variation strict, а её семантическая безвредность не установлена. Comparator не изменялся. S5-07 остаётся `[ ]` / `blocked/unaccepted`, пока repeatability не будет объяснена и N=2 не даст пустой список unexplained differences. Подробные метрики и hashes: [automatic series CLI log](../reports/data/stage5/s5-07-auto-series-cli-20261115.log).
 
+Перекрёстный просмотр сохранённых N=2 traces нашёл меняющийся набор optional frames: scheduler/PSI, page-fault/mm, task-id. Документация [Linux x86 stack traces](https://kernel.org/doc/html/v6.6/arch/x86/kernel-stacks.html#printing-backtraces-on-x86) определяет `?` как адрес вне ожидаемой frame-pointer chain; он часто указывает на stale stack value, но может быть реальным кадром, если unwinder не распознал цепочку. Нельзя нормализовать все `?` lines как безвредные без разбора фактического kernel build. Следующий шаг — установить, почему меняются эти trace observations и IRQ counts на данном build; до этого оставить их strict.
+
 ### S5-17. Host-side отказы и ограниченные ресурсы
 
 - [x] Принято после независимого ревью. Гостевая часть (гость видит ошибку по контракту) — отдельным шагом, **blocked до `S4-39`**. Пересечение с `S9-18` разрешается решением `S5-00` п.4(а).
