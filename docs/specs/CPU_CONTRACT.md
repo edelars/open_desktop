@@ -433,7 +433,7 @@ vCPU lifecycle. S4-21, S4-24, S4-32 and Stage 4 remain open. See the
 - `66` перед `B0`–`B7`, повторный `66`, `67`, сегментные префиксы, `F2`/`F3` и любые сочетания префиксов, кроме указанных в таблице (допуск проверяет точный набор `Prefixes` и длину 2 или 4); `F0` (LOCK) не допускается и сохраняет классификацию декодера;
 - `C6 /0` и `C7 /0` (`MOV r/m, imm`), любые другие операции с непосредственным операндом (`ADD`, `CMP`, `OR` и т. п.); исключение для одной точной entry-формы `48 C7 C0 id` описано в расширении S7-04 ниже.
 
-Профили, построенные на том же внутреннем шаге, расширение **не** получают: `PagedCpl0Cr3ProbeV1` (S4-12c), `PagedCpl0Cr0WpProbeV1` (S4-12d), стековый профиль `step_paged_stack_probe`, CPL3-профили `step_paged_cpl3_mov`/`step_paged_cpl3_load` и `PagedCpl0PioU8V1` (S4-24c) сохраняют свои allowlist, и `B0`–`BF` в них остаются `Unsupported`. S7-04 отдельно добавляет bare `CLD` и точные формы `48 C7 C0 id`, `48 39 C7`, `75 24`, `49 89 F8` и `48 8D 3D 09 2B 00 00` и `48 8D 0D 02 2B 00 00` в базовый профиль; прочие `MOV`/`CMP`, branches/calls, CR4, сегментные переходы и `LRETQ`/`IRETQ` остаются вне allowlist ([FIRMWARE_BOOT.md](FIRMWARE_BOOT.md), разделы 5 и 7).
+Профили, построенные на том же внутреннем шаге, расширение **не** получают: `PagedCpl0Cr3ProbeV1` (S4-12c), `PagedCpl0Cr0WpProbeV1` (S4-12d), стековый профиль `step_paged_stack_probe`, CPL3-профили `step_paged_cpl3_mov`/`step_paged_cpl3_load` и `PagedCpl0PioU8V1` (S4-24c) сохраняют свои allowlist, и `B0`–`BF` в них остаются `Unsupported`. S7-04 отдельно добавляет bare `CLD` и точные формы `48 C7 C0 id`, `48 39 C7`, `75 24`, `49 89 F8` и `48 8D 3D 09 2B 00 00` и `48 8D 0D 02 2B 00 00` и `48 29 F9` (`SUB RCX,RDI`) в базовый профиль; прочие `MOV`/`CMP`, branches/calls, CR4, сегментные переходы и `LRETQ`/`IRETQ` остаются вне allowlist ([FIRMWARE_BOOT.md](FIRMWARE_BOOT.md), разделы 5 и 7).
 
 Проверка (обязательна для S7-03): позитивный тест на каждую из 16 форм (значение целевой части, сохранность остальных битов и регистров, `RIP`, флаги), отрицательные тесты на соседние формы из списка выше и на другие профили, fault при fetch непосредственного операнда через границу страницы, мини-образ `build_firmware.py --smoke` в `boot-firmware` печатает `X` в COM1 и останавливается по `HLT`.
 
@@ -479,6 +479,12 @@ vCPU lifecycle. S4-21, S4-24, S4-32 and Stage 4 remain open. See the
 В базовом `PagedCpl0ProbeV1` допускается только `48 8D 0D 02 2B 00 00`: Primary `8D`, длина 7, ровно REX.W `48`, qword-операнд, приёмник RCX и RIP-relative адрес без индекса с displacement `0x2b02`. Переиспользуется `MemoryOperand::effective_address(state, next_rip)` без чтения памяти; меняются только RCX и RIP, flags/definedness сохраняются. Соседние регистры, смещения, адресация и префиксы, прочие paged profiles и CPL3 остаются вне допуска. Fetch fault до последнего байта не фиксирует CPU state.
 
 `paged_probe_profile` проверяет exact target/full state, definedness, neighbors, cross-page fetch fault, CPL3 и stack/CR3/CR0.WP isolation. Runner после семи retired инструкций остановился на `48 29 F9` (`SUB RCX,RDI`, ISSUE-107, RIP `0x20005e`).
+
+#### Расширение S7-04: точный `SUB RCX,RDI` из entry прошивки
+
+В базовый `PagedCpl0ProbeV1` добавлены только bytes `48 29 F9`: Primary opcode `29`, ModRM register destination RCX и source RDI, qword width, единственный префикс REX.W `48`, длина 3. Intel mnemonic/operand order — `SUB RCX,RDI`, то есть `RCX := RCX - RDI`; эквивалентная AT&T запись — `subq %rdi,%rcx`. Используется существующая `ArithmeticKind::Sub`; обновляются RCX и арифметические flags, соответствующие flags становятся defined, RIP продвигается на 3. Остальные CPU state fields сохраняются. Другие SUB opcodes, регистры, ширины, префиксы, память, CPL3 и соседние profiles остаются вне allowlist; fetch fault на ModRM не фиксирует состояние.
+
+Focused tests проверяют равенство, borrow, signed overflow, результат, все arithmetic flags и definedness, остальное состояние, opcode/register/direction/width/prefix/memory neighbors, cross-page fetch fault, CPL3 и stack/CR3/CR0.WP isolation. Runner retired восемь инструкций и остановился на `31 C0` (`XOR EAX,EAX`, ISSUE-108, RIP `0x200061`).
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 

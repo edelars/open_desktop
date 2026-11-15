@@ -34,10 +34,18 @@
 ### ISSUE-107 — S7-04: paged CPU profile не допускает `SUB RCX,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `LEA RCX`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
-- **Статус:** открыта; runner исполнил семь startup-инструкций, до Rust entry не дошёл.
-- **Суть и последствия:** runner отклоняет `48 29 F9` (`SUB RCX,RDI`) при `RIP=0x20005e`; COM1 пуст, handoff parser в машине не проверен.
-- **Основание:** `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-lea-rcx.bin --com1-out /private/tmp/od-fw-s7-04-lea-rcx.com1 --budget 10000` вернул `status=error`, `exit=unsupported`, `Unsupported { opcode: 41 }` (decimal = `0x29`), `retired=7`, `RIP=0x20005e`, `com1_bytes=0`. Байты подтверждены `od -An -tx1 -j 0x5e -N16`: `48 29 f9 31 c0 f3 aa ...`.
-- **Следующий шаг:** рассмотреть точную форму `48 29 F9` после проверки арифметической семантики и профиля.
+- **Статус:** решена узко для точных байтов `48 29 F9`; runner остановился на `31 C0` (ISSUE-108).
+- **Суть:** Intel operand order для `48 29 F9` — `SUB RCX,RDI` (`RCX := RCX - RDI`); в AT&T syntax это `subq %rdi,%rcx`. В базовый `PagedCpl0ProbeV1` допущена только эта форма, остальные SUB encodings вне allowlist.
+- **Результат и проверка:** focused `paged_probe_profile` — 105 passed; arithmetic result, CF/PF/AF/ZF/SF/OF, flags definedness, full-state retention, neighboring ops/registers/widths/prefixes, cross-page fetch fault, CPL3 и stack/CR3/CR0.WP isolation проверены. Runner retired 8 инструкций и остановился на `31 C0` (`XOR EAX,EAX`) при `RIP=0x200061`; см. [S7-04 отчёт](reports/STAGE_7_REPORT.md#s7-04-cpu-profile-sub).
+
+<a id="issue-108-s7-04-paged-cpu-profile-does-not-admit-xor-eax-eax-at-firmware-entry"></a>
+### ISSUE-108 — S7-04: paged CPU profile не допускает `XOR EAX,EAX` из entry прошивки
+- **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `SUB RCX,RDI`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
+- **Статус:** открыта; runner исполнил восемь startup-инструкций, до Rust entry не дошёл.
+- **Суть и последствия:** runner отклоняет `31 C0` (`XOR EAX,EAX`) при `RIP=0x200061`; COM1 пуст, handoff parser в машине не проверен.
+- **Основание:** `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-sub.bin --com1-out /private/tmp/od-fw-s7-04-sub.com1 --budget 10000` вернул `status=error`, `exit=unsupported`, `Unsupported { opcode: 49 }` (decimal = `0x31`), `retired=8`, `RIP=0x200061`, `com1_bytes=0`. Байты подтверждены `od -An -tx1 -j 0x61 -N16`: `31 c0 f3 aa 4c 89 c7 ...`.
+- **Следующий шаг:** рассмотреть точную форму `31 C0` с учетом 32-bit write zero-extension и логических флагов.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки

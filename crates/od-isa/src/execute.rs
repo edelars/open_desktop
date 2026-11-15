@@ -20245,6 +20245,43 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(dst, src.effective_address(state, next_rip));
             state.rip = next_rip;
         }
+        // S7-04: preserve the firmware's exact `48 29 F9` form. Intel order is
+        // SUB RCX,RDI (AT&T: `subq %rdi,%rcx`); no other SUB form is admitted.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Sub,
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x29
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x48),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rcx, OperandSize::Qword)
+            && source == RegisterView::low(Register::Rdi, OperandSize::Qword) =>
+        {
+            let lhs = state.read(destination);
+            let rhs = state.read(source);
+            let (value, flags) = arithmetic_result(
+                OperandSize::Qword,
+                ArithmeticKind::Sub,
+                lhs,
+                rhs,
+                state.rflags,
+            );
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: the firmware entry compares the handoff GPA in RDI with the
         // expected value loaded into RAX. Admit only `48 39 C7`; all other CMP
         // forms remain outside this bounded boot profile.
