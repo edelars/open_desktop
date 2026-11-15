@@ -601,6 +601,13 @@ Tests покрывают equality и nonzero upper-qword сравнение, fla
 
 Tests проверяют truth table всех комбинаций CF/ZF при undefined CF/ZF, flags/definedness retention, taken noncanonical target #GP, not-taken noncanonical fall-through, fetch fault, neighboring forms и CPL3/stack/CR3/CR0.WP isolation. Runner retired 29 инструкций, взял переход на `0x200d2a` и остановился на `48 BF 4F 44 48 41 4E 44 4F 46` (`MOV RDI,imm64`, ISSUE-129, RIP `0x200d2a`).
 
+<a id="s7-04-mov-rdi-handoff-magic"></a>
+#### Расширение S7-04: exact Rust-helper `MOV RDI,handoff magic`
+
+В base `PagedCpl0ProbeV1` допускается только `48 BF 4F 44 48 41 4E 44 4F 46`: Primary `B8+r` opcode `BF`, ровно REX.W `0x48`, длина 10, qword destination RDI и immediate `0x464f444e4148444f`. Запись использует существующую `MovImmediate` семантику; остальные registers и flags/definedness сохраняются, RIP продвигается на 10. Другие immediate bits, регистры, ширины, префиксы, profiles и CPL3 не допускаются.
+
+Tests проверяют точное значение и full-state retention, zero/bit-flipped immediate, register/width/prefix neighbors, fetch fault на последнем immediate byte через границу страницы, CPL3 и другие paged profiles. Runner retired 30 инструкций и остановился на `48 39 3E` (`CMP qword ptr [RSI],RDI`, ISSUE-130, RIP `0x200d34`); полная проверка handoff ещё не завершена.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции

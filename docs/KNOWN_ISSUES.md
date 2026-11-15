@@ -220,13 +220,22 @@
 - **Проверка решения:** `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 191 passed; все четыре комбинации CF/ZF, сохранение flags/definedness, taken noncanonical target #GP, not-taken noncanonical fall-through, fetch fault, соседние branch forms и CPL3/stack/CR3/CR0.WP isolation. Образ `/private/tmp/od-fw-s7-ja-rel8.bin` собран (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 29 инструкций, взял `77 0E` до `0x200d2a` и остановился на `48 BF 4F 44 48 41 4E 44 4F 46` (`MOV RDI,0x464f444e4148444f`) при `RIP=0x200d2a`, `Unsupported { opcode: 191 }`, `com1_bytes=0`.
 
 <a id="issue-129-s7-04-rust-helper-mov-rdi-imm64-unsupported"></a>
-### ISSUE-129 — S7-04: Rust helper `MOV RDI,imm64` остаётся вне paged CPU profile
+### ISSUE-129 — S7-04: paged profile exact `MOV RDI,imm64` handoff magic
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `JA/JNBE +0x0e`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware target `0x200d10`.
-- **Статус:** открыта; helper branch прошёл, magic value ещё не загружено в RDI.
-- **Суть и последствия:** `RIP=0x200d2a` содержит `48 BF 4F 44 48 41 4E 44 4F 46` (`MOV RDI,0x464f444e4148444f`). Runner возвращает `Unsupported { opcode: 191 }`; COM1 пуст, полная проверка handoff ещё не завершена.
+- **Статус:** решена только для exact `48 BF 4F 44 48 41 4E 44 4F 46` в base `PagedCpl0ProbeV1`; полная проверка handoff ещё не завершена.
+- **Результат и проверка:** qword immediate magic записывается в RDI через существующий `MovImmediate`; соседние значения/формы и другие profiles остаются unsupported. Focused `paged_probe_profile` — 195 passed; full state, zero/bit-flipped immediate rejects, fetch-fault atomicity и CPL3/other-profile isolation проверены. Реализация описана в [CPU_CONTRACT.md](specs/CPU_CONTRACT.md#s7-04-mov-rdi-handoff-magic).
+- **Runner:** после 30 retired инструкций продолжил с `RIP=0x200d34` и остановился на `48 39 3E` (`CMP qword ptr [RSI],RDI`), `Unsupported { opcode: 57 }`; COM1 пуст. Следующий blocker — [ISSUE-130](#issue-130-s7-04-rust-helper-cmp-memory-handoff-magic-unsupported).
 - **Основание:** образ `/private/tmp/od-fw-s7-ja-rel8.bin`; `od -An -tx1 -j 0xd2a -N16` показывает `48 bf 4f 44 48 41 4e 44 4f 46 48 39 3e 75 38 55`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=29`, `RIP=0x200d2a`, `com1_bytes=0`.
-- **Следующий шаг:** проверить exact immediate MOV формы и профильную изоляцию.
+
+<a id="issue-130-s7-04-rust-helper-cmp-memory-handoff-magic-unsupported"></a>
+### ISSUE-130 — S7-04: Rust helper `CMP qword ptr [RSI],RDI` остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact загрузки handoff magic в RDI.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d34`.
+- **Статус:** открыта.
+- **Суть и последствия:** байты `48 39 3E` сравнивают qword handoff magic по адресу RSI с ожидаемым значением RDI; дальше ветка перед полной проверкой полей handoff. Runner возвращает `Unsupported { opcode: 57 }`, `retired=30`, `RIP=0x200d34`; COM1 пуст.
+- **Основание:** образ `/private/tmp/od-fw-s7-mov-rdi-magic.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner с бюджетом 10000.
+- **Следующий шаг:** ограниченно исследовать memory CMP operand/fault semantics и exact profile admission без ослабления общей реализации.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки

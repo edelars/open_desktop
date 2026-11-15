@@ -20734,6 +20734,28 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: the helper loads the handoff magic into RDI with exactly
+        // `48 BF 4F 44 48 41 4E 44 4F 46`. Keep this qword immediate form,
+        // destination and value confined to the base profile.
+        Operation::MovImmediate {
+            dst: Operand::Register(destination),
+            value,
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xbf
+            && instruction.length == 10
+            && instruction.operand_size == OperandSize::Qword
+            && destination == RegisterView::low(Register::Rdi, OperandSize::Qword)
+            && value == 0x464f_444e_4148_444f
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x48),
+                    ..Prefixes::default()
+                }) =>
+        {
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: the firmware handoff GPA is loaded into RSI by the exact
         // `BE 00 00 10 00` encoding. Admit only this 32-bit immediate write
         // to ESI in the base profile; architectural register write semantics
