@@ -2882,24 +2882,74 @@ fn retained_hit_segment(
     })
 }
 
-#[test]
-fn cached_corpus_matches_existing_observations_and_saves_versioned_trace() {
-    let _guard = jit_test_lock();
-    let corpus_path = artifact_dir().join("native-register-v1-observations.json");
-    let corpus: CorpusObservationsEnvelope = serde_json::from_slice(
-        &fs::read(&corpus_path)
-            .unwrap_or_else(|error| panic!("source corpus observations missing: {error}")),
-    )
-    .unwrap_or_else(|error| panic!("source corpus observations malformed: {error}"));
-    validate_corpus_observations(&corpus).unwrap();
+/// Builds the observation corpus the same way as
+/// `generated_corpus_runs_twice_across_all_backends` (about one second).
+fn generate_corpus_observations() -> CorpusObservationsEnvelope {
+    let mut code_digest = 0xcbf2_9ce4_8422_2325u64;
+    let mut cases = Vec::with_capacity(SEEDS.len() * CASES_PER_SEED);
+    for seed in SEEDS {
+        for index in 0..CASES_PER_SEED {
+            let input = generate_case(seed, index);
+            validate_input(&input)
+                .unwrap_or_else(|error| panic!("seed={seed:#x} index={index}: {error}"));
+            for byte in &canonical_input(&input) {
+                code_digest = (code_digest ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3);
+            }
+            let backend_runs = run_repeated(&input);
+            cases.push(CorpusObservation { input, backend_runs });
+        }
+    }
+    let mut envelope = CorpusObservationsEnvelope {
+        version: ENVELOPE_VERSION,
+        profile: PROFILE.into(),
+        inputs_digest: format!("fnv1a64:{code_digest:016x}"),
+        cases,
+        envelope_digest: String::new(),
+    };
+    envelope.envelope_digest = corpus_observations_digest(
+        envelope.version,
+        &envelope.profile,
+        &envelope.inputs_digest,
+        &envelope.cases,
+    );
+    envelope
+}
 
+/// Returns the observation corpus for the cached-trace tests. The ignored
+/// `work/` artifact is used when it exists; otherwise the corpus is generated
+/// deterministically and saved, so these tests do not depend on test order or
+/// on files left by an earlier run.
+fn load_or_generate_corpus_observations() -> CorpusObservationsEnvelope {
+    let corpus_path = artifact_dir().join("native-register-v1-observations.json");
+    let corpus = match fs::read(&corpus_path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .unwrap_or_else(|error| panic!("source corpus observations malformed: {error}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let corpus = generate_corpus_observations();
+            write_json(&corpus_path, &corpus);
+            corpus
+        }
+        Err(error) => panic!("source corpus observations unreadable: {error}"),
+    };
+    validate_corpus_observations(&corpus).unwrap();
+    corpus
+}
+
+fn build_cache_trace(corpus: &CorpusObservationsEnvelope) -> CacheTraceEnvelope {
     let segments = vec![
-        cached_corpus_segment(&corpus, "eager").unwrap(),
-        cached_corpus_segment(&corpus, "demand_candidate").unwrap(),
+        cached_corpus_segment(corpus, "eager").unwrap(),
+        cached_corpus_segment(corpus, "demand_candidate").unwrap(),
         retained_hit_segment("eager", &corpus.inputs_digest).unwrap(),
         retained_hit_segment("demand_candidate", &corpus.inputs_digest).unwrap(),
     ];
-    let trace = finish_cache_trace(corpus.inputs_digest.clone(), segments);
+    finish_cache_trace(corpus.inputs_digest.clone(), segments)
+}
+
+#[test]
+fn cached_corpus_matches_existing_observations_and_saves_versioned_trace() {
+    let _guard = jit_test_lock();
+    let corpus = load_or_generate_corpus_observations();
+    let trace = build_cache_trace(&corpus);
     validate_cache_trace(&trace, &corpus).unwrap();
     let path = artifact_dir().join("native-register-v1-cache-trace.json");
     write_json(&path, &trace);
@@ -2918,18 +2968,18 @@ fn cached_corpus_matches_existing_observations_and_saves_versioned_trace() {
 #[test]
 fn cached_trace_replays_from_empty_cache_and_rejects_corruption() {
     let _guard = jit_test_lock();
+    let corpus = load_or_generate_corpus_observations();
     let path = artifact_dir().join("native-register-v1-cache-trace.json");
-    let trace: CacheTraceEnvelope = serde_json::from_slice(
-        &fs::read(&path)
-            .unwrap_or_else(|error| panic!("cache trace missing at {}: {error}", path.display())),
-    )
-    .unwrap_or_else(|error| panic!("cache trace malformed: {error}"));
-    let corpus_path = artifact_dir().join("native-register-v1-observations.json");
-    let corpus: CorpusObservationsEnvelope = serde_json::from_slice(
-        &fs::read(&corpus_path)
-            .unwrap_or_else(|error| panic!("source observations missing: {error}")),
-    )
-    .unwrap_or_else(|error| panic!("source observations malformed: {error}"));
+    let trace: CacheTraceEnvelope = match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .unwrap_or_else(|error| panic!("cache trace malformed: {error}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let trace = build_cache_trace(&corpus);
+            write_json(&path, &trace);
+            trace
+        }
+        Err(error) => panic!("cache trace unreadable at {}: {error}", path.display()),
+    };
     validate_cache_trace(&trace, &corpus).unwrap();
 
     let mut changed_input = trace.clone();
@@ -2980,13 +3030,7 @@ fn cached_failure_trace_replays_saved_prefix_and_failure() {
         return;
     }
 
-    let corpus_path = artifact_dir().join("native-register-v1-observations.json");
-    let corpus: CorpusObservationsEnvelope = serde_json::from_slice(
-        &fs::read(&corpus_path)
-            .unwrap_or_else(|error| panic!("source observations missing: {error}")),
-    )
-    .unwrap_or_else(|error| panic!("source observations malformed: {error}"));
-    validate_corpus_observations(&corpus).unwrap();
+    let corpus = load_or_generate_corpus_observations();
     let prefix_case = &corpus.cases[0];
     let case = &corpus.cases[1];
     let mut cache = od_jit::dispatch::SingleEntryBlockCache::new(

@@ -299,12 +299,21 @@ fn uart_echo_profile_checks_rx_expectation_budgets_and_stop() {
             }
         );
     }
+    // Since S4-38L9z an RBR read on an empty receiver is not a port-I/O error:
+    // as on a 16550 it returns the last received byte (0 after reset). The
+    // guest therefore echoes 0 and the expectation of 1 is a mismatch (exit 5),
+    // while the expectation of 0 completes.
     let (empty_code, empty_rbr) = run(&["--expect-byte", "1"]);
-    assert_eq!(empty_code, Some(6));
-    assert_eq!(empty_rbr["status"], "pio_error");
-    assert_eq!(empty_rbr["retired"], 0);
-    assert_eq!(empty_rbr["rip"], "0x0000000000400000");
-    assert_eq!(empty_rbr["serial_bytes"], serde_json::json!([]));
+    assert_eq!(empty_code, Some(5));
+    assert_eq!(empty_rbr["status"], "completion_mismatch");
+    assert_eq!(empty_rbr["retired"], 3);
+    assert_eq!(empty_rbr["rip"], "0x0000000000400003");
+    assert_eq!(empty_rbr["observed_rax"], "0x0000000000000000");
+    assert_eq!(empty_rbr["serial_bytes"], serde_json::json!([0]));
+    let (empty_ok_code, empty_ok) = run(&["--expect-byte", "0"]);
+    assert_eq!(empty_ok_code, Some(0), "{empty_ok}");
+    assert_eq!(empty_ok["status"], "guest_completed");
+    assert_eq!(empty_ok["serial_bytes"], serde_json::json!([0]));
     assert_eq!(
         run(&["--rx-byte", "1", "--expect-byte", "2"]).1["status"],
         "completion_mismatch"
