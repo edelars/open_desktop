@@ -24,7 +24,7 @@
 | S7-01 | in_progress | `426c98a` | — | Сборка прошивки и EFI-приложений, host-side тесты, методика (выполнено исполнителем, ревью пройдено, замечания исправлены, коммита на момент записи нет; каркас основного образа и доказательство сборки PE32+ probe; тестовые EFI-приложения — S7-06, боевой RT-образ и размещение в FV — S7-11) |
 | S7-02 | in_progress | `68cca38` | — | Контракт входа: окна, handoff, manifest платы, ABI/состояние вызова, таймеры, ROM, RT relocation (выполнено, ожидает ревью, коммита нет) |
 | S7-03 | in_progress | — | — | ROM backing/shadow, загрузчик образа, handoff block, профиль платы и runner (выполнено исполнителем, ожидает ревью, коммита нет; blocker снят реализацией решения архитектора — допуск `B0+r ib` и `66 B8+r iw` в `PagedCpl0ProbeV1`; образ `--smoke` в машине: выход 0, `halted`, `retired = 4`, COM1 ровно `X`, см. раздел 5 и раздел S7-03) |
-| S7-04 | in_progress | `e1ef0f1`, `6553d56`, `d5d6e22`, `b219d0e`, `7bb0108`, `dd57771`, `717fed3` | все предыдущие срезы reviewed; LEA RDI срез прошёл независимое ревью | handoff parser подключён; paged profile исполняет bare `CLD`, точные entry C7/CMP/JNZ/MOV R8, runner останавливается на RIP-relative LEA (ISSUE-105) |
+| S7-04 | in_progress | `e1ef0f1`, `6553d56`, `d5d6e22`, `b219d0e`, `7bb0108`, `dd57771`, `717fed3` | все предыдущие срезы reviewed; LEA RCX-срез прошёл независимое ревью | handoff parser подключён; paged profile исполняет bare `CLD`, точные entry C7/CMP/JNZ/MOV R8, runner останавливается на RIP-relative LEA (ISSUE-105) |
 | S7-05 | not_started | — | — | System Table, Boot Services, база протоколов, события, `ExitBootServices` |
 | S7-06 | not_started | — | — | PE/COFF loader, Authenticode-дайджест, `LoadImage`/`StartImage`/`Exit`, Loaded Image, Device Path |
 | S7-07 | not_started | — | — | Консоль: Simple Text Output/Input на COM1, ConIn/ConOut/StdErr |
@@ -519,3 +519,11 @@ git diff --check
 Добавлена только форма `48 8D 3D 09 2B 00 00` в базовый `PagedCpl0ProbeV1`; адрес вычисляется через существующий `effective_address` относительно next RIP, без чтения памяти. Тест проверяет точную цель, изменение только RDI/RIP, неизменность flags/definedness, соседние формы, CPL3/прочие профили и атомарный fetch fault.
 
 Проверки: `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 97 passed. `python3 tools/build/build_firmware.py --out /private/tmp/od-fw-s7-04-lea.bin` успешно собрал 4 MiB образ, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`. `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-lea.bin --com1-out /private/tmp/od-fw-s7-04-lea.com1 --budget 10000` вернул `status=error`, `exit=unsupported`, `Unsupported { opcode: 141 }`, `retired=6`, `RIP=0x200057`, `com1_bytes=0`. Bytes at image offset `0x57`: `48 8d 0d 02 2b 00 00` (`LEA RCX,[RIP+0x2b02]`), следующий blocker [ISSUE-106](../KNOWN_ISSUES.md#issue-106-s7-04-paged-cpu-profile-does-not-admit-lea-rcx-rip-relative-at-firmware-entry). Реализация ожидает независимого ревью.
+
+
+<a id="s7-04-cpu-profile-lea-rcx"></a>
+#### S7-04 CPU-profile slice: exact entry `LEA RCX,[RIP+0x2b02]`
+
+В базовый paged CPL0 профиль добавлена только точная форма `48 8D 0D 02 2B 00 00`. Как и LEA RDI, она использует существующий next-RIP effective-address расчёт, не обращается к памяти и меняет только RCX/RIP. Соседние формы, другие профили, CPL3 и fetch fault проверены.
+
+Проверки: `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 101 passed. Сборка `/private/tmp/od-fw-s7-04-lea-rcx.bin` успешна, 4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`. Runner command завершился `status=error`, `exit=unsupported`, `Unsupported { opcode: 41 }`, `retired=7`, `RIP=0x20005e`, `com1_bytes=0`. Байты на image offset `0x5e` — `48 29 f9` (`SUB RCX,RDI`), текущий blocker [ISSUE-107](../KNOWN_ISSUES.md#issue-107-s7-04-paged-cpu-profile-does-not-admit-sub-rcx-rdi-at-firmware-entry). Изменение ожидает независимого ревью.

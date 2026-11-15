@@ -26,10 +26,18 @@
 ### ISSUE-106 — S7-04: paged CPU profile не допускает `LEA RCX,[RIP+disp32]` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `LEA RDI`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
-- **Статус:** открыта; runner исполнил шесть startup-инструкций, до Rust entry не дошёл.
-- **Суть и последствия:** runner отклоняет `48 8D 0D 02 2B 00 00` (`LEA RCX,[RIP+0x2b02]`) при `RIP=0x200057`; COM1 пуст, handoff parser в машине не проверен.
-- **Основание:** `/private/tmp/od-fw-s7-04-lea.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-lea.bin --com1-out /private/tmp/od-fw-s7-04-lea.com1 --budget 10000` вернул `status=error`, `exit=unsupported`, `Unsupported { opcode: 141 }`, `retired=6`, `RIP=0x200057`, `com1_bytes=0`. Байты подтверждены через `od -An -tx1 -j 0x57 -N16`: `48 8d 0d 02 2b 00 00 ...`.
-- **Следующий шаг:** рассмотреть только наблюдённую форму `LEA RCX,[RIP+0x2b02]`, подтвердить регистр/смещение и повторить runner.
+- **Статус:** решена узко для точной формы `48 8D 0D 02 2B 00 00`; runner остановился на следующей инструкции (ISSUE-107).
+- **Суть и последствия:** runner отклонял `LEA RCX,[RIP+0x2b02]` на `RIP=0x200057`. Базовый `PagedCpl0ProbeV1` теперь считает EA относительно next RIP и пишет только RCX; иные формы LEA остаются вне допуска.
+- **Результат и проверка:** focused `paged_probe_profile` — 101 passed; exact target/full-state, flags/definedness retention, neighbors, fetch fault, CPL3 and other-profile isolation. Образ SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` в runner retired семь инструкций и остановился на `48 29 F9` (`SUB RCX,RDI`) при `RIP=0x20005e`; см. [S7-04 отчёт](reports/STAGE_7_REPORT.md#s7-04-cpu-profile-lea-rcx).
+
+<a id="issue-107-s7-04-paged-cpu-profile-does-not-admit-sub-rcx-rdi-at-firmware-entry"></a>
+### ISSUE-107 — S7-04: paged CPU profile не допускает `SUB RCX,RDI` из entry прошивки
+- **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `LEA RCX`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
+- **Статус:** открыта; runner исполнил семь startup-инструкций, до Rust entry не дошёл.
+- **Суть и последствия:** runner отклоняет `48 29 F9` (`SUB RCX,RDI`) при `RIP=0x20005e`; COM1 пуст, handoff parser в машине не проверен.
+- **Основание:** `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-lea-rcx.bin --com1-out /private/tmp/od-fw-s7-04-lea-rcx.com1 --budget 10000` вернул `status=error`, `exit=unsupported`, `Unsupported { opcode: 41 }` (decimal = `0x29`), `retired=7`, `RIP=0x20005e`, `com1_bytes=0`. Байты подтверждены `od -An -tx1 -j 0x5e -N16`: `48 29 f9 31 c0 f3 aa ...`.
+- **Следующий шаг:** рассмотреть точную форму `48 29 F9` после проверки арифметической семантики и профиля.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
