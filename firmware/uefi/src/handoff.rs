@@ -1,8 +1,8 @@
 //! Parser for the machine-owned firmware handoff block (FIRMWARE_BOOT.md §6).
 //!
 //! This module is allocation-free so it can validate the header, CRC and table extents before
-//! firmware services exist. Region-record structure is checked; device contents and board-map
-//! consistency are validated by later firmware initialization steps.
+//! firmware services exist. Region/device record structure is checked; device-specific parameter
+//! values and consistency with the complete board memory map are validated by later steps.
 
 pub const HANDOFF_WINDOW_SIZE: usize = 0x1_0000;
 const MAGIC: &[u8; 8] = b"ODHANDOF";
@@ -31,19 +31,91 @@ pub enum HandoffError {
     UnsupportedMinor(u16),
     InvalidHeaderSize(u32),
     InvalidTotalSize(u32),
-    MisalignedOffset { table: &'static str, offset: u32 },
+    MisalignedOffset {
+        table: &'static str,
+        offset: u32,
+    },
     OverlappingTables,
-    InvalidTableCount { table: &'static str, count: u32 },
-    InvalidDeviceCountForVersion { version_minor: u16, count: u32 },
-    InvalidRegionType { index: usize, kind: u32 },
-    InvalidRegionAttributes { index: usize, attrs: u32 },
-    InvalidRegionRange { index: usize },
-    InvalidRegionOwner { index: usize, owner: u32 },
-    NonZeroRegionReserved { index: usize },
-    RegionsUnsortedOrOverlapping { index: usize },
-    InvalidTableEntrySize { table: &'static str, actual: u32 },
-    TableOutOfBounds { table: &'static str },
-    BadCrc { stored: u32, computed: u32 },
+    InvalidTableCount {
+        table: &'static str,
+        count: u32,
+    },
+    InvalidDeviceCountForVersion {
+        version_minor: u16,
+        count: u32,
+    },
+    InvalidRegionType {
+        index: usize,
+        kind: u32,
+    },
+    InvalidRegionAttributes {
+        index: usize,
+        attrs: u32,
+    },
+    InvalidRegionRange {
+        index: usize,
+    },
+    InvalidRegionOwner {
+        index: usize,
+        owner: u32,
+    },
+    NonZeroRegionReserved {
+        index: usize,
+    },
+    RegionsUnsortedOrOverlapping {
+        index: usize,
+    },
+    InvalidDeviceType {
+        index: usize,
+        kind: u32,
+    },
+    DuplicateDeviceType {
+        index: usize,
+        kind: u32,
+    },
+    InvalidDeviceFlags {
+        index: usize,
+        flags: u32,
+    },
+    InvalidDeviceIrqFlags {
+        index: usize,
+        flags: u32,
+    },
+    InvalidDeviceRange {
+        index: usize,
+    },
+    InvalidDeviceVersion {
+        index: usize,
+        kind: u32,
+        version_minor: u16,
+    },
+    RequiredDeviceNotPresent {
+        index: usize,
+        kind: u32,
+    },
+    MissingDeviceType {
+        kind: u32,
+    },
+    InvalidHeaderFlags(u32),
+    InvalidBoardProfile(u32),
+    InvalidCpuCount(u32),
+    InvalidTscFrequency(u64),
+    InvalidSerialLength(u16),
+    InvalidSerial,
+    NonZeroHeaderReserved {
+        offset: usize,
+    },
+    InvalidTableEntrySize {
+        table: &'static str,
+        actual: u32,
+    },
+    TableOutOfBounds {
+        table: &'static str,
+    },
+    BadCrc {
+        stored: u32,
+        computed: u32,
+    },
 }
 
 fn u16_at(bytes: &[u8], offset: usize) -> u16 {
@@ -141,6 +213,121 @@ fn validate_regions(
             return Err(HandoffError::RegionsUnsortedOrOverlapping { index });
         }
         previous_end = base + length;
+    }
+    Ok(())
+}
+
+fn validate_devices(
+    bytes: &[u8],
+    offset: usize,
+    count: usize,
+    version_minor: u16,
+) -> Result<(), HandoffError> {
+    let mut seen = [false; 10];
+    for index in 0..count {
+        let at = offset + index * 0x30;
+        let kind = u32_at(bytes, at);
+        let flags = u32_at(bytes, at + 4);
+        let base = u64_at(bytes, at + 8);
+        let length = u64_at(bytes, at + 16);
+        let irq_flags = u32_at(bytes, at + 0x1C);
+        let present = flags & 1 != 0;
+        let pio = flags & 2 != 0;
+
+        if !(1..=9).contains(&kind) {
+            return Err(HandoffError::InvalidDeviceType { index, kind });
+        }
+        let required_minor = match kind {
+            8 => 1,
+            9 => 2,
+            _ => 0,
+        };
+        if version_minor < required_minor {
+            return Err(HandoffError::InvalidDeviceVersion {
+                index,
+                kind,
+                version_minor,
+            });
+        }
+        if seen[kind as usize] {
+            return Err(HandoffError::DuplicateDeviceType { index, kind });
+        }
+        seen[kind as usize] = true;
+        if flags & !0x3 != 0 {
+            return Err(HandoffError::InvalidDeviceFlags { index, flags });
+        }
+        if irq_flags & !0x3 != 0 {
+            return Err(HandoffError::InvalidDeviceIrqFlags {
+                index,
+                flags: irq_flags,
+            });
+        }
+        if pio && !matches!(kind, 1 | 9) || present && matches!(kind, 1 | 9) && !pio {
+            return Err(HandoffError::InvalidDeviceFlags { index, flags });
+        }
+        if kind >= 8 && !present {
+            return Err(HandoffError::RequiredDeviceNotPresent { index, kind });
+        }
+        if (!present && (base != 0 || length != 0))
+            || (present
+                && (length == 0
+                    || if pio {
+                        base > 0xFFFF || base.checked_add(length).is_none_or(|end| end > 0x1_0000)
+                    } else {
+                        base.checked_add(length)
+                            .is_none_or(|end| end > (1u64 << 36))
+                    }))
+        {
+            return Err(HandoffError::InvalidDeviceRange { index });
+        }
+    }
+    for kind in 1..=7 {
+        if !seen[kind] {
+            return Err(HandoffError::MissingDeviceType { kind: kind as u32 });
+        }
+    }
+    if version_minor == 1 && !seen[8] {
+        return Err(HandoffError::MissingDeviceType { kind: 8 });
+    }
+    if version_minor == 2 && !seen[9] {
+        return Err(HandoffError::MissingDeviceType { kind: 9 });
+    }
+    Ok(())
+}
+
+fn validate_header_fields(bytes: &[u8]) -> Result<(), HandoffError> {
+    let cpu_count = u32_at(bytes, 0x1C);
+    if cpu_count != 1 {
+        return Err(HandoffError::InvalidCpuCount(cpu_count));
+    }
+    let tsc_hz = u64_at(bytes, 0x20);
+    if tsc_hz == 0 {
+        return Err(HandoffError::InvalidTscFrequency(tsc_hz));
+    }
+    let serial_len = u16_at(bytes, 0x58);
+    if serial_len > 64 {
+        return Err(HandoffError::InvalidSerialLength(serial_len));
+    }
+    let serial_end = 0x60 + serial_len as usize;
+    if bytes[0x60..serial_end]
+        .iter()
+        .any(|byte| !(0x20..=0x7E).contains(byte))
+        || bytes[serial_end..0xA0].iter().any(|&byte| byte != 0)
+    {
+        return Err(HandoffError::InvalidSerial);
+    }
+    let flags = u32_at(bytes, 0x18);
+    if flags != 0 {
+        return Err(HandoffError::InvalidHeaderFlags(flags));
+    }
+    let board_profile = u32_at(bytes, 0x28);
+    if board_profile != 1 {
+        return Err(HandoffError::InvalidBoardProfile(board_profile));
+    }
+    for (offset, range) in [(0x2C, 0x2C..0x30), (0x5A, 0x5A..0x60)] {
+        if bytes[range].iter().any(|&byte| byte != 0) {
+            return Err(HandoffError::NonZeroHeaderReserved { offset });
+        }
     }
     Ok(())
 }
@@ -251,6 +438,8 @@ impl<'a> Handoff<'a> {
             device_count as usize,
             minor,
         )?;
+        validate_devices(bytes, device_offset as usize, device_count as usize, minor)?;
+        validate_header_fields(bytes)?;
         Ok(Self {
             bytes: &bytes[..total],
             version_minor: minor,
@@ -328,6 +517,23 @@ mod tests {
         b[second + 8..second + 16].copy_from_slice(&0u64.to_le_bytes());
         b[second + 16..second + 24].copy_from_slice(&0x1000u64.to_le_bytes());
         b[second + 24..second + 28].copy_from_slice(&u32::MAX.to_le_bytes());
+        seal(&mut b);
+        b
+    }
+
+    fn sample_minor1() -> Vec<u8> {
+        let mut b = sample();
+        let device_offset = u32_at(&b, 0x3C) as usize;
+        b.resize(b.len() + 0x30, 0);
+        let total_size = b.len() as u32;
+        b[0x10..0x14].copy_from_slice(&total_size.to_le_bytes());
+        b[0x0A..0x0C].copy_from_slice(&1u16.to_le_bytes());
+        b[0x40..0x44].copy_from_slice(&8u32.to_le_bytes());
+        let extension = device_offset + 7 * 0x30;
+        b[extension..extension + 4].copy_from_slice(&8u32.to_le_bytes());
+        b[extension + 4..extension + 8].copy_from_slice(&1u32.to_le_bytes());
+        b[extension + 8..extension + 16].copy_from_slice(&0xFC00_1000u64.to_le_bytes());
+        b[extension + 16..extension + 24].copy_from_slice(&0x2000u64.to_le_bytes());
         seal(&mut b);
         b
     }
@@ -492,9 +698,24 @@ mod tests {
         let total_size = b.len() as u32;
         b[0x10..0x14].copy_from_slice(&total_size.to_le_bytes());
         b[0x40..0x44].copy_from_slice(&8u32.to_le_bytes());
+        let device_offset = u32_at(&b, 0x3C) as usize;
+        let extension = device_offset + 7 * 0x30;
+        b[extension..extension + 4].copy_from_slice(&9u32.to_le_bytes());
+        b[extension + 4..extension + 8].copy_from_slice(&3u32.to_le_bytes());
+        b[extension + 8..extension + 16].copy_from_slice(&0x600u64.to_le_bytes());
+        b[extension + 16..extension + 24].copy_from_slice(&0x10u64.to_le_bytes());
+        b[extension + 0x18..extension + 0x1C].copy_from_slice(&9u32.to_le_bytes());
+        b[extension + 0x1C..extension + 0x20].copy_from_slice(&3u32.to_le_bytes());
         b[0x0A..0x0C].copy_from_slice(&2u16.to_le_bytes());
         seal(&mut b);
         assert!(Handoff::parse(&b, 2).is_ok());
+        b[extension + 4..extension + 8].copy_from_slice(&0u32.to_le_bytes());
+        b[extension + 8..extension + 24].fill(0);
+        seal(&mut b);
+        assert!(matches!(
+            Handoff::parse(&b, 2),
+            Err(HandoffError::RequiredDeviceNotPresent { kind: 9, .. })
+        ));
     }
 
     #[test]
@@ -532,5 +753,154 @@ mod tests {
                 count: 8
             })
         );
+    }
+
+    #[test]
+    fn validates_device_types_flags_presence_and_address_ranges() {
+        let mut b = sample();
+        let offset = u32_at(&b, 0x3C) as usize;
+        seal(&mut b);
+        assert!(Handoff::parse(&b, 2).is_ok());
+
+        b[offset..offset + 4].copy_from_slice(&99u32.to_le_bytes());
+        seal(&mut b);
+        assert!(matches!(
+            Handoff::parse(&b, 2),
+            Err(HandoffError::InvalidDeviceType { .. })
+        ));
+
+        b[offset..offset + 4].copy_from_slice(&1u32.to_le_bytes());
+        let second = offset + 0x30;
+        b[second..second + 4].copy_from_slice(&1u32.to_le_bytes());
+        seal(&mut b);
+        assert!(matches!(
+            Handoff::parse(&b, 2),
+            Err(HandoffError::DuplicateDeviceType { .. })
+        ));
+
+        b[second..second + 4].copy_from_slice(&2u32.to_le_bytes());
+        b[offset + 4..offset + 8].copy_from_slice(&4u32.to_le_bytes());
+        seal(&mut b);
+        assert!(matches!(
+            Handoff::parse(&b, 2),
+            Err(HandoffError::InvalidDeviceFlags { .. })
+        ));
+
+        b[offset + 4..offset + 8].copy_from_slice(&0u32.to_le_bytes());
+        b[offset + 0x1C..offset + 0x20].copy_from_slice(&4u32.to_le_bytes());
+        seal(&mut b);
+        assert!(matches!(
+            Handoff::parse(&b, 2),
+            Err(HandoffError::InvalidDeviceIrqFlags { .. })
+        ));
+
+        b[offset + 0x1C..offset + 0x20].copy_from_slice(&0u32.to_le_bytes());
+        b[offset + 8..offset + 16].copy_from_slice(&1u64.to_le_bytes());
+        seal(&mut b);
+        assert!(matches!(
+            Handoff::parse(&b, 2),
+            Err(HandoffError::InvalidDeviceRange { .. })
+        ));
+
+        b[offset + 8..offset + 16].copy_from_slice(&0xFFFFu64.to_le_bytes());
+        b[offset + 16..offset + 24].copy_from_slice(&2u64.to_le_bytes());
+        b[offset + 4..offset + 8].copy_from_slice(&3u32.to_le_bytes());
+        seal(&mut b);
+        assert!(matches!(
+            Handoff::parse(&b, 2),
+            Err(HandoffError::InvalidDeviceRange { .. })
+        ));
+
+        b[offset + 8..offset + 16].copy_from_slice(&0x3F8u64.to_le_bytes());
+        b[offset + 16..offset + 24].copy_from_slice(&8u64.to_le_bytes());
+        b[offset + 4..offset + 8].copy_from_slice(&3u32.to_le_bytes());
+        seal(&mut b);
+        assert!(Handoff::parse(&b, 2).is_ok());
+
+        let third = offset + 0x30;
+        b[third + 4..third + 8].copy_from_slice(&1u32.to_le_bytes());
+        b[third + 8..third + 16].copy_from_slice(&((1u64 << 36) - 0x1000).to_le_bytes());
+        b[third + 16..third + 24].copy_from_slice(&0x2000u64.to_le_bytes());
+        seal(&mut b);
+        assert!(matches!(
+            Handoff::parse(&b, 2),
+            Err(HandoffError::InvalidDeviceRange { .. })
+        ));
+
+        let mut b = sample();
+        let offset = u32_at(&b, 0x3C) as usize;
+        b[offset..offset + 4].copy_from_slice(&8u32.to_le_bytes());
+        seal(&mut b);
+        assert!(matches!(
+            Handoff::parse(&b, 2),
+            Err(HandoffError::InvalidDeviceVersion { .. })
+        ));
+
+        let mut b = sample_minor1();
+        assert!(Handoff::parse(&b, 2).is_ok());
+        let extension = u32_at(&b, 0x3C) as usize + 7 * 0x30;
+        b[extension + 4..extension + 8].copy_from_slice(&0u32.to_le_bytes());
+        b[extension + 8..extension + 24].fill(0);
+        seal(&mut b);
+        assert!(matches!(
+            Handoff::parse(&b, 2),
+            Err(HandoffError::RequiredDeviceNotPresent { kind: 8, .. })
+        ));
+        b[extension + 4..extension + 8].copy_from_slice(&1u32.to_le_bytes());
+        b[extension + 8..extension + 16].copy_from_slice(&0xFC00_1000u64.to_le_bytes());
+        b[extension + 16..extension + 24].copy_from_slice(&0x2000u64.to_le_bytes());
+        b[extension..extension + 4].copy_from_slice(&9u32.to_le_bytes());
+        seal(&mut b);
+        assert!(matches!(
+            Handoff::parse(&b, 2),
+            Err(HandoffError::InvalidDeviceVersion { .. })
+        ));
+    }
+
+    #[test]
+    fn validates_cpu_profile_clock_board_reserved_and_serial_fields() {
+        let cases: &[(usize, &[u8], HandoffError)] = &[
+            (0x18, &[1, 0, 0, 0], HandoffError::InvalidHeaderFlags(1)),
+            (0x1C, &[2, 0, 0, 0], HandoffError::InvalidCpuCount(2)),
+            (0x20, &[0; 8], HandoffError::InvalidTscFrequency(0)),
+            (0x28, &[2, 0, 0, 0], HandoffError::InvalidBoardProfile(2)),
+        ];
+        for (offset, value, expected) in cases {
+            let mut b = sample();
+            b[*offset..*offset + value.len()].copy_from_slice(value);
+            seal(&mut b);
+            assert_eq!(Handoff::parse(&b, 2), Err(*expected));
+        }
+
+        let mut b = sample();
+        b[0x2C] = 1;
+        seal(&mut b);
+        assert_eq!(
+            Handoff::parse(&b, 2),
+            Err(HandoffError::NonZeroHeaderReserved { offset: 0x2C })
+        );
+        let mut b = sample();
+        b[0x5A] = 1;
+        seal(&mut b);
+        assert_eq!(
+            Handoff::parse(&b, 2),
+            Err(HandoffError::NonZeroHeaderReserved { offset: 0x5A })
+        );
+        let mut b = sample();
+        b[0x58..0x5A].copy_from_slice(&65u16.to_le_bytes());
+        seal(&mut b);
+        assert_eq!(
+            Handoff::parse(&b, 2),
+            Err(HandoffError::InvalidSerialLength(65))
+        );
+        let mut b = sample();
+        b[0x58..0x5A].copy_from_slice(&1u16.to_le_bytes());
+        b[0x60] = 0x7F;
+        seal(&mut b);
+        assert_eq!(Handoff::parse(&b, 2), Err(HandoffError::InvalidSerial));
+        let mut b = sample();
+        b[0x61] = b'X';
+        seal(&mut b);
+        assert_eq!(Handoff::parse(&b, 2), Err(HandoffError::InvalidSerial));
     }
 }
