@@ -1765,16 +1765,69 @@ bash tools/stage4/run_local_set.sh
 | --- | --- | --- |
 | `linux-boot-positive-negative` | not_run | vmlinuz, initramfs, ACPI manifest/blob (нет в репозитории) |
 | `linux-direct-gate-real-kernel` | not_run | `od-runner linux-direct-gate` с настоящим ядром и теми же артефактами |
-| `mac-mini-hardware-cases` | blocked | стенд Mac mini и его владелец (hardware gate этапа 3 — в своём scope) |
+| `mac-mini-hardware-cases` | blocked | только bare-metal: стенд Mac mini и его владелец (hardware gate этапа 3 — в своём scope). KVM-прогоны на Mini (S4-34a, S4-34b, S4-34cde) выполнены вне этого набора — см. ниже |
 | `guest-firmware-artifacts-build` | not_run | отдельная сборка `tools/build/*.py`, `firmware/uefi` и их `tools/build/test_*.py` (toolchain `x86_64-unknown-none`/uefi; не входит в S4-44a/b) |
 | `vmhost-system-smokes` | not_run | собранный VMHost app bundle и desktop-сессия (`tests/system/*.py`, `*.swift`, `*.c`; scope этапа 3) |
+| `runner-stress-mode` | not_run | stress mode runner в `tests/system/` (передано из S4-43; владелец S4-44) |
+| `reboot-cycles` | not_run | `--reboot-cycles`: повторные boot/STOP/reset в runner (передано из S4-43; S4-44, затем STAGE_7, S7-26) |
+| `guest-ram-limit` | not_run | явный лимит guest RAM (в S4-43 проверены только host heap/RSS; владелец S4-44) |
+| `executable-cache-limit` | not_run | лимит executable cache (`crates/od-jit/src/dispatch.rs`; S4-42 или S4-44) |
+
+Выполнено вне локального набора: **KVM-прогоны на Mac mini** (S4-34a, S4-34b, S4-34cde; Linux-хост, VT-x guest execution через KVM, не bare-metal, наш CPU/MMU не участвует; evidence `docs/reports/data/stage4/s4-34b-kvm-repeatability.json`, `s4-34cde-kvm-system.json`); набор их не повторяет. Родитель S4-34 не принят.
+
+Строки `runner-stress-mode`, `reboot-cycles`, `guest-ram-limit`, `executable-cache-limit` и секция `executed_outside_local_set` внесены в `s4-44b-local-set.json` документарно (ревью S4-46); список `NOT_RUN` в `tools/stage4/run_local_set.sh` не менялся, поэтому заново сгенерированная сводка их не содержит, пока скрипт не обновлён (код этим срезом не менялся).
 
 **Как читать сводку** (`s4-44b-local-set.json`, схема `od.stage4.s4-44b.local-set.v2`): `environment` — commit, ветка, `git status --porcelain` на старте, sha256 скрипта, `rustc`, `cargo`, macOS, arch; `steps[]` — `id`, `command`, `status` (`passed`/`failed`/`known_divergence`/`timeout`), `returncode`, `duration_seconds`, `log` (путь в `work/`, не в Git) и `log_sha256`; для шагов `cargo test` — `targets[]` (результат каждой цели: `target`, `binary`, `status` `passed`/`failed`/`no_result`, `passed`/`failed`/`ignored`, `failed_tests`) и `targets_total`/`targets_failed`, разобранные из лога cargo; `totals`; `not_run[]`; `overall_local` = `passed` только при нуле `failed`/`timeout`. Логи в Git не лежат: sha256 позволяет сверить ваш лог только при том же окружении, сравнивать надо статусы и счётчики тестов. Ошибка компиляции цели обрывает `cargo test` даже с `--no-fail-fast`: тогда у шага нет результата для не собранных целей, и он `failed`.
 
-**Ожидаемый результат** на чистом checkout: `fmt` — `known_divergence`; остальные шаги — `passed`. Результат прогона S4-44b (2026-11-15, commit `3e8467d`: 8 `passed`, 1 `known_divergence`, 0 `failed`) и разбор падений S4-44a — в `docs/reports/STAGE_4_REPORT.md`, разделы «S4-44 — результат локального прогона» и «S4-44b — результат».
+**Ожидаемый результат** на чистом checkout: `fmt` — `known_divergence`; остальные шаги — `passed`. Результат прогона S4-44b (2026-11-15T02:08Z, UTC — `generated_utc` сводки; commit `3e8467d`: 8 `passed`, 1 `known_divergence`, 0 `failed`) и разбор падений S4-44a — в `docs/reports/STAGE_4_REPORT.md`, разделы «S4-44 — результат локального прогона» и «S4-44b — результат».
 
 **Известные ограничения набора.**
 
 1. Набор не запускает ничего из таблицы «Что НЕ запускается локально»: зелёный `overall_local` означает только «локальный набор прошёл», а не «этап 4 принят».
 2. Все 9 тестов `native_register_v1_corpus` (`od-host`, включая `cached_*`, `retained_hit_failure_reducer_and_selfcheck`, `saved_case_round_trip_and_replay`, `reduce_saved_native_register_v1_case`) не зависят от порядка тестов и от содержимого `work/`: если нужных файлов (`native-register-v1-{observations,cache-trace,saved-case}.json`) нет в `work/stage3-native-register-v1/manual/` (или в `OD_JIT_NATIVE_REGISTER_V1_CORPUS_DIR`), фикстура детерминированно генерируется (около 1 с) и сохраняется туда. Существующий файл читается и валидируется; явные пути `OD_JIT_NATIVE_REGISTER_V1_REPLAY_CASE`/`..._REDUCE_CASE` используются как заданы. Проверено на пустом `OD_JIT_NATIVE_REGISTER_V1_CORPUS_DIR`: каждый тест отдельно и все вместе. Оговорка: при заданном `OD_JIT_NATIVE_REGISTER_V1_CORPUS_DIR` повторный запуск `reduce_saved_native_register_v1_case` падает (`refusing to overwrite` в каталоге reducer, так задумано); без переменной используется временный каталог.
 3. `stage4_probe_cli::uart_echo_profile_checks_rx_expectation_budgets_and_stop`: чтение RBR пустого приёмника UART с S4-38L9z возвращает последний принятый байт (0 после сброса), а не ошибку порта; тест обновлён (`--expect-byte 1` без `--rx-byte` — `completion_mismatch`, код 5; `--expect-byte 0` — `guest_completed`). Связку `PortIo` → код 6 на уровне CLI проверить нельзя: загрузчик пробы принимает только фиксированный код (в echo-профиле `in/out/hlt` на COM1), а произвольный гостевой код отвергается как `loader_error` (код 4). Ближайшая проверка — unit-тест `stage4_probe::tests::exit_categories_remain_distinct` через `exit_code()`.
+
+## Воспроизведение Linux direct boot (S4-39j)
+
+Раздел описывает, как повторить зачётный результат S4-39j и что без артефактов повторить нельзя. Результат узкий: Linux userspace на пути интерпретатора под CPUID-профилем `stage4a` (`--user-mode`, без APIC и SSE/SSE2, 8259 PIC), сценарий `/init` с фиксированным nonce `s4-38l4a`; JIT не использовался. Это не воспроизведение «стабильного Linux» и не приёмка этапа 4 (S4-44 открыт, Linux boot и `linux-direct-gate` на настоящем ядре в локальный набор не входят — строки `linux-boot-positive-negative` и `linux-direct-gate-real-kernel` выше).
+
+**Требуемые артефакты.** Большие артефакты в репозитории не хранятся (каталог `work/` игнорируется Git).
+
+| артефакт | идентичность | в Git | как получить |
+| --- | --- | --- | --- |
+| `vmlinuz-7.0.0-38-generic` (Ubuntu 7.0.0-38.38) | 17 320 328 байт, sha256 `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e` | нет | `python3 tools/build/stage_linux_artifact.py`: проверяет и кладёт файлы по манифесту S4-00a (`docs/reports/data/stage4/s4-00a-source-audit-2026-11-05.json`) из каталога `work/vms/s2-00-ubuntu-26.04.1` в `work/stage4/linux-7.0.0-38.38/`. Сам входной каталог с пакетами Ubuntu **требует уточнения**: в репозитории его нет, способ получения описан в материалах S2-00/S4-00a, в этом срезе не восстанавливался. Подлинность не подтверждена (проверяется только content hash, S4-35) |
+| `initramfs.cpio` (настоящий `/init`) | 4688 байт, sha256 `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588` | нет (исходник — `tests/fixtures/guest/stage4/initramfs/init.S`) | `python3 tools/build/build_stage4_initramfs.py` (по умолчанию `work/stage4/initramfs/initramfs.cpio`; нужен тулчейн для сборки фикстуры). Совпадение пересобранного архива с этим sha256 в S4-46 не проверялось: сверять по `--expected-initramfs-sha256` |
+| ACPI blob | 1072 байта, sha256 `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf` | да: `tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin` | уже в checkout; пересборка и сравнение — `python3 tools/build/build_stage4_acpi_blob.py --compare tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin` |
+| ACPI manifest hash | `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2` | значение, не файл | передаётся аргументом `--expected-acpi-manifest-hash`; отдельного файла манифеста нет |
+
+**Сборка.** `cargo build --release --locked --offline -p od-runner`, бинарь `target/release/od-runner`.
+
+**Прогон (два независимых холодных процесса).** Аргументы взяты из раздела S4-39j `docs/specs/CPU_CONTRACT.md` и из `inputs`/`stop` сохранённых отчётов; пути входов — относительные, из корня checkout (как в сохранённых отчётах). Для N = 1, 2:
+
+```text
+target/release/od-runner linux-direct \
+  --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --nonce s4-38l4a \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --out <каталог>/coldN.json \
+  --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode
+
+target/release/od-runner linux-direct-gate \
+  --report <каталог>/coldN.json --nonce s4-38l4a \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --out <каталог>/verdictN.json
+```
+
+Не передавать `--diagnostic-past-c7` (иначе `acceptance` = `diagnostic_not_counted` и гейт даст `FAIL`) и `--allow-diagnostic-acceptance`. Коды гейта: 0 `PASS`, 5 `FAIL`, 6 `PASS_DIAGNOSTIC_NOT_COUNTED`, 3 ошибка аргументов или отчёта. Точное время зачётных прогонов в документах не зафиксированы (в записях S4-38 прогон с тем же бюджетом на release занимал порядка 10 минут; **требует уточнения**); хост зачётных прогонов в отчёте не записан (разработка велась на macOS/arm64; другие хосты не проверялись).
+
+**Ожидаемый результат.** Оба гейта: `verdict` = `PASS`, `counted` = `true`, `failures` пусты, код выхода 0. Сохранённые зачётные прогоны: отчёты `docs/reports/data/stage4/s4-39j-gate-counted-cold1-stage4a-run.json` и `…-cold2-…` побайтно равны (sha256 `d99b1898da27fd283568b2c8bad4270233e75d103e20a19da2380842cf53bd2a`), вердикт `s4-39j-gate-counted-verdict.json`, run ID `9d34785cdd85762428ba69873dd543700d87a50af5391e49d1728e79709b92c2`. Run ID — функция nonce, хешей входов и sha256 байтов отчёта: тот же ID получается только при побайтно том же отчёте (проверка — `shasum -a 256 <отчёт>` против значения выше); другой хост, сборка или путь могут дать иной отчёт и иной ID при том же `PASS`. Критерий воспроизведения — `PASS` на двух холодных прогонах с одинаковой последовательностью журнала syscall (83, 165, 257, 0, 3, 1, 39, 35, 60), строкой `OD_NONCE=s4-38l4a` в COM1 и строкой паники `Attempted to kill init! exitcode=0x00000000`; прогон кончается `budget_exhausted` в цикле паники (штатно, гейт `exit_kind` не проверяет).
+
+**Что воспроизводится локально без артефактов.** Только гейт на сохранённых отчётах: `od-runner linux-direct-gate --report docs/reports/data/stage4/s4-39j-gate-counted-cold1-stage4a-run.json --nonce s4-38l4a` с теми же тремя `--expected-*` и `--out` даёт `PASS` и вердикт, побайтно равный `s4-39j-gate-counted-verdict.json` (run ID `9d34785c…92c2`); проверено при подготовке S4-46 на release-сборке `od-runner` из этого checkout. Это проверка самосогласованности отчёта, а не повторное исполнение Linux: хеш отчёта входит в run ID, подписи нет.
+
+**Что НЕ воспроизводится без артефактов.** Сам прогон ядра (`linux-direct --run`), положительный и негативные Linux-прогоны, проверка хешей входов против реальных файлов, повторение двух холодных запусков и сравнение их отчётов. Для них нужны vmlinuz и initramfs, которых в репозитории нет, и входной каталог пакетов Ubuntu (см. «требует уточнения»). Не подтверждены повтор на другом хосте, release/debug-различия, JIT, новый nonce на прогон (nonce фиксированный, ISSUE-092), IRQ из CPL3 (ISSUE-090), профили кроме `stage4a` (ISSUE-091). Связанные записи реестра: ISSUE-088, ISSUE-090…ISSUE-099 в [KNOWN_ISSUES](../KNOWN_ISSUES.md).
