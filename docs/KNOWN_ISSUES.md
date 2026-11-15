@@ -160,10 +160,19 @@
 ### ISSUE-122 — S7-04: Rust helper `SUB RSP,imm32` остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после допуска bare `53` (`PUSH RBX`).
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware target `0x2004a0`.
-- **Статус:** открыта; оба callee-saved registers сохранены, helper stack frame ещё не выделен.
-- **Суть и последствия:** `RIP=0x2004a3` содержит `48 81 EC B8 00 00 00` (`SUB RSP,0x000000b8`), 184-byte stack frame allocation. Runner возвращает `Unsupported { opcode: 129 }`; COM1 пуст, последующая функция ещё не исполняется.
+- **Статус:** решена узко для exact `48 81 EC B8 00 00 00` в base `PagedCpl0ProbeV1`.
+- **Суть и результат:** qword `SUB RSP,0xb8` меняет только RSP и арифметические flags/definedness через существующую SUB-семантику. Это register-only adjustment: stack memory не читается/не пишется, полученный RSP не проверяется на canonicality. Остальные immediate, регистры, widths/prefixes, CPL3 и другие profiles остаются unsupported.
 - **Основание:** образ `/private/tmp/od-fw-s7-push-rbx.bin`; байты подтверждены `od -An -tx1 -j 0x4a3 -N16` как `48 81 ec b8 00 00 00 48 89 fb 48 8d 7c 24 50 e8`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=22`, `RIP=0x2004a3`, `com1_bytes=0`.
-- **Следующий шаг:** исследовать exact stack adjustment и его arithmetic flags/canonicality/fault boundary, затем оценить ограниченный допуск.
+- **Проверка решения:** `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 172 passed; полное состояние, arithmetic flags/definedness, noncanonical RSP результат, imm32 fetch fault atomicity, соседние формы и CPL3/stack/CR3/CR0.WP isolation. Образ `/private/tmp/od-fw-s7-sub-rsp-b8.bin` собран (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 23 инструкции и остановился на `48 89 FB` (`MOV RBX,RDI`) при `RIP=0x2004aa`, `Unsupported { opcode: 137 }`, `com1_bytes=0`.
+
+<a id="issue-123-s7-04-rust-helper-mov-rbx-rdi-unsupported"></a>
+### ISSUE-123 — S7-04: Rust helper `MOV RBX,RDI` остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `SUB RSP,0xb8`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware target `0x2004a0`.
+- **Статус:** открыта; helper stack frame выделен, следующий регистровый перенос не исполняется.
+- **Суть и последствия:** `RIP=0x2004aa` содержит `48 89 FB` (`MOV RBX,RDI`). Runner возвращает `Unsupported { opcode: 137 }`; COM1 пуст, handoff parser ещё не достигнут.
+- **Основание:** образ `/private/tmp/od-fw-s7-sub-rsp-b8.bin`; `od -An -tx1 -j 0x4aa -N16` показывает `48 89 fb 48 8d 7c 24 50 e8 59 08 00 00 4c 8b 74`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=23`, `RIP=0x2004aa`, `com1_bytes=0`.
+- **Следующий шаг:** проверить узкий exact регистровый MOV допуск и его profile/encoding isolation.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки

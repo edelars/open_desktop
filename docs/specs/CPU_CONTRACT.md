@@ -569,6 +569,12 @@ Tests проверяют full state/RSP и все восемь qword bytes, PF/S
 
 Tests проверяют full state/RSP, все восемь записанных bytes, stack #PF/#SS, fetch fault, соседние REX/opcode/width forms и CPL3/stack/CR3/CR0.WP isolation. Runner retired 22 инструкции и остановился на `48 81 EC B8 00 00 00` (`SUB RSP,0xb8`, ISSUE-122, RIP `0x2004a3`).
 
+#### Расширение S7-04: exact Rust-helper `SUB RSP,0xb8`
+
+В base `PagedCpl0ProbeV1` допускается только `48 81 EC B8 00 00 00`: Primary opcode `81`, ModRM `/5` с назначением RSP, qword operand size и единственный REX.W `0x48`; signed imm32 равен `0xb8`. Переиспользуется существующая SUB-семантика с соответствующими arithmetic flags и definedness. Операция register-only: не обращается к стеку и не проверяет canonicality нового RSP; fetch fault до полного imm32 не меняет состояние CPU. Другие immediate/forms и остальные profiles остаются вне allowlist.
+
+Tests проверяют full state, flags/definedness, noncanonical RSP result, cross-page immediate fetch-fault atomicity, neighboring encodings и CPL3/stack/CR3/CR0.WP isolation. Runner retired 23 инструкции и остановился на `48 89 FB` (`MOV RBX,RDI`, ISSUE-123, RIP `0x2004aa`).
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции
