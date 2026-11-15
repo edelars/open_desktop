@@ -64,6 +64,7 @@ mod translation_probe_cache;
 mod uart16550;
 mod uart_pic_irq_source;
 mod uart_rx_events;
+mod vcpu;
 mod virtual_clock;
 
 pub use acpi_blob::{
