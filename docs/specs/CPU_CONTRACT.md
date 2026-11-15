@@ -730,6 +730,12 @@ Base `PagedCpl0ProbeV1` admits only `81 FF 61 FF 00 00` for this dword register/
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_cmp_edi_imm32 -- --nocapture` — 4 passed: equal/less/greater low dword cases with varied high RDI, flags and definedness, full-state preservation, exact immediate bytes, final immediate-byte fetch-fault atomicity, neighboring forms, CPL3 and other-profile isolation. Runner retired 56 instructions, then stopped at `40 0F 92 C7` (`SETB DIL`, ISSUE-154, RIP `0x200dc3`). Full handoff validation remains incomplete.
 
+#### Расширение S7-04: exact Rust-helper `SETB DIL`
+
+Base `PagedCpl0ProbeV1` admits only `40 0F 92 C7`: bare REX `40`, `ConditionCode::Below`, raw ModRM `C7`, and DIL. The shared SETcc path reads CF, writes only DIL, preserves the upper 56 bits of RDI and RFLAGS, and leaves flag-definedness unchanged.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_setb_dil -- --nocapture` — 4 passed: CF true/false with both defined and undefined CF metadata, full-state preservation, fetch fault on ModRM, neighboring conditions/registers/REX/prefixes, CPL3 and other-profile isolation. Runner retired 57 instructions, then stopped at `48 39 EA` (`CMP RDX,RBP`, ISSUE-155, RIP `0x200dc7`). Full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции
