@@ -790,6 +790,13 @@ Base `PagedCpl0ProbeV1` admits only `0F B7 CB`: opcode map `0F`, opcode `B7`, no
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_movzx_ecx_bx -- --nocapture` — 4 passed; full `paged_probe_profile` — 329 passed. Tests cover high-RCX zero-extension, full-state/flags retention, unsupported neighbors, fetch fault at ModRM, CPL3 and other-profile isolation. Firmware image `/private/tmp/od-fw-s7-movzx-ecx-bx.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 65 instructions and stopped at `49 B8 FC FF FF FF FF FF FF 7F` (`MOV R8,0x7ffffffffffffffc`, ISSUE-163), `RIP=0x200de5`, `Unsupported { opcode: 184 }`, `com1_bytes=0`; full handoff validation remains incomplete.
 
+<a id="s7-04-exact-rust-helper-mov-r9d-imm32"></a>
+#### Расширение S7-04: exact Rust-helper `MOV R9D,0xffffffff`
+
+Base `PagedCpl0ProbeV1` admits only `41 B9 FF FF FF FF`: primary-map opcode `B9`, exact REX `41`, dword destination R9D, exact imm32 `0xffffffff`, length 6. It reuses the existing MOV-immediate register write; the dword write zero-extends into R9, changing only R9 and RIP. RFLAGS/definedness and all other CPU state remain unchanged. Other immediate values, destinations, widths and prefixes are unsupported.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_mov_r9d_imm32 -- --nocapture` — 4 passed; full `paged_probe_profile` — 342 passed. Tests cover zero-extension, full state and flags, neighboring forms, final-immediate fetch-fault atomicity, CPL3 and other-profile isolation. Firmware image `/private/tmp/od-fw-s7-mov-r9d-imm32.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 68 instructions and stopped at `45 31 D2` (`XOR R10D,R10D`, ISSUE-166), `RIP=0x200df8`, `Unsupported { opcode: 49 }`, `com1_bytes=0`; full handoff validation remains incomplete.
+
 <a id="s7-04-exact-rust-helper-mov-edi-dword-rsi-14"></a>
 #### Расширение S7-04: exact Rust-helper `MOV EDI,dword ptr [RSI+0x14]`
 

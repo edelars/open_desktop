@@ -21446,6 +21446,28 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: the helper initializes exactly `41 B9 FF FF FF FF`
+        // (MOV R9D,0xffffffff). The dword write zero-extends into R9;
+        // keep the register, immediate and REX encoding exact.
+        Operation::MovImmediate {
+            dst: Operand::Register(destination),
+            value,
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xb9
+            && instruction.length == 6
+            && instruction.operand_size == OperandSize::Dword
+            && destination == RegisterView::low(Register::R9, OperandSize::Dword)
+            && value == 0xffff_ffff
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x41),
+                    ..Prefixes::default()
+                }) =>
+        {
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: the firmware handoff GPA is loaded into RSI by the exact
         // `BE 00 00 10 00` encoding. Admit only this 32-bit immediate write
         // to ESI in the base profile; architectural register write semantics
