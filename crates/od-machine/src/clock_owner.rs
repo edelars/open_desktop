@@ -22,8 +22,10 @@
 //! vCPU activity itself and passes it in the views; `state.activity` is not consulted. A timer
 //! dispatch raises at most one request per call, as `LocalApicHandle::dispatch_timer` does: a
 //! periodic timer folds missed periods into one interrupt and keeps its phase, a one-shot fires at
-//! the step boundary. The wiring slice must therefore cap a vCPU's step budget at
-//! `(next_deadline - now) / NS_PER_RETIRED`, or the tick count depends on the quantum size.
+//! the step boundary. A caller must therefore cap a vCPU's step budget at
+//! `(next_deadline - now) / NS_PER_RETIRED`, or the tick count depends on the quantum size; that
+//! rule is [`ClockOwner::step_budget`] (S4-23h), exercised by the test harness only, still not
+//! wired to a production stepper.
 
 // No production caller yet: a later slice wires the owner in; tests exercise it now.
 #![cfg_attr(not(test), allow(dead_code))]
@@ -34,6 +36,30 @@ use crate::{DeviceError, LocalApicHandle, VirtualClockError, VirtualClockHandle}
 
 /// Virtual nanoseconds charged per retired instruction (D7).
 pub(crate) const NS_PER_RETIRED: u64 = 1;
+
+/// Instruction budget of one vCPU step: the scheduler quantum, cut so that the step cannot retire
+/// past the earliest deadline (S4-23h). Pure; `rate` is the nanoseconds charged per retired
+/// instruction.
+///
+/// - no deadline: `quantum`;
+/// - deadline after `now`: `min(quantum, (deadline - now) / rate)`, so the step ends at or before
+///   the deadline and the timer dispatch that follows it sees the deadline at its own time;
+/// - deadline not after `now` (stale or already due): 1. The step is never empty, so a caller
+///   cannot loop without progress, and it is one retirement only, so a stale deadline does not
+///   open a long overshoot;
+/// - the result is never 0 (also for `quantum == 0`, and when the gap is below `rate`).
+fn budget_with_rate(quantum: u64, now: u64, deadline: Option<u64>, rate: u64) -> u64 {
+    let budget = match deadline {
+        None => quantum,
+        Some(deadline) => quantum.min(deadline.saturating_sub(now) / rate),
+    };
+    budget.max(1)
+}
+
+/// [`budget_with_rate`] at the D7 rate [`NS_PER_RETIRED`].
+pub(crate) fn capped_budget(quantum: u64, now: u64, deadline: Option<u64>) -> u64 {
+    budget_with_rate(quantum, now, deadline, NS_PER_RETIRED)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ClockOwnerError {
@@ -120,6 +146,28 @@ impl ClockOwner {
 
     pub(crate) fn now_ns(&self) -> u64 {
         self.advancer.snapshot().now_ns()
+    }
+
+    /// Earliest virtual-time deadline of the owner's LAPIC timers, merged with one optional
+    /// deadline of the board (for example the end of a run). Read-only.
+    pub(crate) fn nearest_deadline(&self, board_deadline: Option<u64>) -> Option<u64> {
+        self.apics
+            .iter()
+            .filter_map(LocalApicHandle::next_timer_deadline)
+            .chain(board_deadline)
+            .min()
+    }
+
+    /// Instruction budget for the next vCPU step under the quantum, bounded by the nearest
+    /// deadline (see [`capped_budget`]). Never 0. A step of this size ends no later than the
+    /// deadline, so [`Self::account_retired`] dispatches the timer at exactly its deadline and the
+    /// tick count and times do not depend on `quantum`.
+    pub(crate) fn step_budget(&self, quantum: u64, board_deadline: Option<u64>) -> u64 {
+        capped_budget(
+            quantum,
+            self.now_ns(),
+            self.nearest_deadline(board_deadline),
+        )
     }
 
     /// Charge `retired` instructions to the clock, then dispatch every LAPIC timer in index order
@@ -802,5 +850,202 @@ mod tests {
         assert_eq!(second.idle_ns, 200);
         assert_eq!(second.fired, [false, true]);
         assert_eq!(h.now(), now + 300);
+    }
+
+    // S4-23h: the step budget is bounded by the nearest deadline.
+
+    /// `jmp -2`: a vCPU that retires instructions forever and never halts.
+    const SPIN: [u8; 2] = [0xeb, 0xfe];
+    const PERIODIC_LVT: u64 = 1 << 17;
+    /// Far from both programs: the spinning vCPUs never reach it.
+    const NEVER_RIP: u64 = 0x3f00;
+
+    fn spin_harness() -> Harness {
+        let mut h = Harness::new(HZ, HZ);
+        h.ram.load(CODE0, &SPIN);
+        h.ram.load(CODE1, &SPIN);
+        h.cpus[0].hlt_rip = NEVER_RIP;
+        h.cpus[1].hlt_rip = NEVER_RIP;
+        h
+    }
+
+    /// Periodic LAPIC timer of `cpu` with a period of `period` ticks (1 tick = 1 ns here).
+    fn arm_periodic(h: &mut Harness, cpu: usize, period: u64) {
+        h.write(cpu, 0x320, PERIODIC_LVT | u64::from(VECTOR));
+        h.write(cpu, 0x3e0, 0xb);
+        h.write(cpu, 0x380, period);
+    }
+
+    /// Consume the interrupt request of `cpu` if there is one (acknowledge and end of interrupt).
+    fn take_fire(h: &mut Harness, cpu: usize) -> bool {
+        if h.apic(cpu).acknowledge().is_some() {
+            h.write(cpu, 0xb0, 0);
+            true
+        } else {
+            false
+        }
+    }
+
+    struct Step {
+        before: u64,
+        deadline: Option<u64>,
+        budget: u64,
+        after: u64,
+    }
+
+    struct Observed {
+        /// `(cpu, now)` of every timer request, in the order they were raised.
+        fires: Vec<(usize, u64)>,
+        steps: Vec<Step>,
+        final_now: u64,
+    }
+
+    /// Two spinning vCPUs, periodic timers of 100 ns (vCPU0) and 70 ns (vCPU1), stepped in turn
+    /// until `horizon`. With `capped` the budget follows the owner's rule (the horizon is a board
+    /// deadline); without it every step is the plain quantum, as a caller ignoring the rule does.
+    fn drive(quantum: u64, capped: bool, horizon: u64) -> Observed {
+        let mut h = spin_harness();
+        arm_periodic(&mut h, 0, 100);
+        arm_periodic(&mut h, 1, 70);
+        let mut observed = Observed {
+            fires: Vec::new(),
+            steps: Vec::new(),
+            final_now: 0,
+        };
+        let mut turn = 0;
+        while h.now() < horizon {
+            let before = h.now();
+            let deadline = h.owner.nearest_deadline(Some(horizon));
+            let budget = if capped {
+                h.owner.step_budget(quantum, Some(horizon))
+            } else {
+                quantum
+            };
+            assert!(budget >= 1);
+            let result = h.run(turn % 2, budget);
+            assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+            assert_eq!(result.instructions_executed, budget);
+            turn += 1;
+            let after = h.now();
+            for cpu in 0..2 {
+                if take_fire(&mut h, cpu) {
+                    observed.fires.push((cpu, after));
+                }
+            }
+            observed.steps.push(Step {
+                before,
+                deadline,
+                budget,
+                after,
+            });
+        }
+        observed.final_now = h.now();
+        observed
+    }
+
+    fn expected_fires(horizon: u64) -> Vec<(usize, u64)> {
+        let mut want: Vec<(usize, u64)> = (1..=horizon / 100)
+            .map(|k| (0, k * 100))
+            .chain((1..=horizon / 70).map(|k| (1, k * 70)))
+            .collect();
+        want.sort_by_key(|&(cpu, now)| (now, cpu));
+        want
+    }
+
+    #[test]
+    fn tick_count_does_not_depend_on_quantum() {
+        const HORIZON: u64 = 1_050;
+        let want = expected_fires(HORIZON);
+        assert_eq!(want.len(), 10 + 15);
+        for quantum in [1, 7, 1_000] {
+            let got = drive(quantum, true, HORIZON);
+            assert_eq!(got.final_now, HORIZON, "quantum {quantum}");
+            assert_eq!(got.fires, want, "quantum {quantum}");
+        }
+        // Without the rule the same program ticks differently: the rule is what fixes the trace.
+        let overshoot = drive(1_000, false, HORIZON);
+        assert_ne!(overshoot.fires, want);
+        let shifted = drive(7, false, HORIZON);
+        assert_ne!(shifted.fires, want);
+        assert_ne!(shifted.fires, overshoot.fires);
+    }
+
+    #[test]
+    fn budget_never_crosses_a_deadline() {
+        const HORIZON: u64 = 1_050;
+        for quantum in [1, 7, 64, 1_000] {
+            let got = drive(quantum, true, HORIZON);
+            let mut cut = 0;
+            for step in &got.steps {
+                // The owner dispatches after every charge, so a live deadline is always ahead.
+                let deadline = step.deadline.expect("timers are armed");
+                assert!(deadline > step.before, "quantum {quantum}");
+                assert!(step.budget <= quantum);
+                assert!(
+                    step.after <= deadline,
+                    "quantum {quantum}: step {}..{} crossed {deadline}",
+                    step.before,
+                    step.after
+                );
+                if step.budget < quantum {
+                    cut += 1;
+                }
+            }
+            if quantum > 1 {
+                assert!(cut > 0, "quantum {quantum}: the rule never cut a step");
+            }
+        }
+    }
+
+    #[test]
+    fn no_deadline_budget_is_quantum() {
+        let mut h = spin_harness();
+        for quantum in [1, 7, 1_000, u64::MAX] {
+            assert_eq!(h.owner.nearest_deadline(None), None);
+            assert_eq!(h.owner.step_budget(quantum, None), quantum);
+        }
+        // Retirement alone does not create a deadline.
+        assert_eq!(h.run(0, 25).instructions_executed, 25);
+        assert_eq!(h.owner.step_budget(1_000, None), 1_000);
+        assert_eq!(capped_budget(1_000, 25, None), 1_000);
+        // A masked timer has no useful deadline either.
+        arm_periodic(&mut h, 0, 100);
+        h.write(0, 0x320, PERIODIC_LVT | (1 << 16) | u64::from(VECTOR));
+        assert_eq!(h.apic(0).next_timer_deadline(), None);
+        assert_eq!(h.owner.step_budget(1_000, None), 1_000);
+        // A timer or a board deadline bounds it again, whichever is nearer.
+        h.write(0, 0x320, PERIODIC_LVT | u64::from(VECTOR));
+        assert_eq!(h.apic(0).next_timer_deadline(), Some(125));
+        assert_eq!(h.owner.step_budget(1_000, None), 100);
+        assert_eq!(h.owner.step_budget(1_000, Some(40)), 15);
+        assert_eq!(h.owner.step_budget(1_000, Some(500)), 100);
+        assert_eq!(h.owner.step_budget(50, None), 50);
+    }
+
+    #[test]
+    fn budget_is_never_zero() {
+        // Stale or due deadlines and a zero quantum give one retirement, not an empty step.
+        assert_eq!(capped_budget(100, 500, Some(500)), 1);
+        assert_eq!(capped_budget(100, 500, Some(100)), 1);
+        assert_eq!(capped_budget(100, 500, Some(0)), 1);
+        assert_eq!(capped_budget(100, 500, Some(501)), 1);
+        assert_eq!(capped_budget(0, 500, None), 1);
+        assert_eq!(capped_budget(0, 0, Some(9)), 1);
+        assert_eq!(capped_budget(u64::MAX, 0, Some(u64::MAX)), u64::MAX);
+        // A gap below one retirement's cost rounds down to 0 and is lifted to 1.
+        assert_eq!(budget_with_rate(100, 0, Some(3), 4), 1);
+        assert_eq!(budget_with_rate(100, 0, Some(8), 4), 2);
+        assert_eq!(budget_with_rate(100, 0, Some(11), 4), 2);
+        // On the owner, with a real clock past the deadline.
+        let mut h = spin_harness();
+        assert_eq!(h.run(0, 10).instructions_executed, 10);
+        assert_eq!(h.now(), 10);
+        for deadline in [0, 9, 10, 11] {
+            assert_eq!(h.owner.step_budget(100, Some(deadline)), 1, "{deadline}");
+        }
+        assert_eq!(h.owner.step_budget(0, None), 1);
+        // The stale step retires one instruction and then moves on.
+        assert_eq!(h.run(0, 1).instructions_executed, 1);
+        assert_eq!(h.now(), 11);
     }
 }
