@@ -27,7 +27,7 @@
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
 - **Владелец:** S7-04 совместно с владельцем CPU profile.
-- **Статус:** решена узко для точной формы `49 89 F8`; runner остаётся заблокирован на следующей startup-инструкции (ISSUE-105).
+- **Статус:** решена узко для точной формы `49 89 F8` (код `dd57771`); runner остаётся заблокирован на следующей startup-инструкции (ISSUE-105).
 - **Суть и последствия:** после `CLD`, `48 C7 C0 00 00 10 00`, `48 39 C7` и невзятого `75 24` runner отклонял `49 89 F8` (`MOV R8,RDI`) на `RIP=0x20004d`. Базовый `PagedCpl0ProbeV1` теперь копирует только RDI в R8 по этой точной форме; до Rust entry runner пока не дошёл.
 - **Основание:** образ `/private/tmp/od-fw-s7-04-jnz.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; команда `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-jnz.bin --com1-out /private/tmp/od-fw-s7-04-jnz.com1 --budget 10000` вернула `Unsupported { opcode: 137 }` (decimal = `0x89`), `retired=4`, `RIP=0x20004d`, `com1_bytes=0`.
 - **Результат и проверка:** `paged_probe_profile` проверяет полное состояние и только R8 mutation, REX register selection, соседние направления/ширины/prefixes/memory forms, fetch fault до ModRM, профильную изоляцию stack/CR3/CR0.WP и CPL3. Runner retired пять инструкций и теперь останавливается на `48 8D 3D 09 2B 00 00` (`LEA RDI,[RIP+0x2b09]`) на `RIP=0x200050`; см. ISSUE-105. Реализация узкой формы прошла независимое ревью.
