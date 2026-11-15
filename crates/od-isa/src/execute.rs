@@ -20856,8 +20856,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
-        // S7-04: this Rust helper reads only `0F B7 7E 08` (MOVZX EDI,[RSI+8]) and
-        // `0F B7 5E 0A` (MOVZX EBX,[RSI+0xA]). Reuse the faulting read and 32-bit write.
+        // S7-04: the Rust helper reads exact handoff fields with MOVZX Word at
+        // +8/+0xA and `8B 4E 0C` (MOV ECX,dword ptr [RSI+0xC]). Reuse the
+        // faulting read and 32-bit write; other load forms remain unsupported.
         Operation::Extend {
             dst: destination,
             src: Operand::Memory(source),
@@ -20877,6 +20878,34 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             && source.scale == 1
             && source.address_size == OperandSize::Qword
             && source.size == OperandSize::Word =>
+        {
+            let value =
+                match read_operand(state, memory, context, next_rip, Operand::Memory(source)) {
+                    Ok(value) => value,
+                    Err(MemoryError::Architectural(fault)) => {
+                        return result(PagedProbeExit::Fault(fault), 0);
+                    }
+                    Err(error) => return result(PagedProbeExit::Backend(error), 0),
+                };
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Memory(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x8b
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes == Prefixes::default()
+            && destination == RegisterView::low(Register::Rcx, OperandSize::Dword)
+            && source.base == AddressBase::Register(Register::Rsi)
+            && source.index.is_none()
+            && source.scale == 1
+            && source.displacement == 0x0c
+            && source.address_size == OperandSize::Qword
+            && source.size == OperandSize::Dword =>
         {
             let value =
                 match read_operand(state, memory, context, next_rip, Operand::Memory(source)) {

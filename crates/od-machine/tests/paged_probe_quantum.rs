@@ -579,35 +579,42 @@ fn unsupported_and_paged_fetch_fault_are_distinct_nonretiring_exits() {
 }
 
 #[test]
-fn paged_probe_movzx_word_reads_use_tracked_page_walk_and_zero_extend_registers() {
+fn paged_probe_handoff_field_reads_use_tracked_page_walk_and_zero_extend_registers() {
     let (mut bus, _) = fixture();
     put_bytes_at(
         &mut bus,
         CODE_PHYSICAL,
-        &[0x0f, 0xb7, 0x7e, 0x08, 0x0f, 0xb7, 0x5e, 0x0a],
+        &[
+            0x0f, 0xb7, 0x7e, 0x08, // MOVZX EDI,word ptr [RSI+8]
+            0x0f, 0xb7, 0x5e, 0x0a, // MOVZX EBX,word ptr [RSI+0xA]
+            0x8b, 0x4e, 0x0c, // MOV ECX,dword ptr [RSI+0xC]
+        ],
     );
     put(&mut bus, DATA_PHYSICAL + 8, 0xfeed_face_2468_1234);
+    put_bytes_at(&mut bus, DATA_PHYSICAL + 0x0c, &[0xef, 0xcd, 0xab, 0x89]);
     let mut state = initial_state(0);
     state.gpr[Register::Rsi as usize] = DATA_LINEAR;
     state.gpr[Register::Rdi as usize] = 0xaabb_ccdd_eeff_0011;
     state.gpr[Register::Rbx as usize] = 0x1122_3344_5566_7788;
+    state.gpr[Register::Rcx as usize] = 0xfeed_face_0123_4567;
     let before_flags = state.rflags;
     let mut writes = Vec::new();
 
-    let result = run(&mut state, &mut bus, 2, || false, &mut writes);
+    let result = run(&mut state, &mut bus, 3, || false, &mut writes);
 
     assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
-    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(result.instructions_executed, 3);
     assert_eq!(result.page_fault, None);
     assert_eq!(result.memory_error, None);
-    assert_eq!(state.rip, CODE_LINEAR + 8);
+    assert_eq!(state.rip, CODE_LINEAR + 11);
     assert_eq!(state.gpr[Register::Rdi as usize], 0x1234);
     assert_eq!(state.gpr[Register::Rbx as usize], 0x2468);
+    assert_eq!(state.gpr[Register::Rcx as usize], 0x89ab_cdef);
     assert_eq!(state.rflags, before_flags);
     assert_eq!(
         qword(&mut bus, DATA_PHYSICAL + 8),
-        0xfeed_face_2468_1234,
-        "the MOVZX performs no data write"
+        0x89ab_cdef_2468_1234,
+        "the handoff field loads perform no data write"
     );
     assert_eq!(qword(&mut bus, ROOT), ROOT + 0x1007 | (1 << 5));
     assert_eq!(qword(&mut bus, ROOT + 0x1000), ROOT + 0x2007 | (1 << 5));

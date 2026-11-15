@@ -7912,6 +7912,121 @@ fn firmware_entry_lea_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn rust_helper_mov_ecx_dword_handoff_field_zero_extends_and_preserves_flags() {
+    let code = [0x8b, 0x4e, 0x0c]; // MOV ECX,dword ptr [RSI+0xC]
+    let rip = 0x200da3;
+    let mut memory = memory_with_code_at(&code, rip);
+    memory.bytes[DATA_PHYSICAL + 0x0c..DATA_PHYSICAL + 0x10]
+        .copy_from_slice(&[0x78, 0x56, 0x34, 0x12]);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsi as usize] = DATA;
+    cpu.gpr[Register::Rcx as usize] = 0xaabb_ccdd_eeff_0011;
+    cpu.rflags = 0x8d7;
+    let before = cpu.clone();
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    let mut expected = before;
+    expected.gpr[Register::Rcx as usize] = 0x1234_5678;
+    expected.rip = rip + code.len() as u64;
+    assert_eq!(cpu, expected);
+    assert_eq!(memory.reads, 1);
+    assert_eq!(memory.read_addresses, [(DATA + 0x0c, 4)]);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn rust_helper_mov_ecx_dword_handoff_field_read_fault_preserves_state() {
+    let code = [0x8b, 0x4e, 0x0c];
+    let rip = 0x200da3;
+    let mut memory = memory_with_code_at(&code, rip);
+    let fault_address = DATA + 0x0c;
+    memory.fail_read_at = Some((fault_address, page_fault(0, fault_address)));
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsi as usize] = DATA;
+    let before = cpu.clone();
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(fault_address),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.reads, 1);
+    assert_eq!(memory.read_addresses, [(fault_address, 4)]);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn rust_helper_mov_ecx_dword_handoff_field_neighbours_stay_unsupported() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x8b, 0x4e, 0x0b], 0x8b),       // different displacement
+        (&[0x8b, 0x56, 0x0c], 0x8b),       // EDX destination
+        (&[0x8b, 0x4f, 0x0c], 0x8b),       // RDI base
+        (&[0x8b, 0x0e], 0x8b),             // no displacement
+        (&[0x48, 0x8b, 0x4e, 0x0c], 0x8b), // qword destination
+        (&[0x66, 0x8b, 0x4e, 0x0c], 0x8b), // word destination
+        (&[0x67, 0x8b, 0x4e, 0x0c], 0x8b), // address-size prefix
+        (&[0xf3, 0x8b, 0x4e, 0x0c], 0x8b), // REP prefix
+        (&[0x89, 0x4e, 0x0c], 0x89),       // store direction
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "{bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0), "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn rust_helper_mov_ecx_dword_handoff_field_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x8b, 0x4e, 0x0c];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    let before = cpu.clone();
+
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x8b });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
     use od_isa::execute::{PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1, PagedCpl0StackProbeV1};
     for (bytes, opcode) in [
@@ -7966,6 +8081,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x0f, 0x97, 0xc1][..], 0x97),
         (&[0x40, 0x0f, 0x93, 0xc7][..], 0x93),
         (&[0x40, 0x08, 0xcf][..], 0x08),
+        (&[0x8b, 0x4e, 0x0c][..], 0x8b),
     ] {
         for profile in ["stack", "cr3", "cr0wp"] {
             let mut memory = Memory::new(bytes);

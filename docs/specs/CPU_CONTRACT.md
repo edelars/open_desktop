@@ -649,7 +649,7 @@ Tests покрывают точное сравнение magic, flags/definednes
 
 В base `PagedCpl0ProbeV1` допускаются только `0F B7 7E 08` (dword destination EDI, word source `[RSI+8]`) и `0F B7 5E 0A` (dword destination EBX, word source `[RSI+0xA]`): Escape0f opcode `B7`, длина 4, без префиксов, обе формы строго фиксируют destination и displacement. Переиспользуются `read_operand` и unsigned `Operation::Extend`: успешное чтение zero-extends word в EDI/RDI или EBX/RBX, обнуляя верхние 32 бита соответствующего 64-bit регистра; flags не меняются. Адрес проходит обычную canonicality проверку, memory fault до записи оставляет CPU state неизменным. В `PagedProbeMemory` добавлена поддержка tracked Word read; другие word-read instructions остаются заблокированы точным CPU-profile admission.
 
-`paged_probe_profile` — 238 passed: оба zero-extended destination, full state, flags/definedness, injected GuestMemory read fault (этот fixture не проверяет page walk или cross-page behavior), noncanonical #GP, fetch fault (первая форма), neighboring forms и CPL3/other-profile isolation. `paged_probe_quantum` исполнил обе word-загрузки через реальный 4-level page walk и проверил A bits верхних уровней и leaf PTE кода/данных; тест не пересекает страницу. Runner retired 44 инструкции, исполнил exact `66 39 CB` (`CMP BX,CX`) и остановился на `0F 97 C1` (`SETA CL`, ISSUE-142, RIP `0x200d58`). Полная проверка handoff ещё не завершена.
+`paged_probe_profile` — 238 passed: обе zero-extended word destinations, full state, flags/definedness, injected GuestMemory read fault (этот fixture не проверяет page walk или cross-page behavior), noncanonical #GP, fetch fault (первая форма), neighboring forms и CPL3/other-profile isolation. `paged_probe_quantum paged_probe_handoff_field_reads_use_tracked_page_walk_and_zero_extend_registers -- --exact` исполняет оба word reads и exact dword load `[RSI+0xC]` через реальный 4-level page walk и проверяет A bits уровней и leaf PTE кода/данных; test accesses remain within mapped pages. Runner retired 44 инструкции, исполнил exact `66 39 CB` (`CMP BX,CX`) и остановился на `0F 97 C1` (`SETA CL`, ISSUE-142, RIP `0x200d58`). Полная проверка handoff ещё не завершена.
 
 #### Расширение S7-04: exact Rust-helper `CMP DI,1`
 
@@ -692,6 +692,12 @@ Base `PagedCpl0ProbeV1` admits only `40 08 CF`, requiring bare REX `40`, byte `O
 Base `PagedCpl0ProbeV1` additionally admits only the tuple `74 3B`, decoded as short `ConditionCode::Equal` with displacement `+0x3B`. It reuses shared branch behavior: ZF controls taken/fall-through, flags and their definedness remain unchanged, and canonicality is checked only for a taken target.
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_jz_rel8 -- --nocapture` — 5 passed, including both ZF values with ZF defined and undefined, taken-target #GP versus deferred noncanonical fall-through, rel8 fetch-fault atomicity, neighboring opcodes/displacements/prefixes, and CPL3. Runner retired 49 instructions; JZ was taken to `0x200da3` and stopped at `8B 4E 0C` (`MOV ECX,dword ptr [RSI+0xC]`, ISSUE-147). Full handoff validation remains incomplete.
+
+#### Расширение S7-04: exact Rust-helper `MOV ECX,dword ptr [RSI+0xC]`
+
+Base `PagedCpl0ProbeV1` admits only `8B 4E 0C`: Primary `MOV r32,r/m32`, no prefixes, destination ECX and qword-addressed source `[RSI+0xC]`. `PagedProbeMemory` routes the admitted 4-byte read through tracked `AccessWidth::Dword`; the shared read path zero-extends the result into RCX, preserves flags, and does not commit CPU state when the read faults. No page-crossing behavior is claimed.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_mov_ecx_dword_handoff_field -- --nocapture` — 4 passed: zero-extension/full-state, injected read-fault atomicity, neighboring addressing/register/width/prefix forms, CPL3 and other paged profiles. The renamed real integration test `paged_probe_handoff_field_reads_use_tracked_page_walk_and_zero_extend_registers` reads this field through four-level tables and checks upper-level and code/data leaf Accessed bits. Runner retired 50 instructions and stopped at `81 F9 A0 00 00 00` (`CMP ECX,0xa0`, ISSUE-148, RIP `0x200da6`); full handoff validation remains incomplete.
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 

@@ -376,13 +376,22 @@
 - **Runner:** image `/private/tmp/od-fw-s7-jz-3b.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retired 49 instructions; JZ was taken to `RIP=0x200da3`, where `8B 4E 0C` (`MOV ECX,dword ptr [RSI+0xC]`) stopped with `Unsupported { opcode: 139 }`, `com1_bytes=0`; see [ISSUE-147](#issue-147-s7-04-rust-helper-mov-ecx-dword-rsi-plus-0xc-unsupported).
 
 <a id="issue-147-s7-04-rust-helper-mov-ecx-dword-rsi-plus-0xc-unsupported"></a>
-### ISSUE-147 — S7-04: Rust helper `MOV ECX,dword ptr [RSI+0xC]` (`8B 4E 0C`) remains outside paged CPU profile
+### ISSUE-147 — S7-04: exact Rust helper dword field load `MOV ECX,[RSI+0xC]` (`8B 4E 0C`) admitted
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact JZ `+0x3B`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200da3`.
-- **Статус:** открыта.
-- **Суть и последствия:** the taken JZ reaches `8B 4E 0C` (`MOV ECX,dword ptr [RSI+0xC]`), `Unsupported { opcode: 139 }`, `retired=49`, `RIP=0x200da3`; COM1 пуст.
+- **Статус:** решена только для exact `8B 4E 0C` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Результат и проверка:** exact MOV reads a dword from `[RSI+0xC]`, zero-extends ECX into RCX, preserves flags, and commits state only after a successful tracked read. Four focused tests pass for full state, injected read-fault atomicity, neighboring forms, CPL3 and other profiles. A real four-level integration test confirms the dword field through tracked page walk, zero-extension and A bits, with no cross-page claim.
 - **Основание:** образ `/private/tmp/od-fw-s7-jz-3b.bin`; `od -An -tx1 -j 0xda3 -N16` показывает `8b 4e 0c 81 f9 a0 00 00 00 0f 85 d6 00 00 00 8b`; runner с бюджетом 10000.
-- **Следующий шаг:** проверить exact dword load from `[RSI+0xC]`, 32-bit zero-extension and tracked paged-memory read semantics before admitting the narrow form.
+- **Runner:** image `/private/tmp/od-fw-s7-mov-ecx-dword.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retired 50 instructions, then stopped at `81 F9 A0 00 00 00` (`CMP ECX,0xa0`) with `Unsupported { opcode: 129 }`, `RIP=0x200da6`, `com1_bytes=0`; see [ISSUE-148](#issue-148-s7-04-rust-helper-cmp-ecx-0xa0-unsupported).
+
+<a id="issue-148-s7-04-rust-helper-cmp-ecx-0xa0-unsupported"></a>
+### ISSUE-148 — S7-04: Rust helper `CMP ECX,0xA0` (`81 F9 A0 00 00 00`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact dword handoff-field load.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200da6`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner stops at `81 F9 A0 00 00 00` (`CMP ECX,0xa0`), `Unsupported { opcode: 129 }`, `retired=50`, `RIP=0x200da6`; COM1 пуст.
+- **Основание:** образ `/private/tmp/od-fw-s7-mov-ecx-dword.bin`; `od -An -tx1 -j 0xda6 -N16` показывает `81 f9 a0 00 00 00 0f 85 d6 00 00 00 8b 4e 10 89`; runner с бюджетом 10000.
+- **Следующий шаг:** inspect the exact 32-bit register/immediate CMP form and admit only ECX versus `0xa0` in the base profile.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.
