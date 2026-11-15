@@ -20445,6 +20445,35 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     | (crate::ARITHMETIC_FLAGS & !crate::AF),
             };
         }
+        // S7-04: the helper tests the low three bits of BPL with exact
+        // `40 F6 C5 07`; TEST only changes flags and leaves AF undefined.
+        Operation::Logic {
+            kind: LogicKind::Test,
+            dst: Operand::Register(destination),
+            src: Operand::Immediate(7),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xf6
+            && instruction.length == 4
+            && instruction.operand_size == OperandSize::Byte
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x40),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rbp, OperandSize::Byte) =>
+        {
+            let lhs = state.read(destination);
+            let (_, flags) = logic_result(OperandSize::Byte, LogicKind::Test, lhs, 7, state.rflags);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: (initial_rflags_defined & !crate::AF)
+                    | (crate::ARITHMETIC_FLAGS & !crate::AF),
+            };
+        }
         // S7-04: startup/helper use only observed literal conditional branch
         // encodings, including this exact near JNZ; other branches stay outside.
         Operation::Branch {
