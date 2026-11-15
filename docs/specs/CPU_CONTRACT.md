@@ -533,9 +533,11 @@ Tests проверяют full state, сравнение равного handoff G
 
 Tests проверяют taken/not-taken для обоих точных displacement, full CPU state и неизменность flags/definedness, #GP только для noncanonical taken target (в то время как noncanonical fall-through успешно retire), fetch fault на rel8 и neighbors/CPL3/other-profile isolation. Firmware runner: JNZ не взят для валидного handoff pointer, retired 15 instructions и остановился на `48 8D 7C 24 08` (`LEA RDI,[RSP+8]`, ISSUE-115, RIP `0x2001fd`).
 
-#### Расширение S7-04: точный Rust-entry `LEA RDI,[RSP+8]`
+#### Расширение S7-04: точные Rust-helper `LEA RDI,[RSP+8]` и `LEA RDI,[RSP+0x50]`
 
-В base `PagedCpl0ProbeV1` допускается только `48 8D 7C 24 08`: Primary `8D`, длина 5, qword LEA в RDI из qword memory expression `[RSP+8]`, без индекса и с SIB scale 1, ровно REX.W `0x48`. Используется `MemoryOperand::effective_address` с wraparound/address-size semantics; значение записывается только в RDI, RIP продвигается на 5, RFLAGS/definedness сохраняются. LEA не читает данные памяти и не проверяет canonicality результата; проверка адреса относится к последующим memory access. Другие destination/base/index/displacement/width/prefix forms, CPL3 и остальные paged profiles остаются вне allowlist.
+В base `PagedCpl0ProbeV1` допускаются только `48 8D 7C 24 08` и `48 8D 7C 24 50`: Primary `8D`, длина 5, qword LEA в RDI из qword expressions `[RSP+8]` и `[RSP+0x50]`, без индекса и с SIB scale 1, ровно REX.W `0x48`. Используется `MemoryOperand::effective_address` с wraparound/address-size semantics; значение записывается только в RDI, RIP продвигается на 5, RFLAGS/definedness сохраняются. LEA не читает данные памяти и не проверяет canonicality результата; проверка адреса относится к последующим memory access. Другие destination/base/index/displacement/width/prefix forms, CPL3 и остальные paged profiles остаются вне allowlist.
+
+Tests проверяют обе точные формы, полный state/flags/definedness, noncanonical effective address без fault или чтения памяти, fetch-fault atomicity, соседние displacements и CPL3/stack/CR3/CR0.WP isolation. Runner retired 25 instructions и остановился на `E8 59 08 00 00` (`CALL rel32`, ISSUE-125, RIP `0x2004b2`, target `0x200d10`).
 
 Tests проверяют полный CPU state, effective address для firmware stack и noncanonical адреса, неизменность flags/definedness, отсутствие data-memory access, fetch fault на disp8 через границу страницы, соседние формы и CPL3/stack/CR3/CR0.WP isolation. Runner retired 16 instructions и остановился на `BE 00 00 10 00` (`MOV ESI,0x00100000`, handoff GPA zero-extended to RSI; следующим `BA 00 00 01 00` в EDX загружается размер handoff block (64 KiB), ISSUE-116, RIP `0x200202`).
 

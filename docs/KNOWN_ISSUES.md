@@ -178,10 +178,19 @@
 ### ISSUE-124 — S7-04: Rust helper `LEA RDI,[RSP+0x50]` остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `MOV RBX,RDI`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware target `0x2004a0`.
-- **Статус:** открыта; handoff argument сохранён в RBX, вычисление локального адреса ещё не исполняется.
-- **Суть и последствия:** `RIP=0x2004ad` содержит `48 8D 7C 24 50` (`LEA RDI,[RSP+0x50]`). Runner возвращает `Unsupported { opcode: 141 }`; COM1 пуст, handoff parser ещё не достигнут.
+- **Статус:** решена узко для exact `48 8D 7C 24 50` вместе с ранее допущенной формой `48 8D 7C 24 08`.
+- **Суть и результат:** qword LEA записывает в RDI `RSP + disp8`, не читает память и не проверяет canonicality адреса; остальные регистры, flags и definedness сохраняются. Другие displacements/forms и CPL3/прочие profiles остаются unsupported.
 - **Основание:** образ `/private/tmp/od-fw-s7-mov-rbx-rdi.bin`; `od -An -tx1 -j 0x4ad -N16` показывает `48 8d 7c 24 50 e8 59 08 00 00 4c 8b 74 24 50 48`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=24`, `RIP=0x2004ad`, `com1_bytes=0`.
-- **Следующий шаг:** проверить адресную арифметику exact stack-relative LEA и отсутствие memory access.
+- **Проверка решения:** `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 176 passed; обе exact формы, полный state/flags/definedness, noncanonical EA без fault и без memory access, fetch-fault atomicity, neighbors и CPL3/stack/CR3/CR0.WP isolation. Образ `/private/tmp/od-fw-s7-lea-rdi-rsp50.bin` собран (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 25 инструкций и остановился на `E8 59 08 00 00` (`CALL rel32`, target `0x200d10`) при `RIP=0x2004b2`, `Unsupported { opcode: 232 }`, `com1_bytes=0`.
+
+<a id="issue-125-s7-04-rust-helper-call-rel32-unsupported"></a>
+### ISSUE-125 — S7-04: Rust helper `CALL rel32` остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `LEA RDI,[RSP+0x50]`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware target `0x2004a0`.
+- **Статус:** открыта; локальный RDI вычислен, следующий call target ещё не исполняется.
+- **Суть и последствия:** `RIP=0x2004b2` содержит `E8 59 08 00 00` (`CALL rel32` на `0x200d10`). Runner возвращает `Unsupported { opcode: 232 }`; COM1 пуст, handoff parser ещё не достигнут.
+- **Основание:** образ `/private/tmp/od-fw-s7-lea-rdi-rsp50.bin`; `od -An -tx1 -j 0x4b2 -N16` показывает `e8 59 08 00 00 4c 8b 74 24 50 48 8b 44 24 58 48`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=25`, `RIP=0x2004b2`, `com1_bytes=0`.
+- **Следующий шаг:** исследовать целевой Rust helper и bounded stack/canonicality effects для exact CALL.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки

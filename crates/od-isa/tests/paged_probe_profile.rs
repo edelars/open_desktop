@@ -4841,27 +4841,66 @@ fn firmware_entry_lea_rcx_is_unsupported_in_cpl3_profile() {
 
 #[test]
 fn rust_entry_lea_rdi_rsp_disp8_sets_effective_address_only() {
-    let code = [0x48, 0x8d, 0x7c, 0x24, 0x08]; // LEA RDI,[RSP+8]
     let defined = DEFINED & !(1 << 6);
-    for rsp in [0x14_ffa0, 0x0000_8000_0000_0000] {
-        let mut memory = Memory::new(&code);
+    for (displacement, code) in [
+        (8u64, [0x48, 0x8d, 0x7c, 0x24, 0x08]),
+        (0x50u64, [0x48, 0x8d, 0x7c, 0x24, 0x50]),
+    ] {
+        for rsp in [0x14_ffa0, 0x0000_8000_0000_0000] {
+            let mut memory = Memory::new(&code);
+            let mut cpu = state();
+            cpu.gpr = gpr_patterns();
+            cpu.gpr[Register::Rsp as usize] = rsp;
+            cpu.gpr[Register::Rdi as usize] = 0x1122_3344_5566_7788;
+            cpu.rflags = 0xd5a;
+            let before = cpu.clone();
+            let mut pio = Pio::default();
+
+            let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, defined);
+            let mut expected = before;
+            expected.gpr[Register::Rdi as usize] = rsp.wrapping_add(displacement);
+            expected.rip = RIP + code.len() as u64;
+            assert_eq!(cpu, expected, "disp={displacement:#x}, rsp={rsp:#x}");
+            assert_eq!((memory.reads, memory.writes), (0, 0));
+            assert!(memory.write_addresses.is_empty());
+            assert!(pio.reads.is_empty() && pio.writes.is_empty());
+        }
+    }
+}
+
+#[test]
+fn rust_entry_lea_rdi_rsp_disp8_fetch_fault_is_atomic() {
+    for code in [
+        [0x48, 0x8d, 0x7c, 0x24, 0x08],
+        [0x48, 0x8d, 0x7c, 0x24, 0x50],
+    ] {
+        let mut memory = Memory::new(&[]);
+        memory.bytes[CODE_PHYSICAL + 0xffc..CODE_PHYSICAL + 0x1000].copy_from_slice(&code[..4]);
         let mut cpu = state();
+        cpu.rip = RIP + 0xffc;
         cpu.gpr = gpr_patterns();
-        cpu.gpr[Register::Rsp as usize] = rsp;
-        cpu.gpr[Register::Rdi as usize] = 0x1122_3344_5566_7788;
-        cpu.rflags = 0xd5a;
         let before = cpu.clone();
         let mut pio = Pio::default();
+        memory.fail_fetch_at = Some((cpu.rip + 4, page_fault(0x10, cpu.rip + 4)));
 
-        let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
 
-        assert_eq!(result.exit, PagedProbeExit::Retired);
-        assert_eq!(result.instructions_executed, 1);
-        assert_eq!(result.rflags_defined, defined);
-        let mut expected = before;
-        expected.gpr[Register::Rdi as usize] = rsp.wrapping_add(8);
-        expected.rip = RIP + code.len() as u64;
-        assert_eq!(cpu, expected);
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x10),
+                linear_address: Some(RIP + 0x1000),
+            }),
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
         assert_eq!((memory.reads, memory.writes), (0, 0));
         assert!(memory.write_addresses.is_empty());
         assert!(pio.reads.is_empty() && pio.writes.is_empty());
@@ -4869,40 +4908,12 @@ fn rust_entry_lea_rdi_rsp_disp8_sets_effective_address_only() {
 }
 
 #[test]
-fn rust_entry_lea_rdi_rsp_disp8_fetch_fault_is_atomic() {
-    let mut memory = Memory::new(&[]);
-    memory.bytes[CODE_PHYSICAL + 0xffc..CODE_PHYSICAL + 0x1000]
-        .copy_from_slice(&[0x48, 0x8d, 0x7c, 0x24]);
-    let mut cpu = state();
-    cpu.rip = RIP + 0xffc;
-    cpu.gpr = gpr_patterns();
-    let before = cpu.clone();
-    let mut pio = Pio::default();
-    memory.fail_fetch_at = Some((cpu.rip + 4, page_fault(0x10, cpu.rip + 4)));
-
-    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
-
-    assert_eq!(
-        result.exit,
-        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
-            vector: 14,
-            error_code: Some(0x10),
-            linear_address: Some(RIP + 0x1000),
-        })
-    );
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(result.rflags_defined, DEFINED);
-    assert_eq!(cpu, before);
-    assert_eq!((memory.reads, memory.writes), (0, 0));
-    assert!(memory.write_addresses.is_empty());
-    assert!(pio.reads.is_empty() && pio.writes.is_empty());
-}
-
-#[test]
 fn rust_entry_lea_rdi_rsp_disp8_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
         (&[0x48, 0x8d, 0x7c, 0x24, 0x07], 0x8d), // different displacement
         (&[0x48, 0x8d, 0x7c, 0x24, 0x09], 0x8d), // different displacement
+        (&[0x48, 0x8d, 0x7c, 0x24, 0x4f], 0x8d), // different displacement
+        (&[0x48, 0x8d, 0x7c, 0x24, 0x51], 0x8d), // different displacement
         (&[0x48, 0x8d, 0x74, 0x24, 0x08], 0x8d), // RSI destination
         (&[0x4c, 0x8d, 0x7c, 0x24, 0x08], 0x8d), // REX.R destination
         (&[0x48, 0x8d, 0x7d, 0x08], 0x8d),       // RBP base
@@ -4937,24 +4948,28 @@ fn rust_entry_lea_rdi_rsp_disp8_neighbours_stay_unsupported_without_mutation() {
 
 #[test]
 fn rust_entry_lea_rdi_rsp_disp8_is_unsupported_in_cpl3_profile() {
-    let bytes = [0x48, 0x8d, 0x7c, 0x24, 0x08];
-    let mut memory = Memory::new(&bytes);
-    let mut cpu = state();
-    cpu.cr3 = Some(0x1000);
-    cpu.gpr = gpr_patterns();
-    let before = cpu.clone();
-    let result = execute::step_paged_cpl3_mov(
-        &mut cpu,
-        &mut memory,
-        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
-        0xd00,
-        DEFINED,
-    );
-    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x8d });
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(result.rflags_defined, DEFINED);
-    assert_eq!(cpu, before);
-    assert_eq!((memory.reads, memory.writes), (0, 0));
+    for bytes in [
+        [0x48, 0x8d, 0x7c, 0x24, 0x08],
+        [0x48, 0x8d, 0x7c, 0x24, 0x50],
+    ] {
+        let mut memory = Memory::new(&bytes);
+        let mut cpu = state();
+        cpu.cr3 = Some(0x1000);
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let result = execute::step_paged_cpl3_mov(
+            &mut cpu,
+            &mut memory,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+            0xd00,
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x8d });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
 }
 
 #[test]
@@ -5060,6 +5075,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x48, 0x8d, 0x3d, 0x09, 0x2b, 0, 0][..], 0x8d),
         (&[0x48, 0x8d, 0x0d, 0x02, 0x2b, 0, 0][..], 0x8d),
         (&[0x48, 0x8d, 0x7c, 0x24, 0x08][..], 0x8d),
+        (&[0x48, 0x8d, 0x7c, 0x24, 0x50][..], 0x8d),
         (&[0x48, 0x29, 0xf9][..], 0x29),
         (&[0x31, 0xc0][..], 0x31),
         (&[0x31, 0xc9][..], 0x31),
