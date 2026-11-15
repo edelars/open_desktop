@@ -493,7 +493,7 @@ Focused tests проверяют равенство, borrow, signed overflow, р
 
 #### Расширение S7-04: точный `XOR EAX,EAX` из entry прошивки
 
-В базовом `PagedCpl0ProbeV1` для EAX допускаются только bytes `31 C0`: Primary opcode `31`, длина 2, operand size dword, без префиксов, register destination и source EAX. Переиспользуется `LogicKind::Xor`/`logic_result`; нулевой результат записывается в EAX и архитектурно zero-extends в RAX. CF и OF очищаются, ZF/PF/SF рассчитываются от результата, AF сохраняет конкретный бит по детерминированному общему helper, но его definedness удаляется как undefined; прочие flags/state сохраняются. Точные формы `31 C9` и `45 31 D2` описаны ниже; прочие регистры/opcodes/widths/prefixes/memory, CPL3 и другие profiles остаются вне allowlist. Fault fetching ModRM не коммитит состояние.
+В базовом `PagedCpl0ProbeV1` для EAX допускаются только bytes `31 C0`: Primary opcode `31`, длина 2, operand size dword, без префиксов, register destination и source EAX. Переиспользуется `LogicKind::Xor`/`logic_result`; нулевой результат записывается в EAX и архитектурно zero-extends в RAX. CF и OF очищаются, ZF/PF/SF рассчитываются от результата, AF сохраняет конкретный бит по детерминированному общему helper, но его definedness удаляется как undefined; прочие flags/state сохраняются. Точные формы `31 C9`, `45 31 D2` и `45 31 DB` описаны ниже; прочие регистры/opcodes/widths/prefixes/memory, CPL3 и другие profiles остаются вне allowlist. Fault fetching ModRM не коммитит состояние.
 
 Tests проверяют full state, zero-extension, concrete logical flags и undefined AF, definedness mask, соседние формы, cross-page fetch fault, CPL3 и stack/CR3/CR0.WP isolation. Runner retired девять инструкций и остановился на `F3 AA` (`REP STOSB`, ISSUE-109, RIP `0x200063`).
 
@@ -803,6 +803,13 @@ Base `PagedCpl0ProbeV1` admits only `41 B9 FF FF FF FF`: primary-map opcode `B9`
 Base `PagedCpl0ProbeV1` admits only `45 31 D2`: primary-map opcode `31`, exact REX `45`, ModRM `D2`, dword operands and length 3. The existing `LogicKind::Xor`/`logic_result` semantics compute the result and flags. Writing R10D zero-extends into R10; CF/OF clear, ZF/PF/SF reflect zero, and AF's concrete bit is retained while its definedness is cleared. Other registers/state and memory are unchanged. Neighboring opcode, ModRM, width, prefix and profile forms remain unsupported.
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_xor_r10d -- --nocapture` — 2 passed; full `paged_probe_profile` — 344 passed. Tests cover result and full state, flags/AF definedness, cross-page ModRM fetch-fault atomicity, neighbors, CPL3 and other paged profiles. `cargo check --offline -p od-isa --all-targets` passed; scoped rustfmt and `git diff --check` passed. Firmware image `/private/tmp/od-fw-s7-04-issue166.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 69 instructions and stopped at `45 31 DB` (`XOR R11D,R11D`, ISSUE-167), `RIP=0x200dfb`, `Unsupported { opcode: 49 }`, `com1_bytes=0`; full handoff validation remains incomplete.
+
+<a id="s7-04-exact-rust-helper-xor-r11d-r11d"></a>
+#### Расширение S7-04: exact Rust-helper `XOR R11D,R11D`
+
+Base `PagedCpl0ProbeV1` additionally admits only `45 31 DB`: primary-map opcode `31`, exact REX `45`, ModRM `DB`, dword operands and length 3. The existing `LogicKind::Xor`/`logic_result` semantics are reused. Writing R11D zero-extends into R11; CF/OF clear, ZF/PF/SF reflect the zero result, and AF's concrete bit is retained while its definedness is cleared. Other state and memory are unchanged; other REX/ModRM forms remain unsupported.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_xor_r11d -- --nocapture` — 2 passed; full `paged_probe_profile` — 346 passed. Tests cover full state, zero-extension, flags/AF definedness, ModRM fetch-fault atomicity, neighbors, CPL3 and other-profile isolation. `cargo check --offline -p od-isa --all-targets`, scoped rustfmt and `git diff --check` passed. Firmware image `/private/tmp/od-fw-s7-04-issue167.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 70 instructions and stopped at `66 90` (`Unsupported { opcode: 144 }`), `RIP=0x200dfe`, `com1_bytes=0` (ISSUE-168); full handoff validation remains incomplete.
 
 <a id="s7-04-exact-rust-helper-mov-edi-dword-rsi-14"></a>
 #### Расширение S7-04: exact Rust-helper `MOV EDI,dword ptr [RSI+0x14]`

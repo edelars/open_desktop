@@ -3496,6 +3496,43 @@ fn rust_helper_xor_r10d_r10d_zero_extends_and_updates_logical_flags() {
 }
 
 #[test]
+fn rust_helper_xor_r11d_r11d_zero_extends_and_updates_logical_flags() {
+    const CF: u64 = 1 << 0;
+    const PF: u64 = 1 << 2;
+    const AF: u64 = 1 << 4;
+    const ZF: u64 = 1 << 6;
+    const SF: u64 = 1 << 7;
+    const OF: u64 = 1 << 11;
+    const LOGIC_DEFINED: u64 = CF | PF | ZF | SF | OF;
+    let code = [0x45, 0x31, 0xdb]; // XOR R11D,R11D
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::R11 as usize] = 0xffff_ffff_a5a5_5a5a;
+    cpu.rflags = 0x2 | (1 << 9) | (1 << 10) | (1 << 18) | CF | AF | SF | OF;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let initial_defined = (DEFINED & !ZF) | AF;
+
+    let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), initial_defined);
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        result.rflags_defined,
+        (initial_defined | LOGIC_DEFINED) & !AF
+    );
+    let mut expected = before;
+    expected.gpr[Register::R11 as usize] = 0; // R11D write zero-extends into R11.
+    expected.rflags = (expected.rflags & !(CF | PF | ZF | SF | OF)) | PF | ZF;
+    // XOR leaves AF's concrete bit untouched although its definedness is cleared.
+    expected.rip += code.len() as u64;
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
 fn firmware_entry_xor_fetch_fault_on_modrm_does_not_commit() {
     let mut memory = Memory::new(&[]);
     memory.bytes[CODE_PHYSICAL + 0xfff] = 0x31;
@@ -3565,6 +3602,41 @@ fn rust_helper_xor_r10d_fetch_fault_on_modrm_does_not_commit() {
 }
 
 #[test]
+fn rust_helper_xor_r11d_fetch_fault_on_modrm_does_not_commit() {
+    let mut memory = Memory::new(&[]);
+    memory.bytes[CODE_PHYSICAL + 0xffe] = 0x45;
+    memory.bytes[CODE_PHYSICAL + 0xfff] = 0x31;
+    let mut cpu = state();
+    cpu.rip = RIP + 0xffe;
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    memory.fail_fetch_at = Some((cpu.rip + 2, page_fault(0x10, cpu.rip + 2)));
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(RIP + 0x1000),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert!(
+        memory
+            .fetches
+            .iter()
+            .any(|(address, _)| *address == RIP + 0x1000)
+    );
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
 fn firmware_entry_xor_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
         (&[0x31, 0xd2], 0x31),       // XOR EDX,EDX
@@ -3573,8 +3645,8 @@ fn firmware_entry_xor_neighbours_stay_unsupported_without_mutation() {
         (&[0x66, 0x31, 0xc0], 0x31), // word XOR
         (&[0x40, 0x31, 0xc0], 0x31), // REX-prefixed XOR
         (&[0x41, 0x31, 0xc0], 0x31), // XOR R8D,EAX
-        (&[0x45, 0x31, 0xdb], 0x31), // XOR R11D,R11D
-        (&[0x45, 0x31, 0xd3], 0x31), // XOR R10D,R11D
+        (&[0x45, 0x31, 0xda], 0x31), // XOR R10D,R11D
+        (&[0x45, 0x31, 0xd3], 0x31), // XOR R11D,R10D
         (&[0x45, 0x33, 0xd2], 0x33), // reverse direction opcode
         (&[0x31, 0x00], 0x31),       // memory destination
         (&[0x01, 0xc0], 0x01),       // ADD EAX,EAX
@@ -3601,23 +3673,24 @@ fn firmware_entry_xor_neighbours_stay_unsupported_without_mutation() {
 
 #[test]
 fn firmware_entry_xor_is_unsupported_in_cpl3_profile() {
-    let bytes = [0x45, 0x31, 0xd2];
-    let mut memory = Memory::new(&bytes);
-    let mut cpu = state();
-    cpu.cr3 = Some(0x1000);
-    let before = cpu.clone();
-    let result = execute::step_paged_cpl3_mov(
-        &mut cpu,
-        &mut memory,
-        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
-        0xd00,
-        DEFINED,
-    );
-    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x45 });
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(result.rflags_defined, DEFINED);
-    assert_eq!(cpu, before);
-    assert_eq!((memory.reads, memory.writes), (0, 0));
+    for bytes in [[0x45, 0x31, 0xd2], [0x45, 0x31, 0xdb]] {
+        let mut memory = Memory::new(&bytes);
+        let mut cpu = state();
+        cpu.cr3 = Some(0x1000);
+        let before = cpu.clone();
+        let result = execute::step_paged_cpl3_mov(
+            &mut cpu,
+            &mut memory,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+            0xd00,
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x45 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
 }
 
 #[test]
@@ -10296,6 +10369,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x31, 0xc0][..], 0x31),
         (&[0x31, 0xc9][..], 0x31),
         (&[0x45, 0x31, 0xd2][..], 0x31),
+        (&[0x45, 0x31, 0xdb][..], 0x31),
         (&[0xf3, 0xaa][..], 0xaa),
         (&[0x4c, 0x89, 0xc7][..], 0x89),
         (&[0xe8, 0x83, 0x01, 0, 0][..], 0xe8),
