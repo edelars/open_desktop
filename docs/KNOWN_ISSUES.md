@@ -507,13 +507,23 @@
 - **Ссылка:** [CPU profile contract](specs/CPU_CONTRACT.md#s7-04-exact-rust-helper-test-r8b-dil).
 
 <a id="issue-161-s7-04-rust-helper-jz-rel32-b4-unsupported"></a>
-### ISSUE-161 — S7-04: Rust helper `JZ rel32 +0xB4` (`0F 84 B4 00 00 00`) remains outside paged CPU profile
+### ISSUE-161 — S7-04: exact Rust-helper `JZ rel32 +0xB4` (`0F 84 B4 00 00 00`) profile slice
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `TEST R8B,DIL`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200ddc`.
+- **Статус:** решена только для exact encoding `0F 84 B4 00 00 00` in base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Суть и последствия:** exact near JZ reads ZF, computes the signed rel32 target with shared branch semantics, leaves flags/definedness unchanged, and checks target canonicality only when taken.
+- **Основание:** image `/private/tmp/od-fw-s7-jz-rel32-b4.bin`; runner с бюджетом 10000.
+- **Результат и проверка:** `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_jz_rel32 -- --nocapture` — 5 passed; all 325 `paged_probe_profile` tests pass. Coverage includes both outcomes with defined/undefined ZF, taken-only canonicality, fault at the final displacement byte, adjacent displacement/condition/prefix rejects, CPL3 and other-profile isolation. Runner retired 64 instructions; ZF was clear, so JZ fell through and stopped at `0F B7 CB` (`MOVZX ECX,BX`, ISSUE-162), `RIP=0x200de2`, `Unsupported { opcode: 183 }`, `com1_bytes=0`.
+- **Ссылка:** [CPU profile contract](specs/CPU_CONTRACT.md#s7-04-exact-rust-helper-jz-rel32-b4).
+
+<a id="issue-162-s7-04-rust-helper-movzx-ecx-bx-unsupported"></a>
+### ISSUE-162 — S7-04: Rust helper `MOVZX ECX,BX` (`0F B7 CB`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `JZ rel32 +0xB4`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200de2`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retires exact TEST, then stops at `0F 84 B4 00 00 00` (`JZ rel32 +0xB4`), `Unsupported { opcode: 132 }`, `retired=63`, `RIP=0x200ddc`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-test-r8b-dil.bin`; `od -An -tx1 -j 0xddc -N16` shows `0f 84 b4 00 00 00 0f b7 cb 49 b8 fc ff ff ff ff`; runner с бюджетом 10000.
-- **Следующий шаг:** verify exact near JZ condition, displacement and taken-target semantics, then admit only the observed form if bounded.
+- **Суть и последствия:** runner retires the exact JZ as not-taken, then stops at `0F B7 CB` (`MOVZX ECX,BX`), `Unsupported { opcode: 183 }`, `retired=64`, `RIP=0x200de2`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-jz-rel32-b4.bin`; `od -An -tx1 -j 0xde2 -N16` shows `0f b7 cb 49 b8 fc ff ff ff ff ff ff 7f 8b 7e 14`; runner с бюджетом 10000.
+- **Следующий шаг:** inspect exact MOVZX source width, register encoding and zero-extension semantics, then admit only the observed form if bounded.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.

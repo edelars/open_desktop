@@ -20530,7 +20530,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             };
         }
         // S7-04: startup/helper use only observed literal conditional branch
-        // encodings, including this exact near JNZ; other branches stay outside.
+        // encodings, including these exact near JNZ/JZ forms; other branches stay outside.
         Operation::Branch {
             condition,
             displacement,
@@ -20545,10 +20545,11 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                         | (ConditionCode::Equal, 0x74, 0x3b)
                 ))
                 || (instruction.opcode.map == OpcodeMap::Escape0f
-                    && instruction.opcode.byte == 0x85
                     && instruction.length == 6
-                    && condition == ConditionCode::NotEqual
-                    && displacement == 0xd6)) =>
+                    && matches!(
+                        (condition, instruction.opcode.byte, displacement),
+                        (ConditionCode::NotEqual, 0x85, 0xd6) | (ConditionCode::Equal, 0x84, 0xb4)
+                    ))) =>
         {
             if condition.evaluate(state.rflags) {
                 let target = next_rip.wrapping_add_signed(i64::from(displacement));

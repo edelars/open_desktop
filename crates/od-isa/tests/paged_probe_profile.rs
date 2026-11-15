@@ -3876,6 +3876,165 @@ fn rust_helper_jnz_rel32_neighbours_stay_unsupported_without_mutation() {
 }
 
 #[test]
+fn rust_helper_jz_rel32_obeys_zf_and_preserves_flags_and_definedness() {
+    let code = [0x0f, 0x84, 0xb4, 0, 0, 0]; // JZ +0xb4
+    for zero in [false, true] {
+        for zf_defined in [false, true] {
+            let defined = if zf_defined {
+                DEFINED
+            } else {
+                DEFINED & !(1 << 6)
+            };
+            let mut memory = Memory::new(&code);
+            let mut cpu = state();
+            cpu.gpr = gpr_patterns();
+            cpu.rflags = (state().rflags & !(1 << 6)) | if zero { 1 << 6 } else { 0 };
+            let before = cpu.clone();
+
+            let result =
+                step_with_defined(&mut cpu, &mut memory, &mut Pio::default(), ring0(), defined);
+
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, defined);
+            let mut expected = before;
+            expected.rip = if zero { RIP + 6 + 0xb4 } else { RIP + 6 };
+            assert_eq!(cpu, expected, "ZF={zero}, defined={zf_defined}");
+            assert_eq!((memory.reads, memory.writes), (0, 0));
+        }
+    }
+}
+
+#[test]
+fn rust_helper_jz_rel32_checks_canonicality_only_for_taken_target() {
+    let code = [0x0f, 0x84, 0xb4, 0, 0, 0];
+    let rip = 0x0000_7fff_ffff_fffa;
+    let mut memory = Memory::new(&[]);
+    memory.pages.insert(rip & !0xfff, CODE_PHYSICAL);
+    memory.bytes[CODE_PHYSICAL + 0xffa..CODE_PHYSICAL + 0x1000].copy_from_slice(&code);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.rflags &= !(1 << 6); // Not taken; noncanonical fall-through is deferred.
+    let before = cpu.clone();
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    let mut expected = before;
+    expected.rip = 0x0000_8000_0000_0000;
+    assert_eq!(cpu, expected);
+
+    let rip = 0x0000_7fff_ffff_ff46;
+    let mut memory = Memory::new(&[]);
+    memory.pages.insert(rip & !0xfff, CODE_PHYSICAL);
+    memory.bytes[CODE_PHYSICAL + 0xf46..CODE_PHYSICAL + 0xf4c].copy_from_slice(&code);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.rflags |= 1 << 6; // Taken target is the first noncanonical address.
+    let before = cpu.clone();
+    assert_eq!(rip + 6 + 0xb4, 0x0000_8000_0000_0000);
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None,
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn rust_helper_jz_rel32_fetch_fault_on_last_displacement_byte_is_atomic() {
+    let rip = RIP + 0xffb;
+    let mut memory = Memory::new(&[]);
+    memory.bytes[CODE_PHYSICAL + 0xffb..CODE_PHYSICAL + 0x1000]
+        .copy_from_slice(&[0x0f, 0x84, 0xb4, 0, 0]);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    memory.fail_fetch_at = Some((rip + 5, page_fault(0x10, rip + 5)));
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 5),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn rust_helper_jz_rel32_neighbours_stay_unsupported_without_mutation() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x0f, 0x84, 0xb3, 0, 0, 0], 0x84), // adjacent displacement
+        (&[0x0f, 0x84, 0xb5, 0, 0, 0], 0x84), // adjacent displacement
+        (&[0x0f, 0x85, 0xb4, 0, 0, 0], 0x85), // JNZ +0xb4
+        (&[0x0f, 0x85, 0xb3, 0, 0, 0], 0x85), // different condition
+        (&[0x66, 0x0f, 0x84, 0xb4, 0, 0, 0], 0x84), // operand-size prefix
+        (&[0x40, 0x0f, 0x84, 0xb4, 0, 0, 0], 0x84), // REX prefix
+        (&[0x74, 0xb4], 0x74),                // short JZ
+        (&[0xe9, 0xb4, 0, 0, 0], 0xe9),       // JMP rel32
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "{bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_jz_rel32_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x0f, 0x84, 0xb4, 0, 0, 0];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x0f });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn rust_helper_jz_rel8_obeys_zf_and_preserves_flags_and_definedness() {
     let code = [0x74, 0x3b]; // JZ +0x3b
     for zero in [false, true] {
@@ -9580,6 +9739,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x81, 0xf9, 0xa0, 0, 0, 0][..], 0x81),
         (&[0x81, 0xff, 0x61, 0xff, 0, 0][..], 0x81),
         (&[0x0f, 0x85, 0xd6, 0, 0, 0][..], 0x85),
+        (&[0x0f, 0x84, 0xb4, 0, 0, 0][..], 0x84),
         (&[0x48, 0x39, 0x3e][..], 0x39),
         (&[0x0f, 0xb7, 0x5e, 0x0a][..], 0xb7),
         (&[0x8b, 0x4e, 0x10][..], 0x8b),

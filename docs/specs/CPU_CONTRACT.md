@@ -776,6 +776,13 @@ Base `PagedCpl0ProbeV1` admits only `41 84 F8`: REX `41`, opcode `84`, byte oper
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_test_r8b_dil -- --nocapture` — 4 passed; full `paged_probe_profile` — 320 passed. Cases cover several byte results, flags/definedness, full register retention, ModRM fetch fault, adjacent operand/direction/operation/width/prefix/memory forms, CPL3 and other profiles. Firmware image `/private/tmp/od-fw-s7-test-r8b-dil.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 63 instructions then stopped at `0F 84 B4 00 00 00` (`JZ rel32 +0xB4`, ISSUE-161), `RIP=0x200ddc`, `Unsupported { opcode: 132 }`, `com1_bytes=0`; full handoff validation remains incomplete.
 
+<a id="s7-04-exact-rust-helper-jz-rel32-b4"></a>
+#### Расширение S7-04: exact Rust-helper `JZ rel32 +0xB4`
+
+Base `PagedCpl0ProbeV1` admits only `0F 84 B4 00 00 00` for this near JZ. It reuses shared `ConditionCode::Equal` evaluation and signed rel32 target calculation. ZF is read without changing RFLAGS or flag-definedness; canonicality is checked only for a taken target, and not-taken fall-through is validated by the next fetch.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_jz_rel32 -- --nocapture` — 5 passed; full `paged_probe_profile` — 325 passed. Tests cover taken/fall-through with defined and undefined ZF, noncanonical taken target and noncanonical fall-through, last-displacement-byte fetch-fault atomicity, neighboring forms, CPL3 and other paged profiles. Firmware image `/private/tmp/od-fw-s7-jz-rel32-b4.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 64 instructions; with ZF clear it fell through and stopped at `0F B7 CB` (`MOVZX ECX,BX`, ISSUE-162), `RIP=0x200de2`, `Unsupported { opcode: 183 }`, `com1_bytes=0`; full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции
