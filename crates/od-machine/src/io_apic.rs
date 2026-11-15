@@ -10,7 +10,8 @@ const POLARITY_LOW: u32 = 1 << 13;
 /// MADT. The EOI register at offset 0x40 is not modeled, nor is register 0x03 (UnknownOffset).
 const IO_APIC_VERSION: u32 = 0x0017_0020;
 
-/// IOAPIC register window; INTIN4 (edge/level) and INTIN2 (edge only) route to APIC ID 0.
+/// IOAPIC register window; INTIN4 (edge/level) and INTIN2 (edge only) route to the vCPU whose
+/// APIC ID the entry's destination field holds (physical mode; APIC ID 0 at reset).
 pub struct IoApic(Arc<Mutex<PairState>>);
 #[derive(Clone)]
 pub struct IoApicHandle(Arc<Mutex<PairState>>);
@@ -110,7 +111,7 @@ impl BusDevice for IoApic {
         let value = match register(state.route.selector).ok_or(DeviceError::UnknownOffset)? {
             Register::Id | Register::ArbitrationId => u32::from(state.route.id) << 24,
             Register::Version => IO_APIC_VERSION,
-            Register::Redirection { high: true, .. } => 0,
+            Register::Redirection { pin, high: true } => u32::from(state.route.dest[pin]) << 24,
             Register::Redirection { pin: 4, .. } => {
                 state.route.low
                     | if state.route.remote_irr {
@@ -138,7 +139,11 @@ impl BusDevice for IoApic {
                 state.route.id = (value >> 24) as u8;
                 Ok(())
             }
-            Register::Redirection { high: true, .. } if value == 0 => Ok(()),
+            // Physical destination only: bits 31:24 are the APIC ID of an existing vCPU, the
+            // rest is reserved. An ID no vCPU has is refused before any change.
+            Register::Redirection { pin, high: true } if value & !(0xff << 24) == 0 => {
+                state.set_dest(pin, (value >> 24) as u8)
+            }
             Register::Redirection { pin, high: false } if valid_low(pin, value) => {
                 let low = value as u32 & !READ_ONLY_STATUS;
                 if pin == 4 {
@@ -167,7 +172,9 @@ mod tests {
     };
 
     fn setup() -> (MachineBus, IoApicHandle, LocalApicHandle) {
-        let local = LocalApic::new();
+        setup_with(LocalApic::new())
+    }
+    fn setup_with(local: LocalApic) -> (MachineBus, IoApicHandle, LocalApicHandle) {
         let apic = local.handle();
         apic.set_global_enabled(true).unwrap();
         let io = IoApic::new(apic.clone());
@@ -479,9 +486,9 @@ mod tests {
         apic.request_fixed_edge(0x61).unwrap();
         route(&mut bus, 0x51);
         io.set_intin4(true).unwrap();
-        let local_before = io.0.lock().unwrap().local.clone();
+        let local_before = io.0.lock().unwrap().cpus[0].local.clone();
         io.reset().unwrap();
-        assert_eq!(io.0.lock().unwrap().local, local_before);
+        assert_eq!(io.0.lock().unwrap().cpus[0].local, local_before);
         assert_eq!(apic.pending(), Some(0x61));
         assert_eq!(apic.acknowledge(), Some(0x61));
 
@@ -1092,5 +1099,208 @@ mod tests {
         // INTIN2 line state is untouched by INTIN4 transitions and vice versa.
         io.set_intin4(false).unwrap();
         assert!(snapshot(&io).route.intin2_high && !snapshot(&io).route.high_line);
+    }
+
+    // S6-11: the destination field selects the vCPU whose LAPIC receives the request.
+
+    /// Two vCPUs, both software-enabled; vcpu 1's handle is the last element.
+    fn smp_setup() -> (MachineBus, IoApicHandle, LocalApicHandle, LocalApicHandle) {
+        let local = LocalApic::with_cpus(2).unwrap();
+        let cpu1 = local.handle_for(1).unwrap();
+        let (bus, io, cpu0) = setup_with(local);
+        for cpu in [&cpu0, &cpu1] {
+            cpu.0.lock().unwrap().cpus[cpu.cpu_index()].local.svr = 0x1ff;
+        }
+        (bus, io, cpu0, cpu1)
+    }
+    /// High dword of entry `pin`: the APIC ID in bits 31:24.
+    fn set_destination(bus: &mut MachineBus, pin: u64, apic_id: u64) -> Result<(), BusAccessError> {
+        select(bus, 0x11 + 2 * pin);
+        write(bus, IO_APIC_MMIO_BASE, 0x10, apic_id << 24)
+    }
+    fn destination(bus: &mut MachineBus, pin: u64) -> u64 {
+        select(bus, 0x11 + 2 * pin);
+        read(bus, 0x10).unwrap() >> 24
+    }
+    fn route_pin(bus: &mut MachineBus, pin: u64, low: u64) {
+        select(bus, 0x10 + 2 * pin);
+        write(bus, IO_APIC_MMIO_BASE, 0x10, low).unwrap();
+    }
+
+    /// The state is as it was, except for the register selector, which accesses move.
+    fn assert_unchanged(io: &IoApicHandle, mut before: PairState) {
+        let now = snapshot(io);
+        before.route.selector = now.route.selector;
+        assert_eq!(now, before);
+    }
+
+    #[test]
+    fn an_edge_route_to_apic_id_1_raises_the_request_in_vcpu_1_only() {
+        let (mut bus, io, cpu0, cpu1) = smp_setup();
+        // Reset: both destinations read APIC ID 0.
+        assert_eq!((destination(&mut bus, 4), destination(&mut bus, 2)), (0, 0));
+        set_destination(&mut bus, 4, 1).unwrap();
+        route_pin(&mut bus, 4, 0x41);
+        assert_eq!(destination(&mut bus, 4), 1);
+        io.set_intin4(true).unwrap();
+        assert_eq!(cpu1.vector_state(0x41), (true, false));
+        assert_eq!(cpu1.pending(), Some(0x41));
+        assert_eq!(
+            (cpu0.vector_state(0x41), cpu0.pending()),
+            ((false, false), None)
+        );
+        // Back to APIC ID 0: the next edge goes to vcpu 0 and vcpu 1 keeps what it has.
+        io.set_intin4(false).unwrap();
+        set_destination(&mut bus, 4, 0).unwrap();
+        io.set_intin4(true).unwrap();
+        assert_eq!(cpu0.vector_state(0x41), (true, false));
+        assert_eq!(cpu1.vector_state(0x41), (true, false));
+        // Taking the request on vcpu 1 does not take it from vcpu 0.
+        assert_eq!(cpu1.acknowledge(), Some(0x41));
+        assert_eq!(cpu0.vector_state(0x41), (true, false));
+    }
+
+    #[test]
+    fn intin2_follows_its_own_destination_field() {
+        let (mut bus, io, cpu0, cpu1) = smp_setup();
+        set_destination(&mut bus, 2, 1).unwrap();
+        route_pin(&mut bus, 2, 0x92);
+        // INTIN4 still goes to vcpu 0: the destinations are per entry.
+        assert_eq!(destination(&mut bus, 4), 0);
+        io.set_intin2(true).unwrap();
+        assert_eq!(cpu1.vector_state(0x92), (true, false));
+        assert_eq!(cpu0.vector_state(0x92), (false, false));
+    }
+
+    #[test]
+    fn a_level_route_to_apic_id_1_sets_remote_irr_until_that_vcpu_acknowledges_it() {
+        let (mut bus, io, cpu0, cpu1) = smp_setup();
+        set_destination(&mut bus, 4, 1).unwrap();
+        route_pin(&mut bus, 4, u64::from(LEVEL) | 0x51);
+        io.set_intin4(true).unwrap();
+        assert_eq!(cpu1.vector_state(0x51), (true, false));
+        assert_eq!(cpu0.vector_state(0x51), (false, false));
+        assert_ne!(
+            window(&mut bus, 0x18).unwrap() & u64::from(REMOTE_IRR),
+            0,
+            "Remote IRR"
+        );
+        // An EOI from the other LAPIC does not end the request.
+        cpu0.0.lock().unwrap().eoi(0).unwrap();
+        assert!(snapshot(&io).route.remote_irr);
+        assert_eq!(cpu1.acknowledge(), Some(0x51));
+        // Moving the destination while the request is outstanding is refused, and refused
+        // atomically.
+        let before = snapshot(&io);
+        assert_eq!(
+            set_destination(&mut bus, 4, 0),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_unchanged(&io, before);
+        // With the line low again, the EOI of the destination LAPIC ends the request.
+        io.set_intin4(false).unwrap();
+        cpu1.0.lock().unwrap().eoi(1).unwrap();
+        assert!(!snapshot(&io).route.remote_irr);
+        assert_eq!(cpu1.vector_state(0x51), (false, false));
+    }
+
+    #[test]
+    fn a_destination_no_vcpu_has_is_refused_before_any_change() {
+        let (mut bus, io, _cpu0, cpu1) = smp_setup();
+        set_destination(&mut bus, 4, 1).unwrap();
+        route_pin(&mut bus, 4, 0x41);
+        let before = snapshot(&io);
+        for apic_id in [2u64, 3, 0xff] {
+            assert_eq!(
+                set_destination(&mut bus, 4, apic_id),
+                Err(device_error(DeviceError::UnsupportedConfiguration)),
+                "APIC ID {apic_id}"
+            );
+            // Entries without an input line refuse it too: no entry may name a missing vCPU.
+            assert_eq!(
+                set_destination(&mut bus, 9, apic_id),
+                Err(device_error(DeviceError::UnsupportedConfiguration)),
+                "APIC ID {apic_id}"
+            );
+        }
+        assert_unchanged(&io, before);
+        assert_eq!(destination(&mut bus, 4), 1);
+        // The route still delivers to the vcpu it had.
+        io.set_intin4(true).unwrap();
+        assert_eq!(cpu1.vector_state(0x41), (true, false));
+        // Reserved bits of the high dword are refused as before.
+        select(&mut bus, 0x19);
+        assert_eq!(
+            write(&mut bus, IO_APIC_MMIO_BASE, 0x10, (1 << 24) | 1),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+    }
+
+    #[test]
+    fn one_vcpu_accepts_no_destination_but_apic_id_0() {
+        let (mut bus, _io, _apic) = setup();
+        assert!(set_destination(&mut bus, 4, 0).is_ok());
+        assert_eq!(
+            set_destination(&mut bus, 4, 1),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(destination(&mut bus, 4), 0);
+    }
+
+    #[test]
+    fn logical_destination_and_lowest_priority_stay_refused_with_several_vcpus() {
+        let (mut bus, io, _cpu0, _cpu1) = smp_setup();
+        let before = snapshot(&io);
+        // Destination mode (bit 11) logical, delivery mode lowest priority (001), NMI (100).
+        for low in [0x41 | (1 << 11), 0x41 | (1 << 8), 0x41 | (4 << 8)] {
+            select(&mut bus, 0x18);
+            assert_eq!(
+                write(&mut bus, IO_APIC_MMIO_BASE, 0x10, low),
+                Err(device_error(DeviceError::UnsupportedConfiguration)),
+                "{low:#x}"
+            );
+        }
+        assert_unchanged(&io, before);
+    }
+
+    #[test]
+    fn a_level_vector_collides_with_a_timer_only_in_the_lapic_that_receives_it() {
+        let clock = crate::VirtualClockHandle::new(1_000_000_000).unwrap();
+        let local = LocalApic::with_shared_timers(clock, 1_000_000_000, 2).unwrap();
+        let mut timer_owner = local.clone();
+        let (mut bus, _io, cpu0, cpu1) = {
+            let cpu1 = local.handle_for(1).unwrap();
+            let (bus, io, cpu0) = setup_with(local);
+            (bus, io, cpu0, cpu1)
+        };
+        for cpu in [&cpu0, &cpu1] {
+            cpu.0.lock().unwrap().cpus[cpu.cpu_index()].local.svr = 0x1ff;
+        }
+        // vcpu 0's LVT Timer uses 0x51, unmasked.
+        timer_owner
+            .write_from_cpu(
+                0,
+                DeviceAccess {
+                    space: IoSpace::Mmio,
+                    offset: 0x320,
+                    width: AccessWidth::Dword,
+                },
+                0x51,
+            )
+            .unwrap();
+        // A level route to vcpu 0 may not reuse the vector; one to vcpu 1 may.
+        select(&mut bus, 0x18);
+        assert_eq!(
+            write(&mut bus, IO_APIC_MMIO_BASE, 0x10, u64::from(LEVEL) | 0x51),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+        set_destination(&mut bus, 4, 1).unwrap();
+        route_pin(&mut bus, 4, u64::from(LEVEL) | 0x51);
+        // And the route cannot be moved back onto the colliding LAPIC.
+        assert_eq!(
+            set_destination(&mut bus, 4, 0),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(destination(&mut bus, 4), 1);
     }
 }

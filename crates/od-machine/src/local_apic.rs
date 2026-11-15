@@ -1,22 +1,29 @@
-//! A deliberately incomplete one-CPU xAPIC register and fixed interrupt model.
+//! A deliberately incomplete xAPIC register and fixed interrupt model, one Local APIC per vCPU
+//! (S6-11; one by default).
 //!
 //! The Version register (S4-25f) advertises an integrated APIC with four LVT
 //! entries (Timer, LINT0, LINT1, Error). LINT0/LINT1/Error LVT, DFR, LDR and
 //! ESR only store state: there is no LINT pin or error source, and no CPU
 //! interrupt delivery is performed.
-use crate::apic_pair::{LEVEL, MASK, PERIODIC, PairState, Timer};
+use crate::apic_pair::{CpuApic, MASK, PERIODIC, PairState, Timer};
+use crate::vcpu::{BOOT_VCPU_INDEX, MAX_VCPUS};
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace};
 use std::sync::{Arc, Mutex};
 
 pub const LOCAL_APIC_MMIO_BASE: u64 = 0xfee0_0000;
 pub const LOCAL_APIC_MMIO_SIZE: u64 = 0x1000;
 
+/// The Local APICs of the board, one per vCPU, behind the one bus window `0xFEE0_0000` (S6-11).
+/// A window access reaches the LAPIC of the vCPU that makes it: the bus passes that vCPU's index
+/// to [`BusDevice::read_from_cpu`]/[`BusDevice::write_from_cpu`]; [`BusDevice::read`] and
+/// [`BusDevice::write`] are the accesses of the boot processor.
 #[derive(Clone, Debug)]
 pub struct LocalApic(Arc<Mutex<PairState>>);
 
-/// Control operations address the same state as the device on the bus.
+/// Control operations address the same state as the device on the bus, for the LAPIC of one
+/// vCPU (the second field). [`LocalApic::handle`] is the boot processor's.
 #[derive(Clone, Debug)]
-pub struct LocalApicHandle(pub(crate) Arc<Mutex<PairState>>);
+pub struct LocalApicHandle(pub(crate) Arc<Mutex<PairState>>, pub(crate) usize);
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct State {
@@ -119,15 +126,21 @@ impl LocalApic {
     pub fn new() -> Self {
         Self(Arc::new(Mutex::new(PairState::default())))
     }
+    /// `count` Local APICs without timers, APIC IDs `0..count`; `count` is `1..=MAX_VCPUS`.
+    pub fn with_cpus(count: usize) -> Result<Self, DeviceError> {
+        Self::checked_count(count)?;
+        let cpus = vec![CpuApic::default(); count];
+        Ok(Self(Arc::new(Mutex::new(PairState::new(cpus)))))
+    }
     /// Create an opt-in one-shot/periodic timer with its own caller-driven
     /// clock. This does not connect a vCPU clock, NMI, MOV-SS, a Linux profile,
     /// or a general scheduler.
     pub fn with_timer(clock: crate::VirtualClock, timer_hz: u64) -> Result<Self, DeviceError> {
-        let pair = PairState {
+        let cpu = CpuApic {
             timer: Some(Timer::new(clock, timer_hz)?),
-            ..PairState::default()
+            ..CpuApic::default()
         };
-        Ok(Self(Arc::new(Mutex::new(pair))))
+        Ok(Self(Arc::new(Mutex::new(PairState::new(vec![cpu])))))
     }
     /// Create an opt-in one-shot/periodic timer observing a vCPU-owned clock.
     /// The APIC cannot advance this clock; its vCPU session remains the owner.
@@ -135,17 +148,40 @@ impl LocalApic {
         clock: crate::VirtualClockHandle,
         timer_hz: u64,
     ) -> Result<Self, DeviceError> {
-        let pair = PairState {
-            timer: Some(Timer::new_shared(clock, timer_hz)?),
-            ..PairState::default()
-        };
-        Ok(Self(Arc::new(Mutex::new(pair))))
+        Self::with_shared_timers(clock, timer_hz, 1)
     }
+    /// `count` Local APICs, each with its own timer and event queue observing the same clock
+    /// (the board clock); `count` is `1..=MAX_VCPUS`.
+    pub fn with_shared_timers(
+        clock: crate::VirtualClockHandle,
+        timer_hz: u64,
+        count: usize,
+    ) -> Result<Self, DeviceError> {
+        Self::checked_count(count)?;
+        let cpus = (0..count)
+            .map(|_| {
+                Ok(CpuApic {
+                    timer: Some(Timer::new_shared(clock.clone(), timer_hz)?),
+                    ..CpuApic::default()
+                })
+            })
+            .collect::<Result<Vec<_>, DeviceError>>()?;
+        Ok(Self(Arc::new(Mutex::new(PairState::new(cpus)))))
+    }
+    fn checked_count(count: usize) -> Result<(), DeviceError> {
+        if (1..=MAX_VCPUS).contains(&count) {
+            Ok(())
+        } else {
+            Err(DeviceError::UnsupportedConfiguration)
+        }
+    }
+    /// Handle of the boot processor's LAPIC.
     pub fn handle(&self) -> LocalApicHandle {
-        LocalApicHandle(Arc::clone(&self.0))
+        LocalApicHandle(Arc::clone(&self.0), BOOT_VCPU_INDEX)
     }
-    fn with_state<R>(&self, f: impl FnOnce(&mut State) -> R) -> R {
-        f(&mut self.0.lock().unwrap_or_else(|e| e.into_inner()).local)
+    /// Handle of the LAPIC of vCPU `cpu`, or `None` when the board has no such vCPU.
+    pub fn handle_for(&self, cpu: usize) -> Option<LocalApicHandle> {
+        self.handle().for_cpu(cpu)
     }
 }
 impl Default for LocalApic {
@@ -155,34 +191,51 @@ impl Default for LocalApic {
 }
 
 impl LocalApicHandle {
+    /// Handle of the LAPIC of vCPU `cpu` of the same board, or `None` when there is no such vCPU.
+    pub fn for_cpu(&self, cpu: usize) -> Option<LocalApicHandle> {
+        let count = self.0.lock().unwrap_or_else(|e| e.into_inner()).cpus.len();
+        (cpu < count).then(|| LocalApicHandle(Arc::clone(&self.0), cpu))
+    }
+    /// Number of Local APICs (vCPUs) of the board this handle belongs to.
+    pub fn cpu_count(&self) -> usize {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).cpus.len()
+    }
+    /// Index of the vCPU whose LAPIC this handle addresses (its APIC ID).
+    pub fn cpu_index(&self) -> usize {
+        self.1
+    }
     fn with_state<R>(&self, f: impl FnOnce(&mut State) -> R) -> R {
-        f(&mut self.0.lock().unwrap_or_else(|e| e.into_inner()).local)
+        f(&mut self.0.lock().unwrap_or_else(|e| e.into_inner()).cpus[self.1].local)
     }
     /// Reset only the Local APIC; a level request awaiting EOI vetoes reset.
     pub fn reset(&self) -> Result<(), DeviceError> {
         self.0
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .reset_local()
+            .reset_local(self.1)
     }
-    /// Atomically reset the pair, discarding all accepted requests.
+    /// Atomically reset the IOAPIC route and the LAPIC of this handle's vCPU, discarding the
+    /// requests accepted by them. With several vCPUs the other LAPICs keep the requests already
+    /// delivered to them.
     pub fn reset_pair(&self) -> Result<(), DeviceError> {
         self.reset_checked()
     }
-    /// Reset both controllers, retaining the timer clock and configuration.
+    /// Reset this vCPU's LAPIC and the IOAPIC routes, retaining the timer clock and
+    /// configuration. The LAPICs of other vCPUs are untouched.
     pub fn reset_checked(&self) -> Result<(), DeviceError> {
         let mut pair = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(timer) = &mut pair.timer {
+        let apic = &mut pair.cpus[self.1];
+        if let Some(timer) = &mut apic.timer {
             timer.reset()?;
         }
-        pair.local = State::default();
+        apic.local = State::default();
         pair.route = Default::default();
         Ok(())
     }
     /// Advance only a timer configured with its private clock.
     pub fn advance_timer_ns(&self, delta: u64) -> Result<(), DeviceError> {
         let mut pair = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let timer = pair
+        let timer = pair.cpus[self.1]
             .timer
             .as_mut()
             .ok_or(DeviceError::UnsupportedConfiguration)?;
@@ -197,7 +250,7 @@ impl LocalApicHandle {
     /// Dispatch at most one due timer event without entering the CPU.
     pub fn dispatch_timer(&self) -> Result<bool, DeviceError> {
         let mut pair = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let timer = pair
+        let timer = pair.cpus[self.1]
             .timer
             .as_ref()
             .ok_or(DeviceError::UnsupportedConfiguration)?;
@@ -219,7 +272,11 @@ impl LocalApicHandle {
                 return Err(DeviceError::Busy);
             }
             if lvt & PERIODIC != 0 {
-                let deadline = pair.timer.as_ref().unwrap().next_periodic_deadline(now)?;
+                let deadline = pair.cpus[self.1]
+                    .timer
+                    .as_ref()
+                    .unwrap()
+                    .next_periodic_deadline(now)?;
                 queue
                     .replace_single(generation, Some(deadline))
                     .map_err(|_| DeviceError::UnsupportedConfiguration)?;
@@ -229,18 +286,16 @@ impl LocalApicHandle {
                     .map_err(|_| DeviceError::UnsupportedConfiguration)?;
             }
             if lvt & MASK == 0 {
-                pair.edge(lvt as u8)?;
+                pair.edge(self.1, lvt as u8)?;
             }
             // Queue consumption and IRR publication share both locks.
-            pair.timer.as_mut().unwrap().queue = queue;
+            pair.cpus[self.1].timer.as_mut().unwrap().queue = queue;
             Ok(true)
         })
     }
-    /// Whether this APIC pair has an opt-in timer (S4-27i2). Read-only.
+    /// Whether this LAPIC has an opt-in timer (S4-27i2). Read-only.
     pub fn has_timer(&self) -> bool {
-        self.0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).cpus[self.1]
             .timer
             .is_some()
     }
@@ -251,7 +306,7 @@ impl LocalApicHandle {
     /// it consumes no event and does not read or advance the clock.
     pub fn next_timer_deadline(&self) -> Option<u64> {
         let pair = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let timer = pair.timer.as_ref()?;
+        let timer = pair.cpus[self.1].timer.as_ref()?;
         if timer.lvt & MASK != 0 {
             return None;
         }
@@ -261,7 +316,7 @@ impl LocalApicHandle {
     /// Read-only; `None` when the timer is absent or masked.
     pub fn timer_vector(&self) -> Option<u8> {
         let pair = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let timer = pair.timer.as_ref()?;
+        let timer = pair.cpus[self.1].timer.as_ref()?;
         (timer.lvt & MASK == 0).then_some(timer.lvt as u8)
     }
     /// Disable is rejected while a level request awaits EOI.
@@ -269,14 +324,14 @@ impl LocalApicHandle {
         self.0
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .set_enabled(enabled)
+            .set_enabled(self.1, enabled)
     }
     /// Record a fixed edge. Repeated requests coalesce in the IRR bit.
     pub fn request_fixed_edge(&self, vector: u8) -> Result<(), DeviceError> {
         self.0
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .edge(vector)
+            .edge(self.1, vector)
     }
     /// Observe the highest pending vector without consuming it.
     pub fn pending(&self) -> Option<u8> {
@@ -362,7 +417,7 @@ pub fn step_apic_base_msr(
     let outcome = candidate.step(memory, context, budget, stop);
     let mut pair = apic.0.lock().unwrap_or_else(|e| e.into_inner());
     if let od_isa::msr::ApicBaseExit::Write(effect) = outcome {
-        pair.set_enabled(effect.new == od_isa::msr::ApicBaseCpu::ENABLED)?;
+        pair.set_enabled(apic.1, effect.new == od_isa::msr::ApicBaseCpu::ENABLED)?;
     }
     *cpu = candidate;
     Ok(outcome)
@@ -427,13 +482,25 @@ fn bank(offset: u64, base: u64) -> Option<usize> {
 }
 impl BusDevice for LocalApic {
     fn read(&mut self, a: DeviceAccess) -> Result<u64, DeviceError> {
+        self.read_from_cpu(BOOT_VCPU_INDEX, a)
+    }
+    fn write(&mut self, a: DeviceAccess, value: u64) -> Result<(), DeviceError> {
+        self.write_from_cpu(BOOT_VCPU_INDEX, a, value)
+    }
+    /// The window of the LAPIC of vCPU `cpu`; there is no such LAPIC when the board has fewer
+    /// vCPUs, which is `UnsupportedConfiguration`.
+    fn read_from_cpu(&mut self, cpu: usize, a: DeviceAccess) -> Result<u64, DeviceError> {
         let offset = validate(a)?;
+        let mut pair = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let apic = pair
+            .cpus
+            .get_mut(cpu)
+            .ok_or(DeviceError::UnsupportedConfiguration)?;
         if matches!(offset, 0x320 | 0x380 | 0x390 | 0x3e0) {
-            let pair = self.0.lock().unwrap_or_else(|e| e.into_inner());
-            if !pair.local.global_enabled {
+            if !apic.local.global_enabled {
                 return Err(DeviceError::UnsupportedConfiguration);
             }
-            let t = pair.timer.as_ref().ok_or(DeviceError::UnknownOffset)?;
+            let t = apic.timer.as_ref().ok_or(DeviceError::UnknownOffset)?;
             return Ok(u64::from(match offset {
                 0x320 => t.lvt,
                 0x380 => t.initial,
@@ -441,12 +508,14 @@ impl BusDevice for LocalApic {
                 _ => t.divide,
             }));
         }
-        self.with_state(|s| {
+        {
+            let s = &mut apic.local;
             if !s.global_enabled {
                 return Err(DeviceError::UnsupportedConfiguration);
             }
             let value = match offset {
-                0x20 => 0, // fixed APIC ID
+                // The xAPIC ID register holds the APIC ID in bits 31:24; APIC ID = vCPU index.
+                0x20 => (cpu as u32) << 24,
                 0x30 => VERSION,
                 0xd0 => s.ldr,
                 0xe0 => s.dfr,
@@ -466,17 +535,28 @@ impl BusDevice for LocalApic {
                 _ => return Err(DeviceError::UnknownOffset),
             };
             Ok(u64::from(value))
-        })
+        }
     }
-    fn write(&mut self, a: DeviceAccess, value: u64) -> Result<(), DeviceError> {
+    fn write_from_cpu(
+        &mut self,
+        cpu: usize,
+        a: DeviceAccess,
+        value: u64,
+    ) -> Result<(), DeviceError> {
         let offset = validate(a)?;
         let mut pair = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if cpu >= pair.cpus.len() {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
         {
-            if !pair.local.global_enabled {
+            if !pair.cpus[cpu].local.global_enabled {
                 return Err(DeviceError::UnsupportedConfiguration);
             }
             if matches!(offset, 0x320 | 0x380 | 0x390 | 0x3e0) {
-                let timer = pair.timer.as_ref().ok_or(DeviceError::UnknownOffset)?;
+                let timer = pair.cpus[cpu]
+                    .timer
+                    .as_ref()
+                    .ok_or(DeviceError::UnknownOffset)?;
                 if offset == 0x390 {
                     return Err(DeviceError::ReadOnly);
                 }
@@ -490,21 +570,25 @@ impl BusDevice for LocalApic {
                             || value & 0xff < 16
                             || ((value as u32 ^ timer.lvt) & PERIODIC != 0
                                 && !timer.queue.is_empty())
-                            || (value & u64::from(MASK) == 0 && pair.local.svr & 0x100 == 0)
                             || (value & u64::from(MASK) == 0
-                                && pair.route.low & LEVEL != 0
-                                && pair.route.low as u8 == value as u8)
+                                && pair.cpus[cpu].local.svr & 0x100 == 0)
+                            || (value & u64::from(MASK) == 0
+                                && pair.level_vector_reserved(cpu, value as u8))
                         {
                             return Err(DeviceError::UnsupportedConfiguration);
                         }
-                        pair.timer.as_mut().unwrap().lvt = value as u32;
+                        pair.cpus[cpu].timer.as_mut().unwrap().lvt = value as u32;
                         return Ok(());
                     }
                     0x380 if value <= u64::from(u32::MAX) => {
-                        return pair.timer.as_mut().unwrap().arm_at(now_ns, value as u32);
+                        return pair.cpus[cpu]
+                            .timer
+                            .as_mut()
+                            .unwrap()
+                            .arm_at(now_ns, value as u32);
                     }
                     0x3e0 if value & !0xb == 0 && timer.queue.is_empty() => {
-                        pair.timer.as_mut().unwrap().divide = value as u32;
+                        pair.cpus[cpu].timer.as_mut().unwrap().divide = value as u32;
                         return Ok(());
                     }
                     _ => return Err(DeviceError::UnsupportedConfiguration),
@@ -512,29 +596,32 @@ impl BusDevice for LocalApic {
             }
             match offset {
                 0x80 if value <= 0xff => {
-                    pair.local.tpr = value as u8;
+                    pair.cpus[cpu].local.tpr = value as u8;
                     Ok(())
                 }
                 0xf0 if value & !0x1ff == 0 => {
                     if value & 0x100 == 0
-                        && (pair.route.remote_irr
-                            || pair.timer.as_ref().is_some_and(|t| !t.queue.is_empty()))
+                        && (pair.awaits_eoi(cpu)
+                            || pair.cpus[cpu]
+                                .timer
+                                .as_ref()
+                                .is_some_and(|t| !t.queue.is_empty()))
                     {
                         return Err(DeviceError::UnsupportedConfiguration);
                     }
                     if value & 0x100 == 0 {
-                        if let Some(timer) = pair.timer.as_mut() {
+                        if let Some(timer) = pair.cpus[cpu].timer.as_mut() {
                             timer.lvt |= MASK;
                         }
                         // Software disable masks every LVT entry (SDM 13.4.7.2).
-                        pair.local.lint0 |= MASK;
-                        pair.local.lint1 |= MASK;
-                        pair.local.error_lvt |= MASK;
+                        pair.cpus[cpu].local.lint0 |= MASK;
+                        pair.cpus[cpu].local.lint1 |= MASK;
+                        pair.cpus[cpu].local.error_lvt |= MASK;
                     }
-                    pair.local.svr = value as u16;
+                    pair.cpus[cpu].local.svr = value as u16;
                     Ok(())
                 }
-                0xb0 if value == 0 => pair.eoi(),
+                0xb0 if value == 0 => pair.eoi(cpu),
                 // Fixed, edge-triggered, asserted self-IPI. Destination mode
                 // is ignored for self shorthand. Delivery completes here.
                 0x300
@@ -545,12 +632,12 @@ impl BusDevice for LocalApic {
                     // Delivery Status is device-owned and remains Idle in
                     // this synchronous self-delivery profile.
                     let command = value & !(1 << 12);
-                    pair.edge(command as u8)?;
-                    pair.local.icr_low = command as u32;
+                    pair.edge(cpu, command as u8)?;
+                    pair.cpus[cpu].local.icr_low = command as u32;
                     Ok(())
                 }
                 0x310 if value & !0xff00_0000 == 0 => {
-                    pair.local.icr_high = value as u32;
+                    pair.cpus[cpu].local.icr_high = value as u32;
                     Ok(())
                 }
                 // LINT0/LINT1/Error LVT: storage and mask only. Unmasking is
@@ -564,30 +651,32 @@ impl BusDevice for LocalApic {
                         })
                         == 0
                         && (offset == 0x370 || !matches!((value >> 8) & 7, 1 | 3 | 6))
-                        && (value & u64::from(MASK) != 0 || pair.local.svr & 0x100 != 0) =>
+                        && (value & u64::from(MASK) != 0
+                            || pair.cpus[cpu].local.svr & 0x100 != 0) =>
                 {
                     let stored = value as u32 & !LVT_READ_ONLY_BITS;
                     match offset {
-                        0x350 => pair.local.lint0 = stored,
-                        0x360 => pair.local.lint1 = stored,
-                        _ => pair.local.error_lvt = stored,
+                        0x350 => pair.cpus[cpu].local.lint0 = stored,
+                        0x360 => pair.cpus[cpu].local.lint1 = stored,
+                        _ => pair.cpus[cpu].local.error_lvt = stored,
                     }
                     Ok(())
                 }
                 // Logical destination routing is not modelled. DFR keeps only
                 // the model nibble (flat 0xf, cluster 0x0); bits 27:0 read 1.
                 0xe0 if value <= u64::from(u32::MAX) && matches!(value >> 28, 0 | 0xf) => {
-                    pair.local.dfr = value as u32 | 0x0fff_ffff;
+                    pair.cpus[cpu].local.dfr = value as u32 | 0x0fff_ffff;
                     Ok(())
                 }
                 0xd0 if value & !0xff00_0000 == 0 => {
-                    pair.local.ldr = value as u32;
+                    pair.cpus[cpu].local.ldr = value as u32;
                     Ok(())
                 }
                 // The written value is ignored: the write latches the errors
                 // accumulated since the last write and clears the log.
                 0x280 if value <= u64::from(u32::MAX) => {
-                    pair.local.esr = std::mem::take(&mut pair.local.esr_pending);
+                    pair.cpus[cpu].local.esr =
+                        std::mem::take(&mut pair.cpus[cpu].local.esr_pending);
                     Ok(())
                 }
                 0x80 | 0xb0 | 0xf0 | 0x300 | 0x310 | 0x350 | 0x360 | 0x370 | 0xd0 | 0xe0
@@ -608,6 +697,7 @@ impl BusDevice for LocalApic {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::apic_pair::LEVEL;
     use crate::{
         BusAccessError, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
         MemoryRegionKind, MemoryRegionSpec, MmioBinding, RamLimits,
@@ -1148,9 +1238,7 @@ mod tests {
         write(&mut bus, 0x3e0, 0xb).unwrap();
         write(&mut bus, 0x380, 1).unwrap();
         apic.advance_timer_ns(1).unwrap();
-        apic.0
-            .lock()
-            .unwrap()
+        apic.0.lock().unwrap().cpus[0]
             .timer
             .as_mut()
             .unwrap()
@@ -1180,9 +1268,7 @@ mod tests {
         assert_eq!(read(&mut bus, 0x320), Ok(u64::from(MASK)));
         assert_eq!(read(&mut bus, 0x390), Ok(0));
         assert_eq!(
-            apic.0
-                .lock()
-                .unwrap()
+            apic.0.lock().unwrap().cpus[0]
                 .timer
                 .as_ref()
                 .unwrap()
@@ -1200,10 +1286,7 @@ mod tests {
     fn timer_generation_and_reset_failure_are_atomic() {
         let (mut bus, apic) = timer_setup(1_000_000_000);
         write(&mut bus, 0x380, 5).unwrap();
-        let old = apic
-            .0
-            .lock()
-            .unwrap()
+        let old = apic.0.lock().unwrap().cpus[0]
             .timer
             .as_ref()
             .unwrap()
@@ -1212,7 +1295,7 @@ mod tests {
         write(&mut bus, 0x380, 6).unwrap();
         {
             let mut pair = apic.0.lock().unwrap();
-            let timer = pair.timer.as_mut().unwrap();
+            let timer = pair.cpus[0].timer.as_mut().unwrap();
             assert!(timer.queue.validate_generation(old).is_err());
             timer.queue.exhaust_generation_for_test();
         }
@@ -1289,7 +1372,7 @@ mod tests {
         assert_eq!(read(&mut bus, 0x380), Ok(0));
         assert!(!apic.dispatch_timer().unwrap());
         let pair = apic.0.lock().unwrap();
-        let timer = pair.timer.as_ref().unwrap();
+        let timer = pair.cpus[0].timer.as_ref().unwrap();
         assert_eq!(timer.clock.snapshot().now_ns(), 1);
         assert_eq!(timer.hz, 1_000_000_000);
     }
@@ -1589,9 +1672,9 @@ mod tests {
         write(bus, 0x370, 0xfe).unwrap();
         write(bus, 0xe0, 0x0fff_ffff).unwrap();
         write(bus, 0xd0, 0x0100_0000).unwrap();
-        apic.0.lock().unwrap().local.esr_pending = 0x40;
+        apic.0.lock().unwrap().cpus[0].local.esr_pending = 0x40;
         write(bus, 0x280, 0).unwrap();
-        apic.0.lock().unwrap().local.esr_pending = 0x80;
+        apic.0.lock().unwrap().cpus[0].local.esr_pending = 0x80;
         assert_eq!(read(bus, 0x280), Ok(0x40));
         assert_eq!(read(bus, 0x1b0), Ok(1 << 17)); // TMR 0x71
         assert_eq!(read(bus, 0x120), Ok(1 << 17)); // ISR 0x51
@@ -1636,7 +1719,11 @@ mod tests {
             }
         }
         assert_eq!(read(bus, 0xb0), Err(error(DeviceError::WriteOnly)));
-        assert_eq!(snapshot(apic).local.esr_pending, 0, "{label} esr log");
+        assert_eq!(
+            snapshot(apic).cpus[0].local.esr_pending,
+            0,
+            "{label} esr log"
+        );
         assert_eq!(apic.pending(), None, "{label}");
         assert_eq!(apic.eligible(), None, "{label}");
         assert_eq!(apic.spurious_vector(), Some(0xff), "{label}");
@@ -2103,14 +2190,14 @@ mod tests {
         assert_eq!(snapshot(&apic), before);
 
         // A global-disabled APIC refuses every implemented register.
-        apic.0.lock().unwrap().local.global_enabled = false;
+        apic.0.lock().unwrap().cpus[0].local.global_enabled = false;
         let disabled = snapshot(&apic);
         for offset in (0..0x1000u64).step_by(16).filter(|o| supported(*o)) {
             assert_eq!(read(&mut bus, offset), Err(error(UC)), "{offset:#x}");
             assert_eq!(write(&mut bus, offset, 0), Err(error(UC)), "{offset:#x}");
         }
         assert_eq!(snapshot(&apic), disabled);
-        apic.0.lock().unwrap().local.global_enabled = true;
+        apic.0.lock().unwrap().cpus[0].local.global_enabled = true;
 
         // The rejected traffic did not wedge the device.
         write(&mut bus, 0x80, 0x20).unwrap();
@@ -2188,7 +2275,7 @@ mod tests {
         write(&mut bus, 0xf0, 0x1ff).unwrap();
         apic.request_fixed_edge(0x41).unwrap();
         let irr = |a: &LocalApicHandle| {
-            let s = snapshot(a).local;
+            let s = snapshot(a).cpus[0].local.clone();
             (s.irr, s.isr, s.tmr)
         };
         let before = irr(&apic);
@@ -2230,17 +2317,17 @@ mod tests {
         write(&mut bus, 0x280, 0).unwrap();
         assert_eq!(read(&mut bus, 0x280), Ok(0));
         // The mechanism with an injected error log.
-        apic.0.lock().unwrap().local.esr_pending = 0x20;
+        apic.0.lock().unwrap().cpus[0].local.esr_pending = 0x20;
         assert_eq!(read(&mut bus, 0x280), Ok(0), "read alone does not latch");
         write(&mut bus, 0x280, 0).unwrap();
         assert_eq!(read(&mut bus, 0x280), Ok(0x20));
         assert_eq!(read(&mut bus, 0x280), Ok(0x20), "read does not clear");
-        assert_eq!(snapshot(&apic).local.esr_pending, 0);
+        assert_eq!(snapshot(&apic).cpus[0].local.esr_pending, 0);
         // The value written is ignored; the next write clears the latch.
         write(&mut bus, 0x280, 0xdead_beef).unwrap();
         assert_eq!(read(&mut bus, 0x280), Ok(0));
         // A nonzero value does not inject errors or retain the latch.
-        apic.0.lock().unwrap().local.esr_pending = 0x08;
+        apic.0.lock().unwrap().cpus[0].local.esr_pending = 0x08;
         write(&mut bus, 0x280, 0xffff_ffff).unwrap();
         assert_eq!(read(&mut bus, 0x280), Ok(0x08));
         write(&mut bus, 0x280, 0).unwrap();
@@ -2251,19 +2338,22 @@ mod tests {
     fn esr_write_does_not_touch_irr_isr_tmr_or_other_registers() {
         let (mut bus, apic) = timer_setup(1_000_000_000);
         dirty(&mut bus, &apic);
-        apic.0.lock().unwrap().local.esr_pending = 0;
+        apic.0.lock().unwrap().cpus[0].local.esr_pending = 0;
         let mut before = snapshot(&apic);
         write(&mut bus, 0x280, 0).unwrap();
-        before.local.esr = 0;
+        before.cpus[0].local.esr = 0;
         assert_eq!(snapshot(&apic), before);
         // Only the latch moves when a log exists.
-        apic.0.lock().unwrap().local.esr_pending = 4;
+        apic.0.lock().unwrap().cpus[0].local.esr_pending = 4;
         write(&mut bus, 0x280, 0).unwrap();
         let after = snapshot(&apic);
-        assert_eq!(after.local.irr, before.local.irr);
-        assert_eq!(after.local.isr, before.local.isr);
-        assert_eq!(after.local.tmr, before.local.tmr);
-        assert_eq!((after.local.esr, after.local.esr_pending), (4, 0));
+        assert_eq!(after.cpus[0].local.irr, before.cpus[0].local.irr);
+        assert_eq!(after.cpus[0].local.isr, before.cpus[0].local.isr);
+        assert_eq!(after.cpus[0].local.tmr, before.cpus[0].local.tmr);
+        assert_eq!(
+            (after.cpus[0].local.esr, after.cpus[0].local.esr_pending),
+            (4, 0)
+        );
     }
 
     #[test]
@@ -2341,5 +2431,165 @@ mod tests {
             }
         }
         assert_eq!(snapshot(&apic), before);
+    }
+
+    // S6-11: one Local APIC per vCPU behind the one window.
+
+    fn dword(offset: u64) -> DeviceAccess {
+        DeviceAccess {
+            space: IoSpace::Mmio,
+            offset,
+            width: AccessWidth::Dword,
+        }
+    }
+
+    fn smp_timer_device(count: usize) -> (LocalApic, crate::VirtualClockHandle) {
+        let clock = crate::VirtualClockHandle::new(1_000_000_000).unwrap();
+        let device = LocalApic::with_shared_timers(clock.clone(), 1_000_000_000, count).unwrap();
+        (device, clock)
+    }
+
+    #[test]
+    fn apic_id_register_is_the_index_of_the_vcpu_that_reads_it() {
+        let mut device = LocalApic::with_cpus(3).unwrap();
+        for cpu in 0..3 {
+            assert_eq!(
+                device.read_from_cpu(cpu, dword(0x20)),
+                Ok((cpu as u64) << 24),
+                "vcpu {cpu}"
+            );
+        }
+        // The plain bus access is the boot processor's.
+        assert_eq!(device.read(dword(0x20)), Ok(0));
+        // The ID is read-only for every processor.
+        assert_eq!(
+            device.write_from_cpu(1, dword(0x20), 0x0200_0000),
+            Err(DeviceError::ReadOnly)
+        );
+        assert_eq!(device.read_from_cpu(1, dword(0x20)), Ok(1 << 24));
+    }
+
+    #[test]
+    fn an_access_from_a_vcpu_the_board_does_not_have_is_refused() {
+        let mut device = LocalApic::with_cpus(2).unwrap();
+        let before = device.handle().0.lock().unwrap().clone();
+        assert_eq!(
+            device.read_from_cpu(2, dword(0x20)),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        assert_eq!(
+            device.write_from_cpu(2, dword(0x80), 0x30),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        assert_eq!(*device.handle().0.lock().unwrap(), before);
+        assert!(device.handle_for(2).is_none());
+        assert_eq!(device.handle().cpu_count(), 2);
+        // The board refuses a processor count outside 1..=4.
+        for count in [0, 5] {
+            assert_eq!(
+                LocalApic::with_cpus(count).err(),
+                Some(DeviceError::UnsupportedConfiguration)
+            );
+        }
+    }
+
+    #[test]
+    fn registers_written_by_one_vcpu_are_invisible_to_the_other() {
+        let mut device = LocalApic::with_cpus(2).unwrap();
+        device.write_from_cpu(1, dword(0x80), 0x30).unwrap();
+        device.write_from_cpu(1, dword(0xf0), 0x1ab).unwrap();
+        device.write_from_cpu(1, dword(0xd0), 0x0300_0000).unwrap();
+        assert_eq!(device.read_from_cpu(1, dword(0x80)), Ok(0x30));
+        assert_eq!(device.read_from_cpu(1, dword(0xf0)), Ok(0x1ab));
+        assert_eq!(device.read_from_cpu(1, dword(0xd0)), Ok(0x0300_0000));
+        assert_eq!(device.read_from_cpu(0, dword(0x80)), Ok(0));
+        assert_eq!(device.read_from_cpu(0, dword(0xf0)), Ok(0xff));
+        assert_eq!(device.read_from_cpu(0, dword(0xd0)), Ok(0));
+        // The handles follow the same split.
+        assert_eq!(device.handle_for(1).unwrap().with_state(|s| s.tpr), 0x30);
+        assert_eq!(device.handle().with_state(|s| s.tpr), 0);
+    }
+
+    #[test]
+    fn a_request_and_an_eoi_stay_inside_their_own_lapic() {
+        let mut device = LocalApic::with_cpus(2).unwrap();
+        let (cpu0, cpu1) = (device.handle(), device.handle_for(1).unwrap());
+        for cpu in 0..2 {
+            device.write_from_cpu(cpu, dword(0xf0), 0x1ff).unwrap();
+        }
+        cpu1.request_fixed_edge(0x61).unwrap();
+        assert_eq!((cpu0.pending(), cpu1.pending()), (None, Some(0x61)));
+        // cpu 1 takes the request; cpu 0 has nothing eligible and acknowledges nothing.
+        assert_eq!(cpu0.acknowledge(), None);
+        assert_eq!(cpu1.acknowledge(), Some(0x61));
+        assert_eq!(cpu1.vector_state(0x61), (false, true));
+        assert_eq!(cpu0.vector_state(0x61), (false, false));
+        // The same vector requested on cpu 0 is its own request, not a repeat of cpu 1's.
+        cpu0.request_fixed_edge(0x61).unwrap();
+        assert_eq!(cpu0.vector_state(0x61), (true, false));
+        assert_eq!(cpu1.vector_state(0x61), (false, true));
+        // Disabling one LAPIC clears only its own state.
+        cpu1.set_global_enabled(false).unwrap();
+        assert_eq!(cpu1.vector_state(0x61), (false, false));
+        assert_eq!(cpu0.vector_state(0x61), (true, false));
+        assert_eq!(
+            cpu1.request_fixed_edge(0x62),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        cpu0.request_fixed_edge(0x62).unwrap();
+    }
+
+    #[test]
+    fn the_timer_of_one_vcpu_does_not_change_the_state_of_the_other() {
+        let (mut device, clock) = smp_timer_device(2);
+        let (cpu0, cpu1) = (device.handle(), device.handle_for(1).unwrap());
+        for cpu in 0..2 {
+            device.write_from_cpu(cpu, dword(0xf0), 0x1ff).unwrap();
+        }
+        // Only vcpu 1 starts its timer: unmasked vector 0x40, one-shot, count 1 (2 ns).
+        device.write_from_cpu(1, dword(0x320), 0x40).unwrap();
+        device.write_from_cpu(1, dword(0x380), 1).unwrap();
+        let cpu0_before = cpu0.0.lock().unwrap().cpus[0].clone();
+        assert!(cpu1.next_timer_deadline().is_some());
+        assert_eq!(cpu0.next_timer_deadline(), None);
+        clock.advance_standalone(10).unwrap();
+        // The expiry belongs to vcpu 1 alone.
+        assert_eq!(cpu0.dispatch_timer(), Ok(false));
+        assert_eq!(cpu0.0.lock().unwrap().cpus[0], cpu0_before);
+        assert_eq!(cpu1.dispatch_timer(), Ok(true));
+        assert_eq!(cpu1.vector_state(0x40), (true, false));
+        assert_eq!(cpu0.vector_state(0x40), (false, false));
+        assert_eq!(cpu0.0.lock().unwrap().cpus[0], cpu0_before);
+        // The timer registers are per processor too: vcpu 0 still reads its masked reset LVT,
+        // no count, and a current count of zero.
+        assert_eq!(device.read_from_cpu(0, dword(0x320)), Ok(u64::from(MASK)));
+        assert_eq!(device.read_from_cpu(0, dword(0x380)), Ok(0));
+        assert_eq!(device.read_from_cpu(1, dword(0x380)), Ok(1));
+        // A second expiry now on vcpu 0 does not disturb the already pending request of vcpu 1.
+        device.write_from_cpu(0, dword(0x320), 0x50).unwrap();
+        device.write_from_cpu(0, dword(0x380), 1).unwrap();
+        clock.advance_standalone(10).unwrap();
+        let cpu1_before = cpu1.0.lock().unwrap().cpus[1].clone();
+        assert_eq!(cpu0.dispatch_timer(), Ok(true));
+        assert_eq!(cpu0.vector_state(0x50), (true, false));
+        assert_eq!(cpu1.0.lock().unwrap().cpus[1], cpu1_before);
+    }
+
+    #[test]
+    fn resetting_one_lapic_leaves_the_other_alone() {
+        let (mut device, _clock) = smp_timer_device(2);
+        let (cpu0, cpu1) = (device.handle(), device.handle_for(1).unwrap());
+        for cpu in 0..2 {
+            device.write_from_cpu(cpu, dword(0xf0), 0x1ff).unwrap();
+            device.write_from_cpu(cpu, dword(0x320), 0x40).unwrap();
+        }
+        cpu0.request_fixed_edge(0x70).unwrap();
+        cpu1.request_fixed_edge(0x70).unwrap();
+        let cpu0_before = cpu0.0.lock().unwrap().cpus[0].clone();
+        cpu1.reset().unwrap();
+        assert_eq!(cpu1.pending(), None);
+        assert_eq!(cpu1.timer_vector(), None);
+        assert_eq!(cpu0.0.lock().unwrap().cpus[0], cpu0_before);
+        assert_eq!(cpu0.pending(), Some(0x70));
     }
 }

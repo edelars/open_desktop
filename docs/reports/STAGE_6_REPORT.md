@@ -21,7 +21,7 @@
 | S6-08 | `accepted` | Независимые code/doc reviews пройдены; implementation commit `fa74b1c`; Linux tests 9 library + 258 runner, обычный fixture path прошёл; полный corpus 18×10,000 rounds/process ×3, 540,000 суммарных rounds, все гистограммы conservation-valid и observed outcomes допустимы; физический SB `00` зарегистрирован 1 раз. См. [calibration report](data/stage6/s6-08-native-calibration.md) и [raw JSON](data/stage6/s6-08-native-calibration.json). |
 | S6-09 | `accepted` | Независимое evidence review `gpt-6.1-sol/high` пройдено; полный физический прогон завершён с exit 0: 18×500,000 rounds/process ×3 = 27,000,000; 54 process histograms and 18 aggregate histograms conserved; forbidden outcomes 0; SB `00` observed 19 times; summed child elapsed 519.593 s. См. [physical report](data/stage6/s6-09-native-physical.md) и [raw JSON](data/stage6/s6-09-native-physical.json). |
 | S6-10 | `accepted` | S4-21 передан этапу 6 решением владельца 2026-11-15 |
-| S6-11 | `blocked` | S4-21 (через S6-10) |
+| S6-11 | `accepted` | Реализовано 2026-11-15, ожидает независимого ревью; раздел S6-11 ниже |
 | S6-12 | `blocked` | S4-21 (через S6-10) |
 | S6-13 | `blocked` | S4-21; согласование кода `od-isa` по D5/S4-38 |
 | S6-14 | `in_progress` | S6-14a AP startup profile и S6-14b real-mode KVM oracle приняты по результатам отдельных ревью; см. ниже. Код S6-14c+ остаётся ограничен S4-21 и согласованием с S4-38 по D5. |
@@ -249,6 +249,34 @@ od-runner linux-direct --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-
 - Замер темпа: серия 3+3 с чередованием, разрешение 1 s, разница 0 s в пределах разброса 1 s; более тонкие отличия темпа (доли процента) серия не различает.
 - `page_table_root` — гостевой CR3, записывается гостем; он остаётся на плате и должен переехать в `Vcpu` не позже S6-15 (иначе второй vCPU разделит CR3 с первым). `pci_config_address` — регистр порта `0xCF8` общей платы, остаётся на плате.
 - Graphify: в worktree графа не было; `GRAPHIFY_MAX_WORKERS=8 graphify update .` построил его заново (46374 узла, 128844 ребра); перед правками `graphify query` не выполнялся (графа не было), код читался по `rg`/строкам.
+
+### S6-11 — LAPIC на каждый vCPU (реализовано, ожидает ревью)
+
+Чекбокс в плане не отмечен: его ставит ревью. Контракт: [`MACHINE_CONTRACT.md`](../specs/MACHINE_CONTRACT.md#lapic-на-каждый-vcpu-s6-11), источник требований — [`SMP_CONTRACT.md`](../specs/SMP_CONTRACT.md) §2, §6.
+
+**Что сделано.**
+- `apic_pair.rs`: `PairState { local, route, timer }` заменён на `PairState { cpus: Vec<CpuApic>, route: Route }`, `CpuApic { local, timer }`. Один `Mutex` сохранён (level-запрос связывает LAPIC-адресата и Remote IRR). Методы, не называющие процессор (`level`, `set_line`, `set_line2`, `set_low`, `set_low2`), действуют на LAPIC, который выбирает поле адресата записи; остальные (`edge`, `eoi`, `set_enabled`, `reset_local`) принимают индекс LAPIC. В `Route` добавлено `dest: [u8; 24]`; новый `set_dest` отказывает несуществующий APIC ID до изменений и применяет к смене адресата level-входа правила смены вектора.
+- `local_apic.rs`: `LocalApic::with_cpus(n)`, `with_shared_timers(clock, hz, n)` (старые конструкторы — один LAPIC); `LocalApicHandle(Arc, cpu)`, `handle_for`, `for_cpu`, `cpu_count`, `cpu_index`; чтение ID как `index << 24`; `BusDevice::read_from_cpu`/`write_from_cpu` для окна `0xFEE0_0000`.
+- `io_apic.rs`: старший dword записи хранит и возвращает physical APIC ID (раньше принимался только 0).
+- `bus.rs`: два метода трейта `BusDevice` с реализацией по умолчанию (`read_from_cpu`, `write_from_cpu`), параметр `vcpu` у `MachineBus::access_tracked`. `paged_memory_adapter.rs`: `AdapterBus::Machine(bus, vcpu)`, метод `vcpu()`, обе точки вызова `access_tracked` передают его; `From<&mut MachineBus>` даёт процессор 0.
+- `vcpu.rs`: `MAX_VCPUS = 4`, `vcpu_set(boot_state, count)`. `firmware_board.rs`: `FirmwareBoardConfig::vcpu_count` (по умолчанию 1; вне `1..=4` — `Config`), `LoadedFirmwareBoard::vcpu_count()`, `local_apic_of(index)`.
+- Тесты (17 новых, без изменения ожиданий старых; в существующих тестах только механическая замена `.local`/`.timer` на `.cpus[0].…`): `local_apic::tests` — разные APIC ID, отказ несуществующего vCPU, регистры по процессорам, запрос/EOI/выключение внутри своего LAPIC, таймер одного vCPU не меняет состояние другого (полное сравнение `CpuApic`), сброс одного LAPIC; `io_apic::tests` — edge INTIN4 и INTIN2 на APIC ID 1 поднимают запрос только у vCPU 1, level на APIC ID 1 (Remote IRR снимает только EOI vCPU 1, смена адресата при ожидающем EOI отказана атомарно), несуществующий ID отказан без изменений, при одном vCPU допустим только 0, logical/Lowest Priority/NMI отказаны, конфликт вектора с LVT Timer только в LAPIC-адресате; `vcpu::tests` — набор vCPU, `vcpu_count` платы, границы 1..=4; `paged_memory_adapter::tests` — доступ через адаптер vCPU 1 и vCPU 0 попадает в свой LAPIC (проверено мутацией: подмена индекса на 0 в `bus.rs` роняет тест).
+
+**Проверки (однократно на финальном коде).**
+- `cargo check --workspace --all-targets --offline` — прошла.
+- `cargo test -p od-machine --offline -- --test-threads=1` — 0 failed; lib: 1170 passed (1153 прежних + 17 новых), 6 ignored; остальные наборы без отказов.
+- `cargo fmt -p od-machine -- --check` — прошла. `cargo fmt --all -- --check` падает на двух файлах вне среза (`crates/od-host/src/storage_abi_v1.rs`, `tools/image-tool/tests/cli.rs`), они не менялись.
+- Контрольный прогон `od-runner linux-direct … --run --budget 300000000 --set-cpl0 --cpuid-profile stage4a --user-mode` (команда и входы как в S6-10; release): «до» — раннер на коммите `2c49f60`, «после» — раннер с изменениями S6-11. Оба exit 0; выходной JSON совпал побайтно (sha256 `f86ef2b657a5ba42885aacf3cf36c7daf96e550d3d829cab0341e7fbb936228b`), stdout совпал побайтно. Замер темпа не делался (в срезе он не требуется; запуски шли параллельно).
+
+**Ограничения и открытое.**
+- Исполняется только процессор 0; AP существуют как `Vcpu` с `LongModeState::default()` и своим LAPIC. Путь CPL0-цикла (`SetStepMmio`) по-прежнему обслуживает только ECAM, поэтому доступ vCPU 1 к окну LAPIC проверен через paged-адаптер, а не через цикл `run_boot`; диагностические `IdentityMemoryAdapter`/`DiagnosticVcpuSession` и `read_physical`/`write_physical` — процессор 0.
+- Блок передачи управления, ACPI blob (MADT/DSDT) и CPUID описывают один процессор при любом `vcpu_count` (S6-15/S7-02, SMP_CONTRACT §2).
+- Предел `vcpu_count = 4` взят из SMP_CONTRACT §2; там же сказано, что `N = 4` поддерживается после gate S6-38, плата это не проверяет.
+- `reset_checked`/`reset_pair` сбрасывают LAPIC своего процессора и маршруты IOAPIC; общая семантика сброса платы с несколькими LAPIC уточняется с S6-13.
+- Риск для S6-13 (решить до S6-13): гость, пишущий broadcast `0xFF` в старший dword маскированного входа IOAPIC, получит фатальную ошибку MMIO, потому что `set_dest` отказывает APIC ID, которого нет среди vCPU (Linux при `clear_IO_APIC`/маскировании может писать такое значение).
+- Риск для S6-15 (решить в S6-15): при N > 1 смена affinity level-входа записью «старший dword, потом младший» отказывается `set_dest`, если вход ждёт EOI или линия высока (SMP affinity в Linux меняет адресат уже работающего входа); отказ — фатальная ошибка MMIO.
+- Риск для S6-13/S6-15 (провести до запуска AP): индекс vCPU не проводится от `Vcpu` на рабочих путях MMIO — `SetStepMmio` (CPL0-цикл), `read_physical`/`write_physical` и `AdapterBus::RamMmio` всегда обслуживают процессор 0; индекс несёт только `AdapterBus::Machine(bus, vcpu)`, и пока его создаёт лишь тест.
+- Graphify: перед правками `graphify query` не выполнялся (в worktree графа не было); после правок `GRAPHIFY_MAX_WORKERS=8 graphify update .` выполнен (46426 узлов, 129065 рёбер).
 
 ### S6-07 — inventory однопроцессорных допущений (accepted)
 

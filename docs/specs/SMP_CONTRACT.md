@@ -78,7 +78,7 @@ Fixed IPI vector доставляется как maskable APIC interrupt чер�
 
 Для reference `OpenDesktop` target выбран physical-flat xAPIC: APIC destinations физические, `APIC_ID` адресата берётся из CPUID/MADT-consistent набора. IOAPIC и MSI маршрутизируют только Fixed physical interrupts к APIC ID `0…N−1`; logical и Lowest Priority routing для этого профиля отклоняются. MSI composition сохраняет физический адресат и Fixed delivery. Edge/level, remote IRR, EOI и допустимая polarity наследуются из реализованных ограниченных правил IOAPIC в [контракте машины](MACHINE_CONTRACT.md#fixed-edge-ioapic-route-s4-26a) и его следующих S4 slices; S6-03 не расширяет electrical/SCI профили.
 
-Каждый vCPU имеет отдельный LAPIC state. Владелец CPU execution context передаёт свой vCPU index в его memory adapter; доступ по LAPIC MMIO window адресуется LAPIC именно этого vCPU, без глобальной переменной «текущий APIC». Пока общий board wiring не поддерживает несколько LAPIC, этот пункт остаётся целевым контрактом.
+Каждый vCPU имеет отдельный LAPIC state. Владелец CPU execution context передаёт свой vCPU index в его memory adapter; доступ по LAPIC MMIO window адресуется LAPIC именно этого vCPU, без глобальной переменной «текущий APIC». Состояние на S6-11: плата создаёт N LAPIC по конфигурации (`vcpu_count`, по умолчанию 1), окно адресуется LAPIC выполняющего vCPU через явный индекс (см. [контракт машины](MACHINE_CONTRACT.md#lapic-на-каждый-vcpu-s6-11)); индекс пока не проводится от `Vcpu` на рабочих путях MMIO, маршрутизация IPI, INIT/SIPI и runtime-исполнение AP ещё не реализованы.
 
 ## 7. NMI
 
@@ -105,7 +105,7 @@ S4-22 и S4-23 как родительские задачи ещё не прин
 
 - x2APIC и MADT type 9; logical/cluster routing; Lowest Priority; SMI; hot-add/hot-remove; topology с несколькими threads per core; больше 4 vCPU.
 - Generic `OpenDesktop` Linux package/core topology — S6-18; Windows CPU-06 — трасса Stage 8.
-- Runtime AP execution, multi-LAPIC default board wiring, двух-/четырёх-vCPU Linux boot и выбранный delay provider ещё не выполнены.
+- Runtime AP execution, IPI/INIT/SIPI, multi-LAPIC wiring по умолчанию (плата с `vcpu_count > 1` собирается, но по умолчанию 1), двух-/четырёх-vCPU Linux boot и выбранный delay provider ещё не выполнены.
 - TSC/HLT/event timing до S4-22/S4-23 остаётся открытым.
 - Реализация CPU exception/interrupt delivery остаётся в границах задач этапов 4/6; таблица описывает целевой контракт, не наличие реализации.
 

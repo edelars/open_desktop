@@ -15,7 +15,7 @@ use crate::paged_probe::run_paged_probe_2m_ram;
 use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
 use crate::pit_pic_irq_source::PitPicIrqSource;
 use crate::uart_pic_irq_source::UartPicIrqSource;
-use crate::vcpu::{BOOT_VCPU_INDEX, Vcpu};
+use crate::vcpu::{BOOT_VCPU_INDEX, MAX_VCPUS, Vcpu, vcpu_set};
 use crate::{
     ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AbsentPortRegion, AbsentPorts,
     AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError, DISPLAY_FRAMEBUFFER_BASE,
@@ -177,6 +177,11 @@ pub struct FirmwareBoardConfig {
     /// manifest hash do not depend on it (`false` and `true` give the same bytes).
     /// Not bound: `0x60/0x64` (a trap), LAPIC shared timer, port tick, IRQ delivery.
     pub linux_profile: bool,
+    /// Number of vCPUs `N` (S6-11), `1..=4`; `1` is the board as it was. Each has its own Local
+    /// APIC with APIC ID equal to its index, and the IOAPIC accepts those IDs as destinations.
+    /// Only the boot processor runs; the handoff block, the ACPI blob and CPUID still describe
+    /// one processor (their `N` is S6-15/S7-02), so they do not depend on this field.
+    pub vcpu_count: usize,
 }
 
 impl Default for FirmwareBoardConfig {
@@ -193,6 +198,7 @@ impl Default for FirmwareBoardConfig {
             acpi_pm: false,
             acpi_tables: false,
             linux_profile: false,
+            vcpu_count: 1,
         }
     }
 }
@@ -395,6 +401,11 @@ fn validate_config(config: &FirmwareBoardConfig) -> Result<(), FirmwareBoardErro
     }
     if config.tsc_hz == 0 {
         return Err(FirmwareBoardError::Config("tsc_hz must not be zero"));
+    }
+    if !(1..=MAX_VCPUS).contains(&config.vcpu_count) {
+        return Err(FirmwareBoardError::Config(
+            "vcpu_count must be in 1..=MAX_VCPUS",
+        ));
     }
     if config.second_screen && !config.display_enabled {
         return Err(FirmwareBoardError::Config(
@@ -1090,6 +1101,16 @@ impl LoadedFirmwareBoard {
     /// `dispatch_timer`). `has_timer()` is true only under `linux_profile`.
     pub fn local_apic(&self) -> LocalApicHandle {
         self.lapic.clone()
+    }
+
+    /// Number of vCPUs of the board (`FirmwareBoardConfig::vcpu_count`).
+    pub fn vcpu_count(&self) -> usize {
+        self.vcpus.len()
+    }
+
+    /// Handle of the LAPIC of vCPU `index` (its APIC ID), `None` when the board has no such vCPU.
+    pub fn local_apic_of(&self, index: usize) -> Option<LocalApicHandle> {
+        self.lapic.for_cpu(index)
     }
 
     pub fn bus_mut(&mut self) -> &mut MachineBus {
@@ -2055,13 +2076,15 @@ pub(crate) fn assemble_board(
     // Under `linux_profile` the LAPIC has a timer on the board clock (S4-37a4). The
     // timer only reads the clock; delivery of its IRQ is S4-38.
     let lapic = if config.linux_profile {
-        LocalApic::with_shared_timer(
+        LocalApic::with_shared_timers(
             apic_timer_clock.unwrap_or_else(|| clock.clone()),
             FIRMWARE_APIC_TIMER_HZ,
+            config.vcpu_count,
         )
+        // `validate_config` has accepted `vcpu_count`, so only the frequency can be refused.
         .map_err(|_| FirmwareBoardError::Config("apic timer needs a nonzero frequency"))?
     } else {
-        LocalApic::new()
+        LocalApic::with_cpus(config.vcpu_count).expect("validate_config checked vcpu_count")
     };
     let lapic_handle = lapic.handle();
     let ioapic = IoApic::new(lapic.handle());
@@ -2292,7 +2315,7 @@ impl AssembledBoard {
         state.gpr[Register::Rdi as usize] = FIRMWARE_HANDOFF_GPA;
         Ok(LoadedFirmwareBoard {
             bus,
-            vcpus: vec![Vcpu::new(BOOT_VCPU_INDEX, state)],
+            vcpus: vcpu_set(state, lapic.cpu_count()),
             uart,
             display,
             nvme,
@@ -2350,7 +2373,7 @@ impl AssembledBoard {
         configure_com1(&mut bus)?;
         Ok(LoadedFirmwareBoard {
             bus,
-            vcpus: vec![Vcpu::new(BOOT_VCPU_INDEX, LongModeState::default())],
+            vcpus: vcpu_set(LongModeState::default(), lapic.cpu_count()),
             uart,
             display,
             nvme,

@@ -126,6 +126,22 @@ pub trait BusDevice {
     /// before applying its synchronous effect.
     fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError>;
 
+    /// The access of vCPU `cpu`. Only a device with one register window per processor (the
+    /// Local APIC, S6-11) tells the processors apart; every other device serves all of them with
+    /// `read`.
+    fn read_from_cpu(&mut self, _cpu: usize, access: DeviceAccess) -> Result<u64, DeviceError> {
+        self.read(access)
+    }
+    /// The access of vCPU `cpu`; see [`BusDevice::read_from_cpu`].
+    fn write_from_cpu(
+        &mut self,
+        _cpu: usize,
+        access: DeviceAccess,
+        value: u64,
+    ) -> Result<(), DeviceError> {
+        self.write(access, value)
+    }
+
     /// A display device reports the framebuffer window its registers
     /// advertise. `MachineBus::new` checks it against the memory map; every
     /// other device keeps the default `None`.
@@ -716,8 +732,10 @@ impl MachineBus {
         (memory, MachineBusPortIo { devices, ports })
     }
 
+    /// A tracked access by vCPU `vcpu`: an MMIO operand reaches the device as that vCPU's access.
     pub(crate) fn access_tracked(
         &mut self,
+        vcpu: usize,
         paging: &Long64ProbeConfig,
         request: TrackedAccessRequest,
         committed_write: impl FnMut(GuestPhysicalRange),
@@ -775,7 +793,7 @@ impl MachineBus {
                 };
                 match operation {
                     RamAccessOperation::Read { .. } => devices[binding.device_index]
-                        .read(access)
+                        .read_from_cpu(vcpu, access)
                         .map(|value| value & width.mask())
                         .map_err(|error| {
                             crate::page_walk::MmioDispatchError::Backend(format!(
@@ -784,7 +802,7 @@ impl MachineBus {
                             ))
                         }),
                     RamAccessOperation::Write { value, .. } => devices[binding.device_index]
-                        .write(access, value & width.mask())
+                        .write_from_cpu(vcpu, access, value & width.mask())
                         .map(|()| 0)
                         .map_err(|error| {
                             crate::page_walk::MmioDispatchError::Backend(format!(
