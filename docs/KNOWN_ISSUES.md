@@ -431,13 +431,22 @@
 - **Результат и проверка:** focused LEA tests and all 288 `paged_probe_profile` tests pass, covering signed disp32 arithmetic, EDI zero-extension, full state/flags, noncanonical computed address without memory access, final displacement-byte fetch-fault atomicity, neighbors, CPL3 and other-profile isolation. Runner retired 55 instructions, then stopped at `81 FF 61 FF 00 00` (`CMP EDI,0xff61`, ISSUE-153), `RIP=0x200dbd`, `Unsupported { opcode: 129 }`, `com1_bytes=0`.
 
 <a id="issue-153-s7-04-rust-helper-cmp-edi-0xff61-unsupported"></a>
-### ISSUE-153 — S7-04: Rust helper `CMP EDI,0xff61` (`81 FF 61 FF 00 00`) remains outside paged CPU profile
+### ISSUE-153 — S7-04: exact Rust helper `CMP EDI,0xff61` (`81 FF 61 FF 00 00`) profile slice
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `LEA EDI,[RCX-0xA0]`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200dbd`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner stops at `81 FF 61 FF 00 00` (`CMP EDI,0xff61`), `Unsupported { opcode: 129 }`, `retired=55`, `RIP=0x200dbd`; COM1 пуст.
+- **Статус:** решена только для exact dword compare `81 FF 61 FF 00 00` in base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Суть и последствия:** the exact form compares EDI against unsigned immediate `0xff61`, ignores upper RDI bits, preserves registers, and updates arithmetic flags using shared CMP semantics.
 - **Основание:** image `/private/tmp/od-fw-s7-lea-edi-rcx.bin`; `od -An -tx1 -j 0xdbd -N16` shows `81 ff 61 ff 00 00 40 0f 92 c7 48 39 ea 41 0f 93 c0`; runner с бюджетом 10000.
-- **Следующий шаг:** inspect exact dword CMP destination/immediate semantics and admit only this observed form in the base profile if bounded.
+- **Результат и проверка:** focused CMP tests and all 292 `paged_probe_profile` tests pass, covering high RDI ignored, flag values and definedness, exact immediate bytes, final immediate-byte fetch-fault atomicity, neighboring forms, CPL3 and other-profile isolation. Runner retired 56 instructions, then stopped at `40 0F 92 C7` (`SETB DIL`, ISSUE-154), `RIP=0x200dc3`, `Unsupported { opcode: 146 }`, `com1_bytes=0`.
+
+<a id="issue-154-s7-04-rust-helper-setb-dil-unsupported"></a>
+### ISSUE-154 — S7-04: Rust helper `SETB DIL` (`40 0F 92 C7`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `CMP EDI,0xff61`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200dc3`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner stops at `40 0F 92 C7` (`SETB DIL`), `Unsupported { opcode: 146 }`, `retired=56`, `RIP=0x200dc3`; COM1 пуст.
+- **Основание:** image `/private/tmp/od-fw-s7-cmp-edi-ff61.bin`; `od -An -tx1 -j 0xdc3 -N16` shows `40 0f 92 c7 48 39 ea 41 0f 93 c0 41 20 f8 40 f6`; runner с бюджетом 10000.
+- **Следующий шаг:** inspect the exact SETB DIL encoding and condition/write semantics, then admit only this observed form in the base profile if bounded.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.

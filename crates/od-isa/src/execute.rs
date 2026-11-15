@@ -21087,27 +21087,30 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
-        // S7-04: the Rust helper checks the 32-bit ECX value with exactly
-        // `81 F9 A0 00 00 00` (CMP ECX,0xa0). Preserve dword arithmetic so
-        // upper RCX bits are ignored and the comparison updates only flags.
+        // S7-04: admit only the firmware's exact dword immediate compares:
+        // `81 F9 A0 00 00 00` (CMP ECX,0xa0) and `81 FF 61 FF 00 00`
+        // (CMP EDI,0xff61). Dword arithmetic ignores upper register bits.
         Operation::Arithmetic {
             kind: ArithmeticKind::Cmp,
             dst: Operand::Register(destination),
-            src: Operand::Immediate(0xa0),
+            src: Operand::Immediate(immediate @ (0xa0 | 0xff61)),
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x81
             && instruction.length == 6
             && instruction.operand_size == OperandSize::Dword
             && instruction.prefixes == Prefixes::default()
-            && destination == RegisterView::low(Register::Rcx, OperandSize::Dword) =>
+            && ((immediate == 0xa0
+                && destination == RegisterView::low(Register::Rcx, OperandSize::Dword))
+                || (immediate == 0xff61
+                    && destination == RegisterView::low(Register::Rdi, OperandSize::Dword))) =>
         {
             let lhs = state.read(destination);
             let (_, flags) = arithmetic_result(
                 OperandSize::Dword,
                 ArithmeticKind::Cmp,
                 lhs,
-                0xa0,
+                immediate,
                 state.rflags,
             );
             state.rflags = flags;

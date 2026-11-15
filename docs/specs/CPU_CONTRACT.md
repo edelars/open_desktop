@@ -724,6 +724,12 @@ Base `PagedCpl0ProbeV1` admits only `8D B9 60 FF FF FF`. This is an unprefixed d
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_lea_edi_rcx_minus_a0 -- --nocapture` — 4 passed, covering signed arithmetic/wrap, full state and flags/definedness, a noncanonical computed address without memory access, final disp32-byte fetch-fault atomicity, neighboring encodings, CPL3 and other-profile isolation. Runner retired 55 instructions, then stopped at `81 FF 61 FF 00 00` (`CMP EDI,0xff61`, ISSUE-153, RIP `0x200dbd`). Full handoff validation remains incomplete.
 
+#### Расширение S7-04: exact Rust-helper `CMP EDI,0xff61`
+
+Base `PagedCpl0ProbeV1` admits only `81 FF 61 FF 00 00` for this dword register/immediate compare. The shared CMP arithmetic ignores upper RDI bits, preserves registers, and updates arithmetic flags and definedness. Other destination registers, immediates, widths, prefixes and operation groups remain outside the allowlist.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_cmp_edi_imm32 -- --nocapture` — 4 passed: equal/less/greater low dword cases with varied high RDI, flags and definedness, full-state preservation, exact immediate bytes, final immediate-byte fetch-fault atomicity, neighboring forms, CPL3 and other-profile isolation. Runner retired 56 instructions, then stopped at `40 0F 92 C7` (`SETB DIL`, ISSUE-154, RIP `0x200dc3`). Full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции
