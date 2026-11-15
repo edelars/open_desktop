@@ -395,7 +395,8 @@ Long64 CPL0 allowlist: `48 8B 03` (`MOV RAX,[RBX]`), `48 89 0B`
 bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`,
 `75 24`/`75 77` (the two exact firmware JNZ rel8 forms), `49 89 F8`,
 `E8 83 01 00 00` (`CALL rel32`), `48 83 EC 58`
-(`SUB RSP,0x58`), and `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`; see the extensions below). The CPU entry validates its
+(`SUB RSP,0x58`), `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`), and
+`48 8D 7C 24 08` (`LEA RDI,[RSP+8]`; see the extensions below). The CPU entry validates its
 profile admission and CR0/CR4 before fetch. It receives page-aware `GuestMemory`;
 CR3/EFER validation and selecting the four-level 4 KiB paging context belong
 to the machine entry.
@@ -529,6 +530,12 @@ Tests проверяют full state, сравнение равного handoff G
 В base `PagedCpl0ProbeV1` к ранее разрешённой `75 24` добавлена только ещё одна форма `75 77`: Primary JNZ/JNE rel8, длина 2, displacement `+0x77`, без префиксов. Она использует тот же condition evaluation и control-flow контракт, что `75 24`: ZF=0 вычисляет `next_rip + displacement` и проверяет canonicality taken target до commit; ZF=1 продвигает RIP на 2 и не проверяет canonicality fall-through. Flags, definedness, GPR, memory и I/O сохраняются. Соседние displacement и остальные branch/profile формы остаются вне allowlist.
 
 Tests проверяют taken/not-taken для обоих точных displacement, full CPU state и неизменность flags/definedness, #GP только для noncanonical taken target (в то время как noncanonical fall-through успешно retire), fetch fault на rel8 и neighbors/CPL3/other-profile isolation. Firmware runner: JNZ не взят для валидного handoff pointer, retired 15 instructions и остановился на `48 8D 7C 24 08` (`LEA RDI,[RSP+8]`, ISSUE-115, RIP `0x2001fd`).
+
+#### Расширение S7-04: точный Rust-entry `LEA RDI,[RSP+8]`
+
+В base `PagedCpl0ProbeV1` допускается только `48 8D 7C 24 08`: Primary `8D`, длина 5, qword LEA в RDI из qword memory expression `[RSP+8]`, без индекса и с SIB scale 1, ровно REX.W `0x48`. Используется `MemoryOperand::effective_address` с wraparound/address-size semantics; значение записывается только в RDI, RIP продвигается на 5, RFLAGS/definedness сохраняются. LEA не читает данные памяти и не проверяет canonicality результата; проверка адреса относится к последующим memory access. Другие destination/base/index/displacement/width/prefix forms, CPL3 и остальные paged profiles остаются вне allowlist.
+
+Tests проверяют полный CPU state, effective address для firmware stack и noncanonical адреса, неизменность flags/definedness, отсутствие data-memory access, fetch fault на disp8 через границу страницы, соседние формы и CPL3/stack/CR3/CR0.WP isolation. Runner retired 16 instructions и остановился на `BE 00 00 10 00` (`MOV ESI,0x00100000`, handoff GPA zero-extended to RSI; следующим `BA 00 00 01 00` в EDX загружается размер handoff block (64 KiB), ISSUE-116, RIP `0x200202`).
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 

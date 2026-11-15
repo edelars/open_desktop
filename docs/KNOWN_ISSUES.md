@@ -98,10 +98,18 @@
 ### ISSUE-115 — S7-04: Rust entry `LEA RDI,[RSP+8]` остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после допуска Rust-entry `JNZ +0x77`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust entry prologue (`firmware/uefi/src/start.S`).
-- **Статус:** открыта; handoff validation branch прошла, но вычисление stack-local address не исполнилось.
-- **Суть и последствия:** `RIP=0x2001fd` содержит `48 8D 7C 24 08` (`LEA RDI,[RSP+8]`); paged profile возвращает `Unsupported { opcode: 141 }`. COM1 пуст, handoff parser в машине пока не достигнут.
-- **Основание:** образ `/private/tmp/od-fw-s7-jnz77.bin`, байты подтверждены `od -An -tx1 -j 0x1fd -N16` (`48 8d 7c 24 08 be 00 00 10 00 ba 00 00 01 00 31`); runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=15`, `RIP=0x2001fd`, `com1_bytes=0`.
-- **Следующий шаг:** рассмотреть exact RSP-relative LEA с корректным effective-address/overflow контрактом и profile isolation.
+- **Статус:** решена узко для `48 8D 7C 24 08`; runner перешёл к `MOV ESI,0x00100000` и остановился на ISSUE-116.
+- **Суть и результат:** base `PagedCpl0ProbeV1` допускает только qword LEA в RDI от `[RSP+8]` без индекса. Переиспользуется effective-address calculation, не читающая память; GPR кроме RDI, флаги и definedness сохраняются. Canonicality адреса не проверяется самим LEA. Другие формы и profiles не расширены.
+- **Проверка:** `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 141 passed; full state, flags/definedness, стандартный и noncanonical effective address без data access, fetch fault на disp8, соседние формы, CPL3 и stack/CR3/CR0.WP isolation. Firmware runner retired 16 instructions, `RIP=0x200202`; следующий stop `Unsupported { opcode: 190 }` (`0xbe`), COM1 пуст.
+
+<a id="issue-116-s7-04-rust-entry-mov-esi-imm32-unsupported"></a>
+### ISSUE-116 — S7-04: Rust entry `MOV ESI,imm32` остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после допуска RSP-relative LEA.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust entry prologue (`firmware/uefi/src/start.S`).
+- **Статус:** открыта; stack-local handoff pointer вычислен, но загрузка GPA handoff в RSI не исполнилась.
+- **Суть и последствия:** `RIP=0x200202` содержит `BE 00 00 10 00` (`MOV ESI,0x00100000`, zero-extend в RSI), то есть загружает адрес handoff block в RSI. Размер блока (64 KiB) загружается следующей инструкцией `BA 00 00 01 00` в EDX, которая пока не исполнялась. Paged profile возвращает `Unsupported { opcode: 190 }`. COM1 пуст, handoff parser в машине пока не достигнут.
+- **Основание:** образ `/private/tmp/od-fw-s7-lea-rsp.bin`, байты подтверждены `od -An -tx1 -j 0x202 -N16` (`be 00 00 10 00 ba 00 00 01 00 31 c9 e8 8d 02 00`); runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=16`, `RIP=0x200202`, `com1_bytes=0`.
+- **Следующий шаг:** ограничить точный move handoff GPA в ESI/RSI с правильным zero-extension и profile isolation.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
