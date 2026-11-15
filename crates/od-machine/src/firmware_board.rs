@@ -1059,6 +1059,12 @@ pub struct FirmwareRunReport {
     pub com1: Vec<u8>,
     pub virtual_ns: u64,
     pub tsc_hz: u64,
+    /// Successful guest RDTSC reads in this call; `None` without the Linux-profile source.
+    pub rdtsc_reads: Option<u64>,
+    /// Successful guest reads of PIT port B (`0x61`) during this call; `None` without a PIT.
+    pub pit_port_b_reads: Option<u64>,
+    /// Successful guest reads of PIT channel 2 (`0x42`) during this call; `None` without a PIT.
+    pub pit_counter_port_reads: Option<u64>,
     /// Set when the guest asked the PM block to stop the machine (S5 or reset,
     /// S7-14a); `exit` is then `Stopped`. Always `None` without `acpi_pm`.
     pub stop_reason: Option<MachineStopReason>,
@@ -1816,6 +1822,9 @@ impl LoadedFirmwareBoard {
         let acpi_pm = self.acpi_pm.clone();
         let pit = self.pit.clone();
         let rdtsc_tick = self.rdtsc_tick.clone();
+        let pit_port_b_reads_before = pit.as_ref().map(Pit8254Handle::port_b_reads);
+        let pit_counter_port_reads_before = pit.as_ref().map(Pit8254Handle::counter_port_reads);
+        let mut rdtsc_reads = 0u64;
         if let Some(pm) = &acpi_pm {
             pm.take_timer_tick_ns();
         }
@@ -1964,6 +1973,7 @@ impl LoadedFirmwareBoard {
             if let Some(flag) = &rdtsc_tick
                 && flag.swap(false, Ordering::Relaxed)
             {
+                rdtsc_reads = rdtsc_reads.saturating_add(1);
                 let tick_ns = RDTSC_TICK_NS;
                 #[cfg(test)]
                 let tick_ns = if self.suppress_rdtsc_tick { 0 } else { tick_ns };
@@ -2047,6 +2057,13 @@ impl LoadedFirmwareBoard {
                 com1: self.com1_log.clone(),
                 virtual_ns: self.clock().now_ns(),
                 tsc_hz: self.clock().tsc_hz(),
+                rdtsc_reads: rdtsc_tick.as_ref().map(|_| rdtsc_reads),
+                pit_port_b_reads: pit_port_b_reads_before
+                    .zip(pit.as_ref().map(Pit8254Handle::port_b_reads))
+                    .map(|(before, after)| after.saturating_sub(before)),
+                pit_counter_port_reads: pit_counter_port_reads_before
+                    .zip(pit.as_ref().map(Pit8254Handle::counter_port_reads))
+                    .map(|(before, after)| after.saturating_sub(before)),
                 stop_reason,
             })
             .map(|run| (run, set_exit_detail, cpuid_divergence_leaf, user_entry));
@@ -2087,6 +2104,9 @@ impl LoadedFirmwareBoard {
         let acpi_pm = self.acpi_pm.clone();
         let pit = self.pit.clone();
         let rdtsc_tick = self.rdtsc_tick.clone();
+        let pit_port_b_reads_before = pit.as_ref().map(Pit8254Handle::port_b_reads);
+        let pit_counter_port_reads_before = pit.as_ref().map(Pit8254Handle::counter_port_reads);
+        let mut rdtsc_reads = 0u64;
         // Ticks queued before this run came from the host, not from the guest.
         if let Some(pm) = &acpi_pm {
             pm.take_timer_tick_ns();
@@ -2153,6 +2173,7 @@ impl LoadedFirmwareBoard {
             if let Some(flag) = &rdtsc_tick
                 && flag.swap(false, Ordering::Relaxed)
             {
+                rdtsc_reads = rdtsc_reads.saturating_add(1);
                 let tick_ns = RDTSC_TICK_NS;
                 #[cfg(test)]
                 let tick_ns = if self.suppress_rdtsc_tick { 0 } else { tick_ns };
@@ -2177,6 +2198,13 @@ impl LoadedFirmwareBoard {
                 com1: self.com1_log.clone(),
                 virtual_ns: self.clock().now_ns(),
                 tsc_hz: self.clock().tsc_hz(),
+                rdtsc_reads: rdtsc_tick.as_ref().map(|_| rdtsc_reads),
+                pit_port_b_reads: pit_port_b_reads_before
+                    .zip(pit.as_ref().map(Pit8254Handle::port_b_reads))
+                    .map(|(before, after)| after.saturating_sub(before)),
+                pit_counter_port_reads: pit_counter_port_reads_before
+                    .zip(pit.as_ref().map(Pit8254Handle::counter_port_reads))
+                    .map(|(before, after)| after.saturating_sub(before)),
                 stop_reason,
             });
         }
@@ -4857,6 +4885,9 @@ mod tests {
         assert_eq!(report.retired, 5, "MOV, 3 x IN, HLT");
         assert_eq!(board.pit.as_ref().unwrap().counter_port_reads(), 3);
         assert_eq!(board.pit.as_ref().unwrap().port_b_reads(), 0);
+        assert_eq!(report.rdtsc_reads, Some(0));
+        assert_eq!(report.pit_port_b_reads, Some(0));
+        assert_eq!(report.pit_counter_port_reads, Some(3));
         assert_eq!(report.virtual_ns, 5 + 3 * 1_000);
         assert_eq!(board.clock().now_ns(), report.virtual_ns);
     }
@@ -4872,6 +4903,9 @@ mod tests {
         assert_eq!(report.retired, 8, "2 x MOV, 5 x IN, HLT");
         assert_eq!(board.pit.as_ref().unwrap().port_b_reads(), 2);
         assert_eq!(board.pit.as_ref().unwrap().counter_port_reads(), 3);
+        assert_eq!(report.rdtsc_reads, Some(0));
+        assert_eq!(report.pit_port_b_reads, Some(2));
+        assert_eq!(report.pit_counter_port_reads, Some(3));
         assert_eq!(report.virtual_ns, 8 + 5 * 1_000);
     }
 
@@ -5007,6 +5041,9 @@ mod tests {
         let report = board.run_boot(1_000).unwrap();
         assert_eq!(report.exit, PagedProbeExit::Halted);
         assert_eq!(report.retired, 101);
+        assert_eq!(report.rdtsc_reads, Some(100));
+        assert_eq!(report.pit_port_b_reads, Some(0));
+        assert_eq!(report.pit_counter_port_reads, Some(0));
         assert_eq!(report.virtual_ns, 100 * 1_000 + 101);
         // The 100th RDTSC saw 99 earlier (1 ns + 1 us) steps; tsc_hz is 1 GHz.
         assert_eq!(edx_eax(&board), 99 * 1_001);
@@ -5031,6 +5068,9 @@ mod tests {
         assert_eq!(report.exit, PagedProbeExit::Unsupported { opcode: 0x31 });
         assert_eq!(report.retired, 0, "Unsupported on the first instruction");
         assert_eq!(report.virtual_ns, 0, "no tick without the profile");
+        assert_eq!(report.rdtsc_reads, None);
+        assert_eq!(report.pit_port_b_reads, None);
+        assert_eq!(report.pit_counter_port_reads, None);
     }
 
     #[test]

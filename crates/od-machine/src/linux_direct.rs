@@ -513,6 +513,12 @@ pub struct LinuxStopRecord {
     pub virtual_ns: u64,
     /// Successful reads of the ACPI PM timer during this run; `None` when the board has no PM block.
     pub pm_timer_reads: Option<u64>,
+    /// Successful guest RDTSC reads during this run; `None` without the Linux-profile source.
+    pub rdtsc_reads: Option<u64>,
+    /// Successful guest reads of PIT port B (`0x61`) during this run; `None` without a PIT.
+    pub pit_port_b_reads: Option<u64>,
+    /// Successful guest reads of PIT channel 2 (`0x42`) during this run; `None` without a PIT.
+    pub pit_counter_port_reads: Option<u64>,
     pub tsc_hz: u64,
     /// The bytes the guest transmitted through COM1.
     pub com1: Vec<u8>,
@@ -785,6 +791,9 @@ fn stop_record(
         quanta: report.quanta,
         virtual_ns: report.virtual_ns,
         pm_timer_reads,
+        rdtsc_reads: report.rdtsc_reads,
+        pit_port_b_reads: report.pit_port_b_reads,
+        pit_counter_port_reads: report.pit_counter_port_reads,
         tsc_hz: report.tsc_hz,
         com1: report.com1,
         linux_profile: boot.board.has_linux_profile(),
@@ -1794,6 +1803,34 @@ mod tests {
         let second = run_set_facade(&mut boot, &file, 2, halting_default());
         assert_eq!(second.pm_timer_reads, Some(1));
         assert_eq!(second.virtual_ns, 2_004);
+    }
+
+    #[test]
+    fn stop_record_counts_rdtsc_and_pit_reads_per_invocation() {
+        // RDTSC; MOV DX,0x61; IN; MOV DX,0x42; IN; MOV DX,0x608; IN; HLT.
+        let code = [
+            0x0f, 0x31, 0x66, 0xba, 0x61, 0x00, 0xec, 0x66, 0xba, 0x42, 0x00, 0xec, 0x66, 0xba,
+            0x08, 0x06, 0xec, 0xf4,
+        ];
+        let (mut boot, file) = boot_with_entry(&code);
+        program_pit_channel_2(&mut boot);
+        let check = |record: &LinuxStopRecord| {
+            assert_eq!(record.rdtsc_reads, Some(1));
+            assert_eq!(record.pit_port_b_reads, Some(1));
+            assert_eq!(record.pit_counter_port_reads, Some(1));
+            assert_eq!(record.pm_timer_reads, Some(1));
+        };
+
+        let first = run_set_facade(&mut boot, &file, 32, halting_default());
+        assert_eq!(first.exit, PagedProbeExit::Halted, "{first:?}");
+        check(&first);
+
+        // Resuming the same board reports the invocation delta, not cumulative device counts.
+        boot.board.state_mut().rip = ENTRY;
+        boot.board.state_mut().activity = Some(CpuActivity::Running);
+        let second = run_set_facade(&mut boot, &file, 32, halting_default());
+        assert_eq!(second.exit, PagedProbeExit::Halted, "{second:?}");
+        check(&second);
     }
 
     #[test]
