@@ -20743,6 +20743,42 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: the Rust helper compares the 16-bit handoff fields with
+        // exactly `66 39 CB` (CMP BX,CX, Intel operand order).
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Cmp,
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x39
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Word
+            && instruction.prefixes
+                == (Prefixes {
+                    operand_override: true,
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rbx, OperandSize::Word)
+            && source == RegisterView::low(Register::Rcx, OperandSize::Word) =>
+        {
+            let lhs = state.read(destination);
+            let rhs = state.read(source);
+            let (_, flags) = arithmetic_result(
+                OperandSize::Word,
+                ArithmeticKind::Cmp,
+                lhs,
+                rhs,
+                state.rflags,
+            );
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: this Rust helper reads only `0F B7 7E 08` (MOVZX EDI,[RSI+8]) and
         // `0F B7 5E 0A` (MOVZX EBX,[RSI+0xA]). Reuse the faulting read and 32-bit write.
         Operation::Extend {
