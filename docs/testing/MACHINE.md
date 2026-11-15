@@ -1735,3 +1735,46 @@ mapping are not covered. See [report](../reports/STAGE_4_S4-30C_2026-11-08.md).
 71. S4-27i4b вводит трейт `PumpBackend` и проверяет, что `InterruptPump` работает через один интерфейс поверх flat (`FlatBackend`, S4-27i1–i3, i5) и paged (`PagedBackend`, S4-27h/S4-27i4a) профиля. Образ `Stage4InterruptPumpPagedProbeV1` — раскладка S4-27h с main `STI; HLT; HLT; HLT` (вектор `0x41`, handler `89 03 48 CF`). Тесты: `cargo test -p od-machine --offline --test interrupt_pump_paged` (14: due и future на paged — два пробуждения на 0 нс и 250000 нс с кадром RIP после HLT и итоговыми A/D `0x6023, 0x7023, 0x8023, 0x9023, 0xFEE00063, 0xA063`; future остаётся в очереди после первого пробуждения; вход на границе перед HLT при IF=1 с RIP кадра = адрес HLT; pause/resume сохраняет future; reset отвергает старую generation; два due с одним вектором — один IRR-фронт и один вход; отказ request при отключённом caller APIC оставляет событие, принятое `(IdleHalt, 2, 2, 250000)` против инъекции `PopBeforeRequest` `(IdleHalt, 1, 1, 250000)`; равенство flat и paged по полям (имена и источники событий трассы, часы, источник и время входа, RIP кадра относительно HLT, CS/RFLAGS/SS, выравнивание нового RSP, IRR/ISR, число возвратов handler и EOI, схлопывание, длина очереди) для четырёх сценариев; IDT P=0 даёт `Rejected(HaltWake(InvalidGate))` с сохранённым IRR; код после последнего HLT — terminal `Unsupported`; STOP финален). Ожидания взяты из правил очереди S4-27i3 и Intel SDM (Vol. 3A 6.14.2 кадр и выравнивание, 4.8 A/D, 10.8.3.1 EOI), не из вывода интерпретатора. Регрессии по одному, без правки ожиданий: `interrupt_pump_flat` 12, `interrupt_timer_pump` 7, `interrupt_queue_pump` 8, `paged_sti_hlt_wake` 9, `stage4_paged_irq_probe` 9, `stage4_uart_irq_probe` 10, `diagnostic_vcpu_api` 8, `--lib diagnostic_vcpu` 46; runner `stage4_interrupt_queue_build_cli` 3, `stage4_uart_irq_cli` 6, `stage4_paged_sti_hlt_build_cli` 1. Runner: `cargo test -p od-runner --offline --test stage4_interrupt_pump_paged_cli` (4: очередь с фазой отказа request, инъекция, `--request` в том числе после idle, бюджет и ошибки ввода; образ собирается в тесте независимо от загрузчика). Граница: счётчик flat (RAM) на paged заменён числом возвратов handler; сравнение с flat идёт в `with_entry_only_delivery`; вектор paged `0x41`, не `0x62`; Python-builder образа не создан; нет вложенных событий (S4-33), `run_boot` (S4-37a), paged-таймера (владелец — S4-37a) и JIT; S4-27 уже закрыт в плане, S4-27i принят по подсрезам i1–i5. Отчёт: [S4-27i4b](../reports/STAGE_4_S4-27I4B_2026-11-09.md).
 
 72. S4-29f подключает PIT канал 0 к INTIN2: мост `PitIrq0Owner` (владелец-хук `InterruptPump`) держит `EventQueue` с поколениями, считает фронты OUT0 по формуле `T(t) = floor(t · 1 193 182 / 1e9)` (режим 2 — фронты `k·N`, режим 0 — один на `N`, срок `ceil(E · 1e9 / 1 193 182)` нс), каждый due-фронт предъявляет IOAPIC импульсом `set_intin2`; reprogram, shutdown (`0x30`) и сброс PIT начинают новое поколение и снимают события; PIC IR0 не получает доставки. Образ `Stage4PitIrq0ProbeV1` (вектор `0x60`, счёт 1790 заменяется счётом 1193, три входа). Тесты: `cargo test -p od-machine --offline --test pit_irq0_pump` (12: режим 2 — три входа в 999 848/1 999 695/2 999 543 нс, счётчик 3, EOI на каждый, IRR/ISR чисты, статистика моста 3/5/5/2; режим 0 — один вход; reprogram — токен старого поколения устарел, фронт 1 500 191 нс не доставлен; shutdown `0x30` и сброс PIT снимают событие; PIC — образ мастера и чтение IRR = 0, ни одного события вектора `0x30`; инъекции `MaskedEntry2` `(budget, 0, 0, 156 976 053)`, `NoEoi` `(budget, 1, 1, 143 978 036)`, `NoGeneration` `(idle_halt, 4, 4, 2 999 543)`; отказ Local APIC оставляет событие в очереди; загрузчик проверяет образ и места правки), `cargo test -p od-machine --offline --lib stage4_pit_irq0` (4: формулы следующего фронта, в том числе отложенный счёт), `python3 -m unittest tools/build/test_build_stage4_pit_irq0_probe.py` (6; реальная сборка clang/lld, воспроизводимость, ожидаемые значения из формулы PIT), `cargo test -p od-runner --offline --test stage4_pit_irq0_cli` (4; сборка → CLI → сравнение с manifest builder, режим 0, три инъекции при `--budget 200`, fail-closed). Evidence: [s4-29f-pit-irq0.json](../reports/data/stage4/s4-29f-pit-irq0.json). Контракт — раздел «PIT канал 0 → INTIN2 (GSI 2) (S4-29f)» в `MACHINE_CONTRACT.md`.
+
+## S4-44 — воспроизводимый локальный набор этапа 4
+
+Подсрез S4-44a. S4-44 в целом открыт: Linux boot, Mac mini и сборка guest/firmware artifacts здесь не выполняются (см. «Что не запускается»).
+
+**Как запустить** (из корня checkout, один раз; оркестрация только вызывает существующие команды и не содержит CPU-семантики):
+
+```text
+bash tools/stage4/run_local_set.sh
+```
+
+Переменные: `STAGE4_STEP_TIMEOUT` (секунды на шаг, по умолчанию 1200), `STAGE4_LOG_DIR` (по умолчанию `work/stage4/s4-44a/`, игнорируется Git), `STAGE4_SUMMARY` (по умолчанию `docs/reports/data/stage4/s4-44a-local-set.json`). Код возврата: 0 — все шаги `passed`/`known_divergence`; 1 — есть `failed`/`timeout` (набор при этом доходит до конца, а сводка пишется всегда); 2 — ошибка запуска/сводки. Шаг не пропускается молча: он либо выполнен, либо записан в `not_run`.
+
+**Что входит** (шаги по порядку, `--locked --offline` кроме fmt):
+
+| id | команда |
+| --- | --- |
+| `fmt` | `cargo fmt --all -- --check` |
+| `check-workspace` | `cargo check --workspace --all-targets` |
+| `test-od-isa`, `test-od-machine`, `test-od-jit`, `test-od-host`, `test-od-runner`, `test-od-bench` | `cargo test -p <пакет>` |
+| `test-rest-of-workspace` | `cargo test --workspace` без шести пакетов выше (od-storage, od-tpm, od-testkit, od-x86-runner, od-image-tool, od-power-loss) |
+
+Состав включает kernel system suite (`tests/system/stage4_memory_fault.rs`, `stage4_exception_delivery.rs` как цели `od-host`), local contracts (`od-isa`, `od-machine`, `od-jit`), CLI-тесты runner (в том числе `linux_direct_lifecycle_cli.rs`, lifecycle/STOP) и S4-42/S4-43 (`od-bench`). `cargo fmt` допускает только известные расхождения в `crates/od-host/src/storage_abi_v1.rs` и `tools/image-tool/tests/cli.rs`; такой результат получает статус `known_divergence`, любой другой файл — `failed`.
+
+**Что НЕ запускается локально** (в сводке — секция `not_run`, в выводе скрипта — строки `NOT RUN: ...`):
+
+| id | статус | требуется |
+| --- | --- | --- |
+| `linux-boot-positive-negative` | not_run | vmlinuz, initramfs, ACPI manifest/blob (нет в репозитории) |
+| `linux-direct-gate-real-kernel` | not_run | `od-runner linux-direct-gate` с настоящим ядром и теми же артефактами |
+| `mac-mini-hardware-cases` | blocked | стенд Mac mini и его владелец (hardware gate этапа 3 — в своём scope) |
+| `guest-firmware-artifacts-build` | not_run | отдельная сборка `tools/build/*.py`, `firmware/uefi` и их `tools/build/test_*.py` (S4-44b) |
+| `vmhost-system-smokes` | not_run | собранный VMHost app bundle и desktop-сессия (`tests/system/*.py`, `*.swift`, `*.c`; scope этапа 3) |
+
+**Как читать сводку** (`s4-44a-local-set.json`): `environment` — commit, ветка, `git status --porcelain` на старте, sha256 скрипта, `rustc`, `cargo`, macOS, arch; `steps[]` — `id`, `command`, `status` (`passed`/`failed`/`known_divergence`/`timeout`), `returncode`, `duration_seconds`, `log` (путь в `work/`, не в Git) и `log_sha256`; `totals`; `not_run[]`; `overall_local` = `passed` только при нуле `failed`/`timeout`. Логи в Git не лежат: sha256 позволяет сверить ваш лог только при том же окружении, сравнивать надо статусы и счётчики тестов.
+
+**Ожидаемый результат** на чистом checkout: `fmt` — `known_divergence`; остальные шаги — `passed`. Отклонения первого прогона (2026-11-14, commit `47dd472`, rustc 1.99.0, macOS 26.7.1, arm64) и их причины — в `docs/reports/STAGE_4_REPORT.md`, раздел «S4-44 — результат локального прогона».
+
+**Известные ограничения набора.**
+
+1. `cargo test -p <пакет>` без `--no-fail-fast`: после первой упавшей цели пакета остальные цели пакета не запускаются. В первом прогоне так не дошли `od-host` (цели `stage4_memory_fault`, `stage4_exception_delivery`, `stage3_dword_store_corpus`, `memory_corpus`, `diagnostic_jit_event`) и `od-runner` (`stage4_stack_build_cli`, `stage4_store_load_build_cli`, `stage4_uart_irq_cli`). Недостающее выполнено отдельным дополнительным запуском, вне сводки (см. отчёт). Для S4-44b добавить `--no-fail-fast`.
+2. Три теста `od-host` (`native_register_v1_corpus::cached_*`) читают файлы из игнорируемого `work/stage3-native-register-v1/manual/`, которые создаются другими тестами того же пакета; на свежем worktree они могут упасть в первом прогоне, при повторе проходят. Это зависимость от порядка/состояния, а не от кода этапа 4.
+3. Один тест `od-runner` падает: `stage4_probe_cli::uart_echo_profile_checks_rx_expectation_budgets_and_stop` ожидает код выхода 6 для `pio_error`, получен 5 (`tools/runner/tests/stage4_probe_cli.rs:303`). Причина не исследована.

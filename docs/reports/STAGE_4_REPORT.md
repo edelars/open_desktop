@@ -1468,3 +1468,37 @@ reset, удержанная куча main равна baseline (0), `Bounded` tra
 `docs/reports/data/stage4/s4-43b-queues.json`,
 `docs/reports/data/stage4/s4-43c-repeats.json`,
 `docs/reports/data/stage4/s4-43c-runs/`.
+
+## S4-44 — результат локального прогона
+
+**Статус.** S4-44a (локальный набор) выполнен один раз; результат `failed` (2 шага из 9 с ненулевым кодом, из них один — зависимость от состояния `work/`, один — реальное падение теста). S4-44 в целом открыт: Linux boot, Mac mini и сборка guest/firmware artifacts не выполнялись. Скрипт: `tools/stage4/run_local_set.sh` (sha256 `77d22562d08ce1b9bf6da069f909f54372268db9cb041a2b5a57069445aa7b09`), сводка: `docs/reports/data/stage4/s4-44a-local-set.json`, порядок запуска — `docs/testing/MACHINE.md`, раздел «S4-44 — воспроизводимый локальный набор этапа 4».
+
+**Окружение.** commit `47dd472` (дерево чистое, кроме нового `tools/stage4/`), ветка worktree от main, rustc 1.99.0 (b940084d7 2026-09-28), cargo 1.99.0, macOS 26.7.1, arm64, 2026-11-14. Общая длительность 788 с; шаг-таймаут 1200 с, ни один шаг не исключён.
+
+| шаг | статус | код | длительность, с | log sha256 |
+| --- | --- | --- | --- | --- |
+| `fmt` | known_divergence | 1 | 4 | `cb81c490…` |
+| `check-workspace` | passed | 0 | 15 | `8f7c4d73…` |
+| `test-od-isa` | passed | 0 | 39 | `77188671…` |
+| `test-od-machine` | passed | 0 | 83 | `64717430…` |
+| `test-od-jit` | passed | 0 | 6 | `b1529ead…` |
+| `test-od-host` | failed | 101 | 128 | `87765124…` |
+| `test-od-runner` | failed | 101 | 454 | см. JSON |
+| `test-od-bench` | passed | 0 | 19 | см. JSON |
+| `test-rest-of-workspace` | passed | 0 | 40 | см. JSON |
+
+**Итог:** 6 passed (включая `check-workspace`), 1 known_divergence (`fmt`: только `crates/od-host/src/storage_abi_v1.rs` и `tools/image-tool/tests/cli.rs`), 2 failed, 0 timeout, 0 исключено. `overall_local` = `failed`. Полные sha256 логов — в JSON.
+
+**Разбор двух падений.**
+- `test-od-host`: 376 passed, 3 failed — `tests::native_register_v1_corpus::cached_*` (нет файлов `work/stage3-native-register-v1/manual/native-register-v1-{observations,cache-trace}.json` в свежем worktree). Cargo остановился на lib-цели, остальные цели пакета не запускались. Дополнительный запуск `cargo test -p od-host --locked --offline --no-fail-fast` (вне сводки, лог sha256 `60da8c54…e2e7`): все цели `passed` — lib 379 passed, `stage4_exception_delivery` 39, `stage4_memory_fault` 1, `stage3_dword_store_corpus` 5, `memory_corpus` 22 (2 ignored), `diagnostic_jit_event` 4; при этом файлы в `work/` уже были созданы первым прогоном. Вывод: тесты не гермитичны (зависят от порядка/состояния `work/`); это не регрессия этапа 4, но воспроизводимость на чистом дереве не подтверждена.
+- `test-od-runner`: lib/bin 267 + 589 passed, одна цель упала — `stage4_probe_cli::uart_echo_profile_checks_rx_expectation_budgets_and_stop` (`left: Some(5)`, `right: Some(6)`, `tools/runner/tests/stage4_probe_cli.rs:303`, код выхода `pio_error`). Не дошли три цели; дополнительный запуск `--no-fail-fast --test stage4_stack_build_cli --test stage4_store_load_build_cli --test stage4_uart_irq_cli` (вне сводки, sha256 `383487fe…ec754`): 2 + 1 + 6 passed. Падение `stage4_probe_cli` не исследовано, не исправлено и остаётся открытым (владелец — следующий срез S4-44 / S4-46).
+
+**NOT RUN (не выполнялось, не заменено локальным успехом).**
+- Linux positive/negative boot — нужны vmlinuz, initramfs, ACPI manifest/blob.
+- `od-runner linux-direct-gate` на настоящем ядре — те же артефакты.
+- Mac mini hardware cases (blocked) — стенд и владелец; hardware gate этапа 3 остаётся в своём scope.
+- Сборка guest/firmware artifacts (`tools/build/*.py`, `firmware/uefi`, `tools/build/test_*.py`) — отдельная сборка (S4-44b).
+- `tests/system` smokes VMHost app — app bundle и desktop-сессия, scope этапа 3.
+- Также не выполнялись из плана S4-44: runner stress mode, `--reboot-cycles`, явный лимит guest RAM, лимит executable cache (передано из S4-43).
+
+**Ограничения набора:** нет `--no-fail-fast` (после первого падения цели пакета остаются непроверенными — исправить в S4-44b); сводка JSON отражает только один прогон скрипта, дополнительные запуски описаны выше текстом.
