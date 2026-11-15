@@ -21042,6 +21042,37 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: the Rust helper checks the 32-bit ECX value with exactly
+        // `81 F9 A0 00 00 00` (CMP ECX,0xa0). Preserve dword arithmetic so
+        // upper RCX bits are ignored and the comparison updates only flags.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Cmp,
+            dst: Operand::Register(destination),
+            src: Operand::Immediate(0xa0),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x81
+            && instruction.length == 6
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes == Prefixes::default()
+            && destination == RegisterView::low(Register::Rcx, OperandSize::Dword) =>
+        {
+            let lhs = state.read(destination);
+            let (_, flags) = arithmetic_result(
+                OperandSize::Dword,
+                ArithmeticKind::Cmp,
+                lhs,
+                0xa0,
+                state.rflags,
+            );
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: the Rust helper checks handoff fields with exact `66 83 FF 01`
         // (CMP DI,1) and `66 83 FB 03` (CMP BX,3). The imm8 is sign-extended by
         // the decoder; keep both 16-bit register/immediate pairs exact here.

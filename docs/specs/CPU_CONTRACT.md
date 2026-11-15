@@ -697,7 +697,14 @@ Base `PagedCpl0ProbeV1` additionally admits only the tuple `74 3B`, decoded as s
 
 Base `PagedCpl0ProbeV1` admits only `8B 4E 0C`: Primary `MOV r32,r/m32`, no prefixes, destination ECX and qword-addressed source `[RSI+0xC]`. `PagedProbeMemory` routes the admitted 4-byte read through tracked `AccessWidth::Dword`; the shared read path zero-extends the result into RCX, preserves flags, and does not commit CPU state when the read faults. No page-crossing behavior is claimed.
 
-`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_mov_ecx_dword_handoff_field -- --nocapture` — 4 passed: zero-extension/full-state, injected read-fault atomicity, neighboring addressing/register/width/prefix forms, CPL3 and other paged profiles. The renamed real integration test `paged_probe_handoff_field_reads_use_tracked_page_walk_and_zero_extend_registers` reads this field through four-level tables and checks upper-level and code/data leaf Accessed bits. Runner retired 50 instructions and stopped at `81 F9 A0 00 00 00` (`CMP ECX,0xa0`, ISSUE-148, RIP `0x200da6`); full handoff validation remains incomplete.
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_mov_ecx_dword_handoff_field -- --nocapture` — 4 passed: zero-extension/full-state, injected read-fault atomicity, neighboring addressing/register/width/prefix forms, CPL3 and other paged profiles. The renamed real integration test `paged_probe_handoff_field_reads_use_tracked_page_walk_and_zero_extend_registers` reads this field through four-level tables and checks upper-level and code/data leaf Accessed bits. Runner retired 51 instructions after this load and the exact `CMP ECX,0xa0`, then stopped at `0F 85 D6 00 00 00` (`JNZ rel32 +0xD6`, ISSUE-149, RIP `0x200dac`); full handoff validation remains incomplete.
+
+<a id="s7-04-rust-helper-cmp-ecx-0xa0"></a>
+#### Расширение S7-04: exact Rust-helper `CMP ECX,0xa0`
+
+Base `PagedCpl0ProbeV1` admits only `81 F9 A0 00 00 00`. The operation is a dword compare: only ECX participates, upper RCX is ignored, registers remain unchanged, and shared CMP semantics update arithmetic flags/definedness. Other register, immediate, operand-width and prefix forms remain unsupported.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_cmp_ecx_imm32 -- --nocapture` — 4 passed: upper RCX ignored with equal and greater ECX values, full-state/flag-definedness checks, immediate and width neighbors (including qword sign-extended form), fetch-fault atomicity, CPL3 and other paged profiles. Runner retired 51 instructions and stopped at `0F 85 D6 00 00 00` (`JNZ rel32 +0xD6`, ISSUE-149, RIP `0x200dac`); full handoff validation remains incomplete.
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 

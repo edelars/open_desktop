@@ -382,16 +382,26 @@
 - **Статус:** решена только для exact `8B 4E 0C` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
 - **Результат и проверка:** exact MOV reads a dword from `[RSI+0xC]`, zero-extends ECX into RCX, preserves flags, and commits state only after a successful tracked read. Four focused tests pass for full state, injected read-fault atomicity, neighboring forms, CPL3 and other profiles. A real four-level integration test confirms the dword field through tracked page walk, zero-extension and A bits, with no cross-page claim.
 - **Основание:** образ `/private/tmp/od-fw-s7-jz-3b.bin`; `od -An -tx1 -j 0xda3 -N16` показывает `8b 4e 0c 81 f9 a0 00 00 00 0f 85 d6 00 00 00 8b`; runner с бюджетом 10000.
-- **Runner:** image `/private/tmp/od-fw-s7-mov-ecx-dword.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retired 50 instructions, then stopped at `81 F9 A0 00 00 00` (`CMP ECX,0xa0`) with `Unsupported { opcode: 129 }`, `RIP=0x200da6`, `com1_bytes=0`; see [ISSUE-148](#issue-148-s7-04-rust-helper-cmp-ecx-0xa0-unsupported).
+- **Runner:** image `/private/tmp/od-fw-s7-cmp-ecx-a0.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retired 51 instructions, then stopped at `0F 85 D6 00 00 00` (`JNZ rel32 +0xD6`) with `Unsupported { opcode: 133 }`, `RIP=0x200dac`, `com1_bytes=0`; see [ISSUE-149](#issue-149-s7-04-rust-helper-jnz-rel32-unsupported).
 
 <a id="issue-148-s7-04-rust-helper-cmp-ecx-0xa0-unsupported"></a>
-### ISSUE-148 — S7-04: Rust helper `CMP ECX,0xA0` (`81 F9 A0 00 00 00`) remains outside paged CPU profile
+### ISSUE-148 — S7-04: exact Rust-helper `CMP ECX,0xA0` (`81 F9 A0 00 00 00`) profile slice
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact dword handoff-field load.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200da6`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner stops at `81 F9 A0 00 00 00` (`CMP ECX,0xa0`), `Unsupported { opcode: 129 }`, `retired=50`, `RIP=0x200da6`; COM1 пуст.
+- **Статус:** решена только для exact dword compare в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Суть и последствия:** точная форма `81 F9 A0 00 00 00` сравнивает low 32 bits ECX с `0xa0`, игнорирует high RCX и меняет только arithmetic flags. Guard сохраняет dword operand width и не допускает соседние register/immediate/prefix/width формы.
 - **Основание:** образ `/private/tmp/od-fw-s7-mov-ecx-dword.bin`; `od -An -tx1 -j 0xda6 -N16` показывает `81 f9 a0 00 00 00 0f 85 d6 00 00 00 8b 4e 10 89`; runner с бюджетом 10000.
-- **Следующий шаг:** inspect the exact 32-bit register/immediate CMP form and admit only ECX versus `0xa0` in the base profile.
+- **Результат и проверка:** `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_cmp_ecx_imm32 -- --nocapture` — 4 passed: high RCX ignored, ECX flags/definedness, immediate/prefix/neighbor rejects, fetch-fault atomicity, CPL3 and other-profile isolation. См. [CPU contract](specs/CPU_CONTRACT.md#s7-04-rust-helper-cmp-ecx-0xa0).
+- **Следующий runner blocker:** после 51 retired instructions runner остановился на `0F 85 D6 00 00 00` по `RIP=0x200dac`; см. [ISSUE-149](#issue-149-s7-04-rust-helper-jnz-rel32-unsupported).
+
+<a id="issue-149-s7-04-rust-helper-jnz-rel32-unsupported"></a>
+### ISSUE-149 — S7-04: Rust helper `JNZ rel32` (`0F 85 D6 00 00 00`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `CMP ECX,0xa0`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200dac`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner stops at `0F 85 D6 00 00 00` (`JNZ rel32 +0xD6`), `Unsupported { opcode: 133 }`, `retired=51`, `RIP=0x200dac`; COM1 пуст. Если ветка taken, next RIP is `0x200db2` and target is `0x200e88`.
+- **Основание:** образ `/private/tmp/od-fw-s7-cmp-ecx-a0.bin`; `od -An -tx1 -j 0xdac -N16` показывает `0f 85 d6 00 00 00 8b 4e 10 89 cd 8d b9 60 ff ff`; runner с бюджетом 10000.
+- **Следующий шаг:** inspect the exact near conditional-branch tuple and add only this observed JNZ rel32 form to the base paged profile, preserving taken-target canonicality and ZF-definedness rules.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.
