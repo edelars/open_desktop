@@ -17,7 +17,7 @@
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `MOV R8,RDI`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
 - **Владелец:** S7-04 совместно с владельцем CPU profile.
-- **Статус:** решена узко для точной формы `48 8D 3D 09 2B 00 00`; runner остановился на следующем LEA (ISSUE-106).
+- **Статус:** решена узко для точной формы `48 8D 3D 09 2B 00 00` (код `717fed3`); runner остановился на следующем LEA (ISSUE-106).
 - **Суть и последствия:** после `49 89 F8` runner отклонял `48 8D 3D 09 2B 00 00` на `RIP=0x200050`. Базовый `PagedCpl0ProbeV1` теперь вычисляет RIP-relative EA относительно next RIP и записывает только RDI; иные LEA формы и профили остаются вне допуска.
 - **Основание:** образ `/private/tmp/od-fw-s7-04-lea.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner retired 6 инструкций и остановился на следующем `48 8D 0D 02 2B 00 00` (`LEA RCX,[RIP+0x2b02]`) на `RIP=0x200057`; см. ISSUE-106.
 - **Проверка:** `paged_probe_profile` — 97 passed; exact target/full state, flags-definedness, neighbors, fetch fault, CPL3 and other-profile isolation. Реализация и следующий blocker описаны в [S7-04 отчёте](reports/STAGE_7_REPORT.md#s7-04-cpu-profile-lea).
