@@ -396,7 +396,8 @@ bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`,
 `75 24`/`75 77` (the two exact firmware JNZ rel8 forms), `49 89 F8`,
 `E8 83 01 00 00` (`CALL rel32`), `48 83 EC 58`
 (`SUB RSP,0x58`), `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`), and
-`48 8D 7C 24 08` (`LEA RDI,[RSP+8]`; see the extensions below). The CPU entry validates its
+`48 8D 7C 24 08` (`LEA RDI,[RSP+8]`), `BE 00 00 10 00`
+(`MOV ESI,0x00100000`; see the extensions below). The CPU entry validates its
 profile admission and CR0/CR4 before fetch. It receives page-aware `GuestMemory`;
 CR3/EFER validation and selecting the four-level 4 KiB paging context belong
 to the machine entry.
@@ -536,6 +537,12 @@ Tests проверяют taken/not-taken для обоих точных displace
 В base `PagedCpl0ProbeV1` допускается только `48 8D 7C 24 08`: Primary `8D`, длина 5, qword LEA в RDI из qword memory expression `[RSP+8]`, без индекса и с SIB scale 1, ровно REX.W `0x48`. Используется `MemoryOperand::effective_address` с wraparound/address-size semantics; значение записывается только в RDI, RIP продвигается на 5, RFLAGS/definedness сохраняются. LEA не читает данные памяти и не проверяет canonicality результата; проверка адреса относится к последующим memory access. Другие destination/base/index/displacement/width/prefix forms, CPL3 и остальные paged profiles остаются вне allowlist.
 
 Tests проверяют полный CPU state, effective address для firmware stack и noncanonical адреса, неизменность flags/definedness, отсутствие data-memory access, fetch fault на disp8 через границу страницы, соседние формы и CPL3/stack/CR3/CR0.WP isolation. Runner retired 16 instructions и остановился на `BE 00 00 10 00` (`MOV ESI,0x00100000`, handoff GPA zero-extended to RSI; следующим `BA 00 00 01 00` в EDX загружается размер handoff block (64 KiB), ISSUE-116, RIP `0x200202`).
+
+#### Расширение S7-04: точный Rust-entry `MOV ESI,0x00100000`
+
+В base `PagedCpl0ProbeV1` допускается только `BE 00 00 10 00`: Primary opcode `BE`, длина 5, dword immediate в ESI, значение `0x00100000`, без префиксов. Существующая запись в 32-битный view обнуляет старшую половину RSI; меняются только RSI и RIP, RFLAGS/definedness сохраняются. Инструкция не обращается к памяти или I/O. Другие immediate, регистры, ширины и префиксы, CPL3 и прочие paged profiles не допускаются этой формой.
+
+Tests проверяют full state с ненулевыми старшими 32 битами исходного RSI, flags/definedness, соседние формы, CPL3 и stack/CR3/CR0.WP isolation, а также fetch fault последнего immediate byte через границу страницы без commit. Runner retired 17 инструкций и остановился на `BA 00 00 01 00` (`MOV EDX,0x00010000`, размер блока handoff 64 KiB, ISSUE-117, RIP `0x200207`).
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 

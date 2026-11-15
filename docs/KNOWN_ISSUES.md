@@ -106,10 +106,19 @@
 ### ISSUE-116 — S7-04: Rust entry `MOV ESI,imm32` остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после допуска RSP-relative LEA.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust entry prologue (`firmware/uefi/src/start.S`).
-- **Статус:** открыта; stack-local handoff pointer вычислен, но загрузка GPA handoff в RSI не исполнилась.
-- **Суть и последствия:** `RIP=0x200202` содержит `BE 00 00 10 00` (`MOV ESI,0x00100000`, zero-extend в RSI), то есть загружает адрес handoff block в RSI. Размер блока (64 KiB) загружается следующей инструкцией `BA 00 00 01 00` в EDX, которая пока не исполнялась. Paged profile возвращает `Unsupported { opcode: 190 }`. COM1 пуст, handoff parser в машине пока не достигнут.
+- **Статус:** решена узко для точного `BE 00 00 10 00` в base `PagedCpl0ProbeV1`.
+- **Суть и результат:** exact `MOV ESI,0x00100000` записывает handoff GPA в RSI с архитектурным zero-extension; flags и прочее CPU state сохраняются. Не допущены другие immediate/register/prefix forms, CPL3 и остальные paged profiles.
 - **Основание:** образ `/private/tmp/od-fw-s7-lea-rsp.bin`, байты подтверждены `od -An -tx1 -j 0x202 -N16` (`be 00 00 10 00 ba 00 00 01 00 31 c9 e8 8d 02 00`); runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=16`, `RIP=0x200202`, `com1_bytes=0`.
-- **Следующий шаг:** ограничить точный move handoff GPA в ESI/RSI с правильным zero-extension и profile isolation.
+- **Проверка решения:** `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 145 passed; full state/zero-extension, flags/definedness, adjacent encodings, CPL3 и stack/CR3/CR0.WP isolation, fetch fault последнего immediate byte без commit. Образ `/private/tmp/od-fw-s7-mov-esi.bin` собран (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 17 инструкций и остановился на следующей инструкции `BA 00 00 01 00` (`MOV EDX,0x00010000`, размер handoff block 64 KiB), `RIP=0x200207`, `Unsupported { opcode: 186 }`, `com1_bytes=0`.
+
+<a id="issue-117-s7-04-rust-entry-mov-edx-imm32-unsupported"></a>
+### ISSUE-117 — S7-04: Rust entry `MOV EDX,imm32` остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после допуска точного `MOV ESI,0x00100000`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust entry prologue (`firmware/uefi/src/start.S`).
+- **Статус:** открыта; handoff GPA уже помещён в RSI, загрузка размера ещё не исполнилась.
+- **Суть и последствия:** `RIP=0x200207` содержит `BA 00 00 01 00` (`MOV EDX,0x00010000`), которое передаёт размер handoff block — 64 KiB — в EDX. Runner возвращает `Unsupported { opcode: 186 }`; COM1 пуст, handoff parser в машине пока не достигнут.
+- **Основание:** образ `/private/tmp/od-fw-s7-mov-esi.bin`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=17`, `RIP=0x200207`, `com1_bytes=0`.
+- **Следующий шаг:** исследовать и при безопасном ограничении допустить только точную загрузку размера в EDX, сохранив zero-extension и profile isolation.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
