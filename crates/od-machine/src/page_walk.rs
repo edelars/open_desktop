@@ -1111,7 +1111,7 @@ pub(crate) fn access_long64_2m_with_mmio(
     paging: &Long64ProbeConfig,
     request: TrackedAccessRequest,
     committed_write: impl FnMut(GuestPhysicalRange),
-    window: MmioWindow,
+    windows: &[MmioWindow],
     mut mmio: impl FnMut(GuestPhysicalAddress, u8, RamAccessOperation) -> Result<u64, MmioDispatchError>,
 ) -> TrackedAccessReport {
     access_long64_4k_internal(
@@ -1122,7 +1122,7 @@ pub(crate) fn access_long64_2m_with_mmio(
         true,
         Some(&mut mmio),
         true,
-        Some(window),
+        Some(windows),
     )
 }
 
@@ -1134,7 +1134,7 @@ fn access_long64_4k_internal(
     set_mmio_dirty_before_dispatch: bool,
     mmio: Option<&mut MmioDispatch<'_>>,
     allow_2m: bool,
-    mmio_window: Option<MmioWindow>,
+    mmio_windows: Option<&[MmioWindow]>,
 ) -> TrackedAccessReport {
     access_long64_4k_internal_windowed(
         memory,
@@ -1145,7 +1145,7 @@ fn access_long64_4k_internal(
         mmio,
         &mut write_tracked_table_entry,
         allow_2m,
-        mmio_window,
+        mmio_windows,
     )
 }
 
@@ -1172,9 +1172,10 @@ fn access_long64_4k_internal_with_writer(
     )
 }
 
-/// The tracked access. `mmio_window`, when set, limits the MMIO the dispatch serves to the
-/// physical range `(base, size)`: an operand in any other MMIO region takes the same typed error
-/// as without a dispatch, before the dirty bit or the device is touched (S4-38L9s).
+/// The tracked access. `mmio_windows`, when set, limits the MMIO the dispatch serves to the
+/// physical ranges `(base, size)` it lists: an operand in any other MMIO region takes the same typed
+/// error as without a dispatch, before the dirty bit or the device is touched (S4-38L9s; several
+/// windows since S4-38L8d).
 fn access_long64_4k_internal_windowed(
     memory: &mut PhysicalMemory,
     paging: &Long64ProbeConfig,
@@ -1184,7 +1185,7 @@ fn access_long64_4k_internal_windowed(
     mut mmio: Option<&mut MmioDispatch<'_>>,
     table_writer: &mut TrackedTableWriter<'_>,
     allow_2m: bool,
-    mmio_window: Option<MmioWindow>,
+    mmio_windows: Option<&[MmioWindow]>,
 ) -> TrackedAccessReport {
     let mut trace = WalkTrace::new();
     let mut ad_updates = [None; 5];
@@ -1278,9 +1279,12 @@ fn access_long64_4k_internal_windowed(
     };
     let _ = range;
 
-    let served = mmio_window.is_none_or(|(base, size)| {
-        physical.get() >= base
-            && u128::from(physical.get()) + u128::from(width) <= u128::from(base) + u128::from(size)
+    let served = mmio_windows.is_none_or(|windows| {
+        windows.iter().any(|&(base, size)| {
+            physical.get() >= base
+                && u128::from(physical.get()) + u128::from(width)
+                    <= u128::from(base) + u128::from(size)
+        })
     });
     if is_mmio && (mmio.is_none() || !served) {
         let error = if access == AccessKind::Write {

@@ -1105,6 +1105,9 @@ pub struct LoadedFirmwareBoard {
     pit_pic_source: Option<PitPicIrqSource>,
     /// The UART THRE -> 8259 IR4 source once [`Self::enable_uart_irq4`] installed it (S4-39i).
     uart_irq_source: Option<UartPicIrqSource>,
+    /// The PIT OUT0 -> IOAPIC INTIN2 -> Local APIC source once [`Self::enable_pit_ioapic_irq`]
+    /// installed it (S4-38L8d); exclusive with `pit_pic_source`.
+    pit_ioapic_source: Option<PitIoapicIrqSource>,
     /// Who moves the board clock inside the CPL0-set loop (S4-23j): the board itself (default,
     /// byte-for-byte the S4-37/38 behaviour) or a [`ClockOwner`] that [`Self::enable_clock_owner`]
     /// installed. Never `Owned` unless that call succeeded.
@@ -1185,12 +1188,11 @@ impl LoadedFirmwareBoard {
     /// A source of the PIT channel 0 line through the IOAPIC INTIN2 and the Local APIC of this
     /// board (S4-38L8c), on the board clock; `None` without the Linux profile (no PIT). It is not
     /// installed: the caller gives it to [`Self::set_irq_source`] (a clone of it stays a handle
-    /// for the counters). The board does this for no run today: the Linux board has no APIC in
-    /// CPUID, and a synthetic guest or a test installs the source itself.
+    /// for the counters). The `X8664V1Stage4AApic` run installs it through
+    /// [`Self::enable_pit_ioapic_irq`] (S4-38L8d); a test may install a source itself.
     ///
     /// The IOAPIC handle is made from the Local APIC handle the way `assemble_board` makes the
     /// IOAPIC device: both views share one pair state.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn pit_ioapic_irq_source(&self) -> Option<PitIoapicIrqSource> {
         let pit = self.pit.clone()?;
         let io_apic = IoApic::new(self.lapic.clone()).handle();
@@ -1210,6 +1212,10 @@ impl LoadedFirmwareBoard {
         if self.pit_pic_source.is_some() {
             return true;
         }
+        // S4-38L8d: the 8259 and the IOAPIC sources are exclusive (one board interrupt source).
+        if self.pit_ioapic_source.is_some() {
+            return false;
+        }
         let (Some(pit), Some(pic)) = (self.pit.clone(), self.pic_master.clone()) else {
             return false;
         };
@@ -1219,6 +1225,44 @@ impl LoadedFirmwareBoard {
         self.irq_source = Box::new(source.clone());
         self.pit_pic_source = Some(source);
         true
+    }
+
+    /// S4-38L8d: whether [`Self::enable_pit_ioapic_irq`] would succeed (a pure check): the
+    /// Linux-profile PIT exists and the 8259 source is not installed.
+    pub(crate) fn pit_ioapic_irq_available(&self) -> bool {
+        self.pit_ioapic_source.is_some() || (self.pit.is_some() && self.pit_pic_source.is_none())
+    }
+
+    /// S4-38L8d: install the PIT channel 0 -> IOAPIC INTIN2 -> Local APIC source (ISA IRQ 0 is
+    /// overridden to GSI 2 by the MADT) as the board's interrupt source (once; a second call keeps
+    /// the installed one). It also arms the PIT software strobe, like the 8259 variant, and opens the
+    /// Local APIC and IOAPIC MMIO windows of the set loop (the guest's register accesses). `false`
+    /// and nothing installed without the Linux-profile PIT, or when the 8259 source
+    /// ([`Self::enable_pit_pic_irq`]) is already installed: the two are exclusive. Called by the
+    /// `X8664V1Stage4AApic` run of the Linux board only.
+    pub(crate) fn enable_pit_ioapic_irq(&mut self) -> bool {
+        if self.pit_ioapic_source.is_some() {
+            return true;
+        }
+        if self.pit_pic_source.is_some() {
+            return false;
+        }
+        let Some(source) = self.pit_ioapic_irq_source() else {
+            return false;
+        };
+        if let Some(pit) = &self.pit {
+            pit.enable_software_strobe();
+        }
+        self.bus.enable_apic_mmio_windows();
+        self.irq_source = Box::new(source.clone());
+        self.pit_ioapic_source = Some(source);
+        true
+    }
+
+    /// The installed PIT -> IOAPIC source (a second handle on it), if any.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn pit_ioapic_source(&self) -> Option<PitIoapicIrqSource> {
+        self.pit_ioapic_source.clone()
     }
 
     /// S4-39i: wrap the installed PIT -> IR0 source with the UART interrupt output -> 8259 master
@@ -2547,6 +2591,7 @@ impl AssembledBoard {
             pic_master,
             pit_pic_source: None,
             uart_irq_source: None,
+            pit_ioapic_source: None,
             clock_driver: BoardClock::Standalone,
             checkpoints: None,
             foreign_timer_clock,
@@ -2609,6 +2654,7 @@ impl AssembledBoard {
             pic_master,
             pit_pic_source: None,
             uart_irq_source: None,
+            pit_ioapic_source: None,
             clock_driver: BoardClock::Standalone,
             checkpoints: None,
             foreign_timer_clock,

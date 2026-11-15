@@ -30,8 +30,16 @@ pub enum CpuidProfile {
     /// feature bit of the target table (APIC, PAT, SEP, SSE, SSE2, ...) stays clear until the slice
     /// that implements its behaviour declares it.
     X8664V1Stage4A,
+    /// `X8664V1Stage4A` plus the APIC bit (CPUID.01H:EDX[9], S4-38L8d) and nothing else: the board
+    /// then provides a xAPIC-mode local APIC and an IOAPIC (MMIO windows opened by the runner flag of
+    /// the same profile). x2APIC (ECX[21]), TSC-deadline (ECX[24]) and the hypervisor bit (ECX[31])
+    /// stay clear; leaves 6, 0xB, 0x15 and 0x16 stay zero.
+    X8664V1Stage4AApic,
 }
 
+/// CPUID.01H:EDX bit 9 (APIC), declared by `X8664V1Stage4AApic` since S4-38L8d. From the Intel SDM,
+/// from memory.
+const LEAF1_EDX_APIC: u32 = 1 << 9;
 /// CPUID.01H:EDX bit 4 (TSC); the bit position is from the Intel SDM, from memory.
 const LEAF1_EDX_TSC: u32 = 1 << 4;
 /// CPUID.01H:EDX bit 0 (FPU), declared since S4-38L9d: `FNINIT` is implemented in the CPL0 set's FP
@@ -43,11 +51,20 @@ const LEAF1_EDX_FPU: u32 = 1 << 0;
 const LEAF1_EDX_FXSR: u32 = 1 << 24;
 
 impl CpuidProfile {
+    /// Whether the profile is `X8664V1Stage4A` or a variant of it (`X8664V1Stage4AApic`): the family
+    /// the Linux board's stage 4 members (MSR 0x87, FP state, `INT3`) are turned on for.
+    pub const fn is_stage4a_family(self) -> bool {
+        matches!(self, Self::X8664V1Stage4A | Self::X8664V1Stage4AApic)
+    }
+
     /// Return a CPUID tuple. This initial slice ignores ECX for every leaf.
     pub const fn query(self, leaf: u32, _subleaf: u32) -> CpuidResult {
         let leaf1_edx = match self {
             Self::DiagnosticV1 => 0,
             Self::X8664V1Stage4A => LEAF1_EDX_FPU | LEAF1_EDX_TSC | LEAF1_EDX_FXSR,
+            Self::X8664V1Stage4AApic => {
+                LEAF1_EDX_FPU | LEAF1_EDX_TSC | LEAF1_EDX_APIC | LEAF1_EDX_FXSR
+            }
         };
         match leaf {
             0 => CpuidResult {
@@ -267,6 +284,62 @@ mod tests {
                 assert_eq!((old.edx, new.edx), (0, 0x0100_0011));
             } else {
                 assert_eq!(new, old, "leaf={leaf:#x}");
+            }
+        }
+    }
+
+    /// S4-38L8d. Oracle by hand: FPU (bit 0) | TSC (bit 4) | APIC (bit 9) | FXSR (bit 24).
+    #[test]
+    fn stage4a_apic_leaf_1_adds_only_the_apic_bit() {
+        let leaf1 = CpuidProfile::X8664V1Stage4AApic.query(1, 0);
+        assert_eq!(leaf1.eax, 0x0000_0600);
+        assert_eq!(leaf1.ebx, 0x0000_0100, "initial APIC ID 0");
+        assert_eq!(leaf1.ecx, 0);
+        assert_eq!(leaf1.edx, 0x0100_0211);
+        assert_eq!(
+            leaf1.edx,
+            CpuidProfile::X8664V1Stage4A.query(1, 0).edx | (1 << 9)
+        );
+        // x2APIC (ECX[21]), TSC-deadline (ECX[24]) and hypervisor (ECX[31]) stay clear.
+        for bit in [21, 24, 31] {
+            assert_eq!(leaf1.ecx & (1 << bit), 0, "ECX bit {bit}");
+        }
+    }
+
+    #[test]
+    fn stage4a_apic_zero_leaves_and_all_other_leaves_match_stage4a() {
+        let apic = CpuidProfile::X8664V1Stage4AApic;
+        let base = CpuidProfile::X8664V1Stage4A;
+        for leaf in [6, 0xB, 0x15, 0x16] {
+            for subleaf in [0, 1, u32::MAX] {
+                assert_eq!(
+                    apic.query(leaf, subleaf),
+                    CpuidResult::default(),
+                    "leaf={leaf:#x}, ecx={subleaf:#x}"
+                );
+            }
+        }
+        for leaf in [
+            0,
+            2,
+            3,
+            4,
+            7,
+            0x0D,
+            0x8000_0000,
+            0x8000_0001,
+            0x8000_0007,
+            0x8000_0008,
+            0x8000_0009,
+            0x4000_0000,
+            u32::MAX,
+        ] {
+            for subleaf in [0, 1, u32::MAX] {
+                assert_eq!(
+                    apic.query(leaf, subleaf),
+                    base.query(leaf, subleaf),
+                    "leaf={leaf:#x}, ecx={subleaf:#x}"
+                );
             }
         }
     }

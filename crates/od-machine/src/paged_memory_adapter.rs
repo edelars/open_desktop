@@ -1916,7 +1916,7 @@ impl AdapterBus<'_> {
                 paging,
                 request,
                 committed_write,
-                mmio.window(),
+                mmio.windows(),
                 |address, width, operation| mmio.dispatch(address, width, operation),
             ),
         }

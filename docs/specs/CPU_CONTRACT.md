@@ -24468,6 +24468,20 @@ CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, г�
 
 3. Повтор `stage4a` **без** `--diagnostic-past-c7` (ревью-правка; те же бюджет 3e9, nonce `s4-38l4a`, 128 MiB, тот же release-бинарник коммита среза: `od-runner linux-direct --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a`), JSON: `docs/reports/data/stage4/s4-38l9a-stage4a-no-pastc7-run.json` (отдельный файл, JSON п. 2 не перезаписывался). real 580.62 с, user 562.71 с. Результат тот же, что в п. 2: `exit_kind` = `unsupported`, `exit_detail` = `Unsupported { opcode: 144 }`, retired = 1524010411, квантов 135874, `virtual_ns` = 1635702411, RIP `0xffffffff8271b335`, байты `f3 90 65 ff 05 f2 1c d0 01 65 8b 35 ef 1c d0 01`, `cpuid_divergence_leaf` = null, регистры и `com1_text` совпадают с п. 2 (сравнены все поля `stop`: отличается только `diagnostic_past_c7`: `false` против `true`). Верхний уровень: `acceptance` = `diagnostic_not_counted`, `cpuid_profile` = `X8664V1Stage4A`, `diagnostic_past_c7` = `false`. То есть на настоящем ядре профиль `stage4a` сам по себе не даёт ложной границы C7: оба листа 1 и `0x80000001` исполнены без `cpuid_divergence`, прогон дошёл до `PAUSE`. Замечание: JSON п. 2 и п. 3 записаны раннером коммита среза, у них `diagnostic_note` с единственным пояснением про подмножество (раннер после ревью-правки при обоих флагах пишет и пояснение про C7).
 
+### CPUID-подмножество X8664V1Stage4AApic (S4-38L8d)
+
+Отдельный профиль `CpuidProfile::X8664V1Stage4AApic` (`crates/od-isa/src/cpuid.rs`): `X8664V1Stage4A` плюс бит APIC. Профиль `X8664V1Stage4A` не менялся (его лист 1, `PASS` S4-39j и принятые отчёты остаются как есть); новый профиль не заменяет его и не засчитывается как S4-39j.
+
+| CPUID input | EAX | EBX | ECX | EDX |
+|---|---:|---:|---:|---:|
+| `CPUID(1)` | `0x00000600` | `0x00000100` (APIC ID 0) | `0x00000000` | `0x01000211` (биты 0 FPU, 4 TSC, 9 APIC, 24 FXSR) |
+| `CPUID(6)`, `CPUID(0xB)`, `CPUID(0x15)`, `CPUID(0x16)` | 0 | 0 | 0 | 0 |
+| все остальные листы | как у `X8664V1Stage4A` (побайтно) | | | |
+
+Не объявляются: x2APIC (ECX[21]), TSC-deadline (ECX[24]), hypervisor (ECX[31]), SSE/SSE2. Позиция бита 9 (APIC) — по SDM, по памяти.
+
+**Выбор на плате.** Раннер: `--cpuid-profile stage4a-apic` (только с `--run --set-cpl0`); в JSON `cpuid_profile` = `X8664V1Stage4AApic`, член набора `cpuid:X8664V1Stage4AApic`. Для профиля плата включает `irq`, `halt` и `clock_owner` (в `set_members` видны), ставит источник PIT OUT0 → IOAPIC INTIN2 → LAPIC (ISO 0→2 из MADT) вместо PIT → 8259 и открывает окна MMIO цикла набора для LAPIC `0xFEE00000` и IOAPIC `0xFEC00000` (4 KiB каждое); у `stage4a` эти окна закрыты (типизированная ошибка, как прежде). `--user-mode` с этим профилем отвергается (в раннере и до запуска в `od-machine`). Правило `acceptance`: для `stage4a-apic` всегда `diagnostic_not_counted`, со своим `diagnostic_note`; единственный статус профиля — checkpoint L8d (`check_timer` без отказных сообщений, не меньше 5 IRQ). Строки `diagnostic_note` и `acceptance` для `stage4a` и `diagnostic` не менялись. Результат и стоп: `docs/reports/STAGE_4_REPORT.md`, раздел S4-38L8d; открытые вопросы — ISSUE-091, ISSUE-105, ISSUE-106.
+
 ### PAUSE (F3 90) в наборе CPL0 (S4-38L9b)
 
 Основание: граница S4-38L9a — `Unsupported { opcode: 144 }` (`0x90`) на RIP `0xffffffff8271b335`, байты `f3 90 65 ff 05 f2 1c d0 01 65 8b 35 ef 1c d0 01`. `F3 90` — `PAUSE`; в модели без SMT и без задержек спин-ожидания это NOP-подсказка. Декодер для `0x90` с префиксом `F3` отказывал, голый `90` в наборе исполнялся.

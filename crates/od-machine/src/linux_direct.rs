@@ -1138,7 +1138,33 @@ fn run_linux_direct_board_set_with(
     // and the interrupt hook. Every other run (also `--diagnostic-past-c7` without the flag,
     // `DiagnosticV1`, the base probe) keeps the board as it was.
     let mut members = members;
-    if user_mode && boot.board.enable_pit_pic_irq() {
+    // S4-38L8d: the APIC profile (`X8664V1Stage4AApic`) gets the timer line through the IOAPIC and the
+    // Local APIC instead (PIT OUT0 -> INTIN2 -> LAPIC IRR), the clock owner (the LAPIC timer and the
+    // idle wake need it: without it the tick hangs after `check_timer`), `halt` and the interrupt
+    // hook. The 8259 source is not installed. The user mode is refused before anything runs: the
+    // CPL3 interrupt path was built for the 8259 line only.
+    if members.cpuid_profile == CpuidProfile::X8664V1Stage4AApic {
+        let refuse = |detail: &str| {
+            let mut error = LinuxDirectError::text("run_failed", "run", detail.to_string());
+            error.retired = Some(0);
+            error
+        };
+        if user_mode {
+            return Err(refuse(
+                "the user mode is not supported with the X8664V1Stage4AApic profile",
+            ));
+        }
+        // Only a check here: the board is changed after the last refusal below (the clock owner,
+        // the checkpoint table), see `enable_pit_ioapic_irq` further down.
+        if !boot.board.pit_ioapic_irq_available() {
+            return Err(refuse(
+                "the X8664V1Stage4AApic profile needs the Linux-profile PIT and no 8259 source",
+            ));
+        }
+        members.halt = true;
+        members.irq = true;
+        members.clock_owner = true;
+    } else if user_mode && boot.board.enable_pit_pic_irq() {
         // S4-39i: the UART THRE line goes to master IR4, so the kernel's 8250 driver can send
         // `tty` output (it writes THR from the THRE interrupt).
         boot.board.enable_uart_irq4();
@@ -1285,6 +1311,20 @@ fn run_linux_direct_board_set_with(
             error.retired = Some(0);
             error
         })?;
+    }
+    // S4-38L8d: the APIC profile's timer line is installed last, so that a refusal above (the clock
+    // owner, the checkpoint table) leaves the board without it. `pit_ioapic_irq_available` was
+    // checked at the top, so this cannot fail; the refusal is kept for a broken invariant.
+    if members.cpuid_profile == CpuidProfile::X8664V1Stage4AApic
+        && !boot.board.enable_pit_ioapic_irq()
+    {
+        let mut error = LinuxDirectError::text(
+            "run_failed",
+            "run",
+            "the X8664V1Stage4AApic profile could not install the IOAPIC timer source".to_string(),
+        );
+        error.retired = Some(0);
+        return Err(error);
     }
     let result = boot.board.run_linux_boot_cpl0_set(
         instruction_budget,
@@ -14300,6 +14340,407 @@ mod tests {
         }
     }
 
+    // ---- S4-38L8d: the APIC profile (`X8664V1Stage4AApic`): guest access to the LAPIC and the IOAPIC ----
+
+    mod apic_profile {
+        use super::irq_hook::{CLD, IRQ_HANDLER_AT, IRQ_VECTOR, irq_board};
+        use super::*;
+        use crate::{IO_APIC_MMIO_BASE, LOCAL_APIC_MMIO_BASE};
+        use od_isa::StiProfile;
+
+        const PIT_HZ: u64 = 1_193_182;
+        const MASKED: u32 = 1 << 16;
+        const CHUNK: u64 = 500;
+
+        /// The deadline of the PIT tick, by hand: `ceil(tick * 1e9 / 1_193_182)`.
+        fn deadline(tick: u64) -> u64 {
+            (tick * 1_000_000_000).div_ceil(PIT_HZ)
+        }
+
+        /// `MOV <r32>, imm32` (`B8 + r`): EAX = 0, ECX = 1, EBX = 3.
+        fn mov32(register: u8, value: u32) -> Vec<u8> {
+            let mut code = vec![0xB8 + register];
+            code.extend_from_slice(&value.to_le_bytes());
+            code
+        }
+
+        /// `MOV AL, control; MOV DX, 0x43; OUT DX, AL; MOV AL, lo; MOV DX, 0x40; OUT DX, AL;
+        /// MOV AL, hi; OUT DX, AL` (`n` < 256, so AL = 0 afterwards).
+        fn pit_program(control: u8, n: u8) -> Vec<u8> {
+            vec![
+                0xB0, control, 0x66, 0xBA, 0x43, 0x00, 0xEE, 0xB0, n, 0x66, 0xBA, 0x40, 0x00, 0xEE,
+                0xB0, 0x00, 0xEE,
+            ]
+        }
+
+        /// `EBX = LAPIC base`, `ECX = IOAPIC base`; SVR := 0x1FF (software enable, spurious
+        /// vector 0xFF); IOREGSEL := 0x14, IOWIN := `entry2` (the low dword of redirection entry 2);
+        /// then `EAX = 0`.
+        fn apic_setup(entry2: u32) -> Vec<u8> {
+            let mut code = mov32(3, LOCAL_APIC_MMIO_BASE as u32);
+            code.extend(mov32(1, IO_APIC_MMIO_BASE as u32));
+            code.extend(mov32(0, 0x1FF));
+            code.extend([0x89, 0x83, 0xF0, 0x00, 0x00, 0x00]); // MOV [RBX+0xF0], EAX
+            code.extend(mov32(0, 0x14));
+            code.extend([0x89, 0x01]); // MOV [RCX], EAX
+            code.extend(mov32(0, entry2));
+            code.extend([0x89, 0x41, 0x10]); // MOV [RCX+0x10], EAX
+            code.extend(mov32(0, 0));
+            code
+        }
+
+        /// The guest: set the APIC up, load a PIT mode 2 count of `n`, `STI`, spin.
+        fn timer_guest(entry2: u32, n: u8) -> Vec<u8> {
+            let mut code = apic_setup(entry2);
+            code.extend(pit_program(0x34, n));
+            code.push(0xFB); // STI
+            code.extend([0xEB, 0xFE]); // JMP $
+            code
+        }
+
+        /// The handler at `IRQ_HANDLER_AT`: with `eoi` the guest writes the Local APIC EOI register
+        /// (`MOV [RBX+0xB0], EAX`, EAX = 0, RBX = the Local APIC base), then `IRETQ`.
+        fn handler(eoi: bool) -> Vec<u8> {
+            let mut code = Vec::new();
+            if eoi {
+                code.extend([0x89, 0x83, 0xB0, 0x00, 0x00, 0x00]);
+            }
+            code.extend([0x48, 0xCF]);
+            code
+        }
+
+        /// The loader's tables identity-map the first GiB only (2 MiB leaves in the PD at
+        /// `cr3 + 0x2000`): map GVA = GPA for the 2 MiB pages of the IOAPIC (`0xFEC00000`) and of the
+        /// Local APIC (`0xFEE00000`) through a PD of its own behind PDPT entry 3.
+        fn map_apic_windows(boot: &mut LinuxDirectBoot) {
+            const PD: u64 = TREE_PML4;
+            let cr3 = boot.board.cr3();
+            write_phys(boot, cr3 + 0x1000 + 3 * 8, &(PD | 3).to_le_bytes());
+            for base in [IO_APIC_MMIO_BASE, LOCAL_APIC_MMIO_BASE] {
+                let index = (base >> 21) & 511;
+                write_phys(boot, PD + index * 8, &(base | 0x83).to_le_bytes());
+            }
+        }
+
+        /// A board of `irq_board` with the APIC profile's timer line enabled.
+        fn apic_board(code: &[u8], eoi: bool) -> LinuxDirectBoot {
+            let (mut boot, _) = irq_board(code);
+            map_apic_windows(&mut boot);
+            write_phys(&mut boot, IRQ_HANDLER_AT, &handler(eoi));
+            assert!(boot.board.enable_pit_ioapic_irq());
+            boot
+        }
+
+        fn set<'a>(
+            cli: &'a CliProfile,
+            sti: &'a StiProfile,
+            halt: &'a HaltProfile,
+        ) -> Cpl0ProfileSet<'a> {
+            Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+                .with_cli(cli)
+                .with_cpu_owned_cr3(MovCr3Long64V1)
+                .with_pio_u8()
+                .with_halt(halt)
+                .with_sti(sti)
+        }
+
+        /// Chunks of the board loop until the clock reaches `until_ns`; the delivered vectors.
+        fn run_until(boot: &mut LinuxDirectBoot, until_ns: u64) -> u64 {
+            let (cli, sti, halt) = (
+                CliProfile::NonPviLong64V1,
+                StiProfile::NonPviLong64V1,
+                HaltProfile::Long64V1,
+            );
+            let set = set(&cli, &sti, &halt);
+            let mut delivered = 0;
+            while boot.board.clock().now_ns() < until_ns {
+                let report = boot
+                    .board
+                    .run_linux_boot_cpl0_set(CHUNK, &set, false, false, true)
+                    .expect("runs");
+                assert_eq!(
+                    report.run.exit,
+                    PagedProbeExit::BudgetExhausted,
+                    "{report:?}"
+                );
+                delivered += report.irq.irqs_delivered;
+            }
+            delivered
+        }
+
+        /// `MOV EBX, 0xFEE00000; MOV EAX, [RBX+0x30]; MOV ECX, 0xFEC00000; MOV EAX, 1;
+        /// MOV [RCX], EAX; MOV EDX, [RCX+0x10]; MOV EAX, [RBX+0x30]; HLT`: the Local APIC version in
+        /// EAX, the IOAPIC version (IOREGSEL 1, IOWIN) in EDX.
+        fn register_guest() -> Vec<u8> {
+            let mut code = mov32(3, LOCAL_APIC_MMIO_BASE as u32);
+            code.extend([0x8B, 0x43, 0x30]); // MOV EAX, [RBX+0x30]
+            code.extend(mov32(1, IO_APIC_MMIO_BASE as u32));
+            code.extend(mov32(0, 1));
+            code.extend([0x89, 0x01]); // MOV [RCX], EAX: IOREGSEL := 1
+            code.extend([0x8B, 0x51, 0x10]); // MOV EDX, [RCX+0x10]
+            code.extend([0x8B, 0x43, 0x30]); // MOV EAX, [RBX+0x30]
+            code.push(0xF4);
+            code
+        }
+
+        fn run_register_guest(apic: bool) -> (LinuxDirectBoot, crate::FirmwareRunReport) {
+            let (mut boot, _) = boot_with_entry(&register_guest());
+            map_apic_windows(&mut boot);
+            if apic {
+                assert!(boot.board.enable_pit_ioapic_irq());
+            }
+            let (cli, sti, halt) = (
+                CliProfile::NonPviLong64V1,
+                StiProfile::NonPviLong64V1,
+                HaltProfile::Long64V1,
+            );
+            let set = set(&cli, &sti, &halt);
+            let report = boot
+                .board
+                .run_linux_boot_cpl0_set(64, &set, false, false, true)
+                .expect("runs");
+            (boot, report.run)
+        }
+
+        #[test]
+        fn the_guest_reads_the_lapic_version_and_the_ioapic_version_under_the_apic_profile() {
+            let (boot, run) = run_register_guest(true);
+            assert_eq!(run.exit, PagedProbeExit::Halted, "{run:?}");
+            assert_eq!(run.memory_error, None);
+            let state = boot.board.state();
+            assert_eq!(state.gpr[Register::Rax as usize], 0x0003_0014);
+            assert_eq!(state.gpr[Register::Rdx as usize], 0x0017_0020);
+        }
+
+        /// Stage4a keeps the typed error: the Local APIC window is not served by its set loop.
+        #[test]
+        fn stage4a_keeps_the_lapic_access_a_typed_error() {
+            let (boot, run) = run_register_guest(false);
+            assert!(
+                matches!(
+                    run.memory_error,
+                    Some(crate::TrackedAccessError::OperandPhysical { address, .. })
+                        if address.get() == LOCAL_APIC_MMIO_BASE + 0x30
+                ),
+                "{run:?}"
+            );
+            assert_ne!(run.exit, PagedProbeExit::Halted);
+            assert_eq!(boot.board.state().gpr[Register::Rax as usize], 0);
+        }
+
+        #[test]
+        fn a_thousand_periods_give_a_thousand_vectors_with_a_guest_eoi_and_an_iretq_each() {
+            let n = 4u8;
+            let mut boot = apic_board(&timer_guest(u32::from(IRQ_VECTOR), n), true);
+            let rsp = boot.board.state().gpr[Register::Rsp as usize];
+            // The count is loaded by the guest's own accesses in the first microseconds.
+            run_until(&mut boot, 2000);
+            let source = boot.board.pit_ioapic_source().expect("installed");
+            let run = source.channel0_run().expect("loaded by the guest");
+            assert_eq!(u8::try_from(run.reload).unwrap(), n);
+            let t0 = run.start_tick;
+            let until = deadline(t0 + 1000 * u64::from(n)) + 1000;
+            let first = source.stats().acknowledged;
+            let delivered = run_until(&mut boot, until);
+            let stats = source.stats();
+            assert!(delivered >= 1000, "delivered {delivered}, {stats:?}");
+            assert_eq!(stats.acknowledged, first + delivered);
+            assert_eq!(
+                (stats.edges_refused, stats.ack_refused, stats.queue_faults),
+                (0, 0, 0),
+                "{stats:?}"
+            );
+            let state = boot.board.state();
+            assert_eq!(
+                state.gpr[Register::Rsp as usize],
+                rsp,
+                "the IRETQ circle is balanced"
+            );
+            assert_ne!(state.rflags & (1 << 9), 0, "IRETQ restored IF");
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false)
+            );
+        }
+
+        #[test]
+        fn a_masked_entry_delivers_nothing() {
+            let n = 10u8;
+            let mut boot = apic_board(&timer_guest(MASKED | u32::from(IRQ_VECTOR), n), true);
+            run_until(&mut boot, 2000);
+            let source = boot.board.pit_ioapic_source().expect("installed");
+            let t0 = source.channel0_run().expect("loaded").start_tick;
+            let delivered = run_until(&mut boot, deadline(t0 + 40) + 1000);
+            assert_eq!(delivered, 0);
+            assert_eq!(source.stats().edges, 4, "presented and lost at the IOAPIC");
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false)
+            );
+        }
+
+        #[test]
+        fn without_a_guest_eoi_the_second_irq_is_not_delivered() {
+            let n = 10u8;
+            let mut boot = apic_board(&timer_guest(u32::from(IRQ_VECTOR), n), false);
+            run_until(&mut boot, 2000);
+            let source = boot.board.pit_ioapic_source().expect("installed");
+            let t0 = source.channel0_run().expect("loaded").start_tick;
+            run_until(&mut boot, deadline(t0 + 40) + 1000);
+            let stats = source.stats();
+            assert_eq!(stats.acknowledged, 1, "{stats:?}");
+            assert_eq!(stats.edges, 4);
+            // In service, and one coalesced request waits in IRR.
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (true, true)
+            );
+        }
+
+        /// S4-38L8d measurement (AGENTS.md: performance decisions rest on measurements): the wall
+        /// time per retired instruction of a `JMP $` spin without the interrupt hook, with the hook and
+        /// the empty source, and with the hook and the PIT -> IOAPIC -> Local APIC source (the PIT
+        /// count of 65536 ticks gives no edge inside the run, so every boundary asks
+        /// `pending_vector` and gets `None`). `cargo test -p od-machine --release --lib
+        /// the_pending_vector_cost -- --ignored --nocapture`.
+        #[test]
+        #[ignore = "measurement, not an assertion of speed: run with --release -- --ignored --nocapture"]
+        fn the_pending_vector_cost_per_boundary_is_measured() {
+            const N: u64 = 20_000_000;
+            const ROUNDS: usize = 7;
+            let (cli, sti, halt) = (
+                CliProfile::NonPviLong64V1,
+                StiProfile::NonPviLong64V1,
+                HaltProfile::Long64V1,
+            );
+            let set = set(&cli, &sti, &halt);
+            let run = |mode: usize| -> f64 {
+                let mut boot = match mode {
+                    0 | 1 => irq_board(&[0xEB, 0xFE]).0,
+                    _ => apic_board(&timer_guest(u32::from(IRQ_VECTOR), 0), true),
+                };
+                if mode == 2 {
+                    // Let the guest program the APIC and the PIT first (a few dozen instructions).
+                    boot.board
+                        .run_linux_boot_cpl0_set(200, &set, false, false, true)
+                        .expect("runs");
+                }
+                let started = std::time::Instant::now();
+                let report = boot
+                    .board
+                    .run_linux_boot_cpl0_set(N, &set, false, false, mode != 0)
+                    .expect("runs");
+                let elapsed = started.elapsed();
+                assert_eq!(report.run.exit, PagedProbeExit::BudgetExhausted);
+                assert_eq!(report.irq.irqs_delivered, 0);
+                elapsed.as_nanos() as f64 / report.run.retired as f64
+            };
+            let mut samples = [const { Vec::new() }; 3];
+            for _ in 0..ROUNDS {
+                for (mode, bucket) in samples.iter_mut().enumerate() {
+                    bucket.push(run(mode));
+                }
+            }
+            let names = [
+                "no hook",
+                "hook, empty source",
+                "hook, PIT->IOAPIC->LAPIC source",
+            ];
+            for (name, bucket) in names.iter().zip(samples.iter_mut()) {
+                bucket.sort_by(f64::total_cmp);
+                println!(
+                    "{name:34} median {:7.2} ns/instr  min {:7.2}  max {:7.2}",
+                    bucket[ROUNDS / 2],
+                    bucket[0],
+                    bucket[ROUNDS - 1]
+                );
+            }
+        }
+
+        #[test]
+        fn the_two_irq_sources_are_exclusive() {
+            let (mut boot, _) = boot_with_entry(&[CLD]);
+            assert!(boot.board.enable_pit_pic_irq());
+            assert!(
+                !boot.board.enable_pit_ioapic_irq(),
+                "the 8259 source is installed"
+            );
+            assert!(boot.board.pit_ioapic_source().is_none());
+            let (mut boot, _) = boot_with_entry(&[CLD]);
+            assert!(boot.board.enable_pit_ioapic_irq());
+            assert!(
+                boot.board.enable_pit_ioapic_irq(),
+                "a second call keeps the source"
+            );
+            assert!(
+                !boot.board.enable_pit_pic_irq(),
+                "the IOAPIC source is installed"
+            );
+            assert!(!boot.board.enable_uart_irq4(), "no 8259 source to wrap");
+        }
+
+        fn members(profile: CpuidProfile) -> LinuxCpl0SetMembers {
+            LinuxCpl0SetMembers {
+                cpuid_profile: profile,
+                ..LinuxCpl0SetMembers::linux_default()
+            }
+        }
+
+        #[test]
+        fn the_apic_profile_turns_on_irq_halt_and_the_clock_owner_and_stage4a_does_not() {
+            let (mut boot, file) = boot_with_entry(&com1_program(b'X'));
+            let record = run_set_facade(
+                &mut boot,
+                &file,
+                64,
+                members(CpuidProfile::X8664V1Stage4AApic),
+            );
+            assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+            assert_eq!(record.com1, b"X");
+            for name in ["cpuid:X8664V1Stage4AApic", "halt", "irq", "clock_owner"] {
+                assert!(record.set_members.iter().any(|m| m == name), "{name}");
+            }
+            assert!(!record.set_members.iter().any(|m| m == "user_mode"));
+            assert!(boot.board.clock_owner_enabled());
+            assert!(boot.board.pit_ioapic_source().is_some());
+
+            let (mut boot, file) = boot_with_entry(&com1_program(b'X'));
+            let record =
+                run_set_facade(&mut boot, &file, 64, members(CpuidProfile::X8664V1Stage4A));
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode: 0xF4 },
+                "{record:?}"
+            );
+            assert!(
+                !record
+                    .set_members
+                    .iter()
+                    .any(|m| m == "clock_owner" || m == "halt")
+            );
+            assert!(!boot.board.clock_owner_enabled());
+            assert!(boot.board.pit_ioapic_source().is_none());
+        }
+
+        #[test]
+        fn the_apic_profile_refuses_the_user_mode_before_anything_runs() {
+            let (mut boot, file) = boot_with_entry(&com1_program(b'X'));
+            let error = run_linux_direct_board_set_user_mode(
+                &mut boot,
+                &input(&file, &[], BLOB, board_hash()),
+                64,
+                members(CpuidProfile::X8664V1Stage4AApic),
+            )
+            .expect_err("refused");
+            assert_eq!((error.code, error.stage), ("run_failed", "run"));
+            assert_eq!(error.retired, Some(0));
+            assert!(error.detail.contains("user mode"), "{error}");
+            assert!(boot.board.pit_ioapic_source().is_none());
+            assert!(!boot.board.clock_owner_enabled());
+            assert!(boot.board.com1_transcript().is_empty());
+        }
+    }
+
     // ---- S4-38L9s: ECAM (PCI MMCONFIG) data accesses of the set loop ----
 
     /// GPA of the ECAM byte for bus 0, `device`, `function`, `register`.
@@ -14531,11 +14972,11 @@ mod tests {
             width: crate::AccessWidth::Dword,
         };
         assert_eq!(
-            io.window(),
-            (
+            io.windows(),
+            [(
                 crate::PCI_ECAM_DESCRIPTOR.base,
                 crate::PCI_ECAM_DESCRIPTOR.size
-            )
+            )]
         );
         for base in [LOCAL_APIC_MMIO_BASE, IO_APIC_MMIO_BASE] {
             assert!(

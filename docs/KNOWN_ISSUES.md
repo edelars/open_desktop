@@ -12,6 +12,24 @@
 
 ## Записи
 
+### ISSUE-106 — S4-38L8d: стоп на записи RTE пина 9 (SCI) и непроверенные части APIC-профиля
+
+- **Дата обнаружения:** 2026-11-15, живой прогон S4-38L8d (`docs/reports/data/stage4/s4-38l8d-apic-check-timer.json`).
+- **Компонент:** `crates/od-machine/src/io_apic.rs` (`valid_low`), `pit_ioapic_irq_source.rs`, `firmware_board.rs`, профиль `X8664V1Stage4AApic`.
+- **Владелец:** S4-38L8e и следующие срезы S4-38.
+- **Статус:** открыта.
+- **Суть и последствия:** (1) после checkpoint L8d прогон стоит на `mov [rax+0x10], r9d` (RIP `0xffffffff813f2f9d`, retired 1 792 955 123): запись в IOWIN (`0xfec00010`) отвергнута IOAPIC как `UnsupportedConfiguration`; r9 = `0xa020` (уровень, активный низкий, вектор 0x20, без маски). Скорее всего это SCI на пине 9 (по значению; выбранный IOREGSEL не проверялся): модель IOAPIC не принимает снятие маски у входа без линии (`valid_low`). Нужен срез L8e. (2) У `PitIoapicIrqSource` нет `wake_ns` и нет дедлайна таймера LAPIC: HLT с IF = 1 завершает прогон как `halted`; пробуждение HLT по таймеру LAPIC держится только на владельце часов и в живом прогоне не проверено. (3) UART не подключён к INTIN4. (4) `--user-mode` с `stage4a-apic` отвергается (путь CPL3-IRQ построен под 8259, ISSUE-090).
+- **Следующий шаг:** срез L8e (SCI на пине 9), затем `wake_ns` и таймер LAPIC как источник пробуждения, UART на INTIN4.
+
+### ISSUE-105 — S4-38L8d: RDMSR IA32_APIC_BASE (0x1B) даёт `#GP`, ядро ограничивается одним CPU
+
+- **Дата обнаружения:** 2026-11-15, живой прогон S4-38L8d.
+- **Компонент:** набор CPL0 (`od-isa`), профиль `X8664V1Stage4AApic`.
+- **Владелец:** отдельный срез S4-38 (MSR 0x1B).
+- **Статус:** открыта.
+- **Суть и последствия:** в COM1 появилась строка `unchecked MSR access error: RDMSR from 0x1b at rIP: 0xffffffff81409342 (native_read_msr+0x2/0x50)` (условие решения владельца о добавлении MSR 0x1B выполнено). Далее `CPU topo: Enumerated BSP APIC 0 is not marked in APICBASE MSR` и `[Firmware Bug]: APIC enumeration order not specification compliant`; `CPU topo: Assuming crash kernel. Limiting to one CPU to prevent machine INIT` (ядро ограничивается одним CPU; `smp: Brought up 1 node, 1 CPU`). Прогон идёт дальше (ядро ловит `#GP` через fixup); для N vCPU (S6-18/S6-21) MSR нужен.
+- **Следующий шаг:** отдельный срез: `RDMSR`/`WRMSR` 0x1B (BSP, enable, база 0xFEE00000) и сверка с моделью LAPIC (`set_global_enabled`).
+
 ### ISSUE-104 — остатки S4-22/S4-23 переданы после закрытия с переносом
 
 - **Дата обнаружения:** 2026-11-15, решение владельца о закрытии S4-22 и S4-23 с переносом остатков.
@@ -133,11 +151,11 @@
 ### ISSUE-091 — профиль stage4a без APIC и SSE/SSE2 (Linux на 8259)
 
 - **Дата обнаружения:** 2026-11-15, итоговое ревью S4-45.
-- **Компонент:** CPUID-профиль `X8664V1Stage4A`, плата Linux direct-boot.
+- **Компонент:** CPUID-профили `X8664V1Stage4A` и `X8664V1Stage4AApic`, плата Linux direct-boot.
 - **Владелец:** этап 5.
-- **Статус:** открыта.
-- **Суть и последствия:** `PASS` S4-39j получен под профилем, где APIC и SSE/SSE2 в CPUID не объявлены, прерывания идут через 8259 PIC. Работа Linux с APIC и в профиле по умолчанию не подтверждена; результат нельзя переносить на другие профили.
-- **Следующий шаг:** этап 5 решает, нужны ли APIC и SSE/SSE2 для рабочего Linux, и повторяет S4-39j под новым профилем.
+- **Статус:** открыта, частично подвинута (S4-38L8d, 2026-11-15).
+- **Суть и последствия:** `PASS` S4-39j получен под профилем `stage4a`, где APIC и SSE/SSE2 в CPUID не объявлены, прерывания идут через 8259 PIC; профиль не изменён. S4-38L8d добавил отдельный профиль `stage4a-apic` (флаг раннера `--cpuid-profile stage4a-apic`): APIC объявлен, таймер идёт PIT → IOAPIC INTIN2 → LAPIC, включён владелец часов. Под ним достигнут checkpoint C13 (`check_timer`, путь pin 2 без отказных сообщений, 401 IRQ), но прогон не доходит до userspace (ISSUE-105, ISSUE-106), результат не засчитывается, `PASS` S4-39j остаётся за `stage4a`. SSE/SSE2 по-прежнему не объявлены ни в одном профиле. Работа Linux с APIC в профиле по умолчанию не подтверждена.
+- **Следующий шаг:** L8e и последующие срезы S4-38 (ISSUE-105, ISSUE-106); этап 5 решает, нужны ли SSE/SSE2, и повторяет S4-39j под профилем с APIC.
 
 ### ISSUE-090 — внешнее IRQ из CPL3 не поддержано (`run_failed`)
 
