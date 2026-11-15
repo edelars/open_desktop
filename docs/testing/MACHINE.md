@@ -1738,7 +1738,7 @@ mapping are not covered. See [report](../reports/STAGE_4_S4-30C_2026-11-08.md).
 
 ## S4-44 — воспроизводимый локальный набор этапа 4
 
-Подсрез S4-44a. S4-44 в целом открыт: Linux boot, Mac mini и сборка guest/firmware artifacts здесь не выполняются (см. «Что не запускается»).
+Подсрезы S4-44a (набор) и S4-44b (набор доведён до зелёного, `--no-fail-fast`, сводка по целям). S4-44 в целом открыт: Linux boot, Mac mini и сборка guest/firmware artifacts здесь не выполняются (см. «Что не запускается»).
 
 **Как запустить** (из корня checkout, один раз; оркестрация только вызывает существующие команды и не содержит CPU-семантики):
 
@@ -1746,15 +1746,15 @@ mapping are not covered. See [report](../reports/STAGE_4_S4-30C_2026-11-08.md).
 bash tools/stage4/run_local_set.sh
 ```
 
-Переменные: `STAGE4_STEP_TIMEOUT` (секунды на шаг, по умолчанию 1200), `STAGE4_LOG_DIR` (по умолчанию `work/stage4/s4-44a/`, игнорируется Git), `STAGE4_SUMMARY` (по умолчанию `docs/reports/data/stage4/s4-44a-local-set.json`). Код возврата: 0 — все шаги `passed`/`known_divergence`; 1 — есть `failed`/`timeout` (набор при этом доходит до конца, а сводка пишется всегда); 2 — ошибка запуска/сводки. Шаг не пропускается молча: он либо выполнен, либо записан в `not_run`.
+Переменные: `STAGE4_STEP_TIMEOUT` (секунды на шаг, по умолчанию 1200), `STAGE4_LOG_DIR` (по умолчанию `work/stage4/s4-44b/`, игнорируется Git), `STAGE4_SUMMARY` (по умолчанию `docs/reports/data/stage4/s4-44b-local-set.json`). Код возврата: 0 — все шаги `passed`/`known_divergence`; 1 — есть `failed`/`timeout` (набор при этом доходит до конца, а сводка пишется всегда); 2 — ошибка запуска/сводки. Шаг не пропускается молча: он либо выполнен, либо записан в `not_run`.
 
-**Что входит** (шаги по порядку, `--locked --offline` кроме fmt):
+**Что входит** (шаги по порядку; `--locked --offline` кроме fmt, все `cargo test` — с `--no-fail-fast`: упавшая цель не скрывает остальные цели шага):
 
 | id | команда |
 | --- | --- |
 | `fmt` | `cargo fmt --all -- --check` |
 | `check-workspace` | `cargo check --workspace --all-targets` |
-| `test-od-isa`, `test-od-machine`, `test-od-jit`, `test-od-host`, `test-od-runner`, `test-od-bench` | `cargo test -p <пакет>` |
+| `test-od-isa`, `test-od-machine`, `test-od-jit`, `test-od-host`, `test-od-runner`, `test-od-bench` | `cargo test -p <пакет> --no-fail-fast` |
 | `test-rest-of-workspace` | `cargo test --workspace` без шести пакетов выше (od-storage, od-tpm, od-testkit, od-x86-runner, od-image-tool, od-power-loss) |
 
 Состав включает kernel system suite (`tests/system/stage4_memory_fault.rs`, `stage4_exception_delivery.rs` как цели `od-host`), local contracts (`od-isa`, `od-machine`, `od-jit`), CLI-тесты runner (в том числе `linux_direct_lifecycle_cli.rs`, lifecycle/STOP) и S4-42/S4-43 (`od-bench`). `cargo fmt` допускает только известные расхождения в `crates/od-host/src/storage_abi_v1.rs` и `tools/image-tool/tests/cli.rs`; такой результат получает статус `known_divergence`, любой другой файл — `failed`.
@@ -1766,15 +1766,15 @@ bash tools/stage4/run_local_set.sh
 | `linux-boot-positive-negative` | not_run | vmlinuz, initramfs, ACPI manifest/blob (нет в репозитории) |
 | `linux-direct-gate-real-kernel` | not_run | `od-runner linux-direct-gate` с настоящим ядром и теми же артефактами |
 | `mac-mini-hardware-cases` | blocked | стенд Mac mini и его владелец (hardware gate этапа 3 — в своём scope) |
-| `guest-firmware-artifacts-build` | not_run | отдельная сборка `tools/build/*.py`, `firmware/uefi` и их `tools/build/test_*.py` (S4-44b) |
+| `guest-firmware-artifacts-build` | not_run | отдельная сборка `tools/build/*.py`, `firmware/uefi` и их `tools/build/test_*.py` (toolchain `x86_64-unknown-none`/uefi; не входит в S4-44a/b) |
 | `vmhost-system-smokes` | not_run | собранный VMHost app bundle и desktop-сессия (`tests/system/*.py`, `*.swift`, `*.c`; scope этапа 3) |
 
-**Как читать сводку** (`s4-44a-local-set.json`): `environment` — commit, ветка, `git status --porcelain` на старте, sha256 скрипта, `rustc`, `cargo`, macOS, arch; `steps[]` — `id`, `command`, `status` (`passed`/`failed`/`known_divergence`/`timeout`), `returncode`, `duration_seconds`, `log` (путь в `work/`, не в Git) и `log_sha256`; `totals`; `not_run[]`; `overall_local` = `passed` только при нуле `failed`/`timeout`. Логи в Git не лежат: sha256 позволяет сверить ваш лог только при том же окружении, сравнивать надо статусы и счётчики тестов.
+**Как читать сводку** (`s4-44b-local-set.json`, схема `od.stage4.s4-44b.local-set.v2`): `environment` — commit, ветка, `git status --porcelain` на старте, sha256 скрипта, `rustc`, `cargo`, macOS, arch; `steps[]` — `id`, `command`, `status` (`passed`/`failed`/`known_divergence`/`timeout`), `returncode`, `duration_seconds`, `log` (путь в `work/`, не в Git) и `log_sha256`; для шагов `cargo test` — `targets[]` (результат каждой цели: `target`, `binary`, `status` `passed`/`failed`/`no_result`, `passed`/`failed`/`ignored`, `failed_tests`) и `targets_total`/`targets_failed`, разобранные из лога cargo; `totals`; `not_run[]`; `overall_local` = `passed` только при нуле `failed`/`timeout`. Логи в Git не лежат: sha256 позволяет сверить ваш лог только при том же окружении, сравнивать надо статусы и счётчики тестов. Ошибка компиляции цели обрывает `cargo test` даже с `--no-fail-fast`: тогда у шага нет результата для не собранных целей, и он `failed`.
 
-**Ожидаемый результат** на чистом checkout: `fmt` — `known_divergence`; остальные шаги — `passed`. Отклонения первого прогона (2026-11-14, commit `47dd472`, rustc 1.99.0, macOS 26.7.1, arm64) и их причины — в `docs/reports/STAGE_4_REPORT.md`, раздел «S4-44 — результат локального прогона».
+**Ожидаемый результат** на чистом checkout: `fmt` — `known_divergence`; остальные шаги — `passed`. Результат прогона S4-44b (2026-11-15, commit `f118596`: 8 `passed`, 1 `known_divergence`, 0 `failed`) и разбор падений S4-44a — в `docs/reports/STAGE_4_REPORT.md`, разделы «S4-44 — результат локального прогона» и «S4-44b — результат».
 
 **Известные ограничения набора.**
 
-1. `cargo test -p <пакет>` без `--no-fail-fast`: после первой упавшей цели пакета остальные цели пакета не запускаются. В первом прогоне так не дошли `od-host` (цели `stage4_memory_fault`, `stage4_exception_delivery`, `stage3_dword_store_corpus`, `memory_corpus`, `diagnostic_jit_event`) и `od-runner` (`stage4_stack_build_cli`, `stage4_store_load_build_cli`, `stage4_uart_irq_cli`). Недостающее выполнено отдельным дополнительным запуском, вне сводки (см. отчёт). Для S4-44b добавить `--no-fail-fast`.
-2. Три теста `od-host` (`native_register_v1_corpus::cached_*`) читают файлы из игнорируемого `work/stage3-native-register-v1/manual/`, которые создаются другими тестами того же пакета; на свежем worktree они могут упасть в первом прогоне, при повторе проходят. Это зависимость от порядка/состояния, а не от кода этапа 4.
-3. Один тест `od-runner` падает: `stage4_probe_cli::uart_echo_profile_checks_rx_expectation_budgets_and_stop` ожидает код выхода 6 для `pio_error`, получен 5 (`tools/runner/tests/stage4_probe_cli.rs:303`). Причина не исследована.
+1. Набор не запускает ничего из таблицы «Что НЕ запускается локально»: зелёный `overall_local` означает только «локальный набор прошёл», а не «этап 4 принят».
+2. `native_register_v1_corpus::cached_*` (`od-host`) больше не зависят от порядка тестов: если файлов `native-register-v1-{observations,cache-trace}.json` нет в `work/stage3-native-register-v1/manual/` (или в `OD_JIT_NATIVE_REGISTER_V1_CORPUS_DIR`), тесты детерминированно генерируют корпус (около 1 с) и трассу и сохраняют их туда. Существующий файл читается и валидируется, как раньше.
+3. `stage4_probe_cli::uart_echo_profile_checks_rx_expectation_budgets_and_stop`: чтение RBR пустого приёмника UART с S4-38L9z возвращает последний принятый байт (0 после сброса), а не ошибку порта; тест обновлён (`--expect-byte 1` без `--rx-byte` — `completion_mismatch`, код 5; `--expect-byte 0` — `guest_completed`).

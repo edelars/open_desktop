@@ -1502,3 +1502,31 @@ reset, удержанная куча main равна baseline (0), `Bounded` tra
 - Также не выполнялись из плана S4-44: runner stress mode, `--reboot-cycles`, явный лимит guest RAM, лимит executable cache (передано из S4-43).
 
 **Ограничения набора:** нет `--no-fail-fast` (после первого падения цели пакета остаются непроверенными — исправить в S4-44b); сводка JSON отражает только один прогон скрипта, дополнительные запуски описаны выше текстом.
+
+## S4-44b — результат
+
+**Статус.** S4-44b выполнен: локальный набор зелёный (`overall_local` = `passed`: 8 `passed`, 1 `known_divergence` (`fmt`), 0 `failed`, 0 `timeout`). S4-44 в целом остаётся открытым: Linux boot, Mac mini, сборка guest/firmware artifacts, `tests/system` smokes не выполнялись (см. NOT RUN в разделе выше и в сводке). Ветка `s4-44b-fix` от S4-44a (`ba8bfd3`, main `47dd472`). Сводка: `docs/reports/data/stage4/s4-44b-local-set.json` (схема v2, результат по каждой цели), скрипт `tools/stage4/run_local_set.sh` (sha256 `ea2e3408…7ac8`).
+
+**Падение `stage4_probe_cli` (код 5 вместо 6) — вердикт: устаревший тест (не регрессия кода раннера, не окружение).** Доказательство: (1) падение воспроизведено точечно (`cargo test --test stage4_probe_cli uart_echo`): `left: Some(5)`, `right: Some(6)`, строка 303. (2) Ручной запуск `od-runner --stage4-uart-echo-probe <образ> --expect-byte 1` без `--rx-byte` даёт `retired=3`, `rip=0x400003`, `serial_bytes=[0]`, `status=completion_mismatch`, код 5: гость выполнил `in al,dx; out dx,al; hlt` и вывел 0. (3) Причина в ядре: коммит `001b79a` (S4-38L9z, 2026-11-13) осознанно изменил `uart16550.rs` — чтение RBR пустого приёмника возвращает последний принятый байт (0 после сброса), как у настоящего 16550, вместо `DeviceError::WriteOnly` (в диффе `-.ok_or(DeviceError::WriteOnly)`); тесты `od-machine` в том же коммите обновлены, тест раннера `stage4_probe_cli` (последний раз менялся в `fb49c93`, 2026-11-07) — нет. Код раннера (`stage4_probe.rs`: `PortIo` → код 6, иначе 5) корректен и не менялся; ядро не менялось. Тест теперь проверяет актуальное поведение: `--expect-byte 1` → `completion_mismatch`, код 5, `serial_bytes=[0]`; `--expect-byte 0` → `guest_completed`, код 0. Ожидание подогнано не «под результат», а под зафиксированный и задокументированный контракт UART; `git bisect` не потребовался: изменяющий коммит найден по `git log`/diff `uart16550.rs`.
+
+**`od-host` `native_register_v1_corpus::cached_*` — выбран вариант (а): фикстура воспроизводится в тесте.** Генерация корпуса (1200 входов × все backends) занимает около 1 с (`generated_corpus_runs_twice_across_all_backends`: 1.23 с), поэтому тесты `cached_*` теперь при отсутствии `native-register-v1-observations.json` / `native-register-v1-cache-trace.json` строят их детерминированно (хелперы `generate_corpus_observations`, `load_or_generate_corpus_observations`, `build_cache_trace`) и сохраняют; существующий файл читается и валидируется, как раньше. Проверено на пустом каталоге (`OD_JIT_NATIVE_REGISTER_V1_CORPUS_DIR=<пустой>`): все три теста проходят и по отдельности, и вместе. Вариант (б) (NOT RUN) не понадобился.
+
+**`--no-fail-fast`.** Добавлен во все шаги `cargo test`; сводка содержит `targets[]` по каждой цели (бинарник, статус, счётчики, имена упавших тестов).
+
+**Прогон.** commit `f118596` (дерево чистое), rustc 1.99.0 (b940084d7 2026-09-28), macOS 26.7.1, arm64, 2026-11-15; общая длительность 607 с. Полный набор запускался дважды: первый прогон (commit `4e6747f`) был признан недействительным и не используется как итог — шаг `fmt` упал на моём же форматировании хелперов в `native_register_v1_corpus.rs` (не в `KNOWN_FMT_FILES`); все тестовые шаги первого прогона при этом были `passed`. Исправление — whitespace-only коммит `f118596`, после него выполнен второй (итоговый) прогон.
+
+| шаг | статус | код | длительность, с | целей (упало) | тестов passed | log sha256 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `fmt` | known_divergence | 1 | 5 | — | — | `7bda54ca…` |
+| `check-workspace` | passed | 0 | 1 | — | — | `1975e67e…` |
+| `test-od-isa` | passed | 0 | 12 | 9 (0) | 4172 | `a317c4fe…` |
+| `test-od-machine` | passed | 0 | 75 | 31 (0) | 1438 | `9d5e19dd…` |
+| `test-od-jit` | passed | 0 | 1 | 2 (0) | 455 | `2bb7bd44…` |
+| `test-od-host` | passed | 0 | 23 | 7 (0) | 450 | `d926fe9d…` |
+| `test-od-runner` | passed | 0 | 458 | 28 (0) | 926 | `a4c562d3…` |
+| `test-od-bench` | passed | 0 | 7 | 5 (0) | 81 | `a705ada0…` |
+| `test-rest-of-workspace` | passed | 0 | 25 | 16 (0) | 1046 | `08cb68ad…` |
+
+`fmt` — `known_divergence`: только `crates/od-host/src/storage_abi_v1.rs` и `tools/image-tool/tests/cli.rs`. Короткие длительности сборочных шагов объясняются прогретым `target/` (второй прогон подряд); `test-od-runner` стабильно около 460-470 с в обоих прогонах (длительность самих тестов).
+
+**Оговорки.** (1) При итоговом прогоне каталог `work/stage3-native-register-v1/manual/` в worktree уже существовал (создан предыдущими запусками), поэтому независимость `cached_*` от `work/` подтверждена отдельным точечным прогоном с пустым `OD_JIT_NATIVE_REGISTER_V1_CORPUS_DIR`, а не самим набором. (2) Зелёный локальный набор не закрывает S4-44: NOT RUN-пункты не изменились (Linux positive/negative boot, `linux-direct-gate` на настоящем ядре, Mac mini — blocked, сборка guest/firmware artifacts, VMHost smokes; runner stress mode, `--reboot-cycles`, лимит guest RAM, лимит executable cache). (3) Сводка s4-44a-local-set.json сохранена как исторический результат S4-44a и не менялась.
