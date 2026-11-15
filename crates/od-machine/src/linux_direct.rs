@@ -12520,7 +12520,22 @@ mod tests {
             )
             .expect_err("the delivery is refused");
             assert_eq!(error.code, "run_failed");
-            assert!(error.detail.contains("external interrupt"), "{error:?}");
+            assert!(
+                error.detail.contains("ExternalInterruptDelivery"),
+                "{error:?}"
+            );
+            assert!(
+                error.detail.contains(&format!("vector: {}", IRQ_VECTOR)),
+                "{error:?}"
+            );
+            assert!(
+                error
+                    .detail
+                    .contains("failure: \"Refused(GateNotPresent)\""),
+                "{error:?}"
+            );
+            assert!(error.detail.contains("rip: "), "{error:?}");
+            assert!(error.detail.contains("cs_selector: Some("), "{error:?}");
             assert!(script.0.borrow().acked.is_empty());
             // Without the `irq` member the same source is never asked.
             let (mut boot, file) = irq_board(&[CLD; 8]);

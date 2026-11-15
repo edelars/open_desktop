@@ -264,6 +264,14 @@ pub enum FirmwareBoardError {
     BusBuild(BusBuildError),
     Bus(BusAccessError),
     Clock(VirtualClockError),
+    /// An external interrupt could not be delivered during a Linux run. Keep the original
+    /// typed failure's Debug form and the guest execution point for the host evidence record.
+    ExternalInterruptDelivery {
+        vector: u8,
+        failure: String,
+        rip: u64,
+        cs_selector: Option<u16>,
+    },
 }
 
 impl fmt::Display for FirmwareBoardError {
@@ -932,9 +940,34 @@ fn resumes_deadline_cut(
 /// ([`resumes_set_exit`]); it reaches this function only when the run ends on it anyway (a stop
 /// the guest asked for, or no budget left) and is then expressed like the quantum stop
 /// (`Stopped`), which the loop turns into `BudgetExhausted` once the budget is spent.
+#[derive(Debug, Eq, PartialEq)]
+enum SetExitMappingError {
+    Integration(&'static str),
+    ExternalInterrupt {
+        vector: u8,
+        failure: IrqDeliveryFailure,
+    },
+}
+
+impl SetExitMappingError {
+    fn into_board_error(self, state: &LongModeState) -> FirmwareBoardError {
+        match self {
+            Self::Integration(detail) => FirmwareBoardError::Config(detail),
+            Self::ExternalInterrupt { vector, failure } => {
+                FirmwareBoardError::ExternalInterruptDelivery {
+                    vector,
+                    failure: format!("{failure:?}"),
+                    rip: state.rip,
+                    cs_selector: state.cs_selector,
+                }
+            }
+        }
+    }
+}
+
 fn set_exit_to_probe_exit(
     exit: PagedCpl0SetExit,
-) -> Result<(PagedProbeExit, String), &'static str> {
+) -> Result<(PagedProbeExit, String), SetExitMappingError> {
     let detail = format!("{exit:?}");
     let mapped = match exit {
         PagedCpl0SetExit::Run(run) => match run {
@@ -947,7 +980,9 @@ fn set_exit_to_probe_exit(
             RunExit::Unsupported { opcode } => PagedProbeExit::Unsupported { opcode },
             RunExit::MemoryError(error) => PagedProbeExit::Backend(error),
             RunExit::StopAddress => {
-                return Err("the CPL0 set returned an exit the board never asks for");
+                return Err(SetExitMappingError::Integration(
+                    "the CPL0 set returned an exit the board never asks for",
+                ));
             }
         },
         PagedCpl0SetExit::Rejected(error) => {
@@ -989,20 +1024,15 @@ fn set_exit_to_probe_exit(
         // report's `user_entry` frame.
         PagedCpl0SetExit::UserEntry(_) => PagedProbeExit::Stopped,
         PagedCpl0SetExit::UnknownSetExit => {
-            return Err("the CPL0 set returned an exit variant the board does not know");
+            return Err(SetExitMappingError::Integration(
+                "the CPL0 set returned an exit variant the board does not know",
+            ));
         }
         // S4-38L8b: an interrupt of the board source that could not be delivered is an error of
         // the run, never a quiet stop; the vector and the reason are in the `Debug` text of the
         // set exit.
-        PagedCpl0SetExit::IrqDeliveryFailed { failure, .. } => {
-            return Err(match failure {
-                IrqDeliveryFailure::Refused(_) => {
-                    "an external interrupt of the board source was refused by the CPU delivery"
-                }
-                IrqDeliveryFailure::Aborted { .. } => {
-                    "an external interrupt of the board source aborted on a memory access"
-                }
-            });
+        PagedCpl0SetExit::IrqDeliveryFailed { vector, failure } => {
+            return Err(SetExitMappingError::ExternalInterrupt { vector, failure });
         }
     };
     Ok((mapped, detail))
@@ -1838,7 +1868,7 @@ impl LoadedFirmwareBoard {
             }
             let (exit, set_exit_detail) = match set_exit_to_probe_exit(report.exit) {
                 Ok(exit) => exit,
-                Err(detail) => break Err(failure(FirmwareBoardError::Config(detail))),
+                Err(error) => break Err(failure(error.into_board_error(&self.state))),
             };
             let exit = match exit {
                 PagedProbeExit::Stopped
@@ -5272,12 +5302,31 @@ mod tests {
     fn irq_delivery_failure_is_an_error_of_the_run_and_a_deadline_cut_resumes() {
         use crate::paged_memory_adapter::IrqDeliveryFailure;
         use od_isa::Cpl0ExternalInterruptRefusal;
-        assert!(
-            set_exit_to_probe_exit(PagedCpl0SetExit::IrqDeliveryFailed {
+        let mapping_error = set_exit_to_probe_exit(PagedCpl0SetExit::IrqDeliveryFailed {
+            vector: 0x30,
+            failure: IrqDeliveryFailure::Refused(Cpl0ExternalInterruptRefusal::GateNotPresent),
+        })
+        .expect_err("a refused external IRQ remains a run error");
+        assert_eq!(
+            mapping_error,
+            SetExitMappingError::ExternalInterrupt {
                 vector: 0x30,
-                failure: IrqDeliveryFailure::Refused(Cpl0ExternalInterruptRefusal::GateNotPresent),
-            })
-            .is_err()
+                failure: IrqDeliveryFailure::Refused(Cpl0ExternalInterruptRefusal::GateNotPresent,),
+            }
+        );
+        let state = LongModeState {
+            rip: 0xffff_ffff_8159_1b14,
+            cs_selector: Some(0x33),
+            ..LongModeState::default()
+        };
+        assert_eq!(
+            mapping_error.into_board_error(&state),
+            FirmwareBoardError::ExternalInterruptDelivery {
+                vector: 0x30,
+                failure: "Refused(GateNotPresent)".to_string(),
+                rip: 0xffff_ffff_8159_1b14,
+                cs_selector: Some(0x33),
+            }
         );
         let budget = PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted);
         assert!(resumes_deadline_cut(&budget, true, false, 5, 3));
@@ -5302,12 +5351,16 @@ mod tests {
     fn set_exit_without_a_probe_counterpart_is_an_integration_error_of_the_board() {
         assert_eq!(
             set_exit_to_probe_exit(PagedCpl0SetExit::UnknownSetExit),
-            Err("the CPL0 set returned an exit variant the board does not know")
+            Err(SetExitMappingError::Integration(
+                "the CPL0 set returned an exit variant the board does not know",
+            ))
         );
         // The loop passes no stop address.
         assert_eq!(
             set_exit_to_probe_exit(PagedCpl0SetExit::Run(RunExit::StopAddress)),
-            Err("the CPL0 set returned an exit the board never asks for")
+            Err(SetExitMappingError::Integration(
+                "the CPL0 set returned an exit the board never asks for",
+            ))
         );
     }
 

@@ -360,6 +360,8 @@ Scenario candidate summaries in the compact inventories are derived from exact r
 
 Дополнение 2026-11-15: две отдельные counted Stage 4 nonce серии A/B прошли с точным `OD_NONCE`, `retired=2,999,999,998` и одинаковыми входными hashes; `--compare-results A B --linux-stage5 --json` вернул `matches=true`, `unexplained_differences=[]`. Проверочная общая серия C (2 запуска, один series ID, два nonce) завершилась `failed`: run 1 дошёл до `retired=2,320,063,581`, затем runner вернул `run_failed` (`external interrupt ... refused by CPU delivery`), а run 2 прошёл ожидаемый budget stop и nonce marker. Этот отказ не удаляется сравнением A/B и не считается допустимым различием. S5-07 остаётся blocked/unaccepted до разбора отказа и успешного полного общего N-run series; ограниченный live evidence и точные hashes — в [отчёте](../reports/STAGE_5_REPORT.md#s5-07-counted-nonce-series-follow-up-2026-11-15) и [ISSUE-081](../KNOWN_ISSUES.md#issue-081-s5-07-series-evidence-prepared-but-stand-blocked).
 
+Дополнение 2026-11-15: diagnostic-only machine slice now carries the IRQ vector, typed refusal detail, RIP and CS selector through `run_failed`; mapping and `linux-direct` facade tests verify the fields. It does not change the guest IRQ behavior or reinterpret series C. A new counted live series using this build is required to localize the old failure; S5-07 remains `blocked/unaccepted`.
+
 ### S5-17. Host-side отказы и ограниченные ресурсы
 
 - [x] Принято после независимого ревью. Гостевая часть (гость видит ошибку по контракту) — отдельным шагом, **blocked до `S4-39`**. Пересечение с `S9-18` разрешается решением `S5-00` п.4(а).
