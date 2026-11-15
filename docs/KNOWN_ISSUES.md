@@ -241,10 +241,19 @@
 ### ISSUE-131 — S7-04: Rust helper `JNZ +0x38` остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact CMP handoff magic.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d37`.
+- **Статус:** решена только для exact `75 38` в base `PagedCpl0ProbeV1`; полная проверка handoff ещё не завершена.
+- **Результат и проверка:** exact JNZ использует общую ветку condition evaluation и taken-only canonicality check; flags/definedness сохраняются. `paged_probe_profile` — 201 passed: taken/not-taken, noncanonical target/fall-through, rel8 fetch fault, neighbors, CPL3/other-profile isolation. Runner при совпавшем magic не взял переход и остановился на ISSUE-132.
+- **Runner:** после 32 retired инструкций остановился на `55` (`PUSH RBP`) при `RIP=0x200d39`, `Unsupported { opcode: 85 }`; COM1 пуст. Следующий blocker — [ISSUE-132](#issue-132-s7-04-rust-helper-push-rbp-unsupported).
+- **Основание:** образ `/private/tmp/od-fw-s7-jnz-38.bin`; байты `75 38 55` по `RIP=0x200d37`; runner с бюджетом 10000.
+
+<a id="issue-132-s7-04-rust-helper-push-rbp-unsupported"></a>
+### ISSUE-132 — S7-04: Rust helper bare `PUSH RBP` остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact helper `JNZ +0x38`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d39`.
 - **Статус:** открыта.
-- **Суть и последствия:** `75 38` проверяет результат сравнения handoff magic перед продолжением полной проверки полей handoff. Runner возвращает `Unsupported { opcode: 117 }`, `retired=31`, `RIP=0x200d37`; COM1 пуст.
-- **Основание:** образ `/private/tmp/od-fw-s7-cmp-handoff-magic.bin`; `od -An -tx1 -j 0xd34 -N12` показывает `48 39 3e 75 38 55 41 57 41 56 41 55`; runner с бюджетом 10000.
-- **Следующий шаг:** установить точное условие/target и безопасные границы profile admission для этой JNZ формы.
+- **Суть и последствия:** байт `55` (`PUSH RBP`) сохраняет frame pointer перед следующей helper-прологой. Runner возвращает `Unsupported { opcode: 85 }`, `retired=32`, `RIP=0x200d39`; COM1 пуст.
+- **Основание:** образ `/private/tmp/od-fw-s7-jnz-38.bin`; `od -An -tx1 -j 0xd39 -N12` показывает `55 41 57 41 56 41 55 41 54 53 48 83`; runner с бюджетом 10000.
+- **Следующий шаг:** исследовать существующую stack-register PUSH семантику и допустить только exact bare `55` при сохранении atomicity/profile isolation.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки

@@ -393,7 +393,7 @@ Long64 CPL0 allowlist: `48 8B 03` (`MOV RAX,[RBX]`), `48 89 0B`
 (`MOV [RBX],RCX`), bare `EC` (`IN AL,DX`), bare `EE` (`OUT DX,AL`) and bare
 `F4` (`HLT`); S7-03 extends it with `B0+r ib` and `66 B8+r iw`, and S7-04 adds
 bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`,
-`75 24`/`75 77` (the two exact firmware JNZ rel8 forms), `77 0E` (exact helper JA/JNBE rel8), `49 89 F8`,
+`75 24`/`75 38`/`75 77` (the exact firmware/helper JNZ rel8 forms), `77 0E` (exact helper JA/JNBE rel8), `49 89 F8`,
 `E8 83 01 00 00` and `E8 8D 02 00 00` (the two exact `CALL rel32` forms), `48 83 EC 58`
 (`SUB RSP,0x58`), `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`), `48 81 FA 9F 00 00 00` (`CMP RDX,0x9f`), and
 `48 8D 7C 24 08` (`LEA RDI,[RSP+8]`), `BE 00 00 10 00`
@@ -532,6 +532,12 @@ Tests проверяют full state, сравнение равного handoff G
 В base `PagedCpl0ProbeV1` к ранее разрешённой `75 24` добавлена только ещё одна форма `75 77`: Primary JNZ/JNE rel8, длина 2, displacement `+0x77`, без префиксов. Она использует тот же condition evaluation и control-flow контракт, что `75 24`: ZF=0 вычисляет `next_rip + displacement` и проверяет canonicality taken target до commit; ZF=1 продвигает RIP на 2 и не проверяет canonicality fall-through. Flags, definedness, GPR, memory и I/O сохраняются. Соседние displacement и остальные branch/profile формы остаются вне allowlist.
 
 Tests проверяют taken/not-taken для обоих точных displacement, full CPU state и неизменность flags/definedness, #GP только для noncanonical taken target (в то время как noncanonical fall-through успешно retire), fetch fault на rel8 и neighbors/CPL3/other-profile isolation. Firmware runner: JNZ не взят для валидного handoff pointer, retired 15 instructions и остановился на `48 8D 7C 24 08` (`LEA RDI,[RSP+8]`, ISSUE-115, RIP `0x2001fd`).
+
+#### Расширение S7-04: exact Rust-helper `JNZ +0x38`
+
+К base `PagedCpl0ProbeV1` добавлена только третья JNZ rel8 форма `75 38`. Она использует общий JNZ path: condition читается из ZF, taken target проверяется на canonicality до commit, not-taken path продвигает RIP на 2 без проверки fall-through. RFLAGS/definedness, GPR и память не изменяются; прочие Jcc/opcode/displacement и profiles остаются вне allowlist.
+
+Tests для `+0x24`, `+0x38` и `+0x77` проверяют taken/not-taken, state/flags/definedness, taken-only #GP, fetch fault и profile/CPL isolation. Runner не взял переход при равном handoff magic; после 32 retired инструкций остановился на `55` (`PUSH RBP`, ISSUE-132, RIP `0x200d39`). Полная проверка handoff ещё не завершена.
 
 #### Расширение S7-04: точные Rust-helper `LEA RDI,[RSP+8]` и `LEA RDI,[RSP+0x50]`
 
