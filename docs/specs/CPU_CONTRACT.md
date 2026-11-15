@@ -769,6 +769,13 @@ Base `PagedCpl0ProbeV1` admits only `40 0F 94 C7`: bare REX `40`, `ConditionCode
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_setz_dil -- --nocapture` — 4 passed; full `paged_probe_profile` — 316 passed. Tests cover both ZF values with defined and undefined metadata, register/flag preservation, exact REX and ignored ModRM.reg, final ModRM fetch-fault atomicity, neighboring forms, CPL3 and other paged profiles. Firmware image `/private/tmp/od-fw-s7-setz-dil.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 62 instructions then stopped at `41 84 F8` (`TEST R8B,DIL`, ISSUE-160), `RIP=0x200dd9`, `Unsupported { opcode: 132 }`, `com1_bytes=0`; full handoff validation remains incomplete.
 
+<a id="s7-04-exact-rust-helper-test-r8b-dil"></a>
+#### Расширение S7-04: exact Rust-helper `TEST R8B,DIL`
+
+Base `PagedCpl0ProbeV1` admits only `41 84 F8`: REX `41`, opcode `84`, byte operands R8B and DIL, and length 3. It reuses `LogicKind::Test` and writes no register or memory. CF/OF clear, SF/ZF/PF follow `R8B & DIL`, and AF's concrete value is retained while its definedness is cleared.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_test_r8b_dil -- --nocapture` — 4 passed; full `paged_probe_profile` — 320 passed. Cases cover several byte results, flags/definedness, full register retention, ModRM fetch fault, adjacent operand/direction/operation/width/prefix/memory forms, CPL3 and other profiles. Firmware image `/private/tmp/od-fw-s7-test-r8b-dil.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 63 instructions then stopped at `0F 84 B4 00 00 00` (`JZ rel32 +0xB4`, ISSUE-161), `RIP=0x200ddc`, `Unsupported { opcode: 132 }`, `com1_bytes=0`; full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции

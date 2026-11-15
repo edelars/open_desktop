@@ -497,13 +497,23 @@
 - **Ссылка:** [CPU profile contract](specs/CPU_CONTRACT.md#s7-04-exact-rust-helper-setz-dil).
 
 <a id="issue-160-s7-04-rust-helper-test-r8b-dil-unsupported"></a>
-### ISSUE-160 — S7-04: Rust helper `TEST R8B,DIL` (`41 84 F8`) remains outside paged CPU profile
+### ISSUE-160 — S7-04: exact Rust-helper `TEST R8B,DIL` (`41 84 F8`) profile slice
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `SETZ DIL`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200dd9`.
+- **Статус:** решена только для exact encoding `41 84 F8` in base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Суть и последствия:** exact byte TEST compares R8B & DIL without writing registers; shared logic flags apply, and AF's concrete value is retained while its definedness is cleared.
+- **Основание:** image `/private/tmp/od-fw-s7-test-r8b-dil.bin`; runner с бюджетом 10000.
+- **Результат и проверка:** `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_test_r8b_dil -- --nocapture` — 4 passed; all 320 `paged_probe_profile` tests pass. Coverage includes differing byte results, flags/AF-definedness, full-register retention, ModRM fetch-fault atomicity, neighboring directions/registers/operations/widths/prefixes/memory, CPL3 and other-profile isolation. Runner retired 63 instructions then stopped at `0F 84 B4 00 00 00` (`JZ rel32 +0xB4`, ISSUE-161), `RIP=0x200ddc`, `Unsupported { opcode: 132 }`, `com1_bytes=0`.
+- **Ссылка:** [CPU profile contract](specs/CPU_CONTRACT.md#s7-04-exact-rust-helper-test-r8b-dil).
+
+<a id="issue-161-s7-04-rust-helper-jz-rel32-b4-unsupported"></a>
+### ISSUE-161 — S7-04: Rust helper `JZ rel32 +0xB4` (`0F 84 B4 00 00 00`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `TEST R8B,DIL`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200ddc`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retires exact SETZ, then stops at `41 84 F8` (`TEST R8B,DIL`), `Unsupported { opcode: 132 }`, `retired=62`, `RIP=0x200dd9`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-setz-dil.bin`; `od -An -tx1 -j 0xdd9 -N16` shows `41 84 f8 0f 84 b4 00 00 00 0f b7 cb`; runner с бюджетом 10000.
-- **Следующий шаг:** verify exact byte TEST register operand order and REX register selection, then admit only this observed form if bounded.
+- **Суть и последствия:** runner retires exact TEST, then stops at `0F 84 B4 00 00 00` (`JZ rel32 +0xB4`), `Unsupported { opcode: 132 }`, `retired=63`, `RIP=0x200ddc`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-test-r8b-dil.bin`; `od -An -tx1 -j 0xddc -N16` shows `0f 84 b4 00 00 00 0f b7 cb 49 b8 fc ff ff ff ff`; runner с бюджетом 10000.
+- **Следующий шаг:** verify exact near JZ condition, displacement and taken-target semantics, then admit only the observed form if bounded.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.
