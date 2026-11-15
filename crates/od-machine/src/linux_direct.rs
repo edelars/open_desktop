@@ -10544,6 +10544,15 @@ mod tests {
         let handler = pf_repair_handler(pde_address, (DATA & !(2 * MIB - 1)) | 0x83);
         write_phys(&mut boot, PF_HANDLER_AT, &handler);
         let rsp = boot.board.state().gpr[Register::Rsp as usize];
+        let faulting_rbp = 0x5555;
+        let faulting_rsi = 0x6666;
+        let faulting_rdi = 0x7777;
+        {
+            let state = boot.board.state_mut();
+            state.gpr[Register::Rbp as usize] = faulting_rbp;
+            state.gpr[Register::Rsi as usize] = faulting_rsi;
+            state.gpr[Register::Rdi as usize] = faulting_rdi;
+        }
         // The store faults, the frame is pushed, six handler instructions retire and IRETQ is
         // the last of them: the store is back at RIP and RF is set (it came from the frame).
         let mut observations = LinuxExecutionObservationCollector::default();
@@ -10576,6 +10585,14 @@ mod tests {
                 error_code: 2,
                 access: "Write".into(),
                 cpl: 0,
+                faulting_context: crate::FaultingPageFaultContext {
+                    cr3: boot.board.cr3(),
+                    rsp,
+                    rbp: faulting_rbp,
+                    rcx: 0x5A,
+                    rsi: faulting_rsi,
+                    rdi: faulting_rdi,
+                },
             }]
         );
         assert_ne!(
@@ -11627,6 +11644,49 @@ mod tests {
         assert_eq!(state.cs_selector, Some(0x08));
         assert_eq!((state.ss_selector, state.ss_unusable), (Some(0), true));
         assert_eq!(state.rflags & (1 << 9), 0, "interrupt gate clears IF");
+    }
+
+    #[test]
+    fn execution_observation_keeps_cpl3_registers_from_before_page_fault_delivery() {
+        let (mut boot, _) = user_pf_board(&[0x90], &|_, _| vec![0x90, 0x90, 0x90], true);
+        let faulting_rbp = 0x5555;
+        let faulting_rcx = 0x6666;
+        let faulting_rsi = 0x7777;
+        let faulting_rdi = 0x8888;
+        {
+            let state = boot.board.state_mut();
+            state.gpr[Register::Rbp as usize] = faulting_rbp;
+            state.gpr[Register::Rcx as usize] = faulting_rcx;
+            state.gpr[Register::Rsi as usize] = faulting_rsi;
+            state.gpr[Register::Rdi as usize] = faulting_rdi;
+        }
+        let cli = CliProfile::NonPviLong64V1;
+        let set = minimal_set(&cli).with_user_mode();
+        let mut observations = LinuxExecutionObservationCollector::default();
+        let (state, report) =
+            run_set_with_observations(&mut boot, true, 3, &set, Some(&mut observations));
+
+        assert_eq!(report.delivered_page_faults, 1, "{report:?}");
+        assert_eq!(report.cpl3_retired, 0, "{report:?}");
+        assert_eq!(state.gpr[Register::Rsp as usize], (USER_RSP0 & !15) - 48);
+        let observations = observations.finish();
+        assert_eq!(observations.page_fault_events.len(), 1);
+        assert_eq!(
+            observations.page_fault_events[0].faulting_context,
+            crate::FaultingPageFaultContext {
+                cr3: boot.board.cr3(),
+                rsp: ENTRY + 0x800,
+                rbp: faulting_rbp,
+                rcx: faulting_rcx,
+                rsi: faulting_rsi,
+                rdi: faulting_rdi,
+            }
+        );
+        assert_ne!(
+            observations.page_fault_events[0].faulting_context.rsp,
+            state.gpr[Register::Rsp as usize],
+            "the event records user RSP before delivery, not handler RSP0"
+        );
     }
 
     #[test]

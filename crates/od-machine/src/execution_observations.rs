@@ -12,12 +12,25 @@ pub struct RdtscSiteCount {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FaultingPageFaultContext {
+    /// Guest CR3 at the faulting instruction boundary.
+    pub cr3: u64,
+    pub rsp: u64,
+    pub rbp: u64,
+    pub rcx: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeliveredPageFaultObservation {
     pub rip: u64,
     pub cr2: u64,
     pub error_code: u32,
     pub access: String,
     pub cpl: u8,
+    /// Selected guest registers before exception delivery mutates the CPU state.
+    pub faulting_context: FaultingPageFaultContext,
 }
 
 /// Opt-in, bounded telemetry for one Linux CPL0-set run.
@@ -95,6 +108,14 @@ mod tests {
             error_code: 0x7,
             access: "Write".into(),
             cpl: 3,
+            faulting_context: FaultingPageFaultContext {
+                cr3: 0x1000,
+                rsp: 0x2000,
+                rbp: 0x3000,
+                rcx: 0x4000,
+                rsi: 0x5000,
+                rdi: 0x6000,
+            },
         }
     }
 

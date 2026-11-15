@@ -1,7 +1,7 @@
 //! Opt-in one-instruction Long64 bridge through the uncached RAM walker.
 
 use crate::execution_observations::{
-    DeliveredPageFaultObservation, LinuxExecutionObservationCollector,
+    DeliveredPageFaultObservation, FaultingPageFaultContext, LinuxExecutionObservationCollector,
 };
 use crate::fetch_translation_cache::{FetchCacheStats, FetchTranslationCache};
 use crate::irq_source::IrqBoundaryHook;
@@ -1028,6 +1028,17 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
                 && fault.vector == 14
                 && state.idtr.is_some()
             {
+                let faulting_context =
+                    execution_observations
+                        .as_ref()
+                        .map(|_| FaultingPageFaultContext {
+                            cr3: reported_cr3,
+                            rsp: state.gpr[od_isa::Register::Rsp as usize],
+                            rbp: state.gpr[od_isa::Register::Rbp as usize],
+                            rcx: state.gpr[od_isa::Register::Rcx as usize],
+                            rsi: state.gpr[od_isa::Register::Rsi as usize],
+                            rdi: state.gpr[od_isa::Register::Rdi as usize],
+                        });
                 let fault = fault.clone();
                 let original_record = memory.page_fault.clone();
                 let failure = if deliveries_without_retirement >= MAX_DELIVERIES_WITHOUT_RETIREMENT
@@ -1053,7 +1064,9 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
                     None => {
                         delivered_exceptions += 1;
                         delivered_page_faults += 1;
-                        if let Some(observations) = execution_observations.as_deref_mut() {
+                        if let Some((observations, faulting_context)) =
+                            execution_observations.as_deref_mut().zip(faulting_context)
+                        {
                             observations.record_page_fault(DeliveredPageFaultObservation {
                                 rip: original_record
                                     .as_ref()
@@ -1069,6 +1082,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
                                     |record| format!("{:?}", record.access()),
                                 ),
                                 cpl: u8::from(cpl3) * 3,
+                                faulting_context,
                             });
                         }
                         deliveries_without_retirement += 1;

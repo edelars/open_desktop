@@ -1287,8 +1287,8 @@ fn write_execution_observations_sidecar(
     observations: &LinuxExecutionObservations,
 ) -> Result<(), String> {
     let value = json!({
-        "schema_version": 1,
-        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events",
+        "schema_version": 2,
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events with pre-delivery register context",
         "limits": {
             "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
             "page_fault_events": od_machine::LINUX_PAGE_FAULT_EVENT_CAPACITY,
@@ -1306,6 +1306,14 @@ fn write_execution_observations_sidecar(
             "error_code": format!("0x{:08x}", event.error_code),
             "access": event.access,
             "cpl": event.cpl,
+            "faulting_context": {
+                "cr3": hex64(event.faulting_context.cr3),
+                "rsp": hex64(event.faulting_context.rsp),
+                "rbp": hex64(event.faulting_context.rbp),
+                "rcx": hex64(event.faulting_context.rcx),
+                "rsi": hex64(event.faulting_context.rsi),
+                "rdi": hex64(event.faulting_context.rdi),
+            },
         })).collect::<Vec<_>>(),
         "page_fault_events_omitted": observations.page_fault_events_omitted,
     });
@@ -3107,13 +3115,21 @@ mod tests {
                 error_code: 7,
                 access: "Write".into(),
                 cpl: 3,
+                faulting_context: od_machine::FaultingPageFaultContext {
+                    cr3: 0x1000,
+                    rsp: 0x2000,
+                    rbp: 0x3000,
+                    rcx: 0x4000,
+                    rsi: 0x5000,
+                    rdi: 0x6000,
+                },
             }],
             page_fault_events_omitted: 4,
         };
         write_execution_observations_sidecar(&mut file, path.to_str().unwrap(), &observations)
             .unwrap();
         let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["schema_version"], 2);
         assert_eq!(
             value["limits"]["rdtsc_cpl0_sites"],
             od_machine::LINUX_RDTSC_SITE_CAPACITY
@@ -3131,6 +3147,30 @@ mod tests {
         assert_eq!(value["page_fault_events"][0]["error_code"], "0x00000007");
         assert_eq!(value["page_fault_events"][0]["access"], "Write");
         assert_eq!(value["page_fault_events"][0]["cpl"], 3);
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["cr3"],
+            "0x1000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["rsp"],
+            "0x2000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["rbp"],
+            "0x3000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["rcx"],
+            "0x4000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["rsi"],
+            "0x5000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["rdi"],
+            "0x6000"
+        );
         assert_eq!(value["page_fault_events_omitted"], 4);
         drop(file);
         std::fs::remove_file(path).unwrap();
