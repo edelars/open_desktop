@@ -14484,7 +14484,11 @@ mod tests {
         }
 
         fn run_register_guest(apic: bool) -> (LinuxDirectBoot, crate::FirmwareRunReport) {
-            let (mut boot, _) = boot_with_entry(&register_guest());
+            run_guest_code(&register_guest(), apic)
+        }
+
+        fn run_guest_code(code: &[u8], apic: bool) -> (LinuxDirectBoot, crate::FirmwareRunReport) {
+            let (mut boot, _) = boot_with_entry(code);
             map_apic_windows(&mut boot);
             if apic {
                 assert!(boot.board.enable_pit_ioapic_irq());
@@ -14510,6 +14514,49 @@ mod tests {
             let state = boot.board.state();
             assert_eq!(state.gpr[Register::Rax as usize], 0x0003_0014);
             assert_eq!(state.gpr[Register::Rdx as usize], 0x0017_0020);
+        }
+
+        /// `MOV ECX, 0xFEC00000; MOV EAX, 0x22; MOV [RCX], EAX; MOV EAX, 0xA020;
+        /// MOV [RCX+0x10], EAX; MOV EDX, [RCX+0x10]; HLT`: the SCI redirection entry (GSI 9) written
+        /// as level, active low, vector 0x20, unmasked (the write the L8d run stopped on), and read
+        /// back in EDX.
+        fn sci_rte_guest() -> Vec<u8> {
+            let mut code = mov32(1, IO_APIC_MMIO_BASE as u32);
+            code.extend(mov32(0, 0x22));
+            code.extend([0x89, 0x01]); // MOV [RCX], EAX: IOREGSEL := 0x22
+            code.extend(mov32(0, 0xA020));
+            code.extend([0x89, 0x41, 0x10]); // MOV [RCX+0x10], EAX
+            code.extend([0x8B, 0x51, 0x10]); // MOV EDX, [RCX+0x10]
+            code.push(0xF4);
+            code
+        }
+
+        /// S4-38L8e: under the APIC profile the guest's level/active-low SCI entry is accepted
+        /// through IOREGSEL/IOWIN and reads back; the run reaches HLT without a memory error.
+        #[test]
+        fn the_sci_rte_write_is_accepted_under_the_apic_profile() {
+            let (boot, run) = run_guest_code(&sci_rte_guest(), true);
+            assert_eq!(run.exit, PagedProbeExit::Halted, "{run:?}");
+            assert_eq!(run.memory_error, None);
+            assert_eq!(boot.board.state().gpr[Register::Rdx as usize], 0xA020);
+        }
+
+        /// S4-38L8e: stage4a keeps the former typed error: the IOAPIC window is not served by its
+        /// set loop, so the very first register access (IOREGSEL) is a `DeviceUnavailable` error
+        /// and the guest does not halt.
+        #[test]
+        fn stage4a_keeps_the_sci_rte_write_a_typed_error() {
+            let (boot, run) = run_guest_code(&sci_rte_guest(), false);
+            assert!(
+                matches!(
+                    run.memory_error,
+                    Some(crate::TrackedAccessError::DeviceUnavailable { address })
+                        if address.get() == IO_APIC_MMIO_BASE
+                ),
+                "{run:?}"
+            );
+            assert_ne!(run.exit, PagedProbeExit::Halted);
+            assert_eq!(boot.board.state().gpr[Register::Rdx as usize], 0);
         }
 
         /// Stage4a keeps the typed error: the Local APIC window is not served by its set loop.
