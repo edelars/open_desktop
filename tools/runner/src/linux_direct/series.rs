@@ -445,6 +445,11 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
+        if name == "--stack-context-out" {
+            return Err(
+                "--stack-context-out is available only for a single linux-direct run".into(),
+            );
+        }
         if matches!(
             name,
             "--run" | "--set-cpl0" | "--diagnostic-past-c7" | "--user-mode"
@@ -2037,6 +2042,9 @@ mod tests {
         assert_eq!(parsed.requested_runs, 2);
         assert_eq!(parsed.expected_s5_marker_keys, ["A_FILE", "A_PASS"]);
         assert!(parse_series_args(&base[2..]).is_err());
+        let mut diagnostic = base.clone();
+        diagnostic.extend(["--stack-context-out".into(), "context.json".into()]);
+        assert!(parse_series_args(&diagnostic).is_err());
 
         let mut wrong_scenario = base.clone();
         let marker = wrong_scenario

@@ -271,6 +271,50 @@ pub enum TrackedCodePatchError {
 }
 
 impl MachineBus {
+    /// Diagnostic-only read of one guest virtual range. The page walk uses a no-op A/D writer,
+    /// and the final physical access is admitted only when its entire range is backed by RAM.
+    pub(crate) fn read_virtual_ram_diagnostic(
+        &mut self,
+        paging: &Long64ProbeConfig,
+        rip: u64,
+        linear: GuestLinearAddress,
+        context: AccessContext,
+        output: &mut [u8],
+    ) -> Result<(), String> {
+        let mut offset = 0usize;
+        while offset < output.len() {
+            let linear_address = linear
+                .get()
+                .checked_add(u64::try_from(offset).map_err(|_| "virtual offset overflow")?)
+                .ok_or("virtual address overflow")?;
+            let bytes_to_page_end = 4096 - (linear_address as usize & 0xfff);
+            let fragment_len = bytes_to_page_end.min(output.len() - offset);
+            let physical = crate::page_walk::translate_long64_2m_ram_read_only(
+                &mut self.memory,
+                paging,
+                rip,
+                GuestLinearAddress::new(linear_address),
+                context,
+                AccessKind::Read,
+            )
+            .map_err(|error| format!("read-only translation failed: {error:?}"))?;
+            let end = u128::from(physical.get()) + fragment_len as u128;
+            let in_ram = self.memory.region_specs().any(|region| {
+                region.kind == MemoryRegionKind::Ram
+                    && physical.get() >= region.range.start().get()
+                    && end <= region.range.end_exclusive()
+            });
+            if !in_ram {
+                return Err("translated range is not wholly backed by RAM".into());
+            }
+            self.memory
+                .read_bytes(physical, &mut output[offset..offset + fragment_len])
+                .map_err(|error| format!("RAM read failed: {error:?}"))?;
+            offset += fragment_len;
+        }
+        Ok(())
+    }
+
     pub fn code_page_generation(
         &self,
         address: GuestPhysicalAddress,
@@ -1508,6 +1552,100 @@ mod tests {
         )
         .unwrap();
         (bus, state)
+    }
+
+    fn diagnostic_page_bus(map_second_page: bool) -> (MachineBus, Long64ProbeConfig) {
+        let map = MachineMemoryMap::new(
+            36,
+            vec![crate::MemoryRegionSpec::new(
+                range(0, 0x10_000),
+                MemoryRegionKind::Ram,
+            )],
+        )
+        .unwrap();
+        let mut bus =
+            MachineBus::new(map, RamLimits::new(0x10_000), vec![], vec![], vec![]).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3000, 0x4007),
+            (0x4020, 0x7007),
+            (0x4028, if map_second_page { 0x9007 } else { 0 }),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x7ff8), &[0x11; 8])
+            .unwrap();
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x8000), &[0x22; 8])
+            .unwrap();
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x9000), &[0x33; 8])
+            .unwrap();
+        let paging = Long64ProbeConfig::new(
+            0x8001_0033,
+            0x1000,
+            1 << 5,
+            (1 << 8) | (1 << 10) | (1 << 11),
+        )
+        .unwrap();
+        (bus, paging)
+    }
+
+    #[test]
+    fn diagnostic_ram_read_translates_each_virtual_page_fragment() {
+        let (mut bus, paging) = diagnostic_page_bus(true);
+        let pte_before = bus
+            .read_physical(GuestPhysicalAddress::new(0x4020), AccessWidth::Qword)
+            .unwrap();
+        let next_pte_before = bus
+            .read_physical(GuestPhysicalAddress::new(0x4028), AccessWidth::Qword)
+            .unwrap();
+        let mut output = [0; 16];
+        bus.read_virtual_ram_diagnostic(
+            &paging,
+            0x1234,
+            GuestLinearAddress::new(0x4ff8),
+            AccessContext::default(),
+            &mut output,
+        )
+        .unwrap();
+        assert_eq!(
+            output,
+            [0x11; 8].into_iter().chain([0x33; 8]).collect::<Vec<_>>()[..]
+        );
+        assert_ne!(&output[8..], &[0x22; 8]);
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(0x4020), AccessWidth::Qword)
+                .unwrap(),
+            pte_before
+        );
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(0x4028), AccessWidth::Qword)
+                .unwrap(),
+            next_pte_before
+        );
+    }
+
+    #[test]
+    fn diagnostic_ram_read_refuses_unmapped_second_virtual_page() {
+        let (mut bus, paging) = diagnostic_page_bus(false);
+        let mut output = [0xaa; 16];
+        let error = bus
+            .read_virtual_ram_diagnostic(
+                &paging,
+                0x1234,
+                GuestLinearAddress::new(0x4ff8),
+                AccessContext::default(),
+                &mut output,
+            )
+            .unwrap_err();
+        assert!(error.contains("read-only translation failed"));
+        assert_eq!(&output[8..], &[0xaa; 8]);
     }
 
     #[test]

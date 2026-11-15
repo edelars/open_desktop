@@ -6,6 +6,10 @@
 //! builds the temporary 4 KiB identity page tables and the handoff block, and
 //! hands over a `LongModeState`. It is not a reset vector and not real mode.
 
+use crate::console_output_context::{
+    ConsoleContextTrigger, ConsoleLineTrigger, ConsoleOutputContextSnapshot, MAX_CAPTURE_COUNT,
+    capture_frame_chain,
+};
 use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters, NoIrqSource};
 use crate::page_walk::translate_long64_2m_ram_read_only;
 use crate::paged_memory_adapter::{
@@ -1124,6 +1128,9 @@ pub struct LoadedFirmwareBoard {
     guest_fp: GuestFpState,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
+    /// Disabled by default. Diagnostic snapshots are sampled only at completed COM1 lines.
+    console_context_parser: Option<ConsoleLineTrigger>,
+    console_context_snapshots: Vec<ConsoleOutputContextSnapshot>,
     /// Pending-tick flag of the guest `RDTSC` (S4-37a6b); `Some` only under
     /// `linux_profile`, where `run` hands the CPU a time source. The source sets
     /// it, the `run_boot` stop predicate reads it and `run_boot` clears it.
@@ -1172,6 +1179,79 @@ impl LoadedFirmwareBoard {
     /// that returned an error (so the runner never loses transcript bytes).
     pub fn com1_transcript(&self) -> &[u8] {
         &self.com1_log
+    }
+
+    /// Enables bounded diagnostic sampling at selected completed console-output lines.
+    /// Sampling reads CPU state and RAM only; the result describes console-output context,
+    /// not the unwind state of a previously printed trace.
+    pub fn enable_console_output_context_diagnostic(&mut self) {
+        self.console_context_parser = Some(ConsoleLineTrigger::default());
+        self.console_context_snapshots.clear();
+    }
+
+    /// Takes the snapshots produced by the last run, if the diagnostic was enabled.
+    pub fn take_console_output_context_diagnostic(&mut self) -> Vec<ConsoleOutputContextSnapshot> {
+        std::mem::take(&mut self.console_context_snapshots)
+    }
+
+    fn sample_console_output_context(&mut self, byte: u8) {
+        if self.console_context_snapshots.len() >= MAX_CAPTURE_COUNT {
+            self.console_context_parser = None;
+            return;
+        }
+        let trigger = self
+            .console_context_parser
+            .as_mut()
+            .and_then(|parser| parser.push(byte));
+        if let Some(trigger) = trigger {
+            self.capture_console_output_context(trigger);
+            if self.console_context_snapshots.len() >= MAX_CAPTURE_COUNT {
+                self.console_context_parser = None;
+            }
+        }
+    }
+
+    fn capture_console_output_context(&mut self, trigger: ConsoleContextTrigger) {
+        const CR0_LONG_PAGING: u64 = (1 << 31) | (1 << 16) | (1 << 4) | 1;
+        const CR4_PAE: u64 = 1 << 5;
+        let rip = self.state.rip;
+        let rbp = self.state.gpr[Register::Rbp as usize];
+        let cr3 = self.page_table_root;
+        let paging = Long64ProbeConfig::new(
+            self.state.cr0.unwrap_or(CR0_LONG_PAGING),
+            cr3,
+            self.state.cr4.unwrap_or(CR4_PAE),
+            FIRMWARE_EFER,
+        );
+        let (frames, ended) = match paging {
+            Ok(paging) => capture_frame_chain(rbp, |frame_pointer| {
+                let mut bytes = [0; 16];
+                self.bus
+                    .read_virtual_ram_diagnostic(
+                        &paging,
+                        rip,
+                        GuestLinearAddress::new(frame_pointer),
+                        AccessContext {
+                            mode: InstructionMode::Long64,
+                            privilege: PrivilegeLevel::Ring0,
+                            origin: AccessOrigin::Explicit,
+                        },
+                        &mut bytes,
+                    )
+                    .map(|()| bytes)
+                    .map_err(|_| ())
+            }),
+            Err(_) => (Vec::new(), crate::FrameChainEnd::ReadFailed),
+        };
+        self.console_context_snapshots
+            .push(ConsoleOutputContextSnapshot {
+                trigger,
+                rip,
+                rbp,
+                cr3,
+                frames,
+                ended,
+            });
     }
 
     pub fn uart(&self) -> Uart16550Handle {
@@ -1673,6 +1753,10 @@ impl LoadedFirmwareBoard {
         let mut cpl3_retired = 0u64;
         let mut syscall_journal = crate::linux_direct::SyscallJournal::default();
         self.com1_log.clear();
+        self.console_context_snapshots.clear();
+        if self.console_context_parser.is_some() {
+            self.console_context_parser = Some(ConsoleLineTrigger::default());
+        }
         let nvme = self.nvme.clone();
         let acpi_pm = self.acpi_pm.clone();
         let pit = self.pit.clone();
@@ -1790,6 +1874,9 @@ impl LoadedFirmwareBoard {
             while uart.transfer_holding_to_shift() {
                 if let Some(byte) = uart.complete_transmission() {
                     self.com1_log.push(byte);
+                    if self.console_context_parser.is_some() {
+                        self.sample_console_output_context(byte);
+                    }
                 }
             }
             if let Some(source) = &self.uart_irq_source {
@@ -2389,6 +2476,8 @@ impl AssembledBoard {
             guest_kernel_gs_base: 0,
             guest_fp: GuestFpState::initial(),
             com1_log: Vec::new(),
+            console_context_parser: None,
+            console_context_snapshots: Vec::new(),
             rdtsc_tick,
             irq_source: Box::new(NoIrqSource),
             pic_master,
@@ -2458,6 +2547,8 @@ impl AssembledBoard {
             guest_kernel_gs_base: 0,
             guest_fp: GuestFpState::initial(),
             com1_log: Vec::new(),
+            console_context_parser: None,
+            console_context_snapshots: Vec::new(),
             rdtsc_tick,
             irq_source: Box::new(NoIrqSource),
             pic_master,

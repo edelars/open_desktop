@@ -83,7 +83,7 @@ pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a] [--user-mode]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a] [--user-mode] [--stack-context-out <json>]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -122,6 +122,8 @@ struct Options {
     /// `--user-mode` (S4-39c, only with `--set-cpl0 --cpuid-profile stage4a`): a committed `IRETQ`
     /// to CPL3 continues with the CPL3 entry instead of stopping at `user_entry`.
     user_mode: bool,
+    /// Separate, opt-in sidecar for bounded console-output stack context; single run only.
+    stack_context_out: Option<String>,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -141,7 +143,32 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(3);
         }
     };
-    let (value, code) = evaluate(&options);
+    let (mut value, code) = evaluate(&options);
+    let skip_report_write = value
+        .get("_skip_report_write")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if let Some(object) = value.as_object_mut() {
+        object.remove("_skip_report_write");
+    }
+    if skip_report_write {
+        println!("{value}");
+        return ExitCode::from(code);
+    }
+    let sidecar_collides_with_report = options
+        .stack_context_out
+        .as_ref()
+        .is_some_and(|sidecar| match_existing_file_identity(sidecar, &options.out).unwrap_or(true));
+    if sidecar_collides_with_report {
+        let value = refusal(
+            "invalid_input",
+            "stack_context_sidecar",
+            "the sidecar and primary report resolve to the same filesystem object".into(),
+            json!({"retired": 0, "guest_started": false}),
+        );
+        println!("{value}");
+        return ExitCode::from(3);
+    }
     let text = format!("{value:#}\n");
     if let Err(error) = std::fs::write(&options.out, &text) {
         let value = refusal(
@@ -271,6 +298,59 @@ fn evaluate(options: &Options) -> (Value, u8) {
         Ok(mut boot) => {
             describe(&mut evidence, &boot, &cmdline, &vmlinuz, &initramfs_sha);
             if let Some(budget) = options.budget {
+                let mut sidecar_file = None;
+                if let Some(path) = &options.stack_context_out {
+                    let file = match std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(path)
+                    {
+                        Ok(file) => file,
+                        Err(error) => {
+                            let mut value = refusal(
+                                "diagnostic_sidecar_reservation_failed",
+                                "stack_context_sidecar",
+                                format!("{path}: {error}"),
+                                evidence,
+                            );
+                            // Existing files, including dangling symlinks, are preserved when
+                            // destination identity cannot be established.
+                            value["_skip_report_write"] = json!(true);
+                            return (value, 4);
+                        }
+                    };
+                    match file_matches_existing_path(&file, path, &options.out) {
+                        Ok(false) => sidecar_file = Some(file),
+                        Ok(true) => {
+                            let cleanup = discard_sidecar_reservation(path, file);
+                            let mut value = refusal(
+                                "diagnostic_sidecar_path_collision",
+                                "stack_context_sidecar",
+                                "--out resolves to the reserved sidecar file".into(),
+                                evidence,
+                            );
+                            if cleanup.is_err() {
+                                value["_skip_report_write"] = json!(true);
+                            }
+                            return (value, 4);
+                        }
+                        Err(detail) => {
+                            let cleanup = discard_sidecar_reservation(path, file);
+                            let mut value = refusal(
+                                "diagnostic_sidecar_identity_failed",
+                                "stack_context_sidecar",
+                                detail,
+                                evidence,
+                            );
+                            // If identity could not be established, avoid writing through an
+                            // output alias that might refer to the reservation.
+                            value["_skip_report_write"] = json!(true);
+                            let _ = cleanup;
+                            return (value, 4);
+                        }
+                    }
+                    boot.board.enable_console_output_context_diagnostic();
+                }
                 let run_set = if options.user_mode {
                     run_linux_direct_board_set_user_mode
                 } else {
@@ -306,6 +386,20 @@ fn evaluate(options: &Options) -> (Value, u8) {
                 } else {
                     run_linux_direct_board(&mut boot, &machine_input, budget)
                 };
+                if let Some(path) = &options.stack_context_out {
+                    let snapshots = boot.board.take_console_output_context_diagnostic();
+                    let write_error = match sidecar_file.as_mut() {
+                        Some(file) => write_stack_context_sidecar(file, path, &snapshots).err(),
+                        None => Some("sidecar reservation is missing".into()),
+                    };
+                    evidence["stack_context_sidecar"] = json!({
+                        "path": path,
+                        "capture_scope": "console-output context",
+                        "unwind_context": false,
+                        "snapshots": snapshots.len(),
+                        "write_error": write_error,
+                    });
+                }
                 match result {
                     Ok(record) => {
                         evidence["guest_started"] = json!(true);
@@ -743,6 +837,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut user_mode = false;
     let mut budget = None;
     let mut cpuid_profile_text: Option<String> = None;
+    let mut stack_context_out = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -794,6 +889,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--out" => &mut out,
             "--budget" => &mut budget,
             "--cpuid-profile" => &mut cpuid_profile_text,
+            "--stack-context-out" => &mut stack_context_out,
             other => {
                 return Err(format!("unexpected option {other}; usage: {USAGE}"));
             }
@@ -847,6 +943,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--user-mode needs --run, --set-cpl0 and --cpuid-profile stage4a; usage: {USAGE}"
         ));
     }
+    if stack_context_out.is_some() && !(run && set_cpl0) {
+        return Err(format!(
+            "--stack-context-out needs --run and --set-cpl0; usage: {USAGE}"
+        ));
+    }
     let nonce = required(nonce, "--nonce")?;
     if nonce.is_empty()
         || nonce.chars().count() > MAX_NONCE_CHARS
@@ -895,7 +996,138 @@ fn parse(args: &[String]) -> Result<Options, String> {
         diagnostic_past_c7,
         cpuid_profile,
         user_mode,
+        stack_context_out,
     })
+}
+
+fn match_existing_file_identity(first: &str, second: &str) -> Result<bool, String> {
+    let first_metadata = match std::fs::metadata(first) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("could not inspect {first}: {error}")),
+    };
+    let second_metadata = match std::fs::metadata(second) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("could not inspect {second}: {error}")),
+    };
+    metadata_is_same_file(&first_metadata, &second_metadata, first, second)
+}
+
+fn file_matches_existing_path(
+    file: &File,
+    reservation_path: &str,
+    path: &str,
+) -> Result<bool, String> {
+    let reserved_metadata = file.metadata().map_err(|error| {
+        format!("could not inspect reserved sidecar {reservation_path}: {error}")
+    })?;
+    let reservation_path_metadata = std::fs::metadata(reservation_path).map_err(|error| {
+        format!("could not inspect reserved sidecar path {reservation_path}: {error}")
+    })?;
+    if !metadata_is_same_file(
+        &reserved_metadata,
+        &reservation_path_metadata,
+        reservation_path,
+        reservation_path,
+    )? {
+        return Err("sidecar reservation path changed after it was opened".into());
+    }
+    match_existing_file_identity(reservation_path, path)
+}
+
+#[cfg(unix)]
+fn metadata_is_same_file(
+    first: &std::fs::Metadata,
+    second: &std::fs::Metadata,
+    _first_path: &str,
+    _second_path: &str,
+) -> Result<bool, String> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(first.dev() == second.dev() && first.ino() == second.ino())
+}
+
+#[cfg(not(unix))]
+fn metadata_is_same_file(
+    _first: &std::fs::Metadata,
+    _second: &std::fs::Metadata,
+    first_path: &str,
+    second_path: &str,
+) -> Result<bool, String> {
+    let first = std::fs::canonicalize(first_path)
+        .map_err(|error| format!("could not resolve {first_path}: {error}"))?;
+    let second = std::fs::canonicalize(second_path)
+        .map_err(|error| format!("could not resolve {second_path}: {error}"))?;
+    Ok(first == second)
+}
+
+fn discard_sidecar_reservation(path: &str, file: File) -> Result<(), String> {
+    if !file_matches_existing_path(&file, path, path)? {
+        return Err("sidecar reservation path identity changed".into());
+    }
+    drop(file);
+    std::fs::remove_file(path).map_err(|error| format!("could not remove {path}: {error}"))
+}
+
+fn write_stack_context_sidecar(
+    file: &mut File,
+    path: &str,
+    snapshots: &[od_machine::ConsoleOutputContextSnapshot],
+) -> Result<(), String> {
+    let value = json!({
+        "schema_version": 1,
+        "capture_scope": "console-output context",
+        "unwind_context": false,
+        "limits": {
+            "snapshots": 4,
+            "line_bytes": 192,
+            "frame_links": 32,
+            "stack_window_bytes": 4096
+        },
+        "snapshots": snapshots.iter().map(|snapshot| json!({
+            "trigger": match snapshot.trigger {
+                od_machine::ConsoleContextTrigger::CallTraceLine => "call_trace_line",
+                od_machine::ConsoleContextTrigger::OptionalFrameLine => "optional_frame_line",
+            },
+            "rip": hex64(snapshot.rip),
+            "rbp": hex64(snapshot.rbp),
+            "cr3": hex64(snapshot.cr3),
+            "frames": snapshot.frames.iter().map(|frame| json!({
+                "frame_pointer": hex64(frame.frame_pointer),
+                "return_address": hex64(frame.return_address),
+            })).collect::<Vec<_>>(),
+            "ended": match snapshot.ended {
+                od_machine::FrameChainEnd::NullFramePointer => "null_frame_pointer",
+                od_machine::FrameChainEnd::NonCanonicalFramePointer => "non_canonical_frame_pointer",
+                od_machine::FrameChainEnd::UnalignedFramePointer => "unaligned_frame_pointer",
+                od_machine::FrameChainEnd::OutsideStackWindow => "outside_stack_window",
+                od_machine::FrameChainEnd::RepeatedFramePointer => "repeated_frame_pointer",
+                od_machine::FrameChainEnd::NonMonotonicFramePointer => "non_monotonic_frame_pointer",
+                od_machine::FrameChainEnd::ReadFailed => "read_failed",
+                od_machine::FrameChainEnd::NonCanonicalReturnAddress => "non_canonical_return_address",
+                od_machine::FrameChainEnd::FrameLimit => "frame_limit",
+            },
+        })).collect::<Vec<_>>(),
+    });
+    file_matches_existing_path(file, path, path)?;
+    let bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
+    use std::io::Write;
+    if let Err(error) = file.write_all(&bytes).and_then(|()| file.write_all(b"\n")) {
+        let cleanup = match file_matches_existing_path(file, path, path) {
+            Ok(true) => {
+                std::fs::remove_file(path).map_err(|cleanup_error| cleanup_error.to_string())
+            }
+            Ok(false) => Err("reservation path identity changed".into()),
+            Err(cleanup_error) => Err(cleanup_error),
+        };
+        return Err(match cleanup {
+            Ok(()) => format!("{path}: {error}"),
+            Err(cleanup_error) => {
+                format!("{path}: {error}; partial sidecar cleanup failed: {cleanup_error}")
+            }
+        });
+    }
+    Ok(())
 }
 
 /// A lowercase 64-digit hex string.
@@ -1019,6 +1251,7 @@ mod tests {
                 diagnostic_past_c7: false,
                 cpuid_profile: CpuidProfile::DiagnosticV1,
                 user_mode: false,
+                stack_context_out: None,
             };
             Self { dir, options }
         }
@@ -2359,6 +2592,147 @@ mod tests {
     }
 
     #[test]
+    fn stack_context_sidecar_is_single_cpl0_run_only() {
+        let run = ["--run", "--budget", "1", "--set-cpl0"];
+        let accepted =
+            parse_base(&[&run[..], &["--stack-context-out", "context.json"]].concat()).unwrap();
+        assert_eq!(accepted.stack_context_out.as_deref(), Some("context.json"));
+        assert!(parse_base(&["--stack-context-out", "context.json"]).is_err());
+        assert_eq!(
+            parse_base(&[&run[..], &["--stack-context-out", "o"]].concat())
+                .unwrap()
+                .stack_context_out
+                .as_deref(),
+            Some("o")
+        );
+        assert!(
+            parse_base(&[
+                "--run",
+                "--budget",
+                "1",
+                "--stack-context-out",
+                "context.json"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn sidecar_collision_guard_uses_filesystem_identity_for_aliases() {
+        let root = std::env::temp_dir().join(format!(
+            "od-runner-stack-context-paths-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let sub = root.join("sub");
+        let real = root.join("real");
+        let alias = root.join("alias");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(&real).unwrap();
+        let ordinary = root.join("out.json");
+        let dotdot = sub.join("../out.json");
+        let ordinary_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&ordinary)
+            .unwrap();
+        assert!(
+            file_matches_existing_path(
+                &ordinary_file,
+                ordinary.to_str().unwrap(),
+                dotdot.to_str().unwrap()
+            )
+            .unwrap()
+        );
+
+        let case_alias = root.join("OUT.JSON");
+        let same_case_alias = file_matches_existing_path(
+            &ordinary_file,
+            ordinary.to_str().unwrap(),
+            case_alias.to_str().unwrap(),
+        )
+        .unwrap();
+        if same_case_alias {
+            assert!(std::fs::metadata(&case_alias).is_ok());
+        } else {
+            // On a case-sensitive volume this is a distinct future destination.
+            let _case_file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&case_alias)
+                .unwrap();
+            assert!(
+                !file_matches_existing_path(
+                    &ordinary_file,
+                    ordinary.to_str().unwrap(),
+                    case_alias.to_str().unwrap()
+                )
+                .unwrap()
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            let dangling = root.join("dangling.json");
+            std::os::unix::fs::symlink(root.join("missing-target.json"), &dangling).unwrap();
+            assert!(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&dangling)
+                    .is_err()
+            );
+
+            std::os::unix::fs::symlink(&real, &alias).unwrap();
+            let sidecar_path = real.join("sidecar.json");
+            let sidecar_file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&sidecar_path)
+                .unwrap();
+            assert!(
+                file_matches_existing_path(
+                    &sidecar_file,
+                    sidecar_path.to_str().unwrap(),
+                    alias.join("sidecar.json").to_str().unwrap()
+                )
+                .unwrap()
+            );
+        }
+        drop(ordinary_file);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stack_context_sidecar_serializes_as_separate_console_context_evidence() {
+        let path = std::env::temp_dir().join(format!(
+            "od-runner-stack-context-{}-{}.json",
+            std::process::id(),
+            1
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        write_stack_context_sidecar(&mut file, path.to_str().unwrap(), &[]).unwrap();
+        let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["capture_scope"], "console-output context");
+        assert_eq!(value["unwind_context"], false);
+        assert_eq!(value["snapshots"].as_array().unwrap().len(), 0);
+        assert!(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .is_err()
+        );
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn stage4a_runs_leaf_1_without_the_c7_stop_and_marks_the_result_counted() {
         // CLI; MOV EAX, 1; CPUID; HLT, no --diagnostic-past-c7.
         let code = [0xFA, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x0F, 0xA2, 0xF4];
@@ -2653,6 +3027,7 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
+            stack_context_out: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -2696,6 +3071,7 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
+            stack_context_out: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -2746,6 +3122,7 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
+            stack_context_out: None,
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");

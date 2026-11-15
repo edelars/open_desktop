@@ -5,6 +5,7 @@ mod acpi_blob;
 mod acpi_pm;
 mod apic_pair;
 mod bus;
+mod console_output_context;
 mod diagnostic_vcpu;
 mod display_device;
 mod dma_page;
@@ -89,6 +90,10 @@ pub use bus::{
     DisplayBindingError, FramebufferBinding, IoSpace, MachineBus, MmioBinding, PortAddress,
     PortRange, PortRegionBinding, TrackedCodePatchError, TrackedCodeSnapshot,
     TrackedCodeSnapshotError,
+};
+
+pub use console_output_context::{
+    ConsoleContextFrame, ConsoleContextTrigger, ConsoleOutputContextSnapshot, FrameChainEnd,
 };
 pub use dma_page::{DMA_PAGE_0_PORT, DMA_PAGE_0_PORT_BYTES, DmaPage0};
 pub use pic_8259::{
