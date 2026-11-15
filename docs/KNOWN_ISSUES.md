@@ -145,6 +145,8 @@
 
 - Диагностический срез и два live single-run результата зафиксированы выше; ограничения comparator и блокировка S5-07 остаются в силе.
 
+- **UART byte-provenance follow-up (2026-11-15):** opt-in `--stack-context-out` sidecar расширен до schema v2. При первом точном `OD_NONCE=` в COM1 он записывает `=` и максимум 511 следующих байт с абсолютными offsets, byte values, retired count, post-OUT instruction-boundary RIP, RSP/RBP/CR3, CS/CPL и немедленными bounded frame chains. Первые восемь marker bytes явно не имеют context samples; конец окна различает отсутствие marker, конец run и лимит 512 байт. Набор parser/bounds и serializer tests прошёл, но свежего Linux guest run с этим sidecar ещё нет. Поэтому origin interleaving неизвестен, exact marker validation остаётся строгой, S5-07 остаётся открытой. Опция не принимает `--test-runs`; выполнить отдельные counted single diagnostic runs с sidecars, после чего отдельно запустить acceptance N=2 series без sidecar. Overhead не измерялся. Подробности: [UART provenance report](reports/STAGE_5_REPORT.md#s5-07-bounded-uart-byte-provenance-window-2026-11-15).
+
 <a id="issue-080-s5-06-guest-suite-unverified-and-f-endpoint-blocked"></a>
 
 

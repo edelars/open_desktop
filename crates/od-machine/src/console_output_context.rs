@@ -7,6 +7,10 @@ pub(crate) const MAX_CAPTURE_COUNT: usize = 4;
 const MAX_LINE_BYTES: usize = 192;
 pub(crate) const MAX_FRAME_LINKS: usize = 32;
 pub(crate) const STACK_WINDOW_BYTES: u64 = 4096;
+pub const MAX_UART_PROVENANCE_BYTES: usize = 512;
+
+const UART_PROVENANCE_MARKER: &[u8] = b"OD_NONCE=";
+const UART_PROVENANCE_PREFIX: [usize; 9] = [0, 0, 0, 0, 1, 0, 0, 0, 0];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConsoleContextTrigger {
@@ -41,6 +45,166 @@ pub struct ConsoleOutputContextSnapshot {
     pub cr3: u64,
     pub frames: Vec<ConsoleContextFrame>,
     pub ended: FrameChainEnd,
+}
+
+/// CPU and bounded frame-chain context captured when a single byte is appended to COM1.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UartOutputByteContextSnapshot {
+    pub offset: u64,
+    pub byte: u8,
+    pub retired: u64,
+    pub rip: u64,
+    pub rsp: u64,
+    pub rbp: u64,
+    pub cr3: u64,
+    pub cs_selector: Option<u16>,
+    pub frames: Vec<ConsoleContextFrame>,
+    pub ended: FrameChainEnd,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UartOutputContextEnd {
+    MarkerNotFound,
+    RunEnded,
+    ByteLimit,
+}
+
+/// Bounded provenance window following the first `OD_NONCE=` marker.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UartOutputContextDiagnostic {
+    /// COM1 offset of `O` in the matched marker.
+    pub marker_offset: Option<u64>,
+    /// The marker's first eight bytes precede the trigger and have no per-byte context samples.
+    pub marker_prefix_before_trigger_unobserved: bool,
+    pub end: UartOutputContextEnd,
+    pub samples: Vec<UartOutputByteContextSnapshot>,
+}
+
+#[derive(Default)]
+pub(crate) struct UartOutputContextCapture {
+    marker_match: usize,
+    marker_offset: Option<u64>,
+    samples: Vec<UartOutputByteContextSnapshot>,
+}
+
+impl UartOutputContextCapture {
+    /// Returns true when the current byte needs an immediate CPU/stack snapshot.
+    pub(crate) fn observe_byte(&mut self, byte: u8, offset: u64) -> bool {
+        if self.marker_offset.is_none() {
+            while self.marker_match > 0 && byte != UART_PROVENANCE_MARKER[self.marker_match] {
+                self.marker_match = UART_PROVENANCE_PREFIX[self.marker_match - 1];
+            }
+            if byte == UART_PROVENANCE_MARKER[self.marker_match] {
+                self.marker_match += 1;
+                if self.marker_match == UART_PROVENANCE_MARKER.len() {
+                    self.marker_offset = Some(offset + 1 - UART_PROVENANCE_MARKER.len() as u64);
+                    return true;
+                }
+            }
+            return false;
+        }
+        self.samples.len() < MAX_UART_PROVENANCE_BYTES
+    }
+
+    pub(crate) fn push_snapshot(&mut self, snapshot: UartOutputByteContextSnapshot) {
+        if self.samples.len() < MAX_UART_PROVENANCE_BYTES {
+            self.samples.push(snapshot);
+        }
+    }
+
+    pub(crate) fn finish(self) -> UartOutputContextDiagnostic {
+        let end = if self.marker_offset.is_none() {
+            UartOutputContextEnd::MarkerNotFound
+        } else if self.samples.len() >= MAX_UART_PROVENANCE_BYTES {
+            UartOutputContextEnd::ByteLimit
+        } else {
+            UartOutputContextEnd::RunEnded
+        };
+        UartOutputContextDiagnostic {
+            marker_offset: self.marker_offset,
+            marker_prefix_before_trigger_unobserved: self.marker_offset.is_some(),
+            end,
+            samples: self.samples,
+        }
+    }
+}
+
+#[cfg(test)]
+mod uart_provenance_tests {
+    use super::*;
+
+    fn sample(offset: u64, byte: u8) -> UartOutputByteContextSnapshot {
+        UartOutputByteContextSnapshot {
+            offset,
+            byte,
+            retired: offset + 100,
+            rip: 0x1000 + offset,
+            rsp: 0x8000,
+            rbp: 0x8100,
+            cr3: 0x6000,
+            cs_selector: Some(0x8),
+            frames: Vec::new(),
+            ended: FrameChainEnd::NullFramePointer,
+        }
+    }
+
+    #[test]
+    fn nonce_window_starts_at_equals_and_records_absolute_byte_offsets() {
+        let mut capture = UartOutputContextCapture::default();
+        for (offset, byte) in b"OD_NOD_NONCE=ab".iter().copied().enumerate() {
+            if capture.observe_byte(byte, offset as u64) {
+                capture.push_snapshot(sample(offset as u64, byte));
+            }
+        }
+        let diagnostic = capture.finish();
+        assert_eq!(diagnostic.marker_offset, Some(4));
+        assert!(diagnostic.marker_prefix_before_trigger_unobserved);
+        assert_eq!(diagnostic.end, UartOutputContextEnd::RunEnded);
+        assert_eq!(
+            diagnostic
+                .samples
+                .iter()
+                .map(|sample| sample.byte)
+                .collect::<Vec<_>>(),
+            b"=ab"
+        );
+        assert_eq!(
+            diagnostic
+                .samples
+                .iter()
+                .map(|sample| sample.offset)
+                .collect::<Vec<_>>(),
+            [12, 13, 14]
+        );
+    }
+
+    #[test]
+    fn nonce_window_is_bounded_and_absent_marker_is_explicit() {
+        let mut capture = UartOutputContextCapture::default();
+        for (offset, byte) in b"OD_NONCE=".iter().copied().enumerate() {
+            if capture.observe_byte(byte, offset as u64) {
+                capture.push_snapshot(sample(offset as u64, byte));
+            }
+        }
+        for index in 0..MAX_UART_PROVENANCE_BYTES + 20 {
+            let offset = (b"OD_NONCE=".len() + index) as u64;
+            if capture.observe_byte(b'x', offset) {
+                capture.push_snapshot(sample(offset, b'x'));
+            }
+        }
+        let diagnostic = capture.finish();
+        assert_eq!(diagnostic.samples.len(), MAX_UART_PROVENANCE_BYTES);
+        assert_eq!(diagnostic.end, UartOutputContextEnd::ByteLimit);
+
+        let mut capture = UartOutputContextCapture::default();
+        for (offset, byte) in b"OD_NONCE".iter().copied().enumerate() {
+            assert!(!capture.observe_byte(byte, offset as u64));
+        }
+        let diagnostic = capture.finish();
+        assert_eq!(diagnostic.marker_offset, None);
+        assert_eq!(diagnostic.end, UartOutputContextEnd::MarkerNotFound);
+        assert!(diagnostic.samples.is_empty());
+    }
 }
 
 /// Small line recognizer. A too-long line is discarded through its newline, never truncated into

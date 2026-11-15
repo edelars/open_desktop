@@ -8,6 +8,7 @@
 
 use crate::console_output_context::{
     ConsoleContextTrigger, ConsoleLineTrigger, ConsoleOutputContextSnapshot, MAX_CAPTURE_COUNT,
+    UartOutputByteContextSnapshot, UartOutputContextCapture, UartOutputContextDiagnostic,
     capture_frame_chain,
 };
 use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters, NoIrqSource};
@@ -1131,6 +1132,8 @@ pub struct LoadedFirmwareBoard {
     /// Disabled by default. Diagnostic snapshots are sampled only at completed COM1 lines.
     console_context_parser: Option<ConsoleLineTrigger>,
     console_context_snapshots: Vec<ConsoleOutputContextSnapshot>,
+    /// Disabled by default. Captures a bounded window after the first nonce marker.
+    uart_output_context: Option<UartOutputContextCapture>,
     /// Pending-tick flag of the guest `RDTSC` (S4-37a6b); `Some` only under
     /// `linux_profile`, where `run` hands the CPU a time source. The source sets
     /// it, the `run_boot` stop predicate reads it and `run_boot` clears it.
@@ -1187,11 +1190,19 @@ impl LoadedFirmwareBoard {
     pub fn enable_console_output_context_diagnostic(&mut self) {
         self.console_context_parser = Some(ConsoleLineTrigger::default());
         self.console_context_snapshots.clear();
+        self.uart_output_context = Some(UartOutputContextCapture::default());
     }
 
     /// Takes the snapshots produced by the last run, if the diagnostic was enabled.
     pub fn take_console_output_context_diagnostic(&mut self) -> Vec<ConsoleOutputContextSnapshot> {
         std::mem::take(&mut self.console_context_snapshots)
+    }
+
+    /// Takes bounded byte-level COM1 provenance, if the diagnostic was enabled.
+    pub fn take_uart_output_context_diagnostic(&mut self) -> Option<UartOutputContextDiagnostic> {
+        self.uart_output_context
+            .take()
+            .map(UartOutputContextCapture::finish)
     }
 
     fn sample_console_output_context(&mut self, byte: u8) {
@@ -1211,16 +1222,65 @@ impl LoadedFirmwareBoard {
         }
     }
 
+    fn sample_uart_output_context(&mut self, byte: u8, offset: u64, retired: u64) {
+        let should_capture = self
+            .uart_output_context
+            .as_mut()
+            .is_some_and(|capture| capture.observe_byte(byte, offset));
+        if !should_capture {
+            return;
+        }
+
+        let rip = self.state().rip;
+        let rbp = self.state().gpr[Register::Rbp as usize];
+        let rsp = self.state().gpr[Register::Rsp as usize];
+        let cr3 = self.page_table_root;
+        let (frames, ended) = self.capture_console_frame_chain(rip, rbp, cr3);
+        let snapshot = UartOutputByteContextSnapshot {
+            offset,
+            byte,
+            retired,
+            rip,
+            rsp,
+            rbp,
+            cr3,
+            cs_selector: self.state().cs_selector,
+            frames,
+            ended,
+        };
+        if let Some(capture) = self.uart_output_context.as_mut() {
+            capture.push_snapshot(snapshot);
+        }
+    }
+
     fn capture_console_output_context(&mut self, trigger: ConsoleContextTrigger) {
+        let rip = self.state().rip;
+        let rbp = self.state().gpr[Register::Rbp as usize];
+        let cr3 = self.page_table_root;
+        let (frames, ended) = self.capture_console_frame_chain(rip, rbp, cr3);
+        self.console_context_snapshots
+            .push(ConsoleOutputContextSnapshot {
+                trigger,
+                rip,
+                rbp,
+                cr3,
+                frames,
+                ended,
+            });
+    }
+
+    fn capture_console_frame_chain(
+        &mut self,
+        rip: u64,
+        rbp: u64,
+        cr3: u64,
+    ) -> (Vec<crate::ConsoleContextFrame>, crate::FrameChainEnd) {
         const CR0_LONG_PAGING: u64 = (1 << 31) | (1 << 16) | (1 << 4) | 1;
         const CR4_PAE: u64 = 1 << 5;
-        let rip = self.state.rip;
-        let rbp = self.state.gpr[Register::Rbp as usize];
-        let cr3 = self.page_table_root;
         let paging = Long64ProbeConfig::new(
-            self.state.cr0.unwrap_or(CR0_LONG_PAGING),
+            self.state().cr0.unwrap_or(CR0_LONG_PAGING),
             cr3,
-            self.state.cr4.unwrap_or(CR4_PAE),
+            self.state().cr4.unwrap_or(CR4_PAE),
             FIRMWARE_EFER,
         );
         let (frames, ended) = match paging {
@@ -1243,15 +1303,7 @@ impl LoadedFirmwareBoard {
             }),
             Err(_) => (Vec::new(), crate::FrameChainEnd::ReadFailed),
         };
-        self.console_context_snapshots
-            .push(ConsoleOutputContextSnapshot {
-                trigger,
-                rip,
-                rbp,
-                cr3,
-                frames,
-                ended,
-            });
+        (frames, ended)
     }
 
     pub fn uart(&self) -> Uart16550Handle {
@@ -1757,6 +1809,9 @@ impl LoadedFirmwareBoard {
         if self.console_context_parser.is_some() {
             self.console_context_parser = Some(ConsoleLineTrigger::default());
         }
+        if self.uart_output_context.is_some() {
+            self.uart_output_context = Some(UartOutputContextCapture::default());
+        }
         let nvme = self.nvme.clone();
         let acpi_pm = self.acpi_pm.clone();
         let pit = self.pit.clone();
@@ -1876,6 +1931,13 @@ impl LoadedFirmwareBoard {
                     self.com1_log.push(byte);
                     if self.console_context_parser.is_some() {
                         self.sample_console_output_context(byte);
+                    }
+                    if self.uart_output_context.is_some() {
+                        self.sample_uart_output_context(
+                            byte,
+                            self.com1_log.len() as u64 - 1,
+                            retired,
+                        );
                     }
                 }
             }
@@ -2478,6 +2540,7 @@ impl AssembledBoard {
             com1_log: Vec::new(),
             console_context_parser: None,
             console_context_snapshots: Vec::new(),
+            uart_output_context: None,
             rdtsc_tick,
             irq_source: Box::new(NoIrqSource),
             pic_master,
@@ -2549,6 +2612,7 @@ impl AssembledBoard {
             com1_log: Vec::new(),
             console_context_parser: None,
             console_context_snapshots: Vec::new(),
+            uart_output_context: None,
             rdtsc_tick,
             irq_source: Box::new(NoIrqSource),
             pic_master,

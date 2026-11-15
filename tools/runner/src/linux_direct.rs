@@ -388,15 +388,24 @@ fn evaluate(options: &Options) -> (Value, u8) {
                 };
                 if let Some(path) = &options.stack_context_out {
                     let snapshots = boot.board.take_console_output_context_diagnostic();
+                    let uart_diagnostic = boot.board.take_uart_output_context_diagnostic();
                     let write_error = match sidecar_file.as_mut() {
-                        Some(file) => write_stack_context_sidecar(file, path, &snapshots).err(),
+                        Some(file) => write_stack_context_sidecar(
+                            file,
+                            path,
+                            &snapshots,
+                            uart_diagnostic.as_ref(),
+                        )
+                        .err(),
                         None => Some("sidecar reservation is missing".into()),
                     };
                     evidence["stack_context_sidecar"] = json!({
                         "path": path,
-                        "capture_scope": "console-output context",
+                        "capture_scope": "console-output and bounded UART byte context",
                         "unwind_context": false,
                         "snapshots": snapshots.len(),
+                        "uart_provenance_samples": uart_diagnostic.as_ref().map_or(0, |capture| capture.samples.len()),
+                        "uart_provenance_end": uart_diagnostic.as_ref().map(|capture| uart_context_end_name(capture.end)),
                         "write_error": write_error,
                     });
                 }
@@ -1073,10 +1082,11 @@ fn write_stack_context_sidecar(
     file: &mut File,
     path: &str,
     snapshots: &[od_machine::ConsoleOutputContextSnapshot],
+    uart_diagnostic: Option<&od_machine::UartOutputContextDiagnostic>,
 ) -> Result<(), String> {
     let value = json!({
-        "schema_version": 1,
-        "capture_scope": "console-output context",
+        "schema_version": 2,
+        "capture_scope": "console-output and bounded UART byte context",
         "unwind_context": false,
         "limits": {
             "snapshots": 4,
@@ -1096,18 +1106,32 @@ fn write_stack_context_sidecar(
                 "frame_pointer": hex64(frame.frame_pointer),
                 "return_address": hex64(frame.return_address),
             })).collect::<Vec<_>>(),
-            "ended": match snapshot.ended {
-                od_machine::FrameChainEnd::NullFramePointer => "null_frame_pointer",
-                od_machine::FrameChainEnd::NonCanonicalFramePointer => "non_canonical_frame_pointer",
-                od_machine::FrameChainEnd::UnalignedFramePointer => "unaligned_frame_pointer",
-                od_machine::FrameChainEnd::OutsideStackWindow => "outside_stack_window",
-                od_machine::FrameChainEnd::RepeatedFramePointer => "repeated_frame_pointer",
-                od_machine::FrameChainEnd::NonMonotonicFramePointer => "non_monotonic_frame_pointer",
-                od_machine::FrameChainEnd::ReadFailed => "read_failed",
-                od_machine::FrameChainEnd::NonCanonicalReturnAddress => "non_canonical_return_address",
-                od_machine::FrameChainEnd::FrameLimit => "frame_limit",
-            },
+            "ended": frame_chain_end_name(snapshot.ended),
         })).collect::<Vec<_>>(),
+        "uart_provenance": uart_diagnostic.map(|capture| json!({
+            "trigger": "first_OD_NONCE_equals",
+            "marker_offset": capture.marker_offset,
+            "marker_prefix_before_trigger_unobserved": capture.marker_prefix_before_trigger_unobserved,
+            "end": uart_context_end_name(capture.end),
+            "byte_limit": od_machine::MAX_UART_PROVENANCE_BYTES,
+            "samples": capture.samples.iter().map(|sample| json!({
+                "offset": sample.offset,
+                "byte": sample.byte,
+                "retired": sample.retired,
+                "rip_phase": "post_out_instruction_boundary",
+                "rip": hex64(sample.rip),
+                "rsp": hex64(sample.rsp),
+                "rbp": hex64(sample.rbp),
+                "cr3": hex64(sample.cr3),
+                "cs_selector": sample.cs_selector.map(|selector| format!("0x{selector:04x}")),
+                "cpl": sample.cs_selector.map(|selector| selector & 3),
+                "frames": sample.frames.iter().map(|frame| json!({
+                    "frame_pointer": hex64(frame.frame_pointer),
+                    "return_address": hex64(frame.return_address),
+                })).collect::<Vec<_>>(),
+                "ended": frame_chain_end_name(sample.ended),
+            })).collect::<Vec<_>>(),
+        })),
     });
     file_matches_existing_path(file, path, path)?;
     let bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
@@ -1128,6 +1152,28 @@ fn write_stack_context_sidecar(
         });
     }
     Ok(())
+}
+
+fn uart_context_end_name(end: od_machine::UartOutputContextEnd) -> &'static str {
+    match end {
+        od_machine::UartOutputContextEnd::MarkerNotFound => "marker_not_found",
+        od_machine::UartOutputContextEnd::RunEnded => "run_end",
+        od_machine::UartOutputContextEnd::ByteLimit => "byte_limit",
+    }
+}
+
+fn frame_chain_end_name(end: od_machine::FrameChainEnd) -> &'static str {
+    match end {
+        od_machine::FrameChainEnd::NullFramePointer => "null_frame_pointer",
+        od_machine::FrameChainEnd::NonCanonicalFramePointer => "non_canonical_frame_pointer",
+        od_machine::FrameChainEnd::UnalignedFramePointer => "unaligned_frame_pointer",
+        od_machine::FrameChainEnd::OutsideStackWindow => "outside_stack_window",
+        od_machine::FrameChainEnd::RepeatedFramePointer => "repeated_frame_pointer",
+        od_machine::FrameChainEnd::NonMonotonicFramePointer => "non_monotonic_frame_pointer",
+        od_machine::FrameChainEnd::ReadFailed => "read_failed",
+        od_machine::FrameChainEnd::NonCanonicalReturnAddress => "non_canonical_return_address",
+        od_machine::FrameChainEnd::FrameLimit => "frame_limit",
+    }
 }
 
 /// A lowercase 64-digit hex string.
@@ -2716,17 +2762,77 @@ mod tests {
             .create_new(true)
             .open(&path)
             .unwrap();
-        write_stack_context_sidecar(&mut file, path.to_str().unwrap(), &[]).unwrap();
+        write_stack_context_sidecar(&mut file, path.to_str().unwrap(), &[], None).unwrap();
         let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["capture_scope"], "console-output context");
+        assert_eq!(
+            value["capture_scope"],
+            "console-output and bounded UART byte context"
+        );
         assert_eq!(value["unwind_context"], false);
         assert_eq!(value["snapshots"].as_array().unwrap().len(), 0);
+        assert!(value["uart_provenance"].is_null());
         assert!(
             std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&path)
                 .is_err()
+        );
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn stack_context_sidecar_serializes_bounded_uart_byte_provenance() {
+        let path = std::env::temp_dir().join(format!(
+            "od-runner-uart-context-{}-{}.json",
+            std::process::id(),
+            1
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let capture = od_machine::UartOutputContextDiagnostic {
+            marker_offset: Some(10),
+            marker_prefix_before_trigger_unobserved: true,
+            end: od_machine::UartOutputContextEnd::RunEnded,
+            samples: vec![od_machine::UartOutputByteContextSnapshot {
+                offset: 18,
+                byte: b'=',
+                retired: 99,
+                rip: 0x1234,
+                rsp: 0x8000,
+                rbp: 0x8100,
+                cr3: 0x6000,
+                cs_selector: Some(0x1b),
+                frames: vec![od_machine::ConsoleContextFrame {
+                    frame_pointer: 0x8100,
+                    return_address: 0xffff_ffff_8100_1234,
+                }],
+                ended: od_machine::FrameChainEnd::NullFramePointer,
+            }],
+        };
+        write_stack_context_sidecar(&mut file, path.to_str().unwrap(), &[], Some(&capture))
+            .unwrap();
+        let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["schema_version"], 2);
+        let provenance = &value["uart_provenance"];
+        assert_eq!(provenance["marker_offset"], 10);
+        assert_eq!(provenance["marker_prefix_before_trigger_unobserved"], true);
+        assert_eq!(provenance["end"], "run_end");
+        assert_eq!(provenance["samples"][0]["offset"], 18);
+        assert_eq!(
+            provenance["samples"][0]["rip_phase"],
+            "post_out_instruction_boundary"
+        );
+        assert_eq!(provenance["samples"][0]["byte"], b'=' as u64);
+        assert_eq!(provenance["samples"][0]["cpl"], 3);
+        assert_eq!(
+            provenance["samples"][0]["frames"].as_array().unwrap().len(),
+            1
         );
         drop(file);
         std::fs::remove_file(path).unwrap();
