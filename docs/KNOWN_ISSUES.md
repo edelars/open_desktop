@@ -90,10 +90,18 @@
 ### ISSUE-114 — S7-04: Rust entry `JNZ +0x77` остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после допуска handoff CMP.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust entry prologue (`firmware/uefi/src/start.S`).
-- **Статус:** открыта; сравнение handoff GPA прошло, но проверяющая ветвь не исполнилась.
-- **Суть и последствия:** `RIP=0x2001fb` содержит `75 77` (`JNZ rel8`, target displacement `+0x77`); paged profile возвращает `Unsupported { opcode: 117 }`. COM1 пуст, handoff parser в машине пока не достигнут.
-- **Основание:** образ `/private/tmp/od-fw-s7-cmp-imm.bin`, байты подтверждены `od -An -tx1 -j 0x1fb -N16` (`75 77 48 8d 7c 24 08 be 00 00 10 00 ba 00 00 01`); runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=14`, `RIP=0x2001fb`, `com1_bytes=0`.
-- **Следующий шаг:** рассмотреть exact JNZ encoding с корректной taken/not-taken веткой, флагами, canonical target check и profile isolation.
+- **Статус:** решена узко для exact `75 77`; runner перешёл на `LEA RDI,[RSP+8]` и остановился на ISSUE-115.
+- **Суть и результат:** base `PagedCpl0ProbeV1` допускает JNZ rel8 только с displacement `+0x24` и `+0x77`; taken target проверяется на canonicality до RIP commit, not-taken ветвь не проверяет fall-through canonicality. RFLAGS/definedness и остальной state сохраняются. Другие Jcc формы и profiles не расширены.
+- **Проверка:** `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 137 passed; обе ветви для обоих displacement, full-state/flags preservation, noncanonical taken #GP против not-taken fallthrough, fetch fault, neighbors и CPL3/other profiles. Firmware runner retired 15 instructions, `RIP=0x2001fd`; следующий stop `Unsupported { opcode: 141 }` (`0x8d`), COM1 пуст.
+
+<a id="issue-115-s7-04-rust-entry-lea-rdi-rsp-disp8-unsupported"></a>
+### ISSUE-115 — S7-04: Rust entry `LEA RDI,[RSP+8]` остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после допуска Rust-entry `JNZ +0x77`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust entry prologue (`firmware/uefi/src/start.S`).
+- **Статус:** открыта; handoff validation branch прошла, но вычисление stack-local address не исполнилось.
+- **Суть и последствия:** `RIP=0x2001fd` содержит `48 8D 7C 24 08` (`LEA RDI,[RSP+8]`); paged profile возвращает `Unsupported { opcode: 141 }`. COM1 пуст, handoff parser в машине пока не достигнут.
+- **Основание:** образ `/private/tmp/od-fw-s7-jnz77.bin`, байты подтверждены `od -An -tx1 -j 0x1fd -N16` (`48 8d 7c 24 08 be 00 00 10 00 ba 00 00 01 00 31`); runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=15`, `RIP=0x2001fd`, `com1_bytes=0`.
+- **Следующий шаг:** рассмотреть exact RSP-relative LEA с корректным effective-address/overflow контрактом и profile isolation.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки

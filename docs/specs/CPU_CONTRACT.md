@@ -393,7 +393,8 @@ Long64 CPL0 allowlist: `48 8B 03` (`MOV RAX,[RBX]`), `48 89 0B`
 (`MOV [RBX],RCX`), bare `EC` (`IN AL,DX`), bare `EE` (`OUT DX,AL`) and bare
 `F4` (`HLT`); S7-03 extends it with `B0+r ib` and `66 B8+r iw`, and S7-04 adds
 bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`,
-`75 24`, `49 89 F8`, `E8 83 01 00 00` (`CALL rel32`), `48 83 EC 58`
+`75 24`/`75 77` (the two exact firmware JNZ rel8 forms), `49 89 F8`,
+`E8 83 01 00 00` (`CALL rel32`), `48 83 EC 58`
 (`SUB RSP,0x58`), and `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`; see the extensions below). The CPU entry validates its
 profile admission and CR0/CR4 before fetch. It receives page-aware `GuestMemory`;
 CR3/EFER validation and selecting the four-level 4 KiB paging context belong
@@ -522,6 +523,12 @@ Tests проверяют полный CPU state и точные flags/definednes
 В base `PagedCpl0ProbeV1` допускается только `48 81 FF 00 00 10 00`: Primary opcode `81`, длина 7, qword, ровно REX.W `0x48`, operation Cmp, destination RDI и sign-extended imm32 `0x00100000`. Переиспользуется `arithmetic_result` для qword `RDI - 0x00100000`; RDI и остальные GPR не меняются, все шесть arithmetic flags обновляются и становятся defined, прочие RFLAGS сохраняются. При равенстве устанавливаются ZF и PF. Данных памяти и I/O инструкция не касается. Fault при fetch immediate не коммитит CPU state. Остальные immediate/opcode/width/prefix/operand формы, CPL3 и прочие paged profiles остаются вне допуска.
 
 Tests проверяют full state, сравнение равного handoff GPA (ZF/PF), flags/definedness, соседние формы и fetch fault imm32 через границу страницы, а также CPL3 и stack/CR3/CR0.WP profiles. Runner retired 14 инструкций и остановился на `75 77` (`JNZ rel8`, ISSUE-114, RIP `0x2001fb`).
+
+#### Расширение S7-04: точный Rust-entry `JNZ +0x77`
+
+В base `PagedCpl0ProbeV1` к ранее разрешённой `75 24` добавлена только ещё одна форма `75 77`: Primary JNZ/JNE rel8, длина 2, displacement `+0x77`, без префиксов. Она использует тот же condition evaluation и control-flow контракт, что `75 24`: ZF=0 вычисляет `next_rip + displacement` и проверяет canonicality taken target до commit; ZF=1 продвигает RIP на 2 и не проверяет canonicality fall-through. Flags, definedness, GPR, memory и I/O сохраняются. Соседние displacement и остальные branch/profile формы остаются вне allowlist.
+
+Tests проверяют taken/not-taken для обоих точных displacement, full CPU state и неизменность flags/definedness, #GP только для noncanonical taken target (в то время как noncanonical fall-through успешно retire), fetch fault на rel8 и neighbors/CPL3/other-profile isolation. Firmware runner: JNZ не взят для валидного handoff pointer, retired 15 instructions и остановился на `48 8D 7C 24 08` (`LEA RDI,[RSP+8]`, ISSUE-115, RIP `0x2001fd`).
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 

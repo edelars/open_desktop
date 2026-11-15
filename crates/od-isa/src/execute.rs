@@ -20144,8 +20144,8 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::DF,
             };
         }
-        // S7-04: startup uses one short JNE to stop on an invalid handoff GPA.
-        // Keep this to the literal firmware encoding; all other branches stay
+        // S7-04: startup uses two short JNEs for invalid handoff GPA checks.
+        // Keep these to the literal firmware encodings; other branches stay
         // outside the bounded paged boot profile.
         Operation::Branch {
             condition,
@@ -20156,7 +20156,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             && instruction.opcode.byte == 0x75
             && instruction.length == 2
             && instruction.prefixes == Prefixes::default()
-            && displacement == 0x24 =>
+            && matches!(displacement, 0x24 | 0x77) =>
         {
             if condition.evaluate(state.rflags) {
                 let target = next_rip.wrapping_add_signed(i64::from(displacement));

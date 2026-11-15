@@ -2802,75 +2802,83 @@ fn firmware_entry_rep_stosb_is_unsupported_in_cpl3_profile() {
 
 #[test]
 fn firmware_entry_jnz_taken_and_not_taken_preserve_flags_and_definedness() {
-    let code = [0x75, 0x24]; // JNZ +0x24
     let defined = DEFINED & !(1 << 6);
-    for (zero, expected_rip) in [(false, RIP + 2 + 0x24), (true, RIP + 2)] {
-        let mut memory = Memory::new(&code);
-        let mut cpu = state();
-        cpu.gpr = gpr_patterns();
-        cpu.rflags = 0x2 | (1 << 9) | (1 << 10) | (1 << 18) | if zero { 1 << 6 } else { 0 };
-        let before = cpu.clone();
-        let mut pio = Pio::default();
+    for displacement in [0x24u8, 0x77] {
+        let code = [0x75, displacement];
+        for (zero, expected_rip) in [(false, RIP + 2 + u64::from(displacement)), (true, RIP + 2)] {
+            let mut memory = Memory::new(&code);
+            let mut cpu = state();
+            cpu.gpr = gpr_patterns();
+            cpu.rflags = 0x2 | (1 << 9) | (1 << 10) | (1 << 18) | if zero { 1 << 6 } else { 0 };
+            let before = cpu.clone();
+            let mut pio = Pio::default();
 
-        let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+            let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
 
-        assert_eq!(result.exit, PagedProbeExit::Retired);
-        assert_eq!(result.instructions_executed, 1);
-        assert_eq!(result.rflags_defined, defined);
-        let mut expected = before;
-        expected.rip = expected_rip;
-        assert_eq!(cpu, expected);
-        assert_eq!((memory.reads, memory.writes), (0, 0));
-        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Retired,
+                "disp={displacement:#x}"
+            );
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, defined);
+            let mut expected = before;
+            expected.rip = expected_rip;
+            assert_eq!(cpu, expected, "disp={displacement:#x}, ZF={zero}");
+            assert_eq!((memory.reads, memory.writes), (0, 0));
+            assert!(pio.reads.is_empty() && pio.writes.is_empty());
+        }
     }
 }
 
 #[test]
 fn firmware_entry_jnz_checks_canonicality_only_when_taken() {
-    let code = [0x75, 0x24];
     let start = 0x0000_7fff_ffff_fffe;
-    let mut memory = Memory::new(&[]);
-    memory.pages.insert(start & !0xfff, CODE_PHYSICAL);
-    memory.bytes[CODE_PHYSICAL + 0xffe..CODE_PHYSICAL + 0x1000].copy_from_slice(&code);
+    for displacement in [0x24u8, 0x77] {
+        let code = [0x75, displacement];
+        let mut memory = Memory::new(&[]);
+        memory.pages.insert(start & !0xfff, CODE_PHYSICAL);
+        memory.bytes[CODE_PHYSICAL + 0xffe..CODE_PHYSICAL + 0x1000].copy_from_slice(&code);
 
-    let mut cpu = state();
-    cpu.rip = start;
-    cpu.rflags |= 1 << 6; // ZF=1: JNZ not taken; fall-through is non-canonical.
-    let before = cpu.clone();
-    let mut pio = Pio::default();
-    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+        let mut cpu = state();
+        cpu.rip = start;
+        cpu.rflags |= 1 << 6; // ZF=1: fall-through is non-canonical, but not checked here.
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
 
-    assert_eq!(result.exit, PagedProbeExit::Retired);
-    assert_eq!(result.instructions_executed, 1);
-    assert_eq!(result.rflags_defined, DEFINED);
-    let mut expected = before;
-    expected.rip = 0x0000_8000_0000_0000;
-    assert_eq!(cpu, expected);
-    assert_eq!((memory.reads, memory.writes), (0, 0));
-    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        let mut expected = before;
+        expected.rip = 0x0000_8000_0000_0000;
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
 
-    let mut memory = Memory::new(&[]);
-    memory.pages.insert(start & !0xfff, CODE_PHYSICAL);
-    memory.bytes[CODE_PHYSICAL + 0xffe..CODE_PHYSICAL + 0x1000].copy_from_slice(&code);
-    let mut cpu = state();
-    cpu.rip = start;
-    cpu.rflags &= !(1 << 6); // ZF=0: branch target is non-canonical.
-    let before = cpu.clone();
-    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+        let mut memory = Memory::new(&[]);
+        memory.pages.insert(start & !0xfff, CODE_PHYSICAL);
+        memory.bytes[CODE_PHYSICAL + 0xffe..CODE_PHYSICAL + 0x1000].copy_from_slice(&code);
+        let mut cpu = state();
+        cpu.rip = start;
+        cpu.rflags &= !(1 << 6); // ZF=0: branch target is non-canonical.
+        let before = cpu.clone();
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
 
-    assert_eq!(
-        result.exit,
-        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
-            vector: 13,
-            error_code: Some(0),
-            linear_address: None,
-        })
-    );
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(result.rflags_defined, DEFINED);
-    assert_eq!(cpu, before);
-    assert_eq!((memory.reads, memory.writes), (0, 0));
-    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
 }
 
 #[test]
@@ -2913,6 +2921,8 @@ fn firmware_entry_jnz_fetch_fault_on_rel8_does_not_commit() {
 fn firmware_entry_jnz_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
         (&[0x75, 0x23], 0x75),                // different displacement
+        (&[0x75, 0x76], 0x75),                // neighboring displacement
+        (&[0x75, 0x78], 0x75),                // neighboring displacement
         (&[0x74, 0x24], 0x74),                // JZ
         (&[0x0f, 0x85, 0x24, 0, 0, 0], 0x85), // near JNZ
         (&[0x66, 0x75, 0x24], 0x75),          // prefixed JNZ
@@ -2943,7 +2953,7 @@ fn firmware_entry_jnz_neighbours_stay_unsupported_without_mutation() {
 
 #[test]
 fn firmware_entry_jnz_is_unsupported_in_cpl3_profile() {
-    let bytes = [0x75, 0x24];
+    let bytes = [0x75, 0x77];
     let mut memory = Memory::new(&bytes);
     let mut cpu = state();
     cpu.cr3 = Some(0x1000);
@@ -3892,6 +3902,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x48, 0xc7, 0xc0, 0, 0, 0x10, 0][..], 0xc7),
         (&[0x48, 0x39, 0xc7][..], 0x39),
         (&[0x75, 0x24][..], 0x75),
+        (&[0x75, 0x77][..], 0x75),
         (&[0x49, 0x89, 0xf8][..], 0x89),
         (&[0x48, 0x8d, 0x3d, 0x09, 0x2b, 0, 0][..], 0x8d),
         (&[0x48, 0x8d, 0x0d, 0x02, 0x2b, 0, 0][..], 0x8d),
