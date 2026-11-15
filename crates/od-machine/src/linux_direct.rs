@@ -12076,6 +12076,584 @@ mod tests {
         assert_eq!(format!("{cached:?}"), format!("{plain:?}"));
     }
 
+    // ---- S4-14h: the guest-driven invalidation policy of the fetch cache ----
+
+    use crate::fetch_translation_cache::FetchCacheInvalidation;
+    use crate::paged_memory_adapter::run_cpl0_set_paged_2m_ram_with_policy;
+
+    const OLD_MARKER: u64 = 0x1111;
+    const NEW_MARKER: u64 = 0x3333;
+    /// `INVLPG [RBX]`: the operand is never evaluated (S4-38L7ab), RBX only has to be a register.
+    const INVLPG_RBX: [u8; 3] = [0x0F, 0x01, 0x3B];
+    /// `NOP DWORD [RAX]`: the same length as the `INVLPG` and no effect.
+    const NOP3: [u8; 3] = [0x0F, 0x1F, 0x00];
+    const MOV_CR3_RAX: [u8; 3] = [0x0F, 0x22, 0xD8];
+    const MOV_CR0_RAX: [u8; 3] = [0x0F, 0x22, 0xC0];
+    const MOV_CR4_RAX: [u8; 3] = [0x0F, 0x22, 0xE0];
+    const CR4_PAE: u64 = 1 << 5;
+    const CR4_PAE_PGE: u64 = CR4_PAE | (1 << 7);
+
+    struct PolicyOutcome {
+        state: LongModeState,
+        report: PagedCpl0SetReport,
+        stats: FetchCacheStats,
+    }
+
+    /// Runs the set loop with the fetch cache policy `policy` over the case `build` lays out.
+    fn run_policy_case(
+        build: &dyn Fn(&mut LinuxDirectBoot) -> LongModeState,
+        set: &Cpl0ProfileSet<'_>,
+        budget: u64,
+        policy: FetchCacheInvalidation,
+    ) -> PolicyOutcome {
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let mut state = build(&mut boot);
+        let efer = boot.board.efer();
+        let cr3 = state.cr3.expect("the case runs with a CPU-owned CR3");
+        let mut report = run_cpl0_set_paged_2m_ram_with_policy(
+            &mut state,
+            boot.board.bus_mut(),
+            cr3,
+            efer,
+            long64(),
+            budget,
+            INTEGER_FLAGS,
+            set,
+            None,
+            || false,
+            |_| {},
+            true,
+            Some(policy),
+            None,
+        );
+        let stats = report.fetch_cache_stats.take().expect("the cache is on");
+        PolicyOutcome {
+            state,
+            report,
+            stats,
+        }
+    }
+
+    /// The remap layout. Page A (always mapped to `SPLIT_PAGE0`) ends with
+    /// `[prefix] MOV RBX, PTE1; MOV RCX, new PTE; MOV [RBX], RCX` and the last byte of that store
+    /// lies on page X (`SPLIT_VA + 0x1000`), so X is fetched, and cached, before the store
+    /// retires. The store rewrites the PTE of X from the old frame (`OLD_MARKER` code) to
+    /// `ALT_PAGE1` (`NEW_MARKER` code). Both frames hold the same bytes up to the marker:
+    /// the rest of the store, then `sync` (what the guest does to invalidate, or a no-op of the
+    /// same length), then `MOV RDX, marker; HLT`. RDX tells which frame the marker was fetched
+    /// from: a stale cached translation of X runs `sync` and the marker of the old frame.
+    fn remap_case(
+        boot: &mut LinuxDirectBoot,
+        prefix: &[u8],
+        sync: &[u8],
+        cr4: Option<u64>,
+    ) -> LongModeState {
+        write_tree(
+            boot,
+            TREE_PML4,
+            &[
+                (0, SPLIT_PAGE0 | A_PRESENT_WRITABLE),
+                (1, SPLIT_PAGE1 | A_PRESENT_WRITABLE),
+            ],
+            Some(TREE_PML4 + 0x3000),
+        );
+        let mut head = prefix.to_vec();
+        head.extend(mov_imm32(3, (WINDOW_VA + 8) as u32));
+        head.extend(mov_imm32(1, (ALT_PAGE1 | 3) as u32));
+        head.extend([0x48, 0x89, 0x0B]);
+        let on_first = head.len() - 1;
+        write_phys(
+            boot,
+            SPLIT_PAGE0 + 0x1000 - on_first as u64,
+            &head[..on_first],
+        );
+        for (page, marker) in [(SPLIT_PAGE1, OLD_MARKER), (ALT_PAGE1, NEW_MARKER)] {
+            let mut bytes = head[on_first..].to_vec();
+            bytes.extend(sync);
+            bytes.extend(mov_imm32(2, marker as u32));
+            bytes.push(0xF4);
+            write_phys(boot, page, &bytes);
+        }
+        let mut state = tree_state(boot, TREE_PML4, SPLIT_VA + 0x1000 - on_first as u64);
+        if let Some(cr4) = cr4 {
+            state.cr4 = Some(cr4);
+        }
+        state
+    }
+
+    fn assert_halted_with_marker(outcome: &PolicyOutcome, marker: u64) {
+        assert_eq!(
+            outcome.report.exit,
+            PagedCpl0SetExit::Run(RunExit::Halted),
+            "{:?}",
+            outcome.report
+        );
+        assert_eq!(
+            outcome.state.gpr[Register::Rdx as usize],
+            marker,
+            "{:?}",
+            outcome.stats
+        );
+    }
+
+    /// The guest rewrites the PTE of a cached page and executes `INVLPG`: under `GuestOnly` the
+    /// store alone drops nothing, the retired `INVLPG` does, and the next fetch of the page walks
+    /// the new frame.
+    #[test]
+    fn guest_only_invlpg_after_a_pte_store_runs_the_new_code() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], &INVLPG_RBX, None);
+        let outcome = run_policy_case(
+            &build,
+            &switch_set(&cli, &halt),
+            16,
+            FetchCacheInvalidation::GuestOnly,
+        );
+        assert_halted_with_marker(&outcome, NEW_MARKER);
+        let stats = outcome.stats;
+        assert_eq!(stats.invlpg_flushes, 1, "{stats:?}");
+        assert_eq!(stats.write_flushes, 0, "{stats:?}");
+        assert!(stats.ignored_table_writes >= 1, "{stats:?}");
+        assert_eq!((stats.control_flushes, stats.context_flushes), (0, 0));
+        // MOV RBX, MOV RCX, store, INVLPG, MOV RDX, HLT.
+        assert_eq!(outcome.report.instructions_executed, 6);
+    }
+
+    /// The same program without the `INVLPG`: a TLB-like cache may keep the old translation, a
+    /// write-watching one may not. Both outcomes are pinned.
+    #[test]
+    fn guest_only_without_invlpg_keeps_the_stale_translation_and_write_watch_does_not() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], &NOP3, None);
+        let guest_only = run_policy_case(
+            &build,
+            &switch_set(&cli, &halt),
+            16,
+            FetchCacheInvalidation::GuestOnly,
+        );
+        assert_halted_with_marker(&guest_only, OLD_MARKER);
+        let stats = guest_only.stats;
+        assert_eq!(
+            (
+                stats.invlpg_flushes,
+                stats.control_flushes,
+                stats.context_flushes,
+                stats.write_flushes
+            ),
+            (0, 0, 0, 0),
+            "{stats:?}"
+        );
+        assert!(stats.ignored_table_writes >= 1, "{stats:?}");
+        let write_watch = run_policy_case(
+            &build,
+            &switch_set(&cli, &halt),
+            16,
+            FetchCacheInvalidation::WriteWatch,
+        );
+        assert_halted_with_marker(&write_watch, NEW_MARKER);
+        assert_eq!(write_watch.stats.write_flushes, 1);
+        assert_eq!(
+            (
+                write_watch.stats.invlpg_flushes,
+                write_watch.stats.control_flushes,
+                write_watch.stats.ignored_table_writes
+            ),
+            (0, 0, 0)
+        );
+    }
+
+    /// `INVLPG` is not what makes `WriteWatch` see the new page: the policy is unchanged and the
+    /// `INVLPG` flushes nothing there (the table write already did).
+    #[test]
+    fn write_watch_ignores_the_invlpg_of_the_guest() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], &INVLPG_RBX, None);
+        let outcome = run_policy_case(
+            &build,
+            &switch_set(&cli, &halt),
+            16,
+            FetchCacheInvalidation::WriteWatch,
+        );
+        assert_halted_with_marker(&outcome, NEW_MARKER);
+        assert_eq!(outcome.stats.write_flushes, 1);
+        assert_eq!(outcome.stats.invlpg_flushes, 0);
+    }
+
+    /// `MOV CR3` with the value it already has, after the remap: no table is written afterwards
+    /// and the paging snapshot is unchanged, so only the flush of the retired `MOV CR3` makes the
+    /// next fetch walk the new frame.
+    #[test]
+    fn guest_only_reloading_cr3_with_the_same_value_runs_the_new_code() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| {
+            remap_case(boot, &mov_imm32(0, TREE_PML4 as u32), &MOV_CR3_RAX, None)
+        };
+        let outcome = run_policy_case(
+            &build,
+            &switch_set(&cli, &halt),
+            16,
+            FetchCacheInvalidation::GuestOnly,
+        );
+        assert_halted_with_marker(&outcome, NEW_MARKER);
+        assert_eq!(outcome.report.translation_context_changes.len(), 1);
+        assert_eq!(outcome.report.cr3, TREE_PML4);
+        let stats = outcome.stats;
+        assert_eq!(stats.context_flushes, 1, "{stats:?}");
+        assert_eq!((stats.invlpg_flushes, stats.control_flushes), (0, 0));
+        assert_eq!(stats.write_flushes, 0, "{stats:?}");
+    }
+
+    /// CR4.PGE 1 -> 0 -> 1 after the remap: the CPU state returns to where it was, the paging
+    /// snapshot of the cache key never changes, so only the comparison of CR4 around each
+    /// instruction flushes.
+    #[test]
+    fn guest_only_toggling_cr4_pge_runs_the_new_code() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let mut sync = mov_eax(CR4_PAE as u32);
+        sync.extend(MOV_CR4_RAX);
+        sync.extend(mov_eax(CR4_PAE_PGE as u32));
+        sync.extend(MOV_CR4_RAX);
+        let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], &sync, Some(CR4_PAE_PGE));
+        let outcome = run_policy_case(
+            &build,
+            &switch_set(&cli, &halt),
+            24,
+            FetchCacheInvalidation::GuestOnly,
+        );
+        assert_halted_with_marker(&outcome, NEW_MARKER);
+        assert_eq!(outcome.state.cr4, Some(CR4_PAE_PGE));
+        let stats = outcome.stats;
+        assert_eq!(stats.control_flushes, 2, "{stats:?}");
+        assert_eq!((stats.invlpg_flushes, stats.context_flushes), (0, 0));
+        assert_eq!(stats.write_flushes, 0, "{stats:?}");
+    }
+
+    /// A rewrite of CR0 (AM toggled and restored) is a control change too: the cache is flushed.
+    #[test]
+    fn guest_only_rewriting_cr0_runs_the_new_code() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let cr0 = {
+            let (boot, _) = boot_with_entry(&[0xF4]);
+            boot.board.state().cr0.expect("the board models CR0")
+        };
+        let mut sync = mov_eax((cr0 | (1 << 18)) as u32);
+        sync.extend(MOV_CR0_RAX);
+        sync.extend(mov_eax(cr0 as u32));
+        sync.extend(MOV_CR0_RAX);
+        let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], &sync, None);
+        let outcome = run_policy_case(
+            &build,
+            &switch_set(&cli, &halt),
+            24,
+            FetchCacheInvalidation::GuestOnly,
+        );
+        assert_halted_with_marker(&outcome, NEW_MARKER);
+        assert_eq!(outcome.state.cr0, Some(cr0));
+        let stats = outcome.stats;
+        assert_eq!(stats.control_flushes, 2, "{stats:?}");
+        assert_eq!(stats.write_flushes, 0, "{stats:?}");
+    }
+
+    /// A MOV to a control register that changes nothing (the value it already has) is not a
+    /// reason to flush: the stale translation survives, as without the instruction.
+    #[test]
+    fn guest_only_a_cr4_write_of_the_same_value_flushes_nothing() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let mut sync = mov_eax(CR4_PAE_PGE as u32);
+        sync.extend(MOV_CR4_RAX);
+        let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], &sync, Some(CR4_PAE_PGE));
+        let outcome = run_policy_case(
+            &build,
+            &switch_set(&cli, &halt),
+            24,
+            FetchCacheInvalidation::GuestOnly,
+        );
+        assert_halted_with_marker(&outcome, OLD_MARKER);
+        assert_eq!(outcome.stats.control_flushes, 0, "{:?}", outcome.stats);
+    }
+
+    /// A 2 MiB leaf that the guest tightens (`NX` set, or not present) while its code runs from
+    /// the cached translation. `sync` is the `INVLPG` or a no-op; the walk of the instruction after
+    /// `sync` is exact when the cache was flushed and may hit the cache when it was not.
+    /// Returns the outcome of the `GuestOnly` and the `WriteWatch` run.
+    fn two_mib_tightening(
+        offset: u64,
+        value: u32,
+        sync: &[u8],
+        set: &Cpl0ProfileSet<'_>,
+    ) -> (PolicyOutcome, PolicyOutcome) {
+        let build = |boot: &mut LinuxDirectBoot| {
+            // The tree of the window onto the PD, then PD index 8 becomes a 2 MiB leaf
+            // (present, writable, accessed, page size) over the frame of the split pages.
+            write_tree(boot, TREE_PML4, &[], Some(TREE_PML4 + 0x2000));
+            write_phys(
+                boot,
+                TREE_PML4 + 0x2000 + 8 * 8,
+                &(SPLIT_PAGE0 | 0xA3).to_le_bytes(),
+            );
+            let mut code = mov_imm32(3, (WINDOW_VA + 8 * 8 + offset) as u32);
+            code.extend(mov_imm32(0, value));
+            code.extend([0x89, 0x03]);
+            code.extend(sync);
+            code.extend(mov_imm32(2, OLD_MARKER as u32));
+            code.push(0xF4);
+            write_phys(boot, SPLIT_PAGE0 + 0x200, &code);
+            tree_state(boot, TREE_PML4, SPLIT_VA + 0x200)
+        };
+        (
+            run_policy_case(&build, set, 16, FetchCacheInvalidation::GuestOnly),
+            run_policy_case(&build, set, 16, FetchCacheInvalidation::WriteWatch),
+        )
+    }
+
+    /// The fetch fault of a run that retired `retired` instructions of `MOV RBX` (7 bytes),
+    /// `MOV RAX` (7), store (2) and `sync` (3): the next instruction faults.
+    fn assert_fetch_fault(outcome: &PolicyOutcome, error_code: u32, retired: u64) {
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &outcome.report.exit else {
+            panic!("{:?}", outcome.report);
+        };
+        let rip = SPLIT_VA + 0x200 + 16 + 3 * (retired - 3);
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(error_code), Some(rip)),
+            "{:?}",
+            outcome.report
+        );
+        assert_eq!(
+            outcome.report.page_fault.as_ref().map(|r| r.saved_rip()),
+            Some(rip)
+        );
+        assert_eq!(outcome.report.instructions_executed, retired);
+    }
+
+    /// After `INVLPG` the tightened 2 MiB leaf is walked again: a fetch of an `NX` page is the
+    /// exact `#PF` (present, instruction fetch). Without it the stale translation may run on
+    /// (allowed). `WriteWatch` sees the fault right after the table store (3 retired), at the
+    /// instruction that would have been the `INVLPG`.
+    #[test]
+    fn guest_only_two_mib_leaf_made_nx_faults_exactly_after_invlpg() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let set = switch_set(&cli, &halt);
+        // The high dword of the PDE gets bit 31: PDE bit 63 (NX).
+        let (with_invlpg, watch) = two_mib_tightening(4, 0x8000_0000, &INVLPG_RBX, &set);
+        assert_fetch_fault(&with_invlpg, 0x11, 4);
+        assert_eq!(with_invlpg.stats.invlpg_flushes, 1);
+        assert_fetch_fault(&watch, 0x11, 3);
+        assert_eq!(watch.stats.write_flushes, 1);
+        let (without, watch) = two_mib_tightening(4, 0x8000_0000, &NOP3, &set);
+        assert_halted_with_marker(&without, OLD_MARKER);
+        assert_eq!(without.stats.invlpg_flushes, 0);
+        assert_fetch_fault(&watch, 0x11, 3);
+    }
+
+    /// The same for a leaf that becomes not present: the fetch fault has no present bit.
+    #[test]
+    fn guest_only_two_mib_leaf_made_not_present_faults_exactly_after_invlpg() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let set = switch_set(&cli, &halt);
+        let (with_invlpg, watch) = two_mib_tightening(0, 0, &INVLPG_RBX, &set);
+        assert_fetch_fault(&with_invlpg, 0x10, 4);
+        assert_eq!(with_invlpg.stats.invlpg_flushes, 1);
+        assert_fetch_fault(&watch, 0x10, 3);
+        let (without, watch) = two_mib_tightening(0, 0, &NOP3, &set);
+        assert_halted_with_marker(&without, OLD_MARKER);
+        assert_fetch_fault(&watch, 0x10, 3);
+    }
+
+    /// `INVLPG` with a GS override and with a REX byte (no W): the peek skips the prefixes, so the
+    /// retired instruction flushes the cache like the bare form.
+    #[test]
+    fn guest_only_prefixed_invlpg_forms_run_the_new_code() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        for sync in [
+            &[0x65u8, 0x0F, 0x01, 0x38][..], // INVLPG GS:[RAX]
+            &[0x41, 0x0F, 0x01, 0x3F],       // INVLPG [R15]
+            &[0x64, 0x41, 0x0F, 0x01, 0x3F], // INVLPG FS:[R15]
+        ] {
+            let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], sync, None);
+            let outcome = run_policy_case(
+                &build,
+                &switch_set(&cli, &halt),
+                16,
+                FetchCacheInvalidation::GuestOnly,
+            );
+            assert_halted_with_marker(&outcome, NEW_MARKER);
+            assert_eq!(outcome.stats.invlpg_flushes, 1, "{sync:02x?}");
+        }
+    }
+
+    /// What the peek calls an `INVLPG` is what the decoder admits as one: an optional FS/GS
+    /// override, an optional REX without W directly before the opcode, `0F 01 /7` with a memory
+    /// operand. `SWAPGS` (`0F 01 F8`), `RDTSCP` (`0F 01 F9`) and every other `mod = 3` form are
+    /// not; neither are the other `0F 01` groups, REX.W and the prefixes the decoder refuses.
+    #[test]
+    fn the_invlpg_peek_recognizes_exactly_the_decoded_shapes() {
+        use crate::paged_memory_adapter::invlpg_at_rip;
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let cr3 = boot.board.cr3();
+        let mut state = boot.board.state().clone();
+        state.cr3 = Some(cr3);
+        state.rip = ENTRY;
+        let paging =
+            crate::page_walk::Long64ProbeConfig::from_cpu_state(&state, cr3, boot.board.efer())
+                .expect("the board state is a valid snapshot");
+        for (bytes, expected) in [
+            (&[0x0Fu8, 0x01, 0x3B][..], true),
+            (&[0x0F, 0x01, 0x38], true),
+            (&[0x0F, 0x01, 0x7B, 0x10], true),
+            (&[0x65, 0x0F, 0x01, 0x38], true),
+            (&[0x64, 0x0F, 0x01, 0x3B], true),
+            (&[0x41, 0x0F, 0x01, 0x3F], true),
+            (&[0x47, 0x0F, 0x01, 0x3F], true),
+            (&[0x65, 0x41, 0x0F, 0x01, 0x38], true),
+            // The register forms of `0F 01 /7` and the other `mod = 3` forms.
+            (&[0x0F, 0x01, 0xF8], false), // SWAPGS
+            (&[0x0F, 0x01, 0xF9], false), // RDTSCP
+            (&[0x0F, 0x01, 0xFB], false), // reg 7, mod 3
+            (&[0x0F, 0x01, 0xC1], false), // VMCALL, mod 3
+            (&[0x65, 0x0F, 0x01, 0xF8], false),
+            (&[0x41, 0x0F, 0x01, 0xFF], false),
+            // Memory forms of the other groups.
+            (&[0x0F, 0x01, 0x10], false), // LGDT
+            (&[0x0F, 0x01, 0x18], false), // LIDT
+            (&[0x0F, 0x01, 0x00], false), // SGDT
+            (&[0x0F, 0x01, 0x20], false), // SMSW
+            // Prefixes the decoder refuses or that are not directly before the opcode.
+            (&[0x48, 0x0F, 0x01, 0x3B], false),
+            (&[0x4F, 0x0F, 0x01, 0x3F], false),
+            (&[0x41, 0x65, 0x0F, 0x01, 0x38], false),
+            (&[0x66, 0x0F, 0x01, 0x3B], false),
+            (&[0xF0, 0x0F, 0x01, 0x3B], false),
+            (&[0x26, 0x0F, 0x01, 0x3B], false),
+            (&[0x0F, 0x00, 0x3B], false),
+            (&[0x90, 0x0F, 0x01, 0x3B], false),
+        ] {
+            let mut window = bytes.to_vec();
+            window.resize(8, 0x90);
+            write_phys(&mut boot, ENTRY, &window);
+            assert_eq!(
+                invlpg_at_rip(&state, boot.board.bus_mut(), &paging, long64(), None),
+                expected,
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    /// The tree for the delivered-`#PF` case: the board's own tree with PD index 40 (VA
+    /// `0x0500_0000`) replaced by a PT that maps page A to `SPLIT_PAGE0` and page X (`+ 0x1000`) to
+    /// `SPLIT_PAGE1`. The code on X (both frames) stores to an unmapped page, so it takes a `#PF`
+    /// right after it has been cached; the handler (through the guest IDT) remaps PTE 1 to
+    /// `ALT_PAGE1` WITHOUT an `INVLPG`, maps the faulting page and returns to the store, which is
+    /// followed by `MOV RDX, marker; HLT`.
+    const PF_TEST_VA: u64 = 0x0500_0000;
+    const PF_TEST_PT: u64 = 0x0400_3000;
+
+    fn page_fault_remap_case(boot: &mut LinuxDirectBoot) -> LongModeState {
+        let cr3 = boot.board.cr3();
+        write_phys(
+            boot,
+            cr3 + 0x2000 + (PF_TEST_VA / (2 * MIB)) * 8,
+            &(PF_TEST_PT | A_PRESENT_WRITABLE).to_le_bytes(),
+        );
+        write_phys(
+            boot,
+            PF_TEST_PT,
+            &(SPLIT_PAGE0 | A_PRESENT_WRITABLE).to_le_bytes(),
+        );
+        write_phys(
+            boot,
+            PF_TEST_PT + 8,
+            &(SPLIT_PAGE1 | A_PRESENT_WRITABLE).to_le_bytes(),
+        );
+        for (frame, marker) in [(SPLIT_PAGE1, OLD_MARKER), (ALT_PAGE1, NEW_MARKER)] {
+            let mut code = mov_imm32(3, (PF_VA + 0x20) as u32);
+            code.extend(PF_STORE);
+            code.extend(mov_imm32(2, marker as u32));
+            code.push(0xF4);
+            write_phys(boot, frame, &code);
+        }
+        // PTE 1 -> ALT_PAGE1 (no INVLPG), then the repair of the faulting page and IRETQ.
+        let mut handler = mov_imm32(2, (PF_TEST_PT + 8) as u32);
+        handler.extend(mov_imm32(6, (ALT_PAGE1 | 3) as u32));
+        handler.extend([0x48, 0x89, 0x32]); // MOV [RDX], RSI
+        handler.extend(pf_repair_handler(
+            pf_pde_address(boot),
+            (DATA & !(2 * MIB - 1)) | 0x83,
+        ));
+        write_phys(boot, PF_HANDLER_AT, &handler);
+        let mut gate = [0u8; 16];
+        gate[0..2].copy_from_slice(&(PF_HANDLER_AT as u16).to_le_bytes());
+        gate[2..4].copy_from_slice(&0x10u16.to_le_bytes());
+        gate[5] = 0x8E;
+        gate[6..8].copy_from_slice(&((PF_HANDLER_AT >> 16) as u16).to_le_bytes());
+        write_phys(boot, PF_IDT_AT + 14 * 16, &gate);
+        let state = boot.board.state_mut();
+        state.idtr = Some(od_isa::state::Idtr {
+            base: PF_IDT_AT,
+            limit: 0xFF,
+        });
+        state.gpr[Register::Rcx as usize] = 0x5A;
+        state.rflags = 2 | (1 << 9) | 1;
+        let mut state = boot.board.state().clone();
+        state.cr3 = Some(cr3);
+        state.rip = PF_TEST_VA + 0x1000;
+        state
+    }
+
+    /// A `#PF` delivered to the guest invalidates the cached translation of the page it
+    /// faulted on (the whole cache goes): the handler changes the PTE of that very page with
+    /// no `INVLPG`, and the restarted instruction is fetched through the new frame.
+    #[test]
+    fn guest_only_a_delivered_page_fault_drops_the_cached_translation() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let guest_only = run_policy_case(
+            &page_fault_remap_case,
+            &switch_set(&cli, &halt),
+            24,
+            FetchCacheInvalidation::GuestOnly,
+        );
+        assert_halted_with_marker(&guest_only, NEW_MARKER);
+        assert_eq!(guest_only.report.delivered_exceptions, 1);
+        let stats = guest_only.stats;
+        assert_eq!(stats.fault_flushes, 1, "{stats:?}");
+        assert_eq!(
+            (
+                stats.invlpg_flushes,
+                stats.control_flushes,
+                stats.context_flushes,
+                stats.write_flushes
+            ),
+            (0, 0, 0, 0),
+            "{stats:?}"
+        );
+        // The write-watching policy sees the handler's PTE store itself.
+        let write_watch = run_policy_case(
+            &page_fault_remap_case,
+            &switch_set(&cli, &halt),
+            24,
+            FetchCacheInvalidation::WriteWatch,
+        );
+        assert_halted_with_marker(&write_watch, NEW_MARKER);
+        assert_eq!(write_watch.stats.fault_flushes, 0);
+    }
+
+    /// The default of the board and of the runner is untouched: the same layout through the
+    /// `bool` entry point (S4-13) is the write-watching cache.
+    #[test]
+    fn the_bool_entry_point_is_the_write_watch_cache() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], &NOP3, None);
+        let outcome = run_cache_case(&build, &switch_set(&cli, &halt), 16, true);
+        let stats = outcome.report.fetch_cache_stats.expect("cache stats");
+        assert_eq!(outcome.state.gpr[Register::Rdx as usize], NEW_MARKER);
+        assert_eq!(stats.write_flushes, 1, "{stats:?}");
+        assert_eq!(
+            (stats.invlpg_flushes, stats.control_flushes),
+            (0, 0),
+            "{stats:?}"
+        );
+    }
+
     /// The same check on the real kernel: the 2M-instruction prefix of the Linux board run ends
     /// with the same stop record and leaves byte-identical guest RAM (hence identical page-table
     /// accessed/dirty bits) with the fetch translation cache on and off.

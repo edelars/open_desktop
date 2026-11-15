@@ -25,6 +25,13 @@
 //!   between calls (NVMe DMA) can never leave a stale entry behind.
 //!
 //! The cache is off unless the caller asks for it.
+//!
+//! S4-14h: the invalidation policy is a choice of the caller ([`FetchCacheInvalidation`]).
+//! `WriteWatch` (the S4-13 behaviour, the default of every caller) drops entries on a write to a
+//! watched table frame, so the cache is exact against a TLB-less reference. `GuestOnly` models a
+//! TLB: a write to a page table does not touch an entry, only the invalidations the guest itself
+//! performs do (`INVLPG`, `MOV CR3`, a change of CR0/CR4, and a delivered `#PF` for its own
+//! page), so a stale translation may still be used until the guest asks for a flush, as on hardware.
 
 use crate::page_walk::Long64ProbeConfig;
 use crate::physical_memory::{GuestPhysicalRange, RamFrame};
@@ -47,6 +54,21 @@ struct Entry {
     tables: [u64; 4],
 }
 
+/// How the cache learns that a cached translation may be stale (S4-14h).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum FetchCacheInvalidation {
+    /// S4-13: a committed write to a watched table frame drops every entry, besides the explicit
+    /// flush of a translation context change. Needs no guest cooperation.
+    #[default]
+    WriteWatch,
+    /// A write to a table frame drops nothing (it is only counted); the caller flushes on the
+    /// guest invalidations: `MOV CR3`, `INVLPG`, a change of CR0 or CR4, and a `#PF` delivered
+    /// to the guest (a page fault invalidates the translations of its address; the whole cache
+    /// is dropped).
+    #[cfg_attr(not(test), allow(dead_code))]
+    GuestOnly,
+}
+
 /// Counters of one cache, for tests and diagnostics.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct FetchCacheStats {
@@ -57,6 +79,14 @@ pub(crate) struct FetchCacheStats {
     pub(crate) write_flushes: u64,
     /// Explicit flushes (translation context changes).
     pub(crate) context_flushes: u64,
+    /// `GuestOnly`: flushes after a retired `INVLPG`.
+    pub(crate) invlpg_flushes: u64,
+    /// `GuestOnly`: flushes after a change of CR0 or CR4.
+    pub(crate) control_flushes: u64,
+    /// `GuestOnly`: flushes at a `#PF` delivered to the guest.
+    pub(crate) fault_flushes: u64,
+    /// `GuestOnly`: committed writes that touched a watched table frame and dropped nothing.
+    pub(crate) ignored_table_writes: u64,
 }
 
 #[derive(Default)]
@@ -71,11 +101,26 @@ struct Inner {
 #[derive(Default)]
 pub(crate) struct FetchTranslationCache {
     inner: RefCell<Inner>,
+    invalidation: FetchCacheInvalidation,
 }
 
 impl FetchTranslationCache {
+    /// A cache with the S4-13 policy ([`FetchCacheInvalidation::WriteWatch`]).
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn with_invalidation(invalidation: FetchCacheInvalidation) -> Self {
+        Self {
+            invalidation,
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn invalidation(&self) -> FetchCacheInvalidation {
+        self.invalidation
     }
 
     /// The RAM frame of `address` when its page has a live entry for exactly this paging
@@ -149,7 +194,8 @@ impl FetchTranslationCache {
         inner.stats.inserts += 1;
     }
 
-    /// A committed RAM write reached memory: drop every entry if it touched a watched table.
+    /// A committed RAM write reached memory: with `WriteWatch` drop every entry if it touched a
+    /// watched table; with `GuestOnly` only count such a write.
     pub(crate) fn note_write(&self, range: GuestPhysicalRange) {
         let first = range.start().get() >> 12;
         let last = ((range.end_exclusive() - 1) >> 12) as u64;
@@ -160,17 +206,47 @@ impl FetchTranslationCache {
                 .iter()
                 .any(|table| *table != NO_TABLE && (first..=last).contains(table))
         });
-        if touched {
-            inner.entries = [None; SLOTS];
-            inner.stats.write_flushes += 1;
+        if !touched {
+            return;
+        }
+        match self.invalidation {
+            FetchCacheInvalidation::WriteWatch => {
+                inner.entries = [None; SLOTS];
+                inner.stats.write_flushes += 1;
+            }
+            FetchCacheInvalidation::GuestOnly => inner.stats.ignored_table_writes += 1,
         }
     }
 
-    /// Drop every entry (a translation context change: `MOV CR3`, `INVLPG`, CR0/CR4/EFER).
+    /// Drop every entry after a retired `MOV CR3` (or another translation context change the
+    /// set reports), in either policy.
     pub(crate) fn flush(&self) {
         let mut inner = self.inner.borrow_mut();
         inner.entries = [None; SLOTS];
         inner.stats.context_flushes += 1;
+    }
+
+    /// Drop every entry after a retired `INVLPG` (`GuestOnly`; the flush is of the whole cache,
+    /// not of the page the operand names).
+    pub(crate) fn flush_after_invlpg(&self) {
+        let mut inner = self.inner.borrow_mut();
+        inner.entries = [None; SLOTS];
+        inner.stats.invlpg_flushes += 1;
+    }
+
+    /// Drop every entry when a `#PF` is delivered to the guest (`GuestOnly`).
+    pub(crate) fn flush_after_page_fault(&self) {
+        let mut inner = self.inner.borrow_mut();
+        inner.entries = [None; SLOTS];
+        inner.stats.fault_flushes += 1;
+    }
+
+    /// Drop every entry after CR0 or CR4 changed (`GuestOnly`; a toggle of CR4.PGE is a global
+    /// TLB flush, and any other change is flushed too, which is always allowed).
+    pub(crate) fn flush_after_control_change(&self) {
+        let mut inner = self.inner.borrow_mut();
+        inner.entries = [None; SLOTS];
+        inner.stats.control_flushes += 1;
     }
 
     pub(crate) fn stats(&self) -> FetchCacheStats {
@@ -295,6 +371,68 @@ mod tests {
             assert_eq!(live, !flushes, "{write:?}");
             assert_eq!(cache.stats().write_flushes, u64::from(flushes), "{write:?}");
         }
+    }
+
+    #[test]
+    fn guest_only_counts_a_table_write_and_keeps_every_entry_until_a_guest_flush() {
+        let memory = memory();
+        let ring0 = context(PrivilegeLevel::Ring0);
+        let cache = FetchTranslationCache::with_invalidation(FetchCacheInvalidation::GuestOnly);
+        assert_eq!(cache.invalidation(), FetchCacheInvalidation::GuestOnly);
+        cache.insert(
+            CODE_VA,
+            &paging(0x1000),
+            ring0,
+            frame(&memory, 0x8000),
+            TABLES,
+        );
+        // A write into a watched table (counted), one that misses every table (not counted).
+        cache.note_write(range(0x3008, 8));
+        cache.note_write(range(0x8000, 8));
+        assert!(cache.lookup(CODE_VA, &paging(0x1000), ring0).is_some());
+        let stats = cache.stats();
+        assert_eq!(
+            (stats.write_flushes, stats.ignored_table_writes),
+            (0, 1),
+            "{stats:?}"
+        );
+        // Each guest invalidation drops the entry and counts on its own counter.
+        for flush in [
+            FetchTranslationCache::flush_after_invlpg as fn(&FetchTranslationCache),
+            FetchTranslationCache::flush_after_control_change,
+            FetchTranslationCache::flush_after_page_fault,
+            FetchTranslationCache::flush,
+        ] {
+            cache.insert(
+                CODE_VA,
+                &paging(0x1000),
+                ring0,
+                frame(&memory, 0x8000),
+                TABLES,
+            );
+            flush(&cache);
+            assert_eq!(cache.lookup(CODE_VA, &paging(0x1000), ring0), None);
+        }
+        let stats = cache.stats();
+        assert_eq!(
+            (
+                stats.invlpg_flushes,
+                stats.control_flushes,
+                stats.fault_flushes,
+                stats.context_flushes
+            ),
+            (1, 1, 1, 1),
+            "{stats:?}"
+        );
+    }
+
+    #[test]
+    fn write_watch_is_the_default_policy_and_ignores_nothing() {
+        let cache = FetchTranslationCache::new();
+        assert_eq!(cache.invalidation(), FetchCacheInvalidation::WriteWatch);
+        assert_eq!(FetchCacheInvalidation::default(), cache.invalidation());
+        cache.note_write(range(0x3008, 8));
+        assert_eq!(cache.stats(), FetchCacheStats::default());
     }
 
     #[test]
