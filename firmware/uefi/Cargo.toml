@@ -8,6 +8,10 @@ license = "AGPL-3.0-only"
 publish = false
 description = "Open Desktop own UEFI firmware (S7-01: build skeleton, not a firmware implementation)"
 
+# Keep this host-testable guest project independent even when a checkout is nested in another
+# Open Desktop worktree, where Cargo would otherwise discover that outer workspace first.
+[workspace]
+
 [lib]
 name = "od_firmware"
 path = "src/lib.rs"

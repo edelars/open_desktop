@@ -11,6 +11,7 @@
 // does not link. S7-04 adds the allocator together with `extern crate alloc`.
 
 pub mod acpi;
+pub mod handoff;
 pub mod image;
 pub mod stop;
 

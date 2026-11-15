@@ -441,3 +441,11 @@ printf X | cmp - work/stage7/mini_com1.txt                           # тран�
 python3 tools/check_layout.py 2>&1 | grep -c ERROR                    # 45
 git diff --check
 ```
+
+### S7-04. Срез: безопасный разбор заголовка handoff
+
+Статус: частичный срез реализован; S7-04 не закрыта. Добавлен allocation-free `Handoff::parse` в `firmware/uefi/src/handoff.rs`: проверяются magic, major/minor, размер фиксированного заголовка, размер блока, CRC до разбора таблиц, размеры записей (region 32 байта, device 48 байт), границы, выравнивание и отсутствие пересечения таблиц. Парсер возвращает заимствованный view и не выделяет память. Отдельная запись `[workspace]` в `firmware/uefi/Cargo.toml` нужна, чтобы Cargo сохранял standalone-проект прошивки при тестировании worktree, вложенного в другой checkout.
+
+Проверено: `cargo test --manifest-path firmware/uefi/Cargo.toml --offline` — 158 passed; `cargo check --manifest-path firmware/uefi/Cargo.toml --target x86_64-unknown-none --offline` — успешно; `rustfmt --check firmware/uefi/src/handoff.rs` — чисто; `git diff --check` — чисто. Полный `cargo fmt` отдельного проекта пока не проходит из-за уже существующих отличий форматирования в файлах ACPI; файлы вне среза оставлены без изменений. Независимое ревью среза (gpt-6.1-sol, high): после исправления размера device-записи, порядка CRC-проверки, выравнивания и перекрытия таблиц замечаний, блокирующих объявленный scope, нет.
+
+Ограничения: тесты подтверждают заголовок и структуру таблиц, включая каноническую раскладку с одной записью региона и семью 48-байтовыми записями устройств; содержимое реальных записей не валидируется. Не проверяются region/device semantics, counts, reserved fields, `cpu_count`, serial и связь с живой картой платы. Не реализованы entry/stack, собственные page tables, аллокаторы, UEFI memory map, COM1 boot log и запуск полного образа в машине. Следующий шаг S7-04 — определить и реализовать семантическую проверку handoff и связать её с безопасной диагностикой на COM1.
