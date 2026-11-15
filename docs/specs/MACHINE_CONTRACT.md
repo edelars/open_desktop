@@ -2206,7 +2206,10 @@ See the [S4-26b report](../reports/STAGE_4_S4-26B_2026-11-07.md) and
   mode (бит 11 = 0), active-high (бит 13 = 0), нулевых битах 31:17; исключение —
   входы без линии (все, кроме INTIN4): под маской разрешён бит 13 = 1 (active-low;
   MADT объявляет SCI на GSI 9 как level/active-low, flags `0x000F`), запись без маски
-  с бит 13 = 1 — `UnsupportedConfiguration` без изменений; INTIN4 остаётся только
+  с бит 13 = 1 — `UnsupportedConfiguration` без изменений, кроме одной формы (S4-38L8e):
+  pin 9 с бит 15 = 1 (level) и бит 13 = 1 (active-low) принимается и без маски (вектор
+  `0x10..=0xFE`, Fixed, physical), это ровно то, что описывает ISO MADT (IRQ 9 → GSI 9,
+  flags `0x000F`); INTIN4 остаётся только
   active-high даже под маской; биты 12 и 14
   (read-only) отбрасываются. Vector: для unmasked записи `0x10..=0xFE`; для masked
   записи допустим любой байт (reset-состояние уже masked с vector 0, а Linux
@@ -2219,13 +2222,25 @@ See the [S4-26b report](../reports/STAGE_4_S4-26B_2026-11-07.md) and
 
 **Недопустимые записи** (vector < 16 при unmasked, `0xFF` при unmasked, любой
 delivery mode кроме Fixed — lowest priority, SMI, NMI, INIT, ExtINT и зарезервированные
-`011`/`110`, polarity (кроме masked на входах без линии), reserved-биты, ненулевой high dword) всегда
+`011`/`110`, polarity (кроме masked на входах без линии и формы level/active-low pin 9, S4-38L8e), reserved-биты, ненулевой high dword) всегда
 `UnsupportedConfiguration` и не меняют ни один вход, ID, Remote IRR, IRR/ISR/TMR.
 Тесты сравнивают полный снимок `PairState` до и после.
 
-**Ограничения S4-26c.** (а) SCI GSI 9 (level/active-low) принимается только
-маскированным; разблокировка такого входа — отказ, потому что active-low не
-моделируется: риск для S4-29/S4-38 (включение SCI). (б) EOI-регистра IOAPIC по
+**S4-38L8e: SCI на pin 9 (level, active-low).** Запись `0xa020`-формы (бит 15 и бит 13 = 1, без маски)
+в low dword pin 9 принимается (раньше отказ, на нём остановился прогон L8d). Модель: `sci_asserted`
+(физический уровень низкий, источник вызывает `IoApicHandle::set_sci_line(asserted)`) и
+`sci_remote_irr`; семантика та же, что у уровневого INTIN4: доставка при снятой маске и поднятой линии
+ставит IRR/TMR и Remote IRR, EOI адресата снимает Remote IRR и, пока линия поднята, а запись не
+маскирована, доставляет повторно; маска блокирует доставку, повторная запись или поднятие линии при
+Remote IRR второй запрос не ставят; вектор уровневого pin 9 резервируется против фронтов и уровневого
+INTIN4 того же LAPIC; Remote IRR вето на сброс IOAPIC и отключение LAPIC. Pin 9 в других неотказных
+формах (например, level/active-high) хранится без линии, `set_sci_line(true)` при такой записи без маски —
+`UnsupportedConfiguration` без изменений. Источника SCI в плате пока нет (его линию никто не поднимает).
+Резерв вектора уровневой формы pin 9 действует и под маской: маскированная SCI-форма с вектором V отвергается, если V уже занят (разблокированный entry 2, уровневый INTIN4, LVT Timer того же LAPIC), и наоборот: пока pin 9 в SCI-форме держит V, уровневый INTIN4, запись entry 2 и LVT Timer с V отвергаются, а фронт INTIN4 с V не доставляется (`edge` отказывает). Принятые пути не затронуты: UART probe пишет только INTIN4 = 0x51, pin 9 остаётся MASK; окна IOAPIC под stage4a закрыты. Для среза источника SCI: если линия поднята до настройки ОС (`sci_asserted`), переход записи pin 9 в SCI-форму или смена её вектора отвергается (`UnsupportedConfiguration`, как у INTIN4): ОС должна настроить запись до подъёма линии, либо источник поднимает её позже. Другие входы: active-low без маски по-прежнему отказ. Профиль stage4a окна IOAPIC не открывает (прежняя
+типизированная ошибка шины).
+
+**Ограничения S4-26c.** (а) [заменено S4-38L8e для pin 9: форма level/active-low без маски принимается;
+прочие формы active-low без маски отвергаются.] (б) EOI-регистра IOAPIC по
 смещению `0x40` нет (тот же `UnknownOffset` по общим
 правилам окна), регистр `0x03` не моделируется (`UnknownOffset`); Version `0x20`
 выбрана как у ICH/QEMU-style IOAPIC, не 82093AA. (в) Polarity в «Сделать» S4-26
