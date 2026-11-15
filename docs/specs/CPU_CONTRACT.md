@@ -860,6 +860,13 @@ Base `PagedCpl0ProbeV1` admits only `45 89 CC`: primary opcode `89`, exact REX `
 
 Checks: four focused `rust_helper_mov_r12d_r9d` tests and other-profile isolation passed; all 368 `paged_probe_profile` tests passed. Coverage includes high-source bits ignored, destination zero-extension, full-state/flag preservation, ModRM fetch fault, neighbors and CPL/profile isolation. Firmware image `/private/tmp/od-fw-s7-04-issue172.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 75 instructions then stopped at `41 C1 EC 08` (`SHR R12D,8`, ISSUE-173), `RIP=0x200e0e`, `Unsupported { opcode: 193 }`, `com1_bytes=0`; full handoff validation remains incomplete.
 
+<a id="s7-04-exact-rust-helper-shr-r12d-8"></a>
+#### Расширение S7-04: exact Rust-helper `SHR R12D,8`
+
+Base `PagedCpl0ProbeV1` admits only `41 C1 EC 08`: primary opcode `C1`, exact REX `41`, ModRM `EC` selecting group `/5` and R12D, immediate count 8, dword width, and length 4. Existing SHR/count semantics are reused. The result is written to R12D, zero-extending into R12; CF/SF/ZF/PF are defined for this count, while AF/OF become undefined and retain their concrete prior bits. Fetch faults do not commit state. Other count, destination, shift kind, count source, width, prefix, memory form, CPL3 and other paged profiles remain unsupported.
+
+Checks: four focused `rust_helper_shr_r12d_8` tests and other-profile isolation passed; all 372 `paged_probe_profile` tests passed. Vectors verify shifted results, carry/result flags, preserved concrete AF/OF with undefined metadata, dword zero-extension, full-state retention, final-immediate fetch-fault atomicity, neighbors and profile/CPL isolation. Firmware image `/private/tmp/od-fw-s7-04-issue173.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 76 instructions then stopped at `49 83 FF 14` (`CMP R15,0x14`, ISSUE-174), `RIP=0x200e12`, `Unsupported { opcode: 131 }`, `com1_bytes=0`; full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции
