@@ -12,25 +12,36 @@
 
 ## Записи
 
+<a id="issue-103-s7-04-paged-cpu-profile-does-not-admit-jcc-jne-at-firmware-entry"></a>
+### ISSUE-103 — S7-04: paged CPU profile не допускает `JNZ` из entry прошивки
+- **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `CMP RDI,RAX`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
+- **Владелец:** S7-04 совместно с владельцем CPU profile.
+- **Статус:** открыта; runner проходит три startup-инструкции, но до Rust entry не доходит.
+- **Суть и последствия:** после `CLD`, `48 C7 C0 00 00 10 00` и `48 39 C7` runner отклоняет `75 24` (`JNZ rel8`) на `RIP=0x20004b`. Вывод COM1 пуст; handoff parser и firmware entry не проверены в машине.
+- **Основание:** образ `/private/tmp/od-fw-s7-04-cmp.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; команда `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-cmp.bin --com1-out /private/tmp/od-fw-s7-04-cmp.com1 --budget 10000` вернула `Unsupported { opcode: 117 }` (decimal = `0x75`), `retired=3`, `RIP=0x20004b`, `com1_bytes=0`.
+- **Следующий шаг:** определить точный контракт для `JNZ rel8` из firmware entry, включая taken/not-taken RIP и атомарность fetch; повторить runner-прогон.
+
 <a id="issue-102-s7-04-paged-cpu-profile-does-not-admit-cmp-rdi-rax-at-firmware-entry"></a>
 ### ISSUE-102 — S7-04: paged CPU profile не допускает `CMP RDI,RAX` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска entry `C7`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
 - **Владелец:** S7-04 совместно с владельцем CPU profile.
-- **Статус:** открыта; runner доходит на две инструкции дальше, но до Rust entry не доходит.
+- **Статус:** решена в точной форме `48 39 C7` (CMP-срез прошёл ревью; commit pending); runner заблокирован на следующем startup instruction (ISSUE-103).
 - **Суть и последствия:** после `CLD` и `48 C7 C0 00 00 10 00` runner отклоняет байты `48 39 C7` (`CMP RDI,RAX`) на `RIP=0x200048`. В сообщении `Unsupported { opcode: 57 }` число 57 десятичное (`0x39`), а не hex `0x57`; handoff parser и COM1 остаются непроверенными в машине.
 - **Основание:** образ `/private/tmp/od-fw-s7-04-c7.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-c7.bin --com1-out /private/tmp/od-fw-s7-04-c7.com1 --budget 10000` вернул `status=error`, `exit=unsupported`, `Unsupported { opcode: 57 }` (decimal; `0x39`), `retired=2`, `RIP=0x200048`, `com1_bytes=0`.
-- **Следующий шаг:** определить минимальный register-form контракт для `REX.W 39 /r` (`CMP RDI,RAX`) и продолжить runner-прогон к `JNE`, сохраняя профильную изоляцию и точное поведение flags.
+- **Результат:** базовый paged profile принимает только `48 39 C7`, переиспользует существующий `ArithmeticKind::Cmp` и меняет только арифметические флаги и RIP; соседние формы, CPL3 и прочие paged profiles отклоняются. Runner теперь retires три инструкции и останавливается на ISSUE-103.
+- **Проверка:** focused `paged_probe_profile` — 84 passed; CPU contract и runner evidence описаны в [S7-04 CMP slice](reports/STAGE_7_REPORT.md#s7-04-cpu-profile-cmp).
 
 <a id="issue-101-s7-04-paged-cpu-profile-does-not-admit-c7-mov-imm32-at-entry"></a>
 ### ISSUE-101 — S7-04: paged CPU profile не допускает `C7 MOV` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `CLD`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
 - **Владелец:** S7-04 совместно с владельцем CPU profile.
-- **Статус:** решена в узком смысле exact entry формы `MOV RAX,imm32` (код `d5d6e22`); runner остаётся заблокирован на следующем startup instruction (ISSUE-102).
+- **Статус:** решена в узком смысле exact entry формы `MOV RAX,imm32` (код `d5d6e22`); runner остаётся заблокирован на следующем startup instruction (ISSUE-103; ISSUE-102 решена узко).
 - **Суть и последствия:** после успешно исполненного `CLD` runner отклонял `C7` (`MOV RAX,imm32`, bytes `48 C7 C0 00 00 10 00`) на `RIP=0x200041`. Narrow profile slice теперь принимает только этот REX.W C7 /0 register encoding для RAX. До Rust entry прошивка пока не доходит; handoff parser и COM1 остаются непроверенными в машине.
 - **Основание:** на образе `/private/tmp/od-fw-s7-04.bin` команда `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04.bin --com1-out /private/tmp/od-fw-s7-04-after-cld.com1 --budget 10000` вернула `status=error`, `exit=unsupported`, `Unsupported { opcode: 199 }`, `retired=1`, `RIP=0x200041`, `com1_bytes=0`. Образ SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
-- **Результат:** базовый `PagedCpl0ProbeV1` исполняет exact `48 C7 C0 id`, sign-extends immediate dword, изменяет только RAX и RIP, без guest data access; другие widths/registers/memory forms и paged profiles отклоняются. Runner retired 2 инструкции (`CLD`, C7) и теперь отклоняет `48 39 C7` (`CMP RDI,RAX`, unsupported opcode 57 decimal = `0x39`) на `RIP=0x200048`; см. ISSUE-102.
+- **Результат:** базовый `PagedCpl0ProbeV1` исполняет exact `48 C7 C0 id`, sign-extends immediate dword, изменяет только RAX и RIP, без guest data access; другие widths/registers/memory forms и paged profiles отклоняются. Runner retired 2 инструкции (`CLD`, C7) и тогда отклонял `48 39 C7` (`CMP RDI,RAX`, unsupported opcode 57 decimal = `0x39`) на `RIP=0x200048`; ISSUE-102 теперь узко решена, текущая остановка описана в ISSUE-103.
 - **Проверка:** `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 80 passed; runner прогон и полный контракт описаны в [S7-04 CPU-profile C7 slice](reports/STAGE_7_REPORT.md#s7-04-cpu-profile-c7).
 
 <a id="issue-100-s7-04-paged-cpu-profile-does-not-admit-cld-at-firmware-entry"></a>
