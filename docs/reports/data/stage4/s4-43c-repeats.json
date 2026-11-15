@@ -497,25 +497,13 @@
    "rss_growth_below_5mib": true
   }
  },
- "differences_between_processes": "Совпадают все счётчики, кучи и длины очередей (сравнено по всем плоским полям JSON). Различаются только время и RSS (в пределах 16-48 KiB).",
- "differences_vs_committed_json": "Счётчики те же, что в s4-43a-churn.json / s4-43b-queues.json. Отличаются: RSS (иной момент/способ запуска), live_heap на 45 байт больше в прежнем JSON у 43a (14913 против 14958 до прогрева, вероятно длина пути в env), rss_growth_main_vs_warmup_bytes у 43a 1 310 720 против 245 760 (рост приходится на фазу baseline: +1 114 112 байт, главный прогон +196 608 как и прежде).",
+ "differences_between_processes": "Значения всех полей-счётчиков, куч и длин очередей совпадают во всех процессах (файлы не байт-в-байт равны: размеры 43b p3 16 457 и p1/p2 16 458 из-за разной длины чисел времени). Различаются только время и RSS (в пределах 16-48 KiB).",
+ "differences_vs_committed_json": "Счётчики те же, что в s4-43a-churn.json / s4-43b-queues.json. Отличаются: RSS (иной момент/способ запуска); live_heap 43a на 45 байт меньше, чем в прежнем JSON, и до прогрева (14 913 против 14 958), и после фаз (15 633 против 15 678) — вероятно, из-за длины пути в окружении (не проверялось); rss_growth_main_vs_warmup_bytes 43a 1 310 720 против 245 760: рост приходится на фазу baseline (+1 114 112 байт против +49 152 в одиночном прогоне), главный прогон +196 608 как и прежде; причина роста не установлена.",
  "manual_fields": [
-  "source_commit",
-  "os",
-  "arch",
-  "profile",
-  "how_run",
-  "raw_runs_dir",
-  "runs[].passed",
-  "runs[].tests_passed",
-  "runs[].tests_failed",
-  "runs[].test_finished_in_s",
-  "runs[].wall_s",
-  "runs[].test_binary_sha256",
-  "runs[].key (выборка из JSON процесса)",
-  "aggregates",
-  "invariants",
-  "differences_between_processes",
-  "differences_vs_committed_json"
+  "вся сводка собрана одноразовым python-скриптом вне тестов (скрипт не закоммичен; сырые JSON процессов лежат в raw_runs_dir)",
+  "скопированы из сырых JSON процессов: runs[].total_elapsed_ms, runs[].watchdog_self_test_timed_out, runs[].rss_growth_bytes, runs[].key.* (выборка полей)",
+  "взяты из stdout процесса: runs[].tests_passed, runs[].tests_failed, runs[].test_finished_in_s",
+  "измерены снаружи или посчитаны: runs[].wall_s, runs[].test_binary_sha256, runs[].passed (код возврата и stdout), aggregates, invariants",
+  "написаны вручную: schema, scope, source_commit, os, arch, profile, how_run, raw_runs_dir, runs[].test, runs[].process, differences_between_processes, differences_vs_committed_json, manual_fields"
  ]
 }
