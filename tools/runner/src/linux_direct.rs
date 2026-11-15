@@ -125,7 +125,7 @@ struct Options {
     /// `--cpuid-profile diagnostic|stage4a|stage4a-apic` (S4-38L9a, S4-38L8d: the APIC variant; only with
     /// `--set-cpl0`): the CPUID profile of the set; `diagnostic` (DiagnosticV1, with the C7 boundary) when absent.
     cpuid_profile: CpuidProfile,
-    /// `--user-mode` (S4-39c, only with `--set-cpl0 --cpuid-profile stage4a`): a committed `IRETQ`
+    /// `--user-mode` (S4-39c, only with `--set-cpl0 --cpuid-profile stage4a|stage4a-apic`, S4-38L9-um): a committed `IRETQ`
     /// to CPL3 continues with the CPL3 entry instead of stopping at `user_entry`.
     user_mode: bool,
     /// `--checkpoint-table <s4-38l2-oracle.json>` (S4-38L4i, only with `--run --set-cpl0`): record
@@ -1138,10 +1138,12 @@ fn parse(args: &[String]) -> Result<Options, String> {
     };
     // S4-39c: the user mode needs the CPUID subset the kernel boots with; `linux_default` (the
     // `diagnostic` profile) never turns it on.
-    if user_mode && cpuid_profile != CpuidProfile::X8664V1Stage4A {
-        // S4-38L8d: `stage4a-apic` has no user mode (the CPL3 interrupt path is the 8259 one).
+    if user_mode && !cpuid_profile.is_stage4a_family() {
+        // S4-38L9-um: `stage4a-apic` has the user mode too (ISSUE-090 for the APIC profile: the
+        // CPL3 interrupt goes through the Local APIC IRR and the IDT); its result stays
+        // `diagnostic_not_counted`. The diagnostic profile has none.
         return Err(format!(
-            "--user-mode needs --run, --set-cpl0 and --cpuid-profile stage4a (not stage4a-apic); usage: {USAGE}"
+            "--user-mode needs --run, --set-cpl0 and --cpuid-profile stage4a or stage4a-apic; usage: {USAGE}"
         ));
     }
     if stack_context_out.is_some() && !(run && set_cpl0) {
@@ -2745,6 +2747,44 @@ mod tests {
         );
     }
 
+    /// S4-38L9-um: the same program under `stage4a-apic --user-mode` reaches CPL3 (no refusal
+    /// before the board is changed), carries the APIC members and the IRQ source, and the result
+    /// stays `diagnostic_not_counted`.
+    #[test]
+    fn user_mode_under_the_apic_profile_runs_into_cpl3_and_is_not_counted() {
+        let mut case = Case::new(
+            "set-user-mode-apic",
+            &bzimage_with_entry(&iretq_to_cpl3_program()),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(64);
+        case.options.set_cpl0 = true;
+        case.options.cpuid_profile = CpuidProfile::X8664V1Stage4AApic;
+        case.options.user_mode = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        assert_eq!(value["acceptance"], "diagnostic_not_counted", "{value:#}");
+        assert_eq!(value["cpuid_profile"], "X8664V1Stage4AApic");
+        let stop = &value["stop"];
+        assert_eq!(stop["exit_kind"], "user_mode_fault", "{value:#}");
+        assert_eq!(stop["cpl"], 3);
+        assert_eq!(stop["user_mode"], true);
+        let members = stop["set_members"].as_array().unwrap();
+        for name in [
+            "cpuid:X8664V1Stage4AApic",
+            "halt",
+            "irq",
+            "clock_owner",
+            "user_mode",
+        ] {
+            assert!(
+                members.iter().any(|member| member == name),
+                "{name}: {members:?}"
+            );
+        }
+    }
+
     fn cpuid_leaf_case(name: &str, leaf: u8, diagnostic: bool) -> (Value, u8) {
         // CLI; MOV EAX, leaf; CPUID; HLT.
         let code = [0xFA, 0xB8, leaf, 0x00, 0x00, 0x00, 0x0F, 0xA2, 0xF4];
@@ -3605,10 +3645,10 @@ mod tests {
         );
     }
 
-    /// S4-38L8d: `--cpuid-profile stage4a-apic` is a profile of its own; the user mode needs
-    /// `stage4a` and is refused for it before anything runs.
+    /// S4-38L8d: `--cpuid-profile stage4a-apic` is a profile of its own. S4-38L9-um: the user mode
+    /// is accepted for it (and for `stage4a`), and still refused for the diagnostic profile.
     #[test]
-    fn stage4a_apic_is_accepted_and_has_no_user_mode() {
+    fn stage4a_apic_is_accepted_and_has_the_user_mode() {
         let with = |extra: &[&str]| {
             let mut args = vec!["--run", "--budget", "1", "--set-cpl0"];
             args.extend_from_slice(extra);
@@ -3621,8 +3661,33 @@ mod tests {
             CpuidProfile::X8664V1Stage4AApic
         );
         assert!(with(&["--cpuid-profile", "stage4a-apic", "--diagnostic-past-c7"]).is_ok());
-        let error = with(&["--cpuid-profile", "stage4a-apic", "--user-mode"]).unwrap_err();
-        assert!(error.contains("--user-mode needs"), "{error}");
+        let user = with(&["--cpuid-profile", "stage4a-apic", "--user-mode"]).unwrap();
+        assert!(user.user_mode);
+        assert_eq!(user.cpuid_profile, CpuidProfile::X8664V1Stage4AApic);
+        assert!(
+            !with(&["--cpuid-profile", "stage4a-apic"])
+                .unwrap()
+                .user_mode
+        );
+        // Only the stage4a family has it: the diagnostic profile and the default are refused.
+        for bad in [
+            vec!["--cpuid-profile", "diagnostic", "--user-mode"],
+            vec!["--user-mode"],
+            vec![
+                "--cpuid-profile",
+                "stage4a-apic",
+                "--user-mode",
+                "--user-mode",
+            ],
+        ] {
+            let error = with(&bad).unwrap_err();
+            assert!(
+                error.contains("--user-mode needs") || error.contains("duplicate"),
+                "{error}"
+            );
+        }
+        let error = with(&["--cpuid-profile", "diagnostic", "--user-mode"]).unwrap_err();
+        assert!(error.contains("stage4a or stage4a-apic"), "{error}");
         // Needs --run and --set-cpl0 like the other profiles.
         assert!(parse_base(&["--cpuid-profile", "stage4a-apic"]).is_err());
     }

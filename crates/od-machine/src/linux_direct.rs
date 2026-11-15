@@ -1253,19 +1253,16 @@ fn run_linux_direct_board_set_with_post_iret_index(
     // S4-38L8d: the APIC profile (`X8664V1Stage4AApic`) gets the timer line through the IOAPIC and the
     // Local APIC instead (PIT OUT0 -> INTIN2 -> LAPIC IRR), the clock owner (the LAPIC timer and the
     // idle wake need it: without it the tick hangs after `check_timer`), `halt` and the interrupt
-    // hook. The 8259 source is not installed. The user mode is refused before anything runs: the
-    // CPL3 interrupt path was built for the 8259 line only.
+    // hook. The 8259 source is not installed. S4-38L9-um: the user mode is allowed here too; the
+    // CPL3 interrupt goes through the same boundary hook (the Local APIC IRR vector, the guest IDT,
+    // `TSS.RSP0`) as at CPL0, so the source of the vector (IOAPIC or the LAPIC timer) is not
+    // looked at by the privilege entry.
     if members.cpuid_profile == CpuidProfile::X8664V1Stage4AApic {
         let refuse = |detail: &str| {
             let mut error = LinuxDirectError::text("run_failed", "run", detail.to_string());
             error.retired = Some(0);
             error
         };
-        if user_mode {
-            return Err(refuse(
-                "the user mode is not supported with the X8664V1Stage4AApic profile",
-            ));
-        }
         // Only a check here: the board is changed after the last refusal below (the clock owner,
         // the checkpoint table), see `enable_pit_ioapic_irq` further down.
         if !boot.board.pit_ioapic_irq_available() {
@@ -11508,7 +11505,19 @@ mod tests {
     /// that map it (PML4E, PDPTE and the 2 MiB PDE of the first GiB) get the user bit; without
     /// it the page stays supervisor-only.
     fn user_mode_board(user_code: &[u8], user_page: bool) -> (LinuxDirectBoot, Vec<u8>) {
-        let (mut boot, file) = boot_with_entry(&[0x48, 0xCF]);
+        user_mode_board_with(&[], user_code, user_page, 0x202)
+    }
+
+    /// `user_mode_board` with `prefix` (CPL0 code that runs before the `IRETQ`, no stack effect)
+    /// and the RFLAGS of the `IRETQ` frame (`0x202`: IF set; `0x2`: IF clear in CPL3).
+    fn user_mode_board_with(
+        prefix: &[u8],
+        user_code: &[u8],
+        user_page: bool,
+        user_rflags: u64,
+    ) -> (LinuxDirectBoot, Vec<u8>) {
+        let entry: Vec<u8> = prefix.iter().copied().chain([0x48, 0xCF]).collect();
+        let (mut boot, file) = boot_with_entry(&entry);
         write_phys(
             &mut boot,
             USER_GDT + 0x10,
@@ -11524,7 +11533,7 @@ mod tests {
         for (offset, value) in [
             (0u64, USER_CODE_AT),
             (8, 0x13),
-            (16, 0x202),
+            (16, user_rflags),
             (24, ENTRY + 0x800),
             (32, 0x1b),
         ] {
@@ -15928,22 +15937,186 @@ mod tests {
             assert_eq!(source.uart_refused(), 0);
         }
 
-        #[test]
-        fn the_apic_profile_refuses_the_user_mode_before_anything_runs() {
-            let (mut boot, file) = boot_with_entry(&com1_program(b'X'));
-            let error = run_linux_direct_board_set_user_mode(
+        // ---- S4-38L9-um: the user mode under the APIC profile (ISSUE-090 for the APIC board) ----
+
+        /// A user-mode board for the APIC profile: `user_mode_board_with` plus the APIC windows,
+        /// the kernel code descriptor at GDT 0x08, an interrupt gate `IRQ_VECTOR` to the handler
+        /// at `USER_HANDLER_AT` (guest EOI, `IRETQ`; `RBX` = the Local APIC base from the prefix and
+        /// `EAX` = 0 from the user spin) and a task register over a TSS whose RSP0 is `USER_RSP0`.
+        /// `prefix` is the CPL0 setup that runs before the `IRETQ` to CPL3.
+        fn user_apic_board(
+            prefix: &[u8],
+            user_code: &[u8],
+            user_rflags: u64,
+        ) -> (LinuxDirectBoot, Vec<u8>) {
+            let (mut boot, file) = user_mode_board_with(prefix, user_code, true, user_rflags);
+            map_apic_windows(&mut boot);
+            write_phys(
                 &mut boot,
-                &input(&file, &[], BLOB, board_hash()),
-                64,
+                USER_GDT + 0x08,
+                &0x00af_9b00_0000_ffff_u64.to_le_bytes(),
+            );
+            write_phys(&mut boot, USER_HANDLER_AT, &handler(true));
+            let mut gate = [0u8; 16];
+            gate[0..2].copy_from_slice(&(USER_HANDLER_AT as u16).to_le_bytes());
+            gate[2..4].copy_from_slice(&0x08u16.to_le_bytes());
+            gate[5] = 0x8E;
+            gate[6..8].copy_from_slice(&((USER_HANDLER_AT >> 16) as u16).to_le_bytes());
+            write_phys(&mut boot, USER_IDT_AT + u64::from(IRQ_VECTOR) * 16, &gate);
+            write_phys(&mut boot, USER_TSS_AT + 4, &USER_RSP0.to_le_bytes());
+            let state = boot.board.state_mut();
+            state.idtr = Some(od_isa::state::Idtr {
+                base: USER_IDT_AT,
+                limit: 0xFFF,
+            });
+            state.tr = Some(od_isa::TaskRegisterCache {
+                selector: 0x20,
+                base: USER_TSS_AT,
+                limit: 0x67,
+                access: 0x8B,
+                flags: 0,
+            });
+            (boot, file)
+        }
+
+        /// CPL3 code: `MOV EAX, 0; JMP -7` (a spin that retires two instructions per turn and
+        /// keeps `EAX` = 0 for the handler's EOI write).
+        const USER_SPIN: [u8; 7] = [0xB8, 0, 0, 0, 0, 0xEB, 0xF9];
+
+        fn run_user_apic(boot: &mut LinuxDirectBoot, file: &[u8], budget: u64) -> LinuxStopRecord {
+            run_linux_direct_board_set_user_mode(
+                boot,
+                &input(file, &[], BLOB, board_hash()),
+                budget,
                 members(CpuidProfile::X8664V1Stage4AApic),
             )
-            .expect_err("refused");
-            assert_eq!((error.code, error.stage), ("run_failed", "run"));
-            assert_eq!(error.retired, Some(0));
-            assert!(error.detail.contains("user mode"), "{error}");
-            assert!(boot.board.pit_ioapic_source().is_none());
-            assert!(!boot.board.clock_owner_enabled());
-            assert!(boot.board.com1_transcript().is_empty());
+            .expect("the APIC profile runs in user mode")
+        }
+
+        /// The Local APIC timer armed by the host before the run (the clock owner of the facade
+        /// then cuts the first quantum at its deadline): SVR enabled, a one-shot LVT timer of
+        /// `IRQ_VECTOR`, divider 1, `count` counts of 10 ns. A timer armed by the guest inside a
+        /// quantum is dispatched at the next quantum boundary (a Local APIC write does not end
+        /// the quantum), so these tests do not arm it from the guest.
+        fn arm_lapic_timer(boot: &mut LinuxDirectBoot, count: u64) {
+            for (offset, value) in [
+                (0xF0, 0x1ff),
+                (0x320, u64::from(IRQ_VECTOR)),
+                (0x3E0, 0xB),
+                (0x380, count),
+            ] {
+                boot.board
+                    .bus_mut()
+                    .write_physical(
+                        GuestPhysicalAddress::new(LOCAL_APIC_MMIO_BASE + offset),
+                        crate::AccessWidth::Dword,
+                        value,
+                        |_| {},
+                    )
+                    .expect("the register accepts the write");
+            }
+        }
+
+        #[test]
+        fn a_lapic_timer_irq_in_cpl3_goes_through_the_idt_and_iretq_returns_to_cpl3() {
+            // The timer, armed by the host, fires at 200 ns, while the user spin runs (one
+            // instruction is one ns; the `IRETQ` to CPL3 retires at 1 ns). The handler runs at
+            // CPL0 on `TSS.RSP0`, writes the EOI and `IRETQ`s to the spin, which goes on to the
+            // end of the budget.
+            let (mut boot, file) =
+                user_apic_board(&mov32(3, LOCAL_APIC_MMIO_BASE as u32), &USER_SPIN, 0x202);
+            arm_lapic_timer(&mut boot, 20);
+            let record = run_user_apic(&mut boot, &file, 1000);
+            assert_eq!(record.exit_kind, "budget_exhausted", "{record:?}");
+            assert_eq!(record.irqs_delivered, 1, "{record:?}");
+            assert_eq!(record.irq_refused_masked, 0, "{record:?}");
+            assert_eq!(record.cpl, 3, "{record:?}");
+            assert_eq!(record.retired, 1000, "{record:?}");
+            // The user code kept retiring after the return: the IRQ came after about 200 retired
+            // user instructions, and everything but the `IRETQ` and the two handler
+            // instructions is user code.
+            assert!(record.cpl3_retired > 900, "{record:?}");
+            assert!(
+                (USER_CODE_AT..USER_CODE_AT + 7).contains(&record.rip),
+                "{record:?}"
+            );
+            assert_eq!(
+                record.gpr[Register::Rsp as usize],
+                ENTRY + 0x800,
+                "the frame on TSS.RSP0 was popped by the IRETQ"
+            );
+            for name in ["user_mode", "irq", "clock_owner", "halt"] {
+                assert!(
+                    record.set_members.iter().any(|member| member == name),
+                    "{name}: {:?}",
+                    record.set_members
+                );
+            }
+            // The handler's EOI (a CPL0 access to the Local APIC) cleared the vector.
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false)
+            );
+            let frame = USER_RSP0 & !15;
+            // The frame the delivery pushed (no error code for an external vector) is still in
+            // memory: the CPL3 SS, RSP, RFLAGS (IF set), CS and the interrupted user RIP.
+            assert_eq!(read_qword(&mut boot, frame - 8), 0x1b, "SS");
+            assert_eq!(read_qword(&mut boot, frame - 16), ENTRY + 0x800, "RSP");
+            assert_ne!(read_qword(&mut boot, frame - 24) & (1 << 9), 0, "RFLAGS.IF");
+            assert_eq!(read_qword(&mut boot, frame - 32), 0x13, "CS");
+            let rip = read_qword(&mut boot, frame - 40);
+            assert!((USER_CODE_AT..USER_CODE_AT + 7).contains(&rip), "{rip:#x}");
+        }
+
+        #[test]
+        fn a_pit_ioapic_irq_in_cpl3_is_delivered_each_period_and_the_user_code_goes_on() {
+            // PIT mode 2, count 10 (one edge every 8381 ns), entry 2 -> `IRQ_VECTOR`, all set up
+            // by the guest at CPL0 before the `IRETQ`. Two edges fall in 20000 ns.
+            let mut prefix = apic_setup(u32::from(IRQ_VECTOR));
+            prefix.extend(pit_program(0x34, 10));
+            let (mut boot, file) = user_apic_board(&prefix, &USER_SPIN, 0x202);
+            let record = run_user_apic(&mut boot, &file, 20_000);
+            assert_eq!(record.exit_kind, "budget_exhausted", "{record:?}");
+            assert!(record.irqs_delivered >= 2, "{record:?}");
+            assert_eq!(record.irq_refused_masked, 0, "{record:?}");
+            assert_eq!(record.cpl, 3, "{record:?}");
+            assert!(record.cpl3_retired > 19_000, "{record:?}");
+            assert_eq!(record.gpr[Register::Rsp as usize], ENTRY + 0x800);
+            let source = boot.board.pit_ioapic_source().expect("installed");
+            let stats = source.stats();
+            assert_eq!(stats.acknowledged, record.irqs_delivered, "{stats:?}");
+            assert_eq!(
+                (stats.edges_refused, stats.ack_refused, stats.queue_faults),
+                (0, 0, 0),
+                "{stats:?}"
+            );
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false)
+            );
+        }
+
+        #[test]
+        fn a_cpl3_irq_with_if_clear_is_refused_as_masked_and_stays_pending() {
+            // The `IRETQ` frame carries IF = 0: the timer vector reaches the Local APIC IRR and
+            // each user instruction boundary counts a masked refusal; nothing is delivered and
+            // the run does not fail.
+            let (mut boot, file) =
+                user_apic_board(&mov32(3, LOCAL_APIC_MMIO_BASE as u32), &USER_SPIN, 0x2);
+            arm_lapic_timer(&mut boot, 20);
+            let record = run_user_apic(&mut boot, &file, 1000);
+            assert_eq!(record.exit_kind, "budget_exhausted", "{record:?}");
+            assert_eq!(record.irqs_delivered, 0, "{record:?}");
+            assert!(record.irq_refused_masked > 100, "{record:?}");
+            assert_eq!(record.cpl, 3, "{record:?}");
+            assert_eq!(record.exceptions_delivered, 0, "{record:?}");
+            assert!(record.cpl3_retired > 900, "{record:?}");
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (true, false),
+                "the vector waits in the IRR"
+            );
+            assert_eq!(boot.board.state().rflags & (1 << 9), 0);
         }
 
         /// S4-38L8g: `MOV ECX, 0x1B; MOV EDX, 0x66; <body>; HLT`.
