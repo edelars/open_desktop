@@ -10,7 +10,7 @@
 #   summary   docs/reports/data/stage4/s4-44b-local-set.json   (override: STAGE4_SUMMARY)
 #
 # Step statuses: passed | failed | known_divergence | timeout.
-#   known_divergence: `cargo fmt --check` fails ONLY on files listed in KNOWN_FMT_FILES.
+#   known_divergence: `cargo fmt --check` fails with exactly the diff listed in KNOWN_FMT_DIFFS.
 # Every `cargo test` step runs with --no-fail-fast: a failing test target does not stop the
 # other targets of the step, and the summary lists the result of EACH target (`targets`:
 # binary, status, counts, names of failed tests) parsed from the cargo log.
@@ -29,8 +29,15 @@ cd "$ROOT" || exit 2
 STEP_TIMEOUT="${STAGE4_STEP_TIMEOUT:-1200}"
 LOG_DIR="${STAGE4_LOG_DIR:-$ROOT/work/stage4/s4-44b}"
 SUMMARY="${STAGE4_SUMMARY:-$ROOT/docs/reports/data/stage4/s4-44b-local-set.json}"
-# Known pre-existing rustfmt divergences (not new errors); matched by path suffix.
-KNOWN_FMT_FILES="crates/od-host/src/storage_abi_v1.rs tools/image-tool/tests/cli.rs"
+# Known pre-existing rustfmt divergences (not new errors). Each entry is
+# "<path relative to ROOT> <diff blocks> <changed +/- lines> <sha256[:16] of the changed lines>",
+# as printed by tools/stage4/fmt_fingerprint.py. The fmt step is `known_divergence` only if its
+# fingerprint equals this list exactly: a new diff block or any other change, even inside a
+# known file, makes it `failed`. The hashes depend on the rustfmt version (recorded in the summary).
+KNOWN_FMT_DIFFS=(
+  "crates/od-host/src/storage_abi_v1.rs 1 9 a45ac43961401f05"
+  "tools/image-tool/tests/cli.rs 1 5 98bc3ea4bc4e24e9"
+)
 
 mkdir -p "$LOG_DIR" "$(dirname "$SUMMARY")" || exit 2
 TSV="$LOG_DIR/steps.tsv"
@@ -38,7 +45,7 @@ TSV="$LOG_DIR/steps.tsv"
 
 # Steps: id|command. Order is fixed; ids are the stable keys in the summary.
 STEPS=(
-  "fmt|cargo fmt --all -- --check"
+  "fmt|cargo fmt --all -- --check --color never"
   "check-workspace|cargo check --workspace --all-targets --locked --offline"
   "test-od-isa|cargo test -p od-isa --no-fail-fast --locked --offline"
   "test-od-machine|cargo test -p od-machine --no-fail-fast --locked --offline"
@@ -58,7 +65,7 @@ NOT_RUN=(
   "vmhost-system-smokes|not_run|tests/system Python/Swift/C smokes of the VMHost app (macOS app bundle)|built VMHost app bundle and a desktop session; stage 3 scope"
 )
 
-KNOWN_NOTE="rustfmt divergences in KNOWN_FMT_FILES are known, not new errors"
+KNOWN_NOTE="rustfmt divergences are the known ones (KNOWN_FMT_DIFFS), not new errors"
 
 now() { date +%s; }
 
@@ -78,23 +85,15 @@ run_step() {
     status=failed
   fi
   if [ "$id" = fmt ] && [ "$status" = failed ]; then
-    # Files rustfmt wants to change; known iff every one matches KNOWN_FMT_FILES.
-    local files unknown=0 f k hit
-    files="$(grep -E '^Diff in ' "$log" | sed -E 's/^Diff in (.*):[0-9]+:?$/\1/' | sort -u)"
-    if [ -z "$files" ]; then
-      unknown=1
-    else
-      for f in $files; do
-        hit=0
-        for k in $KNOWN_FMT_FILES; do case "$f" in *"$k") hit=1 ;; esac; done
-        [ "$hit" -eq 1 ] || unknown=1
-      done
-    fi
-    if [ "$unknown" -eq 0 ]; then
+    # Compare the diff fingerprint (files, block counts, changed lines) with KNOWN_FMT_DIFFS.
+    local got want
+    got="$(python3 -I "$ROOT/tools/stage4/fmt_fingerprint.py" "$ROOT" "$log" 2>&1)"
+    want="$(printf '%s\n' "${KNOWN_FMT_DIFFS[@]}" | sort)"
+    if [ -n "$got" ] && [ "$got" = "$want" ]; then
       status=known_divergence
-      note="$KNOWN_NOTE; files: $(echo $files | tr '\n' ' ')"
+      note="$KNOWN_NOTE; diff fingerprint equals KNOWN_FMT_DIFFS: $(echo "$got" | awk '{print $1}' | tr '\n' ' ')"
     else
-      note="fmt diff outside KNOWN_FMT_FILES: $(echo $files | tr '\n' ' ')"
+      note="fmt diff differs from KNOWN_FMT_DIFFS; got: $(echo "$got" | tr '\n' ';')"
     fi
   fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -116,7 +115,8 @@ for n in "${NOT_RUN[@]}"; do
 done
 
 # --- Summary -----------------------------------------------------------------
-export ROOT SUMMARY TSV SET_START SET_END STEP_TIMEOUT KNOWN_FMT_FILES
+export KNOWN_FMT_DIFFS_LINES="$(printf '%s\n' "${KNOWN_FMT_DIFFS[@]}")"
+export ROOT SUMMARY TSV SET_START SET_END STEP_TIMEOUT
 export NOT_RUN_LINES="$(printf '%s\n' "${NOT_RUN[@]}")"
 export GIT_HEAD="$(git rev-parse HEAD 2>&1)"
 export GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>&1)"
@@ -194,7 +194,7 @@ doc = {
         "rustc": os.environ["RUSTC_V"], "cargo": os.environ["CARGO_V"],
         "macos": os.environ["MACOS_V"], "arch": os.environ["UNAME_V"],
         "step_timeout_seconds": int(os.environ["STEP_TIMEOUT"]),
-        "known_fmt_files": os.environ["KNOWN_FMT_FILES"].split(),
+        "known_fmt_diffs": os.environ["KNOWN_FMT_DIFFS_LINES"].splitlines(),
     },
     "total_duration_seconds": int(os.environ["SET_END"]) - int(os.environ["SET_START"]),
     "steps": steps,
