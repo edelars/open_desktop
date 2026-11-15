@@ -528,6 +528,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   checks, formatting and JSON/diff checks passed. Final independent review
   found no remaining findings. See [S4-14g report](../reports/STAGE_4_S4-14G_2026-11-06.md) and
   [manifest](../reports/data/stage4/s4-14g-mov-cr3-wp-2026-11-06.json).
+- S4-14h (реализовано, ревью не пройдено; чекбокс не ставится, S4-14 остаётся
+  открытым): opt-in политика `FetchCacheInvalidation::GuestOnly` кэша выборки
+  набора CPL0 (`run_cpl0_set_paged_2m_ram_with_policy`). Запись PTE сама кэш не
+  сбрасывает; сбрасывают retired `INVLPG`, `MOV CR3` (тем же значением тоже),
+  смена CR0/CR4 (CR4.PGE) и каждый доставленный гостю `#PF`. Умолчание раннера и Linux (`WriteWatch`), od-isa и
+  жизненный цикл кэша (новый на вызов, постоянный — S4-14i) не менялись. См.
+  раздел S4-14h в [отчёте](../reports/STAGE_4_REPORT.md) и CPU_CONTRACT.
 - **Где:** `od-machine`, system instruction effects `od-isa`.
 - **Сделать:** CR3/context transitions, INVLPG, paging/permission-control changes, reset; global/PCID/INVPCID — только при объявленной поддержке. Развести software-cache generations и архитектурную семантику guest page tables.
 - **Проверка:** remap A→B, tighten/relax rights с обязательной invalidation, stale entry после context switch, huge-page coverage, код/данные, разные guest pages внутри host page. Поведение без invalidation проверять в пределах разрешённого стандартом, не требовать несуществующей гарантии.

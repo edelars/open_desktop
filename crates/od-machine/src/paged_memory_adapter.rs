@@ -1,6 +1,8 @@
 //! Opt-in one-instruction Long64 bridge through the uncached RAM walker.
 
-use crate::fetch_translation_cache::{FetchCacheStats, FetchTranslationCache};
+use crate::fetch_translation_cache::{
+    FetchCacheInvalidation, FetchCacheStats, FetchTranslationCache,
+};
 use crate::irq_source::IrqBoundaryHook;
 use crate::page_walk::translate_long64_2m_ram_read_only_with_tables;
 use crate::{
@@ -631,6 +633,56 @@ fn iretq_at_rip(
     byte_at(0) == Some(0x48) && byte_at(1) == Some(0xCF)
 }
 
+/// S4-14h: whether the instruction at RIP has the shape of `INVLPG m`: an optional `FS`/`GS`
+/// override (`64`/`65`), an optional REX byte without W (`40`-`47`), `0F 01`, and a ModRM with
+/// `reg = 7` and `mod != 3` (the register forms of `0F 01 /7` are `SWAPGS` and `RDTSCP`). Same
+/// read-only walk as [`iretq_at_rip`] (no accessed/dirty bit, RAM only); an untranslatable byte is
+/// `false`. It only decides whether the cache is flushed after the instruction retires; the
+/// instruction itself is decoded and executed by the set, so a shape the set does not accept
+/// retires nothing and flushes nothing.
+pub(crate) fn invlpg_at_rip(
+    state: &LongModeState,
+    bus: &mut MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+    cache: Option<&FetchTranslationCache>,
+) -> bool {
+    let (memory, _) = bus.split_for_pio_step();
+    let mut byte_at = |offset: u64| -> Option<u8> {
+        let linear = state.rip.wrapping_add(offset);
+        if let Some(byte) = cache
+            .and_then(|cache| cache.lookup(linear, paging, context))
+            .and_then(|frame| memory.read_ram_frame_u8(frame, linear))
+        {
+            return Some(byte);
+        }
+        let physical = crate::page_walk::translate_long64_2m_ram_read_only(
+            memory,
+            paging,
+            state.rip,
+            GuestLinearAddress::new(state.rip.wrapping_add(offset)),
+            context,
+            od_isa::memory::AccessKind::Fetch,
+        )
+        .ok()?;
+        memory.read_u8(physical).ok()
+    };
+    let mut offset = 0u64;
+    let mut first = byte_at(offset);
+    if matches!(first, Some(0x64 | 0x65)) {
+        offset += 1;
+        first = byte_at(offset);
+    }
+    if matches!(first, Some(0x40..=0x47)) {
+        offset += 1;
+        first = byte_at(offset);
+    }
+    if first != Some(0x0F) || byte_at(offset + 1) != Some(0x01) {
+        return false;
+    }
+    byte_at(offset + 2).is_some_and(|modrm| (modrm >> 3) & 7 == 7 && modrm >> 6 != 3)
+}
+
 /// S4-39f: whether the instruction at `rip` is exactly `SYSRETQ` (`48 0F 07`). The same read-only
 /// walk as [`iretq_at_rip`] (no accessed/dirty bit, RAM only, `rip` is the instruction RIP); an
 /// untranslatable byte is `false`. Called only after a committed return to CPL3, to tell the
@@ -774,11 +826,54 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
     instruction_budget: u64,
     rflags_defined: u64,
     set: &Cpl0ProfileSet<'_>,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    cpuid_boundary: bool,
+    fetch_cache: bool,
+    irq: Option<IrqBoundaryHook<'_>>,
+) -> PagedCpl0SetReport {
+    run_cpl0_set_paged_2m_ram_with_policy(
+        state,
+        bus,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        set,
+        rdtsc,
+        stop,
+        committed_write,
+        cpuid_boundary,
+        fetch_cache.then_some(FetchCacheInvalidation::WriteWatch),
+        irq,
+    )
+}
+
+/// [`run_cpl0_set_paged_2m_ram_with_cpuid_boundary`] with the invalidation policy of the fetch
+/// cache chosen by the caller (S4-14h): `None` is no cache, `Some(WriteWatch)` is the S4-13 cache.
+/// With `Some(GuestOnly)` a write to a page table drops nothing; the loop flushes the cache after
+/// a retired `INVLPG` (peeked before the step like `IRETQ`, read-only), after a retired
+/// `MOV CR3` (as in every policy), when CR0 or CR4 differ after the step, and at every `#PF`
+/// delivered to the guest IDT. A step that retires nothing and delivers no `#PF` (a fault that
+/// stops the run, a rejection, a `#GP` delivery) keeps the cache. The cache still lives in this
+/// call only.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_cpl0_set_paged_2m_ram_with_policy(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
     mut rdtsc: Option<&mut dyn FnMut() -> u64>,
     mut stop: impl FnMut() -> bool,
     mut committed_write: impl FnMut(GuestPhysicalRange),
     cpuid_boundary: bool,
-    fetch_cache: bool,
+    fetch_cache: Option<FetchCacheInvalidation>,
     mut irq: Option<IrqBoundaryHook<'_>>,
 ) -> PagedCpl0SetReport {
     let context = AccessContext {
@@ -788,7 +883,8 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
     // S4-13: the translation cache of the instruction fetch lives in this call only. Every
     // committed RAM write of the loop (guest stores, walker A/D commits, exception frames) passes
     // through `watch`, which lets the cache drop entries whose tables were written.
-    let cache = fetch_cache.then(FetchTranslationCache::new);
+    let cache = fetch_cache.map(FetchTranslationCache::with_invalidation);
+    let guest_only = fetch_cache == Some(FetchCacheInvalidation::GuestOnly);
     let mut watch = |range: GuestPhysicalRange| {
         if let Some(cache) = &cache {
             cache.note_write(range);
@@ -902,6 +998,12 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         let resume_flag_before = state.rflags & RFLAGS_RF != 0;
         let clear_resume_flag =
             resume_flag_before && !iretq_at_rip(state, bus, &paging, context, cache.as_ref());
+        // S4-14h: under `GuestOnly` the guest's own invalidations flush the cache. `INVLPG` is
+        // peeked before the step (read-only, through the cache like the fetch itself); CR0/CR4
+        // are compared around it.
+        let invlpg_pending =
+            guest_only && invlpg_at_rip(state, bus, &paging, context, cache.as_ref());
+        let control_before = (state.cr0, state.cr4);
         let (ram, io) = bus.split_for_set_step();
         let mut port = PitWriteWatch {
             inner: io.port_io(),
@@ -995,6 +1097,14 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                 };
                 match failure {
                     None => {
+                        // S4-14h: a delivered `#PF` invalidates the translations of its linear
+                        // address (SDM Vol. 3A, "Invalidation of TLBs and Paging-Structure Caches",
+                        // cited from memory, not checked against the primary source). Under
+                        // `GuestOnly` the whole cache is dropped, which is always allowed; the
+                        // handler may repair the page tables without `INVLPG`.
+                        if guest_only && let Some(cache) = &cache {
+                            cache.flush_after_page_fault();
+                        }
                         delivered_exceptions += 1;
                         deliveries_without_retirement += 1;
                         continue;
@@ -1101,6 +1211,15 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
             && let Some(cache) = &cache
         {
             cache.flush();
+        }
+        // S4-14h: a retired `INVLPG` and a change of CR0/CR4 flush the whole cache (`GuestOnly`).
+        if guest_only && let Some(cache) = &cache {
+            if invlpg_pending && result.instructions_executed > 0 {
+                cache.flush_after_invlpg();
+            }
+            if control_before != (state.cr0, state.cr4) {
+                cache.flush_after_control_change();
+            }
         }
         if let Some(exit) = handle_set_exit(
             result.exit,
