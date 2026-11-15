@@ -743,6 +743,7 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
         },
     });
     stop["machine_stop_reason"] = machine_stop_reason_json(record.stop_reason);
+    stop["pm_timer_reads"] = json!(record.pm_timer_reads);
     // Keep the vector breakdown outside the large literal to stay under `json!`'s recursion limit.
     stop["page_faults_delivered"] = json!(record.page_faults_delivered);
     stop["general_protection_faults_delivered"] = json!(record.general_protection_faults_delivered);
@@ -1829,6 +1830,25 @@ mod tests {
         assert_eq!(value["stop"]["com1_text"], "X");
         assert_eq!(value["stop"]["com1_hex"], "58");
         assert_eq!(value["retired"], 4);
+    }
+
+    #[test]
+    fn stop_json_reports_pm_timer_reads() {
+        let code = [0x66, 0xba, 0x08, 0x06, 0xec];
+        let mut case = Case::new(
+            "run-pm-timer-read",
+            &bzimage_with_entry(&code),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(2);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        assert_eq!(value["status"], "loaded");
+        assert_eq!(value["stop"]["exit_kind"], "budget_exhausted");
+        assert_eq!(value["stop"]["pm_timer_reads"], 1);
+        assert_eq!(value["stop"]["virtual_ns"], 1_002);
     }
 
     #[test]

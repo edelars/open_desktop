@@ -511,6 +511,8 @@ pub struct LinuxStopRecord {
     pub retired: u64,
     pub quanta: u64,
     pub virtual_ns: u64,
+    /// Successful reads of the ACPI PM timer during this run; `None` when the board has no PM block.
+    pub pm_timer_reads: Option<u64>,
     pub tsc_hz: u64,
     /// The bytes the guest transmitted through COM1.
     pub com1: Vec<u8>,
@@ -670,6 +672,7 @@ pub fn run_linux_direct_board(
     input: &LinuxDirectInput<'_>,
     instruction_budget: u64,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
+    let pm_timer_reads_before = boot.board.acpi_pm().map(|pm| pm.timer_reads());
     let report = boot
         .board
         .run_linux_boot(instruction_budget)
@@ -682,6 +685,7 @@ pub fn run_linux_direct_board(
         boot,
         input,
         report,
+        pm_timer_reads_before,
         SetExtras {
             path: "paged_probe",
             members: Vec::new(),
@@ -723,6 +727,7 @@ fn stop_record(
     boot: &mut LinuxDirectBoot,
     input: &LinuxDirectInput<'_>,
     report: FirmwareRunReport,
+    pm_timer_reads_before: Option<u64>,
     extras: SetExtras<'_>,
 ) -> LinuxStopRecord {
     let state = boot.board.state().clone();
@@ -732,6 +737,9 @@ fn stop_record(
         PagedProbeExit::Unsupported { opcode } => Some(opcode),
         _ => None,
     };
+    let pm_timer_reads = pm_timer_reads_before
+        .zip(boot.board.acpi_pm().map(|pm| pm.timer_reads()))
+        .map(|(before, after)| after.saturating_sub(before));
     LinuxStopRecord {
         exit_kind: if extras.cpuid_divergence_leaf.is_some() {
             "cpuid_divergence"
@@ -776,6 +784,7 @@ fn stop_record(
         retired: report.retired,
         quanta: report.quanta,
         virtual_ns: report.virtual_ns,
+        pm_timer_reads,
         tsc_hz: report.tsc_hz,
         com1: report.com1,
         linux_profile: boot.board.has_linux_profile(),
@@ -1099,6 +1108,7 @@ fn run_linux_direct_board_set_with(
     members: LinuxCpl0SetMembers,
     user_mode: bool,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
+    let pm_timer_reads_before = boot.board.acpi_pm().map(|pm| pm.timer_reads());
     // S4-39g: only the user-mode run of a board with the Linux-profile PIT and 8259 gets the
     // timer line: the PIT -> 8259 IR0 source becomes the board source, and the set carries `halt`
     // (an idle `sti; hlt` ends the quantum and the board wakes the CPU at the next timer edge)
@@ -1267,6 +1277,7 @@ fn run_linux_direct_board_set_with(
         boot,
         input,
         report.run,
+        pm_timer_reads_before,
         SetExtras {
             path: "cpl0_set",
             members: names,
@@ -1763,6 +1774,26 @@ mod tests {
             record.inputs.kernel_pm_code_sha256_in_memory,
             sha256(&file[PM_OFFSET..PM_OFFSET + PM_CODE])
         );
+    }
+
+    #[test]
+    fn stop_record_counts_pm_timer_reads_and_keeps_their_virtual_time_tick() {
+        // MOV DX, 0x0608; IN AL, DX. Each successful PM_TMR read queues one microsecond
+        // after the instruction quantum, so two retired instructions advance time by 1,002 ns.
+        let code = [0x66, 0xba, 0x08, 0x06, 0xec];
+        let (mut boot, file) = boot_with_entry(&code);
+        let first = run_set_facade(&mut boot, &file, 2, halting_default());
+        assert_eq!(first.exit, PagedProbeExit::BudgetExhausted, "{first:?}");
+        assert_eq!(first.retired, 2);
+        assert_eq!(first.pm_timer_reads, Some(1));
+        assert_eq!(first.virtual_ns, 1_002);
+
+        // The same board can continue across calls; this field is the per-run delta, not the
+        // handle's cumulative count since board construction.
+        boot.board.state_mut().rip = ENTRY;
+        let second = run_set_facade(&mut boot, &file, 2, halting_default());
+        assert_eq!(second.pm_timer_reads, Some(1));
+        assert_eq!(second.virtual_ns, 2_004);
     }
 
     #[test]
