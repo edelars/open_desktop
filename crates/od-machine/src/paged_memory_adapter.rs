@@ -2,7 +2,8 @@
 
 use crate::console_output_context::capture_frame_chain;
 use crate::execution_observations::{
-    DeliveredPageFaultObservation, FaultingPageFaultContext, LinuxExecutionObservationCollector,
+    DeliveredPageFaultObservation, FaultingPageFaultContext, FaultingPageWalkContext,
+    LinuxExecutionObservationCollector,
 };
 use crate::fetch_translation_cache::{FetchCacheStats, FetchTranslationCache};
 use crate::irq_source::IrqBoundaryHook;
@@ -89,6 +90,8 @@ pub fn step_paged_invlpg(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: None,
         committed_writes: None,
         capture_effects: false,
@@ -212,6 +215,8 @@ fn step_paged_state_op(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: None,
         committed_writes: None,
         capture_effects: false,
@@ -284,6 +289,8 @@ pub fn with_paged_mov_memory<R>(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: Some(Vec::new()),
         committed_writes: Some(Vec::new()),
         capture_effects: true,
@@ -343,6 +350,8 @@ pub fn step_paged_mov(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: None,
         committed_writes: None,
         capture_effects: false,
@@ -401,6 +410,8 @@ pub fn step_paged_mov_2m_ram(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: None,
         committed_writes: None,
         capture_effects: false,
@@ -973,6 +984,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
             &mut watch,
             cache.as_ref(),
         );
+        memory.capture_page_fault_trace = execution_observations.is_some();
         let run_config = RunConfig {
             instruction_budget: 1,
             stop_rip: None,
@@ -1043,6 +1055,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
                         rdi: state.gpr[od_isa::Register::Rdi as usize],
                         frame_chain,
                         frame_chain_end,
+                        page_walk: memory.page_fault_trace.clone(),
                     }
                 });
                 let fault = fault.clone();
@@ -1249,6 +1262,8 @@ fn set_loop_adapter<'a>(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: None,
         committed_writes: None,
         capture_effects: false,
@@ -1485,6 +1500,8 @@ pub fn step_paged_mov_word_read(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: None,
         committed_writes: None,
         capture_effects: false,
@@ -1563,6 +1580,8 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: None,
         committed_writes: None,
         capture_effects: false,
@@ -1623,6 +1642,8 @@ pub fn step_paged_mov_dword_read(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: None,
         committed_writes: None,
         capture_effects: false,
@@ -1692,6 +1713,8 @@ pub fn step_paged_mov_dword_store(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: None,
         committed_writes: None,
         capture_effects: false,
@@ -1867,6 +1890,8 @@ pub struct PagedMovMemoryAdapter<'a> {
     page_fault: Option<PageFaultRecord>,
     memory_error: Option<TrackedAccessError>,
     access_error: Option<TrackedAccessError>,
+    page_fault_trace: Option<FaultingPageWalkContext>,
+    capture_page_fault_trace: bool,
     committed_ad_updates: Option<Vec<crate::AdUpdate>>,
     committed_writes: Option<Vec<GuestPhysicalRange>>,
     capture_effects: bool,
@@ -1939,6 +1964,26 @@ pub struct PagedMovMemoryAdapter<'a> {
     fetch_cache: Option<&'a FetchTranslationCache>,
 }
 
+fn faulting_page_walk_context(
+    error: &TrackedAccessError,
+    trace: crate::WalkTrace,
+) -> Option<FaultingPageWalkContext> {
+    let TrackedAccessError::PageFault { reason, .. } = error else {
+        return None;
+    };
+    let entries = trace
+        .entries()
+        .iter()
+        .take(trace.len().min(crate::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY))
+        .flatten()
+        .copied()
+        .collect();
+    Some(FaultingPageWalkContext {
+        entries,
+        reason: *reason,
+    })
+}
+
 impl PagedMovMemoryAdapter<'_> {
     fn capture_fault_frame_chain(
         &mut self,
@@ -1992,6 +2037,9 @@ impl PagedMovMemoryAdapter<'_> {
         operation: RamAccessOperation,
         mmio_allowed: bool,
     ) -> Result<TrackedAccessOutcome, MemoryError> {
+        if self.capture_page_fault_trace {
+            self.page_fault_trace = None;
+        }
         // S4-39d: the walker takes the CPL of the context; the origin is normalized to `Explicit`
         // as before, but a descriptor-table access (IDT, GDT, TSS) keeps its supervisor page
         // privilege: at CPL3 it is made with CPL0 page rights (also under PTI, where these tables
@@ -2058,6 +2106,13 @@ impl PagedMovMemoryAdapter<'_> {
                 .machine()?
                 .access_tracked(&self.paging, request, &mut *self.committed_write)
         };
+        if self.capture_page_fault_trace {
+            self.page_fault_trace = report
+                .outcome
+                .as_ref()
+                .err()
+                .and_then(|error| faulting_page_walk_context(error, report.trace));
+        }
         match report.outcome {
             Ok(outcome) => Ok(outcome),
             Err(error) => {
@@ -2127,18 +2182,39 @@ impl PagedMovMemoryAdapter<'_> {
         context: AccessContext,
         width: crate::AccessWidth,
     ) -> Result<u64, MemoryError> {
+        if self.capture_page_fault_trace {
+            self.page_fault_trace = None;
+        }
         let context = AccessContext {
             origin: od_isa::memory::AccessOrigin::Explicit,
             ..context
         };
+        let request = TrackedAccessRequest {
+            instruction_rip: self.instruction_rip,
+            address: GuestLinearAddress::new(address),
+            context,
+            operation: RamAccessOperation::Read { width },
+        };
+        if self.capture_page_fault_trace {
+            self.page_fault_trace = None;
+            let mut trace = None;
+            let result = self
+                .bus
+                .machine()?
+                .read_tracked_bounded_ram_read_with_fault_trace(
+                    &self.paging,
+                    request,
+                    &mut *self.committed_write,
+                    &mut trace,
+                );
+            if let (Some(trace), Err(error)) = (trace, &result) {
+                self.page_fault_trace = faulting_page_walk_context(error, trace);
+            }
+            return result.map_err(|error| self.map_access_error(error));
+        }
         let result = self.bus.machine()?.read_tracked_bounded_ram_read(
             &self.paging,
-            TrackedAccessRequest {
-                instruction_rip: self.instruction_rip,
-                address: GuestLinearAddress::new(address),
-                context,
-                operation: RamAccessOperation::Read { width },
-            },
+            request,
             &mut *self.committed_write,
         );
         result.map_err(|error| self.map_access_error(error))
@@ -2154,26 +2230,45 @@ impl PagedMovMemoryAdapter<'_> {
         context: AccessContext,
         source: &[u8],
     ) -> Result<(), MemoryError> {
+        if self.capture_page_fault_trace {
+            self.page_fault_trace = None;
+        }
         let context = AccessContext {
             origin: od_isa::memory::AccessOrigin::Explicit,
             ..context
         };
         let second_page = (address & !0xfff).wrapping_add(0x1000);
         for check_address in [address, second_page] {
+            let mut trace = None;
             let result = match &mut self.bus {
                 AdapterBus::Ram(memory) | AdapterBus::RamMmio(memory, _) => {
-                    crate::page_walk::translate_long64_2m_ram_write_check(
-                        memory,
-                        &self.paging,
-                        self.instruction_rip,
-                        GuestLinearAddress::new(check_address),
-                        context,
-                        &mut *self.committed_write,
-                    )
+                    if self.capture_page_fault_trace {
+                        crate::page_walk::translate_long64_2m_ram_write_check_with_fault_trace(
+                            memory,
+                            &self.paging,
+                            self.instruction_rip,
+                            GuestLinearAddress::new(check_address),
+                            context,
+                            &mut *self.committed_write,
+                            Some(&mut trace),
+                        )
+                    } else {
+                        crate::page_walk::translate_long64_2m_ram_write_check(
+                            memory,
+                            &self.paging,
+                            self.instruction_rip,
+                            GuestLinearAddress::new(check_address),
+                            context,
+                            &mut *self.committed_write,
+                        )
+                    }
                 }
                 AdapterBus::Machine(_) => return Err(Self::unsupported("cross-page write")),
             };
             if let Err(error) = result {
+                if let Some(trace) = trace {
+                    self.page_fault_trace = faulting_page_walk_context(&error, trace);
+                }
                 self.access_error = Some(error.clone());
                 return Err(self.map_access_error(error));
             }
@@ -2489,6 +2584,8 @@ mod tests {
             page_fault: None,
             memory_error: None,
             access_error: None,
+            page_fault_trace: None,
+            capture_page_fault_trace: false,
             committed_ad_updates: None,
             committed_writes: None,
             capture_effects: false,
@@ -2547,6 +2644,126 @@ mod tests {
             Err(())
         );
         assert_eq!(bytes, [0xaa; 16]);
+    }
+
+    #[test]
+    fn cross_page_read_keeps_the_failed_second_page_walk_when_opted_in() {
+        let mut bus = bus(0x7007);
+        let mut committed = |_| {};
+        let mut memory = adapter(&mut bus, &mut committed);
+        memory.capture_page_fault_trace = true;
+        let error = memory
+            .access_cross_page_read(DATA_LINEAR + 0xffc, context(), AccessWidth::Qword)
+            .unwrap_err();
+        assert!(matches!(error, MemoryError::Architectural(_)));
+        let walk = memory.page_fault_trace.as_ref().unwrap();
+        assert_eq!(
+            walk.reason,
+            crate::PageFaultReason::NotPresent {
+                level: crate::PageTableLevel::Pt,
+            }
+        );
+        assert_eq!(walk.entries.len(), 4);
+        assert_eq!(walk.entries[3].entry_address.get(), 0x5008);
+        assert_eq!(walk.entries[3].entry_value, 0);
+        memory.capture_page_fault_trace = false;
+        memory.page_fault_trace = None;
+        assert!(
+            memory
+                .access_cross_page_read(DATA_LINEAR + 0xffc, context(), AccessWidth::Qword,)
+                .is_err()
+        );
+        assert!(memory.page_fault_trace.is_none(), "capture is opt-in");
+        drop(memory);
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(0x5000), AccessWidth::Qword)
+                .unwrap()
+                & 0x60,
+            0x20
+        );
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(0x5008), AccessWidth::Qword)
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn cross_page_write_preflight_keeps_failed_walk_without_dirty_or_operand_write() {
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_LEN).unwrap();
+        let map =
+            MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                .unwrap();
+        let mut physical = crate::PhysicalMemory::new(&map, RamLimits::new(RAM_LEN)).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3020, 0x5007),
+            (0x5000, 0x7007),
+        ] {
+            physical
+                .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+        }
+        physical
+            .write_bytes(GuestPhysicalAddress::new(0x7ffc), &[0x11; 4], |_| {})
+            .unwrap();
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let mut committed = |_| {};
+        let mut memory = set_loop_adapter(
+            &mut physical,
+            None,
+            paging,
+            0x0040_0000,
+            &mut committed,
+            None,
+        );
+        memory.capture_page_fault_trace = true;
+        let error = memory
+            .write_crossing_page(DATA_LINEAR + 0xffc, context(), &[0x22; 8])
+            .unwrap_err();
+        assert!(matches!(error, MemoryError::Architectural(_)));
+        let walk = memory.page_fault_trace.as_ref().unwrap();
+        assert_eq!(
+            walk.reason,
+            crate::PageFaultReason::NotPresent {
+                level: crate::PageTableLevel::Pt,
+            }
+        );
+        assert_eq!(walk.entries.len(), 4);
+        assert_eq!(walk.entries[3].entry_address.get(), 0x5008);
+        assert_eq!(walk.entries[3].entry_value, 0);
+        memory.capture_page_fault_trace = false;
+        memory.page_fault_trace = None;
+        assert!(
+            memory
+                .write_crossing_page(DATA_LINEAR + 0xffc, context(), &[0x33; 8])
+                .is_err()
+        );
+        assert!(memory.page_fault_trace.is_none(), "capture is opt-in");
+        drop(memory);
+        assert_eq!(
+            physical
+                .read_u64(GuestPhysicalAddress::new(0x5000))
+                .unwrap()
+                & 0x60,
+            0x20,
+            "the successful preflight sets A but not D"
+        );
+        assert_eq!(
+            physical
+                .read_u64(GuestPhysicalAddress::new(0x5008))
+                .unwrap(),
+            0
+        );
+        let mut operand = [0; 4];
+        physical
+            .read_bytes(GuestPhysicalAddress::new(0x7ffc), &mut operand)
+            .unwrap();
+        assert_eq!(
+            operand, [0x11; 4],
+            "failed preflight stores no operand bytes"
+        );
     }
 
     fn invlpg_state(target: u64) -> LongModeState {

@@ -1053,7 +1053,27 @@ pub(crate) fn translate_long64_2m_ram_write_check(
     instruction_rip: u64,
     address: GuestLinearAddress,
     context: AccessContext,
+    committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<(), TrackedAccessError> {
+    translate_long64_2m_ram_write_check_with_fault_trace(
+        memory,
+        paging,
+        instruction_rip,
+        address,
+        context,
+        committed_write,
+        None,
+    )
+}
+
+pub(crate) fn translate_long64_2m_ram_write_check_with_fault_trace(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    address: GuestLinearAddress,
+    context: AccessContext,
     mut committed_write: impl FnMut(GuestPhysicalRange),
+    fault_trace: Option<&mut Option<WalkTrace>>,
 ) -> Result<(), TrackedAccessError> {
     let walk = walk_long64_4k_with_writer(
         memory,
@@ -1066,7 +1086,14 @@ pub(crate) fn translate_long64_2m_ram_write_check(
         &mut write_tracked_table_entry,
         true,
     );
-    let physical = walk.translation?.physical;
+    let translation = match walk.translation {
+        Ok(translation) => translation,
+        Err(error) => {
+            retain_page_fault_trace(fault_trace, &error, walk.trace);
+            return Err(error);
+        }
+    };
+    let physical = translation.physical;
     match memory.locate_region_kind(physical, 1) {
         Ok(MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer) => Ok(()),
         Ok(MemoryRegionKind::Mmio) => {
@@ -1080,6 +1107,18 @@ pub(crate) fn translate_long64_2m_ram_write_check(
             address: physical,
             source,
         }),
+    }
+}
+
+fn retain_page_fault_trace(
+    fault_trace: Option<&mut Option<WalkTrace>>,
+    error: &TrackedAccessError,
+    trace: WalkTrace,
+) {
+    if matches!(error, TrackedAccessError::PageFault { .. })
+        && let Some(fault_trace) = fault_trace
+    {
+        *fault_trace = Some(trace);
     }
 }
 
@@ -1605,8 +1644,37 @@ pub(crate) fn read_long64_4k_bounded_ram_read(
     memory: &mut PhysicalMemory,
     paging: &Long64ProbeConfig,
     request: TrackedAccessRequest,
-    mut committed_write: impl FnMut(GuestPhysicalRange),
+    committed_write: impl FnMut(GuestPhysicalRange),
 ) -> Result<u64, TrackedAccessError> {
+    read_long64_4k_bounded_ram_read_inner(memory, paging, request, committed_write, None)
+}
+
+pub(crate) fn read_long64_4k_bounded_ram_read_with_fault_trace(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    request: TrackedAccessRequest,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    fault_trace: &mut Option<WalkTrace>,
+) -> Result<u64, TrackedAccessError> {
+    read_long64_4k_bounded_ram_read_inner(
+        memory,
+        paging,
+        request,
+        committed_write,
+        Some(fault_trace),
+    )
+}
+
+fn read_long64_4k_bounded_ram_read_inner(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    request: TrackedAccessRequest,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+    mut fault_trace: Option<&mut Option<WalkTrace>>,
+) -> Result<u64, TrackedAccessError> {
+    if let Some(fault_trace) = fault_trace.as_deref_mut() {
+        *fault_trace = None;
+    }
     let (width, access) = match request.operation {
         RamAccessOperation::Read {
             width: width @ (AccessWidth::Word | AccessWidth::Dword | AccessWidth::Qword),
@@ -1627,7 +1695,7 @@ pub(crate) fn read_long64_4k_bounded_ram_read(
     let offset = request.address.0 & 0xfff;
     let first_len = (4096 - offset).min(u64::from(width)) as u8;
     let crosses_page = first_len < width;
-    let first = walk_long64_4k(
+    let first_walk = walk_long64_4k(
         memory,
         paging,
         request.instruction_rip,
@@ -1635,8 +1703,14 @@ pub(crate) fn read_long64_4k_bounded_ram_read(
         request.context,
         access,
         &mut committed_write,
-    )
-    .translation?;
+    );
+    let first = match first_walk.translation {
+        Ok(translation) => translation,
+        Err(error) => {
+            retain_page_fault_trace(fault_trace.as_deref_mut(), &error, first_walk.trace);
+            return Err(error);
+        }
+    };
     let second = if crosses_page {
         let second_linear = request.address.0.checked_add(u64::from(first_len)).ok_or(
             TrackedAccessError::CrossesPage {
@@ -1644,18 +1718,22 @@ pub(crate) fn read_long64_4k_bounded_ram_read(
                 width,
             },
         )?;
-        Some(
-            walk_long64_4k(
-                memory,
-                paging,
-                request.instruction_rip,
-                GuestLinearAddress::new(second_linear),
-                request.context,
-                access,
-                &mut committed_write,
-            )
-            .translation?,
-        )
+        let second_walk = walk_long64_4k(
+            memory,
+            paging,
+            request.instruction_rip,
+            GuestLinearAddress::new(second_linear),
+            request.context,
+            access,
+            &mut committed_write,
+        );
+        match second_walk.translation {
+            Ok(translation) => Some(translation),
+            Err(error) => {
+                retain_page_fault_trace(fault_trace.as_deref_mut(), &error, second_walk.trace);
+                return Err(error);
+            }
+        }
     } else {
         None
     };

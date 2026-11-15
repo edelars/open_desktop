@@ -897,6 +897,22 @@ impl MachineBus {
         )
     }
 
+    pub(crate) fn read_tracked_bounded_ram_read_with_fault_trace(
+        &mut self,
+        paging: &Long64ProbeConfig,
+        request: TrackedAccessRequest,
+        committed_write: impl FnMut(GuestPhysicalRange),
+        fault_trace: &mut Option<crate::WalkTrace>,
+    ) -> Result<u64, crate::TrackedAccessError> {
+        crate::page_walk::read_long64_4k_bounded_ram_read_with_fault_trace(
+            &mut self.memory,
+            paging,
+            request,
+            committed_write,
+            fault_trace,
+        )
+    }
+
     pub(crate) fn memory_kind(
         &self,
         address: GuestPhysicalAddress,

@@ -163,7 +163,8 @@ pub use linux_direct::{
 pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEvent};
 
 pub use execution_observations::{
-    DeliveredPageFaultObservation, FaultingPageFaultContext, LINUX_PAGE_FAULT_EVENT_CAPACITY,
+    DeliveredPageFaultObservation, FaultingPageFaultContext, FaultingPageWalkContext,
+    LINUX_PAGE_FAULT_EVENT_CAPACITY, LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
     LINUX_RDTSC_SITE_CAPACITY, LinuxExecutionObservations, RdtscSiteCount,
 };
 pub use firmware_board::{

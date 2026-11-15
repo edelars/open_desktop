@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 pub const LINUX_RDTSC_SITE_CAPACITY: usize = 128;
 /// Maximum successful delivered page-fault events retained in one diagnostic run.
 pub const LINUX_PAGE_FAULT_EVENT_CAPACITY: usize = 256;
+pub const LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY: usize = 4;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RdtscSiteCount {
@@ -24,6 +25,15 @@ pub struct FaultingPageFaultContext {
     pub frame_chain: Vec<crate::ConsoleContextFrame>,
     /// Why the bounded frame-pointer walk stopped.
     pub frame_chain_end: crate::FrameChainEnd,
+    /// The original access walk, captured before exception delivery and its A/D effects.
+    pub page_walk: Option<FaultingPageWalkContext>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FaultingPageWalkContext {
+    /// Raw table entries observed by the faulting access, before its A/D updates.
+    pub entries: Vec<crate::WalkEntry>,
+    pub reason: crate::PageFaultReason,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -121,6 +131,7 @@ mod tests {
                 rdi: 0x6000,
                 frame_chain: Vec::new(),
                 frame_chain_end: crate::FrameChainEnd::ReadFailed,
+                page_walk: None,
             },
         }
     }

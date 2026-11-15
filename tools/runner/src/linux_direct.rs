@@ -1287,12 +1287,13 @@ fn write_execution_observations_sidecar(
     observations: &LinuxExecutionObservations,
 ) -> Result<(), String> {
     let value = json!({
-        "schema_version": 3,
-        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events with pre-delivery registers and bounded read-only frame-pointer context",
+        "schema_version": 4,
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events with pre-delivery registers, bounded frame-pointer context, and the original faulting page-walk trace",
         "limits": {
             "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
             "page_fault_events": od_machine::LINUX_PAGE_FAULT_EVENT_CAPACITY,
             "frame_links_per_page_fault": od_machine::LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY,
+            "page_walk_entries_per_fault": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
         },
         "rdtsc_cpl0_sites": observations.rdtsc_cpl0_sites.iter().map(|site| json!({
             "rip": hex64(site.rip),
@@ -1319,6 +1320,17 @@ fn write_execution_observations_sidecar(
                     "return_address": hex64(frame.return_address),
                 })).collect::<Vec<_>>(),
                 "frame_chain_end": format!("{:?}", event.faulting_context.frame_chain_end),
+                "page_walk": event.faulting_context.page_walk.as_ref().map(|walk| json!({
+                    "source": "original_faulting_guest_access",
+                    "entry_values": "raw_before_accessed_dirty_updates",
+                    "reason": format!("{:?}", walk.reason),
+                    "entries": walk.entries.iter().map(|entry| json!({
+                        "level": format!("{:?}", entry.level),
+                        "index": entry.index,
+                        "entry_address": hex64(entry.entry_address.get()),
+                        "entry_value": hex64(entry.entry_value),
+                    })).collect::<Vec<_>>(),
+                })),
             },
         })).collect::<Vec<_>>(),
         "page_fault_events_omitted": observations.page_fault_events_omitted,
@@ -3133,6 +3145,17 @@ mod tests {
                         return_address: 0xffff_ffff_8100_7000,
                     }],
                     frame_chain_end: od_machine::FrameChainEnd::NullFramePointer,
+                    page_walk: Some(od_machine::FaultingPageWalkContext {
+                        entries: vec![od_machine::WalkEntry {
+                            level: od_machine::PageTableLevel::Pd,
+                            index: 4,
+                            entry_address: od_machine::GuestPhysicalAddress::new(0x3020),
+                            entry_value: 0x4007,
+                        }],
+                        reason: od_machine::PageFaultReason::NotPresent {
+                            level: od_machine::PageTableLevel::Pt,
+                        },
+                    }),
                 },
             }],
             page_fault_events_omitted: 4,
@@ -3140,7 +3163,7 @@ mod tests {
         write_execution_observations_sidecar(&mut file, path.to_str().unwrap(), &observations)
             .unwrap();
         let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema_version"], 3);
+        assert_eq!(value["schema_version"], 4);
         assert_eq!(
             value["limits"]["rdtsc_cpl0_sites"],
             od_machine::LINUX_RDTSC_SITE_CAPACITY
@@ -3152,6 +3175,10 @@ mod tests {
         assert_eq!(
             value["limits"]["frame_links_per_page_fault"],
             od_machine::LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY
+        );
+        assert_eq!(
+            value["limits"]["page_walk_entries_per_fault"],
+            od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY
         );
         assert_eq!(value["rdtsc_cpl0_sites"][0]["rip"], "0xffffffff81001234");
         assert_eq!(value["rdtsc_cpl0_sites"][0]["reads"], 19);
@@ -3197,6 +3224,30 @@ mod tests {
         assert_eq!(
             value["page_fault_events"][0]["faulting_context"]["frame_chain_end"],
             "NullFramePointer"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["page_walk"]["source"],
+            "original_faulting_guest_access"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["page_walk"]["entry_values"],
+            "raw_before_accessed_dirty_updates"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["page_walk"]["reason"],
+            "NotPresent { level: Pt }"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["page_walk"]["entries"][0]["level"],
+            "Pd"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["page_walk"]["entries"][0]["entry_address"],
+            "0x3020"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["page_walk"]["entries"][0]["entry_value"],
+            "0x4007"
         );
         assert_eq!(value["page_fault_events_omitted"], 4);
         drop(file);

@@ -10540,6 +10540,16 @@ mod tests {
         let cli = CliProfile::NonPviLong64V1;
         let (mut boot, _) = pf_board(0x5A, &[]);
         let pde_address = pf_pde_address(&boot);
+        let cr3 = boot.board.cr3();
+        let pml4_index = ((PF_VA >> 39) & 0x1ff) as u16;
+        let pml4_address = cr3 + u64::from(pml4_index) * 8;
+        let pml4_value = read_qword(&mut boot, pml4_address);
+        let pdpt_address = (pml4_value & 0x000f_ffff_ffff_f000) + (((PF_VA >> 30) & 0x1ff) * 8);
+        let pdpt_value = read_qword(&mut boot, pdpt_address);
+        let pd_address = (pdpt_value & 0x000f_ffff_ffff_f000) + (((PF_VA >> 21) & 0x1ff) * 8);
+        let pd_value_before = read_qword(&mut boot, pd_address);
+        assert_eq!(pd_address, pde_address);
+        assert_eq!(pd_value_before, 0, "the original PDE is not present");
         // 2 MiB leaf (P, W, PS) onto the 2 MiB frame that holds `DATA`.
         let handler = pf_repair_handler(pde_address, (DATA & !(2 * MIB - 1)) | 0x83);
         write_phys(&mut boot, PF_HANDLER_AT, &handler);
@@ -10583,34 +10593,87 @@ mod tests {
         let observations = observations.finish();
         assert_eq!(observations.page_faults_delivered, 1);
         assert_eq!(observations.page_fault_events_omitted, 0);
+        let event = &observations.page_fault_events[0];
         assert_eq!(
-            observations.page_fault_events,
-            [crate::DeliveredPageFaultObservation {
-                rip: ENTRY,
-                cr2: PF_VA + 0x20,
-                error_code: 2,
-                access: "Write".into(),
-                cpl: 0,
-                faulting_context: crate::FaultingPageFaultContext {
-                    cr3: boot.board.cr3(),
-                    rsp,
-                    rbp: faulting_rbp,
-                    rcx: 0x5A,
-                    rsi: faulting_rsi,
-                    rdi: faulting_rdi,
-                    frame_chain: vec![
-                        crate::ConsoleContextFrame {
-                            frame_pointer: faulting_rbp,
-                            return_address: 0xffff_ffff_8100_1000,
-                        },
-                        crate::ConsoleContextFrame {
-                            frame_pointer: faulting_rbp + 16,
-                            return_address: 0xffff_ffff_8100_2000,
-                        },
-                    ],
-                    frame_chain_end: crate::FrameChainEnd::NullFramePointer,
+            (event.rip, event.cr2, event.error_code, event.cpl),
+            (ENTRY, PF_VA + 0x20, 2, 0)
+        );
+        assert_eq!(event.access, "Write");
+        let context = &event.faulting_context;
+        assert_eq!(
+            (context.cr3, context.rsp, context.rbp),
+            (cr3, rsp, faulting_rbp)
+        );
+        assert_eq!(
+            (context.rcx, context.rsi, context.rdi),
+            (0x5A, faulting_rsi, faulting_rdi)
+        );
+        assert_eq!(
+            context.frame_chain,
+            [
+                crate::ConsoleContextFrame {
+                    frame_pointer: faulting_rbp,
+                    return_address: 0xffff_ffff_8100_1000,
                 },
-            }]
+                crate::ConsoleContextFrame {
+                    frame_pointer: faulting_rbp + 16,
+                    return_address: 0xffff_ffff_8100_2000,
+                },
+            ]
+        );
+        assert_eq!(
+            context.frame_chain_end,
+            crate::FrameChainEnd::NullFramePointer
+        );
+        let page_walk = context.page_walk.as_ref().unwrap();
+        assert_eq!(
+            page_walk.reason,
+            crate::PageFaultReason::NotPresent {
+                level: crate::PageTableLevel::Pd,
+            }
+        );
+        assert_eq!(page_walk.entries.len(), 3);
+        for (entry, (level, index, address, value)) in page_walk.entries.iter().zip([
+            (
+                crate::PageTableLevel::Pml4,
+                pml4_index,
+                pml4_address,
+                pml4_value,
+            ),
+            (
+                crate::PageTableLevel::Pdpt,
+                ((PF_VA >> 30) & 0x1ff) as u16,
+                pdpt_address,
+                pdpt_value,
+            ),
+            (
+                crate::PageTableLevel::Pd,
+                ((PF_VA >> 21) & 0x1ff) as u16,
+                pd_address,
+                pd_value_before,
+            ),
+        ]) {
+            assert_eq!(
+                (entry.level, entry.index, entry.entry_address.get()),
+                (level, index, address)
+            );
+            if level == crate::PageTableLevel::Pd {
+                assert_eq!(entry.entry_value, value);
+            } else {
+                // Instruction fetch may set A on the shared upper-level path before this data
+                // access. The raw trace must otherwise match the pre-run table entries.
+                assert_eq!(entry.entry_value & !0x20, value & !0x20);
+            }
+        }
+        assert_eq!(
+            read_qword(&mut boot, pde_address),
+            (DATA & !(2 * MIB - 1)) | 0x83,
+            "the handler repairs the absent PDE after the raw walk was captured"
+        );
+        assert_eq!(read_qword(&mut boot, faulting_rbp), 0x5560);
+        assert_eq!(
+            read_qword(&mut boot, faulting_rbp + 8),
+            0xffff_ffff_8100_1000
         );
         assert_ne!(
             state.rflags & (1 << 16),
@@ -11688,19 +11751,19 @@ mod tests {
         assert_eq!(state.gpr[Register::Rsp as usize], (USER_RSP0 & !15) - 48);
         let observations = observations.finish();
         assert_eq!(observations.page_fault_events.len(), 1);
+        let context = &observations.page_fault_events[0].faulting_context;
+        assert_eq!(context.cr3, boot.board.cr3());
+        assert_eq!(context.rsp, ENTRY + 0x800);
+        assert_eq!(context.rbp, faulting_rbp);
+        assert_eq!(context.rcx, faulting_rcx);
+        assert_eq!(context.rsi, faulting_rsi);
+        assert_eq!(context.rdi, faulting_rdi);
+        assert!(context.frame_chain.is_empty());
         assert_eq!(
-            observations.page_fault_events[0].faulting_context,
-            crate::FaultingPageFaultContext {
-                cr3: boot.board.cr3(),
-                rsp: ENTRY + 0x800,
-                rbp: faulting_rbp,
-                rcx: faulting_rcx,
-                rsi: faulting_rsi,
-                rdi: faulting_rdi,
-                frame_chain: Vec::new(),
-                frame_chain_end: crate::FrameChainEnd::UnalignedFramePointer,
-            }
+            context.frame_chain_end,
+            crate::FrameChainEnd::UnalignedFramePointer
         );
+        assert!(context.page_walk.is_some());
         assert_ne!(
             observations.page_fault_events[0].faulting_context.rsp,
             state.gpr[Register::Rsp as usize],
