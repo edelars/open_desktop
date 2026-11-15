@@ -169,10 +169,19 @@
 ### ISSUE-123 — S7-04: Rust helper `MOV RBX,RDI` остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `SUB RSP,0xb8`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware target `0x2004a0`.
-- **Статус:** открыта; helper stack frame выделен, следующий регистровый перенос не исполняется.
-- **Суть и последствия:** `RIP=0x2004aa` содержит `48 89 FB` (`MOV RBX,RDI`). Runner возвращает `Unsupported { opcode: 137 }`; COM1 пуст, handoff parser ещё не достигнут.
+- **Статус:** решена узко для exact `48 89 FB` в base `PagedCpl0ProbeV1`.
+- **Суть и результат:** exact qword register MOV копирует RDI в RBX, продвигает RIP и сохраняет flags, definedness и остальные registers. Другие направления, registers, widths/prefixes, CPL3 и другие profiles остаются unsupported.
 - **Основание:** образ `/private/tmp/od-fw-s7-sub-rsp-b8.bin`; `od -An -tx1 -j 0x4aa -N16` показывает `48 89 fb 48 8d 7c 24 50 e8 59 08 00 00 4c 8b 74`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=23`, `RIP=0x2004aa`, `com1_bytes=0`.
-- **Следующий шаг:** проверить узкий exact регистровый MOV допуск и его profile/encoding isolation.
+- **Проверка решения:** `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 176 passed; full state, flags/definedness, cross-page fetch fault atomicity, neighboring encodings и CPL3/stack/CR3/CR0.WP isolation. Образ `/private/tmp/od-fw-s7-mov-rbx-rdi.bin` собран (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 24 инструкции и остановился на `48 8D 7C 24 50` (`LEA RDI,[RSP+0x50]`) при `RIP=0x2004ad`, `Unsupported { opcode: 141 }`, `com1_bytes=0`.
+
+<a id="issue-124-s7-04-rust-helper-lea-rdi-rsp-disp8-unsupported"></a>
+### ISSUE-124 — S7-04: Rust helper `LEA RDI,[RSP+0x50]` остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `MOV RBX,RDI`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware target `0x2004a0`.
+- **Статус:** открыта; handoff argument сохранён в RBX, вычисление локального адреса ещё не исполняется.
+- **Суть и последствия:** `RIP=0x2004ad` содержит `48 8D 7C 24 50` (`LEA RDI,[RSP+0x50]`). Runner возвращает `Unsupported { opcode: 141 }`; COM1 пуст, handoff parser ещё не достигнут.
+- **Основание:** образ `/private/tmp/od-fw-s7-mov-rbx-rdi.bin`; `od -An -tx1 -j 0x4ad -N16` показывает `48 8d 7c 24 50 e8 59 08 00 00 4c 8b 74 24 50 48`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=24`, `RIP=0x2004ad`, `com1_bytes=0`.
+- **Следующий шаг:** проверить адресную арифметику exact stack-relative LEA и отсутствие memory access.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки

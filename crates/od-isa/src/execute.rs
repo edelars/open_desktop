@@ -20367,6 +20367,28 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: the Rust helper copies the handoff argument into RBX with
+        // exactly `48 89 FB` (MOV RBX,RDI). Other register MOVs stay refused.
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x89
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x48),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rbx, OperandSize::Qword)
+            && source == RegisterView::low(Register::Rdi, OperandSize::Qword) =>
+        {
+            let value = state.read(source);
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: the firmware entry loads __bss_start into RDI with exactly
         // `48 8D 3D 09 2B 00 00` (LEA RDI,[RIP+0x2b09]). Reuse the decoder's
         // next-RIP-relative effective-address calculation without a data read.
