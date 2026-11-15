@@ -13163,9 +13163,11 @@ mod tests {
         state
     }
 
-    /// A `#PF` delivered to the guest invalidates the cached translation of the page it
-    /// faulted on (the whole cache goes): the handler changes the PTE of that very page with
-    /// no `INVLPG`, and the restarted instruction is fetched through the new frame.
+    /// A `#PF` delivered to the guest drops the whole cache (a deliberate superset of what
+    /// the architecture requires: it would only invalidate the translation of the faulting
+    /// address). This test pins the stricter implementation behaviour, not an architectural
+    /// requirement: the handler changes the PTE of a page that is not the faulting one, with
+    /// no `INVLPG`, and the restarted instruction must be fetched through the new frame.
     #[test]
     fn guest_only_a_delivered_page_fault_drops_the_cached_translation() {
         let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
