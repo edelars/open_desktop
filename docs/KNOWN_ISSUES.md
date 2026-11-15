@@ -27,7 +27,7 @@
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `CMP RDI,RAX`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
 - **Владелец:** S7-04 совместно с владельцем CPU profile.
-- **Статус:** решена узко для точной формы `75 24` (`JNZ rel8`); runner остаётся заблокирован на следующей startup-инструкции (ISSUE-104).
+- **Статус:** решена узко для точной формы `75 24` (`JNZ rel8`, код `7bb0108`); runner остаётся заблокирован на следующей startup-инструкции (ISSUE-104).
 - **Суть и последствия:** после `CLD`, `48 C7 C0 00 00 10 00` и `48 39 C7` runner отклонял `75 24` на `RIP=0x20004b`. Базовый `PagedCpl0ProbeV1` теперь исполняет только short JNZ с displacement `+0x24`, сохраняя RFLAGS и их definedness. До Rust entry runner пока не дошёл; вывод COM1 пуст, handoff parser в машине не проверен.
 - **Основание:** образ `/private/tmp/od-fw-s7-04-cmp.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; команда `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-cmp.bin --com1-out /private/tmp/od-fw-s7-04-cmp.com1 --budget 10000` вернула `Unsupported { opcode: 117 }` (decimal = `0x75`), `retired=3`, `RIP=0x20004b`, `com1_bytes=0`.
 - **Результат и проверка:** `paged_probe_profile` проверяет taken/not-taken target RIP, сохранение CPU state/RFLAGS/definedness, fetch fault на rel8 через границу страницы, соседние ветви и префиксы, остальные paged profiles и CPL3. Runner retired четыре инструкции (`CLD`, `MOV`, `CMP`, невзятый `JNZ`) и теперь останавливается на `49 89 F8` (`MOV R8,RDI`, opcode `0x89`) на `RIP=0x20004d`; см. ISSUE-104. Реализация узкой формы ждёт независимого ревью.
