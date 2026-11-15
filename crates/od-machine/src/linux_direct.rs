@@ -44,6 +44,7 @@ use crate::firmware_board::{FirmwareBoardConfig, FirmwareRunReport, LoadedFirmwa
 use crate::irq_source::IrqCounters;
 use crate::linux_boot::{LinuxBzImageHeader, LinuxHeaderError, parse_linux_bzimage_header};
 use crate::linux_boot_params::{LINUX_E820_MAX_ENTRIES, LinuxBootParamsError};
+use crate::linux_checkpoints::{LinuxCheckpointRecord, LinuxCheckpointTable};
 use crate::linux_load::{LinuxLoadError, LinuxLoadInput, load_linux_direct};
 use crate::linux_placement::LinuxPlacementError;
 use crate::{GuestPhysicalAddress, MachineStopReason};
@@ -581,6 +582,10 @@ pub struct LinuxStopRecord {
     /// ([`LinuxCpl0SetMembers::diagnostic_past_c7`]): the CPUID boundary was off, so the result is
     /// diagnostic only and is NOT counted. `false` on every other run.
     pub diagnostic_past_c7: bool,
+    /// S4-38L4i: the checkpoints C0..C17 reached by the run, in id order (only those reached), when
+    /// the run was made with a checkpoint table ([`run_linux_direct_board_set_observed`]); `None`
+    /// otherwise, and then the record is what it always was.
+    pub checkpoints: Option<Vec<LinuxCheckpointRecord>>,
 }
 
 /// S4-39f: how many system calls the journal of a stop record keeps (the last ones).
@@ -691,6 +696,7 @@ pub fn run_linux_direct_board(
             exceptions_delivered: 0,
             irq: IrqCounters::default(),
             diagnostic_past_c7: false,
+            checkpoints: None,
         },
     ))
 }
@@ -709,6 +715,7 @@ struct SetExtras<'a> {
     exceptions_delivered: u64,
     irq: IrqCounters,
     diagnostic_past_c7: bool,
+    checkpoints: Option<Vec<LinuxCheckpointRecord>>,
 }
 
 fn stop_record(
@@ -798,6 +805,7 @@ fn stop_record(
         halt_wakes: extras.irq.halt_wakes,
         halt_idle_ns: extras.irq.halt_idle_ns,
         diagnostic_past_c7: extras.diagnostic_past_c7,
+        checkpoints: extras.checkpoints,
         cr3_changes: extras.changes.len() as u64,
         // The set loop records `MOV CR3` only; anything else it stops on as an integration error.
         last_cr3_change: extras
@@ -1069,7 +1077,7 @@ pub fn run_linux_direct_board_set(
     instruction_budget: u64,
     members: LinuxCpl0SetMembers,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
-    run_linux_direct_board_set_with(boot, input, instruction_budget, members, false)
+    run_linux_direct_board_set_with(boot, input, instruction_budget, members, false, None)
 }
 
 /// [`run_linux_direct_board_set`] with the user mode of the board (S4-39c): the set is built
@@ -1089,7 +1097,31 @@ pub fn run_linux_direct_board_set_user_mode(
     instruction_budget: u64,
     members: LinuxCpl0SetMembers,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
-    run_linux_direct_board_set_with(boot, input, instruction_budget, members, true)
+    run_linux_direct_board_set_with(boot, input, instruction_budget, members, true, None)
+}
+
+/// [`run_linux_direct_board_set`] (`user_mode` false) or [`run_linux_direct_board_set_user_mode`]
+/// (`user_mode` true) with the opt-in checkpoint recorder of S4-38L4i. With `Some(table)` the
+/// board records C0..C17 on the instruction boundaries of the loop (see `linux_checkpoints`) and
+/// the record carries them in `checkpoints`; with `None` this is exactly the function it wraps.
+/// The recorder only observes: the run retires the same instructions in the same quanta and the
+/// record is equal to the one without it except for the `checkpoints` field.
+pub fn run_linux_direct_board_set_observed(
+    boot: &mut LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    instruction_budget: u64,
+    members: LinuxCpl0SetMembers,
+    user_mode: bool,
+    checkpoints: Option<LinuxCheckpointTable>,
+) -> Result<LinuxStopRecord, LinuxDirectError> {
+    run_linux_direct_board_set_with(
+        boot,
+        input,
+        instruction_budget,
+        members,
+        user_mode,
+        checkpoints,
+    )
 }
 
 fn run_linux_direct_board_set_with(
@@ -1098,6 +1130,7 @@ fn run_linux_direct_board_set_with(
     instruction_budget: u64,
     members: LinuxCpl0SetMembers,
     user_mode: bool,
+    checkpoint_table: Option<LinuxCheckpointTable>,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
     // S4-39g: only the user-mode run of a board with the Linux-profile PIT and 8259 gets the
     // timer line: the PIT -> 8259 IR0 source becomes the board source, and the set carries `halt`
@@ -1243,6 +1276,16 @@ fn run_linux_direct_board_set_with(
             names.push("syscall".into());
         }
     }
+    // S4-38L4i: after every refusal that leaves the guest untouched, before the first
+    // instruction; the recorder only observes.
+    if let Some(table) = checkpoint_table {
+        // A bad table is refused before the first instruction (`run_failed`, nothing retired).
+        boot.board.enable_checkpoints(table).map_err(|error| {
+            let mut error = LinuxDirectError::new("run_failed", "run", error);
+            error.retired = Some(0);
+            error
+        })?;
+    }
     let result = boot.board.run_linux_boot_cpl0_set(
         instruction_budget,
         &set,
@@ -1265,6 +1308,7 @@ fn run_linux_direct_board_set_with(
     boot.board
         .set_guest_kernel_gs_base(kernel_gs_base_cell.get());
     boot.board.set_guest_fp(fp_cell.into_inner());
+    let checkpoints = boot.board.take_checkpoints();
     let report = result.map_err(|failure| {
         let mut error = LinuxDirectError::new("run_failed", "run", failure.error);
         error.retired = Some(failure.retired);
@@ -1275,6 +1319,7 @@ fn run_linux_direct_board_set_with(
         input,
         report.run,
         SetExtras {
+            checkpoints,
             path: "cpl0_set",
             members: names,
             exit_detail: Some(report.set_exit_detail),
@@ -1893,6 +1938,7 @@ mod tests {
     }
     // ---- S2-45f: the CPL0 profile set through the board walker ----
 
+    use super::run_linux_direct_board_set_observed;
     use crate::paged_memory_adapter::{
         PagedCpl0SetExit, PagedCpl0SetReport, run_cpl0_set_paged_2m_ram,
     };
@@ -14548,4 +14594,190 @@ mod tests {
         );
         assert_ne!(out.report.exit, PagedCpl0SetExit::Run(RunExit::Halted));
     }
+
+    // ---- S4-38L4i: the opt-in checkpoint recorder on the board ----
+
+    fn target(id: u8, name: &str, pa: u64) -> crate::LinuxCheckpointTarget {
+        target_at(id, name, None, pa)
+    }
+
+    fn target_at(id: u8, name: &str, va: Option<u64>, pa: u64) -> crate::LinuxCheckpointTarget {
+        crate::LinuxCheckpointTarget {
+            id,
+            name: name.to_string(),
+            va,
+            pa: Some(pa),
+            cpl3: false,
+            after: None,
+        }
+    }
+
+    /// Runs `cr3_switch_program` through the board loop with the recorder and returns its records
+    /// and the run report (`Debug` text, for equality) of a fresh board each time.
+    fn run_switch_with_recorder(
+        targets: Option<Vec<crate::LinuxCheckpointTarget>>,
+        fetch_cache: bool,
+        budget: u64,
+    ) -> (Option<Vec<crate::LinuxCheckpointRecord>>, String) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let (mut boot, _) = boot_with_entry(&cr3_switch_program(TREE_PML4, 0x1111));
+        install_second_tree(&mut boot, 0x2222);
+        if let Some(targets) = targets {
+            boot.board
+                .enable_checkpoints(crate::LinuxCheckpointTable { targets })
+                .expect("valid table");
+        }
+        let report = boot
+            .board
+            .run_linux_boot_cpl0_set(budget, &switch_set(&cli, &halt), false, fetch_cache, false)
+            .expect("runs");
+        (boot.board.take_checkpoints(), format!("{report:?}"))
+    }
+
+    #[test]
+    fn checkpoints_follow_the_boundaries_of_the_board_loop_in_order() {
+        // CLI, MOV RAX, MOV CR3 (retired 3), then the old RIP + 0xB is fetched through the new
+        // tree: its physical address is in the code page of the second tree, not at ENTRY + 0xB.
+        let new_gpa = TREE_CODE + 0x20B;
+        for fetch_cache in [false, true] {
+            let (records, _) = run_switch_with_recorder(
+                Some(vec![
+                    target_at(8, "after_cr3", Some(ENTRY + 0xB), new_gpa),
+                    target_at(9, "old_mapping", Some(ENTRY + 0xB), ENTRY + 0xB),
+                    target_at(10, "halt", Some(ENTRY + 0x12), TREE_CODE + 0x212),
+                ]),
+                fetch_cache,
+                64,
+            );
+            let records = records.expect("recorder was enabled");
+            let ids: Vec<u8> = records.iter().map(|record| record.id).collect();
+            assert_eq!(ids, [0, 3, 8, 10], "{records:?}");
+            let by = |id: u8| records.iter().find(|record| record.id == id).unwrap();
+            let c0 = by(0);
+            assert_eq!(
+                (c0.rip, c0.gpa, c0.retired, c0.quanta, c0.cr3),
+                (ENTRY, Some(ENTRY), 0, 1, c0.cr3)
+            );
+            let board_cr3 = c0.cr3;
+            assert_ne!(board_cr3, TREE_PML4);
+            let c3 = by(3);
+            assert_eq!(
+                (c3.kind, c3.rip, c3.retired),
+                ("after_event", ENTRY + 0xB, 3)
+            );
+            assert_eq!((c3.cr3, c3.gpa), (TREE_PML4, Some(new_gpa)));
+            let c8 = by(8);
+            assert_eq!(
+                (c8.rip, c8.gpa, c8.retired, c8.virtual_ns, c8.cpl),
+                (ENTRY + 0xB, Some(new_gpa), 3, 3, 0)
+            );
+            assert_eq!(c8.bytes.len(), 16);
+            // The HLT, the fourth instruction: the table row of the old mapping never matched.
+            let c10 = by(10);
+            assert_eq!(
+                (c10.rip, c10.retired, c10.name.as_str()),
+                (ENTRY + 0x12, 4, "halt")
+            );
+        }
+    }
+
+    #[test]
+    fn the_recorder_does_not_change_the_run() {
+        for fetch_cache in [false, true] {
+            let (none, without) = run_switch_with_recorder(None, fetch_cache, 64);
+            assert_eq!(none, None);
+            let (some, with) = run_switch_with_recorder(Some(Vec::new()), fetch_cache, 64);
+            assert!(some.is_some_and(|records| !records.is_empty()));
+            assert_eq!(with, without, "fetch_cache {fetch_cache}");
+        }
+        // A budget that ends the run right after the MOV CR3 (before the next fetch).
+        let (_, without) = run_switch_with_recorder(None, false, 3);
+        let (records, with) = run_switch_with_recorder(Some(Vec::new()), false, 3);
+        assert_eq!(with, without);
+        let records = records.unwrap();
+        // The budget ended the run on the boundary after the MOV CR3: C3 is not seen (the boundary
+        // hook runs after the budget check), and nothing past C0 is invented.
+        assert_eq!(records.iter().map(|r| r.id).collect::<Vec<_>>(), [0]);
+    }
+
+    #[test]
+    fn checkpoints_through_the_facade_cpuid_leaves_and_the_c7_stop() {
+        // CLI; MOV EAX, 0; CPUID; MOV EAX, 1; CPUID. DiagnosticV1 answers leaf 0 and stops before
+        // leaf 1 (cpuid_divergence), at the address the table calls C7.
+        let program = [
+            0xFA, 0xB8, 0, 0, 0, 0, 0x0F, 0xA2, 0xB8, 1, 0, 0, 0, 0x0F, 0xA2,
+        ];
+        let c7_gpa = ENTRY + 13;
+        let table = crate::LinuxCheckpointTable {
+            targets: vec![
+                target(7, "cpuid1", c7_gpa),
+                // One byte off: the same instruction, but not this address.
+                target(8, "shifted", c7_gpa + 1),
+            ],
+        };
+        let members = LinuxCpl0SetMembers::linux_default();
+        let (mut boot, file) = boot_with_entry(&program);
+        let with = run_linux_direct_board_set_observed(
+            &mut boot,
+            &input(&file, &[], BLOB, board_hash()),
+            64,
+            members,
+            false,
+            Some(table),
+        )
+        .expect("runs");
+        assert_eq!(with.exit_kind, "cpuid_divergence");
+        assert_eq!(with.cpuid_divergence_leaf, Some(1));
+        let records = with.checkpoints.clone().expect("enabled");
+        assert_eq!(
+            records.iter().map(|record| record.id).collect::<Vec<_>>(),
+            [0, 6, 7]
+        );
+        let c6 = &records[1];
+        assert_eq!((c6.rip, c6.retired, c6.kind), (ENTRY + 6, 2, "boundary"));
+        let c7 = &records[2];
+        // The boundary of the stop: the same retired and quanta count as the stop record.
+        assert_eq!((c7.rip, c7.gpa), (c7_gpa, Some(c7_gpa)));
+        assert_eq!((c7.retired, c7.quanta), (with.retired, with.quanta));
+        assert_eq!(c7.virtual_ns, with.virtual_ns);
+        assert_eq!(with.retired, 4);
+
+        // The same run without the table: the record is equal except for the field.
+        let (mut boot, file) = boot_with_entry(&program);
+        let without = run_linux_direct_board_set(
+            &mut boot,
+            &input(&file, &[], BLOB, board_hash()),
+            64,
+            members,
+        )
+        .expect("runs");
+        assert_eq!(without.checkpoints, None);
+        let mut with = with;
+        with.checkpoints = None;
+        assert_eq!(with, without);
+    }
+
+    #[test]
+    fn a_checkpoint_table_with_an_id_out_of_range_is_refused_before_the_run() {
+        let (mut boot, file) = boot_with_entry(&CHECKPOINT_PROGRAM_HLT);
+        let error = run_linux_direct_board_set_observed(
+            &mut boot,
+            &input(&file, &[], BLOB, board_hash()),
+            64,
+            LinuxCpl0SetMembers::linux_default(),
+            false,
+            Some(crate::LinuxCheckpointTable {
+                targets: vec![target(18, "beyond", ENTRY)],
+            }),
+        )
+        .expect_err("refused");
+        assert_eq!((error.code, error.stage), ("run_failed", "run"));
+        assert_eq!(error.retired, Some(0));
+        assert!(error.detail.contains("IdOutOfRange"), "{error:?}");
+        // Nothing ran and no recorder was left on the board.
+        assert_eq!(boot.board.state().rip, ENTRY);
+        assert_eq!(boot.board.take_checkpoints(), None);
+    }
+
+    const CHECKPOINT_PROGRAM_HLT: [u8; 1] = [0xF4];
 }
