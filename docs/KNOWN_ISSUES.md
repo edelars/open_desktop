@@ -50,10 +50,18 @@
 ### ISSUE-109 — S7-04: paged CPU profile не допускает `REP STOSB` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `XOR EAX,EAX`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
-- **Статус:** открыта; runner исполнил девять startup-инструкций, до Rust entry не дошёл.
-- **Суть и последствия:** runner отклоняет `F3 AA` (`REP STOSB`) при `RIP=0x200063`; COM1 пуст, firmware BSS initialization и handoff parser в машине не проверены.
-- **Основание:** `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-xor.bin --com1-out /private/tmp/od-fw-s7-04-xor.com1 --budget 10000` вернул `status=error`, `exit=unsupported`, `Unsupported { opcode: 170 }` (decimal = `0xaa`), `retired=9`, `RIP=0x200063`, `com1_bytes=0`. Байты подтверждены `od -An -tx1 -j 0x63 -N16`: `f3 aa 4c 89 c7 e8 83 01 00 00 ...`.
-- **Следующий шаг:** рассмотреть узкую `REP STOSB` форму с проверкой памяти, счётчика, direction flag и fault/partial-retirement semantics.
+- **Статус:** решена узко для exact `F3 AA` при `RCX <= 1024`; большие counts остаются отказом профиля. Runner остановился на следующем `MOV` (ISSUE-110).
+- **Семантика:** записывает AL по `[RDI]` с шагом ±1 по DF, затем обновляет RDI/RCX; flags неизменны. Нулевой count не обращается к памяти и сразу продвигает RIP. При fault успешные предыдущие элементы сохраняются, текущие RDI/RCX не обновляются, RIP остаётся на REP для рестарта. Вызов ограничен 1024 stores; STOP/interrupt проверяются только на границах CPU-инструкций.
+- **Результат и проверка:** `paged_probe_profile` — 116 passed: zero/positive counts, DF обеих сторон, partial progress on write fault, fetch fault, count cap, neighbors, CPL3 и other-profile isolation. Runner retired 10 инструкций и остановился на `4C 89 C7` (`MOV RDI,R8`) при `RIP=0x200065`; см. [S7-04 отчёт](reports/STAGE_7_REPORT.md#s7-04-cpu-profile-rep-stosb).
+
+<a id="issue-110-s7-04-paged-cpu-profile-does-not-admit-mov-rdi-r8-at-firmware-entry"></a>
+### ISSUE-110 — S7-04: paged CPU profile не допускает `MOV RDI,R8` из entry прошивки
+- **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `REP STOSB`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
+- **Статус:** открыта; runner исполнил десять startup-инструкций и до Rust entry не дошёл.
+- **Суть и последствия:** runner отклоняет `4C 89 C7` (`MOV RDI,R8`) при `RIP=0x200065`; COM1 пуст, handoff parser в машине не проверен.
+- **Основание:** `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-rep-stosb.bin --com1-out /private/tmp/od-fw-s7-04-rep-stosb.com1 --budget 10000` вернул `status=error`, `exit=unsupported`, `Unsupported { opcode: 137 }` (decimal = `0x89`), `retired=10`, `RIP=0x200065`, `com1_bytes=0`. Байты подтверждены `od -An -tx1 -j 0x65 -N16`: `4c 89 c7 e8 83 01 00 00 ...`.
+- **Следующий шаг:** проверить точный register direction/REX and existing MOV semantics, then rerun runner.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки

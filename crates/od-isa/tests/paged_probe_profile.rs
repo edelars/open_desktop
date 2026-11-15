@@ -23,10 +23,12 @@ struct Memory {
     fetches: Vec<(u64, AccessContext)>,
     reads: usize,
     writes: usize,
+    write_addresses: Vec<u64>,
     fail_fetch: Option<MemoryError>,
     fail_fetch_at: Option<(u64, MemoryError)>,
     fail_read: Option<MemoryError>,
     fail_write: Option<MemoryError>,
+    fail_write_on: Option<(usize, MemoryError)>,
 }
 
 impl Memory {
@@ -42,10 +44,12 @@ impl Memory {
             fetches: Vec::new(),
             reads: 0,
             writes: 0,
+            write_addresses: Vec::new(),
             fail_fetch: None,
             fail_fetch_at: None,
             fail_read: None,
             fail_write: None,
+            fail_write_on: None,
         }
     }
 
@@ -107,6 +111,12 @@ impl GuestMemory for Memory {
 
     fn write(&mut self, address: u64, _: AccessContext, source: &[u8]) -> Result<(), MemoryError> {
         self.writes += 1;
+        self.write_addresses.push(address);
+        if let Some((write_number, error)) = &self.fail_write_on
+            && self.writes == *write_number
+        {
+            return Err(error.clone());
+        }
         if let Some(error) = &self.fail_write {
             return Err(error.clone());
         }
@@ -2545,6 +2555,252 @@ fn firmware_entry_xor_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn firmware_entry_rep_stosb_writes_al_and_updates_rdi_rcx_by_df() {
+    let code = [0xf3, 0xaa]; // REP STOSB, address-size 64
+    for (df, start, expected_rdi, expected_offsets) in [
+        (false, DATA, DATA + 3, [0usize, 1, 2]),
+        (true, DATA + 2, DATA.wrapping_sub(1), [2usize, 1, 0]),
+    ] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::Rax as usize] = 0xfeed_beef_cafe_00a5;
+        cpu.gpr[Register::Rcx as usize] = 3;
+        cpu.gpr[Register::Rdi as usize] = start;
+        if df {
+            cpu.rflags |= 1 << 10;
+        } else {
+            cpu.rflags &= !(1 << 10);
+        }
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        let mut expected = before;
+        expected.gpr[Register::Rcx as usize] = 0;
+        expected.gpr[Register::Rdi as usize] = expected_rdi;
+        expected.rip += code.len() as u64;
+        assert_eq!(cpu, expected);
+        for offset in expected_offsets {
+            assert_eq!(memory.bytes[DATA_PHYSICAL + offset], 0xa5);
+        }
+        assert_eq!(memory.writes, 3);
+        assert_eq!(memory.reads, 0);
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn firmware_entry_rep_stosb_completes_count_at_work_limit() {
+    let code = [0xf3, 0xaa];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rax as usize] = 0x5a;
+    cpu.gpr[Register::Rcx as usize] = execute::REP_ITERATION_WORK_LIMIT;
+    cpu.gpr[Register::Rdi as usize] = DATA;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    let mut expected = before;
+    expected.gpr[Register::Rcx as usize] = 0;
+    expected.gpr[Register::Rdi as usize] = DATA + execute::REP_ITERATION_WORK_LIMIT;
+    expected.rip += code.len() as u64;
+    assert_eq!(cpu, expected);
+    let start = DATA_PHYSICAL;
+    let end = start + execute::REP_ITERATION_WORK_LIMIT as usize;
+    assert!(memory.bytes[start..end].iter().all(|byte| *byte == 0x5a));
+    assert_eq!(memory.writes, execute::REP_ITERATION_WORK_LIMIT as usize);
+    assert_eq!(memory.reads, 0);
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn firmware_entry_rep_stosb_zero_count_retires_without_memory_access() {
+    let code = [0xf3, 0xaa];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rcx as usize] = 0;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    let mut expected = before;
+    expected.rip += code.len() as u64;
+    assert_eq!(cpu, expected);
+    assert_eq!(memory.writes, 0);
+    assert_eq!(memory.reads, 0);
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn firmware_entry_rep_stosb_write_fault_preserves_only_completed_iterations() {
+    let code = [0xf3, 0xaa];
+    let mut memory = Memory::new(&code);
+    memory.fail_write_on = Some((2, page_fault(0x2, DATA + 1)));
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rax as usize] = 0x5a;
+    cpu.gpr[Register::Rcx as usize] = 3;
+    cpu.gpr[Register::Rdi as usize] = DATA;
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x2),
+            linear_address: Some(DATA + 1),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu.gpr[Register::Rdi as usize], DATA + 1);
+    assert_eq!(cpu.gpr[Register::Rcx as usize], 2);
+    assert_eq!(cpu.rip, RIP); // restart the REP instruction after fault delivery
+    assert_eq!(memory.bytes[DATA_PHYSICAL], 0x5a);
+    assert_eq!(memory.writes, 2);
+    assert_eq!(memory.reads, 0);
+    assert_eq!(memory.write_addresses, [DATA, DATA + 1]);
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+
+    // Resume after the fault: the completed first byte is not replayed, and the
+    // remaining two elements continue at the saved RDI/RCX pair.
+    memory.fail_write_on = None;
+    let resumed = step(&mut cpu, &mut memory, &mut pio, ring0());
+    assert_eq!(resumed.exit, PagedProbeExit::Retired);
+    assert_eq!(resumed.instructions_executed, 1);
+    assert_eq!(resumed.rflags_defined, DEFINED);
+    assert_eq!(cpu.gpr[Register::Rcx as usize], 0);
+    assert_eq!(cpu.gpr[Register::Rdi as usize], DATA + 3);
+    assert_eq!(cpu.rip, RIP + code.len() as u64);
+    assert_eq!(memory.write_addresses, [DATA, DATA + 1, DATA + 1, DATA + 2]);
+    assert_eq!(memory.bytes[DATA_PHYSICAL..DATA_PHYSICAL + 3], [0x5a; 3]);
+    assert_eq!(memory.writes, 4);
+}
+
+#[test]
+fn firmware_entry_rep_stosb_refuses_counts_over_work_limit_without_mutation() {
+    let code = [0xf3, 0xaa];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rcx as usize] = execute::REP_ITERATION_WORK_LIMIT + 1;
+    cpu.gpr[Register::Rdi as usize] = DATA;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0xaa });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.writes, 0);
+    assert_eq!(memory.reads, 0);
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn firmware_entry_rep_stosb_fetch_fault_does_not_commit() {
+    let mut memory = Memory::new(&[]);
+    memory.bytes[CODE_PHYSICAL + 0xfff] = 0xf3;
+    let mut cpu = state();
+    cpu.rip = RIP + 0xfff;
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rcx as usize] = 1;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    memory.fail_fetch_at = Some((cpu.rip + 1, page_fault(0x10, cpu.rip + 1)));
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(RIP + 0x1000),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.writes, 0);
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn firmware_entry_rep_stosb_neighbours_stay_unsupported_without_mutation() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0xaa], 0xaa),             // unprefixed STOSB
+        (&[0xf2, 0xaa], 0xaa),       // REPNE STOSB
+        (&[0xf3, 0x66, 0xaa], 0xaa), // extra operand prefix
+        (&[0xf3, 0x48, 0xaa], 0xaa), // REX prefix
+        (&[0xf3, 0x67, 0xaa], 0xaa), // address-size override
+        (&[0xf3, 0xab], 0xab),       // REP STOS wider than byte
+        (&[0xf3, 0xf3, 0xaa], 0xaa), // duplicate REP prefix
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "{bytes:02x?}");
+        assert_eq!(memory.writes, 0);
+        assert_eq!(memory.reads, 0);
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn firmware_entry_rep_stosb_is_unsupported_in_cpl3_profile() {
+    let bytes = [0xf3, 0xaa];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    let before = cpu.clone();
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0xf3 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.writes, 0);
+    assert_eq!(memory.reads, 0);
+}
+
+#[test]
 fn firmware_entry_jnz_taken_and_not_taken_preserve_flags_and_definedness() {
     let code = [0x75, 0x24]; // JNZ +0x24
     let defined = DEFINED & !(1 << 6);
@@ -3065,6 +3321,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x48, 0x8d, 0x0d, 0x02, 0x2b, 0, 0][..], 0x8d),
         (&[0x48, 0x29, 0xf9][..], 0x29),
         (&[0x31, 0xc0][..], 0x31),
+        (&[0xf3, 0xaa][..], 0xaa),
     ] {
         for profile in ["stack", "cr3", "cr0wp"] {
             let mut memory = Memory::new(bytes);

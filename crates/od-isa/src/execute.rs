@@ -20274,6 +20274,58 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
+        // S7-04: admit only firmware's bare address-size-64 `F3 AA` REP STOSB.
+        // Bound one paged instruction invocation to REP_ITERATION_WORK_LIMIT
+        // stores; larger counts are refused before any memory/state mutation.
+        Operation::RepStos {
+            size: OperandSize::Byte,
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xaa
+            && instruction.length == 2
+            && instruction.address_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    group1: Some(0xf3),
+                    ..Prefixes::default()
+                }) =>
+        {
+            let count = state.gpr[Register::Rcx as usize];
+            if count > REP_ITERATION_WORK_LIMIT {
+                return unsupported();
+            }
+            while state.gpr[Register::Rcx as usize] != 0 {
+                let destination = Operand::Memory(MemoryOperand {
+                    base: AddressBase::Register(Register::Rdi),
+                    index: None,
+                    scale: 1,
+                    displacement: 0,
+                    address_size: OperandSize::Qword,
+                    size: OperandSize::Byte,
+                });
+                let value = state.gpr[Register::Rax as usize] & 0xff;
+                if let Err(error) =
+                    write_operand(state, memory, context, next_rip, destination, value)
+                {
+                    return match error {
+                        MemoryError::Architectural(fault) => {
+                            result(PagedProbeExit::Fault(fault), 0)
+                        }
+                        error => result(PagedProbeExit::Backend(error), 0),
+                    };
+                }
+                let step = if state.rflags & crate::DF == 0 {
+                    1
+                } else {
+                    u64::MAX
+                };
+                state.gpr[Register::Rdi as usize] =
+                    state.gpr[Register::Rdi as usize].wrapping_add(step);
+                state.gpr[Register::Rcx as usize] -= 1;
+            }
+            state.rip = next_rip;
+            return result(PagedProbeExit::Retired, 1);
+        }
         // S7-04: preserve the firmware's exact `48 29 F9` form. Intel order is
         // SUB RCX,RDI (AT&T: `subq %rdi,%rcx`); no other SUB form is admitted.
         Operation::Arithmetic {
