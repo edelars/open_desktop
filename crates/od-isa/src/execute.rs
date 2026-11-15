@@ -20485,6 +20485,39 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     | (crate::ARITHMETIC_FLAGS & !crate::AF),
             };
         }
+        // S7-04: after saving R11 in R15, the Rust helper combines it with
+        // R8 using only `4D 21 C7` (AND R15,R8). Other widths and pairs stay refused.
+        Operation::Logic {
+            kind: LogicKind::And,
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x21
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x4d),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R15, OperandSize::Qword)
+            && source == RegisterView::low(Register::R8, OperandSize::Qword) =>
+        {
+            let lhs = state.read(destination);
+            let rhs = state.read(source);
+            let (value, flags) =
+                logic_result(OperandSize::Qword, LogicKind::And, lhs, rhs, state.rflags);
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: (initial_rflags_defined & !crate::AF)
+                    | (crate::ARITHMETIC_FLAGS & !crate::AF),
+            };
+        }
         // S7-04: the helper tests the low three bits of BPL with exact
         // `40 F6 C5 07`; TEST only changes flags and leaves AF undefined.
         Operation::Logic {

@@ -846,6 +846,13 @@ Base `PagedCpl0ProbeV1` admits only `4D 89 DF`: primary opcode `89`, exact REX `
 
 Checks: four focused `rust_helper_mov_r15_r11` tests and `other_paged_profiles_keep_s7_entry_instructions_unsupported` passed; all 360 `paged_probe_profile` tests passed. Coverage includes complete-state/flag preservation, a fetch fault at ModRM, neighboring encodings, CPL3 and other-profile isolation. Firmware image `/private/tmp/od-fw-s7-04-issue170.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 73 instructions then stopped at `4D 21 C7` (`AND R15,R8`, ISSUE-171), `RIP=0x200e08`, `Unsupported { opcode: 33 }`, `com1_bytes=0`; full handoff validation remains incomplete.
 
+<a id="s7-04-exact-rust-helper-and-r15-r8"></a>
+#### Расширение S7-04: exact Rust-helper `AND R15,R8`
+
+Base `PagedCpl0ProbeV1` admits only `4D 21 C7`: primary opcode `21`, exact REX `4D` (W/R/B), ModRM `C7`, qword destination R15 and source R8, and length 3. Existing `LogicKind::And` semantics compute the result and logical flags; only R15 changes, CF/OF clear, ZF/PF/SF reflect the result, and AF's concrete bit is retained while its definedness is cleared. Fetch faults do not commit CPU state. Other register pairs/directions, widths, prefixes, memory forms, CPL3 and other paged profiles remain unsupported.
+
+Checks: four focused `rust_helper_and_r15_r8` tests and other-profile isolation passed; all 364 `paged_probe_profile` tests passed. Coverage includes qword result vectors, complete state, flags and AF-definedness, fetch fault at ModRM, neighboring forms and CPL/profile isolation. Firmware image `/private/tmp/od-fw-s7-04-issue171.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 74 instructions then stopped at `45 89 CC` (`MOV R12D,R9D`, ISSUE-172), `RIP=0x200e0b`, `Unsupported { opcode: 137 }`, `com1_bytes=0`; full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции
