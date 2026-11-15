@@ -63,12 +63,29 @@ const SCENARIO_BUDGET: Duration = Duration::from_secs(30);
 /// Process RSS growth limit over the main runs, bytes (5 MiB).
 const RSS_GROWTH_LIMIT: u64 = 5 * 1024 * 1024;
 /// Retained live heap difference allowed between the 200-iteration baseline and
-/// the 2000-iteration run (queues alive in both), bytes.
-const RETAINED_HEAP_GROWTH_LIMIT: i64 = 64 * 1024;
+/// the 2000-iteration run (queues alive in both), bytes. Measured: 0.
+const RETAINED_HEAP_GROWTH_LIMIT: i64 = 1024;
 /// Live heap left after the queues are dropped, relative to before creation.
-const LEAK_AFTER_DROP_LIMIT: i64 = 16 * 1024;
-/// Peak live heap above the pre-scenario level during any scenario.
-const PEAK_HEAP_LIMIT: u64 = 4 * 1024 * 1024;
+/// Measured: 0 for `EventQueue` (empty `Counters.extra`) and 280 for the others.
+/// The 280 bytes are not a queue leak: they are the single leaf node of the
+/// `BTreeMap` in `Counters.extra`, which the returned `Outcome` still owns after
+/// the queues are dropped. The limit leaves room for one such leaf only.
+const LEAK_AFTER_DROP_LIMIT: i64 = 512;
+/// Per-queue heap limits, measured and then narrowed (see the report): peak
+/// above the scenario start (beyond `fixed_heap_bytes`) and growth between
+/// creation and the end of a run.
+const EQ_PEAK_MARGIN: u64 = 1024; // measured 384
+const EQ_MAX_GROWTH: i64 = 64; // measured 0
+const UART_PEAK_MARGIN: u64 = 2048; // measured 968
+/// Tight on purpose: a payload pushed on a refused schedule reallocates the
+/// payload list (128 -> 256 bytes at least, +128 over the measured 64) and exceeds this.
+const UART_MAX_GROWTH: i64 = 96; // measured 64 (model and drain state)
+const PUMP_PEAK_MARGIN: u64 = 80 * 1024; // measured 57_101
+const PUMP_MAX_GROWTH: i64 = 12 * 1024; // measured 9_496 (ring trace Vec at steady state)
+/// Display: the framebuffer (`DISPLAY_FRAMEBUFFER_BYTES`) is added to the peak
+/// limit; the rest is the 128 KiB RAM region plus device state (measured 165_200).
+const DISPLAY_PEAK_MARGIN: u64 = 192 * 1024;
+const DISPLAY_MAX_GROWTH: i64 = 256; // measured 0
 /// Per-run step budget of the pump (a hang would end as `Budget`, not IdleHalt).
 const PUMP_RUN_BUDGET: u64 = 100_000;
 
@@ -156,7 +173,13 @@ impl HeapWindow {
     fn retained(&self) -> i64 {
         live_bytes() as i64 - self.before as i64
     }
-    fn finish(self, counters: Counters, retained_alive: i64, started: Instant) -> Outcome {
+    fn finish(
+        self,
+        counters: Counters,
+        retained_initial: i64,
+        retained_alive: i64,
+        started: Instant,
+    ) -> Outcome {
         let elapsed = started.elapsed();
         assert!(
             elapsed < SCENARIO_BUDGET,
@@ -164,7 +187,9 @@ impl HeapWindow {
         );
         Outcome {
             counters,
+            retained_initial_bytes: retained_initial,
             retained_alive_bytes: retained_alive,
+            growth_after_creation_bytes: retained_alive - retained_initial,
             leaked_after_drop_bytes: self.retained(),
             peak_above_before_bytes: PEAK_BYTES
                 .load(Ordering::Relaxed)
@@ -205,6 +230,15 @@ struct Counters {
 }
 
 impl Counters {
+    /// Counters whose `extra` keys exist from the start, so the `BTreeMap` leaf
+    /// is allocated before the first heap sample and does not count as growth.
+    fn with_keys(keys: &[&'static str]) -> Self {
+        let mut counters = Self::default();
+        for key in keys {
+            counters.extra.insert(key, 0);
+        }
+        counters
+    }
     fn bump(&mut self, name: &'static str) {
         *self.extra.entry(name).or_default() += 1;
     }
@@ -227,7 +261,11 @@ impl Counters {
 #[derive(Serialize)]
 struct Outcome {
     counters: Counters,
+    /// Live heap right after the queues were created (0 iterations).
+    retained_initial_bytes: i64,
     retained_alive_bytes: i64,
+    /// `retained_alive - retained_initial`: what the iterations added.
+    growth_after_creation_bytes: i64,
     leaked_after_drop_bytes: i64,
     peak_above_before_bytes: u64,
     allocations: u64,
@@ -250,12 +288,14 @@ fn scenario_event_queue(iterations: usize) -> Outcome {
     let window = HeapWindow::begin();
     let mut c = Counters::default();
     let mut rng = Rng(0x5334_3433_6200_0001);
+    let retained_initial;
     let retained_alive;
     {
         let mut queue = EventQueue::new(EQ_CAPACITY);
         assert_eq!(queue.capacity(), EQ_CAPACITY);
         let mut generation = queue.generation();
-        let mut model: Vec<ModelEntry> = Vec::new();
+        let mut model: Vec<ModelEntry> = Vec::with_capacity(EQ_CAPACITY);
+        retained_initial = window.retained();
         let mut next_sequence = 0_u64;
         let mut now = 0_u64;
         for i in 0..iterations {
@@ -394,15 +434,20 @@ fn scenario_event_queue(iterations: usize) -> Outcome {
         }
         retained_alive = window.retained();
     }
-    window.finish(c, retained_alive, started)
+    window.finish(c, retained_initial, retained_alive, started)
 }
 
 // ---- scenario 2: UartRxEventPump (event queue plus payload list) -------------
 fn scenario_uart_rx_pump(iterations: usize) -> Outcome {
     let started = Instant::now();
     let window = HeapWindow::begin();
-    let mut c = Counters::default();
+    let mut c = Counters::with_keys(&[
+        "bytes_delivered",
+        "events_dropped_by_reset",
+        "non_delivering_exits_checked",
+    ]);
     let mut rng = Rng(0x5334_3433_6200_0002);
+    let retained_initial;
     let retained_alive;
     {
         let (_device, uart) = Uart16550PollingTx::new_with_handle();
@@ -410,7 +455,12 @@ fn scenario_uart_rx_pump(iterations: usize) -> Outcome {
         assert_eq!(pump.capacity(), UART_CAPACITY);
         let mut generation = pump.generation();
         // key, deadline, sequence, value
-        let mut model: Vec<(u64, u64, u64, u8)> = Vec::new();
+        let mut model: Vec<(u64, u64, u64, u8)> = Vec::with_capacity(UART_CAPACITY);
+        // Payload list check: `payloads` is private, so a payload pushed on a
+        // refused `schedule` is seen through the heap. The list is reserved for
+        // exactly `UART_CAPACITY` entries at construction; one extra entry would
+        // reallocate it and show up as growth after creation (limit below).
+        retained_initial = window.retained();
         let mut sequence = 0_u64;
         for i in 0..iterations {
             c.iterations += 1;
@@ -533,7 +583,7 @@ fn scenario_uart_rx_pump(iterations: usize) -> Outcome {
         }
         retained_alive = window.retained();
     }
-    window.finish(c, retained_alive, started)
+    window.finish(c, retained_initial, retained_alive, started)
 }
 
 // ---- scenario 3: InterruptPump IRQ queue and Ring trace ----------------------
@@ -619,8 +669,11 @@ fn pump_counter(pump: &mut InterruptPump) -> u64 {
     pump.peek_ram_qword(COUNTER).unwrap() & 0xffff_ffff
 }
 
-/// Trace invariants of every mode: length bound, no silent loss, contiguous seq.
-fn check_trace(pump: &InterruptPump, capacity: usize, c: &mut Counters) {
+/// Ring trace invariants against `recorded`, the number of events the test
+/// itself expects to have been recorded (independent of the pump's counters):
+/// length = min(capacity, recorded), dropped = recorded - length, `seq`
+/// contiguous and ending at `recorded - 1`.
+fn check_ring_trace(pump: &InterruptPump, capacity: usize, recorded: u64, c: &mut Counters) {
     let trace = pump.trace();
     assert!(
         trace.len() <= capacity,
@@ -628,13 +681,17 @@ fn check_trace(pump: &InterruptPump, capacity: usize, c: &mut Counters) {
         trace.len()
     );
     assert_eq!(
-        pump.trace_dropped() + trace.len() as u64,
-        pump.trace_next_seq(),
-        "every recorded event is retained or counted as dropped"
+        trace.len() as u64,
+        recorded.min(capacity as u64),
+        "ring length"
     );
-    assert_eq!(pump.trace_first_seq(), pump.trace_dropped());
+    assert_eq!(
+        pump.trace_dropped(),
+        recorded - trace.len() as u64,
+        "dropped events vs the test-side count"
+    );
     for (offset, event) in trace.iter().enumerate() {
-        assert_eq!(event.seq, pump.trace_first_seq() + offset as u64, "seq gap");
+        assert_eq!(event.seq, pump.trace_dropped() + offset as u64, "seq gap");
     }
     c.max_extra("trace_max_len", trace.len() as u64);
 }
@@ -642,8 +699,18 @@ fn check_trace(pump: &InterruptPump, capacity: usize, c: &mut Counters) {
 fn scenario_interrupt_pump_ring(iterations: usize) -> Outcome {
     let started = Instant::now();
     let window = HeapWindow::begin();
-    let mut c = Counters::default();
+    let mut c = Counters::with_keys(&[
+        "cancelled",
+        "interrupts_delivered",
+        "irq_events_accepted",
+        "irq_events_dropped_by_reset",
+        "stop_checks",
+        "trace_events_dropped",
+        "trace_events_recorded",
+        "trace_max_len",
+    ]);
     let mut rng = Rng(0x5334_3433_6200_0003);
+    let retained_initial;
     let retained_alive;
     {
         let image = build_queue_image();
@@ -651,8 +718,18 @@ fn scenario_interrupt_pump_ring(iterations: usize) -> Outcome {
         // Ring mode must be chosen before the first event is recorded.
         pump.set_trace_mode(PumpTraceMode::Ring(RING_CAPACITY))
             .unwrap();
+        retained_initial = window.retained();
         assert_eq!(pump.run(10_000, || false).exit, PumpExit::IdleHalt);
         assert!(pump.is_waiting());
+        // Boot to the first HLT records exactly STI and HLT.
+        let mut trace_model_recorded = 2_u64;
+        assert_eq!(
+            pump.trace()
+                .iter()
+                .map(|event| event.kind.name())
+                .collect::<Vec<_>>(),
+            ["sti", "hlt"]
+        );
         let mut generation = pump.irq_generation();
         let mut next_key = 0_u64;
         let mut counter_model = 0_u64;
@@ -703,6 +780,7 @@ fn scenario_interrupt_pump_ring(iterations: usize) -> Outcome {
                 assert_eq!(pump.irq_queue_len(), accepted.len());
             }
 
+            let trace_seq_before = trace_model_recorded;
             let counter_before = pump_counter(&mut pump);
             let time_before = pump.virtual_time_ns().unwrap();
             if i % PUMP_RESET_EVERY == PUMP_RESET_EVERY - 1 {
@@ -755,10 +833,28 @@ fn scenario_interrupt_pump_ring(iterations: usize) -> Outcome {
                 .unwrap_or(time_before)
                 .max(time_before);
             assert_eq!(pump.virtual_time_ns().unwrap(), expected_time);
+            // Trace model, kept on the test side: every delivered interrupt
+            // records irr, entry, eoi, iretq, hlt (5 events) and every merged
+            // due event records one `coalesced`. Nothing else is recorded.
+            trace_model_recorded +=
+                5 * distinct.len() as u64 + (accepted.len() - distinct.len()) as u64;
+            assert_eq!(
+                pump.trace_next_seq(),
+                trace_model_recorded,
+                "events recorded by the pump vs the test-side count"
+            );
+            let new_kinds = pump.trace_since(trace_seq_before);
+            let visible_expected =
+                (trace_model_recorded - trace_seq_before).min(RING_CAPACITY as u64);
+            assert_eq!(
+                new_kinds.len() as u64,
+                visible_expected,
+                "visible new events"
+            );
             c.oracle_comparisons += 4;
             c.add("interrupts_delivered", distinct.len() as u64);
             c.add("irq_events_accepted", accepted.len() as u64);
-            check_trace(&pump, RING_CAPACITY, &mut c);
+            check_ring_trace(&pump, RING_CAPACITY, trace_model_recorded, &mut c);
         }
         assert!(
             pump.trace_dropped() > 0,
@@ -786,6 +882,11 @@ fn scenario_interrupt_pump_ring(iterations: usize) -> Outcome {
         );
         let again = pump.run(PUMP_RUN_BUDGET, || false);
         assert_eq!(again.exit, PumpExit::Stopped, "STOP is final, never a hang");
+        assert_eq!(
+            pump.irq_queue_len(),
+            3,
+            "the repeated run after STOP must not consume queued events either"
+        );
         generation = pump.reset_irq_queue().unwrap();
         assert_eq!(pump.irq_queue_len(), 0);
         assert_eq!(
@@ -796,7 +897,7 @@ fn scenario_interrupt_pump_ring(iterations: usize) -> Outcome {
         c.bump("stop_checks");
         retained_alive = window.retained();
     }
-    window.finish(c, retained_alive, started)
+    window.finish(c, retained_initial, retained_alive, started)
 }
 
 /// Bounded trace (the default mode): the limit ends the run with an explicit
@@ -851,6 +952,13 @@ fn bounded_trace_check() -> BoundedTraceCheck {
     assert_eq!(pump.trace_dropped(), 0, "Bounded mode never drops");
     assert_eq!(pump.trace_next_seq(), INTERRUPT_PUMP_TRACE_LIMIT as u64);
     let queue_len = pump.irq_queue_len();
+    // The exact number of events left pending by the rejection is not modelled
+    // (it depends on where in a delivery the 512th event was recorded); only
+    // the bounds are checked: some events were left, never more than capacity.
+    assert!(
+        queue_len > 0 && queue_len <= INTERRUPT_PUMP_QUEUE_CAPACITY,
+        "pending events at rejection: {queue_len}"
+    );
     let second = pump.run(PUMP_RUN_BUDGET, || false);
     assert_eq!(second.exit, exit, "rejection is final, not a hang");
     assert_eq!(pump.trace().len(), INTERRUPT_PUMP_TRACE_LIMIT);
@@ -941,8 +1049,13 @@ fn wr(bus: &mut MachineBus, offset: u64, value: u32) {
 fn scenario_display_events(iterations: usize) -> Outcome {
     let started = Instant::now();
     let window = HeapWindow::begin();
-    let mut c = Counters::default();
+    let mut c = Counters::with_keys(&[
+        "events_dropped_by_reset",
+        "events_popped",
+        "no_driver_refusals",
+    ]);
     let mut rng = Rng(0x5334_3433_6200_0004);
+    let retained_initial;
     let retained_alive;
     {
         let (mut bus, handle) = display_bus();
@@ -953,6 +1066,7 @@ fn scenario_display_events(iterations: usize) -> Outcome {
         );
         wr(&mut bus, display_reg::DRIVER_PROTOCOL, 1);
         assert_eq!(handle.driver_protocol(), 1);
+        retained_initial = window.retained();
         let mut last_seq: Option<u64> = None;
         for i in 0..iterations {
             c.iterations += 1;
@@ -961,10 +1075,7 @@ fn scenario_display_events(iterations: usize) -> Outcome {
             let seq = match handle.post_mode_request(width, height, DISPLAY_FORMAT_BGRX8888) {
                 Ok(seq) => seq,
                 Err(DisplayRequestError::QueueFull) => {
-                    c.overflow_attempts += 1;
-                    c.overflow_refused_explicitly += 1;
-                    c.bump("queue_full_observed");
-                    panic!("display queue full through the public API: unexpected");
+                    panic!("display queue full through the public API: unexpected")
                 }
                 Err(error) => panic!("post_mode_request: {error:?}"),
             };
@@ -1008,7 +1119,9 @@ fn scenario_display_events(iterations: usize) -> Outcome {
                     handle.post_mode_request(640, 480, DISPLAY_FORMAT_BGRX8888),
                     Err(DisplayRequestError::NoDriver)
                 );
-                c.stale_token_refusals += 1;
+                // NoDriver is a refusal while the protocol is off, not a stale
+                // token: it has its own counter.
+                c.bump("no_driver_refusals");
                 if had_pending == 1 {
                     assert_eq!(
                         handle.mode_request_state().unwrap().outcome,
@@ -1030,6 +1143,7 @@ fn scenario_display_events(iterations: usize) -> Outcome {
                     handle.post_mode_request(640, 480, DISPLAY_FORMAT_BGRX8888),
                     Err(DisplayRequestError::NoDriver)
                 );
+                c.bump("no_driver_refusals");
                 wr(&mut bus, display_reg::DRIVER_PROTOCOL, 1);
                 assert_eq!(handle.driver_protocol(), 1);
                 // Sequence numbers after a host reset are re-read, not assumed.
@@ -1038,7 +1152,7 @@ fn scenario_display_events(iterations: usize) -> Outcome {
         }
         retained_alive = window.retained();
     }
-    window.finish(c, retained_alive, started)
+    window.finish(c, retained_initial, retained_alive, started)
 }
 
 // ---- runner, report, watchdog ------------------------------------------------
@@ -1052,8 +1166,15 @@ struct QueueSpec {
     run: Scenario,
     /// The public API can reach the declared overflow.
     overflow_reachable: bool,
+    /// The queue has generation tokens (stale tokens are refused after reset).
+    has_generation_tokens: bool,
     /// Extra host allocation the scenario owns by construction (framebuffer).
     fixed_heap_bytes: u64,
+    /// Allowed peak above `fixed_heap_bytes`; measured peak plus headroom.
+    peak_margin_bytes: u64,
+    /// Allowed heap growth between creation and the end of the run (any phase,
+    /// so also 2000 iterations); measured value plus headroom.
+    max_growth_bytes: i64,
 }
 
 fn queue_specs() -> Vec<QueueSpec> {
@@ -1065,7 +1186,10 @@ fn queue_specs() -> Vec<QueueSpec> {
             overflow: "error: EventQueueError::Full; queue unchanged",
             run: scenario_event_queue,
             overflow_reachable: true,
+            has_generation_tokens: true,
             fixed_heap_bytes: 0,
+            peak_margin_bytes: EQ_PEAK_MARGIN,
+            max_growth_bytes: EQ_MAX_GROWTH,
         },
         QueueSpec {
             name: "UartRxEventPump events + payloads",
@@ -1074,7 +1198,10 @@ fn queue_specs() -> Vec<QueueSpec> {
             overflow: "error: EventQueueError::Full from schedule; payload list not extended",
             run: scenario_uart_rx_pump,
             overflow_reachable: true,
+            has_generation_tokens: true,
             fixed_heap_bytes: 0,
+            peak_margin_bytes: UART_PEAK_MARGIN,
+            max_growth_bytes: UART_MAX_GROWTH,
         },
         QueueSpec {
             name: "InterruptPump IRQ event queue + Ring trace",
@@ -1083,7 +1210,10 @@ fn queue_specs() -> Vec<QueueSpec> {
             overflow: "error: PumpQueueError::Queue(Full); due merge counted in coalesced_irqs",
             run: scenario_interrupt_pump_ring,
             overflow_reachable: true,
+            has_generation_tokens: true,
             fixed_heap_bytes: 0,
+            peak_margin_bytes: PUMP_PEAK_MARGIN,
+            max_growth_bytes: PUMP_MAX_GROWTH,
         },
         QueueSpec {
             name: "Display event queue",
@@ -1092,7 +1222,10 @@ fn queue_specs() -> Vec<QueueSpec> {
             overflow: "error: DisplayRequestError::QueueFull (not reachable from the public API: mode requests merge)",
             run: scenario_display_events,
             overflow_reachable: false,
+            has_generation_tokens: false,
             fixed_heap_bytes: DISPLAY_FRAMEBUFFER_BYTES,
+            peak_margin_bytes: DISPLAY_PEAK_MARGIN,
+            max_growth_bytes: DISPLAY_MAX_GROWTH,
         },
     ]
 }
@@ -1111,7 +1244,10 @@ struct QueueReport {
     declared_capacity: usize,
     overflow_behavior: &'static str,
     overflow_reachable_through_public_api: bool,
+    has_generation_tokens: bool,
     fixed_heap_bytes: u64,
+    peak_margin_bytes: u64,
+    max_growth_bytes: i64,
     phases: Vec<PhaseReport>,
     retained_heap_main_vs_baseline_bytes: i64,
 }
@@ -1161,7 +1297,6 @@ struct Limits {
     rss_growth_limit_bytes: u64,
     retained_heap_growth_limit_bytes: i64,
     leak_after_drop_limit_bytes: i64,
-    peak_heap_limit_bytes: u64,
     pump_run_budget: u64,
 }
 
@@ -1194,7 +1329,10 @@ fn workload() -> Summary {
             declared_capacity: spec.capacity,
             overflow_behavior: spec.overflow,
             overflow_reachable_through_public_api: spec.overflow_reachable,
+            has_generation_tokens: spec.has_generation_tokens,
             fixed_heap_bytes: spec.fixed_heap_bytes,
+            peak_margin_bytes: spec.peak_margin_bytes,
+            max_growth_bytes: spec.max_growth_bytes,
             phases: Vec::new(),
             retained_heap_main_vs_baseline_bytes: 0,
         })
@@ -1253,7 +1391,6 @@ fn workload() -> Summary {
             rss_growth_limit_bytes: RSS_GROWTH_LIMIT,
             retained_heap_growth_limit_bytes: RETAINED_HEAP_GROWTH_LIMIT,
             leak_after_drop_limit_bytes: LEAK_AFTER_DROP_LIMIT,
-            peak_heap_limit_bytes: PEAK_HEAP_LIMIT,
             pump_run_budget: PUMP_RUN_BUDGET,
         },
         queues: reports,
@@ -1331,14 +1468,29 @@ fn bounded_queues_and_trace_under_churn() {
         }
         assert!(c.resets > 0, "{name}");
         assert_eq!(c.empty_after_reset_checks, c.resets, "{name}");
-        assert!(c.stale_token_refusals > 0, "{name}");
+        if report.has_generation_tokens {
+            assert!(c.stale_token_refusals > 0, "{name}");
+        } else {
+            assert_eq!(
+                c.stale_token_refusals, 0,
+                "{name}: no tokens, no stale count"
+            );
+            assert!(c.extra["no_driver_refusals"] > 0, "{name}");
+        }
         for phase in &report.phases {
             let o = &phase.outcome;
             assert!(
-                o.peak_above_before_bytes <= PEAK_HEAP_LIMIT + report.fixed_heap_bytes,
-                "{name}/{}: peak heap {} bytes",
+                o.peak_above_before_bytes <= report.fixed_heap_bytes + report.peak_margin_bytes,
+                "{name}/{}: peak heap {} bytes above the start",
                 phase.phase,
                 o.peak_above_before_bytes
+            );
+            assert!(
+                o.growth_after_creation_bytes <= report.max_growth_bytes,
+                "{name}/{}: heap grew by {} bytes after creation (limit {})",
+                phase.phase,
+                o.growth_after_creation_bytes,
+                report.max_growth_bytes
             );
             assert!(
                 o.leaked_after_drop_bytes.abs() <= LEAK_AFTER_DROP_LIMIT,
