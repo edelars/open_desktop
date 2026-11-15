@@ -25,9 +25,8 @@
     "watchdog_seconds": 120,
     "scenario_budget_seconds": 30,
     "rss_growth_limit_bytes": 5242880,
-    "retained_heap_growth_limit_bytes": 65536,
-    "leak_after_drop_limit_bytes": 16384,
-    "peak_heap_limit_bytes": 4194304,
+    "retained_heap_growth_limit_bytes": 1024,
+    "leak_after_drop_limit_bytes": 512,
     "pump_run_budget": 100000
   },
   "queues": [
@@ -37,7 +36,10 @@
       "declared_capacity": 8,
       "overflow_behavior": "error: EventQueueError::Full; queue unchanged",
       "overflow_reachable_through_public_api": true,
+      "has_generation_tokens": true,
       "fixed_heap_bytes": 0,
+      "peak_margin_bytes": 1024,
+      "max_growth_bytes": 64,
       "phases": [
         {
           "phase": "warmup",
@@ -55,10 +57,12 @@
               "stale_token_refusals": 10,
               "extra": {}
             },
+            "retained_initial_bytes": 384,
             "retained_alive_bytes": 384,
+            "growth_after_creation_bytes": 0,
             "leaked_after_drop_bytes": 0,
             "peak_above_before_bytes": 384,
-            "allocations": 3,
+            "allocations": 2,
             "elapsed_ms": 0
           }
         },
@@ -78,10 +82,12 @@
               "stale_token_refusals": 20,
               "extra": {}
             },
+            "retained_initial_bytes": 384,
             "retained_alive_bytes": 384,
+            "growth_after_creation_bytes": 0,
             "leaked_after_drop_bytes": 0,
             "peak_above_before_bytes": 384,
-            "allocations": 3,
+            "allocations": 2,
             "elapsed_ms": 0
           }
         },
@@ -101,10 +107,12 @@
               "stale_token_refusals": 200,
               "extra": {}
             },
+            "retained_initial_bytes": 384,
             "retained_alive_bytes": 384,
+            "growth_after_creation_bytes": 0,
             "leaked_after_drop_bytes": 0,
             "peak_above_before_bytes": 384,
-            "allocations": 3,
+            "allocations": 2,
             "elapsed_ms": 2
           }
         }
@@ -117,7 +125,10 @@
       "declared_capacity": 8,
       "overflow_behavior": "error: EventQueueError::Full from schedule; payload list not extended",
       "overflow_reachable_through_public_api": true,
+      "has_generation_tokens": true,
       "fixed_heap_bytes": 0,
+      "peak_margin_bytes": 2048,
+      "max_growth_bytes": 96,
       "phases": [
         {
           "phase": "warmup",
@@ -139,10 +150,12 @@
                 "non_delivering_exits_checked": 86
               }
             },
+            "retained_initial_bytes": 904,
             "retained_alive_bytes": 968,
+            "growth_after_creation_bytes": 64,
             "leaked_after_drop_bytes": 280,
             "peak_above_before_bytes": 968,
-            "allocations": 7,
+            "allocations": 6,
             "elapsed_ms": 0
           }
         },
@@ -166,10 +179,12 @@
                 "non_delivering_exits_checked": 178
               }
             },
+            "retained_initial_bytes": 904,
             "retained_alive_bytes": 968,
+            "growth_after_creation_bytes": 64,
             "leaked_after_drop_bytes": 280,
             "peak_above_before_bytes": 968,
-            "allocations": 7,
+            "allocations": 6,
             "elapsed_ms": 0
           }
         },
@@ -193,10 +208,12 @@
                 "non_delivering_exits_checked": 1781
               }
             },
+            "retained_initial_bytes": 904,
             "retained_alive_bytes": 968,
+            "growth_after_creation_bytes": 64,
             "leaked_after_drop_bytes": 280,
             "peak_above_before_bytes": 968,
-            "allocations": 7,
+            "allocations": 6,
             "elapsed_ms": 8
           }
         }
@@ -209,7 +226,10 @@
       "declared_capacity": 16,
       "overflow_behavior": "error: PumpQueueError::Queue(Full); due merge counted in coalesced_irqs",
       "overflow_reachable_through_public_api": true,
+      "has_generation_tokens": true,
       "fixed_heap_bytes": 0,
+      "peak_margin_bytes": 81920,
+      "max_growth_bytes": 12288,
       "phases": [
         {
           "phase": "warmup",
@@ -236,10 +256,12 @@
                 "trace_max_len": 64
               }
             },
+            "retained_initial_bytes": 46531,
             "retained_alive_bytes": 56027,
+            "growth_after_creation_bytes": 9496,
             "leaked_after_drop_bytes": 280,
             "peak_above_before_bytes": 57101,
-            "allocations": 5775,
+            "allocations": 5776,
             "elapsed_ms": 20
           }
         },
@@ -268,11 +290,13 @@
                 "trace_max_len": 64
               }
             },
+            "retained_initial_bytes": 46531,
             "retained_alive_bytes": 56027,
+            "growth_after_creation_bytes": 9496,
             "leaked_after_drop_bytes": 280,
             "peak_above_before_bytes": 57101,
-            "allocations": 11644,
-            "elapsed_ms": 39
+            "allocations": 11645,
+            "elapsed_ms": 38
           }
         },
         {
@@ -300,11 +324,13 @@
                 "trace_max_len": 64
               }
             },
+            "retained_initial_bytes": 46531,
             "retained_alive_bytes": 56027,
+            "growth_after_creation_bytes": 9496,
             "leaked_after_drop_bytes": 280,
             "peak_above_before_bytes": 57101,
-            "allocations": 114903,
-            "elapsed_ms": 384
+            "allocations": 114904,
+            "elapsed_ms": 378
           }
         }
       ],
@@ -316,7 +342,10 @@
       "declared_capacity": 16,
       "overflow_behavior": "error: DisplayRequestError::QueueFull (not reachable from the public API: mode requests merge)",
       "overflow_reachable_through_public_api": false,
+      "has_generation_tokens": false,
       "fixed_heap_bytes": 37748736,
+      "peak_margin_bytes": 196608,
+      "max_growth_bytes": 256,
       "phases": [
         {
           "phase": "warmup",
@@ -331,17 +360,20 @@
               "overflow_refused_explicitly": 0,
               "resets": 3,
               "empty_after_reset_checks": 3,
-              "stale_token_refusals": 2,
+              "stale_token_refusals": 0,
               "extra": {
                 "events_dropped_by_reset": 3,
-                "events_popped": 49
+                "events_popped": 49,
+                "no_driver_refusals": 3
               }
             },
+            "retained_initial_bytes": 37913808,
             "retained_alive_bytes": 37913808,
+            "growth_after_creation_bytes": 0,
             "leaked_after_drop_bytes": 280,
             "peak_above_before_bytes": 37913936,
             "allocations": 18,
-            "elapsed_ms": 102
+            "elapsed_ms": 99
           }
         },
         {
@@ -357,17 +389,20 @@
               "overflow_refused_explicitly": 0,
               "resets": 6,
               "empty_after_reset_checks": 6,
-              "stale_token_refusals": 4,
+              "stale_token_refusals": 0,
               "extra": {
                 "events_dropped_by_reset": 4,
-                "events_popped": 93
+                "events_popped": 93,
+                "no_driver_refusals": 6
               }
             },
+            "retained_initial_bytes": 37913808,
             "retained_alive_bytes": 37913808,
+            "growth_after_creation_bytes": 0,
             "leaked_after_drop_bytes": 280,
             "peak_above_before_bytes": 37913936,
             "allocations": 19,
-            "elapsed_ms": 99
+            "elapsed_ms": 97
           }
         },
         {
@@ -383,17 +418,20 @@
               "overflow_refused_explicitly": 0,
               "resets": 60,
               "empty_after_reset_checks": 60,
-              "stale_token_refusals": 40,
+              "stale_token_refusals": 0,
               "extra": {
                 "events_dropped_by_reset": 37,
-                "events_popped": 992
+                "events_popped": 992,
+                "no_driver_refusals": 60
               }
             },
+            "retained_initial_bytes": 37913808,
             "retained_alive_bytes": 37913808,
+            "growth_after_creation_bytes": 0,
             "leaked_after_drop_bytes": 280,
             "peak_above_before_bytes": 37913936,
             "allocations": 37,
-            "elapsed_ms": 100
+            "elapsed_ms": 98
           }
         }
       ],
@@ -436,20 +474,20 @@
       "why_not_exercised": "needs an NVMe driver workload; not an event queue"
     }
   ],
-  "rss_after_warmup_bytes": 42680320,
-  "rss_after_main_bytes": 42860544,
-  "rss_growth_bytes": 180224,
+  "rss_after_warmup_bytes": 42631168,
+  "rss_after_main_bytes": 42762240,
+  "rss_growth_bytes": 131072,
   "watchdog_self_test_timed_out": true,
-  "total_elapsed_ms": 769,
+  "total_elapsed_ms": 756,
   "test": "tools/bench/tests/s4_43b_bounded_queues.rs (cargo test -p od-bench --test s4_43b_bounded_queues, profile test = debug)",
-  "source_commit": "d6eb907",
+  "source_commit": "a50a93c",
   "result": "passed",
   "control_checks": [
     {
       "name": "EventQueue::reset does not clear entries",
       "where": "crates/od-machine/src/event_queue.rs, temporary edit, reverted with git checkout, not committed",
       "result": "test failed",
-      "message": "queue after reset (s4_43b_bounded_queues.rs:369)"
+      "message": "queue after reset (s4_43b_bounded_queues.rs:369 at the time of the run)"
     },
     {
       "name": "EventQueue::schedule capacity check `==` replaced by `>` (queue grows past capacity)",
@@ -461,7 +499,56 @@
       "name": "Ring trace does not count dropped events (trace_dropped += 1 removed)",
       "where": "crates/od-machine/src/interrupt_pump.rs, temporary edit, reverted with git checkout, not committed",
       "result": "test failed",
-      "message": "every recorded event is retained or counted as dropped: left 64 right 77"
+      "message": "every recorded event is retained or counted as dropped: left 64 right 77 (run on the first version of the test)"
+    },
+    {
+      "name": "UartRxEventPump::schedule pushes a payload on a refused (Full) schedule, key reused after reset",
+      "where": "crates/od-machine/src/uart_rx_events.rs, temporary edit, reverted with git checkout, not committed",
+      "result": "test failed",
+      "message": "delivery order: left Some(170) right Some(90) (stale payload found by the reused key 1)"
+    },
+    {
+      "name": "UartRxEventPump::schedule pushes a payload (key !key, never reused) only when the schedule is refused",
+      "where": "crates/od-machine/src/uart_rx_events.rs, temporary edit, reverted with git checkout, not committed",
+      "result": "test failed",
+      "message": "UartRxEventPump events + payloads/warmup: heap grew by 448 bytes after creation (limit 96)"
+    }
+  ],
+  "inventory_added_by_review": [
+    {
+      "queue": "SyscallJournal.entries",
+      "source": "crates/od-machine/src/linux_direct.rs (SYSCALL_JOURNAL_CAPACITY)",
+      "capacity": "32 entries; `entered` and `returned` are u64 totals, not capped",
+      "overflow": "overwrite: pop_front of the oldest entry on Enter, totals keep counting; the return of an evicted call is not attributed",
+      "checked": "no (in-crate unit test only)"
+    },
+    {
+      "queue": "PitIrq0Owner bridge EventQueue",
+      "source": "crates/od-machine/src/stage4_pit_irq0_probe.rs (BRIDGE_QUEUE_CAPACITY)",
+      "capacity": "16; deliver_due handles at most 16 edges per call",
+      "overflow": "queue error propagates as Err(String); the delivery loop is bounded by the constant",
+      "checked": "no"
+    },
+    {
+      "queue": "apic_pair timer EventQueue",
+      "source": "crates/od-machine/src/apic_pair.rs",
+      "capacity": "1 (single timer slot, EventQueue::new(1))",
+      "overflow": "one pending deadline; reprogramming replaces it (replace_single), no growth",
+      "checked": "no"
+    },
+    {
+      "queue": "NVMe ErrorLog",
+      "source": "crates/od-machine/src/nvme/admin.rs (ERROR_LOG_ENTRIES)",
+      "capacity": "64 entries (count is a u64 total)",
+      "overflow": "push_front then truncate: the oldest entry is dropped, the total keeps counting",
+      "checked": "no"
+    },
+    {
+      "queue": "NVMe AerState (outstanding + ready; pending)",
+      "source": "crates/od-machine/src/nvme/admin.rs (AER_LIMIT)",
+      "capacity": "4 outstanding + ready requests; pending events at most one per event type (masked bit, 8 types)",
+      "overflow": "outstanding request over the limit completes with AER_LIMIT_EXCEEDED; a repeated event type is masked",
+      "checked": "no"
     }
   ],
   "findings": [
@@ -469,7 +556,9 @@
     "InterruptPump trace has no clear: only dropping the pump resets it; trace_next_seq and coalesced_irqs are cumulative by design; reset_irq_queue clears the IRQ queue only.",
     "Ring(n) capacity is chosen by the caller with no upper limit; only Bounded mode has a fixed limit (512).",
     "A Bounded-mode trace overflow ends the pump for good (Rejected(TraceLimit), run keeps returning it); the pending IRQ events stay in the queue until reset_irq_queue.",
-    "leaked_after_drop_bytes = 280 for scenarios with a non-empty counters.extra is the returned test summary (BTreeMap), not a queue leak."
+    "leaked_after_drop_bytes = 280 for scenarios with a non-empty counters.extra is one BTreeMap leaf of the returned test summary, not a queue leak (comment in the test).",
+    "irq_queue_len_at_rejection (9) is not modelled exactly; the test checks only 0 < len <= 16.",
+    "Display scenario: NoDriver refusals are counted in extra.no_driver_refusals, not in stale_token_refusals (the display queue has no generation token)."
   ],
   "manual_fields": [
     "test",
@@ -477,6 +566,7 @@
     "result",
     "control_checks",
     "findings",
+    "inventory_added_by_review",
     "manual_fields"
   ]
 }
