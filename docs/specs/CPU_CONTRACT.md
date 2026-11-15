@@ -736,6 +736,12 @@ Base `PagedCpl0ProbeV1` admits only `40 0F 92 C7`: bare REX `40`, `ConditionCode
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_setb_dil -- --nocapture` — 4 passed: CF true/false with both defined and undefined CF metadata, full-state preservation, fetch fault on ModRM, neighboring conditions/registers/REX/prefixes, CPL3 and other-profile isolation. Runner retired 57 instructions, then stopped at `48 39 EA` (`CMP RDX,RBP`, ISSUE-155, RIP `0x200dc7`). Full handoff validation remains incomplete.
 
+#### Расширение S7-04: exact Rust-helper `CMP RDX,RBP`
+
+Base `PagedCpl0ProbeV1` admits only `48 39 EA` for this qword register compare. Intel operand order is RDX minus RBP. Shared CMP semantics leave both registers unchanged and update arithmetic flags and their definedness.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_cmp_rdx_rbp -- --nocapture` — 4 passed: equal/less/greater and overflow-sensitive qword cases, full GPR and flags/definedness checks, final ModRM-byte fetch-fault atomicity, neighboring tuples/directions/widths/prefixes, CPL3 and other-profile isolation. Runner retired 58 instructions, then stopped at `41 0F 93 C0` (`SETAE R8B`, ISSUE-156, RIP `0x200dca`). Full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции
