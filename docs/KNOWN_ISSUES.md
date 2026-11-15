@@ -34,7 +34,7 @@
 ### ISSUE-107 — S7-04: paged CPU profile не допускает `SUB RCX,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `LEA RCX`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
-- **Статус:** решена узко для точных байтов `48 29 F9`; runner остановился на `31 C0` (ISSUE-108).
+- **Статус:** решена узко для точных байтов `48 29 F9` (код `9439e93` прошёл ревью); runner остановился на `31 C0` (ISSUE-108).
 - **Суть:** Intel operand order для `48 29 F9` — `SUB RCX,RDI` (`RCX := RCX - RDI`); в AT&T syntax это `subq %rdi,%rcx`. В базовый `PagedCpl0ProbeV1` допущена только эта форма, остальные SUB encodings вне allowlist.
 - **Результат и проверка:** focused `paged_probe_profile` — 105 passed; arithmetic result, CF/PF/AF/ZF/SF/OF, flags definedness, full-state retention, neighboring ops/registers/widths/prefixes, cross-page fetch fault, CPL3 и stack/CR3/CR0.WP isolation проверены. Runner retired 8 инструкций и остановился на `31 C0` (`XOR EAX,EAX`) при `RIP=0x200061`; см. [S7-04 отчёт](reports/STAGE_7_REPORT.md#s7-04-cpu-profile-sub).
 
