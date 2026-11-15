@@ -397,8 +397,9 @@ bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`,
 `E8 83 01 00 00` (`CALL rel32`), `48 83 EC 58`
 (`SUB RSP,0x58`), `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`), and
 `48 8D 7C 24 08` (`LEA RDI,[RSP+8]`), `BE 00 00 10 00`
-(`MOV ESI,0x00100000`; see the extensions below). The CPU entry validates its
-profile admission and CR0/CR4 before fetch. It receives page-aware `GuestMemory`;
+(`MOV ESI,0x00100000`), and `BA 00 00 01 00` (`MOV EDX,0x00010000`; see
+the extensions below). The CPU entry validates its profile admission and
+CR0/CR4 before fetch. It receives page-aware `GuestMemory`;
 CR3/EFER validation and selecting the four-level 4 KiB paging context belong
 to the machine entry.
 
@@ -543,6 +544,12 @@ Tests проверяют полный CPU state, effective address для firmwa
 В base `PagedCpl0ProbeV1` допускается только `BE 00 00 10 00`: Primary opcode `BE`, длина 5, dword immediate в ESI, значение `0x00100000`, без префиксов. Существующая запись в 32-битный view обнуляет старшую половину RSI; меняются только RSI и RIP, RFLAGS/definedness сохраняются. Инструкция не обращается к памяти или I/O. Другие immediate, регистры, ширины и префиксы, CPL3 и прочие paged profiles не допускаются этой формой.
 
 Tests проверяют full state с ненулевыми старшими 32 битами исходного RSI, flags/definedness, соседние формы, CPL3 и stack/CR3/CR0.WP isolation, а также fetch fault последнего immediate byte через границу страницы без commit. Runner retired 17 инструкций и остановился на `BA 00 00 01 00` (`MOV EDX,0x00010000`, размер блока handoff 64 KiB, ISSUE-117, RIP `0x200207`).
+
+#### Расширение S7-04: точный Rust-entry `MOV EDX,0x00010000`
+
+В base `PagedCpl0ProbeV1` допускается только `BA 00 00 01 00`: Primary opcode `BA`, длина 5, dword immediate `0x00010000` в EDX, без префиксов. Существующая запись в 32-битный view обнуляет старшую половину RDX; меняются только RDX и RIP, RFLAGS/definedness сохраняются. Инструкция не обращается к памяти или I/O. Остальные immediate/register/width/prefix forms, CPL3 и прочие paged profiles не допускаются этой формой.
+
+Tests проверяют full state с ненулевыми старшими 32 битами исходного RDX, flags/definedness, соседние формы, CPL3 и stack/CR3/CR0.WP isolation, а также fetch fault последнего immediate byte через границу страницы без commit. Runner retired 18 инструкций и остановился на `31 C9` (`XOR ECX,ECX`, ISSUE-118, RIP `0x20020c`).
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 

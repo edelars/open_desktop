@@ -20588,6 +20588,24 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: the firmware hands off a 64 KiB block size through EDX.
+        // Admit only `BA 00 00 01 00` in the base profile; writing the dword
+        // view zero-extends into RDX and leaves RFLAGS untouched.
+        Operation::MovImmediate {
+            dst: Operand::Register(destination),
+            value,
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xba
+            && instruction.length == 5
+            && instruction.operand_size == OperandSize::Dword
+            && destination == RegisterView::low(Register::Rdx, OperandSize::Dword)
+            && value == 0x0001_0000
+            && instruction.prefixes == Prefixes::default() =>
+        {
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-03: `B0+r ib` and `66 B8+r iw` are admitted only in the base
         // `PagedCpl0ProbeV1` profile; every other profile keeps them
         // unsupported. RFLAGS is not touched.
