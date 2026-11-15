@@ -1,0 +1,73 @@
+# S5-07 RDTSC/PIT per-run source counts and automatic N=2 series, 2026-11-15
+
+Purpose: split the remaining virtual-time residual into guest RDTSC and PIT
+time-port reads. Diagnostic only; the series is not S5-07 acceptance.
+
+## Source and inputs
+
+- Worktree: `codex`; source revision `4a28a35228dd928c5d6cf7ef9162773806d36d82`, `source_dirty=false`.
+- Host: macOS/aarch64; release `od-runner` 0.1.0.
+- Kernel SHA-256: `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`.
+- Initramfs SHA-256: `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`.
+- ACPI blob SHA-256: `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`.
+- ACPI manifest SHA-256: `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`.
+- Profile: counted `stage4a`, `--set-cpl0 --user-mode`, 128 MiB, budget `3,000,000,000`, expected stop `budget_exhausted`.
+
+## Command
+
+```sh
+target/release/od-runner linux-direct --test-runs 2 \
+  --series-id stage5-s5-07-stage4a-source-reads-20261115-e \
+  --scenario-id stage4-init-nonce \
+  --expected-stop-kind budget_exhausted \
+  --out work/stage5/stage5-s5-07-stage4a-source-reads-20261115-e/series.json \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs /Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --run --budget 3000000000 --set-cpl0 \
+  --cpuid-profile stage4a --user-mode
+```
+
+## Results
+
+Both runs started Linux `/init`, reached `retired=2,999,999,998`, stopped at
+`budget_exhausted`, and passed exact nonce validation. The series scenario
+outcome was `passed`; the automatic strict comparison was `matches=false`, exit
+code 1, with unexplained `machine_observations` and
+`ordered_uart_bytes` differences. No normalization was added by this slice.
+
+| Run | RDTSC reads | PIT `0x61` reads | PIT `0x42` reads | PM reads | Halt idle ns | Virtual ns | Residual ns | Quanta | IRQ0 edges / delivered |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0001 | 34,443,745 | 1 | 16,672 | 230 | 1,136,513 | 37,461,784,511 | 34,460,418,000 | 34,570,225 | 34,804 / 34,809 |
+| 0002 | 34,450,132 | 1 | 16,672 | 230 | 1,769,420 | 37,468,804,418 | 34,466,805,000 | 34,576,373 | 34,811 / 34,816 |
+
+Residual is `virtual_ns - retired - halt_idle_ns - pm_timer_reads × 1,000 ns`.
+Each residual exactly equals `(rdtsc_reads + pit_0x61_reads +
+pit_0x42_reads) × 1,000 ns`. PM and PIT counts match across runs; RDTSC differs
+by 6,387 reads, which exactly accounts for the 6,387,000 ns residual delta.
+The full `virtual_ns` delta is 7,019,907 ns: the remaining 632,907 ns equals
+the difference in explicit halt idle. This accounting does not establish why
+guest execution issued a different number of RDTSC instructions or spent a
+different amount of time halted.
+
+Both nonce lines were intact, but their order relative to the kernel printk
+reversed: run 0001 emitted nonce before `[2.270895] Run /init as init process`;
+run 0002 emitted `[2.270736] Run /init as init process` before nonce. The strict
+machine comparison also retains differences in
+`rdtsc_reads` (34,443,745/34,450,132), `cr3_changes` (26,618/26,617), and
+`set_exit_detail` (`Run(InstructionBudgetExhausted)` /
+`Run(StopRequested)`). These are observations, not declared benign. S5-07
+remains blocked/unaccepted; do not normalize them without further evidence.
+
+## Evidence hashes
+
+Artifacts are under ignored
+`work/stage5/stage5-s5-07-stage4a-source-reads-20261115-e/`.
+
+- `series.json`: `88d4d99e01678ad38724e882c13e94b723d27a9ef0289f6b93fab07cbefbb664`.
+- `comparison.json`: `989064d1f1ec9b4732e55fb44c4f28eb73dd41a9422163b0b14af4c5d558654e`.
+- Run 0001 manifest / runner JSON / UART: `df7a14ccb26437db7b80c07e38739d33f4142a8b6e85bd97a3c2669e651ccd53` / `4460b9d0595af3c8bad02c5db9a4ee41eb30e06b218ff4d634c4940bc1a335d4` / `858b90361fcdd48a842466ce32e6e16205874e2382e7962607e17787cf327938`.
+- Run 0002 manifest / runner JSON / UART: `e29b7db28c6a6a990913003c799dfd24e9da2fa167ecb6f1cb92aa8e3b5cf2cd` / `4745c2df0df16433551a17394a9fcfb7b00ec3635eb6af71f34df9992442bd2f` / `840382f85346552c3c6f000d731303f70aece8cd44de5ad67a7de84c3ee1689b`.
