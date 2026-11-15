@@ -474,11 +474,10 @@ pub(crate) enum PagedCpl0SetExit {
     /// An external interrupt of the board source (S4-38L8b) could not be delivered, although the
     /// loop had checked IF and the STI shadow first: a refusal other than
     /// `InterruptsMasked`/`StiShadowActive` (a broken gate, a missing IDT, and also
-    /// `ActivityOutsideProfile`: the CPU activity is checked by
-    /// `deliver_external_interrupt_cpl0_set`, not by the loop, so with IF = 1, a `Clear` shadow
-    /// and an activity other than `Running` the refusal ends here) or a failed memory access of
-    /// the delivery. The run stops with an error (`run_failed` on the board), never as a quiet
-    /// skip; nothing was acknowledged. RIP is on the instruction that was about to run.
+    /// `ActivityOutsideProfile`, an unsupported privilege/context, or a failed memory access of
+    /// the delivery. CPL3 delivery switches through `TSS.RSP0` to CPL0. The run stops with an
+    /// error (`run_failed` on the board), never as a quiet skip; nothing was acknowledged. RIP
+    /// is on the instruction that was about to run.
     IrqDeliveryFailed {
         vector: u8,
         failure: IrqDeliveryFailure,
@@ -854,11 +853,11 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         // the CPL3 entry under `with_user_mode`; without it a CS with RPL 3 is refused before
         // anything runs, so user code never executes through the CPL0 entry (review S4-39b, 3).
         // Everything below (IRQ delivery, peeks, fault delivery) uses the privilege of the entry.
-        // S4-39d: a `#PF` or `#GP(0)` from CPL3 is delivered through `TSS.RSP0` and leaves a CPL0
+        // S4-39d/S4-39h: a supported `#PF`, `#GP(0)`, or external IRQ from CPL3 is delivered
+        // through `TSS.RSP0` and leaves a CPL0
         // state (CS from the gate, RPL 0); the `continue` after a delivery returns here, so the CPL
         // is computed again from the new CS and the next instruction runs through the CPL0 entry
-        // (review S4-39c, 1). An external interrupt from CPL3 is still the set's refusal
-        // (`NotRing0Long64`, `IrqDeliveryFailed`): S4-39h.
+        // (review S4-39c, 1).
         let cpl3 = state.cs_selector.is_some_and(|selector| selector & 3 == 3);
         if cpl3 && !user_mode {
             break (
@@ -875,8 +874,8 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         } else {
             context
         };
-        if let Some(hook) = irq.as_mut()
-            && let Some(failed) = deliver_pending_irq(
+        if let Some(hook) = irq.as_mut() {
+            match deliver_pending_irq(
                 hook,
                 state,
                 bus,
@@ -884,9 +883,11 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                 context,
                 &mut watch,
                 cache.as_ref(),
-            )
-        {
-            break failed;
+            ) {
+                IrqBoundaryOutcome::None => {}
+                IrqBoundaryOutcome::Delivered => continue,
+                IrqBoundaryOutcome::Failed(failure) => break failure,
+            }
         }
         if cpuid_boundary
             && let Some(leaf) = cpuid_leaf_at_rip(state, bus, &paging, context, cache.as_ref())
@@ -1233,6 +1234,18 @@ const RFLAGS_IF: u64 = 1 << 9;
 /// read); 4) otherwise `deliver_external_interrupt_cpl0_set`: `Delivered` acknowledges the
 /// vector and counts `irqs_delivered`; a refusal of IF or shadow (not expected after 3) counts
 /// like 3; any other refusal, and `Aborted`, end the run as `IrqDeliveryFailed`, never silently.
+enum IrqBoundaryOutcome {
+    None,
+    Delivered,
+    Failed(
+        (
+            PagedCpl0SetExit,
+            Option<PageFaultRecord>,
+            Option<TrackedAccessError>,
+        ),
+    ),
+}
+
 fn deliver_pending_irq(
     hook: &mut IrqBoundaryHook<'_>,
     state: &mut LongModeState,
@@ -1241,23 +1254,21 @@ fn deliver_pending_irq(
     context: AccessContext,
     watch: &mut dyn FnMut(GuestPhysicalRange),
     cache: Option<&FetchTranslationCache>,
-) -> Option<(
-    PagedCpl0SetExit,
-    Option<PageFaultRecord>,
-    Option<TrackedAccessError>,
-)> {
+) -> IrqBoundaryOutcome {
     if hook.skip_first_boundary {
         hook.skip_first_boundary = false;
-        return None;
+        return IrqBoundaryOutcome::None;
     }
-    let vector = hook.source.pending_vector()?;
+    let Some(vector) = hook.source.pending_vector() else {
+        return IrqBoundaryOutcome::None;
+    };
     if state.rflags & RFLAGS_IF == 0 {
         hook.counters.irq_refused_masked += 1;
-        return None;
+        return IrqBoundaryOutcome::None;
     }
     if state.sti_shadow != Some(od_isa::StiShadow::Clear) {
         hook.counters.irq_refused_shadow += 1;
-        return None;
+        return IrqBoundaryOutcome::None;
     }
     let (ram, _port) = bus.split_for_pio_step();
     let mut memory = set_loop_adapter(ram, None, *paging, state.rip, watch, cache);
@@ -1266,22 +1277,22 @@ fn deliver_pending_irq(
         Cpl0ExternalInterruptDelivery::Delivered { .. } => {
             hook.source.acknowledge(vector);
             hook.counters.irqs_delivered += 1;
-            return None;
+            return IrqBoundaryOutcome::Delivered;
         }
         Cpl0ExternalInterruptDelivery::Refused(Cpl0ExternalInterruptRefusal::InterruptsMasked) => {
             hook.counters.irq_refused_masked += 1;
-            return None;
+            return IrqBoundaryOutcome::None;
         }
         Cpl0ExternalInterruptDelivery::Refused(Cpl0ExternalInterruptRefusal::StiShadowActive) => {
             hook.counters.irq_refused_shadow += 1;
-            return None;
+            return IrqBoundaryOutcome::None;
         }
         Cpl0ExternalInterruptDelivery::Refused(reason) => IrqDeliveryFailure::Refused(reason),
         Cpl0ExternalInterruptDelivery::Aborted { phase, cause } => {
             IrqDeliveryFailure::Aborted { phase, cause }
         }
     };
-    Some((
+    IrqBoundaryOutcome::Failed((
         PagedCpl0SetExit::IrqDeliveryFailed { vector, failure },
         memory.page_fault,
         memory.memory_error,

@@ -26,11 +26,16 @@ Opus, внешние модели gpt-6.1-sol / gpt-6-astra недоступны
   (разделы ниже, S4-42 и S4-43 отдельно).
 - S4-44a/b: локальный воспроизводимый набор зелёный
   (`overall_local` = `passed`), полный S4-44 открыт.
+- S4-39h implementation slice (2026-11-15): CPL3 external IRQ now switches
+  through `TSS.RSP0`; the board loop restarts after delivery and recalculates
+  CPL before executing the handler. Independent review and focused ISA/board
+  tests passed; this is modeled-path evidence, not a live guest run.
 
 **Что НЕ доказано.**
-- Прерывания и таймер в CPL3: внешнее IRQ из CPL3 даёт `run_failed`; S4-39h
-  пропущен. Сценарий `/init` проходит, потому что `/init` завершается после
-  сна, а таймерные пробуждения шли в CPL0.
+- Live прерывания и таймер в CPL3 на Linux-госте не проверены. Синтетический
+  board integration test S4-39h подтверждает IRQ → CPL0 handler → IRETQ → CPL3
+  продолжение; исторический run_failed не установлен как ошибка CPL3 и не
+  локализует отказ C/run-0001 из S5-07.
 - Профиль stage4a — без APIC и без SSE/SSE2 (Linux работает на 8259); работа
   под другим CPUID-профилем и с APIC не подтверждена.
 - Nonce фиксированный (`s4-38l4a`), а не свежий на прогон.
@@ -795,8 +800,10 @@ linux-direct-gate`: оба `PASS`, `counted: true`, `failures` пусты, run I
 - Конец прогона определяется строкой паники и журналом, а не `user_exit`; гейт
   принимает `budget_exhausted`, `exit_kind` и `cpuid_profile` не проверяет.
 - Nonce фиксированный `s4-38l4a`; «новый nonce» плана не выполнен.
-- IRQ из CPL3 не поддержано; S4-39h пропущен. Таймерная проверка гейтом не
-  выполняется (в отчёте `halt_wakes` 2, но гейт его не требует).
+- На момент S4-46 IRQ из CPL3 не поддерживалось; implementation slice S4-39h
+  добавлен 2026-11-15 и покрыт synthetic board test. Live timer/IRQ проверка
+  гейтом по-прежнему не выполняется (в отчёте `halt_wakes` 2, но гейт его не
+  требует).
 - Профиль stage4a: без APIC и SSE/SSE2, 8259 PIC; JIT не использовался.
 - Правило `counted` для stage4a — решение пользователя в день PASS; ревью этого
   решения не записано.
@@ -1717,7 +1724,8 @@ Sol/Astra» в более ранних срезах (например, S4-20e и
   `fmt` — `known_divergence`.
 
 **Что не доказано и не закрыто.**
-- IRQ/timer в CPL3 (внешнее IRQ из CPL3 даёт `run_failed`, S4-39h пропущен);
+- Live IRQ/timer в CPL3 на физическом Linux-госте (S4-39h прошёл только
+  synthetic board integration test);
   stage4a без APIC и SSE/SSE2; nonce фиксированный `s4-38l4a`; JIT на Linux 0 %;
   pause/resume для Linux нет; control v2 не несёт путь к ядру; живой serial и
   доставка `od-runner` в бандле; гейт не проверяет `exit_kind`,

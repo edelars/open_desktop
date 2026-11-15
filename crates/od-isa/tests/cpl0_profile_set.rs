@@ -8079,9 +8079,9 @@ fn gp_delivery_from_cpl3_refuses_without_a_write() {
 }
 
 #[test]
-fn external_interrupt_from_cpl3_stays_refused() {
-    // S4-39h: the external interrupt delivery of the set does not start from CPL3 yet.
-    let (mut state, mut memory) = u3_state();
+fn external_interrupt_from_cpl3_uses_tss_rsp0_and_enters_the_handler() {
+    let (mut state, mut memory) = u3_ext_state();
+    state.rflags |= (1 << 8) | (1 << 14) | (1 << 18);
     let before = state.clone();
     let delivered = od_isa::deliver_external_interrupt_cpl0_set(
         &mut state,
@@ -8089,13 +8089,100 @@ fn external_interrupt_from_cpl3_stays_refused() {
         0x20,
         context(PrivilegeLevel::Ring3),
     );
+    let frame = U3_RSP0 & !15;
     assert_eq!(
         delivered,
-        od_isa::Cpl0ExternalInterruptDelivery::Refused(
-            od_isa::Cpl0ExternalInterruptRefusal::NotRing0Long64
-        )
+        od_isa::Cpl0ExternalInterruptDelivery::Delivered {
+            target_rip: EXT_HANDLER,
+            new_rsp: frame - 40,
+        }
     );
-    assert_eq!((state, memory.writes), (before, 0));
+    assert_eq!(pf_qword(&memory, frame - 8), u64::from(U3_USER_SS));
+    assert_eq!(pf_qword(&memory, frame - 16), U3_USER_RSP);
+    assert_eq!(
+        pf_qword(&memory, frame - 24),
+        (before.rflags & !(1 << 16)) | 2
+    );
+    assert_eq!(pf_qword(&memory, frame - 32), u64::from(U3_USER_CS));
+    assert_eq!(pf_qword(&memory, frame - 40), before.rip);
+    assert_eq!(memory.writes, 5);
+    assert!(
+        memory
+            .write_privileges
+            .iter()
+            .all(|p| *p == PrivilegeLevel::Ring0)
+    );
+    assert!(
+        memory
+            .read_privileges
+            .iter()
+            .all(|p| *p == PrivilegeLevel::Ring0)
+    );
+    assert_eq!(
+        memory.reads.last(),
+        Some(&(U3_TSS + 4, 8, AccessOrigin::DescriptorTable))
+    );
+    assert_eq!(state.cs_selector, Some(0x10));
+    assert_eq!((state.ss_selector, state.ss_unusable), (Some(0), true));
+    assert_eq!(state.ss_cache, before.ss_cache);
+    assert_eq!(state.gpr[Register::Rsp as usize], frame - 40);
+    assert_eq!(state.rip, EXT_HANDLER);
+    assert_eq!(
+        state.rflags,
+        (before.rflags & !(1 << 9 | 1 << 8 | 1 << 14 | 1 << 16)) | 2
+    );
+}
+
+#[test]
+fn external_interrupt_from_cpl3_checks_tss_before_writing_the_frame() {
+    use od_isa::Cpl0ExternalInterruptDelivery as D;
+    use od_isa::Cpl0ExternalInterruptRefusal as R;
+    let cases: [(fn(&mut LongModeState, &mut LretqMemory), R); 3] = [
+        (|state, _| state.tr = None, R::MissingTaskRegister),
+        (
+            |state, _| state.tr.as_mut().unwrap().limit = 10,
+            R::TssRsp0BeyondLimit,
+        ),
+        (
+            |_, memory| memory.put(U3_TSS + 4, 0x0000_8000_0000_0000),
+            R::NonCanonicalRsp0,
+        ),
+    ];
+    for (index, (tweak, expected)) in cases.into_iter().enumerate() {
+        let (mut state, mut memory) = u3_ext_state();
+        tweak(&mut state, &mut memory);
+        let before = state.clone();
+        assert_eq!(
+            od_isa::deliver_external_interrupt_cpl0_set(
+                &mut state,
+                &mut memory,
+                0x20,
+                context(PrivilegeLevel::Ring3),
+            ),
+            D::Refused(expected),
+            "case {index}"
+        );
+        assert_eq!(state, before, "case {index}");
+        assert_eq!(memory.writes, 0, "case {index}");
+    }
+
+    let (mut state, mut memory) = u3_ext_state();
+    memory.fault_pages = vec![U3_TSS & !0xfff];
+    let before = state.clone();
+    assert!(matches!(
+        od_isa::deliver_external_interrupt_cpl0_set(
+            &mut state,
+            &mut memory,
+            0x20,
+            context(PrivilegeLevel::Ring3),
+        ),
+        D::Aborted {
+            phase: od_isa::Cpl0ExternalInterruptPhase::TssRsp0Read,
+            ..
+        }
+    ));
+    assert_eq!(state, before);
+    assert_eq!(memory.writes, 0);
 }
 
 #[test]
@@ -8215,6 +8302,17 @@ fn ext_state() -> (LongModeState, LretqMemory) {
     code.resize((EXT_HANDLER - RIP) as usize, 0x90);
     code.extend_from_slice(&IRETQ);
     memory.code = code;
+    ext_put_gate(
+        &mut memory,
+        EXT_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 0, 0x8e),
+    );
+    state.idtr.as_mut().unwrap().limit = EXT_IDT_LIMIT;
+    (state, memory)
+}
+
+fn u3_ext_state() -> (LongModeState, LretqMemory) {
+    let (mut state, mut memory) = u3_state();
     ext_put_gate(
         &mut memory,
         EXT_VECTOR,

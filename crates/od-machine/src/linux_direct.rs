@@ -1066,10 +1066,11 @@ pub fn run_linux_direct_board_set(
 /// check commits, and the board then follows the CPL of the state: CS RPL 0 runs the CPL0 entry,
 /// RPL 3 the CPL3 entry (`run_with_cpl3_profile_set`, its allow-list and Ring3 context). The run
 /// goes on from CPL0 into CPL3 on the same state; the record carries `user_mode` and
-/// `cpl3_retired`, and a stop in CPL3 is `user_mode_fault` / `user_mode_unsupported`. Fault
-/// delivery and interrupts from CPL3 are refused by the CPU delivery (S4-39d, S4-39g), which ends
-/// the run as an `ExceptionDeliveryFailed` fault (`set_exit_detail`). Without the user mode the
-/// `IRETQ` stops at the `user_entry` boundary as before. S4-39e: a user-mode set that carries
+/// `cpl3_retired`, and a stop in CPL3 is `user_mode_fault` / `user_mode_unsupported`. Supported
+/// CPL3 `#PF`/`#GP(0)` exceptions and external IRQs switch through `TSS.RSP0` to their CPL0
+/// handlers (S4-39d/S4-39h). A refused or aborted external IRQ ends as `run_failed`; failed
+/// `#PF`/`#GP` delivery remains a guest fault with its delivery detail.
+/// Without the user mode the `IRETQ` stops at the `user_entry` boundary as before. S4-39e: a user-mode set that carries
 /// the EFER (`msr`), STAR, LSTAR and SYSCALL_MASK members also gets `with_syscall` (named
 /// `syscall` in `set_members`), so `SYSCALL` from CPL3 enters the kernel at LSTAR.
 pub fn run_linux_direct_board_set_user_mode(
@@ -12144,6 +12145,7 @@ mod tests {
         #[derive(Default)]
         struct Script {
             pending: Option<u8>,
+            pending_after_queries: u64,
             /// Stays pending after the acknowledge (a level line).
             keep_pending: bool,
             acked: Vec<u8>,
@@ -12157,7 +12159,13 @@ mod tests {
 
         impl BoardIrqSource for ScriptedSource {
             fn pending_vector(&self) -> Option<u8> {
-                self.0.borrow().pending
+                let mut script = self.0.borrow_mut();
+                if script.pending_after_queries > 0 {
+                    script.pending_after_queries -= 1;
+                    None
+                } else {
+                    script.pending
+                }
             }
             fn acknowledge(&mut self, vector: u8) {
                 let mut script = self.0.borrow_mut();
@@ -12214,7 +12222,10 @@ mod tests {
         ) -> (LongModeState, PagedCpl0SetReport) {
             let cli = CliProfile::NonPviLong64V1;
             let sti = StiProfile::NonPviLong64V1;
-            let set = minimal_set(&cli).with_pio_u8().with_sti(&sti);
+            let set = minimal_set(&cli)
+                .with_pio_u8()
+                .with_sti(&sti)
+                .with_user_mode();
             let (cr3, efer) = (boot.board.cr3(), boot.board.efer());
             let mut state = boot.board.state().clone();
             state.cr3 = Some(cr3);
@@ -12567,6 +12578,80 @@ mod tests {
             assert_eq!(script.0.borrow().acked, [IRQ_VECTOR]);
             assert_eq!(record.rip, IRQ_HANDLER_AT + 3);
             assert_eq!(record.retired, 3);
+        }
+
+        #[test]
+        fn a_pending_irq_at_cpl3_switches_to_rsp0_and_user_code_resumes_after_iretq() {
+            let (mut boot, _file) = user_mode_board(
+                &[
+                    0xb8, 0x53, 0, 0, 0, // MOV EAX, 0x53
+                    0xb8, 0x54, 0, 0, 0, // MOV EAX, 0x54
+                    0xb8, 0x55, 0, 0, 0, // MOV EAX, 0x55
+                ],
+                true,
+            );
+            write_phys(
+                &mut boot,
+                USER_GDT + 0x08,
+                &0x00af_9b00_0000_ffff_u64.to_le_bytes(),
+            );
+            write_phys(&mut boot, USER_HANDLER_AT, &[0x48, 0xcf]);
+            write_phys(&mut boot, USER_TSS_AT + 4, &USER_RSP0.to_le_bytes());
+            let mut gate = [0u8; 16];
+            gate[0..2].copy_from_slice(&(USER_HANDLER_AT as u16).to_le_bytes());
+            gate[2..4].copy_from_slice(&0x08u16.to_le_bytes());
+            gate[5] = 0x8E;
+            gate[6..8].copy_from_slice(&((USER_HANDLER_AT >> 16) as u16).to_le_bytes());
+            write_phys(&mut boot, USER_IDT_AT + u64::from(IRQ_VECTOR) * 16, &gate);
+            let state = boot.board.state_mut();
+            state.idtr = Some(od_isa::state::Idtr {
+                base: USER_IDT_AT,
+                limit: 0xFFF,
+            });
+            state.tr = Some(od_isa::TaskRegisterCache {
+                selector: 0x20,
+                base: USER_TSS_AT,
+                limit: 0x67,
+                access: 0x8B,
+                flags: 0,
+            });
+
+            let source = ScriptedSource::default();
+            {
+                let mut script = source.0.borrow_mut();
+                // First boundary is the kernel IRETQ; the next boundary is in CPL3.
+                script.pending_after_queries = 1;
+                script.pending = Some(IRQ_VECTOR);
+            }
+            let mut counters = IrqCounters::default();
+            let (state, report) = run_hook(&mut boot, 5, &mut source.clone(), &mut counters, false);
+
+            assert_eq!(
+                report.exit,
+                PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
+                "{report:?}"
+            );
+            assert_eq!(counters.irqs_delivered, 1, "{report:?}");
+            assert_eq!(source.0.borrow().acked, [IRQ_VECTOR]);
+            assert_eq!(report.instructions_executed, 5, "{report:?}");
+            assert_eq!(report.cpl3_retired, 3, "{report:?}");
+            assert_eq!(state.cs_selector, Some(0x13), "{report:?}");
+            assert_eq!(state.rip, USER_CODE_AT + 15, "{report:?}");
+            assert_eq!(state.gpr[Register::Rax as usize], 0x55);
+            assert_eq!(state.gpr[Register::Rsp as usize], ENTRY + 0x800);
+            let frame = USER_RSP0 & !15;
+            assert_eq!(state.gpr[Register::Rsp as usize] & 15, 0);
+            let mut raw = [0u8; 8];
+            for (address, expected) in [
+                (frame - 8, 0x1b),
+                (frame - 16, ENTRY + 0x800),
+                (frame - 24, 0x202),
+                (frame - 32, 0x13),
+                (frame - 40, USER_CODE_AT),
+            ] {
+                read(&mut boot.board, address, &mut raw).expect("interrupt frame");
+                assert_eq!(u64::from_le_bytes(raw), expected, "{address:#x}");
+            }
         }
 
         #[test]
