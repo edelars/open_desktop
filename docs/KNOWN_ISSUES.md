@@ -382,7 +382,7 @@
 - **Статус:** решена только для exact `8B 4E 0C` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
 - **Результат и проверка:** exact MOV reads a dword from `[RSI+0xC]`, zero-extends ECX into RCX, preserves flags, and commits state only after a successful tracked read. Four focused tests pass for full state, injected read-fault atomicity, neighboring forms, CPL3 and other profiles. A real four-level integration test confirms the dword field through tracked page walk, zero-extension and A bits, with no cross-page claim.
 - **Основание:** образ `/private/tmp/od-fw-s7-jz-3b.bin`; `od -An -tx1 -j 0xda3 -N16` показывает `8b 4e 0c 81 f9 a0 00 00 00 0f 85 d6 00 00 00 8b`; runner с бюджетом 10000.
-- **Runner:** image `/private/tmp/od-fw-s7-jcc-near.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retired 53 instructions, then stopped at `89 CD` (`MOV EBP,ECX`) with `Unsupported { opcode: 137 }`, `RIP=0x200db5`, `com1_bytes=0`; see [ISSUE-151](#issue-151-s7-04-rust-helper-mov-ebp-ecx-unsupported).
+- **Runner:** image `/private/tmp/od-fw-s7-mov-ebp-ecx.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retired 54 instructions, then stopped at `8D B9 60 FF FF FF` (`LEA EDI,[RCX-0xA0]`) with `Unsupported { opcode: 141 }`, `RIP=0x200db7`, `com1_bytes=0`; see [ISSUE-152](#issue-152-s7-04-rust-helper-lea-edi-rcx-minus-0xa0-unsupported).
 
 <a id="issue-148-s7-04-rust-helper-cmp-ecx-0xa0-unsupported"></a>
 ### ISSUE-148 — S7-04: exact Rust-helper `CMP ECX,0xA0` (`81 F9 A0 00 00 00`) profile slice
@@ -392,7 +392,7 @@
 - **Суть и последствия:** точная форма `81 F9 A0 00 00 00` сравнивает low 32 bits ECX с `0xa0`, игнорирует high RCX и меняет только arithmetic flags. Guard сохраняет dword operand width и не допускает соседние register/immediate/prefix/width формы.
 - **Основание:** образ `/private/tmp/od-fw-s7-mov-ecx-dword.bin`; `od -An -tx1 -j 0xda6 -N16` показывает `81 f9 a0 00 00 00 0f 85 d6 00 00 00 8b 4e 10 89`; runner с бюджетом 10000.
 - **Результат и проверка:** `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_cmp_ecx_imm32 -- --nocapture` — 4 passed: high RCX ignored, ECX flags/definedness, immediate/prefix/neighbor rejects, fetch-fault atomicity, CPL3 and other-profile isolation. См. [CPU contract](specs/CPU_CONTRACT.md#s7-04-rust-helper-cmp-ecx-0xa0).
-- **Следующий runner blocker:** after 53 retired instructions, the not-taken JNZ and second dword load lead to `89 CD` at `RIP=0x200db5`; см. [ISSUE-151](#issue-151-s7-04-rust-helper-mov-ebp-ecx-unsupported).
+- **Следующий runner blocker:** after 54 retired instructions, the not-taken JNZ, second dword load, and `MOV EBP,ECX` lead to `8D B9 60 FF FF FF` at `RIP=0x200db7`; см. [ISSUE-152](#issue-152-s7-04-rust-helper-lea-edi-rcx-minus-0xa0-unsupported).
 
 <a id="issue-149-s7-04-rust-helper-jnz-rel32-unsupported"></a>
 ### ISSUE-149 — S7-04: exact Rust-helper `JNZ rel32` (`0F 85 D6 00 00 00`) profile slice
@@ -401,7 +401,7 @@
 - **Статус:** решена только для exact `0F 85 D6 00 00 00` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
 - **Суть и последствия:** exact near JNZ uses shared `ConditionCode::NotEqual` behavior. ZF determines taken/fall-through, flags and definedness are preserved, the rel32 displacement is signed, and canonicality is checked only for a taken target.
 - **Основание:** образ `/private/tmp/od-fw-s7-cmp-ecx-a0.bin`; `od -An -tx1 -j 0xdac -N16` показывает `0f 85 d6 00 00 00 8b 4e 10 89 cd 8d b9 60 ff ff`; runner с бюджетом 10000.
-- **Результат и проверка:** четыре branch tests pass for defined/undefined ZF with both outcomes, taken-only canonicality, last-displacement-byte fetch-fault atomicity and nearby condition/displacement/prefix forms. CPL3 and other paged profiles reject this encoding. Runner retired 53 instructions; this branch was not taken, the second dword load retired, and execution stopped at `89 CD` (`MOV EBP,ECX`), RIP `0x200db5`; see [ISSUE-151](#issue-151-s7-04-rust-helper-mov-ebp-ecx-unsupported).
+- **Результат и проверка:** четыре branch tests pass for defined/undefined ZF with both outcomes, taken-only canonicality, last-displacement-byte fetch-fault atomicity and nearby condition/displacement/prefix forms. CPL3 and other paged profiles reject this encoding. Runner retired 54 instructions; this branch was not taken, the second dword load and `MOV EBP,ECX` retired, and execution stopped at `8D B9 60 FF FF FF` (`LEA EDI,[RCX-0xA0]`), RIP `0x200db7`; see [ISSUE-152](#issue-152-s7-04-rust-helper-lea-edi-rcx-minus-0xa0-unsupported).
 
 <a id="issue-150-s7-04-rust-helper-mov-ecx-dword-rsi-plus-0x10-unsupported"></a>
 ### ISSUE-150 — S7-04: exact Rust helper dword load `MOV ECX,dword ptr [RSI+0x10]` (`8B 4E 10`) profile slice
@@ -410,16 +410,25 @@
 - **Статус:** решена только для exact dword load encodings `8B 4E 0C` and `8B 4E 10` in base `PagedCpl0ProbeV1`; full handoff validation не завершена.
 - **Суть и последствия:** оба admitted forms read a dword through `PagedProbeMemory` with tracked `AccessWidth::Dword`, zero-extend into RCX, preserve flags, and leave CPU state unchanged on read fault. No page-crossing behavior is claimed.
 - **Основание:** образ `/private/tmp/od-fw-s7-jcc-near.bin`; `od -An -tx1 -j 0xdb2 -N16` показывает `8b 4e 10 89 cd 8d b9 60 ff ff ff 81 ff 61 ff 00`; runner с бюджетом 10000.
-- **Результат и проверка:** `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_mov_ecx_dword_handoff_field -- --nocapture` — 4 passed, covering both displacements, dword zero-extension/full-state, injected read-fault atomicity, neighboring offsets/registers/widths/prefixes, CPL3 and other paged profiles. Real integration `cargo test --offline -p od-machine --test paged_probe_quantum paged_probe_handoff_field_reads_use_tracked_page_walk_and_zero_extend_registers -- --exact` executes both reads through four-level tables and checks the second field value, preserved memory, and upper-level and code/data leaf A bits; no cross-page claim. Runner retired 53 instructions and stopped at `89 CD` (`MOV EBP,ECX`, RIP `0x200db5`); see [ISSUE-151](#issue-151-s7-04-rust-helper-mov-ebp-ecx-unsupported).
+- **Результат и проверка:** `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_mov_ecx_dword_handoff_field -- --nocapture` — 4 passed, covering both displacements, dword zero-extension/full-state, injected read-fault atomicity, neighboring offsets/registers/widths/prefixes, CPL3 and other paged profiles. Real integration `cargo test --offline -p od-machine --test paged_probe_quantum paged_probe_handoff_field_reads_use_tracked_page_walk_and_zero_extend_registers -- --exact` executes both reads through four-level tables and checks the second field value, preserved memory, and upper-level and code/data leaf A bits; no cross-page claim. Runner retired 54 instructions and stopped at `8D B9 60 FF FF FF` (`LEA EDI,[RCX-0xA0]`, RIP `0x200db7`); see [ISSUE-152](#issue-152-s7-04-rust-helper-lea-edi-rcx-minus-0xa0-unsupported).
 
 <a id="issue-151-s7-04-rust-helper-mov-ebp-ecx-unsupported"></a>
-### ISSUE-151 — S7-04: Rust helper `MOV EBP,ECX` (`89 CD`) remains outside paged CPU profile
+### ISSUE-151 — S7-04: exact Rust helper `MOV EBP,ECX` (`89 CD`) profile slice
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact dword handoff-field load at `[RSI+0x10]`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200db5`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner stops at `89 CD` (`MOV EBP,ECX`), `Unsupported { opcode: 137 }`, `retired=53`, `RIP=0x200db5`; COM1 пуст.
+- **Статус:** решена только для exact dword register move `89 CD` in base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Суть и последствия:** the exact move copies ECX to EBP; writing the dword destination zero-extends into RBP. Flags and other state remain unchanged.
 - **Основание:** image `/private/tmp/od-fw-s7-mov-ecx-dword-10.bin`; `od -An -tx1 -j 0xdb5 -N16` показывает `89 cd 8d b9 60 ff ff ff 81 ff 61 ff 00 00 40 0f`; runner с бюджетом 10000.
-- **Следующий шаг:** inspect the exact 32-bit register-to-register move and admit only this observed EBP←ECX encoding if its paged-profile scope is bounded.
+- **Результат и проверка:** `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_mov_ebp_ecx -- --nocapture` — 4 passed: nonzero high RCX with expected EBP low dword, RBP zero-extension, full-state/flags, ModRM fetch-fault atomicity, neighboring forms and CPL3; the existing other-profile matrix also rejects `89 CD`. Runner retired 54 instructions and stopped at `8D B9 60 FF FF FF` (`LEA EDI,[RCX-0xA0]`, `RIP=0x200db7`); see [ISSUE-152](#issue-152-s7-04-rust-helper-lea-edi-rcx-minus-0xa0-unsupported).
+
+<a id="issue-152-s7-04-rust-helper-lea-edi-rcx-minus-0xa0-unsupported"></a>
+### ISSUE-152 — S7-04: Rust helper `LEA EDI,[RCX-0xA0]` (`8D B9 60 FF FF FF`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `MOV EBP,ECX`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200db7`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner stops at `8D B9 60 FF FF FF` (`LEA EDI,[RCX-0xA0]`), `Unsupported { opcode: 141 }`, `retired=54`, `RIP=0x200db7`; COM1 пуст.
+- **Основание:** image `/private/tmp/od-fw-s7-mov-ebp-ecx.bin`; `od -An -tx1 -j 0xdb7 -N16` показывает `8d b9 60 ff ff ff 81 ff 61 ff 00 00 40 0f 92 c7`; runner с бюджетом 10000.
+- **Следующий шаг:** inspect the exact 32-bit LEA source/destination tuple and sign-extended disp32, then admit only this observed form in the base profile if bounded.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.
