@@ -3694,6 +3694,114 @@ fn firmware_entry_xor_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn rust_helper_operand_size_prefixed_nop_advances_rip_only() {
+    let code = [0x66, 0x90]; // NOP (XCHG AX,AX encoding)
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.rflags = 0x2 | (1 << 9) | (1 << 10) | (1 << 18) | (1 << 6) | (1 << 11);
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let initial_defined = DEFINED & !(1 << 6);
+
+    let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), initial_defined);
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, initial_defined);
+    let mut expected = before;
+    expected.rip += code.len() as u64;
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_helper_operand_size_prefixed_nop_fetch_fault_is_atomic() {
+    let mut memory = Memory::new(&[]);
+    memory.bytes[CODE_PHYSICAL + 0xfff] = 0x66;
+    let mut cpu = state();
+    cpu.rip = RIP + 0xfff;
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    memory.fail_fetch_at = Some((cpu.rip + 1, page_fault(0x10, cpu.rip + 1)));
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(RIP + 0x1000),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert!(
+        memory
+            .fetches
+            .iter()
+            .any(|(address, _)| *address == RIP + 0x1000)
+    );
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_helper_prefixed_nop_neighbors_stay_unsupported_without_mutation() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x90], 0x90),             // bare NOP remains outside this slice
+        (&[0x66, 0x91], 0x91),       // XCHG AX,CX
+        (&[0xf3, 0x90], 0x90),       // PAUSE
+        (&[0x40, 0x90], 0x90),       // REX-prefixed XCHG
+        (&[0x2e, 0x66, 0x90], 0x90), // extra segment prefix
+        (&[0x66, 0x40, 0x90], 0x90), // extra REX prefix
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "{bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_operand_size_prefixed_nop_stays_unsupported_in_cpl3_profile() {
+    let bytes = [0x66, 0x90];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    let before = cpu.clone();
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x66 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn firmware_entry_rep_stosb_writes_al_and_updates_rdi_rcx_by_df() {
     let code = [0xf3, 0xaa]; // REP STOSB, address-size 64
     for (df, start, expected_rdi, expected_offsets) in [
@@ -10370,6 +10478,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x31, 0xc9][..], 0x31),
         (&[0x45, 0x31, 0xd2][..], 0x31),
         (&[0x45, 0x31, 0xdb][..], 0x31),
+        (&[0x66, 0x90][..], 0x90),
         (&[0xf3, 0xaa][..], 0xaa),
         (&[0x4c, 0x89, 0xc7][..], 0x89),
         (&[0xe8, 0x83, 0x01, 0, 0][..], 0xe8),

@@ -19880,6 +19880,23 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         return reject(PagedProbeRejection::WrongPrivilege);
     }
     match instruction.operation {
+        // S7-04: admit only the firmware helper's operand-size-prefixed NOP
+        // (`66 90`) in the base paged profile. This is intentionally local to
+        // this profile and does not widen generic/JIT NOP admission.
+        Operation::Nop
+            if base_profile
+                && instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0x90
+                && instruction.length == 2
+                && instruction.operand_size == OperandSize::Word
+                && instruction.prefixes
+                    == (Prefixes {
+                        operand_override: true,
+                        ..Prefixes::default()
+                    }) =>
+        {
+            state.rip = next_rip;
+        }
         Operation::WriteCr0
             if allow_cr0_wp
                 && instruction.length == 3

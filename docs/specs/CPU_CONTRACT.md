@@ -811,6 +811,13 @@ Base `PagedCpl0ProbeV1` additionally admits only `45 31 DB`: primary-map opcode 
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_xor_r11d -- --nocapture` — 2 passed; full `paged_probe_profile` — 346 passed. Tests cover full state, zero-extension, flags/AF definedness, ModRM fetch-fault atomicity, neighbors, CPL3 and other-profile isolation. `cargo check --offline -p od-isa --all-targets`, scoped rustfmt and `git diff --check` passed. Firmware image `/private/tmp/od-fw-s7-04-issue167.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 70 instructions and stopped at `66 90` (`Unsupported { opcode: 144 }`), `RIP=0x200dfe`, `com1_bytes=0` (ISSUE-168); full handoff validation remains incomplete.
 
+<a id="s7-04-exact-rust-helper-prefixed-nop-66-90"></a>
+#### Расширение S7-04: exact Rust-helper operand-size-prefixed NOP `66 90`
+
+Base `PagedCpl0ProbeV1` admits only `66 90`: primary-map opcode `90`, length 2, word operand size and only the operand-size override prefix. It advances RIP by two and preserves all other CPU state, including RFLAGS and its definedness. Bare `90`, PAUSE, XCHG variants, extra prefixes, CPL3 and other paged profiles remain unsupported. The change is local to `step_paged_probe_inner`; the generic decoder and JIT NOP admission policy remain unchanged.
+
+`cargo test --offline -p od-isa --test paged_probe_profile prefixed_nop -- --nocapture` — 4 passed; other-paged-profile isolation passed; JIT test `nop_admission_is_s0_09_plus_only_exact_bare_90_and_valid_boundaries` passed; full `paged_probe_profile` — 350 passed. Tests cover RIP-only mutation, flags/definedness retention, fetch-fault atomicity, neighboring forms and CPL3/profile isolation. `cargo check --offline -p od-isa --all-targets` and scoped rustfmt passed. Firmware image `/private/tmp/od-fw-s7-04-issue168.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 71 instructions and stopped at `46 0F B6 34 1E` (`MOVZX R14D,byte ptr [RSI+R11]`, ISSUE-169), `RIP=0x200e00`, `Unsupported { opcode: 182 }`, `com1_bytes=0`; full handoff validation remains incomplete.
+
 <a id="s7-04-exact-rust-helper-mov-edi-dword-rsi-14"></a>
 #### Расширение S7-04: exact Rust-helper `MOV EDI,dword ptr [RSI+0x14]`
 

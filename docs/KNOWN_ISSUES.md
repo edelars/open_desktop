@@ -580,10 +580,20 @@
 ### ISSUE-168 — S7-04: Rust helper `66 90` NOP remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после допуска exact `XOR R11D,R11D`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200dfe`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner retired 70 instructions, then stops at raw bytes `66 90` (`XCHG AX,AX`, NOP encoding), `Unsupported { opcode: 144 }`, `RIP=0x200dfe`; COM1 remains empty.
+- **Статус:** решена узко для exact `66 90`; runner перешёл к ISSUE-169.
+- **Суть и результат:** base `PagedCpl0ProbeV1` admits only primary-map opcode `90`, length 2, word operand size, and operand-override-only prefix metadata. The paged-profile branch advances RIP without changing any other CPU state. Generic decoder and JIT NOP admission policy are unchanged; bare `90` and other prefixed forms remain outside this slice.
+- **Проверка:** `cargo test --offline -p od-isa --test paged_probe_profile prefixed_nop -- --nocapture` — 4 passed; `other_paged_profiles_keep_s7_entry_instructions_unsupported` passed; the JIT's `nop_admission_is_s0_09_plus_only_exact_bare_90_and_valid_boundaries` passed; all 350 `paged_probe_profile` tests passed. Coverage includes full-state/flags/definedness retention, fetch-fault atomicity, neighboring encodings, CPL3 and other-profile isolation. Image `/private/tmp/od-fw-s7-04-issue168.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`); runner retired 71 instructions and stopped at `46 0F B6 34 1E` (`Unsupported { opcode: 182 }`), `RIP=0x200e00`, `com1_bytes=0`.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue167.bin`; bytes at offset `0xdfe` begin `66 90 46 0f b6 34 1e`; runner budget 10000.
-- **Следующий шаг:** assess whether the exact operand-size-prefixed NOP is safely bounded in the profile; otherwise record why the instruction cannot be admitted narrowly.
+- **Ссылка:** [CPU profile contract](specs/CPU_CONTRACT.md#s7-04-exact-rust-helper-prefixed-nop-66-90).
+
+<a id="issue-169-s7-04-rust-helper-movzx-r14d-memory-unsupported"></a>
+### ISSUE-169 — S7-04: Rust helper `MOVZX R14D,byte ptr [RSI+R11]` remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после допуска exact operand-size-prefixed NOP.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200e00`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner retired 71 instructions, then stops at raw bytes `46 0F B6 34 1E` (`MOVZX R14D,byte ptr [RSI+R11]`), `Unsupported { opcode: 182 }`, `RIP=0x200e00`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue168.bin`; bytes at offset `0xe00` begin `46 0f b6 34 1e 4d 89 df 4d 21 c7 45 89 cc`; runner budget 10000.
+- **Следующий шаг:** verify the exact byte-load tuple, existing address/read semantics, and real page-walk effects before considering this narrow form.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.
