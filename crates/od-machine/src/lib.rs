@@ -14,6 +14,8 @@ mod fetch_translation_cache;
 mod firmware_board;
 mod identity_memory_adapter;
 mod idle_arbiter;
+#[cfg(test)]
+mod interleaved_harness;
 mod interrupt_pump;
 mod io_apic;
 mod irq_source;
