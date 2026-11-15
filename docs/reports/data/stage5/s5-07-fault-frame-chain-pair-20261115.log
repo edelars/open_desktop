@@ -1,0 +1,121 @@
+# S5-07 fault-time frame-chain schema-v3 diagnostic pair, 2026-11-15
+
+Purpose: resolve the caller chain at the variably observed CPL0 page fault in
+`rep_movs_alternative+0x11`. These are two independent counted single runs,
+not an automatic N=2 series. No comparator was run; this evidence does not
+accept S5-07.
+
+## Source, host, binary and inputs
+
+- Worktree/branch: `codex`, source commit
+  `f59d06d00e9c14eb703ff86c3c4e31c2fb2adcbe`, clean before the runs.
+- Host: Darwin arm64. Release `od-runner` SHA-256:
+  `43a44a98219b49fd78bf2829a00892277423d5cd8a030ee3e05a3b52a48941a0`.
+- Kernel SHA-256:
+  `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`.
+- Initramfs SHA-256:
+  `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`.
+- ACPI blob SHA-256:
+  `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`;
+  manifest hash `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`.
+- Matching `vmlinux-debug-7.0.0-38-generic` SHA-256:
+  `7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f`.
+- Both runs used 128 MiB, counted `stage4a`, release, budget
+  `3,000,000,000`, `--set-cpl0 --user-mode`, and expected stop
+  `budget_exhausted`. Inputs and run flags match the preceding schema-v2
+  diagnostic pair; only nonce and output directory changed.
+
+## Results
+
+Both reports say `status=loaded`, `acceptance=counted`, `guest_started=true`,
+and reached `retired=2,999,999,998` with the exact nonce. Both sidecars are
+schema v3 and have zero omitted #PF records.
+
+| Run | Nonce | #PF | RDTSC | IRQ0 edges / delivered | Quanta | Virtual ns | CPL3 retired |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `k` | `od5fchain20261115k` | 34 | 34,450,164 | 34,811 / 34,816 | 34,575,842 | 37,468,905,987 | 906 |
+| `l` | `od5fchain20261115l` | 33 | 34,446,427 | 34,807 / 34,812 | 34,572,344 | 37,464,465,341 | 906 |
+
+Both sidecars retained the same 22 distinct RDTSC sites. Of the total delta
+of 3,737 reads, 3,647 are at `0xffffffff8271b34d` (`delay_tsc+0x4d`); the
+other nine changed sites account for the remaining 90 reads. This localizes
+the count variation to the delay loop but does not explain why the guest
+executes a different number of iterations.
+
+The first 30 fault signatures match. Run `k` has one extra event at index 30;
+after aligning past it, all later signatures match run `l`:
+
+| Field | Run `k`, event 30 |
+|---|---|
+| RIP / symbol | `0xffffffff8271a9c1`, `rep_movs_alternative+0x11` |
+| Instruction | byte store `MOVB AL,(RDI)` |
+| Access / CPL / error | Write / 0 / `0x00000002` |
+| CR2 = RDI | `0x7ffc63ea4399` |
+| CR3 | `0x648a000` |
+| RSP / RBP | `0xffffc9000000fc80` / `0xffffc9000000fc88` |
+| RCX / RSI | `0x7` / `0xffffffff82fdeb8f` |
+| Captured frames / end | 10 / `UnalignedFramePointer` |
+
+The following table lists the frame-pointer slot and its saved return address.
+GNU `addr2line` 2.47, using the matching debug ELF above, resolved these
+addresses:
+
+| Frame pointer | Return address | Resolved function + offset |
+|---|---|---|
+| `0xffffc9000000fc88` | `0xffffffff81999bd9` | `create_elf_tables+0x99` |
+| `0xffffc9000000fd10` | `0xffffffff8199c32c` | `load_elf_binary+0xb0c` |
+| `0xffffc9000000fdd8` | `0xffffffff818f1cbc` | `search_binary_handler` inlined in `exec_binprm+0x13c` |
+| `0xffffc9000000fe38` | `0xffffffff818f2020` | `bprm_execve.part.0+0x160` |
+| `0xffffc9000000fe70` | `0xffffffff818f210a` | `bprm_execve+0x4a` |
+| `0xffffc9000000fe90` | `0xffffffff818f4682` | `kernel_execve+0x112` |
+| `0xffffc9000000fec8` | `0xffffffff812002b3` | `run_init_process+0xf3` |
+| `0xffffc9000000fee8` | `0xffffffff8272caa5` | `kernel_init+0xb5` |
+| `0xffffc9000000ff00` | `0xffffffff813b2525` | `ret_from_fork+0x195` |
+| `0xffffc9000000ff38` | `0xffffffff81346aca` | `ret_from_fork_asm+0x1a` |
+
+Run `l` has no corresponding event: its event 30 is the CPL3 fetch fault at
+`RIP=CR2=0x4000b0` with null RBP, and its sidecar records
+`frame_chain_end=NullFramePointer`. Thus the chain in `k` localizes that extra
+fault to a byte store while Linux is executing the ELF loading / initial stack
+setup path rooted at `create_elf_tables`. Together with `RCX=7` and RSI's
+previously verified `x86_64\0` bytes, this supports a startup-stack string-copy
+interpretation. It does not prove the exact copy purpose or why the page fault
+is absent in run `l`; no pre/post PTE state was captured. The termination at
+`UnalignedFramePointer` also means the trace is bounded evidence, not a complete
+unwind.
+
+The counts vary between these independent runs: one delivered #PF, 3,737
+RDTSC reads, four IRQ0 edges / deliveries, and 3,498 quanta. No comparator ran,
+no differences are classified benign, and no normalization changed. The
+frame-chain reader is opt-in; its wall-time overhead was not measured. S5-07
+remains blocked/unaccepted.
+
+## Commands and artifact hashes
+
+Each invocation used the same command shape:
+
+```sh
+target/release/od-runner linux-direct \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs /Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --nonce NONCE \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 \
+  --out RUN_DIR/run.json \
+  --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --execution-observations-out RUN_DIR/execution-observations.json
+```
+
+`NONCE` was `od5fchain20261115k` / `od5fchain20261115l`; `RUN_DIR` was
+`work/stage5/stage5-s5-07-frame-chain-20261115-k` /
+`work/stage5/stage5-s5-07-frame-chain-20261115-l`.
+
+- `k` run report / sidecar SHA-256:
+  `040ccfb7478fb0f158db688f189522f354bcd028278e92ca107d236112e20fe5` /
+  `fb893ab97455d89d8c4058c8fc9c5074dad0eb7ace6bcce1300649a73f7e2849`.
+- `l` run report / sidecar SHA-256:
+  `6e71b6e2ea0d7d8468b997ca64c0fd9c0cbc9fe0c0c982b32528986edb59abfa` /
+  `932fbe99184d224ec6157e29c449e5af6aa29c48d9275868e866aac0b0401871`.
