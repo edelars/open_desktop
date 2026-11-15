@@ -1,0 +1,156 @@
+{
+  "schema": "od.stage4.s4-44a.local-set.v1",
+  "generated_utc": "2026-11-15T01:19:35Z",
+  "environment": {
+    "git_head": "47dd47258bd7789b87a68e6d3c35bf17f7663d5a",
+    "git_branch": "worktree-agent-a2b4691591757cd4c",
+    "git_status_porcelain": [
+      "?? tools/stage4/"
+    ],
+    "script_sha256": "77d22562d08ce1b9bf6da069f909f54372268db9cb041a2b5a57069445aa7b09",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
+    "macos": "26.7.1",
+    "arch": "arm64",
+    "step_timeout_seconds": 1200,
+    "known_fmt_files": [
+      "crates/od-host/src/storage_abi_v1.rs",
+      "tools/image-tool/tests/cli.rs"
+    ]
+  },
+  "total_duration_seconds": 788,
+  "steps": [
+    {
+      "id": "fmt",
+      "command": "cargo fmt --all -- --check",
+      "status": "known_divergence",
+      "returncode": 1,
+      "duration_seconds": 4,
+      "log": "work/stage4/s4-44a/fmt.log",
+      "log_sha256": "cb81c4904236877a8ff44df2ef0dce4cebd904d15a6798094115b7610940bc30",
+      "note": "rustfmt divergences in KNOWN_FMT_FILES are known, not new errors; files: /Users/senya/projects/open_desktop/.claude/worktrees/agent-a2b4691591757cd4c/crates/od-host/src/storage_abi_v1.rs /Users/senya/projects/open_desktop/.claude/worktrees/agent-a2b4691591757cd4c/tools/image-tool/tests/cli.rs "
+    },
+    {
+      "id": "check-workspace",
+      "command": "cargo check --workspace --all-targets --locked --offline",
+      "status": "passed",
+      "returncode": 0,
+      "duration_seconds": 15,
+      "log": "work/stage4/s4-44a/check-workspace.log",
+      "log_sha256": "8f7c4d737d837eee996a52be171492158a9f8af1accde00718cda8d6aa4eb059",
+      "note": ""
+    },
+    {
+      "id": "test-od-isa",
+      "command": "cargo test -p od-isa --locked --offline",
+      "status": "passed",
+      "returncode": 0,
+      "duration_seconds": 39,
+      "log": "work/stage4/s4-44a/test-od-isa.log",
+      "log_sha256": "77188671ed68309ed764ba986cef5da7aa2b5234ab7722f3525b168a9a9612cb",
+      "note": ""
+    },
+    {
+      "id": "test-od-machine",
+      "command": "cargo test -p od-machine --locked --offline",
+      "status": "passed",
+      "returncode": 0,
+      "duration_seconds": 83,
+      "log": "work/stage4/s4-44a/test-od-machine.log",
+      "log_sha256": "64717430dc36fd018a9322c55ac3db19ca5a1de57d9c90d1df4095eeb12c3f37",
+      "note": ""
+    },
+    {
+      "id": "test-od-jit",
+      "command": "cargo test -p od-jit --locked --offline",
+      "status": "passed",
+      "returncode": 0,
+      "duration_seconds": 6,
+      "log": "work/stage4/s4-44a/test-od-jit.log",
+      "log_sha256": "b1529eadb7b90290e5873525192568506d2fbf98b09ec0dca34fb8f066070a5c",
+      "note": ""
+    },
+    {
+      "id": "test-od-host",
+      "command": "cargo test -p od-host --locked --offline",
+      "status": "failed",
+      "returncode": 101,
+      "duration_seconds": 128,
+      "log": "work/stage4/s4-44a/test-od-host.log",
+      "log_sha256": "87765124d828ac1a6fb149f600561beb562fe324bafe9ca9b89c6f1e4c3bffbd",
+      "note": ""
+    },
+    {
+      "id": "test-od-runner",
+      "command": "cargo test -p od-runner --locked --offline",
+      "status": "failed",
+      "returncode": 101,
+      "duration_seconds": 454,
+      "log": "work/stage4/s4-44a/test-od-runner.log",
+      "log_sha256": "c9e82dba64835c4599db39c99c375089517dbee73fc6211c4fd000abd1a2ffb3",
+      "note": ""
+    },
+    {
+      "id": "test-od-bench",
+      "command": "cargo test -p od-bench --locked --offline",
+      "status": "passed",
+      "returncode": 0,
+      "duration_seconds": 19,
+      "log": "work/stage4/s4-44a/test-od-bench.log",
+      "log_sha256": "f0ef1ad06b3ed6ee6c2900ab4f628c2bea4ac80fcfdf553417333f0f882f87c8",
+      "note": ""
+    },
+    {
+      "id": "test-rest-of-workspace",
+      "command": "cargo test --workspace --exclude od-isa --exclude od-machine --exclude od-jit --exclude od-host --exclude od-runner --exclude od-bench --locked --offline",
+      "status": "passed",
+      "returncode": 0,
+      "duration_seconds": 40,
+      "log": "work/stage4/s4-44a/test-rest-of-workspace.log",
+      "log_sha256": "cb590eca006d0ffd6df3b5bdee25b4b0692a645abeeee473ce84f46226e48a90",
+      "note": ""
+    }
+  ],
+  "totals": {
+    "passed": 6,
+    "known_divergence": 1,
+    "failed": 2,
+    "timeout": 0,
+    "excluded_steps": 0,
+    "not_run": 4,
+    "blocked": 1
+  },
+  "not_run": [
+    {
+      "id": "linux-boot-positive-negative",
+      "status": "not_run",
+      "what": "Linux positive/negative boot",
+      "requires": "vmlinuz, initramfs and ACPI manifest/blob (guest artifacts, not in the repository)"
+    },
+    {
+      "id": "linux-direct-gate-real-kernel",
+      "status": "not_run",
+      "what": "od-runner linux-direct-gate on a real kernel",
+      "requires": "real vmlinuz + initramfs + ACPI manifest passed to linux-direct-gate"
+    },
+    {
+      "id": "mac-mini-hardware-cases",
+      "status": "blocked",
+      "what": "Mac mini hardware cases (physical Hypervisor.framework / KVM-method cases)",
+      "requires": "the Mac mini stand and its owner; stage 3 hardware gate stays in its own scope"
+    },
+    {
+      "id": "guest-firmware-artifacts-build",
+      "status": "not_run",
+      "what": "guest/firmware artifacts build (tools/build/*.py, firmware/uefi, tools/build/test_*.py)",
+      "requires": "x86_64-unknown-none/uefi toolchain run as a separate build job (S4-44b); the outputs are inputs of the boot cases above"
+    },
+    {
+      "id": "vmhost-system-smokes",
+      "status": "not_run",
+      "what": "tests/system Python/Swift/C smokes of the VMHost app (macOS app bundle)",
+      "requires": "built VMHost app bundle and a desktop session; stage 3 scope"
+    }
+  ],
+  "overall_local": "failed"
+}
