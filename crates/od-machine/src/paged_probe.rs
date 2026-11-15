@@ -843,18 +843,16 @@ impl GuestMemory for PagedProbeMemory<'_> {
         context: AccessContext,
         destination: &mut [u8],
     ) -> Result<(), MemoryError> {
-        if destination.len() != 8 {
-            return Err(MemoryError::Backend(
-                "paged probe only supports qword reads".into(),
-            ));
-        }
-        let value = match self.access(
-            address,
-            context,
-            RamAccessOperation::Read {
-                width: crate::AccessWidth::Qword,
-            },
-        )? {
+        let width = match destination.len() {
+            2 => crate::AccessWidth::Word,
+            8 => crate::AccessWidth::Qword,
+            _ => {
+                return Err(MemoryError::Backend(
+                    "paged probe only supports word and qword reads".into(),
+                ));
+            }
+        };
+        let value = match self.access(address, context, RamAccessOperation::Read { width })? {
             TrackedAccessOutcome::Read(value) => value,
             _ => {
                 return Err(MemoryError::Backend(
@@ -862,7 +860,7 @@ impl GuestMemory for PagedProbeMemory<'_> {
                 ));
             }
         };
-        destination.copy_from_slice(&value.to_le_bytes());
+        destination.copy_from_slice(&value.to_le_bytes()[..destination.len()]);
         Ok(())
     }
 

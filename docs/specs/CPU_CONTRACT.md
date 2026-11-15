@@ -398,7 +398,7 @@ bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`,
 (`SUB RSP,0x58`/`SUB RSP,0x38`), `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`), `48 81 FA 9F 00 00 00` (`CMP RDX,0x9f`), and
 `48 8D 7C 24 08` (`LEA RDI,[RSP+8]`), `BE 00 00 10 00`
 (`MOV ESI,0x00100000`), `BA 00 00 01 00` (`MOV EDX,0x00010000`), and
-`31 C9` (`XOR ECX,ECX`), `41 56`/`41 57`/`41 55`/`41 54` (`PUSH R14`/`PUSH R15`/`PUSH R13`/`PUSH R12`), and bare `53`/`55` (`PUSH RBX`/`PUSH RBP`; see the extensions below). The CPU entry validates its profile admission and
+`0F B7 7E 08` (`MOVZX EDI,word ptr [RSI+8]`), `31 C9` (`XOR ECX,ECX`), `41 56`/`41 57`/`41 55`/`41 54` (`PUSH R14`/`PUSH R15`/`PUSH R13`/`PUSH R12`), and bare `53`/`55` (`PUSH RBX`/`PUSH RBP`; see the extensions below). The CPU entry validates its profile admission and
 CR0/CR4 before fetch. It receives page-aware `GuestMemory`;
 CR3/EFER validation and selecting the four-level 4 KiB paging context belong
 to the machine entry.
@@ -644,6 +644,12 @@ Tests проверяют точное значение и full-state retention, 
 В base `PagedCpl0ProbeV1` допускается только `48 39 3E`: Primary opcode `39`, длина 3, ровно REX.W `0x48`, qword destination `[RSI]` без index/displacement и qword source RDI. Значение читается через `read_operand`, затем применяется существующая qword CMP семантика. Инструкция не записывает data operand или GPR; обычные page-walk A/D side effects остаются под контрактом paged memory path. RFLAGS/definedness и RIP коммитятся только после успешного чтения. Canonicality проверяется до memory read: noncanonical RSI даёт #GP без data read; memory #PF и backend fault не меняют CPU state. Другие адреса, регистры, widths, prefixes, CPL3 и profiles остаются вне allowlist.
 
 Tests покрывают точное сравнение magic, flags/definedness, read #PF, noncanonical #GP, injected GuestMemory read fault без CPU-state commit (тест не моделирует page-walk или cross-page translation), unsupported neighbors и profile isolation. Runner retired 31 инструкцию и остановился на `75 38` (`JNZ rel8`, ISSUE-131, RIP `0x200d37`); полная проверка handoff ещё не завершена.
+
+#### Расширение S7-04: exact Rust-helper `MOVZX EDI,word ptr [RSI+8]`
+
+В base `PagedCpl0ProbeV1` допускается только `0F B7 7E 08`: Escape0f opcode `B7`, длина 4, без префиксов, dword destination EDI и единственная memory source форма `word ptr [RSI+8]`. Переиспользуются `read_operand` и unsigned `Operation::Extend`: успешный read zero-extends word в EDI, тем самым обнуляя верхнюю половину RDI; flags не меняются. Адрес проходит обычную canonicality проверку, memory fault до записи оставляет CPU state неизменным. В `PagedProbeMemory` добавлена поддержка tracked Word read; другие word-read instructions остаются заблокированы точным CPU-profile admission.
+
+`paged_probe_profile` — 234 passed: full state/zero-extension, flags/definedness, injected GuestMemory read fault (этот fixture не проверяет page walk или cross-page behavior), noncanonical #GP, fetch fault, neighboring forms и CPL3/other-profile isolation. `paged_probe_quantum` прошёл реальное 4-level page-table чтение word и проверил accessed bits; он не тестирует переход через границу страницы. Runner retired 40 инструкций и остановился на `0F B7 5E 0A` (`MOVZX EBX,word ptr [RSI+0xA]`, ISSUE-138, RIP `0x200d4b`). Полная проверка handoff ещё не завершена.
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 

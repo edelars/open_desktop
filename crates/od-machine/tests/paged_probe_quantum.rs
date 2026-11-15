@@ -579,6 +579,39 @@ fn unsupported_and_paged_fetch_fault_are_distinct_nonretiring_exits() {
 }
 
 #[test]
+fn paged_probe_movzx_word_read_uses_tracked_page_walk_and_zero_extends_edi() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x0f, 0xb7, 0x7e, 0x08]);
+    put(&mut bus, DATA_PHYSICAL + 8, 0xfeed_face_cafe_1234);
+    let mut state = initial_state(0);
+    state.gpr[Register::Rsi as usize] = DATA_LINEAR;
+    state.gpr[Register::Rdi as usize] = 0xaabb_ccdd_eeff_0011;
+    let before_flags = state.rflags;
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.page_fault, None);
+    assert_eq!(result.memory_error, None);
+    assert_eq!(state.rip, CODE_LINEAR + 4);
+    assert_eq!(state.gpr[Register::Rdi as usize], 0x1234);
+    assert_eq!(state.rflags, before_flags);
+    assert_eq!(
+        qword(&mut bus, DATA_PHYSICAL + 8),
+        0xfeed_face_cafe_1234,
+        "the MOVZX performs no data write"
+    );
+    assert_eq!(qword(&mut bus, ROOT), ROOT + 0x1007 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x1000), ROOT + 0x2007 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x2010), ROOT + 0x3007 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x3000), CODE_PHYSICAL | 7 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x2020), ROOT + 0x4007 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x4000), DATA_PHYSICAL | 7 | (1 << 5));
+}
+
+#[test]
 fn tracked_ram_backend_failure_is_distinct_from_guest_page_fault() {
     let (mut bus, _) = fixture();
     // This page is present, but its physical target is outside configured RAM.

@@ -20743,6 +20743,40 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: this Rust helper reads exactly `0F B7 7E 08` (MOVZX EDI,word ptr [RSI+8]).
+        // Reuse the normal faulting operand read and 32-bit register write so RDI is zero-extended.
+        Operation::Extend {
+            dst: destination,
+            src: Operand::Memory(source),
+            signed: false,
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0xb7
+            && instruction.length == 4
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes == Prefixes::default()
+            && destination == RegisterView::low(Register::Rdi, OperandSize::Dword)
+            && source
+                == (MemoryOperand {
+                    base: AddressBase::Register(Register::Rsi),
+                    index: None,
+                    scale: 1,
+                    displacement: 8,
+                    address_size: OperandSize::Qword,
+                    size: OperandSize::Word,
+                }) =>
+        {
+            let value =
+                match read_operand(state, memory, context, next_rip, Operand::Memory(source)) {
+                    Ok(value) => value,
+                    Err(MemoryError::Architectural(fault)) => {
+                        return result(PagedProbeExit::Fault(fault), 0);
+                    }
+                    Err(error) => return result(PagedProbeExit::Backend(error), 0),
+                };
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: the Rust helper compares the qword handoff magic at [RSI]
         // against RDI with exactly `48 39 3E`. Reuse the potentially faulting
         // memory read and qword CMP semantics; no other addressing form is admitted.
