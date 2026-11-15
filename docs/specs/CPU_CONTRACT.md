@@ -395,7 +395,7 @@ Long64 CPL0 allowlist: `48 8B 03` (`MOV RAX,[RBX]`), `48 89 0B`
 bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`,
 `75 24`/`75 77` (the two exact firmware JNZ rel8 forms), `49 89 F8`,
 `E8 83 01 00 00` and `E8 8D 02 00 00` (the two exact `CALL rel32` forms), `48 83 EC 58`
-(`SUB RSP,0x58`), `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`), and
+(`SUB RSP,0x58`), `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`), `48 81 FA 9F 00 00 00` (`CMP RDX,0x9f`), and
 `48 8D 7C 24 08` (`LEA RDI,[RSP+8]`), `BE 00 00 10 00`
 (`MOV ESI,0x00100000`), `BA 00 00 01 00` (`MOV EDX,0x00010000`), and
 `31 C9` (`XOR ECX,ECX`), `41 56` (`PUSH R14`), and bare `53` (`PUSH RBX`; see the extensions below). The CPU entry validates its profile admission and
@@ -588,6 +588,12 @@ Tests проверяют полный state, сохранение flags/definedn
 В base `PagedCpl0ProbeV1` допускается только `48 89 F8`: Primary opcode `89`, длина 3, qword operand size, ровно REX.W `0x48`, назначение RAX и источник RDI. Существующая MOV-семантика копирует только RDI в RAX, продвигает RIP и сохраняет RFLAGS/definedness и остальные registers. Fetch fault на ModRM не коммитит состояние; соседние register/direction/width/prefix/memory forms, CPL3 и другие paged profiles остаются вне allowlist.
 
 Tests проверяют full state, flags/definedness, cross-page ModRM fetch-fault atomicity, neighbors и CPL3/stack/CR3/CR0.WP isolation. Runner retired 27 инструкций и остановился на `48 81 FA 9F 00 00 00` (`CMP RDX,0x9f`, ISSUE-127, RIP `0x200d13`).
+
+#### Расширение S7-04: exact Rust-helper `CMP RDX,0x9f`
+
+В base `PagedCpl0ProbeV1` допускается только `48 81 FA 9F 00 00 00`: Primary opcode `81`, длина 7, qword operand size, ровно REX.W `0x48`, операция CMP, назначение RDX и sign-extended imm32 `0x9f` (положительное значение 159). Используется существующая qword CMP-семантика: RDX не меняется, arithmetic flags/definedness обновляются, прочие flags сохраняются. Fetch fault на immediate не коммитит состояние; другие immediate/register/width/prefix/memory формы и CPL3/прочие paged profiles остаются вне allowlist.
+
+Tests покрывают equality и nonzero upper-qword сравнение, flags/definedness, fetch-fault atomicity, sign-extended negative immediate как rejected neighbor, другие neighbors и profile isolation. Runner retired 28 инструкций и остановился на `77 0E` (`JA/JNBE rel8`, ISSUE-128, RIP `0x200d1a`).
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 

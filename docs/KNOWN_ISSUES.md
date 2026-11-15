@@ -205,10 +205,19 @@
 ### ISSUE-127 — S7-04: Rust helper `CMP RDX,imm32` остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `MOV RAX,RDI`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware target `0x200d10`.
-- **Статус:** открыта; RDI скопирован в RAX, следующий length check не исполняется.
-- **Суть и последствия:** `RIP=0x200d13` содержит `48 81 FA 9F 00 00 00` (`CMP RDX,0x9f`). Runner возвращает `Unsupported { opcode: 129 }`; COM1 пуст, handoff parser ещё не достигнут.
+- **Статус:** решена узко для exact `48 81 FA 9F 00 00 00` в base `PagedCpl0ProbeV1`.
+- **Суть и результат:** qword CMP сравнивает RDX с sign-extended imm32 `0x9f`, меняет только arithmetic flags/definedness и сохраняет RDX. Другие immediates, registers, widths/prefixes, CPL3 и другие profiles остаются unsupported.
 - **Основание:** образ `/private/tmp/od-fw-s7-mov-rax-rdi.bin`; `od -An -tx1 -j 0xd13 -N16` показывает `48 81 fa 9f 00 00 00 77 0e 66 c7 40 08 00 00 48`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=27`, `RIP=0x200d13`, `com1_bytes=0`.
-- **Следующий шаг:** проверить exact qword immediate compare semantics и ограниченный профильный допуск.
+- **Проверка решения:** `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 186 passed; exact equal/high-qword cases, flags/definedness, no register writes, immediate fetch-fault atomicity, sign-extended negative neighbor, другие neighbors и CPL3/stack/CR3/CR0.WP isolation. Образ `/private/tmp/od-fw-s7-cmp-rdx-9f.bin` собран (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 28 инструкций и остановился на `77 0E` (`JA/JNBE`, rel8 `+0x0e`) при `RIP=0x200d1a`, `Unsupported { opcode: 119 }`, `com1_bytes=0`.
+
+<a id="issue-128-s7-04-rust-helper-jcc-ja-rel8-unsupported"></a>
+### ISSUE-128 — S7-04: Rust helper `Jcc rel8` (`JA/JNBE`) остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `CMP RDX,0x9f`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware target `0x200d10`.
+- **Статус:** открыта; length compare выполнен, условный переход ещё не исполняется.
+- **Суть и последствия:** `RIP=0x200d1a` содержит `77 0E`, short `Jcc rel8` с condition `NotBelowOrEqual` (`JA/JNBE`) и displacement `+0x0e`. Runner возвращает `Unsupported { opcode: 119 }`; COM1 пуст, handoff parser ещё не достигнут.
+- **Основание:** образ `/private/tmp/od-fw-s7-cmp-rdx-9f.bin`; `od -An -tx1 -j 0xd1a -N16` показывает `77 0e 66 c7 40 08 00 00 48 c7 00 00 00 00 00 c3`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=28`, `RIP=0x200d1a`, `com1_bytes=0`.
+- **Следующий шаг:** подтвердить branch condition/target относительно firmware helper flow и ограничить допуск exact encoding.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки

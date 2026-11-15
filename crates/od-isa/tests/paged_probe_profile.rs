@@ -4951,6 +4951,126 @@ fn rust_entry_cmp_rdi_imm32_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn rust_helper_cmp_rdx_imm32_checks_exact_size_and_updates_flags() {
+    let code = [0x48, 0x81, 0xfa, 0x9f, 0, 0, 0]; // CMP RDX,0x9f
+    for (rdx, arithmetic_flags) in [(0x9fu64, (1 << 6) | (1 << 2)), (0x1_0000_009f, 1 << 2)] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::Rdx as usize] = rdx;
+        cpu.rflags = 0x8d7;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let defined = DEFINED & !(1 << 6);
+
+        let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined | 0x8d5);
+        let mut expected = before;
+        expected.rip = RIP + code.len() as u64;
+        // CMP is qword-wide: equality at 0x9f sets ZF/PF; the high-qword
+        // value differs by 2^32 and sets only PF for the resulting low byte.
+        expected.rflags = (expected.rflags & !0x8d5) | arithmetic_flags;
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(memory.write_addresses.is_empty());
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_cmp_rdx_imm32_fetch_fault_is_atomic() {
+    let mut memory = Memory::new(&[]);
+    memory.bytes[CODE_PHYSICAL + 0xffa..CODE_PHYSICAL + 0x1000]
+        .copy_from_slice(&[0x48, 0x81, 0xfa, 0x9f, 0, 0]);
+    let mut cpu = state();
+    cpu.rip = RIP + 0xffa;
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    memory.fail_fetch_at = Some((cpu.rip + 6, page_fault(0x10, cpu.rip + 6)));
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(RIP + 0x1000),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(memory.write_addresses.is_empty());
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_helper_cmp_rdx_imm32_neighbours_stay_unsupported_without_mutation() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x48, 0x81, 0xfa, 0x9e, 0, 0, 0], 0x81), // different immediate
+        (&[0x48, 0x81, 0xfa, 0xa0, 0, 0, 0], 0x81), // different immediate
+        (&[0x48, 0x81, 0xfa, 0x9f, 0xff, 0xff, 0xff], 0x81), // sign-extended negative imm32
+        (&[0x48, 0x81, 0xff, 0x9f, 0, 0, 0], 0x81), // CMP RDI,0x9f
+        (&[0x48, 0x81, 0xea, 0x9f, 0, 0, 0], 0x81), // SUB RDX,0x9f
+        (&[0x48, 0x81, 0xf2, 0x9f, 0, 0, 0], 0x81), // different group extension
+        (&[0x81, 0xfa, 0x9f, 0, 0, 0], 0x81),       // dword CMP EDX,imm32
+        (&[0x48, 0x83, 0xfa, 0x9f], 0x83),          // imm8 form
+        (&[0x48, 0x39, 0xd0], 0x39),                // register CMP
+        (&[0x48, 0x81, 0x3a, 0x9f, 0, 0, 0], 0x81), // memory destination
+        (&[0x66, 0x48, 0x81, 0xfa, 0x9f, 0, 0, 0], 0x81), // operand-size prefix
+        (&[0x67, 0x48, 0x81, 0xfa, 0x9f, 0, 0, 0], 0x81), // address-size prefix
+        (&[0xf3, 0x48, 0x81, 0xfa, 0x9f, 0, 0, 0], 0x81), // REP prefix
+        (&[0x4c, 0x81, 0xfa, 0x9f, 0, 0, 0], 0x81), // different REX
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "{bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0), "{bytes:02x?}");
+        assert!(memory.write_addresses.is_empty());
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_cmp_rdx_imm32_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x48, 0x81, 0xfa, 0x9f, 0, 0, 0];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    let before = cpu.clone();
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x81 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn firmware_entry_lea_rdi_rip_disp32_sets_exact_target_only() {
     let code = [0x48, 0x8d, 0x3d, 0x09, 0x2b, 0, 0];
     let mut memory = Memory::new(&code);
@@ -5341,6 +5461,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x48, 0x89, 0xfb][..], 0x89),
         (&[0x48, 0x89, 0xf8][..], 0x89),
         (&[0x48, 0x81, 0xff, 0, 0, 0x10, 0][..], 0x81),
+        (&[0x48, 0x81, 0xfa, 0x9f, 0, 0, 0][..], 0x81),
     ] {
         for profile in ["stack", "cr3", "cr0wp"] {
             let mut memory = Memory::new(bytes);

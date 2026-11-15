@@ -20677,6 +20677,41 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: the handoff helper checks input-slice length with exactly
+        // `48 81 FA 9F 00 00 00` (CMP RDX,0x9f). Keep the immediate/register
+        // pair exact and reuse the existing qword CMP flag semantics.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Cmp,
+            dst: Operand::Register(destination),
+            src: Operand::Immediate(0x9f),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x81
+            && instruction.length == 7
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x48),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rdx, OperandSize::Qword) =>
+        {
+            let lhs = state.read(destination);
+            let (_, flags) = arithmetic_result(
+                OperandSize::Qword,
+                ArithmeticKind::Cmp,
+                lhs,
+                0x9f,
+                state.rflags,
+            );
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: the firmware entry uses exactly `48 C7 C0 id` to load the
         // handoff GPA into RAX. Admit only REX.W C7 /0 with a register destination;
         // memory destinations, other widths/prefixes, and other registers stay
