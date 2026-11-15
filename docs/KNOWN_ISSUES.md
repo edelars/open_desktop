@@ -467,13 +467,23 @@
 - **Результат и проверка:** focused tests and all 304 `paged_probe_profile` tests pass, covering true/false CF with defined and undefined metadata, R8B-only write, RAX/AH and all other GPR retention, exact REX/ModRM form, fetch-fault atomicity, neighbors, CPL3 and other-profile isolation. Runner retired 59 instructions, then stopped at `41 20 F8` (`AND R8B,DIL`, ISSUE-157), `RIP=0x200dce`, `Unsupported { opcode: 32 }`, `com1_bytes=0`.
 
 <a id="issue-157-s7-04-rust-helper-and-r8b-dil-unsupported"></a>
-### ISSUE-157 — S7-04: Rust helper `AND R8B,DIL` (`41 20 F8`) remains outside paged CPU profile
+### ISSUE-157 — S7-04: exact Rust helper `AND R8B,DIL` (`41 20 F8`) profile slice
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `SETAE R8B`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200dce`.
+- **Статус:** решена только для exact encoding `41 20 F8` in base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Суть и последствия:** byte AND writes only R8B, preserves other register bits/state, and updates logical flags; AF's concrete value is retained while its definedness is cleared.
+- **Основание:** image `/private/tmp/od-fw-s7-and-r8b-dil.bin`; runner с бюджетом 10000.
+- **Результат и проверка:** `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_and_r8b_dil -- --nocapture` — 4 passed; all 308 `paged_probe_profile` tests pass. Coverage includes result/flags and AF-definedness, R8B-only mutation, exact REX/opcode/ModRM, fetch-fault atomicity, neighbors, CPL3 and other-profile isolation. Runner retired 60 instructions then stopped at `40 F6 C5 07` (`TEST BPL,7`, ISSUE-158), `RIP=0x200dd1`, `Unsupported { opcode: 246 }`, `com1_bytes=0`.
+- **Ссылка:** [CPU profile contract](specs/CPU_CONTRACT.md#s7-04-exact-rust-helper-and-r8bdil).
+
+<a id="issue-158-s7-04-rust-helper-test-bpl-7-unsupported"></a>
+### ISSUE-158 — S7-04: Rust helper `TEST BPL,7` (`40 F6 C5 07`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `AND R8B,DIL`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200dd1`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner stops at `41 20 F8` (`AND R8B,DIL`), `Unsupported { opcode: 32 }`, `retired=59`, `RIP=0x200dce`; COM1 пуст.
-- **Основание:** image `/private/tmp/od-fw-s7-setae-r8b.bin`; `od -An -tx1 -j 0xdce -N16` shows `41 20 f8 40 f6 c5 07 40 0f 94 c7 41 84 f8 0f 84`; runner с бюджетом 10000.
-- **Следующий шаг:** inspect exact byte-AND operand order and REX register selection, then admit only this observed form in the base profile if bounded.
+- **Суть и последствия:** runner retires the exact AND, then stops at `40 F6 C5 07` (`TEST BPL,7`), `Unsupported { opcode: 246 }`, `retired=60`, `RIP=0x200dd1`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-and-r8b-dil.bin`; `od -An -tx1 -j 0xdd1 -N16` shows `40 f6 c5 07 40 0f 94 c7 41 84 f8 0f 84 b4 00 00`; runner с бюджетом 10000.
+- **Следующий шаг:** verify exact TEST byte-register/immediate semantics and REX register selection, then admit only the observed form if bounded.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.

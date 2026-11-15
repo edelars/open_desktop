@@ -748,6 +748,13 @@ Base `PagedCpl0ProbeV1` admits only `41 0F 93 C0`: REX `41`, `ConditionCode::Abo
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_setae_r8b -- --nocapture` — 4 passed: CF true/false with defined and undefined metadata, high-byte/register preservation, exact REX/ModRM form, fetch fault, neighboring conditions/registers/prefixes, CPL3 and other-profile isolation. Runner retired 59 instructions, then stopped at `41 20 F8` (`AND R8B,DIL`, ISSUE-157, RIP `0x200dce`). Full handoff validation remains incomplete.
 
+<a id="s7-04-exact-rust-helper-and-r8bdil"></a>
+#### Расширение S7-04: exact Rust-helper `AND R8B,DIL`
+
+Base `PagedCpl0ProbeV1` admits only `41 20 F8`: exact REX `41`, opcode `20`, and ModRM `F8` (`AND R8B,DIL`). It reuses byte `LogicKind::And` semantics and writes only R8B; other GPR bits and state are preserved. CF and OF are cleared, SF/ZF/PF follow the byte result, and AF's concrete value is retained while its definedness is cleared.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_and_r8b_dil -- --nocapture` — 4 passed; full `paged_probe_profile` — 308 passed. Coverage includes several results and flags, AF initially defined then undefined, full-state/R8B-only mutation, fetch-fault atomicity, neighboring direction/register/opcode/width/REX/prefix forms, CPL3 and other-profile isolation. Firmware image `/private/tmp/od-fw-s7-and-r8b-dil.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 60 instructions then stopped at `40 F6 C5 07` (`TEST BPL,7`, ISSUE-158), `RIP=0x200dd1`, `Unsupported { opcode: 246 }`, `com1_bytes=0`; full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции
