@@ -86,7 +86,7 @@ pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a] [--user-mode] [--checkpoint-table <oracle.json>]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode] [--checkpoint-table <oracle.json>]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -119,8 +119,8 @@ struct Options {
     set_cpl0: bool,
     /// `--diagnostic-past-c7` (S4-38L7): CPUID boundary off, result diagnostic and not counted.
     diagnostic_past_c7: bool,
-    /// `--cpuid-profile diagnostic|stage4a` (S4-38L9a, only with `--set-cpl0`): the CPUID profile
-    /// of the set; `diagnostic` (DiagnosticV1, with the C7 boundary) when absent.
+    /// `--cpuid-profile diagnostic|stage4a|stage4a-apic` (S4-38L9a, S4-38L8d: the APIC variant; only with
+    /// `--set-cpl0`): the CPUID profile of the set; `diagnostic` (DiagnosticV1, with the C7 boundary) when absent.
     cpuid_profile: CpuidProfile,
     /// `--user-mode` (S4-39c, only with `--set-cpl0 --cpuid-profile stage4a`): a committed `IRETQ`
     /// to CPL3 continues with the CPL3 entry instead of stopping at `user_entry`.
@@ -314,16 +314,17 @@ fn evaluate(options: &Options) -> (Value, u8) {
                             // S4-38L9c: with the TSC-only subset the kernel's `tdx_init` reads
                             // MSR 0x87 (MKTME KeyID partitioning); the member answers 0:0. Off for
                             // the DiagnosticV1 default, whose run does not get there.
-                            msr_tdx_keyid_partitioning_read: options.cpuid_profile
-                                == CpuidProfile::X8664V1Stage4A,
+                            msr_tdx_keyid_partitioning_read: options
+                                .cpuid_profile
+                                .is_stage4a_family(),
                             // S4-38L9d: with the subset that declares FPU and FXSR the kernel's
                             // `fpu__init_system` runs `FNINIT` and `FXSAVE`; the FP member
                             // implements them. Off for the DiagnosticV1 default.
-                            fp_state: options.cpuid_profile == CpuidProfile::X8664V1Stage4A,
+                            fp_state: options.cpuid_profile.is_stage4a_family(),
                             // S4-38L9e: the kernel's `int3_selftest` executes `INT3` and waits for
                             // `#BP` through the IDT; the INT3 member delivers it. Off for the
                             // DiagnosticV1 default (its member list stays as it was).
-                            int3: options.cpuid_profile == CpuidProfile::X8664V1Stage4A,
+                            int3: options.cpuid_profile.is_stage4a_family(),
                             ..LinuxCpl0SetMembers::linux_default()
                         },
                         options.user_mode,
@@ -373,7 +374,10 @@ fn evaluate(options: &Options) -> (Value, u8) {
 fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool, cpuid_profile: CpuidProfile) {
     let subset = cpuid_profile != CpuidProfile::DiagnosticV1;
     evidence["diagnostic_past_c7"] = json!(diagnostic_past_c7);
-    evidence["acceptance"] = json!(if diagnostic_past_c7 {
+    // S4-38L8d: the APIC profile is never counted (only the checkpoint L8d is its status; the PASS
+    // of S4-39j stays with `stage4a`).
+    let apic = cpuid_profile == CpuidProfile::X8664V1Stage4AApic;
+    evidence["acceptance"] = json!(if diagnostic_past_c7 || apic {
         "diagnostic_not_counted"
     } else {
         "counted"
@@ -383,7 +387,13 @@ fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool, cpuid_profile
     }
     // With both flags the note carries both explanations (subset and C7).
     let mut parts = Vec::new();
-    if subset {
+    if apic {
+        parts.push(
+            "CPUID profile X8664V1Stage4AApic declares a subset of the target (TSC, FPU, FXSR and \
+             APIC; checkpoint C7 boundary off by the profile; PIT -> IOAPIC INTIN2 -> Local APIC \
+             timer line and the clock owner on)",
+        );
+    } else if subset {
         parts.push(
             "CPUID profile X8664V1Stage4A declares a subset of the target (TSC, FPU and FXSR; \
              checkpoint C7 boundary off by the profile)",
@@ -399,7 +409,9 @@ fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool, cpuid_profile
         });
     }
     if !parts.is_empty() {
-        let verdict = if diagnostic_past_c7 {
+        let verdict = if apic {
+            "the result is NOT counted (a checkpoint L8d record only; the S4-39j PASS stays with stage4a)"
+        } else if diagnostic_past_c7 {
             "the result is NOT counted"
         } else {
             "the result is counted (stage4a is the counted profile)"
@@ -867,17 +879,20 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let cpuid_profile = match cpuid_profile_text.as_deref() {
         None | Some("diagnostic") => CpuidProfile::DiagnosticV1,
         Some("stage4a") => CpuidProfile::X8664V1Stage4A,
+        // S4-38L8d: stage4a plus the APIC bit; the board gets the IOAPIC timer line.
+        Some("stage4a-apic") => CpuidProfile::X8664V1Stage4AApic,
         Some(other) => {
             return Err(format!(
-                "invalid --cpuid-profile '{other}': diagnostic or stage4a; usage: {USAGE}"
+                "invalid --cpuid-profile '{other}': diagnostic, stage4a or stage4a-apic; usage: {USAGE}"
             ));
         }
     };
     // S4-39c: the user mode needs the CPUID subset the kernel boots with; `linux_default` (the
     // `diagnostic` profile) never turns it on.
     if user_mode && cpuid_profile != CpuidProfile::X8664V1Stage4A {
+        // S4-38L8d: `stage4a-apic` has no user mode (the CPL3 interrupt path is the 8259 one).
         return Err(format!(
-            "--user-mode needs --run, --set-cpl0 and --cpuid-profile stage4a; usage: {USAGE}"
+            "--user-mode needs --run, --set-cpl0 and --cpuid-profile stage4a (not stage4a-apic); usage: {USAGE}"
         ));
     }
     let nonce = required(nonce, "--nonce")?;
@@ -2454,6 +2469,85 @@ mod tests {
         );
     }
 
+    /// S4-38L8d: `--cpuid-profile stage4a-apic` is a profile of its own; the user mode needs
+    /// `stage4a` and is refused for it before anything runs.
+    #[test]
+    fn stage4a_apic_is_accepted_and_has_no_user_mode() {
+        let with = |extra: &[&str]| {
+            let mut args = vec!["--run", "--budget", "1", "--set-cpl0"];
+            args.extend_from_slice(extra);
+            parse_base(&args)
+        };
+        assert_eq!(
+            with(&["--cpuid-profile", "stage4a-apic"])
+                .unwrap()
+                .cpuid_profile,
+            CpuidProfile::X8664V1Stage4AApic
+        );
+        assert!(with(&["--cpuid-profile", "stage4a-apic", "--diagnostic-past-c7"]).is_ok());
+        let error = with(&["--cpuid-profile", "stage4a-apic", "--user-mode"]).unwrap_err();
+        assert!(error.contains("--user-mode needs"), "{error}");
+        // Needs --run and --set-cpl0 like the other profiles.
+        assert!(parse_base(&["--cpuid-profile", "stage4a-apic"]).is_err());
+    }
+
+    #[test]
+    fn stage4a_apic_evidence_names_the_profile_declares_apic_and_turns_on_irq_and_clock_owner() {
+        // CLI; MOV EAX, 1; CPUID; HLT.
+        let code = [0xFA, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x0F, 0xA2, 0xF4];
+        let run = |profile: CpuidProfile| {
+            let mut case = Case::new(
+                "stage4a-apic",
+                &bzimage_with_entry(&code),
+                &[0xAB; 4688],
+                BLOB,
+            );
+            case.options.budget = Some(64);
+            case.options.set_cpl0 = true;
+            case.options.cpuid_profile = profile;
+            let (value, exit) = evaluate(&case.options);
+            assert_eq!(exit, 0, "{value:#}");
+            value
+        };
+        let value = run(CpuidProfile::X8664V1Stage4AApic);
+        let stop = &value["stop"];
+        assert_eq!(value["cpuid_profile"], "X8664V1Stage4AApic");
+        // Oracle by hand: FPU (bit 0) | TSC (bit 4) | APIC (bit 9) | FXSR (bit 24).
+        assert_eq!(stop["gpr"]["rdx"], "0x1000211", "{value:#}");
+        assert_eq!(stop["gpr"]["rcx"], "0x0");
+        assert_eq!(stop["exit_kind"], "halted", "{value:#}");
+        let members = stop["set_members"].as_array().unwrap();
+        let has = |name: &str| members.iter().any(|member| member == name);
+        for name in [
+            "cpuid:X8664V1Stage4AApic",
+            "halt",
+            "irq",
+            "clock_owner",
+            "fp_state",
+            "int3",
+        ] {
+            assert!(has(name), "{name}: {members:?}");
+        }
+        assert!(!has("user_mode"));
+        // Not the counted profile of S4-39j: the PASS stays with stage4a.
+        assert_eq!(value["acceptance"], "diagnostic_not_counted");
+        let note = value["diagnostic_note"].as_str().unwrap();
+        assert!(note.contains("X8664V1Stage4AApic"), "{note}");
+        assert!(!note.contains("stage4a is the counted profile"), "{note}");
+        // The same program under stage4a: no clock owner, no halt (HLT is outside its set), and
+        // the unchanged evidence lines.
+        let base = run(CpuidProfile::X8664V1Stage4A);
+        assert_eq!(base["cpuid_profile"], "X8664V1Stage4A");
+        assert_eq!(base["stop"]["gpr"]["rdx"], "0x1000011");
+        assert_eq!(base["acceptance"], "counted");
+        let base_members = base["stop"]["set_members"].as_array().unwrap();
+        assert!(
+            !base_members
+                .iter()
+                .any(|m| m == "clock_owner" || m == "halt")
+        );
+    }
+
     #[test]
     fn stage4a_runs_fninit_and_fxsave_and_the_default_profile_does_not() {
         // CLI; MOV RAX,CR0; AND RAX,-13; MOV RDI,RAX; MOV CR0,RDI; MOV EDI,0x620; MOV CR4,RDI;
@@ -2636,6 +2730,38 @@ mod tests {
         assert_eq!(note(false, CpuidProfile::DiagnosticV1), None);
     }
 
+    /// S4-38L8d: the notes of the accepted evidence stay byte for byte (the APIC profile has its
+    /// own verdict). The strings are the `diagnostic_note` of the saved reports
+    /// `s4-39g-pic-pit-hlt-stage4a-run.json` (stage4a + `--diagnostic-past-c7`),
+    /// `s4-39j-gate-counted-cold1-stage4a-run.json` (stage4a alone); the diagnostic + flag note is the
+    /// one of `main` (42dc902), the S4-38L7 report predates the `; ` joint.
+    #[test]
+    fn the_notes_of_the_accepted_evidence_are_unchanged() {
+        let note = |past_c7: bool, profile: CpuidProfile| {
+            let mut evidence = json!({});
+            mark_acceptance(&mut evidence, past_c7, profile);
+            evidence["diagnostic_note"].as_str().unwrap().to_string()
+        };
+        assert_eq!(
+            note(true, CpuidProfile::X8664V1Stage4A),
+            "CPUID profile X8664V1Stage4A declares a subset of the target (TSC, FPU and FXSR; \
+             checkpoint C7 boundary off by the profile); --diagnostic-past-c7 also turns the \
+             checkpoint C7 boundary off by itself, so this run does not show that the profile \
+             alone avoids it; the result is NOT counted"
+        );
+        assert_eq!(
+            note(true, CpuidProfile::DiagnosticV1),
+            "DiagnosticV1 answers CPUID leaf 1 and 0x80000001 (checkpoint C7 boundary off); not a \
+             profile of the target CPU; the result is NOT counted"
+        );
+        assert_eq!(
+            note(false, CpuidProfile::X8664V1Stage4A),
+            "CPUID profile X8664V1Stage4A declares a subset of the target (TSC, FPU and FXSR; \
+             checkpoint C7 boundary off by the profile); the result is counted (stage4a is the \
+             counted profile)"
+        );
+    }
+
     #[test]
     fn acceptance_is_counted_for_both_profiles_without_the_flag_and_not_with_it() {
         let acceptance = |past_c7: bool, profile: CpuidProfile| {
@@ -2750,6 +2876,72 @@ mod tests {
         );
         assert_eq!(value["retired"], 0);
         assert_eq!(value["guest_started"], true);
+    }
+
+    /// S4-38L8d checkpoint, real kernel under `--cpuid-profile stage4a-apic` (release build:
+    /// `cargo test -p od-runner --release --offline -- --ignored stage4a_apic_reaches_check_timer`,
+    /// about ten minutes). The kernel enumerates the IOAPIC, `check_timer` takes the pin 2 path
+    /// without a fallback message, and the board delivers the timer IRQs. The stop after it is NOT
+    /// asserted: it moves with the next slices (today the SCI on IOAPIC pin 9, L8e). Evidence file
+    /// of the slice: `docs/reports/data/stage4/s4-38l8d-apic-check-timer.json` (from the CLI).
+    #[test]
+    #[ignore = "needs work/stage4 artifacts; release build, minutes"]
+    fn real_artifacts_stage4a_apic_reaches_check_timer() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let path = |p: &str| root.join(p).to_string_lossy().into_owned();
+        let options = Options {
+            vmlinuz: path("work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic"),
+            initramfs: path("work/stage4/initramfs/initramfs.cpio"),
+            acpi_blob: path("tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin"),
+            nonce: "s4-38l4a".to_string(),
+            expected_vmlinuz_sha256:
+                "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e".to_string(),
+            expected_acpi_manifest_hash: board_manifest_hash(),
+            expected_initramfs_sha256:
+                "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588".to_string(),
+            ram_mib: 128,
+            out: String::new(),
+            budget: Some(2_600_000_000),
+            set_cpl0: true,
+            diagnostic_past_c7: false,
+            cpuid_profile: CpuidProfile::X8664V1Stage4AApic,
+            user_mode: false,
+            checkpoint_table: Some(path("docs/reports/data/stage4/s4-38l2-oracle.json")),
+        };
+        let (value, exit) = evaluate(&options);
+        assert_eq!(exit, 0, "{value:#}");
+        assert_eq!(value["cpuid_profile"], "X8664V1Stage4AApic");
+        assert_eq!(value["acceptance"], "diagnostic_not_counted");
+        let stop = &value["stop"];
+        let com1 = stop["com1_text"].as_str().unwrap();
+        let ioapic = com1
+            .find("IOAPIC[0]: apic_id 1, version 32, address 0xfec00000, GSI 0-23")
+            .unwrap_or_else(|| panic!("no IOAPIC line: {stop:#}"));
+        let timer = com1
+            .find("..TIMER: vector=0x30 apic1=0 pin1=2 apic2=-1 pin2=-1")
+            .unwrap_or_else(|| panic!("no ..TIMER line: {stop:#}"));
+        assert!(ioapic < timer, "the IOAPIC line comes first");
+        for bad in [
+            "MP-BIOS bug",
+            "trying to set up timer",
+            "IO-APIC + timer doesn't work",
+            "No local APIC present",
+        ] {
+            assert!(!com1[timer..].contains(bad), "{bad}");
+        }
+        assert!(
+            stop["irqs_delivered"].as_u64().unwrap() >= 5,
+            "{}",
+            stop["irqs_delivered"]
+        );
+        assert!(stop["irq0_edges"].as_u64().unwrap() >= 5);
+        let c13 = value["checkpoints"]["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["id"] == "C13")
+            .expect("C13");
+        assert_eq!(c13["status"], "reached", "{c13:#}");
     }
 
     /// Real kernel through the CPL0 set (S4-38L3): the null segment loads (S2-46) and the dword
