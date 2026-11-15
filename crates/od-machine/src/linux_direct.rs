@@ -1126,7 +1126,34 @@ pub fn run_linux_direct_board_set_user_mode_with_execution_observations(
     instruction_budget: u64,
     members: LinuxCpl0SetMembers,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
-    run_linux_direct_board_set_with(boot, input, instruction_budget, members, true, true)
+    run_linux_direct_board_set_with_post_iret_index(
+        boot,
+        input,
+        instruction_budget,
+        members,
+        true,
+        true,
+        None,
+    )
+}
+
+/// One-shot user-mode run with an additional read-only post-IRET walk for one delivered #PF.
+pub fn run_linux_direct_board_set_user_mode_with_post_iret_index(
+    boot: &mut LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    instruction_budget: u64,
+    members: LinuxCpl0SetMembers,
+    delivered_page_fault_ordinal: u64,
+) -> Result<LinuxStopRecord, LinuxDirectError> {
+    run_linux_direct_board_set_with_post_iret_index(
+        boot,
+        input,
+        instruction_budget,
+        members,
+        true,
+        true,
+        Some(delivered_page_fault_ordinal),
+    )
 }
 
 fn run_linux_direct_board_set_with(
@@ -1136,6 +1163,26 @@ fn run_linux_direct_board_set_with(
     members: LinuxCpl0SetMembers,
     user_mode: bool,
     capture_execution_observations: bool,
+) -> Result<LinuxStopRecord, LinuxDirectError> {
+    run_linux_direct_board_set_with_post_iret_index(
+        boot,
+        input,
+        instruction_budget,
+        members,
+        user_mode,
+        capture_execution_observations,
+        None,
+    )
+}
+
+fn run_linux_direct_board_set_with_post_iret_index(
+    boot: &mut LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    instruction_budget: u64,
+    members: LinuxCpl0SetMembers,
+    user_mode: bool,
+    capture_execution_observations: bool,
+    selected_post_iret_ordinal: Option<u64>,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
     let pm_timer_reads_before = boot.board.acpi_pm().map(|pm| pm.timer_reads());
     // S4-39g: only the user-mode run of a board with the Linux-profile PIT and 8259 gets the
@@ -1278,13 +1325,14 @@ fn run_linux_direct_board_set_with(
     let cpuid_boundary =
         members.cpuid && !members.diagnostic_past_c7 && cpuid == CpuidProfile::DiagnosticV1;
     let result = if capture_execution_observations {
-        boot.board.run_linux_boot_cpl0_set_with_observations(
+        boot.board.run_linux_boot_cpl0_set_with_post_iret_index(
             instruction_budget,
             &set,
             cpuid_boundary,
             members.fetch_cache,
             members.irq,
             true,
+            selected_post_iret_ordinal,
         )
     } else {
         boot.board.run_linux_boot_cpl0_set(

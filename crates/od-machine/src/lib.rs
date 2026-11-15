@@ -159,6 +159,7 @@ pub use linux_direct::{
     load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
     run_linux_direct_board_set_user_mode,
     run_linux_direct_board_set_user_mode_with_execution_observations,
+    run_linux_direct_board_set_user_mode_with_post_iret_index,
 };
 
 pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEvent};
@@ -166,7 +167,8 @@ pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEve
 pub use execution_observations::{
     DeliveredPageFaultObservation, FaultingPageFaultContext, FaultingPageWalkContext,
     LINUX_PAGE_FAULT_EVENT_CAPACITY, LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
-    LINUX_RDTSC_SITE_CAPACITY, LinuxExecutionObservations, RdtscSiteCount,
+    LINUX_RDTSC_SITE_CAPACITY, LinuxExecutionObservations, PostIretPageWalkSnapshot,
+    RdtscSiteCount,
 };
 pub use firmware_board::{
     FIRMWARE_ACPI_FACS_BASE, FIRMWARE_ACPI_FACS_BYTES, FIRMWARE_ACPI_TABLES_BASE,

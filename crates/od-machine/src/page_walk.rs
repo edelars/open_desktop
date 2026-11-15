@@ -1020,11 +1020,36 @@ pub(crate) fn translate_long64_2m_ram_read_only_with_tables(
     context: AccessContext,
     access: AccessKind,
 ) -> Result<(GuestPhysicalAddress, [Option<GuestPhysicalAddress>; 4]), TrackedAccessError> {
+    translate_long64_2m_ram_read_only_with_trace(
+        memory,
+        paging,
+        instruction_rip,
+        address,
+        context,
+        access,
+    )
+    .0
+}
+
+/// Read-only 4 KiB / 2 MiB translation with the entries observed by the same walk, including
+/// entries visited before a translation fault or other walk error. The writer is a no-op, so
+/// this diagnostic does not commit accessed or dirty bits.
+pub(crate) fn translate_long64_2m_ram_read_only_with_trace(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    address: GuestLinearAddress,
+    context: AccessContext,
+    access: AccessKind,
+) -> (
+    Result<(GuestPhysicalAddress, [Option<GuestPhysicalAddress>; 4]), TrackedAccessError>,
+    WalkTrace,
+) {
     let mut no_op_writer = |_: &mut PhysicalMemory,
                             _: GuestPhysicalAddress,
                             _: u64,
                             _: &mut dyn FnMut(GuestPhysicalRange)| Ok(());
-    walk_long64_4k_with_writer(
+    let walk = walk_long64_4k_with_writer(
         memory,
         paging,
         instruction_rip,
@@ -1034,9 +1059,12 @@ pub(crate) fn translate_long64_2m_ram_read_only_with_tables(
         &mut |_| {},
         &mut no_op_writer,
         true,
+    );
+    (
+        walk.translation
+            .map(|translation| (translation.physical, translation.table_pages)),
+        walk.trace,
     )
-    .translation
-    .map(|translation| (translation.physical, translation.table_pages))
 }
 
 /// S4-38L4h: the translation half of a data write through the 4 KiB / 2 MiB tracked walk, with no

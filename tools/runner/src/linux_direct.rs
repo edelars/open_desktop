@@ -73,6 +73,7 @@ use od_machine::{
     LinuxExecutionObservations, LinuxStopRecord, MachineStopReason, load_linux_direct_board,
     run_linux_direct_board, run_linux_direct_board_set, run_linux_direct_board_set_user_mode,
     run_linux_direct_board_set_user_mode_with_execution_observations,
+    run_linux_direct_board_set_user_mode_with_post_iret_index,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -84,7 +85,7 @@ pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a] [--user-mode] [--stack-context-out <json>] [--execution-observations-out <json>]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a] [--user-mode] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-post-iret-index <n>]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -127,6 +128,8 @@ struct Options {
     stack_context_out: Option<String>,
     /// Separate, opt-in sidecar for CPL0 RDTSC sites and delivered #PF events; single user-mode run only.
     execution_observations_out: Option<String>,
+    /// Zero-based delivered-#PF ordinal for the opt-in post-IRET page-walk snapshot.
+    execution_observations_post_iret_index: Option<u64>,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -444,7 +447,15 @@ fn evaluate(options: &Options) -> (Value, u8) {
                     int3: options.cpuid_profile == CpuidProfile::X8664V1Stage4A,
                     ..LinuxCpl0SetMembers::linux_default()
                 };
-                let result = if options.execution_observations_out.is_some() {
+                let result = if let Some(index) = options.execution_observations_post_iret_index {
+                    run_linux_direct_board_set_user_mode_with_post_iret_index(
+                        &mut boot,
+                        &machine_input,
+                        budget,
+                        members,
+                        index,
+                    )
+                } else if options.execution_observations_out.is_some() {
                     run_linux_direct_board_set_user_mode_with_execution_observations(
                         &mut boot,
                         &machine_input,
@@ -954,6 +965,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut cpuid_profile_text: Option<String> = None;
     let mut stack_context_out = None;
     let mut execution_observations_out = None;
+    let mut execution_observations_post_iret_index = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1007,6 +1019,23 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--cpuid-profile" => &mut cpuid_profile_text,
             "--stack-context-out" => &mut stack_context_out,
             "--execution-observations-out" => &mut execution_observations_out,
+            "--execution-observations-post-iret-index" => {
+                let parsed = value
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|_| !value.starts_with('+'))
+                    .ok_or_else(|| {
+                        format!("invalid --execution-observations-post-iret-index '{value}'")
+                    })?;
+                if execution_observations_post_iret_index
+                    .replace(parsed)
+                    .is_some()
+                {
+                    return Err(format!("duplicate option {name}; usage: {USAGE}"));
+                }
+                index += 2;
+                continue;
+            }
             other => {
                 return Err(format!("unexpected option {other}; usage: {USAGE}"));
             }
@@ -1070,6 +1099,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--execution-observations-out needs --run, --set-cpl0 and --user-mode; usage: {USAGE}"
         ));
     }
+    if execution_observations_post_iret_index.is_some() && execution_observations_out.is_none() {
+        return Err(format!(
+            "--execution-observations-post-iret-index needs --execution-observations-out; usage: {USAGE}"
+        ));
+    }
     if stack_context_out.is_some()
         && stack_context_out.as_ref() == execution_observations_out.as_ref()
     {
@@ -1125,6 +1159,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         user_mode,
         stack_context_out,
         execution_observations_out,
+        execution_observations_post_iret_index,
     })
 }
 
@@ -1287,13 +1322,14 @@ fn write_execution_observations_sidecar(
     observations: &LinuxExecutionObservations,
 ) -> Result<(), String> {
     let value = json!({
-        "schema_version": 4,
-        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events with pre-delivery registers, bounded frame-pointer context, and the original faulting page-walk trace",
+        "schema_version": 5,
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, and an optional selected post-IRET page-walk snapshot",
         "limits": {
             "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
             "page_fault_events": od_machine::LINUX_PAGE_FAULT_EVENT_CAPACITY,
             "frame_links_per_page_fault": od_machine::LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY,
             "page_walk_entries_per_fault": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
+            "post_iret_page_walk_entries": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
         },
         "rdtsc_cpl0_sites": observations.rdtsc_cpl0_sites.iter().map(|site| json!({
             "rip": hex64(site.rip),
@@ -1315,6 +1351,7 @@ fn write_execution_observations_sidecar(
                 "rcx": hex64(event.faulting_context.rcx),
                 "rsi": hex64(event.faulting_context.rsi),
                 "rdi": hex64(event.faulting_context.rdi),
+                "cs_selector": event.faulting_context.cs_selector.map(|selector| format!("0x{selector:04x}")),
                 "frame_chain": event.faulting_context.frame_chain.iter().map(|frame| json!({
                     "frame_pointer": hex64(frame.frame_pointer),
                     "return_address": hex64(frame.return_address),
@@ -1334,6 +1371,31 @@ fn write_execution_observations_sidecar(
             },
         })).collect::<Vec<_>>(),
         "page_fault_events_omitted": observations.page_fault_events_omitted,
+        "post_iret_selected_ordinal": observations.post_iret_selected_ordinal,
+        "post_iret_page_walk_status": observations.post_iret_page_walk_status,
+        "post_iret_page_walk": observations.post_iret_page_walk.as_ref().map(|snapshot| json!({
+            "event_ordinal": snapshot.event_ordinal,
+            "fault_rip": hex64(snapshot.fault_rip),
+            "fault_cr2": hex64(snapshot.fault_cr2),
+            "fault_access": snapshot.fault_access,
+            "fault_cpl": snapshot.fault_cpl,
+            "post_iret_context": {
+                "rip": hex64(snapshot.post_iret_rip),
+                "cs": snapshot.post_iret_cs.map(|selector| format!("0x{selector:04x}")),
+                "cpl": snapshot.post_iret_cpl,
+                "rsp": hex64(snapshot.post_iret_rsp),
+                "cr3": hex64(snapshot.post_iret_cr3),
+            },
+            "translation_status": snapshot.translation_status,
+            "translated_physical": snapshot.translated_physical.map(hex64),
+            "translation_error": snapshot.translation_error,
+            "entries": snapshot.entries.iter().map(|entry| json!({
+                "level": format!("{:?}", entry.level),
+                "index": entry.index,
+                "entry_address": hex64(entry.entry_address.get()),
+                "entry_value": hex64(entry.entry_value),
+            })).collect::<Vec<_>>(),
+        })),
     });
     file_matches_existing_path(file, path, path)?;
     let bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
@@ -1501,6 +1563,7 @@ mod tests {
                 user_mode: false,
                 stack_context_out: None,
                 execution_observations_out: None,
+                execution_observations_post_iret_index: None,
             };
             Self { dir, options }
         }
@@ -2916,6 +2979,53 @@ mod tests {
             accepted.execution_observations_out.as_deref(),
             Some("observations.json")
         );
+        let selected = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-post-iret-index",
+                    "30",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(selected.execution_observations_post_iret_index, Some(30));
+        assert!(parse_base(&["--execution-observations-post-iret-index", "30"]).is_err());
+        assert!(
+            parse_base(
+                &[
+                    &run[..],
+                    &[
+                        "--execution-observations-out",
+                        "observations.json",
+                        "--execution-observations-post-iret-index",
+                        "-1",
+                    ],
+                ]
+                .concat(),
+            )
+            .is_err()
+        );
+        assert!(
+            parse_base(
+                &[
+                    &run[..],
+                    &[
+                        "--execution-observations-out",
+                        "observations.json",
+                        "--execution-observations-post-iret-index",
+                        "30",
+                        "--execution-observations-post-iret-index",
+                        "31",
+                    ],
+                ]
+                .concat(),
+            )
+            .is_err()
+        );
         assert!(parse_base(&["--execution-observations-out", "observations.json"]).is_err());
         assert!(parse_base(&[&run[..6], &["--execution-observations-out", "o"]].concat()).is_err());
         assert!(parse_base(&[&run[..4], &["--execution-observations-out", "o"]].concat()).is_err());
@@ -3140,6 +3250,7 @@ mod tests {
                     rcx: 0x4000,
                     rsi: 0x5000,
                     rdi: 0x6000,
+                    cs_selector: Some(0x23),
                     frame_chain: vec![od_machine::ConsoleContextFrame {
                         frame_pointer: 0x7000,
                         return_address: 0xffff_ffff_8100_7000,
@@ -3159,11 +3270,47 @@ mod tests {
                 },
             }],
             page_fault_events_omitted: 4,
+            post_iret_selected_ordinal: Some(3),
+            post_iret_page_walk_status: Some("captured"),
+            post_iret_page_walk: Some(od_machine::PostIretPageWalkSnapshot {
+                event_ordinal: 3,
+                fault_rip: 0xffff_ffff_8100_5678,
+                fault_cr2: 0x0000_0000_0040_2000,
+                fault_access: "Write".into(),
+                fault_cpl: 3,
+                post_iret_rip: 0xffff_ffff_8100_5678,
+                post_iret_cs: Some(0x23),
+                post_iret_cpl: 3,
+                post_iret_rsp: 0x2000,
+                post_iret_cr3: 0x1000,
+                entries: vec![od_machine::WalkEntry {
+                    level: od_machine::PageTableLevel::Pd,
+                    index: 4,
+                    entry_address: od_machine::GuestPhysicalAddress::new(0x3020),
+                    entry_value: 0x4007,
+                }],
+                translation_status: "translated",
+                translated_physical: Some(0x4_2000),
+                translation_error: None,
+            }),
         };
         write_execution_observations_sidecar(&mut file, path.to_str().unwrap(), &observations)
             .unwrap();
         let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema_version"], 4);
+        assert_eq!(value["schema_version"], 5);
+        assert_eq!(value["post_iret_selected_ordinal"], 3);
+        assert_eq!(value["post_iret_page_walk_status"], "captured");
+        assert_eq!(
+            value["post_iret_page_walk"]["translation_status"],
+            "translated"
+        );
+        assert_eq!(
+            value["post_iret_page_walk"]["entries"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
         assert_eq!(
             value["limits"]["rdtsc_cpl0_sites"],
             od_machine::LINUX_RDTSC_SITE_CAPACITY
@@ -3607,6 +3754,7 @@ mod tests {
             user_mode: false,
             stack_context_out: None,
             execution_observations_out: None,
+            execution_observations_post_iret_index: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -3652,6 +3800,7 @@ mod tests {
             user_mode: false,
             stack_context_out: None,
             execution_observations_out: None,
+            execution_observations_post_iret_index: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -3704,6 +3853,7 @@ mod tests {
             user_mode: false,
             stack_context_out: None,
             execution_observations_out: None,
+            execution_observations_post_iret_index: None,
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");

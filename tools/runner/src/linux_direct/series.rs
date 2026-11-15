@@ -445,7 +445,12 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
-        if matches!(name, "--stack-context-out" | "--execution-observations-out") {
+        if matches!(
+            name,
+            "--stack-context-out"
+                | "--execution-observations-out"
+                | "--execution-observations-post-iret-index"
+        ) {
             return Err(format!(
                 "{name} is available only for a single linux-direct run"
             ));
@@ -2052,6 +2057,16 @@ mod tests {
         ]);
         let error = parse_series_args(&execution_observations).unwrap_err();
         assert!(error.contains("--execution-observations-out"), "{error}");
+        let mut post_iret = base.clone();
+        post_iret.extend([
+            "--execution-observations-post-iret-index".into(),
+            "30".into(),
+        ]);
+        let error = parse_series_args(&post_iret).unwrap_err();
+        assert!(
+            error.contains("--execution-observations-post-iret-index"),
+            "{error}"
+        );
 
         let mut wrong_scenario = base.clone();
         let marker = wrong_scenario

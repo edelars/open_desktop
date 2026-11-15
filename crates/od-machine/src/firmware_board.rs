@@ -1785,6 +1785,27 @@ impl LoadedFirmwareBoard {
         irq_hook: bool,
         capture_execution_observations: bool,
     ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
+        self.run_linux_boot_cpl0_set_with_post_iret_index(
+            instruction_budget,
+            set,
+            cpuid_boundary,
+            fetch_cache,
+            irq_hook,
+            capture_execution_observations,
+            None,
+        )
+    }
+
+    pub(crate) fn run_linux_boot_cpl0_set_with_post_iret_index(
+        &mut self,
+        instruction_budget: u64,
+        set: &Cpl0ProfileSet<'_>,
+        cpuid_boundary: bool,
+        fetch_cache: bool,
+        irq_hook: bool,
+        capture_execution_observations: bool,
+        selected_post_iret_ordinal: Option<u64>,
+    ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
         let context = AccessContext {
             mode: InstructionMode::Long64,
             privilege: PrivilegeLevel::Ring0,
@@ -1797,8 +1818,9 @@ impl LoadedFirmwareBoard {
         let mut exceptions_delivered = 0u64;
         let mut page_faults_delivered = 0u64;
         let mut general_protection_faults_delivered = 0u64;
-        let mut execution_observations =
-            capture_execution_observations.then(LinuxExecutionObservationCollector::default);
+        let mut execution_observations = capture_execution_observations.then(|| {
+            LinuxExecutionObservationCollector::with_post_iret_ordinal(selected_post_iret_ordinal)
+        });
         let mut cpl3_retired = 0u64;
         let mut syscall_journal = crate::linux_direct::SyscallJournal::default();
         self.com1_log.clear();

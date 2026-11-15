@@ -3,11 +3,13 @@
 use crate::console_output_context::capture_frame_chain;
 use crate::execution_observations::{
     DeliveredPageFaultObservation, FaultingPageFaultContext, FaultingPageWalkContext,
-    LinuxExecutionObservationCollector,
+    LinuxExecutionObservationCollector, PendingPostIretObservation, PostIretPageWalkSnapshot,
 };
 use crate::fetch_translation_cache::{FetchCacheStats, FetchTranslationCache};
 use crate::irq_source::IrqBoundaryHook;
-use crate::page_walk::translate_long64_2m_ram_read_only_with_tables;
+use crate::page_walk::{
+    translate_long64_2m_ram_read_only_with_tables, translate_long64_2m_ram_read_only_with_trace,
+};
 use crate::{
     GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, Long64ProbeConfig, MachineBus,
     MemoryRegionKind, RamAccessOperation, TrackedAccessError, TrackedAccessOutcome,
@@ -950,7 +952,12 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
                 cache.as_ref(),
             ) {
                 IrqBoundaryOutcome::None => {}
-                IrqBoundaryOutcome::Delivered => continue,
+                IrqBoundaryOutcome::Delivered => {
+                    if let Some(observations) = execution_observations.as_deref_mut() {
+                        observations.note_nested_delivery();
+                    }
+                    continue;
+                }
                 IrqBoundaryOutcome::Failed(failure) => break failure,
             }
         }
@@ -969,8 +976,17 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
         // when that instruction is itself an `IRETQ`: it loads RF from its own frame (SDM, from
         // memory) and the loaded value stays.
         let resume_flag_before = state.rflags & RFLAGS_RF != 0;
-        let clear_resume_flag =
-            resume_flag_before && !iretq_at_rip(state, bus, &paging, context, cache.as_ref());
+        let pending_post_iret = execution_observations
+            .as_deref()
+            .and_then(LinuxExecutionObservationCollector::pending_post_iret);
+        let resume_flag_is_iretq =
+            resume_flag_before && iretq_at_rip(state, bus, &paging, context, cache.as_ref());
+        // The selected diagnostic uses the same opcode check but bypasses the fetch cache so it
+        // does not perturb cache hit/miss counters while waiting for the selected return.
+        let selected_return_is_iretq =
+            pending_post_iret.is_some() && iretq_at_rip(state, bus, &paging, context, None);
+        let iretq_detected = resume_flag_is_iretq || selected_return_is_iretq;
+        let clear_resume_flag = resume_flag_before && !resume_flag_is_iretq;
         let (ram, io) = bus.split_for_set_step();
         let mut port = PitWriteWatch {
             inner: io.port_io(),
@@ -1030,6 +1046,21 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
             pit_write_pending = true;
         }
         if let Ok(done) = &result {
+            if iretq_detected && done.instructions_executed == 1 {
+                if let Some(pending) = pending_post_iret.as_ref() {
+                    let restored_context_matches = post_iret_context_matches(pending, state);
+                    if let Some(observations) = execution_observations.as_deref_mut() {
+                        if observations.accept_post_iret_return(restored_context_matches) {
+                            let snapshot = memory.capture_post_iret_page_walk(
+                                pending.clone(),
+                                state,
+                                reported_cr3,
+                            );
+                            observations.record_post_iret_page_walk(snapshot);
+                        }
+                    }
+                }
+            }
             if done.instructions_executed > 0 {
                 deliveries_without_retirement = 0;
                 if clear_resume_flag {
@@ -1053,6 +1084,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
                         rcx: state.gpr[od_isa::Register::Rcx as usize],
                         rsi: state.gpr[od_isa::Register::Rsi as usize],
                         rdi: state.gpr[od_isa::Register::Rdi as usize],
+                        cs_selector: state.cs_selector,
                         frame_chain,
                         frame_chain_end,
                         page_walk: memory.page_fault_trace.clone(),
@@ -1086,6 +1118,9 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
                         if let Some((observations, faulting_context)) =
                             execution_observations.as_deref_mut().zip(faulting_context)
                         {
+                            if pending_post_iret.is_some() {
+                                observations.note_nested_delivery();
+                            }
                             observations.record_page_fault(DeliveredPageFaultObservation {
                                 rip: original_record
                                     .as_ref()
@@ -1152,6 +1187,11 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
                     None => {
                         delivered_exceptions += 1;
                         delivered_general_protection_faults += 1;
+                        if pending_post_iret.is_some()
+                            && let Some(observations) = execution_observations.as_deref_mut()
+                        {
+                            observations.note_nested_delivery();
+                        }
                         deliveries_without_retirement += 1;
                         continue;
                     }
@@ -1984,7 +2024,87 @@ fn faulting_page_walk_context(
     })
 }
 
+fn post_iret_context_matches(pending: &PendingPostIretObservation, state: &LongModeState) -> bool {
+    let cpl = state.cs_selector.map_or(0, |selector| (selector & 3) as u8);
+    state.rip == pending.fault_rip
+        && state.cs_selector == pending.fault_cs
+        && cpl == pending.fault_cpl
+        && state.gpr[od_isa::Register::Rsp as usize] == pending.fault_rsp
+}
+
 impl PagedMovMemoryAdapter<'_> {
+    fn capture_post_iret_page_walk(
+        &mut self,
+        pending: PendingPostIretObservation,
+        state: &LongModeState,
+        cr3: u64,
+    ) -> PostIretPageWalkSnapshot {
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: if pending.fault_cpl == 3 {
+                PrivilegeLevel::Ring3
+            } else {
+                PrivilegeLevel::Ring0
+            },
+            origin: AccessOrigin::Explicit,
+        };
+        let access = match pending.fault_access.as_str() {
+            "Read" => AccessKind::Read,
+            "Write" => AccessKind::Write,
+            "Fetch" => AccessKind::Fetch,
+            _ => AccessKind::Read,
+        };
+        let (translation, trace) = match &mut self.bus {
+            AdapterBus::Ram(memory) | AdapterBus::RamMmio(memory, _) => {
+                translate_long64_2m_ram_read_only_with_trace(
+                    memory,
+                    &self.paging,
+                    pending.fault_rip,
+                    GuestLinearAddress::new(pending.fault_cr2),
+                    context,
+                    access,
+                )
+            }
+            AdapterBus::Machine(bus) => {
+                let (memory, _) = bus.split_for_pio_step();
+                translate_long64_2m_ram_read_only_with_trace(
+                    memory,
+                    &self.paging,
+                    pending.fault_rip,
+                    GuestLinearAddress::new(pending.fault_cr2),
+                    context,
+                    access,
+                )
+            }
+        };
+        let entries = trace.entries().iter().flatten().copied().collect();
+        let (translation_status, translated_physical, translation_error) = match translation {
+            Ok((physical, _)) => ("translated", Some(physical.get()), None),
+            Err(TrackedAccessError::PageFault { record, reason }) => (
+                "page_fault",
+                None,
+                Some(format!("record={record:?}; reason={reason:?}")),
+            ),
+            Err(error) => ("error", None, Some(format!("{error:?}"))),
+        };
+        PostIretPageWalkSnapshot {
+            event_ordinal: pending.event_ordinal,
+            fault_rip: pending.fault_rip,
+            fault_cr2: pending.fault_cr2,
+            fault_access: pending.fault_access,
+            fault_cpl: pending.fault_cpl,
+            post_iret_rip: state.rip,
+            post_iret_cs: state.cs_selector,
+            post_iret_cpl: state.cs_selector.map_or(0, |selector| (selector & 3) as u8),
+            post_iret_rsp: state.gpr[od_isa::Register::Rsp as usize],
+            post_iret_cr3: cr3,
+            entries,
+            translation_status,
+            translated_physical,
+            translation_error,
+        }
+    }
+
     fn capture_fault_frame_chain(
         &mut self,
         rip: u64,
@@ -2605,6 +2725,179 @@ mod tests {
             cpl0_set_cross_page_read: false,
             fetch_cache: None,
         }
+    }
+
+    fn pending_post_iret(access: &str, cpl: u8) -> PendingPostIretObservation {
+        PendingPostIretObservation {
+            event_ordinal: 2,
+            fault_rip: 0x0040_0000,
+            fault_cr2: DATA_LINEAR + 0x456,
+            fault_access: access.into(),
+            fault_cpl: cpl,
+            fault_rsp: 0x7000,
+            fault_cs: Some(if cpl == 3 { 0x23 } else { 0x08 }),
+        }
+    }
+
+    #[test]
+    fn post_iret_snapshot_observes_handler_repaired_missing_leaf_without_a_d_updates() {
+        let mut bus = bus(0);
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let (original_fault, original_trace) = {
+            let (memory, _) = bus.split_for_pio_step();
+            translate_long64_2m_ram_read_only_with_trace(
+                memory,
+                &paging,
+                0x0040_0000,
+                GuestLinearAddress::new(DATA_LINEAR + 0x456),
+                context(),
+                AccessKind::Write,
+            )
+        };
+        assert!(matches!(
+            original_fault,
+            Err(TrackedAccessError::PageFault { .. })
+        ));
+        assert_eq!(original_trace.len(), 4);
+
+        // Model the handler repair between delivery and IRET.
+        put(&mut bus, 0x5000, 0x9007);
+        let before = [0x1000, 0x2000, 0x3010, 0x3020, 0x5000].map(|address| {
+            bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap()
+        });
+        let mut writes = Vec::new();
+        let mut callback = |range| writes.push(range);
+        let mut memory = adapter(&mut bus, &mut callback);
+        let pending = pending_post_iret("Write", 3);
+        let mut state = LongModeState::default();
+        state.rip = pending.fault_rip;
+        state.cs_selector = pending.fault_cs;
+        state.gpr[od_isa::Register::Rsp as usize] = pending.fault_rsp;
+        let snapshot = memory.capture_post_iret_page_walk(pending, &state, 0x1000);
+        assert_eq!(snapshot.translation_status, "translated");
+        assert_eq!(snapshot.translated_physical, Some(0x9456));
+        assert_eq!(snapshot.entries.len(), 4);
+        drop(memory);
+        drop(callback);
+        let after = [0x1000, 0x2000, 0x3010, 0x3020, 0x5000].map(|address| {
+            bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap()
+        });
+        assert_eq!(before, after);
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn post_iret_snapshot_uses_the_shared_two_mib_leaf_walk() {
+        let mut bus = bus(0);
+        put(&mut bus, 0x3020, 0x87);
+        let mut writes = |_| {};
+        let mut memory = adapter(&mut bus, &mut writes);
+        let pending = pending_post_iret("Read", 3);
+        let mut state = LongModeState::default();
+        state.rip = pending.fault_rip;
+        state.cs_selector = pending.fault_cs;
+        state.gpr[od_isa::Register::Rsp as usize] = pending.fault_rsp;
+        let snapshot = memory.capture_post_iret_page_walk(pending, &state, ROOT);
+        assert_eq!(snapshot.translation_status, "translated");
+        assert_eq!(snapshot.translated_physical, Some(0x456));
+        assert_eq!(snapshot.entries.len(), 3);
+        assert_eq!(snapshot.entries[2].entry_value, 0x87);
+    }
+
+    #[test]
+    fn nested_interrupt_return_context_cannot_complete_the_selected_page_fault() {
+        let mut collector = LinuxExecutionObservationCollector::with_post_iret_ordinal(Some(0));
+        let event = DeliveredPageFaultObservation {
+            rip: 0x0040_0000,
+            cr2: DATA_LINEAR,
+            error_code: 7,
+            access: "Write".into(),
+            cpl: 3,
+            faulting_context: FaultingPageFaultContext {
+                cr3: ROOT,
+                rsp: 0x7000,
+                rbp: 0,
+                rcx: 0,
+                rsi: 0,
+                rdi: 0,
+                cs_selector: Some(0x23),
+                frame_chain: Vec::new(),
+                frame_chain_end: crate::FrameChainEnd::NullFramePointer,
+                page_walk: None,
+            },
+        };
+        collector.record_page_fault(event);
+        let pending = collector.pending_post_iret().unwrap();
+        let mut nested_irq_return = LongModeState::default();
+        nested_irq_return.rip = 0xffff_ffff_8100_1000;
+        nested_irq_return.cs_selector = Some(0x08);
+        nested_irq_return.gpr[od_isa::Register::Rsp as usize] = 0x9000;
+        assert!(!post_iret_context_matches(&pending, &nested_irq_return));
+        collector.note_nested_delivery();
+        assert!(!collector.accept_post_iret_return(false));
+        assert_eq!(collector.pending_post_iret(), Some(pending.clone()));
+
+        let mut selected_fault_return = LongModeState::default();
+        selected_fault_return.rip = pending.fault_rip;
+        selected_fault_return.cs_selector = pending.fault_cs;
+        selected_fault_return.gpr[od_isa::Register::Rsp as usize] = pending.fault_rsp;
+        assert!(post_iret_context_matches(&pending, &selected_fault_return));
+        assert!(collector.accept_post_iret_return(true));
+        collector.record_post_iret_page_walk(PostIretPageWalkSnapshot {
+            event_ordinal: pending.event_ordinal,
+            fault_rip: pending.fault_rip,
+            fault_cr2: pending.fault_cr2,
+            fault_access: pending.fault_access,
+            fault_cpl: pending.fault_cpl,
+            post_iret_rip: selected_fault_return.rip,
+            post_iret_cs: selected_fault_return.cs_selector,
+            post_iret_cpl: 3,
+            post_iret_rsp: pending.fault_rsp,
+            post_iret_cr3: ROOT,
+            entries: Vec::new(),
+            translation_status: "translated",
+            translated_physical: Some(0x9000),
+            translation_error: None,
+        });
+        let observations = collector.finish();
+        assert_eq!(observations.post_iret_page_walk_status, Some("captured"));
+        assert_eq!(
+            observations.post_iret_page_walk.unwrap().event_ordinal,
+            pending.event_ordinal
+        );
+    }
+
+    #[test]
+    fn post_iret_snapshot_reports_permission_fault_and_preserves_page_tables() {
+        let mut bus = bus(0x9005);
+        let before = [0x1000, 0x2000, 0x3010, 0x3020, 0x5000].map(|address| {
+            bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap()
+        });
+        let mut writes = |_| {};
+        let mut memory = adapter(&mut bus, &mut writes);
+        let pending = pending_post_iret("Write", 3);
+        let mut state = LongModeState::default();
+        state.rip = pending.fault_rip;
+        state.cs_selector = pending.fault_cs;
+        state.gpr[od_isa::Register::Rsp as usize] = pending.fault_rsp;
+        let snapshot = memory.capture_post_iret_page_walk(pending, &state, ROOT);
+        assert_eq!(snapshot.translation_status, "page_fault");
+        assert_eq!(snapshot.entries.len(), 4);
+        assert!(
+            snapshot
+                .translation_error
+                .as_deref()
+                .is_some_and(|error| error.contains("write_denied: true"))
+        );
+        drop(memory);
+        let after = [0x1000, 0x2000, 0x3010, 0x3020, 0x5000].map(|address| {
+            bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap()
+        });
+        assert_eq!(before, after);
     }
 
     #[test]
