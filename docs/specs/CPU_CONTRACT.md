@@ -393,7 +393,7 @@ Long64 CPL0 allowlist: `48 8B 03` (`MOV RAX,[RBX]`), `48 89 0B`
 (`MOV [RBX],RCX`), bare `EC` (`IN AL,DX`), bare `EE` (`OUT DX,AL`) and bare
 `F4` (`HLT`); S7-03 extends it with `B0+r ib` and `66 B8+r iw`, and S7-04 adds
 bare `FC` (`CLD`) and the exact entry forms `48 C7 C0 id`, `48 39 C7`,
-`75 24`/`75 77` (the two exact firmware JNZ rel8 forms), `49 89 F8`,
+`75 24`/`75 77` (the two exact firmware JNZ rel8 forms), `77 0E` (exact helper JA/JNBE rel8), `49 89 F8`,
 `E8 83 01 00 00` and `E8 8D 02 00 00` (the two exact `CALL rel32` forms), `48 83 EC 58`
 (`SUB RSP,0x58`), `48 81 FF 00 00 10 00` (`CMP RDI,0x00100000`), `48 81 FA 9F 00 00 00` (`CMP RDX,0x9f`), and
 `48 8D 7C 24 08` (`LEA RDI,[RSP+8]`), `BE 00 00 10 00`
@@ -594,6 +594,12 @@ Tests проверяют full state, flags/definedness, cross-page ModRM fetch-f
 В base `PagedCpl0ProbeV1` допускается только `48 81 FA 9F 00 00 00`: Primary opcode `81`, длина 7, qword operand size, ровно REX.W `0x48`, операция CMP, назначение RDX и sign-extended imm32 `0x9f` (положительное значение 159). Используется существующая qword CMP-семантика: RDX не меняется, arithmetic flags/definedness обновляются, прочие flags сохраняются. Fetch fault на immediate не коммитит состояние; другие immediate/register/width/prefix/memory формы и CPL3/прочие paged profiles остаются вне allowlist.
 
 Tests покрывают equality и nonzero upper-qword сравнение, flags/definedness, fetch-fault atomicity, sign-extended negative immediate как rejected neighbor, другие neighbors и profile isolation. Runner retired 28 инструкций и остановился на `77 0E` (`JA/JNBE rel8`, ISSUE-128, RIP `0x200d1a`).
+
+#### Расширение S7-04: exact Rust-helper `JA/JNBE +0x0e`
+
+В base `PagedCpl0ProbeV1` допускается только `77 0E`: Primary opcode `77`, длина 2, без префиксов, `ConditionCode::Above` и displacement `+0x0e`. Переиспользуется общая branch semantics: target RIP вычисляется от next RIP, taken target проходит shared canonicality check до commit, not-taken branch только продвигает RIP. Условие истинно при CF=0 и ZF=0. RFLAGS/definedness и остальной CPU state сохраняются; другие condition/opcode/displacement и остальные paged profiles остаются вне allowlist.
+
+Tests проверяют truth table всех комбинаций CF/ZF при undefined CF/ZF, flags/definedness retention, taken noncanonical target #GP, not-taken noncanonical fall-through, fetch fault, neighboring forms и CPL3/stack/CR3/CR0.WP isolation. Runner retired 29 инструкций, взял переход на `0x200d2a` и остановился на `48 BF 4F 44 48 41 4E 44 4F 46` (`MOV RDI,imm64`, ISSUE-129, RIP `0x200d2a`).
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 

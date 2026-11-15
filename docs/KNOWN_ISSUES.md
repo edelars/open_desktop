@@ -214,10 +214,19 @@
 ### ISSUE-128 — S7-04: Rust helper `Jcc rel8` (`JA/JNBE`) остаётся вне paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `CMP RDX,0x9f`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware target `0x200d10`.
-- **Статус:** открыта; length compare выполнен, условный переход ещё не исполняется.
-- **Суть и последствия:** `RIP=0x200d1a` содержит `77 0E`, short `Jcc rel8` с condition `NotBelowOrEqual` (`JA/JNBE`) и displacement `+0x0e`. Runner возвращает `Unsupported { opcode: 119 }`; COM1 пуст, handoff parser ещё не достигнут.
+- **Статус:** решена узко для exact `77 0E` (`JA/JNBE rel8`) в base `PagedCpl0ProbeV1`.
+- **Суть и результат:** переиспользуется общая условная branch-семантика: переход берётся тогда и только тогда, когда CF=0 и ZF=0; taken target проходит shared canonicality check, not-taken fall-through не проверяется заранее. Flags/definedness не меняются. Другие условия/displacements и profiles остаются unsupported.
 - **Основание:** образ `/private/tmp/od-fw-s7-cmp-rdx-9f.bin`; `od -An -tx1 -j 0xd1a -N16` показывает `77 0e 66 c7 40 08 00 00 48 c7 00 00 00 00 00 c3`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=28`, `RIP=0x200d1a`, `com1_bytes=0`.
-- **Следующий шаг:** подтвердить branch condition/target относительно firmware helper flow и ограничить допуск exact encoding.
+- **Проверка решения:** `cargo test --offline -p od-isa --test paged_probe_profile --quiet` — 191 passed; все четыре комбинации CF/ZF, сохранение flags/definedness, taken noncanonical target #GP, not-taken noncanonical fall-through, fetch fault, соседние branch forms и CPL3/stack/CR3/CR0.WP isolation. Образ `/private/tmp/od-fw-s7-ja-rel8.bin` собран (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 29 инструкций, взял `77 0E` до `0x200d2a` и остановился на `48 BF 4F 44 48 41 4E 44 4F 46` (`MOV RDI,0x464f444e4148444f`) при `RIP=0x200d2a`, `Unsupported { opcode: 191 }`, `com1_bytes=0`.
+
+<a id="issue-129-s7-04-rust-helper-mov-rdi-imm64-unsupported"></a>
+### ISSUE-129 — S7-04: Rust helper `MOV RDI,imm64` остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `JA/JNBE +0x0e`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware target `0x200d10`.
+- **Статус:** открыта; helper branch прошёл, magic value ещё не загружено в RDI.
+- **Суть и последствия:** `RIP=0x200d2a` содержит `48 BF 4F 44 48 41 4E 44 4F 46` (`MOV RDI,0x464f444e4148444f`). Runner возвращает `Unsupported { opcode: 191 }`; COM1 пуст, полная проверка handoff ещё не завершена.
+- **Основание:** образ `/private/tmp/od-fw-s7-ja-rel8.bin`; `od -An -tx1 -j 0xd2a -N16` показывает `48 bf 4f 44 48 41 4e 44 4f 46 48 39 3e 75 38 55`; runner с бюджетом 10000 завершился `status=error`, `exit=unsupported`, `retired=29`, `RIP=0x200d2a`, `com1_bytes=0`.
+- **Следующий шаг:** проверить exact immediate MOV формы и профильную изоляцию.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
