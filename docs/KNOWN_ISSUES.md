@@ -12,6 +12,25 @@
 
 ## Записи
 
+### ISSUE-108 — слияние линий S4 и S5: не покрыты тестами совместные режимы наблюдений
+
+- **Дата обнаружения:** 2026-11-15, ревью слияния `63027b0` (codex, линия этапа 5, в main).
+- **Компонент:** `crates/od-machine/src/paged_memory_adapter.rs` (`run_cpl0_set_paged_2m_ram_observed`), `crates/od-machine/src/linux_direct.rs`, `tools/runner/src/linux_direct.rs`.
+- **Статус:** открыта; поддержка и тесты — отдельным срезом.
+- **Суть и последствия:** (1) Пара `--execution-observations-out` + `--checkpoint-table` не поддержана: публичные функции наблюдений S5 не принимают таблицу checkpoints S4, поэтому `parse` отвергает пару явным отказом (тест `execution_observations_with_checkpoint_table_is_refused`). Цикл платы (`run_cpl0_set_paged_2m_ram_observed`) принимает оба наблюдателя сразу, но совместный запуск checkpoints + observations тестами не проверялся. (2) Совместное включение `FetchCacheInvalidation::GuestOnly` (S4-14h) и наблюдений S5 тестами не проверялось. (3) Захват post-IRET внутри цикла платы не покрыт тестом через user-mode фасад: сценарий «`#PF` в CPL3 → ремонт обработчиком → `IRETQ` → снимок» и `Some(0)` (индекс выбранного доставленного `#PF`) проверены только на уровне адаптера (`post_iret_snapshot_*`), не на уровне `run_linux_direct_board_set_user_mode_with_post_iret_index`.
+- **Условия обнаружения:** чтение результата слияния; разрешённые конфликты `paged_memory_adapter.rs`, `firmware_board.rs`, `linux_direct.rs`.
+- **Следующий шаг:** срез с тестами (a) user-mode фасад с `#PF` → ремонт → `IRETQ` и `Some(0)`; (b) checkpoints + observations в одном прогоне цикла, затем снятие отказа в `parse`; (c) `GuestOnly` + observations.
+
+<a id="issue-107-stage4-uart-echo-cli-test-exit-code-mismatch"></a>
+
+### ISSUE-107 (закрыто) — S4 UART echo CLI test: exit-code assertion mismatch
+
+- **Дата обнаружения:** 2026-11-14 (линия этапа 5, в реестре codex значилась как ISSUE-100; переименована при слиянии с main, где номер 100 занят).
+- **Компонент:** `tools/runner/tests/stage4_probe_cli.rs` (`uart_echo_profile_checks_rx_expectation_budgets_and_stop`) и соответствие кодов выхода пробы UART echo Stage 4.
+- **Статус:** закрыта. Исправление: коммит `6265daa` («S4-44b probe_cli exit code»), он в main; после слияния линии этапа 5 (`63027b0`) тест `stage4_probe_cli::uart_echo_profile_checks_rx_expectation_budgets_and_stop` проходит.
+- **Суть и последствия (исторически):** полный прогон `od-runner` останавливался на проверке кода выхода `6` для `--stage4-uart-echo-probe --expect-byte 1`, а runner возвращал `5`; последующие JSON-проверки теста не выполнялись.
+- **Следующий шаг:** нет.
+
 ### ISSUE-106 — S4-38L8d: стоп на записи RTE пина 9 (SCI) и непроверенные части APIC-профиля
 
 - **Дата обнаружения:** 2026-11-15, живой прогон S4-38L8d (`docs/reports/data/stage4/s4-38l8d-apic-check-timer.json`).
@@ -79,16 +98,6 @@
   2. `FIRMWARE_CTRL` и `X_FIRMWARE_CTRL` оба равны `0xE_F000` (адрес FACS); валидатор требует равенства обоих адресу FACS. Спецификация может требовать, чтобы при ненулевом `X_FIRMWARE_CTRL` значение `FIRMWARE_CTRL` игнорировалось или было нулём; обязательность нуля по первоисточнику не сверена. Linux отдаёт приоритет 64-битному адресу (`acpi_tb_select_address`, `tbfadt.c`), поэтому на Linux различия не ожидается, но принятие таблиц Linux ещё не проверялось.
 - **Условия обнаружения:** чтение `fadt.rs` и валидатора ревью; запуск Linux с этими таблицами выполняется в S4-38.
 - **Следующий шаг:** сверить оба пункта с ACPI 6.x (Table 5.10, FADT; FACS) и решить вместе с S4-38 (принятие таблиц Linux); при расхождении исправить `fadt.rs`, golden-байты и валидатор.
-
-<a id="issue-107-stage4-uart-echo-cli-test-exit-code-mismatch"></a>
-
-### ISSUE-107 — S4 UART echo CLI test: exit-code assertion mismatch
-
-- **Дата обнаружения:** 2026-11-14, при проверке `cargo test -p od-runner --offline`.
-- **Компонент:** `tools/runner/tests/stage4_probe_cli.rs` (`uart_echo_profile_checks_rx_expectation_budgets_and_stop`) и exit mapping Stage 4 UART echo probe.
-- **Статус:** открыта; причина несовпадения test expectation и CLI exit mapping не установлена.
-- **Основание и последствия:** полный `od-runner` test run останавливается на assertion, ожидающем exit code `6` для `--stage4-uart-echo-probe --expect-byte 1`, тогда как текущий runner возвращает `5`. Повтор того же теста отдельно воспроизводит несовпадение. Тест прерывается на проверке кода и не подтверждает последующие JSON assertions. Это не связано с изменениями S5 build provenance.
-- **Следующий шаг:** проверить контракт exit codes и реализацию pio-error path; затем исправить реализацию или expectation на основании подтверждённого контракта и повторить тест.
 
 ### ISSUE-099 — S4-39j: правило зачётности `counted` для stage4a принято решением пользователя без записанного ревью
 

@@ -1159,8 +1159,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--execution-observations-post-iret-index needs --execution-observations-out; usage: {USAGE}"
         ));
     }
-    // The execution-observation runs of od-machine do not take a checkpoint table (the S4
-    // recorder and the S5 collector were built apart); refuse the pair rather than drop one.
+    // The board loop accepts both observers, but the public execution-observation runs of
+    // od-machine do not take a checkpoint table and the pair is untested (ISSUE-108); refuse it
+    // explicitly rather than drop one of the two.
     if execution_observations_out.is_some() && checkpoint_table.is_some() {
         return Err(format!(
             "--execution-observations-out cannot be combined with --checkpoint-table; usage: {USAGE}"
@@ -3017,6 +3018,28 @@ mod tests {
                 "context.json"
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn execution_observations_with_checkpoint_table_is_refused() {
+        let error = parse_base(&[
+            "--run",
+            "--budget",
+            "1",
+            "--set-cpl0",
+            "--cpuid-profile",
+            "stage4a",
+            "--user-mode",
+            "--execution-observations-out",
+            "observations.json",
+            "--checkpoint-table",
+            "oracle.json",
+        ])
+        .unwrap_err();
+        assert!(
+            error.contains("cannot be combined with --checkpoint-table"),
+            "{error}"
         );
     }
 
