@@ -742,6 +742,12 @@ Base `PagedCpl0ProbeV1` admits only `48 39 EA` for this qword register compare. 
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_cmp_rdx_rbp -- --nocapture` — 4 passed: equal/less/greater and overflow-sensitive qword cases, full GPR and flags/definedness checks, final ModRM-byte fetch-fault atomicity, neighboring tuples/directions/widths/prefixes, CPL3 and other-profile isolation. Runner retired 58 instructions, then stopped at `41 0F 93 C0` (`SETAE R8B`, ISSUE-156, RIP `0x200dca`). Full handoff validation remains incomplete.
 
+#### Расширение S7-04: exact Rust-helper `SETAE R8B`
+
+Base `PagedCpl0ProbeV1` admits only `41 0F 93 C0`: REX `41`, `ConditionCode::AboveOrEqual`, raw ModRM `C0`, and R8B. Shared SETcc reads CF, writes only R8B, preserves R8's upper 56 bits and all other registers/RFLAGS, and leaves flag-definedness unchanged.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_setae_r8b -- --nocapture` — 4 passed: CF true/false with defined and undefined metadata, high-byte/register preservation, exact REX/ModRM form, fetch fault, neighboring conditions/registers/prefixes, CPL3 and other-profile isolation. Runner retired 59 instructions, then stopped at `41 20 F8` (`AND R8B,DIL`, ISSUE-157, RIP `0x200dce`). Full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции

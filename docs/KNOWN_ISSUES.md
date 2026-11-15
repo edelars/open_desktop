@@ -458,13 +458,22 @@
 - **Результат и проверка:** focused tests and all 300 `paged_probe_profile` tests pass, covering equal and differing qwords (including reversed-result cases), flags/definedness, unchanged GPRs, final ModRM-byte fetch-fault atomicity, neighboring directions/registers/widths/prefixes, CPL3 and other-profile isolation. Runner retired 58 instructions, then stopped at `41 0F 93 C0` (`SETAE R8B`, ISSUE-156), `RIP=0x200dca`, `Unsupported { opcode: 147 }`, `com1_bytes=0`.
 
 <a id="issue-156-s7-04-rust-helper-setae-r8b-unsupported"></a>
-### ISSUE-156 — S7-04: Rust helper `SETAE R8B` (`41 0F 93 C0`) remains outside paged CPU profile
+### ISSUE-156 — S7-04: exact Rust helper `SETAE R8B` (`41 0F 93 C0`) profile slice
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `CMP RDX,RBP`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200dca`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner stops at `41 0F 93 C0` (`SETAE R8B`), `Unsupported { opcode: 147 }`, `retired=58`, `RIP=0x200dca`; COM1 пуст.
+- **Статус:** решена только для exact SETAE R8B encoding `41 0F 93 C0` in base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Суть и последствия:** the exact SETcc form evaluates `CF=0`, writes only R8B, preserves upper R8 and all other registers/RFLAGS, and leaves flag-definedness unchanged.
 - **Основание:** image `/private/tmp/od-fw-s7-cmp-rdx-rbp.bin`; `od -An -tx1 -j 0xdca -N16` shows `41 0f 93 c0 41 20 f8 40 f6 c5 07 40 0f 94 c7 41`; runner с бюджетом 10000.
-- **Следующий шаг:** inspect the exact SETAE R8B condition/register encoding and shared byte-write semantics, then admit only this observed form in the base profile if bounded.
+- **Результат и проверка:** focused tests and all 304 `paged_probe_profile` tests pass, covering true/false CF with defined and undefined metadata, R8B-only write, RAX/AH and all other GPR retention, exact REX/ModRM form, fetch-fault atomicity, neighbors, CPL3 and other-profile isolation. Runner retired 59 instructions, then stopped at `41 20 F8` (`AND R8B,DIL`, ISSUE-157), `RIP=0x200dce`, `Unsupported { opcode: 32 }`, `com1_bytes=0`.
+
+<a id="issue-157-s7-04-rust-helper-and-r8b-dil-unsupported"></a>
+### ISSUE-157 — S7-04: Rust helper `AND R8B,DIL` (`41 20 F8`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `SETAE R8B`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200dce`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner stops at `41 20 F8` (`AND R8B,DIL`), `Unsupported { opcode: 32 }`, `retired=59`, `RIP=0x200dce`; COM1 пуст.
+- **Основание:** image `/private/tmp/od-fw-s7-setae-r8b.bin`; `od -An -tx1 -j 0xdce -N16` shows `41 20 f8 40 f6 c5 07 40 0f 94 c7 41 84 f8 0f 84`; runner с бюджетом 10000.
+- **Следующий шаг:** inspect exact byte-AND operand order and REX register selection, then admit only this observed form in the base profile if bounded.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.
