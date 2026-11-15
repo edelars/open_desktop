@@ -2454,6 +2454,123 @@ fn firmware_entry_jnz_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn firmware_entry_mov_r8_rdi_copies_only_r8_and_advances_rip() {
+    let code = [0x49, 0x89, 0xf8]; // MOV R8,RDI
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rdi as usize] = 0x1122_3344_5566_7788;
+    cpu.gpr[Register::R8 as usize] = 0xaabb_ccdd_eeff_0011;
+    cpu.rflags = 0xd5a;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let defined = DEFINED & !(1 << 2);
+
+    let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, defined);
+    let mut expected = before;
+    expected.gpr[Register::R8 as usize] = expected.gpr[Register::Rdi as usize];
+    expected.rip += code.len() as u64;
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn firmware_entry_mov_r8_rdi_fetch_fault_does_not_commit() {
+    // Place the ModRM byte on the next unmapped code page.
+    let mut memory = Memory::new(&[]);
+    memory.bytes[CODE_PHYSICAL + 0xffe..CODE_PHYSICAL + 0x1000].copy_from_slice(&[0x49, 0x89]);
+    let mut cpu = state();
+    cpu.rip = RIP + 0xffe;
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    memory.fail_fetch_at = Some((cpu.rip + 2, page_fault(0x10, cpu.rip + 2)));
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(RIP + 0x1000),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert!(
+        memory
+            .fetches
+            .iter()
+            .any(|(address, _)| *address == RIP + 0x1000)
+    );
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn firmware_entry_mov_r8_rdi_neighbours_stay_unsupported_without_mutation() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x49, 0x89, 0xf9], 0x89),       // MOV R9,RDI
+        (&[0x49, 0x89, 0xf0], 0x89),       // MOV R8,RSI
+        (&[0x49, 0x8b, 0xf8], 0x8b),       // reverse direction: MOV RDI,R8
+        (&[0x41, 0x89, 0xf8], 0x89),       // dword MOV R8D,EDI
+        (&[0x49, 0x89, 0x38], 0x89),       // MOV [R8],RDI
+        (&[0x66, 0x49, 0x89, 0xf8], 0x89), // extra operand-size prefix
+        (&[0x40, 0x49, 0x89, 0xf8], 0x89), // redundant REX
+    ];
+
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "bytes {bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "bytes {bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn firmware_entry_mov_r8_rdi_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x49, 0x89, 0xf8];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    let before = cpu.clone();
+
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x49 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
     use od_isa::execute::{PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1, PagedCpl0StackProbeV1};
     for (bytes, opcode) in [
@@ -2462,6 +2579,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x48, 0xc7, 0xc0, 0, 0, 0x10, 0][..], 0xc7),
         (&[0x48, 0x39, 0xc7][..], 0x39),
         (&[0x75, 0x24][..], 0x75),
+        (&[0x49, 0x89, 0xf8][..], 0x89),
     ] {
         for profile in ["stack", "cr3", "cr0wp"] {
             let mut memory = Memory::new(bytes);

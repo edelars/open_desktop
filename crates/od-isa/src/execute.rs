@@ -20174,6 +20174,28 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             }
             return result(PagedProbeExit::Retired, 1);
         }
+        // S7-04: the validated handoff pointer is copied from RDI to R8 by
+        // exactly `49 89 F8`. Keep all other register MOV forms unsupported.
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x89
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x49),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R8, OperandSize::Qword)
+            && source == RegisterView::low(Register::Rdi, OperandSize::Qword) =>
+        {
+            let value = state.read(source);
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: the firmware entry compares the handoff GPA in RDI with the
         // expected value loaded into RAX. Admit only `48 39 C7`; all other CMP
         // forms remain outside this bounded boot profile.
