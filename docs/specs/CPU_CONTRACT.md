@@ -681,6 +681,12 @@ Base `PagedCpl0ProbeV1` admits only `40 0F 93 C7`: bare REX `40`, `SETAE` (`CF=0
 
 `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_setae_dil -- --nocapture` — 4 passed, covering CF true/false with CF undefined in metadata, full-state preservation, final-byte fetch fault atomicity, neighboring conditions/registers/prefixes and ignored ModRM.reg, CPL3 and other paged profiles. Runner retired 47 instructions and stopped at `40 08 CF` (`OR DIL,CL`, ISSUE-145, RIP `0x200d63`); full handoff validation remains incomplete.
 
+#### Расширение S7-04: exact Rust-helper `OR DIL,CL`
+
+Base `PagedCpl0ProbeV1` admits only `40 08 CF`, requiring bare REX `40`, byte `OR r/m8,r8`, destination DIL, and source CL. The existing logic result writes only the low DIL byte, preserving upper RDI and RCX. Flags follow shared OR semantics: CF and OF clear, SF/ZF/PF reflect the 8-bit result, and AF's concrete bit is preserved while AF becomes undefined in the returned definedness mask.
+
+`cargo test --offline -p od-isa --test paged_probe_profile rust_helper_or_dil_cl -- --nocapture` — 4 passed, covering 8-bit results and status flags, AF initially defined then undefined, full-state preservation, fetch-fault atomicity, unprefixed BH neighbor and other REX/operation/direction/register/width forms, CPL3 and other paged profiles. Runner retired 48 instructions and stopped at `74 3B` (`JZ +0x3B`, ISSUE-146, RIP `0x200d66`); full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции

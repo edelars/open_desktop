@@ -24,7 +24,7 @@
 | S7-01 | in_progress | `426c98a` | — | Сборка прошивки и EFI-приложений, host-side тесты, методика (выполнено исполнителем, ревью пройдено, замечания исправлены, коммита на момент записи нет; каркас основного образа и доказательство сборки PE32+ probe; тестовые EFI-приложения — S7-06, боевой RT-образ и размещение в FV — S7-11) |
 | S7-02 | in_progress | `68cca38` | — | Контракт входа: окна, handoff, manifest платы, ABI/состояние вызова, таймеры, ROM, RT relocation (выполнено, ожидает ревью, коммита нет) |
 | S7-03 | in_progress | — | — | ROM backing/shadow, загрузчик образа, handoff block, профиль платы и runner (выполнено исполнителем, ожидает ревью, коммита нет; blocker снят реализацией решения архитектора — допуск `B0+r ib` и `66 B8+r iw` в `PagedCpl0ProbeV1`; образ `--smoke` в машине: выход 0, `halted`, `retired = 4`, COM1 ровно `X`, см. раздел 5 и раздел S7-03) |
-| S7-04 | in_progress | `e1ef0f1`, `6553d56`, `d5d6e22`, `b219d0e`, `7bb0108`, `dd57771`, `717fed3`, `e32436b`, `9439e93`, `ebb9ef0`, `571dcc5` | previous slices reviewed; exact SETAE DIL slice awaits review | handoff parser connected; base profile admits exact `40 0F 93 C7` SETAE DIL with raw prefix/ModRM guard; runner retired 47 instructions and stopped at `40 08 CF` (`OR DIL,CL`, ISSUE-145) |
+| S7-04 | in_progress | `e1ef0f1`, `6553d56`, `d5d6e22`, `b219d0e`, `7bb0108`, `dd57771`, `717fed3`, `e32436b`, `9439e93`, `ebb9ef0`, `571dcc5` | previous slices reviewed; exact OR DIL,CL slice awaits review | handoff parser connected; base profile admits exact `40 08 CF` OR DIL,CL; runner retired 48 instructions and stopped at `74 3B` (`JZ +0x3B`, ISSUE-146) |
 | S7-05 | not_started | — | — | System Table, Boot Services, база протоколов, события, `ExitBootServices` |
 | S7-06 | not_started | — | — | PE/COFF loader, Authenticode-дайджест, `LoadImage`/`StartImage`/`Exit`, Loaded Image, Device Path |
 | S7-07 | not_started | — | — | Консоль: Simple Text Output/Input на COM1, ConIn/ConOut/StdErr |
@@ -776,3 +776,10 @@ Checks: `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_c
 Base `PagedCpl0ProbeV1` admits only `40 0F 93 C7`; the guard requires REX `40`, `AboveOrEqual`, raw ModRM `C7`, and DIL. Shared SETcc evaluation reads CF and writes only DIL, preserving the upper 56 bits of RDI, RFLAGS, and flag-definedness.
 
 Checks: `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_setae_dil -- --nocapture` — 4 passed; CF truth table, undefined CF, full state, final-byte fetch-fault atomicity, neighbor and ignored-ModRM.reg rejection, CPL3 and other paged profiles. Firmware image `/private/tmp/od-fw-s7-setae-dil.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner stopped after 47 retired instructions at `40 08 CF` (`OR DIL,CL`, ISSUE-145), `RIP=0x200d63`, `Unsupported { opcode: 8 }`, `com1_bytes=0`; full handoff validation remains incomplete.
+
+
+#### S7-04 CPU-profile slice: exact Rust-helper `OR DIL,CL`
+
+Base `PagedCpl0ProbeV1` admits only `40 08 CF` and reuses `LogicKind::Or` byte semantics. The result updates only DIL; upper RDI and RCX are preserved. CF/OF clear, SF/ZF/PF reflect the byte result, and AF's concrete value is retained while its definedness is cleared.
+
+Checks: `cargo test --offline -p od-isa --test paged_probe_profile rust_helper_or_dil_cl -- --nocapture` — 4 passed. Cases cover multiple 8-bit results/status flags, AF initially defined then undefined, full-state preservation, final-byte fetch-fault atomicity, unprefixed BH neighbor, neighboring source/direction/operation/width/REX forms, CPL3 and other paged profiles. Firmware image `/private/tmp/od-fw-s7-or-dil-cl.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner stopped after 48 retired instructions at `74 3B` (`JZ +0x3B`, ISSUE-146), `RIP=0x200d66`, `Unsupported { opcode: 116 }`, `com1_bytes=0`; full handoff validation remains incomplete.

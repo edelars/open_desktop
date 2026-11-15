@@ -358,13 +358,22 @@
 - **Runner:** image `/private/tmp/od-fw-s7-setae-dil.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retired 47 instructions, then stopped at `40 08 CF` (`OR DIL,CL`) with `Unsupported { opcode: 8 }`, `RIP=0x200d63`, `com1_bytes=0`; see [ISSUE-145](#issue-145-s7-04-rust-helper-or-dil-cl-unsupported).
 
 <a id="issue-145-s7-04-rust-helper-or-dil-cl-unsupported"></a>
-### ISSUE-145 — S7-04: Rust helper `OR DIL,CL` (`40 08 CF`) остаётся вне paged CPU profile
+### ISSUE-145 — S7-04: точная форма Rust helper `OR DIL,CL` (`40 08 CF`) admitted
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `SETAE DIL`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d63`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner stops at `40 08 CF` (`OR DIL,CL`), `Unsupported { opcode: 8 }`, `retired=47`, `RIP=0x200d63`; COM1 пуст. The helper now combines the byte results held in DIL and CL.
+- **Статус:** решена только для exact `40 08 CF` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Результат и проверка:** exact base-profile OR reads CL and DIL, writes the 8-bit result to DIL, and preserves upper RDI. Shared logic semantics clear CF/OF, compute SF/ZF/PF, retain concrete AF deterministically, and remove AF from flags-definedness. Four focused tests passed, covering result/flags, AF-definedness transition, fetch-fault atomicity, neighbors, REX requirement, CPL3 and other paged profiles.
 - **Основание:** образ `/private/tmp/od-fw-s7-setae-dil.bin`; `od -An -tx1 -j 0xd63 -N16` показывает `40 08 cf 74 3b c7 40 08 02 00 01 00 eb 18 66 c7`; runner с бюджетом 10000.
-- **Следующий шаг:** проверить bounded byte-register OR semantics and admit only this exact DIL,CL encoding in the base profile.
+- **Runner:** image `/private/tmp/od-fw-s7-or-dil-cl.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retired 48 instructions, then stopped at `74 3B` (`JZ +0x3B`) with `Unsupported { opcode: 116 }`, `RIP=0x200d66`, `com1_bytes=0`; see [ISSUE-146](#issue-146-s7-04-rust-helper-jz-plus-0x3b-unsupported).
+
+<a id="issue-146-s7-04-rust-helper-jz-plus-0x3b-unsupported"></a>
+### ISSUE-146 — S7-04: Rust helper `JZ +0x3B` (`74 3B`) остаётся вне paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `OR DIL,CL`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), Rust helper at firmware address `0x200d66`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner stops at `74 3B` (`JZ +0x3B`), `Unsupported { opcode: 116 }`, `retired=48`, `RIP=0x200d66`; COM1 пуст. This conditional branch follows the byte-result combination.
+- **Основание:** образ `/private/tmp/od-fw-s7-or-dil-cl.bin`; `od -An -tx1 -j 0xd66 -N16` показывает `74 3b c7 40 08 02 00 01 00 eb 18 66 c7 40 08 01`; runner с бюджетом 10000.
+- **Следующий шаг:** проверить exact short JZ displacement, taken/fall-through behavior, flags-definedness and target canonicality in base profile.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.
