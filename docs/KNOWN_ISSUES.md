@@ -17,10 +17,19 @@
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `MOV R8,RDI`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
 - **Владелец:** S7-04 совместно с владельцем CPU profile.
-- **Статус:** открыта; runner проходит пять startup-инструкций, но до Rust entry не доходит.
-- **Суть и последствия:** после четырёх предыдущих инструкций и `49 89 F8` runner отклоняет `48 8D 3D 09 2B 00 00` (`LEA RDI,[RIP+0x2b09]`) на `RIP=0x200050`. COM1 пуст; handoff parser и firmware entry не проверены в машине.
-- **Основание:** образ `/private/tmp/od-fw-s7-04-mov-r8.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; команда `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-mov-r8.bin --com1-out /private/tmp/od-fw-s7-04-mov-r8.com1 --budget 10000` вернула `Unsupported { opcode: 141 }` (decimal = `0x8d`), `retired=5`, `RIP=0x200050`, `com1_bytes=0`.
-- **Следующий шаг:** определить точную RIP-relative LEA форму из startup, проверить вычисление EA относительно next RIP и профильную изоляцию; повторить runner-прогон.
+- **Статус:** решена узко для точной формы `48 8D 3D 09 2B 00 00`; runner остановился на следующем LEA (ISSUE-106).
+- **Суть и последствия:** после `49 89 F8` runner отклонял `48 8D 3D 09 2B 00 00` на `RIP=0x200050`. Базовый `PagedCpl0ProbeV1` теперь вычисляет RIP-relative EA относительно next RIP и записывает только RDI; иные LEA формы и профили остаются вне допуска.
+- **Основание:** образ `/private/tmp/od-fw-s7-04-lea.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner retired 6 инструкций и остановился на следующем `48 8D 0D 02 2B 00 00` (`LEA RCX,[RIP+0x2b02]`) на `RIP=0x200057`; см. ISSUE-106.
+- **Проверка:** `paged_probe_profile` — 97 passed; exact target/full state, flags-definedness, neighbors, fetch fault, CPL3 and other-profile isolation. Реализация и следующий blocker описаны в [S7-04 отчёте](reports/STAGE_7_REPORT.md#s7-04-cpu-profile-lea).
+
+<a id="issue-106-s7-04-paged-cpu-profile-does-not-admit-lea-rcx-rip-relative-at-firmware-entry"></a>
+### ISSUE-106 — S7-04: paged CPU profile не допускает `LEA RCX,[RIP+disp32]` из entry прошивки
+- **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `LEA RDI`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, `crates/od-machine/`), `_start` (`firmware/uefi/src/start.S`).
+- **Статус:** открыта; runner исполнил шесть startup-инструкций, до Rust entry не дошёл.
+- **Суть и последствия:** runner отклоняет `48 8D 0D 02 2B 00 00` (`LEA RCX,[RIP+0x2b02]`) при `RIP=0x200057`; COM1 пуст, handoff parser в машине не проверен.
+- **Основание:** `/private/tmp/od-fw-s7-04-lea.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; `cargo run --offline -p od-runner -- boot-firmware --image /private/tmp/od-fw-s7-04-lea.bin --com1-out /private/tmp/od-fw-s7-04-lea.com1 --budget 10000` вернул `status=error`, `exit=unsupported`, `Unsupported { opcode: 141 }`, `retired=6`, `RIP=0x200057`, `com1_bytes=0`. Байты подтверждены через `od -An -tx1 -j 0x57 -N16`: `48 8d 0d 02 2b 00 00 ...`.
+- **Следующий шаг:** рассмотреть только наблюдённую форму `LEA RCX,[RIP+0x2b02]`, подтвердить регистр/смещение и повторить runner.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
