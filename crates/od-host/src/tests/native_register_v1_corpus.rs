@@ -2896,7 +2896,10 @@ fn generate_corpus_observations() -> CorpusObservationsEnvelope {
                 code_digest = (code_digest ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3);
             }
             let backend_runs = run_repeated(&input);
-            cases.push(CorpusObservation { input, backend_runs });
+            cases.push(CorpusObservation {
+                input,
+                backend_runs,
+            });
         }
     }
     let mut envelope = CorpusObservationsEnvelope {
