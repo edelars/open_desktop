@@ -27121,3 +27121,10 @@ Four focused tests cover representative sums and flag combinations, carry/zero/p
 Base `PagedCpl0ProbeV1` admits only exact bytes `48 39 EF`: primary opcode `39` (r/m destination, reg source), exact REX.W `48`, and register-direct ModRM `EF`. This selects qword RDI as the compared destination and qword RBP as the source; shared qword CMP semantics compute RDI−RBP for CF/PF/AF/ZF/SF/OF and mark all six arithmetic flags defined. CMP changes no GPRs. Other register pairs, reverse opcode direction, widths, prefixes, memory operands, CPL3 and other profiles remain unsupported.
 
 Four focused tests cover equality, borrow, parity and signed overflow flags, complete GPR/state retention, arithmetic flag definedness, final-ModRM fetch-fault atomicity, neighboring encodings and CPL3 isolation. The other-profile isolation test passes. Firmware now advances to ISSUE-209: `77 3D` (`JA rel8 +0x3d`) at RIP `0x200ef6`.
+
+
+### S7-04: exact Rust-helper `JA rel8 +0x3d` (ISSUE-209)
+
+Base `PagedCpl0ProbeV1` admits only exact no-prefix bytes `77 3D`: short `JA/JNBE`, signed displacement +0x3d. The shared `ConditionCode::Above` condition is `CF=0 && ZF=0`. The branch preserves RFLAGS and `rflags_defined`; it selects `next_rip+0x3d` when taken and fall-through otherwise. Only a taken target is canonicality-checked. Other displacements, conditions, prefixes, near forms, CPL3 and other profiles remain unsupported.
+
+Five focused tests cover all CF/ZF combinations with defined and undefined inputs, exact target/fall-through and full-state retention, taken-only canonicality, rel8 fetch-fault atomicity, adjacent conditions/displacements/prefixes and CPL3 isolation. All 508 `paged_probe_profile` tests pass; all `od-isa` package suites pass. Scoped check, Rust 2024 rustfmt and diff-check pass. The full `od-machine` suite reports 1,195 passed, 2 failed, 6 ignored; both failures are the registered ISSUE-201 stale CLD expectations (actual unsupported opcode 250, expected 252). Firmware now advances to ISSUE-210: `44 8B 6E 3C` (`MOV R13D,dword ptr [RSI+0x3c]`) at RIP `0x200ef8`.
