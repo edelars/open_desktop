@@ -1268,13 +1268,14 @@
 - **Проверка:** focused tests cover both ZF outcomes and definedness states, exact target/fallthrough, taken-only canonicality including a noncanonical target, final-byte fetch-fault atomicity, adjacent displacements, condition/opcode and prefix neighbors, CPL3 and other-profile isolation. Runner advances to `48 89 F0` (`MOV RAX,RSI`, ISSUE-243) at RIP `0x201574`, after 8,931 retired instructions; COM1 remains empty. Independent review approved with no findings.
 - **Следующий шаг:** independent review of exact JZ rel32 guard and branch semantics.
 
-### ISSUE-243 — S7-04: helper `MOV RAX,RSI` (`48 89 F0`) remains outside paged CPU profile
+### ISSUE-243 — S7-04: helper `MOV RAX,RSI` (`48 89 F0`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-242.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201574`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner retired 8,931 instructions and stopped on `48 89 F0`, `Unsupported { opcode: 137 }`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue242.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1574` begin `48 89 F0`; runner budget 10000.
-- **Следующий шаг:** verify exact qword register-copy direction and state preservation for ISSUE-243.
+- **Статус:** решена в S7-04; exact base-profile form is admitted and independently reviewed.
+- **Суть и последствия:** opcode `89` copies the ModRM reg source RSI to the r/m destination RAX as a qword; all other GPRs, RFLAGS and flag definedness are preserved. Neighboring encodings and CPL3/other profiles remain unsupported.
+- **Проверка:** high-bit transfer, full state/definedness preservation, final-byte fetch-fault atomicity, opcode/direction/REX/width/prefix neighbors, CPL3 and profile isolation pass. Runner retires 8,932 instructions and stops at `48 8D 71 04` (`LEA RSI,[RCX+4]`, ISSUE-244) at RIP `0x201577`; COM1 remains empty.
+- **Основание:** firmware image `/private/tmp/od-fw-s7-04-issue243.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner budget 10000.
+- **Следующий шаг:** verify exact LEA address calculation and no-memory-access semantics for ISSUE-244.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.
@@ -3707,3 +3708,12 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Статус:** решена 2026-11-14; независимое повторное ревью не нашло blocker/major/minor замечаний.
 - **Результат:** отказ `PAUSE reason=system_sleep` отправляется в unified logging с subsystem `dev.opendesk.OpenDesktop`, категорией `MachineLifecycle` и только публичным числовым кодом ошибки. Имя машины, пути и текст диагностического сообщения не записываются. Уведомление по-прежнему показывается после пробуждения. Тест проходит через отказ запроса, проверяет аудит-код и уведомление после wake; `swift test --package-path apps` — 344 tests, 0 failures.
 - **Проверка и документация:** [MachineController.swift](../apps/macos/Sources/App/MachineController.swift), [тесты S11-12](../apps/macos/Tests/HostConditionsTests.swift), [отчёт этапа 11](reports/STAGE_11_REPORT.md). Локальные файлы в `logs/` bundle не используются, поэтому владельцем каталога и ротацией по-прежнему остаётся VMHost согласно [VM_BUNDLE §2.2](specs/VM_BUNDLE.md#22-logs).
+
+
+### ISSUE-244 — S7-04: helper `LEA RSI,[RCX+4]` (`48 8D 71 04`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-243.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201577`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner retired 8,932 instructions and stopped on `48 8D 71 04`, `Unsupported { opcode: 141 }`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue243.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1577` begin `48 8D 71 04`; runner budget 10000.
+- **Следующий шаг:** verify exact LEA register routing and effective-offset semantics without memory access for ISSUE-244.

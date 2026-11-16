@@ -27349,3 +27349,10 @@ Four focused profile tests cover qword data/state, stack/fetch faults, neighbors
 Base `PagedCpl0ProbeV1` admits only the exact unprefixed qword encoding `E8 79 05 00 00`. At firmware RIP `0x200fe2`, it computes target `0x201560`, pushes return RIP `0x200fe7` to `[RSP-8]` through tracked memory, then commits RSP and target RIP. CPU state and flags/definedness remain unchanged on stack or instruction-fetch faults; CPL3 and other paged profiles reject this exact encoding.
 
 Focused profile tests cover the return address, target, state retention, stack #PF/#SS, fetch-fault atomicity, adjacent displacement forms, CPL3 and profile isolation. Four-level machine tests confirm successful stack write A/D effects and same-page supervisor WP fault atomicity; independent review approved with no findings. Runner retires 8,928 instructions and next stops on `50` (`PUSH RAX`, ISSUE-240) at RIP `0x20156a`; COM1 remains empty.
+
+
+### S7-04: exact helper `MOV RAX,RSI` (ISSUE-243)
+
+Base `PagedCpl0ProbeV1` admits only exact `48 89 F0`. Opcode 89 uses RSI as the ModRM reg source and RAX as the r/m destination; the full qword is copied. Other GPRs, RFLAGS and flag definedness are unchanged. Instruction-fetch faults do not retire or commit state. Neighboring register/direction/REX/width/prefix forms, CPL3 and other profiles remain unsupported.
+
+Four focused profile tests cover high-bit values and full-state preservation, final-byte fetch-fault atomicity, neighboring encodings, CPL3 and profile isolation. Firmware advances after 8,932 retired instructions to `48 8D 71 04` (`LEA RSI,[RCX+4]`, ISSUE-244) at RIP `0x201577`; COM1 remains empty. Independent review approved with no findings.

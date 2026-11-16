@@ -21146,6 +21146,28 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: the helper copies RSI into RAX with exact `48 89 F0`.
+        // Opcode 89 stores the ModRM reg source into the r/m destination.
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x89
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x48),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rax, OperandSize::Qword)
+            && source == RegisterView::low(Register::Rsi, OperandSize::Qword) =>
+        {
+            let value = state.read(source);
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: the Rust helper saves R11 in R15 with exactly
         // `4D 89 DF` (MOV R15,R11); keep other register transfers refused.
         Operation::Mov {
