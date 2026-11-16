@@ -72,7 +72,7 @@ use od_machine::{
     LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput,
     LinuxExecutionObservations, LinuxStopRecord, MachineStopReason, load_linux_direct_board,
     run_linux_direct_board, run_linux_direct_board_set_observed,
-    run_linux_direct_board_set_user_mode_with_execution_observations_options,
+    run_linux_direct_board_set_user_mode_with_execution_observations_sampling_options,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -88,7 +88,7 @@ pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex>]]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>]]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -142,6 +142,8 @@ struct Options {
     execution_observations_post_iret_index: Option<u64>,
     /// Selected CPL0 RDTSC RIP for bounded post-instruction register samples.
     execution_observations_rdtsc_rip: Option<u64>,
+    /// Capture every Nth hit at the selected CPL0 RDTSC RIP.
+    execution_observations_rdtsc_stride: Option<u64>,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -596,13 +598,14 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                 };
                 let run_started = std::time::Instant::now();
                 let result = if options.execution_observations_out.is_some() {
-                    run_linux_direct_board_set_user_mode_with_execution_observations_options(
+                    run_linux_direct_board_set_user_mode_with_execution_observations_sampling_options(
                         &mut boot,
                         &machine_input,
                         budget,
                         members,
                         options.execution_observations_post_iret_index,
                         options.execution_observations_rdtsc_rip,
+                        options.execution_observations_rdtsc_stride.unwrap_or(1),
                     )
                 } else if options.set_cpl0 {
                     run_linux_direct_board_set_observed(
@@ -679,6 +682,7 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                     });
                 }
                 if let Some(path) = &options.execution_observations_out {
+                    let mut successful_metadata = None;
                     let write_error = if result.is_err() {
                         let cleanup_error = execution_observations_file
                             .take()
@@ -690,12 +694,25 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                         match (result.as_ref().ok(), execution_observations_file.as_mut()) {
                             (Some(record), Some(file)) => {
                                 match record.execution_observations.as_ref() {
-                                    Some(observations) => write_execution_observations_sidecar(
-                                        file,
-                                        path,
-                                        observations,
-                                    )
-                                    .err(),
+                                    Some(observations) => {
+                                        match write_execution_observations_sidecar(
+                                            file,
+                                            path,
+                                            observations,
+                                        ) {
+                                            Ok((byte_count, sha256)) => {
+                                                successful_metadata =
+                                                    Some(execution_observations_sidecar_metadata(
+                                                        path,
+                                                        observations,
+                                                        byte_count,
+                                                        sha256,
+                                                    ));
+                                                None
+                                            }
+                                            Err(error) => Some(error),
+                                        }
+                                    }
                                     None => Some("run returned no execution observations".into()),
                                 }
                             }
@@ -703,11 +720,12 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                             (None, _) => Some("run result is unavailable".into()),
                         }
                     };
-                    evidence["execution_observations_sidecar"] = json!({
+                    let mut metadata = successful_metadata.unwrap_or_else(|| json!({
                         "path": path,
                         "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events",
-                        "write_error": write_error,
-                    });
+                    }));
+                    metadata["write_error"] = json!(write_error);
+                    evidence["execution_observations_sidecar"] = metadata;
                 }
                 match result {
                     Ok(record) => {
@@ -1199,6 +1217,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut execution_observations_out = None;
     let mut execution_observations_post_iret_index = None;
     let mut execution_observations_rdtsc_rip = None;
+    let mut execution_observations_rdtsc_stride = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1304,6 +1323,19 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 index += 2;
                 continue;
             }
+            "--execution-observations-rdtsc-stride" => {
+                let parsed = value.parse::<u64>().ok().filter(|stride| *stride > 0).ok_or_else(|| {
+                    format!("invalid --execution-observations-rdtsc-stride '{value}': expected a positive integer")
+                })?;
+                if execution_observations_rdtsc_stride
+                    .replace(parsed)
+                    .is_some()
+                {
+                    return Err(format!("duplicate option {name}; usage: {USAGE}"));
+                }
+                index += 2;
+                continue;
+            }
             other => {
                 return Err(format!("unexpected option {other}; usage: {USAGE}"));
             }
@@ -1403,6 +1435,13 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--execution-observations-rdtsc-rip needs --execution-observations-out; usage: {USAGE}"
         ));
     }
+    if execution_observations_rdtsc_stride.is_some()
+        && (execution_observations_out.is_none() || execution_observations_rdtsc_rip.is_none())
+    {
+        return Err(format!(
+            "--execution-observations-rdtsc-stride needs --execution-observations-out and --execution-observations-rdtsc-rip; usage: {USAGE}"
+        ));
+    }
     // The board loop accepts both observers, but the public execution-observation runs of
     // od-machine do not take a checkpoint table and the pair is untested (ISSUE-108); refuse it
     // explicitly rather than drop one of the two.
@@ -1471,6 +1510,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         execution_observations_out,
         execution_observations_post_iret_index,
         execution_observations_rdtsc_rip,
+        execution_observations_rdtsc_stride,
     })
 }
 
@@ -1894,9 +1934,9 @@ fn write_execution_observations_sidecar(
     file: &mut File,
     path: &str,
     observations: &LinuxExecutionObservations,
-) -> Result<(), String> {
+) -> Result<(usize, String), String> {
     let value = json!({
-        "schema_version": 6,
+        "schema_version": 7,
         "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, and optional post-instruction registers at one selected CPL0 RDTSC RIP",
         "limits": {
             "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
@@ -1913,8 +1953,11 @@ fn write_execution_observations_sidecar(
         "rdtsc_cpl0_unattributed_reads": observations.rdtsc_cpl0_unattributed_reads,
         "rdtsc_cpl0_site_overflow_reads": observations.rdtsc_cpl0_site_overflow_reads,
         "rdtsc_sample_rip": observations.rdtsc_sample_rip.map(hex64),
+        "rdtsc_sample_stride": observations.rdtsc_sample_stride,
+        "rdtsc_sample_site_hits": observations.rdtsc_sample_site_hits,
         "rdtsc_site_samples": observations.rdtsc_site_samples.iter().map(|sample| json!({
             "rip": hex64(sample.rip),
+            "hit_ordinal": sample.hit_ordinal,
             "requested_cycles": hex64(sample.requested_cycles),
             "start_tsc": hex64(sample.start_tsc),
             "observed_tsc": hex64(sample.observed_tsc),
@@ -1985,9 +2028,13 @@ fn write_execution_observations_sidecar(
         })),
     });
     file_matches_existing_path(file, path, path)?;
-    let bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
+    let mut bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
+    bytes.push(b'\n');
     use std::io::Write;
-    if let Err(error) = file.write_all(&bytes).and_then(|()| file.write_all(b"\n")) {
+    if let Err(error) = file
+        .write_all(&bytes)
+        .and_then(|()| file.flush())
+    {
         let cleanup = match file_matches_existing_path(file, path, path) {
             Ok(true) => {
                 std::fs::remove_file(path).map_err(|cleanup_error| cleanup_error.to_string())
@@ -2002,7 +2049,28 @@ fn write_execution_observations_sidecar(
             }
         });
     }
-    Ok(())
+    file_matches_existing_path(file, path, path)?;
+    Ok((bytes.len(), od_testkit::sha256_hex(&bytes)))
+}
+
+fn execution_observations_sidecar_metadata(
+    path: &str,
+    observations: &LinuxExecutionObservations,
+    byte_count: usize,
+    sha256: String,
+) -> Value {
+    json!({
+        "path": path,
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events",
+        "write_error": null,
+        "selected_rip": observations.rdtsc_sample_rip.map(hex64),
+        "stride": observations.rdtsc_sample_stride,
+        "selected_site_hits": observations.rdtsc_sample_site_hits,
+        "sample_count": observations.rdtsc_site_samples.len(),
+        "samples_omitted": observations.rdtsc_site_samples_omitted,
+        "byte_count": byte_count,
+        "sha256": sha256,
+    })
 }
 
 fn uart_context_end_name(end: od_machine::UartOutputContextEnd) -> &'static str {
@@ -2155,6 +2223,7 @@ mod tests {
                 execution_observations_out: None,
                 execution_observations_post_iret_index: None,
                 execution_observations_rdtsc_rip: None,
+                execution_observations_rdtsc_stride: None,
             };
             Self { dir, options }
         }
@@ -3801,6 +3870,67 @@ mod tests {
             selected_rip.execution_observations_rdtsc_rip,
             Some(0xffff_ffff_8271_b34d)
         );
+        let selected_stride = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-rdtsc-rip",
+                    "0xffffffff8271b34d",
+                    "--execution-observations-rdtsc-stride",
+                    "512",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(
+            selected_stride.execution_observations_rdtsc_stride,
+            Some(512)
+        );
+        let mut zero_stride = run.to_vec();
+        zero_stride.extend([
+            "--execution-observations-out",
+            "observations.json",
+            "--execution-observations-rdtsc-rip",
+            "0x1234",
+            "--execution-observations-rdtsc-stride",
+            "0",
+        ]);
+        assert!(
+            parse_base(&zero_stride)
+                .unwrap_err()
+                .contains("positive integer")
+        );
+        let mut stride_without_rip = run.to_vec();
+        stride_without_rip.extend([
+            "--execution-observations-out",
+            "observations.json",
+            "--execution-observations-rdtsc-stride",
+            "2",
+        ]);
+        assert!(
+            parse_base(&stride_without_rip)
+                .unwrap_err()
+                .contains("needs")
+        );
+        let mut duplicate_stride = run.to_vec();
+        duplicate_stride.extend([
+            "--execution-observations-out",
+            "observations.json",
+            "--execution-observations-rdtsc-rip",
+            "0x1234",
+            "--execution-observations-rdtsc-stride",
+            "2",
+            "--execution-observations-rdtsc-stride",
+            "4",
+        ]);
+        assert!(
+            parse_base(&duplicate_stride)
+                .unwrap_err()
+                .contains("duplicate")
+        );
         let selected = parse_base(
             &[
                 &run[..],
@@ -4469,8 +4599,11 @@ mod tests {
                 reads: 19,
             }],
             rdtsc_sample_rip: Some(0xffff_ffff_8271_b34d),
+            rdtsc_sample_stride: 512,
+            rdtsc_sample_site_hits: 19_000_000,
             rdtsc_site_samples: vec![od_machine::RdtscSiteSample {
                 rip: 0xffff_ffff_8271_b34d,
+                hit_ordinal: 1024,
                 requested_cycles: 0x1234,
                 start_tsc: 0x1000,
                 observed_tsc: 0x1235,
@@ -4540,10 +4673,25 @@ mod tests {
                 translation_error: None,
             }),
         };
-        write_execution_observations_sidecar(&mut file, path.to_str().unwrap(), &observations)
-            .unwrap();
+        let (byte_count, sha256) =
+            write_execution_observations_sidecar(&mut file, path.to_str().unwrap(), &observations)
+                .unwrap();
+        let metadata = execution_observations_sidecar_metadata(
+            path.to_str().unwrap(),
+            &observations,
+            byte_count,
+            sha256.clone(),
+        );
+        let written = std::fs::read(&path).unwrap();
+        assert_eq!(byte_count, written.len());
+        assert_eq!(sha256, od_testkit::sha256_hex(&written));
+        assert_eq!(metadata["selected_rip"], "0xffffffff8271b34d");
+        assert_eq!(metadata["stride"], 512);
+        assert_eq!(metadata["selected_site_hits"], 19_000_000);
+        assert_eq!(metadata["sample_count"], 1);
+        assert_eq!(metadata["samples_omitted"], 7);
         let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema_version"], 6);
+        assert_eq!(value["schema_version"], 7);
         assert_eq!(value["post_iret_selected_ordinal"], 3);
         assert_eq!(value["post_iret_page_walk_status"], "captured");
         assert_eq!(
@@ -4581,6 +4729,9 @@ mod tests {
             od_machine::LINUX_RDTSC_SAMPLE_CAPACITY
         );
         assert_eq!(value["rdtsc_sample_rip"], "0xffffffff8271b34d");
+        assert_eq!(value["rdtsc_sample_stride"], 512);
+        assert_eq!(value["rdtsc_sample_site_hits"], 19_000_000);
+        assert_eq!(value["rdtsc_site_samples"][0]["hit_ordinal"], 1024);
         assert_eq!(value["rdtsc_site_samples"][0]["requested_cycles"], "0x1234");
         assert_eq!(value["rdtsc_site_samples"][0]["start_tsc"], "0x1000");
         assert_eq!(value["rdtsc_site_samples"][0]["observed_tsc"], "0x1235");
@@ -5192,6 +5343,7 @@ mod tests {
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
             execution_observations_rdtsc_rip: None,
+            execution_observations_rdtsc_stride: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -5242,6 +5394,7 @@ mod tests {
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
             execution_observations_rdtsc_rip: None,
+            execution_observations_rdtsc_stride: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -5296,6 +5449,7 @@ mod tests {
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
             execution_observations_rdtsc_rip: None,
+            execution_observations_rdtsc_stride: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -5371,6 +5525,7 @@ mod tests {
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
             execution_observations_rdtsc_rip: None,
+            execution_observations_rdtsc_stride: None,
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");

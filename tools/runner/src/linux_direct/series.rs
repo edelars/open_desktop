@@ -143,6 +143,7 @@ struct SeriesCli {
     expected_s5_marker_keys: Vec<String>,
     capture_execution_observations: bool,
     execution_observations_rdtsc_rip: Option<u64>,
+    execution_observations_rdtsc_stride: Option<u64>,
     out: PathBuf,
     forwarded: Vec<String>,
 }
@@ -187,19 +188,12 @@ pub(super) fn run(args: &[String]) -> ExitCode {
             .into_owned(),
     ]);
     if cli.capture_execution_observations {
-        preflight_args.extend([
-            "--execution-observations-out".into(),
-            series_dir
-                .join("preflight-execution-observations.json")
-                .to_string_lossy()
-                .into_owned(),
-        ]);
-        if let Some(rip) = cli.execution_observations_rdtsc_rip {
-            preflight_args.extend([
-                "--execution-observations-rdtsc-rip".into(),
-                format!("0x{rip:x}"),
-            ]);
-        }
+        append_execution_observations_args(
+            &mut preflight_args,
+            &series_dir.join("preflight-execution-observations.json"),
+            cli.execution_observations_rdtsc_rip,
+            cli.execution_observations_rdtsc_stride,
+        );
     }
     if let Err(error) = parse(&preflight_args) {
         return invalid_input(&error);
@@ -234,6 +228,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
         }
 
         let raw_path = run_dir.join("runner.json");
+        let observation_sidecar_path = run_dir.join("execution-observations.json");
         let mut run_args = cli.forwarded.clone();
         run_args.extend([
             "--nonce".into(),
@@ -242,26 +237,26 @@ pub(super) fn run(args: &[String]) -> ExitCode {
             raw_path.to_string_lossy().into_owned(),
         ]);
         if cli.capture_execution_observations {
-            run_args.extend([
-                "--execution-observations-out".into(),
-                run_dir
-                    .join("execution-observations.json")
-                    .to_string_lossy()
-                    .into_owned(),
-            ]);
-            if let Some(rip) = cli.execution_observations_rdtsc_rip {
-                run_args.extend([
-                    "--execution-observations-rdtsc-rip".into(),
-                    format!("0x{rip:x}"),
-                ]);
-            }
+            append_execution_observations_args(
+                &mut run_args,
+                &observation_sidecar_path,
+                cli.execution_observations_rdtsc_rip,
+                cli.execution_observations_rdtsc_stride,
+            );
         }
         let options = match parse(&run_args) {
             Ok(value) => value,
             Err(error) => return invalid_input(&error),
         };
         let started = Instant::now();
-        let (runner_value, exit_code) = evaluate(&options);
+        let (mut runner_value, exit_code) = evaluate(&options);
+        if runner_value["execution_observations_sidecar"]["sha256"].is_string() {
+            let relative = match relative_to_series(series_dir, &observation_sidecar_path) {
+                Ok(value) => value,
+                Err(error) => return invalid_input(&error),
+            };
+            runner_value["execution_observations_sidecar"]["path"] = json!(relative);
+        }
         let elapsed = started.elapsed().as_secs_f64();
         let raw_bytes = format!("{runner_value:#}\n").into_bytes();
         let raw_sha256 = od_testkit::sha256_hex(&raw_bytes);
@@ -462,6 +457,30 @@ fn source_dirty_from_env(value: Option<&str>) -> Option<bool> {
     }
 }
 
+fn append_execution_observations_args(
+    args: &mut Vec<String>,
+    sidecar_path: &std::path::Path,
+    selected_rip: Option<u64>,
+    stride: Option<u64>,
+) {
+    args.extend([
+        "--execution-observations-out".into(),
+        sidecar_path.to_string_lossy().into_owned(),
+    ]);
+    if let Some(rip) = selected_rip {
+        args.extend([
+            "--execution-observations-rdtsc-rip".into(),
+            format!("0x{rip:x}"),
+        ]);
+    }
+    if let Some(stride) = stride {
+        args.extend([
+            "--execution-observations-rdtsc-stride".into(),
+            stride.to_string(),
+        ]);
+    }
+}
+
 fn supported_schema_version(version: u32) -> bool {
     matches!(version, 1 | SERIES_SCHEMA_VERSION)
 }
@@ -475,6 +494,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     let mut expected_s5_marker_keys = Vec::new();
     let mut capture_execution_observations = false;
     let mut execution_observations_rdtsc_rip = None;
+    let mut execution_observations_rdtsc_stride = None;
     let mut forwarded = Vec::new();
     let mut index = 0;
     while index < args.len() {
@@ -530,6 +550,16 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
                         format!("invalid --execution-observations-rdtsc-rip '{value}'")
                     })?);
             }
+            "--execution-observations-rdtsc-stride" => {
+                if execution_observations_rdtsc_stride.is_some() {
+                    return Err("duplicate --execution-observations-rdtsc-stride".into());
+                }
+                execution_observations_rdtsc_stride = Some(
+                    value.parse::<u64>().ok().filter(|stride| *stride > 0).ok_or_else(|| {
+                        format!("invalid --execution-observations-rdtsc-stride '{value}': expected a positive integer")
+                    })?,
+                );
+            }
             "--test-runs" => {
                 if requested_runs.is_some() {
                     return Err("duplicate --test-runs".into());
@@ -582,6 +612,11 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     if execution_observations_rdtsc_rip.is_some() && !capture_execution_observations {
         return Err("--execution-observations-rdtsc-rip needs --execution-observations".into());
     }
+    if execution_observations_rdtsc_stride.is_some()
+        && (execution_observations_rdtsc_rip.is_none() || !capture_execution_observations)
+    {
+        return Err("--execution-observations-rdtsc-stride needs --execution-observations and --execution-observations-rdtsc-rip".into());
+    }
     for key in &expected_s5_marker_keys {
         if !valid_marker_key(key) {
             return Err(format!("invalid --expected-s5-marker key '{key}'"));
@@ -616,6 +651,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
         expected_s5_marker_keys,
         capture_execution_observations,
         execution_observations_rdtsc_rip,
+        execution_observations_rdtsc_stride,
         out,
         forwarded,
     })
@@ -928,6 +964,90 @@ fn relative_to_series(root: &Path, path: &Path) -> Result<String, String> {
         .map_err(|error| format!("artifact path escapes series directory: {error}"))
 }
 
+fn validate_execution_observations_sidecar(
+    root: &Path,
+    run_id: &str,
+    runner: &Value,
+) -> Result<(), String> {
+    let Some(sidecar) = runner.get("execution_observations_sidecar") else {
+        return Ok(());
+    };
+    let has_sha256 = sidecar.get("sha256").is_some();
+    let has_byte_count = sidecar.get("byte_count").is_some();
+    if !has_sha256 && !has_byte_count {
+        // Older raw runner JSON recorded a path and write_error, but not integrity metadata.
+        return Ok(());
+    }
+    if has_sha256 != has_byte_count
+        || sidecar
+            .get("write_error")
+            .map_or(true, |write_error| !write_error.is_null())
+    {
+        return Err("execution-observations sidecar integrity metadata is incomplete".into());
+    }
+    let path = sidecar["path"]
+        .as_str()
+        .ok_or("execution-observations sidecar path is missing")?;
+    if path != format!("runs/{run_id}/execution-observations.json") {
+        return Err("execution-observations sidecar path does not match run directory".into());
+    }
+    let expected_sha256 = sidecar["sha256"]
+        .as_str()
+        .ok_or("execution-observations sidecar SHA-256 is missing")?;
+    let expected_byte_count = sidecar["byte_count"]
+        .as_u64()
+        .ok_or("execution-observations sidecar byte count is invalid")?;
+    let selected_rip_is_canonical = match sidecar.get("selected_rip") {
+        Some(Value::Null) => true,
+        Some(Value::String(rip)) => canonical_hex64(rip),
+        _ => false,
+    };
+    if expected_sha256.len() != 64
+        || !expected_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || sidecar["stride"].as_u64().unwrap_or(0) == 0
+        || sidecar["selected_site_hits"].as_u64().is_none()
+        || sidecar["sample_count"].as_u64().is_none()
+        || sidecar["samples_omitted"].as_u64().is_none()
+        || !selected_rip_is_canonical
+    {
+        return Err("execution-observations sidecar integrity metadata is invalid".into());
+    }
+    let path = safe_relative(root, path)?;
+    let bytes = fs::read(path)
+        .map_err(|error| format!("could not read execution-observations sidecar: {error}"))?;
+    if bytes.len() as u64 != expected_byte_count
+        || od_testkit::sha256_hex(&bytes) != expected_sha256
+    {
+        return Err("execution-observations sidecar byte count or SHA-256 mismatch".into());
+    }
+    let sidecar_json: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("invalid execution-observations sidecar JSON: {error}"))?;
+    let sample_count = sidecar_json["rdtsc_site_samples"]
+        .as_array()
+        .map(|samples| samples.len() as u64);
+    if sidecar_json["rdtsc_sample_rip"] != sidecar["selected_rip"]
+        || sidecar_json["rdtsc_sample_stride"] != sidecar["stride"]
+        || sidecar_json["rdtsc_sample_site_hits"] != sidecar["selected_site_hits"]
+        || sample_count != sidecar["sample_count"].as_u64()
+        || sidecar_json["rdtsc_site_samples_omitted"] != sidecar["samples_omitted"]
+    {
+        return Err(
+            "execution-observations sidecar summary does not match raw runner metadata".into(),
+        );
+    }
+    Ok(())
+}
+
+fn canonical_hex64(value: &str) -> bool {
+    let Some(digits) = value.strip_prefix("0x") else {
+        return false;
+    };
+    let Ok(parsed) = u64::from_str_radix(digits, 16) else {
+        return false;
+    };
+    format!("0x{parsed:x}") == value
+}
+
 fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
     file.write_all(bytes)?;
@@ -1122,6 +1242,7 @@ fn load_run_manifest(series_path: &Path, reference: &RunReference) -> Result<Run
     }
     let raw_value: Value = serde_json::from_slice(&raw)
         .map_err(|error| format!("invalid raw runner JSON: {error}"))?;
+    validate_execution_observations_sidecar(root, &manifest.run_id, &raw_value)?;
     if raw_value["status"].as_str() != Some(manifest.hardware_status.as_str())
         || raw_value["nonce"].as_str() != Some(manifest.nonce.as_str())
         || raw_value["guest_started"].as_bool() != Some(manifest.runner.guest_started)
@@ -2064,6 +2185,102 @@ mod tests {
     }
 
     #[test]
+    fn series_loader_verifies_execution_observations_sidecar_hash_and_size() {
+        let temp = std::env::temp_dir().join(format!(
+            "od-runner-stage5-observation-sidecar-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let series_path =
+            write_test_series(&temp, "observation-sidecar", "nonceObsSidecar0001", "PASS");
+        let series_dir = series_path.parent().unwrap();
+        let run_id = "observation-sidecar-run-0001";
+        let run_dir = series_dir.join("runs").join(run_id);
+        let sidecar_path = run_dir.join("execution-observations.json");
+        let sidecar_value = json!({
+            "schema_version": 7,
+            "rdtsc_sample_rip": "0xffffffff8271b34d",
+            "rdtsc_sample_stride": 512,
+            "rdtsc_sample_site_hits": 19_000_000,
+            "rdtsc_site_samples": [],
+            "rdtsc_site_samples_omitted": 0,
+        });
+        let mut sidecar_bytes = serde_json::to_vec_pretty(&sidecar_value).unwrap();
+        sidecar_bytes.push(b'\n');
+        fs::write(&sidecar_path, &sidecar_bytes).unwrap();
+
+        let metadata = json!({
+            "path": format!("runs/{run_id}/execution-observations.json"),
+            "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events",
+            "write_error": null,
+            "selected_rip": "0xffffffff8271b34d",
+            "stride": 512,
+            "selected_site_hits": 19_000_000,
+            "sample_count": 0,
+            "samples_omitted": 0,
+            "byte_count": sidecar_bytes.len(),
+            "sha256": od_testkit::sha256_hex(&sidecar_bytes),
+        });
+        let update_metadata = |metadata: Value| {
+            let mut series: Value =
+                serde_json::from_slice(&fs::read(&series_path).unwrap()).unwrap();
+            let manifest_path = series_dir.join(series["runs"][0]["manifest"].as_str().unwrap());
+            let mut run: Value =
+                serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+            let raw_path = series_dir.join(run["runner"]["raw_json"].as_str().unwrap());
+            let mut raw: Value = serde_json::from_slice(&fs::read(&raw_path).unwrap()).unwrap();
+            raw["execution_observations_sidecar"] = metadata;
+            let raw_bytes = serde_json::to_vec_pretty(&raw).unwrap();
+            fs::write(&raw_path, &raw_bytes).unwrap();
+            run["runner"]["raw_json_sha256"] = json!(od_testkit::sha256_hex(&raw_bytes));
+            let run_bytes = serde_json::to_vec_pretty(&run).unwrap();
+            fs::write(&manifest_path, &run_bytes).unwrap();
+            series["runs"][0]["manifest_sha256"] = json!(od_testkit::sha256_hex(&run_bytes));
+            fs::write(&series_path, serde_json::to_vec_pretty(&series).unwrap()).unwrap();
+        };
+        update_metadata(metadata.clone());
+
+        let loaded = fresh_manifest(&series_path).unwrap();
+        assert!(load_run_manifest(&series_path, &loaded.runs[0]).is_ok());
+
+        let mut malformed_rip = metadata.clone();
+        malformed_rip["selected_rip"] = json!("0x0ffffffff8271b34d");
+        update_metadata(malformed_rip);
+        let loaded = fresh_manifest(&series_path).unwrap();
+        let error = load_run_manifest(&series_path, &loaded.runs[0]).unwrap_err();
+        assert!(error.contains("integrity metadata is invalid"), "{error}");
+        update_metadata(metadata.clone());
+
+        let mut malformed_summary = metadata.clone();
+        malformed_summary["sample_count"] = json!(37_109);
+        update_metadata(malformed_summary);
+        let loaded = fresh_manifest(&series_path).unwrap();
+        let error = load_run_manifest(&series_path, &loaded.runs[0]).unwrap_err();
+        assert!(error.contains("summary does not match"), "{error}");
+        update_metadata(metadata);
+        let loaded = fresh_manifest(&series_path).unwrap();
+
+        fs::write(&sidecar_path, b"tampered sidecar").unwrap();
+        let error = load_run_manifest(&series_path, &loaded.runs[0]).unwrap_err();
+        assert!(
+            error.contains("sidecar byte count or SHA-256 mismatch"),
+            "{error}"
+        );
+
+        fs::write(&sidecar_path, &sidecar_bytes).unwrap();
+        fs::remove_file(&sidecar_path).unwrap();
+        let error = load_run_manifest(&series_path, &loaded.runs[0]).unwrap_err();
+        assert!(
+            error.contains("could not resolve series artifact"),
+            "{error}"
+        );
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
     fn legacy_v2_configuration_without_linux_diagnostic_keys_still_verifies_raw_json() {
         let temp = std::env::temp_dir().join(format!(
             "od-runner-stage5-legacy-linux-config-{}-{}",
@@ -2365,6 +2582,32 @@ mod tests {
             parsed.execution_observations_rdtsc_rip,
             Some(0xffff_ffff_8271_b34d)
         );
+        let mut selected_rdtsc_stride = selected_rdtsc.clone();
+        selected_rdtsc_stride
+            .extend(["--execution-observations-rdtsc-stride".into(), "512".into()]);
+        let parsed = parse_series_args(&selected_rdtsc_stride).unwrap();
+        assert_eq!(parsed.execution_observations_rdtsc_stride, Some(512));
+        let mut zero_stride = selected_rdtsc.clone();
+        zero_stride.extend(["--execution-observations-rdtsc-stride".into(), "0".into()]);
+        assert!(
+            parse_series_args(&zero_stride)
+                .unwrap_err()
+                .contains("positive integer")
+        );
+        let mut stride_without_rip = execution_observations.clone();
+        stride_without_rip.extend(["--execution-observations-rdtsc-stride".into(), "512".into()]);
+        assert!(
+            parse_series_args(&stride_without_rip)
+                .unwrap_err()
+                .contains("needs")
+        );
+        let mut duplicate_stride = selected_rdtsc_stride.clone();
+        duplicate_stride.extend(["--execution-observations-rdtsc-stride".into(), "256".into()]);
+        assert!(
+            parse_series_args(&duplicate_stride)
+                .unwrap_err()
+                .contains("duplicate")
+        );
         let mut rdtsc_without_observations = base.clone();
         rdtsc_without_observations
             .extend(["--execution-observations-rdtsc-rip".into(), "0x1234".into()]);
@@ -2411,6 +2654,38 @@ mod tests {
             .unwrap();
         wrong_scenario[marker] = "B_FILE".into();
         assert!(parse_series_args(&wrong_scenario).is_err());
+    }
+
+    #[test]
+    fn observation_args_keep_per_run_sidecar_paths_and_forward_stride() {
+        let rip = Some(0xffff_ffff_8271_b34d);
+        let stride = Some(512);
+        let mut first = vec!["--run".into()];
+        append_execution_observations_args(
+            &mut first,
+            std::path::Path::new("series/runs/run-1/execution-observations.json"),
+            rip,
+            stride,
+        );
+        let mut second = vec!["--run".into()];
+        append_execution_observations_args(
+            &mut second,
+            std::path::Path::new("series/runs/run-2/execution-observations.json"),
+            rip,
+            stride,
+        );
+        assert_ne!(first[2], second[2]);
+        for args in [&first, &second] {
+            assert!(
+                args.windows(2).any(
+                    |pair| pair == ["--execution-observations-rdtsc-rip", "0xffffffff8271b34d"]
+                )
+            );
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--execution-observations-rdtsc-stride", "512"])
+            );
+        }
     }
 
     #[test]

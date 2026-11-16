@@ -180,6 +180,7 @@ pub use linux_direct::{
     run_linux_direct_board_set_observed, run_linux_direct_board_set_user_mode,
     run_linux_direct_board_set_user_mode_with_execution_observations,
     run_linux_direct_board_set_user_mode_with_execution_observations_options,
+    run_linux_direct_board_set_user_mode_with_execution_observations_sampling_options,
     run_linux_direct_board_set_user_mode_with_post_iret_index,
 };
 

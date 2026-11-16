@@ -2186,6 +2186,7 @@ impl LoadedFirmwareBoard {
             capture_execution_observations,
             None,
             None,
+            1,
         )
     }
 
@@ -2199,6 +2200,7 @@ impl LoadedFirmwareBoard {
         capture_execution_observations: bool,
         selected_post_iret_ordinal: Option<u64>,
         selected_rdtsc_sample_rip: Option<u64>,
+        selected_rdtsc_sample_stride: u64,
     ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
         let context = AccessContext {
             mode: InstructionMode::Long64,
@@ -2215,6 +2217,7 @@ impl LoadedFirmwareBoard {
         let mut execution_observations = capture_execution_observations.then(|| {
             LinuxExecutionObservationCollector::with_post_iret_ordinal(selected_post_iret_ordinal)
                 .with_rdtsc_sample_rip(selected_rdtsc_sample_rip)
+                .with_rdtsc_sample_stride(selected_rdtsc_sample_stride)
         });
         let mut cpl3_retired = 0u64;
         let mut syscall_journal = crate::linux_direct::SyscallJournal::default();
