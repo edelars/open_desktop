@@ -462,8 +462,19 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   modes × 20 paired samples завершены; результат и ограничения записаны в
   [S4-13a report](../reports/STAGE_4_S4-13a_2026-11-05.md).
 - Полный S4-13 остаётся открытым: это не production TLB choice. Нужны tracked
-  A/D semantics, mutable mappings, guest invalidation, CPU/JIT integration и
+  A/D semantics, mutable mappings, guest invalidation, CPU integration и
   representative boot workloads перед выбором capacity/replacement.
+  **Решение владельца 2026-11-15:** JIT-часть «CPU/JIT integration» выведена из
+  S4-13 и переносится в S4-15 и S4-42; TLB-on на трассе Linux — в S4-42/S4-44.
+  Срезы S4-13 закрываются без JIT: S4-13b (наблюдаемость на реальном пути),
+  S4-13c (теневые кэши: ёмкость, политика, гранулярность), S4-13d (расширенный
+  дифференциальный гейт), S4-13e (тайминг и правило решения), S4-13f (применение
+  и закрытие с ограничением «JIT вне среза»).
+- S4-13b (реализовано, ревью не проведено; чекбокс не ставится, S4-13 остаётся открытым): наблюдаемость кэша выборки на
+  реальном пути Linux, только измерение. Переменная окружения раннера `OD_FETCH_CACHE_STATS=<путь>` пишет sidecar с
+  суммой `FetchCacheStats` по всем вызовам цикла набора, обходами выборки/чтения/записи на инструкцию и разбиением на
+  фазы до/после checkpoint C5; без неё отчёт и поведение прежние (побайтно). `OD_NO_FETCH_CACHE` разобран отдельной
+  функцией (`0` и пустое значение оставляют кэш). См. раздел S4-13b в [отчёте](../reports/STAGE_4_REPORT.md).
 - **Где:** `od-machine`, `tools/bench/`, отчёт и небольшие данные этапа.
 - **Сделать:** сохранить uncached baseline, сделать минимальный bounded TLB prototype. Ключ/tag отражает address space, access/context, размер страницы и все влияющие на перевод permissions; исключить хранение невалидных указателей на RAM.
 - **Проверка:** одинаковые translations/faults/A/D effects cached/uncached; рабочие наборы разного размера, повторные прогоны, hit/miss, latency и память. Сначала измерить реальные случаи, затем выбрать структуру/размер.

@@ -12157,10 +12157,22 @@ mod tests {
         set: &Cpl0ProfileSet<'_>,
         budget: u64,
     ) -> (CacheOutcome, FetchCacheStats) {
-        let plain = run_cache_case(build, set, budget, false);
+        let mut plain = run_cache_case(build, set, budget, false);
         let mut cached = run_cache_case(build, set, budget, true);
         assert_eq!(plain.report.fetch_cache_stats, None);
         let stats = cached.report.fetch_cache_stats.take().expect("cache stats");
+        // S4-13b: the walk counters are measurement. The cache is invisible to data accesses
+        // (same data walks) and can only remove instruction-fetch walks; the rest of the report
+        // is compared as before.
+        let (cached_walks, plain_walks) = (cached.report.walk_counts, plain.report.walk_counts);
+        assert_eq!(cached_walks.data_read, plain_walks.data_read);
+        assert_eq!(cached_walks.data_write, plain_walks.data_write);
+        assert!(
+            cached_walks.fetch <= plain_walks.fetch,
+            "{cached_walks:?} {plain_walks:?}"
+        );
+        cached.report.walk_counts = Default::default();
+        plain.report.walk_counts = Default::default();
         assert_eq!(cached.report, plain.report);
         assert_eq!(cached.state, plain.state);
         assert_eq!(cached.writes, plain.writes);
@@ -17060,6 +17072,99 @@ mod tests {
         // The budget ended the run on the boundary after the MOV CR3: C3 is not seen (the boundary
         // hook runs after the budget check), and nothing past C0 is invented.
         assert_eq!(records.iter().map(|r| r.id).collect::<Vec<_>>(), [0]);
+    }
+
+    // ---- S4-13b: the opt-in fetch cache report of the board loop ----
+
+    /// `run_switch_with_recorder` with the report requested or not; returns the `Debug` text of
+    /// the run report and the fetch cache report.
+    fn run_switch_with_fetch_report(
+        targets: Option<Vec<crate::LinuxCheckpointTarget>>,
+        fetch_cache: bool,
+        report_on: bool,
+    ) -> (String, Option<crate::LinuxFetchCacheReport>) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let (mut boot, _) = boot_with_entry(&cr3_switch_program(TREE_PML4, 0x1111));
+        install_second_tree(&mut boot, 0x2222);
+        if let Some(targets) = targets {
+            boot.board
+                .enable_checkpoints(crate::LinuxCheckpointTable { targets })
+                .expect("valid table");
+        }
+        if report_on {
+            boot.board.enable_fetch_cache_report();
+        }
+        let report = boot
+            .board
+            .run_linux_boot_cpl0_set(64, &switch_set(&cli, &halt), false, fetch_cache, false)
+            .expect("runs");
+        let fetch_report = boot.board.take_fetch_cache_report();
+        // Taking the report ends the request: a second take has nothing.
+        assert_eq!(boot.board.take_fetch_cache_report(), None);
+        (format!("{report:?}"), fetch_report)
+    }
+
+    /// The report changes nothing in the run, is split at the boundary of C5 (the HLT here, the
+    /// fifth instruction) and its phases add up to the total.
+    #[test]
+    fn fetch_cache_report_splits_at_c5_and_leaves_the_run_unchanged() {
+        let c5 = || {
+            Some(vec![target_at(
+                5,
+                "e_entry",
+                Some(ENTRY + 0x12),
+                TREE_CODE + 0x212,
+            )])
+        };
+        let mut walks_by_cache = Vec::new();
+        for fetch_cache in [false, true] {
+            let (plain, none) = run_switch_with_fetch_report(c5(), fetch_cache, false);
+            assert_eq!(none, None, "no opt-in, no report");
+            let (observed, report) = run_switch_with_fetch_report(c5(), fetch_cache, true);
+            assert_eq!(observed, plain, "fetch_cache {fetch_cache}");
+            let report = report.expect("requested");
+            assert_eq!(report.cache_enabled, fetch_cache);
+            assert_eq!(report.phase_rule, crate::FETCH_CACHE_PHASE_RULE_C5);
+            assert!(report.c5_reached);
+            // Four instructions retire before the boundary of C5 (the HLT, as in the checkpoint
+            // test above); the HLT itself is after it.
+            assert_eq!(report.total.retired, 5);
+            assert_eq!(report.before_c5.retired, 4);
+            assert_eq!(report.after_c5.retired, 1);
+            assert_eq!((report.total.calls, report.before_c5.calls), (1, 1));
+            assert_eq!(report.after_c5.calls, 0);
+            // The HLT after the boundary is fetched by a walk or served by the cache.
+            assert!(report.after_c5.walks.fetch + report.after_c5.cache.hits > 0);
+            let mut both = report.before_c5;
+            both += report.after_c5;
+            assert_eq!(both, report.total);
+            assert!(report.total.walks.fetch > 0, "{report:?}");
+            if fetch_cache {
+                assert!(report.total.cache.hits > 0, "{report:?}");
+                assert!(report.total.cache.misses > 0, "{report:?}");
+                assert!(report.total.cache.context_flushes > 0, "{report:?}");
+            } else {
+                assert_eq!(report.total.cache, crate::FetchCacheStats::default());
+            }
+            walks_by_cache.push(report.total.walks);
+        }
+        let (plain, cached) = (walks_by_cache[0], walks_by_cache[1]);
+        assert_eq!(plain.data_read, cached.data_read);
+        assert_eq!(plain.data_write, cached.data_write);
+        assert!(cached.fetch < plain.fetch, "{cached:?} {plain:?}");
+    }
+
+    /// Without the checkpoint recorder nothing is split: everything is phase 1 and the report
+    /// says which rule applied.
+    #[test]
+    fn fetch_cache_report_without_checkpoints_has_no_split() {
+        let (_, report) = run_switch_with_fetch_report(None, true, true);
+        let report = report.expect("requested");
+        assert_eq!(report.phase_rule, crate::FETCH_CACHE_PHASE_RULE_NONE);
+        assert!(!report.c5_reached);
+        assert_eq!(report.before_c5, report.total);
+        assert_eq!(report.after_c5, crate::LinuxFetchCachePhase::default());
+        assert_eq!(report.total.retired, 5);
     }
 
     #[test]
