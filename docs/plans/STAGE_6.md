@@ -466,7 +466,7 @@
 ### S6-12. Доставлять межпроцессорные прерывания
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-16):** срез S6-12a принят независимым ревью Claude Opus / high (блокеров и major нет) и подтверждён владельцем 2026-11-16 (изменение ожидания Self `(0,0)` и два консервативных решения, записаны в SMP_CONTRACT §5). Код в `main` (коммит `9c80da2` — предок `main`). S6-12 остаётся `in_progress`: NMI не сделан (blocked: D5/S4-38 для od-isa/state.rs), чекбокс не отмечен.
+- **Текущий статус (2026-11-16):** срез S6-12a принят независимым ревью Claude Opus / high (блокеров и major нет) и подтверждён владельцем 2026-11-16 (изменение ожидания Self `(0,0)` и два консервативных решения, записаны в SMP_CONTRACT §5). Код в `main` (коммит `9c80da2` — предок `main`). S6-12 остаётся `in_progress`: NMI не сделан (D5 и S4-38 больше не блокируют od-isa/state.rs: линия S4-38 завершена, отмечено владельцем 2026-11-16), чекбокс не отмечен.
 - Прежний статус (2026-11-15): реализовано, ожидает ревью — срез S6-12a (без NMI, blocked: D5/S4-38 для od-isa/state.rs). Запись в `ICR_LOW` доставляет Fixed edge по матрице [SMP_CONTRACT.md](../specs/SMP_CONTRACT.md) §5: физический адресат, Self, All including self, All-but-self; всё прочее, включая строки NMI/INIT/SIPI, — явная ошибка устройства до изменения состояния; Delivery Status всегда Idle. Контракт: [MACHINE_CONTRACT.md](../specs/MACHINE_CONTRACT.md#доставка-ipi-s6-12a), факты и проверки: [отчёт S6](../reports/STAGE_6_REPORT.md) (S6-12a). Пункт 2 «Сделать» (NMI) не выполнен.
 - **Где:** `crates/od-machine/src/local_apic.rs`; доставка в процессор — рядом с существующей `deliver_pending_irq` в `crates/od-machine/src/paged_memory_adapter.rs`; состояние блокировки NMI — в `crates/od-isa/src/state.rs` (владелец — `od-isa`); разделы в `MACHINE_CONTRACT.md` и `CPU_CONTRACT.md`.
 - **Сделать:**
@@ -493,7 +493,7 @@
 
 ### S6-14. Реализовать профиль CPU для trampoline
 
-- [ ] Принято после ревью каждого среза. Срезы кода в `od-isa` — по ответу на D5 и по согласованию с линией `S4-38`, которая меняет тот же декодер.
+- [ ] Принято после ревью каждого среза. Срезы кода в `od-isa` — по ответу на D5. Линия `S4-38` завершена (отмечено владельцем 2026-11-16), согласовывать с ней не нужно.
 - Текущий статус (2026-11-13): S6-14a bounded CPU profile и AP-only уточнение firmware entry в [FIRMWARE_BOOT.md](../specs/FIRMWARE_BOOT.md#1-граница-контракта) приняты после независимого архитектурного ревью `gpt-6.1-sol/high`; документационный срез зафиксирован коммитом [`67a201b`](https://github.com/edelars/open_desktop/commit/67a201b). Точные decode rows связаны с tracked physical-x86 evidence; SIPI state, mode transitions, addressing и profile exclusions заданы. S6-14b KVM oracle для заданного real-mode `CS:IP` реализован и проверен на физическом Intel Mini, независимое code review прошло; результаты — в [отчёте S6-14b](../reports/STAGE_6_REPORT.md#s6-14b--kvm-real-mode-oracle). AP trampoline и режимы за пределами real-mode entry не исполнялись; S6-14c+ остаются отдельными срезами.
 - **Где:** `docs/specs/CPU_CONTRACT.md` (новый раздел; фраза «Real-mode entry не требуется» уточняется: требуется только для старта AP), `docs/specs/FIRMWARE_BOOT.md` (строка «real mode, 16/32-битные режимы не реализуются» — согласовать формулировку с владельцем `S7-02`), `tools/kvm-runner/kvm_runner.c`, `crates/od-isa/src/` (состояние, декодер, исполнение), корпус в `tests/cpu/`.
 - **Сделать:**
