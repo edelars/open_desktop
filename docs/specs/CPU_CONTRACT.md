@@ -27769,3 +27769,7 @@ Four focused profile tests cover result and logical flag values, AF definedness,
 ### Stage 7 paged-profile ADD R12,0x3c
 
 `PagedCpl0ProbeV1` admits exact bytes `49 83 C4 3C`. REX.W/B select qword R12; opcode 83 sign-extends imm8 `0x3c` to the qword operand. Shared ADD semantics update CF/PF/AF/ZF/SF/OF and their definedness. Only R12 and RIP change. Other immediates, operation groups, widths, prefixes and profiles remain unsupported.
+
+### Stage 7 paged-profile SHL R8,5
+
+`PagedCpl0ProbeV1` admits exact bytes `49 C1 E0 05`. REX.B selects qword R8; raw ModRM `/4` selects SHL and excludes the normalized `/6` SAL alias. Count five is masked by the qword shift rules. Shared semantics update CF/SF/ZF/PF; AF and OF are undefined for this count. Only R8 and RIP change. Other counts, groups, registers, widths, prefixes and profiles remain unsupported.
