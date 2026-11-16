@@ -394,7 +394,7 @@ fn assert_success_literals(result: &MemoryFaultObservation) {
 
 #[test]
 fn s4_17a_compares_paged_interpreter_and_jit_memory_fault_results() {
-    let _guard = JIT_TEST_LOCK.lock().unwrap();
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let published = publish_load();
 
     for data_leaf_present in [true, false] {
@@ -475,4 +475,608 @@ fn s4_17a_compares_paged_interpreter_and_jit_memory_fault_results() {
                 && difference.differing_bits == Some(0x20)
         }));
     }
+}
+
+// ---------------------------------------------------------------------------
+// S4-15b: the JIT block is admitted from bytes fetched out of guest RAM
+// through the tracked instruction-fetch path, not from a compile-time constant.
+// ---------------------------------------------------------------------------
+
+const FETCH_RAM_BYTES: u64 = 0xb000;
+/// Second code page: the same `48 8B 03` at offsets 0x0 and 0x80.
+const CODE_PHYSICAL_2: u64 = 0xa000;
+const CODE_RIP_2: u64 = 0x0040_2080;
+const NX: u64 = 1 << 63;
+const ACCESSED: u64 = 1 << 5;
+const DIRTY: u64 = 1 << 6;
+/// Code-branch table entries in walk order: PML4, PDPT, PD, PT.
+const CODE_WALK_ENTRIES: [u64; 4] = [0x1000, 0x2000, 0x4010, 0x6008];
+const CODE_WALK_RANGES: [(u64, usize); 4] = [(0x1000, 8), (0x2000, 8), (0x4010, 8), (0x6008, 8)];
+/// Data-branch table entries (separate PML4 slot) and the data leaf.
+const DATA_WALK_ENTRIES: [u64; 4] = [0x1008, 0x3000, 0x5000, 0x7000];
+
+#[derive(Clone, Copy)]
+struct FetchLayout {
+    /// Accessed bit preset on the three upper code-branch entries.
+    code_upper_ad: bool,
+    /// Full flag word (low bits and NX) of the code PT leaf entries.
+    code_leaf_flags: u64,
+    data_leaf_present: bool,
+}
+
+impl FetchLayout {
+    /// Code page user-accessible and executable, no Accessed bits preset.
+    const CLEAN: Self = Self {
+        code_upper_ad: false,
+        code_leaf_flags: 0x7,
+        data_leaf_present: true,
+    };
+}
+
+fn fetch_context(privilege: PrivilegeLevel) -> AccessContext {
+    AccessContext {
+        mode: InstructionMode::Long64,
+        privilege,
+        origin: od_isa::memory::AccessOrigin::Explicit,
+    }
+}
+
+fn make_fetch_bus(layout: FetchLayout) -> MachineBus {
+    let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), FETCH_RAM_BYTES).unwrap();
+    let map =
+        MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)]).unwrap();
+    let mut bus =
+        MachineBus::new(map, RamLimits::new(FETCH_RAM_BYTES), vec![], vec![], vec![]).unwrap();
+    let upper = if layout.code_upper_ad { 0x27 } else { 0x7 };
+    for (address, value) in [
+        (0x1000, 0x2000 | upper),
+        (0x2000, 0x4000 | upper),
+        (0x4010, 0x6000 | upper),
+        (0x6008, CODE_PHYSICAL | layout.code_leaf_flags),
+        (0x6010, CODE_PHYSICAL_2 | layout.code_leaf_flags),
+        // Data branch: every Accessed bit clear.
+        (0x1008, 0x3007),
+        (0x3000, 0x5007),
+        (0x5000, 0x7007),
+        (
+            0x7000,
+            DATA_PHYSICAL | if layout.data_leaf_present { 0x7 } else { 0x6 },
+        ),
+    ] {
+        put_qword(&mut bus, address, value);
+    }
+    for address in [CODE_PHYSICAL, CODE_PHYSICAL_2, CODE_PHYSICAL_2 + 0x80] {
+        bus.patch_physical_ram(GuestPhysicalAddress::new(address), &CODE)
+            .unwrap();
+    }
+    put_qword(&mut bus, DATA_PHYSICAL + 0x120, LOADED_VALUE);
+    bus
+}
+
+fn fetch_state(rip: u64) -> LongModeState {
+    let mut state = initial_state(false);
+    state.rip = rip;
+    state
+}
+
+fn ram_image(bus: &mut MachineBus) -> Vec<u64> {
+    (0..FETCH_RAM_BYTES)
+        .step_by(8)
+        .map(|address| {
+            bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap()
+        })
+        .collect()
+}
+
+fn entry(bus: &mut MachineBus, address: u64) -> u64 {
+    bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+        .unwrap()
+}
+
+fn tracked_patch(bus: &mut MachineBus, linear: u64, physical_page: u64, value: u8) {
+    let paging = od_machine::Long64ProbeConfig::new(CR0, CR3, CR4, EFER).unwrap();
+    bus.patch_tracked_code_byte(
+        &paging,
+        linear,
+        GuestPhysicalAddress::new(physical_page),
+        value,
+        fetch_context(PrivilegeLevel::Ring0),
+    )
+    .unwrap();
+}
+
+/// Everything compared between the interpreter and the fetched-JIT path.
+#[derive(Debug, PartialEq)]
+struct FetchObservation {
+    gprs: [u64; 16],
+    rip: u64,
+    rflags: u64,
+    page_fault: Option<od_isa::memory::PageFaultRecord>,
+    writes: Vec<(u64, u64)>,
+    ram: Vec<u64>,
+}
+
+fn range_pairs(ranges: &[GuestPhysicalRange]) -> Vec<(u64, u64)> {
+    ranges
+        .iter()
+        .map(|range| (range.start().get(), range.len()))
+        .collect()
+}
+
+fn observe_interpreter(
+    bus: &mut MachineBus,
+    state: &mut LongModeState,
+    privilege: PrivilegeLevel,
+) -> FetchObservation {
+    let mut writes = Vec::new();
+    let report = od_machine::step_paged_mov(
+        state,
+        bus,
+        CR3,
+        EFER,
+        fetch_context(privilege),
+        RFLAGS_DEFINED,
+        |range| writes.push(range),
+    )
+    .unwrap();
+    let page_fault = match &report.cpu.exit {
+        od_isa::execute::RunExit::StopAddress => None,
+        od_isa::execute::RunExit::Fault(fault) => {
+            let record = report.page_fault.clone().unwrap();
+            assert_eq!(fault, record.fault());
+            Some(record)
+        }
+        other => panic!("unexpected interpreter exit: {other:?}"),
+    };
+    FetchObservation {
+        gprs: state.gpr,
+        rip: state.rip,
+        rflags: state.rflags & RFLAGS_DEFINED,
+        page_fault,
+        writes: range_pairs(&writes),
+        ram: ram_image(bus),
+    }
+}
+
+/// Runs the session once; returns the observation and the admission outcome,
+/// or the typed refusal (with the state/RAM left for the caller to inspect).
+fn observe_fetched_jit(
+    session: &mut od_host::PagedFetchedLoadSession,
+    bus: &mut MachineBus,
+    state: &mut LongModeState,
+    privilege: PrivilegeLevel,
+) -> Result<(FetchObservation, od_host::PagedFetchedLoadReport), od_host::PagedFetchedLoadError> {
+    let report = session.execute(state, bus, CR3, EFER, fetch_context(privilege))?;
+    let execution = report.execution.callback_result.as_ref().unwrap();
+    let page_fault = match &execution.exit {
+        MemoryOperationExecutionExitV2::Complete => None,
+        MemoryOperationExecutionExitV2::GuestFault(fault) => {
+            let record = report.execution.page_fault.clone().unwrap();
+            assert_eq!(fault, record.fault());
+            Some(record)
+        }
+        other => panic!("unexpected JIT exit: {other:?}"),
+    };
+    let mut writes = range_pairs(&report.fetch_committed_writes);
+    writes.extend(range_pairs(&report.execution.committed_writes));
+    Ok((
+        FetchObservation {
+            gprs: state.gpr,
+            rip: state.rip,
+            rflags: state.rflags & RFLAGS_DEFINED,
+            page_fault,
+            writes,
+            ram: ram_image(bus),
+        },
+        report,
+    ))
+}
+
+fn fetch_page_fault(
+    error: &od_host::PagedFetchedLoadError,
+) -> (
+    &od_isa::memory::PageFaultRecord,
+    &od_machine::PageFaultReason,
+) {
+    match &error.kind {
+        od_host::PagedFetchedLoadErrorKind::Fetch(
+            od_machine::TrackedCodeSnapshotError::Access(
+                od_machine::TrackedAccessError::PageFault { record, reason },
+            ),
+        ) => (record, reason),
+        other => panic!("expected a fetch #PF, got {other:?}"),
+    }
+}
+
+#[test]
+fn s4_15b_block_is_admitted_from_guest_ram_bytes_and_matches_the_interpreter() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut session = od_host::PagedFetchedLoadSession::new();
+
+    // Interpreter oracle and JIT run over independent identical RAM.
+    let mut interp_bus = make_fetch_bus(FetchLayout::CLEAN);
+    let mut interp_state = fetch_state(CODE_RIP);
+    let expected = observe_interpreter(&mut interp_bus, &mut interp_state, PrivilegeLevel::Ring0);
+    assert_eq!(expected.gprs[Register::Rax as usize], LOADED_VALUE);
+
+    let mut bus = make_fetch_bus(FetchLayout::CLEAN);
+    let mut state = fetch_state(CODE_RIP);
+    let (observed, report) =
+        observe_fetched_jit(&mut session, &mut bus, &mut state, PrivilegeLevel::Ring0).unwrap();
+    assert_eq!(observed, expected, "JIT must equal the interpreter");
+    assert_eq!(report.admission, od_host::PagedFetchAdmission::Admitted);
+    assert_eq!(report.fetched_bytes, CODE);
+    assert_eq!(report.fetched_linear_base, CODE_RIP);
+    assert_eq!(report.fetched_physical_page.get(), CODE_PHYSICAL);
+    assert_eq!(state.rip, CODE_RIP + 3);
+    assert_eq!(session.admissions(), 1);
+
+    // Same bytes, same page, same generation: the admitted block is reused.
+    state.rip = CODE_RIP;
+    state.gpr[Register::Rax as usize] = INITIAL_RAX;
+    let (_, again) =
+        observe_fetched_jit(&mut session, &mut bus, &mut state, PrivilegeLevel::Ring0).unwrap();
+    assert_eq!(again.admission, od_host::PagedFetchAdmission::Reused);
+    assert_eq!(session.admissions(), 1);
+    assert_eq!(state.gpr[Register::Rax as usize], LOADED_VALUE);
+
+    // The block follows the fetched RIP: the same form at another linear
+    // address, another physical page and another page offset is admitted
+    // anew. A block compiled from a constant CODE_RIP would refuse this entry
+    // with EntryRipMismatch instead of executing.
+    let mut alias_bus = make_fetch_bus(FetchLayout::CLEAN);
+    let mut alias_interp_bus = make_fetch_bus(FetchLayout::CLEAN);
+    let mut alias_interp_state = fetch_state(CODE_RIP_2);
+    let alias_expected = observe_interpreter(
+        &mut alias_interp_bus,
+        &mut alias_interp_state,
+        PrivilegeLevel::Ring0,
+    );
+    let mut alias_state = fetch_state(CODE_RIP_2);
+    let (alias_observed, alias_report) = observe_fetched_jit(
+        &mut session,
+        &mut alias_bus,
+        &mut alias_state,
+        PrivilegeLevel::Ring0,
+    )
+    .unwrap();
+    assert_eq!(alias_observed, alias_expected);
+    assert_eq!(
+        alias_report.admission,
+        od_host::PagedFetchAdmission::Admitted
+    );
+    assert_eq!(alias_report.fetched_physical_page.get(), CODE_PHYSICAL_2);
+    assert_eq!(alias_state.rip, CODE_RIP_2 + 3);
+    assert_eq!(session.admissions(), 2);
+}
+
+#[test]
+fn s4_15b_unsupported_bytes_in_ram_are_refused_not_replaced_by_a_constant() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let mut bus = make_fetch_bus(FetchLayout::CLEAN);
+
+    // Admit the supported form first so a stale block exists to be dropped.
+    let mut state = fetch_state(CODE_RIP);
+    observe_fetched_jit(&mut session, &mut bus, &mut state, PrivilegeLevel::Ring0).unwrap();
+    assert!(session.has_admitted_block());
+
+    // 48 8B 0B is MOV RCX,[RBX]: a different (compilable) memory form.
+    tracked_patch(&mut bus, CODE_RIP + 2, CODE_PHYSICAL, 0x0b);
+    let data_before: Vec<u64> = DATA_WALK_ENTRIES.map(|a| entry(&mut bus, a)).to_vec();
+    let mut state = fetch_state(CODE_RIP);
+    let before = state.clone();
+    let error = session
+        .execute(
+            &mut state,
+            &mut bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.kind,
+        od_host::PagedFetchedLoadErrorKind::UnsupportedForm {
+            bytes: vec![0x48, 0x8b, 0x0b]
+        }
+    );
+    // The constant `48 8B 03` block was NOT run: RAX/RCX/RIP untouched, and
+    // the operand walk never happened.
+    assert_eq!(state, before);
+    assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX);
+    let data_after: Vec<u64> = DATA_WALK_ENTRIES.map(|a| entry(&mut bus, a)).to_vec();
+    assert_eq!(data_after, data_before);
+    assert!(!session.has_admitted_block());
+
+    // Not a memory load at all (NOP NOP NOP).
+    for byte in [0x90u8, 0x90, 0x90].iter().enumerate() {
+        tracked_patch(&mut bus, CODE_RIP + byte.0 as u64, CODE_PHYSICAL, *byte.1);
+    }
+    let mut state = fetch_state(CODE_RIP);
+    let error = session
+        .execute(
+            &mut state,
+            &mut bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.kind,
+        od_host::PagedFetchedLoadErrorKind::UnsupportedForm {
+            bytes: vec![0x90, 0x90, 0x90]
+        }
+    );
+    assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX);
+    assert_eq!(session.admissions(), 1);
+}
+
+#[test]
+fn s4_15b_fetch_faults_precede_any_data_access_and_match_the_interpreter() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // (label, layout, CPL, expected PFEC literal)
+    // PFEC bits: P=0x1, U/S=0x4, I/D=0x10 (EFER.NXE=1).
+    let cases = [
+        (
+            "NX leaf at CPL0",
+            FetchLayout {
+                code_leaf_flags: 0x27 | NX,
+                ..FetchLayout::CLEAN
+            },
+            PrivilegeLevel::Ring0,
+            0x11u32,
+        ),
+        (
+            "supervisor-only leaf at CPL3",
+            FetchLayout {
+                code_leaf_flags: 0x3,
+                ..FetchLayout::CLEAN
+            },
+            PrivilegeLevel::Ring3,
+            0x15,
+        ),
+        (
+            "not-present leaf at CPL0",
+            FetchLayout {
+                code_leaf_flags: 0x6,
+                ..FetchLayout::CLEAN
+            },
+            PrivilegeLevel::Ring0,
+            0x10,
+        ),
+    ];
+    for (label, layout, privilege, pfec) in cases {
+        let mut interp_bus = make_fetch_bus(layout);
+        let mut interp_state = fetch_state(CODE_RIP);
+        let expected = observe_interpreter(&mut interp_bus, &mut interp_state, privilege);
+        let interp_record = expected.page_fault.clone().expect(label);
+        assert_eq!(interp_record.fault().vector, 14, "{label}");
+        assert_eq!(interp_record.fault().error_code, Some(pfec), "{label}");
+        assert_eq!(interp_record.cr2_value(), CODE_RIP, "{label}");
+
+        let mut session = od_host::PagedFetchedLoadSession::new();
+        let mut bus = make_fetch_bus(layout);
+        let data_before: Vec<u64> = DATA_WALK_ENTRIES.map(|a| entry(&mut bus, a)).to_vec();
+        let mut state = fetch_state(CODE_RIP);
+        let before = state.clone();
+        let error = session
+            .execute(&mut state, &mut bus, CR3, EFER, fetch_context(privilege))
+            .unwrap_err();
+        let (record, _reason) = fetch_page_fault(&error);
+        // Exact #PF: vector, instruction-fetch PFEC, CR2 = RIP, saved RIP.
+        assert_eq!(record, &interp_record, "{label}");
+        assert_eq!(record.fault().error_code, Some(pfec), "{label}");
+        assert_eq!(record.cr2_value(), CODE_RIP, "{label}");
+        assert_eq!(record.saved_rip(), CODE_RIP, "{label}");
+        // No RAX write, no retirement, nothing admitted or executed.
+        assert_eq!(state, before, "{label}");
+        assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX, "{label}");
+        assert!(!session.has_admitted_block(), "{label}");
+        assert_eq!(session.admissions(), 0, "{label}");
+        // The operand walk (which would succeed) never ran: data-branch
+        // entries keep their Accessed bits clear.
+        let data_after: Vec<u64> = DATA_WALK_ENTRIES.map(|a| entry(&mut bus, a)).to_vec();
+        assert_eq!(data_after, data_before, "{label}");
+        assert!(data_after.iter().all(|v| v & ACCESSED == 0), "{label}");
+        // Same committed fetch-walk effects and final RAM as the interpreter.
+        assert_eq!(
+            range_pairs(&error.fetch_committed_writes),
+            expected.writes,
+            "{label}"
+        );
+        assert_eq!(ram_image(&mut bus), expected.ram, "{label}");
+        assert_eq!(state.rip, expected.rip, "{label}");
+        assert_eq!(state.gpr, expected.gprs, "{label}");
+    }
+}
+
+#[test]
+fn s4_15b_code_accessed_bits_are_committed_without_preset_and_data_fault_matches() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    for (label, layout, privilege) in [
+        ("success CPL0", FetchLayout::CLEAN, PrivilegeLevel::Ring0),
+        ("success CPL3", FetchLayout::CLEAN, PrivilegeLevel::Ring3),
+        (
+            "missing data leaf CPL0",
+            FetchLayout {
+                data_leaf_present: false,
+                ..FetchLayout::CLEAN
+            },
+            PrivilegeLevel::Ring0,
+        ),
+    ] {
+        let mut interp_bus = make_fetch_bus(layout);
+        let mut interp_state = fetch_state(CODE_RIP);
+        let expected = observe_interpreter(&mut interp_bus, &mut interp_state, privilege);
+
+        let mut session = od_host::PagedFetchedLoadSession::new();
+        let mut bus = make_fetch_bus(layout);
+        // No Accessed bit on the code branch before execution (S4-17a preset them).
+        for address in CODE_WALK_ENTRIES {
+            assert_eq!(entry(&mut bus, address) & ACCESSED, 0, "{label}");
+        }
+        let mut state = fetch_state(CODE_RIP);
+        let (observed, report) =
+            observe_fetched_jit(&mut session, &mut bus, &mut state, privilege).unwrap();
+        assert_eq!(observed, expected, "{label}: JIT == interpreter");
+        // Fetch A commits are an effect: four ordered walk writes, A set, D clear.
+        assert_eq!(
+            range_pairs(&report.fetch_committed_writes),
+            CODE_WALK_RANGES.map(|(a, l)| (a, l as u64)).to_vec(),
+            "{label}"
+        );
+        for address in CODE_WALK_ENTRIES {
+            let value = entry(&mut bus, address);
+            assert_ne!(value & ACCESSED, 0, "{label}: A set at {address:#x}");
+            assert_eq!(value & DIRTY, 0, "{label}: no D at {address:#x}");
+        }
+        if layout.data_leaf_present {
+            assert_eq!(state.gpr[Register::Rax as usize], LOADED_VALUE, "{label}");
+        } else {
+            // Data #PF after a successful fetch: PFEC 0 (not-present read),
+            // RAX untouched, yet the code A bits above stay committed.
+            let record = observed.page_fault.as_ref().unwrap();
+            assert_eq!(record.fault().error_code, Some(0));
+            assert_eq!(record.cr2_value(), DATA_LINEAR);
+            assert_eq!(record.saved_rip(), CODE_RIP);
+            assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX);
+            assert_eq!(state.rip, CODE_RIP);
+        }
+
+        // A second execution finds every code A bit already set: the walk
+        // commits nothing new for the fetch, and the block is reused.
+        state.rip = CODE_RIP;
+        let (_, second) =
+            observe_fetched_jit(&mut session, &mut bus, &mut state, privilege).unwrap();
+        assert!(second.fetch_committed_writes.is_empty(), "{label}");
+        assert_eq!(second.admission, od_host::PagedFetchAdmission::Reused);
+    }
+}
+
+#[test]
+fn s4_15b_patched_code_byte_forces_readmission_and_never_runs_the_old_block() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let mut bus = make_fetch_bus(FetchLayout::CLEAN);
+    let run = |session: &mut od_host::PagedFetchedLoadSession, bus: &mut MachineBus| {
+        let mut state = fetch_state(CODE_RIP);
+        let result = session.execute(
+            &mut state,
+            bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        );
+        (state, result)
+    };
+
+    let (state, first) = run(&mut session, &mut bus);
+    let first = first.unwrap();
+    assert_eq!(state.gpr[Register::Rax as usize], LOADED_VALUE);
+    assert_eq!(first.admission, od_host::PagedFetchAdmission::Admitted);
+
+    // Patch through a tracked write to a different byte: the old block would
+    // still load LOADED_VALUE, so RAX staying INITIAL_RAX proves it did not run.
+    tracked_patch(&mut bus, CODE_RIP + 2, CODE_PHYSICAL, 0x0b);
+    let (state, patched) = run(&mut session, &mut bus);
+    let error = patched.unwrap_err();
+    assert!(matches!(
+        error.kind,
+        od_host::PagedFetchedLoadErrorKind::UnsupportedForm { .. }
+    ));
+    assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX);
+    assert_eq!(state.rip, CODE_RIP);
+    assert!(!session.has_admitted_block());
+
+    // Restoring the original byte is a new write: new generation, new admission.
+    tracked_patch(&mut bus, CODE_RIP + 2, CODE_PHYSICAL, 0x03);
+    let (state, restored) = run(&mut session, &mut bus);
+    let restored = restored.unwrap();
+    assert_eq!(restored.admission, od_host::PagedFetchAdmission::Admitted);
+    assert!(restored.fetched_generation > first.fetched_generation);
+    assert_eq!(state.gpr[Register::Rax as usize], LOADED_VALUE);
+    assert_eq!(session.admissions(), 2);
+
+    // Rewriting the same value still moves the generation: conservative
+    // re-admission rather than trusting that the bytes are unchanged.
+    tracked_patch(&mut bus, CODE_RIP + 2, CODE_PHYSICAL, 0x03);
+    let (_, rewritten) = run(&mut session, &mut bus);
+    let rewritten = rewritten.unwrap();
+    assert_eq!(rewritten.admission, od_host::PagedFetchAdmission::Admitted);
+    assert!(rewritten.fetched_generation > restored.fetched_generation);
+    assert_eq!(session.admissions(), 3);
+
+    // Remapping the code PTE to another physical page holding the same bytes
+    // changes the page identity: admitted again, bytes unchanged.
+    put_qword(&mut bus, 0x6008, CODE_PHYSICAL_2 | 0x7);
+    let (state, remapped) = run(&mut session, &mut bus);
+    let remapped = remapped.unwrap();
+    assert_eq!(remapped.admission, od_host::PagedFetchAdmission::Admitted);
+    assert_eq!(remapped.fetched_physical_page.get(), CODE_PHYSICAL_2);
+    assert_eq!(state.gpr[Register::Rax as usize], LOADED_VALUE);
+    assert_eq!(session.admissions(), 4);
+
+    // Rights are re-checked on every call even with an admitted block: making
+    // the live code page NX makes the next execution fault without running it.
+    put_qword(&mut bus, 0x6008, CODE_PHYSICAL_2 | 0x27 | NX);
+    let (state, nx) = run(&mut session, &mut bus);
+    let error = nx.unwrap_err();
+    assert_eq!(fetch_page_fault(&error).0.fault().error_code, Some(0x11));
+    assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX);
+    assert_eq!(session.admissions(), 4);
+}
+
+#[test]
+fn s4_15b_reuse_key_compares_bytes_when_page_and_generation_are_equal() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // The session key is (linear RIP, physical page, generation, bytes) and
+    // is not bound to a particular bus, so a second bus can present the same
+    // RIP, the same physical page and the same generation with other bytes.
+    // Both buses get exactly one tracked write to the code page, so their
+    // generations are equal; only the bytes differ.
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let mut bus_a = make_fetch_bus(FetchLayout::CLEAN);
+    tracked_patch(&mut bus_a, CODE_RIP + 2, CODE_PHYSICAL, 0x03);
+    let mut bus_b = make_fetch_bus(FetchLayout::CLEAN);
+    tracked_patch(&mut bus_b, CODE_RIP + 2, CODE_PHYSICAL, 0x0b);
+
+    let page = GuestPhysicalAddress::new(CODE_PHYSICAL);
+    let generation = bus_a.code_page_generation(page).unwrap();
+    assert_eq!(bus_b.code_page_generation(page).unwrap(), generation);
+
+    let mut state = fetch_state(CODE_RIP);
+    let (_, first) =
+        observe_fetched_jit(&mut session, &mut bus_a, &mut state, PrivilegeLevel::Ring0).unwrap();
+    assert_eq!(first.admission, od_host::PagedFetchAdmission::Admitted);
+    assert_eq!(first.fetched_generation, generation);
+    assert_eq!(first.fetched_physical_page.get(), CODE_PHYSICAL);
+    assert_eq!(state.gpr[Register::Rax as usize], LOADED_VALUE);
+    assert!(session.has_admitted_block());
+
+    // Same RIP, page and generation, different bytes (48 8B 0B): the old
+    // block must be refused, not run and not reused.
+    let mut state = fetch_state(CODE_RIP);
+    let before = state.clone();
+    let error = session
+        .execute(
+            &mut state,
+            &mut bus_b,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.kind,
+        od_host::PagedFetchedLoadErrorKind::UnsupportedForm {
+            bytes: vec![0x48, 0x8b, 0x0b]
+        }
+    );
+    assert_eq!(state, before);
+    assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX);
+    assert!(!session.has_admitted_block());
+    assert_eq!(session.admissions(), 1);
 }
