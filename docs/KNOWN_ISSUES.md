@@ -1118,19 +1118,28 @@
 ### ISSUE-226 — S7-04: exact Rust helper `SHL RAX,4` (`48 C1 E0 04`) admitted narrowly
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `LEA RAX,[R12+R12*2]`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200f94`.
-- **Статус:** решена узко для exact `48 C1 E0 04` в base `PagedCpl0ProbeV1`; независимо проверена и одобрена, ожидает коммита.
+- **Статус:** решена узко для exact `48 C1 E0 04` в base `PagedCpl0ProbeV1`; независимо проверена и committed `f16d39c`.
 - **Суть и результат:** exact REX.W `C1 /4` immediate qword shift, raw ModRM `E0`, shifts RAX left by 4 through shared count/result semantics. Only RAX changes among GPRs; CF/PF/ZF/SF are defined, AF and OF become undefined for count 4, and other concrete flag state follows the shared helper. Raw `/4` is pinned so the neighboring `/6` SAL alias remains unsupported.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue226.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf94` are `48 C1 E0 04`; runner budget 10000.
 - **Проверка:** four focused ISA tests cover qword edge values/results and flags/definedness, only-RAX mutation, final-imm8 fetch-fault atomicity, adjacent immediate/count/opcode/group/register/width/prefix and memory forms, plus CPL3; other-profile isolation passes. Runner retired 8909 and stopped at `4C 01 E8` (`ADD RAX,R13`, ISSUE-227), RIP `0x200f98`, `Unsupported { opcode: 1 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
 - **Следующий шаг:** continue S7-04 at ISSUE-227.
 
-### ISSUE-227 — S7-04: Rust helper `ADD RAX,R13` (`4C 01 E8`) remains outside paged CPU profile
+### ISSUE-227 — S7-04: exact Rust helper `ADD RAX,R13` (`4C 01 E8`) admitted narrowly
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `SHL RAX,4`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200f98`.
+- **Статус:** решена узко для exact `4C 01 E8` в base `PagedCpl0ProbeV1`; независимо проверена и одобрена, ожидает коммита.
+- **Суть и результат:** REX.W/R selects qword RAX destination and R13 source through opcode `01` ModRM `E8`; shared qword ADD updates RAX and arithmetic flags/definedness while preserving all other GPRs. Other register directions, sources, destinations, widths, prefixes, CPL3 and profiles remain unsupported.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue227.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf98` are `4C 01 E8`; runner budget 10000.
+- **Проверка:** four focused ISA tests cover qword carry/overflow/sign/zero, high-bit operand values, source/destination routing, only-RAX mutation, arithmetic flags/definedness, ModRM fetch-fault atomicity, adjacent opcode/register/REX/width/prefix/memory forms and CPL3; other-profile isolation passes. Runner retired 8910 and stopped at `48 39 E8` (`CMP RAX,RBP`, ISSUE-228), RIP `0x200f9b`, `Unsupported { opcode: 57 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
+- **Следующий шаг:** continue S7-04 at ISSUE-228.
+
+### ISSUE-228 — S7-04: Rust helper `CMP RAX,RBP` (`48 39 E8`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact `ADD RAX,R13`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200f9b`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8909 instructions and stopped at `4C 01 E8`, `Unsupported { opcode: 1 }`, `RIP=0x200f98`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue226.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf98` are `4C 01 E8`; runner budget 10000.
-- **Следующий шаг:** verify REX.R operand routing, Intel destination/source direction and qword arithmetic flags before narrow admission.
+- **Суть и последствия:** runner retired 8910 instructions and stopped at `48 39 E8`, `Unsupported { opcode: 57 }`, `RIP=0x200f9b`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue227.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf9b` are `48 39 E8`; runner budget 10000.
+- **Следующий шаг:** verify exact CMP destination/source routing and qword flags before narrow admission.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.

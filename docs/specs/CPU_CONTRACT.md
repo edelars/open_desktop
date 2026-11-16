@@ -27244,3 +27244,10 @@ Four focused tests cover operand routing, wrapping and noncanonical results, ful
 Base `PagedCpl0ProbeV1` admits only exact `48 C1 E0 04`: REX.W, opcode `C1`, raw ModRM `E0` selecting group `/4` and RAX, immediate count 4. The raw selector guard is intentional because `/6` SAL normalizes to the same decoded shift kind. Shared qword shift semantics perform the masked count/result calculation; RAX is the only GPR modified. For count 4, CF/PF/ZF/SF are defined and AF/OF are undefined; RFLAGS concrete bits follow the shared shift helper. Other groups, registers, counts, count encodings, widths, memory destinations, prefixes, CPL3 and other profiles remain unsupported.
 
 Four focused tests cover qword edge values, result and flags/definedness, only-RAX mutation, final-immediate fetch-fault atomicity, `/6` and other neighbors, prefixes, CPL3 and profile isolation. Firmware advances to ISSUE-227: `4C 01 E8` (`ADD RAX,R13`) at RIP `0x200f98`.
+
+
+### S7-04: exact Rust-helper `ADD RAX,R13` (ISSUE-227)
+
+Base `PagedCpl0ProbeV1` admits only exact `4C 01 E8`: REX.W/R, primary opcode `01`, ModRM `E8`, qword destination RAX and source R13. Intel operand direction is preserved. Shared qword ADD writes only RAX among GPRs and updates arithmetic flags/definedness; other register pairs/directions, operand sizes, prefixes, CPL3 and other profiles remain unsupported.
+
+Four focused tests cover carry, signed overflow, sign/zero results, high-bit operands, routing, only-RAX mutation, arithmetic flags/definedness, final-ModRM fetch-fault atomicity, adjacent forms, CPL3 and profile isolation. Firmware advances to ISSUE-228: `48 39 E8` (`CMP RAX,RBP`) at RIP `0x200f9b`.
