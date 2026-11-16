@@ -27223,3 +27223,10 @@ The store uses the tracked `GuestMemory::write_integer` path. On success only RI
 Base `PagedCpl0ProbeV1` admits only exact `41 81 FD A0 00 00 00`: REX `41`, opcode `81` group `/7`, ModRM `FD`, and imm32 `A0 00 00 00`. REX.B extends the ModRM r/m destination from EBP to R13D; the REX.R bit is clear. The dword comparison reads only low R13D and the full 32-bit immediate. Shared arithmetic semantics update CF/PF/AF/ZF/SF/OF and mark these flags defined; CMP writes no GPR. Other destinations, immediates, operand sizes, prefixes, CPL3 and other profiles remain unsupported.
 
 Four focused tests cover equality, less-than, greater-than, signed overflow, values above 16 bits, ignored upper qword bits, full GPR retention, arithmetic flags and definedness, final-immediate fetch-fault atomicity, neighbors, CPL3 and other-profile isolation. Firmware advances to ISSUE-224: `72 2A` (`JB/JNAE rel8 +0x2a`) at RIP `0x200f8e`.
+
+
+### S7-04: exact Rust-helper `JB/JNAE rel8 +0x2A` (ISSUE-224)
+
+Base `PagedCpl0ProbeV1` admits only the exact no-prefix bytes `72 2A`. The shared branch condition reads CF only; the branch leaves all RFLAGS and definedness unchanged, sets RIP to the signed-rel8 target when CF=1 and to fall-through when CF=0, and checks canonicality only for the taken target. Neighboring displacements/conditions, prefixed and rel32 forms, CPL3 and other profiles remain unsupported.
+
+Five focused tests cover taken/not-taken targets with defined and undefined CF, state/definedness retention, taken-only canonicality, rel8 fetch-fault atomicity, neighbors and CPL3; other-profile isolation passes. Firmware advances to ISSUE-225: `4B 8D 04 64` (`LEA RAX,[R12+R12*2]`) at RIP `0x200f90`.
