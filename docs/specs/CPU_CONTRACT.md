@@ -27326,6 +27326,12 @@ Base `PagedCpl0ProbeV1` admits only exact `4D 89 E1`. REX.W selects qword width,
 
 Four focused tests cover high-bit qword values, full-state and flags-definedness retention, instruction-fetch-fault atomicity, neighboring register/REX/opcode/width/prefix forms and CPL3; other-profile isolation passes. Firmware advances to ISSUE-239: `E8 79 05 00 00` (`CALL rel32 +0x579`) at RIP `0x200fe2`, after 8921 retired instructions.
 
+### S7-04: exact helper `JZ rel32 +0x149` (ISSUE-242)
+
+Base `PagedCpl0ProbeV1` admits only exact no-prefix bytes `0F 84 49 01 00 00`. The signed 32-bit displacement `+0x149` is added to `next_rip`; from firmware RIP `0x20156e`, a taken branch targets `0x2016bd`, while a not-taken branch falls through to `0x201574`. The condition reads only ZF and preserves flags/definedness; target canonicality is checked only when taken. Fetch faults do not retire or commit state. Adjacent displacements, other conditions, JMP, short JZ, prefixes, CPL3 and other profiles remain unsupported.
+
+Five focused profile tests cover ZF/definedness outcomes, target/fall-through, taken-only canonicality, final displacement-byte fetch-fault atomicity, neighbors, CPL3, and profile isolation. Runner advances after 8,931 retired instructions to `48 89 F0` (`MOV RAX,RSI`, ISSUE-243) at RIP `0x201574`; COM1 remains empty. Independent review approved with no findings.
+
 ### S7-04: exact helper `TEST R8,R8` (ISSUE-241)
 
 Base `PagedCpl0ProbeV1` admits only exact qword self-register encoding `4D 85 C0`. The shared TEST semantics use full-width R8 as both operands and do not write a GPR. CF/OF are cleared; SF/ZF/PF follow the logical result; AF's concrete value is retained while AF is marked undefined. CF/PF/ZF/SF/OF become defined and AF becomes undefined; definedness of all unrelated flags is preserved. All unrelated flag values and all GPRs remain unchanged. Fetch faults do not retire or commit flags. Neighbor registers, widths, prefixes, CPL3 and other profiles remain unsupported.

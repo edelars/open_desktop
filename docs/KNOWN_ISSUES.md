@@ -1259,13 +1259,22 @@
 - **Проверка:** focused tests cover zero, parity, sign and all-ones inputs; preserve all GPRs and unrelated flags; confirm logical flag definedness and AF undefinedness; test fetch-fault atomicity, neighboring registers/widths/prefixes, CPL3 and other-profile isolation. Runner advances to `0F 84 49 01 00 00` (`JZ rel32 +0x149`, ISSUE-242) at RIP `0x20156e`, after 8,930 retired instructions; COM1 remains empty. Independent review approved with no findings.
 - **Следующий шаг:** independent review of exact qword TEST and flag definedness.
 
-### ISSUE-242 — S7-04: helper `JZ rel32 +0x149` (`0F 84 49 01 00 00`) remains outside paged CPU profile
+### ISSUE-242 — S7-04: helper `JZ rel32 +0x149` (`0F 84 49 01 00 00`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-241.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20156e`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner retired 8,930 instructions and stopped on `0F 84 49 01 00 00`, `Unsupported { opcode: 132 }`; COM1 remains empty.
+- **Статус:** реализована узко; independent review pending.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact no-prefix near JZ with rel32 displacement `+0x149`. The signed rel32 target is added to next RIP; ZF and its definedness are preserved, and canonicality is checked only when taken.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue241.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x156e` begin `0F 84 49 01 00 00`; runner budget 10000.
-- **Следующий шаг:** verify exact JZ rel32 displacement and condition/canonical-target semantics.
+- **Проверка:** focused tests cover both ZF outcomes and definedness states, exact target/fallthrough, taken-only canonicality including a noncanonical target, final-byte fetch-fault atomicity, adjacent displacements, condition/opcode and prefix neighbors, CPL3 and other-profile isolation. Runner advances to `48 89 F0` (`MOV RAX,RSI`, ISSUE-243) at RIP `0x201574`, after 8,931 retired instructions; COM1 remains empty. Independent review approved with no findings.
+- **Следующий шаг:** independent review of exact JZ rel32 guard and branch semantics.
+
+### ISSUE-243 — S7-04: helper `MOV RAX,RSI` (`48 89 F0`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-242.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201574`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner retired 8,931 instructions and stopped on `48 89 F0`, `Unsupported { opcode: 137 }`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue242.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1574` begin `48 89 F0`; runner budget 10000.
+- **Следующий шаг:** verify exact qword register-copy direction and state preservation for ISSUE-243.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.
