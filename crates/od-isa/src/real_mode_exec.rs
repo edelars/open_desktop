@@ -1,8 +1,10 @@
-//! Execution of the first two instruction groups of the AP trampoline in real mode
-//! (S6-14d, S6-14e).
+//! Execution of the first three instruction groups of the AP trampoline in real mode
+//! (S6-14d, S6-14e, S6-14f).
 //!
 //! Scope is the closed set of forms from the S6-14a profile (CPU_CONTRACT.md, sections
-//! "S6-14d" and "S6-14e"), block 1 of the trampoline at blob offsets `0x1000..0x101e`:
+//! "S6-14d", "S6-14e" and "S6-14f"), block 1 of the trampoline at blob offsets
+//! `0x1000..0x1027` (through `MOV ESP, imm32` at `0x101e` and `CALL verify_cpu` at `0x1024`),
+//! plus the parts of block 2 that need no `CPUID`:
 //!
 //! | bytes                    | instruction                  | slice  |
 //! |--------------------------|------------------------------|--------|
@@ -15,19 +17,35 @@
 //! | `73 cb`                  | `JAE rel8`                   | S6-14e |
 //! | `f3 90`                  | `PAUSE`                      | S6-14e |
 //! | `eb cb`                  | `JMP rel8`                   | S6-14e |
+//! | `66 bc i i i i`          | `MOV ESP, imm32`             | S6-14f |
+//! | `66 b8 i i i i`          | `MOV EAX, imm32`             | S6-14f |
+//! | `e8 lo hi`               | `CALL rel16` (near)          | S6-14f |
+//! | `c3`                     | `RET` (near)                 | S6-14f |
+//! | `9c` / `9d`              | `PUSHF` / `POPF` (16-bit)    | S6-14f |
+//! | `6a cb`                  | `PUSH imm8` (16-bit word)    | S6-14f |
+//! | `66 31 c0`               | `XOR EAX, EAX`               | S6-14f |
 //!
-//! Everything else (`CALL verify_cpu`, `HLT`, the padding `NOP`, any other prefix byte or
-//! prefix order, any other ModRM form, `BT`/`BTR`/`BTC`, unlocked or 16-bit `BTS`) is an
-//! explicit [`RealModeRefusal::Unsupported`] with the address and the bytes, and the state is
-//! not changed. Those belong to the following slices (S6-14f and later).
+//! Everything else (`HLT`, the padding `NOP`, `TEST`/`JNE`, `PUSHFD`/`POPFD`, `CPUID`, any
+//! other prefix byte or prefix order, any other ModRM form, `BT`/`BTR`/`BTC`, unlocked or
+//! 16-bit `BTS`) is an explicit [`RealModeRefusal::Unsupported`] with the address and the
+//! bytes, and the state is not changed. Those belong to the following slices (S6-14g and
+//! later).
+//!
+//! S6-14f stack: real mode, 16-bit stack size (the oracle reports `SS.B = 0`), so implicit
+//! stack accesses use `SS.base + SP` and change SP only (the upper half of ESP is kept); a
+//! word is never split across the SS limit and the offset does not wrap inside a word (a push
+//! with `SP = 1` or a pop at `SP = 0xFFFF` is refused as [`RealModeRefusal::DataBeyondLimit`]).
 //!
 //! State: [`RealModeCpu`] wraps the S6-14c [`RealModeState`] (segments, EIP, EFLAGS, CR0)
 //! and adds only the eight 32-bit general-purpose registers; `LongModeState` is not used
-//! and not changed. Operand and address size are 16 bits except the one `66`-prefixed
-//! `LOCK BTS` form (32-bit operand, 16-bit address). Instruction fetch goes through CS
-//! (`CS.base + IP`, offset limit-checked), the one data operand (`LOCK BTS`) through DS
-//! (`DS.base + disp16`, the whole 4-byte operand limit-checked, no wrap), with no paging and
-//! no A20 or wrap-around modelling. There are no caches: `WBINVD` changes nothing visible,
+//! and not changed. Operand and address size are 16 bits except the `66`-prefixed forms:
+//! `MOV ESP, imm32`, `MOV EAX, imm32` and `XOR EAX, EAX` (32-bit register operand) and
+//! `LOCK BTS` (32-bit operand, 16-bit address). Instruction fetch goes through CS
+//! (`CS.base + IP`, offset limit-checked). There is more than one kind of data operand: the
+//! `LOCK BTS` operand goes through DS (`DS.base + disp16`, the whole 4-byte operand
+//! limit-checked, no wrap), and the stack word of `CALL`/`RET`/`PUSH`/`POP`/`PUSHF`/`POPF`
+//! goes through `SS.base + SP` (the whole word limit-checked against SS, no wrap), with no
+//! paging and no A20 or wrap-around modelling. There are no caches: `WBINVD` changes nothing visible,
 //! and `LOCK` adds no atomicity (a single processor is modelled).
 //!
 //! Sources: Intel SDM Vol. 2 (`CLI`, `JMP`, `Jcc`, `MOV` to/from segment registers, `BTS`,
@@ -53,6 +71,16 @@ pub const CR0_PE: u32 = 1;
 pub const EFLAGS_CF: u32 = 1;
 /// EFLAGS.IF.
 pub const EFLAGS_IF: u32 = 1 << 9;
+/// EFLAGS.TF.
+pub const EFLAGS_TF: u32 = 1 << 8;
+/// EFLAGS.PF and ZF (the flags `XOR EAX, EAX` sets).
+const EFLAGS_PF: u32 = 1 << 2;
+const EFLAGS_ZF: u32 = 1 << 6;
+/// CF, PF, AF, ZF, SF, OF: the arithmetic flags rewritten by `XOR`.
+const EFLAGS_ARITH: u32 = 0x8D5;
+/// Bits a 16-bit `POPF` writes in real mode: CF, PF, AF, ZF, SF, TF, IF, DF, OF, IOPL, NT.
+/// Bit 1 stays 1, bits 3, 5, 15 stay 0, the upper half (RF, VM, AC, ID) is untouched.
+const EFLAGS_POPF_MASK: u32 = 0x7FD5;
 
 /// Number of bytes copied into [`RealModeRefusal::Unsupported::bytes`] at most.
 pub const UNSUPPORTED_BYTES_MAX: usize = 8;
@@ -66,7 +94,7 @@ pub enum SegReg {
     Ss,
 }
 
-/// Decoded instruction of the first two groups.
+/// Decoded instruction of the first three groups (S6-14d, S6-14e, S6-14f).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RealInstruction {
     /// `FA`.
@@ -88,10 +116,25 @@ pub enum RealInstruction {
     Pause,
     /// `EB cb` (S6-14e): `JMP rel8`.
     JmpShort { rel: i8 },
+    /// `66 B8 imm32` / `66 BC imm32` (S6-14f): `MOV EAX|ESP, imm32` (`reg` is [`EAX`] or
+    /// [`ESP`]). No flags change.
+    MovR32Imm32 { reg: usize, imm: u32 },
+    /// `E8 lo hi` (S6-14f): near `CALL rel16`.
+    CallNear { rel: i16 },
+    /// `C3` (S6-14f): near `RET`.
+    RetNear,
+    /// `9C` (S6-14f): 16-bit `PUSHF`.
+    Pushf,
+    /// `9D` (S6-14f): 16-bit `POPF`.
+    Popf,
+    /// `6A cb` (S6-14f): `PUSH imm8`, sign-extended to a 16-bit word.
+    PushImm8 { imm: i8 },
+    /// `66 31 C0` (S6-14f): `XOR EAX, EAX`.
+    XorEaxEax,
 }
 
-/// Memory for instruction fetch and the one data operand: physical (= linear, no paging)
-/// address.
+/// Memory for instruction fetch and the data operands (the `LOCK BTS` operand and the stack
+/// word of `CALL`/`RET`/`PUSH`/`POP`/`PUSHF`/`POPF`): physical (= linear, no paging) address.
 pub trait RealModeMemory {
     /// One byte at `linear`, or `None` if the address is not readable.
     fn read_u8(&self, linear: u32) -> Option<u8>;
@@ -175,10 +218,12 @@ pub enum RealModeRefusal {
     /// An instruction byte is not readable in memory: `cs:ip` is the start of the
     /// instruction, `linear` the address of the unreadable byte.
     FetchUnreadable { cs: u16, ip: u32, linear: u32 },
-    /// The target offset of a far jump or of a taken short jump is greater than the CS limit.
+    /// The target offset of a far jump, a taken short jump, a `CALL` or a `RET` is greater than
+    /// the CS limit.
     TargetBeyondLimit { offset: u32, limit: u32 },
-    /// The 4-byte data operand of `LOCK BTS` does not fit under the DS limit: `offset` is the
-    /// offset of the first byte beyond it (real mode does not wrap the operand).
+    /// The 4-byte data operand of `LOCK BTS` does not fit under the DS limit, or the stack word
+    /// of `PUSH`/`POP`/`CALL`/`RET`/`PUSHF`/`POPF` does not fit under the SS limit: `offset` is
+    /// the offset of the first byte beyond it (real mode does not wrap the operand).
     DataBeyondLimit { cs: u16, ip: u32, offset: u32 },
     /// A data byte at `linear` is not readable in memory.
     DataUnreadable { cs: u16, ip: u32, linear: u32 },
@@ -186,6 +231,9 @@ pub enum RealModeRefusal {
     DataUnwritable { cs: u16, ip: u32, linear: u32 },
     /// CR0.PE is set: this module executes real mode only.
     NotRealMode { cr0: u32 },
+    /// `POPF` would set `EFLAGS.TF` or `EFLAGS.IF` (`flags` is the 16-bit word on the stack).
+    /// Trap and interrupt enabling are not modelled in this slice, so the pop is refused.
+    PopfUnmodelledFlags { cs: u16, ip: u32, flags: u16 },
 }
 
 /// Result of [`RealModeCpu::run`].
@@ -315,27 +363,67 @@ impl RealModeCpu {
                 0x09 => Ok((RealInstruction::Wbinvd, 2)),
                 _ => Err(self.unsupported(mem)),
             },
-            // The only prefixed form is `66 F0 0F BA /5 ib` with ModRM `2E` (mod 00, rm 110:
-            // disp16 only, reg 5 = BTS), in exactly this prefix order. Operand bytes are free.
-            0x66 => {
-                let modrm_ok = self.fetch(mem, 1)? == 0xF0
-                    && self.fetch(mem, 2)? == 0x0F
-                    && self.fetch(mem, 3)? == 0xBA
-                    && self.fetch(mem, 4)? == 0x2E;
-                if !modrm_ok {
-                    return Err(self.unsupported(mem));
-                }
-                let lo = self.fetch(mem, 5)?;
-                let hi = self.fetch(mem, 6)?;
-                let imm8 = self.fetch(mem, 7)?;
+            0xE8 => {
+                let lo = self.fetch(mem, 1)?;
+                let hi = self.fetch(mem, 2)?;
                 Ok((
-                    RealInstruction::LockBtsImm8 {
-                        disp: u16::from_le_bytes([lo, hi]),
-                        imm8,
+                    RealInstruction::CallNear {
+                        rel: i16::from_le_bytes([lo, hi]),
                     },
-                    8,
+                    3,
                 ))
             }
+            0xC3 => Ok((RealInstruction::RetNear, 1)),
+            0x9C => Ok((RealInstruction::Pushf, 1)),
+            0x9D => Ok((RealInstruction::Popf, 1)),
+            0x6A => Ok((
+                RealInstruction::PushImm8 {
+                    imm: self.fetch(mem, 1)? as i8,
+                },
+                2,
+            )),
+            // Prefixed forms: `66 F0 0F BA /5 ib` (S6-14e) and the S6-14f `66`-prefixed
+            // register forms. Any other byte after `66` is refused.
+            0x66 => match self.fetch(mem, 1)? {
+                // `66 F0 0F BA /5 ib` with ModRM `2E` (mod 00, rm 110: disp16 only, reg 5 =
+                // BTS), in exactly this prefix order. Operand bytes are free.
+                0xF0 => {
+                    let modrm_ok = self.fetch(mem, 2)? == 0x0F
+                        && self.fetch(mem, 3)? == 0xBA
+                        && self.fetch(mem, 4)? == 0x2E;
+                    if !modrm_ok {
+                        return Err(self.unsupported(mem));
+                    }
+                    let lo = self.fetch(mem, 5)?;
+                    let hi = self.fetch(mem, 6)?;
+                    let imm8 = self.fetch(mem, 7)?;
+                    Ok((
+                        RealInstruction::LockBtsImm8 {
+                            disp: u16::from_le_bytes([lo, hi]),
+                            imm8,
+                        },
+                        8,
+                    ))
+                }
+                // `66 B8 imm32` (EAX) and `66 BC imm32` (ESP): the only register targets in
+                // the profile.
+                op @ (0xB8 | 0xBC) => {
+                    let imm = u32::from_le_bytes([
+                        self.fetch(mem, 2)?,
+                        self.fetch(mem, 3)?,
+                        self.fetch(mem, 4)?,
+                        self.fetch(mem, 5)?,
+                    ]);
+                    let reg = if op == 0xB8 { EAX } else { ESP };
+                    Ok((RealInstruction::MovR32Imm32 { reg, imm }, 6))
+                }
+                // `66 31 C0`: XOR EAX, EAX (ModRM C0 = mod 11, reg EAX, rm EAX).
+                0x31 => match self.fetch(mem, 2)? {
+                    0xC0 => Ok((RealInstruction::XorEaxEax, 3)),
+                    _ => Err(self.unsupported(mem)),
+                },
+                _ => Err(self.unsupported(mem)),
+            },
             0x73 => Ok((
                 RealInstruction::Jae {
                     rel: self.fetch(mem, 1)? as i8,
@@ -360,7 +448,12 @@ impl RealModeCpu {
     /// size, so the sum is truncated to 16 bits (SDM Vol. 2, `Jcc`/`JMP`, by memory). An
     /// unwrapped `next_eip` of `0x10000` (see the contract) is therefore taken as 0.
     fn short_target(next_eip: u32, rel: i8) -> u32 {
-        next_eip.wrapping_add_signed(i32::from(rel)) & 0xFFFF
+        Self::near_target(next_eip, i32::from(rel))
+    }
+
+    /// Same for a 16-bit relative displacement (`CALL rel16`).
+    fn near_target(next_eip: u32, rel: i32) -> u32 {
+        next_eip.wrapping_add_signed(rel) & 0xFFFF
     }
 
     /// Decodes and executes one instruction. On refusal the state and the memory are not
@@ -379,6 +472,7 @@ impl RealModeCpu {
         let branch_target = match insn {
             RealInstruction::JmpFar { offset, .. } => Some(u32::from(offset)),
             RealInstruction::JmpShort { rel } => Some(Self::short_target(next_eip, rel)),
+            RealInstruction::CallNear { rel } => Some(Self::near_target(next_eip, i32::from(rel))),
             RealInstruction::Jae { rel } if self.mode.eflags & EFLAGS_CF == 0 => {
                 Some(Self::short_target(next_eip, rel))
             }
@@ -391,6 +485,36 @@ impl RealModeCpu {
                 offset,
                 limit: self.mode.cs.limit,
             });
+        }
+        // Stack accesses (S6-14f): checked in full before anything is written.
+        let push_at = match insn {
+            RealInstruction::CallNear { .. }
+            | RealInstruction::Pushf
+            | RealInstruction::PushImm8 { .. } => Some(self.check_stack_push(mem)?),
+            _ => None,
+        };
+        let popped = match insn {
+            RealInstruction::RetNear | RealInstruction::Popf => Some(self.check_stack_pop(mem)?),
+            _ => None,
+        };
+        if matches!(insn, RealInstruction::RetNear) {
+            let offset = u32::from(popped.expect("RET pops a word"));
+            if offset > self.mode.cs.limit {
+                return Err(RealModeRefusal::TargetBeyondLimit {
+                    offset,
+                    limit: self.mode.cs.limit,
+                });
+            }
+        }
+        if matches!(insn, RealInstruction::Popf) {
+            let flags = popped.expect("POPF pops a word");
+            if u32::from(flags) & (EFLAGS_TF | EFLAGS_IF) != 0 {
+                return Err(RealModeRefusal::PopfUnmodelledFlags {
+                    cs: self.mode.cs.selector,
+                    ip: self.mode.eip,
+                    flags,
+                });
+            }
         }
         let bts_operand = match insn {
             RealInstruction::LockBtsImm8 { disp, .. } => Some(self.check_dword_operand(mem, disp)?),
@@ -435,6 +559,47 @@ impl RealModeCpu {
             RealInstruction::Jae { .. } | RealInstruction::JmpShort { .. } => {
                 // Taken (`branch_target` set) or falling through: JAE jumps when CF = 0.
                 self.mode.eip = branch_target.unwrap_or(next_eip);
+            }
+            RealInstruction::MovR32Imm32 { reg, imm } => {
+                self.gpr[reg] = imm;
+                self.mode.eip = next_eip;
+            }
+            RealInstruction::XorEaxEax => {
+                // Result zero: CF = OF = SF = 0, ZF = PF = 1. AF is undefined by the SDM; the
+                // model clears it (the oracle host did the same, see the contract).
+                self.gpr[EAX] = 0;
+                self.mode.eflags = (self.mode.eflags & !EFLAGS_ARITH) | EFLAGS_ZF | EFLAGS_PF;
+                self.mode.eip = next_eip;
+            }
+            RealInstruction::CallNear { .. }
+            | RealInstruction::Pushf
+            | RealInstruction::PushImm8 { .. } => {
+                let word = match insn {
+                    // The return address is the 16-bit IP of the next instruction.
+                    RealInstruction::CallNear { .. } => (next_eip & 0xFFFF) as u16,
+                    RealInstruction::Pushf => self.mode.eflags as u16,
+                    RealInstruction::PushImm8 { imm } => i16::from(imm) as u16,
+                    _ => unreachable!(),
+                };
+                let (new_sp, linear) = push_at.expect("stack slot checked");
+                for (i, byte) in word.to_le_bytes().into_iter().enumerate() {
+                    let ok = mem.write_u8(linear.wrapping_add(i as u32), byte);
+                    debug_assert!(ok, "writability was checked before the push");
+                }
+                self.set_sp(new_sp);
+                self.mode.eip = branch_target.unwrap_or(next_eip);
+            }
+            RealInstruction::RetNear => {
+                let ip = popped.expect("RET pops a word");
+                self.set_sp((self.gpr[ESP] as u16).wrapping_add(2));
+                self.mode.eip = u32::from(ip);
+            }
+            RealInstruction::Popf => {
+                let flags = u32::from(popped.expect("POPF pops a word"));
+                self.set_sp((self.gpr[ESP] as u16).wrapping_add(2));
+                self.mode.eflags =
+                    (self.mode.eflags & !EFLAGS_POPF_MASK) | (flags & EFLAGS_POPF_MASK);
+                self.mode.eip = next_eip;
             }
             RealInstruction::MovAxFromCs => {
                 // 16-bit operand: only AX is written, the upper half of EAX is kept. This is
@@ -510,6 +675,65 @@ impl RealModeCpu {
             value |= u32::from(byte) << (8 * i);
         }
         Ok((linear, value))
+    }
+
+    /// Replaces SP and keeps the upper half of ESP (16-bit stack size).
+    fn set_sp(&mut self, sp: u16) {
+        self.gpr[ESP] = (self.gpr[ESP] & 0xFFFF_0000) | u32::from(sp);
+    }
+
+    /// Checks the word at `SS:(SP - 2)` for a push (offset limit, writability of both bytes).
+    /// Returns the new SP and the linear address of the low byte. Nothing is changed.
+    fn check_stack_push<M: RealModeMemory>(&self, mem: &M) -> Result<(u16, u32), RealModeRefusal> {
+        let (cs, ip) = (self.mode.cs.selector, self.mode.eip);
+        let new_sp = (self.gpr[ESP] as u16).wrapping_sub(2);
+        let offset = u32::from(new_sp);
+        if offset + 1 > self.mode.ss.limit {
+            return Err(RealModeRefusal::DataBeyondLimit {
+                cs,
+                ip,
+                offset: offset.max(self.mode.ss.limit + 1),
+            });
+        }
+        let linear = self.mode.ss.base.wrapping_add(offset);
+        for i in 0..2u32 {
+            let byte_linear = linear.wrapping_add(i);
+            if !mem.can_write(byte_linear) {
+                return Err(RealModeRefusal::DataUnwritable {
+                    cs,
+                    ip,
+                    linear: byte_linear,
+                });
+            }
+        }
+        Ok((new_sp, linear))
+    }
+
+    /// Checks and reads the word at `SS:SP` for a pop (offset limit, readability of both
+    /// bytes). Nothing is changed.
+    fn check_stack_pop<M: RealModeMemory>(&self, mem: &M) -> Result<u16, RealModeRefusal> {
+        let (cs, ip) = (self.mode.cs.selector, self.mode.eip);
+        let offset = u32::from(self.gpr[ESP] as u16);
+        if offset + 1 > self.mode.ss.limit {
+            return Err(RealModeRefusal::DataBeyondLimit {
+                cs,
+                ip,
+                offset: offset.max(self.mode.ss.limit + 1),
+            });
+        }
+        let linear = self.mode.ss.base.wrapping_add(offset);
+        let mut bytes = [0u8; 2];
+        for (i, slot) in bytes.iter_mut().enumerate() {
+            let byte_linear = linear.wrapping_add(i as u32);
+            *slot = mem
+                .read_u8(byte_linear)
+                .ok_or(RealModeRefusal::DataUnreadable {
+                    cs,
+                    ip,
+                    linear: byte_linear,
+                })?;
+        }
+        Ok(u16::from_le_bytes(bytes))
     }
 
     /// Executes up to `max_steps` instructions, stopping at the first refusal.
@@ -753,8 +977,7 @@ mod tests {
         let cases: &[(&[u8], &str)] = &[
             (&[0x90], "NOP"),
             (&[0xF4], "HLT"),
-            (&[0xE8, 0x59, 0x00], "CALL"),
-            (&[0x66, 0xBC, 0x20, 0x60, 0x00, 0x00], "MOV ESP,imm32"),
+            // Near-misses of the S6-14f forms are in `s6_14f_near_misses_are_refused`.
             (&[0x0F, 0x22, 0xC0], "MOV CR0,EAX"),
             (&[0x66, 0x0F, 0x01, 0x1E, 0x60, 0x00], "LIDT"),
             // Near-miss forms of admitted opcodes: other ModRM, prefixes.
@@ -1703,5 +1926,797 @@ mod tests {
         0x1000,
         1,
         0x1008
+    );
+
+    // ---- S6-14f: MOV r32,imm32, CALL/RET, PUSHF/POPF, PUSH imm8, XOR EAX,EAX -----------
+    //
+    // Expected values below are worked out by hand from the SDM (Vol. 2, from memory), not
+    // read back from the implementation.
+
+    /// CS = 0 (base 0), SS = DS = 0, SP = 0x6020 (`ESP` = `esp`), RAM 0..0x10000 with `code`
+    /// at `ip`.
+    fn stack_setup(ip: u16, code: &[u8], esp: u32) -> (RealModeCpu, Vec<u8>) {
+        let mut cpu = RealModeCpu::at_cs_ip(0, ip, 0, 0x1234);
+        cpu.gpr[ESP] = esp;
+        let mut ram = vec![0u8; 0x1_0000];
+        ram[usize::from(ip)..usize::from(ip) + code.len()].copy_from_slice(code);
+        (cpu, ram)
+    }
+
+    fn word_at(ram: &[u8], at: usize) -> u16 {
+        u16::from_le_bytes([ram[at], ram[at + 1]])
+    }
+
+    #[test]
+    fn mov_r32_imm32_writes_eax_and_esp_only_and_no_flags() {
+        // 66 bc 20 60 00 00 at 0x101e (the blob's `mov esp, 0x6020`): ESP = 0x6020, EIP =
+        // 0x101e + 6 = 0x1024, everything else unchanged.
+        let (mut cpu, mut ram) = stack_setup(0x101E, &[0x66, 0xBC, 0x20, 0x60, 0, 0], 0xFFFF_FFFF);
+        cpu.gpr[EAX] = 0x1111_2222;
+        cpu.mode.eflags = 0x0000_08D7;
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        assert_eq!(
+            cpu.step(&mut m),
+            Ok(RealInstruction::MovR32Imm32 {
+                reg: ESP,
+                imm: 0x6020
+            })
+        );
+        assert_eq!(cpu.gpr[ESP], 0x6020, "the whole ESP is replaced");
+        assert_eq!(cpu.gpr[EAX], 0x1111_2222);
+        assert_eq!(cpu.mode.eip, 0x1024);
+        assert_eq!(cpu.mode.eflags, 0x0000_08D7);
+        // 66 b8 imm32 = EAX; the full 32-bit value, little-endian.
+        let (mut cpu, mut ram) = stack_setup(0x1000, &[0x66, 0xB8, 0xEF, 0xBE, 0xAD, 0xDE], 5);
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        assert_eq!(
+            cpu.step(&mut m),
+            Ok(RealInstruction::MovR32Imm32 {
+                reg: EAX,
+                imm: 0xDEAD_BEEF
+            })
+        );
+        assert_eq!(cpu.gpr[EAX], 0xDEAD_BEEF);
+        assert_eq!(cpu.gpr[ESP], 5);
+        assert_eq!(cpu.mode.eip, 0x1006);
+    }
+
+    #[test]
+    fn call_near_pushes_next_ip_and_jumps() {
+        // e8 59 00 at 0x1024: next = 0x1027, target = 0x1027 + 0x59 = 0x1080. SP 0x6020 ->
+        // 0x601e, word 0x1027 stored little-endian at 0x601e.
+        let (mut cpu, mut ram) = stack_setup(0x1024, &[0xE8, 0x59, 0x00], 0x6020);
+        cpu.mode.eflags = 0x0000_0A97;
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        assert_eq!(
+            cpu.step(&mut m),
+            Ok(RealInstruction::CallNear { rel: 0x59 })
+        );
+        assert_eq!(cpu.mode.eip, 0x1080);
+        assert_eq!(cpu.gpr[ESP], 0x601E);
+        assert_eq!(&ram[0x601E..0x6020], &[0x27, 0x10]);
+        assert_eq!(cpu.mode.eflags, 0x0000_0A97, "CALL changes no flag");
+        // Backward call: e8 fd ff at 0x1100: next 0x1103, -3 -> 0x1100 (a call to itself).
+        let (mut cpu, mut ram) = stack_setup(0x1100, &[0xE8, 0xFD, 0xFF], 0x6020);
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        cpu.step(&mut m).unwrap();
+        assert_eq!(cpu.mode.eip, 0x1100);
+        assert_eq!(word_at(&ram, 0x601E), 0x1103);
+        // 16-bit wrap of the target: at 0xFF00, next 0xFF03, rel +0x0200 -> 0x10103 & 0xFFFF
+        // = 0x0103.
+        let (mut cpu, mut ram) = stack_setup(0xFF00, &[0xE8, 0x00, 0x02], 0x6020);
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        cpu.step(&mut m).unwrap();
+        assert_eq!(cpu.mode.eip, 0x0103);
+        assert_eq!(word_at(&ram, 0x601E), 0xFF03);
+        // A call ending exactly at 0x10000 pushes the 16-bit IP 0 and, with rel 0, goes to 0.
+        let (mut cpu, mut ram) = stack_setup(0xFFFD, &[0xE8, 0x00, 0x00], 0x6020);
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        cpu.step(&mut m).unwrap();
+        assert_eq!(cpu.mode.eip, 0);
+        assert_eq!(word_at(&ram, 0x601E), 0);
+    }
+
+    #[test]
+    fn ret_near_pops_ip_and_keeps_flags() {
+        // Word 0x1027 at 0x601e, SP = 0x601e: RET -> IP = 0x1027, SP = 0x6020.
+        let (mut cpu, mut ram) = stack_setup(0x11A8, &[0xC3], 0x6_601E);
+        ram[0x601E..0x6020].copy_from_slice(&[0x27, 0x10]);
+        cpu.mode.eflags = 0x0000_0A97;
+        let before_ram = ram.clone();
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        assert_eq!(cpu.step(&mut m), Ok(RealInstruction::RetNear));
+        assert_eq!(cpu.mode.eip, 0x1027);
+        assert_eq!(
+            cpu.gpr[ESP], 0x6_6020,
+            "SP + 2, upper half of ESP kept: 0x0006_601E -> 0x0006_6020"
+        );
+        assert_eq!(cpu.mode.eflags, 0x0000_0A97);
+        assert_eq!(ram, before_ram, "RET writes no memory");
+    }
+
+    #[test]
+    fn call_then_ret_round_trip() {
+        // 0x1024: call 0x1080 (e8 59 00); 0x1080: ret. Hand: after the call SP = 0x601e and
+        // IP = 0x1080, after the ret IP = 0x1027 and SP = 0x6020 again.
+        let (mut cpu, mut ram) = stack_setup(0x1024, &[0xE8, 0x59, 0x00], 0x6020);
+        ram[0x1080] = 0xC3;
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        cpu.step(&mut m).unwrap();
+        assert_eq!((cpu.mode.eip, cpu.gpr[ESP]), (0x1080, 0x601E));
+        cpu.step(&mut m).unwrap();
+        assert_eq!((cpu.mode.eip, cpu.gpr[ESP]), (0x1027, 0x6020));
+    }
+
+    #[test]
+    fn esp_upper_half_is_kept_and_sp_wraps_below_zero() {
+        // ESP = 0xABCD_0000 (SP = 0): CALL stores at SS:0xFFFE, SP = 0xFFFE, ESP = 0xABCD_FFFE
+        // (a 16-bit stack touches SP only). Then RET returns SP to 0, ESP = 0xABCD_0000.
+        let (mut cpu, mut ram) = stack_setup(0x1000, &[0xE8, 0x0D, 0x00], 0xABCD_0000);
+        ram[0x1010] = 0xC3;
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        cpu.step(&mut m).unwrap();
+        assert_eq!(cpu.gpr[ESP], 0xABCD_FFFE);
+        assert_eq!(cpu.mode.eip, 0x1010);
+        cpu.step(&mut m).unwrap();
+        assert_eq!(cpu.gpr[ESP], 0xABCD_0000);
+        assert_eq!(cpu.mode.eip, 0x1003);
+        assert_eq!(word_at(&ram, 0xFFFE), 0x1003);
+    }
+
+    #[test]
+    fn stack_uses_the_ss_base_not_the_ds_or_cs_base() {
+        // SS = 0x0800 (base 0x8000), SP = 0x0100: push imm8 writes at 0x8000 + 0xFE.
+        let (mut cpu, mut ram) = stack_setup(0x1000, &[0x6A, 0x55], 0x0100);
+        cpu.mode.ss = RealSegment {
+            selector: 0x0800,
+            base: 0x8000,
+            limit: 0xFFFF,
+        };
+        cpu.mode.ds.base = 0x4000;
+        ram.resize(0x2_0000, 0);
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        cpu.step(&mut m).unwrap();
+        assert_eq!(word_at(&ram, 0x80FE), 0x0055);
+        assert_eq!(cpu.gpr[ESP], 0x00FE);
+    }
+
+    #[test]
+    fn pushf_pushes_the_low_word_and_popf_restores_the_modifiable_bits() {
+        // EFLAGS = 0x0021_08D7 (ID, OF, SF, ZF, AF, PF, bit 1, CF). PUSHF stores the low word
+        // 0x08D7. Then POPF of 0x0000 (push imm8 0) gives 0x0021_0002: the writable bits go
+        // to 0, bit 1 stays set, the upper half (ID) is not touched by the 16-bit POPF.
+        let (mut cpu, mut ram) = stack_setup(0x1000, &[0x9C, 0x6A, 0x00, 0x9D, 0x9D], 0x6020);
+        cpu.mode.eflags = 0x0021_08D7;
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        assert_eq!(cpu.step(&mut m), Ok(RealInstruction::Pushf));
+        assert_eq!(cpu.gpr[ESP], 0x601E);
+        assert_eq!(cpu.mode.eflags, 0x0021_08D7);
+        assert_eq!(cpu.step(&mut m), Ok(RealInstruction::PushImm8 { imm: 0 }));
+        assert_eq!(cpu.step(&mut m), Ok(RealInstruction::Popf));
+        assert_eq!(cpu.mode.eflags, 0x0021_0002);
+        assert_eq!(cpu.gpr[ESP], 0x601E);
+        // The second POPF restores the saved 0x08D7 (the verify_cpu pattern).
+        assert_eq!(cpu.step(&mut m), Ok(RealInstruction::Popf));
+        assert_eq!(cpu.mode.eflags, 0x0021_08D7);
+        assert_eq!(cpu.gpr[ESP], 0x6020);
+        assert_eq!(cpu.mode.eip, 0x1005);
+    }
+
+    #[test]
+    fn popf_writes_only_its_mask() {
+        // Pop 0xFCFF (every bit but TF and IF): the written bits are 0xFCFF & 0x7FD5 =
+        // 0x7CD5; bit 15 (reserved) and bits 3 and 5 are not written; bit 1 stays 1.
+        // 0x0002 | 0x7CD5 = 0x7CD7.
+        let (mut cpu, mut ram) = stack_setup(0x1000, &[0x9D], 0x6000);
+        ram[0x6000..0x6002].copy_from_slice(&0xFCFFu16.to_le_bytes());
+        cpu.mode.eflags = 0x0002;
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        cpu.step(&mut m).unwrap();
+        assert_eq!(cpu.mode.eflags, 0x7CD7);
+        // A pop of 0 clears every bit of the mask (IF, IOPL, NT, OF, SF, ZF, AF, PF, CF) except
+        // the ones outside it.
+        let (mut cpu, mut ram) = stack_setup(0x1000, &[0x9D], 0x6000);
+        cpu.mode.eflags = 0x0002 | 0x7000 | 0x0A00 | 0x8D5 | 0x0008 | 0x0020;
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        cpu.step(&mut m).unwrap();
+        // Bits 3 and 5 (0x28) are not in the mask: they are not touched by the pop.
+        assert_eq!(cpu.mode.eflags, 0x0002 | 0x0028);
+    }
+
+    #[test]
+    fn popf_with_tf_or_if_is_refused_unchanged() {
+        for flags in [0x0100u16, 0x0200, 0x0302, 0xFFFF] {
+            let (mut cpu, mut ram) = stack_setup(0x1000, &[0x9D], 0x6000);
+            ram[0x6000..0x6002].copy_from_slice(&flags.to_le_bytes());
+            cpu.mode.eflags = 0x0000_0046;
+            let before = cpu;
+            let snapshot = ram.clone();
+            let mut m = ImageMemoryMut {
+                base: 0,
+                bytes: &mut ram,
+            };
+            assert_eq!(
+                cpu.step(&mut m),
+                Err(RealModeRefusal::PopfUnmodelledFlags {
+                    cs: 0,
+                    ip: 0x1000,
+                    flags
+                })
+            );
+            assert_eq!(cpu, before);
+            assert_eq!(ram, snapshot);
+        }
+    }
+
+    #[test]
+    fn push_imm8_sign_extends_to_a_word() {
+        // 0x00 -> 0x0000, 0x7f -> 0x007f, 0x80 -> 0xff80, 0xff -> 0xffff.
+        for (imm, word) in [
+            (0x00u8, 0x0000u16),
+            (0x7F, 0x007F),
+            (0x80, 0xFF80),
+            (0xFF, 0xFFFF),
+        ] {
+            let (mut cpu, mut ram) = stack_setup(0x1000, &[0x6A, imm], 0x6020);
+            cpu.mode.eflags = 0x0000_08D7;
+            let mut m = ImageMemoryMut {
+                base: 0,
+                bytes: &mut ram,
+            };
+            assert_eq!(
+                cpu.step(&mut m),
+                Ok(RealInstruction::PushImm8 { imm: imm as i8 })
+            );
+            assert_eq!(word_at(&ram, 0x601E), word, "imm8 {imm:#x}");
+            assert_eq!(cpu.gpr[ESP], 0x601E);
+            assert_eq!(cpu.mode.eip, 0x1002);
+            assert_eq!(cpu.mode.eflags, 0x0000_08D7);
+        }
+    }
+
+    #[test]
+    fn xor_eax_eax_sets_zero_result_flags() {
+        // EAX = 0xDEADBEEF, EFLAGS = 0x0A97 (IF, OF, SF, ZF, AF, PF, CF). XOR clears CF, OF,
+        // SF, AF and sets ZF, PF: bits 0x8D5 are cleared (leaving IF 0x200 and bit 1) and 0x44
+        // is set: 0x202 | 0x44 = 0x246. Upper EFLAGS bits (ID 0x200000) are kept.
+        let (mut cpu, mut ram) = stack_setup(0x11A5, &[0x66, 0x31, 0xC0], 0x6020);
+        cpu.gpr[EAX] = 0xDEAD_BEEF;
+        cpu.gpr[ECX] = 7;
+        cpu.mode.eflags = 0x0020_0A97;
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        assert_eq!(cpu.step(&mut m), Ok(RealInstruction::XorEaxEax));
+        assert_eq!(cpu.gpr[EAX], 0);
+        assert_eq!(cpu.gpr[ECX], 7);
+        assert_eq!(cpu.mode.eflags, 0x0020_0246);
+        assert_eq!(cpu.mode.eip, 0x11A8);
+    }
+
+    #[test]
+    fn stack_push_must_fit_under_the_ss_limit() {
+        // SS limit 0x00FF. SP = 0x0100: the word goes to 0xFE..=0xFF, fine. SP = 0x0101: the
+        // word would occupy 0xFF..=0x100: refused, first offset beyond the limit is 0x100.
+        // SP = 0x0300: new SP = 0x2FE is entirely beyond: offset 0x2FE. SP = 0: new SP =
+        // 0xFFFE, offset 0xFFFE. SP = 1: new SP = 0xFFFF, the word straddles 0xFFFF..0x10000.
+        let pushes: [(&[u8], &str); 3] = [
+            (&[0x9C], "PUSHF"),
+            (&[0x6A, 0x01], "PUSH imm8"),
+            (&[0xE8, 0x00, 0x00], "CALL"),
+        ];
+        for (code, name) in pushes {
+            for (esp, limit, expected) in [
+                (0x0100u32, 0x00FFu32, None),
+                (0x0101, 0x00FF, Some(0x0100)),
+                (0x0300, 0x00FF, Some(0x02FE)),
+                (0x0000, 0x00FF, Some(0xFFFE)),
+                (0x0001, 0xFFFF, Some(0x1_0000)),
+            ] {
+                let (mut cpu, mut ram) = stack_setup(0x1000, code, esp);
+                cpu.mode.ss.limit = limit;
+                let before = cpu;
+                let snapshot = ram.clone();
+                let mut m = ImageMemoryMut {
+                    base: 0,
+                    bytes: &mut ram,
+                };
+                let r = cpu.step(&mut m);
+                match expected {
+                    None => {
+                        assert!(r.is_ok(), "{name} esp {esp:#x}");
+                        assert_eq!(cpu.gpr[ESP], 0x00FE);
+                    }
+                    Some(offset) => {
+                        assert_eq!(
+                            r,
+                            Err(RealModeRefusal::DataBeyondLimit {
+                                cs: 0,
+                                ip: 0x1000,
+                                offset
+                            }),
+                            "{name} esp {esp:#x}"
+                        );
+                        assert_eq!(cpu, before, "{name}: state unchanged");
+                        assert_eq!(ram, snapshot, "{name}: memory unchanged");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stack_pop_must_fit_under_the_ss_limit() {
+        // SS limit 0x00FF. SP = 0xFE: bytes 0xFE and 0xFF, fine. SP = 0xFF: bytes 0xFF and
+        // 0x100: refused (offset 0x100). SP = 0xFFFF with limit 0xFFFF: 0xFFFF and 0x10000:
+        // refused (offset 0x10000), no wrap to offset 0.
+        for code in [&[0xC3u8][..], &[0x9D]] {
+            for (esp, limit, expected) in [
+                (0x00FEu32, 0x00FFu32, None),
+                (0x00FF, 0x00FF, Some(0x0100u32)),
+                (0xFFFF, 0xFFFF, Some(0x1_0000)),
+            ] {
+                let (mut cpu, mut ram) = stack_setup(0x1000, code, esp);
+                cpu.mode.ss.limit = limit;
+                let before = cpu;
+                let mut m = ImageMemoryMut {
+                    base: 0,
+                    bytes: &mut ram,
+                };
+                let r = cpu.step(&mut m);
+                match expected {
+                    None => assert!(r.is_ok()),
+                    Some(offset) => {
+                        assert_eq!(
+                            r,
+                            Err(RealModeRefusal::DataBeyondLimit {
+                                cs: 0,
+                                ip: 0x1000,
+                                offset
+                            })
+                        );
+                        assert_eq!(cpu, before);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stack_unwritable_or_unreadable_is_refused_unchanged() {
+        // Push: the second byte of the word (0x601f) is read-only. The first one is writable
+        // but must not be written.
+        for code in [&[0x9Cu8][..], &[0x6A, 0x01], &[0xE8, 0x00, 0x00]] {
+            let (mut cpu, mut ram) = stack_setup(0x1000, code, 0x6020);
+            let before = cpu;
+            let snapshot = ram.clone();
+            let mut m = PartlyReadOnly {
+                inner: ImageMemoryMut {
+                    base: 0,
+                    bytes: &mut ram,
+                },
+                read_only_from: 0x601F,
+            };
+            assert_eq!(
+                cpu.step(&mut m),
+                Err(RealModeRefusal::DataUnwritable {
+                    cs: 0,
+                    ip: 0x1000,
+                    linear: 0x601F
+                })
+            );
+            assert_eq!(cpu, before);
+            assert_eq!(ram, snapshot);
+        }
+        // Read-only image: the first byte 0x601e is the one named.
+        let (mut cpu, ram) = stack_setup(0x1000, &[0x9C], 0x6020);
+        let before = cpu;
+        let mut m = mem(0, &ram);
+        assert_eq!(
+            cpu.step(&mut m),
+            Err(RealModeRefusal::DataUnwritable {
+                cs: 0,
+                ip: 0x1000,
+                linear: 0x601E
+            })
+        );
+        assert_eq!(cpu, before);
+        // Pop: memory ends at 0x6001, so the second byte (0x6001) is not readable.
+        for code in [&[0xC3u8][..], &[0x9D]] {
+            let (mut cpu, ram) = stack_setup(0x1000, code, 0x6000);
+            let before = cpu;
+            let mut short = ram[..0x6001].to_vec();
+            let mut m = ImageMemoryMut {
+                base: 0,
+                bytes: &mut short,
+            };
+            assert_eq!(
+                cpu.step(&mut m),
+                Err(RealModeRefusal::DataUnreadable {
+                    cs: 0,
+                    ip: 0x1000,
+                    linear: 0x6001
+                })
+            );
+            assert_eq!(cpu, before);
+        }
+    }
+
+    #[test]
+    fn call_and_ret_targets_must_lie_under_the_cs_limit() {
+        // CS limit 0x2000. CALL to 0x1000 + 3 + 0x2000 = 0x3003 is refused without pushing.
+        let (mut cpu, mut ram) = stack_setup(0x1000, &[0xE8, 0x00, 0x20], 0x6020);
+        cpu.mode.cs.limit = 0x2000;
+        let before = cpu;
+        let snapshot = ram.clone();
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        assert_eq!(
+            cpu.step(&mut m),
+            Err(RealModeRefusal::TargetBeyondLimit {
+                offset: 0x3003,
+                limit: 0x2000
+            })
+        );
+        assert_eq!(cpu, before);
+        assert_eq!(ram, snapshot);
+        // RET popping 0x3000 (limit 0x2000): refused, SP unchanged.
+        let (mut cpu, mut ram) = stack_setup(0x1000, &[0xC3], 0x6000);
+        ram[0x6000..0x6002].copy_from_slice(&0x3000u16.to_le_bytes());
+        cpu.mode.cs.limit = 0x2000;
+        let before = cpu;
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        assert_eq!(
+            cpu.step(&mut m),
+            Err(RealModeRefusal::TargetBeyondLimit {
+                offset: 0x3000,
+                limit: 0x2000
+            })
+        );
+        assert_eq!(cpu, before);
+        // A target exactly at the limit is allowed.
+        let (mut cpu, mut ram) = stack_setup(0x1000, &[0xC3], 0x6000);
+        ram[0x6000..0x6002].copy_from_slice(&0x2000u16.to_le_bytes());
+        cpu.mode.cs.limit = 0x2000;
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        cpu.step(&mut m).unwrap();
+        assert_eq!(cpu.mode.eip, 0x2000);
+    }
+
+    #[test]
+    fn stack_instructions_end_a_mov_ss_shadow() {
+        // `MOV SS, AX` then `PUSH imm8` (the next instruction): the shadow ends after it.
+        let (mut cpu, mut ram) = stack_setup(0x1000, &[0x8E, 0xD0, 0x6A, 0x01, 0x9C], 0x6020);
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        cpu.step(&mut m).unwrap();
+        assert!(cpu.mov_ss_shadow);
+        cpu.step(&mut m).unwrap();
+        assert!(!cpu.mov_ss_shadow);
+    }
+
+    #[test]
+    fn s6_14f_near_misses_are_refused() {
+        let cases: &[(&[u8], &str)] = &[
+            (&[0x66, 0xB9, 0, 0, 0, 0], "MOV ECX,imm32"),
+            (&[0x66, 0xBD, 0, 0, 0, 0], "MOV EBP,imm32"),
+            (&[0xB8, 0x01, 0x00], "MOV AX,imm16"),
+            (&[0xBC, 0x20, 0x60], "MOV SP,imm16"),
+            (&[0x66, 0x9C], "PUSHFD"),
+            (&[0x66, 0x9D], "POPFD"),
+            (&[0x66, 0x58], "POP EAX"),
+            (&[0x66, 0x50], "PUSH EAX"),
+            (&[0x58], "POP AX"),
+            (&[0x50], "PUSH AX"),
+            (&[0x66, 0x6A, 0x00], "PUSH imm8 (32-bit)"),
+            (&[0x68, 0x00, 0x00], "PUSH imm16"),
+            (&[0x66, 0xE8, 0x00, 0x00, 0x00, 0x00], "CALL rel32"),
+            (&[0x66, 0xC3], "RET (32-bit)"),
+            (&[0xC2, 0x04, 0x00], "RET imm16"),
+            (&[0xCB], "RETF"),
+            (&[0x9A, 0, 0, 0, 0], "CALL far"),
+            (&[0xFF, 0xD0], "CALL AX"),
+            (&[0xF3, 0xC3], "REP RET"),
+            (&[0x67, 0xE8, 0x00, 0x00], "67 CALL"),
+            (&[0x2E, 0xC3], "CS RET"),
+            (&[0xF0, 0x9C], "LOCK PUSHF"),
+            (&[0x66, 0x31, 0xC9], "XOR ECX,ECX"),
+            (&[0x66, 0x31, 0xD8], "XOR EAX,EBX"),
+            (&[0x66, 0x33, 0xC0], "XOR r32,r/m32 (33)"),
+            (&[0x31, 0xC0], "XOR AX,AX"),
+            (&[0x66, 0x85, 0xC0], "TEST EAX,EAX"),
+            (&[0x75, 0x20], "JNE"),
+            (&[0x0F, 0xA2], "CPUID"),
+            (&[0x66, 0x0F, 0xA2], "66 CPUID"),
+            (&[0x9B], "FWAIT"),
+        ];
+        for (bytes, name) in cases {
+            let (mut cpu, mut ram) = stack_setup(0x1000, &[0; 0], 0x6020);
+            ram[0x1000..0x1000 + bytes.len()].copy_from_slice(bytes);
+            let before = cpu;
+            let snapshot = ram.clone();
+            let mut m = ImageMemoryMut {
+                base: 0,
+                bytes: &mut ram,
+            };
+            let mut expected_bytes = ram_bytes(&m, 0x1000, 8);
+            expected_bytes.truncate(UNSUPPORTED_BYTES_MAX);
+            assert_eq!(
+                cpu.step(&mut m),
+                Err(RealModeRefusal::Unsupported {
+                    cs: 0,
+                    ip: 0x1000,
+                    linear: 0x1000,
+                    bytes: expected_bytes,
+                }),
+                "{name}"
+            );
+            assert_eq!(cpu, before, "{name}: state unchanged");
+            assert_eq!(ram, snapshot, "{name}: memory unchanged");
+        }
+    }
+
+    fn ram_bytes(m: &ImageMemoryMut<'_>, at: u32, n: u32) -> Vec<u8> {
+        (0..n).map(|i| m.read_u8(at + i).unwrap()).collect()
+    }
+
+    #[test]
+    fn truncated_s6_14f_forms_are_fetch_refusals() {
+        // `66 b8` with only two immediate bytes: the third immediate byte (offset 4) is missing.
+        let mut cpu = RealModeCpu::at_cs_ip(0, 0x1000, 0, 0);
+        let image = [0x66, 0xB8, 0x01, 0x00];
+        let mut m = mem(0x1000, &image);
+        assert_eq!(
+            cpu.step(&mut m),
+            Err(RealModeRefusal::FetchUnreadable {
+                cs: 0,
+                ip: 0x1000,
+                linear: 0x1004
+            })
+        );
+        // `e8 59` without the high byte; `6a` without the immediate; `66 31` without ModRM.
+        for (image, linear) in [
+            (&[0xE8u8, 0x59][..], 0x1002u32),
+            (&[0x6A], 0x1001),
+            (&[0x66, 0x31], 0x1002),
+        ] {
+            let mut cpu = RealModeCpu::at_cs_ip(0, 0x1000, 0, 0);
+            let mut m = mem(0x1000, image);
+            assert_eq!(
+                cpu.step(&mut m),
+                Err(RealModeRefusal::FetchUnreadable {
+                    cs: 0,
+                    ip: 0x1000,
+                    linear
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn verify_cpu_shaped_success_and_failure_tails_by_hand() {
+        // Blob bytes 0x101e..0x1027 then a callee shaped like verify_cpu's start and tails:
+        //   0x101e mov esp,0x6020 ; 0x1024 call 0x1080 ; 0x1027 hlt (stands for TEST EAX,EAX)
+        //   0x1080 pushf; push 0; popf ; 0x1084 popf; xor eax,eax; ret   (0x11a4 shape)
+        // Hand: ESP = 0x6020; call: [0x601e] = 0x1027, SP = 0x601e; pushf: [0x601c] = 0x0002
+        // (EFLAGS = 2), SP = 0x601c; push 0: [0x601a] = 0, SP = 0x601a; popf: flags = 2,
+        // SP = 0x601c; popf: flags = 0x0002, SP = 0x601e; xor eax,eax: EAX = 0, flags = 0x46;
+        // ret: IP = 0x1027, SP = 0x6020. 8 steps in all: the mov, the call, then 6 callee
+        // instructions (pushf, push 0, popf, popf, xor, ret) -> stop at 0x1027 (HLT).
+        let mut code = vec![0u8; 0x90];
+        code[0x1E..0x1E + 6].copy_from_slice(&[0x66, 0xBC, 0x20, 0x60, 0, 0]);
+        code[0x24..0x27].copy_from_slice(&[0xE8, 0x59, 0x00]);
+        code[0x27] = 0xF4;
+        code[0x80..0x84].copy_from_slice(&[0x9C, 0x6A, 0x00, 0x9D]);
+        code[0x84..0x89].copy_from_slice(&[0x9D, 0x66, 0x31, 0xC0, 0xC3]);
+        let (mut cpu, mut ram) = stack_setup(0x101E - 0x1E, &[], 0);
+        ram[0x1000..0x1000 + code.len()].copy_from_slice(&code);
+        cpu.mode.eip = 0x101E;
+        cpu.gpr[EAX] = 0x5555_5555;
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        let run = cpu.run(&mut m, 100);
+        assert_eq!(run.steps, 8);
+        assert!(matches!(
+            run.stop,
+            Some(RealModeRefusal::Unsupported { ip: 0x1027, .. })
+        ));
+        assert_eq!(cpu.gpr[EAX], 0);
+        assert_eq!(cpu.gpr[ESP], 0x6020);
+        assert_eq!(cpu.mode.eflags, 0x0000_0046);
+        assert_eq!(word_at(&ram, 0x601E), 0x1027);
+        assert_eq!(word_at(&ram, 0x601C), 0x0002);
+        assert_eq!(word_at(&ram, 0x601A), 0x0000);
+
+        // Failure tail (0x119b shape): `popf; mov eax,1; ret` with CF = 1 saved by pushf.
+        // Hand: entry flags 0x0003 (CF). pushf [..] = 0x0003, push 0, popf -> flags 2, popf
+        // -> flags 3, mov eax,1, ret.
+        let mut code = vec![0u8; 0x40];
+        code[0..6].copy_from_slice(&[0x66, 0xBC, 0x20, 0x60, 0, 0]);
+        code[6..9].copy_from_slice(&[0xE8, 0x11, 0x00]); // next 0x1009 + 0x11 = 0x101a
+        code[9] = 0xF4;
+        code[0x1A..0x1E].copy_from_slice(&[0x9C, 0x6A, 0x00, 0x9D]);
+        code[0x1E..0x26].copy_from_slice(&[0x9D, 0x66, 0xB8, 1, 0, 0, 0, 0xC3]);
+        let (mut cpu, mut ram) = stack_setup(0x1000, &[], 0);
+        ram[0x1000..0x1000 + code.len()].copy_from_slice(&code);
+        cpu.mode.eflags = 0x0003;
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        let run = cpu.run(&mut m, 100);
+        assert_eq!(run.steps, 8);
+        assert_eq!(cpu.gpr[EAX], 1);
+        assert_eq!(cpu.mode.eflags, 0x0003);
+        assert_eq!(cpu.gpr[ESP], 0x6020);
+        assert_eq!(cpu.mode.eip, 0x1009);
+    }
+
+    // ---- Comparison with the KVM oracle (S6-14f) ---------------------------------------
+    //
+    // Files in docs/reports/data/stage6/s6-14f/ (run-oracle.sh). The model runs the same image
+    // from the same entry; the registers, segments, EFLAGS, CR0 and the captured stack words
+    // are compared with the oracle's JSON, not with test expectations.
+
+    fn compare_with_oracle_f(
+        image: &[u8],
+        json: &str,
+        mut cpu: RealModeCpu,
+        (entry_cs, entry_ip): (u16, u16),
+        expected_steps: u64,
+        expected_hlt_ip: u32,
+    ) {
+        assert!(json.contains("\"stop_reason\":\"guest_hlt\""));
+        // The stack is 16-bit in the oracle (SS.B = 0): the model's SP-only rule applies.
+        assert_eq!(
+            oracle_num(json, &["final_state", "segments", "ss", "db"]),
+            0
+        );
+        let base = u32::from(entry_cs) << 4;
+        let mut ram = vec![0u8; 0x1_0000];
+        let at = usize::from(entry_ip);
+        ram[at..at + image.len()].copy_from_slice(image);
+        let mut m = ImageMemoryMut {
+            base,
+            bytes: &mut ram,
+        };
+        let run = cpu.run(&mut m, 100);
+        assert_eq!(run.steps, expected_steps);
+        match run.stop {
+            Some(RealModeRefusal::Unsupported { bytes, ip, .. }) => {
+                assert_eq!(bytes[0], 0xF4, "stops at HLT");
+                assert_eq!(ip, expected_hlt_ip);
+            }
+            other => panic!("expected stop at HLT, got {other:?}"),
+        }
+        assert_final_state_matches(json, &cpu);
+        // The oracle's SS base is the model's: the captured stack words are physical memory.
+        let (gpa, oracle_bytes) = oracle_result_block(json);
+        let start = (gpa - base) as usize;
+        assert_eq!(
+            &ram[start..start + oracle_bytes.len()],
+            &oracle_bytes[..],
+            "stack words at {gpa:#x}"
+        );
+    }
+
+    macro_rules! oracle_case_f {
+        ($name:ident, $stem:literal, $cs:expr, $ip:expr, $steps:expr, $hlt_ip:expr) => {
+            #[test]
+            fn $name() {
+                let image: &[u8] = include_bytes!(concat!(
+                    "../../../docs/reports/data/stage6/s6-14f/",
+                    $stem,
+                    ".bin"
+                ));
+                let json: &str = include_str!(concat!(
+                    "../../../docs/reports/data/stage6/s6-14f/oracle-",
+                    $stem,
+                    ".json"
+                ));
+                let cpu = RealModeCpu::at_cs_ip($cs, $ip, 0x6000_0010, oracle_signature(json));
+                compare_with_oracle_f(image, json, cpu, ($cs, $ip), $steps, $hlt_ip);
+            }
+        };
+    }
+
+    // a: the blob layout 0x1000..0x1027 (block 1, mov esp, call) and a verify_cpu-shaped
+    // callee at 0x1080 (pushf; push 0; popf; popf; xor eax,eax; ret): 17 steps, HLT at 0x1027.
+    oracle_case_f!(
+        oracle_f_a_call_success_tail,
+        "a-call-success-tail-0000-1000",
+        0x0000,
+        0x1000,
+        17,
+        0x1027
+    );
+    // b: relocated to CS = 0x9f00 (SS = 0x9f00), CF = 1 from the second BTS, the failure-tail
+    // shape (popf; mov eax,1; ret): 13 steps, HLT at 0x101f.
+    oracle_case_f!(
+        oracle_f_b_call_failure_tail_cf1_relocated,
+        "b-call-failure-tail-cf1-9f00-1000",
+        0x9F00,
+        0x1000,
+        13,
+        0x101F
+    );
+    // c: nested call, PUSH imm8 -1/0x7f/0x57, POPF of 0x57, RET: 8 steps, HLT at 0x102a.
+    oracle_case_f!(
+        oracle_f_c_nested_call_push_imm8_popf,
+        "c-nested-call-push-imm8-popf-0000-1000",
+        0x0000,
+        0x1000,
+        8,
+        0x102A
+    );
+    // d: ESP = 0x10000, CALL stores at SS:0xFFFE, RET: 3 steps, HLT at 0x1009.
+    oracle_case_f!(
+        oracle_f_d_sp_wrap_call_ret,
+        "d-sp-wrap-call-ret-0000-1000",
+        0x0000,
+        0x1000,
+        3,
+        0x1009
+    );
+    // e: the same, stopping inside the callee: ESP = 0x1fffe (upper half kept): 2 steps.
+    oracle_case_f!(
+        oracle_f_e_sp_wrap_stop_in_callee,
+        "e-sp-wrap-stop-in-callee-0000-1000",
+        0x0000,
+        0x1000,
+        2,
+        0x1010
     );
 }
