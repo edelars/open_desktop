@@ -484,7 +484,12 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
         }
         if matches!(
             name,
-            "--run" | "--set-cpl0" | "--diagnostic-past-c7" | "--user-mode" | "--linux-norandmaps"
+            "--run"
+                | "--set-cpl0"
+                | "--diagnostic-past-c7"
+                | "--user-mode"
+                | "--linux-norandmaps"
+                | "--linux-no-randomize-kstack-offset"
         ) {
             forwarded.push(name.to_string());
             index += 1;
@@ -816,8 +821,43 @@ fn configuration_from_runner(runner: &Value) -> Value {
         "cpu_path": runner["stop"]["path"],
         "cpu_profile": runner["stop"]["cpu_profile"],
         "diagnostic_past_c7": runner["diagnostic_past_c7"],
+        "linux_norandmaps": runner["linux_norandmaps"],
+        "linux_no_randomize_kstack_offset": runner["linux_no_randomize_kstack_offset"],
         "acceptance": runner["acceptance"],
     })
+}
+
+fn configuration_matches_runner(configuration: &Value, runner: &Value) -> bool {
+    let Some(configuration_object) = configuration.as_object() else {
+        return false;
+    };
+    let mut expected = configuration_from_runner(runner);
+    let Some(expected_object) = expected.as_object_mut() else {
+        return false;
+    };
+    // These optional Linux diagnostics were added without a schema bump. Older manifests omit
+    // their configuration keys even when the raw runner evidence predates or records the flags.
+    // Ignore only absent keys; a present value and all other configuration (including cmdline)
+    // must still match the raw JSON exactly.
+    for key in ["linux_norandmaps", "linux_no_randomize_kstack_offset"] {
+        if !configuration_object.contains_key(key) {
+            expected_object.remove(key);
+        }
+    }
+    configuration == &expected
+}
+
+fn enrich_legacy_diagnostic_configuration(configuration: &mut Value, runner: &Value) {
+    let Some(configuration_object) = configuration.as_object_mut() else {
+        return;
+    };
+    for key in ["linux_norandmaps", "linux_no_randomize_kstack_offset"] {
+        if !configuration_object.contains_key(key) {
+            if let Some(value) = runner.get(key) {
+                configuration_object.insert(key.into(), value.clone());
+            }
+        }
+    }
 }
 
 fn aggregate_status(statuses: &[ScenarioStatus]) -> ScenarioStatus {
@@ -1032,7 +1072,7 @@ fn load_run_manifest(series_path: &Path, reference: &RunReference) -> Result<Run
     if od_testkit::sha256_hex(&bytes) != reference.manifest_sha256 {
         return Err("run manifest hash mismatch".into());
     }
-    let manifest: RunManifest = serde_json::from_slice(&bytes)
+    let mut manifest: RunManifest = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid run manifest JSON: {error}"))?;
     if !supported_schema_version(manifest.schema_version) || manifest.run_id != reference.run_id {
         return Err("run manifest identity or schema mismatch".into());
@@ -1056,11 +1096,12 @@ fn load_run_manifest(series_path: &Path, reference: &RunReference) -> Result<Run
     {
         return Err("run manifest runner summary does not match raw JSON".into());
     }
-    if manifest.configuration != configuration_from_runner(&raw_value)
+    if !configuration_matches_runner(&manifest.configuration, &raw_value)
         || manifest.artifact_hashes != artifact_hashes(&raw_value)
     {
         return Err("run manifest configuration or artifact hashes do not match raw JSON".into());
     }
+    enrich_legacy_diagnostic_configuration(&mut manifest.configuration, &raw_value);
     if manifest.machine_stop_reason != machine_stop_reason_from_stop(raw_value.get("stop"))? {
         return Err("run manifest machine stop reason does not match raw runner JSON".into());
     }
@@ -1206,8 +1247,10 @@ fn compare_run(
             unexplained.push(format!("{prefix}.{field} differs"));
         }
     }
-    let left_config = normalize_nonce(&left.configuration, &left.nonce);
-    let right_config = normalize_nonce(&right.configuration, &right.nonce);
+    let left_config =
+        normalize_optional_linux_diagnostics(&normalize_nonce(&left.configuration, &left.nonce));
+    let right_config =
+        normalize_optional_linux_diagnostics(&normalize_nonce(&right.configuration, &right.nonce));
     if left_config != right_config {
         unexplained.push(format!("{prefix}.configuration differs"));
     }
@@ -1403,6 +1446,22 @@ fn normalize_nonce(value: &Value, nonce: &str) -> Value {
         ),
         other => other.clone(),
     }
+}
+
+fn normalize_optional_linux_diagnostics(value: &Value) -> Value {
+    let mut normalized = value.clone();
+    let Some(configuration) = normalized.as_object_mut() else {
+        return normalized;
+    };
+    for key in ["linux_norandmaps", "linux_no_randomize_kstack_offset"] {
+        if matches!(
+            configuration.get(key),
+            None | Some(Value::Null | Value::Bool(false))
+        ) {
+            configuration.remove(key);
+        }
+    }
+    normalized
 }
 
 fn normalize_uart(bytes: &[u8], nonce: &str) -> Vec<u8> {
@@ -1841,6 +1900,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn automatic_series_configuration_records_linux_boot_diagnostics() {
+        let configuration = configuration_from_runner(&json!({
+            "cmdline": "nokaslr norandmaps randomize_kstack_offset=off",
+            "ram_mib": 128,
+            "stop": {"budget": 3000000000u64, "path": "cpl0_set", "cpu_profile": "stage4a"},
+            "diagnostic_past_c7": false,
+            "linux_norandmaps": true,
+            "linux_no_randomize_kstack_offset": true,
+            "acceptance": "diagnostic_not_counted"
+        }));
+        assert_eq!(configuration["linux_norandmaps"], true);
+        assert_eq!(configuration["linux_no_randomize_kstack_offset"], true);
+        assert_eq!(configuration["acceptance"], "diagnostic_not_counted");
+    }
+
+    #[test]
+    fn comparison_normalizes_only_inactive_linux_diagnostic_configuration() {
+        let legacy = json!({
+            "cmdline": "nokaslr norandmaps",
+            "ram_mib": 128,
+            "linux_norandmaps": true
+        });
+        let current_equivalent = json!({
+            "cmdline": "nokaslr norandmaps",
+            "ram_mib": 128,
+            "linux_norandmaps": true,
+            "linux_no_randomize_kstack_offset": false
+        });
+        assert_eq!(
+            normalize_optional_linux_diagnostics(&legacy),
+            normalize_optional_linux_diagnostics(&current_equivalent)
+        );
+
+        let true_flag_without_suffix = json!({
+            "cmdline": "nokaslr norandmaps",
+            "ram_mib": 128,
+            "linux_norandmaps": true,
+            "linux_no_randomize_kstack_offset": true
+        });
+        assert_ne!(
+            normalize_optional_linux_diagnostics(&legacy),
+            normalize_optional_linux_diagnostics(&true_flag_without_suffix)
+        );
+
+        let active_diagnostic = json!({
+            "cmdline": "nokaslr norandmaps randomize_kstack_offset=off",
+            "ram_mib": 128,
+            "linux_norandmaps": true,
+            "linux_no_randomize_kstack_offset": true
+        });
+        assert_ne!(
+            normalize_optional_linux_diagnostics(&legacy),
+            normalize_optional_linux_diagnostics(&active_diagnostic)
+        );
+    }
+
+    #[test]
     fn build_source_revision_is_a_git_hash_when_available() {
         if let Some(revision) = build_source_revision() {
             assert!(matches!(revision.len(), 40 | 64));
@@ -1910,6 +2026,121 @@ mod tests {
         assert_eq!(manifest.schema_version, 1);
         assert_eq!(run.schema_version, 1);
         assert_eq!(run.host.source_dirty, None);
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn legacy_v2_configuration_without_linux_diagnostic_keys_still_verifies_raw_json() {
+        let temp = std::env::temp_dir().join(format!(
+            "od-runner-stage5-legacy-linux-config-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let prepare_norandmaps_run = |series_path: &Path, legacy_config: bool| {
+            let mut series: Value =
+                serde_json::from_slice(&fs::read(series_path).unwrap()).unwrap();
+            let run_path = series_path
+                .parent()
+                .unwrap()
+                .join(series["runs"][0]["manifest"].as_str().unwrap());
+            let mut run: Value = serde_json::from_slice(&fs::read(&run_path).unwrap()).unwrap();
+            let raw_path = series_path
+                .parent()
+                .unwrap()
+                .join(run["runner"]["raw_json"].as_str().unwrap());
+            let mut raw: Value = serde_json::from_slice(&fs::read(&raw_path).unwrap()).unwrap();
+            raw["cmdline"] = json!(format!("{} norandmaps", raw["cmdline"].as_str().unwrap()));
+            raw["linux_norandmaps"] = json!(true);
+            if !legacy_config {
+                raw["linux_no_randomize_kstack_offset"] = json!(false);
+            }
+            // This raw JSON models a historical run with norandmaps enabled; its manifest uses
+            // the old seven-key configuration, while current manifests record both flags.
+            let raw_bytes = serde_json::to_vec(&raw).unwrap();
+            fs::write(&raw_path, &raw_bytes).unwrap();
+            run["runner"]["raw_json_sha256"] = json!(od_testkit::sha256_hex(&raw_bytes));
+            run["configuration"]["cmdline"] = raw["cmdline"].clone();
+            if legacy_config {
+                run["configuration"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("linux_norandmaps");
+                run["configuration"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("linux_no_randomize_kstack_offset");
+            } else {
+                run["configuration"]["linux_norandmaps"] = json!(true);
+                run["configuration"]["linux_no_randomize_kstack_offset"] = json!(false);
+            }
+            let run_bytes = serde_json::to_vec_pretty(&run).unwrap();
+            fs::write(&run_path, &run_bytes).unwrap();
+            series["runs"][0]["manifest_sha256"] = json!(od_testkit::sha256_hex(&run_bytes));
+            fs::write(series_path, serde_json::to_vec_pretty(&series).unwrap()).unwrap();
+        };
+
+        let legacy_path =
+            write_test_series(&temp, "legacy-linux-config", "nonceLegacyCfg001", "PASS");
+        let current_path =
+            write_test_series(&temp, "current-linux-config", "nonceCurrentCfg001", "PASS");
+        prepare_norandmaps_run(&legacy_path, true);
+        prepare_norandmaps_run(&current_path, false);
+
+        let legacy_reference: Value =
+            serde_json::from_slice(&fs::read(&legacy_path).unwrap()).unwrap();
+        let legacy_manifest_path = legacy_path
+            .parent()
+            .unwrap()
+            .join(legacy_reference["runs"][0]["manifest"].as_str().unwrap());
+        let legacy_manifest_value: Value =
+            serde_json::from_slice(&fs::read(legacy_manifest_path).unwrap()).unwrap();
+        assert_eq!(
+            legacy_manifest_value["configuration"]
+                .as_object()
+                .unwrap()
+                .len(),
+            7
+        );
+
+        let legacy_series = fresh_manifest(&legacy_path).unwrap();
+        let legacy = load_run_manifest(&legacy_path, &legacy_series.runs[0]).unwrap();
+        let current_series = fresh_manifest(&current_path).unwrap();
+        let current = load_run_manifest(&current_path, &current_series.runs[0]).unwrap();
+        let loaded = &legacy;
+        assert_eq!(loaded.schema_version, SERIES_SCHEMA_VERSION);
+        assert_eq!(loaded.configuration["linux_norandmaps"], true);
+        assert!(!loaded.configuration["linux_no_randomize_kstack_offset"].is_boolean());
+
+        let mut explained = Vec::new();
+        let mut unexplained = Vec::new();
+        compare_run(
+            0,
+            &legacy_path,
+            &current_path,
+            &legacy,
+            &current,
+            &mut explained,
+            &mut unexplained,
+        )
+        .unwrap();
+        assert!(
+            unexplained
+                .iter()
+                .all(|item| !item.contains("configuration")),
+            "{unexplained:?}"
+        );
+
+        let mut tampered_configuration = loaded.configuration.clone();
+        tampered_configuration["cmdline"] = json!("od.nonce=changed norandmaps");
+        let raw_path = legacy_path.parent().unwrap().join(&loaded.runner.raw_json);
+        let raw_value: Value = serde_json::from_slice(&fs::read(raw_path).unwrap()).unwrap();
+        assert!(!configuration_matches_runner(
+            &tampered_configuration,
+            &raw_value
+        ));
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -2139,6 +2370,7 @@ mod tests {
             "--set-cpl0".into(),
             "--user-mode".into(),
             "--linux-norandmaps".into(),
+            "--linux-no-randomize-kstack-offset".into(),
             "--cpuid-profile".into(),
             "stage4a".into(),
             "--budget".into(),
@@ -2157,6 +2389,12 @@ mod tests {
                 .forwarded
                 .iter()
                 .any(|argument| argument == "--linux-norandmaps")
+        );
+        assert!(
+            parsed
+                .forwarded
+                .iter()
+                .any(|argument| argument == "--linux-no-randomize-kstack-offset")
         );
         assert!(
             parsed

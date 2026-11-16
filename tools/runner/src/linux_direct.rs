@@ -85,7 +85,7 @@ pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a] [--user-mode [--linux-norandmaps]] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-post-iret-index <n>]]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-post-iret-index <n>]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -126,6 +126,8 @@ struct Options {
     user_mode: bool,
     /// Opt-in user-stack diagnostic: append Linux's `norandmaps` cmdline parameter.
     linux_norandmaps: bool,
+    /// Opt-in stack-unwind diagnostic: append `randomize_kstack_offset=off` to the Linux cmdline.
+    linux_no_randomize_kstack_offset: bool,
     /// Separate, opt-in sidecar for bounded console-output stack context; single run only.
     stack_context_out: Option<String>,
     /// Separate, opt-in sidecar for CPL0 RDTSC sites and delivered #PF events; single user-mode run only.
@@ -208,6 +210,7 @@ fn evaluate(options: &Options) -> (Value, u8) {
         &mut evidence,
         options.diagnostic_past_c7,
         options.linux_norandmaps,
+        options.linux_no_randomize_kstack_offset,
         options.cpuid_profile,
     );
     let io_failure = |evidence: Value, stage: &str, detail: String| {
@@ -293,7 +296,11 @@ fn evaluate(options: &Options) -> (Value, u8) {
     });
 
     // 6 (cmdline). The runner builds the line; od-machine checks it.
-    let cmdline = cmdline(&options.nonce, options.linux_norandmaps);
+    let cmdline = cmdline(
+        &options.nonce,
+        options.linux_norandmaps,
+        options.linux_no_randomize_kstack_offset,
+    );
     evidence["cmdline"] = json!(cmdline);
 
     // 4-8. od-machine.
@@ -548,8 +555,8 @@ fn evaluate(options: &Options) -> (Value, u8) {
 /// S4-38L7: the acceptance marker, set right after the arguments are parsed so that every result
 /// (a refusal of an early step, of the machine or of the run included) carries it. Always
 /// present: `acceptance` is `counted` without diagnostic flags and `diagnostic_not_counted` with
-/// `--diagnostic-past-c7` or `--linux-norandmaps`. The marker follows the requested flags, not
-/// their observed effect.
+/// `--diagnostic-past-c7`, `--linux-norandmaps`, or `--linux-no-randomize-kstack-offset`. The
+/// marker follows the requested flags, not their observed effect.
 ///
 /// S4-38L9a: with `--cpuid-profile stage4a` the CPUID boundary is off by the profile (it declares
 /// a subset of the target: TSC, since S4-38L9d also FPU and FXSR) and `cpuid_profile` says
@@ -563,12 +570,14 @@ fn mark_acceptance(
     evidence: &mut Value,
     diagnostic_past_c7: bool,
     linux_norandmaps: bool,
+    linux_no_randomize_kstack_offset: bool,
     cpuid_profile: CpuidProfile,
 ) {
     let subset = cpuid_profile != CpuidProfile::DiagnosticV1;
     evidence["diagnostic_past_c7"] = json!(diagnostic_past_c7);
     evidence["linux_norandmaps"] = json!(linux_norandmaps);
-    let diagnostic = diagnostic_past_c7 || linux_norandmaps;
+    evidence["linux_no_randomize_kstack_offset"] = json!(linux_no_randomize_kstack_offset);
+    let diagnostic = diagnostic_past_c7 || linux_norandmaps || linux_no_randomize_kstack_offset;
     evidence["acceptance"] = json!(if diagnostic {
         "diagnostic_not_counted"
     } else {
@@ -597,6 +606,11 @@ fn mark_acceptance(
     if linux_norandmaps {
         parts.push(
             "--linux-norandmaps disables Linux address-space randomization for the user-stack diagnostic",
+        );
+    }
+    if linux_no_randomize_kstack_offset {
+        parts.push(
+            "--linux-no-randomize-kstack-offset disables Linux kernel stack offset randomization for this diagnostic",
         );
     }
     if !parts.is_empty() {
@@ -649,14 +663,16 @@ fn read_capped(path: &str, limit: u64) -> Result<Vec<u8>, String> {
 }
 
 /// The kernel command line: the S4-29g template with the operator's nonce, `nokaslr`, and the
-/// optional user-stack `norandmaps` diagnostic.
-fn cmdline(nonce: &str, linux_norandmaps: bool) -> String {
-    let base = format!("{CMDLINE_PREFIX} od.nonce={nonce} {CMDLINE_SUFFIX}");
+/// optional Linux user-stack and kernel-stack diagnostics.
+fn cmdline(nonce: &str, linux_norandmaps: bool, linux_no_randomize_kstack_offset: bool) -> String {
+    let mut base = format!("{CMDLINE_PREFIX} od.nonce={nonce} {CMDLINE_SUFFIX}");
     if linux_norandmaps {
-        format!("{base} norandmaps")
-    } else {
-        base
+        base.push_str(" norandmaps");
     }
+    if linux_no_randomize_kstack_offset {
+        base.push_str(" randomize_kstack_offset=off");
+    }
+    base
 }
 
 fn merge(target: &mut Value, source: Value) {
@@ -983,6 +999,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut diagnostic_past_c7 = false;
     let mut user_mode = false;
     let mut linux_norandmaps = false;
+    let mut linux_no_randomize_kstack_offset = false;
     let mut budget = None;
     let mut cpuid_profile_text: Option<String> = None;
     let mut stack_context_out = None;
@@ -1026,6 +1043,15 @@ fn parse(args: &[String]) -> Result<Options, String> {
             if std::mem::replace(&mut linux_norandmaps, true) {
                 return Err(format!(
                     "duplicate option --linux-norandmaps; usage: {USAGE}"
+                ));
+            }
+            index += 1;
+            continue;
+        }
+        if name == "--linux-no-randomize-kstack-offset" {
+            if std::mem::replace(&mut linux_no_randomize_kstack_offset, true) {
+                return Err(format!(
+                    "duplicate option --linux-no-randomize-kstack-offset; usage: {USAGE}"
                 ));
             }
             index += 1;
@@ -1128,6 +1154,14 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 .into(),
         );
     }
+    if linux_no_randomize_kstack_offset
+        && !(run && set_cpl0 && cpuid_profile == CpuidProfile::X8664V1Stage4A && user_mode)
+    {
+        return Err(
+            "--linux-no-randomize-kstack-offset needs --run, --set-cpl0, --cpuid-profile stage4a and --user-mode"
+                .into(),
+        );
+    }
     if stack_context_out.is_some() && !(run && set_cpl0) {
         return Err(format!(
             "--stack-context-out needs --run and --set-cpl0; usage: {USAGE}"
@@ -1197,6 +1231,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         cpuid_profile,
         user_mode,
         linux_norandmaps,
+        linux_no_randomize_kstack_offset,
         stack_context_out,
         execution_observations_out,
         execution_observations_post_iret_index,
@@ -1602,6 +1637,7 @@ mod tests {
                 cpuid_profile: CpuidProfile::DiagnosticV1,
                 user_mode: false,
                 linux_norandmaps: false,
+                linux_no_randomize_kstack_offset: false,
                 stack_context_out: None,
                 execution_observations_out: None,
                 execution_observations_post_iret_index: None,
@@ -2711,15 +2747,102 @@ mod tests {
     }
 
     #[test]
-    fn linux_norandmaps_cmdline_suffix_is_opt_in() {
+    fn linux_cmdline_diagnostics_are_opt_in_and_compose() {
         assert_eq!(
-            cmdline("N0nce-1", false),
+            cmdline("N0nce-1", false, false),
             "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=N0nce-1 nokaslr"
         );
         assert_eq!(
-            cmdline("N0nce-1", true),
+            cmdline("N0nce-1", true, false),
             "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=N0nce-1 nokaslr norandmaps"
         );
+        assert_eq!(
+            cmdline("N0nce-1", false, true),
+            "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=N0nce-1 nokaslr randomize_kstack_offset=off"
+        );
+        assert_eq!(
+            cmdline("N0nce-1", true, true),
+            "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=N0nce-1 nokaslr norandmaps randomize_kstack_offset=off"
+        );
+    }
+
+    #[test]
+    fn linux_no_randomize_kstack_offset_requires_the_full_user_mode_profile() {
+        assert!(!parse_base(&[]).unwrap().linux_no_randomize_kstack_offset);
+        let enabled = parse_base(&[
+            "--run",
+            "--budget",
+            "1",
+            "--set-cpl0",
+            "--cpuid-profile",
+            "stage4a",
+            "--user-mode",
+            "--linux-no-randomize-kstack-offset",
+        ])
+        .unwrap();
+        assert!(enabled.linux_no_randomize_kstack_offset);
+        let composed = parse_base(&[
+            "--run",
+            "--budget",
+            "1",
+            "--set-cpl0",
+            "--cpuid-profile",
+            "stage4a",
+            "--user-mode",
+            "--linux-norandmaps",
+            "--linux-no-randomize-kstack-offset",
+        ])
+        .unwrap();
+        assert!(composed.linux_norandmaps && composed.linux_no_randomize_kstack_offset);
+
+        for bad in [
+            vec!["--linux-no-randomize-kstack-offset"],
+            vec![
+                "--run",
+                "--budget",
+                "1",
+                "--linux-no-randomize-kstack-offset",
+            ],
+            vec![
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--linux-no-randomize-kstack-offset",
+            ],
+            vec![
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--cpuid-profile",
+                "stage4a",
+                "--linux-no-randomize-kstack-offset",
+            ],
+            vec![
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--cpuid-profile",
+                "diagnostic",
+                "--user-mode",
+                "--linux-no-randomize-kstack-offset",
+            ],
+            vec![
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--cpuid-profile",
+                "stage4a",
+                "--user-mode",
+                "--linux-no-randomize-kstack-offset",
+                "--linux-no-randomize-kstack-offset",
+            ],
+        ] {
+            assert!(parse_base(&bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
@@ -2884,7 +3007,7 @@ mod tests {
         };
         for (flag, acceptance) in [(true, "diagnostic_not_counted"), (false, "counted")] {
             let mut base = json!({"retired": 0, "guest_started": false, "nonce": "n"});
-            mark_acceptance(&mut base, flag, false, CpuidProfile::DiagnosticV1);
+            mark_acceptance(&mut base, flag, false, false, CpuidProfile::DiagnosticV1);
             let value = run_failure(&error, base);
             assert_eq!(value["status"], "refused");
             assert_eq!(value["diagnostic_past_c7"], flag, "{value:#}");
@@ -3785,61 +3908,85 @@ mod tests {
 
     #[test]
     fn diagnostic_note_has_both_explanations_with_both_flags() {
-        let note = |past_c7: bool, norandmaps: bool, profile: CpuidProfile| {
+        let note = |past_c7: bool,
+                    norandmaps: bool,
+                    no_kstack_randomization: bool,
+                    profile: CpuidProfile| {
             let mut evidence = json!({});
-            mark_acceptance(&mut evidence, past_c7, norandmaps, profile);
+            mark_acceptance(
+                &mut evidence,
+                past_c7,
+                norandmaps,
+                no_kstack_randomization,
+                profile,
+            );
             evidence
                 .get("diagnostic_note")
                 .and_then(Value::as_str)
                 .map(str::to_string)
         };
-        let both = note(true, false, CpuidProfile::X8664V1Stage4A).expect("note");
+        let both = note(true, false, false, CpuidProfile::X8664V1Stage4A).expect("note");
         assert!(both.contains("X8664V1Stage4A declares a subset"), "{both}");
         assert!(both.contains("--diagnostic-past-c7"), "{both}");
         assert!(both.contains("NOT counted"), "{both}");
-        let subset = note(false, false, CpuidProfile::X8664V1Stage4A).expect("note");
+        let subset = note(false, false, false, CpuidProfile::X8664V1Stage4A).expect("note");
         assert!(subset.contains("subset") && !subset.contains("--diagnostic-past-c7"));
         assert!(
             subset.contains("is counted") && !subset.contains("NOT counted"),
             "{subset}"
         );
-        let diag = note(true, false, CpuidProfile::DiagnosticV1).expect("note");
+        let diag = note(true, false, false, CpuidProfile::DiagnosticV1).expect("note");
         assert!(diag.contains("DiagnosticV1 answers CPUID leaf 1"), "{diag}");
-        let norandmaps = note(false, true, CpuidProfile::X8664V1Stage4A).expect("note");
+        let norandmaps = note(false, true, false, CpuidProfile::X8664V1Stage4A).expect("note");
         assert!(
             norandmaps.contains("address-space randomization"),
             "{norandmaps}"
         );
         assert!(norandmaps.contains("NOT counted"), "{norandmaps}");
-        assert_eq!(note(false, false, CpuidProfile::DiagnosticV1), None);
+        let no_kstack = note(false, false, true, CpuidProfile::X8664V1Stage4A).expect("note");
+        assert!(
+            no_kstack.contains("kernel stack offset randomization"),
+            "{no_kstack}"
+        );
+        assert!(no_kstack.contains("NOT counted"), "{no_kstack}");
+        assert_eq!(note(false, false, false, CpuidProfile::DiagnosticV1), None);
     }
 
     #[test]
     fn acceptance_is_counted_for_both_profiles_without_the_flag_and_not_with_it() {
-        let acceptance = |past_c7: bool, norandmaps: bool, profile: CpuidProfile| {
+        let acceptance = |past_c7: bool,
+                          norandmaps: bool,
+                          no_kstack_randomization: bool,
+                          profile: CpuidProfile| {
             let mut evidence = json!({});
-            mark_acceptance(&mut evidence, past_c7, norandmaps, profile);
+            mark_acceptance(
+                &mut evidence,
+                past_c7,
+                norandmaps,
+                no_kstack_randomization,
+                profile,
+            );
             evidence["acceptance"].as_str().unwrap().to_string()
         };
         assert_eq!(
-            acceptance(false, false, CpuidProfile::X8664V1Stage4A),
+            acceptance(false, false, false, CpuidProfile::X8664V1Stage4A),
             "counted"
         );
         assert_eq!(
-            acceptance(true, false, CpuidProfile::X8664V1Stage4A),
+            acceptance(true, false, false, CpuidProfile::X8664V1Stage4A),
             "diagnostic_not_counted"
         );
         assert_eq!(
-            acceptance(false, true, CpuidProfile::X8664V1Stage4A),
+            acceptance(false, true, false, CpuidProfile::X8664V1Stage4A),
             "diagnostic_not_counted"
         );
         // The default profile keeps its earlier marking: counted without the flag, not with it.
         assert_eq!(
-            acceptance(false, false, CpuidProfile::DiagnosticV1),
+            acceptance(false, false, false, CpuidProfile::DiagnosticV1),
             "counted"
         );
         assert_eq!(
-            acceptance(true, false, CpuidProfile::DiagnosticV1),
+            acceptance(true, false, false, CpuidProfile::DiagnosticV1),
             "diagnostic_not_counted"
         );
     }
@@ -3877,6 +4024,7 @@ mod tests {
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
             linux_norandmaps: false,
+            linux_no_randomize_kstack_offset: false,
             stack_context_out: None,
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
@@ -3924,6 +4072,7 @@ mod tests {
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
             linux_norandmaps: false,
+            linux_no_randomize_kstack_offset: false,
             stack_context_out: None,
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
@@ -3978,6 +4127,7 @@ mod tests {
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
             linux_norandmaps: false,
+            linux_no_randomize_kstack_offset: false,
             stack_context_out: None,
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
@@ -4070,7 +4220,7 @@ mod tests {
             Self {
                 vmlinuz: bzimage_with_entry(code),
                 initramfs: vec![0xAB; 4688],
-                cmdline: cmdline("N0nce-1", false),
+                cmdline: cmdline("N0nce-1", false, false),
             }
         }
 
