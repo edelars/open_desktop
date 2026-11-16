@@ -27156,3 +27156,10 @@ Six focused tests cover loaded values, R8 zero-extension, full-state/flags reten
 Base `PagedCpl0ProbeV1` admits only exact bytes `85 C9`: primary opcode `85`, register-direct ModRM `C9`, dword width and ECX as both operands. Shared 32-bit TEST semantics compute ECX AND ECX for CF/PF/ZF/SF/OF; CF and OF clear, SZP reflect the result, and AF's concrete bit is retained while AF is marked undefined. All computed logical flags become defined. No GPR changes; unrelated flags are preserved, RIP advances by two, and all other CPU state is preserved. Other register pairs, widths, prefixes, immediate/memory forms, CPL3 and other profiles remain unsupported.
 
 Four focused tests cover zero/parity/sign result flags, unchanged GPRs, unrelated flag and AF-value preservation, AF undefinedness/logical-flag definedness, ModRM fetch-fault atomicity, neighboring encodings and CPL3 isolation. The other-profile isolation test confirms this exact form remains refused there. Firmware now advances to ISSUE-214: `74 35` (`JZ rel8 +0x35`) at RIP `0x200f06`.
+
+
+### S7-04: exact Rust-helper `JZ rel8 +0x35` (ISSUE-214)
+
+Base `PagedCpl0ProbeV1` admits only exact no-prefix bytes `74 35`: short JZ with signed displacement +0x35. The branch reads only ZF, preserves RFLAGS and `rflags_defined`, and selects `next_rip+0x35` when taken or the two-byte fall-through when not taken. Only a taken target is checked for canonicality; a not-taken fall-through is deferred to the next fetch. Other conditions, displacements, prefixes, near forms, CPL3 and other profiles remain unsupported.
+
+The existing JZ rel8 profile tests now cover +0x35 with both ZF values and defined/undefined input metadata, exact targets, full-state retention, taken-only canonicality, rel8 displacement-fetch-fault atomicity, neighboring branches/displacements/prefixes and CPL3 isolation. The other-profile isolation test confirms the form remains refused there. Firmware now advances to ISSUE-215: `41 83 FC 07` (`CMP R12D,7`) at RIP `0x200f3d`.

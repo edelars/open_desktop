@@ -20717,7 +20717,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     ) | (ConditionCode::Above, 0x77, 0x0e | 0x3d)
                         | (ConditionCode::AboveOrEqual, 0x73, 0x4c)
                         | (ConditionCode::Below, 0x72, 0x4c)
-                        | (ConditionCode::Equal, 0x74, 0x3b | 0x64)
+                        | (ConditionCode::Equal, 0x74, 0x35 | 0x3b | 0x64)
                 ))
                 || (instruction.opcode.map == OpcodeMap::Escape0f
                     && instruction.length == 6
