@@ -21451,6 +21451,42 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: the Rust helper compares the dword in EDI against R9D with
+        // exact `44 39 CF`; opcode 39 preserves Intel destination/source order.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Cmp,
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x39
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x44),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rdi, OperandSize::Dword)
+            && source == RegisterView::low(Register::R9, OperandSize::Dword) =>
+        {
+            let lhs = state.read(destination);
+            let rhs = state.read(source);
+            let (_, flags) = arithmetic_result(
+                OperandSize::Dword,
+                ArithmeticKind::Cmp,
+                lhs,
+                rhs,
+                state.rflags,
+            );
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: the Rust helper compares RDX with RBP in the exact
         // `48 39 EA` encoding. Preserve Intel operand order and only flags change.
         Operation::Arithmetic {
