@@ -72,6 +72,8 @@ INIT не равен power-on reset. Не очищаются x87/MMX, XMM/MXCSR,
 
 Linux `__prepare_ICR()` в pinned source для Fixed/NMI и SIPI формирует `Level=0, Trigger=0`; trigger для этих delivery modes не управляет доставкой. Fixed дополнительно сохраняет уже принятый S4-25c `(Level, Trigger)=(1,0)` self-IPI encoding. Поэтому target принимает обе существующие формы, а не навязывает `Level=1` для Linux edge IPIs. Для INIT assert Linux пишет level-triggered assert; затем targeted level-triggered deassert; SIPI отправляется targeted physical с vector `start_eip >> 12`.
 
+Подтверждено владельцем 2026-11-16 (срез S6-12a). (а) Self с `(0,0)` принимается наравне с `(1,0)`, поэтому прежнее ожидание теста, отвергавшее Self `(0,0)`, заменено. (б) Консервативные решения реализации: если любой адресат Fixed IPI (физический, All или All-but-self) имеет глобально выключенный LAPIC либо вектор, зарезервированный level-входом IOAPIC в его LAPIC, вся IPI отклоняется явной ошибкой устройства без изменения состояния всех vCPU. (в) All-but-self при одном vCPU не имеет адресатов: запись принимается, событий нет. Адресаты вне `0…N−1` (включая broadcast `0xFF`) — явная ошибка по правилу «не перечислено — ошибка».
+
 Fixed IPI vector доставляется как maskable APIC interrupt через CPU/LAPIC acceptance path. Набор `0x10–0xFF` допускает SDM §13.5.2; `0xFF` также покрывает существующий S4-25c contract. Все Fixed shorthand из S6-12 (`Self`, `All including self`, `All-but-self`) перечислены выше. Lowest Priority отсутствует потому, что Linux target выбирает physical-flat xAPIC и не нуждается в priority arbitration; SMI, logical destinations и дополнительные shorthand не входят в доказанный S6-02 target.
 
 ## 6. IOAPIC, MSI и локальная адресация LAPIC
