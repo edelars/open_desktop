@@ -3840,10 +3840,20 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Следующий шаг:** verify exact JA rel32 condition/target/fault behavior for ISSUE-257.
 
 
-### ISSUE-257 — S7-04: helper `JA rel32 +0x2a3` (`0F 87 A3 02 00 00`) remains outside paged CPU profile
+### ISSUE-257 — S7-04: exact helper `JA rel32 +0x2a3` (`0F 87 A3 02 00 00`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-256.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015BF`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner retired 8,949 instructions and stopped on `0F 87 A3 02 00 00`, `Unsupported { opcode: 135 }`; COM1 remains empty.
+- **Статус:** implemented in S7-04; independent review approved with no findings.
+- **Суть и последствия:** exact no-prefix JA rel32 branches iff CF=0 and ZF=0, adds signed rel32 to next RIP, preserves RFLAGS/definedness and checks target canonicality only when taken.
+- **Проверка:** five focused tests cover all CF/ZF combinations and definedness masks, target choice, taken-only canonicality, final-byte fetch-fault atomicity, neighbor forms, CPL3 and profile isolation. Firmware retires 8,950 instructions and stops at ISSUE-258; COM1 remains empty.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15BF` are `0F 87 A3 02 00 00`; runner budget 10000.
-- **Следующий шаг:** verify exact JA rel32 condition, signed target calculation, taken-only canonicality and fetch-fault atomicity for ISSUE-257.
+- **Следующий шаг:** verify exact MOVZX dword destination/source form and fetch-fault behavior for ISSUE-258.
+
+
+### ISSUE-258 — S7-04: helper `MOVZX EBX,word ptr [RSP+0x40]` (`0F B7 5C 24 40`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-257.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015C5`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner retired 8,950 instructions and stopped on `0F B7 5C 24 40`, `Unsupported { opcode: 183 }`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15C5` are `0F B7 5C 24 40`; runner budget 10000.
+- **Следующий шаг:** verify exact word load through the tracked read path, EBX zero-extension, page-walk/fault atomicity, and profile isolation for ISSUE-258.

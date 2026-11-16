@@ -27446,4 +27446,11 @@ Five focused profile tests cover all CF/ZF combinations and definedness masks, t
 
 Base `PagedCpl0ProbeV1` admits only exact `4C 8D 51 20`. REX.R selects qword R10. This LEA adds disp8 +0x20 to RCX with wrapping; it performs no memory access or canonicality check. Other GPRs, flags and definedness remain unchanged. A fetch fault on the displacement byte does not retire or mutate state. Neighboring displacement/base/destination/REX/width/prefix/SIB forms, CPL3 and other paged profiles remain unsupported.
 
-Four focused tests cover ordinary/high/noncanonical/wrapping inputs, R10-only mutation, flags/definedness preservation, no memory or I/O, final-byte fetch-fault atomicity, neighbors, CPL3 and profile isolation. Firmware advances after 8,949 retired instructions to `0F 87 A3 02 00 00` (`JA rel32 +0x2a3`, ISSUE-257) at RIP `0x2015BF`; COM1 remains empty. Independent review pending.
+Four focused tests cover ordinary/high/noncanonical/wrapping inputs, R10-only mutation, flags/definedness preservation, no memory or I/O, final-byte fetch-fault atomicity, neighbors, CPL3 and profile isolation. Firmware advances after 8,949 retired instructions to `0F 87 A3 02 00 00` (`JA rel32 +0x2a3`, ISSUE-257) at RIP `0x2015BF`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `JA rel32 +0x2a3` (ISSUE-257)
+
+Base `PagedCpl0ProbeV1` admits only exact no-prefix `0F 87 A3 02 00 00`. The signed rel32 `+0x2a3` is added to next RIP; JA is taken iff CF=0 and ZF=0. RFLAGS and definedness remain unchanged. The target is checked for canonicality only when taken. Final-byte instruction-fetch faults do not retire or mutate state. Neighboring displacements/conditions, operand/REX prefixes, short branches, CPL3 and other paged profiles remain unsupported.
+
+Five focused tests cover all CF/ZF combinations and definedness masks, taken/fall-through RIP, taken-only canonicality, fetch-fault atomicity, neighboring encodings, CPL3 and profile isolation. Firmware advances after 8,950 retired instructions to `0F B7 5C 24 40` (`MOVZX EBX,word ptr [RSP+0x40]`, ISSUE-258) at RIP `0x2015C5`; COM1 remains empty. Independent review approved with no findings.
