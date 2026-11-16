@@ -27079,3 +27079,10 @@ Checks: four focused `rust_helper_test_r15b_imm8_*` tests cover result flags for
 Base `PagedCpl0ProbeV1` admits only no-prefix bytes `74 64`: short opcode `74`, displacement `+0x64`. Shared `ConditionCode::Equal` tests ZF and leaves RFLAGS and `rflags_defined` unchanged, including when ZF is undefined. ZF=1 selects `next_rip+0x64`; ZF=0 selects the fall-through. Only a taken target is canonicality-checked. Neighboring displacements/opcodes, prefixes, near branches and other profiles remain unsupported.
 
 Five focused tests cover both outcomes with defined and undefined ZF, complete-state retention, taken-only canonicality, rel8 fetch-fault atomicity, neighboring encodings and CPL3 isolation. Firmware now advances to ISSUE-203: `41 81 FF A0 00 00 00` at RIP `0x200ee0`.
+
+
+### S7-04: exact Rust-helper `CMP R15D,0xA0` (ISSUE-203)
+
+Base `PagedCpl0ProbeV1` admits only exact bytes `41 81 FF A0 00 00 00`: REX.B selects R15D, opcode `81 /7` is CMP, and the imm32 value is `0xA0`. Shared dword CMP semantics update arithmetic flags and their definedness and leave all GPRs unchanged. The dword immediate is used as `0xA0`, without qword sign-extension. Other registers, immediates, group operations, widths, prefixes, CPL3 and other profiles remain unsupported.
+
+Four focused tests cover flag values/definedness, complete-state retention, final-imm32 fetch-fault atomicity, neighboring encodings, CPL3 and other-profile isolation. Firmware now advances to ISSUE-204: `72 4C` (`JB/JNAE rel8 +0x4c`) at RIP `0x200ee7`.

@@ -911,10 +911,19 @@
 ### ISSUE-203 — S7-04: Rust helper `CMP R15D,0xA0` (`41 81 FF A0 00 00 00`) remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `JZ rel8 +0x64`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200ee0`.
+- **Статус:** решена узко для exact `41 81 FF A0 00 00 00` в base `PagedCpl0ProbeV1`; ожидает независимого review. Другие регистры, immediate values, widths, prefixes and profiles remain outside the allowlist.
+- **Суть и результат:** REX.B plus ModRM FF selects R15D; opcode `81 /7` compares the dword with unsigned immediate `0xA0` using shared CMP arithmetic semantics. It changes arithmetic flags/definedness only and leaves every GPR unchanged. The immediate is not sign-extended to qword width because this exact tuple is dword.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue203.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xee0` are `41 81 FF A0 00 00 00`; runner budget 10000.
+- **Проверка:** четыре focused теста покрывают CMP flags and definedness, full state/GPR non-mutation, final-imm32 fetch-fault atomicity, neighboring immediates/registers/operations/widths/prefixes, CPL3 and other-profile isolation. Firmware runner retired 8885 and stopped at `72 4C` (`JB/JNAE rel8 +0x4c`, ISSUE-204), RIP `0x200ee7`, `Unsupported { opcode: 114 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
+- **Следующий шаг:** independently review this exact CMP admission and continue S7-04 at ISSUE-204.
+
+### ISSUE-204 — S7-04: Rust helper `JB rel8 +0x4c` (`72 4C`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact `CMP R15D,0xA0`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200ee7`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8884 instructions and stopped at `41 81 FF A0 00 00 00`, `Unsupported { opcode: 129 }`, `RIP=0x200ee0`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue202.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xee0` are `41 81 FF A0 00 00 00`; runner budget 10000.
-- **Следующий шаг:** inspect exact CMP operand/width, flags and definedness before considering narrow admission.
+- **Суть и последствия:** runner retired 8885 instructions and stopped at `72 4C`, `Unsupported { opcode: 114 }`, `RIP=0x200ee7`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue203.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xee7` are `72 4C`; runner budget 10000.
+- **Следующий шаг:** inspect exact condition, signed rel8 target/fall-through, flags-definedness and taken-only canonicality before considering narrow admission.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.

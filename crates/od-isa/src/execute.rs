@@ -21962,7 +21962,8 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         }
         // S7-04: admit only the firmware's exact dword immediate compares:
         // `81 F9 A0 00 00 00` (CMP ECX,0xa0) and `81 FF 61 FF 00 00`
-        // (CMP EDI,0xff61), plus helper `81 FF 80 00 00 00` (CMP EDI,0x80).
+        // (CMP EDI,0xff61), plus helper `81 FF 80 00 00 00` (CMP EDI,0x80)
+        // and exact `41 81 FF A0 00 00 00` (CMP R15D,0xa0).
         // Dword arithmetic ignores upper register bits.
         Operation::Arithmetic {
             kind: ArithmeticKind::Cmp,
@@ -21971,15 +21972,25 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x81
-            && instruction.length == 6
             && instruction.operand_size == OperandSize::Dword
-            && instruction.prefixes == Prefixes::default()
-            && ((immediate == 0xa0
-                && destination == RegisterView::low(Register::Rcx, OperandSize::Dword))
-                || (immediate == 0xff61
-                    && destination == RegisterView::low(Register::Rdi, OperandSize::Dword))
-                || (immediate == 0x80
-                    && destination == RegisterView::low(Register::Rdi, OperandSize::Dword))) =>
+            && ((instruction.length == 6
+                && instruction.prefixes == Prefixes::default()
+                && ((immediate == 0xa0
+                    && destination == RegisterView::low(Register::Rcx, OperandSize::Dword))
+                    || (immediate == 0xff61
+                        && destination
+                            == RegisterView::low(Register::Rdi, OperandSize::Dword))
+                    || (immediate == 0x80
+                        && destination
+                            == RegisterView::low(Register::Rdi, OperandSize::Dword))))
+                || (instruction.length == 7
+                    && immediate == 0xa0
+                    && instruction.prefixes
+                        == (Prefixes {
+                            rex: Some(0x41),
+                            ..Prefixes::default()
+                        })
+                    && destination == RegisterView::low(Register::R15, OperandSize::Dword))) =>
         {
             let lhs = state.read(destination);
             let (_, flags) = arithmetic_result(
