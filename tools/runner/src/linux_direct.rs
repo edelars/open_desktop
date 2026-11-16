@@ -88,7 +88,7 @@ pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>]]]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>]]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -142,6 +142,8 @@ struct Options {
     execution_observations_post_iret_index: Option<u64>,
     /// Selected CPL0 RDTSC RIP for bounded post-instruction register samples.
     execution_observations_rdtsc_rip: Option<u64>,
+    /// Optional delay-function entry RIP, captured at every matching CPL0 RDTSC.
+    execution_observations_rdtsc_entry_rip: Option<u64>,
     /// Capture every Nth hit at the selected CPL0 RDTSC RIP.
     execution_observations_rdtsc_stride: Option<u64>,
 }
@@ -606,6 +608,7 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                         options.execution_observations_post_iret_index,
                         options.execution_observations_rdtsc_rip,
                         options.execution_observations_rdtsc_stride.unwrap_or(1),
+                        options.execution_observations_rdtsc_entry_rip,
                     )
                 } else if options.set_cpl0 {
                     run_linux_direct_board_set_observed(
@@ -722,7 +725,7 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                     };
                     let mut metadata = successful_metadata.unwrap_or_else(|| json!({
                         "path": path,
-                        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events",
+                        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events, with optional selected-site and entry-site samples",
                     }));
                     metadata["write_error"] = json!(write_error);
                     evidence["execution_observations_sidecar"] = metadata;
@@ -1217,6 +1220,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut execution_observations_out = None;
     let mut execution_observations_post_iret_index = None;
     let mut execution_observations_rdtsc_rip = None;
+    let mut execution_observations_rdtsc_entry_rip = None;
     let mut execution_observations_rdtsc_stride = None;
     let mut index = 0;
     while index < args.len() {
@@ -1318,6 +1322,26 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 let parsed = u64::from_str_radix(hex, 16)
                     .map_err(|_| format!("invalid --execution-observations-rdtsc-rip '{value}'"))?;
                 if execution_observations_rdtsc_rip.replace(parsed).is_some() {
+                    return Err(format!("duplicate option {name}; usage: {USAGE}"));
+                }
+                index += 2;
+                continue;
+            }
+            "--execution-observations-rdtsc-entry-rip" => {
+                let hex = value
+                    .strip_prefix("0x")
+                    .or_else(|| value.strip_prefix("0X"))
+                    .filter(|digits| !digits.is_empty())
+                    .ok_or_else(|| {
+                        format!("invalid --execution-observations-rdtsc-entry-rip '{value}': expected 0x-prefixed hexadecimal")
+                    })?;
+                let parsed = u64::from_str_radix(hex, 16).map_err(|_| {
+                    format!("invalid --execution-observations-rdtsc-entry-rip '{value}'")
+                })?;
+                if execution_observations_rdtsc_entry_rip
+                    .replace(parsed)
+                    .is_some()
+                {
                     return Err(format!("duplicate option {name}; usage: {USAGE}"));
                 }
                 index += 2;
@@ -1435,6 +1459,18 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--execution-observations-rdtsc-rip needs --execution-observations-out; usage: {USAGE}"
         ));
     }
+    if execution_observations_rdtsc_entry_rip.is_some()
+        && (execution_observations_out.is_none() || execution_observations_rdtsc_rip.is_none())
+    {
+        return Err(format!(
+            "--execution-observations-rdtsc-entry-rip needs --execution-observations-out and --execution-observations-rdtsc-rip; usage: {USAGE}"
+        ));
+    }
+    if execution_observations_rdtsc_entry_rip.is_some()
+        && execution_observations_rdtsc_entry_rip == execution_observations_rdtsc_rip
+    {
+        return Err("entry and selected RDTSC RIPs must differ".into());
+    }
     if execution_observations_rdtsc_stride.is_some()
         && (execution_observations_out.is_none() || execution_observations_rdtsc_rip.is_none())
     {
@@ -1510,6 +1546,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         execution_observations_out,
         execution_observations_post_iret_index,
         execution_observations_rdtsc_rip,
+        execution_observations_rdtsc_entry_rip,
         execution_observations_rdtsc_stride,
     })
 }
@@ -1935,75 +1972,83 @@ fn write_execution_observations_sidecar(
     path: &str,
     observations: &LinuxExecutionObservations,
 ) -> Result<(usize, String), String> {
-    let value = json!({
-        "schema_version": 7,
-        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, and optional post-instruction registers at one selected CPL0 RDTSC RIP",
-        "limits": {
-            "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
-            "rdtsc_site_samples": od_machine::LINUX_RDTSC_SAMPLE_CAPACITY,
-            "page_fault_events": od_machine::LINUX_PAGE_FAULT_EVENT_CAPACITY,
-            "frame_links_per_page_fault": od_machine::LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY,
-            "page_walk_entries_per_fault": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
-            "post_iret_page_walk_entries": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
-        },
-        "rdtsc_cpl0_sites": observations.rdtsc_cpl0_sites.iter().map(|site| json!({
-            "rip": hex64(site.rip),
-            "reads": site.reads,
-        })).collect::<Vec<_>>(),
-        "rdtsc_cpl0_unattributed_reads": observations.rdtsc_cpl0_unattributed_reads,
-        "rdtsc_cpl0_site_overflow_reads": observations.rdtsc_cpl0_site_overflow_reads,
-        "rdtsc_sample_rip": observations.rdtsc_sample_rip.map(hex64),
-        "rdtsc_sample_stride": observations.rdtsc_sample_stride,
-        "rdtsc_sample_site_hits": observations.rdtsc_sample_site_hits,
-        "rdtsc_site_samples": observations.rdtsc_site_samples.iter().map(|sample| json!({
-            "rip": hex64(sample.rip),
-            "hit_ordinal": sample.hit_ordinal,
-            "requested_cycles": hex64(sample.requested_cycles),
-            "start_tsc": hex64(sample.start_tsc),
-            "observed_tsc": hex64(sample.observed_tsc),
-            "elapsed_cycles": hex64(sample.elapsed_cycles),
-            "rbp": hex64(sample.rbp),
-            "rsp": hex64(sample.rsp),
-            "cr3": sample.cr3.map(hex64),
-        })).collect::<Vec<_>>(),
-        "rdtsc_site_samples_omitted": observations.rdtsc_site_samples_omitted,
-        "page_faults_delivered": observations.page_faults_delivered,
-        "page_fault_events": observations.page_fault_events.iter().map(|event| json!({
-            "rip": hex64(event.rip),
-            "cr2": hex64(event.cr2),
-            "error_code": format!("0x{:08x}", event.error_code),
-            "access": event.access,
-            "cpl": event.cpl,
-            "faulting_context": {
-                "cr3": hex64(event.faulting_context.cr3),
-                "rsp": hex64(event.faulting_context.rsp),
-                "rbp": hex64(event.faulting_context.rbp),
-                "rcx": hex64(event.faulting_context.rcx),
-                "rsi": hex64(event.faulting_context.rsi),
-                "rdi": hex64(event.faulting_context.rdi),
-                "cs_selector": event.faulting_context.cs_selector.map(|selector| format!("0x{selector:04x}")),
-                "frame_chain": event.faulting_context.frame_chain.iter().map(|frame| json!({
-                    "frame_pointer": hex64(frame.frame_pointer),
-                    "return_address": hex64(frame.return_address),
-                })).collect::<Vec<_>>(),
-                "frame_chain_end": format!("{:?}", event.faulting_context.frame_chain_end),
-                "page_walk": event.faulting_context.page_walk.as_ref().map(|walk| json!({
-                    "source": "original_faulting_guest_access",
-                    "entry_values": "raw_before_accessed_dirty_updates",
-                    "reason": format!("{:?}", walk.reason),
-                    "entries": walk.entries.iter().map(|entry| json!({
-                        "level": format!("{:?}", entry.level),
-                        "index": entry.index,
-                        "entry_address": hex64(entry.entry_address.get()),
-                        "entry_value": hex64(entry.entry_value),
+    let rdtsc_sites = observations
+        .rdtsc_cpl0_sites
+        .iter()
+        .map(|site| json!({ "rip": hex64(site.rip), "reads": site.reads }))
+        .collect::<Vec<_>>();
+    let poll_samples = observations
+        .rdtsc_site_samples
+        .iter()
+        .map(|sample| {
+            json!({
+                "rip": hex64(sample.rip),
+                "hit_ordinal": sample.hit_ordinal,
+                "requested_cycles": hex64(sample.requested_cycles),
+                "start_tsc": hex64(sample.start_tsc),
+                "observed_tsc": hex64(sample.observed_tsc),
+                "elapsed_cycles": hex64(sample.elapsed_cycles),
+                "rbp": hex64(sample.rbp),
+                "rsp": hex64(sample.rsp),
+                "cr3": sample.cr3.map(hex64),
+            })
+        })
+        .collect::<Vec<_>>();
+    let entry_samples = observations
+        .rdtsc_entry_samples
+        .iter()
+        .map(|sample| {
+            json!({
+                "rip": hex64(sample.rip),
+                "hit_ordinal": sample.hit_ordinal,
+                "requested_cycles": hex64(sample.requested_cycles),
+                "observed_tsc": hex64(sample.observed_tsc),
+                "rbp": hex64(sample.rbp),
+                "rsp": hex64(sample.rsp),
+                "cr3": sample.cr3.map(hex64),
+            })
+        })
+        .collect::<Vec<_>>();
+    let page_fault_events = observations
+        .page_fault_events
+        .iter()
+        .map(|event| {
+            json!({
+                "rip": hex64(event.rip),
+                "cr2": hex64(event.cr2),
+                "error_code": format!("0x{:08x}", event.error_code),
+                "access": event.access,
+                "cpl": event.cpl,
+                "faulting_context": {
+                    "cr3": hex64(event.faulting_context.cr3),
+                    "rsp": hex64(event.faulting_context.rsp),
+                    "rbp": hex64(event.faulting_context.rbp),
+                    "rcx": hex64(event.faulting_context.rcx),
+                    "rsi": hex64(event.faulting_context.rsi),
+                    "rdi": hex64(event.faulting_context.rdi),
+                    "cs_selector": event.faulting_context.cs_selector.map(|selector| format!("0x{selector:04x}")),
+                    "frame_chain": event.faulting_context.frame_chain.iter().map(|frame| json!({
+                        "frame_pointer": hex64(frame.frame_pointer),
+                        "return_address": hex64(frame.return_address),
                     })).collect::<Vec<_>>(),
-                })),
-            },
-        })).collect::<Vec<_>>(),
-        "page_fault_events_omitted": observations.page_fault_events_omitted,
-        "post_iret_selected_ordinal": observations.post_iret_selected_ordinal,
-        "post_iret_page_walk_status": observations.post_iret_page_walk_status,
-        "post_iret_page_walk": observations.post_iret_page_walk.as_ref().map(|snapshot| json!({
+                    "frame_chain_end": format!("{:?}", event.faulting_context.frame_chain_end),
+                    "page_walk": event.faulting_context.page_walk.as_ref().map(|walk| json!({
+                        "source": "original_faulting_guest_access",
+                        "entry_values": "raw_before_accessed_dirty_updates",
+                        "reason": format!("{:?}", walk.reason),
+                        "entries": walk.entries.iter().map(|entry| json!({
+                            "level": format!("{:?}", entry.level),
+                            "index": entry.index,
+                            "entry_address": hex64(entry.entry_address.get()),
+                            "entry_value": hex64(entry.entry_value),
+                        })).collect::<Vec<_>>(),
+                    })),
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    let post_iret_page_walk = observations.post_iret_page_walk.as_ref().map(|snapshot| {
+        json!({
             "event_ordinal": snapshot.event_ordinal,
             "fault_rip": hex64(snapshot.fault_rip),
             "fault_cr2": hex64(snapshot.fault_cr2),
@@ -2025,16 +2070,44 @@ fn write_execution_observations_sidecar(
                 "entry_address": hex64(entry.entry_address.get()),
                 "entry_value": hex64(entry.entry_value),
             })).collect::<Vec<_>>(),
-        })),
+        })
+    });
+    let value = json!({
+        "schema_version": 8,
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, and an optional bounded every-hit entry-RDTSC stream",
+        "limits": {
+            "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
+            "rdtsc_site_samples": od_machine::LINUX_RDTSC_SAMPLE_CAPACITY,
+            "rdtsc_entry_samples": od_machine::LINUX_RDTSC_SAMPLE_CAPACITY,
+            "page_fault_events": od_machine::LINUX_PAGE_FAULT_EVENT_CAPACITY,
+            "frame_links_per_page_fault": od_machine::LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY,
+            "page_walk_entries_per_fault": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
+            "post_iret_page_walk_entries": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
+        },
+        "rdtsc_cpl0_sites": rdtsc_sites,
+        "rdtsc_cpl0_unattributed_reads": observations.rdtsc_cpl0_unattributed_reads,
+        "rdtsc_cpl0_site_overflow_reads": observations.rdtsc_cpl0_site_overflow_reads,
+        "rdtsc_sample_rip": observations.rdtsc_sample_rip.map(hex64),
+        "rdtsc_sample_stride": observations.rdtsc_sample_stride,
+        "rdtsc_sample_site_hits": observations.rdtsc_sample_site_hits,
+        "rdtsc_site_samples": poll_samples,
+        "rdtsc_site_samples_omitted": observations.rdtsc_site_samples_omitted,
+        "rdtsc_entry_sample_rip": observations.rdtsc_entry_sample_rip.map(hex64),
+        "rdtsc_entry_sample_hits": observations.rdtsc_entry_sample_hits,
+        "rdtsc_entry_samples": entry_samples,
+        "rdtsc_entry_samples_omitted": observations.rdtsc_entry_samples_omitted,
+        "page_faults_delivered": observations.page_faults_delivered,
+        "page_fault_events": page_fault_events,
+        "page_fault_events_omitted": observations.page_fault_events_omitted,
+        "post_iret_selected_ordinal": observations.post_iret_selected_ordinal,
+        "post_iret_page_walk_status": observations.post_iret_page_walk_status,
+        "post_iret_page_walk": post_iret_page_walk,
     });
     file_matches_existing_path(file, path, path)?;
     let mut bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
     use std::io::Write;
-    if let Err(error) = file
-        .write_all(&bytes)
-        .and_then(|()| file.flush())
-    {
+    if let Err(error) = file.write_all(&bytes).and_then(|()| file.flush()) {
         let cleanup = match file_matches_existing_path(file, path, path) {
             Ok(true) => {
                 std::fs::remove_file(path).map_err(|cleanup_error| cleanup_error.to_string())
@@ -2061,13 +2134,17 @@ fn execution_observations_sidecar_metadata(
 ) -> Value {
     json!({
         "path": path,
-        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events",
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events, with optional selected-site and entry-site samples",
         "write_error": null,
         "selected_rip": observations.rdtsc_sample_rip.map(hex64),
         "stride": observations.rdtsc_sample_stride,
         "selected_site_hits": observations.rdtsc_sample_site_hits,
         "sample_count": observations.rdtsc_site_samples.len(),
         "samples_omitted": observations.rdtsc_site_samples_omitted,
+        "entry_rip": observations.rdtsc_entry_sample_rip.map(hex64),
+        "entry_hits": observations.rdtsc_entry_sample_hits,
+        "entry_sample_count": observations.rdtsc_entry_samples.len(),
+        "entry_samples_omitted": observations.rdtsc_entry_samples_omitted,
         "byte_count": byte_count,
         "sha256": sha256,
     })
@@ -2223,6 +2300,7 @@ mod tests {
                 execution_observations_out: None,
                 execution_observations_post_iret_index: None,
                 execution_observations_rdtsc_rip: None,
+                execution_observations_rdtsc_entry_rip: None,
                 execution_observations_rdtsc_stride: None,
             };
             Self { dir, options }
@@ -3889,6 +3967,37 @@ mod tests {
             selected_stride.execution_observations_rdtsc_stride,
             Some(512)
         );
+        let selected_entry = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-rdtsc-rip",
+                    "0xffffffff8271b34d",
+                    "--execution-observations-rdtsc-entry-rip",
+                    "0xffffffff8271b31b",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(
+            selected_entry.execution_observations_rdtsc_entry_rip,
+            Some(0xffff_ffff_8271_b31b)
+        );
+        let mut entry_without_selected = run.to_vec();
+        entry_without_selected.extend([
+            "--execution-observations-out",
+            "observations.json",
+            "--execution-observations-rdtsc-entry-rip",
+            "0x1234",
+        ]);
+        assert!(
+            parse_base(&entry_without_selected)
+                .unwrap_err()
+                .contains("needs")
+        );
         let mut zero_stride = run.to_vec();
         zero_stride.extend([
             "--execution-observations-out",
@@ -4613,6 +4722,18 @@ mod tests {
                 cr3: Some(0x4000),
             }],
             rdtsc_site_samples_omitted: 7,
+            rdtsc_entry_sample_rip: Some(0xffff_ffff_8271_b31b),
+            rdtsc_entry_sample_hits: 12,
+            rdtsc_entry_samples: vec![od_machine::RdtscEntrySample {
+                rip: 0xffff_ffff_8271_b31b,
+                hit_ordinal: 12,
+                requested_cycles: 0x1234,
+                observed_tsc: 0x1000,
+                rbp: 0x3000,
+                rsp: 0x2000,
+                cr3: Some(0x4000),
+            }],
+            rdtsc_entry_samples_omitted: 2,
             rdtsc_cpl0_unattributed_reads: 2,
             rdtsc_cpl0_site_overflow_reads: 3,
             page_faults_delivered: 5,
@@ -4691,7 +4812,7 @@ mod tests {
         assert_eq!(metadata["sample_count"], 1);
         assert_eq!(metadata["samples_omitted"], 7);
         let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema_version"], 7);
+        assert_eq!(value["schema_version"], 8);
         assert_eq!(value["post_iret_selected_ordinal"], 3);
         assert_eq!(value["post_iret_page_walk_status"], "captured");
         assert_eq!(
@@ -4738,6 +4859,15 @@ mod tests {
         assert_eq!(value["rdtsc_site_samples"][0]["elapsed_cycles"], "0x235");
         assert_eq!(value["rdtsc_site_samples"][0]["cr3"], "0x4000");
         assert_eq!(value["rdtsc_site_samples_omitted"], 7);
+        assert_eq!(value["rdtsc_entry_sample_rip"], "0xffffffff8271b31b");
+        assert_eq!(value["rdtsc_entry_sample_hits"], 12);
+        assert_eq!(value["rdtsc_entry_samples"][0]["hit_ordinal"], 12);
+        assert_eq!(
+            value["rdtsc_entry_samples"][0]["requested_cycles"],
+            "0x1234"
+        );
+        assert_eq!(value["rdtsc_entry_samples"][0]["observed_tsc"], "0x1000");
+        assert_eq!(value["rdtsc_entry_samples_omitted"], 2);
         assert_eq!(value["page_faults_delivered"], 5);
         assert_eq!(value["page_fault_events"][0]["rip"], "0xffffffff81005678");
         assert_eq!(value["page_fault_events"][0]["cr2"], "0x402000");
@@ -5343,6 +5473,7 @@ mod tests {
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
             execution_observations_rdtsc_rip: None,
+            execution_observations_rdtsc_entry_rip: None,
             execution_observations_rdtsc_stride: None,
         };
         let (value, exit) = evaluate(&options);
@@ -5394,6 +5525,7 @@ mod tests {
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
             execution_observations_rdtsc_rip: None,
+            execution_observations_rdtsc_entry_rip: None,
             execution_observations_rdtsc_stride: None,
         };
         let (value, exit) = evaluate(&options);
@@ -5449,6 +5581,7 @@ mod tests {
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
             execution_observations_rdtsc_rip: None,
+            execution_observations_rdtsc_entry_rip: None,
             execution_observations_rdtsc_stride: None,
         };
         let (value, exit) = evaluate(&options);
@@ -5525,6 +5658,7 @@ mod tests {
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
             execution_observations_rdtsc_rip: None,
+            execution_observations_rdtsc_entry_rip: None,
             execution_observations_rdtsc_stride: None,
         };
         let (value, exit) = evaluate(&options);

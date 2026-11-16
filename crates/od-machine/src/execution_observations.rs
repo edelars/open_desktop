@@ -34,6 +34,19 @@ pub struct RdtscSiteSample {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RdtscEntrySample {
+    pub rip: u64,
+    /// 1-based hit ordinal at the selected delay-function entry RIP.
+    pub hit_ordinal: u64,
+    pub requested_cycles: u64,
+    /// TSC value returned in EDX:EAX by the entry RDTSC instruction.
+    pub observed_tsc: u64,
+    pub rbp: u64,
+    pub rsp: u64,
+    pub cr3: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultingPageFaultContext {
     /// Guest CR3 at the faulting instruction boundary.
     pub cr3: u64,
@@ -107,6 +120,10 @@ pub struct LinuxExecutionObservations {
     pub rdtsc_sample_site_hits: u64,
     pub rdtsc_site_samples: Vec<RdtscSiteSample>,
     pub rdtsc_site_samples_omitted: u64,
+    pub rdtsc_entry_sample_rip: Option<u64>,
+    pub rdtsc_entry_sample_hits: u64,
+    pub rdtsc_entry_samples: Vec<RdtscEntrySample>,
+    pub rdtsc_entry_samples_omitted: u64,
     /// CPL0 RDTSC reads for which the set loop did not report an instruction RIP.
     pub rdtsc_cpl0_unattributed_reads: u64,
     /// CPL0 RDTSC reads at new sites after the distinct-site table reached its capacity.
@@ -127,6 +144,10 @@ pub(crate) struct LinuxExecutionObservationCollector {
     rdtsc_sample_site_hits: u64,
     rdtsc_site_samples: Vec<RdtscSiteSample>,
     rdtsc_site_samples_omitted: u64,
+    rdtsc_entry_sample_rip: Option<u64>,
+    rdtsc_entry_sample_hits: u64,
+    rdtsc_entry_samples: Vec<RdtscEntrySample>,
+    rdtsc_entry_samples_omitted: u64,
     rdtsc_sites: BTreeMap<u64, u64>,
     rdtsc_unattributed_reads: u64,
     rdtsc_site_overflow_reads: u64,
@@ -158,11 +179,36 @@ impl LinuxExecutionObservationCollector {
         self
     }
 
+    pub(crate) fn with_rdtsc_entry_sample_rip(mut self, rip: Option<u64>) -> Self {
+        self.rdtsc_entry_sample_rip = rip;
+        self
+    }
+
     pub(crate) fn record_rdtsc_site_sample(
         &mut self,
         rip: Option<u64>,
         state: &od_isa::LongModeState,
     ) {
+        if let Some(entry_rip) = rip.filter(|rip| Some(*rip) == self.rdtsc_entry_sample_rip) {
+            self.rdtsc_entry_sample_hits = self.rdtsc_entry_sample_hits.saturating_add(1);
+            if self.rdtsc_entry_samples.len() < LINUX_RDTSC_SAMPLE_CAPACITY {
+                use od_isa::Register;
+                let rax = state.gpr[Register::Rax as usize] & u64::from(u32::MAX);
+                let rdx = state.gpr[Register::Rdx as usize] & u64::from(u32::MAX);
+                self.rdtsc_entry_samples.push(RdtscEntrySample {
+                    rip: entry_rip,
+                    hit_ordinal: self.rdtsc_entry_sample_hits,
+                    requested_cycles: state.gpr[Register::R8 as usize],
+                    observed_tsc: (rdx << 32) | rax,
+                    rbp: state.gpr[Register::Rbp as usize],
+                    rsp: state.gpr[Register::Rsp as usize],
+                    cr3: state.cr3,
+                });
+            } else {
+                self.rdtsc_entry_samples_omitted =
+                    self.rdtsc_entry_samples_omitted.saturating_add(1);
+            }
+        }
         let Some(rip) = rip.filter(|rip| Some(*rip) == self.rdtsc_sample_rip) else {
             return;
         };
@@ -296,6 +342,10 @@ impl LinuxExecutionObservationCollector {
             rdtsc_sample_site_hits: self.rdtsc_sample_site_hits,
             rdtsc_site_samples: self.rdtsc_site_samples,
             rdtsc_site_samples_omitted: self.rdtsc_site_samples_omitted,
+            rdtsc_entry_sample_rip: self.rdtsc_entry_sample_rip,
+            rdtsc_entry_sample_hits: self.rdtsc_entry_sample_hits,
+            rdtsc_entry_samples: self.rdtsc_entry_samples,
+            rdtsc_entry_samples_omitted: self.rdtsc_entry_samples_omitted,
             rdtsc_cpl0_unattributed_reads: self.rdtsc_unattributed_reads,
             rdtsc_cpl0_site_overflow_reads: self.rdtsc_site_overflow_reads,
             page_faults_delivered: self.page_faults_delivered,
@@ -546,6 +596,57 @@ mod tests {
         assert_eq!(observations.rdtsc_site_samples_omitted, 1);
         assert_eq!(
             observations.rdtsc_sample_site_hits,
+            LINUX_RDTSC_SAMPLE_CAPACITY as u64 + 1
+        );
+    }
+
+    #[test]
+    fn selected_rdtsc_entry_rip_keeps_every_hit_and_reports_cap_omissions() {
+        use od_isa::{LongModeState, Register};
+
+        const RIP: u64 = 0xffff_ffff_8271_b31b;
+        let mut collector =
+            LinuxExecutionObservationCollector::default().with_rdtsc_entry_sample_rip(Some(RIP));
+        let mut state = LongModeState::default();
+        state.gpr[Register::R8 as usize] = 0x1234;
+        state.gpr[Register::Rax as usize] = 0x5678;
+        state.gpr[Register::Rdx as usize] = 0x9abc;
+        state.gpr[Register::Rbp as usize] = 0x8000;
+        state.gpr[Register::Rsp as usize] = 0x7ff0;
+        state.cr3 = Some(0x9000);
+
+        collector.record_rdtsc_site_sample(Some(RIP + 2), &state);
+        collector.record_rdtsc_site_sample(Some(RIP), &state);
+        let observations = collector.finish();
+        assert_eq!(observations.rdtsc_entry_sample_rip, Some(RIP));
+        assert_eq!(observations.rdtsc_entry_sample_hits, 1);
+        assert_eq!(observations.rdtsc_entry_samples_omitted, 0);
+        assert_eq!(
+            observations.rdtsc_entry_samples[0],
+            RdtscEntrySample {
+                rip: RIP,
+                hit_ordinal: 1,
+                requested_cycles: 0x1234,
+                observed_tsc: 0x9abc_0000_5678,
+                rbp: 0x8000,
+                rsp: 0x7ff0,
+                cr3: Some(0x9000),
+            }
+        );
+
+        let mut capped =
+            LinuxExecutionObservationCollector::default().with_rdtsc_entry_sample_rip(Some(RIP));
+        for _ in 0..=LINUX_RDTSC_SAMPLE_CAPACITY {
+            capped.record_rdtsc_site_sample(Some(RIP), &state);
+        }
+        let observations = capped.finish();
+        assert_eq!(
+            observations.rdtsc_entry_samples.len(),
+            LINUX_RDTSC_SAMPLE_CAPACITY
+        );
+        assert_eq!(observations.rdtsc_entry_samples_omitted, 1);
+        assert_eq!(
+            observations.rdtsc_entry_sample_hits,
             LINUX_RDTSC_SAMPLE_CAPACITY as u64 + 1
         );
     }

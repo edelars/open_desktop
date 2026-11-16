@@ -144,6 +144,7 @@ struct SeriesCli {
     capture_execution_observations: bool,
     execution_observations_rdtsc_rip: Option<u64>,
     execution_observations_rdtsc_stride: Option<u64>,
+    execution_observations_rdtsc_entry_rip: Option<u64>,
     out: PathBuf,
     forwarded: Vec<String>,
 }
@@ -193,6 +194,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
             &series_dir.join("preflight-execution-observations.json"),
             cli.execution_observations_rdtsc_rip,
             cli.execution_observations_rdtsc_stride,
+            cli.execution_observations_rdtsc_entry_rip,
         );
     }
     if let Err(error) = parse(&preflight_args) {
@@ -242,6 +244,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
                 &observation_sidecar_path,
                 cli.execution_observations_rdtsc_rip,
                 cli.execution_observations_rdtsc_stride,
+                cli.execution_observations_rdtsc_entry_rip,
             );
         }
         let options = match parse(&run_args) {
@@ -462,6 +465,7 @@ fn append_execution_observations_args(
     sidecar_path: &std::path::Path,
     selected_rip: Option<u64>,
     stride: Option<u64>,
+    entry_rip: Option<u64>,
 ) {
     args.extend([
         "--execution-observations-out".into(),
@@ -477,6 +481,12 @@ fn append_execution_observations_args(
         args.extend([
             "--execution-observations-rdtsc-stride".into(),
             stride.to_string(),
+        ]);
+    }
+    if let Some(rip) = entry_rip {
+        args.extend([
+            "--execution-observations-rdtsc-entry-rip".into(),
+            format!("0x{rip:x}"),
         ]);
     }
 }
@@ -495,6 +505,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     let mut capture_execution_observations = false;
     let mut execution_observations_rdtsc_rip = None;
     let mut execution_observations_rdtsc_stride = None;
+    let mut execution_observations_rdtsc_entry_rip = None;
     let mut forwarded = Vec::new();
     let mut index = 0;
     while index < args.len() {
@@ -548,6 +559,22 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
                 execution_observations_rdtsc_rip =
                     Some(u64::from_str_radix(hex, 16).map_err(|_| {
                         format!("invalid --execution-observations-rdtsc-rip '{value}'")
+                    })?);
+            }
+            "--execution-observations-rdtsc-entry-rip" => {
+                if execution_observations_rdtsc_entry_rip.is_some() {
+                    return Err("duplicate --execution-observations-rdtsc-entry-rip".into());
+                }
+                let hex = value
+                    .strip_prefix("0x")
+                    .or_else(|| value.strip_prefix("0X"))
+                    .filter(|digits| !digits.is_empty())
+                    .ok_or_else(|| {
+                        format!("invalid --execution-observations-rdtsc-entry-rip '{value}': expected 0x-prefixed hexadecimal")
+                    })?;
+                execution_observations_rdtsc_entry_rip =
+                    Some(u64::from_str_radix(hex, 16).map_err(|_| {
+                        format!("invalid --execution-observations-rdtsc-entry-rip '{value}'")
                     })?);
             }
             "--execution-observations-rdtsc-stride" => {
@@ -612,6 +639,16 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     if execution_observations_rdtsc_rip.is_some() && !capture_execution_observations {
         return Err("--execution-observations-rdtsc-rip needs --execution-observations".into());
     }
+    if execution_observations_rdtsc_entry_rip.is_some()
+        && (execution_observations_rdtsc_rip.is_none() || !capture_execution_observations)
+    {
+        return Err("--execution-observations-rdtsc-entry-rip needs --execution-observations and --execution-observations-rdtsc-rip".into());
+    }
+    if execution_observations_rdtsc_entry_rip.is_some()
+        && execution_observations_rdtsc_entry_rip == execution_observations_rdtsc_rip
+    {
+        return Err("entry and selected RDTSC RIPs must differ".into());
+    }
     if execution_observations_rdtsc_stride.is_some()
         && (execution_observations_rdtsc_rip.is_none() || !capture_execution_observations)
     {
@@ -652,6 +689,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
         capture_execution_observations,
         execution_observations_rdtsc_rip,
         execution_observations_rdtsc_stride,
+        execution_observations_rdtsc_entry_rip,
         out,
         forwarded,
     })
@@ -1022,6 +1060,13 @@ fn validate_execution_observations_sidecar(
     }
     let sidecar_json: Value = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid execution-observations sidecar JSON: {error}"))?;
+    let schema_version = sidecar_json["schema_version"]
+        .as_u64()
+        .filter(|version| matches!(version, 7 | 8))
+        .ok_or_else(|| {
+            "execution-observations sidecar schema_version is missing, invalid, or unsupported"
+                .to_string()
+        })?;
     let sample_count = sidecar_json["rdtsc_site_samples"]
         .as_array()
         .map(|samples| samples.len() as u64);
@@ -1034,6 +1079,49 @@ fn validate_execution_observations_sidecar(
         return Err(
             "execution-observations sidecar summary does not match raw runner metadata".into(),
         );
+    }
+    if schema_version == 8 {
+        let entry_rip_is_canonical = match sidecar.get("entry_rip") {
+            Some(Value::Null) => true,
+            Some(Value::String(rip)) => canonical_hex64(rip),
+            _ => false,
+        };
+        let raw_entry_rip_is_canonical = match sidecar_json.get("rdtsc_entry_sample_rip") {
+            Some(Value::Null) => true,
+            Some(Value::String(rip)) => canonical_hex64(rip),
+            _ => false,
+        };
+        let entry_hits = sidecar.get("entry_hits").and_then(Value::as_u64);
+        let entry_samples_omitted = sidecar.get("entry_samples_omitted").and_then(Value::as_u64);
+        let entry_sample_count_metadata = sidecar.get("entry_sample_count").and_then(Value::as_u64);
+        let entry_sample_count = sidecar_json["rdtsc_entry_samples"]
+            .as_array()
+            .map(|samples| samples.len() as u64);
+        let raw_entry_hits = sidecar_json["rdtsc_entry_sample_hits"].as_u64();
+        let raw_entry_samples_omitted = sidecar_json["rdtsc_entry_samples_omitted"].as_u64();
+        if !entry_rip_is_canonical
+            || !raw_entry_rip_is_canonical
+            || entry_hits.is_none()
+            || entry_samples_omitted.is_none()
+            || entry_sample_count_metadata.is_none()
+            || entry_sample_count.is_none()
+            || raw_entry_hits.is_none()
+            || raw_entry_samples_omitted.is_none()
+        {
+            return Err(
+                "execution-observations entry sample metadata is missing or invalid".into(),
+            );
+        }
+        if sidecar_json["rdtsc_entry_sample_rip"] != sidecar["entry_rip"]
+            || raw_entry_hits != entry_hits
+            || entry_sample_count != entry_sample_count_metadata
+            || raw_entry_samples_omitted != entry_samples_omitted
+        {
+            return Err(
+                "execution-observations entry sample summary does not match raw runner metadata"
+                    .into(),
+            );
+        }
     }
     Ok(())
 }
@@ -2201,12 +2289,16 @@ mod tests {
         let run_dir = series_dir.join("runs").join(run_id);
         let sidecar_path = run_dir.join("execution-observations.json");
         let sidecar_value = json!({
-            "schema_version": 7,
+            "schema_version": 8,
             "rdtsc_sample_rip": "0xffffffff8271b34d",
             "rdtsc_sample_stride": 512,
             "rdtsc_sample_site_hits": 19_000_000,
             "rdtsc_site_samples": [],
             "rdtsc_site_samples_omitted": 0,
+            "rdtsc_entry_sample_rip": "0xffffffff8271b31b",
+            "rdtsc_entry_sample_hits": 100,
+            "rdtsc_entry_samples": [],
+            "rdtsc_entry_samples_omitted": 0,
         });
         let mut sidecar_bytes = serde_json::to_vec_pretty(&sidecar_value).unwrap();
         sidecar_bytes.push(b'\n');
@@ -2214,13 +2306,17 @@ mod tests {
 
         let metadata = json!({
             "path": format!("runs/{run_id}/execution-observations.json"),
-            "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events",
+            "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events, with optional selected-site and entry-site samples",
             "write_error": null,
             "selected_rip": "0xffffffff8271b34d",
             "stride": 512,
             "selected_site_hits": 19_000_000,
             "sample_count": 0,
             "samples_omitted": 0,
+            "entry_rip": "0xffffffff8271b31b",
+            "entry_hits": 100,
+            "entry_sample_count": 0,
+            "entry_samples_omitted": 0,
             "byte_count": sidecar_bytes.len(),
             "sha256": od_testkit::sha256_hex(&sidecar_bytes),
         });
@@ -2241,6 +2337,17 @@ mod tests {
             series["runs"][0]["manifest_sha256"] = json!(od_testkit::sha256_hex(&run_bytes));
             fs::write(&series_path, serde_json::to_vec_pretty(&series).unwrap()).unwrap();
         };
+        let assert_rejected = |sidecar_value: Value, mut metadata: Value, expected_detail: &str| {
+            let mut bytes = serde_json::to_vec_pretty(&sidecar_value).unwrap();
+            bytes.push(b'\n');
+            fs::write(&sidecar_path, &bytes).unwrap();
+            metadata["byte_count"] = json!(bytes.len());
+            metadata["sha256"] = json!(od_testkit::sha256_hex(&bytes));
+            update_metadata(metadata);
+            let loaded = fresh_manifest(&series_path).unwrap();
+            let error = load_run_manifest(&series_path, &loaded.runs[0]).unwrap_err();
+            assert!(error.contains(expected_detail), "{error}");
+        };
         update_metadata(metadata.clone());
 
         let loaded = fresh_manifest(&series_path).unwrap();
@@ -2260,7 +2367,117 @@ mod tests {
         let loaded = fresh_manifest(&series_path).unwrap();
         let error = load_run_manifest(&series_path, &loaded.runs[0]).unwrap_err();
         assert!(error.contains("summary does not match"), "{error}");
-        update_metadata(metadata);
+        update_metadata(metadata.clone());
+
+        for (key, malformed) in [
+            ("entry_hits", None),
+            ("entry_hits", Some(Value::Null)),
+            ("entry_hits", Some(json!("100"))),
+            ("entry_samples_omitted", None),
+            ("entry_samples_omitted", Some(Value::Null)),
+            ("entry_samples_omitted", Some(json!("0"))),
+            ("entry_sample_count", None),
+            ("entry_sample_count", Some(Value::Null)),
+            ("entry_sample_count", Some(json!("0"))),
+        ] {
+            let mut bad_entry_metadata = json!({
+                "path": format!("runs/{run_id}/execution-observations.json"),
+                "capture_scope": "CPL0 RDTSC observation sidecar",
+                "write_error": null,
+                "selected_rip": "0xffffffff8271b34d",
+                "stride": 512,
+                "selected_site_hits": 19_000_000,
+                "sample_count": 0,
+                "samples_omitted": 0,
+                "entry_rip": "0xffffffff8271b31b",
+                "entry_hits": 100,
+                "entry_sample_count": 0,
+                "entry_samples_omitted": 0,
+                "byte_count": sidecar_bytes.len(),
+                "sha256": od_testkit::sha256_hex(&sidecar_bytes),
+            });
+            if let Some(value) = malformed {
+                bad_entry_metadata[key] = value;
+            } else {
+                bad_entry_metadata.as_object_mut().unwrap().remove(key);
+            }
+            assert_rejected(
+                sidecar_value.clone(),
+                bad_entry_metadata.clone(),
+                "entry sample metadata is missing or invalid",
+            );
+        }
+
+        for (key, malformed) in [
+            ("rdtsc_entry_sample_hits", None),
+            ("rdtsc_entry_sample_hits", Some(Value::Null)),
+            ("rdtsc_entry_sample_hits", Some(json!("100"))),
+            ("rdtsc_entry_samples_omitted", None),
+            ("rdtsc_entry_samples_omitted", Some(Value::Null)),
+            ("rdtsc_entry_samples_omitted", Some(json!("0"))),
+            ("rdtsc_entry_samples", None),
+            ("rdtsc_entry_samples", Some(Value::Null)),
+        ] {
+            let mut malformed_sidecar = sidecar_value.clone();
+            if let Some(value) = malformed {
+                malformed_sidecar[key] = value;
+            } else {
+                malformed_sidecar.as_object_mut().unwrap().remove(key);
+            }
+            assert_rejected(
+                malformed_sidecar,
+                metadata.clone(),
+                "entry sample metadata is missing or invalid",
+            );
+        }
+
+        for version in [None, Some(Value::Null), Some(json!("8")), Some(json!(9))] {
+            let mut malformed_sidecar = sidecar_value.clone();
+            if let Some(value) = version {
+                malformed_sidecar["schema_version"] = value;
+            } else {
+                malformed_sidecar
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("schema_version");
+            }
+            assert_rejected(
+                malformed_sidecar,
+                metadata.clone(),
+                "schema_version is missing, invalid, or unsupported",
+            );
+        }
+
+        let mut legacy_sidecar = sidecar_value.clone();
+        legacy_sidecar["schema_version"] = json!(7);
+        for key in [
+            "rdtsc_entry_sample_rip",
+            "rdtsc_entry_sample_hits",
+            "rdtsc_entry_samples",
+            "rdtsc_entry_samples_omitted",
+        ] {
+            legacy_sidecar.as_object_mut().unwrap().remove(key);
+        }
+        let mut legacy_metadata = metadata.clone();
+        for key in [
+            "entry_rip",
+            "entry_hits",
+            "entry_sample_count",
+            "entry_samples_omitted",
+        ] {
+            legacy_metadata.as_object_mut().unwrap().remove(key);
+        }
+        let mut legacy_bytes = serde_json::to_vec_pretty(&legacy_sidecar).unwrap();
+        legacy_bytes.push(b'\n');
+        fs::write(&sidecar_path, &legacy_bytes).unwrap();
+        legacy_metadata["byte_count"] = json!(legacy_bytes.len());
+        legacy_metadata["sha256"] = json!(od_testkit::sha256_hex(&legacy_bytes));
+        update_metadata(legacy_metadata);
+        let loaded = fresh_manifest(&series_path).unwrap();
+        assert!(load_run_manifest(&series_path, &loaded.runs[0]).is_ok());
+
+        fs::write(&sidecar_path, &sidecar_bytes).unwrap();
+        update_metadata(metadata.clone());
         let loaded = fresh_manifest(&series_path).unwrap();
 
         fs::write(&sidecar_path, b"tampered sidecar").unwrap();
@@ -2587,6 +2804,16 @@ mod tests {
             .extend(["--execution-observations-rdtsc-stride".into(), "512".into()]);
         let parsed = parse_series_args(&selected_rdtsc_stride).unwrap();
         assert_eq!(parsed.execution_observations_rdtsc_stride, Some(512));
+        let mut selected_entry = selected_rdtsc.clone();
+        selected_entry.extend([
+            "--execution-observations-rdtsc-entry-rip".into(),
+            "0xffffffff8271b31b".into(),
+        ]);
+        let parsed = parse_series_args(&selected_entry).unwrap();
+        assert_eq!(
+            parsed.execution_observations_rdtsc_entry_rip,
+            Some(0xffff_ffff_8271_b31b)
+        );
         let mut zero_stride = selected_rdtsc.clone();
         zero_stride.extend(["--execution-observations-rdtsc-stride".into(), "0".into()]);
         assert!(
@@ -2660,12 +2887,14 @@ mod tests {
     fn observation_args_keep_per_run_sidecar_paths_and_forward_stride() {
         let rip = Some(0xffff_ffff_8271_b34d);
         let stride = Some(512);
+        let entry_rip = Some(0xffff_ffff_8271_b31b);
         let mut first = vec!["--run".into()];
         append_execution_observations_args(
             &mut first,
             std::path::Path::new("series/runs/run-1/execution-observations.json"),
             rip,
             stride,
+            entry_rip,
         );
         let mut second = vec!["--run".into()];
         append_execution_observations_args(
@@ -2673,8 +2902,12 @@ mod tests {
             std::path::Path::new("series/runs/run-2/execution-observations.json"),
             rip,
             stride,
+            entry_rip,
         );
         assert_ne!(first[2], second[2]);
+        assert!(first.windows(2).any(|pair| {
+            pair[0] == "--execution-observations-rdtsc-entry-rip" && pair[1] == "0xffffffff8271b31b"
+        }));
         for args in [&first, &second] {
             assert!(
                 args.windows(2).any(
