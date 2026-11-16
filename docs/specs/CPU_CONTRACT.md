@@ -27608,3 +27608,10 @@ Six focused profile tests cover qword value/address, read/noncanonical/fetch fau
 Base `PagedCpl0ProbeV1` admits only exact `4D 85 F6`. The qword self-TEST uses shared logical semantics: it writes no GPR, clears CF/OF, derives SF/ZF/PF from R14, preserves unrelated flag values, and marks AF undefined while updating the logical flag definedness. A final ModRM-byte fetch fault is atomic. Neighboring registers/directions/widths, memory operands, prefixes, CPL3 and other paged profiles remain unsupported.
 
 Four focused profile tests cover zero, parity, sign and high-bit values, complete GPR/flag preservation, AF definedness, fetch-fault atomicity, neighboring forms and CPL3/profile isolation. Firmware advances after 8,976 retired instructions to `74 33` (`JZ rel8 +0x33`, ISSUE-280) at RIP `0x20162B`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `JZ rel8 +0x33` (ISSUE-280)
+
+Base `PagedCpl0ProbeV1` admits only exact no-prefix `74 33`. The signed rel8 +0x33 is added to next RIP when ZF is set; otherwise execution falls through. RFLAGS and definedness are unchanged. Canonicality is checked only for the taken target; a final displacement-byte fetch fault does not retire or mutate state. Other Jcc conditions/displacements, prefixes, CPL3 and other paged profiles remain unsupported.
+
+Five focused tests cover ZF and definedness, branch/fall-through targets, taken-only canonicality, displacement-fetch fault atomicity, neighboring encodings, CPL3 and other-profile isolation. Firmware advances after 8,977 retired instructions to `4C 8B 54 08 08` (`MOV R10,[RAX+RCX+8]`, ISSUE-281) at RIP `0x20162D`; COM1 remains empty. Independent review approved with no findings.

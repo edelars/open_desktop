@@ -4087,8 +4087,18 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-280 — S7-04: exact helper `JZ rel8 +0x33` (`74 33`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-279.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20162B`.
-- **Статус:** открыта.
-- **Суть и последствия:** base `PagedCpl0ProbeV1` does not yet admit this exact short conditional branch; the next instruction is blocked until its ZF predicate, target calculation, and taken-only canonicality behavior are implemented.
+- **Статус:** реализована в S7-04; независимое ревью одобрило изменение без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact short JZ +0x33. ZF selects the branch; flags and definedness remain unchanged, and canonicality is checked only for a taken target.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x162b` are `74 33`; runner budget 10000.
-- **Проверки исполнения:** after ISSUE-279, firmware retires 8,976 instructions and stops with `Unsupported { opcode: 116 }`; COM1 remains empty.
-- **Следующий шаг:** admit only exact JZ rel8 +0x33 and test taken/fall-through, flags/definedness, taken-only canonicality and fetch-fault atomicity.
+- **Проверки исполнения:** five focused tests cover both ZF values and definedness, taken/fall-through RIP, taken-only canonicality, displacement-fetch atomicity, neighbors and CPL3; other paged profiles retain isolation. Firmware retires 8,977 instructions and advances to `4C 8B 54 08 08` (`MOV R10,[RAX+RCX+8]`, ISSUE-281) at RIP `0x20162D`; COM1 remains empty. Independent review approved with no findings.
+- **Следующий шаг:** handle exact `MOV R10,[RAX+RCX+8]` as ISSUE-281.
+
+
+### ISSUE-281 — S7-04: exact helper `MOV R10,[RAX+RCX+8]` (`4C 8B 54 08 08`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-280.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20162D`.
+- **Статус:** открыта.
+- **Суть и последствия:** the base profile does not yet admit this exact qword SIB load into R10; subsequent firmware execution is blocked.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x162d` are `4C 8B 54 08 08`; runner budget 10000.
+- **Проверки исполнения:** after ISSUE-280, firmware retires 8,977 instructions and stops with `Unsupported { opcode: 139 }`; COM1 remains empty.
+- **Следующий шаг:** admit only this exact qword load and verify its tracked read, destination, and fault atomicity.
