@@ -1079,13 +1079,22 @@
 - **Проверка:** five focused JZ rel8 tests cover both ZF values, defined/undefined ZF, exact targets, taken-only canonicality and rel8 fetch-fault atomicity. Neighboring displacement/condition/prefix/near forms, CPL3 and other-profile isolation are covered. Runner retired 8904 and stopped at `48 89 44 24 08` (`MOV qword ptr [RSP+8],RAX`, ISSUE-222), RIP `0x200f82`, `Unsupported { opcode: 137 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
 - **Следующий шаг:** continue S7-04 at ISSUE-222.
 
-### ISSUE-222 — S7-04: Rust helper `MOV qword ptr [RSP+8],RAX` (`48 89 44 24 08`) remains outside paged CPU profile
+### ISSUE-222 — S7-04: exact Rust-helper `MOV qword ptr [RSP+8],RAX` (`48 89 44 24 08`) admitted narrowly
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact JZ rel8 +0x59.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200f82`.
+- **Статус:** решена узко для exact `48 89 44 24 08` в base `PagedCpl0ProbeV1`; независимо проверена и одобрена, ожидает коммита. Other sources, displacements, address/width/prefix forms, CPL3 and profiles remain unsupported.
+- **Суть и результат:** the qword value from RAX is written to `[RSP+8]` through the tracked `GuestMemory::write_integer` path. On success only RIP changes; GPRs, flags and definedness remain unchanged. The tested same-page supervisor write-protection #PF prevents retirement and data commit; page-walk Accessed updates persist while leaf Dirty remains clear. General backend rollback and cross-page behavior remain outside evidence (ISSUE-054).
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue222.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf82` are `48 89 44 24 08`; runner budget 10000.
+- **Проверка:** five focused ISA tests cover qword value/state, injected write #PF, final-displacement fetch-fault atomicity, adjacent source/displacement/addressing/width/prefix forms, CPL3 and other-profile isolation. Two machine tests verify four-level A/D behavior on success and no data commit/D bit on same-page write-protection #PF. Runner retired 8905 and stopped at `41 81 FD A0 00 00 00` (`CMP R13D,0xA0`, ISSUE-223), RIP `0x200f87`, `Unsupported { opcode: 129 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
+- **Следующий шаг:** continue S7-04 at ISSUE-223.
+
+### ISSUE-223 — S7-04: Rust helper `CMP R13D,0xA0` (`41 81 FD A0 00 00 00`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact RAX-to-stack qword store.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200f87`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8904 instructions and stopped at `48 89 44 24 08`, `Unsupported { opcode: 137 }`, `RIP=0x200f82`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue221.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf82` begin `48 89 44 24 08`; runner budget 10000.
-- **Следующий шаг:** inspect the exact stack store tuple, tracked write path, and existing store fault tests before narrow admission.
+- **Суть и последствия:** runner retired 8905 instructions and stopped at `41 81 FD A0 00 00 00`, `Unsupported { opcode: 129 }`, `RIP=0x200f87`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue222.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf87` begin `41 81 FD A0 00 00 00`; runner budget 10000.
+- **Следующий шаг:** inspect the exact dword CMP tuple and shared arithmetic flag semantics before narrow admission.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.
