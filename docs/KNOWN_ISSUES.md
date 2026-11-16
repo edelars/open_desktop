@@ -1271,7 +1271,7 @@
 ### ISSUE-243 — S7-04: helper `MOV RAX,RSI` (`48 89 F0`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-242.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201574`.
-- **Статус:** решена в S7-04; exact base-profile form is admitted and independently reviewed.
+- **Статус:** решена в S7-04; exact base-profile form is admitted and independently reviewed with no findings.
 - **Суть и последствия:** opcode `89` copies the ModRM reg source RSI to the r/m destination RAX as a qword; all other GPRs, RFLAGS and flag definedness are preserved. Neighboring encodings and CPL3/other profiles remain unsupported.
 - **Проверка:** high-bit transfer, full state/definedness preservation, final-byte fetch-fault atomicity, opcode/direction/REX/width/prefix neighbors, CPL3 and profile isolation pass. Runner retires 8,932 instructions and stops at `48 8D 71 04` (`LEA RSI,[RCX+4]`, ISSUE-244) at RIP `0x201577`; COM1 remains empty.
 - **Основание:** firmware image `/private/tmp/od-fw-s7-04-issue243.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner budget 10000.
@@ -3710,10 +3710,20 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Проверка и документация:** [MachineController.swift](../apps/macos/Sources/App/MachineController.swift), [тесты S11-12](../apps/macos/Tests/HostConditionsTests.swift), [отчёт этапа 11](reports/STAGE_11_REPORT.md). Локальные файлы в `logs/` bundle не используются, поэтому владельцем каталога и ротацией по-прежнему остаётся VMHost согласно [VM_BUNDLE §2.2](specs/VM_BUNDLE.md#22-logs).
 
 
-### ISSUE-244 — S7-04: helper `LEA RSI,[RCX+4]` (`48 8D 71 04`) remains outside paged CPU profile
+### ISSUE-244 — S7-04: helper `LEA RSI,[RCX+4]` (`48 8D 71 04`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-243.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201577`.
+- **Статус:** решена в S7-04; exact base-profile form is admitted and independently reviewed with no findings.
+- **Суть и последствия:** qword LEA uses RCX as base and signed disp8 +4 to compute RSI; it performs no memory access and does not check canonicality. Only RSI/RIP change; flags, definedness and other GPRs are preserved.
+- **Проверка:** high/noncanonical and wrapping offsets, full state/flag-definedness, final-byte fetch-fault atomicity, register/displacement/width/prefix neighbors, CPL3 and other-profile isolation pass. Runner retires 8,933 instructions and stops at `48 39 D6` (`CMP RSI,RDX`, ISSUE-245) at RIP `0x20157B`; COM1 remains empty.
+- **Основание:** firmware image `/private/tmp/od-fw-s7-04-issue244.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner budget 10000.
+- **Следующий шаг:** verify exact qword operand order and arithmetic flag semantics for ISSUE-245.
+
+
+### ISSUE-245 — S7-04: helper `CMP RSI,RDX` (`48 39 D6`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-244.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20157B`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8,932 instructions and stopped on `48 8D 71 04`, `Unsupported { opcode: 141 }`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue243.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1577` begin `48 8D 71 04`; runner budget 10000.
-- **Следующий шаг:** verify exact LEA register routing and effective-offset semantics without memory access for ISSUE-244.
+- **Суть и последствия:** runner retired 8,933 instructions and stopped on `48 39 D6`, `Unsupported { opcode: 57 }`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue244.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x157B` begin `48 39 D6`; runner budget 10000.
+- **Следующий шаг:** verify exact qword CMP destination/source order, flags and definedness for ISSUE-245.

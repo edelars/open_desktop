@@ -21481,6 +21481,31 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(dst, src.effective_address(state, next_rip));
             state.rip = next_rip;
         }
+        // S7-04: the Rust helper computes `RCX + 4` into RSI with exact
+        // `48 8D 71 04`. The mod=01 disp8 addressing form is qword LEA only;
+        // it calculates an effective offset without touching guest memory.
+        Operation::Lea { dst, src }
+            if base_profile
+                && instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0x8d
+                && instruction.length == 4
+                && instruction.operand_size == OperandSize::Qword
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x48),
+                        ..Prefixes::default()
+                    })
+                && dst == RegisterView::low(Register::Rsi, OperandSize::Qword)
+                && src.base == AddressBase::Register(Register::Rcx)
+                && src.index.is_none()
+                && src.scale == 1
+                && src.displacement == 4
+                && src.address_size == OperandSize::Qword
+                && src.size == OperandSize::Qword =>
+        {
+            state.write(dst, src.effective_address(state, next_rip));
+            state.rip = next_rip;
+        }
         // S7-04: this helper computes the effective address with exact
         // `8D B9 60 FF FF FF` (LEA EDI,[RCX-0xA0]). Calculate the 64-bit EA,
         // then truncate on the EDI write (which zero-extends into RDI). LEA
