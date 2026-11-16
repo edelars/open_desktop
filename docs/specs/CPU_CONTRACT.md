@@ -27827,3 +27827,8 @@ Four focused profile tests cover result and logical flag values, AF definedness,
 ### Stage 7 paged-profile JA rel32 +0x16e
 
 `PagedCpl0ProbeV1` admits exact no-prefix bytes `0F 87 6E 01 00 00`. JA is taken iff `CF=0 && ZF=0`; signed rel32 `+0x16e` is added to next RIP. Flags/definedness remain unchanged, and target canonicality is checked only when taken. Other branch conditions, displacements, prefixes and profiles remain unsupported.
+
+
+### Stage 7 paged-profile ADD RSI,0x3c
+
+`PagedCpl0ProbeV1` admits exact bytes `48 83 C6 3C`. REX.W selects qword RSI; opcode 83 sign-extends imm8 `0x3c`. Shared ADD semantics update arithmetic flags and their definedness. Only RSI and RIP change. Other immediate values, arithmetic groups, registers, widths, prefixes and profiles remain unsupported.
