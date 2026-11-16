@@ -3973,8 +3973,19 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-269 — S7-04: exact helper `MOV EBP,dword ptr [RAX+RCX+4]` (`8B 6C 08 04`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-268.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015F8`.
-- **Статус:** открыта.
-- **Суть и последствия:** base `PagedCpl0ProbeV1` does not yet admit the exact dword load using RAX base, RCX scale-1 index and disp8 +4.
+- **Статус:** реализована в S7-04; независимое ревью одобрило без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact no-prefix `8B 6C 08 04`. The 64-bit effective address is RAX+RCX+sign-extended disp8 +4; a tracked dword read writes EBP and zero-extends RBP. Flags/definedness remain unchanged, and the destination/RIP commit only after a successful read.
+- **Проверка:** six focused profile tests cover address/destination selection, zero-extension, flag/state preservation, read-fault and noncanonical-address behavior, fetch-fault atomicity, adjacent SIB/register/width/prefix forms, and CPL3 isolation. Two machine tests cover a successful four-level read with A bits set and D bits clear, plus a precise unmapped-data page fault without partial state commit; other paged profiles keep this form unsupported.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15F8` are `8B 6C 08 04`; runner budget 10000.
-- **Проверки исполнения:** firmware retires 8,962 instructions and stops with `Unsupported { opcode: 139 }`; COM1 remains empty.
-- **Следующий шаг:** admit only this exact instruction and verify effective-address, dword zero-extension, tracked read faults, and profile isolation.
+- **Проверки исполнения:** firmware retires 8,964 instructions and advances to exact `81 FD 00 01 00 00` (`CMP EBP,0x100`) at RIP `0x2015FF`; COM1 remains empty.
+- **Следующий шаг:** verify dword CMP EBP,0x100 semantics for ISSUE-270.
+
+
+### ISSUE-270 — S7-04: exact helper `CMP EBP,0x100` (`81 FD 00 01 00 00`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-269.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015FF`.
+- **Статус:** открыта.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` does not yet admit the exact dword register compare against imm32 `0x100`.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15FF` are `81 FD 00 01 00 00`; runner budget 10000.
+- **Проверки исполнения:** firmware retires 8,964 instructions and stops with `Unsupported { opcode: 129 }`; COM1 remains empty.
+- **Следующий шаг:** verify exact opcode/group/register/imm32 decoding, dword flags and definedness for ISSUE-270.

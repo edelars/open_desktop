@@ -22411,7 +22411,8 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         // `44 8B 6E 3C` (MOV R13D,dword ptr [RSI+0x3c]), `44 8B 66 40`
         // (MOV R12D,dword ptr [RSI+0x40]), `44 8B 46 44`
         // (MOV R8D,dword ptr [RSI+0x44]), and exact `44 8B 14 08`
-        // (MOV R10D,dword ptr [RAX+RCX]). The exact `0F B7 5C 24 40`
+        // (MOV R10D,dword ptr [RAX+RCX]) and exact `8B 6C 08 04`
+        // (MOV EBP,dword ptr [RAX+RCX+4]). The exact `0F B7 5C 24 40`
         // (MOVZX EBX,word ptr [RSP+0x40]) stack form is admitted here too.
         // Reuse the tracked faulting read and 32-bit write; other load forms
         // remain unsupported.
@@ -22577,7 +22578,13 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                             && source.displacement == 0
                             && source.base == AddressBase::Register(Register::Rax)
                             && source.index == Some(Register::Rcx)))
-                    && instruction.length == 4))
+                    && instruction.length == 4)
+                || (instruction.prefixes == Prefixes::default()
+                    && instruction.length == 4
+                    && destination == RegisterView::low(Register::Rbp, OperandSize::Dword)
+                    && source.displacement == 4
+                    && source.base == AddressBase::Register(Register::Rax)
+                    && source.index == Some(Register::Rcx)))
             && ((source.base == AddressBase::Register(Register::Rsi)
                 && source.index.is_none())
                 || (source.base == AddressBase::Register(Register::Rax)

@@ -27531,3 +27531,10 @@ Four focused tests cover byte results, flags and definedness, BPL-only mutation,
 Base `PagedCpl0ProbeV1` admits only exact no-prefix `0F 85 27 02 00 00`. JNZ reads ZF and, when ZF=0, adds signed rel32 `+0x227` to next RIP; otherwise execution falls through by six bytes. RFLAGS and definedness remain unchanged. Target canonicality is checked only when taken; final-displacement fetch faults do not retire or mutate state. Neighboring displacements/conditions, prefixes, short branches, CPL3 and other paged profiles remain unsupported.
 
 Five focused tests cover both ZF values with defined and undefined ZF, exact taken/fall-through RIP, taken-only canonicality, final-byte fetch-fault atomicity, neighboring displacements/conditions/prefixes/short branch and CPL3 isolation. Firmware advances after 8,962 retired instructions to `8B 6C 08 04` (`MOV EBP,dword ptr [RAX+RCX+4]`, ISSUE-269) at RIP `0x2015F8`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `MOV EBP,dword ptr [RAX+RCX+4]` (ISSUE-269)
+
+Base `PagedCpl0ProbeV1` admits only exact no-prefix `8B 6C 08 04`. The SIB computes a 64-bit address from RAX+RCX plus sign-extended disp8 +4. The tracked dword read writes EBP and zero-extends the result into RBP; only RBP/RIP change on success, while flags and definedness are preserved. Data-read and noncanonical-address faults do not commit the destination, and a final displacement-byte fetch fault is atomic. Other SIB bases/indexes/scales/displacements, destinations, widths, prefixes, CPL3 and other paged profiles remain unsupported.
+
+Six focused profile tests cover address/load behavior, zero-extension, flags/state preservation, read/noncanonical/fetch faults, neighbors and CPL3 isolation. Two machine tests cover a successful four-level read with accessed bits set and dirty bits clear, and a precise unmapped-data page fault without state commit. Firmware advances after 8,964 retired instructions to `81 FD 00 01 00 00` (`CMP EBP,0x100`, ISSUE-270) at RIP `0x2015FF`; COM1 remains empty. Independent review approved with no findings.
