@@ -105,6 +105,26 @@ work/stage5/stage5-s5-07-rdtsc-delay-stride512-same-input-run1-replay-20261116/e
 with the same selected RIP and stride. Its runner JSON was written to
 `work/stage5/stage5-s5-07-rdtsc-delay-stride512-same-input-run1-replay-20261116/runner.json`.
 
+Run 0002 was then repeated the same way, with nonce
+`OD518e898753551a790000040f800000001` and output directory
+`work/stage5/stage5-s5-07-rdtsc-delay-stride512-same-input-run2-replay-20261116/`.
+It loaded and retired 2,999,999,998 instructions. The source and replay had
+equal nonce, inputs, command line, complete stop object (including inline
+UART), UART bytes, and schema-v7 sidecar bytes. The selected sidecar hash was
+`4a4450fa2aeb860282cd0154a426b36151ff770a5011006fe37658ee13a166a0` in
+both files; replay UART SHA-256 was
+`045dbefb9eb7fa0121f9fb9b64a7f1587063b5219551fd305bc3202469c8b924`, and
+replay runner JSON SHA-256 was
+`caf763871f2b68d59a7b2fd009b0d6407a2a527e2fffdfe550617bdc9610bdec`.
+
+Both unique-nonce source runs therefore reproduce exactly under their own
+recorded guest inputs on this host/build. The only recorded guest-visible
+input difference between the source runs is the nonce value in `od.nonce=`.
+This is consistent with deterministic nonce-conditioned behavior, but does
+not establish a mechanism or make the cross-run machine/UART differences
+benign. The series still fails strict comparison and is not acceptance
+evidence.
+
 Artifact hashes
 ---------------
 Series SHA-256: f686db61c7180abfc6250fe07d1fce15f6a5a4cc09b675e941d0ece1a0dc2583
@@ -118,6 +138,7 @@ Run 0002 runner JSON SHA-256: 53a12daac5eded87019bfdab668717c65f1c6a6c1557f509a0
 Run 0002 UART SHA-256: 045dbefb9eb7fa0121f9fb9b64a7f1587063b5219551fd305bc3202469c8b924
 Run 0002 sidecar SHA-256: 4a4450fa2aeb860282cd0154a426b36151ff770a5011006fe37658ee13a166a0
 Run 0001 same-input replay runner SHA-256: f133cc17057d93e0ff38c9672a6f331759fa9c65b3a3809cd8cb915e2c3a10c7
+Run 0002 same-input replay runner SHA-256: caf763871f2b68d59a7b2fd009b0d6407a2a527e2fffdfe550617bdc9610bdec
 
 S5-07 remains blocked/unaccepted. No comparator normalization or CPU
 semantics were changed. Raw artifacts are under the ignored work/stage5
