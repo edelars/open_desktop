@@ -22199,9 +22199,10 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
-        // S7-04: exact Rust-helper spill reload `48 8B 74 24 10`
-        // (MOV RSI,qword ptr [RSP+0x10]). Keep the qword destination and
-        // RSP-based SIB disp8 exact; commit RSI/RIP only after the tracked read.
+        // S7-04: exact Rust-helper spill reloads `48 8B 74 24 10`
+        // (MOV RSI,[RSP+0x10]) and `48 8B 54 24 30` (MOV RDX,[RSP+0x30]).
+        // Keep destination and RSP-based SIB disp8 tuples exact; commit the
+        // selected register/RIP only after the tracked read.
         Operation::Mov {
             dst: Operand::Register(destination),
             src: Operand::Memory(source),
@@ -22215,11 +22216,13 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     rex: Some(0x48),
                     ..Prefixes::default()
                 })
-            && destination == RegisterView::low(Register::Rsi, OperandSize::Qword)
+            && ((destination == RegisterView::low(Register::Rsi, OperandSize::Qword)
+                && source.displacement == 0x10)
+                || (destination == RegisterView::low(Register::Rdx, OperandSize::Qword)
+                    && source.displacement == 0x30))
             && source.base == AddressBase::Register(Register::Rsp)
             && source.index.is_none()
             && source.scale == 1
-            && source.displacement == 0x10
             && source.address_size == OperandSize::Qword
             && source.size == OperandSize::Qword =>
         {

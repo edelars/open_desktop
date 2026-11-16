@@ -1196,13 +1196,22 @@
 - **Проверка:** six focused profile tests pass for the qword read/result, read-fault and fetch-fault atomicity, noncanonical/cross-boundary #SS(0) atomicity, neighboring forms and CPL3 isolation; other-profile isolation passes. A four-level machine test confirms RSI receives the tracked qword and page-table accessed bits are set while data dirty bits remain clear. Full od-isa and paged-quantum machine suites pass. Runner retired 8917 instructions and stopped at ISSUE-235: `48 8B 54 24 30` (`MOV RDX,qword ptr [RSP+0x30]`), RIP `0x200fd4`, `Unsupported { opcode: 139 }`, `com1_bytes=0`; full firmware handoff validation remains incomplete.
 - **Следующий шаг:** review exact tracked qword stack-load semantics and ISSUE-235 profile boundary.
 
-### ISSUE-235 — S7-04: Rust helper `MOV RDX,qword ptr [RSP+0x30]` (`48 8B 54 24 30`) remains outside paged CPU profile
+### ISSUE-235 — S7-04: Rust helper `MOV RDX,qword ptr [RSP+0x30]` (`48 8B 54 24 30`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-234.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200fd4`.
+- **Статус:** решена узко для exact qword RSP-based SIB load в base `PagedCpl0ProbeV1`; independently reviewed and approved with no findings.
+- **Суть и результат:** exact REX.W/opcode/ModRM/SIB/disp8 reads qword `[RSP+0x30]` into RDX through tracked memory. RDX/RIP commit only after successful read; other GPRs and flags are preserved. Other destination registers, displacements, widths, prefixes, CPL3 and profiles remain unsupported.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue235.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xfd4` are `48 8B 54 24 30`; runner budget 10000.
+- **Проверка:** five focused profile tests pass for qword result/state, read/fetch fault atomicity, neighboring destination/displacement/index/width/prefix forms and CPL3; other-profile isolation passes. A four-level machine test confirms RDX receives the tracked qword, page-table accessed bits are set and data dirty bits remain clear. Full od-isa and paged-quantum suites pass. Runner retired 8918 instructions and stopped at ISSUE-236: `4C 89 F9` (`MOV RCX,R15`), RIP `0x200fd9`, `Unsupported { opcode: 137 }`, `com1_bytes=0`; full firmware handoff validation remains incomplete.
+- **Следующий шаг:** review exact REX.R register-move semantics and ISSUE-236 profile boundary.
+
+### ISSUE-236 — S7-04: Rust helper `MOV RCX,R15` (`4C 89 F9`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-235.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200fd9`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8917 instructions and stopped at `48 8B 54 24 30`, `Unsupported { opcode: 139 }`, `RIP=0x200fd4`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue234.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xfd4` are `48 8B 54 24 30`; runner budget 10000.
-- **Следующий шаг:** verify qword tracked-load semantics and narrow profile admission for ISSUE-235.
+- **Суть и последствия:** runner retired 8918 instructions and stopped at `4C 89 F9`, `Unsupported { opcode: 137 }`, `RIP=0x200fd9`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue235.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xfd9` are `4C 89 F9`; runner budget 10000.
+- **Следующий шаг:** verify exact REX.R selection and narrow profile admission for ISSUE-236.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.

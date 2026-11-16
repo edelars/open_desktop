@@ -27297,3 +27297,10 @@ Four focused profile tests cover effective-address/state behavior, fetch-fault a
 Base `PagedCpl0ProbeV1` admits only exact `48 8B 74 24 10`. REX.W selects qword width, ModRM selects RSI, and SIB selects RSP as base with no index and disp8 `0x10`. The operation reads through the tracked memory path, then commits RSI/RIP; a data fault leaves CPU state unchanged. Other GPRs and flags/definedness are preserved. Neighbor registers/displacements/addressing forms, widths, prefixes, CPL3 and other profiles remain unsupported.
 
 Six focused tests cover qword result/state, injected read-fault, instruction-fetch-fault and noncanonical/cross-boundary #SS(0) atomicity, adjacent displacement/register/index/width/prefix forms and CPL3; other-profile isolation passes. A four-level machine test confirms the qword value is loaded, page-walk accessed bits are set, and dirty bits remain clear. Full od-isa and paged-quantum suites pass. Firmware advances to ISSUE-235: `48 8B 54 24 30` (`MOV RDX,qword ptr [RSP+0x30]`) at RIP `0x200fd4`, after 8917 retired instructions.
+
+
+### S7-04: exact Rust-helper `MOV RDX,qword ptr [RSP+0x30]` (ISSUE-235)
+
+Base `PagedCpl0ProbeV1` admits only exact `48 8B 54 24 30`. REX.W selects qword width, ModRM selects RDX, and SIB selects RSP as base with no index and disp8 `0x30`. The operation reads through the tracked memory path, then commits RDX/RIP; a data fault leaves CPU state unchanged. Other GPRs and flags/definedness are preserved. Neighbor registers/displacements/addressing forms, widths, prefixes, CPL3 and other profiles remain unsupported.
+
+Five focused tests cover qword result/state, injected read-fault and instruction-fetch-fault atomicity, adjacent displacement/destination/index/width/prefix forms and CPL3; other-profile isolation passes. A four-level machine test confirms the qword value is loaded, page-walk accessed bits are set, and data dirty bits remain clear. Full od-isa and paged-quantum suites pass. Firmware advances to ISSUE-236: `4C 89 F9` (`MOV RCX,R15`) at RIP `0x200fd9`, after 8918 retired instructions.
