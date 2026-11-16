@@ -27398,3 +27398,10 @@ Four focused profile tests cover equality, carry, overflow, sign/parity/AF, high
 Base `PagedCpl0ProbeV1` admits only exact no-prefix `0F 87 D7 02 00 00`. The signed rel32 `+0x2d7` is added to next RIP; JA is taken iff CF=0 and ZF=0. RFLAGS and definedness remain unchanged. The target is checked for canonicality only when taken. Final-byte instruction-fetch faults do not retire or mutate state. Neighboring displacements/conditions, operand/REX prefixes, short branches, CPL3 and other paged profiles remain unsupported.
 
 Five focused profile tests cover all CF/ZF combinations and definedness masks, taken/fall-through RIP, taken-only canonicality, fetch-fault atomicity, neighboring encodings, CPL3 and profile isolation. Firmware advances after 8,938 retired instructions to `48 8D 71 10` (`LEA RSI,[RCX+0x10]`, ISSUE-250) at RIP `0x201591`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `LEA RSI,[RCX+0x10]` (ISSUE-250)
+
+Base `PagedCpl0ProbeV1` admits only exact `48 8D 71 10`. This qword LEA adds disp8 +0x10 to RCX with wrapping and writes RSI; it performs no memory access or canonicality check. Other GPRs, RFLAGS and definedness are unchanged. A fetch fault on the displacement byte does not retire or mutate CPU state. Neighboring displacement/base/destination/width/prefix/SIB forms, CPL3 and other paged profiles remain unsupported.
+
+Four focused profile tests cover ordinary, high, noncanonical and wrapping addresses, RSI-only mutation, state/flag-definedness preservation, no memory/I/O access, final-byte fetch-fault atomicity, neighbors, CPL3 and profile isolation. Firmware advances after 8,940 retired instructions to `0F 87 E4 02 00 00` (`JA rel32 +0x2e4`, ISSUE-251) at RIP `0x201598`; COM1 remains empty. Independent review approved with no findings.

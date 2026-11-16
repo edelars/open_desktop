@@ -21482,9 +21482,10 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(dst, src.effective_address(state, next_rip));
             state.rip = next_rip;
         }
-        // S7-04: the Rust helper computes `RCX + 4` into RSI with exact
-        // `48 8D 71 04`. The mod=01 disp8 addressing form is qword LEA only;
-        // it calculates an effective offset without touching guest memory.
+        // S7-04: the Rust helper computes `RCX + 4` or `RCX + 0x10` into RSI
+        // with exact `48 8D 71 04` / `48 8D 71 10`. The mod=01 disp8 forms are
+        // qword LEA only; they calculate an effective offset without touching
+        // guest memory.
         Operation::Lea { dst, src }
             if base_profile
                 && instruction.opcode.map == OpcodeMap::Primary
@@ -21500,7 +21501,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 && src.base == AddressBase::Register(Register::Rcx)
                 && src.index.is_none()
                 && src.scale == 1
-                && src.displacement == 4
+                && matches!(src.displacement, 4 | 0x10)
                 && src.address_size == OperandSize::Qword
                 && src.size == OperandSize::Qword =>
         {
