@@ -20616,6 +20616,32 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     | (crate::ARITHMETIC_FLAGS & !crate::AF),
             };
         }
+        // S7-04: the Rust helper uses only `41 F7 D1` (NOT R9D). Reuse the
+        // shared width-truncated NOT result; this operation leaves flags unchanged.
+        Operation::Logic {
+            kind: LogicKind::Not,
+            dst: Operand::Register(destination),
+            src: Operand::Immediate(0),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xf7
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x41),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R9, OperandSize::Dword) =>
+        {
+            let lhs = state.read(destination);
+            let (value, flags) =
+                logic_result(OperandSize::Dword, LogicKind::Not, lhs, 0, state.rflags);
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return result(PagedProbeExit::Retired, 1);
+        }
         // S7-04: startup/helper use only observed literal conditional branch
         // encodings, including these exact near JNZ/JZ forms; other branches stay outside.
         Operation::Branch {

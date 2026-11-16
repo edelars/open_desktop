@@ -777,10 +777,20 @@
 ### ISSUE-189 — S7-04: Rust helper `NOT R9D` (`41 F7 D1`) remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `JNZ -0x52`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e52`.
-- **Статус:** открыта.
-- **Суть и последствия:** после 8871 retirement runner остановился на `41 F7 D1` (`NOT R9D`), `Unsupported { opcode: 247 }`, `RIP=0x200e52`; COM1 remains empty.
+- **Статус:** решена узко для exact `41 F7 D1` в base `PagedCpl0ProbeV1`; implementation awaits review/commit. Full handoff validation remains incomplete.
+- **Суть и результат:** exact REX `41`, opcode `F7 /2`, ModRM `D1`, dword operand and decoded R9D destination are admitted only for this register-only NOT. Shared width-truncated NOT semantics write the inverted low dword and zero-extend R9; RFLAGS and `rflags_defined` remain unchanged. Neighboring groups/registers/widths/prefixes and memory forms remain outside the allowlist.
+- **Проверка:** four focused `rust_helper_not_r9d_*` tests and other-profile isolation passed; all 436 `paged_probe_profile` tests and `cargo check --offline -p od-isa --all-targets` passed. Tests cover dword inversion/zero-extension with high source bits, full state, flags/definedness, ModRM fetch-fault atomicity, adjacent encodings, CPL3 and other-profile isolation. Scoped rustfmt and `git diff --check` passed. Firmware image `/private/tmp/od-fw-s7-04-issue189.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner retired 8872 instructions and stopped at ISSUE-190 (`RIP=0x200e55`), COM1 remains empty.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue188.bin`; bytes at offset `0xe52` begin `41 f7 d1`; runner budget 10000.
-- **Следующий шаг:** inspect the exact NOT encoding and existing logical-not semantics, then assess a bounded paged-profile-only admission.
+- **Ссылка:** [S7-04 exact NOT slice](reports/STAGE_7_REPORT.md#s7-04-cpu-profile-slice-exact-rust-helper-not-r9d).
+
+<a id="issue-190-s7-04-rust-helper-cmp-edi-r9d-unsupported"></a>
+### ISSUE-190 — S7-04: Rust helper `CMP EDI,R9D` (`44 39 CF`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `NOT R9D`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e55`.
+- **Статус:** открыта.
+- **Суть и последствия:** после 8872 retire runner остановился на `44 39 CF` (`CMP EDI,R9D`), `Unsupported { opcode: 57 }`, `RIP=0x200e55`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue189.bin`; bytes at offset `0xe55` begin `44 39 cf`; runner budget 10000.
+- **Следующий шаг:** verify exact REX.R/ModRM operand routing and shared dword CMP flags before considering narrow admission.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки

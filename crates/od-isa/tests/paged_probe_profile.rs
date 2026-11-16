@@ -4852,6 +4852,127 @@ fn firmware_entry_jnz_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn rust_helper_not_r9d_zero_extends_and_preserves_flags() {
+    let code = [0x41, 0xf7, 0xd1];
+    let defined = DEFINED & !(1 << 6);
+    for value in [
+        0x1234_5678_0000_0000,
+        0xfedc_ba98_0000_0001,
+        0x8765_4321_ffff_ffff,
+        0x1122_3344_8000_0000,
+    ] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::R9 as usize] = value;
+        cpu.rflags = 0x2
+            | (1 << 0)
+            | (1 << 2)
+            | (1 << 4)
+            | (1 << 6)
+            | (1 << 7)
+            | (1 << 9)
+            | (1 << 11)
+            | (1 << 18);
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+
+        let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined);
+        let mut expected = before;
+        expected.rip = RIP + 3;
+        expected.gpr[Register::R9 as usize] = u64::from(!(value as u32));
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_not_r9d_fetch_fault_on_modrm_does_not_commit() {
+    let code = [0x41, 0xf7];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.rflags = 0x2 | (1 << 0) | (1 << 6) | (1 << 7) | (1 << 9);
+    let before = cpu.clone();
+    memory.fail_fetch_at = Some((RIP + 2, page_fault(0x10, RIP + 2)));
+    let mut pio = Pio::default();
+
+    let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), DEFINED);
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(RIP + 2),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_helper_not_r9d_neighbours_stay_unsupported_without_mutation() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x41, 0xf7, 0xd0], 0xf7),       // NOT R8D
+        (&[0x41, 0xf7, 0xd2], 0xf7),       // NOT R10D
+        (&[0x41, 0xf7, 0xd9], 0xf7),       // NEG R9D
+        (&[0x49, 0xf7, 0xd1], 0xf7),       // NOT R9 (qword)
+        (&[0x66, 0x41, 0xf7, 0xd1], 0xf7), // NOT R9W
+        (&[0xf7, 0xd1], 0xf7),             // NOT ECX without REX.B
+        (&[0x41, 0xf7, 0x11], 0xf7),       // memory operand
+    ];
+
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: *opcode });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "bytes {bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_not_r9d_is_unsupported_in_cpl3_profile() {
+    let code = [0x41, 0xf7, 0xd1];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    let before = cpu.clone();
+
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x41 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn rust_helper_jnz_rel32_obeys_zf_and_preserves_flags_and_definedness() {
     let code = [0x0f, 0x85, 0xd6, 0, 0, 0]; // JNZ +0xd6
     for zero in [false, true] {
@@ -12996,6 +13117,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x45, 0x31, 0xd2][..], 0x31),
         (&[0x45, 0x31, 0xf1][..], 0x31),
         (&[0x45, 0x31, 0xfe][..], 0x31),
+        (&[0x41, 0xf7, 0xd1][..], 0xf7),
         (&[0x46, 0x33, 0x24, 0x8d, 0x80, 0x26, 0x20, 0][..], 0x33),
         (&[0x46, 0x33, 0x0c, 0xb5, 0x80, 0x26, 0x20, 0][..], 0x33),
         (&[0x45, 0x31, 0xdb][..], 0x31),
