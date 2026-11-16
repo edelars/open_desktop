@@ -20309,9 +20309,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::DF,
             };
         }
-        // S7-04: the Rust helper conditionally copies R10D to R14D with only
-        // `45 0F 44 F2`. Exact REX.R/B extend the decoded registers; the dword
-        // destination write zero-extends R14, and the condition leaves flags alone.
+        // S7-04: the Rust helper conditionally copies R10D to R14D/R15D with
+        // only `45 0F 44 F2` and `45 0F 44 FA`. Exact ModRM tuples select the
+        // destination; the dword write zero-extends it and leaves flags alone.
         Operation::ConditionalMove {
             condition,
             dst: destination,
@@ -20327,7 +20327,8 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     rex: Some(0x45),
                     ..Prefixes::default()
                 })
-            && destination == RegisterView::low(Register::R14, OperandSize::Dword)
+            && (destination == RegisterView::low(Register::R14, OperandSize::Dword)
+                || destination == RegisterView::low(Register::R15, OperandSize::Dword))
             && source == RegisterView::low(Register::R10, OperandSize::Dword) =>
         {
             let value = if condition.evaluate(state.rflags) {
