@@ -22189,6 +22189,30 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(dst, src.effective_address(state, next_rip));
             state.rip = next_rip;
         }
+        // S7-04: exact `4C 8D 14 01` computes qword RCX+RAX into R10.
+        // REX.R selects R10; LEA performs no memory access/canonicality check.
+        Operation::Lea { dst, src }
+            if base_profile
+                && instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0x8d
+                && instruction.length == 4
+                && instruction.operand_size == OperandSize::Qword
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x4c),
+                        ..Prefixes::default()
+                    })
+                && dst == RegisterView::low(Register::R10, OperandSize::Qword)
+                && src.base == AddressBase::Register(Register::Rcx)
+                && src.index == Some(Register::Rax)
+                && src.scale == 1
+                && src.displacement == 0
+                && src.address_size == OperandSize::Qword
+                && src.size == OperandSize::Qword =>
+        {
+            state.write(dst, src.effective_address(state, next_rip));
+            state.rip = next_rip;
+        }
         // S7-04: exact `48 8D 34 01` computes the qword sum RCX+RAX into RSI.
         // LEA only calculates the effective address; it performs no memory
         // access or canonicality check.

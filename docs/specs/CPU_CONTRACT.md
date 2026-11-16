@@ -27793,3 +27793,7 @@ Four focused profile tests cover result and logical flag values, AF definedness,
 ### Stage 7 paged-profile JA rel32 +0x152
 
 `PagedCpl0ProbeV1` admits exact no-prefix bytes `0F 87 52 01 00 00`. JA is taken iff `CF=0 && ZF=0`; the signed rel32 is added to next RIP. Flags/definedness are unchanged, and target canonicality is checked only when taken. Other branch conditions, displacements, prefixes and profiles remain unsupported.
+
+### Stage 7 paged-profile LEA R10,[RCX+RAX]
+
+`PagedCpl0ProbeV1` admits exact bytes `4C 8D 14 01`. REX.R selects qword R10; the SIB adds qword RCX and RAX with scale 1 and zero displacement. The effective offset wraps at 64 bits. Only R10 and RIP change; flags/definedness are preserved. LEA does not access memory or check canonicality. Other register, SIB, displacement, prefix and profile forms remain unsupported.
