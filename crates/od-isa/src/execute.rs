@@ -21044,6 +21044,51 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: the Rust helper shifts RDI left by five with exact
+        // `48 C1 E7 05`; use shared qword shift flags and count semantics.
+        Operation::Shift {
+            kind: ShiftKind::Shl,
+            dst: Operand::Register(destination),
+            source: None,
+            count: Operand::Immediate(5),
+            raw_modrm,
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xc1
+            && instruction.length == 4
+            && raw_modrm == 0xe7
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x48),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rdi, OperandSize::Qword) =>
+        {
+            let kind = ShiftKind::Shl;
+            let raw_count = 5;
+            let count = shift_count(kind, instruction.operand_size, raw_count);
+            let lhs = state.read(destination);
+            let (result, flags) = shift_result(
+                instruction.operand_size,
+                kind,
+                lhs,
+                0,
+                count,
+                raw_count & 0x3f,
+                state.rflags,
+            );
+            state.write(destination, result);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction
+                    .flag_effects_for_count(raw_count)
+                    .apply(initial_rflags_defined),
+            };
+        }
         // S7-04: the helper shifts R12D by 8 with only
         // `41 C1 EC 08`; preserve the existing count/flag rules.
         Operation::Shift {
@@ -21051,6 +21096,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             dst: Operand::Register(destination),
             source: None,
             count: Operand::Immediate(8),
+            ..
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0xc1
@@ -21094,6 +21140,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             dst: Operand::Register(destination),
             source: None,
             count: Operand::Immediate(8),
+            ..
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0xc1
@@ -54889,6 +54936,7 @@ fn step_configured(
             dst,
             source,
             count,
+            ..
         } => {
             let shift = (|| {
                 let raw_count = read_operand(state, memory, context, next_rip, count)? as u8;

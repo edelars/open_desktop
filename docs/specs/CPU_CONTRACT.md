@@ -27100,3 +27100,10 @@ Five focused tests cover taken/not-taken paths with CF defined and undefined, fu
 Base `PagedCpl0ProbeV1` admits only exact bytes `4C 89 F7`. Opcode `89` uses Intel operand order (r/m destination, reg source); REX.W enables qword width and REX.R extends ModRM.reg from R6 to R14. The operation copies all 64 bits from R14 to RDI, advances RIP, and preserves other GPRs, RFLAGS and `rflags_defined`. Neighboring registers, directions, widths, prefixes, CPL3 and other profiles remain unsupported.
 
 Four focused tests cover representative 64-bit values, full-state and flags retention, final-ModRM fetch-fault atomicity, neighboring encodings and profile/CPL isolation. Firmware now advances to ISSUE-206: `48 C1 E7 05` (`SHL RDI,5`) at RIP `0x200eec`.
+
+
+### S7-04: exact Rust-helper `SHL RDI,5` (ISSUE-206)
+
+Base `PagedCpl0ProbeV1` admits only exact bytes `48 C1 E7 05`: qword opcode `C1 /4`, exact raw ModRM `E7` (so the `/6` SAL alias is excluded), register destination RDI, imm8 `05`. The shared qword shift-count mask is `0x3f`, so effective count is five. Shared SHL semantics update CF and SZP, mark AF undefined, and mark OF undefined for count>1 while retaining its deterministic concrete value. Among GPRs only RDI changes; RIP advances and flags follow the stated semantics. Other counts, kinds, registers, widths, implicit/CL counts, prefixes, CPL3 and other profiles remain unsupported.
+
+Four focused tests cover full qword result and state, CF/SZP values, AF/OF definedness, final-immediate fetch-fault atomicity, neighboring forms including `/6` SAL, and profile/CPL isolation. All 495 `paged_probe_profile` tests and all `od-isa` package test suites passed. Scoped check, rustfmt and diff-check passed. Full `od-machine` suite: 1,195 passed, 2 failed, 6 ignored; both failures are the unrelated known ISSUE-201 stale CLD expectations (expected unsupported opcode 252, actual opcode 250). Firmware now advances to ISSUE-207: `4C 01 FF` (`ADD RDI,R15`) at RIP `0x200ef0`.

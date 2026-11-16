@@ -938,10 +938,19 @@
 ### ISSUE-206 — S7-04: Rust helper `SHL RDI,5` (`48 C1 E7 05`) remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `MOV RDI,R14`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200eec`.
+- **Статус:** решена узко для exact `48 C1 E7 05` в base `PagedCpl0ProbeV1`; независимое review одобрило, ожидает коммита. Other shift kinds, registers, counts, widths, prefixes and profiles remain unsupported.
+- **Суть и результат:** exact qword `/4` SHL shifts RDI by immediate 5 after the architectural 6-bit count mask (effective count 5). Shared shift semantics update CF/SF/ZF/PF, leave AF undefined, and leave OF's concrete value unchanged but undefined for count>1. Among GPRs only RDI changes; RIP advances and flags follow those semantics. The exact ModRM byte E7 excludes the `/6` SAL alias.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue206.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xeec` are `48 C1 E7 05`; runner budget 10000.
+- **Проверка:** четыре focused tests cover representative qword results, CF/SZP values, AF/OF definedness, full-state retention, final-imm8 fetch-fault atomicity, neighbors, CPL3 and other-profile isolation. Runner retired 8888 and stopped at `4C 01 FF` (`ADD RDI,R15`, ISSUE-207), RIP `0x200ef0`, `Unsupported { opcode: 1 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
+- **Следующий шаг:** independently review this exact SHL admission and continue S7-04 at ISSUE-207.
+
+### ISSUE-207 — S7-04: Rust helper `ADD RDI,R15` (`4C 01 FF`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact `SHL RDI,5`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200ef0`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8887 instructions and stopped at `48 C1 E7 05`, `Unsupported { opcode: 193 }`, `RIP=0x200eec`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue205.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xeec` are `48 C1 E7 05`; runner budget 10000.
-- **Следующий шаг:** inspect exact shift width/count/destination and definedness before considering narrow admission.
+- **Суть и последствия:** runner retired 8888 instructions and stopped at `4C 01 FF`, `Unsupported { opcode: 1 }`, `RIP=0x200ef0`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue206.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xef0` are `4C 01 FF`; runner budget 10000.
+- **Следующий шаг:** inspect exact arithmetic width/source/destination, flags and definedness before considering narrow admission.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.

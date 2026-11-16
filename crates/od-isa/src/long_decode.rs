@@ -2367,6 +2367,8 @@ pub enum Operation {
         /// Present only for SHLD/SHRD; these take a second register source.
         source: Option<Operand>,
         count: Operand,
+        /// Retain the encoding so bounded profiles can distinguish aliases.
+        raw_modrm: u8,
     },
     Branch {
         condition: ConditionCode,
@@ -9514,6 +9516,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     dst,
                     source: None,
                     count,
+                    raw_modrm: modrm,
                 }
             }
             (OpcodeMap::Primary, byte @ (0x84 | 0x85 | 0xa8 | 0xa9)) => {
@@ -10554,6 +10557,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     dst,
                     source: Some(source),
                     count,
+                    raw_modrm: modrm,
                 }
             }
             (OpcodeMap::Escape0f, 0xaf) => {
