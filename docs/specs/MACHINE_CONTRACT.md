@@ -803,6 +803,113 @@ cover CPU execution integration, system acceptance, cross-page accesses,
 additional paging modes, exception delivery or cached A/D behavior. See the
 [S4-09c report](../reports/STAGE_4_S4-09C_2026-11-06.md).
 
+<a id="ad-summary-contract-s4-09d"></a>
+
+#### Сводный контракт A/D страниц (S4-09d, S4-09e)
+
+Это единая таблица effects A/D-битов page-table entries по путям доступа и исходам.
+Она сводит S4-09b/c и последующие срезы (2 MiB, межстраничные доступы, MMIO, LTR,
+доставка `#PF`, кэш выборки) и ничего не меняет в коде; поведение определено кодом и
+перечисленными тестами. Если ячейка не покрыта тестом, это записано явно.
+
+**Решения, зафиксированные таблицей.**
+
+- *A на denied entry.* Проверка прав идёт после обхода всех уровней, а отсутствующий A
+  ставится сразу при прохождении entry (после проверки present/reserved). Поэтому при
+  protection fault A стоит на всех уровнях обхода (четыре для 4 KiB, три для 2 MiB),
+  включая entry, запретившую доступ; D не ставится. Это принятая семантика S4-09c, а не
+  случайность реализации; соответствие конкретному CPU не заявляется. При nonpresent и
+  reserved fault A ставится только у предшественников: сама entry и нижние уровни не
+  меняются, потому что reserved-проверка предшествует записи A.
+- *D только на листе и только для write.* D ставится на листе (PTE, либо PDE 2 MiB) после
+  успешных прав и проверки физической цели, до записи операнда; read и fetch D не ставят.
+  Уже установленный A/D не создаёт ни записи, ни callback.
+- *Одно место коммита D (S4-09e).* D коммитится только helper-ом
+  `commit_leaf_dirty` (`crates/od-machine/src/page_walk.rs`) через seam `table_writer`; им
+  пользуются и tracked access, и транзакция LTR
+  (`commit_paged_ltr_descriptor_with_writer`; до S4-09e LTR писал D прямым
+  `PhysicalMemory::write_u64`). Записи A идут через тот же `table_writer` из
+  `walk_long64_4k_with_writer`; других мест записи A/D в production-коде `od-machine` нет.
+  Оговорка: это утверждение держится на ручном поиске и структурном grep-тесте
+  `leaf_dirty_is_committed_only_by_the_helper`, который не ловит запись D в обход helper
+  через `| 0x40` или новую константу без `AdBit::Dirty`; обход seam в LTR ловят
+  поведенческие тесты (6.1, 6.5).
+- *Отказ записи entry.* Ошибка `table_writer` возвращается как
+  `TrackedAccessError::TableWrite { level, entry_address, bit, source }`; ранее
+  committed A остаются, отказавший бит, операнд и дальнейшие callbacks отсутствуют.
+- *Атомарность A/D не входит в S4-09.* Каждая запись entry — один 8-байтовый
+  неатомарный `write_u64` под эксклюзивным владением RAM; compare-and-replace и повтор
+  обхода при гонке с другим vCPU/DMA/хостом не реализованы. Это работа S6-25 (блокирована
+  до полного S4-09); целевое правило записано в `MEMORY_MODEL.md`, строка «Page walk и
+  A/D bits» (стр. 28). Страницы 1 GiB не заявляются (PDPTE.PS=1 даёт гостевой reserved
+  `#PF`, S4-10c); полноценный 1 GiB остаётся за S4-10.
+- Бит accessed у дескрипторов GDT/IDT/TSS (байт 5 дескриптора) — другой класс side
+  effects и в таблицу не входит (`MEMORY_MODEL.md`, «Дескрипторные side effects»).
+- Поиск по `AdBit::`, маскам `1 << 5`/`1 << 6` и `write_u64` в production-коде крейтов
+  `crates/*/src` не нашёл других мест записи A/D page-table entries, кроме
+  `walk_long64_4k_with_writer` (A), `commit_leaf_dirty` (D) и их writer-а
+  `write_tracked_table_entry`.
+
+**Обозначения.** «A: 4» — A установлен на PML4E, PDPTE, PDE и PTE; «A: 3» — на PML4E,
+PDPTE и PDE 2 MiB; «A: предш.» — только на уровнях выше первой отсутствующей/reserved
+entry. «cb» — callbacks `committed_write` в порядке коммита. Колонка «Тест» называет
+существующий тест (`файл::имя`; без префикса — тест в том же файле, что и предыдущий;
+`page_walk` = `crates/od-machine/src/page_walk.rs`, модуль `tracked_access_tests`).
+Пометка «покрыто чтением» означает: effect следует из кода (ссылка в колонке «Примечание»),
+но отдельного теста на биты таблицы нет. Пометка «частично» — тест проверяет только часть
+ячейки (указано, какую).
+
+| № | Путь | Исход | A по уровням | D листа | Операнд | cb | Тест |
+|---|---|---|---|---|---|---|---|
+| 1.1 | 4 KiB, tracked access | nonpresent | A: предш. | нет | не тронут | A предш. | `page_walk::tracked_nonpresent_matrix_covers_every_level_access_and_cpl`; `nonpresent_reserved_and_protection_faults_keep_prior_accessed_prefix` |
+| 1.2 | 4 KiB | reserved | A: предш. | нет | не тронут | A предш. | `page_walk::tracked_nx_matrix_checks_fetch_faults_reserved_bits_and_data_access` (NXE=0); `nonpresent_reserved_and_protection_faults_keep_prior_accessed_prefix` |
+| 1.3 | 4 KiB | protection (U/S, R/W+WP, NX) | A: 4, включая denied | нет | не тронут | 4 A | `page_walk::tracked_user_supervisor_matrix_accumulates_us_at_every_level`; `tracked_read_write_permissions_cover_every_level_and_wp_cpl_combination`; `tracked_nx_matrix_checks_fetch_faults_reserved_bits_and_data_access` |
+| 1.4 | 4 KiB | success read / fetch | A: 4 | нет | прочитан | 4 A | `page_walk::successful_read_and_fetch_commit_only_accessed_bits` |
+| 1.5 | 4 KiB | success write | A: 4 | да, на PTE, до операнда | записан после D | 4 A, D, операнд | `page_walk::write_commits_accessed_dirty_then_operand_in_order`; `pre_set_accessed_and_dirty_bits_do_not_create_extra_commits`; `preset_accessed_and_dirty_bits_do_not_emit_redundant_table_callbacks` |
+| 1.6 | 4 KiB | отказ записи entry (A либо D) | A-префикс до отказавшего остаётся | при отказе D не ставится | не тронут | только успешные | `page_walk::accessed_write_failures_preserve_committed_prefix_at_each_level`; `fetch_accessed_write_failures_are_tracked_before_physical_fetch`; `dirty_write_failure_preserves_accessed_prefix_without_operand_commit` |
+| 1.7 | 4 KiB | ошибка физической цели (ROM, reserved, дыра) | A: 4 | нет | не тронут | 4 A | `page_walk::writes_to_rom_and_reserved_are_write_errors_after_a_without_dirty_or_operand_commit`; `table_read_and_operand_failures_are_physical_errors_with_committed_prefix` |
+| 2.1 | 2 MiB (`access_long64_2m_ram`) | nonpresent | A: предш. | нет | не тронут | A предш. | частично: `linux_direct::tests::cpl0_set_board_byte_store_to_an_unmapped_page_is_the_exact_page_fault` (таблицы равны состоянию после одной выборки, D нет; A предш. уже стоят от выборки, поэтому их коммит самим тестом не различается); `crates/od-machine/tests/paged_mov_step.rs::two_mib_ram_profile_loads_stores_sets_pde_ad_and_faults_precisely` (nonpresent PDE: точная запись `#PF`, биты не проверяются) |
+| 2.2 | 2 MiB | reserved (в т.ч. PDPTE.PS) | A: предш. | нет | не тронут | A предш. | `page_walk::large_leaf_reserved_bits_fault_keeps_ancestor_accessed_prefix`; `s4_10c_pdpte_ps_is_guest_rsvd_fault_with_a_only_on_pml4e` |
+| 2.3 | 2 MiB | protection | A: 3, включая denied | нет | не тронут | 3 A | `page_walk::large_leaf_aggregates_user_write_and_nx_rights_from_ancestors` (`ad_update_count == 3`) |
+| 2.4 | 2 MiB | success read | A: 3 | нет | прочитан | 3 A | `page_walk::large_leaf_offsets_dirty_and_legacy_admission`; `crates/od-machine/tests/paged_mov_step.rs::two_mib_ram_profile_loads_stores_sets_pde_ad_and_faults_precisely` («load sets A only») |
+| 2.5 | 2 MiB | success write | A: 3 | да, на PDE | записан после D | A, D, операнд | `page_walk::first_write_through_fresh_large_leaf_sets_a_then_d_before_operand`; `large_leaf_offsets_dirty_and_legacy_admission` |
+| 2.6 | 2 MiB | отказ записи PDE (A либо D) | A-префикс остаётся | не ставится | не тронут | A предш. | `page_walk::large_leaf_permissions_and_table_write_failures` |
+| 3.1 | межстраничное чтение/выборка (две страницы, `access_cross_page_read`) | success | A: 4 (или 3) на обеих страницах, walk второй после первой | нет | собран из двух частей | A обеих страниц | `linux_direct::tests::cpl0_set_board_qword_and_dword_reads_across_a_page_boundary_for_every_split`; `paged_mov_step.rs::s4_11c_cross_page_alias_samples_after_both_walks_commit_accessed_bits` |
+| 3.2 | межстраничное чтение | fault/отказ на второй странице | A первой страницы и предш. второй остаются | нет | буфер вызывающего не тронут | A до отказа | `linux_direct::tests::cpl0_set_board_cross_page_read_with_a_missing_second_page_is_a_precise_page_fault`; `paged_mov_step.rs::second_cross_page_walk_failures_preserve_cpu_and_keep_prior_a_updates`; `paged_memory_adapter::tests::failed_second_cross_page_walk_keeps_caller_buffer_unchanged` |
+| 3.3 | межстраничный store (`write_crossing_page`): preflight A без D по обеим страницам, затем побайтные записи с D | success | A: полный обход обеих страниц (preflight) | да, на листе каждой страницы (при одном 2 MiB-листе — один раз на PDE) | записан по частям | A, A, затем D+байт по порядку записей | `linux_direct::tests::cpl0_set_board_qword_store_across_a_page_boundary_writes_both_pages_for_every_split`; `cpl0_set_board_word_and_dword_stores_across_a_page_boundary_on_the_split_tree`; `cpl0_set_board_store_to_a_non_executable_second_page_succeeds`; `cpl0_set_board_word_and_dword_stores_crossing_a_4k_boundary_store_both_pieces` |
+| 3.4 | межстраничный store | fault на второй странице (nonpresent или protection) | A первой страницы; у второй — предш. (nonpresent) либо все уровни (protection) | нет ни на одной странице | ни одного байта | A preflight | `linux_direct::tests::cpl0_set_board_store_with_a_missing_second_page_writes_no_byte_and_faults_precisely`; `cpl0_set_board_store_to_a_read_only_second_page_is_a_present_write_fault_and_no_byte`; `paged_memory_adapter::tests::cross_page_write_preflight_keeps_failed_walk_without_dirty_or_operand_write` |
+| 3.5 | межстраничный store | fault на первой странице | A у предш./по протоколу 1.1-1.3 первой страницы; вторая не обходится | нет | ни одного байта | A первой | частично: `linux_direct::tests::cpl0_set_board_store_with_a_faulting_first_page_reports_the_store_address` (`#PF`, CPU, байты обеих страниц и PTE второй страницы не тронуты; тест не проверяет биты A/D первой страницы) |
+| 3.6 | 4 KiB tracked API (`access_long64_4k_ram`), операнд через границу | `CrossesPage` | не ставится (отказ до обхода) | нет | не тронут | нет | `page_walk::cross_page_rejects_before_any_walk_or_commit_and_probe_stays_pure`; `crossing_read_write_width_matrix_is_an_exact_no_effect_rejection` |
+| 4.1 | RMW (чтение, затем запись того же адреса через `GuestMemory`) | success | A при чтении; запись A повторно не пишет | да, при записи | записан | A, D, операнд | не покрыто тестом (покрыто чтением: `read` и `write` идут теми же tracked-путями 1.4 и 1.5; `linux_direct::tests::cpl0_set_board_dword_read_modify_write_stores_exactly_one_dword` проверяет только ширину записи данных, не биты таблицы) |
+| 4.2 | RMW | fault на чтении или записи | как 1.1-1.3 | нет | не тронут | как 1.1-1.3 | не покрыто тестом (покрыто чтением, пути 1.1-1.3 и 1.5) |
+| 4.3 | `LOCK`-формы (CMPXCHG, XADD, ADD/OR/AND/INC/DEC/BTS/BTR m) | success, в том числе неравное сравнение CMPXCHG (значение пишется обратно) | как 4.1 | как 4.1 | как 4.1 | как 4.1 | не покрыто тестом (покрыто чтением: `lock_*` тесты в `linux_direct` проверяют данные и флаги, не биты таблицы); атомарность `LOCK` относительно других vCPU и DMA не моделируется (S6-31) |
+| 5.1 | MMIO served read | success | A: 4 | нет | чтение у устройства, RAM нет | A, затем dispatch read | `crates/od-machine/tests/paged_mov_step.rs::paged_mov_mmio_read_dispatches_once_and_commits_destination` |
+| 5.2 | MMIO served write | success | A: 4 | да, до dispatch | запись у устройства | A, D, dispatch write | `paged_mov_step.rs::paged_mov_mmio_write_dispatches_once_after_a_and_d_updates`; `linux_direct::tests::an_ecam_store_sets_the_dirty_bit_first_and_commits_one_table_write` |
+| 5.3 | MMIO served write | ошибка backend устройства | A: 4 остаются | остаётся (ставится до dispatch, не откатывается) | устройство отказало, CPU не меняется, retire нет | A, D, затем dispatch | `paged_mov_step.rs::mmio_device_failure_is_backend_error_with_no_retirement_after_dirty_commit` |
+| 5.4 | MMIO unserved (нет dispatch или вне окон набора) | `DeviceUnavailable` (write) / `UnreadableRegion(Mmio)` (read) | A остаётся | нет | устройство не вызывается | только A | `linux_direct::tests::the_set_loop_serves_ecam_and_no_other_mmio`; `a_split_access_never_reaches_the_ecam_device`; `page_walk::mmio_write_is_device_unavailable_without_dispatch_or_operand_notification` |
+| 5.5 | MMIO | protection | A: 4, включая denied (в журнале теста A стоит и на запрещающей PTE) | нет | устройство не вызывается | A | `paged_mov_step.rs::mmio_permission_fault_never_calls_device` |
+| 6.1 | LTR (`commit_paged_ltr_descriptor_with_writer`) | success | A: 4 (walk чтения; walk проверки записи ничего не добавляет) | да, на PTE через `commit_leaf_dirty`, до образа дескриптора | busy-образ дескриптора, 16 байт | A, D, образ | `crates/od-machine/tests/paged_ltr_step.rs::ltr_ax_loads_tr_marks_descriptor_busy_and_dirties_leaf_in_order`; `ltr_ax_with_dirty_leaf_writes_only_the_descriptor`; `page_walk::ltr_table_entry_writes_go_through_the_writer_seam` |
+| 6.2 | LTR | nonpresent страницы GDT | A: предш. | нет | не тронут | A предш. | частично: `paged_ltr_step.rs::ltr_ax_gdt_page_faults_are_precise_and_do_not_load_tr` (точный `#PF`, TR и CPU не меняются; биты A не проверяются) |
+| 6.3 | LTR | protection (GDT read-only при WP=1: walk чтения проходит, walk записи отказывает) | A: 4, включая denied (их ставит walk чтения) | нет | дескриптор не тронут | A walk чтения | частично: `paged_ltr_step.rs::ltr_ax_gdt_page_faults_are_precise_and_do_not_load_tr` (первая половина: код ошибки 3, CR2, дескриптор не тронут; биты A не проверяются) |
+| 6.4 | LTR | дескриптор невалиден (`#GP`/`#NP`) | A: 4 (walk чтения) | нет | дескриптор не тронут | A | частично: `paged_ltr_step.rs::ltr_ax_descriptor_faults_preserve_cpu_and_memory` (семь случаев: D нет, дескриптор и CPU не тронуты; биты A не проверяются) |
+| 6.5 | LTR | отказ записи D (`table_writer` возвращает ошибку) | A: 4 остаются | не ставится (`TableWrite { bit: Dirty }`) | образ не записан, TR не загружен | только A | `page_walk::ltr_dirty_write_failure_commits_no_d_and_no_descriptor_image` |
+| 6.6 | LTR | дескриптор совпал со страницей таблицы (`TableAlias`) | A допускается и может попасть в байты дескриптора | нет | дескриптор не пишется | A | `paged_ltr_step.rs::ltr_ax_rejects_descriptor_aliasing_a_page_table_page`; `ltr_ax_alias_accessed_write_may_change_descriptor_bytes_but_nothing_else` |
+| 7.1 | доставка `#PF`: кадр через `PagedExceptionMemory` (tracked RAM write на каждый слот) | success | A на уровнях страниц кадра, по правилам 1.3-1.5 | да, на PTE каждой страницы кадра, до слота | шесть qword-слотов стека | A, D, слот на каждый слот в порядке push | `tests/system/stage4_exception_delivery.rs::wp_write_fault_delivers_with_if_clear_and_executes_first_handler_mov` (`dirty_updates == [0x5810, 0x5808]` и порядок callbacks) |
+| 7.2 | доставка `#PF` | fault на странице стека/IDT/GDT посреди кадра | уже совершённые A и записи слотов остаются | D у отказавшей страницы нет | предыдущие слоты записаны | до отказа | `tests/system/stage4_exception_delivery.rs::double_fault_stack_page_fault_shuts_down_and_preserves_partial_writes` |
+| 8.1 | peeks и диагностика: `probe_long64_4k`, `translate_long64_2m_ram_read_only*` (no-op writer), `read_virtual_ram_diagnostic`, снимок после IRET | любой | не пишется | нет | только чтение | нет | `page_walk::pure_probe_permission_cases_never_commit_accessed_or_dirty_bits`; `page_walk::tests::page_table_mutation_is_seen_next_call_and_a_d_bits_are_unchanged`; `bus::tests::diagnostic_ram_read_translates_each_virtual_page_fragment`; `paged_memory_adapter::tests::post_iret_snapshot_observes_handler_repaired_missing_leaf_without_a_d_updates` |
+| 9.1 | hit кэша выборки (`FetchTranslationCache`) | success | ничего не пишет сверх того, что закоммитил первый реальный обход (A уже стоит); сброс по записи в таблицу и повторный A/D — как без кэша | нет | байты читаются из кадра | нет новых | `linux_direct::tests::cache_straight_line_code_takes_one_walk_and_changes_nothing`; `cache_a_pte_store_that_clears_accessed_sets_it_again_on_the_next_fetch`; `gate_cleared_accessed_bit_of_a_pde_is_set_again_on_the_next_fetch` (и `..._pdpte_`, `..._pml4e_`); `gate_dirty_commit_on_the_page_of_the_cached_code_matches_the_uncached_run`; `gate_dirty_commit_for_another_page_of_the_same_table_matches_the_uncached_run` |
+| 9.2 | кэш выборки | fault | отказ не кэшируется: полный обход, те же A, что без кэша | нет | не тронут | A предш./4 как 1.1-1.3 | `linux_direct::tests::cache_a_pte_store_that_unmaps_the_page_is_the_same_page_fault` |
+
+**Итог покрытия таблицы.** Всего 38 ячеек (строк): 30 покрыто тестом полностью, 5 покрыто
+частично (2.1, 3.5, 6.2, 6.3, 6.4: тест проверяет исход, но не часть битов A/D), 3 не покрыты
+тестом и покрыты чтением (4.1, 4.2, 4.3: RMW и `LOCK`, нет теста на биты таблицы). Тест не
+придуман ни для одной из них.
+
+**Что таблица не утверждает.** Атомарность и повтор обхода при гонке (S6-25), `LOCK` как
+межпроцессорная операция (S6-31), TLB и инвалидация A/D в кэшах (кэша данных нет; кэш
+выборки сбрасывается по записи в кадр таблицы и по смене CR3), страницы 1 GiB (S4-10),
+и A/D для paging modes кроме Long64 4 KiB / 2 MiB.
+
 ## S4-06b CPU-connected paged MOV
 
 The public `od_machine::step_paged_mov` entry uses its internal

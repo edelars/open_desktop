@@ -336,6 +336,15 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - Это тестовый срез: production walker/API и CPU-поведение не меняются. Нет CPU exception delivery/CR2 update, CPU execution integration, cross-page semantics, иных paging modes или system acceptance.
 - Подробная матрица и результаты проверок: [отчёт S4-09c](../reports/STAGE_4_S4-09C_2026-11-06.md) и [контракт машины](../specs/MACHINE_CONTRACT.md#tracked-permission-level-matrix-s4-09c).
 
+<a id="s4-09de-ad-summary"></a>
+
+#### S4-09d/e. Сводный контракт A/D и одно место коммита D
+
+- Статус: реализовано, ожидает ревью; чекбокс S4-09 не ставится (его ставит ревью после остальных срезов).
+- S4-09e (код, поведение прежнее): D листа коммитится одним helper-ом `commit_leaf_dirty` в `crates/od-machine/src/page_walk.rs` через seam `table_writer`; им пользуются tracked access и транзакция LTR (`commit_paged_ltr_descriptor_with_writer`; раньше LTR писал D прямым `write_u64`). Новые тесты: `ltr_dirty_write_failure_commits_no_d_and_no_descriptor_image`, `ltr_table_entry_writes_go_through_the_writer_seam`, `leaf_dirty_is_committed_only_by_the_helper`.
+- S4-09d (документ): таблица «путь × исход → A по уровням, D, операнд, callbacks» с ссылкой на существующий тест в каждой ячейке (38 ячеек: 30 покрыто полностью, 5 частично, 3 не покрыты тестом) в [контракте машины](../specs/MACHINE_CONTRACT.md#ad-summary-contract-s4-09d); решение «A на denied entry» записано как принятая семантика S4-09c; ссылка добавлена в `CPU_CONTRACT.md`.
+- Не входит: атомарность A/D и повтор обхода (S6-25, `MEMORY_MODEL.md:28`), 1 GiB (S4-10), тесты на биты таблицы для RMW и `LOCK` (ячейки 4.1-4.3 помечены «не покрыто тестом (покрыто чтением)»). Отчёт: раздел «S4-09d/e» в [STAGE_4_REPORT.md](../reports/STAGE_4_REPORT.md).
+
 ### S4-10. Добавить необходимые page sizes и режимы
 
 - [x] Ограниченный S4-10a admission-boundary срез принят после независимого ревью.
