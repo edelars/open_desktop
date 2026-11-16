@@ -21581,7 +21581,8 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         }
         // S7-04: the Rust helper reads exact handoff fields with MOVZX Word at
         // +8/+0xA, `8B 4E 0C`/`8B 4E 10` (MOV ECX,dword ptr [RSI+0xC/+0x10]),
-        // and `8B 7E 14` (MOV EDI,dword ptr [RSI+0x14]). Reuse the tracked
+        // `8B 7E 14` (MOV EDI,dword ptr [RSI+0x14]) and exact
+        // `44 8B 76 34` (MOV R14D,dword ptr [RSI+0x34]). Reuse the tracked
         // faulting read and 32-bit write; other load forms remain unsupported.
         Operation::Extend {
             dst: destination,
@@ -21707,13 +21708,21 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x8b
-            && instruction.length == 3
             && instruction.operand_size == OperandSize::Dword
-            && instruction.prefixes == Prefixes::default()
-            && ((destination == RegisterView::low(Register::Rcx, OperandSize::Dword)
-                && matches!(source.displacement, 0x0c | 0x10))
-                || (destination == RegisterView::low(Register::Rdi, OperandSize::Dword)
-                    && source.displacement == 0x14))
+            && ((instruction.prefixes == Prefixes::default()
+                && instruction.length == 3
+                && ((destination == RegisterView::low(Register::Rcx, OperandSize::Dword)
+                    && matches!(source.displacement, 0x0c | 0x10))
+                    || (destination == RegisterView::low(Register::Rdi, OperandSize::Dword)
+                        && source.displacement == 0x14)))
+                || (instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x44),
+                        ..Prefixes::default()
+                    })
+                    && destination == RegisterView::low(Register::R14, OperandSize::Dword)
+                    && source.displacement == 0x34
+                    && instruction.length == 4))
             && source.base == AddressBase::Register(Register::Rsi)
             && source.index.is_none()
             && source.scale == 1

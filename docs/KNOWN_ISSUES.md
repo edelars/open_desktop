@@ -807,10 +807,21 @@
 ### ISSUE-192 — S7-04: Rust helper `MOV R14D,dword ptr [RSI+0x34]` (`44 8B 76 34`) remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `JNZ +0x4A`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e5a`.
-- **Статус:** открыта.
-- **Суть и последствия:** after 8874 retire runner stopped on `44 8B 76 34` (`MOV R14D,dword ptr [RSI+0x34]`), `Unsupported { opcode: 139 }`, `RIP=0x200e5a`; COM1 remains empty.
+- **Статус:** решена узко для exact `44 8B 76 34` в base `PagedCpl0ProbeV1`; implementation awaits review/commit. Full handoff validation remains incomplete.
+- **Суть и результат:** exact REX `44`, opcode `8B`, ModRM `76`, disp8 `0x34`, dword destination R14D and qword RSI-based address reuse the tracked dword `read_operand` path. A successful dword write zero-extends R14; memory faults occur before CPU-state commit. Other destinations, displacements, widths, addressing forms and profiles remain outside the allowlist.
+- **Проверка:** six focused `rust_helper_mov_r14d_dword_handoff_field_*` tests, other-profile isolation and `paged_probe_mov_r14d_dword_rsi_disp8_uses_tracked_four_level_walk` passed. The integration test verifies Accessed bits through both leaf PTEs and no data write; no cross-page behavior is claimed. All 446 `paged_probe_profile` tests, 36 `paged_probe_quantum` tests, `cargo check --offline -p od-isa -p od-machine --all-targets`, scoped rustfmt and `git diff --check` passed. Firmware image `/private/tmp/od-fw-s7-04-issue192.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner retired 8875 instructions and stopped at ISSUE-193 (`RIP=0x200e5e`), COM1 remains empty.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue191.bin`; bytes at offset `0xe5a` begin `44 8b 76 34`; runner budget 10000.
-- **Следующий шаг:** inspect exact REX.R/ModRM/dword read routing and existing tracked memory-read contract before considering narrow admission.
+- **Следующий шаг:** inspect the exact `41 8D 7E FF` LEA encoding and existing effective-address semantics before considering narrow admission.
+- **Ссылка:** [S7-04 exact MOV R14D memory-load slice](reports/STAGE_7_REPORT.md#s7-04-exact-mov-r14d-dword-rsi-plus-0x34).
+
+<a id="issue-193-s7-04-rust-helper-lea-edi-r14-minus-one-unsupported"></a>
+### ISSUE-193 — S7-04: Rust helper `LEA EDI,[R14-1]` (`41 8D 7E FF`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `MOV R14D,dword ptr [RSI+0x34]`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e5e`.
+- **Статус:** открыта.
+- **Суть и последствия:** after 8875 retire runner stopped on `41 8D 7E FF` (`LEA EDI,[R14-1]`), `Unsupported { opcode: 141 }`, `RIP=0x200e5e`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue192.bin`; bytes at offset `0xe5e` begin `41 8d 7e ff`; runner budget 10000.
+- **Следующий шаг:** inspect exact REX.B / ModRM / disp8 decoded LEA shape and existing address-size semantics before considering narrow admission.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
