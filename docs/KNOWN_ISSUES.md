@@ -4097,8 +4097,18 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-281 — S7-04: exact helper `MOV R10,[RAX+RCX+8]` (`4C 8B 54 08 08`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-280.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20162D`.
-- **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact qword SIB load into R10; subsequent firmware execution is blocked.
+- **Статус:** реализована в S7-04; независимое ревью одобрило изменение без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact `4C 8B 54 08 08`; REX.W/R select qword R10, and the SIB reads RAX + RCX + disp8 8 through tracked memory. Destination and RIP commit only after a successful qword read.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x162d` are `4C 8B 54 08 08`; runner budget 10000.
-- **Проверки исполнения:** after ISSUE-280, firmware retires 8,977 instructions and stops with `Unsupported { opcode: 139 }`; COM1 remains empty.
-- **Следующий шаг:** admit only this exact qword load and verify its tracked read, destination, and fault atomicity.
+- **Проверки исполнения:** six focused tests cover the effective address/value, tracked read, read/noncanonical/fetch faults, neighboring forms and CPL3; the other-paged-profile matrix keeps the form unsupported. Two machine tests verify the four-level accessed/no-dirty read path and precise unmapped-data page-fault atomicity. Firmware retires 8,978 instructions and advances to `44 89 F5` (`MOV EBP,R14D`, ISSUE-282) at RIP `0x201632`; COM1 remains empty. Independent review approved with no findings.
+- **Следующий шаг:** handle exact `MOV EBP,R14D` as ISSUE-282.
+
+
+### ISSUE-282 — S7-04: exact helper `MOV EBP,R14D` (`44 89 F5`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-281.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201632`.
+- **Статус:** открыта.
+- **Суть и последствия:** the base profile does not yet admit this exact dword register move; subsequent firmware execution is blocked.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1632` are `44 89 F5`; runner budget 10000.
+- **Проверки исполнения:** after ISSUE-281, firmware retires 8,978 instructions and stops with `Unsupported { opcode: 137 }`; COM1 remains empty.
+- **Следующий шаг:** admit only the exact R14D-to-EBP copy and validate dword zero-extension and state preservation.

@@ -553,3 +553,10 @@ Four focused profile tests cover qword values, full state preservation, AF defin
 Base `PagedCpl0ProbeV1` admits only exact no-prefix `74 33`. ZF selects the taken branch; signed rel8 is added to next RIP, and the not-taken path falls through. RFLAGS and definedness are preserved. Canonicality is checked only for a taken target; displacement-fetch faults are atomic. Neighboring conditions/displacements/prefixes, CPL3 and other paged profiles remain unsupported.
 
 Five focused tests cover ZF outcomes and definedness, both RIP outcomes, taken-only canonicality, fetch-fault atomicity, neighbors and CPL3/profile isolation. Firmware advances after 8,977 retired instructions to `4C 8B 54 08 08` (`MOV R10,[RAX+RCX+8]`, ISSUE-281) at RIP `0x20162D`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `MOV R10,[RAX+RCX+8]` (ISSUE-281)
+
+Base `PagedCpl0ProbeV1` admits only exact `4C 8B 54 08 08`. REX.W/R select qword R10 and the SIB effective address is RAX + RCX + disp8 8 in 64-bit address size. The tracked read changes only R10/RIP and preserves flags; failed reads and noncanonical addresses do not commit state. Neighboring SIB/register/displacement/width/prefix forms, CPL3 and other paged profiles remain unsupported.
+
+Six profile tests cover qword load/address, fault atomicity, neighbors and profile/CPL isolation. Four-level machine tests confirm page-table accessed bits without dirty bits and a precise unmapped-data #PF without destination commit. Firmware advances after 8,978 retired instructions to `44 89 F5` (`MOV EBP,R14D`, ISSUE-282) at RIP `0x201632`; COM1 remains empty. Independent review approved with no findings.
