@@ -957,6 +957,23 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   `patch_alias_byte`, обёртка «JIT или интерпретатор» для `PagedCodeSession` не
   сделаны. См. раздел S4-16g в [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
 
+#### S4-16h. Покрытие записывающих путей (writers)
+
+- Реализовано (ревью ещё не проводилось; чекбокс S4-16 не ставится). Классы writers,
+  которые не уведомляют `PagedCodeSession` (NVMe DMA `BusDma`, Linux loader,
+  host display, стек/IDT при доставке прерывания `deliver_paged_external_interrupt`,
+  JIT store `PagedFetchedLoadSession::execute_with_store`), покрыты тестами
+  `tests::s4_16h_*` (10): при молчаливой записи в зависимую code page (первую,
+  вторую или обе) следующий вход через оба alias исполняет новые байты и совпадает
+  с oracle на свежей шине, при пересылке диапазонов в `reconcile_code_writes`
+  блок освобождается сразу. Корректность держится на повторном snapshot и ключе
+  (байты + generation), а не на уведомлении. P1 не найдено; код продукта не менялся.
+  `PagedFetchedLoadSession` и `PagedCodeSession` не могут держать блоки одновременно
+  (единственный MAP_JIT-регион).
+- **Граница:** активный блок (S4-16i), реальная проводка callback в NVMe/loader/доставку
+  и исчерпывающий обход всех писателей не сделаны. См. раздел S4-16h в
+  [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
+
 ### S4-17. Собрать локальный memory/fault differential набор
 
 - [ ] Принято после ревью.
