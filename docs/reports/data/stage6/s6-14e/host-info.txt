@@ -1,0 +1,16 @@
+S6-14e KVM real-mode oracle evidence
+Date: 2026-11-16
+Host: mini (senya@192.168.1.39), Linux mini 7.0.0-42-generic #42-Ubuntu SMP PREEMPT_DYNAMIC Thu Oct 15 08:06:44 UTC 2026 x86_64 GNU/Linux
+model name	: Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz
+gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+Host work dir: /tmp/od-s6-14e (kvm_runner rebuilt there, not reused from s6-14d)
+Build: gcc -O2 -Wall -Wextra -Werror -std=c11 kvm_runner.c -o kvm_runner
+Run: see run-oracle.sh (from the repo root); each run adds --result-block GPA:4 for the lock/data word
+SHA-256 (host, /tmp/od-s6-14e):
+969ce3a20af037bb8849d05482b31f881320e9420ee9630701728fd0da4ce7f0  tools/kvm-runner/kvm_runner.c
+5f6a2aac6f4a49fc92c1ab611daeecc0e7474fe1ae6c2551647464ea10bf11b7  kvm_runner
+8c4709b7d26b63f5097578301966da9179498f43c5edeaefd7e60436cd7c694e  a-linked-0000-1000.bin
+05d1cb49cd0eb6ffa1cc4d6152d870d4bf3efa94169d553a33150ab501095eea  b-reloc-9f00-1000.bin
+998c7d5771c424c0f5c99c299df23e5cc7a1041e095fedf3eb63baa514402540  c-bts-twice-0000-1000.bin
+b031ed98a01dc061747809a4bbc3ba5c814dce304cdbfcf69d93b11b040850c3  d-bts-bit31-0000-1000.bin
+SHA-256 of kvm_runner.c in the repo (local): 969ce3a20af037bb8849d05482b31f881320e9420ee9630701728fd0da4ce7f0
