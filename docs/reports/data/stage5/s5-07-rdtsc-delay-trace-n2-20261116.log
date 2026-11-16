@@ -1,0 +1,60 @@
+# S5-07 selected delay_tsc RDTSC prefix trace N=2 (2026-11-16)
+
+## Purpose and scope
+
+The preceding `norandmaps`/`randomize_kstack_offset=off` pair localized most CPL0 RDTSC count variation to `delay_tsc+0x4d` but did not capture elapsed cycles. This diagnostic sampled the first 16,384 executions of that RDTSC site in each automatic unique-nonce run. It does not change the comparator, guest inputs, or acceptance rules.
+
+The pinned Linux 7.0.0-38 debug ELF resolves `0xffffffff8271b34d` to `delay_tsc+0x4d`. At this post-RDTSC boundary, the loop's requested threshold is in R8, its start timestamp is in RDI, and the returned current timestamp is EDX:EAX. The following kernel instructions compare `current - start` with the threshold in R8.
+
+## Command
+
+```sh
+target/release/od-runner linux-direct \
+  --test-runs 2 \
+  --series-id stage5-s5-07-rdtsc-delay-trace-n2-20261116-a \
+  --scenario-id stage4-init-nonce \
+  --expected-stop-kind budget_exhausted \
+  --out work/stage5/stage5-s5-07-rdtsc-delay-trace-n2-20261116-a/series.json \
+  --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --run --budget 3000000000 --set-cpl0 \
+  --cpuid-profile stage4a --user-mode --linux-norandmaps \
+  --linux-no-randomize-kstack-offset --execution-observations \
+  --execution-observations-rdtsc-rip 0xffffffff8271b34d
+```
+
+The release runner was built from `bf481ec`. Kernel SHA-256 is `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`; initramfs SHA-256 is `65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7`; ACPI blob SHA-256 is `6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d`; ACPI manifest hash is `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`.
+
+## Results
+
+Both unique-nonce runs passed exact marker validation and stopped at `budget_exhausted` with 2,999,999,998 retired instructions. The series outcome was `passed` with `run_profile=smoke_not_acceptance`; the strict comparator returned `matches=false` with unexplained differences in `machine_observations` and `ordered_uart_bytes` after nonce normalization.
+
+| Run | `delay_tsc+0x4d` reads | Total CPL0 RDTSC | Delivered #PF | Virtual ns | Quanta |
+|---|---:|---:|---:|---:|---:|
+| 0001 | 33,992,162 | 34,383,853 | 33 | 37,402,390,827 | 34,509,507 |
+| 0002 | 34,004,376 | 34,396,115 | 33 | 37,414,139,565 | 34,521,779 |
+
+The selected-site count differs by 12,214 reads. Each sidecar retained the first 16,384 samples and reported the remaining 33,975,778 / 33,987,992 selected-site reads as omitted. Across this captured prefix, the requested-cycle sequence was identical. Grouping samples through the first `elapsed_cycles >= requested_cycles` boundary produced 173 complete poll loops per run; all 173 had identical requested-cycle values and iteration counts, followed by 36 prefix-truncated samples in each run.
+
+The first poll used a request of `0x7d0` cycles in both runs. Its measured elapsed value was `0x669e` in run 0001 and `0x4f58` in run 0002; both exceeded the threshold on that first poll. Thus the elapsed-cycle reading already varies at the first captured event, while its loop-exit decision remains the same. The bounded prefix does not cover the later 99.95% of selected-site reads and does not explain the full 12,214-read difference.
+
+No machine or UART difference is classified as benign, and no comparator normalization changed. S5-07 remains blocked/unaccepted. Next diagnostic step: capture a bounded, distributed or later-window trace of this RDTSC site to locate the first differing threshold decision over the full run.
+
+## Artifact hashes
+
+| Artifact | SHA-256 |
+|---|---|
+| `series.json` | `06cc6ed458fc2825e02b1a2a863c7300e66492328d525d7ed9f85abd6c5bad0e` |
+| `comparison.json` | `989064d1f1ec9b4732e55fb44c4f28eb73dd41a9422163b0b14af4c5d558654e` |
+| run 0001 manifest | `e16af880266f0c1e9c2d9c3bd266af3222e96929d507230cd36bedb61d2cfd48` |
+| run 0001 runner JSON | `32e27d8ec7c88c5e62bf913333d2816aa2f353f11a7c58785deeea4919aed3ff` |
+| run 0001 UART | `4413178e751dfbc82faf75069c1211972395b8295461c77ccea7735f0955f2ff` |
+| run 0001 observations | `1be53b1fe518efa2212208f312148195d62667a75bb7ca9e1f87aec60d125cca` |
+| run 0002 manifest | `1348c5d6bbe54a4361e6e813e8c629d7355ed44716a511ea6607f2042aaef20b` |
+| run 0002 runner JSON | `47750d8dd2c27fb40f42a27a4c3044a9f6ead3017821736fc59485e495c19691` |
+| run 0002 UART | `c8140396bbb8c28e2dfa16bf623ef28f12a88bebb891f080deef1b4e319f14ad` |
+| run 0002 observations | `0e4d845ce0e2759ffbc73d36998e0464eb2e82892ad2cf81d74f0dd7fd3f1a79` |
