@@ -4117,8 +4117,18 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-283 — S7-04: exact helper `OR EBP,R10D` (`44 09 D5`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-282.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201635`.
-- **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact dword logical OR register form; subsequent firmware execution is blocked.
+- **Статус:** реализована в S7-04; независимое ревью одобрило без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact `44 09 D5`, ORing dword R10D into EBP. The result writes EBP and zero-extends RBP; logical flags update through shared semantics, including undefined AF.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1635` are `44 09 D5`; runner budget 10000.
-- **Проверки исполнения:** after ISSUE-282, firmware retires 8,979 instructions and stops with `Unsupported { opcode: 9 }`; COM1 remains empty.
-- **Следующий шаг:** admit only this exact OR form and validate dword result, flags/definedness and EBP zero-extension.
+- **Проверки исполнения:** four focused tests cover dword operand routing/result, zero-extension, flags/AF definedness, final-byte fetch-fault atomicity, neighbors and CPL3; other paged profiles keep the instruction unsupported. Full od-isa suites (2,322 library, 1,591 profile-set, 126 execution, 29 boundary, 6 flags, 817 paged-profile, 7 profile-isolation, 15 descriptor) and all 61 `paged_probe_quantum` tests pass. Scoped cargo check, formatting and diff-check pass; only the existing unused page-walk helper warning remains. Firmware retires 8,980 instructions and advances to `81 E5 FF 0F 00 00` (`AND EBP,0xfff`, ISSUE-284) at RIP `0x201638`; COM1 remains empty. Independent review approved with no findings.
+- **Следующий шаг:** handle exact `AND EBP,0xfff` as ISSUE-284.
+
+
+### ISSUE-284 — S7-04: exact helper `AND EBP,0xfff` (`81 E5 FF 0F 00 00`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-283.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201638`.
+- **Статус:** открыта.
+- **Суть и последствия:** the base profile does not yet admit this exact dword immediate AND; subsequent firmware execution is blocked.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1638` are `81 E5 FF 0F 00 00`; runner budget 10000.
+- **Проверки исполнения:** after ISSUE-283, firmware retires 8,980 instructions and stops with `Unsupported { opcode: 129 }`; COM1 remains empty.
+- **Следующий шаг:** admit only this exact dword AND immediate form and verify result, flags/definedness, zero-extension and immediate-fetch atomicity.

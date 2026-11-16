@@ -567,3 +567,10 @@ Six profile tests cover qword load/address, fault atomicity, neighbors and profi
 Base `PagedCpl0ProbeV1` admits only exact `44 89 F5`. REX.R selects R14D as the source; the dword write to EBP zero-extends RBP. Flags/definedness and other GPRs are unchanged. A final ModRM-byte fetch fault is atomic. Neighboring source/destination, opcode, width and prefix forms, CPL3 and other paged profiles remain unsupported.
 
 Four focused tests cover dword source routing/zero-extension, state and flags, fetch faults, neighbors and CPL3/profile isolation. Firmware advances after 8,979 retired instructions to `44 09 D5` (`OR EBP,R10D`, ISSUE-283) at RIP `0x201635`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `OR EBP,R10D` (ISSUE-283)
+
+Base `PagedCpl0ProbeV1` admits only exact `44 09 D5`. REX.R selects the R10D source and EBP is the dword destination; its write zero-extends RBP. OR clears CF/OF, computes SF/ZF/PF and leaves AF undefined; other flags and registers are preserved. A final ModRM-byte fetch fault is atomic. Neighboring routes, widths, operations and prefixes, CPL3 and other paged profiles remain unsupported.
+
+Four focused tests cover source/destination routing, dword result/zero-extension, flags/definedness, fetch faults, neighbors and CPL3/profile isolation. Firmware advances after 8,980 retired instructions to `81 E5 FF 0F 00 00` (`AND EBP,0xfff`, ISSUE-284) at RIP `0x201638`; COM1 remains empty. Independent review approved with no findings.

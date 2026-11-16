@@ -20638,6 +20638,40 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     | (crate::ARITHMETIC_FLAGS & !crate::AF),
             };
         }
+        // S7-04: the helper performs an exact dword `OR EBP,R10D` with
+        // `44 09 D5`. REX.R extends the ModRM reg source; writing EBP
+        // zero-extends RBP. Shared OR semantics leave AF undefined.
+        Operation::Logic {
+            kind: LogicKind::Or,
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x09
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x44),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rbp, OperandSize::Dword)
+            && source == RegisterView::low(Register::R10, OperandSize::Dword) =>
+        {
+            let lhs = state.read(destination);
+            let rhs = state.read(source);
+            let (value, flags) =
+                logic_result(OperandSize::Dword, LogicKind::Or, lhs, rhs, state.rflags);
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: (initial_rflags_defined & !crate::AF)
+                    | (crate::ARITHMETIC_FLAGS & !crate::AF),
+            };
+        }
         // S7-04: the helper combines condition bytes with exact
         // `41 20 F8` (AND R8B,DIL); reuse byte AND semantics and AF undefinedness.
         Operation::Logic {

@@ -27629,3 +27629,10 @@ Six focused profile tests cover effective address/value, full state, read/noncan
 Base `PagedCpl0ProbeV1` admits only exact `44 89 F5`. REX.R extends the ModRM reg source to R14D; ModRM r/m selects EBP. The dword write zero-extends RBP. Only RBP/RIP change, with flags/definedness and other GPRs preserved. Final ModRM-byte fetch faults are atomic. Other register routes, directions, widths and prefixes, CPL3 and other paged profiles remain unsupported.
 
 Four focused tests cover R14D source selection and high dword values, EBP zero-extension, full state/flag preservation, final-byte fetch-fault atomicity, neighboring encodings and CPL3/profile isolation. Firmware advances after 8,979 retired instructions to `44 09 D5` (`OR EBP,R10D`, ISSUE-283) at RIP `0x201635`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `OR EBP,R10D` (ISSUE-283)
+
+Base `PagedCpl0ProbeV1` admits only exact `44 09 D5`. REX.R selects R10D as the opcode 09 reg source; EBP is the r/m destination. The dword OR writes the result and zero-extends RBP. Shared logical semantics clear CF/OF, derive SF/ZF/PF from the result, and mark AF undefined while preserving unrelated flag values. Final ModRM-byte fetch faults are atomic. Other register pairs/directions/widths/opcodes/prefixes, CPL3 and other paged profiles remain unsupported.
+
+Four focused tests cover REX source routing, result and zero-extension, logical flags/AF definedness, full state preservation, final-byte fetch-fault atomicity, neighbors and CPL3/profile isolation. Firmware advances after 8,980 retired instructions to `81 E5 FF 0F 00 00` (`AND EBP,0xfff`, ISSUE-284) at RIP `0x201638`; COM1 remains empty. Independent review approved with no findings.
