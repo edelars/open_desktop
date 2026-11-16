@@ -1237,10 +1237,27 @@ impl LoadedFirmwareBoard {
         self.vcpus.get(index)
     }
 
+    /// The state of vCPU `index` for the scheduler of S6-15 (it sets a woken vCPU `Running`),
+    /// `None` when the board has no such vCPU.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn vcpu_mut(&mut self, index: usize) -> Option<&mut Vcpu> {
+        self.vcpus.get_mut(index)
+    }
+
+    /// The single clock owner, once [`Self::enable_clock_owner`] installed it. The scheduler of
+    /// S6-15 moves time through it; the board does not create a second one.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn clock_owner_mut(&mut self) -> Option<&mut ClockOwner> {
+        match &mut self.clock_driver {
+            BoardClock::Owned(owner) => Some(owner),
+            BoardClock::Standalone => None,
+        }
+    }
+
     /// The vCPU `index` applies the INIT and SIPI waiting in its own Local APIC (S6-13), on its
     /// own boundary: the LAPIC hands them over and the vCPU changes its state
-    /// ([`Vcpu::apply_startup`]). Nothing calls it on a schedule yet: the scheduler of S6-15 does,
-    /// before it picks a vCPU; until then tests call it by hand. No such vCPU, or a LAPIC that
+    /// ([`Vcpu::apply_startup`]). The scheduler of S6-15 calls it on the boundary of every vCPU
+    /// before it picks one (`BoardSmpHost::boundary`); the run loop of the board does not. No such vCPU, or a LAPIC that
     /// cannot reset its timer for an INIT, is an error and nothing is applied.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn apply_pending_startup(
@@ -1263,9 +1280,9 @@ impl LoadedFirmwareBoard {
     /// handler executes `IRETQ`, an STI shadow in force (`Some(Blocking)`), or an activity that
     /// takes no NMI: `Shutdown`, `WaitForSipi`); or the frame is on the guest stack and the vCPU
     /// is in the handler (`Delivered`: the latch is taken, `nmi_blocked` is set, a `Halted` vCPU
-    /// is `Running`). Nothing calls it on a schedule yet: the scheduler of S6-15 does, before it
-    /// picks a vCPU, together with [`Self::apply_pending_startup`]; until then tests call it by
-    /// hand. A gate that cannot deliver (not present, IST other than 0, a failed frame store) and
+    /// is `Running`). The scheduler of S6-15 calls it on the boundary of every vCPU, after
+    /// [`Self::apply_pending_startup`] and before it picks one (`BoardSmpHost::boundary`); the run
+    /// loop of the board does not. A gate that cannot deliver (not present, IST other than 0, a failed frame store) and
     /// a state the board cannot deliver through are errors, not holds: a state that is not
     /// modelled (activity or STI shadow `None`), a vCPU with a real-mode state (`real_mode` is
     /// `Some`: NMI in real mode is not modelled, S6-16), paging the walker rejects (the EFER is
@@ -1780,8 +1797,8 @@ impl LoadedFirmwareBoard {
     /// earlier Local APIC timer under the IOAPIC source, `idle_wake_ns`): returns
     /// the nanoseconds skipped. Standalone: the board advances by `wake - now` (0 when the time
     /// has come), exactly as before. Owned (S4-23j): a wake time that is not after `now` skips
-    /// nothing; otherwise the arbiter decides through [`ClockOwner::idle_step`] (the boot CPU
-    /// `Halted` with IF = 1, every other vCPU waiting for a SIPI) and the clock jumps to `wake`;
+    /// nothing; otherwise the arbiter decides through [`ClockOwner::idle_step`] (every vCPU with its own
+    /// [`Vcpu::activity`] and IF; S6-15) and the clock jumps to `wake`;
     /// it ends in `NoProgress` with the skip above 0, because the deadline of the board is then
     /// due and the loop consumes it itself. A Local APIC timer due earlier is dispatched on the
     /// way. A Local APIC vector that would wake the CPU is refused (`Config`), except under the
@@ -1802,15 +1819,17 @@ impl LoadedFirmwareBoard {
                 // Nothing to skip: the wake time has come (first iteration: no jump at all).
                 return Ok(idle);
             }
-            let views = (0..self.vcpus.len())
-                .map(|index| {
+            // S6-15: every vCPU shows its own activity ([`Vcpu::activity`]) and IF; before, the
+            // boot CPU was assumed halted and every other vCPU assumed waiting for SIPI. The
+            // caller halts the boot CPU with IF = 1 before it asks to skip idle time.
+            let views = self
+                .vcpus
+                .iter()
+                .enumerate()
+                .map(|(index, vcpu)| {
                     Ok(WakeView {
-                        activity: if index == BOOT_VCPU_INDEX {
-                            SchedActivity::Halted
-                        } else {
-                            SchedActivity::WaitForSipi
-                        },
-                        if_set: true,
+                        activity: SchedActivity::from(vcpu.activity()),
+                        if_set: vcpu.state.rflags & (1 << 9) != 0,
                         apic: self.lapic.for_cpu(index).ok_or(FirmwareBoardError::Config(
                             "clock owner: a vCPU has no Local APIC",
                         ))?,
@@ -6054,6 +6073,36 @@ mod tests {
             ))
         );
         assert!(!other.clock_owner_enabled());
+    }
+
+    #[test]
+    fn idle_to_shows_every_vcpu_with_its_own_activity() {
+        // S6-15: it used to show every application processor as waiting for SIPI.
+        let config = FirmwareBoardConfig {
+            vcpu_count: 2,
+            ..linux_config()
+        };
+        let mut board = load_firmware_image(&minor2_image(&[0xf4]), &config).unwrap();
+        board.enable_clock_owner().unwrap();
+        // The boot CPU halted with IF = 1, the application processor waits for SIPI: the clock
+        // skips to the wake time.
+        board.vcpus[BOOT_VCPU_INDEX].state.activity = Some(CpuActivity::Halted);
+        board.vcpus[BOOT_VCPU_INDEX].state.rflags |= 1 << 9;
+        assert_eq!(board.idle_to(1000), Ok(1000));
+        assert_eq!(board.clock().now_ns(), 1000);
+        // An application processor that runs is not idle time: nothing may be skipped.
+        board.vcpus[1].state.activity = Some(CpuActivity::Running);
+        assert_eq!(
+            board.idle_to(2000),
+            Err(FirmwareBoardError::Config(
+                "clock owner: the idle step did not reach the wake time"
+            ))
+        );
+        assert_eq!(board.clock().now_ns(), 1000);
+        // The same processor halted with IF = 0 and no timer does not hold the skip back.
+        board.vcpus[1].state.activity = Some(CpuActivity::Halted);
+        assert_eq!(board.idle_to(2000), Ok(1000));
+        assert_eq!(board.clock().now_ns(), 2000);
     }
 
     #[test]
