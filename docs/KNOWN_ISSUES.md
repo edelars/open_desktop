@@ -4451,9 +4451,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-323 — S7-04: exact helper `MOV R10D,dword ptr [R12+RAX-0x1c]` (`45 8B 54 04 E4`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-322.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201745`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** the exact indexed dword load is admitted through the tracked memory-read path. REX.R selects R10D, REX.B selects SIB base R12, SIB index is RAX, and disp8 `0xe4` sign-extends to -0x1c. The dword result zero-extends into R10; flags and definedness remain unchanged.
+- **Проверка:** six focused tests cover the loaded value and read trace, 64-bit address wrap, read-fault atomicity, noncanonical #GP before memory read, final instruction-byte fetch-fault atomicity, exact neighboring rejects, CPL3 rejection, and the cross-profile unsupported matrix. All od-isa suites pass (2,322/1,591/126/29/6/968/7/15; 0 doc tests), all 65 paged machine quantum tests pass, and scoped cargo check/fmt/diff-check pass (cargo check has only the existing page-walk dead-code warning). Runner image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, retires 9,032 instructions and stops at RIP `0x20174e`, bytes `40 0F 92 C6` (`SETB SIL`, ISSUE-324), `Unsupported { opcode: 146 }`; COM1 is empty. Independent review approved with no findings.
+- **Следующий шаг:** implement only ISSUE-324's exact `SETB SIL` form in a separate Stage 7 slice.
+
+### ISSUE-324 — S7-04: exact helper `SETB SIL` (`40 0F 92 C6`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-323.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20174e`.
 - **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact indexed dword load; firmware stops before the following helper instruction.
-- **Основание:** runner image `/private/tmp/od-fw-s7-04-issue256.bin`, budget 10000, retired 9,030 instructions; file offset `0x1745` contains `45 8B 54 04 E4` and reports `Unsupported { opcode: 139 }`; COM1 is empty. REX.R selects R10D, REX.B selects SIB base R12, SIB index is RAX, and disp8 `0xe4` is -0x1c.
-- **Следующий шаг:** analyze and admit only the exact firmware instruction in a separate Stage 7 slice.
+- **Суть и последствия:** the base profile does not yet admit this exact SETcc form; execution stops before the following helper instruction. REX presence selects low byte SIL rather than DH; SETB writes 0 or 1 from CF and preserves the remaining register bits and flags.
+- **Основание:** runner image `/private/tmp/od-fw-s7-04-issue256.bin`, budget 10000, retired 9,032 instructions; file offset `0x174e` contains `40 0F 92 C6` and reports `Unsupported { opcode: 146 }`; COM1 is empty.
+- **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.

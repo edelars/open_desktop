@@ -27847,3 +27847,8 @@ Four focused profile tests cover result and logical flag values, AF definedness,
 ### Stage 7 paged-profile JA rel32 +0x123
 
 `PagedCpl0ProbeV1` admits exact no-prefix bytes `0F 87 23 01 00 00`. JA is taken iff `CF=0 && ZF=0`; signed rel32 `+0x123` is added to next RIP. Flags/definedness remain unchanged, and target canonicality is checked only when taken. Other branch conditions, displacements, prefixes and profiles remain unsupported.
+
+
+### Stage 7 paged-profile MOV R10D,dword ptr [R12+RAX-0x1c]
+
+`PagedCpl0ProbeV1` admits exact bytes `45 8B 54 04 E4`. REX.R selects R10D, REX.B selects SIB base R12, SIB index is RAX with scale 1, and disp8 `0xe4` sign-extends to -0x1c. Effective-address addition wraps at 64 bits and is checked for canonicality before a tracked four-byte read. The dword result zero-extends into R10. Flags and definedness are unchanged; a fetch or data fault retires no instruction and does not partially update R10. Other addressing forms and profiles remain unsupported.

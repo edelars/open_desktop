@@ -785,3 +785,13 @@ With exact `49 83 C2 40` admitted, the Stage 7 firmware runner retires 9,029 ins
 ### Stage 7 runner frontier after ISSUE-322
 
 With exact `0F 87 23 01 00 00` admitted, the Stage 7 firmware runner retires 9,030 instructions and stops at RIP `0x201745`, bytes `45 8B 54 04 E4` (`MOV R10D,dword ptr [R12+RAX-0x1c]`, ISSUE-323), `Unsupported { opcode: 139 }`. COM1 remains empty.
+
+
+### Stage 7 paged-profile MOV R10D,dword ptr [R12+RAX-0x1c]
+
+`PagedCpl0ProbeV1` admits exact bytes `45 8B 54 04 E4`. REX.R/B select R10D/R12, SIB index is RAX with scale 1, and disp8 `0xe4` is -0x1c. The tracked dword load zero-extends into R10 and preserves flags/definedness; address and load faults are atomic.
+
+
+### Stage 7 runner frontier after ISSUE-323
+
+With exact `45 8B 54 04 E4` admitted, the Stage 7 firmware runner retires 9,032 instructions and stops at RIP `0x20174e`, bytes `40 0F 92 C6` (`SETB SIL`, ISSUE-324), `Unsupported { opcode: 146 }`. COM1 remains empty.

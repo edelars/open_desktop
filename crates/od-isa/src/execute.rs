@@ -23337,7 +23337,8 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         // `44 8B 6E 3C` (MOV R13D,dword ptr [RSI+0x3c]), `44 8B 66 40`
         // (MOV R12D,dword ptr [RSI+0x40]), `44 8B 46 44`
         // (MOV R8D,dword ptr [RSI+0x44]), and exact `44 8B 14 08`
-        // (MOV R10D,dword ptr [RAX+RCX]) and exact `8B 6C 08 04`
+        // (MOV R10D,dword ptr [RAX+RCX]), exact `45 8B 54 04 E4`
+        // (MOV R10D,dword ptr [R12+RAX-0x1c]), and exact `8B 6C 08 04`
         // (MOV EBP,dword ptr [RAX+RCX+4]), plus exact `44 8B 6C 08 18`
         // (MOV R13D,dword ptr [RAX+RCX+0x18]). The exact `0F B7 5C 24 40`
         // (MOVZX EBX,word ptr [RSP+0x40]) stack form is admitted here too.
@@ -23506,6 +23507,16 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                             && source.base == AddressBase::Register(Register::Rax)
                             && source.index == Some(Register::Rcx)))
                     && instruction.length == 4)
+                || (instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x45),
+                        ..Prefixes::default()
+                    })
+                    && instruction.length == 5
+                    && destination == RegisterView::low(Register::R10, OperandSize::Dword)
+                    && source.displacement == -0x1c
+                    && source.base == AddressBase::Register(Register::R12)
+                    && source.index == Some(Register::Rax))
                 || (instruction.prefixes == Prefixes::default()
                     && instruction.length == 4
                     && destination == RegisterView::low(Register::Rbp, OperandSize::Dword)
@@ -23515,7 +23526,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             && ((source.base == AddressBase::Register(Register::Rsi)
                 && source.index.is_none())
                 || (source.base == AddressBase::Register(Register::Rax)
-                    && source.index == Some(Register::Rcx)))
+                    && source.index == Some(Register::Rcx))
+                || (source.base == AddressBase::Register(Register::R12)
+                    && source.index == Some(Register::Rax)))
             && source.scale == 1
             && source.address_size == OperandSize::Qword
             && source.size == OperandSize::Dword =>
