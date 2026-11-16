@@ -3962,8 +3962,19 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-268 — S7-04: exact helper `JNZ rel32 +0x227` (`0F 85 27 02 00 00`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-267.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015F2`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware stops on exact near JNZ branch `0F 85 27 02 00 00`, currently outside the profile.
+- **Статус:** реализована в S7-04; независимое ревью одобрило без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact no-prefix `0F 85 27 02 00 00`. JNZ reads ZF, adds signed rel32 `+0x227` to next RIP when taken, preserves flags/definedness, and checks target canonicality only when taken.
+- **Проверка:** five focused tests cover ZF values and definedness, taken/fall-through RIP, taken-only canonicality, final-displacement fetch-fault atomicity, adjacent displacements/conditions/prefixes/short branch, and CPL3 isolation; the other-paged-profile matrix keeps this form unsupported.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15F2` are `0F 85 27 02 00 00`; runner budget 10000.
-- **Проверки исполнения:** firmware retires 8,961 instructions and stops with `Unsupported { opcode: 133 }`; COM1 remains empty.
-- **Следующий шаг:** verify signed rel32 target, ZF-only JNZ predicate, taken-only canonicality and exact profile isolation for ISSUE-268.
+- **Проверки исполнения:** firmware retires 8,962 instructions and advances to exact `8B 6C 08 04` (`MOV EBP,dword ptr [RAX+RCX+4]`) at RIP `0x2015F8`; COM1 remains empty.
+- **Следующий шаг:** verify exact SIB address calculation and tracked dword load behavior for ISSUE-269.
+
+
+### ISSUE-269 — S7-04: exact helper `MOV EBP,dword ptr [RAX+RCX+4]` (`8B 6C 08 04`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-268.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015F8`.
+- **Статус:** открыта.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` does not yet admit the exact dword load using RAX base, RCX scale-1 index and disp8 +4.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15F8` are `8B 6C 08 04`; runner budget 10000.
+- **Проверки исполнения:** firmware retires 8,962 instructions and stops with `Unsupported { opcode: 139 }`; COM1 remains empty.
+- **Следующий шаг:** admit only this exact instruction and verify effective-address, dword zero-extension, tracked read faults, and profile isolation.
