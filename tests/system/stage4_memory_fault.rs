@@ -2714,3 +2714,939 @@ fn s4_15d_store_with_an_untranslatable_operand_is_refused_without_any_data_walk_
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// S4-15e: more operand forms through `execute_forms`. The interpreter's paged
+// allowlist is `48 8B 03` / `48 89 0B` plus the separate dword profile
+// `8B 03`; it has no displacement, RIP-relative or `67` form. The dword load is
+// compared with `step_paged_mov_dword_read` itself. A displacement or
+// RIP-relative load is compared with the interpreter's `48 8B 03` run on
+// identical RAM with RBX set to the effective address the test computes
+// independently from RIP, RBX and the displacement (the oracle's RBX and RIP
+// are normalised afterwards, its code bytes restored before the RAM image is
+// compared), the same equivalence S4-15d uses for the store.
+// ---------------------------------------------------------------------------
+
+const DWORD_CODE: [u8; 2] = [0x8b, 0x03];
+/// Second code page used as readable data for the RIP-relative load: leaf 0x6010
+/// maps linear 0x0040_2000 to `CODE_PHYSICAL_2`.
+const RIP_DATA_LINEAR: u64 = 0x0040_2200;
+const RIP_DATA_PHYSICAL: u64 = CODE_PHYSICAL_2 + 0x200;
+const RIP_VALUE: u64 = 0x1122_3344_5566_7788;
+const RIP_VALUE_AT_SECOND_RIP: u64 = 0x99aa_bbcc_ddee_ff01;
+const RIP_LEAF_ADDRESS: u64 = 0x6010;
+/// `mov rax, [rip + 0x11f9]` at `CODE_RIP`: next RIP 0x40_1007, address 0x40_2200.
+const RIP_REL_CODE: [u8; 7] = [0x48, 0x8b, 0x05, 0xf9, 0x11, 0x00, 0x00];
+const SUPERVISOR_LEAF: u64 = 0x3;
+
+#[derive(Clone, Copy)]
+enum Equivalent {
+    Qword,
+    Dword,
+}
+
+impl Equivalent {
+    fn bytes(self) -> &'static [u8] {
+        match self {
+            Self::Qword => &CODE,
+            Self::Dword => &DWORD_CODE,
+        }
+    }
+}
+
+fn forms_bus(code: &[u8], tweak: &dyn Fn(&mut MachineBus)) -> MachineBus {
+    let mut bus = make_fetch_bus(FetchLayout::CLEAN);
+    bus.patch_physical_ram(GuestPhysicalAddress::new(CODE_PHYSICAL), code)
+        .unwrap();
+    tweak(&mut bus);
+    bus
+}
+
+fn no_tweak(_: &mut MachineBus) {}
+
+fn data_leaf(flags: u64) -> impl Fn(&mut MachineBus) {
+    move |bus| put_qword(bus, DATA_LEAF_ADDRESS, DATA_PHYSICAL | flags)
+}
+
+fn rip_data(leaf_flags: u64) -> impl Fn(&mut MachineBus) {
+    move |bus| {
+        put_qword(bus, RIP_DATA_PHYSICAL, RIP_VALUE);
+        put_qword(bus, RIP_DATA_PHYSICAL + 0x40, RIP_VALUE_AT_SECOND_RIP);
+        put_qword(bus, RIP_LEAF_ADDRESS, CODE_PHYSICAL_2 | leaf_flags);
+    }
+}
+
+/// One `execute_forms` step of `code` against the interpreter's equivalent
+/// instruction on identical RAM: exit, retired count, PageFaultRecord, the
+/// ordered committed writes, the whole RAM image and the full CPU state.
+fn forms_equal_interpreter(
+    label: &str,
+    code: &[u8],
+    equivalent: Equivalent,
+    expected_address: u64,
+    privilege: PrivilegeLevel,
+    tweak: &dyn Fn(&mut MachineBus),
+    prepare: &dyn Fn(&mut LongModeState),
+) -> (od_host::PagedFetchedFormReport, LongModeState, MachineBus) {
+    let mut oracle_bus = forms_bus(equivalent.bytes(), tweak);
+    let mut oracle_state = fetch_state(CODE_RIP);
+    prepare(&mut oracle_state);
+    let original_rbx = oracle_state.gpr[Register::Rbx as usize];
+    oracle_state.gpr[Register::Rbx as usize] = expected_address;
+    let mut oracle_writes = Vec::new();
+    let oracle_report = match equivalent {
+        Equivalent::Qword => od_machine::step_paged_mov(
+            &mut oracle_state,
+            &mut oracle_bus,
+            CR3,
+            EFER,
+            fetch_context(privilege),
+            RFLAGS_DEFINED,
+            |range| oracle_writes.push(range),
+        ),
+        Equivalent::Dword => od_machine::step_paged_mov_dword_read(
+            &mut oracle_state,
+            &mut oracle_bus,
+            CR3,
+            EFER,
+            fetch_context(privilege),
+            RFLAGS_DEFINED,
+            |range| oracle_writes.push(range),
+        ),
+    }
+    .unwrap();
+    oracle_state.gpr[Register::Rbx as usize] = original_rbx;
+    if oracle_report.cpu.instructions_executed == 1 {
+        oracle_state.rip = CODE_RIP + code.len() as u64;
+    }
+    oracle_bus
+        .patch_physical_ram(GuestPhysicalAddress::new(CODE_PHYSICAL), code)
+        .unwrap();
+
+    let mut bus = forms_bus(code, tweak);
+    let mut state = fetch_state(CODE_RIP);
+    prepare(&mut state);
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let report = session
+        .execute_forms(&mut state, &mut bus, CR3, EFER, fetch_context(privilege))
+        .unwrap_or_else(|error| panic!("{label}: refused {error:?}"));
+    assert_eq!(report.fetched_code, code, "{label}");
+    assert_eq!(report.admission, od_host::PagedFetchAdmission::Admitted);
+    assert_eq!(report.store_refusal, None, "{label}");
+    let execution = report.execution.callback_result.as_ref().unwrap();
+    match &execution.exit {
+        MemoryOperationExecutionExitV2::Complete => {
+            assert_eq!(
+                oracle_report.cpu.exit,
+                od_isa::execute::RunExit::StopAddress,
+                "{label}"
+            );
+            assert_eq!(oracle_report.page_fault, None, "{label}");
+        }
+        MemoryOperationExecutionExitV2::GuestFault(fault) => {
+            assert_eq!(
+                oracle_report.cpu.exit,
+                od_isa::execute::RunExit::Fault(fault.clone()),
+                "{label}"
+            );
+            assert_eq!(
+                report.execution.page_fault, oracle_report.page_fault,
+                "{label}"
+            );
+        }
+        other => panic!("{label}: unexpected JIT exit {other:?}"),
+    }
+    assert_eq!(
+        execution.retired_instructions, oracle_report.cpu.instructions_executed,
+        "{label}"
+    );
+    let mut writes = range_pairs(&report.fetch_committed_writes);
+    writes.extend(range_pairs(&report.execution.committed_writes));
+    assert_eq!(writes, range_pairs(&oracle_writes), "{label}: writes");
+    assert_eq!(
+        ram_image(&mut bus),
+        ram_image(&mut oracle_bus),
+        "{label}: RAM image"
+    );
+    assert_eq!(state, oracle_state, "{label}: full LongModeState");
+    (report, state, bus)
+}
+
+fn forms_page_fault(report: &od_host::PagedFetchedFormReport) -> &od_isa::memory::PageFaultRecord {
+    assert!(matches!(
+        report.execution.callback_result.as_ref().unwrap().exit,
+        MemoryOperationExecutionExitV2::GuestFault(_)
+    ));
+    report.execution.page_fault.as_ref().unwrap()
+}
+
+fn forms_state_with_rbx(rbx: u64) -> impl Fn(&mut LongModeState) {
+    move |state| state.gpr[Register::Rbx as usize] = rbx
+}
+
+fn forms_refusal(
+    code: &[u8],
+    rbx: u64,
+    tweak: &dyn Fn(&mut MachineBus),
+) -> (
+    od_host::PagedFetchedLoadError,
+    LongModeState,
+    MachineBus,
+    bool,
+) {
+    let mut bus = forms_bus(code, tweak);
+    let mut state = fetch_state(CODE_RIP);
+    state.gpr[Register::Rbx as usize] = rbx;
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let error = session
+        .execute_forms(
+            &mut state,
+            &mut bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap_err();
+    (error, state, bus, session.has_admitted_block())
+}
+
+#[test]
+fn s4_15e_dword_load_zero_extends_into_rax_and_equals_the_dword_interpreter() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dword = LOADED_VALUE as u32;
+    assert_ne!(INITIAL_RAX >> 32, 0, "the high half must be observable");
+    for (label, tweak, privilege, fault) in [
+        (
+            "CPL0",
+            &no_tweak as &dyn Fn(&mut MachineBus),
+            PrivilegeLevel::Ring0,
+            None,
+        ),
+        ("CPL3", &no_tweak, PrivilegeLevel::Ring3, None),
+        (
+            "not-present data leaf CPL0",
+            &data_leaf(0x6),
+            PrivilegeLevel::Ring0,
+            Some(0x0u32),
+        ),
+        (
+            "supervisor data leaf CPL3",
+            &data_leaf(SUPERVISOR_LEAF),
+            PrivilegeLevel::Ring3,
+            Some(0x5),
+        ),
+    ] {
+        let (report, state, _bus) = forms_equal_interpreter(
+            label,
+            &DWORD_CODE,
+            Equivalent::Dword,
+            DATA_LINEAR,
+            privilege,
+            tweak,
+            &|_| {},
+        );
+        assert_eq!(report.form, od_host::PagedFetchedForm::DwordLoadRbx);
+        match fault {
+            None => {
+                // 32-bit destination write: bits 63:32 of RAX are cleared, and
+                // only four bytes were read (the next dword is not in RAX).
+                assert_eq!(
+                    state.gpr[Register::Rax as usize],
+                    u64::from(dword),
+                    "{label}"
+                );
+                assert_eq!(state.rip, CODE_RIP + 2, "{label}");
+            }
+            Some(pfec) => {
+                let record = forms_page_fault(&report);
+                assert_eq!(record.fault().error_code, Some(pfec), "{label}");
+                assert_eq!(record.cr2_value(), DATA_LINEAR, "{label}");
+                assert_eq!(record.saved_rip(), CODE_RIP, "{label}");
+                assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX, "{label}");
+                assert_eq!(state.rip, CODE_RIP, "{label}");
+            }
+        }
+    }
+}
+
+#[test]
+fn s4_15e_dword_load_may_end_exactly_at_a_page_boundary_but_not_cross_it() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let page = DATA_LINEAR & !0xfff;
+    let put_dword = |bus: &mut MachineBus| {
+        bus.write_physical(
+            GuestPhysicalAddress::new(DATA_PHYSICAL + 0xffc),
+            AccessWidth::Dword,
+            0xdead_beef,
+            |_| {},
+        )
+        .unwrap();
+    };
+    // Offset 0xffc: the last four bytes of the page. A qword here would be
+    // refused (S4-15c); a dword is wholly inside the page.
+    let (report, state, _bus) = forms_equal_interpreter(
+        "dword at 0xffc",
+        &DWORD_CODE,
+        Equivalent::Dword,
+        page + 0xffc,
+        PrivilegeLevel::Ring0,
+        &put_dword,
+        &forms_state_with_rbx(page + 0xffc),
+    );
+    assert_eq!(report.form, od_host::PagedFetchedForm::DwordLoadRbx);
+    assert_eq!(state.gpr[Register::Rax as usize], 0xdead_beef);
+
+    // Offset 0xffd: one byte would be on the next page: refused after the
+    // fetch, before any data walk.
+    let (error, state, mut bus, admitted) = forms_refusal(&DWORD_CODE, page + 0xffd, &put_dword);
+    assert_eq!(
+        error.kind,
+        od_host::PagedFetchedLoadErrorKind::Load(
+            od_host::PagedMemoryLoadV2Error::UnsupportedOperandRange {
+                address: page + 0xffd,
+                length: 4
+            }
+        )
+    );
+    assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX);
+    assert_eq!(state.rip, CODE_RIP);
+    assert!(!admitted);
+    for address in DATA_WALK_ENTRIES {
+        assert_eq!(entry(&mut bus, address) & ACCESSED, 0, "{address:#x}");
+    }
+}
+
+#[test]
+fn s4_15e_dword_load_at_the_end_of_the_code_page_needs_only_its_two_bytes() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // `8B 03` at 0x40_1ffe: a third fetch byte would be on the next page, which
+    // the legacy fetch of three bytes would refuse. The next page is not even
+    // mapped executable here (NX), so reading a third byte would be a fetch #PF.
+    let rip = CODE_RIP + 0xffe;
+    let mut bus = make_fetch_bus(FetchLayout::CLEAN);
+    bus.patch_physical_ram(
+        GuestPhysicalAddress::new(CODE_PHYSICAL + 0xffe),
+        &DWORD_CODE,
+    )
+    .unwrap();
+    put_qword(&mut bus, 0x6010, CODE_PHYSICAL_2 | 0x7 | NX);
+    let mut state = fetch_state(rip);
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let report = session
+        .execute_forms(
+            &mut state,
+            &mut bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap();
+    assert_eq!(report.fetched_code, DWORD_CODE);
+    assert_eq!(
+        state.gpr[Register::Rax as usize],
+        u64::from(LOADED_VALUE as u32)
+    );
+    assert_eq!(state.rip, rip + 2);
+}
+
+#[test]
+fn s4_15e_qword_displacement_loads_use_the_sign_extended_displacement_and_equal_the_interpreter() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // (label, code, RBX such that RBX + displacement = DATA_LINEAR, form)
+    let forms: [(&str, &[u8], u64, od_host::PagedFetchedForm); 4] = [
+        (
+            "disp8 +0x20",
+            &[0x48, 0x8b, 0x43, 0x20],
+            DATA_LINEAR - 0x20,
+            od_host::PagedFetchedForm::QwordLoadRbxDisp8,
+        ),
+        (
+            "disp8 -0x10",
+            &[0x48, 0x8b, 0x43, 0xf0],
+            DATA_LINEAR + 0x10,
+            od_host::PagedFetchedForm::QwordLoadRbxDisp8,
+        ),
+        (
+            "disp32 +0x1234",
+            &[0x48, 0x8b, 0x83, 0x34, 0x12, 0x00, 0x00],
+            DATA_LINEAR - 0x1234,
+            od_host::PagedFetchedForm::QwordLoadRbxDisp32,
+        ),
+        (
+            "disp32 -0x2000",
+            &[0x48, 0x8b, 0x83, 0x00, 0xe0, 0xff, 0xff],
+            DATA_LINEAR + 0x2000,
+            od_host::PagedFetchedForm::QwordLoadRbxDisp32,
+        ),
+    ];
+    for (name, code, rbx, form) in forms {
+        for (case, tweak, privilege, fault) in [
+            (
+                "CPL0",
+                &no_tweak as &dyn Fn(&mut MachineBus),
+                PrivilegeLevel::Ring0,
+                None,
+            ),
+            ("CPL3", &no_tweak, PrivilegeLevel::Ring3, None),
+            (
+                "not-present leaf CPL0",
+                &data_leaf(0x6),
+                PrivilegeLevel::Ring0,
+                Some(0x0u32),
+            ),
+            (
+                "supervisor leaf CPL3",
+                &data_leaf(SUPERVISOR_LEAF),
+                PrivilegeLevel::Ring3,
+                Some(0x5),
+            ),
+        ] {
+            let label = format!("{name} {case}");
+            let (report, state, _bus) = forms_equal_interpreter(
+                &label,
+                code,
+                Equivalent::Qword,
+                DATA_LINEAR,
+                privilege,
+                tweak,
+                &forms_state_with_rbx(rbx),
+            );
+            assert_eq!(report.form, form, "{label}");
+            // RBX is only a base: it is never modified.
+            assert_eq!(state.gpr[Register::Rbx as usize], rbx, "{label}");
+            match fault {
+                None => {
+                    assert_eq!(state.gpr[Register::Rax as usize], LOADED_VALUE, "{label}");
+                    assert_eq!(state.rip, CODE_RIP + code.len() as u64, "{label}");
+                }
+                Some(pfec) => {
+                    let record = forms_page_fault(&report);
+                    assert_eq!(record.fault().error_code, Some(pfec), "{label}");
+                    // CR2 is the effective address, not RBX.
+                    assert_eq!(record.cr2_value(), DATA_LINEAR, "{label}");
+                    assert_eq!(record.saved_rip(), CODE_RIP, "{label}");
+                    assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX, "{label}");
+                    assert_eq!(state.rip, CODE_RIP, "{label}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn s4_15e_rip_relative_load_is_relative_to_the_next_instruction_not_rbx_or_the_start() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(
+        CODE_RIP + RIP_REL_CODE.len() as u64 + 0x11f9,
+        RIP_DATA_LINEAR
+    );
+    for (label, tweak, privilege, fault) in [
+        (
+            "CPL0",
+            &rip_data(0x7) as &dyn Fn(&mut MachineBus),
+            PrivilegeLevel::Ring0,
+            None,
+        ),
+        ("CPL3", &rip_data(0x7), PrivilegeLevel::Ring3, None),
+        (
+            "not-present leaf CPL0",
+            &rip_data(0x6),
+            PrivilegeLevel::Ring0,
+            Some(0x0u32),
+        ),
+        (
+            "supervisor leaf CPL3",
+            &rip_data(SUPERVISOR_LEAF),
+            PrivilegeLevel::Ring3,
+            Some(0x5),
+        ),
+    ] {
+        // RBX deliberately points at other readable data (LOADED_VALUE): the
+        // RBX-relative reading is distinguishable from the RIP-relative one.
+        let (report, state, mut bus) = forms_equal_interpreter(
+            label,
+            &RIP_REL_CODE,
+            Equivalent::Qword,
+            RIP_DATA_LINEAR,
+            privilege,
+            tweak,
+            &|_| {},
+        );
+        assert_eq!(report.form, od_host::PagedFetchedForm::QwordLoadRipRel32);
+        assert_eq!(state.gpr[Register::Rbx as usize], DATA_LINEAR, "{label}");
+        match fault {
+            None => {
+                assert_eq!(state.gpr[Register::Rax as usize], RIP_VALUE, "{label}");
+                assert_ne!(RIP_VALUE, LOADED_VALUE);
+                assert_eq!(state.rip, CODE_RIP + 7, "{label}");
+                // The data walk touched only the second code page's leaf, never
+                // the RBX data branch.
+                assert_ne!(entry(&mut bus, RIP_LEAF_ADDRESS) & ACCESSED, 0, "{label}");
+                for address in DATA_WALK_ENTRIES {
+                    assert_eq!(entry(&mut bus, address) & ACCESSED, 0, "{label}");
+                }
+            }
+            Some(pfec) => {
+                let record = forms_page_fault(&report);
+                assert_eq!(record.fault().error_code, Some(pfec), "{label}");
+                assert_eq!(record.cr2_value(), RIP_DATA_LINEAR, "{label}");
+                assert_eq!(record.saved_rip(), CODE_RIP, "{label}");
+                assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX, "{label}");
+                assert_eq!(state.rip, CODE_RIP, "{label}");
+            }
+        }
+    }
+
+    // Reading at the start of the instruction instead of the next RIP would
+    // land 7 bytes lower: bytes `00..00 88`, a different value.
+    let mut bus = forms_bus(&RIP_REL_CODE, &rip_data(0x7));
+    let wrong = bus
+        .read_physical(
+            GuestPhysicalAddress::new(RIP_DATA_PHYSICAL - RIP_REL_CODE.len() as u64),
+            AccessWidth::Qword,
+        )
+        .unwrap();
+    assert_ne!(wrong, RIP_VALUE);
+}
+
+#[test]
+fn s4_15e_reuse_key_keeps_rip_so_a_rip_relative_block_is_never_reused_at_another_rip() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let second_rip = CODE_RIP + 0x40;
+    let mut bus = forms_bus(&RIP_REL_CODE, &rip_data(0x7));
+    // The same instruction bytes at the same physical page, 0x40 bytes on.
+    bus.patch_physical_ram(
+        GuestPhysicalAddress::new(CODE_PHYSICAL + 0x40),
+        &RIP_REL_CODE,
+    )
+    .unwrap();
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let run = |session: &mut od_host::PagedFetchedLoadSession,
+               bus: &mut MachineBus,
+               rip: u64|
+     -> (od_host::PagedFetchAdmission, u64, u64) {
+        let mut state = fetch_state(rip);
+        let report = session
+            .execute_forms(
+                &mut state,
+                bus,
+                CR3,
+                EFER,
+                fetch_context(PrivilegeLevel::Ring0),
+            )
+            .unwrap_or_else(|error| panic!("{rip:#x}: {error:?}"));
+        (
+            report.admission,
+            state.gpr[Register::Rax as usize],
+            state.rip,
+        )
+    };
+    assert_eq!(
+        run(&mut session, &mut bus, CODE_RIP),
+        (
+            od_host::PagedFetchAdmission::Admitted,
+            RIP_VALUE,
+            CODE_RIP + 7
+        )
+    );
+    // Same RIP again: reused, address recomputed from RIP (same data).
+    assert_eq!(
+        run(&mut session, &mut bus, CODE_RIP).0,
+        od_host::PagedFetchAdmission::Reused
+    );
+    // Same bytes, same page, same generation, other RIP: the block is
+    // recompiled, and the address is relative to this instruction's next RIP
+    // (0x40 higher), reading the second value.
+    assert_eq!(
+        run(&mut session, &mut bus, second_rip),
+        (
+            od_host::PagedFetchAdmission::Admitted,
+            RIP_VALUE_AT_SECOND_RIP,
+            second_rip + 7
+        )
+    );
+    assert_eq!(session.admissions(), 2);
+    // Data that changed between two calls of the reused block is read afresh.
+    put_qword(&mut bus, RIP_DATA_PHYSICAL + 0x40, 0x0bad_f00d);
+    let mut state = fetch_state(second_rip);
+    let report = session
+        .execute_forms(
+            &mut state,
+            &mut bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap();
+    assert_eq!(report.admission, od_host::PagedFetchAdmission::Reused);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x0bad_f00d);
+}
+
+#[test]
+fn s4_15e_reused_displacement_block_recomputes_the_address_from_rbx() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let code = [0x48, 0x8b, 0x43, 0x08];
+    let mut bus = forms_bus(&code, &no_tweak);
+    put_qword(&mut bus, DATA_PHYSICAL + 0x128, 0x5555_6666_7777_8888);
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let mut first = fetch_state(CODE_RIP);
+    first.gpr[Register::Rbx as usize] = DATA_LINEAR - 0x08;
+    let report = session
+        .execute_forms(
+            &mut first,
+            &mut bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap();
+    assert_eq!(report.admission, od_host::PagedFetchAdmission::Admitted);
+    assert_eq!(first.gpr[Register::Rax as usize], LOADED_VALUE);
+    let mut second = fetch_state(CODE_RIP);
+    second.gpr[Register::Rbx as usize] = DATA_LINEAR;
+    let report = session
+        .execute_forms(
+            &mut second,
+            &mut bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap();
+    assert_eq!(report.admission, od_host::PagedFetchAdmission::Reused);
+    assert_eq!(second.gpr[Register::Rax as usize], 0x5555_6666_7777_8888);
+}
+
+#[test]
+fn s4_15e_effective_address_crossing_a_page_is_refused_before_the_data_walk() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let page = DATA_LINEAR & !0xfff;
+    // RBX alone passes the range check (offset 0xf80); base plus displacement
+    // does not: the qword at offset 0xffc has four bytes on the next page.
+    for (label, code, rbx, address) in [
+        (
+            "disp8",
+            &[0x48u8, 0x8b, 0x43, 0x7c][..],
+            page + 0xf80,
+            page + 0xffc,
+        ),
+        (
+            "disp32",
+            &[0x48, 0x8b, 0x83, 0x7c, 0x00, 0x00, 0x00][..],
+            page + 0xf80,
+            page + 0xffc,
+        ),
+        (
+            // 0x40_1007 + 0x1ff9 = 0x40_3000: not even the page of the data
+            // branch; the offset 0xffc form below is the interesting one.
+            "rip-relative",
+            &[0x48, 0x8b, 0x05, 0xf5, 0x1f, 0x00, 0x00][..],
+            DATA_LINEAR,
+            CODE_RIP + 7 + 0x1ff5,
+        ),
+    ] {
+        assert_ne!(rbx & 0xfff, 0xffc, "{label}: RBX alone would be accepted");
+        let (error, state, mut bus, admitted) = forms_refusal(code, rbx, &rip_data(0x7));
+        assert_eq!(
+            error.kind,
+            od_host::PagedFetchedLoadErrorKind::Load(
+                od_host::PagedMemoryLoadV2Error::UnsupportedOperandRange { address, length: 8 }
+            ),
+            "{label}"
+        );
+        assert_eq!(address & 0xfff, 0xffc, "{label}");
+        // The fetch ran (its Accessed bits are reported); nothing else did.
+        assert_eq!(
+            range_pairs(&error.fetch_committed_writes),
+            CODE_WALK_RANGES.map(|(a, l)| (a, l as u64)).to_vec(),
+            "{label}"
+        );
+        assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX, "{label}");
+        assert_eq!(state.rip, CODE_RIP, "{label}");
+        assert!(!admitted, "{label}");
+        for address in DATA_WALK_ENTRIES {
+            assert_eq!(entry(&mut bus, address) & ACCESSED, 0, "{label}");
+        }
+        assert_eq!(entry(&mut bus, RIP_LEAF_ADDRESS) & ACCESSED, 0, "{label}");
+    }
+}
+
+#[test]
+fn s4_15e_fetch_faults_of_the_longer_forms_precede_any_data_access_and_equal_the_interpreter() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let cases = [
+        (
+            "NX leaf CPL0",
+            FetchLayout {
+                code_leaf_flags: 0x27 | NX,
+                ..FetchLayout::CLEAN
+            },
+            PrivilegeLevel::Ring0,
+            0x11u32,
+        ),
+        (
+            "supervisor leaf CPL3",
+            FetchLayout {
+                code_leaf_flags: 0x3,
+                ..FetchLayout::CLEAN
+            },
+            PrivilegeLevel::Ring3,
+            0x15,
+        ),
+        (
+            "not-present leaf CPL0",
+            FetchLayout {
+                code_leaf_flags: 0x6,
+                ..FetchLayout::CLEAN
+            },
+            PrivilegeLevel::Ring0,
+            0x10,
+        ),
+    ];
+    for (form, code) in [
+        ("dword", &DWORD_CODE[..]),
+        ("disp8", &[0x48, 0x8b, 0x43, 0x20][..]),
+        ("disp32", &[0x48, 0x8b, 0x83, 0x34, 0x12, 0x00, 0x00][..]),
+        ("rip-relative", &RIP_REL_CODE[..]),
+    ] {
+        for (label, layout, privilege, pfec) in cases {
+            let label = format!("{form} {label}");
+            let mut oracle_bus = make_fetch_bus(layout);
+            let mut oracle_state = fetch_state(CODE_RIP);
+            let expected = observe_interpreter(&mut oracle_bus, &mut oracle_state, privilege);
+            let oracle_record = expected.page_fault.clone().expect(&label);
+            assert_eq!(oracle_record.fault().error_code, Some(pfec), "{label}");
+
+            let mut bus = make_fetch_bus(layout);
+            bus.patch_physical_ram(GuestPhysicalAddress::new(CODE_PHYSICAL), code)
+                .unwrap();
+            let mut state = fetch_state(CODE_RIP);
+            let before = state.clone();
+            let mut session = od_host::PagedFetchedLoadSession::new();
+            let error = session
+                .execute_forms(&mut state, &mut bus, CR3, EFER, fetch_context(privilege))
+                .unwrap_err();
+            let (record, _) = fetch_page_fault(&error);
+            assert_eq!(record, &oracle_record, "{label}");
+            assert_eq!(record.cr2_value(), CODE_RIP, "{label}");
+            assert_eq!(state, before, "{label}");
+            assert!(!session.has_admitted_block(), "{label}");
+            assert_eq!(
+                range_pairs(&error.fetch_committed_writes),
+                expected.writes,
+                "{label}"
+            );
+            for address in DATA_WALK_ENTRIES {
+                assert_eq!(entry(&mut bus, address) & ACCESSED, 0, "{label}");
+            }
+        }
+    }
+}
+
+#[test]
+fn s4_15e_code_that_does_not_fit_the_page_is_refused_not_faulted() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // `48 8B 83 ...` needs seven bytes; at offset 0xffd only three are on the
+    // page. Not a fault of the guest: the 2 MiB / cross-page code case stays
+    // with the interpreter.
+    let rip = CODE_RIP + 0xffd;
+    let mut bus = make_fetch_bus(FetchLayout::CLEAN);
+    bus.patch_physical_ram(
+        GuestPhysicalAddress::new(CODE_PHYSICAL + 0xffd),
+        &[0x48, 0x8b, 0x83],
+    )
+    .unwrap();
+    let mut state = fetch_state(rip);
+    let before = state.clone();
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let error = session
+        .execute_forms(
+            &mut state,
+            &mut bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.kind,
+        od_host::PagedFetchedLoadErrorKind::Fetch(
+            od_machine::TrackedCodeSnapshotError::InvalidLength
+        )
+    );
+    assert_eq!(state, before);
+    assert!(!session.has_admitted_block());
+}
+
+#[test]
+fn s4_15e_forms_outside_the_allowlist_are_unsupported_forms_with_no_effect() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // None of these is admitted: the interpreter has no such form (store with a
+    // displacement, `67` address prefix), or the JIT does not (other registers,
+    // dword with a displacement). The reported bytes are the three the fetch
+    // classified them from.
+    let unsupported: [(&str, &[u8], [u8; 3]); 5] = [
+        ("store disp8", &[0x48, 0x89, 0x43, 0x08], [0x48, 0x89, 0x43]),
+        ("addr32 dword load", &[0x67, 0x8b, 0x03], [0x67, 0x8b, 0x03]),
+        ("dword disp8", &[0x8b, 0x43, 0x08], [0x8b, 0x43, 0x08]),
+        ("MOV RCX,[RBX]", &[0x48, 0x8b, 0x0b], [0x48, 0x8b, 0x0b]),
+        ("nop", &[0x90, 0x90, 0x90], [0x90, 0x90, 0x90]),
+    ];
+    let mut bus = forms_bus(&[0x48, 0x8b, 0x43, 0x20], &no_tweak);
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let mut admit = fetch_state(CODE_RIP);
+    admit.gpr[Register::Rbx as usize] = DATA_LINEAR - 0x20;
+    session
+        .execute_forms(
+            &mut admit,
+            &mut bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap();
+    assert!(session.has_admitted_block());
+    for (label, code, reported) in unsupported {
+        // Re-admit a block so the refusal's drop of the stale block is visible.
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(CODE_PHYSICAL),
+            &[0x48, 0x8b, 0x43, 0x20],
+        )
+        .unwrap();
+        let mut state = fetch_state(CODE_RIP);
+        state.gpr[Register::Rbx as usize] = DATA_LINEAR - 0x20;
+        session
+            .execute_forms(
+                &mut state,
+                &mut bus,
+                CR3,
+                EFER,
+                fetch_context(PrivilegeLevel::Ring0),
+            )
+            .unwrap();
+        assert!(session.has_admitted_block(), "{label}");
+
+        bus.patch_physical_ram(GuestPhysicalAddress::new(CODE_PHYSICAL), code)
+            .unwrap();
+        let data_before = DATA_WALK_ENTRIES.map(|a| entry(&mut bus, a));
+        let mut state = fetch_state(CODE_RIP);
+        let before = state.clone();
+        let error = session
+            .execute_forms(
+                &mut state,
+                &mut bus,
+                CR3,
+                EFER,
+                fetch_context(PrivilegeLevel::Ring0),
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.kind,
+            od_host::PagedFetchedLoadErrorKind::UnsupportedForm {
+                bytes: reported.to_vec()
+            },
+            "{label}"
+        );
+        assert_eq!(state, before, "{label}");
+        assert!(!session.has_admitted_block(), "{label}");
+        assert_eq!(DATA_WALK_ENTRIES.map(|a| entry(&mut bus, a)), data_before);
+    }
+}
+
+#[test]
+fn s4_15e_legacy_entries_do_not_admit_the_new_forms() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    for (code, reported) in [
+        (&DWORD_CODE[..], vec![0x8b, 0x03, 0x03]),
+        (&[0x48u8, 0x8b, 0x43, 0x20][..], vec![0x48, 0x8b, 0x43]),
+        (&RIP_REL_CODE[..], vec![0x48, 0x8b, 0x05]),
+    ] {
+        let mut bus = forms_bus(code, &no_tweak);
+        let mut state = fetch_state(CODE_RIP);
+        let before = state.clone();
+        let mut session = od_host::PagedFetchedLoadSession::new();
+        for with_store in [false, true] {
+            let result = if with_store {
+                session.execute_with_store(
+                    &mut state,
+                    &mut bus,
+                    CR3,
+                    EFER,
+                    fetch_context(PrivilegeLevel::Ring0),
+                )
+            } else {
+                session.execute(
+                    &mut state,
+                    &mut bus,
+                    CR3,
+                    EFER,
+                    fetch_context(PrivilegeLevel::Ring0),
+                )
+            };
+            assert_eq!(
+                result.unwrap_err().kind,
+                od_host::PagedFetchedLoadErrorKind::UnsupportedForm {
+                    bytes: reported.clone()
+                }
+            );
+            assert_eq!(state, before);
+        }
+    }
+}
+
+#[test]
+fn s4_15e_the_existing_forms_through_execute_forms_equal_the_interpreter() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // `48 8B 03` against its own interpreter step.
+    let (report, state, _bus) = forms_equal_interpreter(
+        "qword load",
+        &CODE,
+        Equivalent::Qword,
+        DATA_LINEAR,
+        PrivilegeLevel::Ring0,
+        &no_tweak,
+        &|_| {},
+    );
+    assert_eq!(report.form, od_host::PagedFetchedForm::QwordLoadRbx);
+    assert_eq!(state.gpr[Register::Rax as usize], LOADED_VALUE);
+
+    // `48 89 03` against the interpreter's `48 89 0B` with RCX = RAX.
+    let mut oracle_bus = forms_bus(&STORE_RCX_CODE, &no_tweak);
+    let mut oracle_state = fetch_state(CODE_RIP);
+    oracle_state.gpr[Register::Rcx as usize] = INITIAL_RAX;
+    let mut oracle_writes = Vec::new();
+    let oracle = od_machine::step_paged_mov(
+        &mut oracle_state,
+        &mut oracle_bus,
+        CR3,
+        EFER,
+        fetch_context(PrivilegeLevel::Ring0),
+        RFLAGS_DEFINED,
+        |range| oracle_writes.push(range),
+    )
+    .unwrap();
+    assert_eq!(oracle.cpu.exit, od_isa::execute::RunExit::StopAddress);
+    oracle_bus
+        .patch_physical_ram(GuestPhysicalAddress::new(CODE_PHYSICAL), &STORE_CODE)
+        .unwrap();
+    let mut bus = forms_bus(&STORE_CODE, &no_tweak);
+    let mut state = fetch_state(CODE_RIP);
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let report = session
+        .execute_forms(
+            &mut state,
+            &mut bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap();
+    assert_eq!(report.form, od_host::PagedFetchedForm::QwordStoreRbx);
+    oracle_state.gpr[Register::Rcx as usize] = state.gpr[Register::Rcx as usize];
+    assert_eq!(state, oracle_state);
+    let mut writes = range_pairs(&report.fetch_committed_writes);
+    writes.extend(range_pairs(&report.execution.committed_writes));
+    assert_eq!(writes, range_pairs(&oracle_writes));
+    assert_eq!(ram_image(&mut bus), ram_image(&mut oracle_bus));
+    assert_eq!(entry(&mut bus, DATA_QWORD), INITIAL_RAX);
+}

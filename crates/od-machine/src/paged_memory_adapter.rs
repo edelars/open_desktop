@@ -290,6 +290,32 @@ pub fn with_paged_mov_memory<R>(
     instruction_rip: u64,
     callback: impl FnOnce(&mut dyn GuestMemory) -> R,
 ) -> PagedMovMemoryScope<R> {
+    with_paged_mov_read_memory(bus, paging, instruction_rip, false, callback)
+}
+
+/// S4-15e: the same RAM-only, read-only, same-page adapter as
+/// [`with_paged_mov_memory`] for a four-byte operand read (`MOV EAX,[RBX]`).
+/// Four-byte reads go through the ordinary tracked walker exactly like the
+/// qword reads (Accessed bits recorded in `committed_writes`); a qword read is
+/// (the operand width is enforced by the host: `execute_paged_checked_load_v2` admits only
+/// dword operands); this adapter itself does not refuse an eight-byte read.
+/// An operand that would cross a 4 KiB page is refused before any walk.
+pub fn with_paged_mov_dword_memory<R>(
+    bus: &mut MachineBus,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    callback: impl FnOnce(&mut dyn GuestMemory) -> R,
+) -> PagedMovMemoryScope<R> {
+    with_paged_mov_read_memory(bus, paging, instruction_rip, true, callback)
+}
+
+fn with_paged_mov_read_memory<R>(
+    bus: &mut MachineBus,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    dword: bool,
+    callback: impl FnOnce(&mut dyn GuestMemory) -> R,
+) -> PagedMovMemoryScope<R> {
     let mut ignore_write = |_| {};
     let mut memory = PagedMovMemoryAdapter {
         bus: bus.into(),
@@ -311,7 +337,9 @@ pub fn with_paged_mov_memory<R>(
         read_only_qword: true,
         large_ram_profile: false,
         dword_write_profile: false,
-        cpl0_set_dword_read: false,
+        // The dword read width is the only thing this flag changes without
+        // `large_ram_profile`: the read stays an ordinary tracked access.
+        cpl0_set_dword_read: dword,
         cpl0_set_byte_read: false,
         cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
@@ -3180,8 +3208,8 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
             _ => return Err(Self::unsupported("read width")),
         };
         if self.reject_crossing_qword
-            && width == crate::AccessWidth::Qword
-            && (address & 0xfff) + 8 > 4096
+            && matches!(width, crate::AccessWidth::Qword | crate::AccessWidth::Dword)
+            && (address & 0xfff) + u64::from(width.bytes()) > 4096
         {
             return Err(Self::unsupported("cross-page qword read"));
         }

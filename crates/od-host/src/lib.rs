@@ -1077,6 +1077,125 @@ impl PublishedCode {
         ))
     }
 
+    /// S4-15e: execute exactly one admitted load form of
+    /// [`PagedFetchedForm`] other than the S4-15b `48 8B 03` (the dword
+    /// `8B 03` and the qword `[RBX+disp8]`, `[RBX+disp32]` and `[RIP+disp32]`
+    /// loads) through the tracked RAM-only adapter. `code` is the exact
+    /// instruction bytes the block was compiled from; every property of the
+    /// published block's metadata is checked against `form` and `code` before
+    /// anything is walked. The effective address is computed here from the CPU
+    /// state of this call, and an operand that would cross a 4 KiB page is
+    /// refused before any walk.
+    pub(crate) fn execute_paged_checked_load_v2(
+        &self,
+        form: PagedFetchedForm,
+        code: &[u8],
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+    ) -> Result<
+        od_machine::PagedMovMemoryScope<
+            Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
+        >,
+        PagedMemoryLoadV2Error,
+    > {
+        check_paged_load_v2_context(state, access_context)?;
+        let dword = match form {
+            PagedFetchedForm::DwordLoadRbx => true,
+            PagedFetchedForm::QwordLoadRbxDisp8
+            | PagedFetchedForm::QwordLoadRbxDisp32
+            | PagedFetchedForm::QwordLoadRipRel32 => false,
+            PagedFetchedForm::QwordLoadRbx | PagedFetchedForm::QwordStoreRbx => {
+                return Err(PagedMemoryLoadV2Error::UnsupportedBlock);
+            }
+        };
+        let (ir, flavor, operand_size) = if dword {
+            (
+                self.checked_dword_load_ir_metadata_v2.as_ref(),
+                od_jit::translation::CompileFlavor::S3_26cIrDwordMemoryLoadV2,
+                od_isa::OperandSize::Dword,
+            )
+        } else {
+            (
+                self.checked_load_ir_metadata_v2.as_ref(),
+                od_jit::translation::CompileFlavor::S3_26aIrMemoryLoadV2,
+                od_isa::OperandSize::Qword,
+            )
+        };
+        let ir = ir.ok_or(PagedMemoryLoadV2Error::UnsupportedBlock)?;
+        let site = ir.site;
+        let operand = site.operand();
+        let (base, displacement) = form.expected_operand(code);
+        if ir.compile_flavor != flavor
+            || usize::from(ir.source_len) != code.len()
+            || ir.source_bytes[..code.len()] != *code
+            || !site.matches_source_bytes(code, od_jit::runtime::MemorySiteOperationV2::Load)
+            || site.operation() != od_jit::runtime::MemorySiteOperationV2::Load
+            || site.instruction_index() != 0
+            || site.guest_rip() != ir.entry_rip
+            || ir.entry_rip.checked_add(code.len() as u64) != Some(site.next_rip())
+            || !site.has_supported_profile()
+            || site.destination() != Some(od_isa::Register::Rax as u8)
+            || site.source().is_some()
+            || operand.base != base
+            || operand.index.is_some()
+            || operand.scale != 1
+            || operand.displacement != displacement
+            || operand.address_size != od_isa::OperandSize::Qword
+            || operand.size != operand_size
+        {
+            return Err(PagedMemoryLoadV2Error::UnsupportedBlock);
+        }
+        if state.rip != ir.entry_rip {
+            return Err(PagedMemoryLoadV2Error::EntryRipMismatch {
+                expected: ir.entry_rip,
+                actual: state.rip,
+            });
+        }
+        if let Some(value) = state.cr3 {
+            return Err(PagedMemoryLoadV2Error::UnsupportedCpuCr3 { value });
+        }
+        let operand_address = operand.effective_address(state, site.next_rip());
+        if operand_address != form.effective_address(state, code) {
+            return Err(PagedMemoryLoadV2Error::UnsupportedBlock);
+        }
+        let length = form.operand_bytes();
+        if (operand_address & 0xfff) + u64::from(length) > 4096 {
+            return Err(PagedMemoryLoadV2Error::UnsupportedOperandRange {
+                address: operand_address,
+                length,
+            });
+        }
+        let paging = od_machine::Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+            .map_err(PagedMemoryLoadV2Error::Paging)?;
+        let stop_requested = AtomicU8::new(0);
+        Ok(if dword {
+            od_machine::with_paged_mov_dword_memory(bus, paging, state.rip, |memory| {
+                self.execute_ir_memory_dword_load_v2(
+                    state,
+                    memory,
+                    access_context,
+                    1,
+                    None,
+                    &stop_requested,
+                )
+            })
+        } else {
+            od_machine::with_paged_mov_memory(bus, paging, state.rip, |memory| {
+                self.execute_ir_memory_load_v2(
+                    state,
+                    memory,
+                    access_context,
+                    1,
+                    None,
+                    &stop_requested,
+                )
+            })
+        })
+    }
+
     /// S4-15d: execute exactly one V2 `MOV [RBX],RAX` (`48 89 03`) through the
     /// tracked machine RAM store adapter. The temporary `GuestMemory` borrow is
     /// confined to this synchronous call and is not retained by the published
@@ -1966,7 +2085,8 @@ struct AdmittedFetchedLoad {
     linear_base: u64,
     physical_page: od_machine::GuestPhysicalAddress,
     generation: u64,
-    bytes: [u8; 3],
+    bytes: Vec<u8>,
+    form: PagedFetchedForm,
     published: PublishedCode,
 }
 
@@ -2159,7 +2279,12 @@ impl PagedFetchedLoadSession {
                 linear_base: snapshot.linear_base,
                 physical_page: snapshot.physical_base,
                 generation: snapshot.backing_generation,
-                bytes: fetched_bytes,
+                bytes: fetched_bytes.to_vec(),
+                form: if is_store {
+                    PagedFetchedForm::QwordStoreRbx
+                } else {
+                    PagedFetchedForm::QwordLoadRbx
+                },
                 published,
             });
             self.admissions += 1;
@@ -2200,6 +2325,334 @@ impl PagedFetchedLoadSession {
             fetched_physical_page: snapshot.physical_base,
             fetched_generation: snapshot.backing_generation,
             fetched_bytes,
+            fetch_committed_writes,
+            admission,
+            execution,
+            store_refusal,
+        })
+    }
+}
+
+/// S4-15e: the instruction forms [`PagedFetchedLoadSession::execute_forms`]
+/// admits from guest RAM. Everything else is `UnsupportedForm`.
+///
+/// | form | bytes | operand |
+/// |------|-------|---------|
+/// | `QwordLoadRbx` | `48 8B 03` | qword `[RBX]` into RAX |
+/// | `QwordStoreRbx` | `48 89 03` | qword RAX into `[RBX]` |
+/// | `DwordLoadRbx` | `8B 03` | dword `[RBX]` into EAX (zero-extended into RAX) |
+/// | `QwordLoadRbxDisp8` | `48 8B 43 ib` | qword `[RBX+disp8]` into RAX |
+/// | `QwordLoadRbxDisp32` | `48 8B 83 id` | qword `[RBX+disp32]` into RAX |
+/// | `QwordLoadRipRel32` | `48 8B 05 id` | qword `[RIP+disp32]` into RAX, RIP of the next instruction |
+///
+/// The displacement is sign-extended and added to the full 64-bit base. The
+/// interpreter's paged allowlist (`step_paged_mov`, `step_paged_mov_dword_read`)
+/// has no displacement, RIP-relative or `67`-prefixed form, so the displacement
+/// forms and every store with a displacement or `67` prefix are admitted (loads)
+/// or refused (stores, `67`) here on the JIT's own authority only; see the S4-15e
+/// report for what the tests compare them with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PagedFetchedForm {
+    QwordLoadRbx,
+    QwordStoreRbx,
+    DwordLoadRbx,
+    QwordLoadRbxDisp8,
+    QwordLoadRbxDisp32,
+    QwordLoadRipRel32,
+}
+
+enum FormProbe {
+    Complete(PagedFetchedForm),
+    NeedBytes(usize),
+    Unsupported,
+}
+
+impl PagedFetchedForm {
+    /// Classifies the bytes fetched so far. `bytes` is always the exact prefix
+    /// of the instruction fetched at RIP (2, 3, 4 or 7 bytes).
+    fn probe(bytes: &[u8]) -> FormProbe {
+        match bytes {
+            [0x8b, 0x03] => FormProbe::Complete(Self::DwordLoadRbx),
+            [_, _] => FormProbe::NeedBytes(3),
+            [0x48, 0x8b, 0x03] => FormProbe::Complete(Self::QwordLoadRbx),
+            [0x48, 0x89, 0x03] => FormProbe::Complete(Self::QwordStoreRbx),
+            [0x48, 0x8b, 0x43] => FormProbe::NeedBytes(4),
+            [0x48, 0x8b, 0x43, _] => FormProbe::Complete(Self::QwordLoadRbxDisp8),
+            [0x48, 0x8b, 0x83 | 0x05] => FormProbe::NeedBytes(7),
+            [0x48, 0x8b, 0x83, _, _, _, _] => FormProbe::Complete(Self::QwordLoadRbxDisp32),
+            [0x48, 0x8b, 0x05, _, _, _, _] => FormProbe::Complete(Self::QwordLoadRipRel32),
+            _ => FormProbe::Unsupported,
+        }
+    }
+
+    /// Operand width in bytes.
+    pub fn operand_bytes(self) -> u8 {
+        match self {
+            Self::DwordLoadRbx => 4,
+            _ => 8,
+        }
+    }
+
+    /// Expected decoded operand shape for the instruction bytes `code`.
+    fn expected_operand(self, code: &[u8]) -> (od_isa::long_decode::AddressBase, i64) {
+        use od_isa::long_decode::AddressBase;
+        let rbx = AddressBase::Register(od_isa::Register::Rbx);
+        let disp32 = || i64::from(i32::from_le_bytes([code[3], code[4], code[5], code[6]]));
+        match self {
+            Self::QwordLoadRbx | Self::QwordStoreRbx | Self::DwordLoadRbx => (rbx, 0),
+            Self::QwordLoadRbxDisp8 => (rbx, i64::from(code[3] as i8)),
+            Self::QwordLoadRbxDisp32 => (rbx, disp32()),
+            Self::QwordLoadRipRel32 => (AddressBase::NextRip, disp32()),
+        }
+    }
+
+    /// The effective address from the CPU state of this call: base register
+    /// (or the RIP after the whole instruction) plus the sign-extended
+    /// displacement. Computed per call, never cached in the block.
+    fn effective_address(self, state: &od_isa::LongModeState, code: &[u8]) -> u64 {
+        let (base, displacement) = self.expected_operand(code);
+        let base = match base {
+            od_isa::long_decode::AddressBase::Register(register) => state.gpr[register as usize],
+            od_isa::long_decode::AddressBase::NextRip => state.rip.wrapping_add(code.len() as u64),
+            od_isa::long_decode::AddressBase::None => 0,
+        };
+        base.wrapping_add_signed(displacement)
+    }
+}
+
+/// Report of one [`PagedFetchedLoadSession::execute_forms`] call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedFetchedFormReport {
+    pub form: PagedFetchedForm,
+    pub fetched_linear_base: u64,
+    pub fetched_physical_page: od_machine::GuestPhysicalAddress,
+    pub fetched_generation: u64,
+    /// Exactly the instruction bytes (2 to 7) the block was compiled from.
+    pub fetched_code: Vec<u8>,
+    pub fetch_committed_writes: Vec<od_machine::GuestPhysicalRange>,
+    pub admission: PagedFetchAdmission,
+    pub execution: od_machine::PagedMovMemoryScope<
+        Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
+    >,
+    /// Set when the store adapter refused the operand before any walk or write.
+    /// Always `None` for a load form.
+    pub store_refusal: Option<od_machine::PagedStoreRefusal>,
+}
+
+impl PagedFetchedLoadSession {
+    /// S4-15e entry: admits the forms of [`PagedFetchedForm`] from the tracked
+    /// instruction fetch. The legacy entries ([`Self::execute`],
+    /// [`Self::execute_with_store`], [`Self::execute_or_interpret`]) are
+    /// unchanged and still admit only `48 8B 03` / `48 89 03`.
+    ///
+    /// Differences from the legacy entries:
+    /// - the instruction length is not fixed: 2 bytes are fetched first, then
+    ///   one more or up to the full length the opcode bytes need, each through
+    ///   the tracked fetch (execute/NX/U/S, code Accessed bits). Code that does
+    ///   not fit in the 4 KiB page of RIP is refused as a fetch error, not
+    ///   faulted;
+    /// - the operand range is checked after the fetch, from the effective
+    ///   address of the fetched form (`UnsupportedOperandRange`, the fetch's
+    ///   Accessed bits stay committed and are reported in the error);
+    /// - there is no interpreter fallback: the interpreter has no displacement or
+    ///   RIP-relative form, so a refusal ends the step without executing it.
+    ///
+    /// The block is reused only while RIP, the physical code page, its write
+    /// generation and every fetched byte are unchanged. The effective address
+    /// is computed from RIP and the registers on every call, so a reused block
+    /// never carries an address of an earlier call.
+    pub fn execute_forms(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+    ) -> Result<PagedFetchedFormReport, PagedFetchedLoadError> {
+        let refuse = |kind| PagedFetchedLoadError {
+            kind,
+            fetch_committed_writes: Vec::new(),
+        };
+        let load = |error| refuse(PagedFetchedLoadErrorKind::Load(error));
+        check_paged_load_v2_context(state, access_context).map_err(load)?;
+        if let Some(value) = state.cr3 {
+            return Err(load(PagedMemoryLoadV2Error::UnsupportedCpuCr3 { value }));
+        }
+        let paging = od_machine::Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+            .map_err(|error| load(PagedMemoryLoadV2Error::Paging(error)))?;
+
+        let rip = state.rip;
+        let mut fetch_committed_writes = Vec::new();
+        let mut wanted = 2usize;
+        let (snapshot, form) = loop {
+            let snapshot = bus
+                .tracked_code_snapshot_with_callback(
+                    &paging,
+                    rip,
+                    wanted,
+                    access_context,
+                    |range| fetch_committed_writes.push(range),
+                )
+                .map_err(|error| PagedFetchedLoadError {
+                    kind: PagedFetchedLoadErrorKind::Fetch(error),
+                    fetch_committed_writes: fetch_committed_writes.clone(),
+                })?;
+            match PagedFetchedForm::probe(&snapshot.bytes) {
+                FormProbe::Complete(form) => break (snapshot, form),
+                FormProbe::NeedBytes(more) => wanted = more,
+                FormProbe::Unsupported => {
+                    // Nothing runs, and no earlier block may run against these
+                    // bytes later: drop it as the legacy entry does.
+                    self.admitted = None;
+                    return Err(PagedFetchedLoadError {
+                        kind: PagedFetchedLoadErrorKind::UnsupportedForm {
+                            bytes: snapshot.bytes,
+                        },
+                        fetch_committed_writes,
+                    });
+                }
+            }
+        };
+        let fail = |kind, writes: &Vec<_>| PagedFetchedLoadError {
+            kind,
+            fetch_committed_writes: writes.clone(),
+        };
+
+        let operand_address = form.effective_address(state, &snapshot.bytes);
+        let operand_len = form.operand_bytes();
+        if (operand_address & 0xfff) + u64::from(operand_len) > 4096 {
+            return Err(fail(
+                PagedFetchedLoadErrorKind::Load(PagedMemoryLoadV2Error::UnsupportedOperandRange {
+                    address: operand_address,
+                    length: operand_len,
+                }),
+                &fetch_committed_writes,
+            ));
+        }
+
+        let reusable = self.admitted.as_ref().is_some_and(|admitted| {
+            admitted.linear_base == snapshot.linear_base
+                && admitted.physical_page == snapshot.physical_base
+                && admitted.generation == snapshot.backing_generation
+                && admitted.bytes == snapshot.bytes
+        });
+        let admission = if reusable {
+            PagedFetchAdmission::Reused
+        } else {
+            // Drop the stale block first: one MAP_JIT region, and an old block
+            // must never run against new bytes.
+            self.admitted = None;
+            let view = od_jit::block::CodeView::new(rip, &snapshot.bytes).map_err(|_| {
+                fail(
+                    PagedFetchedLoadErrorKind::UnsupportedForm {
+                        bytes: snapshot.bytes.clone(),
+                    },
+                    &fetch_committed_writes,
+                )
+            })?;
+            let compile_error = |error| {
+                fail(
+                    PagedFetchedLoadErrorKind::Compile(error),
+                    &fetch_committed_writes,
+                )
+            };
+            let publish_error = |error| {
+                fail(
+                    PagedFetchedLoadErrorKind::Publish(error),
+                    &fetch_committed_writes,
+                )
+            };
+            let published = match form {
+                PagedFetchedForm::QwordStoreRbx => {
+                    let block = od_jit::memory_load_v2::compile_memory_store_block_v2(view, rip)
+                        .map_err(compile_error)?;
+                    PublishedCode::publish_memory_store_v2(&block).map_err(publish_error)?
+                }
+                PagedFetchedForm::QwordLoadRbx => {
+                    let block = od_jit::memory_load_v2::compile_memory_load_block_v2(view, rip)
+                        .map_err(compile_error)?;
+                    PublishedCode::publish_memory_load_v2(&block).map_err(publish_error)?
+                }
+                PagedFetchedForm::DwordLoadRbx => {
+                    let block =
+                        od_jit::memory_load_v2::compile_ir_memory_dword_load_block_v2(view, rip)
+                            .map_err(compile_error)?;
+                    PublishedCode::publish_ir_memory_dword_load_v2(&block).map_err(publish_error)?
+                }
+                PagedFetchedForm::QwordLoadRbxDisp8
+                | PagedFetchedForm::QwordLoadRbxDisp32
+                | PagedFetchedForm::QwordLoadRipRel32 => {
+                    let block = od_jit::memory_load_v2::compile_ir_memory_load_block_v2(view, rip)
+                        .map_err(compile_error)?;
+                    PublishedCode::publish_ir_memory_load_v2(&block).map_err(publish_error)?
+                }
+            };
+            self.admitted = Some(AdmittedFetchedLoad {
+                linear_base: snapshot.linear_base,
+                physical_page: snapshot.physical_base,
+                generation: snapshot.backing_generation,
+                bytes: snapshot.bytes.clone(),
+                form,
+                published,
+            });
+            self.admissions += 1;
+            PagedFetchAdmission::Admitted
+        };
+        let admitted = self
+            .admitted
+            .as_ref()
+            .expect("admitted block is present after admission or reuse");
+        debug_assert_eq!(admitted.form, form);
+        let load_error = |error| {
+            fail(
+                PagedFetchedLoadErrorKind::Load(error),
+                &fetch_committed_writes,
+            )
+        };
+        let (execution, store_refusal) = match form {
+            PagedFetchedForm::QwordStoreRbx => {
+                let scope = admitted
+                    .published
+                    .execute_paged_mov_rbx_rax_store_v2(
+                        state,
+                        bus,
+                        cr3,
+                        efer,
+                        access_context,
+                        snapshot.physical_base,
+                    )
+                    .map_err(load_error)?;
+                (scope.memory, scope.refusal)
+            }
+            PagedFetchedForm::QwordLoadRbx => (
+                admitted
+                    .published
+                    .execute_paged_mov_rax_rbx_v2(state, bus, cr3, efer, access_context)
+                    .map_err(load_error)?,
+                None,
+            ),
+            _ => (
+                admitted
+                    .published
+                    .execute_paged_checked_load_v2(
+                        form,
+                        &admitted.bytes,
+                        state,
+                        bus,
+                        cr3,
+                        efer,
+                        access_context,
+                    )
+                    .map_err(load_error)?,
+                None,
+            ),
+        };
+        Ok(PagedFetchedFormReport {
+            form,
+            fetched_linear_base: snapshot.linear_base,
+            fetched_physical_page: snapshot.physical_base,
+            fetched_generation: snapshot.backing_generation,
+            fetched_code: snapshot.bytes,
             fetch_committed_writes,
             admission,
             execution,
