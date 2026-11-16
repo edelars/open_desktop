@@ -21347,9 +21347,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
-        // S7-04: the helper reads one byte through R14D with exact
-        // `46 0F B6 34 1E` (MOVZX R14D,byte ptr [RSI+R11]). Reuse the tracked
-        // faulting byte read and dword write; no neighboring MOVZX form is admitted.
+        // S7-04: the helper reads one byte through R14D/R15D with only the
+        // exact `46 0F B6 34 1E` and `46 0F B6 7C 1E 01` forms. Reuse the
+        // tracked faulting byte read and dword write; other MOVZX forms stay out.
         Operation::Extend {
             dst: destination,
             src: Operand::Memory(source),
@@ -21357,18 +21357,22 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Escape0f
             && instruction.opcode.byte == 0xb6
-            && instruction.length == 5
+            && (instruction.length == 5 || instruction.length == 6)
             && instruction.operand_size == OperandSize::Dword
             && instruction.prefixes
                 == (Prefixes {
                     rex: Some(0x46),
                     ..Prefixes::default()
                 })
-            && destination == RegisterView::low(Register::R14, OperandSize::Dword)
+            && ((destination == RegisterView::low(Register::R14, OperandSize::Dword)
+                && instruction.length == 5
+                && source.displacement == 0)
+                || (destination == RegisterView::low(Register::R15, OperandSize::Dword)
+                    && instruction.length == 6
+                    && source.displacement == 1))
             && source.base == AddressBase::Register(Register::Rsi)
             && source.index == Some(Register::R11)
             && source.scale == 1
-            && source.displacement == 0
             && source.address_size == OperandSize::Qword
             && source.size == OperandSize::Byte =>
         {

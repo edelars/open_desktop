@@ -669,6 +669,49 @@ fn paged_probe_movzx_r14d_byte_rsi_r11_uses_tracked_four_level_walk() {
 }
 
 #[test]
+fn paged_probe_movzx_r15d_byte_rsi_r11_disp8_one_uses_tracked_four_level_walk() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(
+        &mut bus,
+        CODE_PHYSICAL,
+        &[0x46, 0x0f, 0xb6, 0x7c, 0x1e, 0x01],
+    );
+    put_byte(&mut bus, DATA_PHYSICAL + 0x19, 0x5c);
+    let mut state = initial_state(0);
+    state.gpr[Register::Rsi as usize] = DATA_LINEAR;
+    state.gpr[Register::R11 as usize] = 0x18;
+    state.gpr[Register::Rbp as usize] = 0x0000_8000_0000_0000; // not the memory base
+    state.gpr[Register::R15 as usize] = 0xffff_ffff_dead_beef;
+    let before_flags = state.rflags;
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.page_fault, None);
+    assert_eq!(result.memory_error, None);
+    assert_eq!(state.rip, CODE_LINEAR + 6);
+    assert_eq!(state.gpr[Register::R15 as usize], 0x5c);
+    assert_eq!(state.rflags, before_flags);
+    assert_eq!(
+        bus.read_physical(
+            GuestPhysicalAddress::new(DATA_PHYSICAL + 0x19),
+            AccessWidth::Byte
+        )
+        .unwrap(),
+        0x5c
+    );
+    // Verify Accessed bits in the four-level code and operand walks, including
+    // the leaf PTEs for the code page and the data page read at RSI+R11+1.
+    assert_eq!(qword(&mut bus, ROOT), ROOT + 0x1007 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x1000), ROOT + 0x2007 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x2020), ROOT + 0x4007 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x3000), CODE_PHYSICAL | 7 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x4000), DATA_PHYSICAL | 7 | (1 << 5));
+}
+
+#[test]
 fn paged_probe_mov_edi_dword_rsi_disp8_uses_tracked_four_level_walk() {
     let (mut bus, _) = fixture();
     put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x8b, 0x7e, 0x14]);
