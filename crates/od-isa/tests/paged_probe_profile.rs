@@ -18832,6 +18832,154 @@ fn rust_helper_cmp_rdi_r13_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn rust_helper_cmp_r9_r13_uses_qword_operands_and_preserves_registers() {
+    const CF: u64 = 1 << 0;
+    const PF: u64 = 1 << 2;
+    const AF: u64 = 1 << 4;
+    const ZF: u64 = 1 << 6;
+    const SF: u64 = 1 << 7;
+    const OF: u64 = 1 << 11;
+    const ARITH_FLAGS: u64 = CF | PF | AF | ZF | SF | OF;
+    let code = [0x4d, 0x39, 0xe9]; // CMP R9,R13
+    let cases = [
+        (0x1234_5678_9abc_def0, 0x1234_5678_9abc_def0, PF | ZF),
+        (0x0000_0001_0000_0000, 1, PF | AF),
+        (0, 1, CF | PF | AF | SF),
+        (1, 0, 0),
+        (i64::MIN as u64, 1, PF | AF | OF),
+    ];
+
+    for (r9, r13, cmp_flags) in cases {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::R9 as usize] = r9;
+        cpu.gpr[Register::R13 as usize] = r13;
+        cpu.rflags = 0x8d7;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let initial_defined = DEFINED & !ARITH_FLAGS;
+
+        let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), initial_defined);
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, initial_defined | ARITH_FLAGS);
+        let mut expected = before;
+        expected.rflags = (expected.rflags & !ARITH_FLAGS) | cmp_flags;
+        expected.rip += code.len() as u64;
+        assert_eq!(cpu, expected, "R9={r9:#018x} - R13={r13:#018x}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(memory.write_addresses.is_empty());
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_cmp_r9_r13_fetch_fault_is_atomic() {
+    let rip = RIP + 0xffe;
+    let code = [0x4d, 0x39];
+    let mut memory = memory_with_code_at(&code, rip);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    memory.fail_fetch_at = Some((rip + 2, page_fault(0x10, rip + 2)));
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 2),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(memory.write_addresses.is_empty());
+}
+
+#[test]
+fn rust_helper_cmp_r9_r13_neighbours_stay_unsupported_without_mutation() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x4d, 0x39, 0xe8], 0x39),       // CMP R8,R13
+        (&[0x4d, 0x39, 0xea], 0x39),       // CMP R10,R13
+        (&[0x4d, 0x39, 0xeb], 0x39),       // CMP R11,R13
+        (&[0x4d, 0x39, 0xf1], 0x39),       // CMP R9,R14
+        (&[0x45, 0x39, 0xe9], 0x39),       // dword CMP R9D,R13D
+        (&[0x4d, 0x3b, 0xe9], 0x3b),       // reverse opcode direction
+        (&[0x4c, 0x39, 0xe9], 0x39),       // REX.B absent
+        (&[0x48, 0x39, 0xee], 0x39),       // CMP RSI,RBP
+        (&[0x48, 0x39, 0xe7], 0x39),       // CMP RDI,RSP
+        (&[0x48, 0x39, 0xe9], 0x39),       // CMP RCX,RBP
+        (&[0x48, 0x39, 0xe0], 0x39),       // CMP RAX,RSP
+        (&[0x4c, 0x39, 0xf7], 0x39),       // CMP RDI,R14
+        (&[0x4c, 0x39, 0xee], 0x39),       // CMP RSI,R13
+        (&[0x49, 0x39, 0xef], 0x39),       // CMP R15,RBP
+        (&[0x4c, 0x39, 0xe8], 0x39),       // CMP RAX,R13
+        (&[0x49, 0x39, 0xe8], 0x39),       // CMP R8,RBP
+        (&[0x44, 0x39, 0xe8], 0x39),       // dword destination/source form
+        (&[0x39, 0xe8], 0x39),             // dword CMP EAX,EBP
+        (&[0x48, 0x3b, 0xe8], 0x3b),       // reverse opcode direction
+        (&[0x48, 0x3b, 0xef], 0x3b),       // reverse opcode direction
+        (&[0x4c, 0x3b, 0xef], 0x3b),       // CMP R13,RDI
+        (&[0x49, 0x39, 0xfd], 0x39),       // CMP R13,RDI
+        (&[0x44, 0x39, 0xef], 0x39),       // dword compare
+        (&[0x66, 0x4d, 0x39, 0xe9], 0x39), // operand-size prefix
+        (&[0xf3, 0x4d, 0x39, 0xe9], 0x39), // REP prefix
+        (&[0x40, 0x4d, 0x39, 0xe9], 0x39), // redundant REX prefix
+        (&[0x67, 0x4d, 0x39, 0xe9], 0x39), // address-size prefix
+        (&[0x48, 0x39, 0x2f], 0x39),       // memory destination
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "{bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(memory.write_addresses.is_empty());
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_cmp_r9_r13_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x4d, 0x39, 0xe9];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x4d });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn rust_helper_cmp_r14_r15_uses_qword_operands_and_preserves_registers() {
     const CF: u64 = 1 << 0;
     const PF: u64 = 1 << 2;
@@ -26363,6 +26511,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x0f, 0xb7, 0xcb][..], 0xb7),
         (&[0x48, 0x39, 0x3e][..], 0x39),
         (&[0x4d, 0x39, 0xfe][..], 0x39),
+        (&[0x4d, 0x39, 0xe9][..], 0x39),
         (&[0x0f, 0xb7, 0x5e, 0x0a][..], 0xb7),
         (&[0x0f, 0xb7, 0x5c, 0x24, 0x40][..], 0xb7),
         (&[0x44, 0x8b, 0x14, 0x08][..], 0x8b),
