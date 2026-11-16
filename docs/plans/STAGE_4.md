@@ -600,7 +600,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-15. Соединить JIT с production memory owner
 
-- [ ] Принято после ревью.
+- [x] S4-15 принят с ограничениями (gate-ревью Claude Opus, high; ограничения — «S4-15 — итог» в STAGE_4_REPORT и JIT_CONTRACT).
 - **Где:** `od-jit`, `od-machine`, `od-host` в существующих границах; обновление `JIT_CONTRACT.md`.
 - **Сделать:** адаптировать проверенное memory-подмножество этапа 3 к RAM/MMU machine owner, handles/leases и precise exits. Проверки fault/MMIO не обходятся direct host pointer. Memory ownership не переносить в runner.
 - **Проверка:** одни guest bytes через interpreter и JIT, fault до/после допустимых effects, MMIO side effects, live handle при reset/retirement, реальное освобождение после допустимого срока.
@@ -627,7 +627,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-15b. Memory-блок JIT из байтов guest RAM
 
-- Реализовано (ожидает независимого ревью, чекбокс S4-15 не ставится):
+- Реализовано; ревью Claude Opus, high — принято с ограничениями (см. отчёт):
   `PagedFetchedLoadSession` в `od-host` делает tracked instruction fetch
   exact `48 8B 03` по RIP (execute/NX/U/S, A-биты кода как effect),
   хранит физическую страницу и generation, компилирует блок из этих байтов и
@@ -639,7 +639,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-15c. Fallback-диспетчер на один шаг
 
-- Реализовано (ожидает независимого ревью, чекбокс S4-15 не ставится):
+- Реализовано; ревью Claude Opus, high — принято с ограничениями (см. отчёт):
   `PagedFetchedLoadSession::execute_or_interpret` в `od-host` исполняет шаг
   через JIT S4-15b; если JIT отказал, не исполнив инструкцию (контекст,
   operand range, fetch включая #PF, неподдерживаемая форма, compile/publish,
@@ -647,13 +647,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   `od_machine::step_paged_mov` на тех же state/bus. Исполненный JIT-шаг
   (успех или data #PF) не повторяется. Результат называет путь
   (`Jit`/`Interpreter`). Тесты `s4_15c_*` в
-  `tests/system/stage4_memory_fault.rs`. Store (15d), расширение форм (15e),
-  reset/handle (15f), закрытие (15g) не сделаны. См. раздел S4-15c в
+  `tests/system/stage4_memory_fault.rs`. На момент среза не сделаны (выполнены в
+  срезах ниже): store (15d), расширение форм (15e), reset/handle (15f),
+  закрытие (15g). См. раздел S4-15c в
   [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
 
 #### S4-15d. JIT-store `48 89 03` через tracked write-адаптер
 
-- Реализовано (ожидает независимого ревью, чекбокс S4-15 не ставится):
+- Реализовано; ревью Claude Opus, high — принято с ограничениями (см. отчёт):
   `PagedFetchedLoadSession::execute_with_store` / `execute_or_interpret`
   допускают `MOV [RBX],RAX` из того же fetch-снимка, что и load. Запись идёт
   через `od_machine::with_paged_mov_store_memory` (tracked walk: права
@@ -663,13 +664,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   например 2 MiB лист (`StoreTargetRefused`, без каких-либо effects; шаг
   уходит в интерпретатор по правилу S4-15c, где `48 89 03` даёт `Unsupported`).
   Store в другую code page допустим: повторный вход сверяет байты и generation.
-  Тесты `s4_15d_*`. Активный блок (S4-16i), расширение форм (15e),
-  reset/handle (15f), закрытие (15g) не сделаны. См. раздел S4-15d в
+  Тесты `s4_15d_*`. Активный блок (S4-16i) не сделан; на момент
+  среза не сделаны (выполнены в срезах ниже): расширение форм (15e), reset/handle
+  (15f), закрытие (15g). См. раздел S4-15d в
   [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
 
 #### S4-15e. Расширение допустимых форм: dword, disp8/disp32, RIP-relative
 
-- Реализовано (ожидает независимого ревью, чекбокс S4-15 не ставится):
+- Реализовано; ревью Claude Opus, high — принято с ограничениями (см. отчёт):
   новый вход `PagedFetchedLoadSession::execute_forms` (старые входы не менялись)
   допускает из того же fetch-снимка `8B 03` (dword, zero-extend в RAX),
   `48 8B 43 ib`, `48 8B 83 id` (qword `[RBX+disp]`) и `48 8B 05 id` (qword
@@ -678,16 +680,26 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   operand range проверяется после fetch от эффективного адреса. Dword читается
   через `od_machine::with_paged_mov_dword_memory`. Остальные формы
   (`67`-формы, store со смещением, dword со смещением) — `UnsupportedForm`: в
-  интерпретаторе их нет, ждут форм в `od-isa`. Тесты `s4_15e_*` (13); oracle для
+  allowlist `step_paged_mov` их не содержит. Тесты `s4_15e_*` (13); oracle для
   dword — `step_paged_mov_dword_read`, для disp/RIP-relative — эквивалентный
   `48 8B 03` с RBX = эффективный адрес. Не сделаны: интеграция в
-  `execute_or_interpret`, многоинструкционные блоки, 2 MiB код-страницы,
-  reset/handle (15f), закрытие (15g). См. раздел S4-15e в
+  `execute_or_interpret`, многоинструкционные блоки, 2 MiB код-страницы
+  (reset/handle и закрытие выполнены в 15f, 15g). Ограничение по `48 89 03`:
+  нет в одношаговом paged-профиле `step_paged_mov` (allowlist
+  `is_paged_mov_instruction`: `48 8B 03` и `48 89 0B`); формы `48 89 03` и
+  `8B 03` исполняются в od-isa (плоский s2-интерпретатор, dword-профиль
+  `step_paged_mov_dword_read`, paged CPL0-набор на плате), но fallback к ним из
+  диспетчера не подключён. Slice с гарантией fallback — `48 8B 03` (и
+  `48 89 0B` исполняет интерпретатор); `48 89 03` — расширение JIT БЕЗ
+  гарантии fallback при отказе (отказ явный, `Unsupported`, без молчаливого
+  effect). Адресат остатка: S4-42 (fallback на paged CPL0-набор на Linux-трассе)
+  либо отдельный подсрез od-isa/CPU_CONTRACT, если нужен одношаговый
+  paged-профиль с `48 89 03` (вне «Где» S4-15). См. раздел S4-15e в
   [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
 
 #### S4-15f. Reset и освобождение MAP_JIT-региона на production owner
 
-- Реализовано (ожидает независимого ревью, чекбокс S4-15 не ставится):
+- Реализовано; ревью Claude Opus, high — принято (ограничения в отчёте):
   `PagedFetchedLoadSession::reset(&mut self) -> bool` на safe point между
   вызовами роняет допущенный блок (`PublishedCode`: `munmap` и lease единственного
   MAP_JIT-региона); следующий вход — `Admitted`, а не `Reused`; повторный reset —
@@ -704,6 +716,15 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   Не сделаны: SMP и отложенное освобождение между vCPU (S3-25, G7), grace
   period, интеграция reset в диспетчер/runner, закрытие (15g). См. раздел
   S4-15f в [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
+
+#### S4-15g. Закрытие S4-15 (документы)
+
+- S4-15 предложен к приёмке с ограничениями (gate-ревью Claude Opus, high:
+  принять с записанными ограничениями); чекбокс проставляется координатором. Итог, таблица «пункт плана → чем покрыт» и список
+  ограничений — раздел «S4-15 — итог» в
+  [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md); единый контракт —
+  раздел «S4-15: JIT on the production memory owner» в
+  [JIT_CONTRACT.md](../specs/JIT_CONTRACT.md). Код не менялся.
 
 ### S4-16. Physical aliases и инвалидация исполняемого кода
 
