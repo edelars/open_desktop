@@ -678,7 +678,7 @@ Four focused profile tests cover all CF/ZF combinations with defined and undefin
 
 The base `PagedCpl0ProbeV1` admits only exact `45 84 DA`. REX.B selects ModRM r/m=R10B as the left operand, while REX.R selects ModRM.reg=R11B as the right operand. TEST performs byte AND for flags without writing a GPR: CF/OF clear; ZF/SF/PF reflect the result; AF is undefined and its value is preserved by shared semantics. A ModRM fetch fault commits no state. Neighbor register order, REX fields, operation, prefixes and memory forms remain unsupported; CPL3 and other paged profiles remain isolated.
 
-Four focused profile tests cover result and logical flag values, AF definedness, no GPR writes, ModRM-fetch atomicity, neighbors and CPL3/other-profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/871/7/15); all 63 paged machine tests pass. Scoped cargo check, rustfmt and diff-check pass; only the existing unused page-walk helper warning remains. Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) advances after 8,995 retired instructions to `74 11` (`JZ rel8 +0x11`, ISSUE-299) at RIP `0x201691`; COM1 remains empty. Independent review pending. ISSUE-201 remains the unrelated CLD expectation issue.
+Four focused profile tests cover result and logical flag values, AF definedness, no GPR writes, ModRM-fetch atomicity, neighbors and CPL3/other-profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/871/7/15); all 63 paged machine tests pass. Scoped cargo check, rustfmt and diff-check pass; only the existing unused page-walk helper warning remains. Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) advances after 8,995 retired instructions to `74 11` (`JZ rel8 +0x11`, ISSUE-299) at RIP `0x201691`; COM1 remains empty. Independent review approved with no remaining findings. ISSUE-201 remains the unrelated CLD expectation issue.
 
 ### Stage 7 runner frontier after ISSUE-299
 
@@ -886,3 +886,10 @@ The admitted instruction is dword ESI self-XOR: ESI and thus all of RSI become z
 With exact `45 31 ED` admitted, the runner retires 9,046 instructions and stops at RIP `0x201787`, bytes `41 0F 94 C5` (`SETE R13B`; REX.B extends ModRM r/m=5 to R13B, ISSUE-334), `Unsupported { opcode: 148 }`. Image `/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1 remains empty.
 
 The admitted `XOR R13D,R13D` uses REX.R+B to select both operands as R13D; the dword result zero-extends R13. It preserves unrelated state and follows shared logical XOR flag/definedness semantics. The exact encoding is limited to the base paged profile.
+
+
+### Stage 7 runner frontier after ISSUE-334
+
+With exact `41 0F 94 C5` admitted, the firmware runner retires 9,048 instructions and stops at RIP `0x20178f`, bytes `44 0F 44 EE` (`CMOVE R13D,ESI`, ISSUE-335), `Unsupported { opcode: 68 }`. Image `/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1 output is empty.
+
+The admitted instruction is SETE R13B: REX.B extends the low-byte destination, ZF determines the written byte, upper R13 is preserved, and neither flags nor their definedness change. Admission is limited to the exact form in the base paged profile. Full od-isa suites and all 67 paged machine quantum tests passed; scoped cargo check, formatting and diff-check passed, with only the existing unused page-walk helper warning. Independent review is pending. ISSUE-201 remains the unrelated stale CLD test expectation caveat.

@@ -4539,9 +4539,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-334 — S7-04: exact helper `SETE R13B` (`41 0F 94 C5`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-333.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201787`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `41 0F 94 C5` are admitted. REX.B extends ModRM r/m=5 to R13B (without REX this encoding selects CH). SETE reads ZF and writes only the low byte of R13 when ZF is one, otherwise zero; upper R13 bits, other registers, flags and definedness are preserved.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, retired 9,046 instructions at the prior frontier; file offset `0x1787` contains `41 0F 94 C5`.
+- **Проверка:** four focused profile tests cover ZF true/false and defined/undefined metadata, byte-preservation/full-state behavior, final-byte fetch-fault atomicity, neighboring encodings and CPL3 rejection; the other-paged-profile matrix rejects the exact bytes. Runner now retires 9,048 instructions and stops at `44 0F 44 EE` (`CMOVE R13D,ESI`, ISSUE-335) at RIP `0x20178f`, `Unsupported { opcode: 68 }`; COM1 is empty. Full validation and independent review are recorded in the Stage 7 report and CPU contract. ISSUE-201 remains the unrelated pair of stale CLD-unsupported expectations in full `od-machine` tests.
+
+### ISSUE-335 — S7-04: exact helper `CMOVE R13D,ESI` (`44 0F 44 EE`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-334.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20178f`.
 - **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this REX.B byte-register SETcc; REX.B extends ModRM r/m=5 from BPL to R13B, and firmware stops before the following helper instruction.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, retired 9,046 instructions; file offset `0x1787` contains `41 0F 94 C5` and runner reports `Unsupported { opcode: 148 }`; COM1 is empty.
+- **Суть и последствия:** firmware reaches this conditional dword register move after 9,048 retired instructions. REX.R extends ModRM.reg=5 to R13D; source r/m=6 is ESI. The base profile does not yet admit the exact instruction.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 68 }` at RIP `0x20178f`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.

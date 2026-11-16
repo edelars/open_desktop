@@ -736,6 +736,10 @@ Current bounded CPU-profile progress: exact no-prefix `31 F6` (`XOR ESI,ESI`) is
 
 Current bounded CPU-profile progress: only exact `45 31 ED` is admitted for `XOR R13D,R13D`. REX.R and REX.B jointly select R13D; the dword self-XOR zero-extends R13 and applies shared logical flag/definedness semantics. Four focused tests cover varied high-half inputs, AF definedness, ModRM fetch fault, neighbor rejection, CPL3 and other-profile isolation. Firmware advances after 9,046 retired instructions to ISSUE-334, `41 0F 94 C5` (`SETE R13B`, REX.B-extended byte destination) at RIP `0x201787`; COM1 remains empty. This does not change the broader UEFI task status. ISSUE-201's unrelated stale CLD expectations remain open; see `KNOWN_ISSUES.md`.
 
+### S7-04 firmware CPU handoff progress: ISSUE-334
+
+Current bounded CPU-profile progress: exact `41 0F 94 C5` (`SETE R13B`) is admitted in `PagedCpl0ProbeV1`. REX.B extends r/m=5 to R13B; SETE uses ZF, updates only R13B and preserves upper R13, other state and flag definedness. Four focused tests cover both ZF values with defined and undefined metadata, final-byte fetch fault, neighbors, CPL3 and other-profile isolation. Firmware advances to ISSUE-335, `44 0F 44 EE` (`CMOVE R13D,ESI`) at RIP `0x20178f` after 9,048 retired instructions; COM1 remains empty. Full od-isa suites pass (2,322/1,591/126/29/6/1,016/7/15; 0 doc tests), all 67 paged machine quantum tests pass, and scoped cargo check, Rust formatting and diff-check pass; cargo check reports only the existing unused page-walk helper warning. Independent review approved with no remaining findings. This does not change the broader UEFI task status. ISSUE-201's unrelated stale CLD expectations remain open; see `KNOWN_ISSUES.md`.
+
 ## 9. Готовый промпт на одну задачу
 
 ```text
