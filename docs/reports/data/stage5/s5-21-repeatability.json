@@ -3,13 +3,13 @@
   "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-root-pass2.json",
   "compact_evidence": {
     "coarse_operand_signatures": 560,
-    "generation_command": "Historical base export source (preserved): work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-root-pass2.json; final compact payload reproducibly derived from committed checkpoint 45401a1 with tools/build/annotate_stage5_cpl0_candidates.py. Raw analyzer output was not regenerated and target ELFs were not executed.",
+    "generation_command": "Historical base export source (preserved): work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-root-pass2.json; final compact payload reproducibly derives from committed checkpoint 45401a1 with tools/build/annotate_stage5_cpl0_candidates.py, including the bounded S4-38L7ay XADD and S4-38L9p XCHG conditional overlays. Raw analyzer output was not regenerated and target ELFs were not executed.",
     "normalized_instruction_forms": 1269,
     "path": "docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
     "repeat_cmp_exit_code": 0,
-    "repeat_sha256": "5b688b74a78417bab072e2e4c3f749cb187feb7aa6fc259f3ae07edb118079f2",
-    "sha256": "5b688b74a78417bab072e2e4c3f749cb187feb7aa6fc259f3ae07edb118079f2",
-    "size_bytes": 1125851
+    "repeat_sha256": "3e0d006622e9f21af3c54048c145e6ed21d30bd29ae6225ae7c96e0eff6ba913",
+    "sha256": "3e0d006622e9f21af3c54048c145e6ed21d30bd29ae6225ae7c96e0eff6ba913",
+    "size_bytes": 1126036
   },
   "date_utc": "2026-11-13",
   "full_inventory": {
@@ -19,9 +19,9 @@
     },
     "classified_normalized_forms": 1064,
     "coarse_operand_signatures": 560,
-    "conditional_candidate_hit_count": 116191,
+    "conditional_candidate_hit_count": 116204,
     "conditional_candidate_supported_overlap_rows": 40,
-    "conditional_cpl0_candidate_hits": 115683,
+    "conditional_cpl0_candidate_hits": 115696,
     "conditional_local_state_gated_candidate_frequencies": {
       "S2-37ad-CVTTSS2SI-register-state-gated": 8,
       "S2-37ae-CVTTSD2SI-register-state-gated": 28,
@@ -311,7 +311,7 @@
       }
     },
     "unclassified_normalized_forms": 205,
-    "unique_instruction_rows_with_any_conditional_candidate": 116114,
+    "unique_instruction_rows_with_any_conditional_candidate": 116127,
     "unique_mnemonics": 192,
     "instruction_rows": 6510400,
     "preserved_raw_path": "work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-root-pass2.json",
@@ -332,10 +332,11 @@
       "S4-38L7y-LOCK-CMPXCHG-dword": 9,
       "S4-38L7z-LOCK-ADD-memory-immediate": 33,
       "S4-38L9b-PAUSE-exact-F3-90": 6,
+      "S4-38L9p-XCHG-m32-r32-base-only": 13,
       "composed_cpl0_profile_candidate; control/state/port gates unresolved": 77
     },
-    "conditional_cpl0_candidate_hit_count": 115683,
-    "exact_instruction_rows_with_any_conditional_candidate": 116114,
+    "conditional_cpl0_candidate_hit_count": 115696,
+    "exact_instruction_rows_with_any_conditional_candidate": 116127,
     "scenario_candidate_summaries": {
       "C": {
         "conditional_candidate_frequencies": {
@@ -355,6 +356,7 @@
           "S4-38L7y-LOCK-CMPXCHG-dword": 0,
           "S4-38L7z-LOCK-ADD-memory-immediate": 0,
           "S4-38L9b-PAUSE-exact-F3-90": 0,
+          "S4-38L9p-XCHG-m32-r32-base-only": 0,
           "composed_cpl0_profile_candidate; control/state/port gates unresolved": 0
         },
         "conditional_local_candidate_frequencies": {
@@ -395,6 +397,7 @@
           "S4-38L7y-LOCK-CMPXCHG-dword": 9,
           "S4-38L7z-LOCK-ADD-memory-immediate": 33,
           "S4-38L9b-PAUSE-exact-F3-90": 6,
+          "S4-38L9p-XCHG-m32-r32-base-only": 13,
           "composed_cpl0_profile_candidate; control/state/port gates unresolved": 77
         },
         "conditional_local_candidate_frequencies": {
@@ -415,7 +418,7 @@
           "S2-37v-COMISS-UCOMISS-register-state-gated": 2,
           "S2-37w-COMISD-UCOMISD-register-state-gated": 23
         },
-        "conditional_candidate_instruction_rows": 111669
+        "conditional_candidate_instruction_rows": 111682
       }
     }
   },
@@ -455,13 +458,13 @@
   "candidate_annotation_lineage": {
     "baseline_commit": "45401a1fcb5487fa83b12b3c26abda4dd137711e",
     "baseline_compact_sha256": "7dceca57748810beb6d1c05802c9d1a83aeb6e2c61faa0d36d3eab6b1864b3a9",
-    "latest_compact_sha256": "5b688b74a78417bab072e2e4c3f749cb187feb7aa6fc259f3ae07edb118079f2",
+    "latest_compact_sha256": "3e0d006622e9f21af3c54048c145e6ed21d30bd29ae6225ae7c96e0eff6ba913",
     "raw_analyzer_rerun": false,
     "raw_analyzer_pair_sha256": [
       "bbd593c567fda85f4b95c062509aa7990b34da5fdf4cb6922065aac6cce2bddc",
       "bbd593c567fda85f4b95c062509aa7990b34da5fdf4cb6922065aac6cce2bddc"
     ],
-    "derivation": "Decoded the committed compact inventory at baseline_commit; tools/build/annotate_stage5_cpl0_candidates.py deterministically re-applies existing exact-form overlays and adds the bounded S4-38L7ay LOCK XADD dword memory candidate. The Stage 4 contract historically records SDM attribution as unchecked; a separate current review checked Intel SDM rev. 093. Raw analyzer outputs and target ELFs were not regenerated or executed.",
+    "derivation": "Decoded the committed compact inventory at baseline_commit; tools/build/annotate_stage5_cpl0_candidates.py deterministically reapplies existing exact-form overlays and adds the bounded S4-38L7ay LOCK XADD dword-memory and S4-38L9p unprefixed XCHG dword-memory candidates. The S4-38L9p CPU contract still marks its SDM attribution unchecked; this inventory slice adds no independent source review. Raw analyzer outputs and target ELFs were not regenerated or executed.",
     "prior_cpl0_candidate_frequencies_preserved": {
       "S2-45-CPUID": 77,
       "S2-45-HLT": 8,
@@ -547,9 +550,28 @@
       "S4-38L7y-LOCK-CMPXCHG-dword",
       "S4-38L7z-LOCK-ADD-memory-immediate",
       "S4-38L9b-PAUSE-exact-F3-90",
-      "composed_cpl0_profile_candidate; control/state/port gates unresolved"
+      "composed_cpl0_profile_candidate; control/state/port gates unresolved",
+      "S4-38L9p-XCHG-m32-r32-base-only"
     ],
-    "compact_payload_repeat_sha256": "5b688b74a78417bab072e2e4c3f749cb187feb7aa6fc259f3ae07edb118079f2",
-    "compact_payload_repeat_cmp_exit_code": 0
+    "compact_payload_repeat_sha256": "3e0d006622e9f21af3c54048c145e6ed21d30bd29ae6225ae7c96e0eff6ba913",
+    "compact_payload_repeat_cmp_exit_code": 0,
+    "additional_candidates": [
+      {
+        "candidate_id": "S4-38L9p-XCHG-m32-r32-base-only",
+        "rows": 13,
+        "normalized_forms": 1,
+        "exact_encoding_keys": 3,
+        "binary_frequencies": {
+          "gcc-cc1": 5,
+          "gcc-collect2": 4,
+          "gcc-driver": 4
+        },
+        "classification": "unclassified",
+        "evidence_scope": "outside",
+        "condition": "Long64 runtime gate; Ring0 with selected composed CPL0 control_policy; exact observed unprefixed 87 /r dword memory forms only: base-only 64-bit addresses with ModR/M keys 07, 43 and 47. The accepted profile permits bounded REX and LOCK forms, but this overlay only matches the three observed bare exact keys. No runtime address validity or CPL3 support is inferred.",
+        "source_provenance": "The S4-38L9p CPU contract records SDM attribution as unchecked; no independent source-backed ISA review was performed in this slice.",
+        "atomicity_scope": "single-vCPU synchronous-memory profile; no multi-vCPU atomicity claim"
+      }
+    ]
   }
 }
