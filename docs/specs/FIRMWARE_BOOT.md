@@ -356,3 +356,8 @@ UUID и серийный номер задаёт конфигурация VM н�
 - ROM `[0xFFC0_0000, 0x1_0000_0000)`, NVRAM `[0xFF00_0000, 0xFF04_1000)` и handoff `[0x0010_0000, 0x0011_0000)` не пересекают `[0xF400_0000, 0xFC00_1000)`, `[0xFEC0_0000, 0xFEC0_1000)`, `[0xFED4_0000, 0xFED4_5000)`, `[0xFEE0_0000, 0xFEE0_1000)` и друг друга; ROM и NVRAM лежат внутри `0xFF00_0000–0xFFFF_FFFF`.
 - RAM ниже 4 GiB заканчивается не выше `0xF400_0000`; boot reservations заканчиваются ниже `0x0060_0000 + 0x0800_C000 = 0x0860_C000` и при минимальной RAM — в `0x0066_E000 < 0x0800_0000`.
 - Все окна ниже `2^32`, верхняя RAM ≤ `2^36`: карта совместима с `MachineMemoryMap::new(36, …)`; ни одного `Framebuffer` больше двух, их начала и длины кратны 4 KiB и не больше `0x0240_0000`.
+
+
+## 16. Current S7-04 runner boundary (2026-11-16)
+
+The firmware image enters through the implemented exact `PagedCpl0ProbeV1` profile; the current build retires 8881 instructions and stops at firmware RIP `0x200e72` on `44 8B 7E 30` (`MOV R14D,dword ptr [RSI+0x30]`, ISSUE-199). COM1 is still empty. The preceding exact `75 50` is admitted as `JNZ rel8 +0x50`; its shared condition semantics preserve flags and flag-definedness, and only a taken target is checked for canonicality. This profile progress does not establish completion of handoff validation, page-table construction, allocator, memory map, or serial output. See the [CPU contract](CPU_CONTRACT.md) and [Stage 7 report](../reports/STAGE_7_REPORT.md).

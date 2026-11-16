@@ -4648,7 +4648,7 @@ fn firmware_entry_rep_stosb_is_unsupported_in_cpl3_profile() {
 #[test]
 fn firmware_entry_jnz_taken_and_not_taken_preserve_flags_and_definedness() {
     let defined = DEFINED & !(1 << 6);
-    for displacement in [0x24u8, 0x2a, 0x38, 0x4a, 0x77, 0xae] {
+    for displacement in [0x24u8, 0x2a, 0x38, 0x4a, 0x50, 0x77, 0xae] {
         let code = [0x75, displacement];
         let target = RIP
             .wrapping_add(2)
@@ -4843,7 +4843,7 @@ fn rust_helper_jae_plus_4c_is_unsupported_in_cpl3_profile() {
 
 #[test]
 fn firmware_entry_jnz_checks_canonicality_only_when_taken() {
-    for displacement in [0x24u8, 0x2a, 0x38, 0x4a, 0x77, 0xae] {
+    for displacement in [0x24u8, 0x2a, 0x38, 0x4a, 0x50, 0x77, 0xae] {
         // Positive targets cross the lower canonical boundary from the final low page;
         // the negative target crosses the upper canonical boundary from the first high page.
         let start = if (displacement as i8) < 0 {
@@ -4949,12 +4949,15 @@ fn firmware_entry_jnz_neighbours_stay_unsupported_without_mutation() {
         (&[0x75, 0x39], 0x75),                // neighbor above +0x38
         (&[0x75, 0x49], 0x75),                // neighbor below +0x4a
         (&[0x75, 0x4b], 0x75),                // neighbor above +0x4a
+        (&[0x75, 0x4f], 0x75),                // neighbor below +0x50
+        (&[0x75, 0x51], 0x75),                // neighbor above +0x50
         (&[0x75, 0x76], 0x75),                // neighboring displacement
         (&[0x75, 0x78], 0x75),                // neighboring displacement
         (&[0x75, 0xad], 0x75),                // neighbor below -0x52
         (&[0x75, 0xaf], 0x75),                // neighbor above -0x52
         (&[0x74, 0xae], 0x74),                // JZ with the same displacement
         (&[0x74, 0x4a], 0x74),                // JZ with the same positive displacement
+        (&[0x74, 0x50], 0x74),                // JZ with the same displacement
         (&[0x74, 0x24], 0x74),                // JZ
         (&[0x0f, 0x85, 0x24, 0, 0, 0], 0x85), // near JNZ
         (&[0x66, 0x75, 0x24], 0x75),          // prefixed JNZ
@@ -4991,6 +4994,7 @@ fn firmware_entry_jnz_is_unsupported_in_cpl3_profile() {
         &[0x75, 0x38],
         &[0x75, 0x77],
         &[0x75, 0x4a],
+        &[0x75, 0x50],
         &[0x75, 0xae],
         &[0x0f, 0x85, 0xd6, 0, 0, 0],
     ];

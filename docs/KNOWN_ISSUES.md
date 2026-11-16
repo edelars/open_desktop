@@ -872,10 +872,20 @@
 ### ISSUE-198 — S7-04: Rust helper `JNZ rel8 +0x50` (`75 50`) remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `CMP EDI,0x20`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e70`.
+- **Статус:** решена узко для точных байтов `75 50`; остальные формы JNZ и ветвления не допущены. Независимое review пройдено без замечаний; ожидает коммита.
+- **Суть и последствия:** до исправления после 8880 retire runner останавливался на `75 50`, `Unsupported { opcode: 117 }`, `RIP=0x200e70`; COM1 оставался пустым.
+- **Реализация:** базовый `PagedCpl0ProbeV1` допускает no-prefix `75 50` через существующий `ConditionCode::NotEqual`: ZF=0 берёт `next_rip+0x50`, ZF=1 исполняет fall-through; flags и `rflags_defined` не меняются, canonicality проверяется только для взятой цели. Точный допуск `+0x50` изолирован от соседних displacement/condition/prefix forms и CPL3.
+- **Проверка:** 5 focused `firmware_entry_jnz_*` тестов и все 469 `paged_probe_profile` tests прошли; `cargo check --offline -p od-isa -p od-machine -p od-runner --all-targets` прошёл. Firmware image `/private/tmp/od-fw-s7-04-issue198.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner retired 8881 and stopped at `44 8B 7E 30` (`MOV R14D,dword ptr [RSI+0x30]`, ISSUE-199), RIP `0x200e72`, `Unsupported { opcode: 139 }`, `com1_bytes=0`; full handoff validation remains incomplete. Scoped `rustfmt --edition 2024 --check` passed.
+- **Основание:** исходный image `/private/tmp/od-fw-s7-04-issue197.bin`; bytes at offset `0xe70` begin `75 50 44 8b 7e 30`; runner budget 10000.
+- **Следующий шаг:** continue the S7-04 CPU profile at ISSUE-199; this slice is ready for commit.
+
+### ISSUE-199 — S7-04: Rust helper `MOV R14D,dword ptr [RSI+0x30]` (`44 8B 7E 30`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact `JNZ rel8 +0x50`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e72`.
 - **Статус:** открыта.
-- **Суть и последствия:** after 8880 retire runner stopped on `75 50`, `Unsupported { opcode: 117 }`, `RIP=0x200e70`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue197.bin`; bytes at offset `0xe70` begin `75 50 44 8b 7e 30`; runner budget 10000.
-- **Следующий шаг:** inspect exact JNZ rel8 semantics, target/fallthrough and flag-definedness before considering narrow admission.
+- **Суть и последствия:** runner retired 8881 instructions, затем остановился на `44 8B 7E 30`, `Unsupported { opcode: 139 }`, `RIP=0x200e72`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue198.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xe72` are `44 8b 7e 30`; runner budget 10000.
+- **Следующий шаг:** inspect the exact tracked dword read semantics, effective address and R14D zero-extension before considering narrow admission.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
