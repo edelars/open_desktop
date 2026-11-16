@@ -441,3 +441,10 @@ Four focused tests cover R10D selection, dword comparisons (including values tha
 Base `PagedCpl0ProbeV1` admits only exact `41 0F 93 C6`. REX.B selects low-byte R14B. SETAE reads CF only and replaces R14B with 1 when CF is clear or 0 when CF is set, preserving the upper 56 R14 bits and all flags/definedness. Fetch fault on the final ModRM byte is atomic. Neighboring conditions/registers/REX/prefix forms, memory destinations, CPL3 and other profiles remain unsupported.
 
 Four focused tests cover CF true/false and definedness, partial-register state, flag/state preservation, final-byte fetch-fault atomicity, neighboring forms, and CPL3/profile isolation. Firmware advances after 8,958 retired instructions to `41 83 FF F4` (`CMP R15D,-0x0c`, ISSUE-265) at RIP `0x2015E5`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `CMP R15D,-0x0c` (ISSUE-265)
+
+Base `PagedCpl0ProbeV1` admits only exact `41 83 FF F4`. REX.B selects R15D. Opcode `83 /7` sign-extends imm8 `0xf4` to -12 at dword width and uses shared CMP arithmetic flag/definedness semantics. No GPR or memory is written; a fault fetching the immediate byte is atomic. Neighboring immediates, registers/groups, widths, prefixes, memory forms, CPL3 and other paged profiles remain unsupported.
+
+Four focused tests cover R15D routing, sign extension and dword-vs-word results, flags/definedness, GPR preservation, final-byte fetch-fault atomicity, neighbors, and CPL3/profile isolation. Firmware advances after 8,959 retired instructions to `0F 82 30 02 00 00` (`JB rel32 +0x230`, ISSUE-266) at RIP `0x2015E9`; COM1 remains empty. Independent review approved with no findings.
