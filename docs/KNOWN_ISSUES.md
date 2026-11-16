@@ -4137,8 +4137,18 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-285 — S7-04: exact helper `JNZ rel8 +0x20` (`75 20`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-284.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20163e`.
-- **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact short JNZ displacement; subsequent firmware execution is blocked.
+- **Статус:** реализована в S7-04; независимое ревью одобрило без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact no-prefix `75 20`; JNZ tests ZF, preserves flags/definedness and checks canonicality only for a taken target.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x163e` are `75 20`; runner budget 10000.
-- **Проверки исполнения:** after ISSUE-284, firmware retires 8,981 instructions and stops with `Unsupported { opcode: 117 }`; COM1 remains empty.
-- **Следующий шаг:** admit only exact `75 20`, preserving JNZ state and branch-target semantics.
+- **Проверки исполнения:** five focused tests cover ZF true/false, both RIP outcomes, flags/definedness, taken-only canonicality, rel8 fetch-fault atomicity, neighbors and CPL3; the other-profile matrix keeps it unsupported. Full od-isa suites pass (2,322 library, 1,591 profile-set, 126 execution, 29 boundary, 6 flags, 821 paged-profile, 7 profile-isolation, 15 descriptor); scoped cargo check, formatting and diff-check pass. Cargo check reports only the existing unused page-walk helper warning. Firmware retires 8,982 instructions and falls through to `49 BF 00 00 00 00 10 00 00 00` (`MOV R15,0x1000000000`, ISSUE-286) at RIP `0x201640`; COM1 remains empty. Independent review approved with no findings.
+- **Следующий шаг:** handle the exact `MOV R15,0x1000000000` bytes as ISSUE-286.
+
+
+### ISSUE-286 — S7-04: exact helper `MOV R15,0x1000000000` (`49 BF 00 00 00 00 10 00 00 00`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-285.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201640`.
+- **Статус:** открыта.
+- **Суть и последствия:** the base profile does not yet admit this exact REX.B MOV-imm64 form; subsequent firmware execution is blocked.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1640` are `49 BF 00 00 00 00 10 00 00 00`; runner budget 10000.
+- **Проверки исполнения:** after ISSUE-285, firmware retires 8,982 instructions and stops with `Unsupported { opcode: 191 }`; COM1 remains empty.
+- **Следующий шаг:** admit only the exact immediate MOV encoding and verify R15 routing, value and fetch-fault atomicity.

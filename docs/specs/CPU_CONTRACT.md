@@ -27643,3 +27643,10 @@ Four focused tests cover REX source routing, result and zero-extension, logical 
 Base `PagedCpl0ProbeV1` admits only exact no-prefix `81 E5 FF 0F 00 00`. The dword AND writes EBP and zero-extends RBP. Shared logical semantics clear CF/OF, compute SF/ZF/PF and mark AF undefined while preserving unrelated flags. The final immediate-byte fetch fault is atomic. Other registers/groups/immediates/widths/prefixes, CPL3 and other paged profiles remain unsupported.
 
 Four focused tests cover dword masking and zero-extension, flags/definedness, full state preservation, final-byte fetch-fault atomicity, neighbors and CPL3/profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/821/7/15); all 61 paged machine tests, scoped check, formatting and diff-check pass. Firmware advances after 8,981 retired instructions to `75 20` (`JNZ rel8 +0x20`, ISSUE-285) at RIP `0x20163e`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `JNZ rel8 +0x20` (ISSUE-285)
+
+Base `PagedCpl0ProbeV1` admits only exact no-prefix `75 20`. JNZ tests ZF: ZF=0 adds signed rel8 +0x20 to next RIP; ZF=1 falls through. RFLAGS and definedness are preserved; canonicality is checked only on taken targets. A displacement-byte fetch fault is atomic. Other branch conditions/displacements/prefixes, CPL3 and other paged profiles remain unsupported.
+
+Five focused tests cover ZF outcomes and definedness, taken/fall-through RIP, taken-only canonicality, fetch-fault atomicity, neighboring encodings and CPL3/profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/821/7/15); scoped check, formatting and diff-check pass. Firmware retires 8,982 instructions and falls through to `49 BF 00 00 00 00 10 00 00 00` (`MOV R15,0x1000000000`, ISSUE-286) at RIP `0x201640`; COM1 remains empty. Independent review approved with no findings.

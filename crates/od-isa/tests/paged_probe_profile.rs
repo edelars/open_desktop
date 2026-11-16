@@ -6084,7 +6084,7 @@ fn firmware_entry_rep_stosb_is_unsupported_in_cpl3_profile() {
 #[test]
 fn firmware_entry_jnz_taken_and_not_taken_preserve_flags_and_definedness() {
     let defined = DEFINED & !(1 << 6);
-    for displacement in [0x24u8, 0x2a, 0x38, 0x4a, 0x50, 0x77, 0xae] {
+    for displacement in [0x20u8, 0x24, 0x2a, 0x38, 0x4a, 0x50, 0x77, 0xae] {
         let code = [0x75, displacement];
         let target = RIP
             .wrapping_add(2)
@@ -6602,7 +6602,7 @@ fn rust_helper_jb_plus_2a_is_unsupported_in_cpl3_profile() {
 
 #[test]
 fn firmware_entry_jnz_checks_canonicality_only_when_taken() {
-    for displacement in [0x24u8, 0x2a, 0x38, 0x4a, 0x50, 0x77, 0xae] {
+    for displacement in [0x20u8, 0x24, 0x2a, 0x38, 0x4a, 0x50, 0x77, 0xae] {
         // Positive targets cross the lower canonical boundary from the final low page;
         // the negative target crosses the upper canonical boundary from the first high page.
         let start = if (displacement as i8) < 0 {
@@ -6662,7 +6662,7 @@ fn firmware_entry_jnz_checks_canonicality_only_when_taken() {
 #[test]
 fn firmware_entry_jnz_fetch_fault_on_rel8_does_not_commit() {
     // Put the opcode at the last byte of a mapped code page so every admitted rel8 faults.
-    for displacement in [0x24u8, 0x2a, 0x38, 0x4a, 0x77, 0xae] {
+    for displacement in [0x20u8, 0x24, 0x2a, 0x38, 0x4a, 0x50, 0x77, 0xae] {
         let mut memory = Memory::new(&[]);
         memory.bytes[CODE_PHYSICAL + 0xfff] = 0x75;
         let mut cpu = state();
@@ -6701,6 +6701,8 @@ fn firmware_entry_jnz_fetch_fault_on_rel8_does_not_commit() {
 #[test]
 fn firmware_entry_jnz_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
+        (&[0x75, 0x1f], 0x75),                // neighbor below +0x20
+        (&[0x75, 0x21], 0x75),                // neighbor above +0x20
         (&[0x75, 0x23], 0x75),                // different displacement
         (&[0x75, 0x29], 0x75),                // neighbor below +0x2a
         (&[0x75, 0x2b], 0x75),                // neighbor above +0x2a
@@ -6710,6 +6712,7 @@ fn firmware_entry_jnz_neighbours_stay_unsupported_without_mutation() {
         (&[0x75, 0x4b], 0x75),                // neighbor above +0x4a
         (&[0x75, 0x4f], 0x75),                // neighbor below +0x50
         (&[0x75, 0x51], 0x75),                // neighbor above +0x50
+        (&[0x74, 0x20], 0x74),                // JZ with the same displacement
         (&[0x75, 0x76], 0x75),                // neighboring displacement
         (&[0x75, 0x78], 0x75),                // neighboring displacement
         (&[0x75, 0xad], 0x75),                // neighbor below -0x52
@@ -6720,6 +6723,7 @@ fn firmware_entry_jnz_neighbours_stay_unsupported_without_mutation() {
         (&[0x74, 0x24], 0x74),                // JZ
         (&[0x0f, 0x85, 0x24, 0, 0, 0], 0x85), // near JNZ
         (&[0x66, 0x75, 0x24], 0x75),          // prefixed JNZ
+        (&[0x66, 0x75, 0x20], 0x75),          // prefixed target JNZ
         (&[0x40, 0x75, 0x24], 0x75),          // REX-prefixed JNZ
         (&[0xeb, 0x24], 0xeb),                // JMP rel8
     ];
@@ -6748,6 +6752,7 @@ fn firmware_entry_jnz_neighbours_stay_unsupported_without_mutation() {
 #[test]
 fn firmware_entry_jnz_is_unsupported_in_cpl3_profile() {
     let cases: &[&[u8]] = &[
+        &[0x75, 0x20],
         &[0x75, 0x24],
         &[0x75, 0x2a],
         &[0x75, 0x38],
@@ -25051,6 +25056,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x4c, 0x39, 0xdd][..], 0x39),
         (&[0x44, 0x39, 0xcf][..], 0x39),
         (&[0x66, 0x39, 0xcb][..], 0x39),
+        (&[0x75, 0x20][..], 0x75),
         (&[0x75, 0x24][..], 0x75),
         (&[0x75, 0x2a][..], 0x75),
         (&[0x75, 0x38][..], 0x75),
