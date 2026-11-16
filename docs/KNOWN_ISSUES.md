@@ -4067,8 +4067,18 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-278 — S7-04: exact helper `MOV R14,[RAX+RCX+0x10]` (`4C 8B 74 08 10`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-277.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201620`.
-- **Статус:** открыта.
-- **Суть и последствия:** base `PagedCpl0ProbeV1` does not yet admit the exact qword load into R14 from `[RAX+RCX+0x10]`.
+- **Статус:** реализована в S7-04; независимое ревью одобрило изменение без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact `4C 8B 74 08 10`. REX.W/R select R14 qword destination; SIB address is RAX + RCX + sign-extended disp8 0x10. The tracked qword read writes only R14/RIP and preserves flags; load faults commit no state.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1620` are `4C 8B 74 08 10`; runner budget 10000.
-- **Проверки исполнения:** firmware retires 8,973 instructions and stops with `Unsupported { opcode: 139 }`; COM1 remains empty.
-- **Следующий шаг:** admit only exact tracked qword read, preserving fault atomicity and page-walk accessed/dirty semantics for ISSUE-278.
+- **Проверки исполнения:** six focused profile tests cover effective-address/read/state behavior, injected read/noncanonical/fetch faults, neighboring forms and CPL3; other paged profiles keep it unsupported. A machine integration test confirms the four-level tracked read sets accessed bits without dirty bits. Firmware retires 8,975 instructions and advances to `4D 85 F6` (`TEST R14,R14`) at RIP `0x201628`; COM1 remains empty.
+- **Следующий шаг:** admit exact qword self-TEST R14 and validate shared logical flags for ISSUE-279.
+
+
+### ISSUE-279 — S7-04: exact helper `TEST R14,R14` (`4D 85 F6`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-278.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201628`.
+- **Статус:** открыта.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` does not yet admit the exact qword self-TEST on R14.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1628` are `4D 85 F6`; runner budget 10000.
+- **Проверки исполнения:** firmware retires 8,975 instructions and stops with `Unsupported { opcode: 133 }`; COM1 remains empty.
+- **Следующий шаг:** admit only exact qword R14,R14 TEST and verify logical flags/AF definedness for ISSUE-279.
