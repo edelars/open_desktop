@@ -4187,8 +4187,18 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-290 — S7-04: exact helper `SETA R11B` (`41 0F 97 C3`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-289.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201654`.
-- **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact unsigned-above SETcc byte-register form; subsequent firmware execution is blocked.
+- **Статус:** реализована в S7-04; независимое ревью одобрило без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact `41 0F 97 C3`; SETA writes `0/1` to R11B from the unsigned-above condition `CF=0 && ZF=0`, preserving upper R11 and all flags/definedness.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1654` are `41 0F 97 C3`; runner budget 10000. REX.B extends ModRM r/m=3 to R11B.
-- **Проверки исполнения:** after ISSUE-289, firmware retires 8,986 instructions and stops with `Unsupported { opcode: 151 }`; COM1 remains empty.
-- **Следующий шаг:** admit only exact `SETA R11B`, preserving other state and flags/definedness.
+- **Проверки исполнения:** four focused tests cover all CF/ZF value combinations with both flags defined and undefined, partial-byte/state/flag preservation, final ModRM fetch-fault atomicity, neighbors and CPL3; the other-profile matrix keeps it unsupported. Full od-isa suites pass (2,322 library, 1,591 profile-set, 126 execution, 29 boundary, 6 flags, 841 paged-profile, 7 profile-isolation, 15 descriptor, 0 doc tests); all 61 paged machine tests pass. Scoped cargo check, formatting and diff-check pass; cargo check reports only the existing unused page-walk helper warning. Firmware retires 8,987 instructions and stops at `45 08 D3` (`OR R11B,R10B`, ISSUE-291) at RIP `0x201658`, `Unsupported { opcode: 8 }`; COM1 remains empty. Independent review approved with no findings.
+- **Следующий шаг:** handle exact `OR R11B,R10B` as ISSUE-291.
+
+
+### ISSUE-291 — S7-04: exact helper `OR R11B,R10B` (`45 08 D3`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-290.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201658`.
+- **Статус:** открыта.
+- **Суть и последствия:** the base profile does not yet admit this exact byte OR register form; subsequent firmware execution is blocked.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1658` are `45 08 D3`; runner budget 10000. Opcode 08 uses REX.B-selected r/m destination R11B and REX.R-selected reg source R10B.
+- **Проверки исполнения:** after ISSUE-290, firmware retires 8,987 instructions and stops with `Unsupported { opcode: 8 }`; COM1 remains empty.
+- **Следующий шаг:** admit exact `OR R11B,R10B` with byte logical flags, AF undefinedness, and only R11B written.

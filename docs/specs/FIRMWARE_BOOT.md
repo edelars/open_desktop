@@ -616,3 +616,10 @@ Four focused tests cover CF true/false with defined and undefined CF, partial-by
 This slice admits only exact `4D 39 FE` in base `PagedCpl0ProbeV1`. REX.W/R/B selects qword r/m destination R14 and reg source R15; the compare computes R14−R15 for arithmetic flags, without writing either GPR. Shared qword semantics update CF/PF/AF/ZF/SF/OF and definedness while preserving non-arithmetic flag values. Fetch faults before the final ModRM byte are atomic. The neighbor tests reject the listed alternate routes, reverse opcode direction, widths and prefixes; existing exact CMP admissions remain unchanged, and CPL3/other paged profiles do not gain this form.
 
 Four focused tests cover qword operand routing, flag values/definedness, GPR preservation, fetch-fault atomicity, neighbors and CPL3/profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/837/7/15); all 61 paged machine tests, scoped check, formatting and diff-check pass. Firmware advances after 8,986 retired instructions to `41 0F 97 C3` (`SETA R11B`, ISSUE-290) at RIP `0x201654`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `SETA R11B` (ISSUE-290)
+
+This slice admits only exact `41 0F 97 C3` in base `PagedCpl0ProbeV1`. REX.B selects R11B, and SETA writes one only when CF=0 and ZF=0. The low byte is the sole GPR change; upper R11, all other registers, RFLAGS and definedness are preserved. A final ModRM fetch fault is atomic. Existing exact SETcc forms are unchanged; the unadmitted neighbors and this form in CPL3/other paged profiles remain unsupported.
+
+Four focused tests cover the condition/definedness truth table, R11 partial-byte preservation, fetch-fault atomicity, neighbors and CPL3/profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/841/7/15); all 61 paged machine tests, scoped check, formatting and diff-check pass. Firmware advances after 8,987 retired instructions to `45 08 D3` (`OR R11B,R10B`, ISSUE-291) at RIP `0x201658`; COM1 remains empty. Independent review approved with no findings.
