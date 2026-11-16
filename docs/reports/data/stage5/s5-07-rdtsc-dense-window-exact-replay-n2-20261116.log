@@ -1,0 +1,111 @@
+S5-07 dense poll-RDTSC window and exact-nonce replay N=2 diagnostic
+Date: 2026-11-16
+Host: macOS/aarch64, local Codex worktree
+Source revision: 426190b0ed93f60ae344ff286b49bc85b236083a (clean)
+Runner executable SHA-256: 19c52a6fa998a58969956b9772ef696be2ebb37dec5e6c3376cde6cf641d071f
+
+Purpose
+-------
+The preceding dual-site stride-512 pair first showed a different sampled
+threshold predicate at global poll-hit ordinal 1,175,552. This diagnostic
+replayed both source nonces and inputs with a dense inclusive poll-hit window
+around that ordinal, preserving the entry stream. It checks actual poll
+sequence positions within a call and corrects the interpretation of matching
+global ordinals when earlier call lengths differ.
+
+Configuration and command
+-------------------------
+Both direct runs use the exact nonce, inputs and Linux options from the
+automatic source pair `stage5-s5-07-rdtsc-dual-site-stride512-n2-20261116-a`.
+The poll RIP is 0xffffffff8271b34d, the entry RIP is 0xffffffff8271b31b, and
+the dense selected-site window is inclusive global hit ordinals
+1,150,000:1,200,000 with stride 1. The entry stream captures every hit.
+
+Common command arguments:
+```sh
+target/release/od-runner linux-direct \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --ram-mib 128 --run --budget 3000000000 --set-cpl0 \
+  --cpuid-profile stage4a --user-mode --linux-norandmaps \
+  --linux-no-randomize-kstack-offset \
+  --execution-observations-rdtsc-rip 0xffffffff8271b34d \
+  --execution-observations-rdtsc-stride 1 \
+  --execution-observations-rdtsc-entry-rip 0xffffffff8271b31b \
+  --execution-observations-rdtsc-window 1150000:1200000
+```
+
+Run 0001 adds `--nonce OD518e8a0fda5d3f4600000175200000000`, output
+`work/stage5/stage5-s5-07-rdtsc-window-replay-20261116-a/run-0001.json`, and
+`--execution-observations-out` to the correspondingly named run-0001 sidecar.
+Run 0002 uses nonce `OD518e8a2228ca02d300000175200000001` and run-0002 output
+and sidecar paths.
+
+Both direct replays loaded Linux and stopped at `retired=2,999,999,998` with
+`budget_exhausted`. For each nonce, the complete stop object, UART bytes and
+full entry sample stream exactly match that nonce's automatic source run.
+Each replay also matches all 97 source stride-512 poll samples whose global
+ordinals fall inside the dense window. This establishes replay identity for
+these inputs on this host/build; it does not prove nonce causality or benignity.
+
+Window capture and join validation
+---------------------------------
+Both sidecars use schema v9 and record window `{first_hit: 1150000,
+last_hit: 1200000}`. Each has exactly 50,001 retained poll samples, zero poll
+omissions, and a global selected-site hit total beyond the end of the window.
+Run 0001 has 43,871/43,871 entry hits/samples; run 0002 has 43,868/43,868;
+both entry streams have zero omissions. Sidecars are 26,470,884 and
+26,470,150 bytes.
+
+Every dense poll sample joins uniquely to one entry sample by exact
+`poll.start_tsc == entry.observed_tsc`, then matching requested cycles, RBP,
+and RSP: 50,001 joins per replay, with zero unmatched, ambiguous, or
+context-mismatched records.
+
+Per-call poll sequence comparison
+---------------------------------
+The 53 shared entry ordinals represented in the window have 49,988 paired
+records at matching per-entry poll positions. Nine predicates
+`elapsed_cycles >= requested_cycles` differ at the same local poll position.
+The first is entry ordinal 10,196, poll read 975: run 0001 has elapsed
+`0xf3be0` (false) and continues through read 977, where it reaches `0xf43d0`
+(true); run 0002 has elapsed `0xf4452` (true) at read 975 and exits that
+poll sequence there. The full call has 977 reads in run 0001 and 975 in run
+0002. Window-edge calls may be partial; no count is claimed for those.
+
+The previously highlighted entry ordinal 10,207 has 974 poll reads in both
+runs. Both are false through local read 973 and true at read 974, with no
+predicate difference at any matching local poll position. Its global poll
+ordinal range is 1,174,582–1,175,555 in run 0001 and
+1,174,579–1,175,552 in run 0002. Therefore global ordinal 1,175,552 refers
+to local read 971 in run 0001 (`0xf3631`, false) but local read 974 in run
+0002 (`0xf4219`, true). The earlier sparse comparison paired the same global
+ordinal across the runs, which selected different poll iterations because
+prior calls had accumulated a three-hit offset. That sparse difference does
+not indicate a different exit iteration for call 10,207.
+
+The dense evidence locates an earlier same-local-position threshold
+difference at call 10,196 but does not explain the complete machine/UART
+variation, identify the first unsampled divergence over the whole guest run,
+or establish benignity. The overall automatic comparator remains false;
+these direct replays are diagnostic and are not acceptance evidence.
+
+Artifacts
+---------
+Automatic source series SHA-256:
+269cff1da52a8ae5196ab2f6a4d5f6eda1db2143df03325cdaa42167670449b6
+Automatic comparison SHA-256:
+989064d1f1ec9b4732e55fb44c4f28eb73dd41a9422163b0b14af4c5d558654e
+
+| Replay | Runner JSON SHA-256 | Dense sidecar SHA-256 | UART SHA-256 |
+|---|---|---|---|
+| 0001 | `b65a37b6f5b0ab1b70036a148f6ebc7edf14ee5e938d41a3be7d2f531465c58a` | `1c8ffa5f17b88544d07038a8dc794a752a8dcd76fd0bbb85acc0d407e9f6fc45` | `6ca448b531593443e67762c949d9ae30421c6825a8dcfa5496d1af216fa0c606` |
+| 0002 | `6abf067bad8f8a9c18c72cd470b504e68ae491132a7ba10ea58037c3adcfb2c0` | `fb984d6c07fb1fa4e796fc21e5eb67a29b9353708cb8d1d332461947ea1161cb` | `1cc7d829ab6b0afcec0b15c20aff4fe3387ef4f6e1f92f5e36c5ef3ab2d9a0b8` |
+
+Raw replay artifacts are under the ignored `work/stage5/` directory named
+above. S5-07 remains blocked/unaccepted; no CPU semantics or comparator rules
+changed.
