@@ -22259,8 +22259,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         // S7-04: admit only the firmware's exact dword immediate compares:
         // `81 F9 A0 00 00 00` (CMP ECX,0xa0) and `81 FF 61 FF 00 00`
         // (CMP EDI,0xff61), plus helper `81 FF 80 00 00 00` (CMP EDI,0x80)
-        // and exact `41 81 FF A0 00 00 00` (CMP R15D,0xa0).
-        // Dword arithmetic ignores upper register bits.
+        // exact `41 81 FF A0 00 00 00` (CMP R15D,0xa0), and exact
+        // `41 81 FD A0 00 00 00` (CMP R13D,0xa0). REX.B extends the ModRM
+        // r/m destination; dword arithmetic ignores upper register bits.
         Operation::Arithmetic {
             kind: ArithmeticKind::Cmp,
             dst: Operand::Register(destination),
@@ -22286,7 +22287,15 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                             rex: Some(0x41),
                             ..Prefixes::default()
                         })
-                    && destination == RegisterView::low(Register::R15, OperandSize::Dword))) =>
+                    && destination == RegisterView::low(Register::R15, OperandSize::Dword))
+                || (instruction.length == 7
+                    && immediate == 0xa0
+                    && instruction.prefixes
+                        == (Prefixes {
+                            rex: Some(0x41),
+                            ..Prefixes::default()
+                        })
+                    && destination == RegisterView::low(Register::R13, OperandSize::Dword))) =>
         {
             let lhs = state.read(destination);
             let (_, flags) = arithmetic_result(

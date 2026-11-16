@@ -1088,13 +1088,22 @@
 - **Проверка:** five focused ISA tests cover qword value/state, injected write #PF, final-displacement fetch-fault atomicity, adjacent source/displacement/addressing/width/prefix forms, CPL3 and other-profile isolation. Two machine tests verify four-level A/D behavior on success and no data commit/D bit on same-page write-protection #PF. Runner retired 8905 and stopped at `41 81 FD A0 00 00 00` (`CMP R13D,0xA0`, ISSUE-223), RIP `0x200f87`, `Unsupported { opcode: 129 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
 - **Следующий шаг:** continue S7-04 at ISSUE-223.
 
-### ISSUE-223 — S7-04: Rust helper `CMP R13D,0xA0` (`41 81 FD A0 00 00 00`) remains outside paged CPU profile
+### ISSUE-223 — S7-04: exact Rust-helper `CMP R13D,0xA0` (`41 81 FD A0 00 00 00`) admitted narrowly
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact RAX-to-stack qword store.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200f87`.
+- **Статус:** решена узко для exact `41 81 FD A0 00 00 00` в base `PagedCpl0ProbeV1`; независимое ревью одобрило изменение, ожидает коммита. Other registers, immediates, widths, prefixes, CPL3 and profiles remain unsupported.
+- **Суть и результат:** REX.B extends ModRM.r/m=5 to R13D; opcode `81 /7` compares the low 32 bits against imm32 `0xa0`. Shared dword arithmetic updates CF/PF/AF/ZF/SF/OF and marks them defined; CMP writes no GPR. Upper 32 bits do not participate.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue223.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf87` are `41 81 FD A0 00 00 00`; runner budget 10000.
+- **Проверка:** four focused ISA tests cover values above 16 bits, ignored upper qword bits, full GPR retention, arithmetic flags/definedness, final-immediate fetch-fault atomicity, neighbors and CPL3; other-profile isolation passes. Runner retired 8906 and stopped at `72 2A` (`JB/JNAE rel8 +0x2a`, ISSUE-224), RIP `0x200f8e`, `Unsupported { opcode: 114 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
+- **Следующий шаг:** continue S7-04 at ISSUE-224.
+
+### ISSUE-224 — S7-04: Rust helper `JB/JNAE rel8 +0x2A` (`72 2A`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact dword CMP R13D,0xA0.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200f8e`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8905 instructions and stopped at `41 81 FD A0 00 00 00`, `Unsupported { opcode: 129 }`, `RIP=0x200f87`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue222.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf87` begin `41 81 FD A0 00 00 00`; runner budget 10000.
-- **Следующий шаг:** inspect the exact dword CMP tuple and shared arithmetic flag semantics before narrow admission.
+- **Суть и последствия:** runner retired 8906 instructions and stopped at `72 2A`, `Unsupported { opcode: 114 }`, `RIP=0x200f8e`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue223.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf8e` begin `72 2A`; runner budget 10000.
+- **Следующий шаг:** verify the exact condition code, signed rel8 target, and existing JB semantics before narrow admission.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.

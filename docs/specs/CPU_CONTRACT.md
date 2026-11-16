@@ -27216,3 +27216,10 @@ The JZ rel8 tests cover both ZF outcomes with defined and undefined ZF metadata,
 Base `PagedCpl0ProbeV1` admits only exact bytes `48 89 44 24 08`: REX.W `48`, opcode `89`, ModRM `44`, SIB `24`, and disp8 `08`. The source is qword RAX and the decoded destination is qword `[RSP+8]`; the exact tuple requires RSP base, no index, scale 1 and qword address/access sizes. Other sources, displacements, SIB/disp-width, prefixes, widths, CPL3 and other profiles remain unsupported.
 
 The store uses the tracked `GuestMemory::write_integer` path. On success only RIP changes; GPRs, RFLAGS and definedness are preserved. In the tested same-page supervisor write-protection #PF case, the instruction does not retire or commit operand data; page-walk Accessed updates persist while leaf Dirty remains clear. This does not establish general backend rollback or cross-page behavior (ISSUE-054). Five focused ISA tests cover success/state, injected write #PF, final-displacement fetch fault, and neighbors; two machine tests verify four-level A/D behavior and write-protection atomicity. Firmware advances to ISSUE-223: `41 81 FD A0 00 00 00` (`CMP R13D,0xA0`) at RIP `0x200f87`.
+
+
+### S7-04: exact Rust-helper `CMP R13D,0xA0` (ISSUE-223)
+
+Base `PagedCpl0ProbeV1` admits only exact `41 81 FD A0 00 00 00`: REX `41`, opcode `81` group `/7`, ModRM `FD`, and imm32 `A0 00 00 00`. REX.B extends the ModRM r/m destination from EBP to R13D; the REX.R bit is clear. The dword comparison reads only low R13D and the full 32-bit immediate. Shared arithmetic semantics update CF/PF/AF/ZF/SF/OF and mark these flags defined; CMP writes no GPR. Other destinations, immediates, operand sizes, prefixes, CPL3 and other profiles remain unsupported.
+
+Four focused tests cover equality, less-than, greater-than, signed overflow, values above 16 bits, ignored upper qword bits, full GPR retention, arithmetic flags and definedness, final-immediate fetch-fault atomicity, neighbors, CPL3 and other-profile isolation. Firmware advances to ISSUE-224: `72 2A` (`JB/JNAE rel8 +0x2a`) at RIP `0x200f8e`.
