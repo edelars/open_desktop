@@ -4559,6 +4559,120 @@ and `od-isa::execute::paged_cr3_probe_tests::paged_cr3_profile_keeps_lock_mov_cr
 this JIT slice does not alter CPU semantics. See
 [S4-01b evidence](../reports/STAGE_4_S4-01B_2026-11-06.md).
 
+### S4-15: JIT on the production memory owner (closure, S4-15g)
+
+This section is the single contract for the JIT on the production memory owner
+(`od_host::PagedFetchedLoadSession` over `od_machine::MachineBus`). The
+S4-15b-f subsections that follow are slice-level detail and must not be read as
+extending or narrowing it. Scope: one vCPU, macOS arm64 (MAP_JIT), Long64,
+CPL0/CPL3, 4 KiB pages, one instruction per block, synchronous release.
+
+**What the JIT compiles and executes.** One instruction per block, compiled from
+the bytes fetched from guest RAM (never from a caller constant) and published
+into the process's single MAP_JIT region. The memory operand is never reached
+through a host pointer: it goes through a scoped `GuestMemory` over the tracked
+RAM walker (`with_paged_mov_memory`, `with_paged_mov_dword_memory`,
+`with_paged_mov_store_memory`), which commits Accessed/Dirty bits and data as
+effects and refuses MMIO, ROM, framebuffer, cross-page and 2 MiB/1 GiB-leaf
+operands before any committing walk.
+
+| Form | Bytes | Operand | JIT (`execute_forms`) | JIT in `execute_or_interpret` | Interpreter `step_paged_mov` | Tests |
+|---|---|---|---|---|---|---|
+| `MOV RAX,[RBX]` | `48 8B 03` | qword | yes | yes | yes (allowlist) | `s4_15a`, `s4_15b_*`, `s4_15c_*`, `s4_15e_the_existing_forms_*` |
+| `MOV [RBX],RAX` | `48 89 03` | qword | yes | yes (no fallback guarantee) | no in `step_paged_mov`: explicit `Unsupported` (allowlist has `48 89 0B` only) | `s4_15d_*`, `s4_15e_the_existing_forms_*` (oracle `48 89 0B`, RCX=RAX) |
+| `MOV EAX,[RBX]` | `8B 03` | dword, zero-extended | yes | no (`UnsupportedForm`) | no (a separate dword profile exists; the dispatcher does not call it) | `s4_15e_dword_*` |
+| `MOV RAX,[RBX+disp8]` | `48 8B 43 ib` | qword | yes | no | no | `s4_15e_qword_displacement_*` |
+| `MOV RAX,[RBX+disp32]` | `48 8B 83 id` | qword | yes | no | no | `s4_15e_qword_displacement_*` |
+| `MOV RAX,[RIP+disp32]` | `48 8B 05 id` | qword, from the next RIP | yes | no | no | `s4_15e_rip_relative_*`, `s4_15e_reuse_key_*` |
+| `67`-prefixed forms, store with displacement, dword with displacement | | | `UnsupportedForm` | `UnsupportedForm` | no | `s4_15e_forms_outside_the_allowlist_*` |
+| `48 89 0B` (store RCX) | | qword | `UnsupportedForm` | `UnsupportedForm`, then interpreted | yes (allowlist) | `s4_15c_unsupported_forms_*` |
+
+The two JIT-only entries differ: `execute` admits only `48 8B 03`;
+`execute_with_store` and `execute_or_interpret` admit `48 8B 03` and `48 89 03`;
+`execute_forms` admits every JIT row above. Of these only `execute_or_interpret`
+has the interpreter fallback; a form that the JIT refuses there and that the
+interpreter does not execute ends in the interpreter's explicit
+`RunExit::Unsupported` (0 retired, RIP/RAX untouched, reported, never a silent
+success). That is the case for `48 89 03` after a refused store (non-RAM target,
+the block's own code page, untranslatable operand). For the forms that only
+`execute_forms` admits this follows from `execute_or_interpret` calling
+`execute_with_store`; there is no dedicated dispatcher test for them.
+
+**How the path is chosen (`execute_or_interpret`).** In order:
+(1) preflight without a page walk: CPU context, CR3, paging controls, operand
+range for the legacy forms (`execute_forms` checks the operand range after the
+fetch); (2) tracked instruction fetch at RIP (execute/NX/U/S for the CPL; code
+Accessed bits are committed and reported) giving bytes, physical page and
+`PhysicalMemory::code_page_generation`; (3) admission: the block is reused only
+while RIP, physical page, generation and bytes all match, otherwise the stale
+block is dropped first and the form is compiled again, and bytes outside the
+allowlist are `UnsupportedForm` and never run a stale or constant block;
+(4) for a store, the read-only probe of the operand translation (no A/D);
+(5) the data walk (A bits, then for a store the leaf D bit) and execution of
+the operand bytes. A refusal before step (5) commits nothing but the fetch's
+and, at most, a data walk's Accessed bits, leaves RAX, RIP, RFLAGS and guest
+data untouched and reaches no device, so the step goes once to
+`od_machine::step_paged_mov` and the reported write list equals a pure
+interpreter step. An executed JIT step (completed, or a guest `#PF` with its
+committed Accessed bits and, for a store, before the Dirty bit and the write)
+is final and is never repeated by the interpreter. Any other JIT helper failure
+is `PagedStepError::JitHostFailure` and is not retried.
+
+**Release.** The session owns its block as `PublishedCode`, i.e. the process's
+single MAP_JIT region. It is released by `reset(&mut self)` at a safe point
+between calls, by a later call that drops a stale block, or by dropping the
+session; a call's block lives until it returns; after a reset the next entry is
+`Admitted`. `reset` on an empty session is a no-op and cannot release a region
+owned by another session. A bounded-arena handle dropped under a shared borrow
+defers its release to the next mutable arena access instead of leaking the slot.
+
+**Verified.** Integration tests `tests/system/stage4_memory_fault.rs`: 39
+`s4_15{b,c,d,e,f}_*` tests (6 + 7 + 8 + 13 + 5) plus `s4_17a`, 40 in the file;
+lib tests in `od-host`: `s4_15a_*` (1) and `s4_15f_*` (3), 4 in total. Every
+executed JIT step is compared with the interpreter (or, where it has no form,
+with an equivalent interpreter instruction: `48 89 0B` with RCX=RAX for the
+store, `48 8B 03` with RBX set to the effective address for displacement and
+RIP-relative loads) on 16 GPRs, RIP, masked RFLAGS, `PageFaultRecord`, the
+ordered committed writes and the whole RAM image. Covered: CPL0/CPL3, guest
+`#PF` before and after allowed effects, MMIO operand reaching the device exactly
+once through the interpreter, refused stores without effects, bytes/page/
+generation re-admission, executable-region release at reset/drop/invalidation.
+Source reports: [S4-15a](../reports/STAGE_4_S4-15A_2026-11-06.md) and the
+S4-15b-f sections of `docs/reports/STAGE_4_REPORT.md`.
+
+**Not done (limits of S4-15).**
+
+- Multi-instruction blocks; one instruction per call.
+- `67`-prefixed forms, store with displacement, dword with displacement: not in
+  the `step_paged_mov` allowlist, so the JIT is not extended on its own
+  authority; `execute_forms` is not wired into `execute_or_interpret`.
+- `48 89 03` (`MOV [RBX],RAX`): not in the one-step paged profile
+  `step_paged_mov` (allowlist `is_paged_mov_instruction`: `48 8B 03` and
+  `48 89 0B`). The forms `48 89 03` and `8B 03` do execute in od-isa (the flat
+  s2 interpreter, the dword profile `step_paged_mov_dword_read`, the paged CPL0
+  set on the board), but the fallback to them is not wired from the dispatcher.
+  The slice with a fallback guarantee is `48 8B 03` (and `48 89 0B` is executed
+  by the interpreter); `48 89 03` is a JIT extension WITHOUT a fallback
+  guarantee on refusal (the refusal is explicit, `Unsupported`, no silent
+  effect). Owner of the remainder: S4-42 (fallback to the paged CPL0 set on the
+  Linux trace) or a separate od-isa/CPU_CONTRACT sub-slice if a one-step paged
+  profile with `48 89 03` is needed (outside the "Where" of S4-15).
+- 2 MiB (and 1 GiB) code pages: the tracked fetch goes through the 4 KiB walker
+  and refuses `Fetch(Access(UnsupportedPageSize))`; code crossing a 4 KiB page
+  is `Fetch(InvalidLength)`; cross-page and 2 MiB-leaf operands are refused.
+- MMIO, ROM and framebuffer operands through the JIT (MMIO only through the
+  interpreter, and a refused `48 89 03` is not executed by the dispatcher's interpreter, see the `48 89 03` limit above).
+- SMP, deferred retirement with a grace period (S3-25, G7); release is
+  immediate on one vCPU. One MAP_JIT region per process: a live block of another
+  session makes `Publish` refuse (`MappingAlreadyLive`).
+- Integration into the runner and the Linux trace; `reset` is called only
+  explicitly.
+- Performance: no speed claim; the cost of the repeated tracked fetch and of
+  the probe plus the walk on a store was not measured.
+- Store into the active block and its invalidation (S4-16i); aliases and
+  cache invalidation are S4-16.
+- `JitHostFailure` branches have no test (not reachable from the public API).
+
 ### S4-15b: fetch-snapshot admission from guest RAM
 
 `od_host::PagedFetchedLoadSession` admits the exact `48 8B 03` (`MOV RAX,[RBX]`)
@@ -4574,9 +4688,10 @@ than `48 8B 03` are refused without running a stale block. Fetch rights are
 re-checked on every call. The data operand still runs through
 `with_paged_mov_memory` with scoped `GuestMemory`; no host pointer to guest RAM.
 Fetch faults return the exact `#PF` record before any operand walk. Stores,
-other forms, cross-page code, reset/retirement and interpreter fallback are
-outside this slice (S4-15c-f); the contract text for production owner
-integration as a whole is updated in S4-15g.
+other forms, reset/retirement and interpreter fallback were outside this slice
+and were added in S4-15c-f; cross-page code was not. The contract for the
+production owner as a whole is the section "S4-15: JIT on the production
+memory owner" above (S4-15g).
 
 Limit: re-admission and fetch work only for 4 KiB code pages.
 `tracked_code_snapshot_with_callback` goes through the 4 KiB walker
@@ -4584,7 +4699,8 @@ Limit: re-admission and fetch work only for 4 KiB code pages.
 `Fetch(Access(UnsupportedPageSize))`, possibly with Accessed bits of the upper
 levels already committed. The Linux kernel text is usually mapped with 2 MiB
 pages, so on a real kernel this path will almost certainly refuse. Support for
-2 MiB code pages is a separate slice (S4-15e or S4-16).
+2 MiB code pages was not added by S4-15; it remains open (see the limits in
+the S4-15 section above).
 
 ### S4-15c: one-step fallback dispatcher
 
@@ -4602,8 +4718,8 @@ commit again, and the refused attempt's writes are prepended to the reported
 list so it equals a pure interpreter step. Any other JIT helper failure is
 returned as `PagedStepError::JitHostFailure` and is not retried. The
 interpreter's own allowlist (`48 8B 03`, `48 89 0B`) still applies: other forms
-end in its explicit `Unsupported` exit. Store JIT, new forms, reset/retirement
-and the contract text as a whole remain S4-15d-g.
+end in its explicit `Unsupported` exit. Store JIT, new forms and reset/retirement
+were added in S4-15d-f; the consolidated contract is the S4-15 section above.
 
 ### S4-15d: tracked store `48 89 03` on the production owner
 
@@ -4631,8 +4747,8 @@ no data; only the fetch's Accessed bits remain, so the merged write list and the
 RAM image equal a pure interpreter step. It falls back to one `step_paged_mov`,
 whose allowlist lacks `48 89 03` and reports `Unsupported`. A store into another code page is allowed:
 the next entry re-fetches and compares bytes, page and generation. A store into
-the active block (S4-16i), more forms (S4-15e), reset/handle (S4-15f) and the
-closing contract text (S4-15g) are not part of this slice.
+the active block is not part of this slice (S4-16i); more forms, reset/handle
+and the closing contract text were added in S4-15e-g.
 
 ### S4-15e: wider operand forms through `execute_forms`
 
@@ -4659,9 +4775,10 @@ the fetch, before any data walk).
 | `67`-prefixed forms, stores with a displacement, dword with a displacement | | | `UnsupportedForm` | no (wait for `od-isa`) |
 
 There is no interpreter fallback on this entry: the interpreter has no
-displacement or RIP-relative form. Multi-instruction blocks, 2 MiB code pages,
-the dispatcher integration, reset/handle (S4-15f) and the closing contract text
-(S4-15g) are not part of this slice.
+displacement or RIP-relative form. Multi-instruction blocks, 2 MiB code pages
+and the dispatcher integration (`execute_or_interpret` still uses only
+`48 8B 03` / `48 89 03`) are not part of this slice or of S4-15; reset/handle
+and the closing contract text were added in S4-15f-g.
 
 ### S4-15f: session reset and release of the executable region
 
