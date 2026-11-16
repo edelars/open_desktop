@@ -22199,34 +22199,40 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
-        // S7-04: the Rust helper spills with exact RSP-relative qword stores
-        // `48 89 54 24 30` (RDX), `48 89 74 24 10` (RSI), and
-        // `48 89 44 24 08` (RAX). The decoded tuple pins each form; use the
-        // tracked GuestMemory write path.
+        // S7-04: the Rust helper spills with exact RSP-relative stores:
+        // dword `89 1C 24` (EBX) and qword `48 89 54 24 30` (RDX),
+        // `48 89 74 24 10` (RSI), `48 89 44 24 08` (RAX). The decoded tuple
+        // pins each form; use the tracked GuestMemory write path.
         Operation::Mov {
             dst: Operand::Memory(destination),
             src: Operand::Register(source),
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x89
-            && instruction.length == 5
-            && instruction.operand_size == OperandSize::Qword
-            && instruction.prefixes
-                == (Prefixes {
-                    rex: Some(0x48),
-                    ..Prefixes::default()
-                })
+            && ((instruction.length == 5
+                && instruction.operand_size == OperandSize::Qword
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x48),
+                        ..Prefixes::default()
+                    })
+                && destination.size == OperandSize::Qword
+                && ((destination.displacement == 0x30
+                    && source == RegisterView::low(Register::Rdx, OperandSize::Qword))
+                    || (destination.displacement == 0x10
+                        && source == RegisterView::low(Register::Rsi, OperandSize::Qword))
+                    || (destination.displacement == 0x08
+                        && source == RegisterView::low(Register::Rax, OperandSize::Qword))))
+                || (instruction.length == 3
+                    && instruction.operand_size == OperandSize::Dword
+                    && instruction.prefixes == Prefixes::default()
+                    && destination.size == OperandSize::Dword
+                    && destination.displacement == 0
+                    && source == RegisterView::low(Register::Rbx, OperandSize::Dword)))
             && destination.base == AddressBase::Register(Register::Rsp)
             && destination.index.is_none()
             && destination.scale == 1
-            && destination.address_size == OperandSize::Qword
-            && destination.size == OperandSize::Qword
-            && ((destination.displacement == 0x30
-                && source == RegisterView::low(Register::Rdx, OperandSize::Qword))
-                || (destination.displacement == 0x10
-                    && source == RegisterView::low(Register::Rsi, OperandSize::Qword))
-                || (destination.displacement == 0x08
-                    && source == RegisterView::low(Register::Rax, OperandSize::Qword))) =>
+            && destination.address_size == OperandSize::Qword =>
         {
             let value = state.read(source);
             if let Err(error) = write_operand(

@@ -872,22 +872,19 @@ impl GuestMemory for PagedProbeMemory<'_> {
         context: AccessContext,
         source: &[u8],
     ) -> Result<(), MemoryError> {
-        if source.len() != 8 {
-            return Err(MemoryError::Backend(
-                "paged probe only supports qword writes".into(),
-            ));
-        }
+        let width = match source.len() {
+            4 => crate::AccessWidth::Dword,
+            8 => crate::AccessWidth::Qword,
+            _ => {
+                return Err(MemoryError::Backend(
+                    "paged probe only supports dword and qword writes".into(),
+                ));
+            }
+        };
         let mut bytes = [0; 8];
-        bytes.copy_from_slice(source);
+        bytes[..source.len()].copy_from_slice(source);
         let value = u64::from_le_bytes(bytes);
-        match self.access(
-            address,
-            context,
-            RamAccessOperation::Write {
-                width: crate::AccessWidth::Qword,
-                value,
-            },
-        )? {
+        match self.access(address, context, RamAccessOperation::Write { width, value })? {
             TrackedAccessOutcome::Written => Ok(()),
             _ => Err(MemoryError::Backend(
                 "paged probe write returned a non-write result".into(),

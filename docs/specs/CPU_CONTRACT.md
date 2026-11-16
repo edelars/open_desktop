@@ -27277,3 +27277,9 @@ Four focused tests cover equality, borrow, signed overflow, high-bit qword opera
 Base `PagedCpl0ProbeV1` admits only exact no-prefix `76 22`. The shared JBE condition reads CF=1 or ZF=1, preserves RFLAGS and definedness, selects the signed rel8 target or fall-through, and checks canonicality only for a taken target. Other displacements/conditions, prefixes/near form, CPL3 and other profiles remain unsupported.
 
 Five focused tests cover the CF/ZF truth table with defined and undefined flags, state preservation, taken-only canonicality, rel8 fetch-fault atomicity, neighbors and CPL3; other-profile isolation passes. Firmware advances to ISSUE-232: `89 1C 24` (`MOV dword ptr [RSP],EBX`) at RIP `0x200fc7`.
+
+### S7-04: exact Rust-helper `MOV dword ptr [RSP],EBX` (ISSUE-232)
+
+Base `PagedCpl0ProbeV1` admits only exact `89 1C 24`: opcode 89 with ModRM/SIB selecting dword EBX to `[RSP]`. The shared tracked write path writes the low four source bytes. GPRs and flags are unchanged. Other sources, widths, addressing forms, prefixes, CPL3 and other profiles remain unsupported.
+
+Five focused ISA tests cover exact bytes/address/value, state preservation, injected write and fetch faults, neighboring encodings and CPL3; other-profile isolation passes. Four-level machine tests verify tracked A/D-bit updates on success and atomic supervisor write-protection failure with no leaf D bit. Firmware advances to ISSUE-233: `48 8D 7C 24 18` (`LEA RDI,[RSP+0x18]`) at RIP `0x200fca`.

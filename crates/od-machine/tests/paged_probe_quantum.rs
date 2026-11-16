@@ -1163,6 +1163,88 @@ fn paged_probe_mov_rsp_disp8_rax_write_protection_fault_is_atomic() {
 }
 
 #[test]
+fn paged_probe_mov_rsp_ebx_dword_store_uses_tracked_four_level_walk() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x89, 0x1c, 0x24]);
+    let old_value = 0xfeed_face_cafe_beefu64;
+    put_bytes_at(&mut bus, DATA_PHYSICAL, &old_value.to_le_bytes());
+    let mut state = initial_state(0);
+    state.gpr[Register::Rsp as usize] = DATA_LINEAR;
+    state.gpr[Register::Rbx as usize] = 0xdead_beef_89ab_cdef;
+    let before = state.clone();
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.page_fault, None);
+    assert_eq!(result.memory_error, None);
+    let mut expected = before;
+    expected.rip += 3;
+    assert_eq!(state, expected);
+    assert_eq!(qword(&mut bus, DATA_PHYSICAL), 0xfeed_face_89ab_cdef);
+    assert!(writes.contains(&range(0x1000)));
+    assert!(writes.contains(&range(0x2000)));
+    assert!(writes.contains(&range(0x3010)));
+    assert!(writes.contains(&range(0x4000)));
+    assert!(writes.contains(&range(0x3020)));
+    assert!(writes.contains(&range(0x5000)));
+    assert!(
+        writes.contains(
+            &GuestPhysicalRange::new(GuestPhysicalAddress::new(DATA_PHYSICAL), 4).unwrap()
+        )
+    );
+    assert_eq!(qword(&mut bus, ROOT), ROOT + 0x1007 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x1000), ROOT + 0x2007 | (1 << 5));
+    let data_pde = qword(&mut bus, ROOT + 0x2020);
+    assert_ne!(data_pde & (1 << 5), 0);
+    assert_eq!(data_pde & (1 << 6), 0);
+    let data_pte = qword(&mut bus, ROOT + 0x4000);
+    assert_ne!(data_pte & (1 << 5), 0);
+    assert_ne!(data_pte & (1 << 6), 0);
+}
+
+#[test]
+fn paged_probe_mov_rsp_ebx_dword_write_protection_fault_is_atomic() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x89, 0x1c, 0x24]);
+    let original_value = 0xfeed_face_cafe_beefu64;
+    put_bytes_at(&mut bus, DATA_PHYSICAL, &original_value.to_le_bytes());
+    // Present, readable and supervisor read-only with CR0.WP enabled.
+    put(&mut bus, 0x5000, DATA_PHYSICAL | 5);
+    let mut state = initial_state(0);
+    state.gpr[Register::Rsp as usize] = DATA_LINEAR;
+    state.gpr[Register::Rbx as usize] = 0xaabb_ccdd_89ab_cdef;
+    let before = state.clone();
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    let expected_fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x3),
+        linear_address: Some(DATA_LINEAR),
+    };
+    assert_eq!(result.exit, PagedProbeExit::Fault(expected_fault.clone()));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.memory_error, None);
+    assert_eq!(state, before);
+    let record = result.page_fault.as_ref().expect("write-protection fault");
+    assert_eq!(record.fault(), &expected_fault);
+    assert_eq!(record.access(), AccessKind::Write);
+    assert_eq!(qword(&mut bus, DATA_PHYSICAL), original_value);
+    let data_pte = qword(&mut bus, ROOT + 0x4000);
+    assert_ne!(data_pte & (1 << 5), 0, "data translation is accessed");
+    assert_eq!(data_pte & (1 << 6), 0, "faulting store does not set dirty");
+    assert!(
+        !writes.contains(
+            &GuestPhysicalRange::new(GuestPhysicalAddress::new(DATA_PHYSICAL), 4).unwrap()
+        )
+    );
+}
+
+#[test]
 fn paged_probe_xor_r12d_sib_dword_uses_tracked_four_level_walk() {
     let (mut bus, _) = fixture();
     put_bytes_at(

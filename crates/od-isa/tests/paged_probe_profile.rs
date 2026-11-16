@@ -821,6 +821,161 @@ fn rust_helper_mov_rsp_disp8_rax_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn rust_helper_mov_rsp_ebx_stores_dword_and_preserves_cpu_state() {
+    let code = [0x89, 0x1c, 0x24]; // MOV dword ptr [RSP],EBX
+    let mut memory = Memory::new(&code);
+    memory.bytes[DATA_PHYSICAL..DATA_PHYSICAL + 8]
+        .copy_from_slice(&0xfeed_face_cafe_beefu64.to_le_bytes());
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsp as usize] = DATA;
+    cpu.gpr[Register::Rbx as usize] = 0xdead_beef_89ab_cdef;
+    cpu.rflags = 0x8d7;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    let mut expected = before.clone();
+    expected.rip += code.len() as u64;
+    assert_eq!(cpu, expected);
+    assert_eq!(memory.write_addresses, [DATA]);
+    assert_eq!(memory.writes, 1);
+    assert_eq!(memory.reads, 0);
+    assert_eq!(
+        &memory.bytes[DATA_PHYSICAL..DATA_PHYSICAL + 8],
+        &0xfeed_face_89ab_cdefu64.to_le_bytes()
+    );
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_helper_mov_rsp_ebx_injected_write_page_fault_is_atomic() {
+    let code = [0x89, 0x1c, 0x24];
+    let mut memory = Memory::new(&code);
+    memory.bytes[DATA_PHYSICAL..DATA_PHYSICAL + 8]
+        .copy_from_slice(&0xfeed_face_cafe_beefu64.to_le_bytes());
+    memory.fail_write = Some(page_fault(0x2, DATA));
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsp as usize] = DATA;
+    cpu.gpr[Register::Rbx as usize] = 0xdead_beef_89ab_cdef;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x2),
+            linear_address: Some(DATA),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.write_addresses, [DATA]);
+    assert_eq!(memory.writes, 1);
+    assert_eq!(
+        &memory.bytes[DATA_PHYSICAL..DATA_PHYSICAL + 8],
+        &0xfeed_face_cafe_beefu64.to_le_bytes()
+    );
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_helper_mov_rsp_ebx_fetch_fault_is_atomic() {
+    let code = [0x89, 0x1c];
+    let rip = RIP + 0xffe;
+    let mut memory = memory_with_code_at(&code, rip);
+    memory.fail_fetch_at = Some((rip + 2, page_fault(0x10, rip + 2)));
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr[Register::Rsp as usize] = DATA;
+    cpu.gpr[Register::Rbx as usize] = 0x89ab_cdef;
+    let before = cpu.clone();
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 2),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn rust_helper_mov_rsp_ebx_neighbours_stay_unsupported_without_mutation() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x89, 0x1c, 0x23], 0x89),             // RBX base
+        (&[0x89, 0x1c, 0x64], 0x89),             // alternate SIB scale
+        (&[0x89, 0x5c, 0x24, 0x00], 0x89),       // disp8 instead of no displacement
+        (&[0x89, 0x9c, 0x24, 0, 0, 0, 0], 0x89), // disp32 instead of no displacement
+        (&[0x89, 0x04, 0x24], 0x89),             // EAX source
+        (&[0x44, 0x89, 0x1c, 0x24], 0x89),       // R11D source
+        (&[0x66, 0x89, 0x1c, 0x24], 0x89),       // word width
+        (&[0x40, 0x89, 0x1c, 0x24], 0x89),       // REX prefix
+        (&[0x48, 0x89, 0x1c, 0x24], 0x89),       // qword width
+        (&[0x89, 0x1c, 0x20], 0x89),             // RAX base
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        memory.bytes[DATA_PHYSICAL..DATA_PHYSICAL + 8]
+            .copy_from_slice(&0xfeed_face_cafe_beefu64.to_le_bytes());
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::Rsp as usize] = DATA;
+        let before = cpu.clone();
+        let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "{bytes:02x?}");
+        assert_eq!(memory.writes, 0, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn rust_helper_mov_rsp_ebx_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x89, 0x1c, 0x24];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    cpu.gpr[Register::Rsp as usize] = DATA;
+    cpu.gpr[Register::Rbx as usize] = 0x89ab_cdef;
+    let before = cpu.clone();
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x89 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
 fn pio_forms_use_one_callback_and_preserve_unrelated_cpu_state() {
     let mut memory = Memory::new(&[0xec]);
     let mut cpu = state();
@@ -18190,6 +18345,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x77, 0x1a][..], 0x77),
         (&[0x4c, 0x39, 0xef][..], 0x39),
         (&[0x76, 0x22][..], 0x76),
+        (&[0x89, 0x1c, 0x24][..], 0x89),
         (&[0x49, 0x89, 0xf8][..], 0x89),
         (&[0x48, 0x8d, 0x3d, 0x09, 0x2b, 0, 0][..], 0x8d),
         (&[0x48, 0x8d, 0x0d, 0x02, 0x2b, 0, 0][..], 0x8d),
