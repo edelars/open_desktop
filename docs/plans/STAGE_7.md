@@ -740,6 +740,10 @@ Current bounded CPU-profile progress: only exact `45 31 ED` is admitted for `XOR
 
 Current bounded CPU-profile progress: exact `41 0F 94 C5` (`SETE R13B`) is admitted in `PagedCpl0ProbeV1`. REX.B extends r/m=5 to R13B; SETE uses ZF, updates only R13B and preserves upper R13, other state and flag definedness. Four focused tests cover both ZF values with defined and undefined metadata, final-byte fetch fault, neighbors, CPL3 and other-profile isolation. Firmware advances to ISSUE-335, `44 0F 44 EE` (`CMOVE R13D,ESI`) at RIP `0x20178f` after 9,048 retired instructions; COM1 remains empty. Full od-isa suites pass (2,322/1,591/126/29/6/1,016/7/15; 0 doc tests), all 67 paged machine quantum tests pass, and scoped cargo check, Rust formatting and diff-check pass; cargo check reports only the existing unused page-walk helper warning. Independent review approved with no remaining findings. This does not change the broader UEFI task status. ISSUE-201's unrelated stale CLD expectations remain open; see `KNOWN_ISSUES.md`.
 
+### S7-04 firmware CPU handoff progress: ISSUE-335
+
+Current bounded CPU-profile progress: exact `44 0F 44 EE` (`CMOVE R13D,ESI`) is admitted in `PagedCpl0ProbeV1`. REX.R selects R13D as destination and r/m selects ESI. For ZF=0, the old low R13D is written back and zero-extends R13; flags and definedness are unchanged. Four focused tests cover ZF true/false with defined/undefined metadata, full-state behavior, final-byte fetch fault, neighbors, CPL3 and other-profile isolation. Firmware advances to ISSUE-336, `45 84 ED` (`TEST R13B,R13B`) at RIP `0x201793` after 9,049 retired instructions; COM1 remains empty. Full od-isa suites pass (2,322/1,591/126/29/6/1,020/7/15; 0 doc tests), all 67 paged machine quantum tests pass, and scoped cargo check, Rust formatting and diff-check pass; cargo check reports only the existing unused page-walk helper warning. Independent review approved with no remaining findings. This does not change the broader UEFI task status. ISSUE-201's unrelated stale CLD expectations remain open; see `KNOWN_ISSUES.md`.
+
 ## 9. Готовый промпт на одну задачу
 
 ```text
