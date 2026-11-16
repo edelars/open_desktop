@@ -705,6 +705,41 @@ fn write_tracked_table_entry(
     memory.write_u64(address, value, committed_write)
 }
 
+/// The single place that commits the D (dirty) bit of a leaf entry (S4-09e). Both the tracked
+/// access (`access_long64_4k_internal_windowed`) and the LTR descriptor transaction
+/// (`commit_paged_ltr_descriptor_with_writer`) go through it, and the write itself goes through
+/// the `table_writer` seam like every other table-entry write. Returns `Ok(None)` when D is already
+/// set (nothing is written, no callback), `Ok(Some(update))` after the write was committed, and the
+/// typed `TableWrite` error with `bit: Dirty` when the write fails (nothing is recorded as committed).
+fn commit_leaf_dirty(
+    memory: &mut PhysicalMemory,
+    table_writer: &mut TrackedTableWriter<'_>,
+    committed_write: &mut dyn FnMut(GuestPhysicalRange),
+    level: PageTableLevel,
+    entry_address: GuestPhysicalAddress,
+    entry_value: u64,
+) -> Result<Option<AdUpdate>, TrackedAccessError> {
+    if entry_value & (1 << 6) != 0 {
+        return Ok(None);
+    }
+    let after = entry_value | (1 << 6);
+    table_writer(memory, entry_address, after, committed_write).map_err(|source| {
+        TrackedAccessError::TableWrite {
+            level,
+            entry_address,
+            bit: AdBit::Dirty,
+            source,
+        }
+    })?;
+    Ok(Some(AdUpdate {
+        level,
+        address: entry_address,
+        before: entry_value,
+        after,
+        bit: AdBit::Dirty,
+    }))
+}
+
 fn walk_long64_4k(
     memory: &mut PhysicalMemory,
     paging: &Long64ProbeConfig,
@@ -1373,29 +1408,20 @@ fn access_long64_4k_internal_windowed(
 
     if let RamAccessOperation::Write { width, value } = request.operation {
         if !is_mmio || set_mmio_dirty_before_dispatch {
-            if leaf.1 & (1 << 6) == 0 {
-                let after = leaf.1 | (1 << 6);
-                if let Err(source) = table_writer(memory, leaf.0, after, committed_write) {
-                    return fail(
-                        TrackedAccessError::TableWrite {
-                            level: translation.leaf_level,
-                            entry_address: leaf.0,
-                            bit: AdBit::Dirty,
-                            source,
-                        },
-                        trace,
-                        ad_updates,
-                        ad_update_count,
-                    );
+            match commit_leaf_dirty(
+                memory,
+                table_writer,
+                committed_write,
+                translation.leaf_level,
+                leaf.0,
+                leaf.1,
+            ) {
+                Ok(Some(update)) => {
+                    ad_updates[ad_update_count] = Some(update);
+                    ad_update_count += 1;
                 }
-                ad_updates[ad_update_count] = Some(AdUpdate {
-                    level: translation.leaf_level,
-                    address: leaf.0,
-                    before: leaf.1,
-                    after,
-                    bit: AdBit::Dirty,
-                });
-                ad_update_count += 1;
+                Ok(None) => {}
+                Err(error) => return fail(error, trace, ad_updates, ad_update_count),
             }
         }
         if is_mmio {
@@ -1577,7 +1603,30 @@ pub(crate) fn commit_paged_ltr_descriptor(
     state: &od_isa::LongModeState,
     preparation: &od_isa::execute::PagedLtrPreparation,
     context: AccessContext,
+    committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<od_isa::execute::PreparedPagedLtrCommit, LtrTransactionError> {
+    commit_paged_ltr_descriptor_with_writer(
+        memory,
+        paging,
+        state,
+        preparation,
+        context,
+        committed_write,
+        &mut write_tracked_table_entry,
+    )
+}
+
+/// The LTR transaction with the table-entry writer as an explicit seam (S4-09e): the accessed
+/// bits of both walks and the leaf D bit are written through `table_writer`, like the tracked
+/// access does; the descriptor image is a plain RAM write.
+fn commit_paged_ltr_descriptor_with_writer(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    state: &od_isa::LongModeState,
+    preparation: &od_isa::execute::PagedLtrPreparation,
+    context: AccessContext,
     mut committed_write: impl FnMut(GuestPhysicalRange),
+    table_writer: &mut TrackedTableWriter<'_>,
 ) -> Result<od_isa::execute::PreparedPagedLtrCommit, LtrTransactionError> {
     let od_isa::execute::PagedLtrPreparation::Ready {
         descriptor_address, ..
@@ -1592,7 +1641,7 @@ pub(crate) fn commit_paged_ltr_descriptor(
             TrackedAccessError::CrossesPage { address, width: 16 },
         ));
     }
-    let read = walk_long64_4k(
+    let read = walk_long64_4k_with_writer(
         memory,
         paging,
         state.rip,
@@ -1600,6 +1649,8 @@ pub(crate) fn commit_paged_ltr_descriptor(
         context,
         AccessKind::Read,
         &mut committed_write,
+        &mut *table_writer,
+        false,
     )
     .translation
     .map_err(LtrTransactionError::Access)?;
@@ -1627,7 +1678,7 @@ pub(crate) fn commit_paged_ltr_descriptor(
     .expect("ready preparation");
 
     // Write-permission walk: sets A bits but not D, and never writes the operand.
-    let write = walk_long64_4k(
+    let write = walk_long64_4k_with_writer(
         memory,
         paging,
         state.rip,
@@ -1635,6 +1686,8 @@ pub(crate) fn commit_paged_ltr_descriptor(
         context,
         AccessKind::Write,
         &mut committed_write,
+        &mut *table_writer,
+        false,
     )
     .translation
     .map_err(LtrTransactionError::Access)?;
@@ -1650,19 +1703,15 @@ pub(crate) fn commit_paged_ltr_descriptor(
     }
     descriptor_ram_error(memory, write.physical, true).map_err(LtrTransactionError::Access)?;
 
-    if write.leaf_value & (1 << 6) == 0 {
-        let after = write.leaf_value | (1 << 6);
-        memory
-            .write_u64(write.leaf_address, after, &mut committed_write)
-            .map_err(|source| {
-                LtrTransactionError::Access(TrackedAccessError::TableWrite {
-                    level: write.leaf_level,
-                    entry_address: write.leaf_address,
-                    bit: AdBit::Dirty,
-                    source,
-                })
-            })?;
-    }
+    commit_leaf_dirty(
+        memory,
+        &mut *table_writer,
+        &mut committed_write,
+        write.leaf_level,
+        write.leaf_address,
+        write.leaf_value,
+    )
+    .map_err(LtrTransactionError::Access)?;
     memory
         .write_bytes(
             write.physical,
@@ -3194,6 +3243,192 @@ mod tracked_access_tests {
         );
         assert_eq!(entries(&memory), [0x2027, 0x3027, 0x4027, 0x4027]);
         assert_eq!(memory.read_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0));
+    }
+
+    const LTR_DESCRIPTOR: [u8; 16] = [
+        0x67, 0x45, 0x78, 0x56, 0x34, 0x89, 0x91, 0x12, 0x00, 0x80, 0xff, 0xff, 0, 0, 0, 0,
+    ];
+    const LTR_PHYSICAL: u64 = 0x5abc;
+
+    /// A ready `LTR AX` (selector 8) whose descriptor sits at `LINEAR` -> physical 0x5abc, in the
+    /// frame 0x5000 that no table page shares; the leaf PTE (0x4020) is `leaf`.
+    fn ltr_setup(
+        leaf: u64,
+    ) -> (
+        PhysicalMemory,
+        Long64ProbeConfig,
+        od_isa::LongModeState,
+        od_isa::execute::PagedLtrPreparation,
+    ) {
+        let (mut memory, paging) = setup(leaf, 0x6000);
+        memory
+            .write_bytes(
+                GuestPhysicalAddress::new(LTR_PHYSICAL),
+                &LTR_DESCRIPTOR,
+                |_| {},
+            )
+            .unwrap();
+        let state = od_isa::LongModeState {
+            rip: RIP,
+            gdtr: Some(od_isa::state::Gdtr {
+                base: LINEAR - 8,
+                limit: 0x1f,
+            }),
+            ..od_isa::LongModeState::default()
+        };
+        let preparation = od_isa::execute::PagedLtrPreparation::Ready {
+            selector: 8,
+            descriptor_address: LINEAR,
+            next_rip: RIP + 3,
+        };
+        (memory, paging, state, preparation)
+    }
+
+    fn descriptor_bytes(memory: &PhysicalMemory) -> [u8; 16] {
+        let mut bytes = [0u8; 16];
+        memory
+            .read_bytes(GuestPhysicalAddress::new(LTR_PHYSICAL), &mut bytes)
+            .unwrap();
+        bytes
+    }
+
+    /// S4-09e: a failing D write in the LTR transaction goes through the same table-writer seam as
+    /// the tracked access, returns the typed `TableWrite { bit: Dirty }` error, and leaves no
+    /// partial effect: no D bit, no busy descriptor image, no callback for them; the accessed
+    /// prefix of the read walk stays committed. A mutation that writes D around the seam (the
+    /// pre-S4-09e direct `write_u64`) would not see the failing writer: the transaction would
+    /// succeed and this test would fail on the error and on the busy image.
+    #[test]
+    fn ltr_dirty_write_failure_commits_no_d_and_no_descriptor_image() {
+        let (mut memory, paging, state, preparation) = ltr_setup(0x5007);
+        let leaf_address = GuestPhysicalAddress::new(0x4020);
+        let mut attempts = Vec::new();
+        let mut callbacks = Vec::new();
+        let mut writer = |memory: &mut PhysicalMemory,
+                          address: GuestPhysicalAddress,
+                          value: u64,
+                          callback: &mut dyn FnMut(GuestPhysicalRange)| {
+            attempts.push((address, value));
+            if address == leaf_address && value & (1 << 6) != 0 {
+                Err(MemoryAccessError::Unmapped(address))
+            } else {
+                write_tracked_table_entry(memory, address, value, callback)
+            }
+        };
+        let result = commit_paged_ltr_descriptor_with_writer(
+            &mut memory,
+            &paging,
+            &state,
+            &preparation,
+            privilege(PrivilegeLevel::Ring0),
+            |range| callbacks.push(range),
+            &mut writer,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(LtrTransactionError::Access(TrackedAccessError::TableWrite {
+                    level: PageTableLevel::Pt,
+                    entry_address,
+                    bit: AdBit::Dirty,
+                    source: MemoryAccessError::Unmapped(source_address),
+                })) if entry_address == leaf_address && source_address == leaf_address
+            ),
+            "{result:?}"
+        );
+        assert_eq!(
+            attempts,
+            [
+                (0x1008, 0x2027),
+                (0x2010, 0x3027),
+                (0x3018, 0x4027),
+                (0x4020, 0x5027),
+                (0x4020, 0x5067),
+            ]
+            .map(|(address, value)| (GuestPhysicalAddress::new(address), value))
+        );
+        assert_eq!(
+            logged(&callbacks),
+            [(0x1008, 8), (0x2010, 8), (0x3018, 8), (0x4020, 8)]
+        );
+        // A stays committed on all four levels; D is not set on the leaf.
+        assert_eq!(entries(&memory), [0x2027, 0x3027, 0x4027, 0x5027]);
+        assert_eq!(descriptor_bytes(&memory), LTR_DESCRIPTOR);
+    }
+
+    /// S4-09e: on the LTR path every table-entry write (the accessed bits of the walks and the
+    /// leaf D) reaches the table writer, in order, followed only by the descriptor image; an
+    /// already-dirty leaf is not written again.
+    #[test]
+    fn ltr_table_entry_writes_go_through_the_writer_seam() {
+        for (leaf, expect_dirty_write) in [(0x5007, true), (0x5047, false)] {
+            let (mut memory, paging, state, preparation) = ltr_setup(leaf);
+            let mut attempts = Vec::new();
+            let mut callbacks = Vec::new();
+            let mut writer =
+                |memory: &mut PhysicalMemory,
+                 address: GuestPhysicalAddress,
+                 value: u64,
+                 callback: &mut dyn FnMut(GuestPhysicalRange)| {
+                    attempts.push((address.get(), value));
+                    write_tracked_table_entry(memory, address, value, callback)
+                };
+            let prepared = commit_paged_ltr_descriptor_with_writer(
+                &mut memory,
+                &paging,
+                &state,
+                &preparation,
+                privilege(PrivilegeLevel::Ring0),
+                |range| callbacks.push(range),
+                &mut writer,
+            )
+            .unwrap();
+            let mut expected_attempts = vec![
+                (0x1008, 0x2027),
+                (0x2010, 0x3027),
+                (0x3018, 0x4027),
+                (0x4020, leaf | 0x20),
+            ];
+            let mut expected_log = vec![(0x1008, 8), (0x2010, 8), (0x3018, 8), (0x4020, 8)];
+            if expect_dirty_write {
+                expected_attempts.push((0x4020, leaf | 0x60));
+                expected_log.push((0x4020, 8));
+            }
+            expected_log.push((LTR_PHYSICAL, 16));
+            assert_eq!(attempts, expected_attempts, "leaf {leaf:#x}");
+            assert_eq!(logged(&callbacks), expected_log, "leaf {leaf:#x}");
+            assert_eq!(entries(&memory)[3], leaf | 0x60);
+            let mut busy = LTR_DESCRIPTOR;
+            busy[5] |= 2;
+            assert_eq!(descriptor_bytes(&memory), busy);
+            assert_eq!(prepared.busy_descriptor(), &busy);
+        }
+    }
+
+    /// S4-09e: the production part of this file commits D in exactly one place. Outside
+    /// `commit_leaf_dirty` there is no D-bit mask and no `AdBit::Dirty`, and the only direct
+    /// table-entry `write_u64` is the default writer `write_tracked_table_entry`.
+    #[test]
+    fn leaf_dirty_is_committed_only_by_the_helper() {
+        let source = include_str!("page_walk.rs");
+        let production = &source[..source
+            .find("#[cfg(test)]\nmod tracked_access_tests")
+            .expect("tracked_access_tests marker")];
+        let helper_start = production
+            .find("fn commit_leaf_dirty(")
+            .expect("helper present");
+        let helper_end = production
+            .find("fn walk_long64_4k(")
+            .expect("walk follows helper");
+        let outside = format!(
+            "{}{}",
+            &production[..helper_start],
+            &production[helper_end..]
+        );
+        assert!(!outside.contains("AdBit::Dirty"));
+        assert!(!outside.contains("| (1 << 6)"));
+        assert_eq!(outside.matches(".write_u64(").count(), 1);
+        assert!(production[helper_start..helper_end].contains("table_writer("));
     }
 
     #[test]

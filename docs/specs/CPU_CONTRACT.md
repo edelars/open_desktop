@@ -109,6 +109,19 @@ delivery/CR2, JIT/TLB, and Linux execution are excluded. The machine-side
 effects contract is in the
 [S4-11e machine contract](MACHINE_CONTRACT.md#bounded-cross-page-word-read-s4-11e).
 
+Page-table Accessed/Dirty effects (S4-09d). The statements about A and D in this
+file (Accessed writes from completed walks persist after a later fault; a read
+or fetch sets no Dirty bit; a fault keeps the CPU state while committed table
+writes remain) are instances of the single summary table in
+[MACHINE_CONTRACT.md](MACHINE_CONTRACT.md#ad-summary-contract-s4-09d), which
+lists A by level, D, operand and callbacks for every access path (4 KiB and
+2 MiB, cross-page, RMW/LOCK, MMIO, LTR, `#PF` frame delivery, peeks, fetch
+cache). On a protection fault A is set on every walked level including the
+denying entry; on a nonpresent or reserved fault only on the predecessors. The
+CPU contract claims no atomic compare-and-replace of A/D (S6-25) and no
+cross-vCPU or DMA ordering; where this file and the table differ, the table
+and its linked tests decide.
+
 Normative sources: Intel 64 and IA-32 Architectures Software Developer's
 Manual, Revision 093, Vol. 2A §2.2 and the `MOV` instruction entry, pp. 4-28
 and following, for the `66` operand-size override and encoding; Vol. 1
