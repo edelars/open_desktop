@@ -1,0 +1,125 @@
+S5-07 selected delay_tsc distributed trace and same-input replay
+Date: 2026-11-16
+Host: macOS/aarch64, local Codex worktree, release od-runner
+Source revision: 5fc701d00ac4abbb7f6c17eb82599d2944a6dc76 (clean)
+
+Purpose
+-------
+The earlier selected-site prefix captured only 16,384 samples from the start
+of the run. This pair used stride 512 with the schema-v7 execution-observation
+sidecar, covering the selected delay_tsc RIP across almost the entire
+3,000,000,000-retired-instruction budget. The run is diagnostic only.
+
+Inputs and invocation
+---------------------
+Series: stage5-s5-07-rdtsc-delay-stride512-n2-20261116-a
+Scenario: stage4-init-nonce; two automatic runs; smoke_not_acceptance.
+CPU: stage4a CPL0 set, user mode, diagnostic_past_c7=false.
+Linux options: norandmaps, randomize_kstack_offset=off.
+Budget: 3,000,000,000; expected stop: budget_exhausted.
+Selected CPL0 RDTSC RIP: 0xffffffff8271b34d; stride: 512.
+
+Inputs:
+- vmlinuz SHA-256: 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e
+- initramfs SHA-256: 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7
+- ACPI blob SHA-256: 6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d
+- ACPI manifest SHA-256: 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2
+
+Automatic N=2 command:
+```sh
+target/release/od-runner linux-direct \
+  --test-runs 2 \
+  --series-id stage5-s5-07-rdtsc-delay-stride512-n2-20261116-a \
+  --scenario-id stage4-init-nonce \
+  --expected-stop-kind budget_exhausted \
+  --out work/stage5/stage5-s5-07-rdtsc-delay-stride512-n2-20261116-a/series.json \
+  --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --run --budget 3000000000 --set-cpl0 \
+  --cpuid-profile stage4a --user-mode --linux-norandmaps \
+  --linux-no-randomize-kstack-offset --execution-observations \
+  --execution-observations-rdtsc-rip 0xffffffff8271b34d \
+  --execution-observations-rdtsc-stride 512
+```
+
+Both runs loaded Linux, validated their unique nonce marker, and reached the
+expected budget stop at retired=2,999,999,998. The series outcome is
+`passed` for the smoke scenario, but its run profile is `smoke_not_acceptance`
+and runner acceptance is `diagnostic_not_counted`.
+
+Automatic-series comparison
+---------------------------
+The strict comparison returned matches=false, explained=1,
+unexplained=2:
+- run[1].machine_observations differs
+- run[1].ordered_uart_bytes differs after nonce normalization
+
+The comparator correctly did not apply the counted Stage 4 nonce volatile
+projection to this diagnostic profile. Raw machine observations include
+different terminal registers and counters. IRQ0 edges were 34,741/34,742,
+delivered IRQs 34,746/34,747, quanta 34,506,214/34,507,731, total CPL0 RDTSC
+reads 34,380,601/34,382,096, and #PF counts 33/33. At the selected delay_tsc
+RIP, counts were 33,988,924/33,990,416 (delta 1,492).
+
+The two schema-v7 sidecars retained 66,384 and 66,387 stride samples, with no
+omitted candidates. All 66,384 shared hit ordinals were compared. The
+requested-cycle value differs at one shared sample, ordinal 994,304
+(0xdbb7b/0xf4217); elapsed_cycles differs at 64,450 shared samples. Using
+the derived per-sample predicate elapsed_cycles >= requested_cycles, 117
+shared samples have different outcomes. The first differing sampled outcome
+is ordinal 1,255,424: run 0001 is below the requested interval
+(0x872ab < 0xf4217), while run 0002 is above it (0xf44eb >= 0xf4217).
+This is the first differing sampled predicate at ordinal 1,255,424, not a
+bound on the first divergence: unsampled hits may differ earlier, and equal
+global hit ordinals do not align individual delay invocations. The trace
+establishes sampled threshold-path variation but does not identify its cause
+or classify it as benign.
+
+UART files are both 23,356 bytes. The official comparator reports a strict
+post-nonce difference. As an exploratory check only, additionally removing
+the leading printk timestamp from each line leaves two payload differences:
+available memory 62,024/61,972 KiB and sched_clock calibration values. This
+extra transformation is not the comparator's acceptance rule.
+
+Same-input replay of run 0001
+----------------------------
+Run 0001 was repeated as a direct diagnostic run with the same nonce
+`OD518e8975553f95858000040f800000000`, same CPU/boot options, budget and
+artifact hashes. The replay loaded Linux and retired 2,999,999,998
+instructions. Input metadata and guest command line matched. Its complete
+machine stop object (excluding the separately checked inline UART bytes),
+UART bytes, and schema-v7 observation sidecar were byte-identical to run
+0001. This demonstrates repeatability for that same guest-visible input on
+this host/build. It does not prove that changing the nonce caused the
+cross-run differences, explain those differences, or turn the unique-nonce
+series into acceptance evidence.
+
+The direct replay used `--nonce OD518e8975553f95858000040f800000000`, the
+same input paths/hashes and boot flags shown above, `--budget 3000000000`,
+and `--execution-observations-out
+work/stage5/stage5-s5-07-rdtsc-delay-stride512-same-input-run1-replay-20261116/execution-observations.json`
+with the same selected RIP and stride. Its runner JSON was written to
+`work/stage5/stage5-s5-07-rdtsc-delay-stride512-same-input-run1-replay-20261116/runner.json`.
+
+Artifact hashes
+---------------
+Series SHA-256: f686db61c7180abfc6250fe07d1fce15f6a5a4cc09b675e941d0ece1a0dc2583
+Comparison SHA-256: 989064d1f1ec9b4732e55fb44c4f28eb73dd41a9422163b0b14af4c5d558654e
+Run 0001 manifest SHA-256: 8f24a751d03973bda16ea3cda85ee768b0ebb5f225a8e73249fa0ec505665314
+Run 0001 runner JSON SHA-256: ccac104d8d906e961f24653e8c3fcc1f0e12ca94ee08b7c9cdd619b7fcf5440a
+Run 0001 UART SHA-256: 162a40237c01af9f28d94fd122a7c0bfbf125391cf4ed0d2408827170de2a8f7
+Run 0001 sidecar SHA-256: 81a6f2fde5b42923f128cdb0efa4b714546b72dde5d4ad16451d1ef55bd1fde2
+Run 0002 manifest SHA-256: 5455e07372e32f5b0ce9b22d9f6bd3bb0776c2692b53a1f69418b46e68e3b926
+Run 0002 runner JSON SHA-256: 53a12daac5eded87019bfdab668717c65f1c6a6c1557f509a02d5e6797680b42
+Run 0002 UART SHA-256: 045dbefb9eb7fa0121f9fb9b64a7f1587063b5219551fd305bc3202469c8b924
+Run 0002 sidecar SHA-256: 4a4450fa2aeb860282cd0154a426b36151ff770a5011006fe37658ee13a166a0
+Run 0001 same-input replay runner SHA-256: f133cc17057d93e0ff38c9672a6f331759fa9c65b3a3809cd8cb915e2c3a10c7
+
+S5-07 remains blocked/unaccepted. No comparator normalization or CPU
+semantics were changed. Raw artifacts are under the ignored work/stage5
+directory named by the series and replay IDs above; the series artifacts
+are diagnostic evidence, not acceptance inputs.
