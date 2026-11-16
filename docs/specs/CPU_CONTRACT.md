@@ -27377,3 +27377,10 @@ Four focused profile tests cover equality, carry, overflow, sign/parity/AF and h
 Base `PagedCpl0ProbeV1` admits only exact no-prefix `0F 87 CD 02 00 00`. The signed rel32 displacement `+0x2cd` is added to `next_rip`; the branch is taken only when CF=0 and ZF=0. RFLAGS and definedness are preserved. Canonicality is checked only for a taken target; not-taken fall-through validation is deferred to the next fetch. Any instruction-fetch fault, including the last displacement byte, leaves state unchanged. Adjacent displacements/conditions, short JA, JMP, prefixes, CPL3 and other profiles remain unsupported.
 
 Five focused profile tests cover the CF/ZF truth table and definedness, exact taken/fall-through targets, noncanonical taken-only target, final-byte fetch-fault atomicity, neighbors, CPL3 and profile isolation. Firmware advances after 8,935 retired instructions to `4C 8D 51 08` (`LEA R10,[RCX+8]`, ISSUE-247) at RIP `0x201584`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04: exact helper `LEA R10,[RCX+8]` (ISSUE-247)
+
+Base `PagedCpl0ProbeV1` admits only exact `4C 8D 51 08`. REX.R extends the ModRM reg destination to R10; qword LEA uses RCX base and signed disp8 +8. The wrapping effective offset is written to R10 without memory access or canonicality checking. Only R10 and RIP change; flags, definedness and other GPRs are preserved. Final-byte fetch faults do not retire or mutate state. Neighboring registers/displacements/widths/prefixes, CPL3 and other profiles remain unsupported.
+
+Four focused profile tests cover high/noncanonical and wrapping offsets, full-state/flag-definedness preservation, no memory access, fetch-fault atomicity, neighbors, CPL3 and profile isolation. Firmware advances after 8,936 retired instructions to `49 39 D2` (`CMP R10,RDX`, ISSUE-248) at RIP `0x201588`; COM1 remains empty. Independent review approved with no findings.
