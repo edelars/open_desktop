@@ -1151,13 +1151,22 @@
 - **Проверка:** independent review approved with no findings. Five focused branch tests cover the CF/ZF truth table with defined and undefined flags, state retention, taken-only canonicality, rel8 fetch-fault atomicity, adjacent encodings and CPL3; other-profile isolation passes. All od-isa suites, scoped check/fmt and diff-check pass. Runner retired 8912 and stopped at `4C 39 EF` (`CMP RDI,R13`, ISSUE-230), RIP `0x200fa0`, `Unsupported { opcode: 57 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
 - **Следующий шаг:** continue S7-04 at ISSUE-230.
 
-### ISSUE-230 — S7-04: Rust helper `CMP RDI,R13` (`4C 39 EF`) remains outside paged CPU profile
+### ISSUE-230 — S7-04: exact Rust helper `CMP RDI,R13` (`4C 39 EF`) admitted narrowly
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `JA rel8 +0x1A`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200fa0`.
+- **Статус:** решена узко для exact `4C 39 EF` в base `PagedCpl0ProbeV1`; независимое ревью одобрило без замечаний, ожидает коммита.
+- **Суть и результат:** opcode `39` compares qword RDI−R13 in Intel r/m-destination, reg-source order; exact REX `4C` selects R13. Shared arithmetic semantics update CF/PF/AF/ZF/SF/OF and their definedness; no GPR is written. Other registers/directions/widths/prefixes, CPL3 and profiles remain unsupported.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue230.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xfa0` are `4C 39 EF`; runner budget 10000.
+- **Проверка:** independent review approved with no findings. Four focused tests cover equality, borrow, overflow, high-bit qword operands including a nonzero upper dword, all-GPR retention, arithmetic flags/definedness, final-ModRM fetch-fault atomicity, adjacent registers/opcodes/widths/prefixes, CPL3 and profile isolation. Runner retired 8913 and stopped at ISSUE-231: `76 22` (`JBE rel8 +0x22`), RIP `0x200fa3`, `Unsupported { opcode: 118 }`, `com1_bytes=0`; full firmware handoff validation remains incomplete. Полные проверки см. в отчёте S7.
+- **Следующий шаг:** verify exact JBE condition, branch-target and fetch-fault behavior for ISSUE-231.
+
+### ISSUE-231 — S7-04: Rust helper `JBE rel8 +0x22` (`76 22`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact `CMP RDI,R13`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200fa3`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8912 instructions and stopped at `4C 39 EF`, `Unsupported { opcode: 57 }`, `RIP=0x200fa0`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue229.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xfa0` are `4C 39 EF`; runner budget 10000.
-- **Следующий шаг:** verify exact qword CMP direction and REX.R source selection before narrow admission.
+- **Суть и последствия:** runner retired 8913 instructions and stopped at `76 22`, `Unsupported { opcode: 118 }`, `RIP=0x200fa3`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue230.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xfa3` are `76 22`; runner budget 10000. Decodes as `JBE/JNA rel8 +0x22`.
+- **Следующий шаг:** verify its shared condition and exact narrow-profile boundary.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.
