@@ -8417,6 +8417,174 @@ fn rust_helper_ja_plus_3d_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn rust_helper_ja_plus_1a_obeys_cf_zf_truth_table_and_preserves_state() {
+    let code = [0x77, 0x1a]; // JA/JNBE +0x1a
+    for defined in [DEFINED, DEFINED & !((1 << 0) | (1 << 6))] {
+        for carry in [false, true] {
+            for zero in [false, true] {
+                let mut memory = Memory::new(&code);
+                let mut cpu = state();
+                cpu.gpr = gpr_patterns();
+                cpu.rflags = 0x2 | (1 << 9) | (1 << 10) | (1 << 18);
+                if carry {
+                    cpu.rflags |= 1;
+                }
+                if zero {
+                    cpu.rflags |= 1 << 6;
+                }
+                let before = cpu.clone();
+                let mut pio = Pio::default();
+                let taken = !carry && !zero;
+
+                let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+
+                assert_eq!(result.exit, PagedProbeExit::Retired);
+                assert_eq!(result.instructions_executed, 1);
+                assert_eq!(result.rflags_defined, defined);
+                let mut expected = before;
+                expected.rip = if taken { RIP + 2 + 0x1a } else { RIP + 2 };
+                assert_eq!(cpu, expected, "CF={carry}, ZF={zero}, defined={defined:#x}");
+                assert_eq!((memory.reads, memory.writes), (0, 0));
+                assert!(memory.write_addresses.is_empty());
+                assert!(pio.reads.is_empty() && pio.writes.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn rust_helper_ja_plus_1a_checks_canonicality_only_when_taken() {
+    let start = 0x0000_7fff_ffff_fffe;
+    let code = [0x77, 0x1a];
+    let defined = DEFINED & !((1 << 0) | (1 << 6));
+
+    // CF=1 makes JA false; the noncanonical fall-through is not checked.
+    let mut memory = Memory::new(&[]);
+    memory.pages.insert(start & !0xfff, CODE_PHYSICAL);
+    memory.bytes[CODE_PHYSICAL + 0xffe..CODE_PHYSICAL + 0x1000].copy_from_slice(&code);
+    let mut cpu = state();
+    cpu.rip = start;
+    cpu.rflags = (cpu.rflags | 1) & !(1 << 6);
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, defined);
+    let mut expected = before;
+    expected.rip = 0x0000_8000_0000_0000;
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+
+    // CF=ZF=0 takes JA; its noncanonical target faults without retirement.
+    let mut memory = Memory::new(&[]);
+    memory.pages.insert(start & !0xfff, CODE_PHYSICAL);
+    memory.bytes[CODE_PHYSICAL + 0xffe..CODE_PHYSICAL + 0x1000].copy_from_slice(&code);
+    let mut cpu = state();
+    cpu.rip = start;
+    cpu.rflags &= !((1 << 0) | (1 << 6));
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None,
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, defined);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn rust_helper_ja_plus_1a_fetch_fault_does_not_commit() {
+    let mut memory = Memory::new(&[]);
+    memory.bytes[CODE_PHYSICAL + 0xfff] = 0x77;
+    let mut cpu = state();
+    cpu.rip = RIP + 0xfff;
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    memory.fail_fetch_at = Some((cpu.rip + 1, page_fault(0x10, cpu.rip + 1)));
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(RIP + 0x1000),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_helper_ja_plus_1a_neighbours_stay_unsupported() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x77, 0x19], 0x77),                // adjacent displacement
+        (&[0x77, 0x1b], 0x77),                // adjacent displacement
+        (&[0x76, 0x1a], 0x76),                // JBE
+        (&[0x73, 0x1a], 0x73),                // JAE
+        (&[0x72, 0x1a], 0x72),                // JB
+        (&[0x74, 0x1a], 0x74),                // JZ
+        (&[0x0f, 0x87, 0x1a, 0, 0, 0], 0x87), // near JA
+        (&[0x66, 0x77, 0x1a], 0x77),          // operand-size prefix
+        (&[0x40, 0x77, 0x1a], 0x77),          // REX prefix
+        (&[0xeb, 0x1a], 0xeb),                // JMP rel8
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "{bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(memory.write_addresses.is_empty());
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_ja_plus_1a_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x77, 0x1a];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    let before = cpu.clone();
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x77 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn firmware_entry_mov_r8_rdi_copies_only_r8_and_advances_rip() {
     let code = [0x49, 0x89, 0xf8]; // MOV R8,RDI
     let mut memory = Memory::new(&code);
@@ -17709,6 +17877,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x41, 0x83, 0xf8, 0x30][..], 0x83),
         (&[0x77, 0x0e][..], 0x77),
         (&[0x77, 0x3d][..], 0x77),
+        (&[0x77, 0x1a][..], 0x77),
         (&[0x49, 0x89, 0xf8][..], 0x89),
         (&[0x48, 0x8d, 0x3d, 0x09, 0x2b, 0, 0][..], 0x8d),
         (&[0x48, 0x8d, 0x0d, 0x02, 0x2b, 0, 0][..], 0x8d),

@@ -27258,3 +27258,10 @@ Four focused tests cover carry, signed overflow, sign/zero results, high-bit ope
 Base `PagedCpl0ProbeV1` admits only exact `48 39 E8`: REX.W, opcode `39`, qword r/m destination RAX, reg source RBP. It computes RAX−RBP in Intel operand order with shared arithmetic semantics, updates/defines CF/PF/AF/ZF/SF/OF, and leaves every GPR unchanged. Reverse opcode direction, other registers/widths, prefixes, CPL3 and other profiles remain unsupported.
 
 Four focused tests cover equality, borrow, signed overflow, high-bit qword operands, register preservation, flag/definedness results, final-ModRM fetch-fault atomicity, neighbors, CPL3 and profile isolation. Firmware advances to ISSUE-229: `77 1A` (`JA rel8 +0x1a`) at RIP `0x200f9e`.
+
+
+### S7-04: exact Rust-helper `JA rel8 +0x1A` (ISSUE-229)
+
+Base `PagedCpl0ProbeV1` admits only exact no-prefix `77 1A`. The shared JA condition reads CF=0 and ZF=0, preserves RFLAGS and definedness, selects the taken signed-rel8 target or fall-through, and checks canonicality only for a taken target. Other displacements/conditions, prefixes/near form, CPL3 and other profiles remain unsupported.
+
+Five focused tests cover the CF/ZF truth table with defined and undefined flags, state preservation, taken-only canonicality, rel8 fetch-fault atomicity, neighbors and CPL3; other-profile isolation passes. Firmware advances to ISSUE-230: `4C 39 EF` (`CMP RDI,R13`) at RIP `0x200fa0`.
