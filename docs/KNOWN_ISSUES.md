@@ -1250,13 +1250,22 @@
 - **Проверка:** focused tests verify qword value, state/flags retention, #SS/#PF/fetch-fault atomicity, neighboring register/prefix forms, CPL3 and other-profile isolation. Four-level machine tests verify successful A/D updates and same-page WP failure leaves state/data unchanged and leaf D clear. Runner advances to `4D 85 C0` (`TEST R8,R8`, ISSUE-241) at RIP `0x20156b`, after 8,929 retired instructions; COM1 remains empty. Independent review approved with no findings.
 - **Следующий шаг:** independent review of exact PUSH RAX admission and stack-write behavior.
 
-### ISSUE-241 — S7-04: helper `TEST R8,R8` (`4D 85 C0`) remains outside paged CPU profile
+### ISSUE-241 — S7-04: helper `TEST R8,R8` (`4D 85 C0`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-240.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20156b`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner retired 8,929 instructions and stopped on `4D 85 C0`, `Unsupported { opcode: 133 }`; COM1 remains empty.
+- **Статус:** реализована узко; independent review approved with no findings.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact qword register-self encoding `4D 85 C0` (`TEST R8,R8`). It writes no GPR result; it updates logical flags through shared qword semantics, sets CF/OF to zero, and marks AF undefined while retaining its concrete bit.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue240.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x156b` begin `4D 85 C0`; runner budget 10000.
-- **Следующий шаг:** verify exact qword TEST register form and its logical flag/definedness semantics.
+- **Проверка:** focused tests cover zero, parity, sign and all-ones inputs; preserve all GPRs and unrelated flags; confirm logical flag definedness and AF undefinedness; test fetch-fault atomicity, neighboring registers/widths/prefixes, CPL3 and other-profile isolation. Runner advances to `0F 84 49 01 00 00` (`JZ rel32 +0x149`, ISSUE-242) at RIP `0x20156e`, after 8,930 retired instructions; COM1 remains empty. Independent review approved with no findings.
+- **Следующий шаг:** independent review of exact qword TEST and flag definedness.
+
+### ISSUE-242 — S7-04: helper `JZ rel32 +0x149` (`0F 84 49 01 00 00`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-241.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20156e`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner retired 8,930 instructions and stopped on `0F 84 49 01 00 00`, `Unsupported { opcode: 132 }`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue241.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x156e` begin `0F 84 49 01 00 00`; runner budget 10000.
+- **Следующий шаг:** verify exact JZ rel32 displacement and condition/canonical-target semantics.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.

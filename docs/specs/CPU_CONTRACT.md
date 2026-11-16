@@ -27326,6 +27326,12 @@ Base `PagedCpl0ProbeV1` admits only exact `4D 89 E1`. REX.W selects qword width,
 
 Four focused tests cover high-bit qword values, full-state and flags-definedness retention, instruction-fetch-fault atomicity, neighboring register/REX/opcode/width/prefix forms and CPL3; other-profile isolation passes. Firmware advances to ISSUE-239: `E8 79 05 00 00` (`CALL rel32 +0x579`) at RIP `0x200fe2`, after 8921 retired instructions.
 
+### S7-04: exact helper `TEST R8,R8` (ISSUE-241)
+
+Base `PagedCpl0ProbeV1` admits only exact qword self-register encoding `4D 85 C0`. The shared TEST semantics use full-width R8 as both operands and do not write a GPR. CF/OF are cleared; SF/ZF/PF follow the logical result; AF's concrete value is retained while AF is marked undefined. CF/PF/ZF/SF/OF become defined and AF becomes undefined; definedness of all unrelated flags is preserved. All unrelated flag values and all GPRs remain unchanged. Fetch faults do not retire or commit flags. Neighbor registers, widths, prefixes, CPL3 and other profiles remain unsupported.
+
+Four focused profile tests cover qword values, flag bits/definedness, fetch-fault atomicity, neighboring forms, CPL3 and profile isolation. Runner advances after 8,930 retired instructions to `0F 84 49 01 00 00` (`JZ rel32 +0x149`, ISSUE-242) at RIP `0x20156e`; COM1 remains empty. Independent review approved with no findings.
+
 ### S7-04: exact helper `PUSH RAX` (ISSUE-240)
 
 Base `PagedCpl0ProbeV1` admits only exact bare opcode `50` for qword `PUSH RAX`. The helper writes the original 64-bit RAX value at `[RSP-8]` through the tracked stack path and commits RSP/RIP after successful write. All other GPRs, flags and definedness are preserved. Noncanonical stack (#SS), write (#PF), and fetch faults do not commit CPU state. Prefix, other-register, CPL3, and other-profile forms remain unsupported.
