@@ -4047,8 +4047,18 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-276 — S7-04: exact helper `CMOVE R14D,R11D` (`45 0F 44 F3`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-275.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201616`.
-- **Статус:** открыта.
-- **Суть и последствия:** base `PagedCpl0ProbeV1` does not yet admit the exact ZF-conditioned dword move from R11D to R14D.
+- **Статус:** реализована в S7-04; независимое ревью одобрило изменение без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact `45 0F 44 F3`; REX.R/B select R14D destination and R11D source. If ZF=1, it copies R11D to R14D and zero-extends; if ZF=0, it preserves the old low R14D and zero-extends it, clearing the upper dword. Flags/definedness are preserved.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1616` are `45 0F 44 F3`; runner budget 10000.
-- **Проверки исполнения:** firmware retires 8,970 instructions and stops with `Unsupported { opcode: 68 }`; COM1 remains empty.
-- **Следующий шаг:** admit only exact CMOVE R14D,R11D and validate taken/not-taken register and flag behavior for ISSUE-276.
+- **Проверки исполнения:** four focused tests cover ZF true/false with defined and undefined ZF, taken source copy versus old R14D on false, with dword zero-extension on both paths, fetch-fault atomicity, neighboring conditions/registers/directions/widths/prefixes and CPL3; other paged profiles keep it unsupported. Firmware retires 8,971 instructions and advances to `41 80 FE 01` (`CMP R14B,1`) at RIP `0x20161A`; COM1 remains empty.
+- **Следующий шаг:** admit only exact CMP R14B,1 and verify byte arithmetic flags for ISSUE-277.
+
+
+### ISSUE-277 — S7-04: exact helper `CMP R14B,1` (`41 80 FE 01`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-276.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20161A`.
+- **Статус:** открыта.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` does not yet admit the exact byte CMP of R14B against imm8 1.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x161A` are `41 80 FE 01`; runner budget 10000.
+- **Проверки исполнения:** firmware retires 8,971 instructions and stops with `Unsupported { opcode: 128 }`; COM1 remains empty.
+- **Следующий шаг:** admit only exact CMP R14B,1, preserving other R14 bits and validating byte flags for ISSUE-277.

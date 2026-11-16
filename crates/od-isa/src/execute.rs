@@ -20368,6 +20368,40 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined,
             };
         }
+        // S7-04: the helper conditionally copies R11D to R14D only with exact
+        // `45 0F 44 F3`. REX.R/B select the dword destination/source; a false
+        // condition preserves the low dword and still zero-extends R14.
+        Operation::ConditionalMove {
+            condition,
+            dst: destination,
+            src: Operand::Register(source),
+        } if base_profile
+            && condition == ConditionCode::Equal
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x44
+            && instruction.length == 4
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x45),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R14, OperandSize::Dword)
+            && source == RegisterView::low(Register::R11, OperandSize::Dword) =>
+        {
+            let value = if condition.evaluate(state.rflags) {
+                state.read(source)
+            } else {
+                state.read(destination)
+            };
+            state.write(destination, value);
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined,
+            };
+        }
         // S7-04: the Rust helper stores the unsigned-greater result only in CL
         // with exact `0F 97 C1` (SETA CL). Condition evaluation reads CF/ZF but
         // neither the flags nor their definedness are modified.

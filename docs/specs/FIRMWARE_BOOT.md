@@ -518,3 +518,10 @@ Four focused tests cover ZF true/false with defined and undefined ZF, low-byte-o
 Base `PagedCpl0ProbeV1` admits only exact `41 83 FA 06`. REX.B selects R10D; CMP uses dword operands and sign-extends imm8 6 to that width. No GPR is written; shared arithmetic semantics update all arithmetic flags and their definedness. An immediate-byte fetch fault is atomic. Other immediates/registers/opcodes, byte/word/qword widths, prefixes, memory operands, CPL3 and other paged profiles remain unsupported.
 
 Four focused tests cover equal/borrow/signed-overflow/sign/parity cases, high qword and word-vs-dword distinction, full GPR preservation, immediate-fetch atomicity, neighbors and CPL3/profile isolation. Firmware advances after 8,970 retired instructions to `45 0F 44 F3` (`CMOVE R14D,R11D`, ISSUE-276) at RIP `0x201616`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `CMOVE R14D,R11D` (ISSUE-276)
+
+Base `PagedCpl0ProbeV1` admits only exact `45 0F 44 F3`. REX.R extends ModRM.reg to R14D and REX.B extends r/m to R11D. CMOVE reads ZF; when set, it copies the source dword and zero-extends R14. When clear, it writes the old low R14D back, zero-extending and clearing the upper dword as required by 32-bit CMOV in 64-bit mode. Flags and definedness are preserved, and the register source causes no memory access. A final ModRM-byte fetch fault is atomic. Neighboring conditions/registers/directions/REX/width/prefix forms, memory sources, CPL3 and other paged profiles remain unsupported.
+
+Four focused tests cover taken/untaken outcomes with defined and undefined ZF, source routing and dword zero-extension, false-path dword zero-extension, full state/flag preservation, fetch-fault atomicity, neighbors and CPL3/profile isolation. Firmware advances after 8,971 retired instructions to `41 80 FE 01` (`CMP R14B,1`, ISSUE-277) at RIP `0x20161A`; COM1 remains empty. Independent review approved with no findings.
