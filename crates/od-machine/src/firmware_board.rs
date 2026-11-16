@@ -13,7 +13,7 @@ use crate::console_output_context::{
     capture_frame_chain,
 };
 use crate::execution_observations::{
-    LinuxExecutionObservationCollector, LinuxExecutionObservations,
+    LinuxExecutionObservationCollector, LinuxExecutionObservations, RdtscClockReadLedger,
 };
 use crate::fetch_cache_report::{CallObservation, FetchCacheAccumulator, LinuxFetchCacheReport};
 use crate::fetch_cache_sweep::{FetchCacheSweep, FetchSweepReport, SweepConfig};
@@ -56,6 +56,7 @@ use od_isa::memory::{
     AccessContext, AccessKind, AccessOrigin, InstructionMode, PageFaultRecord, PrivilegeLevel,
 };
 use od_isa::{CpuActivity, INTEGER_FLAGS, IretqUserEntry, LongModeState, Register, StiShadow};
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
@@ -2257,6 +2258,12 @@ impl LoadedFirmwareBoard {
         }
         self.vcpus[BOOT_VCPU_INDEX].state.cr3 = Some(self.page_table_root);
         let mut irq_counters = IrqCounters::default();
+        let mut clock_origin = None;
+        let mut pm_timer_ns_charged = 0u64;
+        let mut pit_ns_charged = 0u64;
+        let mut rdtsc_ns_charged = 0u64;
+        let mut idle_ns_advanced = 0u64;
+        let delivered_irq_mirror = Cell::new(0u64);
         let mut fetch_report = self
             .fetch_cache_report_enabled
             .then(|| FetchCacheAccumulator::new(fetch_cache, self.checkpoints.is_some()));
@@ -2285,11 +2292,49 @@ impl LoadedFirmwareBoard {
         );
         let result = loop {
             let uart = self.uart.clone();
+            let clock_read = Cell::new(None);
+            let quantum_clock_ledger = execution_observations.as_ref().and_then(|observations| {
+                observations.build_rdtsc_clock_trace_if_active(|| {
+                    let (initial_now_ns, tsc_hz) = *clock_origin.get_or_insert_with(|| {
+                        let snapshot = self.clock.snapshot();
+                        (snapshot.now_ns(), snapshot.tsc_hz())
+                    });
+                    delivered_irq_mirror.set(irq_counters.irqs_delivered);
+                    RdtscClockReadLedger {
+                        initial_now_ns,
+                        now_ns: 0,
+                        tsc: 0,
+                        tsc_hz,
+                        retired_instructions_charged: retired,
+                        pm_timer_ns_charged,
+                        pit_ns_charged,
+                        rdtsc_ns_charged,
+                        idle_ns_advanced,
+                        quantum_ordinal: quanta.saturating_add(1),
+                        irqs_delivered: delivered_irq_mirror.get(),
+                    }
+                })
+            });
+            let capture_clock_read = quantum_clock_ledger.is_some();
+            let clock_read_ref = &clock_read;
+            let delivered_irq_mirror_ref = &delivered_irq_mirror;
             let mut source = rdtsc_tick.clone().map(|tick| {
                 let clock = self.clock.clone();
                 move || {
                     tick.store(true, Ordering::Relaxed);
-                    clock.snapshot().tsc()
+                    if let Some(quantum_clock_ledger) = quantum_clock_ledger {
+                        let snapshot = clock.snapshot();
+                        let tsc = snapshot.tsc();
+                        clock_read_ref.set(Some(RdtscClockReadLedger {
+                            now_ns: snapshot.now_ns(),
+                            tsc,
+                            irqs_delivered: delivered_irq_mirror_ref.get(),
+                            ..quantum_clock_ledger
+                        }));
+                        tsc
+                    } else {
+                        clock.snapshot().tsc()
+                    }
                 }
             });
             let stop = || {
@@ -2366,6 +2411,7 @@ impl LoadedFirmwareBoard {
                 irq_hook.then(|| IrqBoundaryHook {
                     source: &mut *self.irq_source,
                     counters: &mut irq_counters,
+                    delivered_mirror: capture_clock_read.then_some(&delivered_irq_mirror),
                     skip_first_boundary: partial_rep,
                 }),
                 self.checkpoints.as_mut(),
@@ -2443,11 +2489,18 @@ impl LoadedFirmwareBoard {
                 if let Err(error) = self.charge_ns(tick_ns) {
                     break Err(failure(error));
                 }
+                if capture_clock_read {
+                    pm_timer_ns_charged = pm_timer_ns_charged.saturating_add(tick_ns);
+                }
             }
-            if let Some(pit) = &pit
-                && let Err(error) = self.charge_ns(pit.take_port_tick_ns())
-            {
-                break Err(failure(error));
+            if let Some(pit) = &pit {
+                let tick_ns = pit.take_port_tick_ns();
+                if let Err(error) = self.charge_ns(tick_ns) {
+                    break Err(failure(error));
+                }
+                if capture_clock_read {
+                    pit_ns_charged = pit_ns_charged.saturating_add(tick_ns);
+                }
             }
             if let Some(flag) = &rdtsc_tick
                 && flag.swap(false, Ordering::Relaxed)
@@ -2462,14 +2515,25 @@ impl LoadedFirmwareBoard {
                     && let Some(observations) = execution_observations.as_mut()
                 {
                     observations.record_cpl0_rdtsc(report.last_instruction_rip);
-                    observations
-                        .record_rdtsc_site_sample(report.last_instruction_rip, self.state());
+                    observations.record_rdtsc_site_sample(
+                        report.last_instruction_rip,
+                        self.state(),
+                        clock_read.get().filter(|_| {
+                            report.last_instruction_rip == selected_rdtsc_entry_sample_rip
+                        }),
+                    );
                 }
                 let tick_ns = RDTSC_TICK_NS;
                 #[cfg(test)]
                 let tick_ns = if self.suppress_rdtsc_tick { 0 } else { tick_ns };
                 if let Err(error) = self.charge_ns(tick_ns) {
                     break Err(failure(error));
+                }
+                if execution_observations
+                    .as_ref()
+                    .is_some_and(LinuxExecutionObservationCollector::wants_rdtsc_clock_trace)
+                {
+                    rdtsc_ns_charged = rdtsc_ns_charged.saturating_add(tick_ns);
                 }
             }
             let stop_reason = acpi_pm.as_ref().and_then(AcpiPmHandle::stop_request);
@@ -2493,6 +2557,12 @@ impl LoadedFirmwareBoard {
                 };
                 irq_counters.halt_wakes += 1;
                 irq_counters.halt_idle_ns += idle;
+                if execution_observations
+                    .as_ref()
+                    .is_some_and(LinuxExecutionObservationCollector::wants_rdtsc_clock_trace)
+                {
+                    idle_ns_advanced = idle_ns_advanced.saturating_add(idle);
+                }
                 self.vcpus[BOOT_VCPU_INDEX].state.activity = Some(CpuActivity::Running);
                 remaining -= 1;
                 partial_rep = false;

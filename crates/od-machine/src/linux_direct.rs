@@ -10973,7 +10973,19 @@ mod tests {
             .with_rdtsc();
         let report = boot
             .board
-            .run_linux_boot_cpl0_set_with_observations(2, &set, false, false, false, true)
+            .run_linux_boot_cpl0_set_with_post_iret_index(
+                2,
+                &set,
+                false,
+                false,
+                false,
+                true,
+                None,
+                None,
+                1,
+                Some(ENTRY),
+                None,
+            )
             .expect("board run");
 
         assert_eq!(report.run.retired, 1, "{report:?}");
@@ -10989,6 +11001,26 @@ mod tests {
         );
         assert_eq!(observations.rdtsc_cpl0_unattributed_reads, 0);
         assert_eq!(observations.rdtsc_cpl0_site_overflow_reads, 0);
+        assert_eq!(observations.rdtsc_entry_sample_hits, 1);
+        assert_eq!(observations.rdtsc_entry_clock_trace_missing, 0);
+        assert_eq!(observations.rdtsc_entry_clock_trace_samples.len(), 1);
+        let clock_read = observations.rdtsc_entry_clock_trace_samples[0];
+        assert_eq!(clock_read.hit_ordinal, 1);
+        assert_eq!(
+            clock_read.now_ns, 0,
+            "callback precedes current-quantum charge"
+        );
+        assert_eq!(clock_read.retired_instructions_charged, 0);
+        assert_eq!(
+            clock_read.rdtsc_ns_charged, 0,
+            "current RDTSC tick is post-callback"
+        );
+        assert_eq!(clock_read.irqs_delivered, 0);
+        assert_eq!(clock_read.unaccounted_elapsed_ns, Some(0));
+        assert_eq!(
+            clock_read.callback_tsc,
+            observations.rdtsc_entry_samples[0].observed_tsc
+        );
     }
 
     #[test]
@@ -14772,6 +14804,17 @@ mod tests {
             counters: &mut IrqCounters,
             skip_first_boundary: bool,
         ) -> (LongModeState, PagedCpl0SetReport) {
+            run_hook_with_mirror(boot, budget, source, counters, skip_first_boundary, None)
+        }
+
+        fn run_hook_with_mirror(
+            boot: &mut LinuxDirectBoot,
+            budget: u64,
+            source: &mut dyn BoardIrqSource,
+            counters: &mut IrqCounters,
+            skip_first_boundary: bool,
+            delivered_mirror: Option<&std::cell::Cell<u64>>,
+        ) -> (LongModeState, PagedCpl0SetReport) {
             let cli = CliProfile::NonPviLong64V1;
             let sti = StiProfile::NonPviLong64V1;
             let set = minimal_set(&cli)
@@ -14798,6 +14841,7 @@ mod tests {
                 Some(IrqBoundaryHook {
                     source,
                     counters,
+                    delivered_mirror,
                     skip_first_boundary,
                 }),
             );
@@ -15130,6 +15174,25 @@ mod tests {
             assert_eq!(script.0.borrow().acked, [IRQ_VECTOR]);
             assert_eq!(record.rip, IRQ_HANDLER_AT + 3);
             assert_eq!(record.retired, 3);
+        }
+
+        #[test]
+        fn delivered_irq_mirror_updates_at_successful_delivery() {
+            let (mut boot, _file) = irq_board(&[CLD; 8]);
+            let mut script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            let mut counters = IrqCounters::default();
+            let delivered = std::cell::Cell::new(0);
+            let (_state, _report) = run_hook_with_mirror(
+                &mut boot,
+                3,
+                &mut script,
+                &mut counters,
+                false,
+                Some(&delivered),
+            );
+            assert_eq!(counters.irqs_delivered, 1);
+            assert_eq!(delivered.get(), counters.irqs_delivered);
         }
 
         #[test]

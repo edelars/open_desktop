@@ -91,6 +91,8 @@ pub(crate) struct IrqCounters {
 pub(crate) struct IrqBoundaryHook<'a> {
     pub(crate) source: &'a mut dyn BoardIrqSource,
     pub(crate) counters: &'a mut IrqCounters,
+    /// Optional callback-visible mirror, updated at the exact successful delivery boundary.
+    pub(crate) delivered_mirror: Option<&'a std::cell::Cell<u64>>,
     /// The call resumes a partial REP (`RepIterationBudgetExhausted`): the first boundary is in
     /// the middle of the REP, nothing is delivered there.
     pub(crate) skip_first_boundary: bool,

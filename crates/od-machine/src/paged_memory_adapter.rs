@@ -1846,6 +1846,9 @@ fn deliver_pending_irq(
         Cpl0ExternalInterruptDelivery::Delivered { .. } => {
             hook.source.acknowledge(vector);
             hook.counters.irqs_delivered += 1;
+            if let Some(delivered) = hook.delivered_mirror {
+                delivered.set(delivered.get().saturating_add(1));
+            }
             return IrqBoundaryOutcome::Delivered;
         }
         Cpl0ExternalInterruptDelivery::Refused(Cpl0ExternalInterruptRefusal::InterruptsMasked) => {

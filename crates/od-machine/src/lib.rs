@@ -189,8 +189,9 @@ pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEve
 pub use execution_observations::{
     DeliveredPageFaultObservation, FaultingPageFaultContext, FaultingPageWalkContext,
     LINUX_PAGE_FAULT_EVENT_CAPACITY, LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
-    LINUX_RDTSC_SAMPLE_CAPACITY, LINUX_RDTSC_SITE_CAPACITY, LinuxExecutionObservations,
-    PostIretPageWalkSnapshot, RdtscEntrySample, RdtscSampleWindow, RdtscSiteCount, RdtscSiteSample,
+    LINUX_RDTSC_CLOCK_TRACE_CAPACITY, LINUX_RDTSC_SAMPLE_CAPACITY, LINUX_RDTSC_SITE_CAPACITY,
+    LinuxExecutionObservations, PostIretPageWalkSnapshot, RdtscClockTraceSample, RdtscEntrySample,
+    RdtscSampleWindow, RdtscSiteCount, RdtscSiteSample,
 };
 pub use firmware_board::{
     FIRMWARE_ACPI_FACS_BASE, FIRMWARE_ACPI_FACS_BYTES, FIRMWARE_ACPI_TABLES_BASE,

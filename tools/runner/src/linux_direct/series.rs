@@ -1092,7 +1092,7 @@ fn validate_execution_observations_sidecar(
         .map_err(|error| format!("invalid execution-observations sidecar JSON: {error}"))?;
     let schema_version = sidecar_json["schema_version"]
         .as_u64()
-        .filter(|version| matches!(version, 7 | 8 | 9))
+        .filter(|version| matches!(version, 7 | 8 | 9 | 10))
         .ok_or_else(|| {
             "execution-observations sidecar schema_version is missing, invalid, or unsupported"
                 .to_string()
@@ -1153,7 +1153,7 @@ fn validate_execution_observations_sidecar(
             );
         }
     }
-    if schema_version == 9 {
+    if schema_version >= 9 {
         let metadata_window = parse_sidecar_sample_window(sidecar.get("sample_window"))?;
         let raw_window = parse_sidecar_sample_window(sidecar_json.get("rdtsc_sample_window"))?;
         let stride = sidecar["stride"].as_u64().unwrap_or(0);
@@ -1177,6 +1177,96 @@ fn validate_execution_observations_sidecar(
             {
                 return Err("execution-observations sample window counts are invalid".into());
             }
+        }
+    }
+    if schema_version >= 10 {
+        let metadata_trace_count = sidecar
+            .get("entry_clock_trace_sample_count")
+            .and_then(Value::as_u64);
+        let metadata_trace_missing = sidecar
+            .get("entry_clock_trace_missing")
+            .and_then(Value::as_u64);
+        let raw_trace_samples = sidecar_json
+            .get("rdtsc_entry_clock_trace_samples")
+            .and_then(Value::as_array);
+        let raw_trace_missing = sidecar_json
+            .get("rdtsc_entry_clock_trace_missing")
+            .and_then(Value::as_u64);
+        let expected_trace_count = sidecar
+            .get("entry_hits")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .min(od_machine::LINUX_RDTSC_CLOCK_TRACE_CAPACITY as u64);
+        let Some(raw_trace_samples) = raw_trace_samples else {
+            return Err("execution-observations clock trace is missing or invalid".into());
+        };
+        let Some(raw_trace_missing) = raw_trace_missing else {
+            return Err("execution-observations clock trace is missing or invalid".into());
+        };
+        let accounted_trace_hits = (raw_trace_samples.len() as u64)
+            .checked_add(raw_trace_missing)
+            .ok_or_else(|| "execution-observations clock trace count overflow".to_string())?;
+        if metadata_trace_count != Some(raw_trace_samples.len() as u64)
+            || metadata_trace_missing != Some(raw_trace_missing)
+            || raw_trace_samples.len() > od_machine::LINUX_RDTSC_CLOCK_TRACE_CAPACITY
+            || accounted_trace_hits != expected_trace_count
+        {
+            return Err(
+                "execution-observations clock trace summary does not match raw runner metadata"
+                    .into(),
+            );
+        }
+        let entry_rip = sidecar_json["rdtsc_entry_sample_rip"].as_str();
+        let mut prior_hit = 0u64;
+        for sample in raw_trace_samples {
+            let valid_rip = sample
+                .get("rip")
+                .and_then(Value::as_str)
+                .is_some_and(canonical_hex64);
+            let hit_ordinal = sample.get("hit_ordinal").and_then(Value::as_u64);
+            let callback_tsc_is_canonical = sample
+                .get("callback_tsc")
+                .and_then(Value::as_str)
+                .is_some_and(canonical_hex64);
+            let initial_ns = sample.get("initial_now_ns").and_then(Value::as_u64);
+            let now_ns = sample.get("now_ns").and_then(Value::as_u64);
+            let tsc_hz = sample.get("tsc_hz").and_then(Value::as_u64);
+            let numeric_fields_valid = [
+                "retired_instructions_charged",
+                "pm_timer_ns_charged",
+                "pit_ns_charged",
+                "rdtsc_ns_charged",
+                "idle_ns_advanced",
+                "quantum_ordinal",
+                "irqs_delivered",
+            ]
+            .into_iter()
+            .all(|key| sample.get(key).and_then(Value::as_u64).is_some());
+            let retired_ns_valid = sample
+                .get("retired_ns_charged")
+                .is_some_and(|value| value.is_null() || value.as_u64().is_some());
+            let unaccounted_valid = matches!(
+                sample.get("unaccounted_elapsed_ns"),
+                Some(Value::Null) | Some(Value::Number(_))
+            ) && sample
+                .get("unaccounted_elapsed_ns")
+                .is_some_and(|value| value.is_null() || value.as_u64().is_some());
+            if !valid_rip
+                || sample.get("rip").and_then(Value::as_str) != entry_rip
+                || hit_ordinal
+                    .is_none_or(|hit| hit == 0 || hit > expected_trace_count || hit <= prior_hit)
+                || !callback_tsc_is_canonical
+                || initial_ns
+                    .zip(now_ns)
+                    .is_none_or(|(initial, now)| now < initial)
+                || tsc_hz.is_none_or(|frequency| frequency == 0)
+                || !numeric_fields_valid
+                || !retired_ns_valid
+                || !unaccounted_valid
+            {
+                return Err("execution-observations clock trace sample is invalid".into());
+            }
+            prior_hit = hit_ordinal.unwrap_or(0);
         }
     }
     Ok(())
@@ -2521,7 +2611,7 @@ mod tests {
             );
         }
 
-        for version in [None, Some(Value::Null), Some(json!("8")), Some(json!(10))] {
+        for version in [None, Some(Value::Null), Some(json!("8")), Some(json!(11))] {
             let mut malformed_sidecar = sidecar_value.clone();
             if let Some(value) = version {
                 malformed_sidecar["schema_version"] = value;
@@ -2554,6 +2644,75 @@ mod tests {
         update_metadata(v9_metadata.clone());
         let loaded = fresh_manifest(&series_path).unwrap();
         assert!(load_run_manifest(&series_path, &loaded.runs[0]).is_ok());
+
+        let trace_sample = |hit_ordinal: u64| {
+            json!({
+                "rip": "0xffffffff8271b31b",
+                "hit_ordinal": hit_ordinal,
+                "initial_now_ns": 0,
+                "now_ns": 20,
+                "callback_tsc": "0x30",
+                "tsc_hz": 2_400_000_000u64,
+                "retired_instructions_charged": 10,
+                "retired_ns_charged": 10,
+                "pm_timer_ns_charged": 2,
+                "pit_ns_charged": 3,
+                "rdtsc_ns_charged": 1,
+                "idle_ns_advanced": 4,
+                "quantum_ordinal": 11 + hit_ordinal,
+                "irqs_delivered": 1,
+                "unaccounted_elapsed_ns": 0,
+            })
+        };
+        let mut v10_sidecar = v9_sidecar.clone();
+        v10_sidecar["schema_version"] = json!(10);
+        v10_sidecar["rdtsc_entry_clock_trace_samples"] = json!([trace_sample(1), trace_sample(2)]);
+        v10_sidecar["rdtsc_entry_clock_trace_missing"] = json!(0);
+        let mut v10_metadata = v9_metadata.clone();
+        v10_metadata["entry_clock_trace_sample_count"] = json!(2);
+        v10_metadata["entry_clock_trace_missing"] = json!(0);
+        let mut v10_bytes = serde_json::to_vec_pretty(&v10_sidecar).unwrap();
+        v10_bytes.push(b'\n');
+        fs::write(&sidecar_path, &v10_bytes).unwrap();
+        v10_metadata["byte_count"] = json!(v10_bytes.len());
+        v10_metadata["sha256"] = json!(od_testkit::sha256_hex(&v10_bytes));
+        update_metadata(v10_metadata.clone());
+        let loaded = fresh_manifest(&series_path).unwrap();
+        assert!(load_run_manifest(&series_path, &loaded.runs[0]).is_ok());
+
+        for malformed in [None, Some(Value::Null), Some(json!("2")), Some(json!(3))] {
+            let mut bad_metadata = v10_metadata.clone();
+            if let Some(value) = malformed {
+                bad_metadata["entry_clock_trace_sample_count"] = value;
+            } else {
+                bad_metadata
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("entry_clock_trace_sample_count");
+            }
+            assert_rejected(
+                v10_sidecar.clone(),
+                bad_metadata,
+                "clock trace summary does not match",
+            );
+        }
+        let mut invalid_trace_sample = v10_sidecar.clone();
+        invalid_trace_sample["rdtsc_entry_clock_trace_samples"][0]["tsc_hz"] = json!(0);
+        assert_rejected(
+            invalid_trace_sample,
+            v10_metadata.clone(),
+            "clock trace sample is invalid",
+        );
+        let mut missing_trace = v10_sidecar.clone();
+        missing_trace
+            .as_object_mut()
+            .unwrap()
+            .remove("rdtsc_entry_clock_trace_samples");
+        assert_rejected(
+            missing_trace,
+            v10_metadata.clone(),
+            "clock trace is missing or invalid",
+        );
 
         for malformed in [
             None,

@@ -2082,6 +2082,29 @@ fn write_execution_observations_sidecar(
             })
         })
         .collect::<Vec<_>>();
+    let entry_clock_trace_samples = observations
+        .rdtsc_entry_clock_trace_samples
+        .iter()
+        .map(|sample| {
+            json!({
+                "rip": hex64(sample.rip),
+                "hit_ordinal": sample.hit_ordinal,
+                "initial_now_ns": sample.initial_now_ns,
+                "now_ns": sample.now_ns,
+                "callback_tsc": hex64(sample.callback_tsc),
+                "tsc_hz": sample.tsc_hz,
+                "retired_instructions_charged": sample.retired_instructions_charged,
+                "retired_ns_charged": sample.retired_ns_charged,
+                "pm_timer_ns_charged": sample.pm_timer_ns_charged,
+                "pit_ns_charged": sample.pit_ns_charged,
+                "rdtsc_ns_charged": sample.rdtsc_ns_charged,
+                "idle_ns_advanced": sample.idle_ns_advanced,
+                "quantum_ordinal": sample.quantum_ordinal,
+                "irqs_delivered": sample.irqs_delivered,
+                "unaccounted_elapsed_ns": sample.unaccounted_elapsed_ns,
+            })
+        })
+        .collect::<Vec<_>>();
     let page_fault_events = observations
         .page_fault_events
         .iter()
@@ -2146,12 +2169,13 @@ fn write_execution_observations_sidecar(
         })
     });
     let value = json!({
-        "schema_version": 9,
-        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, an optional bounded every-hit entry-RDTSC stream, and an optional inclusive hit-ordinal window for selected-site samples",
+        "schema_version": 10,
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, an optional bounded every-hit entry-RDTSC stream with a two-hit pre-charge virtual-clock ledger, and an optional inclusive hit-ordinal window for selected-site samples",
         "limits": {
             "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
             "rdtsc_site_samples": od_machine::LINUX_RDTSC_SAMPLE_CAPACITY,
             "rdtsc_entry_samples": od_machine::LINUX_RDTSC_SAMPLE_CAPACITY,
+            "rdtsc_entry_clock_trace_samples": od_machine::LINUX_RDTSC_CLOCK_TRACE_CAPACITY,
             "page_fault_events": od_machine::LINUX_PAGE_FAULT_EVENT_CAPACITY,
             "frame_links_per_page_fault": od_machine::LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY,
             "page_walk_entries_per_fault": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
@@ -2173,6 +2197,8 @@ fn write_execution_observations_sidecar(
         "rdtsc_entry_sample_hits": observations.rdtsc_entry_sample_hits,
         "rdtsc_entry_samples": entry_samples,
         "rdtsc_entry_samples_omitted": observations.rdtsc_entry_samples_omitted,
+        "rdtsc_entry_clock_trace_samples": entry_clock_trace_samples,
+        "rdtsc_entry_clock_trace_missing": observations.rdtsc_entry_clock_trace_missing,
         "page_faults_delivered": observations.page_faults_delivered,
         "page_fault_events": page_fault_events,
         "page_fault_events_omitted": observations.page_fault_events_omitted,
@@ -2211,7 +2237,7 @@ fn execution_observations_sidecar_metadata(
 ) -> Value {
     json!({
         "path": path,
-        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events, with optional selected-site and entry-site samples",
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events, with optional selected-site and entry-site samples and a two-hit entry-site pre-charge virtual-clock ledger",
         "write_error": null,
         "selected_rip": observations.rdtsc_sample_rip.map(hex64),
         "stride": observations.rdtsc_sample_stride,
@@ -2226,6 +2252,8 @@ fn execution_observations_sidecar_metadata(
         "entry_hits": observations.rdtsc_entry_sample_hits,
         "entry_sample_count": observations.rdtsc_entry_samples.len(),
         "entry_samples_omitted": observations.rdtsc_entry_samples_omitted,
+        "entry_clock_trace_sample_count": observations.rdtsc_entry_clock_trace_samples.len(),
+        "entry_clock_trace_missing": observations.rdtsc_entry_clock_trace_missing,
         "byte_count": byte_count,
         "sha256": sha256,
     })
@@ -4854,6 +4882,43 @@ mod tests {
                 cr3: Some(0x4000),
             }],
             rdtsc_entry_samples_omitted: 2,
+            rdtsc_entry_clock_trace_samples: vec![
+                od_machine::RdtscClockTraceSample {
+                    rip: 0xffff_ffff_8271_b31b,
+                    hit_ordinal: 1,
+                    initial_now_ns: 10,
+                    now_ns: 30,
+                    callback_tsc: 0x1000,
+                    tsc_hz: 2_400_000_000,
+                    retired_instructions_charged: 5,
+                    retired_ns_charged: Some(5),
+                    pm_timer_ns_charged: 2,
+                    pit_ns_charged: 3,
+                    rdtsc_ns_charged: 4,
+                    idle_ns_advanced: 6,
+                    quantum_ordinal: 12,
+                    irqs_delivered: 7,
+                    unaccounted_elapsed_ns: Some(0),
+                },
+                od_machine::RdtscClockTraceSample {
+                    rip: 0xffff_ffff_8271_b31b,
+                    hit_ordinal: 2,
+                    initial_now_ns: 10,
+                    now_ns: 34,
+                    callback_tsc: 0x1001,
+                    tsc_hz: 2_400_000_000,
+                    retired_instructions_charged: 8,
+                    retired_ns_charged: Some(8),
+                    pm_timer_ns_charged: 3,
+                    pit_ns_charged: 3,
+                    rdtsc_ns_charged: 4,
+                    idle_ns_advanced: 6,
+                    quantum_ordinal: 18,
+                    irqs_delivered: 9,
+                    unaccounted_elapsed_ns: Some(0),
+                },
+            ],
+            rdtsc_entry_clock_trace_missing: 0,
             rdtsc_cpl0_unattributed_reads: 2,
             rdtsc_cpl0_site_overflow_reads: 3,
             page_faults_delivered: 5,
@@ -4933,8 +4998,10 @@ mod tests {
         assert_eq!(metadata["samples_omitted"], 1);
         assert_eq!(metadata["sample_window"]["first_hit"], 1024);
         assert_eq!(metadata["sample_window"]["last_hit"], 1536);
+        assert_eq!(metadata["entry_clock_trace_sample_count"], 2);
+        assert_eq!(metadata["entry_clock_trace_missing"], 0);
         let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema_version"], 9);
+        assert_eq!(value["schema_version"], 10);
         assert_eq!(value["post_iret_selected_ordinal"], 3);
         assert_eq!(value["post_iret_page_walk_status"], "captured");
         assert_eq!(
@@ -4992,6 +5059,22 @@ mod tests {
         );
         assert_eq!(value["rdtsc_entry_samples"][0]["observed_tsc"], "0x1000");
         assert_eq!(value["rdtsc_entry_samples_omitted"], 2);
+        assert_eq!(
+            value["rdtsc_entry_clock_trace_samples"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(value["rdtsc_entry_clock_trace_missing"], 0);
+        assert_eq!(
+            value["rdtsc_entry_clock_trace_samples"][0]["hit_ordinal"],
+            1
+        );
+        assert_eq!(
+            value["rdtsc_entry_clock_trace_samples"][1]["callback_tsc"],
+            "0x1001"
+        );
         assert_eq!(value["page_faults_delivered"], 5);
         assert_eq!(value["page_fault_events"][0]["rip"], "0xffffffff81005678");
         assert_eq!(value["page_fault_events"][0]["cr2"], "0x402000");

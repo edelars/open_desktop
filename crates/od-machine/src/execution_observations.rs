@@ -1,9 +1,12 @@
+use crate::clock_owner::NS_PER_RETIRED;
 use std::collections::BTreeMap;
 
 /// Maximum distinct CPL0 RDTSC instruction addresses retained in one diagnostic run.
 pub const LINUX_RDTSC_SITE_CAPACITY: usize = 128;
 /// Maximum post-instruction register samples retained for one selected CPL0 RDTSC RIP.
 pub const LINUX_RDTSC_SAMPLE_CAPACITY: usize = 131_072;
+/// Number of entry-site RDTSC callbacks for which the exact pre-charge clock ledger is retained.
+pub const LINUX_RDTSC_CLOCK_TRACE_CAPACITY: usize = 2;
 /// Maximum successful delivered page-fault events retained in one diagnostic run.
 pub const LINUX_PAGE_FAULT_EVENT_CAPACITY: usize = 256;
 pub const LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY: usize = 4;
@@ -44,6 +47,43 @@ pub struct RdtscEntrySample {
     pub rbp: u64,
     pub rsp: u64,
     pub cr3: Option<u64>,
+}
+
+/// Clock-owner state observed inside the RDTSC callback, before the current quantum is charged.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RdtscClockReadLedger {
+    pub initial_now_ns: u64,
+    pub now_ns: u64,
+    pub tsc: u64,
+    pub tsc_hz: u64,
+    pub retired_instructions_charged: u64,
+    pub pm_timer_ns_charged: u64,
+    pub pit_ns_charged: u64,
+    pub rdtsc_ns_charged: u64,
+    pub idle_ns_advanced: u64,
+    pub quantum_ordinal: u64,
+    pub irqs_delivered: u64,
+}
+
+/// Bounded, exact-callback ledger for the first two selected entry-site reads.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RdtscClockTraceSample {
+    pub rip: u64,
+    pub hit_ordinal: u64,
+    pub initial_now_ns: u64,
+    pub now_ns: u64,
+    pub callback_tsc: u64,
+    pub tsc_hz: u64,
+    pub retired_instructions_charged: u64,
+    pub retired_ns_charged: Option<u64>,
+    pub pm_timer_ns_charged: u64,
+    pub pit_ns_charged: u64,
+    pub rdtsc_ns_charged: u64,
+    pub idle_ns_advanced: u64,
+    pub quantum_ordinal: u64,
+    pub irqs_delivered: u64,
+    /// `None` means the known charged components exceeded the observed elapsed clock or overflowed.
+    pub unaccounted_elapsed_ns: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -133,6 +173,8 @@ pub struct LinuxExecutionObservations {
     pub rdtsc_entry_sample_hits: u64,
     pub rdtsc_entry_samples: Vec<RdtscEntrySample>,
     pub rdtsc_entry_samples_omitted: u64,
+    pub rdtsc_entry_clock_trace_samples: Vec<RdtscClockTraceSample>,
+    pub rdtsc_entry_clock_trace_missing: u64,
     /// CPL0 RDTSC reads for which the set loop did not report an instruction RIP.
     pub rdtsc_cpl0_unattributed_reads: u64,
     /// CPL0 RDTSC reads at new sites after the distinct-site table reached its capacity.
@@ -158,6 +200,8 @@ pub(crate) struct LinuxExecutionObservationCollector {
     rdtsc_entry_sample_hits: u64,
     rdtsc_entry_samples: Vec<RdtscEntrySample>,
     rdtsc_entry_samples_omitted: u64,
+    rdtsc_entry_clock_trace_samples: Vec<RdtscClockTraceSample>,
+    rdtsc_entry_clock_trace_missing: u64,
     rdtsc_sites: BTreeMap<u64, u64>,
     rdtsc_unattributed_reads: u64,
     rdtsc_site_overflow_reads: u64,
@@ -199,13 +243,68 @@ impl LinuxExecutionObservationCollector {
         self
     }
 
+    pub(crate) fn wants_rdtsc_clock_trace(&self) -> bool {
+        self.rdtsc_entry_sample_rip.is_some()
+            && self
+                .rdtsc_entry_clock_trace_samples
+                .len()
+                .saturating_add(self.rdtsc_entry_clock_trace_missing as usize)
+                < LINUX_RDTSC_CLOCK_TRACE_CAPACITY
+    }
+
+    pub(crate) fn build_rdtsc_clock_trace_if_active<T>(
+        &self,
+        build: impl FnOnce() -> T,
+    ) -> Option<T> {
+        self.wants_rdtsc_clock_trace().then(build)
+    }
+
     pub(crate) fn record_rdtsc_site_sample(
         &mut self,
         rip: Option<u64>,
         state: &od_isa::LongModeState,
+        clock_ledger: Option<RdtscClockReadLedger>,
     ) {
         if let Some(entry_rip) = rip.filter(|rip| Some(*rip) == self.rdtsc_entry_sample_rip) {
             self.rdtsc_entry_sample_hits = self.rdtsc_entry_sample_hits.saturating_add(1);
+            let hit_ordinal = self.rdtsc_entry_sample_hits;
+            if hit_ordinal <= LINUX_RDTSC_CLOCK_TRACE_CAPACITY as u64 {
+                if let Some(ledger) = clock_ledger {
+                    let retired_ns_charged = ledger
+                        .retired_instructions_charged
+                        .checked_mul(NS_PER_RETIRED);
+                    let charged_ns = retired_ns_charged.and_then(|ns| {
+                        ns.checked_add(ledger.pm_timer_ns_charged)
+                            .and_then(|ns| ns.checked_add(ledger.pit_ns_charged))
+                            .and_then(|ns| ns.checked_add(ledger.rdtsc_ns_charged))
+                            .and_then(|ns| ns.checked_add(ledger.idle_ns_advanced))
+                    });
+                    let clock_elapsed_ns = ledger.now_ns.checked_sub(ledger.initial_now_ns);
+                    self.rdtsc_entry_clock_trace_samples
+                        .push(RdtscClockTraceSample {
+                            rip: entry_rip,
+                            hit_ordinal,
+                            initial_now_ns: ledger.initial_now_ns,
+                            now_ns: ledger.now_ns,
+                            callback_tsc: ledger.tsc,
+                            tsc_hz: ledger.tsc_hz,
+                            retired_instructions_charged: ledger.retired_instructions_charged,
+                            retired_ns_charged,
+                            pm_timer_ns_charged: ledger.pm_timer_ns_charged,
+                            pit_ns_charged: ledger.pit_ns_charged,
+                            rdtsc_ns_charged: ledger.rdtsc_ns_charged,
+                            idle_ns_advanced: ledger.idle_ns_advanced,
+                            quantum_ordinal: ledger.quantum_ordinal,
+                            irqs_delivered: ledger.irqs_delivered,
+                            unaccounted_elapsed_ns: clock_elapsed_ns
+                                .zip(charged_ns)
+                                .and_then(|(elapsed, charged)| elapsed.checked_sub(charged)),
+                        });
+                } else {
+                    self.rdtsc_entry_clock_trace_missing =
+                        self.rdtsc_entry_clock_trace_missing.saturating_add(1);
+                }
+            }
             if self.rdtsc_entry_samples.len() < LINUX_RDTSC_SAMPLE_CAPACITY {
                 use od_isa::Register;
                 let rax = state.gpr[Register::Rax as usize] & u64::from(u32::MAX);
@@ -368,6 +467,8 @@ impl LinuxExecutionObservationCollector {
             rdtsc_entry_sample_hits: self.rdtsc_entry_sample_hits,
             rdtsc_entry_samples: self.rdtsc_entry_samples,
             rdtsc_entry_samples_omitted: self.rdtsc_entry_samples_omitted,
+            rdtsc_entry_clock_trace_samples: self.rdtsc_entry_clock_trace_samples,
+            rdtsc_entry_clock_trace_missing: self.rdtsc_entry_clock_trace_missing,
             rdtsc_cpl0_unattributed_reads: self.rdtsc_unattributed_reads,
             rdtsc_cpl0_site_overflow_reads: self.rdtsc_site_overflow_reads,
             page_faults_delivered: self.page_faults_delivered,
@@ -583,8 +684,8 @@ mod tests {
         state.gpr[Register::Rsp as usize] = 0x7ff0;
         state.cr3 = Some(0x9000);
 
-        collector.record_rdtsc_site_sample(Some(RIP + 2), &state);
-        collector.record_rdtsc_site_sample(Some(RIP), &state);
+        collector.record_rdtsc_site_sample(Some(RIP + 2), &state, None);
+        collector.record_rdtsc_site_sample(Some(RIP), &state, None);
         let observations = collector.finish();
         assert_eq!(observations.rdtsc_sample_rip, Some(RIP));
         assert_eq!(observations.rdtsc_site_samples.len(), 1);
@@ -608,7 +709,7 @@ mod tests {
             .with_rdtsc_sample_rip(Some(RIP))
             .with_rdtsc_sample_stride(1);
         for _ in 0..=LINUX_RDTSC_SAMPLE_CAPACITY {
-            capped.record_rdtsc_site_sample(Some(RIP), &state);
+            capped.record_rdtsc_site_sample(Some(RIP), &state, None);
         }
         let observations = capped.finish();
         assert_eq!(
@@ -637,8 +738,8 @@ mod tests {
         state.gpr[Register::Rsp as usize] = 0x7ff0;
         state.cr3 = Some(0x9000);
 
-        collector.record_rdtsc_site_sample(Some(RIP + 2), &state);
-        collector.record_rdtsc_site_sample(Some(RIP), &state);
+        collector.record_rdtsc_site_sample(Some(RIP + 2), &state, None);
+        collector.record_rdtsc_site_sample(Some(RIP), &state, None);
         let observations = collector.finish();
         assert_eq!(observations.rdtsc_entry_sample_rip, Some(RIP));
         assert_eq!(observations.rdtsc_entry_sample_hits, 1);
@@ -659,7 +760,7 @@ mod tests {
         let mut capped =
             LinuxExecutionObservationCollector::default().with_rdtsc_entry_sample_rip(Some(RIP));
         for _ in 0..=LINUX_RDTSC_SAMPLE_CAPACITY {
-            capped.record_rdtsc_site_sample(Some(RIP), &state);
+            capped.record_rdtsc_site_sample(Some(RIP), &state, None);
         }
         let observations = capped.finish();
         assert_eq!(
@@ -674,6 +775,130 @@ mod tests {
     }
 
     #[test]
+    fn entry_clock_ledger_keeps_only_the_first_two_callback_snapshots() {
+        use od_isa::LongModeState;
+
+        const RIP: u64 = 0xffff_ffff_8271_b31b;
+        let mut collector =
+            LinuxExecutionObservationCollector::default().with_rdtsc_entry_sample_rip(Some(RIP));
+        let state = LongModeState::default();
+        for hit in 1..=4 {
+            assert_eq!(
+                collector.wants_rdtsc_clock_trace(),
+                hit <= LINUX_RDTSC_CLOCK_TRACE_CAPACITY as u64
+            );
+            collector.record_rdtsc_site_sample(
+                Some(RIP),
+                &state,
+                (hit <= LINUX_RDTSC_CLOCK_TRACE_CAPACITY as u64).then_some(RdtscClockReadLedger {
+                    initial_now_ns: 10,
+                    now_ns: 20 + 2 * hit,
+                    tsc: 0x1000 + hit,
+                    tsc_hz: 2_400_000_000,
+                    retired_instructions_charged: 5,
+                    pm_timer_ns_charged: 2,
+                    pit_ns_charged: 1,
+                    rdtsc_ns_charged: 1,
+                    idle_ns_advanced: 2 + hit,
+                    quantum_ordinal: hit + 9,
+                    irqs_delivered: hit - 1,
+                }),
+            );
+        }
+        assert!(!collector.wants_rdtsc_clock_trace());
+        let observations = collector.finish();
+        assert_eq!(observations.rdtsc_entry_clock_trace_samples.len(), 2);
+        assert_eq!(observations.rdtsc_entry_clock_trace_missing, 0);
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[0].hit_ordinal,
+            1
+        );
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[0].callback_tsc,
+            0x1001
+        );
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[0].retired_ns_charged,
+            Some(5)
+        );
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[0].quantum_ordinal,
+            10
+        );
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[0].irqs_delivered,
+            0
+        );
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[0].unaccounted_elapsed_ns,
+            Some(0)
+        );
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[1].hit_ordinal,
+            2
+        );
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[1].unaccounted_elapsed_ns,
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn entry_clock_ledger_counts_missing_only_for_the_first_two_hits() {
+        use od_isa::LongModeState;
+
+        const RIP: u64 = 0xffff_ffff_8271_b31b;
+        let mut collector =
+            LinuxExecutionObservationCollector::default().with_rdtsc_entry_sample_rip(Some(RIP));
+        for _ in 0..3 {
+            collector.record_rdtsc_site_sample(Some(RIP), &LongModeState::default(), None);
+        }
+        assert!(!collector.wants_rdtsc_clock_trace());
+        let observations = collector.finish();
+        assert_eq!(observations.rdtsc_entry_clock_trace_samples.len(), 0);
+        assert_eq!(observations.rdtsc_entry_clock_trace_missing, 2);
+    }
+
+    #[test]
+    fn inactive_or_complete_clock_trace_does_not_build_diagnostic_state() {
+        use od_isa::LongModeState;
+
+        const RIP: u64 = 0xffff_ffff_8271_b31b;
+        let mut builds = 0;
+        let inactive = LinuxExecutionObservationCollector::default();
+        assert_eq!(
+            inactive.build_rdtsc_clock_trace_if_active(|| {
+                builds += 1;
+                ()
+            }),
+            None
+        );
+
+        let mut complete =
+            LinuxExecutionObservationCollector::default().with_rdtsc_entry_sample_rip(Some(RIP));
+        for _ in 0..LINUX_RDTSC_CLOCK_TRACE_CAPACITY {
+            assert!(complete.wants_rdtsc_clock_trace());
+            assert_eq!(
+                complete.build_rdtsc_clock_trace_if_active(|| {
+                    builds += 1;
+                    ()
+                }),
+                Some(())
+            );
+            complete.record_rdtsc_site_sample(Some(RIP), &LongModeState::default(), None);
+        }
+        assert!(!complete.wants_rdtsc_clock_trace());
+        assert_eq!(
+            complete.build_rdtsc_clock_trace_if_active(|| {
+                builds += 1;
+                ()
+            }),
+            None
+        );
+        assert_eq!(builds, LINUX_RDTSC_CLOCK_TRACE_CAPACITY);
+    }
+
+    #[test]
     fn selected_rdtsc_rip_samples_each_stride_hit_and_tracks_all_hits() {
         use od_isa::LongModeState;
         const RIP: u64 = 0xffff_ffff_8271_b34d;
@@ -682,7 +907,7 @@ mod tests {
             .with_rdtsc_sample_rip(Some(RIP))
             .with_rdtsc_sample_stride(3);
         for _ in 0..8 {
-            collector.record_rdtsc_site_sample(Some(RIP), &state);
+            collector.record_rdtsc_site_sample(Some(RIP), &state, None);
         }
         let observations = collector.finish();
         assert_eq!(observations.rdtsc_sample_stride, 3);
@@ -712,7 +937,7 @@ mod tests {
             .with_rdtsc_sample_stride(3)
             .with_rdtsc_sample_window(Some(window));
         for _ in 0..10 {
-            collector.record_rdtsc_site_sample(Some(RIP), &state);
+            collector.record_rdtsc_site_sample(Some(RIP), &state, None);
         }
         let observations = collector.finish();
         assert_eq!(observations.rdtsc_sample_window, Some(window));
@@ -743,8 +968,8 @@ mod tests {
             .with_rdtsc_sample_window(Some(window))
             .with_rdtsc_entry_sample_rip(Some(ENTRY_RIP));
         for _ in 0..10 {
-            collector.record_rdtsc_site_sample(Some(ENTRY_RIP), &state);
-            collector.record_rdtsc_site_sample(Some(POLL_RIP), &state);
+            collector.record_rdtsc_site_sample(Some(ENTRY_RIP), &state, None);
+            collector.record_rdtsc_site_sample(Some(POLL_RIP), &state, None);
         }
         let observations = collector.finish();
         assert_eq!(observations.rdtsc_sample_site_hits, 10);
@@ -766,7 +991,7 @@ mod tests {
             .with_rdtsc_sample_rip(Some(RIP))
             .with_rdtsc_sample_stride(stride);
         for _ in 0..hits {
-            collector.record_rdtsc_site_sample(Some(RIP), &state);
+            collector.record_rdtsc_site_sample(Some(RIP), &state, None);
         }
         let observations = collector.finish();
         assert_eq!(
