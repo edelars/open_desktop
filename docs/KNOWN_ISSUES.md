@@ -724,13 +724,23 @@
 - **Следующий шаг:** exact bounded admission is complete; full handoff validation is not complete.
 
 <a id="issue-184-s7-04-rust-helper-xor-r14d-r15d-unsupported"></a>
-### ISSUE-184 — S7-04: Rust helper `XOR R14D,R15D` remains outside paged CPU profile
+### ISSUE-184 — S7-04: точная форма Rust helper `XOR R14D,R15D` admitted
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `SHR R9D,8`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e3e`.
+- **Статус:** решена только для exact `45 31 FE` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Результат:** opcode `31 /r` plus exact REX `45` and ModRM `FE` routes R15D to the source and R14D to the destination. Shared XOR writes a zero-extended dword result into R14, updates logic flags, preserves AF's concrete bit and clears AF-definedness; other register pairs, directions, widths and profiles remain outside the allowlist.
+- **Проверка:** four focused tests cover operand order, result/flags/definedness, R14 zero-extension, full-state retention, ModRM fetch-fault atomicity, neighboring forms, CPL3 and other-profile isolation; all 418 `paged_probe_profile` tests and `cargo check --offline -p od-isa --all-targets` passed. Firmware image `/private/tmp/od-fw-s7-04-issue184.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner retired 87 instructions then stopped at ISSUE-185 (`RIP=0x200e41`), COM1 remains empty.
+- **Основание:** same image; runner budget 10000.
+- **Следующий шаг:** inspect the exact SIB-addressed dword XOR and tracked-read contract before considering narrow admission.
+
+<a id="issue-185-s7-04-rust-helper-xor-r9d-sib-unsupported"></a>
+### ISSUE-185 — S7-04: Rust helper `XOR R9D,dword ptr [R14*4+0x202680]` remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `XOR R14D,R15D`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, tracked guest memory), Rust helper at firmware address `0x200e41`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 86 instructions, then stopped at `45 31 FE` (`XOR R14D,R15D`), `Unsupported { opcode: 49 }`, `RIP=0x200e3e`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue183.bin`; bytes at offset `0xe3e` begin `45 31 fe`; runner budget 10000.
-- **Следующий шаг:** inspect the exact register XOR operand routing and shared flags/definedness semantics before considering narrow profile admission.
+- **Суть и последствия:** runner retired 87 instructions, then stopped at `46 33 0C B5 80 26 20 00` (`XOR R9D,dword ptr [R14*4+0x202680]`), `Unsupported { opcode: 51 }`, `RIP=0x200e41`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue184.bin`; bytes at offset `0xe41` decode to the exact SIB memory form; runner budget 10000.
+- **Следующий шаг:** verify existing tracked dword read and page-walk behavior for this exact REX/SIB/destination tuple before narrowly extending admission.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
