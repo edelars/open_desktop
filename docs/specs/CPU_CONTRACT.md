@@ -27370,3 +27370,10 @@ Four focused profile tests cover high/noncanonical offsets, wrapping, full-state
 Base `PagedCpl0ProbeV1` admits only exact `48 39 D6`. Opcode 39 uses r/m as the qword destination operand RSI and ModRM reg as source operand RDX, evaluating RSI−RDX with shared CMP semantics. No GPR is written; arithmetic flags and definedness are updated. Final-byte instruction-fetch faults do not retire or mutate state. Other register orders, opcode direction, widths, prefixes, CPL3 and other profiles remain unsupported.
 
 Four focused profile tests cover equality, carry, overflow, sign/parity/AF and high-bit cases, full GPR preservation, flag definedness, fetch-fault atomicity, neighbors, CPL3 and profile isolation. Firmware advances after 8,934 retired instructions to `0F 87 CD 02 00 00` (`JA rel32 +0x2cd`, ISSUE-246) at RIP `0x20157E`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04: exact helper `JA rel32 +0x2cd` (ISSUE-246)
+
+Base `PagedCpl0ProbeV1` admits only exact no-prefix `0F 87 CD 02 00 00`. The signed rel32 displacement `+0x2cd` is added to `next_rip`; the branch is taken only when CF=0 and ZF=0. RFLAGS and definedness are preserved. Canonicality is checked only for a taken target; not-taken fall-through validation is deferred to the next fetch. Any instruction-fetch fault, including the last displacement byte, leaves state unchanged. Adjacent displacements/conditions, short JA, JMP, prefixes, CPL3 and other profiles remain unsupported.
+
+Five focused profile tests cover the CF/ZF truth table and definedness, exact taken/fall-through targets, noncanonical taken-only target, final-byte fetch-fault atomicity, neighbors, CPL3 and profile isolation. Firmware advances after 8,935 retired instructions to `4C 8D 51 08` (`LEA R10,[RCX+8]`, ISSUE-247) at RIP `0x201584`; COM1 remains empty. Independent review approved with no findings.

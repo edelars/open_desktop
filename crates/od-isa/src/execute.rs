@@ -20813,6 +20813,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                         (condition, instruction.opcode.byte, displacement),
                         (ConditionCode::NotEqual, 0x85, 0xd6)
                             | (ConditionCode::Equal, 0x84, 0xb4 | 0x149)
+                            | (ConditionCode::Above, 0x87, 0x2cd)
                     ))) =>
         {
             if condition.evaluate(state.rflags) {

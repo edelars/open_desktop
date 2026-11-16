@@ -1262,7 +1262,7 @@
 ### ISSUE-242 — S7-04: helper `JZ rel32 +0x149` (`0F 84 49 01 00 00`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-241.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20156e`.
-- **Статус:** реализована узко; independent review pending.
+- **Статус:** решена в S7-04; exact base-profile form is admitted and independently reviewed with no findings.
 - **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact no-prefix near JZ with rel32 displacement `+0x149`. The signed rel32 target is added to next RIP; ZF and its definedness are preserved, and canonicality is checked only when taken.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue241.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x156e` begin `0F 84 49 01 00 00`; runner budget 10000.
 - **Проверка:** focused tests cover both ZF outcomes and definedness states, exact target/fallthrough, taken-only canonicality including a noncanonical target, final-byte fetch-fault atomicity, adjacent displacements, condition/opcode and prefix neighbors, CPL3 and other-profile isolation. Runner advances to `48 89 F0` (`MOV RAX,RSI`, ISSUE-243) at RIP `0x201574`, after 8,931 retired instructions; COM1 remains empty. Independent review approved with no findings.
@@ -3730,10 +3730,20 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Следующий шаг:** verify exact signed rel32 JA condition, target and fetch-fault semantics for ISSUE-246.
 
 
-### ISSUE-246 — S7-04: helper `JA rel32 +0x2cd` (`0F 87 CD 02 00 00`) remains outside paged CPU profile
+### ISSUE-246 — S7-04: helper `JA rel32 +0x2cd` (`0F 87 CD 02 00 00`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-245.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20157E`.
+- **Статус:** решена в S7-04; exact base-profile form is admitted and independently reviewed with no findings.
+- **Суть и последствия:** exact base-profile JA reads CF=0 and ZF=0, calculates signed rel32 from next RIP and checks canonicality only for a taken target. RFLAGS/definedness are preserved.
+- **Проверка:** all condition truth combinations with defined/undefined input flags, taken/fallthrough RIP, taken-only canonicality, final-byte fetch-fault atomicity, adjacent displacements, other conditions/opcodes, prefixes, CPL3 and other-profile isolation pass. Runner retires 8,935 and stops at `4C 8D 51 08` (`LEA R10,[RCX+8]`, ISSUE-247) at RIP `0x201584`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue246.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner budget 10000.
+- **Следующий шаг:** verify exact qword LEA address calculation and no-memory-access semantics for ISSUE-247.
+
+
+### ISSUE-247 — S7-04: helper `LEA R10,[RCX+8]` (`4C 8D 51 08`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-246.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201584`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8,934 instructions and stopped on `0F 87 CD 02 00 00`, `Unsupported { opcode: 135 }`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue245.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x157E` begin `0F 87 CD 02 00 00`; runner budget 10000.
-- **Следующий шаг:** verify exact JA rel32 condition, signed target calculation, taken-only canonicality and fetch-fault atomicity for ISSUE-246.
+- **Суть и последствия:** runner retired 8,935 instructions and stopped on `4C 8D 51 08`, `Unsupported { opcode: 141 }`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue246.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1584` begin `4C 8D 51 08`; runner budget 10000.
+- **Следующий шаг:** verify exact REX.R destination and LEA base/displacement semantics for ISSUE-247.
