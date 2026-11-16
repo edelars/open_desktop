@@ -815,3 +815,13 @@ With exact `40 0F 92 C6` admitted, the Stage 7 firmware runner retires 9,033 ins
 ### Stage 7 runner frontier after ISSUE-325
 
 With exact `45 8D 6A F3` admitted, the Stage 7 firmware runner retires 9,035 instructions and stops at RIP `0x20175a`, bytes `40 0F 93 C5` (`SETAE BPL`, ISSUE-326), `Unsupported { opcode: 147 }`. COM1 remains empty.
+
+
+### Stage 7 paged-profile SETAE BPL
+
+`PagedCpl0ProbeV1` admits exact bytes `40 0F 93 C5`. Bare REX selects BPL instead of CH; CF=0 writes one and CF=1 writes zero. Only the low RBP byte changes; flags and definedness are preserved.
+
+
+### Stage 7 runner frontier after ISSUE-326
+
+With exact `40 0F 93 C5` admitted, the Stage 7 firmware runner retires 9,036 instructions and stops at RIP `0x20175e`, bytes `41 83 FD F4` (`CMP R13D,-12`, ISSUE-327), `Unsupported { opcode: 131 }`. COM1 remains empty.

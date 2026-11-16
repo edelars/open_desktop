@@ -4475,9 +4475,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-326 — S7-04: exact helper `SETAE BPL` (`40 0F 93 C5`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-325.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20175a`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** the exact SETAE form is admitted only for BPL. Mandatory REX presence selects BPL rather than CH; CF=0 writes 1, CF=1 writes 0, and only BPL changes. Other RBP bytes, flags and definedness remain unchanged.
+- **Проверка:** four focused tests cover CF true/false with defined and undefined CF metadata, ZF variations, BPL partial-register and flag preservation, final-byte fetch-fault atomicity, no-REX high-byte and other condition/destination/REX/prefix/memory neighbors, CPL3 rejection and cross-profile isolation. All od-isa suites pass (2,322/1,591/126/29/6/980/7/15; 0 doc tests), all 65 paged machine quantum tests and scoped cargo check/fmt/diff-check pass, with only the existing page-walk dead-code warning. Runner image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, retires 9,036 instructions and stops at RIP `0x20175e`, bytes `41 83 FD F4` (`CMP R13D,-12`, ISSUE-327), `Unsupported { opcode: 131 }`; COM1 is empty. Independent review approved with no findings.
+- **Следующий шаг:** implement only ISSUE-327's exact `CMP R13D,-12` form in a separate Stage 7 slice.
+
+### ISSUE-327 — S7-04: exact helper `CMP R13D,-12` (`41 83 FD F4`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-326.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20175e`.
 - **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact SETcc form; firmware stops before the following helper instruction. Mandatory REX presence selects BPL rather than CH; SETAE reads CF and writes 0/1 to only BPL.
-- **Основание:** runner image `/private/tmp/od-fw-s7-04-issue256.bin`, budget 10000, retired 9,035 instructions; file offset `0x175a` contains `40 0F 93 C5` and reports `Unsupported { opcode: 147 }`; COM1 is empty.
+- **Суть и последствия:** the base profile does not yet admit this exact dword CMP imm8 form; firmware stops before the following helper instruction.
+- **Основание:** runner image `/private/tmp/od-fw-s7-04-issue256.bin`, budget 10000, retired 9,036 instructions; file offset `0x175e` contains `41 83 FD F4` and reports `Unsupported { opcode: 131 }`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.
