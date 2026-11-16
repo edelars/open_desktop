@@ -4231,9 +4231,16 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-295 — S7-04: exact helper `SETNE R10B` (`41 0F 95 C2`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-294.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201683`.
+- **Статус:** решена; base profile admits only this exact SETNE form.
+- **Результат:** REX.B selects R10B; SETNE reads ZF only and writes `!ZF` to the low byte. Upper R10, all other GPRs, flag values, and flag definedness remain unchanged.
+- **Проверки исполнения:** four focused profile tests cover both ZF values and definedness, CF independence, partial-register/full-state preservation, ModRM fetch-fault atomicity, neighbors and CPL3/other-profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/859/7/15); 63 paged machine tests pass. Scoped check, formatting and diff-check pass; only the existing unused page-walk helper warning remains. Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retires 8,992 instructions and stops at `4D 39 E9` (`CMP R9,R13`, ISSUE-296), RIP `0x201687`, `Unsupported { opcode: 57 }`; COM1 remains empty. Independent review approved with no findings.
+
+### ISSUE-296 — S7-04: exact helper `CMP R9,R13` (`4D 39 E9`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-295.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201687`.
 - **Статус:** открыта.
-- **Суть и последствия:** base profile does not yet admit this exact condition-code byte-register write; firmware stops before later helper operations.
-- **Основание:** runner using image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after 8,991 retired instructions it reports `Unsupported { opcode: 149 }`. Bytes at file offset `0x1683` are `41 0F 95 C2`.
-- **Следующий шаг:** admit only `SETNE R10B`, preserving upper R10 and all flag state.
+- **Суть и последствия:** base profile does not yet admit this exact qword register compare; firmware stops before later helper operations.
+- **Основание:** runner using image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after 8,992 retired instructions it reports `Unsupported { opcode: 57 }`. Bytes at file offset `0x1687` are `4D 39 E9`.
+- **Следующий шаг:** admit only the qword register form `CMP R9,R13`, preserving all GPRs and applying shared arithmetic flags.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.
