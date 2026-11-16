@@ -764,13 +764,23 @@
 - **Следующий шаг:** inspect the exact short JNZ displacement/flag contract before narrow admission.
 
 <a id="issue-188-s7-04-rust-helper-jnz-minus-0x52-unsupported"></a>
-### ISSUE-188 — S7-04: Rust helper `JNZ -0x52` (`75 AE`) remains outside paged CPU profile
+### ISSUE-188 — S7-04: exact Rust-helper `JNZ -0x52` (`75 AE`) admitted narrowly
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `CMP RBP,R11`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e50`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner retired 90 instructions, then stopped at `75 AE` (`JNZ rel8 -0x52`), `Unsupported { opcode: 117 }`, `RIP=0x200e50`; COM1 remains empty.
+- **Статус:** решена узко для exact `75 AE` в base `PagedCpl0ProbeV1`; implementation awaits review/commit. Full handoff validation remains incomplete.
+- **Суть и результат:** exact no-prefix short JNZ with signed displacement −0x52 uses existing `ConditionCode::NotEqual` semantics. It tests ZF, preserves flags and definedness, advances to signed target only when taken, and checks canonicality only for that taken target. Other branch tuples remain outside this exact allowlist entry.
+- **Проверка:** пять focused `firmware_entry_jnz_*` tests cover taken/not-taken signed target and complete CPU-state/flags-definedness retention, noncanonical taken target, fetch-fault atomicity on the rel8 byte, adjacent condition/displacement forms and CPL3/other-profile isolation; all 432 `paged_probe_profile` tests and `cargo check --offline -p od-isa --all-targets` passed. Scoped rustfmt and `git diff --check` passed. Firmware image `/private/tmp/od-fw-s7-04-issue188.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner retired 8871 instructions and then stopped at ISSUE-189 (`RIP=0x200e52`), COM1 remains empty.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue187.bin`; bytes at offset `0xe50` begin `75 ae`; runner budget 10000.
-- **Следующий шаг:** verify taken/not-taken ZF behavior, signed displacement target and taken-only canonicality before narrow admission.
+- **Ссылка:** [S7-04 exact JNZ slice](reports/STAGE_7_REPORT.md#s7-04-cpu-profile-slice-exact-rust-helper-jnz-minus-0x52).
+
+<a id="issue-189-s7-04-rust-helper-not-r9d-unsupported"></a>
+### ISSUE-189 — S7-04: Rust helper `NOT R9D` (`41 F7 D1`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `JNZ -0x52`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e52`.
+- **Статус:** открыта.
+- **Суть и последствия:** после 8871 retirement runner остановился на `41 F7 D1` (`NOT R9D`), `Unsupported { opcode: 247 }`, `RIP=0x200e52`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue188.bin`; bytes at offset `0xe52` begin `41 f7 d1`; runner budget 10000.
+- **Следующий шаг:** inspect the exact NOT encoding and existing logical-not semantics, then assess a bounded paged-profile-only admission.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
