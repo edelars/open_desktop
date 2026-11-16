@@ -4411,9 +4411,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-318 — S7-04: exact helper `JA rel32 +0x16e` (`0F 87 6E 01 00 00`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-317.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20171d`.
+- **Статус:** решена; реализация и независимое ревью завершены.
+- **Суть и последствия:** the base profile admits only this exact JA rel32 form. The predicate is `CF=0 && ZF=0`; the signed rel32 is added to next RIP. Flags/definedness remain unchanged and target canonicality is checked only when taken.
+- **Основание:** five focused tests cover CF/ZF combinations and definedness, both RIP targets, taken-only canonicality, final-displacement fetch-fault atomicity, neighboring forms, CPL3 and profile isolation. Runner advances after 9,023 retired to ISSUE-319. Full od-isa suites, 65 paged machine tests, scoped cargo check, rustfmt and diff-check pass; cargo check reports only the existing page-walk dead-code warning. Independent reviewer approved with no findings.
+- **Следующий шаг:** implement only ISSUE-319's exact ADD RSI immediate form in a separate Stage 7 slice.
+
+### ISSUE-319 — S7-04: exact helper `ADD RSI,0x3c` (`48 83 C6 3C`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-318.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201727`.
 - **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact JA rel32 form; firmware stops before the following helper instruction.
-- **Основание:** runner image `/private/tmp/od-fw-s7-04-issue256.bin`, budget 10000, retired 9,021 instructions; file offset `0x171d` contains `0F 87 6E 01 00 00` and reports `Unsupported { opcode: 135 }`; COM1 is empty.
+- **Суть и последствия:** the base profile does not yet admit this exact qword ADD immediate form; firmware stops before the next helper instruction.
+- **Основание:** runner image `/private/tmp/od-fw-s7-04-issue256.bin`, budget 10000, retired 9,023 instructions; file offset `0x1727` contains `48 83 C6 3C` and reports `Unsupported { opcode: 131 }`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only the exact firmware instruction in a separate Stage 7 slice.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.
