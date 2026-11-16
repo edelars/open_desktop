@@ -1,0 +1,112 @@
+S5-07 dual-site RDTSC sample correlation N=2 diagnostic
+Date: 2026-11-16
+Host: macOS/aarch64, local Codex worktree
+Source revision: 71cca6233444a06ec69bf1623c7a46e791313b6a (clean)
+Runner executable SHA-256: e175440adb67d32a636ff198a99ce9d42171f928f0652b6ff76846a9b9bef995
+
+Purpose
+-------
+Capture the initial `delay_tsc` entry RIP and the poll-loop RDTSC RIP in the
+same run, then associate retained poll samples with entry invocations using
+the TSC start value and register context. This checks whether sparse poll
+samples can be assigned to a particular call; it does not count every poll
+instruction per call.
+
+Invocation
+----------
+Series: stage5-s5-07-rdtsc-dual-site-stride512-n2-20261116-a
+Scenario: stage4-init-nonce; two automatic runs; `smoke_not_acceptance`.
+Budget: 3,000,000,000; expected stop: `budget_exhausted`.
+Entry RIP: 0xffffffff8271b31b, every selected hit.
+Poll RIP: 0xffffffff8271b34d, stride 512.
+CPU profile: stage4a CPL0 set, user mode, `diagnostic_past_c7=false`.
+Linux options: `norandmaps`, `randomize_kstack_offset=off`.
+
+Inputs:
+- vmlinuz SHA-256: 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e
+- initramfs SHA-256: 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7
+- ACPI blob SHA-256: 6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d
+- ACPI manifest SHA-256: 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2
+
+Command:
+```sh
+target/release/od-runner linux-direct \
+  --test-runs 2 \
+  --series-id stage5-s5-07-rdtsc-dual-site-stride512-n2-20261116-a \
+  --scenario-id stage4-init-nonce \
+  --expected-stop-kind budget_exhausted \
+  --out work/stage5/stage5-s5-07-rdtsc-dual-site-stride512-n2-20261116-a/series.json \
+  --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --run --budget 3000000000 --set-cpl0 \
+  --cpuid-profile stage4a --user-mode --linux-norandmaps \
+  --linux-no-randomize-kstack-offset --execution-observations \
+  --execution-observations-rdtsc-rip 0xffffffff8271b34d \
+  --execution-observations-rdtsc-stride 512 \
+  --execution-observations-rdtsc-entry-rip 0xffffffff8271b31b
+```
+
+Both runs validated their exact nonce marker and stopped at `retired=2,999,999,998`.
+The series outcome is `passed`, but profile is `smoke_not_acceptance` and
+acceptance is `diagnostic_not_counted`. Strict comparison is `matches=false`
+with unexplained differences in `machine_observations` and
+`ordered_uart_bytes` after nonce normalization. No comparator rule changed.
+Each UART capture contains 23,356 bytes. Wall times were 1,257.737010666 s
+and 1,244.194274334 s; `linux-direct` does not measure user CPU time.
+
+Capture and joins
+-----------------
+Both sidecars are schema v8. Run 0001 recorded 43,871/43,871 entry
+hits/samples and 33,994,592 selected poll hits with 66,395 stride-512 samples.
+Run 0002 recorded 43,868/43,868 entry hits/samples and 33,991,205 selected
+poll hits with 66,389 samples. Neither stream had omissions.
+
+For each poll sample, the offline join searched entry samples for exact
+`poll.start_tsc == entry.observed_tsc`, then required equal requested cycles,
+RBP, and RSP. All 66,395 and 66,389 poll samples respectively had exactly one
+timestamp match with matching context; there were zero unmatched timestamps,
+ambiguous timestamps, or context mismatches.
+
+Across the 43,868 shared entry ordinals, requested-cycle and RBP/RSP
+sequences match exactly. CR3 differs at 33,847 shared ordinals. Consecutive
+entry-TSC increments differ in 4,362 of 43,867 shared intervals. Causes and
+relevance are unknown; these differences are not classified as benign.
+
+Among the 35,787 shared entry ordinals that had at least one retained poll
+sample, 643 calls have a different number of retained stride samples between
+runs (322 with one extra in run 0001; 321 with one extra in run 0002). This is
+only a difference in sparse sample coverage, not an exact per-call poll
+count. Pairing the retained samples in per-entry order yields 66,068 shared
+sample pairs; 321 paired records have different global poll-hit ordinals.
+The sampled predicate `elapsed_cycles >= requested_cycles` differs in 68
+paired records. The first is entry ordinal 10,207; both records are global
+poll-hit ordinal 1,175,552 with request `0xf4217`, while elapsed values are
+`0xf3631` and `0xf4219` (false/true). Sparse stride sampling does not locate
+the first unsampled divergence or identify exact loop exit counts.
+
+Artifacts
+---------
+Series SHA-256: 269cff1da52a8ae5196ab2f6a4d5f6eda1db2143df03325cdaa42167670449b6
+Comparison SHA-256: 989064d1f1ec9b4732e55fb44c4f28eb73dd41a9422163b0b14af4c5d558654e
+
+Run 0001:
+- nonce: OD518e8a0fda5d3f4600000175200000000
+- manifest SHA-256: 24bf6f05a315fd38515eb58f4132166d94508e70c174a3ab27b5bb236ff9a3cf
+- runner JSON SHA-256: d906277484d57762193862e9c85cc6a0104d16d7f079e4d4a8358a89a297df9c
+- UART SHA-256: 6ca448b531593443e67762c949d9ae30421c6825a8dcfa5496d1af216fa0c606
+- sidecar SHA-256: 82b0c871cc04faf24e7b9cab00ef9c2260cba919e0fb36cc9398fca96cd25f7c
+
+Run 0002:
+- nonce: OD518e8a2228ca02d300000175200000001
+- manifest SHA-256: 812c5e98cddb082780a176eb27c709a13b79683595b0cac56bf660c44b0947ce
+- runner JSON SHA-256: bad721b6fb7b94adef6bab8ec3d8c60ad3d885d2e207dbbf8b8414ddf6a58bce
+- UART SHA-256: 1cc7d829ab6b0afcec0b15c20aff4fe3387ef4f6e1f92f5e36c5ef3ab2d9a0b8
+- sidecar SHA-256: e39d62af13603c187270a547e66031a259db2b2ac5eba43f25f29efe7c5a1456
+
+Raw artifacts are in the ignored `work/stage5/` directory named above.
+S5-07 remains blocked/unaccepted; this diagnostic does not explain the strict
+cross-run machine/UART differences or establish benignity.
