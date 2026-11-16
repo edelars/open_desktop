@@ -167,6 +167,8 @@
 
 
 
+- **Same-run panic-context follow-up (2026-11-16):** counted run `OD5CTX20261115xxxxxxxxxxxxxxxxxxxxx` contains `? tty_ldisc_deref+0x16/0x20`. Its four sidecar captures sampled `io_serial_out` while printing the trace, so they do not establish whether the optional frame is stale or genuine. No allowlist/comparator change; further original unwind-context evidence is required. [Evidence log](reports/data/stage5/s5-07-panic-context-followup-20261116.log). S5-07 remains blocked/unaccepted.
+
 ### ISSUE-080 — S5-06: guest suite проверен только частично на Linux; endpoint F отсутствует
 
 - **Дата обнаружения:** 2026-11-12, при подготовке сценариев A–G.
