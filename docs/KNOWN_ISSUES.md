@@ -902,10 +902,19 @@
 ### ISSUE-202 — S7-04: Rust helper `JZ rel8 +0x64` (`74 64`) remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `TEST R15B,7`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e7a`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner retired 8883 instructions and stopped at `74 64`, `Unsupported { opcode: 116 }`, `RIP=0x200e7a`; COM1 remains empty.
+- **Статус:** решена узко для exact `74 64` в base `PagedCpl0ProbeV1`; ожидает независимого review. Другие условия, смещения, длины и профили остаются вне allowlist.
+- **Суть и результат:** exact JZ rel8 использует существующую семантику `ConditionCode::Equal`: проверяет ZF, не меняет RFLAGS или `rflags_defined`, выбирает target `next_rip + 0x64` только при ZF=1; иначе остаётся на fall-through. Каноничность проверяется только для взятой цели.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue200.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xe7a` are `74 64`; runner budget 10000.
-- **Следующий шаг:** inspect exact JZ condition, signed target/fall-through and flag-definedness before considering narrow admission.
+- **Проверка:** пять focused `rust_helper_jz_rel8_*` тестов покрывают оба значения ZF с defined/undefined ZF, полное состояние, target/fall-through, taken-only noncanonical target fault, rel8 fetch-fault atomicity, соседние формы/prefixes и CPL3. Все 478 тестов `paged_probe_profile` и профильная изоляция прошли; полные проверки см. в отчёте S7. Firmware image `/private/tmp/od-fw-s7-04-issue202.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`: runner retired 8884 и остановился на `41 81 FF A0 00 00 00` (`CMP R15D,0xA0`, ISSUE-203), RIP `0x200ee0`, `Unsupported { opcode: 129 }`, `com1_bytes=0`.
+- **Следующий шаг:** independently review this exact JZ admission and continue S7-04 at ISSUE-203.
+
+### ISSUE-203 — S7-04: Rust helper `CMP R15D,0xA0` (`41 81 FF A0 00 00 00`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact `JZ rel8 +0x64`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200ee0`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner retired 8884 instructions and stopped at `41 81 FF A0 00 00 00`, `Unsupported { opcode: 129 }`, `RIP=0x200ee0`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue202.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xee0` are `41 81 FF A0 00 00 00`; runner budget 10000.
+- **Следующий шаг:** inspect exact CMP operand/width, flags and definedness before considering narrow admission.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.

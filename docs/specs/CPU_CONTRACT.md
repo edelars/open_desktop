@@ -27072,3 +27072,10 @@ Checks: five focused `rust_helper_mov_r15d_dword_handoff_field_30_*` tests cover
 Base `PagedCpl0ProbeV1` admits only `41 F6 C7 07`: exact REX `41`, primary opcode `F6 /0`, ModRM `C7`, byte operand, immediate `07`, and R15B selected by REX.B. Existing shared TEST semantics compute `R15B & 7`, preserve all GPRs, set CF=OF=0, set SF/ZF/PF from the result, retain AF's concrete value while clearing AF-definedness, and preserve unrelated flags/definedness. Adjacent immediates, registers, widths, prefixes, memory operands and other profiles remain unsupported.
 
 Checks: four focused `rust_helper_test_r15b_imm8_*` tests cover result flags for representative R15 values, complete state/GPR preservation, AF concrete/definedness behavior, final immediate-byte fetch-fault atomicity, neighboring forms and CPL3 isolation. All 478 `paged_probe_profile` tests and `cargo check --offline -p od-isa -p od-machine -p od-runner --all-targets` passed; Rust 2024 scoped rustfmt and `git diff --check` passed. Firmware image `/private/tmp/od-fw-s7-04-issue200.bin` (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) ran 8,883 instructions, then stopped at `74 64` (`JZ rel8 +0x64`, ISSUE-202), RIP `0x200e7a`, `Unsupported { opcode: 116 }`, `com1_bytes=0`; full handoff validation remains incomplete.
+
+
+### S7-04: exact Rust-helper `JZ rel8 +0x64` (ISSUE-202)
+
+Base `PagedCpl0ProbeV1` admits only no-prefix bytes `74 64`: short opcode `74`, displacement `+0x64`. Shared `ConditionCode::Equal` tests ZF and leaves RFLAGS and `rflags_defined` unchanged, including when ZF is undefined. ZF=1 selects `next_rip+0x64`; ZF=0 selects the fall-through. Only a taken target is canonicality-checked. Neighboring displacements/opcodes, prefixes, near branches and other profiles remain unsupported.
+
+Five focused tests cover both outcomes with defined and undefined ZF, complete-state retention, taken-only canonicality, rel8 fetch-fault atomicity, neighboring encodings and CPL3 isolation. Firmware now advances to ISSUE-203: `41 81 FF A0 00 00 00` at RIP `0x200ee0`.

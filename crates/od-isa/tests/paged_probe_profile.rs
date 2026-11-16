@@ -5442,32 +5442,41 @@ fn rust_helper_jz_rel32_is_unsupported_in_cpl3_profile() {
 
 #[test]
 fn rust_helper_jz_rel8_obeys_zf_and_preserves_flags_and_definedness() {
-    let code = [0x74, 0x3b]; // JZ +0x3b
-    for zero in [false, true] {
-        for zf_defined in [false, true] {
-            let defined = if zf_defined {
-                DEFINED
-            } else {
-                DEFINED & !(1 << 6)
-            };
-            let mut memory = Memory::new(&code);
-            let mut cpu = state();
-            cpu.gpr = gpr_patterns();
-            cpu.rflags = (state().rflags & !(1 << 6)) | if zero { 1 << 6 } else { 0 };
-            let before = cpu.clone();
-            let expected_rip = if zero { RIP + 2 + 0x3b } else { RIP + 2 };
-            let mut pio = Pio::default();
+    for displacement in [0x3bu8, 0x64] {
+        let code = [0x74, displacement]; // observed exact JZ rel8 forms
+        for zero in [false, true] {
+            for zf_defined in [false, true] {
+                let defined = if zf_defined {
+                    DEFINED
+                } else {
+                    DEFINED & !(1 << 6)
+                };
+                let mut memory = Memory::new(&code);
+                let mut cpu = state();
+                cpu.gpr = gpr_patterns();
+                cpu.rflags = (state().rflags & !(1 << 6)) | if zero { 1 << 6 } else { 0 };
+                let before = cpu.clone();
+                let expected_rip = if zero {
+                    RIP + 2 + u64::from(displacement)
+                } else {
+                    RIP + 2
+                };
+                let mut pio = Pio::default();
 
-            let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+                let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
 
-            assert_eq!(result.exit, PagedProbeExit::Retired);
-            assert_eq!(result.instructions_executed, 1);
-            assert_eq!(result.rflags_defined, defined);
-            let mut expected = before;
-            expected.rip = expected_rip;
-            assert_eq!(cpu, expected, "ZF={zero}, defined={zf_defined}");
-            assert_eq!((memory.reads, memory.writes), (0, 0));
-            assert!(pio.reads.is_empty() && pio.writes.is_empty());
+                assert_eq!(result.exit, PagedProbeExit::Retired);
+                assert_eq!(result.instructions_executed, 1);
+                assert_eq!(result.rflags_defined, defined);
+                let mut expected = before;
+                expected.rip = expected_rip;
+                assert_eq!(
+                    cpu, expected,
+                    "disp={displacement:#x}, ZF={zero}, defined={zf_defined}"
+                );
+                assert_eq!((memory.reads, memory.writes), (0, 0));
+                assert!(pio.reads.is_empty() && pio.writes.is_empty());
+            }
         }
     }
 }
@@ -5475,45 +5484,49 @@ fn rust_helper_jz_rel8_obeys_zf_and_preserves_flags_and_definedness() {
 #[test]
 fn rust_helper_jz_rel8_checks_canonicality_only_when_taken() {
     let rip = 0x0000_7fff_ffff_fffe;
-    let mut memory = Memory::new(&[]);
-    memory.pages.insert(rip & !0xfff, CODE_PHYSICAL);
-    memory.bytes[CODE_PHYSICAL + 0xffe..CODE_PHYSICAL + 0x1000].copy_from_slice(&[0x74, 0x3b]);
-    let mut cpu = state();
-    cpu.rip = rip;
-    cpu.rflags &= !(1 << 6); // Not taken: noncanonical fall-through is deferred.
-    let before = cpu.clone();
+    for displacement in [0x3bu8, 0x64] {
+        let code = [0x74, displacement];
+        let mut memory = Memory::new(&[]);
+        memory.pages.insert(rip & !0xfff, CODE_PHYSICAL);
+        memory.bytes[CODE_PHYSICAL + 0xffe..CODE_PHYSICAL + 0x1000].copy_from_slice(&code);
+        let mut cpu = state();
+        cpu.rip = rip;
+        cpu.rflags &= !(1 << 6); // Not taken: noncanonical fall-through is deferred.
+        let before = cpu.clone();
 
-    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+        let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
 
-    assert_eq!(result.exit, PagedProbeExit::Retired);
-    assert_eq!(result.instructions_executed, 1);
-    assert_eq!(result.rflags_defined, DEFINED);
-    let mut expected = before;
-    expected.rip = 0x0000_8000_0000_0000;
-    assert_eq!(cpu, expected);
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        let mut expected = before;
+        expected.rip = 0x0000_8000_0000_0000;
+        assert_eq!(cpu, expected, "disp={displacement:#x}, not taken");
 
-    let mut memory = Memory::new(&[]);
-    memory.pages.insert(rip & !0xfff, CODE_PHYSICAL);
-    memory.bytes[CODE_PHYSICAL + 0xffe..CODE_PHYSICAL + 0x1000].copy_from_slice(&[0x74, 0x3b]);
-    let mut cpu = state();
-    cpu.rip = rip;
-    cpu.rflags |= 1 << 6; // Taken target is noncanonical.
-    let before = cpu.clone();
+        let mut memory = Memory::new(&[]);
+        memory.pages.insert(rip & !0xfff, CODE_PHYSICAL);
+        memory.bytes[CODE_PHYSICAL + 0xffe..CODE_PHYSICAL + 0x1000].copy_from_slice(&code);
+        let mut cpu = state();
+        cpu.rip = rip;
+        cpu.rflags |= 1 << 6; // Taken target is noncanonical.
+        let before = cpu.clone();
 
-    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+        let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
 
-    assert_eq!(
-        result.exit,
-        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
-            vector: 13,
-            error_code: Some(0),
-            linear_address: None,
-        })
-    );
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(result.rflags_defined, DEFINED);
-    assert_eq!(cpu, before);
-    assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            "disp={displacement:#x}, taken"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
 }
 
 #[test]
@@ -5546,6 +5559,12 @@ fn rust_helper_jz_rel8_fetch_fault_is_atomic() {
 #[test]
 fn rust_helper_jz_rel8_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
+        (&[0x74, 0x63], 0x74),                // displacement below +0x64
+        (&[0x74, 0x65], 0x74),                // displacement above +0x64
+        (&[0x75, 0x64], 0x75),                // JNZ with same displacement
+        (&[0x66, 0x74, 0x64], 0x74),          // operand-size prefix
+        (&[0x40, 0x74, 0x64], 0x74),          // REX prefix
+        (&[0x0f, 0x84, 0x64, 0, 0, 0], 0x84), // near JZ
         (&[0x74, 0x3a], 0x74),                // displacement below +0x3b
         (&[0x74, 0x3c], 0x74),                // displacement above +0x3b
         (&[0x75, 0x3b], 0x75),                // JNZ with same displacement
@@ -5577,7 +5596,7 @@ fn rust_helper_jz_rel8_neighbours_stay_unsupported_without_mutation() {
 
 #[test]
 fn rust_helper_jz_rel8_is_unsupported_in_cpl3_profile() {
-    let bytes = [0x74, 0x3b];
+    let bytes = [0x74, 0x64];
     let mut memory = Memory::new(&bytes);
     let mut cpu = state();
     cpu.cr3 = Some(0x1000);
@@ -14372,6 +14391,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x75, 0x4a][..], 0x75),
         (&[0x73, 0x4c][..], 0x73),
         (&[0x74, 0x3b][..], 0x74),
+        (&[0x74, 0x64][..], 0x74),
         (&[0x77, 0x0e][..], 0x77),
         (&[0x49, 0x89, 0xf8][..], 0x89),
         (&[0x48, 0x8d, 0x3d, 0x09, 0x2b, 0, 0][..], 0x8d),
