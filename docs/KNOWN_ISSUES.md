@@ -4197,8 +4197,18 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-291 — S7-04: exact helper `OR R11B,R10B` (`45 08 D3`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-290.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201658`.
-- **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact byte OR register form; subsequent firmware execution is blocked.
+- **Статус:** реализована в S7-04; независимое ревью одобрило без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact `45 08 D3`; REX.B/R select byte destination R11B and source R10B. OR updates logical flags, leaves AF undefined, and changes only low R11.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1658` are `45 08 D3`; runner budget 10000. Opcode 08 uses REX.B-selected r/m destination R11B and REX.R-selected reg source R10B.
-- **Проверки исполнения:** after ISSUE-290, firmware retires 8,987 instructions and stops with `Unsupported { opcode: 8 }`; COM1 remains empty.
-- **Следующий шаг:** admit exact `OR R11B,R10B` with byte logical flags, AF undefinedness, and only R11B written.
+- **Проверки исполнения:** four focused tests cover byte operand routing, results and flags/AF-definedness, upper R11/state preservation, ModRM fetch-fault atomicity, neighbors and CPL3; the other-profile matrix keeps it unsupported. Full od-isa suites pass (2,322 library, 1,591 profile-set, 126 execution, 29 boundary, 6 flags, 845 paged-profile, 7 profile-isolation, 15 descriptor, 0 doc tests); all 61 paged machine tests pass. Scoped cargo check, formatting and diff-check pass; cargo check reports only the existing unused page-walk helper warning. Firmware retires 8,988 instructions and stops at `74 1D` (`JZ rel8 +0x1d`, ISSUE-292) at RIP `0x20165b`, `Unsupported { opcode: 116 }`; COM1 remains empty. Independent review approved with no findings.
+- **Следующий шаг:** handle exact `JZ rel8 +0x1d` as ISSUE-292.
+
+
+### ISSUE-292 — S7-04: exact helper `JZ rel8 +0x1d` (`74 1D`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-291.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20165b`.
+- **Статус:** открыта.
+- **Суть и последствия:** the base profile does not yet admit this exact short JZ displacement; subsequent firmware execution is blocked.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x165b` are `74 1D`; runner budget 10000.
+- **Проверки исполнения:** after ISSUE-291, firmware retires 8,988 instructions and stops with `Unsupported { opcode: 116 }`; COM1 remains empty.
+- **Следующий шаг:** admit exact `JZ rel8 +0x1d` with ZF semantics and precise taken/fall-through handling.

@@ -27685,3 +27685,10 @@ Four focused tests cover qword routing, arithmetic/definedness cases, register p
 This slice admits only exact `41 0F 97 C3` in base `PagedCpl0ProbeV1`. REX.B selects low byte R11B; SETA reads CF and ZF and writes `u8(!CF && !ZF)` to that byte. Upper R11 and other GPRs are preserved, as are all flag values and definedness. A final ModRM-byte fetch fault commits no state. Existing SETcc admissions remain independently exact; unadmitted neighbors and this form in CPL3/other profiles stay unsupported.
 
 Four focused tests cover all CF/ZF values with defined and undefined flags, partial-register/state preservation, fetch-fault atomicity, neighbors and CPL3/profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/841/7/15); all 61 paged machine tests, scoped check, formatting and diff-check pass. Firmware advances after 8,987 retired instructions to `45 08 D3` (`OR R11B,R10B`, ISSUE-291) at RIP `0x201658`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `OR R11B,R10B` (ISSUE-291)
+
+This slice admits only exact `45 08 D3` in base `PagedCpl0ProbeV1`. REX.B selects the byte destination R11B and REX.R selects source R10B. Opcode 08 performs `R11B |= R10B`; only low R11 changes. Shared byte logic semantics clear CF/OF, set SF/ZF/PF from the byte result and mark AF undefined, preserving other flags and definedness rules.
+
+Four focused tests cover values/flags, REX routing, upper-register and full-state preservation, ModRM fetch-fault atomicity, neighbors and CPL3/profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/845/7/15); all 61 paged machine tests, scoped check, formatting and diff-check pass. Firmware advances after 8,988 retired instructions to `74 1D` (`JZ rel8 +0x1d`, ISSUE-292) at RIP `0x20165b`; COM1 remains empty. Independent review approved with no findings.

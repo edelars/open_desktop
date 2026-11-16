@@ -20684,6 +20684,41 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     | (crate::ARITHMETIC_FLAGS & !crate::AF),
             };
         }
+        // S7-04: exact `45 08 D3` performs byte OR R11B,R10B.
+        // REX.B selects the r/m destination and REX.R the reg source;
+        // the partial-byte write preserves upper R11 and shared OR semantics
+        // leave AF undefined.
+        Operation::Logic {
+            kind: LogicKind::Or,
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x08
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Byte
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x45),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R11, OperandSize::Byte)
+            && source == RegisterView::low(Register::R10, OperandSize::Byte) =>
+        {
+            let lhs = state.read(destination);
+            let rhs = state.read(source);
+            let (value, flags) =
+                logic_result(OperandSize::Byte, LogicKind::Or, lhs, rhs, state.rflags);
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: (initial_rflags_defined & !crate::AF)
+                    | (crate::ARITHMETIC_FLAGS & !crate::AF),
+            };
+        }
         // S7-04: the helper performs an exact dword `OR EBP,R10D` with
         // `44 09 D5`. REX.R extends the ModRM reg source; writing EBP
         // zero-extends RBP. Shared OR semantics leave AF undefined.
