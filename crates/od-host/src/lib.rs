@@ -116194,22 +116194,28 @@ pub(crate) mod tests {
     /// maps the first code page 0x7000 and linear page 2 maps the second code
     /// page 0x5000 (not adjacent), through the supplied leaf entry.
     fn s4_16g_bus(second_leaf: u64) -> od_machine::MachineBus {
+        s4_16h_bus_with(second_leaf, S4_16G_RAM_BYTES, vec![], vec![], vec![])
+    }
+
+    /// The S4-16g page-table layout and code bytes on a bus with `ram_bytes` of
+    /// RAM plus extra regions and devices (S4-16h writer fixtures).
+    fn s4_16h_bus_with(
+        second_leaf: u64,
+        ram_bytes: u64,
+        extra_regions: Vec<od_machine::MemoryRegionSpec>,
+        devices: Vec<Box<dyn od_machine::BusDevice>>,
+        bindings: Vec<od_machine::MmioBinding>,
+    ) -> od_machine::MachineBus {
         use od_machine::{
             AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
             MemoryRegionKind, MemoryRegionSpec, RamLimits,
         };
-        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), S4_16G_RAM_BYTES).unwrap();
-        let map =
-            MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
-                .unwrap();
-        let mut bus = MachineBus::new(
-            map,
-            RamLimits::new(S4_16G_RAM_BYTES),
-            vec![],
-            vec![],
-            vec![],
-        )
-        .unwrap();
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), ram_bytes).unwrap();
+        let mut regions = vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)];
+        regions.extend(extra_regions);
+        let map = MachineMemoryMap::new(36, regions).unwrap();
+        let mut bus =
+            MachineBus::new(map, RamLimits::new(ram_bytes), devices, bindings, vec![]).unwrap();
         for (address, value) in [
             (0x1000, 0x2007),
             (0x2000, 0x3007),
@@ -117937,5 +117943,847 @@ pub(crate) mod tests {
             .execute_alias(ALIAS_A, original.len(), &mut first, 1)
             .unwrap();
         assert_eq!(first.gpr[0], 0x8877_6655_4433_22aa);
+    }
+
+    // ---- S4-16h: coverage of the writers that bypass the session ------------
+    //
+    // `PhysicalMemory::write_bytes` advances the generation of every written
+    // 4 KiB page for ANY writer, but only the session's own methods hand the
+    // committed ranges to `reconcile_code_writes`. These tests run each other
+    // writer class against `session.bus` while both aliases of the cross-page
+    // block are resident: the writer does not tell the session, and the next
+    // entry must still run the new bytes (the generation check of the lookup),
+    // never the stale block. The fresh-bus oracle is a second session on a bus
+    // that holds the new bytes from the start.
+
+    /// `MOV RAX,imm64` with the third code byte (last byte of the first page)
+    /// and the seven tail bytes (start of the second page) replaced.
+    fn s4_16h_code(third: u8, tail: [u8; 7]) -> [u8; 10] {
+        let mut code = S4_16G_CODE;
+        code[2] = third;
+        code[3..].copy_from_slice(&tail);
+        code
+    }
+
+    fn s4_16h_immediate(code: &[u8; 10]) -> u64 {
+        u64::from_le_bytes(code[2..10].try_into().unwrap())
+    }
+
+    /// Fresh bus with `code` installed from the start, entered once through
+    /// alias A in its own session.
+    fn s4_16h_oracle(
+        code: [u8; 10],
+    ) -> (
+        od_jit::dispatch::FallbackDispatchResult,
+        od_isa::LongModeState,
+    ) {
+        use od_machine::GuestPhysicalAddress;
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(S4_16G_FIRST_PAGE + 0xffd),
+            &code[..3],
+        )
+        .unwrap();
+        bus.patch_physical_ram(GuestPhysicalAddress::new(S4_16G_SECOND_PAGE), &code[3..])
+            .unwrap();
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        (result.unwrap(), state)
+    }
+
+    /// Generations of the first and the second code page.
+    fn s4_16h_generations(session: &PagedCodeSession<'_>) -> (u64, u64) {
+        use od_machine::GuestPhysicalAddress;
+        (
+            session
+                .bus
+                .code_page_generation(GuestPhysicalAddress::new(S4_16G_FIRST_PAGE))
+                .unwrap(),
+            session
+                .bus
+                .code_page_generation(GuestPhysicalAddress::new(S4_16G_SECOND_PAGE))
+                .unwrap(),
+        )
+    }
+
+    /// Warm both aliases, run `write` against the bus behind the session and
+    /// assert that the next entries through both aliases execute `new_code`
+    /// exactly like the oracle. With `reconcile == false` the writer's
+    /// committed ranges are NOT given to the session (the `|_| {}` classes);
+    /// with `true` they are handed to `reconcile_code_writes` like a
+    /// notifying writer would. Returns the page generations before and after.
+    fn s4_16h_case<C>(
+        new_code: [u8; 10],
+        reconcile: bool,
+        make: impl FnOnce() -> (od_machine::MachineBus, C),
+        write: impl FnOnce(
+            &mut od_machine::MachineBus,
+            C,
+            &mut dyn FnMut(od_machine::GuestPhysicalRange),
+        ),
+    ) -> ((u64, u64), (u64, u64)) {
+        let _guard = jit_test_lock();
+        let (oracle_result, oracle_state) = s4_16h_oracle(new_code);
+        assert_eq!(oracle_state.gpr[RAX], s4_16h_immediate(&new_code));
+        assert_ne!(oracle_state.gpr[RAX], S4_16G_IMMEDIATE);
+
+        let (mut bus, context) = make();
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+        s4_16g_warm(&mut session);
+        let before = s4_16h_generations(&session);
+
+        let mut committed = Vec::new();
+        {
+            let mut sink = |range: od_machine::GuestPhysicalRange| {
+                if reconcile {
+                    committed.push(range);
+                }
+            };
+            write(&mut *session.bus, context, &mut sink);
+        }
+        let after = s4_16h_generations(&session);
+        assert!(
+            after != before,
+            "the writer advanced no code page generation"
+        );
+
+        if reconcile {
+            assert!(!committed.is_empty(), "the writer reported no range");
+            assert!(session.reconcile_code_writes(&committed).unwrap());
+            assert_eq!(session.resident_entries(), 0);
+        } else {
+            assert!(committed.is_empty());
+            assert_eq!(
+                session.resident_entries(),
+                2,
+                "a silent writer does not reach the session"
+            );
+        }
+        for rip in [S4_16G_ALIAS_A, S4_16G_ALIAS_B] {
+            let (result, state) = s4_16g_run(&mut session, rip, 10);
+            assert_eq!(
+                result.unwrap(),
+                oracle_result,
+                "stale bytes were executed through {rip:#x}"
+            );
+            assert_eq!(state.gpr, oracle_state.gpr, "alias {rip:#x}");
+            assert_eq!(state.rip, rip + 10);
+            assert_eq!(state.gpr[RAX], s4_16h_immediate(&new_code));
+        }
+        // Both stale entries were replaced: two more publications.
+        assert_eq!(s4_16g_publications(&session), 4);
+        assert_eq!(session.resident_entries(), 2);
+        // A further entry reuses them (nothing is lost to churn).
+        let (again, _) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        again.unwrap();
+        assert_eq!(s4_16g_publications(&session), 4);
+        (before, after)
+    }
+
+    // -- (1) NVMe DMA: `BusDma::write` -> `write_flat_bytes` ------------------
+
+    const S4_16H_NVME_RAM: u64 = 0x2_0000;
+    const S4_16H_NVME_ASQ: u64 = 0x1_0000;
+    const S4_16H_NVME_ACQ: u64 = 0x1_1000;
+    const S4_16H_NVME_IO_SQ: u64 = 0x1_2000;
+    const S4_16H_NVME_IO_CQ: u64 = 0x1_3000;
+
+    /// A bus with the S4-16g code layout, an NVMe controller on it and one
+    /// queued `Read` (the doorbell is rung, the command is NOT serviced). The
+    /// disk holds `disk` from sector 0 on; the read fetches `sectors` sectors
+    /// from LBA 0 into `prp1`/`prp2`.
+    fn s4_16h_nvme_bus(
+        disk: &[u8],
+        sectors: u16,
+        prp1: u64,
+        prp2: u64,
+    ) -> (od_machine::MachineBus, od_machine::NvmeHandle) {
+        use od_machine::{
+            AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, InMemoryBackend, MachineBus,
+            MemoryRegionKind, MemoryRegionSpec, MmioBinding, NVME_MMIO_BASE, NVME_MMIO_BYTES,
+            NvmeBackend, NvmeConfig, NvmeDevice,
+        };
+        let (device, nvme) = NvmeDevice::new_with_handle(NvmeConfig {
+            namespace_sectors: 8,
+            ..NvmeConfig::default()
+        })
+        .unwrap();
+        let mut backend = InMemoryBackend::new(8).unwrap();
+        backend.write_sectors(0, disk).unwrap();
+        nvme.attach_backend(Box::new(backend)).unwrap();
+        let window =
+            GuestPhysicalRange::new(GuestPhysicalAddress::new(NVME_MMIO_BASE), NVME_MMIO_BYTES)
+                .unwrap();
+        let mut bus = s4_16h_bus_with(
+            S4_16G_SECOND_PAGE | 7,
+            S4_16H_NVME_RAM,
+            vec![MemoryRegionSpec::new(window, MemoryRegionKind::Mmio)],
+            vec![Box::new(device)],
+            vec![MmioBinding {
+                region_start: GuestPhysicalAddress::new(NVME_MMIO_BASE),
+                device_index: 0,
+            }],
+        );
+        fn mmio(bus: &mut MachineBus, offset: u64, width: AccessWidth, value: u64) {
+            bus.write_physical(
+                GuestPhysicalAddress::new(NVME_MMIO_BASE + offset),
+                width,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        // NVMe submission queue entry: opcode, command id, NSID, PRP1/PRP2,
+        // CDW10..CDW12.
+        let sqe = |opcode: u8, cid: u16, prp: (u64, u64), cdw: (u32, u32, u32)| {
+            let mut raw = [0u8; 64];
+            raw[0..4].copy_from_slice(&(u32::from(opcode) | u32::from(cid) << 16).to_le_bytes());
+            raw[4..8].copy_from_slice(&u32::from(opcode == 0x02).to_le_bytes());
+            raw[24..32].copy_from_slice(&prp.0.to_le_bytes());
+            raw[32..40].copy_from_slice(&prp.1.to_le_bytes());
+            raw[40..44].copy_from_slice(&cdw.0.to_le_bytes());
+            raw[44..48].copy_from_slice(&cdw.1.to_le_bytes());
+            raw[48..52].copy_from_slice(&cdw.2.to_le_bytes());
+            raw
+        };
+        let put = |bus: &mut MachineBus, address: u64, bytes: &[u8]| {
+            bus.patch_physical_ram(GuestPhysicalAddress::new(address), bytes)
+                .unwrap();
+        };
+        mmio(&mut bus, 0x24, AccessWidth::Dword, 15 | 15 << 16);
+        mmio(&mut bus, 0x28, AccessWidth::Qword, S4_16H_NVME_ASQ);
+        mmio(&mut bus, 0x30, AccessWidth::Qword, S4_16H_NVME_ACQ);
+        mmio(&mut bus, 0x14, AccessWidth::Dword, 1 | 6 << 16 | 4 << 20);
+        // Admin Create I/O CQ 1 (4 entries) and Create I/O SQ 1 -> CQ 1.
+        put(
+            &mut bus,
+            S4_16H_NVME_ASQ,
+            &sqe(0x05, 1, (S4_16H_NVME_IO_CQ, 0), (1 | 3 << 16, 1, 0)),
+        );
+        mmio(&mut bus, 0x1000, AccessWidth::Dword, 1);
+        nvme.service(&mut bus, |_| {});
+        put(
+            &mut bus,
+            S4_16H_NVME_ASQ + 64,
+            &sqe(
+                0x01,
+                2,
+                (S4_16H_NVME_IO_SQ, 0),
+                (1 | 3 << 16, 1 | 1 << 16, 0),
+            ),
+        );
+        mmio(&mut bus, 0x1000, AccessWidth::Dword, 2);
+        nvme.service(&mut bus, |_| {});
+        // Read `sectors` sectors from LBA 0.
+        put(
+            &mut bus,
+            S4_16H_NVME_IO_SQ,
+            &sqe(0x02, 3, (prp1, prp2), (0, 0, u32::from(sectors) - 1)),
+        );
+        mmio(&mut bus, 0x1008, AccessWidth::Dword, 1);
+        assert!(nvme.doorbell_pending());
+        (bus, nvme)
+    }
+
+    /// Service the queued read like the machine owner does
+    /// (`nvme.service(bus, committed_write)`) and check it completed.
+    fn s4_16h_nvme_service(
+        bus: &mut od_machine::MachineBus,
+        nvme: od_machine::NvmeHandle,
+        committed: &mut dyn FnMut(od_machine::GuestPhysicalRange),
+    ) {
+        use od_machine::GuestPhysicalAddress;
+        let report = nvme.service(bus, |range| committed(range));
+        assert_eq!(report.commands, 1);
+        assert_eq!(report.completions, 1);
+        let dword3 = bus
+            .read_physical(
+                GuestPhysicalAddress::new(S4_16H_NVME_IO_CQ + 12),
+                od_machine::AccessWidth::Dword,
+            )
+            .unwrap();
+        assert_eq!(dword3 >> 17, 0, "the read completed with an error status");
+    }
+
+    #[test]
+    fn s4_16h_nvme_dma_into_first_code_page_is_not_stale() {
+        let code = s4_16h_code(0xaa, S4_16G_CODE[3..].try_into().unwrap());
+        let mut disk = [0u8; 512];
+        disk[0x1fd..].copy_from_slice(&code[..3]);
+        let (before, after) = s4_16h_case(
+            code,
+            false,
+            || s4_16h_nvme_bus(&disk, 1, S4_16G_FIRST_PAGE + 0xe00, 0),
+            |bus, nvme, committed| s4_16h_nvme_service(bus, nvme, committed),
+        );
+        assert!(after.0 > before.0, "DMA wrote the first page");
+        assert_eq!(after.1, before.1, "the second page was not written");
+    }
+
+    #[test]
+    fn s4_16h_nvme_dma_into_second_code_page_is_not_stale() {
+        let code = s4_16h_code(0x11, [0x99, 0x98, 0x97, 0x96, 0x95, 0x94, 0x93]);
+        let mut disk = [0u8; 512];
+        disk[..7].copy_from_slice(&code[3..]);
+        let (before, after) = s4_16h_case(
+            code,
+            false,
+            || s4_16h_nvme_bus(&disk, 1, S4_16G_SECOND_PAGE, 0),
+            |bus, nvme, committed| s4_16h_nvme_service(bus, nvme, committed),
+        );
+        assert_eq!(after.0, before.0, "the first page was not written");
+        assert!(after.1 > before.1, "DMA wrote the second page");
+    }
+
+    #[test]
+    fn s4_16h_nvme_dma_across_both_pages_reports_both_ranges() {
+        // Two sectors: PRP1 = end of the first code page, PRP2 = the second
+        // code page. The committed ranges the DMA reports reach the session
+        // when the owner forwards them (`reconcile == true`).
+        let code = s4_16h_code(0xaa, [0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97]);
+        let mut disk = [0u8; 1024];
+        disk[0x1fd..0x200].copy_from_slice(&code[..3]);
+        disk[0x200..0x207].copy_from_slice(&code[3..]);
+        let ranges = std::cell::RefCell::new(Vec::new());
+        let (before, after) = s4_16h_case(
+            code,
+            true,
+            || s4_16h_nvme_bus(&disk, 2, S4_16G_FIRST_PAGE + 0xe00, S4_16G_SECOND_PAGE),
+            |bus, nvme, committed| {
+                s4_16h_nvme_service(bus, nvme, &mut |range| {
+                    ranges.borrow_mut().push(range);
+                    committed(range);
+                })
+            },
+        );
+        assert!(after.0 > before.0 && after.1 > before.1);
+        let ranges = ranges.into_inner();
+        let covers = |page: u64| {
+            ranges.iter().any(|range| {
+                range.start().get() < page + 0x1000 && page < range.end_exclusive() as u64
+            })
+        };
+        assert!(covers(S4_16G_FIRST_PAGE), "{ranges:?}");
+        assert!(covers(S4_16G_SECOND_PAGE), "{ranges:?}");
+    }
+
+    // -- (2) Linux loader: `write_flat_bytes(.., |_| {})` ----------------------
+
+    #[test]
+    fn s4_16h_loader_flat_writes_are_not_stale() {
+        use od_machine::GuestPhysicalAddress;
+        // The loader's `write` helper is `board.bus_mut().write_flat_bytes(address,
+        // bytes, |_| {})` (crate-private in od-machine), one call per zone. For
+        // RAM it ends in the same `PhysicalMemory::write_bytes` as the public
+        // `patch_physical_ram_with_callback` used here, one call per
+        // non-adjacent zone.
+        let code = s4_16h_code(0xcd, [0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87]);
+        let (before, after) = s4_16h_case(
+            code,
+            false,
+            || (s4_16g_bus(S4_16G_SECOND_PAGE | 7), ()),
+            |bus, (), _committed| {
+                bus.patch_physical_ram_with_callback(
+                    GuestPhysicalAddress::new(S4_16G_FIRST_PAGE + 0xffd),
+                    &code[..3],
+                    |_| {},
+                )
+                .unwrap();
+                bus.patch_physical_ram_with_callback(
+                    GuestPhysicalAddress::new(S4_16G_SECOND_PAGE),
+                    &code[3..],
+                    |_| {},
+                )
+                .unwrap();
+            },
+        );
+        assert!(after.0 > before.0 && after.1 > before.1);
+    }
+
+    #[test]
+    fn s4_16h_loader_write_to_one_page_leaves_the_other_dependency_valid() {
+        use od_machine::GuestPhysicalAddress;
+        // Only the second zone is (re)loaded: the stale first-page span stays
+        // valid, the second-page span is replaced.
+        let code = s4_16h_code(0x11, [0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77]);
+        let (before, after) = s4_16h_case(
+            code,
+            false,
+            || (s4_16g_bus(S4_16G_SECOND_PAGE | 7), ()),
+            |bus, (), _committed| {
+                bus.patch_physical_ram_with_callback(
+                    GuestPhysicalAddress::new(S4_16G_SECOND_PAGE),
+                    &code[3..],
+                    |_| {},
+                )
+                .unwrap();
+            },
+        );
+        assert_eq!(after.0, before.0);
+        assert!(after.1 > before.1);
+    }
+
+    // -- (3) Host display: framebuffer and register stores ----------------------
+
+    #[test]
+    fn s4_16h_display_writes_never_touch_code_pages_and_cannot_become_code() {
+        use od_machine::{
+            AccessWidth, DISPLAY_FORMAT_BGRX8888, DISPLAY_FRAMEBUFFER_BASE,
+            DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES,
+            DisplayDevice, GuestPhysicalAddress, GuestPhysicalRange, MemoryRegionKind,
+            MemoryRegionSpec, MmioBinding,
+        };
+        let (device, _display) = DisplayDevice::new_with_handle();
+        let range = |start, len| GuestPhysicalRange::new(GuestPhysicalAddress::new(start), len);
+        let mut bus = s4_16h_bus_with(
+            S4_16G_SECOND_PAGE | 7,
+            S4_16G_RAM_BYTES,
+            vec![
+                MemoryRegionSpec::new(
+                    range(DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES).unwrap(),
+                    MemoryRegionKind::Framebuffer,
+                ),
+                MemoryRegionSpec::new(
+                    range(DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES).unwrap(),
+                    MemoryRegionKind::Mmio,
+                ),
+            ],
+            vec![Box::new(device)],
+            vec![MmioBinding {
+                region_start: GuestPhysicalAddress::new(DISPLAY_REGISTERS_BASE),
+                device_index: 0,
+            }],
+        );
+        // A page table entry that maps linear 0x403000 to the framebuffer.
+        bus.write_physical(
+            GuestPhysicalAddress::new(0x4018),
+            AccessWidth::Qword,
+            DISPLAY_FRAMEBUFFER_BASE | 7,
+            |_| {},
+        )
+        .unwrap();
+        let _guard = jit_test_lock();
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+        s4_16g_warm(&mut session);
+        let pages = |session: &PagedCodeSession<'_>| -> Vec<u64> {
+            (0..S4_16G_RAM_BYTES / 0x1000)
+                .map(|page| {
+                    session
+                        .bus
+                        .code_page_generation(GuestPhysicalAddress::new(page * 0x1000))
+                        .unwrap()
+                })
+                .collect()
+        };
+        let generations = pages(&session);
+
+        // What `program_test_pattern` does: mode registers, pixels, doorbell,
+        // all as `write_physical(.., |_| {})`.
+        let register = |offset: u64| GuestPhysicalAddress::new(DISPLAY_REGISTERS_BASE + offset);
+        for (offset, value) in [
+            (0x040, 16),
+            (0x044, 4),
+            (0x048, DISPLAY_FORMAT_BGRX8888),
+            (0x04c, 1),
+        ] {
+            session
+                .bus
+                .write_physical(
+                    register(offset),
+                    AccessWidth::Dword,
+                    u64::from(value),
+                    |_| {},
+                )
+                .unwrap();
+        }
+        for pixel in 0..64u64 {
+            session
+                .bus
+                .write_physical(
+                    GuestPhysicalAddress::new(DISPLAY_FRAMEBUFFER_BASE + pixel * 4),
+                    AccessWidth::Dword,
+                    0x00ff_0000 | pixel,
+                    |_| {},
+                )
+                .unwrap();
+        }
+        session
+            .bus
+            .write_physical(register(0x080), AccessWidth::Dword, 1, |_| {})
+            .unwrap();
+
+        assert_eq!(
+            pages(&session),
+            generations,
+            "display stores change no RAM page generation"
+        );
+        // Nothing was invalidated and nothing is rebuilt.
+        assert_eq!(session.resident_entries(), 2);
+        for rip in [S4_16G_ALIAS_A, S4_16G_ALIAS_B] {
+            let (result, state) = s4_16g_run(&mut session, rip, 10);
+            result.unwrap();
+            assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE);
+        }
+        assert_eq!(s4_16g_publications(&session), 2);
+
+        // Display-owned memory is never admitted as code: the fetch from the
+        // framebuffer alias is refused before any block exists.
+        let (result, _) = s4_16g_run(&mut session, 0x0040_3100, 10);
+        assert!(
+            matches!(result, Err(PagedCodeSessionError::Snapshot(_))),
+            "{result:?}"
+        );
+        assert_eq!(s4_16g_publications(&session), 2);
+        assert_eq!(session.resident_entries(), 2);
+    }
+
+    // -- (4) exception/interrupt delivery: IDT reads and stack frame writes ----
+
+    /// The state of a CPL0 interrupt delivery whose stack frame covers the
+    /// code bytes: RSP = 0x402020, so the frame is linear 0x401ff8..0x402020
+    /// (RIP, CS, RFLAGS, old RSP, SS from the lowest slot up). The saved RIP
+    /// repeats the opcode bytes `48 b8 11` of the block in its upper three
+    /// bytes; the saved CS selector (8) becomes the next immediate bytes.
+    fn s4_16h_delivery_state() -> od_isa::LongModeState {
+        let mut state = od_isa::LongModeState {
+            rip: 0x11b8_4800_0000_0000,
+            rflags: 0x202,
+            cr0: Some(S4_16G_CR0),
+            cr3: Some(S4_16G_CR3),
+            cr4: Some(S4_16G_CR4),
+            cs_selector: Some(0x08),
+            cs_cache: Some(od_isa::state::CodeSegmentDescriptorCache {
+                base: 0,
+                limit: u32::MAX,
+                access: 0x9b,
+                flags: 0xa,
+            }),
+            ss_selector: Some(0x10),
+            gdtr: Some(od_isa::state::Gdtr {
+                base: 0x0040_3800,
+                limit: 0x17,
+            }),
+            idtr: Some(od_isa::state::Idtr {
+                base: 0x0040_3000,
+                limit: 0xfff,
+            }),
+            ..Default::default()
+        };
+        state.gpr[od_isa::Register::Rsp as usize] = 0x0040_2020;
+        state
+    }
+
+    /// S4-16g bus plus PT[3] -> 0x8000 holding a GDT (linear 0x403800) with a
+    /// 64-bit code descriptor at selector 8 and an IDT (linear 0x403000) whose
+    /// vector 0x30 is an interrupt gate to 0x405000 through selector 8.
+    fn s4_16h_delivery_bus() -> od_machine::MachineBus {
+        use od_machine::{AccessWidth, GuestPhysicalAddress};
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        bus.write_physical(
+            GuestPhysicalAddress::new(0x4018),
+            AccessWidth::Qword,
+            0x8007,
+            |_| {},
+        )
+        .unwrap();
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(0x8808),
+            &[0xff, 0xff, 0, 0, 0, 0x9b, 0xaf, 0],
+        )
+        .unwrap();
+        let mut gate = [0u8; 16];
+        gate[0..2].copy_from_slice(&0x5000u16.to_le_bytes());
+        gate[2..4].copy_from_slice(&0x08u16.to_le_bytes());
+        gate[5] = 0x8e;
+        gate[6..8].copy_from_slice(&0x0040u16.to_le_bytes());
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x8300), &gate)
+            .unwrap();
+        bus
+    }
+
+    fn s4_16h_deliver(
+        bus: &mut od_machine::MachineBus,
+        mut state: od_isa::LongModeState,
+        committed: &mut dyn FnMut(od_machine::GuestPhysicalRange),
+    ) {
+        let report = od_machine::deliver_paged_external_interrupt(
+            &mut state,
+            bus,
+            S4_16G_CR3,
+            S4_16G_EFER,
+            AccessContext {
+                mode: od_isa::memory::InstructionMode::Long64,
+                privilege: od_isa::memory::PrivilegeLevel::Ring0,
+                origin: od_isa::memory::AccessOrigin::Explicit,
+            },
+            0,
+            0x30,
+            |range| committed(range),
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                report.delivery,
+                od_isa::interrupt::InterruptDeliveryResult::Delivered { .. }
+            ),
+            "{report:?}"
+        );
+        assert_eq!(state.rip, 0x0040_5000);
+        // The report lists the committed stack writes even when the callback
+        // ignores them: both code pages are among them.
+        let covers = |page: u64| {
+            report.committed_writes.iter().any(|range| {
+                range.start().get() < page + 0x1000 && page < range.end_exclusive() as u64
+            })
+        };
+        assert!(covers(S4_16G_FIRST_PAGE) && covers(S4_16G_SECOND_PAGE));
+    }
+
+    #[test]
+    fn s4_16h_exception_frame_written_over_code_is_not_stale() {
+        // Immediate becomes 0x811: byte 0 is the opcode-tail byte the frame
+        // rewrites with the same value, bytes 1.. come from the saved CS.
+        let code = s4_16h_code(0x11, [0x08, 0, 0, 0, 0, 0, 0]);
+        let (before, after) = s4_16h_case(
+            code,
+            false,
+            || (s4_16h_delivery_bus(), s4_16h_delivery_state()),
+            |bus, state, committed| s4_16h_deliver(bus, state, committed),
+        );
+        assert!(after.0 > before.0 && after.1 > before.1);
+    }
+
+    #[test]
+    fn s4_16h_exception_frame_ranges_reconcile_when_forwarded() {
+        let code = s4_16h_code(0x11, [0x08, 0, 0, 0, 0, 0, 0]);
+        s4_16h_case(
+            code,
+            true,
+            || (s4_16h_delivery_bus(), s4_16h_delivery_state()),
+            |bus, state, committed| s4_16h_deliver(bus, state, committed),
+        );
+    }
+
+    // -- (5) JIT store (`PagedFetchedLoadSession::execute_with_store`) ----------
+
+    const S4_16H_LOAD_RIP: u64 = 0x0040_1100;
+    const S4_16H_STORE_RIP: u64 = 0x0040_3100;
+    const S4_16H_DATA: u64 = 0x0040_2100;
+
+    /// Load code `MOV RAX,[RBX]` at linear 0x401100 (physical 0x7100), store
+    /// code `MOV [RBX],RAX` at linear 0x403100 (physical 0x8100) and a data
+    /// qword at linear 0x402100 (physical 0x5100).
+    fn s4_16h_fetch_bus() -> od_machine::MachineBus {
+        use od_machine::{AccessWidth, GuestPhysicalAddress};
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        bus.write_physical(
+            GuestPhysicalAddress::new(0x4018),
+            AccessWidth::Qword,
+            0x8007,
+            |_| {},
+        )
+        .unwrap();
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(0x7100),
+            &PAGED_FETCHED_LOAD_V2_BYTES,
+        )
+        .unwrap();
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(0x8100),
+            &PAGED_FETCHED_STORE_V2_BYTES,
+        )
+        .unwrap();
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(0x5100),
+            &0x1234_5678_9abc_def0u64.to_le_bytes(),
+        )
+        .unwrap();
+        bus
+    }
+
+    fn s4_16h_fetch_state(rip: u64, rbx: u64, rax: u64) -> od_isa::LongModeState {
+        let mut state = od_isa::LongModeState {
+            rip,
+            cr0: Some(S4_16G_CR0),
+            cr4: Some(S4_16G_CR4),
+            ..Default::default()
+        };
+        state.gpr[od_isa::Register::Rbx as usize] = rbx;
+        state.gpr[RAX] = rax;
+        state
+    }
+
+    #[test]
+    fn s4_16h_jit_store_into_a_fetched_block_page_is_not_stale() {
+        use od_machine::GuestPhysicalAddress;
+
+        let mut bus = s4_16h_fetch_bus();
+        let _guard = jit_test_lock();
+        let mut fetched = PagedFetchedLoadSession::new();
+        let run = |fetched: &mut PagedFetchedLoadSession,
+                   bus: &mut od_machine::MachineBus,
+                   state: &mut od_isa::LongModeState,
+                   store: bool| {
+            if store {
+                fetched.execute_with_store(
+                    state,
+                    bus,
+                    S4_16G_CR3,
+                    S4_16G_EFER,
+                    AccessContext::default(),
+                )
+            } else {
+                fetched.execute(
+                    state,
+                    bus,
+                    S4_16G_CR3,
+                    S4_16G_EFER,
+                    AccessContext::default(),
+                )
+            }
+        };
+
+        let mut state = s4_16h_fetch_state(S4_16H_LOAD_RIP, S4_16H_DATA, 0);
+        let report = run(&mut fetched, &mut bus, &mut state, false).unwrap();
+        assert_eq!(report.admission, PagedFetchAdmission::Admitted);
+        assert_eq!(state.gpr[RAX], 0x1234_5678_9abc_def0);
+        let mut state = s4_16h_fetch_state(S4_16H_LOAD_RIP, S4_16H_DATA, 0);
+        let report = run(&mut fetched, &mut bus, &mut state, false).unwrap();
+        assert_eq!(report.admission, PagedFetchAdmission::Reused);
+
+        // Any other writer to the page (here a loader-style patch of an
+        // unrelated byte) advances the generation: the reuse key rejects the
+        // block and the form is admitted again from the fetched bytes.
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x7200), &[1])
+            .unwrap();
+        let mut state = s4_16h_fetch_state(S4_16H_LOAD_RIP, S4_16H_DATA, 0);
+        let report = run(&mut fetched, &mut bus, &mut state, false).unwrap();
+        assert_eq!(report.admission, PagedFetchAdmission::Admitted);
+        assert_eq!(fetched.admissions(), 2);
+
+        // JIT store from another code page over the load instruction itself:
+        // eight NOPs. The store reports its committed write in the report.
+        let nops = 0x9090_9090_9090_9090u64;
+        let mut store = s4_16h_fetch_state(S4_16H_STORE_RIP, S4_16H_LOAD_RIP, nops);
+        let report = run(&mut fetched, &mut bus, &mut store, true).unwrap();
+        assert_eq!(report.admission, PagedFetchAdmission::Admitted);
+        assert!(report.store_refusal.is_none());
+        assert!(
+            report
+                .execution
+                .committed_writes
+                .iter()
+                .any(|range| range.start().get() == 0x7100 && range.end_exclusive() == 0x7108),
+            "{:?}",
+            report.execution.committed_writes
+        );
+        let stored = bus
+            .read_physical(
+                GuestPhysicalAddress::new(0x7100),
+                od_machine::AccessWidth::Qword,
+            )
+            .unwrap();
+        assert_eq!(stored, nops);
+
+        // The old load block must not run against the new bytes: the fetched
+        // NOPs are an unsupported form, nothing is executed, RAX is untouched
+        // (a stale load would have replaced it with the data qword).
+        let mut state = s4_16h_fetch_state(S4_16H_LOAD_RIP, S4_16H_DATA, nops);
+        let error = run(&mut fetched, &mut bus, &mut state, false).unwrap_err();
+        assert!(
+            matches!(
+                &error.kind,
+                PagedFetchedLoadErrorKind::UnsupportedForm { bytes } if bytes == &[0x90; 3]
+            ),
+            "{error:?}"
+        );
+        assert_eq!(state.gpr[RAX], nops);
+        assert!(!fetched.has_admitted_block());
+    }
+
+    #[test]
+    fn s4_16h_jit_store_and_a_code_session_never_hold_blocks_together() {
+        use od_machine::GuestPhysicalAddress;
+
+        // The process has one MAP_JIT region. A fetched-block session that
+        // holds a block excludes a PagedCodeSession (and the other way
+        // round), so a JIT store can never run while a cached alias block
+        // exists: the stale-block hazard of this class does not arise, and a
+        // session created after the store reads the stored bytes.
+        let code = s4_16h_code(0x11, [0x99, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
+        let store_value = u64::from_le_bytes([0x99, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0]);
+        let _guard = jit_test_lock();
+        let (oracle_result, oracle_state) = s4_16h_oracle(code);
+        let mut bus = s4_16h_fetch_bus();
+
+        // Fetched session first: its block holds the region.
+        let mut fetched = PagedFetchedLoadSession::new();
+        let mut store = s4_16h_fetch_state(S4_16H_STORE_RIP, 0x0040_2000, store_value);
+        let report = fetched
+            .execute_with_store(
+                &mut store,
+                &mut bus,
+                S4_16G_CR3,
+                S4_16G_EFER,
+                AccessContext::default(),
+            )
+            .unwrap();
+        assert!(report.store_refusal.is_none());
+        assert!(fetched.has_admitted_block());
+        assert!(matches!(
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()),
+            Err(PagedCodeSessionError::Backend(
+                PublishedArenaError::MappingAlreadyLive
+                    | PublishedArenaError::Mapping(ExecutableMemoryError::MappingAlreadyLive)
+            ))
+        ));
+        assert!(fetched.reset());
+
+        // The code session created afterwards sees the stored bytes.
+        {
+            let mut session =
+                PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+            let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+            assert_eq!(result.unwrap(), oracle_result);
+            assert_eq!(state.gpr, oracle_state.gpr);
+            assert_eq!(state.gpr[RAX], s4_16h_immediate(&code));
+
+            // Code session first: a JIT store cannot even be admitted, so it
+            // writes nothing and the resident block stays valid.
+            let generations = s4_16h_generations(&session);
+            let mut again = s4_16h_fetch_state(S4_16H_STORE_RIP, 0x0040_2000, 0);
+            let mut second = PagedFetchedLoadSession::new();
+            let error = second
+                .execute_with_store(
+                    &mut again,
+                    &mut *session.bus,
+                    S4_16G_CR3,
+                    S4_16G_EFER,
+                    AccessContext::default(),
+                )
+                .unwrap_err();
+            assert!(
+                matches!(&error.kind, PagedFetchedLoadErrorKind::Publish(_)),
+                "{error:?}"
+            );
+            assert_eq!(s4_16h_generations(&session), generations);
+            assert_eq!(
+                session
+                    .bus
+                    .read_physical(
+                        GuestPhysicalAddress::new(S4_16G_SECOND_PAGE),
+                        od_machine::AccessWidth::Byte
+                    )
+                    .unwrap(),
+                0x99
+            );
+            let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+            result.unwrap();
+            assert_eq!(state.gpr[RAX], s4_16h_immediate(&code));
+            assert_eq!(s4_16g_publications(&session), 1);
+        }
     }
 }

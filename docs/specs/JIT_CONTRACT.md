@@ -5044,3 +5044,20 @@ question). Not covered: active-block mutation (S4-16i), arbitrary
 writers (S4-16h), 2 MiB code pages, multi-instruction blocks, patching the
 second page through `patch_alias_byte` (`UnsupportedAlias`). No performance
 claim is made.
+### S4-16h: writers that do not notify the session
+Every committed RAM write advances the generation of each written 4 KiB page in
+`PhysicalMemory::write_bytes`, whichever component writes (NVMe DMA, the Linux
+loader, interrupt/exception frame pushes, a JIT store, a loader patch). Only the
+session's own methods hand committed ranges to `reconcile_code_writes`, which
+releases a stale cache entry immediately. A writer that reports through an empty
+callback does not: correctness then rests on `execute_alias` retaking the tracked
+snapshot before each lookup (current bytes and generations of both pages in the
+translation key), so a stale block is never found and never executed; the
+explicit pre-dispatch `invalidate` and the version in the identity are redundant
+layers on top of the byte key. Display stores reach only MMIO registers and the
+framebuffer region, which has no generations and cannot be admitted as code
+(`Snapshot(_)`). `PagedFetchedLoadSession` and `PagedCodeSession` cannot hold
+blocks at once (one process-wide MAP_JIT region), so a JIT store never runs
+while a cached alias block exists. Covered by `tests::s4_16h_*`. Not covered: a
+host that actually forwards NVMe/loader/delivery ranges to the session, active
+blocks (S4-16i). No performance claim is made.
