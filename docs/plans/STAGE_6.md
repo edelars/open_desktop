@@ -450,7 +450,8 @@
 
 ### S6-11. Дать каждому vCPU свой Local APIC
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью.
+- **Текущий статус (2026-11-15):** принято после независимого ревью Claude Opus / high; замечания ревью исправлены, открытые риски S6-13/S6-15 записаны в отчёте. `PairState` разделён на `CpuApic { local, timer }` (LAPIC одного процессора: свои регистры, свой таймер со своей очередью событий) и `Route` (IOAPIC); `PairState { cpus: Vec<CpuApic>, route }` остаётся под прежним одним `Mutex` (блокировок не добавлено), потому что level-запрос связывает LAPIC-адресата и Remote IRR. Регистр ID читается как `index << 24`. Окно `0xFEE0_0000` адресуется LAPIC выполняющего vCPU через явный индекс (`BusDevice::read_from_cpu`/`write_from_cpu`, `MachineBus::access_tracked(vcpu, …)`, `AdapterBus::Machine(bus, vcpu)`), без глобальной переменной; прежние `read`/`write` и `From<&mut MachineBus>` — процессор 0. Старший dword записи IOAPIC хранит physical APIC ID: принимается ID любого существующего vCPU, несуществующий — `UnsupportedConfiguration` до изменений (logical/Lowest Priority отклоняются, как раньше). Число vCPU — `FirmwareBoardConfig::vcpu_count` (по умолчанию 1, допустимо 1..=4); `LocalApic::with_cpus`/`with_shared_timers`; плата держит `vcpus` длиной `vcpu_count`, исполняется только процессор 0. Блок передачи управления, ACPI blob, CPUID по-прежнему описывают один процессор (S6-15/S7-02). Новые unit-тесты: 17 (разные APIC ID, независимость регистров/запросов/EOI/сброса и таймеров двух LAPIC, маршруты IOAPIC INTIN4 edge/level и INTIN2 на APIC ID 1, отказ несуществующего ID, конфликт вектора только в LAPIC-адресате, число vCPU платы, доступ через paged-адаптер владельца). Результаты проверок и контрольного прогона: [`STAGE_6_REPORT.md`](../reports/STAGE_6_REPORT.md), раздел S6-11; контракт: [`MACHINE_CONTRACT.md`](../specs/MACHINE_CONTRACT.md#lapic-на-каждый-vcpu-s6-11).
 - **Где:** `crates/od-machine/src/local_apic.rs`, `apic_pair.rs`, `io_apic.rs`, `bus.rs`; раздел в `MACHINE_CONTRACT.md`.
 - **Сделать:**
   1. Разделить общее состояние `PairState` на состояние IOAPIC и состояние LAPIC одного процессора. У каждого vCPU свой LAPIC со своим таймером и очередью событий.
@@ -465,6 +466,7 @@
 ### S6-12. Доставлять межпроцессорные прерывания
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-15):** реализовано, ожидает ревью — срез S6-12a (без NMI, blocked: D5/S4-38 для od-isa/state.rs). Запись в `ICR_LOW` доставляет Fixed edge по матрице [SMP_CONTRACT.md](../specs/SMP_CONTRACT.md) §5: физический адресат, Self, All including self, All-but-self; всё прочее, включая строки NMI/INIT/SIPI, — явная ошибка устройства до изменения состояния; Delivery Status всегда Idle. Контракт: [MACHINE_CONTRACT.md](../specs/MACHINE_CONTRACT.md#доставка-ipi-s6-12a), факты и проверки: [отчёт S6](../reports/STAGE_6_REPORT.md) (S6-12a). Пункт 2 «Сделать» (NMI) не выполнен.
 - **Где:** `crates/od-machine/src/local_apic.rs`; доставка в процессор — рядом с существующей `deliver_pending_irq` в `crates/od-machine/src/paged_memory_adapter.rs`; состояние блокировки NMI — в `crates/od-isa/src/state.rs` (владелец — `od-isa`); разделы в `MACHINE_CONTRACT.md` и `CPU_CONTRACT.md`.
 - **Сделать:**
   1. Запись в ICR выполняется строго по матрице S6-03: Fixed — выставить запрос у каждого адресата; shorthand «self», «все», «все кроме себя»; физический адресат.

@@ -682,7 +682,10 @@ vector (0, 1, 15, 0xFF при unmasked), все семь не-Fixed delivery mod
 зарезервированные `011`/`110`; masked и unmasked), logical destination mode
 (бит 11), polarity, reserved-биты и ненулевой high dword отклоняются для входов 0,
 4 и 23 без изменения снимка; политика: masked entry допускает любой vector; на входах без линии под маской
-хранится active-low (бит 13, pin 9), без маски — отказ без изменения снимка,
+хранится active-low (бит 13, pin 9), без маски — отказ без изменения снимка (кроме формы
+level/active-low pin 9, принимаемой S4-38L8e; тесты `sci_*` и `other_unsupported_entry_fields_stay_refused_with_the_sci_form_accepted`
+в `io_apic.rs`, гостевые `the_sci_rte_write_is_accepted_under_the_apic_profile` и
+`stage4a_keeps_the_sci_rte_write_a_typed_error` в `linux_direct.rs`),
 INTIN4 по-прежнему отказывает active-low.
 Согласование с MADT: тест `model_agrees_with_the_firmware_madt` читает ID из байтов
 MADT в реальном blob-фикстуре S4-31d/g, число входов из константы прошивки

@@ -126,6 +126,22 @@ pub trait BusDevice {
     /// before applying its synchronous effect.
     fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError>;
 
+    /// The access of vCPU `cpu`. Only a device with one register window per processor (the
+    /// Local APIC, S6-11) tells the processors apart; every other device serves all of them with
+    /// `read`.
+    fn read_from_cpu(&mut self, _cpu: usize, access: DeviceAccess) -> Result<u64, DeviceError> {
+        self.read(access)
+    }
+    /// The access of vCPU `cpu`; see [`BusDevice::read_from_cpu`].
+    fn write_from_cpu(
+        &mut self,
+        _cpu: usize,
+        access: DeviceAccess,
+        value: u64,
+    ) -> Result<(), DeviceError> {
+        self.write(access, value)
+    }
+
     /// A display device reports the framebuffer window its registers
     /// advertise. `MachineBus::new` checks it against the memory map; every
     /// other device keeps the default `None`.
@@ -239,6 +255,10 @@ pub struct MachineBus {
     /// Byte length of the region of each `mmio` binding (same order), for the set-step MMIO
     /// dispatch, which must not look at `memory` while the page walk holds it (S4-38L9s).
     mmio_lens: Vec<u64>,
+    /// S4-38L8d: the set loop also serves the Local APIC and IOAPIC windows. `false` unless the
+    /// board turned the APIC profile on (`enable_apic_mmio_windows`), so every other run keeps the ECAM
+    /// window as the only MMIO of the set loop.
+    apic_mmio_windows: bool,
     ports: Vec<PortRegionBinding>,
 }
 
@@ -530,6 +550,7 @@ pub(crate) struct MachineBusSetStepIo<'a> {
     ports: &'a [PortRegionBinding],
     mmio: &'a [MmioBinding],
     mmio_lens: &'a [u64],
+    windows: &'static [crate::page_walk::MmioWindow],
 }
 
 /// The port view of [`MachineBusSetStepIo`].
@@ -537,9 +558,10 @@ pub(crate) struct SetStepPortIo<'a, 'b>(&'b MachineBusSetStepIo<'a>);
 
 /// MMIO dispatch of one tracked data access, for the page walker of the set loop.
 pub(crate) trait SetStepMmio {
-    /// The only physical range this dispatch serves, `(base, size)`: every other MMIO operand of
-    /// the set loop stays the typed error it was before S4-38L9s.
-    fn window(&self) -> crate::page_walk::MmioWindow;
+    /// Every physical range this dispatch serves: the ECAM window, and with the APIC profile
+    /// (S4-38L8d) the Local APIC and IOAPIC windows. Every other MMIO operand of the set loop
+    /// stays the typed error it was before S4-38L9s.
+    fn windows(&self) -> &[crate::page_walk::MmioWindow];
 
     fn dispatch(
         &self,
@@ -555,19 +577,26 @@ impl<'a> MachineBusSetStepIo<'a> {
     }
 }
 
-/// The set loop reaches ECAM and nothing else (S4-38L9s): the PCI configuration device is the one
-/// MMIO device its profile needs, and the other MMIO (local APIC, I/O APIC, display, NVMe) is not
-/// admitted by this slice.
-fn set_step_mmio_window() -> crate::page_walk::MmioWindow {
-    (
-        crate::PCI_ECAM_DESCRIPTOR.base,
-        crate::PCI_ECAM_DESCRIPTOR.size,
-    )
-}
+/// The ECAM window: the PCI configuration device is the one MMIO device the set loop's own profile
+/// needs (S4-38L9s). Without the APIC profile it is the only MMIO the set loop serves; the other
+/// MMIO (Local APIC, IOAPIC, display, NVMe) is not admitted.
+const ECAM_WINDOW: crate::page_walk::MmioWindow = (
+    crate::PCI_ECAM_DESCRIPTOR.base,
+    crate::PCI_ECAM_DESCRIPTOR.size,
+);
+
+const SET_STEP_WINDOWS: [crate::page_walk::MmioWindow; 1] = [ECAM_WINDOW];
+/// S4-38L8d: with the APIC profile the set loop also reaches the Local APIC and the IOAPIC (one 4 KiB
+/// window each, MADT addresses), and still nothing else.
+const SET_STEP_APIC_WINDOWS: [crate::page_walk::MmioWindow; 3] = [
+    ECAM_WINDOW,
+    (crate::LOCAL_APIC_MMIO_BASE, crate::LOCAL_APIC_MMIO_SIZE),
+    (crate::IO_APIC_MMIO_BASE, crate::IO_APIC_MMIO_SIZE),
+];
 
 impl SetStepMmio for MachineBusSetStepIo<'_> {
-    fn window(&self) -> crate::page_walk::MmioWindow {
-        set_step_mmio_window()
+    fn windows(&self) -> &[crate::page_walk::MmioWindow] {
+        self.windows
     }
 
     fn dispatch(
@@ -585,13 +614,14 @@ impl SetStepMmio for MachineBusSetStepIo<'_> {
             _ => return Err(Backend(format!("unsupported MMIO width {width}"))),
         };
         let len = u64::from(width.bytes());
-        let (window_base, window_size) = set_step_mmio_window();
-        if address.get() < window_base
-            || u128::from(address.get()) + u128::from(len)
-                > u128::from(window_base) + u128::from(window_size)
-        {
+        let served = self.windows.iter().any(|&(base, size)| {
+            address.get() >= base
+                && u128::from(address.get()) + u128::from(len)
+                    <= u128::from(base) + u128::from(size)
+        });
+        if !served {
             return Err(Backend(format!(
-                "MMIO address {address:?} is outside the ECAM window the set loop serves"
+                "MMIO address {address:?} is outside the windows the set loop serves"
             )));
         }
         let (binding, _) = self
@@ -737,6 +767,7 @@ impl MachineBus {
             devices,
             mmio,
             mmio_lens,
+            apic_mmio_windows,
             ports,
         } = self;
         (
@@ -746,8 +777,19 @@ impl MachineBus {
                 ports,
                 mmio,
                 mmio_lens,
+                windows: if *apic_mmio_windows {
+                    &SET_STEP_APIC_WINDOWS
+                } else {
+                    &SET_STEP_WINDOWS
+                },
             },
         )
+    }
+
+    /// S4-38L8d: let the set loop reach the Local APIC and IOAPIC windows (off by default). Only the
+    /// APIC profile of the Linux board turns it on.
+    pub(crate) fn enable_apic_mmio_windows(&mut self) {
+        self.apic_mmio_windows = true;
     }
 
     pub(crate) fn split_for_pio_step(&mut self) -> (&mut PhysicalMemory, MachineBusPortIo<'_>) {
@@ -760,8 +802,10 @@ impl MachineBus {
         (memory, MachineBusPortIo { devices, ports })
     }
 
+    /// A tracked access by vCPU `vcpu`: an MMIO operand reaches the device as that vCPU's access.
     pub(crate) fn access_tracked(
         &mut self,
+        vcpu: usize,
         paging: &Long64ProbeConfig,
         request: TrackedAccessRequest,
         committed_write: impl FnMut(GuestPhysicalRange),
@@ -819,7 +863,7 @@ impl MachineBus {
                 };
                 match operation {
                     RamAccessOperation::Read { .. } => devices[binding.device_index]
-                        .read(access)
+                        .read_from_cpu(vcpu, access)
                         .map(|value| value & width.mask())
                         .map_err(|error| {
                             crate::page_walk::MmioDispatchError::Backend(format!(
@@ -828,7 +872,7 @@ impl MachineBus {
                             ))
                         }),
                     RamAccessOperation::Write { value, .. } => devices[binding.device_index]
-                        .write(access, value & width.mask())
+                        .write_from_cpu(vcpu, access, value & width.mask())
                         .map(|()| 0)
                         .map_err(|error| {
                             crate::page_walk::MmioDispatchError::Backend(format!(
@@ -1102,6 +1146,7 @@ impl MachineBus {
             devices,
             mmio,
             mmio_lens,
+            apic_mmio_windows: false,
             ports,
         })
     }

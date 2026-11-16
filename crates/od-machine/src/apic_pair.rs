@@ -1,10 +1,24 @@
-//! Atomic state transitions for the single Local APIC and INTIN4 route.
+//! Atomic state transitions for the Local APICs (one per vCPU, S6-11) and the IOAPIC routes.
+//!
+//! The IOAPIC route and every Local APIC sit behind one lock, because a level request couples
+//! them: delivery sets IRR/TMR in the destination LAPIC and Remote IRR in the route, and the
+//! destination's EOI clears Remote IRR. Operations that name no processor (`level`, `set_line`,
+//! `set_line2`, `set_low`, `set_low2`) act on the LAPIC the route's destination field selects;
+//! the others take the index of the LAPIC they act on.
 use crate::{DeviceError, EventQueue, VirtualClock, VirtualClockHandle, local_apic::State};
 
 pub(crate) const MASK: u32 = 1 << 16;
 pub(crate) const PERIODIC: u32 = 1 << 17;
 pub(crate) const LEVEL: u32 = 1 << 15;
 pub(crate) const REMOTE_IRR: u32 = 1 << 14;
+pub(crate) const POLARITY_LOW: u32 = 1 << 13;
+/// The input the MADT interrupt source override (S4-31f) describes as level, active low: the SCI
+/// (ISA IRQ 9 -> GSI 9, flags 0x000F). The only input besides INTIN4 with level semantics.
+pub(crate) const SCI_PIN: usize = 9;
+/// Entry bits of the SCI form: trigger level (bit 15) and polarity active low (bit 13).
+pub(crate) const SCI_LEVEL_LOW: u32 = LEVEL | POLARITY_LOW;
+/// Inputs with level semantics (Remote IRR, EOI-driven redelivery): INTIN4 and the SCI.
+const LEVEL_PINS: [usize; 2] = [4, SCI_PIN];
 /// Number of IOAPIC inputs (MRE = 23); MADT (S4-31f) declares the same count.
 pub(crate) const IO_APIC_PINS: usize = 24;
 /// IOAPIC ID loaded at reset: the value the firmware MADT declares (S4-31f).
@@ -18,10 +32,20 @@ pub(crate) struct Route {
     /// Input level of INTIN2 (S4-29e); edge only, no Remote IRR.
     pub intin2_high: bool,
     pub remote_irr: bool,
+    /// The SCI source (S4-38L8e) drives its input (GSI 9): `true` while the line is asserted,
+    /// the physical level being low as the MADT declares. Meaningful for the level/active-low
+    /// entry form (`SCI_LEVEL_LOW`) only.
+    pub sci_asserted: bool,
+    /// Remote IRR of the SCI entry: set by a level delivery, cleared by the destination's EOI.
+    pub sci_remote_irr: bool,
     /// IOAPIC ID register bits 27:24 (4 bits); Arbitration ID mirrors it.
     pub id: u8,
-    /// Stored low dwords of entries other than INTIN4 (no input line, never delivers).
+    /// Stored low dwords of entries other than INTIN4. Only INTIN2 (edge) and the SCI entry in
+    /// its level/active-low form deliver; every other entry has no input line.
     pub pins: [u32; IO_APIC_PINS],
+    /// Destination field (high dword bits 31:24, a physical APIC ID) of every entry. Always an
+    /// existing vCPU index; a write naming another one is refused (SMP_CONTRACT.md 6).
+    pub dest: [u8; IO_APIC_PINS],
 }
 impl Default for Route {
     fn default() -> Self {
@@ -31,16 +55,33 @@ impl Default for Route {
             high_line: false,
             intin2_high: false,
             remote_irr: false,
+            sci_asserted: false,
+            sci_remote_irr: false,
             id: IO_APIC_RESET_ID,
             pins: [MASK; IO_APIC_PINS],
+            dest: [0; IO_APIC_PINS],
         }
     }
 }
+/// The Local APIC of one processor: its registers and its own timer with its own event queue.
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
-pub(crate) struct PairState {
+pub(crate) struct CpuApic {
     pub local: State,
-    pub route: Route,
     pub timer: Option<Timer>,
+}
+
+/// All APIC state of the board: one [`CpuApic`] per vCPU (index = APIC ID) and the IOAPIC route.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct PairState {
+    pub cpus: Vec<CpuApic>,
+    pub route: Route,
+}
+
+impl Default for PairState {
+    /// One processor without a timer: the pre-SMP configuration.
+    fn default() -> Self {
+        Self::new(vec![CpuApic::default()])
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -152,19 +193,98 @@ impl Timer {
     }
 }
 impl PairState {
-    pub fn reset_local(&mut self) -> Result<(), DeviceError> {
-        if self.route.remote_irr {
+    pub fn new(cpus: Vec<CpuApic>) -> Self {
+        Self {
+            cpus,
+            route: Route::default(),
+        }
+    }
+
+    /// Low dword of the level-capable entry `pin` (INTIN4 or the SCI).
+    fn level_low(&self, pin: usize) -> u32 {
+        if pin == 4 {
+            self.route.low
+        } else {
+            self.route.pins[pin]
+        }
+    }
+    /// Whether `low` is an entry form with level semantics on `pin`: any level entry on INTIN4,
+    /// only the level/active-low form (as the MADT declares it) on the SCI.
+    fn is_level_form(pin: usize, low: u32) -> bool {
+        if pin == 4 {
+            low & LEVEL != 0
+        } else {
+            low & SCI_LEVEL_LOW == SCI_LEVEL_LOW
+        }
+    }
+    fn is_level(&self, pin: usize) -> bool {
+        Self::is_level_form(pin, self.level_low(pin))
+    }
+    fn level_asserted(&self, pin: usize) -> bool {
+        if pin == 4 {
+            self.route.high_line
+        } else {
+            self.route.sci_asserted
+        }
+    }
+    fn level_remote_irr(&self, pin: usize) -> bool {
+        if pin == 4 {
+            self.route.remote_irr
+        } else {
+            self.route.sci_remote_irr
+        }
+    }
+    fn set_level_remote_irr(&mut self, pin: usize, value: bool) {
+        if pin == 4 {
+            self.route.remote_irr = value;
+        } else {
+            self.route.sci_remote_irr = value;
+        }
+    }
+
+    /// Whether a level route (INTIN4 or the SCI) awaits an EOI from this very LAPIC.
+    pub fn awaits_eoi(&self, cpu: usize) -> bool {
+        LEVEL_PINS
+            .iter()
+            .any(|&pin| self.level_remote_irr(pin) && usize::from(self.route.dest[pin]) == cpu)
+    }
+
+    /// Whether the level entry `pin` reserves `vector` in the LAPIC `cpu`.
+    fn pin_level_reserves(&self, pin: usize, cpu: usize, vector: u8) -> bool {
+        self.is_level(pin)
+            && self.level_low(pin) as u8 == vector
+            && usize::from(self.route.dest[pin]) == cpu
+    }
+
+    /// Whether a level entry other than `pin` reserves `vector` in the LAPIC `cpu`.
+    fn other_level_reserves(&self, pin: usize, cpu: usize, vector: u8) -> bool {
+        LEVEL_PINS
+            .iter()
+            .any(|&other| other != pin && self.pin_level_reserves(other, cpu, vector))
+    }
+
+    /// Whether `vector` is reserved against edges in the LAPIC `cpu` by a level route (S4-26b:
+    /// level reserves its vector, even while masked).
+    pub fn level_vector_reserved(&self, cpu: usize, vector: u8) -> bool {
+        LEVEL_PINS
+            .iter()
+            .any(|&pin| self.pin_level_reserves(pin, cpu, vector))
+    }
+
+    pub fn reset_local(&mut self, cpu: usize) -> Result<(), DeviceError> {
+        if self.awaits_eoi(cpu) {
             return Err(DeviceError::UnsupportedConfiguration);
         }
-        if let Some(timer) = &mut self.timer {
+        let apic = &mut self.cpus[cpu];
+        if let Some(timer) = &mut apic.timer {
             timer.reset()?;
         }
-        self.local = State::default();
+        apic.local = State::default();
         Ok(())
     }
 
     pub fn reset_io(&mut self) -> Result<(), DeviceError> {
-        if self.route.remote_irr {
+        if self.route.remote_irr || self.route.sci_remote_irr {
             return Err(DeviceError::UnsupportedConfiguration);
         }
         self.route = Route::default();
@@ -174,59 +294,103 @@ impl PairState {
     fn bit(vector: u8) -> (usize, u32) {
         (usize::from(vector / 32), 1 << (vector % 32))
     }
-    fn busy(&self, vector: u8) -> bool {
+    fn busy(&self, cpu: usize, vector: u8) -> bool {
         let (i, bit) = Self::bit(vector);
-        (self.local.irr[i] | self.local.isr[i]) & bit != 0
+        let local = &self.cpus[cpu].local;
+        (local.irr[i] | local.isr[i]) & bit != 0
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<(), DeviceError> {
-        if self.local.global_enabled != enabled {
+    pub fn set_enabled(&mut self, cpu: usize, enabled: bool) -> Result<(), DeviceError> {
+        if self.cpus[cpu].local.global_enabled != enabled {
             if !enabled {
-                if self.route.remote_irr {
+                if self.awaits_eoi(cpu) {
                     return Err(DeviceError::UnsupportedConfiguration);
                 }
-                if let Some(timer) = &mut self.timer {
+                let apic = &mut self.cpus[cpu];
+                if let Some(timer) = &mut apic.timer {
                     timer.reset()?;
                 }
-                self.local = State::default();
+                apic.local = State::default();
             }
-            self.local.global_enabled = enabled;
+            self.cpus[cpu].local.global_enabled = enabled;
         }
         Ok(())
     }
-    pub fn edge(&mut self, vector: u8) -> Result<(), DeviceError> {
-        if vector < 16
-            || !self.local.global_enabled
-            || (self.route.low & LEVEL != 0 && self.route.low as u8 == vector)
-        {
+    fn edge_refused(&self, cpu: usize, vector: u8) -> bool {
+        vector < 16
+            || !self.cpus[cpu].local.global_enabled
+            || self.level_vector_reserved(cpu, vector)
+    }
+    fn raise_edge(&mut self, cpu: usize, vector: u8) {
+        let (i, bit) = Self::bit(vector);
+        let local = &mut self.cpus[cpu].local;
+        local.irr[i] |= bit;
+        local.tmr[i] &= !bit;
+    }
+    pub fn edge(&mut self, cpu: usize, vector: u8) -> Result<(), DeviceError> {
+        if self.edge_refused(cpu, vector) {
             return Err(DeviceError::UnsupportedConfiguration);
         }
-        let (i, bit) = Self::bit(vector);
-        self.local.irr[i] |= bit;
-        self.local.tmr[i] &= !bit;
+        self.raise_edge(cpu, vector);
         Ok(())
     }
-    pub fn level(&mut self) -> Result<(), DeviceError> {
-        let vector = self.route.low as u8;
-        if !self.local.global_enabled || self.local.svr & 0x100 == 0 || self.busy(vector) {
+    /// One IPI (S6-12): the same edge request in every LAPIC of `targets`, all or none. A target
+    /// that would refuse the request refuses the whole IPI before any LAPIC changes.
+    pub fn edge_all(&mut self, targets: &[usize], vector: u8) -> Result<(), DeviceError> {
+        if targets.iter().any(|&cpu| self.edge_refused(cpu, vector)) {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
+        for &cpu in targets {
+            self.raise_edge(cpu, vector);
+        }
+        Ok(())
+    }
+    /// Level delivery of the entry `pin`: IRR and TMR in the destination LAPIC, Remote IRR in the
+    /// route. Refused (nothing changes) while the LAPIC is disabled, SVR software-disabled or the
+    /// vector is already in IRR/ISR.
+    fn level_pin(&mut self, pin: usize) -> Result<(), DeviceError> {
+        let vector = self.level_low(pin) as u8;
+        let cpu = usize::from(self.route.dest[pin]);
+        let local = &self.cpus[cpu].local;
+        if !local.global_enabled || local.svr & 0x100 == 0 || self.busy(cpu, vector) {
             return Err(DeviceError::UnsupportedConfiguration);
         }
         let (i, bit) = Self::bit(vector);
-        self.local.irr[i] |= bit;
-        self.local.tmr[i] |= bit;
-        self.route.remote_irr = true;
+        let local = &mut self.cpus[cpu].local;
+        local.irr[i] |= bit;
+        local.tmr[i] |= bit;
+        self.set_level_remote_irr(pin, true);
         Ok(())
     }
     pub fn set_line(&mut self, high: bool) -> Result<(), DeviceError> {
-        if high && self.route.low & MASK == 0 {
-            if self.route.low & LEVEL != 0 {
-                if !self.route.remote_irr {
-                    self.level()?;
+        self.set_level_line(4, high)
+    }
+    /// The SCI line (S4-38L8e, GSI 9): `asserted` is the source's request, the physical level
+    /// being low (MADT flags 0x000F). With the entry in the level/active-low form an unmasked
+    /// entry takes a level request (Remote IRR until the destination's EOI, redelivered by the
+    /// EOI while the line stays asserted); a masked entry only records the line. An unmasked
+    /// entry of any other form is refused before any change.
+    pub fn set_sci_line(&mut self, asserted: bool) -> Result<(), DeviceError> {
+        if asserted && self.route.pins[SCI_PIN] & MASK == 0 && !self.is_level(SCI_PIN) {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
+        self.set_level_line(SCI_PIN, asserted)
+    }
+    fn set_level_line(&mut self, pin: usize, high: bool) -> Result<(), DeviceError> {
+        let low = self.level_low(pin);
+        if high && low & MASK == 0 {
+            if Self::is_level_form(pin, low) {
+                if !self.level_remote_irr(pin) {
+                    self.level_pin(pin)?;
                 }
-            } else if !self.route.high_line {
-                self.edge(self.route.low as u8)?;
+            } else if !self.level_asserted(pin) {
+                self.edge(usize::from(self.route.dest[pin]), low as u8)?;
             }
         }
-        self.route.high_line = high;
+        if pin == 4 {
+            self.route.high_line = high;
+        } else {
+            self.route.sci_asserted = high;
+        }
         Ok(())
     }
     /// INTIN2 (S4-29e): rising level with an unmasked entry requests the entry-2 vector as an
@@ -235,17 +399,18 @@ impl PairState {
     pub fn set_line2(&mut self, high: bool) -> Result<(), DeviceError> {
         let low = self.route.pins[2];
         if high && !self.route.intin2_high && low & MASK == 0 {
-            self.edge(low as u8)?;
+            self.edge(usize::from(self.route.dest[2]), low as u8)?;
         }
         self.route.intin2_high = high;
         Ok(())
     }
     /// Entry-2 low dword. An unmasked entry must not share its vector with a level INTIN4
-    /// route (S4-26b: level reserves its vector against edges, even while masked).
+    /// route in the same LAPIC (S4-26b: level reserves its vector against edges, even while
+    /// masked).
     pub fn set_low2(&mut self, value: u32) -> Result<(), DeviceError> {
         if value & MASK == 0
             && (value & LEVEL != 0
-                || (self.route.low & LEVEL != 0 && self.route.low as u8 == value as u8))
+                || self.level_vector_reserved(usize::from(self.route.dest[2]), value as u8))
         {
             return Err(DeviceError::UnsupportedConfiguration);
         }
@@ -253,65 +418,134 @@ impl PairState {
         Ok(())
     }
     pub fn set_low(&mut self, value: u32) -> Result<(), DeviceError> {
-        if value & LEVEL != 0
-            && self.route.pins[2] & MASK == 0
-            && self.route.pins[2] as u8 == value as u8
+        self.set_level_low(4, value)
+    }
+    /// Low dword of the SCI entry (S4-38L8e). Entry forms other than level/active-low are only
+    /// stored; the level/active-low form follows the INTIN4 level rules.
+    pub fn set_sci_low(&mut self, value: u32) -> Result<(), DeviceError> {
+        self.set_level_low(SCI_PIN, value)
+    }
+    fn set_level_low(&mut self, pin: usize, value: u32) -> Result<(), DeviceError> {
+        let cpu = usize::from(self.route.dest[pin]);
+        let old = self.level_low(pin);
+        let (was, now) = (
+            Self::is_level_form(pin, old),
+            Self::is_level_form(pin, value),
+        );
+        if now
+            && (self.entry2_uses_vector_on(cpu, value as u8)
+                || self.timer_uses_vector(cpu, value as u8)
+                || self.other_level_reserves(pin, cpu, value as u8))
         {
             return Err(DeviceError::UnsupportedConfiguration);
         }
-        if value & LEVEL != 0
-            && self
-                .timer
-                .as_ref()
-                .is_some_and(|t| t.lvt & MASK == 0 && t.lvt as u8 == value as u8)
-        {
-            return Err(DeviceError::UnsupportedConfiguration);
-        }
-        let old = self.route.low;
-        let changed =
-            (old ^ value) & LEVEL != 0 || (old & LEVEL != 0 && (old as u8 != value as u8));
+        let changed = was != now || (was && old as u8 != value as u8);
         if changed
-            && (self.route.high_line
-                || self.route.remote_irr
-                || self.busy(old as u8)
-                || self.busy(value as u8))
+            && (self.level_asserted(pin)
+                || self.level_remote_irr(pin)
+                || self.busy(cpu, old as u8)
+                || self.busy(cpu, value as u8))
         {
             return Err(DeviceError::UnsupportedConfiguration);
         }
         // Validate delivery before publishing any configuration change.
         let needs_delivery =
-            value & (LEVEL | MASK) == LEVEL && self.route.high_line && !self.route.remote_irr;
-        if needs_delivery
-            && (!self.local.global_enabled || self.local.svr & 0x100 == 0 || self.busy(value as u8))
-        {
-            return Err(DeviceError::UnsupportedConfiguration);
-        }
-        self.route.low = value;
+            now && value & MASK == 0 && self.level_asserted(pin) && !self.level_remote_irr(pin);
         if needs_delivery {
-            self.level()?;
+            let local = &self.cpus[cpu].local;
+            if !local.global_enabled || local.svr & 0x100 == 0 || self.busy(cpu, value as u8) {
+                return Err(DeviceError::UnsupportedConfiguration);
+            }
+        }
+        if pin == 4 {
+            self.route.low = value;
+        } else {
+            self.route.pins[pin] = value;
+        }
+        if needs_delivery {
+            self.level_pin(pin)?;
         }
         Ok(())
     }
-    pub fn eoi(&mut self) -> Result<(), DeviceError> {
-        let Some(v) = State::highest(&self.local.isr) else {
+
+    /// Whether the unmasked entry 2 takes `vector` into the LAPIC `cpu`.
+    fn entry2_uses_vector_on(&self, cpu: usize, vector: u8) -> bool {
+        self.route.pins[2] & MASK == 0
+            && self.route.pins[2] as u8 == vector
+            && usize::from(self.route.dest[2]) == cpu
+    }
+
+    /// Whether the unmasked LVT Timer of the LAPIC `cpu` uses `vector`.
+    fn timer_uses_vector(&self, cpu: usize, vector: u8) -> bool {
+        self.cpus[cpu]
+            .timer
+            .as_ref()
+            .is_some_and(|t| t.lvt & MASK == 0 && t.lvt as u8 == vector)
+    }
+
+    /// Destination dword of redirection entry `pin` (APIC ID in bits 31:24, physical mode).
+    /// Refused, before any change, when no vCPU has that APIC ID (SMP_CONTRACT.md 6). Moving
+    /// INTIN4 or INTIN2 follows the rules of a vector change: a level INTIN4 entry keeps its
+    /// destination while its line is high, a request awaits EOI or either LAPIC holds the vector,
+    /// and no move may make a vector collide with an LVT Timer or entry 2 of the new LAPIC.
+    pub fn set_dest(&mut self, pin: usize, apic_id: u8) -> Result<(), DeviceError> {
+        let new = usize::from(apic_id);
+        if new >= self.cpus.len() {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
+        let old = usize::from(self.route.dest[pin]);
+        if new != old {
+            match pin {
+                4 | SCI_PIN if self.is_level(pin) => {
+                    let vector = self.level_low(pin) as u8;
+                    if self.level_asserted(pin)
+                        || self.level_remote_irr(pin)
+                        || self.busy(old, vector)
+                        || self.busy(new, vector)
+                        || self.timer_uses_vector(new, vector)
+                        || self.entry2_uses_vector_on(new, vector)
+                        || self.other_level_reserves(pin, new, vector)
+                    {
+                        return Err(DeviceError::UnsupportedConfiguration);
+                    }
+                }
+                2 if self.route.pins[2] & MASK == 0
+                    && self.level_vector_reserved(new, self.route.pins[2] as u8) =>
+                {
+                    return Err(DeviceError::UnsupportedConfiguration);
+                }
+                _ => {}
+            }
+        }
+        self.route.dest[pin] = apic_id;
+        Ok(())
+    }
+
+    /// EOI of the LAPIC `cpu`.
+    pub fn eoi(&mut self, cpu: usize) -> Result<(), DeviceError> {
+        let local = &self.cpus[cpu].local;
+        let Some(v) = State::highest(&local.isr) else {
             return Ok(());
         };
         let (i, bit) = Self::bit(v);
-        let matching =
-            self.local.tmr[i] & bit != 0 && self.route.remote_irr && self.route.low as u8 == v;
-        let retry = matching && self.route.high_line && self.route.low & MASK == 0;
-        if retry
-            && (!self.local.global_enabled
-                || self.local.svr & 0x100 == 0
-                || self.local.irr[i] & bit != 0)
+        let matching = LEVEL_PINS.into_iter().find(|&pin| {
+            local.tmr[i] & bit != 0
+                && self.level_remote_irr(pin)
+                && usize::from(self.route.dest[pin]) == cpu
+                && self.level_low(pin) as u8 == v
+        });
+        let retry =
+            matching.filter(|&pin| self.level_asserted(pin) && self.level_low(pin) & MASK == 0);
+        if retry.is_some()
+            && (!local.global_enabled || local.svr & 0x100 == 0 || local.irr[i] & bit != 0)
         {
             return Err(DeviceError::UnsupportedConfiguration);
         }
-        self.local.isr[i] &= !bit;
-        if matching {
-            self.route.remote_irr = false;
-            if retry {
-                self.level()?;
+        self.cpus[cpu].local.isr[i] &= !bit;
+        if let Some(pin) = matching {
+            self.set_level_remote_irr(pin, false);
+            if retry.is_some() {
+                self.level_pin(pin)?;
             }
         }
         Ok(())

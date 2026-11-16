@@ -8,6 +8,7 @@ use od_isa::{CpuState, ExecutionResult, interpret};
 mod diagnostic;
 mod firmware_boot;
 mod linux_direct;
+mod linux_discovery;
 mod linux_gate;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod s5_nvme_stand;
@@ -109,6 +110,7 @@ fn main() -> ExitCode {
         Some("s5-nvme-stand") => return s5_nvme_stand::run(&args[1..]),
         Some("linux-direct") => return linux_direct::run(&args[1..]),
         Some("linux-direct-gate") => return linux_gate::run(&args[1..]),
+        Some("linux-direct-discovery") => return linux_discovery::run(&args[1..]),
         _ => {}
     }
     if args.windows(2).any(|arguments| {

@@ -1696,8 +1696,9 @@ implement timer registers, clock ownership or event dispatch. See the
 
 ## Fixed-edge Local APIC register core (S4-25a)
 
-`LocalApic` is a one-CPU, fixed-profile xAPIC `BusDevice` at MMIO base
-`0xFEE00000`, with APIC ID 0. It supports aligned 32-bit accesses on the
+`LocalApic` is a fixed-profile xAPIC `BusDevice` (the description below is of one LAPIC; since S6-11 it is one of `vcpu_count` LAPICs, one CPU by default) at MMIO base
+`0xFEE00000`, with APIC ID 0 (one LAPIC per vCPU on a board with several vCPUs:
+see [LAPIC на каждый vCPU](#lapic-на-каждый-vcpu-s6-11)). It supports aligned 32-bit accesses on the
 16-byte register stride for ID (`0x020`), TPR (`0x080`), PPR (`0x0A0`), EOI
 (`0x0B0`), SVR (`0x0F0`), ISR (`0x100..0x170`), TMR (`0x180..0x1F0`) and IRR
 (`0x200..0x270`). Fixed-edge requests for vectors 16 through 255 set the
@@ -1938,10 +1939,11 @@ permits the request to enter IRR but blocks eligibility/acknowledge;
 global APIC disable rejects ICR MMIO, and reset/global disable clears both ICR
 halves.
 
-Only the Fixed Self edge combination is supported. Other delivery modes,
-shorthands, level trigger, invalid vector/reserved bits and invalid widths or
-alignment fail without mutation through the local `DeviceError` contract,
-not guest exception delivery. No IPI bus, external destination, ESR, CPU
+This paragraph is the S4-25c state; since S6-12a the ICR accepts the wider set
+of [Доставка IPI (S6-12a)](#доставка-ipi-s6-12a), of which Fixed Self with
+`(Level, Trigger) = (1,0)` is one row. Everything else, and invalid widths or
+alignment, fails without mutation through the local `DeviceError` contract,
+not guest exception delivery. No ESR, CPU
 interrupt acceptance, handler delivery or HLT wakeup is modeled. Behavior is
 based on Intel [SDM release 093, Volume 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190),
 §§13.6.1–13.6.2.3, Table 13-3 and §§13.8.3–13.8.5. See the [S4-25c report](../reports/STAGE_4_S4-25C_2026-11-07.md)
@@ -2204,24 +2206,41 @@ See the [S4-26b report](../reports/STAGE_4_S4-26B_2026-11-07.md) and
   mode (бит 11 = 0), active-high (бит 13 = 0), нулевых битах 31:17; исключение —
   входы без линии (все, кроме INTIN4): под маской разрешён бит 13 = 1 (active-low;
   MADT объявляет SCI на GSI 9 как level/active-low, flags `0x000F`), запись без маски
-  с бит 13 = 1 — `UnsupportedConfiguration` без изменений; INTIN4 остаётся только
+  с бит 13 = 1 — `UnsupportedConfiguration` без изменений, кроме одной формы (S4-38L8e):
+  pin 9 с бит 15 = 1 (level) и бит 13 = 1 (active-low) принимается и без маски (вектор
+  `0x10..=0xFE`, Fixed, physical), это ровно то, что описывает ISO MADT (IRQ 9 → GSI 9,
+  flags `0x000F`); INTIN4 остаётся только
   active-high даже под маской; биты 12 и 14
   (read-only) отбрасываются. Vector: для unmasked записи `0x10..=0xFE`; для masked
   записи допустим любой байт (reset-состояние уже masked с vector 0, а Linux
   маскирует входы с vector 0). Расширения относительно S4-26a: любой vector под маской и active-low под маской на входах без линии (SCI GSI 9):
   прежние отказы (vector 0/15/0xFF без маски) сохранены. High dword: принимается
   только 0 (physical destination 0, то есть Local APIC ID 0; reserved 23:0 = 0);
-  любое другое значение — `UnsupportedConfiguration` без изменений.
+  любое другое значение — `UnsupportedConfiguration` без изменений. (С S6-11 принимается
+  APIC ID любого существующего vCPU, при одном vCPU — по-прежнему только 0; см.
+  [LAPIC на каждый vCPU](#lapic-на-каждый-vcpu-s6-11).)
 
 **Недопустимые записи** (vector < 16 при unmasked, `0xFF` при unmasked, любой
 delivery mode кроме Fixed — lowest priority, SMI, NMI, INIT, ExtINT и зарезервированные
-`011`/`110`, polarity (кроме masked на входах без линии), reserved-биты, ненулевой high dword) всегда
+`011`/`110`, polarity (кроме masked на входах без линии и формы level/active-low pin 9, S4-38L8e), reserved-биты, ненулевой high dword) всегда
 `UnsupportedConfiguration` и не меняют ни один вход, ID, Remote IRR, IRR/ISR/TMR.
 Тесты сравнивают полный снимок `PairState` до и после.
 
-**Ограничения S4-26c.** (а) SCI GSI 9 (level/active-low) принимается только
-маскированным; разблокировка такого входа — отказ, потому что active-low не
-моделируется: риск для S4-29/S4-38 (включение SCI). (б) EOI-регистра IOAPIC по
+**S4-38L8e: SCI на pin 9 (level, active-low).** Запись `0xa020`-формы (бит 15 и бит 13 = 1, без маски)
+в low dword pin 9 принимается (раньше отказ, на нём остановился прогон L8d). Модель: `sci_asserted`
+(физический уровень низкий, источник вызывает `IoApicHandle::set_sci_line(asserted)`) и
+`sci_remote_irr`; семантика та же, что у уровневого INTIN4: доставка при снятой маске и поднятой линии
+ставит IRR/TMR и Remote IRR, EOI адресата снимает Remote IRR и, пока линия поднята, а запись не
+маскирована, доставляет повторно; маска блокирует доставку, повторная запись или поднятие линии при
+Remote IRR второй запрос не ставят; вектор уровневого pin 9 резервируется против фронтов и уровневого
+INTIN4 того же LAPIC; Remote IRR вето на сброс IOAPIC и отключение LAPIC. Pin 9 в других неотказных
+формах (например, level/active-high) хранится без линии, `set_sci_line(true)` при такой записи без маски —
+`UnsupportedConfiguration` без изменений. Источника SCI в плате пока нет (его линию никто не поднимает).
+Резерв вектора уровневой формы pin 9 действует и под маской: маскированная SCI-форма с вектором V отвергается, если V уже занят (разблокированный entry 2, уровневый INTIN4, LVT Timer того же LAPIC), и наоборот: пока pin 9 в SCI-форме держит V, уровневый INTIN4, запись entry 2 и LVT Timer с V отвергаются, а фронт INTIN4 с V не доставляется (`edge` отказывает). Принятые пути не затронуты: UART probe пишет только INTIN4 = 0x51, pin 9 остаётся MASK; окна IOAPIC под stage4a закрыты. Для среза источника SCI: если линия поднята до настройки ОС (`sci_asserted`), переход записи pin 9 в SCI-форму или смена её вектора отвергается (`UnsupportedConfiguration`, как у INTIN4): ОС должна настроить запись до подъёма линии, либо источник поднимает её позже. Другие входы: active-low без маски по-прежнему отказ. Профиль stage4a окна IOAPIC не открывает (прежняя
+типизированная ошибка шины).
+
+**Ограничения S4-26c.** (а) [заменено S4-38L8e для pin 9: форма level/active-low без маски принимается;
+прочие формы active-low без маски отвергаются.] (б) EOI-регистра IOAPIC по
 смещению `0x40` нет (тот же `UnknownOffset` по общим
 правилам окна), регистр `0x03` не моделируется (`UnknownOffset`); Version `0x20`
 выбрана как у ICH/QEMU-style IOAPIC, не 82093AA. (в) Polarity в «Сделать» S4-26
@@ -3797,3 +3816,41 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 **Отклонения и ограничения.** (1) Строка «счётчик» flat (dword в RAM) на paged заменена числом возвратов handler (`Iretq` в трассе): у paged-handler нет счётчика, а менять образ S4-27h нельзя; на flat счётчик проверен отдельно и равен числу входов. (2) Вход на границе у paged — только вход (первая инструкция handler исполняется следующим шагом), поэтому сравнение идёт с flat в `with_entry_only_delivery`; режим flat по умолчанию (первая инструкция handler в том же кванте) на paged не имеет аналога. (3) Глобальное отключение APIC сбрасывает его состояние, включая SVR: flat-guest сам повторяет запись SVR, у paged-guest кода APIC нет, поэтому owner повторяет запись загрузчика (`enable_stage4_interrupt_pump_paged_apic`). (4) Инъекции `SkipShadowCheck` и `HltAsOrdinary` не имеют paged-аналога (вход S4-27h сам проверяет shadow; HLT идёт только через `step_paged_hlt`); `NoTimerDispatch` не наблюдается (у paged APIC нет таймера). (5) Хост S4-27i5 и частичный REP — только flat. (6) Отказы входа и paged fetch терминальны или `Rejected` (модель; аппаратный исход — последовательный #PF/#NP, вложенная доставка — S4-33); тип памяти LAPIC не моделируется. (7) Builder на Python для этого образа не создан: образ отличается от образа S4-27i4a одним байтом main, runner-тест собирает его независимо по константам builder S4-27i4a. (8) Порядок записи при исчерпании `INTERRUPT_PUMP_TRACE_LIMIT` внутри одного шага чуть изменён (retired прибавляется до записи событий); в тестах недостижимо. (9) Ошибка `advance_time_ns` в Running: paged даёт `TimerAdvance`, flat — `Control` (разные варианты ошибки при одинаковой ситуации).
 
 **Не входит.** Вложенные события (S4-33), `run_boot` и плата (S4-37a), paged-таймер, JIT внутри pump (`not_supported`, S4-33), несколько векторов, CLI на paged, CPL3 и IST != 0, общий paged-интерпретатор (S4-38). Статус S4-27 и S4-27i в плане не менялся. Отчёт: [S4-27i4b](../reports/STAGE_4_S4-27I4B_2026-11-09.md).
+
+## LAPIC на каждый vCPU (S6-11)
+
+Реализация: `crates/od-machine/src/apic_pair.rs` (`CpuApic`, `PairState`, `Route`), `local_apic.rs` (`LocalApic`, `LocalApicHandle`), `io_apic.rs`, `bus.rs` (`BusDevice::read_from_cpu`/`write_from_cpu`, `MachineBus::access_tracked`), `paged_memory_adapter.rs` (`AdapterBus::Machine`), `vcpu.rs` (`MAX_VCPUS`, `vcpu_set`), `firmware_board.rs` (`FirmwareBoardConfig::vcpu_count`). Источник требований — [SMP_CONTRACT.md](SMP_CONTRACT.md) §2 и §6.
+
+**Число vCPU.** `FirmwareBoardConfig::vcpu_count`, по умолчанию 1, допустимо `1..=4` (`MAX_VCPUS`); иначе `FirmwareBoardError::Config("vcpu_count must be in 1..=MAX_VCPUS")`. Плата держит `vcpus: Vec<Vcpu>` длиной `vcpu_count`: процессор 0 получает состояние входа, остальные — `LongModeState::default()`; исполняется только процессор 0 (запуск AP — INIT/SIPI, S6-13). Блок передачи управления, ACPI blob и CPUID по-прежнему описывают один процессор: их `N` не зависит от `vcpu_count` (S6-15/S7-02). `LocalApic::with_cpus(n)` и `with_shared_timers(clock, hz, n)` создают n LAPIC; `n` вне `1..=4` — `UnsupportedConfiguration`. Прежние конструкторы создают один LAPIC.
+
+**Состояние.** `PairState { cpus: Vec<CpuApic>, route: Route }` под одним `Mutex`, который уже был у пары LAPIC+IOAPIC (блокировок не добавлено). `CpuApic { local: State, timer: Option<Timer> }` — LAPIC одного процессора: свои регистры, свой таймер со своей `EventQueue` (на общих часах платы). `Route` — состояние IOAPIC. Одна блокировка нужна потому, что level-запрос связывает их: доставка ставит IRR/TMR в LAPIC адресата и Remote IRR в `Route`, EOI адресата снимает Remote IRR. Индекс в `cpus` равен APIC ID и индексу `Vcpu`.
+
+**Окно `0xFEE0_0000`.** Доступ идёт в LAPIC того vCPU, который его выполняет. Индекс передаётся явно: `BusDevice::read_from_cpu(cpu, access)`/`write_from_cpu(cpu, access, value)` (по умолчанию вызывают `read`/`write`; различает процессоры только `LocalApic`), `MachineBus::access_tracked(vcpu, …)`, а в адаптере памяти его несёт `AdapterBus::Machine(bus, vcpu)`. Глобальной переменной «текущий процессор» нет. `BusDevice::read`/`write` и `AdapterBus::from(&mut MachineBus)` — доступ процессора 0 (`BOOT_VCPU_INDEX`); так работают все прежние вызовы. Индекс vCPU, которого нет на плате, — `UnsupportedConfiguration` без изменений состояния. Путь CPL0-цикла (`SetStepMmio`) по-прежнему обслуживает только ECAM; диагностический `IdentityMemoryAdapter`/`DiagnosticVcpuSession` и `read_physical`/`write_physical` — процессор 0.
+
+**Регистры LAPIC.** ID (`0x20`) читается как `index << 24` (запись — `ReadOnly`). Остальные регистры, таймер (LVT Timer, начальный/текущий счёт, делитель), IRR/ISR/TMR, SVR, TPR, LVT, ESR хранятся и меняются по процессорам независимо. `LocalApicHandle` адресует LAPIC одного vCPU (`LocalApic::handle()` — процессор 0, `handle_for(i)` и `LocalApicHandle::for_cpu(i)` — процессор `i`): `dispatch_timer`, `request_fixed_edge`, `acknowledge*`, `reset`, `set_global_enabled`, `step_apic_base_msr`, `step_local_apic_cr8` действуют только на него. `reset_checked`/`reset_pair` сбрасывают LAPIC своего процессора и маршруты IOAPIC; LAPIC остальных не трогают. Отказ сброса/выключения при ожидающем EOI level-запросе относится только к LAPIC-адресату маршрута.
+
+**IOAPIC.** Окно `0xFEC0_0000` одно на плату. Старший dword любой записи перенаправления: биты 31:24 — physical APIC ID, остальные зарезервированы (≠ 0 — `UnsupportedConfiguration`). APIC ID, которого нет среди vCPU, — `UnsupportedConfiguration` до любого изменения, для любого входа, в том числе без линии и под маской. Значение читается обратно. INTIN4 (edge/level) и INTIN2 (edge) доставляют запрос в LAPIC с APIC ID своей записи (после reset — 0). Остальные правила — прежние: Fixed, physical (бит 11 = 0), active-high, edge/level, Remote IRR, EOI; lowest priority, logical, NMI и прочие режимы по-прежнему отклоняются при записи low dword. Резервирование вектора level-входа против edge и против LVT Timer действует в том LAPIC, куда адресован вход (одинаковый вектор в разных LAPIC допустим). Смена APIC ID у level-входа отказывается, пока линия высока, ожидается EOI, вектор занят (IRR/ISR) в старом или новом LAPIC, либо вектор совпадёт с LVT Timer или входом 2 нового LAPIC; смена у edge-входа INTIN4 свободна; смена INTIN2 отказывается, если его вектор окажется зарезервированным level-вектором INTIN4 в новом LAPIC. EOI не от LAPIC-адресата Remote IRR не снимает.
+
+**Не входит.** IPI между процессорами — [S6-12a](#доставка-ipi-s6-12a); INIT/SIPI (S6-13) и NMI (остаток S6-12), logical destination, MSI, x2APIC, расширение MADT/CPUID/handoff до `N` (S6-15/S7-02, SMP_CONTRACT §2), исполнение AP, потоки и блокировки сверх прежнего `Mutex`.
+
+## Доставка IPI (S6-12a)
+Реализация: `local_apic.rs` (`decode_icr`, запись `ICR_LOW`), `apic_pair.rs` (`PairState::edge_all`). Источник — матрица [SMP_CONTRACT.md](SMP_CONTRACT.md) §5. Срез S6-12a: NMI из S6-12 не сделан (см. ниже).
+
+**Доставляется.** Запись aligned Dword в `ICR_LOW` (`0x300`) vCPU-отправителя ставит запрос Fixed edge в IRR адресатов под тем же замком, что остальное состояние пары; запись в `ICR_HIGH` по-прежнему только хранит байт адресата. Строки:
+
+| Delivery | Shorthand | Destination mode | Вектор | `(Level, Trigger)` | Адресаты |
+|---|---|---|---|---|---|
+| Fixed | нет | physical | `0x10–0xFF` | `(0,0)` | vCPU с APIC ID = `ICR_HIGH[31:24]` отправителя |
+| Fixed | Self | игнорируется | `0x10–0xFF` | `(0,0)` или `(1,0)` | отправитель |
+| Fixed | All including self | игнорируется | `0x10–0xFF` | `(0,0)` | все vCPU |
+| Fixed | All-but-self | игнорируется | `0x10–0xFF` | `(0,0)` | все, кроме отправителя (при одном vCPU — никто, запись принимается) |
+
+С shorthand байт адресата и Destination Mode игнорируются. Запрос — тот же edge, что у `request_fixed_edge` и IOAPIC: тот же IRR, те же правила резервирования вектора level-входа в LAPIC адресата; одинаковые векторы сливаются в IRR. Адресат выполняет запрос на своей границе исполнения (запуск AP — S6-13), отправитель синхронного исполнения не ждёт.
+
+**Ошибка устройства (`UnsupportedConfiguration`) до любого изменения состояния.** Всё, что не строка таблицы: зарезервированные биты (13, 17:16, 31:20; бит 12 игнорируется), Delivery mode кроме Fixed (Lowest Priority, SMI, зарезервированные 011 и 111), вектор `< 0x10`, logical destination без shorthand, APIC ID, которого нет среди vCPU (включая broadcast `0xFF`, которого в матрице нет), неуказанные пары `(Level, Trigger)` для строки, широкая запись больше 32 бит. Если запрос отказывает любой адресат (LAPIC глобально выключен или вектор зарезервирован level-входом IOAPIC), отказывает вся IPI: ни один LAPIC не меняется (`edge_all` сначала проверяет всех). Строки NMI, INIT и SIPI матрицы SMP_CONTRACT §5 в этом срезе **не реализованы** и тоже дают эту ошибку, а не молчаливый пропуск; INIT/SIPI — S6-13.
+
+**Delivery Status** (бит 12) — read-only: при записи игнорируется, читается Idle, потому что доставка в IRR завершена до возврата из записи. Idle означает «отправка закончена», а не «процессор принял прерывание». Хранимое значение `ICR_LOW` — записанное без бита 12; отказанная запись его не меняет.
+
+**Изменение ожиданий S4-25c.** Self с `(Level, Trigger) = (0,0)` раньше отклонялся, теперь принимается: так требует матрица SMP_CONTRACT §5 (кодировка Linux `__prepare_ICR`). `(1,0)` принимается как прежде. Один vCPU: все прочие ожидания self-IPI прежние.
+
+**NMI — не реализован (blocked).** Доставка через вектор 2, блокировка до `IRET` и один запомненный NMI требуют правки `crates/od-isa/src/state.rs`; линия S4-38 там активна, решение владельца D5 не получено ([STAGE_6.md](../plans/STAGE_6.md), S6-12).

@@ -1,16 +1,17 @@
-use crate::apic_pair::{LEVEL, MASK, PairState, REMOTE_IRR};
+use crate::apic_pair::{LEVEL, MASK, POLARITY_LOW, PairState, REMOTE_IRR, SCI_LEVEL_LOW, SCI_PIN};
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace, LocalApicHandle};
 use std::sync::{Arc, Mutex};
 
 pub const IO_APIC_MMIO_BASE: u64 = 0xfec0_0000;
 pub const IO_APIC_MMIO_SIZE: u64 = 0x1000;
 const READ_ONLY_STATUS: u32 = (1 << 12) | REMOTE_IRR;
-const POLARITY_LOW: u32 = 1 << 13;
 /// Version 0x20 (as on ICH/QEMU-style IOAPICs), MRE (bits 23:16) = 23 (24 inputs), as in the
 /// MADT. The EOI register at offset 0x40 is not modeled, nor is register 0x03 (UnknownOffset).
 const IO_APIC_VERSION: u32 = 0x0017_0020;
 
-/// IOAPIC register window; INTIN4 (edge/level) and INTIN2 (edge only) route to APIC ID 0.
+/// IOAPIC register window; INTIN4 (edge/level), INTIN2 (edge only) and the SCI on INTIN9 (level,
+/// active low, S4-38L8e) route to the vCPU whose
+/// APIC ID the entry's destination field holds (physical mode; APIC ID 0 at reset).
 pub struct IoApic(Arc<Mutex<PairState>>);
 #[derive(Clone)]
 pub struct IoApicHandle(Arc<Mutex<PairState>>);
@@ -34,6 +35,23 @@ impl IoApicHandle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_line(high)
+    }
+    /// The SCI line on INTIN9 (GSI 9, S4-38L8e): `asserted` is the source's request, the physical
+    /// level being low (MADT flags 0x000F). Level semantics: see `PairState::set_sci_line`.
+    /// Caller serializes complete device operations.
+    pub fn set_sci_line(&self, asserted: bool) -> Result<(), DeviceError> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_sci_line(asserted)
+    }
+    /// S4-38L8f: the route of INTIN2 as a question that changes nothing: `Some((cpu, vector))`
+    /// when the entry is unmasked (an edge would request `vector` on the Local APIC of vCPU
+    /// `cpu`), `None` when it is masked (an edge is lost).
+    pub(crate) fn intin2_route(&self) -> Option<(usize, u8)> {
+        let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let low = state.route.pins[2];
+        (low & MASK == 0).then(|| (usize::from(state.route.dest[2]), low as u8))
     }
     /// INTIN2 (GSI 2), edge only (S4-29e). Caller serializes complete device operations.
     pub fn set_intin2(&self, high: bool) -> Result<(), DeviceError> {
@@ -87,13 +105,16 @@ fn register(selector: u8) -> Option<Register> {
 
 /// Fixed, physical entry: mask, level bit, vector. Masked entries may hold any vector (reset
 /// and Linux `clear_IO_APIC` leave vector 0); unmasked ones need 0x10..=0xFE. INTIN4 is
-/// active-high only; entries without a line (all others) may additionally hold the active-low
-/// polarity bit while masked (the MADT declares the SCI on GSI 9 as level/active-low), and
-/// unmasking such an entry is refused because nothing could be delivered.
+/// active-high only. Active-low polarity (bit 13) is accepted on entries other than INTIN4
+/// while masked (the MADT declares the SCI on GSI 9 as level/active-low), and unmasked only on
+/// the SCI entry together with the level trigger (bit 15): exactly the entry form the MADT
+/// interrupt source override describes (S4-38L8e). Every other unmasked active-low entry is
+/// refused.
 fn valid_low(pin: usize, value: u64) -> bool {
     let masked = value & u64::from(MASK) != 0;
     let mut allowed = u64::from(MASK | LEVEL | READ_ONLY_STATUS) | 0xff;
-    if pin != 4 && masked {
+    let sci_form = pin == SCI_PIN && value & u64::from(SCI_LEVEL_LOW) == u64::from(SCI_LEVEL_LOW);
+    if pin != 4 && (masked || sci_form) {
         allowed |= u64::from(POLARITY_LOW);
     }
     let vector = value & 0xff;
@@ -110,10 +131,18 @@ impl BusDevice for IoApic {
         let value = match register(state.route.selector).ok_or(DeviceError::UnknownOffset)? {
             Register::Id | Register::ArbitrationId => u32::from(state.route.id) << 24,
             Register::Version => IO_APIC_VERSION,
-            Register::Redirection { high: true, .. } => 0,
+            Register::Redirection { pin, high: true } => u32::from(state.route.dest[pin]) << 24,
             Register::Redirection { pin: 4, .. } => {
                 state.route.low
                     | if state.route.remote_irr {
+                        REMOTE_IRR
+                    } else {
+                        0
+                    }
+            }
+            Register::Redirection { pin: SCI_PIN, .. } => {
+                state.route.pins[SCI_PIN]
+                    | if state.route.sci_remote_irr {
                         REMOTE_IRR
                     } else {
                         0
@@ -138,13 +167,19 @@ impl BusDevice for IoApic {
                 state.route.id = (value >> 24) as u8;
                 Ok(())
             }
-            Register::Redirection { high: true, .. } if value == 0 => Ok(()),
+            // Physical destination only: bits 31:24 are the APIC ID of an existing vCPU, the
+            // rest is reserved. An ID no vCPU has is refused before any change.
+            Register::Redirection { pin, high: true } if value & !(0xff << 24) == 0 => {
+                state.set_dest(pin, (value >> 24) as u8)
+            }
             Register::Redirection { pin, high: false } if valid_low(pin, value) => {
                 let low = value as u32 & !READ_ONLY_STATUS;
                 if pin == 4 {
                     state.set_low(low)
                 } else if pin == 2 {
                     state.set_low2(low)
+                } else if pin == SCI_PIN {
+                    state.set_sci_low(low)
                 } else {
                     state.route.pins[pin] = low;
                     Ok(())
@@ -167,7 +202,9 @@ mod tests {
     };
 
     fn setup() -> (MachineBus, IoApicHandle, LocalApicHandle) {
-        let local = LocalApic::new();
+        setup_with(LocalApic::new())
+    }
+    fn setup_with(local: LocalApic) -> (MachineBus, IoApicHandle, LocalApicHandle) {
         let apic = local.handle();
         apic.set_global_enabled(true).unwrap();
         let io = IoApic::new(apic.clone());
@@ -479,9 +516,9 @@ mod tests {
         apic.request_fixed_edge(0x61).unwrap();
         route(&mut bus, 0x51);
         io.set_intin4(true).unwrap();
-        let local_before = io.0.lock().unwrap().local.clone();
+        let local_before = io.0.lock().unwrap().cpus[0].local.clone();
         io.reset().unwrap();
-        assert_eq!(io.0.lock().unwrap().local, local_before);
+        assert_eq!(io.0.lock().unwrap().cpus[0].local, local_before);
         assert_eq!(apic.pending(), Some(0x61));
         assert_eq!(apic.acknowledge(), Some(0x61));
 
@@ -852,7 +889,7 @@ mod tests {
     }
 
     #[test]
-    fn unmasking_active_low_is_refused_without_state_change() {
+    fn unmasking_other_active_low_forms_is_refused_without_state_change() {
         let (mut bus, io, apic) = setup();
         window_write(
             &mut bus,
@@ -860,19 +897,20 @@ mod tests {
             u64::from(MASK | LEVEL | POLARITY_LOW),
         )
         .unwrap();
-        // Unmasking while active-low is refused with no state change.
+        // S4-38L8e: the level/active-low form of the SCI is accepted unmasked (the entry the MADT
+        // describes); active-low without the level trigger stays refused with no state change.
         select(&mut bus, 0x10 + 2 * 9);
         let before = snapshot(&io);
-        for value in [
-            u64::from(LEVEL | POLARITY_LOW) | 0x59,
-            u64::from(POLARITY_LOW) | 0x59,
-        ] {
-            assert_eq!(
-                write(&mut bus, IO_APIC_MMIO_BASE, 0x10, value),
-                Err(device_error(DeviceError::UnsupportedConfiguration))
-            );
-            assert_eq!(snapshot(&io), before);
-        }
+        assert_eq!(
+            write(
+                &mut bus,
+                IO_APIC_MMIO_BASE,
+                0x10,
+                u64::from(POLARITY_LOW) | 0x59
+            ),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(snapshot(&io), before);
         // Unmasked active-high on the same pin still works, and clears the polarity bit.
         window_write(&mut bus, 0x10 + 2 * 9, u64::from(LEVEL) | 0x59).unwrap();
         assert_eq!(window(&mut bus, 0x10 + 2 * 9), Ok(u64::from(LEVEL) | 0x59));
@@ -890,6 +928,260 @@ mod tests {
         );
         assert_eq!(snapshot(&io), before);
         assert_eq!(apic.pending(), None);
+    }
+
+    // ---- S4-38L8e: the SCI on INTIN9, level/active low ------------------------------------
+
+    const SCI_ENTRY: u64 = 0x10 + 2 * 9;
+    const SCI_VECTOR: u64 = 0x20;
+    fn sci_entry(extra: u32) -> u64 {
+        u64::from(SCI_LEVEL_LOW | extra) | SCI_VECTOR
+    }
+    fn sci_setup() -> (MachineBus, IoApicHandle, LocalApicHandle) {
+        let (mut bus, io, apic) = setup();
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0x1ff).unwrap();
+        select(&mut bus, SCI_ENTRY);
+        (bus, io, apic)
+    }
+    fn lapic_eoi(bus: &mut MachineBus) {
+        write(bus, LOCAL_APIC_MMIO_BASE, 0xb0, 0).unwrap();
+    }
+
+    #[test]
+    fn sci_level_active_low_entry_is_accepted_through_ioregsel_and_iowin() {
+        let (mut bus, _io, apic) = sci_setup();
+        // The write the Linux boot stops on (r9 = 0xa020 at IOREGSEL 0x22).
+        assert_eq!(write(&mut bus, IO_APIC_MMIO_BASE, 0x10, 0xa020), Ok(()));
+        assert_eq!(read(&mut bus, 0x10), Ok(0xa020));
+        assert_eq!(sci_entry(0), 0xa020);
+        assert_eq!(apic.pending(), None);
+    }
+
+    #[test]
+    fn sci_mask_blocks_delivery_and_unmask_with_the_line_asserted_delivers_once() {
+        let (mut bus, io, apic) = sci_setup();
+        write(&mut bus, IO_APIC_MMIO_BASE, 0x10, sci_entry(MASK)).unwrap();
+        io.set_sci_line(true).unwrap();
+        assert_eq!(apic.pending(), None, "masked: no delivery");
+        assert_eq!(read(&mut bus, 0x10).unwrap() & u64::from(REMOTE_IRR), 0);
+        write(&mut bus, IO_APIC_MMIO_BASE, 0x10, sci_entry(0)).unwrap();
+        assert_eq!(
+            apic.pending(),
+            Some(0x20),
+            "unmasking delivers the held line"
+        );
+        assert_ne!(read(&mut bus, 0x10).unwrap() & u64::from(REMOTE_IRR), 0);
+        assert_ne!(
+            local_read(&mut bus, 0x190) & (1 << 0),
+            0,
+            "TMR bit 0x20 (level)"
+        );
+        // Rewriting the entry, or a second assertion, does not queue a second request.
+        write(&mut bus, IO_APIC_MMIO_BASE, 0x10, sci_entry(0)).unwrap();
+        io.set_sci_line(true).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x20));
+        assert_eq!(apic.acknowledge(), None);
+        // Masking again before the EOI keeps Remote IRR until the EOI, and the EOI ends it.
+        write(&mut bus, IO_APIC_MMIO_BASE, 0x10, sci_entry(MASK)).unwrap();
+        lapic_eoi(&mut bus);
+        assert_eq!(read(&mut bus, 0x10).unwrap() & u64::from(REMOTE_IRR), 0);
+        assert_eq!(apic.pending(), None);
+    }
+
+    #[test]
+    fn sci_level_redelivers_on_eoi_while_asserted_and_stops_when_released() {
+        let (mut bus, io, apic) = sci_setup();
+        write(&mut bus, IO_APIC_MMIO_BASE, 0x10, sci_entry(0)).unwrap();
+        io.set_sci_line(true).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x20));
+        for _ in 0..2 {
+            lapic_eoi(&mut bus);
+            assert_eq!(
+                apic.pending(),
+                Some(0x20),
+                "line still asserted: redelivered"
+            );
+            assert_ne!(read(&mut bus, 0x10).unwrap() & u64::from(REMOTE_IRR), 0);
+            assert_eq!(apic.acknowledge(), Some(0x20));
+        }
+        io.set_sci_line(false).unwrap();
+        lapic_eoi(&mut bus);
+        assert_eq!(apic.pending(), None, "line released: no redelivery");
+        assert_eq!(read(&mut bus, 0x10).unwrap() & u64::from(REMOTE_IRR), 0);
+        // A new assertion after the release is a new request.
+        io.set_sci_line(true).unwrap();
+        assert_eq!(apic.pending(), Some(0x20));
+    }
+
+    #[test]
+    fn sci_does_not_disturb_intin4_and_collisions_and_resets_are_refused() {
+        let (mut bus, io, apic) = sci_setup();
+        write(&mut bus, IO_APIC_MMIO_BASE, 0x10, sci_entry(0)).unwrap();
+        // A level INTIN4 entry with the SCI vector collides.
+        select(&mut bus, 0x18);
+        let before = snapshot(&io);
+        assert_eq!(
+            write(
+                &mut bus,
+                IO_APIC_MMIO_BASE,
+                0x10,
+                u64::from(LEVEL) | SCI_VECTOR
+            ),
+            refused()
+        );
+        assert_eq!(snapshot(&io), before);
+        select(&mut bus, ENTRY2);
+        let before = snapshot(&io);
+        // The SCI vector is reserved against edges (INTIN2 is an edge entry).
+        assert_eq!(
+            write(&mut bus, IO_APIC_MMIO_BASE, 0x10, SCI_VECTOR),
+            refused()
+        );
+        assert_eq!(snapshot(&io), before);
+        // INTIN4 with another vector works while the SCI waits for its EOI.
+        io.set_sci_line(true).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x20));
+        window_write(&mut bus, 0x18, u64::from(LEVEL) | 0x51).unwrap();
+        io.set_intin4(true).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x51));
+        // Remote IRR of the SCI vetoes the IOAPIC reset.
+        assert_eq!(io.reset(), Err(DeviceError::UnsupportedConfiguration));
+        io.set_intin4(false).unwrap();
+        io.set_sci_line(false).unwrap();
+        lapic_eoi(&mut bus); // EOI of 0x51 (highest in ISR)
+        lapic_eoi(&mut bus); // EOI of 0x20
+        assert_eq!(
+            window(&mut bus, SCI_ENTRY).unwrap() & u64::from(REMOTE_IRR),
+            0
+        );
+        assert_eq!(apic.pending(), None);
+        io.reset().unwrap();
+    }
+
+    #[test]
+    fn sci_remote_irr_vetoes_lapic_disable_svr_disable_and_lapic_reset() {
+        let (mut bus, io, apic) = sci_setup();
+        write(&mut bus, IO_APIC_MMIO_BASE, 0x10, sci_entry(0)).unwrap();
+        io.set_sci_line(true).unwrap();
+        assert_ne!(read(&mut bus, 0x10).unwrap() & u64::from(REMOTE_IRR), 0);
+        let before = snapshot(&io);
+        assert_eq!(
+            apic.set_global_enabled(false),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        assert_eq!(apic.reset(), Err(DeviceError::UnsupportedConfiguration));
+        assert_eq!(
+            write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0xff),
+            Err(BusAccessError::Device {
+                device_index: 1,
+                source: DeviceError::UnsupportedConfiguration
+            })
+        );
+        assert_eq!(snapshot(&io), before);
+        // After the EOI (line released first) the same operations succeed.
+        assert_eq!(apic.acknowledge(), Some(0x20));
+        io.set_sci_line(false).unwrap();
+        lapic_eoi(&mut bus);
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0xff).unwrap();
+        apic.set_global_enabled(false).unwrap();
+    }
+
+    #[test]
+    fn a_masked_sci_form_reserves_its_vector_both_ways() {
+        let (mut bus, io, apic) = sci_setup();
+        // A masked SCI form takes the vector: a level or edge INTIN4 and entry 2 with it are refused.
+        write(&mut bus, IO_APIC_MMIO_BASE, 0x10, sci_entry(MASK)).unwrap();
+        for (selector, value) in [(0x18, u64::from(LEVEL) | SCI_VECTOR), (ENTRY2, SCI_VECTOR)] {
+            select(&mut bus, selector);
+            let before = snapshot(&io);
+            assert_eq!(
+                write(&mut bus, IO_APIC_MMIO_BASE, 0x10, value),
+                refused(),
+                "selector {selector:#x} value {value:#x}"
+            );
+            assert_eq!(snapshot(&io), before);
+        }
+        // An INTIN4 edge entry may hold the vector, but its edge is refused at delivery.
+        window_write(&mut bus, 0x18, SCI_VECTOR).unwrap();
+        assert_eq!(
+            io.set_intin4(true),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        assert_eq!(apic.pending(), None);
+        window_write(&mut bus, 0x18, u64::from(MASK)).unwrap();
+        // And the other way: a masked SCI form with a vector entry 2 or a level INTIN4 holds is refused.
+        window_write(&mut bus, SCI_ENTRY, u64::from(MASK)).unwrap();
+        window_write(&mut bus, ENTRY2, 0x52).unwrap();
+        window_write(&mut bus, 0x18, u64::from(LEVEL) | 0x51).unwrap();
+        for vector in [0x52u64, 0x51] {
+            select(&mut bus, SCI_ENTRY);
+            let before = snapshot(&io);
+            assert_eq!(
+                write(
+                    &mut bus,
+                    IO_APIC_MMIO_BASE,
+                    0x10,
+                    u64::from(SCI_LEVEL_LOW | MASK) | vector
+                ),
+                refused(),
+                "vector {vector:#x}"
+            );
+            assert_eq!(snapshot(&io), before);
+        }
+    }
+
+    #[test]
+    fn other_unsupported_entry_fields_stay_refused_with_the_sci_form_accepted() {
+        let (mut bus, io, _apic) = sci_setup();
+        write(&mut bus, IO_APIC_MMIO_BASE, 0x10, sci_entry(0)).unwrap();
+        let before = snapshot(&io);
+        // Pin 9: logical destination mode, NMI/SMI/INIT/ExtINT/lowest-priority delivery modes,
+        // reserved bits, the active-low edge form, a vector below 0x10.
+        let mut invalid = vec![
+            0x800 | sci_entry(0),
+            0x8000_0000 | sci_entry(0),
+            u64::from(POLARITY_LOW) | SCI_VECTOR,
+            u64::from(SCI_LEVEL_LOW) | 0x05,
+            u64::from(SCI_LEVEL_LOW) | 0xff,
+            0x2_0000 | sci_entry(0),
+        ];
+        for mode in [1u64, 2, 4, 5, 7] {
+            invalid.push(mode << 8 | sci_entry(0));
+        }
+        for value in invalid {
+            assert_eq!(
+                write(&mut bus, IO_APIC_MMIO_BASE, 0x10, value),
+                refused(),
+                "value {value:#x}"
+            );
+            assert_eq!(snapshot(&io), before);
+        }
+        // The same entry form on other inputs: unmasked level/active-low is refused (the MADT
+        // overrides GSI 9 only), INTIN4 stays active-high only.
+        for pin in [0u64, 2, 4, 8, 10, 23] {
+            let selector = 0x10 + 2 * pin;
+            select(&mut bus, selector);
+            let before = snapshot(&io);
+            for value in [sci_entry(0), u64::from(POLARITY_LOW) | 0x51] {
+                assert_eq!(
+                    write(&mut bus, IO_APIC_MMIO_BASE, 0x10, value),
+                    refused(),
+                    "pin {pin} value {value:#x}"
+                );
+                assert_eq!(snapshot(&io), before);
+            }
+        }
+        assert_eq!(window_write(&mut bus, 0x18, sci_entry(MASK)), refused());
+        // A destination no vCPU has is refused for the SCI entry as for any other.
+        assert_eq!(window_write(&mut bus, SCI_ENTRY + 1, 1 << 24), refused());
+        // An unmasked SCI entry of another form takes no line: typed refusal, no state change.
+        window_write(&mut bus, SCI_ENTRY, u64::from(LEVEL) | 0x59).unwrap();
+        let before = snapshot(&io);
+        assert_eq!(
+            io.set_sci_line(true),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        assert_eq!(snapshot(&io), before);
     }
 
     // ---- S4-29e: INTIN2 (GSI 2), edge only -----------------------------------------------
@@ -1092,5 +1384,208 @@ mod tests {
         // INTIN2 line state is untouched by INTIN4 transitions and vice versa.
         io.set_intin4(false).unwrap();
         assert!(snapshot(&io).route.intin2_high && !snapshot(&io).route.high_line);
+    }
+
+    // S6-11: the destination field selects the vCPU whose LAPIC receives the request.
+
+    /// Two vCPUs, both software-enabled; vcpu 1's handle is the last element.
+    fn smp_setup() -> (MachineBus, IoApicHandle, LocalApicHandle, LocalApicHandle) {
+        let local = LocalApic::with_cpus(2).unwrap();
+        let cpu1 = local.handle_for(1).unwrap();
+        let (bus, io, cpu0) = setup_with(local);
+        for cpu in [&cpu0, &cpu1] {
+            cpu.0.lock().unwrap().cpus[cpu.cpu_index()].local.svr = 0x1ff;
+        }
+        (bus, io, cpu0, cpu1)
+    }
+    /// High dword of entry `pin`: the APIC ID in bits 31:24.
+    fn set_destination(bus: &mut MachineBus, pin: u64, apic_id: u64) -> Result<(), BusAccessError> {
+        select(bus, 0x11 + 2 * pin);
+        write(bus, IO_APIC_MMIO_BASE, 0x10, apic_id << 24)
+    }
+    fn destination(bus: &mut MachineBus, pin: u64) -> u64 {
+        select(bus, 0x11 + 2 * pin);
+        read(bus, 0x10).unwrap() >> 24
+    }
+    fn route_pin(bus: &mut MachineBus, pin: u64, low: u64) {
+        select(bus, 0x10 + 2 * pin);
+        write(bus, IO_APIC_MMIO_BASE, 0x10, low).unwrap();
+    }
+
+    /// The state is as it was, except for the register selector, which accesses move.
+    fn assert_unchanged(io: &IoApicHandle, mut before: PairState) {
+        let now = snapshot(io);
+        before.route.selector = now.route.selector;
+        assert_eq!(now, before);
+    }
+
+    #[test]
+    fn an_edge_route_to_apic_id_1_raises_the_request_in_vcpu_1_only() {
+        let (mut bus, io, cpu0, cpu1) = smp_setup();
+        // Reset: both destinations read APIC ID 0.
+        assert_eq!((destination(&mut bus, 4), destination(&mut bus, 2)), (0, 0));
+        set_destination(&mut bus, 4, 1).unwrap();
+        route_pin(&mut bus, 4, 0x41);
+        assert_eq!(destination(&mut bus, 4), 1);
+        io.set_intin4(true).unwrap();
+        assert_eq!(cpu1.vector_state(0x41), (true, false));
+        assert_eq!(cpu1.pending(), Some(0x41));
+        assert_eq!(
+            (cpu0.vector_state(0x41), cpu0.pending()),
+            ((false, false), None)
+        );
+        // Back to APIC ID 0: the next edge goes to vcpu 0 and vcpu 1 keeps what it has.
+        io.set_intin4(false).unwrap();
+        set_destination(&mut bus, 4, 0).unwrap();
+        io.set_intin4(true).unwrap();
+        assert_eq!(cpu0.vector_state(0x41), (true, false));
+        assert_eq!(cpu1.vector_state(0x41), (true, false));
+        // Taking the request on vcpu 1 does not take it from vcpu 0.
+        assert_eq!(cpu1.acknowledge(), Some(0x41));
+        assert_eq!(cpu0.vector_state(0x41), (true, false));
+    }
+
+    #[test]
+    fn intin2_follows_its_own_destination_field() {
+        let (mut bus, io, cpu0, cpu1) = smp_setup();
+        set_destination(&mut bus, 2, 1).unwrap();
+        route_pin(&mut bus, 2, 0x92);
+        // INTIN4 still goes to vcpu 0: the destinations are per entry.
+        assert_eq!(destination(&mut bus, 4), 0);
+        io.set_intin2(true).unwrap();
+        assert_eq!(cpu1.vector_state(0x92), (true, false));
+        assert_eq!(cpu0.vector_state(0x92), (false, false));
+    }
+
+    #[test]
+    fn a_level_route_to_apic_id_1_sets_remote_irr_until_that_vcpu_acknowledges_it() {
+        let (mut bus, io, cpu0, cpu1) = smp_setup();
+        set_destination(&mut bus, 4, 1).unwrap();
+        route_pin(&mut bus, 4, u64::from(LEVEL) | 0x51);
+        io.set_intin4(true).unwrap();
+        assert_eq!(cpu1.vector_state(0x51), (true, false));
+        assert_eq!(cpu0.vector_state(0x51), (false, false));
+        assert_ne!(
+            window(&mut bus, 0x18).unwrap() & u64::from(REMOTE_IRR),
+            0,
+            "Remote IRR"
+        );
+        // An EOI from the other LAPIC does not end the request.
+        cpu0.0.lock().unwrap().eoi(0).unwrap();
+        assert!(snapshot(&io).route.remote_irr);
+        assert_eq!(cpu1.acknowledge(), Some(0x51));
+        // Moving the destination while the request is outstanding is refused, and refused
+        // atomically.
+        let before = snapshot(&io);
+        assert_eq!(
+            set_destination(&mut bus, 4, 0),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_unchanged(&io, before);
+        // With the line low again, the EOI of the destination LAPIC ends the request.
+        io.set_intin4(false).unwrap();
+        cpu1.0.lock().unwrap().eoi(1).unwrap();
+        assert!(!snapshot(&io).route.remote_irr);
+        assert_eq!(cpu1.vector_state(0x51), (false, false));
+    }
+
+    #[test]
+    fn a_destination_no_vcpu_has_is_refused_before_any_change() {
+        let (mut bus, io, _cpu0, cpu1) = smp_setup();
+        set_destination(&mut bus, 4, 1).unwrap();
+        route_pin(&mut bus, 4, 0x41);
+        let before = snapshot(&io);
+        for apic_id in [2u64, 3, 0xff] {
+            assert_eq!(
+                set_destination(&mut bus, 4, apic_id),
+                Err(device_error(DeviceError::UnsupportedConfiguration)),
+                "APIC ID {apic_id}"
+            );
+            // Entries without an input line refuse it too: no entry may name a missing vCPU.
+            assert_eq!(
+                set_destination(&mut bus, 9, apic_id),
+                Err(device_error(DeviceError::UnsupportedConfiguration)),
+                "APIC ID {apic_id}"
+            );
+        }
+        assert_unchanged(&io, before);
+        assert_eq!(destination(&mut bus, 4), 1);
+        // The route still delivers to the vcpu it had.
+        io.set_intin4(true).unwrap();
+        assert_eq!(cpu1.vector_state(0x41), (true, false));
+        // Reserved bits of the high dword are refused as before.
+        select(&mut bus, 0x19);
+        assert_eq!(
+            write(&mut bus, IO_APIC_MMIO_BASE, 0x10, (1 << 24) | 1),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+    }
+
+    #[test]
+    fn one_vcpu_accepts_no_destination_but_apic_id_0() {
+        let (mut bus, _io, _apic) = setup();
+        assert!(set_destination(&mut bus, 4, 0).is_ok());
+        assert_eq!(
+            set_destination(&mut bus, 4, 1),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(destination(&mut bus, 4), 0);
+    }
+
+    #[test]
+    fn logical_destination_and_lowest_priority_stay_refused_with_several_vcpus() {
+        let (mut bus, io, _cpu0, _cpu1) = smp_setup();
+        let before = snapshot(&io);
+        // Destination mode (bit 11) logical, delivery mode lowest priority (001), NMI (100).
+        for low in [0x41 | (1 << 11), 0x41 | (1 << 8), 0x41 | (4 << 8)] {
+            select(&mut bus, 0x18);
+            assert_eq!(
+                write(&mut bus, IO_APIC_MMIO_BASE, 0x10, low),
+                Err(device_error(DeviceError::UnsupportedConfiguration)),
+                "{low:#x}"
+            );
+        }
+        assert_unchanged(&io, before);
+    }
+
+    #[test]
+    fn a_level_vector_collides_with_a_timer_only_in_the_lapic_that_receives_it() {
+        let clock = crate::VirtualClockHandle::new(1_000_000_000).unwrap();
+        let local = LocalApic::with_shared_timers(clock, 1_000_000_000, 2).unwrap();
+        let mut timer_owner = local.clone();
+        let (mut bus, _io, cpu0, cpu1) = {
+            let cpu1 = local.handle_for(1).unwrap();
+            let (bus, io, cpu0) = setup_with(local);
+            (bus, io, cpu0, cpu1)
+        };
+        for cpu in [&cpu0, &cpu1] {
+            cpu.0.lock().unwrap().cpus[cpu.cpu_index()].local.svr = 0x1ff;
+        }
+        // vcpu 0's LVT Timer uses 0x51, unmasked.
+        timer_owner
+            .write_from_cpu(
+                0,
+                DeviceAccess {
+                    space: IoSpace::Mmio,
+                    offset: 0x320,
+                    width: AccessWidth::Dword,
+                },
+                0x51,
+            )
+            .unwrap();
+        // A level route to vcpu 0 may not reuse the vector; one to vcpu 1 may.
+        select(&mut bus, 0x18);
+        assert_eq!(
+            write(&mut bus, IO_APIC_MMIO_BASE, 0x10, u64::from(LEVEL) | 0x51),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+        set_destination(&mut bus, 4, 1).unwrap();
+        route_pin(&mut bus, 4, u64::from(LEVEL) | 0x51);
+        // And the route cannot be moved back onto the colliding LAPIC.
+        assert_eq!(
+            set_destination(&mut bus, 4, 0),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(destination(&mut bus, 4), 1);
     }
 }

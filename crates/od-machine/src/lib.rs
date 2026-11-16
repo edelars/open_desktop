@@ -5,20 +5,27 @@ mod acpi_blob;
 mod acpi_pm;
 mod apic_pair;
 mod bus;
+mod clock_owner;
 mod console_output_context;
 mod diagnostic_vcpu;
 mod display_device;
 mod dma_page;
 mod event_queue;
 mod execution_observations;
+mod fetch_cache_report;
+mod fetch_cache_sweep;
 mod fetch_translation_cache;
 mod firmware_board;
 mod identity_memory_adapter;
+mod idle_arbiter;
+#[cfg(test)]
+mod interleaved_harness;
 mod interrupt_pump;
 mod io_apic;
 mod irq_source;
 mod linux_boot;
 mod linux_boot_params;
+mod linux_checkpoints;
 mod linux_direct;
 mod linux_load;
 mod linux_placement;
@@ -62,6 +69,7 @@ mod stage4_uart_irq_probe;
 #[cfg(feature = "experimental-translation-probe-cache")]
 mod translation_probe_cache;
 mod uart16550;
+mod uart_ioapic_irq_source;
 mod uart_pic_irq_source;
 mod uart_rx_events;
 mod vcpu;
@@ -151,13 +159,25 @@ pub use stage4_interrupt_pump_paged_probe::{
     load_stage4_interrupt_pump_paged_probe,
 };
 
+pub use fetch_cache_report::{
+    FETCH_CACHE_PHASE_RULE_C5, FETCH_CACHE_PHASE_RULE_NONE, FetchCacheStats, LinuxFetchCachePhase,
+    LinuxFetchCacheReport, LinuxWalkCounts,
+};
+pub use fetch_cache_sweep::{
+    FetchSweepConfigReport, FetchSweepReport, SweepConfig, SweepEventCounts, SweepInvalidation,
+    SweepLifecycle, SweepReplacement, SweepTag,
+};
 pub use linux_boot::{LinuxBzImageHeader, LinuxHeaderError, parse_linux_bzimage_header};
+pub use linux_checkpoints::{
+    LINUX_CHECKPOINT_COUNT, LinuxCheckpointRecord, LinuxCheckpointTable, LinuxCheckpointTableError,
+    LinuxCheckpointTarget,
+};
 pub use linux_direct::{
     LINUX_STOP_RIP_BYTES, LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectE820,
     LinuxDirectEntryState, LinuxDirectError, LinuxDirectInput, LinuxDirectZone, LinuxStopInputs,
     LinuxStopRecord, SYSCALL_JOURNAL_CAPACITY, SyscallJournal, SyscallJournalEntry,
     load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
-    run_linux_direct_board_set_user_mode,
+    run_linux_direct_board_set_observed, run_linux_direct_board_set_user_mode,
     run_linux_direct_board_set_user_mode_with_execution_observations,
     run_linux_direct_board_set_user_mode_with_post_iret_index,
 };

@@ -5,8 +5,13 @@ use crate::execution_observations::{
     DeliveredPageFaultObservation, FaultingPageFaultContext, FaultingPageWalkContext,
     LinuxExecutionObservationCollector, PendingPostIretObservation, PostIretPageWalkSnapshot,
 };
-use crate::fetch_translation_cache::{FetchCacheStats, FetchTranslationCache};
+use crate::fetch_cache_report::{C5Split, LinuxWalkCounts, WalkCounter};
+use crate::fetch_cache_sweep::FetchCacheSweep;
+use crate::fetch_translation_cache::{
+    FetchCacheInvalidation, FetchCacheStats, FetchCacheTag, FetchTranslationCache, TranslationKey,
+};
 use crate::irq_source::IrqBoundaryHook;
+use crate::linux_checkpoints::{BoundaryView, CheckpointRecorder};
 use crate::page_walk::{
     translate_long64_2m_ram_read_only_with_tables, translate_long64_2m_ram_read_only_with_trace,
 };
@@ -39,6 +44,7 @@ use od_isa::{
     deliver_page_fault_cpl0_set,
 };
 use od_isa::{IretqUserEntry, LongModeState};
+use std::rc::Rc;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PagedMovStepError {
@@ -112,6 +118,7 @@ pub fn step_paged_invlpg(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = cpu_step_invlpg(
         InvlpgLong64V1,
@@ -237,6 +244,7 @@ fn step_paged_state_op(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = match op {
         StateOp::Sti => od_isa::step_paged_sti(
@@ -311,6 +319,7 @@ pub fn with_paged_mov_memory<R>(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let callback_result = callback(&mut memory);
     PagedMovMemoryScope {
@@ -372,6 +381,7 @@ pub fn step_paged_mov(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -432,6 +442,7 @@ pub fn step_paged_mov_2m_ram(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -614,6 +625,40 @@ fn cpuid_leaf_at_rip(
     }
 }
 
+/// The fetch translation of RIP for the checkpoint recorder (S4-38L4i): the physical address and
+/// up to 16 bytes there, each translated like an instruction fetch through the read-only walk
+/// (no accessed/dirty bit), RAM only. Shorter bytes when one does not translate.
+fn observed_fetch_view(
+    rip: u64,
+    bus: &mut MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+) -> (Option<u64>, Vec<u8>) {
+    let (memory, _) = bus.split_for_pio_step();
+    let mut first = None;
+    let mut bytes = Vec::with_capacity(16);
+    for offset in 0..16u64 {
+        let Ok(physical) = crate::page_walk::translate_long64_2m_ram_read_only(
+            memory,
+            paging,
+            rip,
+            GuestLinearAddress::new(rip.wrapping_add(offset)),
+            context,
+            od_isa::memory::AccessKind::Fetch,
+        ) else {
+            break;
+        };
+        if offset == 0 {
+            first = Some(physical.get());
+        }
+        let Ok(byte) = memory.read_u8(physical) else {
+            break;
+        };
+        bytes.push(byte);
+    }
+    (first, bytes)
+}
+
 /// Whether the instruction at RIP is exactly `IRETQ` (`48 CF`). Same read-only walk as
 /// [`cpuid_leaf_at_rip`] (no accessed/dirty bit, RAM only); an untranslatable byte is `false`.
 /// Used for the RF rule of S4-38L5c: `IRETQ` loads RF from its own frame, so the board must not
@@ -646,6 +691,56 @@ fn iretq_at_rip(
         memory.read_u8(physical).ok()
     };
     byte_at(0) == Some(0x48) && byte_at(1) == Some(0xCF)
+}
+
+/// S4-14h: whether the instruction at RIP has the shape of `INVLPG m`: an optional `FS`/`GS`
+/// override (`64`/`65`), an optional REX byte without W (`40`-`47`), `0F 01`, and a ModRM with
+/// `reg = 7` and `mod != 3` (the register forms of `0F 01 /7` are `SWAPGS` and `RDTSCP`). Same
+/// read-only walk as [`iretq_at_rip`] (no accessed/dirty bit, RAM only); an untranslatable byte is
+/// `false`. It only decides whether the cache is flushed after the instruction retires; the
+/// instruction itself is decoded and executed by the set, so a shape the set does not accept
+/// retires nothing and flushes nothing.
+pub(crate) fn invlpg_at_rip(
+    state: &LongModeState,
+    bus: &mut MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+    cache: Option<&FetchTranslationCache>,
+) -> bool {
+    let (memory, _) = bus.split_for_pio_step();
+    let mut byte_at = |offset: u64| -> Option<u8> {
+        let linear = state.rip.wrapping_add(offset);
+        if let Some(byte) = cache
+            .and_then(|cache| cache.lookup(linear, paging, context))
+            .and_then(|frame| memory.read_ram_frame_u8(frame, linear))
+        {
+            return Some(byte);
+        }
+        let physical = crate::page_walk::translate_long64_2m_ram_read_only(
+            memory,
+            paging,
+            state.rip,
+            GuestLinearAddress::new(state.rip.wrapping_add(offset)),
+            context,
+            od_isa::memory::AccessKind::Fetch,
+        )
+        .ok()?;
+        memory.read_u8(physical).ok()
+    };
+    let mut offset = 0u64;
+    let mut first = byte_at(offset);
+    if matches!(first, Some(0x64 | 0x65)) {
+        offset += 1;
+        first = byte_at(offset);
+    }
+    if matches!(first, Some(0x40..=0x47)) {
+        offset += 1;
+        first = byte_at(offset);
+    }
+    if first != Some(0x0F) || byte_at(offset + 1) != Some(0x01) {
+        return false;
+    }
+    byte_at(offset + 2).is_some_and(|modrm| (modrm >> 3) & 7 == 7 && modrm >> 6 != 3)
 }
 
 /// S4-39f: whether the instruction at `rip` is exactly `SYSRETQ` (`48 0F 07`). The same read-only
@@ -724,6 +819,13 @@ pub(crate) struct PagedCpl0SetReport {
     pub(crate) syscall_events: Vec<SyscallEvent>,
     /// Last instruction boundary reached when opt-in execution observations were enabled.
     pub(crate) last_instruction_rip: Option<u64>,
+    /// S4-13b: the tracked page walks of the instruction adapter in this call (measurement only,
+    /// see `fetch_cache_report`). They differ with and without the fetch cache by design.
+    pub(crate) walk_counts: LinuxWalkCounts,
+    /// S4-13b: checkpoint C5 was already recorded when this call started.
+    pub(crate) c5_at_call_start: bool,
+    /// S4-13b: the counters at the boundary where this call recorded checkpoint C5.
+    pub(crate) c5_split: Option<C5Split>,
 }
 
 /// Run the CPL0 profile set through the RAM-only 4 KiB/2 MiB tracked walker,
@@ -788,6 +890,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
 /// [`deliver_pending_irq`]. Without it, or with a source that never has a vector, the loop is
 /// what it was.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
     state: &mut LongModeState,
     bus: &mut MachineBus,
@@ -804,7 +907,51 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
     fetch_cache: bool,
     irq: Option<IrqBoundaryHook<'_>>,
 ) -> PagedCpl0SetReport {
-    run_cpl0_set_paged_2m_ram_with_execution_observations(
+    run_cpl0_set_paged_2m_ram_with_policy(
+        state,
+        bus,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        set,
+        rdtsc,
+        stop,
+        committed_write,
+        cpuid_boundary,
+        fetch_cache.then_some(FetchCacheInvalidation::WriteWatch),
+        irq,
+    )
+}
+
+/// [`run_cpl0_set_paged_2m_ram_with_cpuid_boundary`] with the invalidation policy of the fetch
+/// cache chosen by the caller (S4-14h): `None` is no cache, `Some(WriteWatch)` is the S4-13 cache.
+/// With `Some(GuestOnly)` a write to a page table drops nothing; the loop flushes the cache after
+/// a retired `INVLPG` (peeked before the step like `IRETQ`, read-only), after a retired
+/// `MOV CR3` (as in every policy), when CR0 or CR4 differ after the step, and at every `#PF`
+/// delivered to the guest IDT. A step that retires nothing and delivers no `#PF` (a fault that
+/// stops the run, a rejection, a `#GP` delivery) keeps the cache. The cache still lives in this
+/// call only.
+#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+pub(crate) fn run_cpl0_set_paged_2m_ram_with_policy(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    cpuid_boundary: bool,
+    fetch_cache: Option<FetchCacheInvalidation>,
+    irq: Option<IrqBoundaryHook<'_>>,
+) -> PagedCpl0SetReport {
+    run_cpl0_set_paged_2m_ram_observed(
         state,
         bus,
         cr3,
@@ -820,11 +967,145 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         fetch_cache,
         irq,
         None,
+        None,
     )
 }
 
+/// [`run_cpl0_set_paged_2m_ram_with_policy`] with the opt-in checkpoint recorder of S4-38L4i.
+/// With `checkpoints` each instruction boundary (after the stop, budget and interrupt checks,
+/// before the CPUID boundary and the step) is shown to the recorder, which only observes: it gets
+/// the RIP, the CPL, the CR3 and the IDTR of the boundary and the EAX of a `CPUID` at RIP, and
+/// is told of a retired `MOV CR3` and of a delivered `#PF`. The CPUID peek is shared with the
+/// CPUID boundary (made once per boundary when either is on). The peek reads no accessed/dirty
+/// bit and writes nothing to the guest, but with the fetch cache it calls
+/// `FetchTranslationCache::lookup`, which moves the cache's `recent` entry and its hit/miss
+/// statistics. They are visible only in `PagedCpl0SetReport::fetch_cache_stats` (read by tests
+/// of this module, not by the board), so `LinuxSetRunReport` and the run do not change (the
+/// cache only speeds up translations that give the same answer). With `None` the
+/// loop is the one of [`run_cpl0_set_paged_2m_ram_with_policy`], instruction for instruction.
+///
+/// With `execution_observations` (S5-07, opt-in diagnostics of the stage 5 line) the loop also
+/// feeds the collector with delivered and faulting `#PF` contexts, page walks, fault-time frame
+/// chains and the selected post-`IRETQ` boundary; the collector only observes. Checkpoints and
+/// execution observations are independent: either, both or none may be given.
+///
+/// The fetch cache (if any) is created here and lives in this call only; the loop itself is
+/// [`run_cpl0_set_paged_2m_ram_with_cache`].
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    cpuid_boundary: bool,
+    fetch_cache: Option<FetchCacheInvalidation>,
+    irq: Option<IrqBoundaryHook<'_>>,
+    checkpoints: Option<&mut CheckpointRecorder>,
+    execution_observations: Option<&mut LinuxExecutionObservationCollector>,
+) -> PagedCpl0SetReport {
+    run_cpl0_set_paged_2m_ram_observed_with_sweep(
+        state,
+        bus,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        set,
+        rdtsc,
+        stop,
+        committed_write,
+        cpuid_boundary,
+        fetch_cache,
+        irq,
+        checkpoints,
+        execution_observations,
+        None,
+        FetchCacheTag::Page4K,
+    )
+}
+
+/// [`run_cpl0_set_paged_2m_ram_observed`] with the opt-in shadow caches of S4-13c (diagnostics
+/// only). With `sweep` and a cache (`fetch_cache` is `Some`) the call's cache forwards every event
+/// to the shadows, and the loop tells them of the guest invalidations a `WriteWatch` cache does not
+/// act on: a retired `INVLPG` (peeked through the read-only walk WITHOUT the cache, so the counters
+/// of the cache do not move), a `#PF` delivered to the guest and a change of CR0/CR4. Nothing the
+/// loop reads comes back from the shadows: the run is the one of
+/// [`run_cpl0_set_paged_2m_ram_observed`]. Without a cache `sweep` is ignored. `tag` is what one
+/// entry of the call's cache covers (S4-13d): `Page4K` is the default of every other caller.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    cpuid_boundary: bool,
+    fetch_cache: Option<FetchCacheInvalidation>,
+    irq: Option<IrqBoundaryHook<'_>>,
+    checkpoints: Option<&mut CheckpointRecorder>,
+    execution_observations: Option<&mut LinuxExecutionObservationCollector>,
+    sweep: Option<&Rc<FetchCacheSweep>>,
+    tag: FetchCacheTag,
+) -> PagedCpl0SetReport {
+    // S4-13: the translation cache of the instruction fetch lives in this call only.
+    let cache = fetch_cache.map(|invalidation| {
+        let cache = FetchTranslationCache::with_invalidation(invalidation).with_tag(tag);
+        match sweep {
+            Some(sweep) => cache.with_sweep(Rc::clone(sweep)),
+            None => cache,
+        }
+    });
+    run_cpl0_set_paged_2m_ram_with_cache(
+        state,
+        bus,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        set,
+        rdtsc,
+        stop,
+        committed_write,
+        cpuid_boundary,
+        cache.as_ref(),
+        irq,
+        checkpoints,
+        execution_observations,
+    )
+}
+
+/// The set loop of [`run_cpl0_set_paged_2m_ram_observed`] over a fetch cache owned by the caller
+/// (S4-14i). `None` is no cache. A cache built with [`FetchTranslationCache::with_invalidation`]
+/// and dropped after the call is what `_observed` does. A cache the caller passes again to the next
+/// call of the same machine session (typically one built with [`FetchTranslationCache::persistent`])
+/// keeps its entries, flushed only by the events of its policy, which happen inside the loop
+/// (`MOV CR3`, and for `GuestOnly` also `INVLPG`, CR0/CR4 changes and a delivered `#PF`; for
+/// `WriteWatch` a write to a watched table frame), and by the host events. Every cache handed to
+/// this function is sealed when the call ends and checked when it starts, whatever its
+/// constructor: the check drops every entry (`host_flushes`) when the translation context handed
+/// over (CR0/CR3/CR4/EFER, mode, privilege) differs from the one the seal holds, or when the page
+/// generation of a table frame it watches differs (a host or device write between calls);
+/// `flush_for_host_event` and `reset` are the explicit forms. For a cache used by one call only
+/// the check has nothing to compare. `PagedCpl0SetReport::fetch_cache_stats` of a cache that
+/// serves several calls are cumulative over all of them.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
     state: &mut LongModeState,
     bus: &mut MachineBus,
     cr3: u64,
@@ -837,20 +1118,29 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
     mut stop: impl FnMut() -> bool,
     mut committed_write: impl FnMut(GuestPhysicalRange),
     cpuid_boundary: bool,
-    fetch_cache: bool,
+    cache: Option<&FetchTranslationCache>,
     mut irq: Option<IrqBoundaryHook<'_>>,
+    mut checkpoints: Option<&mut CheckpointRecorder>,
     mut execution_observations: Option<&mut LinuxExecutionObservationCollector>,
 ) -> PagedCpl0SetReport {
     let context = AccessContext {
         origin: od_isa::memory::AccessOrigin::Explicit,
         ..context
     };
-    // S4-13: the translation cache of the instruction fetch lives in this call only. Every
-    // committed RAM write of the loop (guest stores, walker A/D commits, exception frames) passes
-    // through `watch`, which lets the cache drop entries whose tables were written.
-    let cache = fetch_cache.then(FetchTranslationCache::new);
+    // S4-14i: any cache first learns of a changed translation context and of writes made outside
+    // the loop since its last call (one-shot caches have no seal yet, so nothing changes for them).
+    if let Some(cache) = cache {
+        cache.revalidate(continuation_key(state, cr3, efer, context), &|page| {
+            bus.code_page_generation(GuestPhysicalAddress::new(page << 12))
+                .ok()
+        });
+    }
+    // Every committed RAM write of the loop (guest stores, walker A/D commits, exception frames)
+    // passes through `watch`, which lets the cache drop entries whose tables were written.
+    let guest_only =
+        cache.is_some_and(|cache| cache.invalidation() == FetchCacheInvalidation::GuestOnly);
     let mut watch = |range: GuestPhysicalRange| {
-        if let Some(cache) = &cache {
+        if let Some(cache) = cache {
             cache.note_write(range);
         }
         committed_write(range);
@@ -873,9 +1163,18 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
                 cpl3_retired: 0,
                 syscall_events: Vec::new(),
                 last_instruction_rip: None,
+                walk_counts: LinuxWalkCounts::default(),
+                c5_at_call_start: false,
+                c5_split: None,
             };
         }
     };
+    // S4-13b: measurement only; the loop never reads these counters back.
+    let walks = WalkCounter::default();
+    let c5_at_call_start = checkpoints
+        .as_deref()
+        .is_some_and(|recorder| recorder.is_recorded(C5_CHECKPOINT));
+    let mut c5_split: Option<C5Split> = None;
     let mut syscall_events = std::collections::VecDeque::new();
     let mut instructions_executed = 0u64;
     let mut cpl3_retired = 0u64;
@@ -942,15 +1241,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
             context
         };
         if let Some(hook) = irq.as_mut() {
-            match deliver_pending_irq(
-                hook,
-                state,
-                bus,
-                &paging,
-                context,
-                &mut watch,
-                cache.as_ref(),
-            ) {
+            match deliver_pending_irq(hook, state, bus, &paging, context, &mut watch, cache) {
                 IrqBoundaryOutcome::None => {}
                 IrqBoundaryOutcome::Delivered => {
                     if let Some(observations) = execution_observations.as_deref_mut() {
@@ -961,8 +1252,39 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
                 IrqBoundaryOutcome::Failed(failure) => break failure,
             }
         }
+        // S4-38L4i: one peek serves the CPUID boundary and the recorder (no guest state is
+        // written; the cache statistics move, see the doc of this function).
+        let cpuid_leaf = if cpuid_boundary || checkpoints.is_some() {
+            cpuid_leaf_at_rip(state, bus, &paging, context, cache)
+        } else {
+            None
+        };
+        if let Some(recorder) = checkpoints.as_deref_mut() {
+            let view = BoundaryView {
+                rip: state.rip,
+                cpl: state.cs_selector.map_or(0, |selector| (selector & 3) as u8),
+                cr3: reported_cr3,
+                call_retired: instructions_executed,
+                idtr: state.idtr.map(|idtr| (idtr.base, idtr.limit)),
+                cpuid_leaf,
+            };
+            recorder.boundary(&view, &mut || {
+                observed_fetch_view(state.rip, bus, &paging, context)
+            });
+            // S4-13b: the boundary at which C5 is recorded splits the phases of the report.
+            if !c5_at_call_start && c5_split.is_none() && recorder.is_recorded(C5_CHECKPOINT) {
+                c5_split = Some(C5Split {
+                    retired: instructions_executed,
+                    walks: walks.snapshot(),
+                    cache: cache.map(FetchTranslationCache::stats),
+                });
+                if let Some(cache) = cache {
+                    cache.sweep_mark_c5();
+                }
+            }
+        }
         if cpuid_boundary
-            && let Some(leaf) = cpuid_leaf_at_rip(state, bus, &paging, context, cache.as_ref())
+            && let Some(leaf) = cpuid_leaf
             && is_cpuid_divergence_leaf(leaf)
         {
             break (PagedCpl0SetExit::CpuidDivergence { leaf }, None, None);
@@ -980,13 +1302,24 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
             .as_deref()
             .and_then(LinuxExecutionObservationCollector::pending_post_iret);
         let resume_flag_is_iretq =
-            resume_flag_before && iretq_at_rip(state, bus, &paging, context, cache.as_ref());
+            resume_flag_before && iretq_at_rip(state, bus, &paging, context, cache);
         // The selected diagnostic uses the same opcode check but bypasses the fetch cache so it
         // does not perturb cache hit/miss counters while waiting for the selected return.
         let selected_return_is_iretq =
             pending_post_iret.is_some() && iretq_at_rip(state, bus, &paging, context, None);
         let iretq_detected = resume_flag_is_iretq || selected_return_is_iretq;
         let clear_resume_flag = resume_flag_before && !resume_flag_is_iretq;
+        // S4-14h: under `GuestOnly` the guest's own invalidations flush the cache. `INVLPG` is
+        // peeked before the step (read-only, through the cache like the fetch itself); CR0/CR4
+        // are compared around it.
+        let invlpg_pending = guest_only && invlpg_at_rip(state, bus, &paging, context, cache);
+        // S4-13c: the shadows of a `WriteWatch` cache learn of a retired `INVLPG` too. The peek
+        // bypasses the cache (read-only walk), so neither the counters nor the order of the cache
+        // move; a `GuestOnly` cache tells them itself.
+        let sweep_invlpg_pending = !guest_only
+            && cache.is_some_and(FetchTranslationCache::sweep_active)
+            && invlpg_at_rip(state, bus, &paging, context, None);
+        let control_before = (state.cr0, state.cr4);
         let (ram, io) = bus.split_for_set_step();
         let mut port = PitWriteWatch {
             inner: io.port_io(),
@@ -998,7 +1331,8 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
             paging,
             instruction_rip,
             &mut watch,
-            cache.as_ref(),
+            cache,
+            Some(&walks),
         );
         memory.capture_page_fault_trace = execution_observations.is_some();
         let run_config = RunConfig {
@@ -1113,6 +1447,18 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
                 };
                 match failure {
                     None => {
+                        // S4-14h: a delivered `#PF` invalidates the translations of its linear
+                        // address (SDM Vol. 3A, "Invalidation of TLBs and Paging-Structure Caches",
+                        // cited from memory, not checked against the primary source). Under
+                        // `GuestOnly` the whole cache is dropped, which is always allowed; the
+                        // handler may repair the page tables without `INVLPG`.
+                        if let Some(cache) = cache {
+                            if guest_only {
+                                cache.flush_after_page_fault();
+                            } else {
+                                cache.sweep_guest_page_fault();
+                            }
+                        }
                         delivered_exceptions += 1;
                         delivered_page_faults += 1;
                         if let Some((observations, faulting_context)) =
@@ -1140,6 +1486,9 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
                             });
                         }
                         deliveries_without_retirement += 1;
+                        if let Some(recorder) = checkpoints.as_deref_mut() {
+                            recorder.note_page_fault_delivered();
+                        }
                         continue;
                     }
                     Some(failure) => {
@@ -1224,7 +1573,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
                         rip: state.gpr[od_isa::Register::Rcx as usize],
                     })
             } else if matches!(result.exit, Cpl0ProfileSetExit::UserModeEntered(_))
-                && sysretq_at(instruction_rip, bus, &paging, context, cache.as_ref())
+                && sysretq_at(instruction_rip, bus, &paging, context, cache)
             {
                 Some(SyscallEvent::Exit {
                     rax: state.gpr[od_isa::Register::Rax as usize],
@@ -1247,9 +1596,33 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
         // S4-13: a retired `MOV CR3` (or any other translation context change) invalidates
         // every cached fetch translation.
         if matches!(result.exit, Cpl0ProfileSetExit::TranslationContextChange(_))
-            && let Some(cache) = &cache
+            && let Some(cache) = cache
         {
             cache.flush();
+        }
+        if matches!(
+            result.exit,
+            Cpl0ProfileSetExit::TranslationContextChange(TranslationContextChange::Cr3Write { .. })
+        ) && let Some(recorder) = checkpoints.as_deref_mut()
+        {
+            recorder.note_cr3_write();
+        }
+        // S4-14h: a retired `INVLPG` and a change of CR0/CR4 flush the whole cache (`GuestOnly`).
+        if guest_only && let Some(cache) = cache {
+            if invlpg_pending && result.instructions_executed > 0 {
+                cache.flush_after_invlpg();
+            }
+            if control_before != (state.cr0, state.cr4) {
+                cache.flush_after_control_change();
+            }
+        } else if let Some(cache) = cache {
+            // S4-13c: observation only, for the shadows.
+            if sweep_invlpg_pending && result.instructions_executed > 0 {
+                cache.sweep_guest_invlpg();
+            }
+            if cache.sweep_active() && control_before != (state.cr0, state.cr4) {
+                cache.sweep_guest_control_change();
+            }
         }
         if let Some(exit) = handle_set_exit(
             result.exit,
@@ -1263,6 +1636,17 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
             break (exit, page_fault, memory_error);
         }
     };
+    // S4-14i: the end of the call seals the cache with the context a continuing call is handed;
+    // a change of it or a write by anyone before the next call starts is caught by the check there.
+    if let Some(cache) = cache {
+        cache.seal(
+            continuation_key(state, reported_cr3, efer, context),
+            &|page| {
+                bus.code_page_generation(GuestPhysicalAddress::new(page << 12))
+                    .ok()
+            },
+        );
+    }
     PagedCpl0SetReport {
         exit,
         instructions_executed,
@@ -1274,11 +1658,38 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_execution_observations(
         delivered_exceptions,
         delivered_page_faults,
         delivered_general_protection_faults,
-        fetch_cache_stats: cache.as_ref().map(FetchTranslationCache::stats),
+        fetch_cache_stats: cache.map(FetchTranslationCache::stats),
         cpl3_retired,
         syscall_events: syscall_events.into_iter().collect(),
         last_instruction_rip,
+        walk_counts: walks.snapshot(),
+        c5_at_call_start,
+        c5_split,
     }
+}
+
+/// The translation context a call that continues this one is handed (S4-14i): the paging snapshot
+/// of `cr3` and the state, and the access context of the loop for the CPL of the state. The same
+/// function computes the seal of the end of a call and the check of the start of the next.
+fn continuation_key(
+    state: &LongModeState,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+) -> Option<TranslationKey> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer).ok()?;
+    let privilege = if state.cs_selector.is_some_and(|selector| selector & 3 == 3) {
+        od_isa::memory::PrivilegeLevel::Ring3
+    } else {
+        context.privilege
+    };
+    Some(TranslationKey::new(
+        paging,
+        AccessContext {
+            privilege,
+            ..context
+        },
+    ))
 }
 
 /// The adapter of the set loop for one instruction or one interrupt delivery: RAM only, the
@@ -1290,6 +1701,7 @@ fn set_loop_adapter<'a>(
     instruction_rip: u64,
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
     fetch_cache: Option<&'a FetchTranslationCache>,
+    walks: Option<&'a WalkCounter>,
 ) -> PagedMovMemoryAdapter<'a> {
     PagedMovMemoryAdapter {
         bus: match mmio {
@@ -1322,6 +1734,7 @@ fn set_loop_adapter<'a>(
         cpl0_set_cross_page_store: true,
         cpl0_set_cross_page_read: true,
         fetch_cache,
+        walks,
     }
 }
 
@@ -1374,6 +1787,9 @@ impl<P: od_isa::PortIo> od_isa::PortIo for PitWriteWatch<P> {
     }
 }
 
+/// Checkpoint C5 (the first fetch at `e_entry`), the split of the phases of the fetch cache report.
+const C5_CHECKPOINT: u8 = 5;
+
 /// RFLAGS.IF, bit 9.
 const RFLAGS_IF: u64 = 1 << 9;
 
@@ -1424,7 +1840,7 @@ fn deliver_pending_irq(
         return IrqBoundaryOutcome::None;
     }
     let (ram, _port) = bus.split_for_pio_step();
-    let mut memory = set_loop_adapter(ram, None, *paging, state.rip, watch, cache);
+    let mut memory = set_loop_adapter(ram, None, *paging, state.rip, watch, cache, None);
     let delivery = deliver_external_interrupt_cpl0_set(state, &mut memory, vector, context);
     let failure = match delivery {
         Cpl0ExternalInterruptDelivery::Delivered { .. } => {
@@ -1560,6 +1976,7 @@ pub fn step_paged_mov_word_read(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = cpu_step_paged_mov_word_read(
         PagedMovCrossPageWordReadLong64V1,
@@ -1640,6 +2057,7 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = cpu_step_paged_mov_word_read_cross_page_fetch(
         PagedMovCrossPageWordFetchLong64V1,
@@ -1702,6 +2120,7 @@ pub fn step_paged_mov_dword_read(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = cpu_step_paged_mov_dword_read(
         PagedMovCrossPageDwordReadLong64V1,
@@ -1773,6 +2192,7 @@ pub fn step_paged_mov_dword_store(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = od_isa::step_paged_mov_dword_store(
         od_isa::PagedMovDwordStoreLong64V1,
@@ -1793,7 +2213,7 @@ pub fn step_paged_mov_dword_store(
 /// `Ram` is the physical memory alone, split off from the bus so that the port half of the same
 /// bus can serve `IN`/`OUT` in the same instruction (large-RAM profile only, S4-38L3).
 enum AdapterBus<'a> {
-    Machine(&'a mut MachineBus),
+    Machine(&'a mut MachineBus, usize),
     Ram(&'a mut crate::PhysicalMemory),
     /// `Ram` plus the MMIO dispatch of the set loop (S4-38L9s): an operand in an MMIO region
     /// goes to the board's device, as on the `Machine` form; the rest is the large-RAM walk.
@@ -1805,16 +2225,26 @@ enum AdapterBus<'a> {
 
 impl<'a> From<&'a mut MachineBus> for AdapterBus<'a> {
     fn from(bus: &'a mut MachineBus) -> Self {
-        Self::Machine(bus)
+        Self::Machine(bus, crate::vcpu::BOOT_VCPU_INDEX)
     }
 }
 
 impl AdapterBus<'_> {
+    /// Index of the vCPU that owns this adapter: its MMIO accesses reach the per-processor
+    /// devices (the Local APIC window, S6-11) as that vCPU's. Only the `Machine` form carries
+    /// one; the RAM-only forms serve the boot processor's set loop.
+    fn vcpu(&self) -> usize {
+        match self {
+            Self::Machine(_, vcpu) => *vcpu,
+            Self::Ram(_) | Self::RamMmio(..) => crate::vcpu::BOOT_VCPU_INDEX,
+        }
+    }
+
     /// The whole bus. The `Ram` form is built only for the large-RAM walk, which never asks
     /// for it; if it ever does, that is a typed backend error and not a panic.
     fn machine(&mut self) -> Result<&mut MachineBus, MemoryError> {
         match self {
-            Self::Machine(bus) => Ok(bus),
+            Self::Machine(bus, _) => Ok(bus),
             Self::Ram(_) | Self::RamMmio(..) => Err(MemoryError::Backend(
                 "the RAM-only adapter bus serves the large-RAM walk only".to_string(),
             )),
@@ -1829,7 +2259,7 @@ impl AdapterBus<'_> {
         mmio_allowed: bool,
     ) -> crate::TrackedAccessReport {
         match self {
-            Self::Machine(bus) => bus.access_tracked_2m_ram(paging, request, committed_write),
+            Self::Machine(bus, _) => bus.access_tracked_2m_ram(paging, request, committed_write),
             Self::Ram(memory) => {
                 crate::page_walk::access_long64_2m_ram(memory, paging, request, committed_write)
             }
@@ -1843,7 +2273,7 @@ impl AdapterBus<'_> {
                 paging,
                 request,
                 committed_write,
-                mmio.window(),
+                mmio.windows(),
                 |address, width, operation| mmio.dispatch(address, width, operation),
             ),
         }
@@ -1853,14 +2283,14 @@ impl AdapterBus<'_> {
     fn ram_mut(&mut self) -> Option<&mut crate::PhysicalMemory> {
         match self {
             Self::Ram(memory) | Self::RamMmio(memory, _) => Some(memory),
-            Self::Machine(_) => None,
+            Self::Machine(..) => None,
         }
     }
 
     fn ram_ref(&self) -> Option<&crate::PhysicalMemory> {
         match self {
             Self::Ram(memory) | Self::RamMmio(memory, _) => Some(memory),
-            Self::Machine(_) => None,
+            Self::Machine(..) => None,
         }
     }
 
@@ -1872,7 +2302,7 @@ impl AdapterBus<'_> {
         context: AccessContext,
         output: &mut [u8],
     ) -> Result<(), ()> {
-        if let Self::Machine(bus) = self {
+        if let Self::Machine(bus, _) = self {
             return bus
                 .read_virtual_ram_diagnostic(paging, rip, linear, context, output)
                 .map_err(|_| ());
@@ -2002,6 +2432,9 @@ pub struct PagedMovMemoryAdapter<'a> {
     /// `fetch_translation_cache`). Used by `fetch` only, and only with the set's cross-page
     /// fetch; `None` everywhere else, which keeps the byte-per-walk behaviour.
     fetch_cache: Option<&'a FetchTranslationCache>,
+    /// S4-13b: counts the tracked walks of this adapter (measurement only); `None` outside the
+    /// set loop's instruction adapter.
+    walks: Option<&'a WalkCounter>,
 }
 
 fn faulting_page_walk_context(
@@ -2065,7 +2498,7 @@ impl PagedMovMemoryAdapter<'_> {
                     access,
                 )
             }
-            AdapterBus::Machine(bus) => {
+            AdapterBus::Machine(bus, _) => {
                 let (memory, _) = bus.split_for_pio_step();
                 translate_long64_2m_ram_read_only_with_trace(
                     memory,
@@ -2176,6 +2609,16 @@ impl PagedMovMemoryAdapter<'_> {
             context,
             operation,
         };
+        if let Some(walks) = self.walks {
+            match operation {
+                RamAccessOperation::Fetch => walks.note_fetch(),
+                RamAccessOperation::Read { .. } | RamAccessOperation::ReadPseudoDescriptor => {
+                    walks.note_read()
+                }
+                RamAccessOperation::Write { .. } => walks.note_write(),
+            }
+        }
+        let vcpu = self.bus.vcpu();
         let report = if self.capture_effects {
             let mut writes = Vec::new();
             let report = if self.large_ram_profile {
@@ -2192,7 +2635,7 @@ impl PagedMovMemoryAdapter<'_> {
             } else {
                 self.bus
                     .machine()?
-                    .access_tracked(&self.paging, request, |range| writes.push(range))
+                    .access_tracked(vcpu, &self.paging, request, |range| writes.push(range))
             };
             self.committed_writes
                 .as_mut()
@@ -2222,9 +2665,12 @@ impl PagedMovMemoryAdapter<'_> {
                 &mut *self.committed_write,
             )
         } else {
-            self.bus
-                .machine()?
-                .access_tracked(&self.paging, request, &mut *self.committed_write)
+            self.bus.machine()?.access_tracked(
+                vcpu,
+                &self.paging,
+                request,
+                &mut *self.committed_write,
+            )
         };
         if self.capture_page_fault_trace {
             self.page_fault_trace = report
@@ -2257,7 +2703,7 @@ impl PagedMovMemoryAdapter<'_> {
             origin: od_isa::memory::AccessOrigin::Explicit,
             ..context
         };
-        if let Some(frame) = cache.lookup(address, &self.paging, context)
+        if let Some(frame) = cache.lookup_fetch(address, &self.paging, context)
             && let Some(memory) = self.bus.ram_ref()
             && let Some(byte) = memory.read_ram_frame_u8(frame, address)
         {
@@ -2286,8 +2732,18 @@ impl PagedMovMemoryAdapter<'_> {
                 )
             };
             let tables = tables.map(|table| table.map(GuestPhysicalAddress::get));
-            if let Some(frame) =
-                memory.ram_frame(GuestPhysicalAddress::new(physical.get() & !0xfff))
+            // S4-13d: with the 2 MiB tag a walk that ended at a 2 MiB leaf (three tables) whose
+            // whole 2 MiB span is plain RAM is remembered for the whole leaf; the span's base is
+            // the physical address minus the offset of the request inside the leaf. Anything else
+            // (a 4 KiB leaf, a span that is not wholly RAM, a base that is not 2 MiB aligned)
+            // stays a 4 KiB entry, as without the tag.
+            let leaf_frame = (cache.tag() == FetchCacheTag::Leaf2M
+                && tables[2].is_some()
+                && tables[3].is_none())
+            .then(|| physical.get().wrapping_sub(address & 0x1f_ffff))
+            .and_then(|base| memory.ram_leaf_2m(GuestPhysicalAddress::new(base)));
+            if let Some(frame) = leaf_frame
+                .or_else(|| memory.ram_frame(GuestPhysicalAddress::new(physical.get() & !0xfff)))
                 && tables.iter().flatten().all(|table| is_ram(*table & !0xfff))
             {
                 cache.insert(address, &self.paging, context, frame, tables);
@@ -2383,7 +2839,7 @@ impl PagedMovMemoryAdapter<'_> {
                         )
                     }
                 }
-                AdapterBus::Machine(_) => return Err(Self::unsupported("cross-page write")),
+                AdapterBus::Machine(..) => return Err(Self::unsupported("cross-page write")),
             };
             if let Err(error) = result {
                 if let Some(trace) = trace {
@@ -2696,8 +3152,15 @@ mod tests {
         bus: &'a mut MachineBus,
         callbacks: &'a mut dyn FnMut(GuestPhysicalRange),
     ) -> PagedMovMemoryAdapter<'a> {
+        adapter_on(bus.into(), callbacks)
+    }
+
+    fn adapter_on<'a>(
+        bus: AdapterBus<'a>,
+        callbacks: &'a mut dyn FnMut(GuestPhysicalRange),
+    ) -> PagedMovMemoryAdapter<'a> {
         PagedMovMemoryAdapter {
-            bus: bus.into(),
+            bus,
             paging: Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
             instruction_rip: 0x0040_0000,
             committed_write: callbacks,
@@ -2724,6 +3187,7 @@ mod tests {
             cpl0_set_cross_page_store: false,
             cpl0_set_cross_page_read: false,
             fetch_cache: None,
+            walks: None,
         }
     }
 
@@ -3009,6 +3473,7 @@ mod tests {
             paging,
             0x0040_0000,
             &mut committed,
+            None,
             None,
         );
         memory.capture_page_fault_trace = true;
@@ -4172,6 +4637,77 @@ mod tests {
         // The whole-bus form hands the bus out.
         let mut adapter_bus = AdapterBus::from(&mut machine);
         assert!(adapter_bus.machine().is_ok());
+    }
+
+    /// RAM with the page tables of `bus()` whose data page maps the Local APIC window, and a
+    /// board of `cpus` Local APICs behind it.
+    fn lapic_bus(cpus: usize) -> (MachineBus, crate::LocalApicHandle) {
+        let window = GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE);
+        let regions = vec![
+            MemoryRegionSpec::new(
+                GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_LEN).unwrap(),
+                MemoryRegionKind::Ram,
+            ),
+            MemoryRegionSpec::new(
+                GuestPhysicalRange::new(window, crate::LOCAL_APIC_MMIO_SIZE).unwrap(),
+                MemoryRegionKind::Mmio,
+            ),
+        ];
+        let map = MachineMemoryMap::new(36, regions).unwrap();
+        let device = crate::LocalApic::with_cpus(cpus).unwrap();
+        let handle = device.handle();
+        let mut bus = MachineBus::new(
+            map,
+            RamLimits::new(RAM_LEN),
+            vec![Box::new(device)],
+            vec![crate::MmioBinding {
+                region_start: window,
+                device_index: 0,
+            }],
+            vec![],
+        )
+        .unwrap();
+        put(&mut bus, 0x1000, 0x2007);
+        put(&mut bus, 0x2000, 0x3007);
+        put(&mut bus, 0x3010, 0x4007);
+        put(&mut bus, 0x3020, 0x5007);
+        put(&mut bus, 0x4000, 0x7007);
+        put(&mut bus, 0x5000, crate::LOCAL_APIC_MMIO_BASE | 7);
+        (bus, handle)
+    }
+
+    #[test]
+    fn a_paged_mmio_access_reaches_the_lapic_of_the_vcpu_that_owns_the_adapter() {
+        let (mut bus, apic) = lapic_bus(2);
+        let mut callback = |_| {};
+        // The APIC ID register reads the owner's index, whichever processor reads it.
+        for vcpu in [1usize, 0] {
+            let mut memory = adapter_on(AdapterBus::Machine(&mut bus, vcpu), &mut callback);
+            memory.cpl0_set_dword_read = true;
+            let mut id = [0xff; 4];
+            memory.read(DATA_LINEAR + 0x20, context(), &mut id).unwrap();
+            assert_eq!(u32::from_le_bytes(id), (vcpu as u32) << 24, "vcpu {vcpu}");
+        }
+        // A write lands in the owner's LAPIC and in no other.
+        let mut memory = adapter_on(AdapterBus::Machine(&mut bus, 1), &mut callback);
+        memory.dword_write_profile = true;
+        memory
+            .write(DATA_LINEAR + 0x80, context(), &0x30u32.to_le_bytes())
+            .unwrap();
+        let pair = apic.0.lock().unwrap();
+        assert_eq!((pair.cpus[0].local.tpr, pair.cpus[1].local.tpr), (0, 0x30));
+        drop(pair);
+        // An adapter built the ordinary way belongs to the boot processor.
+        let mut memory = adapter(&mut bus, &mut callback);
+        memory.dword_write_profile = true;
+        memory
+            .write(DATA_LINEAR + 0x80, context(), &0x40u32.to_le_bytes())
+            .unwrap();
+        let pair = apic.0.lock().unwrap();
+        assert_eq!(
+            (pair.cpus[0].local.tpr, pair.cpus[1].local.tpr),
+            (0x40, 0x30)
+        );
     }
 }
 

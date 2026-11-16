@@ -1,0 +1,645 @@
+{
+  "slice": "S4-38L4i",
+  "acceptance": "observation_only_not_a_new_acceptance",
+  "tool": "od-runner linux-direct --checkpoint-table docs/reports/data/stage4/s4-38l2-oracle.json (release build)",
+  "note": "Checkpoints C0..C17 recorded on the instruction boundaries of the CPL0-set loop; execution unchanged. The full run reports are not stored here (the stage4a one is 81 KB); their sha256 are below.",
+  "stage4a_command": "linux-direct (S4-39j arguments of docs/testing/MACHINE.md) --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode --checkpoint-table docs/reports/data/stage4/s4-38l2-oracle.json",
+  "stage4a": {
+    "cold1_report_sha256": "0bddcc72e129e367c361571a45f9dc8fd886fd9e2cf54319ebf98a49d1a4d4bc",
+    "cold2_report_sha256": "0bddcc72e129e367c361571a45f9dc8fd886fd9e2cf54319ebf98a49d1a4d4bc",
+    "cold_reports_byte_equal": true,
+    "cold_checkpoints_equal": true,
+    "run_without_flag_report_sha256": "d99b1898da27fd283568b2c8bad4270233e75d103e20a19da2380842cf53bd2a",
+    "accepted_s4_39j_report_sha256": "d99b1898da27fd283568b2c8bad4270233e75d103e20a19da2380842cf53bd2a",
+    "run_without_flag_equals_accepted": true,
+    "report_without_checkpoints_key_equals_run_without_flag": true,
+    "exit_kind": "budget_exhausted",
+    "retired": 2999999998,
+    "quanta": 34564401,
+    "virtual_ns": 37456345791,
+    "checkpoints": {
+      "init_entry": "0x4000b0",
+      "not_reached": [
+        "C13"
+      ],
+      "observation_only": true,
+      "reached": 17,
+      "records": [
+        {
+          "bytes": "fc fa 31 c0 8e d8 8e c0 8e d0 8e e0 8e e8 48 8d",
+          "cpl": 0,
+          "cr3": "0x130000",
+          "gpa": "0x1000200",
+          "id": "C0",
+          "kind": "boundary",
+          "name": "entry",
+          "oracle": null,
+          "quanta": 1,
+          "retired": 0,
+          "rip": "0x1000200",
+          "status": "reached",
+          "virtual_ns": 0
+        },
+        {
+          "bytes": "31 c0 48 8d 3d 37 a6 03 00 48 8d 0d 30 46 08 00",
+          "cpl": 0,
+          "cr3": "0x130000",
+          "gpa": "0x541b9c0",
+          "id": "C1",
+          "kind": "boundary",
+          "name": "relocated_copy_first_fetch",
+          "oracle": {
+            "bytes_16": null,
+            "pa": "0x541b9c0",
+            "va": null
+          },
+          "quanta": 2112,
+          "retired": 1393,
+          "rip": "0x541b9c0",
+          "status": "reached",
+          "virtual_ns": 1393
+        },
+        {
+          "bytes": "48 83 c4 18 5b 5d c3 66 0f 1f 44 00 00 f3 0f 1e",
+          "cpl": 0,
+          "cr3": "0x130000",
+          "gpa": "0x2066483",
+          "id": "C2",
+          "kind": "after_event",
+          "name": "first_lidt",
+          "oracle": null,
+          "quanta": 1,
+          "retired": 119,
+          "rip": "0x2066483",
+          "status": "reached",
+          "virtual_ns": 119
+        },
+        {
+          "bytes": "5b e9 a3 17 00 00 0f 1f 00 48 8b 35 01 fa 04 00",
+          "cpl": 0,
+          "cr3": "0x54a0000",
+          "gpa": "0x543c247",
+          "id": "C3",
+          "kind": "after_event",
+          "name": "first_cr3_write",
+          "oracle": null,
+          "quanta": 2148,
+          "retired": 330182,
+          "rip": "0x543c247",
+          "status": "reached",
+          "virtual_ns": 330182
+        },
+        {
+          "bytes": "57 56 52 51 50 41 50 41 51 41 52 41 53 53 55 41",
+          "cpl": 0,
+          "cr3": "0x54a0000",
+          "gpa": "0x543c640",
+          "id": "C4",
+          "kind": "after_event",
+          "name": "first_page_fault",
+          "oracle": null,
+          "quanta": 2148,
+          "retired": 390836,
+          "rip": "0x543c640",
+          "status": "reached",
+          "virtual_ns": 390836
+        },
+        {
+          "bytes": "49 89 f7 48 8d 25 5e eb ad ff b9 01 01 00 c0 31",
+          "bytes_match_oracle": true,
+          "cpl": 0,
+          "cr3": "0x54a0000",
+          "gpa": "0x3f253e0",
+          "id": "C5",
+          "kind": "boundary",
+          "name": "e_entry",
+          "oracle": {
+            "bytes_16": "4989f7488d255eebadffb9010100c031",
+            "pa": "0x3f253e0",
+            "va": "0xffffffff83f253e0"
+          },
+          "quanta": 10131,
+          "retired": 1137474211,
+          "rip": "0x3f253e0",
+          "status": "reached",
+          "virtual_ns": 1137474211
+        },
+        {
+          "bytes": "0f a2 83 f8 06 0f 87 16 02 00 00 45 31 e4 0f 20",
+          "cpl": 0,
+          "cr3": "0x130000",
+          "gpa": "0x20669ff",
+          "id": "C6",
+          "kind": "boundary",
+          "name": "cpuid_leaf_0",
+          "oracle": null,
+          "quanta": 1,
+          "retired": 1363,
+          "rip": "0x20669ff",
+          "status": "reached",
+          "virtual_ns": 1363
+        },
+        {
+          "bytes": "0f a2 81 e2 61 81 00 07 81 f2 61 81 00 07 75 4f",
+          "bytes_match_oracle": true,
+          "cpl": 0,
+          "cr3": "0x54a0000",
+          "gpa": "0x139c287",
+          "id": "C7",
+          "kind": "boundary",
+          "name": "cpuid1",
+          "oracle": {
+            "bytes_16": "0fa281e26181000781f261810007754f",
+            "pa": "0x139c287",
+            "va": "0xffffffff8139c287"
+          },
+          "quanta": 10131,
+          "retired": 1137474358,
+          "rip": "0x139c287",
+          "status": "reached",
+          "virtual_ns": 1137474358
+        },
+        {
+          "bytes": "55 48 89 e5 41 55 41 54 53 44 8b 2d 14 ab 13 ff",
+          "bytes_match_oracle": true,
+          "cpl": 0,
+          "cr3": "0x3ffe000",
+          "gpa": "0x3f25b90",
+          "id": "C8",
+          "kind": "boundary",
+          "name": "x86_64_start_kernel",
+          "oracle": {
+            "bytes_16": "554889e54155415453448b2d14ab13ff",
+            "pa": "0x3f25b90",
+            "va": "0xffffffff83f25b90"
+          },
+          "quanta": 10131,
+          "retired": 1137477750,
+          "rip": "0xffffffff83f25b90",
+          "status": "reached",
+          "virtual_ns": 1137477750
+        },
+        {
+          "bytes": "e8 fb ba 4e fd 55 45 31 db 48 c7 c7 c0 34 a1 83",
+          "bytes_match_oracle": true,
+          "cpl": 0,
+          "cr3": "0x3ffe000",
+          "gpa": "0x3f10400",
+          "id": "C9",
+          "kind": "boundary",
+          "name": "start_kernel",
+          "oracle": {
+            "bytes_16": "e8fbba4efd554531db48c7c7c034a183",
+            "pa": "0x3f10400",
+            "va": "0xffffffff83f10400"
+          },
+          "quanta": 16161,
+          "retired": 1137485714,
+          "rip": "0xffffffff83f10400",
+          "status": "reached",
+          "virtual_ns": 1137485714
+        },
+        {
+          "bytes": "e8 7b 51 4d fd 55 48 c7 c6 00 31 fd 83 48 89 e5",
+          "bytes_match_oracle": true,
+          "cpl": 0,
+          "cr3": "0x3ffe000",
+          "gpa": "0x3f26d80",
+          "id": "C10",
+          "kind": "boundary",
+          "name": "setup_arch",
+          "oracle": {
+            "bytes_16": "e87b514dfd5548c7c60031fd834889e5",
+            "pa": "0x3f26d80",
+            "va": "0xffffffff83f26d80"
+          },
+          "quanta": 16161,
+          "retired": 1137498153,
+          "rip": "0xffffffff83f26d80",
+          "status": "reached",
+          "virtual_ns": 1137498153
+        },
+        {
+          "bytes": "55 48 89 e5 41 57 41 56 41 55 41 54 53 e9 35 2d",
+          "bytes_match_oracle": true,
+          "cpl": 0,
+          "cr3": "0x3a44000",
+          "gpa": "0x3f2ad40",
+          "id": "C11",
+          "kind": "boundary",
+          "name": "tsc_init",
+          "oracle": {
+            "bytes_16": "554889e5415741564155415453e9352d",
+            "pa": "0x3f2ad40",
+            "va": "0xffffffff83f2ad40"
+          },
+          "quanta": 1137680,
+          "retired": 1546888467,
+          "rip": "0xffffffff83f2ad40",
+          "status": "reached",
+          "virtual_ns": 2659678467
+        },
+        {
+          "bytes": "0f 1f 44 00 00 55 8b 05 14 1d 14 ff 48 89 e5 53",
+          "bytes_match_oracle": false,
+          "cpl": 0,
+          "cr3": "0x3a44000",
+          "gpa": "0x3f3f3c0",
+          "id": "C12",
+          "kind": "boundary",
+          "name": "apic_intr_mode_init",
+          "oracle": {
+            "bytes_16": "e83bcb4bfd558b05141d14ff4889e553",
+            "pa": "0x3f3f3c0",
+            "va": "0xffffffff83f3f3c0"
+          },
+          "quanta": 1137634,
+          "retired": 1546867493,
+          "rip": "0xffffffff83f3f3c0",
+          "status": "reached",
+          "virtual_ns": 2659656493
+        },
+        {
+          "id": "C13",
+          "name": "check_timer",
+          "oracle": {
+            "bytes_16": "554889e54157415641554154534883ec",
+            "pa": "0x3f41050",
+            "va": "0xffffffff83f41050"
+          },
+          "reason": "the predicate did not hold before the run ended (exit_kind budget_exhausted, rip 0xffffffff8271b35c, retired 2999999998)",
+          "status": "not_reached"
+        },
+        {
+          "bytes": "0f 1f 44 00 00 55 48 c7 c1 60 2f a1 83 ba ff ff",
+          "bytes_match_oracle": false,
+          "cpl": 0,
+          "cr3": "0x3a44000",
+          "gpa": "0x3f12640",
+          "id": "C14",
+          "kind": "boundary",
+          "name": "populate_rootfs",
+          "oracle": {
+            "bytes_16": "e8bb984efd5548c7c1602fa183baffff",
+            "pa": "0x3f12640",
+            "va": "0xffffffff83f12640"
+          },
+          "quanta": 1177278,
+          "retired": 2071529329,
+          "rip": "0xffffffff83f12640",
+          "status": "reached",
+          "virtual_ns": 3216011329
+        },
+        {
+          "bytes": "0f 1f 44 00 00 55 48 89 fe 48 89 e5 41 54 53 48",
+          "bytes_match_oracle": false,
+          "cpl": 0,
+          "cr3": "0x3a44000",
+          "gpa": "0x12001c0",
+          "id": "C15",
+          "kind": "boundary",
+          "name": "run_init_process",
+          "oracle": {
+            "bytes_16": "e83bbd1f00554889fe4889e541545348",
+            "pa": "0x12001c0",
+            "va": "0xffffffff812001c0"
+          },
+          "quanta": 1202868,
+          "retired": 2319787639,
+          "rip": "0xffffffff812001c0",
+          "status": "reached",
+          "virtual_ns": 3483875639
+        },
+        {
+          "bytes": "0f 1f 44 00 00 55 65 48 8b 05 9a 8a b2 02 48 89",
+          "bytes_match_oracle": false,
+          "cpl": 0,
+          "cr3": "0x3a44000",
+          "gpa": "0x18f4570",
+          "id": "C16",
+          "kind": "boundary",
+          "name": "kernel_execve",
+          "oracle": {
+            "bytes_16": "e88b79b0ff5565488b059a8ab2024889",
+            "pa": "0x18f4570",
+            "va": "0xffffffff818f4570"
+          },
+          "quanta": 1202875,
+          "retired": 2319814351,
+          "rip": "0xffffffff818f4570",
+          "status": "reached",
+          "virtual_ns": 3483909351
+        },
+        {
+          "bytes": "",
+          "cpl": 3,
+          "cr3": "0x648b000",
+          "gpa": null,
+          "id": "C17",
+          "kind": "boundary",
+          "name": "init_entry",
+          "oracle": {
+            "bytes_16": null,
+            "pa": null,
+            "va": "0x4000b0"
+          },
+          "quanta": 1202926,
+          "retired": 2320040851,
+          "rip": "0x4000b0",
+          "status": "reached",
+          "virtual_ns": 3484186851
+        }
+      ],
+      "schema": "s4-38l4i-v1",
+      "table": {
+        "path": "docs/reports/data/stage4/s4-38l2-oracle.json",
+        "sha256": "6ce2faaaa0f4f382dfecc877e80e468dbdefaf1117a806c9a2897b69882c2eb6",
+        "slice": "S4-38L2",
+        "vmlinuz_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+        "vmlinuz_sha256_matches_the_run": true
+      }
+    }
+  },
+  "diagnostic_v1": {
+    "command": "linux-direct (same inputs) --run --budget 3000000000 --set-cpl0 --checkpoint-table docs/reports/data/stage4/s4-38l2-oracle.json",
+    "report_sha256": "964df9ad5f4cffc5f91c87ae16d2322930b035cd587a54737a67161c8fb766e4",
+    "exit_kind": "cpuid_divergence",
+    "rip": "0x139c287",
+    "retired": 1137474358,
+    "quanta": 10131,
+    "virtual_ns": 1137474358,
+    "expected_retired_s4_38l6d": 1137474358,
+    "retired_matches_expected": true,
+    "checkpoints": {
+      "init_entry": "0x4000b0",
+      "not_reached": [
+        "C8",
+        "C9",
+        "C10",
+        "C11",
+        "C12",
+        "C13",
+        "C14",
+        "C15",
+        "C16",
+        "C17"
+      ],
+      "observation_only": true,
+      "reached": 8,
+      "records": [
+        {
+          "bytes": "fc fa 31 c0 8e d8 8e c0 8e d0 8e e0 8e e8 48 8d",
+          "cpl": 0,
+          "cr3": "0x130000",
+          "gpa": "0x1000200",
+          "id": "C0",
+          "kind": "boundary",
+          "name": "entry",
+          "oracle": null,
+          "quanta": 1,
+          "retired": 0,
+          "rip": "0x1000200",
+          "status": "reached",
+          "virtual_ns": 0
+        },
+        {
+          "bytes": "31 c0 48 8d 3d 37 a6 03 00 48 8d 0d 30 46 08 00",
+          "cpl": 0,
+          "cr3": "0x130000",
+          "gpa": "0x541b9c0",
+          "id": "C1",
+          "kind": "boundary",
+          "name": "relocated_copy_first_fetch",
+          "oracle": {
+            "bytes_16": null,
+            "pa": "0x541b9c0",
+            "va": null
+          },
+          "quanta": 2112,
+          "retired": 1393,
+          "rip": "0x541b9c0",
+          "status": "reached",
+          "virtual_ns": 1393
+        },
+        {
+          "bytes": "48 83 c4 18 5b 5d c3 66 0f 1f 44 00 00 f3 0f 1e",
+          "cpl": 0,
+          "cr3": "0x130000",
+          "gpa": "0x2066483",
+          "id": "C2",
+          "kind": "after_event",
+          "name": "first_lidt",
+          "oracle": null,
+          "quanta": 1,
+          "retired": 119,
+          "rip": "0x2066483",
+          "status": "reached",
+          "virtual_ns": 119
+        },
+        {
+          "bytes": "5b e9 a3 17 00 00 0f 1f 00 48 8b 35 01 fa 04 00",
+          "cpl": 0,
+          "cr3": "0x54a0000",
+          "gpa": "0x543c247",
+          "id": "C3",
+          "kind": "after_event",
+          "name": "first_cr3_write",
+          "oracle": null,
+          "quanta": 2148,
+          "retired": 330182,
+          "rip": "0x543c247",
+          "status": "reached",
+          "virtual_ns": 330182
+        },
+        {
+          "bytes": "57 56 52 51 50 41 50 41 51 41 52 41 53 53 55 41",
+          "cpl": 0,
+          "cr3": "0x54a0000",
+          "gpa": "0x543c640",
+          "id": "C4",
+          "kind": "after_event",
+          "name": "first_page_fault",
+          "oracle": null,
+          "quanta": 2148,
+          "retired": 390836,
+          "rip": "0x543c640",
+          "status": "reached",
+          "virtual_ns": 390836
+        },
+        {
+          "bytes": "49 89 f7 48 8d 25 5e eb ad ff b9 01 01 00 c0 31",
+          "bytes_match_oracle": true,
+          "cpl": 0,
+          "cr3": "0x54a0000",
+          "gpa": "0x3f253e0",
+          "id": "C5",
+          "kind": "boundary",
+          "name": "e_entry",
+          "oracle": {
+            "bytes_16": "4989f7488d255eebadffb9010100c031",
+            "pa": "0x3f253e0",
+            "va": "0xffffffff83f253e0"
+          },
+          "quanta": 10131,
+          "retired": 1137474211,
+          "rip": "0x3f253e0",
+          "status": "reached",
+          "virtual_ns": 1137474211
+        },
+        {
+          "bytes": "0f a2 83 f8 06 0f 87 16 02 00 00 45 31 e4 0f 20",
+          "cpl": 0,
+          "cr3": "0x130000",
+          "gpa": "0x20669ff",
+          "id": "C6",
+          "kind": "boundary",
+          "name": "cpuid_leaf_0",
+          "oracle": null,
+          "quanta": 1,
+          "retired": 1363,
+          "rip": "0x20669ff",
+          "status": "reached",
+          "virtual_ns": 1363
+        },
+        {
+          "bytes": "0f a2 81 e2 61 81 00 07 81 f2 61 81 00 07 75 4f",
+          "bytes_match_oracle": true,
+          "cpl": 0,
+          "cr3": "0x54a0000",
+          "gpa": "0x139c287",
+          "id": "C7",
+          "kind": "boundary",
+          "name": "cpuid1",
+          "oracle": {
+            "bytes_16": "0fa281e26181000781f261810007754f",
+            "pa": "0x139c287",
+            "va": "0xffffffff8139c287"
+          },
+          "quanta": 10131,
+          "retired": 1137474358,
+          "rip": "0x139c287",
+          "status": "reached",
+          "virtual_ns": 1137474358
+        },
+        {
+          "id": "C8",
+          "name": "x86_64_start_kernel",
+          "oracle": {
+            "bytes_16": "554889e54155415453448b2d14ab13ff",
+            "pa": "0x3f25b90",
+            "va": "0xffffffff83f25b90"
+          },
+          "reason": "the predicate did not hold before the run ended (exit_kind cpuid_divergence, rip 0x139c287, retired 1137474358)",
+          "status": "not_reached"
+        },
+        {
+          "id": "C9",
+          "name": "start_kernel",
+          "oracle": {
+            "bytes_16": "e8fbba4efd554531db48c7c7c034a183",
+            "pa": "0x3f10400",
+            "va": "0xffffffff83f10400"
+          },
+          "reason": "the predicate did not hold before the run ended (exit_kind cpuid_divergence, rip 0x139c287, retired 1137474358)",
+          "status": "not_reached"
+        },
+        {
+          "id": "C10",
+          "name": "setup_arch",
+          "oracle": {
+            "bytes_16": "e87b514dfd5548c7c60031fd834889e5",
+            "pa": "0x3f26d80",
+            "va": "0xffffffff83f26d80"
+          },
+          "reason": "the predicate did not hold before the run ended (exit_kind cpuid_divergence, rip 0x139c287, retired 1137474358)",
+          "status": "not_reached"
+        },
+        {
+          "id": "C11",
+          "name": "tsc_init",
+          "oracle": {
+            "bytes_16": "554889e5415741564155415453e9352d",
+            "pa": "0x3f2ad40",
+            "va": "0xffffffff83f2ad40"
+          },
+          "reason": "the predicate did not hold before the run ended (exit_kind cpuid_divergence, rip 0x139c287, retired 1137474358)",
+          "status": "not_reached"
+        },
+        {
+          "id": "C12",
+          "name": "apic_intr_mode_init",
+          "oracle": {
+            "bytes_16": "e83bcb4bfd558b05141d14ff4889e553",
+            "pa": "0x3f3f3c0",
+            "va": "0xffffffff83f3f3c0"
+          },
+          "reason": "the predicate did not hold before the run ended (exit_kind cpuid_divergence, rip 0x139c287, retired 1137474358)",
+          "status": "not_reached"
+        },
+        {
+          "id": "C13",
+          "name": "check_timer",
+          "oracle": {
+            "bytes_16": "554889e54157415641554154534883ec",
+            "pa": "0x3f41050",
+            "va": "0xffffffff83f41050"
+          },
+          "reason": "the predicate did not hold before the run ended (exit_kind cpuid_divergence, rip 0x139c287, retired 1137474358)",
+          "status": "not_reached"
+        },
+        {
+          "id": "C14",
+          "name": "populate_rootfs",
+          "oracle": {
+            "bytes_16": "e8bb984efd5548c7c1602fa183baffff",
+            "pa": "0x3f12640",
+            "va": "0xffffffff83f12640"
+          },
+          "reason": "the predicate did not hold before the run ended (exit_kind cpuid_divergence, rip 0x139c287, retired 1137474358)",
+          "status": "not_reached"
+        },
+        {
+          "id": "C15",
+          "name": "run_init_process",
+          "oracle": {
+            "bytes_16": "e83bbd1f00554889fe4889e541545348",
+            "pa": "0x12001c0",
+            "va": "0xffffffff812001c0"
+          },
+          "reason": "the predicate did not hold before the run ended (exit_kind cpuid_divergence, rip 0x139c287, retired 1137474358)",
+          "status": "not_reached"
+        },
+        {
+          "id": "C16",
+          "name": "kernel_execve",
+          "oracle": {
+            "bytes_16": "e88b79b0ff5565488b059a8ab2024889",
+            "pa": "0x18f4570",
+            "va": "0xffffffff818f4570"
+          },
+          "reason": "counted only after C15 (run_init_process): C15 was not reached",
+          "status": "not_reached"
+        },
+        {
+          "id": "C17",
+          "name": "init_entry",
+          "oracle": {
+            "bytes_16": null,
+            "pa": null,
+            "va": "0x4000b0"
+          },
+          "reason": "the predicate did not hold before the run ended (exit_kind cpuid_divergence, rip 0x139c287, retired 1137474358)",
+          "status": "not_reached"
+        }
+      ],
+      "schema": "s4-38l4i-v1",
+      "table": {
+        "path": "docs/reports/data/stage4/s4-38l2-oracle.json",
+        "sha256": "6ce2faaaa0f4f382dfecc877e80e468dbdefaf1117a806c9a2897b69882c2eb6",
+        "slice": "S4-38L2",
+        "vmlinuz_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+        "vmlinuz_sha256_matches_the_run": true
+      }
+    }
+  }
+}

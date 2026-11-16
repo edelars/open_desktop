@@ -1,0 +1,630 @@
+{
+ "binary": "release od-runner of the S4-13d tree",
+ "command": "linux-direct ... --nonce s4-38l4a --ram-mib 128 --run --budget N --set-cpl0 --cpuid-profile stage4a-apic --checkpoint-table docs/reports/data/stage4/s4-38l2-oracle.json [--user-mode]; modes: 4k (default), 2m (OD_FETCH_CACHE_TAG=2m), nocache (OD_NO_FETCH_CACHE=1); OD_FETCH_CACHE_STATS sidecar",
+ "equal": {
+  "20000000": {
+   "data_walks_equal": true,
+   "final_ram_sha256_equal": true,
+   "runs": [
+    "2m-20000000",
+    "4k-20000000",
+    "nocache-20000000"
+   ],
+   "stripped_report_sha256_equal": true
+  },
+  "2330000000": {
+   "data_walks_equal": true,
+   "final_ram_sha256_equal": true,
+   "runs": [
+    "2m-2330000000",
+    "4k-2330000000",
+    "nocache-2330000000"
+   ],
+   "stripped_report_sha256_equal": true
+  },
+  "3000000000": {
+   "data_walks_equal": true,
+   "final_ram_sha256_equal": true,
+   "runs": [
+    "2m-3000000000",
+    "4k-3000000000",
+    "nocache-3000000000"
+   ],
+   "stripped_report_sha256_equal": true
+  },
+  "3000000000-s4a": {
+   "data_walks_equal": true,
+   "final_ram_sha256_equal": true,
+   "runs": [
+    "2m-3000000000-s4a",
+    "4k-3000000000-s4a",
+    "nocache-3000000000-s4a"
+   ],
+   "stripped_report_sha256_equal": true
+  }
+ },
+ "notes": [
+  "stripped report = runner report without the keys fetch_cache_stats_sidecar and inputs; sha256 of its JSON with sorted keys",
+  "final_ram_sha256 = sha256 over all plain-RAM bytes at the end of the run (sidecar key added in S4-13d)",
+  "the three runs of one budget ran in parallel on one machine: wall/RSS are indicative only (RSS includes the 128 MiB RAM hash buffers of the sidecar)"
+ ],
+ "runs": {
+  "2m-20000000": {
+   "budget": 20000000,
+   "cache_after_c5": {
+    "context_flushes": 0,
+    "hits": 0,
+    "inserts": 0,
+    "misses": 0,
+    "write_flushes": 0
+   },
+   "cache_total": {
+    "context_flushes": 1,
+    "hits": 144009136,
+    "host_flushes": 0,
+    "inserts": 2159,
+    "misses": 12931,
+    "write_flushes": 23
+   },
+   "cpuid_profile": "stage4a-apic",
+   "exit_kind": "budget_exhausted",
+   "fetch_cache_enabled": true,
+   "fetch_cache_tag": "2m",
+   "final_ram_sha256": "8dad105f176925fae6a6b148942c9bdf82864b62d9d8efa554b387be798bdb76",
+   "max_rss_bytes": 637812736,
+   "mode": "2m",
+   "retired": 20000000,
+   "stripped_report_sha256": "689b887a9724694fc861f9205d2f74c884c6a474080c3c99505a27f738d2a3a8",
+   "sys_seconds": 0.04,
+   "user_mode": false,
+   "user_seconds": 9.4,
+   "walks": {
+    "after_c5": {
+     "data_read": 0,
+     "data_write": 0,
+     "fetch": 0
+    },
+    "before_c5": {
+     "data_read": 4274318,
+     "data_write": 7061755,
+     "fetch": 2159
+    },
+    "total": {
+     "data_read": 4274318,
+     "data_write": 7061755,
+     "fetch": 2159
+    }
+   },
+   "wall_seconds": 9.45
+  },
+  "2m-2330000000": {
+   "budget": 2330000000,
+   "cache_after_c5": {
+    "context_flushes": 26596,
+    "hits": 7384733000,
+    "inserts": 2701284,
+    "misses": 7612835,
+    "write_flushes": 987
+   },
+   "cache_total": {
+    "context_flushes": 26597,
+    "hits": 16332431205,
+    "host_flushes": 0,
+    "inserts": 2711448,
+    "misses": 7673778,
+    "write_flushes": 1032
+   },
+   "cpuid_profile": "stage4a-apic",
+   "exit_kind": "user_entry",
+   "fetch_cache_enabled": true,
+   "fetch_cache_tag": "2m",
+   "final_ram_sha256": "aa5da8bb2063bf82fd8d11361174482d6b73b6a493b252f5a29d19fcda4681f3",
+   "max_rss_bytes": 577191936,
+   "mode": "2m",
+   "retired": 2321128949,
+   "stripped_report_sha256": "7687f27f32691e849c400eadeaff3b488089585f1ca0719e083f50eb396597a6",
+   "sys_seconds": 3.58,
+   "user_mode": false,
+   "user_seconds": 1056.18,
+   "walks": {
+    "after_c5": {
+     "data_read": 227552390,
+     "data_write": 143953591,
+     "fetch": 2701284
+    },
+    "before_c5": {
+     "data_read": 286498155,
+     "data_write": 164130745,
+     "fetch": 10164
+    },
+    "total": {
+     "data_read": 514050545,
+     "data_write": 308084336,
+     "fetch": 2711448
+    }
+   },
+   "wall_seconds": 1109.18
+  },
+  "2m-3000000000": {
+   "budget": 3000000000,
+   "cache_after_c5": {
+    "context_flushes": 26617,
+    "hits": 7392975612,
+    "inserts": 2712099,
+    "misses": 7646969,
+    "write_flushes": 988
+   },
+   "cache_total": {
+    "context_flushes": 26618,
+    "hits": 16340673817,
+    "host_flushes": 0,
+    "inserts": 2722263,
+    "misses": 7707912,
+    "write_flushes": 1033
+   },
+   "cpuid_profile": "stage4a-apic",
+   "exit_kind": "backend",
+   "fetch_cache_enabled": true,
+   "fetch_cache_tag": "2m",
+   "final_ram_sha256": "2ff2a60569dac744633203777fd8bfb50279629d08ae6ce7e9e2aa8a125372a3",
+   "max_rss_bytes": 638255104,
+   "mode": "2m",
+   "retired": 2322564102,
+   "stripped_report_sha256": "ee8030b6166a1dbd226ece38f6aa7250d31ff754384e39cf404ce2a71a27c691",
+   "sys_seconds": 2.41,
+   "user_mode": true,
+   "user_seconds": 1041.74,
+   "walks": {
+    "after_c5": {
+     "data_read": 227825633,
+     "data_write": 144155709,
+     "fetch": 2712101
+    },
+    "before_c5": {
+     "data_read": 286498155,
+     "data_write": 164130745,
+     "fetch": 10164
+    },
+    "total": {
+     "data_read": 514323788,
+     "data_write": 308286454,
+     "fetch": 2722265
+    }
+   },
+   "wall_seconds": 1052.09
+  },
+  "2m-3000000000-s4a": {
+   "budget": 3000000000,
+   "cache_after_c5": {
+    "context_flushes": 26617,
+    "hits": 11802247916,
+    "inserts": 37844022,
+    "misses": 181059498,
+    "write_flushes": 988
+   },
+   "cache_total": {
+    "context_flushes": 26618,
+    "hits": 20749946121,
+    "host_flushes": 0,
+    "inserts": 37854186,
+    "misses": 181120441,
+    "write_flushes": 1033
+   },
+   "cpuid_profile": "stage4a",
+   "exit_kind": "budget_exhausted",
+   "fetch_cache_enabled": true,
+   "fetch_cache_tag": "2m",
+   "final_ram_sha256": "a64e8b259d57890f30c5fd561238796cf79acd71ef32bb6d0cc7747a21affb73",
+   "max_rss_bytes": 638877696,
+   "mode": "2m",
+   "retired": 2999999998,
+   "stripped_report_sha256": "d41005e7a3d49ffbfbbf85fd70aea6c075456ea9363c7755cb2bfcee2a8feef4",
+   "sys_seconds": 3.28,
+   "user_mode": true,
+   "user_seconds": 1345.5,
+   "walks": {
+    "after_c5": {
+     "data_read": 365319191,
+     "data_write": 236410025,
+     "fetch": 37844024
+    },
+    "before_c5": {
+     "data_read": 286498155,
+     "data_write": 164130745,
+     "fetch": 10164
+    },
+    "total": {
+     "data_read": 651817346,
+     "data_write": 400540770,
+     "fetch": 37854188
+    }
+   },
+   "wall_seconds": 1356.77
+  },
+  "4k-20000000": {
+   "budget": 20000000,
+   "cache_after_c5": {
+    "context_flushes": 0,
+    "hits": 0,
+    "inserts": 0,
+    "misses": 0,
+    "write_flushes": 0
+   },
+   "cache_total": {
+    "context_flushes": 1,
+    "hits": 144007938,
+    "host_flushes": 0,
+    "inserts": 2404,
+    "misses": 14129,
+    "write_flushes": 23
+   },
+   "cpuid_profile": "stage4a-apic",
+   "exit_kind": "budget_exhausted",
+   "fetch_cache_enabled": true,
+   "fetch_cache_tag": "4k",
+   "final_ram_sha256": "8dad105f176925fae6a6b148942c9bdf82864b62d9d8efa554b387be798bdb76",
+   "max_rss_bytes": 637796352,
+   "mode": "4k",
+   "retired": 20000000,
+   "stripped_report_sha256": "689b887a9724694fc861f9205d2f74c884c6a474080c3c99505a27f738d2a3a8",
+   "sys_seconds": 0.04,
+   "user_mode": false,
+   "user_seconds": 9.4,
+   "walks": {
+    "after_c5": {
+     "data_read": 0,
+     "data_write": 0,
+     "fetch": 0
+    },
+    "before_c5": {
+     "data_read": 4274318,
+     "data_write": 7061755,
+     "fetch": 2404
+    },
+    "total": {
+     "data_read": 4274318,
+     "data_write": 7061755,
+     "fetch": 2404
+    }
+   },
+   "wall_seconds": 9.46
+  },
+  "4k-2330000000": {
+   "budget": 2330000000,
+   "cache_after_c5": {
+    "context_flushes": 26596,
+    "hits": 7354053315,
+    "inserts": 11982241,
+    "misses": 38292520,
+    "write_flushes": 619
+   },
+   "cache_total": {
+    "context_flushes": 26597,
+    "hits": 16301601756,
+    "host_flushes": 0,
+    "inserts": 12023110,
+    "misses": 38503227,
+    "write_flushes": 664
+   },
+   "cpuid_profile": "stage4a-apic",
+   "exit_kind": "user_entry",
+   "fetch_cache_enabled": true,
+   "fetch_cache_tag": "4k",
+   "final_ram_sha256": "aa5da8bb2063bf82fd8d11361174482d6b73b6a493b252f5a29d19fcda4681f3",
+   "max_rss_bytes": 577323008,
+   "mode": "4k",
+   "retired": 2321128949,
+   "stripped_report_sha256": "7687f27f32691e849c400eadeaff3b488089585f1ca0719e083f50eb396597a6",
+   "sys_seconds": 3.66,
+   "user_mode": false,
+   "user_seconds": 1060.42,
+   "walks": {
+    "after_c5": {
+     "data_read": 227552390,
+     "data_write": 143953591,
+     "fetch": 11982241
+    },
+    "before_c5": {
+     "data_read": 286498155,
+     "data_write": 164130745,
+     "fetch": 40869
+    },
+    "total": {
+     "data_read": 514050545,
+     "data_write": 308084336,
+     "fetch": 12023110
+    }
+   },
+   "wall_seconds": 1113.33
+  },
+  "4k-3000000000": {
+   "budget": 3000000000,
+   "cache_after_c5": {
+    "context_flushes": 26617,
+    "hits": 7362206683,
+    "inserts": 12011912,
+    "misses": 38415898,
+    "write_flushes": 620
+   },
+   "cache_total": {
+    "context_flushes": 26618,
+    "hits": 16309755124,
+    "host_flushes": 0,
+    "inserts": 12052781,
+    "misses": 38626605,
+    "write_flushes": 665
+   },
+   "cpuid_profile": "stage4a-apic",
+   "exit_kind": "backend",
+   "fetch_cache_enabled": true,
+   "fetch_cache_tag": "4k",
+   "final_ram_sha256": "2ff2a60569dac744633203777fd8bfb50279629d08ae6ce7e9e2aa8a125372a3",
+   "max_rss_bytes": 638287872,
+   "mode": "4k",
+   "retired": 2322564102,
+   "stripped_report_sha256": "ee8030b6166a1dbd226ece38f6aa7250d31ff754384e39cf404ce2a71a27c691",
+   "sys_seconds": 2.43,
+   "user_mode": true,
+   "user_seconds": 1042.91,
+   "walks": {
+    "after_c5": {
+     "data_read": 227825633,
+     "data_write": 144155709,
+     "fetch": 12011914
+    },
+    "before_c5": {
+     "data_read": 286498155,
+     "data_write": 164130745,
+     "fetch": 40869
+    },
+    "total": {
+     "data_read": 514323788,
+     "data_write": 308286454,
+     "fetch": 12052783
+    }
+   },
+   "wall_seconds": 1053.41
+  },
+  "4k-3000000000-s4a": {
+   "budget": 3000000000,
+   "cache_after_c5": {
+    "context_flushes": 26617,
+    "hits": 11754521652,
+    "inserts": 51062916,
+    "misses": 228785762,
+    "write_flushes": 620
+   },
+   "cache_total": {
+    "context_flushes": 26618,
+    "hits": 20702070093,
+    "host_flushes": 0,
+    "inserts": 51103785,
+    "misses": 228996469,
+    "write_flushes": 665
+   },
+   "cpuid_profile": "stage4a",
+   "exit_kind": "budget_exhausted",
+   "fetch_cache_enabled": true,
+   "fetch_cache_tag": "4k",
+   "final_ram_sha256": "a64e8b259d57890f30c5fd561238796cf79acd71ef32bb6d0cc7747a21affb73",
+   "max_rss_bytes": 638844928,
+   "mode": "4k",
+   "retired": 2999999998,
+   "stripped_report_sha256": "d41005e7a3d49ffbfbbf85fd70aea6c075456ea9363c7755cb2bfcee2a8feef4",
+   "sys_seconds": 3.18,
+   "user_mode": true,
+   "user_seconds": 1343.66,
+   "walks": {
+    "after_c5": {
+     "data_read": 365319191,
+     "data_write": 236410025,
+     "fetch": 51062918
+    },
+    "before_c5": {
+     "data_read": 286498155,
+     "data_write": 164130745,
+     "fetch": 40869
+    },
+    "total": {
+     "data_read": 651817346,
+     "data_write": 400540770,
+     "fetch": 51103787
+    }
+   },
+   "wall_seconds": 1354.91
+  },
+  "nocache-20000000": {
+   "budget": 20000000,
+   "cache_after_c5": {
+    "context_flushes": 0,
+    "hits": 0,
+    "inserts": 0,
+    "misses": 0,
+    "write_flushes": 0
+   },
+   "cache_total": {
+    "context_flushes": 0,
+    "hits": 0,
+    "host_flushes": 0,
+    "inserts": 0,
+    "misses": 0,
+    "write_flushes": 0
+   },
+   "cpuid_profile": "stage4a-apic",
+   "exit_kind": "budget_exhausted",
+   "fetch_cache_enabled": false,
+   "fetch_cache_tag": "4k",
+   "final_ram_sha256": "8dad105f176925fae6a6b148942c9bdf82864b62d9d8efa554b387be798bdb76",
+   "max_rss_bytes": 637779968,
+   "mode": "nocache",
+   "retired": 20000000,
+   "stripped_report_sha256": "689b887a9724694fc861f9205d2f74c884c6a474080c3c99505a27f738d2a3a8",
+   "sys_seconds": 0.05,
+   "user_mode": false,
+   "user_seconds": 17.32,
+   "walks": {
+    "after_c5": {
+     "data_read": 0,
+     "data_write": 0,
+     "fetch": 0
+    },
+    "before_c5": {
+     "data_read": 4274318,
+     "data_write": 7061755,
+     "fetch": 72073288
+    },
+    "total": {
+     "data_read": 4274318,
+     "data_write": 7061755,
+     "fetch": 72073288
+    }
+   },
+   "wall_seconds": 17.38
+  },
+  "nocache-2330000000": {
+   "budget": 2330000000,
+   "cache_after_c5": {
+    "context_flushes": 0,
+    "hits": 0,
+    "inserts": 0,
+    "misses": 0,
+    "write_flushes": 0
+   },
+   "cache_total": {
+    "context_flushes": 0,
+    "hits": 0,
+    "host_flushes": 0,
+    "inserts": 0,
+    "misses": 0,
+    "write_flushes": 0
+   },
+   "cpuid_profile": "stage4a-apic",
+   "exit_kind": "user_entry",
+   "fetch_cache_enabled": false,
+   "fetch_cache_tag": "4k",
+   "final_ram_sha256": "aa5da8bb2063bf82fd8d11361174482d6b73b6a493b252f5a29d19fcda4681f3",
+   "max_rss_bytes": 576536576,
+   "mode": "nocache",
+   "retired": 2321128949,
+   "stripped_report_sha256": "7687f27f32691e849c400eadeaff3b488089585f1ca0719e083f50eb396597a6",
+   "sys_seconds": 6.58,
+   "user_mode": false,
+   "user_seconds": 1993.12,
+   "walks": {
+    "after_c5": {
+     "data_read": 227552390,
+     "data_write": 143953591,
+     "fetch": 4062403900
+    },
+    "before_c5": {
+     "data_read": 286498155,
+     "data_write": 164130745,
+     "fetch": 4864838693
+    },
+    "total": {
+     "data_read": 514050545,
+     "data_write": 308084336,
+     "fetch": 8927242593
+    }
+   },
+   "wall_seconds": 2084.02
+  },
+  "nocache-3000000000": {
+   "budget": 3000000000,
+   "cache_after_c5": {
+    "context_flushes": 0,
+    "hits": 0,
+    "inserts": 0,
+    "misses": 0,
+    "write_flushes": 0
+   },
+   "cache_total": {
+    "context_flushes": 0,
+    "hits": 0,
+    "host_flushes": 0,
+    "inserts": 0,
+    "misses": 0,
+    "write_flushes": 0
+   },
+   "cpuid_profile": "stage4a-apic",
+   "exit_kind": "backend",
+   "fetch_cache_enabled": false,
+   "fetch_cache_tag": "4k",
+   "final_ram_sha256": "2ff2a60569dac744633203777fd8bfb50279629d08ae6ce7e9e2aa8a125372a3",
+   "max_rss_bytes": 582483968,
+   "mode": "nocache",
+   "retired": 2322564102,
+   "stripped_report_sha256": "ee8030b6166a1dbd226ece38f6aa7250d31ff754384e39cf404ce2a71a27c691",
+   "sys_seconds": 4.29,
+   "user_mode": true,
+   "user_seconds": 1876.54,
+   "walks": {
+    "after_c5": {
+     "data_read": 227825633,
+     "data_write": 144155709,
+     "fetch": 4067041478
+    },
+    "before_c5": {
+     "data_read": 286498155,
+     "data_write": 164130745,
+     "fetch": 4864838693
+    },
+    "total": {
+     "data_read": 514323788,
+     "data_write": 308286454,
+     "fetch": 8931880171
+    }
+   },
+   "wall_seconds": 1894.65
+  },
+  "nocache-3000000000-s4a": {
+   "budget": 3000000000,
+   "cache_after_c5": {
+    "context_flushes": 0,
+    "hits": 0,
+    "inserts": 0,
+    "misses": 0,
+    "write_flushes": 0
+   },
+   "cache_total": {
+    "context_flushes": 0,
+    "hits": 0,
+    "host_flushes": 0,
+    "inserts": 0,
+    "misses": 0,
+    "write_flushes": 0
+   },
+   "cpuid_profile": "stage4a",
+   "exit_kind": "budget_exhausted",
+   "fetch_cache_enabled": false,
+   "fetch_cache_tag": "4k",
+   "final_ram_sha256": "a64e8b259d57890f30c5fd561238796cf79acd71ef32bb6d0cc7747a21affb73",
+   "max_rss_bytes": 577241088,
+   "mode": "nocache",
+   "retired": 2999999998,
+   "stripped_report_sha256": "d41005e7a3d49ffbfbbf85fd70aea6c075456ea9363c7755cb2bfcee2a8feef4",
+   "sys_seconds": 7.31,
+   "user_mode": true,
+   "user_seconds": 2519.2,
+   "walks": {
+    "after_c5": {
+     "data_read": 365319191,
+     "data_write": 236410025,
+     "fetch": 6430956791
+    },
+    "before_c5": {
+     "data_read": 286498155,
+     "data_write": 164130745,
+     "fetch": 4864838693
+    },
+    "total": {
+     "data_read": 651817346,
+     "data_write": 400540770,
+     "fetch": 11295795484
+    }
+   },
+   "wall_seconds": 2540.98
+  }
+ },
+ "slice": "S4-13d"
+}
