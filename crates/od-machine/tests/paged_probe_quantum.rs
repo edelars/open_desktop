@@ -970,6 +970,83 @@ fn paged_probe_mov_rsp_disp8_rdx_store_uses_tracked_four_level_walk() {
 }
 
 #[test]
+fn paged_probe_call_rel32_0x579_pushes_return_rip_with_tracked_four_level_walk() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0xe8, 0x79, 0x05, 0, 0]);
+    let mut state = initial_state(0);
+    state.rip = CODE_LINEAR;
+    state.gpr[Register::Rsp as usize] = DATA_LINEAR + 0x100;
+    state.rflags = 0xd5a;
+    let before = state.clone();
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.page_fault, None);
+    assert_eq!(result.memory_error, None);
+    let return_rip = CODE_LINEAR + 5;
+    let mut expected = before;
+    expected.gpr[Register::Rsp as usize] = DATA_LINEAR + 0xf8;
+    expected.rip = CODE_LINEAR + 5 + 0x579;
+    assert_eq!(state, expected);
+    assert_eq!(qword(&mut bus, DATA_PHYSICAL + 0xf8), return_rip);
+    assert!(writes.contains(&range(0x1000)));
+    assert!(writes.contains(&range(0x2000)));
+    assert!(writes.contains(&range(0x3010)));
+    assert!(writes.contains(&range(0x4000)));
+    assert!(writes.contains(&range(0x3020)));
+    assert!(writes.contains(&range(0x5000)));
+    assert!(writes.contains(&range(DATA_PHYSICAL + 0xf8)));
+    assert_ne!(qword(&mut bus, ROOT) & (1 << 5), 0);
+    assert_ne!(qword(&mut bus, ROOT + 0x1000) & (1 << 5), 0);
+    assert_ne!(qword(&mut bus, ROOT + 0x2020) & (1 << 5), 0);
+    assert_eq!(qword(&mut bus, ROOT + 0x2020) & (1 << 6), 0);
+    let data_pte = qword(&mut bus, ROOT + 0x4000);
+    assert_ne!(data_pte & (1 << 5), 0);
+    assert_ne!(data_pte & (1 << 6), 0);
+}
+
+#[test]
+fn paged_probe_call_rel32_0x579_write_protection_fault_is_atomic() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0xe8, 0x79, 0x05, 0, 0]);
+    let old_stack = 0xfeed_face_cafe_beefu64;
+    put_bytes_at(&mut bus, DATA_PHYSICAL + 0xf8, &old_stack.to_le_bytes());
+    put(&mut bus, 0x5000, DATA_PHYSICAL | 5);
+    let mut state = initial_state(0);
+    state.rip = CODE_LINEAR;
+    state.gpr[Register::Rsp as usize] = DATA_LINEAR + 0x100;
+    let before = state.clone();
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    let expected_fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x3),
+        linear_address: Some(DATA_LINEAR + 0xf8),
+    };
+    assert_eq!(result.exit, PagedProbeExit::Fault(expected_fault.clone()));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.memory_error, None);
+    assert_eq!(state, before);
+    assert_eq!(qword(&mut bus, DATA_PHYSICAL + 0xf8), old_stack);
+    let record = result
+        .page_fault
+        .as_ref()
+        .expect("stack write-protection fault");
+    assert_eq!(record.fault(), &expected_fault);
+    assert_eq!(record.saved_rip(), CODE_LINEAR);
+    assert_eq!(record.access(), AccessKind::Write);
+    let data_pte = qword(&mut bus, ROOT + 0x4000);
+    assert_ne!(data_pte & (1 << 5), 0);
+    assert_eq!(data_pte & (1 << 6), 0);
+    assert!(!writes.contains(&range(DATA_PHYSICAL + 0xf8)));
+}
+
+#[test]
 fn paged_probe_mov_rsp_disp8_rdx_write_protection_fault_is_atomic() {
     let (mut bus, _) = fixture();
     put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x48, 0x89, 0x54, 0x24, 0x30]);

@@ -10382,6 +10382,98 @@ fn rust_helper_call_rel32_0x859_pushes_return_rip_and_targets_helper() {
 }
 
 #[test]
+fn rust_helper_call_rel32_0x579_pushes_return_rip_and_targets_helper() {
+    let code = [0xe8, 0x79, 0x05, 0, 0]; // CALL 0x201560 from 0x200fe2
+    let rip = 0x200fe2;
+    let mut memory = memory_with_code_at(&code, rip);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsp as usize] = DATA + 0x100;
+    cpu.rflags = 0xd5a;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    let return_rip = rip + code.len() as u64;
+    let mut expected = before.clone();
+    expected.gpr[Register::Rsp as usize] -= 8;
+    expected.rip = 0x201560;
+    assert_eq!(cpu, expected);
+    assert_eq!(memory.write_addresses, [DATA + 0xf8]);
+    assert_eq!(
+        memory.bytes[DATA_PHYSICAL + 0xf8..DATA_PHYSICAL + 0x100],
+        return_rip.to_le_bytes()
+    );
+    assert_eq!(memory.reads, 0);
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    assert_eq!(rip + code.len() as u64 + 0x579, 0x201560);
+}
+
+#[test]
+fn rust_helper_call_rel32_0x579_faults_are_atomic() {
+    let code = [0xe8, 0x79, 0x05, 0, 0];
+    let rip = 0x200fe2;
+
+    let mut memory = memory_with_code_at(&code, rip);
+    memory.fail_write = Some(page_fault(0x2, DATA + 0xf8));
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr[Register::Rsp as usize] = DATA + 0x100;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x2),
+            linear_address: Some(DATA + 0xf8),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.write_addresses, [DATA + 0xf8]);
+
+    let mut memory = memory_with_code_at(&code, rip);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr[Register::Rsp as usize] = 0x0000_8000_0000_0008;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 12,
+            error_code: Some(0),
+            linear_address: None,
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.writes, 0);
+
+    let mut memory = Memory::new(&[]);
+    memory.bytes[CODE_PHYSICAL + 0xffd..CODE_PHYSICAL + 0x1000].copy_from_slice(&code[..3]);
+    let mut cpu = state();
+    cpu.rip = RIP + 0xffd;
+    cpu.gpr[Register::Rsp as usize] = DATA + 0x100;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    memory.fail_fetch_at = Some((cpu.rip + 3, page_fault(0x10, cpu.rip + 3)));
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+    assert!(matches!(result.exit, PagedProbeExit::Fault(_)));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
 fn rust_helper_call_rel32_0x859_faults_are_atomic() {
     let code = [0xe8, 0x59, 0x08, 0, 0];
     let rip = 0x2004b2;
@@ -10718,6 +10810,12 @@ fn firmware_entry_call_neighbours_stay_unsupported_without_mutation() {
         (&[0xe8, 0x8c, 0x02, 0, 0], 0xe8), // adjacent Rust-call displacement
         (&[0xe8, 0x58, 0x08, 0, 0], 0xe8), // adjacent displacement below Rust-helper call
         (&[0xe8, 0x5a, 0x08, 0, 0], 0xe8), // adjacent displacement above Rust-helper call
+        (&[0xe8, 0x78, 0x05, 0, 0], 0xe8), // adjacent displacement below ISSUE-239
+        (&[0xe8, 0x7a, 0x05, 0, 0], 0xe8), // adjacent displacement above ISSUE-239
+        (&[0x2e, 0xe8, 0x79, 0x05, 0, 0], 0xe8), // prefixed exact displacement
+        (&[0x66, 0xe8, 0x79, 0x05, 0, 0], 0xe8), // operand-size prefix
+        (&[0x67, 0xe8, 0x79, 0x05, 0, 0], 0xe8), // address-size prefix
+        (&[0xf3, 0xe8, 0x79, 0x05, 0, 0], 0xe8), // REP prefix
         (&[0xe9, 0x83, 0x01, 0, 0], 0xe9), // JMP rel32
         (&[0x2e, 0xe8, 0x83, 0x01, 0, 0], 0xe8), // null-base segment prefix
         (&[0x66, 0xe8, 0x83, 0x01, 0, 0], 0xe8), // operand-size prefix
@@ -10752,6 +10850,7 @@ fn firmware_entry_call_is_unsupported_in_cpl3_profile() {
         [0xe8, 0x83, 0x01, 0, 0],
         [0xe8, 0x8d, 0x02, 0, 0],
         [0xe8, 0x59, 0x08, 0, 0],
+        [0xe8, 0x79, 0x05, 0, 0],
     ] {
         let mut memory = Memory::new(&bytes);
         let mut cpu = state();
@@ -19093,6 +19192,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0xe8, 0x83, 0x01, 0, 0][..], 0xe8),
         (&[0xe8, 0x8d, 0x02, 0, 0][..], 0xe8),
         (&[0xe8, 0x59, 0x08, 0, 0][..], 0xe8),
+        (&[0xe8, 0x79, 0x05, 0, 0][..], 0xe8),
         (&[0x41, 0x56][..], 0x56),
         (&[0x41, 0x57][..], 0x57),
         (&[0x41, 0x55][..], 0x55),

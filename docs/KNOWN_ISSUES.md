@@ -1232,13 +1232,22 @@
 - **Проверка:** four focused profile tests pass for full-width high-bit transfer/state retention, fetch-fault atomicity, neighboring register/REX/opcode/width/prefix forms and CPL3; other-profile isolation passes. Full od-isa suites pass. Runner retired 8921 instructions and stopped at ISSUE-239: `E8 79 05 00 00` (`CALL rel32 +0x579`), RIP `0x200fe2`, `Unsupported { opcode: 232 }`, `com1_bytes=0`; full firmware handoff validation remains incomplete.
 - **Следующий шаг:** review exact REX.R/REX.B register-copy semantics and ISSUE-239 call boundary.
 
-### ISSUE-239 — S7-04: Rust helper `CALL rel32 +0x579` (`E8 79 05 00 00`) remains outside paged CPU profile
+### ISSUE-239 — S7-04: Rust helper `CALL rel32 +0x579` (`E8 79 05 00 00`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-238.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200fe2`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner retired 8921 instructions and stopped at `E8 79 05 00 00`, `Unsupported { opcode: 232 }`, `RIP=0x200fe2`; COM1 remains empty.
+- **Статус:** решена узко; independent review approved with no findings.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact unprefixed qword rel32 CALL displacement `+0x579` at this instruction; generic CALL encodings remain unsupported. Target is `0x201560`, and return RIP `0x200fe7` is pushed through the tracked qword stack-write path before committing RSP/RIP.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue238.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xfe2` are `E8 79 05 00 00`; runner budget 10000.
-- **Следующий шаг:** verify exact call target/stack semantics and narrow profile admission for ISSUE-239.
+- **Проверка:** 20 CALL-related profile tests pass, including target, return-RIP bytes, register/flag retention, fetch/stack faults, neighbors, CPL3 and other-profile isolation; both machine CALL tests pass, covering four-level accessed/dirty behavior and WP fault atomicity. Independent review approved with no findings. Firmware runner advances beyond ISSUE-239 to `50 4D 85 C0` at RIP `0x20156a`, after 8,928 retired instructions; COM1 remains empty.
+- **Следующий шаг:** review exact CALL profile boundary and investigate the next firmware instruction `PUSH RAX` (`0x50`, ISSUE-240).
+
+### ISSUE-240 — S7-04: helper `PUSH RAX` (`50`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-239.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20156a`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner retired 8,928 instructions and stopped on `50` (`PUSH RAX`), `Unsupported { opcode: 80 }`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue239.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x156a` begin `50 4D 85 C0`; runner budget 10000.
+- **Следующий шаг:** verify exact register push semantics and narrow base-profile admission for ISSUE-240.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.
