@@ -2000,6 +2000,154 @@ impl PagedFetchedLoadSession {
     }
 }
 
+/// Which engine executed the step of [`PagedFetchedLoadSession::execute_or_interpret`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PagedStepPath {
+    Jit,
+    Interpreter,
+}
+
+/// Why the JIT path did not execute the step. Every variant means the
+/// instruction itself was not executed: RAX, RIP, RFLAGS and guest data are
+/// untouched and no device was reached. Page-walk Accessed bits may already be
+/// committed; they are idempotent and are kept in the merged write list.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedStepFallbackReason {
+    /// Refused before running: CPU context, CR3 ownership, operand range,
+    /// paging controls, instruction fetch (including a fetch #PF), an
+    /// unsupported form, compile or publish.
+    Refused(PagedFetchedLoadErrorKind),
+    /// The JIT ran its checked helper and the RAM-only adapter refused the data
+    /// operand (MMIO or another non-RAM target). The helper left the CPU state
+    /// unchanged and never reached a device.
+    OperandMemoryError(MemoryOperationMemoryErrorV2),
+}
+
+/// A JIT result that must not be repeated by the interpreter.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedStepError {
+    /// The interpreter refused its inputs (paging controls or RFLAGS
+    /// definedness) before it executed anything.
+    Interpreter(od_machine::PagedMovStepError),
+    /// The JIT helper boundary failed in a way that does not prove the CPU
+    /// state is unchanged. The step is not retried.
+    JitHostFailure(MemoryOperationExecutionErrorV2),
+}
+
+/// Result of one dispatched step.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedStepOutcome {
+    /// The JIT executed the instruction (completed or delivered a guest #PF).
+    Jit(PagedFetchedLoadReport),
+    /// The interpreter executed the step exactly once after a JIT refusal that
+    /// had no instruction effects. `committed_writes` is the full ordered list of
+    /// page-walk writes: the refused JIT attempt first, then the interpreter's.
+    /// It equals the list a pure interpreter step reports on identical RAM.
+    Interpreter {
+        reason: PagedStepFallbackReason,
+        report: od_machine::PagedMovStepReport,
+        committed_writes: Vec<od_machine::GuestPhysicalRange>,
+    },
+}
+
+impl PagedStepOutcome {
+    pub fn path(&self) -> PagedStepPath {
+        match self {
+            Self::Jit(_) => PagedStepPath::Jit,
+            Self::Interpreter { .. } => PagedStepPath::Interpreter,
+        }
+    }
+}
+
+impl PagedFetchedLoadSession {
+    /// S4-15c: one step with an interpreter fallback.
+    ///
+    /// The JIT path of [`Self::execute`] runs first. If it executed the
+    /// instruction (success or a guest #PF with its committed Accessed bits)
+    /// that result is final and the interpreter is never invoked. If it refused
+    /// without executing the instruction, `od_machine::step_paged_mov` runs
+    /// exactly once on the same state and bus.
+    ///
+    /// A refusal has no instruction effects by construction: the only effects a
+    /// refused attempt can have are page-walk Accessed-bit commits (instruction
+    /// fetch, or the data walk before the RAM-only adapter refused a non-RAM
+    /// operand). Re-walking is idempotent for those bits, so the interpreter
+    /// commits nothing twice, and the attempt's writes are prepended to the
+    /// reported list. A JIT helper failure that does not prove the state is
+    /// unchanged is returned as an error and never retried.
+    pub fn execute_or_interpret(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+        rflags_defined: u64,
+    ) -> Result<PagedStepOutcome, PagedStepError> {
+        // Validate the interpreter's input before the JIT attempt so a bad
+        // argument can never surface after fetch effects were committed.
+        if rflags_defined & !od_isa::INTEGER_FLAGS != 0 {
+            return Err(PagedStepError::Interpreter(
+                od_machine::PagedMovStepError::CpuInput(
+                    od_isa::execute::RunInputError::InvalidRflagsDefined {
+                        value: rflags_defined,
+                    },
+                ),
+            ));
+        }
+        let (reason, mut attempt_writes) = match self.execute(state, bus, cr3, efer, access_context)
+        {
+            Ok(report) => match &report.execution.callback_result {
+                Err(MemoryOperationExecutionErrorV2::MemoryError(error)) => {
+                    let reason = PagedStepFallbackReason::OperandMemoryError(*error);
+                    let mut writes = report.fetch_committed_writes.clone();
+                    writes.extend(report.execution.committed_writes.iter().copied());
+                    (reason, writes)
+                }
+                Err(error) => return Err(PagedStepError::JitHostFailure(error.clone())),
+                Ok(result) => match result.exit {
+                    MemoryOperationExecutionExitV2::Complete
+                    | MemoryOperationExecutionExitV2::GuestFault(_) => {
+                        return Ok(PagedStepOutcome::Jit(report));
+                    }
+                    // A single-load block never ends in any other way. If it
+                    // does, the instruction may have run: report it, never
+                    // retry it on the interpreter.
+                    MemoryOperationExecutionExitV2::CodeInvalidated
+                    | MemoryOperationExecutionExitV2::BudgetExhausted
+                    | MemoryOperationExecutionExitV2::StopRequested
+                    | MemoryOperationExecutionExitV2::StopAddress => {
+                        return Err(PagedStepError::JitHostFailure(
+                            MemoryOperationExecutionErrorV2::InvalidOutcome,
+                        ));
+                    }
+                },
+            },
+            Err(error) => (
+                PagedStepFallbackReason::Refused(error.kind),
+                error.fetch_committed_writes,
+            ),
+        };
+        let mut interpreter_writes = Vec::new();
+        let report = od_machine::step_paged_mov(
+            state,
+            bus,
+            cr3,
+            efer,
+            access_context,
+            rflags_defined,
+            |range| interpreter_writes.push(range),
+        )
+        .map_err(PagedStepError::Interpreter)?;
+        attempt_writes.extend(interpreter_writes);
+        Ok(PagedStepOutcome::Interpreter {
+            reason,
+            report,
+            committed_writes: attempt_writes,
+        })
+    }
+}
+
 /// CPU-context gate shared by every paged V2 load entry. It runs before any
 /// page walk or commit, so an unsupported context leaves guest memory untouched.
 fn check_paged_load_v2_context(

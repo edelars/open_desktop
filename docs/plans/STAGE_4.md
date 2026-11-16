@@ -637,6 +637,20 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   reset/retirement и fallback — S4-15c–f. См. раздел S4-15b в
   [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
 
+#### S4-15c. Fallback-диспетчер на один шаг
+
+- Реализовано (ожидает независимого ревью, чекбокс S4-15 не ставится):
+  `PagedFetchedLoadSession::execute_or_interpret` в `od-host` исполняет шаг
+  через JIT S4-15b; если JIT отказал, не исполнив инструкцию (контекст,
+  operand range, fetch включая #PF, неподдерживаемая форма, compile/publish,
+  RAM-only отказ операнда — MMIO), ровно один раз вызывается
+  `od_machine::step_paged_mov` на тех же state/bus. Исполненный JIT-шаг
+  (успех или data #PF) не повторяется. Результат называет путь
+  (`Jit`/`Interpreter`). Тесты `s4_15c_*` в
+  `tests/system/stage4_memory_fault.rs`. Store (15d), расширение форм (15e),
+  reset/handle (15f), закрытие (15g) не сделаны. См. раздел S4-15c в
+  [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
+
 ### S4-16. Physical aliases и инвалидация исполняемого кода
 
 - [ ] Принято после ревью.

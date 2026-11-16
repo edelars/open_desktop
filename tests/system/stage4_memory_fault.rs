@@ -4,8 +4,9 @@ use od_host::{MemoryOperationExecutionExitV2, PublishedCode};
 use od_isa::memory::{AccessContext, InstructionMode, PrivilegeLevel};
 use od_isa::{LongModeState, Register};
 use od_machine::{
-    AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
-    MemoryRegionKind, MemoryRegionSpec, RamLimits,
+    AccessWidth, BusDevice, DeviceAccess, DeviceError, GuestPhysicalAddress, GuestPhysicalRange,
+    IoSpace, MachineBus, MachineMemoryMap, MemoryRegionKind, MemoryRegionSpec, MmioBinding,
+    RamLimits,
 };
 use od_testkit::memory_fault::{
     Backend, DeviceEvent, ExecutionStatus, MemoryDelta, MemoryFaultObservation, Outcome,
@@ -13,7 +14,7 @@ use od_testkit::memory_fault::{
 };
 use od_testkit::result::Observation;
 use od_testkit::{HexU64, sha256_hex};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 const CODE_RIP: u64 = 0x0040_1000;
 const DATA_LINEAR: u64 = 0x0000_0080_0000_0120;
@@ -28,6 +29,9 @@ const DATA_PHYSICAL: u64 = 0x9000;
 const INITIAL_RAX: u64 = 0xfeed_face_cafe_beef;
 const LOADED_VALUE: u64 = 0x0123_4567_89ab_cdef;
 const CODE: [u8; 3] = [0x48, 0x8b, 0x03];
+/// `mov [rbx], rcx` (the interpreter implements it), placed right after `CODE`
+/// in the fetch fixtures.
+const FOLLOWING_CODE: [u8; 3] = [0x48, 0x89, 0x0b];
 const RAM_OBSERVATION_WORDS: [u64; 8] = [
     0x1000, 0x1008, 0x2000, 0x3000, 0x4010, 0x5000, 0x6008, 0x7000,
 ];
@@ -527,6 +531,13 @@ fn make_fetch_bus(layout: FetchLayout) -> MachineBus {
         MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)]).unwrap();
     let mut bus =
         MachineBus::new(map, RamLimits::new(FETCH_RAM_BYTES), vec![], vec![], vec![]).unwrap();
+    populate_fetch_memory(&mut bus, layout);
+    bus
+}
+
+/// Page tables, code bytes and the data qword shared by the RAM-only and the
+/// MMIO-backed fetch buses.
+fn populate_fetch_memory(bus: &mut MachineBus, layout: FetchLayout) {
     let upper = if layout.code_upper_ad { 0x27 } else { 0x7 };
     for (address, value) in [
         (0x1000, 0x2000 | upper),
@@ -543,14 +554,22 @@ fn make_fetch_bus(layout: FetchLayout) -> MachineBus {
             DATA_PHYSICAL | if layout.data_leaf_present { 0x7 } else { 0x6 },
         ),
     ] {
-        put_qword(&mut bus, address, value);
+        put_qword(bus, address, value);
     }
     for address in [CODE_PHYSICAL, CODE_PHYSICAL_2, CODE_PHYSICAL_2 + 0x80] {
         bus.patch_physical_ram(GuestPhysicalAddress::new(address), &CODE)
             .unwrap();
     }
-    put_qword(&mut bus, DATA_PHYSICAL + 0x120, LOADED_VALUE);
-    bus
+    // A second instruction the interpreter executes (`mov [rbx], rcx`) right
+    // after the first one. One step must retire only the instruction at RIP: an
+    // extra interpreter step after the JIT would move RIP, overwrite the data
+    // qword with RCX and set its Dirty bit, all visible against the oracle.
+    bus.patch_physical_ram(
+        GuestPhysicalAddress::new(CODE_PHYSICAL + CODE.len() as u64),
+        &FOLLOWING_CODE,
+    )
+    .unwrap();
+    put_qword(bus, DATA_PHYSICAL + 0x120, LOADED_VALUE);
 }
 
 fn fetch_state(rip: u64) -> LongModeState {
@@ -1079,4 +1098,726 @@ fn s4_15b_reuse_key_compares_bytes_when_page_and_generation_are_equal() {
     assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX);
     assert!(!session.has_admitted_block());
     assert_eq!(session.admissions(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// S4-15c: one step through the JIT with an interpreter fallback. A JIT refusal
+// that executed nothing runs `step_paged_mov` exactly once on the same state
+// and bus; an executed JIT step (success or guest #PF) is never repeated.
+// ---------------------------------------------------------------------------
+
+/// Device window directly above RAM; the data leaf maps to it in the MMIO cases.
+const MMIO_BASE: u64 = FETCH_RAM_BYTES;
+const MMIO_VALUE: u64 = 0x5a5a_a5a5_0f0f_f0f0;
+/// Data-walk entries in walk order, as the page walk commits them.
+const DATA_WALK_RANGES: [(u64, u64); 4] = [(0x1008, 8), (0x3000, 8), (0x5000, 8), (0x7000, 8)];
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DeviceCall {
+    Read(DeviceAccess),
+    Write(DeviceAccess, u64),
+}
+
+type DeviceJournal = Arc<Mutex<Vec<DeviceCall>>>;
+
+struct JournalMmio(DeviceJournal);
+
+impl BusDevice for JournalMmio {
+    fn read(&mut self, access: DeviceAccess) -> Result<u64, DeviceError> {
+        self.0.lock().unwrap().push(DeviceCall::Read(access));
+        Ok(MMIO_VALUE)
+    }
+
+    fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
+        self.0
+            .lock()
+            .unwrap()
+            .push(DeviceCall::Write(access, value));
+        Ok(())
+    }
+}
+
+/// The fetch layout with the data leaf mapped onto a counting MMIO device.
+fn make_mmio_fetch_bus(journal: &DeviceJournal) -> MachineBus {
+    let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), FETCH_RAM_BYTES).unwrap();
+    let mmio = GuestPhysicalRange::new(GuestPhysicalAddress::new(MMIO_BASE), 0x1000).unwrap();
+    let map = MachineMemoryMap::new(
+        36,
+        vec![
+            MemoryRegionSpec::new(ram, MemoryRegionKind::Ram),
+            MemoryRegionSpec::new(mmio, MemoryRegionKind::Mmio),
+        ],
+    )
+    .unwrap();
+    let mut bus = MachineBus::new(
+        map,
+        RamLimits::new(FETCH_RAM_BYTES),
+        vec![Box::new(JournalMmio(Arc::clone(journal)))],
+        vec![MmioBinding {
+            region_start: GuestPhysicalAddress::new(MMIO_BASE),
+            device_index: 0,
+        }],
+        vec![],
+    )
+    .unwrap();
+    populate_fetch_memory(&mut bus, FetchLayout::CLEAN);
+    put_qword(&mut bus, 0x7000, MMIO_BASE | 0x7);
+    bus
+}
+
+fn mmio_access(offset: u64) -> DeviceAccess {
+    DeviceAccess {
+        space: IoSpace::Mmio,
+        offset,
+        width: AccessWidth::Qword,
+    }
+}
+
+/// State and RAM compared between the dispatcher and a pure interpreter step.
+#[derive(Debug, PartialEq)]
+struct StepSnapshot {
+    gprs: [u64; 16],
+    rip: u64,
+    rflags: u64,
+    writes: Vec<(u64, u64)>,
+    ram: Vec<u64>,
+}
+
+fn snapshot(
+    state: &LongModeState,
+    writes: &[GuestPhysicalRange],
+    bus: &mut MachineBus,
+) -> StepSnapshot {
+    StepSnapshot {
+        gprs: state.gpr,
+        rip: state.rip,
+        rflags: state.rflags & RFLAGS_DEFINED,
+        writes: range_pairs(writes),
+        ram: ram_image(bus),
+    }
+}
+
+fn pure_interpreter(
+    bus: &mut MachineBus,
+    state: &mut LongModeState,
+    privilege: PrivilegeLevel,
+) -> (od_machine::PagedMovStepReport, StepSnapshot) {
+    let mut writes = Vec::new();
+    let report = od_machine::step_paged_mov(
+        state,
+        bus,
+        CR3,
+        EFER,
+        fetch_context(privilege),
+        RFLAGS_DEFINED,
+        |range| writes.push(range),
+    )
+    .unwrap();
+    let snapshot = snapshot(state, &writes, bus);
+    (report, snapshot)
+}
+
+/// Runs the dispatcher on `bus` and a pure interpreter step on the identical
+/// `oracle_bus`, asserts they agree on registers, RIP, RFLAGS, PageFaultRecord,
+/// the full ordered committed-write list and the whole RAM image, and returns
+/// the dispatcher outcome for path-specific assertions.
+fn dispatch_equals_interpreter(
+    label: &str,
+    session: &mut od_host::PagedFetchedLoadSession,
+    mut oracle_bus: MachineBus,
+    bus: &mut MachineBus,
+    privilege: PrivilegeLevel,
+    prepare: impl Fn(&mut LongModeState),
+) -> (od_host::PagedStepOutcome, LongModeState) {
+    let mut oracle_state = fetch_state(CODE_RIP);
+    prepare(&mut oracle_state);
+    let (oracle_report, oracle_snapshot) =
+        pure_interpreter(&mut oracle_bus, &mut oracle_state, privilege);
+
+    let mut state = fetch_state(CODE_RIP);
+    prepare(&mut state);
+    let outcome = session
+        .execute_or_interpret(
+            &mut state,
+            bus,
+            CR3,
+            EFER,
+            fetch_context(privilege),
+            RFLAGS_DEFINED,
+        )
+        .unwrap_or_else(|error| panic!("{label}: dispatcher error {error:?}"));
+    let writes = match &outcome {
+        od_host::PagedStepOutcome::Jit(report) => {
+            let execution = report.execution.callback_result.as_ref().unwrap();
+            // The JIT result must mean exactly what the interpreter reported.
+            match &execution.exit {
+                MemoryOperationExecutionExitV2::Complete => {
+                    assert_eq!(
+                        oracle_report.cpu.exit,
+                        od_isa::execute::RunExit::StopAddress,
+                        "{label}"
+                    );
+                    assert_eq!(oracle_report.page_fault, None, "{label}");
+                }
+                MemoryOperationExecutionExitV2::GuestFault(fault) => {
+                    assert_eq!(
+                        oracle_report.cpu.exit,
+                        od_isa::execute::RunExit::Fault(fault.clone()),
+                        "{label}"
+                    );
+                    assert_eq!(
+                        report.execution.page_fault, oracle_report.page_fault,
+                        "{label}"
+                    );
+                }
+                other => panic!("{label}: unexpected JIT exit {other:?}"),
+            }
+            assert_eq!(
+                execution.retired_instructions, oracle_report.cpu.instructions_executed,
+                "{label}"
+            );
+            let mut writes = report.fetch_committed_writes.clone();
+            writes.extend(report.execution.committed_writes.iter().copied());
+            writes
+        }
+        od_host::PagedStepOutcome::Interpreter {
+            report,
+            committed_writes,
+            ..
+        } => {
+            // Whole report: CPU result, retained PageFaultRecord, memory error.
+            assert_eq!(report, &oracle_report, "{label}");
+            committed_writes.clone()
+        }
+    };
+    assert_eq!(
+        snapshot(&state, &writes, bus),
+        oracle_snapshot,
+        "{label}: dispatcher == pure interpreter"
+    );
+    // The whole CPU state, not only the masked RFLAGS inside the snapshot.
+    assert_eq!(state, oracle_state, "{label}: full LongModeState");
+    (outcome, state)
+}
+
+#[test]
+fn s4_15c_supported_form_stays_on_the_jit_and_equals_the_interpreter() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    for (label, layout, privilege) in [
+        ("success CPL0", FetchLayout::CLEAN, PrivilegeLevel::Ring0),
+        ("success CPL3", FetchLayout::CLEAN, PrivilegeLevel::Ring3),
+        (
+            // A data #PF is an executed JIT result: it is delivered as is and
+            // the interpreter must not re-run it.
+            "data #PF CPL0",
+            FetchLayout {
+                data_leaf_present: false,
+                ..FetchLayout::CLEAN
+            },
+            PrivilegeLevel::Ring0,
+        ),
+    ] {
+        let mut session = od_host::PagedFetchedLoadSession::new();
+        let mut bus = make_fetch_bus(layout);
+        let (outcome, state) = dispatch_equals_interpreter(
+            label,
+            &mut session,
+            make_fetch_bus(layout),
+            &mut bus,
+            privilege,
+            |_| {},
+        );
+        assert_eq!(outcome.path(), od_host::PagedStepPath::Jit, "{label}");
+        assert_eq!(session.admissions(), 1, "{label}");
+        if layout.data_leaf_present {
+            assert_eq!(state.gpr[Register::Rax as usize], LOADED_VALUE, "{label}");
+            assert_eq!(state.rip, CODE_RIP + 3, "{label}");
+        } else {
+            assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX, "{label}");
+            assert_eq!(state.rip, CODE_RIP, "{label}");
+            let od_host::PagedStepOutcome::Jit(report) = &outcome else {
+                unreachable!();
+            };
+            let record = report.execution.page_fault.as_ref().unwrap();
+            assert_eq!(record.fault().error_code, Some(0), "{label}");
+            assert_eq!(record.cr2_value(), DATA_LINEAR, "{label}");
+        }
+        // Code and data walk Accessed bits are committed once each.
+        for address in CODE_WALK_ENTRIES.into_iter().chain(DATA_WALK_ENTRIES) {
+            let present_chain = layout.data_leaf_present || address != 0x7000;
+            if present_chain {
+                assert_ne!(
+                    entry(&mut bus, address) & ACCESSED,
+                    0,
+                    "{label}: {address:#x}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn s4_15c_fetch_fault_is_the_interpreters_page_fault_with_the_fetch_writes_kept() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // NX code leaf at CPL0: the JIT fetch walk commits the code A bits, then
+    // faults. The interpreter re-walks (idempotent) and reports the same #PF.
+    let layout = FetchLayout {
+        code_leaf_flags: 0x27 | NX,
+        ..FetchLayout::CLEAN
+    };
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let mut bus = make_fetch_bus(layout);
+    let (outcome, state) = dispatch_equals_interpreter(
+        "NX fetch",
+        &mut session,
+        make_fetch_bus(layout),
+        &mut bus,
+        PrivilegeLevel::Ring0,
+        |_| {},
+    );
+    let od_host::PagedStepOutcome::Interpreter {
+        reason,
+        report,
+        committed_writes,
+    } = &outcome
+    else {
+        panic!("a fetch #PF falls back to the interpreter, got {outcome:?}");
+    };
+    // The JIT-side fetch refusal carries the architectural record itself; it
+    // must be the very record the interpreter reports for the same walk.
+    let od_host::PagedStepFallbackReason::Refused(od_host::PagedFetchedLoadErrorKind::Fetch(
+        od_machine::TrackedCodeSnapshotError::Access(od_machine::TrackedAccessError::PageFault {
+            record: jit_record,
+            ..
+        }),
+    )) = reason
+    else {
+        panic!("expected a JIT fetch page-fault refusal, got {reason:?}");
+    };
+    let record = report.page_fault.as_ref().unwrap();
+    assert_eq!(jit_record, record, "JIT fetch #PF == interpreter #PF");
+    assert_eq!(jit_record.fault().vector, 14);
+    assert_eq!(jit_record.fault().error_code, Some(0x11));
+    assert_eq!(jit_record.cr2_value(), CODE_RIP);
+    assert_eq!(jit_record.saved_rip(), CODE_RIP);
+    assert_eq!(jit_record.access(), od_isa::memory::AccessKind::Fetch);
+    assert_eq!(jit_record.context(), fetch_context(PrivilegeLevel::Ring0));
+    assert_eq!(record.fault().error_code, Some(0x11));
+    assert_eq!(record.cr2_value(), CODE_RIP);
+    assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX);
+    assert_eq!(state.rip, CODE_RIP);
+    // Each fetch-walk entry is written once even though two walks happened.
+    // The NX violation is found at the leaf before its Accessed bit is
+    // written: only the three upper entries are committed, once each.
+    assert_eq!(
+        range_pairs(committed_writes),
+        CODE_WALK_RANGES[..3]
+            .iter()
+            .map(|&(a, l)| (a, l as u64))
+            .collect::<Vec<_>>()
+    );
+    // The operand walk never ran.
+    for address in DATA_WALK_ENTRIES {
+        assert_eq!(entry(&mut bus, address) & ACCESSED, 0);
+    }
+}
+
+#[test]
+fn s4_15c_mmio_operand_reaches_the_device_exactly_once_via_the_interpreter() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let offset = DATA_LINEAR & 0xfff;
+
+    // The JIT alone refuses the MMIO operand: its helper reports a memory
+    // error, the CPU state is untouched and the device saw nothing.
+    let attempt_journal = DeviceJournal::default();
+    let mut attempt_bus = make_mmio_fetch_bus(&attempt_journal);
+    let mut attempt_session = od_host::PagedFetchedLoadSession::new();
+    let mut attempt_state = fetch_state(CODE_RIP);
+    let before = attempt_state.clone();
+    let attempt = attempt_session
+        .execute(
+            &mut attempt_state,
+            &mut attempt_bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap();
+    assert!(
+        matches!(
+            attempt.execution.callback_result,
+            Err(od_host::MemoryOperationExecutionErrorV2::MemoryError(_))
+        ),
+        "{:?}",
+        attempt.execution.callback_result
+    );
+    assert_eq!(attempt_state, before);
+    assert!(
+        attempt_journal.lock().unwrap().is_empty(),
+        "JIT: 0 device calls"
+    );
+
+    // A re-walk by the interpreter is idempotent for Accessed bits: whatever
+    // the refused JIT data walk committed is not committed again, RAM does not
+    // change, and the device is read exactly once.
+    let jit_data_writes = range_pairs(&attempt.execution.committed_writes);
+    // The RAM-only data walk commits its four Accessed bits before the adapter
+    // refuses the non-RAM leaf target.
+    assert_eq!(jit_data_writes, DATA_WALK_RANGES.to_vec());
+    let ram_after_attempt = ram_image(&mut attempt_bus);
+    let mut interpreter_writes = Vec::new();
+    let report = od_machine::step_paged_mov(
+        &mut attempt_state,
+        &mut attempt_bus,
+        CR3,
+        EFER,
+        fetch_context(PrivilegeLevel::Ring0),
+        RFLAGS_DEFINED,
+        |range| interpreter_writes.push(range),
+    )
+    .unwrap();
+    assert_eq!(report.cpu.exit, od_isa::execute::RunExit::StopAddress);
+    // Fetch and data entries already carry A: the interpreter commits nothing.
+    assert!(
+        interpreter_writes.is_empty(),
+        "re-walk committed {interpreter_writes:?} a second time"
+    );
+    assert_eq!(
+        *attempt_journal.lock().unwrap(),
+        [DeviceCall::Read(mmio_access(offset))]
+    );
+    assert_eq!(attempt_state.gpr[Register::Rax as usize], MMIO_VALUE);
+    assert_eq!(ram_image(&mut attempt_bus), ram_after_attempt);
+    // The host has one executable region: release the attempt's block first.
+    drop(attempt_session);
+
+    // The dispatcher on a fresh bus: one device call in total, path
+    // Interpreter, everything equal to a pure interpreter step.
+    let journal = DeviceJournal::default();
+    let oracle_journal = DeviceJournal::default();
+    let mut bus = make_mmio_fetch_bus(&journal);
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let (outcome, state) = dispatch_equals_interpreter(
+        "MMIO operand",
+        &mut session,
+        make_mmio_fetch_bus(&oracle_journal),
+        &mut bus,
+        PrivilegeLevel::Ring0,
+        |_| {},
+    );
+    assert_eq!(outcome.path(), od_host::PagedStepPath::Interpreter);
+    let od_host::PagedStepOutcome::Interpreter {
+        reason,
+        committed_writes,
+        ..
+    } = &outcome
+    else {
+        unreachable!();
+    };
+    assert!(
+        matches!(
+            reason,
+            od_host::PagedStepFallbackReason::OperandMemoryError(_)
+        ),
+        "{reason:?}"
+    );
+    assert_eq!(
+        *journal.lock().unwrap(),
+        [DeviceCall::Read(mmio_access(offset))],
+        "dispatcher: exactly 1 device call"
+    );
+    assert_eq!(*oracle_journal.lock().unwrap(), *journal.lock().unwrap());
+    assert_eq!(state.gpr[Register::Rax as usize], MMIO_VALUE);
+    assert_eq!(state.rip, CODE_RIP + 3);
+    // Code walk then data walk, each entry once (no duplicate from the re-walk).
+    let expected_writes: Vec<(u64, u64)> = CODE_WALK_RANGES
+        .into_iter()
+        .map(|(a, l)| (a, l as u64))
+        .chain(DATA_WALK_RANGES)
+        .collect();
+    assert_eq!(range_pairs(committed_writes), expected_writes);
+    for address in CODE_WALK_ENTRIES.into_iter().chain(DATA_WALK_ENTRIES) {
+        let value = entry(&mut bus, address);
+        assert_ne!(value & ACCESSED, 0, "A set at {address:#x}");
+        assert_eq!(value & DIRTY, 0, "read must not set D at {address:#x}");
+    }
+}
+
+#[test]
+fn s4_15c_cross_page_operand_is_refused_by_the_jit_before_the_walk_and_interpreted() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // Qword at page offset 0xffc: 4 bytes in the data page, 4 in the next one.
+    let cross_linear = (DATA_LINEAR & !0xfff) + 0xffc;
+    let prepare_memory = |bus: &mut MachineBus| {
+        put_qword(bus, 0x7008, CODE_PHYSICAL_2 | 0x7);
+        bus.write_physical(
+            GuestPhysicalAddress::new(DATA_PHYSICAL + 0xffc),
+            AccessWidth::Dword,
+            0x1122_3344,
+            |_| {},
+        )
+        .unwrap();
+    };
+    let mut oracle_bus = make_fetch_bus(FetchLayout::CLEAN);
+    prepare_memory(&mut oracle_bus);
+    let mut bus = make_fetch_bus(FetchLayout::CLEAN);
+    prepare_memory(&mut bus);
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let (outcome, state) = dispatch_equals_interpreter(
+        "cross-page operand",
+        &mut session,
+        oracle_bus,
+        &mut bus,
+        PrivilegeLevel::Ring0,
+        |state| state.gpr[Register::Rbx as usize] = cross_linear,
+    );
+    let od_host::PagedStepOutcome::Interpreter {
+        reason,
+        report,
+        committed_writes,
+    } = &outcome
+    else {
+        panic!("cross-page operand must be interpreted, got {outcome:?}");
+    };
+    assert_eq!(
+        *reason,
+        od_host::PagedStepFallbackReason::Refused(od_host::PagedFetchedLoadErrorKind::Load(
+            od_host::PagedMemoryLoadV2Error::UnsupportedOperandRange {
+                address: cross_linear,
+                length: 8
+            }
+        ))
+    );
+    assert_eq!(report.cpu.exit, od_isa::execute::RunExit::StopAddress);
+    // Low half from the data page, high half from the first code bytes
+    // `48 8B 03 00` of the second page.
+    assert_eq!(state.gpr[Register::Rax as usize], 0x0003_8b48_1122_3344);
+    assert_eq!(state.rip, CODE_RIP + 3);
+    // The JIT refused before any fetch: nothing admitted, and the whole walk
+    // (code fetch plus both data pages) is the interpreter's single execution.
+    assert!(!session.has_admitted_block());
+    assert_eq!(session.admissions(), 0);
+    let writes = range_pairs(committed_writes);
+    assert!(writes.starts_with(&CODE_WALK_RANGES.map(|(a, l)| (a, l as u64))));
+    let mut unique = writes.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    // The shared upper data entries appear once per walk that changes them.
+    assert!(unique.len() >= 8, "{writes:?}");
+    assert_eq!(entry(&mut bus, 0x7008) & ACCESSED, ACCESSED);
+}
+
+#[test]
+fn s4_15c_unsupported_forms_are_interpreted_once_or_reported_unsupported() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let patch = |bus: &mut MachineBus, bytes: &[u8]| {
+        bus.patch_physical_ram(GuestPhysicalAddress::new(CODE_PHYSICAL), bytes)
+            .unwrap();
+    };
+
+    // NOP NOP NOP: the interpreter's allowlist is only `48 8B 03` / `48 89 0B`,
+    // so the fallback ends in its explicit Unsupported exit, nothing retires.
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let mut oracle_bus = make_fetch_bus(FetchLayout::CLEAN);
+    patch(&mut oracle_bus, &[0x90, 0x90, 0x90]);
+    let mut bus = make_fetch_bus(FetchLayout::CLEAN);
+    patch(&mut bus, &[0x90, 0x90, 0x90]);
+    let (outcome, state) = dispatch_equals_interpreter(
+        "NOP",
+        &mut session,
+        oracle_bus,
+        &mut bus,
+        PrivilegeLevel::Ring0,
+        |_| {},
+    );
+    let od_host::PagedStepOutcome::Interpreter { reason, report, .. } = &outcome else {
+        panic!("NOP must be interpreted, got {outcome:?}");
+    };
+    assert_eq!(
+        *reason,
+        od_host::PagedStepFallbackReason::Refused(
+            od_host::PagedFetchedLoadErrorKind::UnsupportedForm {
+                bytes: vec![0x90, 0x90, 0x90]
+            }
+        )
+    );
+    assert!(
+        matches!(
+            report.cpu.exit,
+            od_isa::execute::RunExit::Unsupported { .. }
+        ),
+        "{:?}",
+        report.cpu.exit
+    );
+    assert_eq!(report.cpu.instructions_executed, 0);
+    assert_eq!(state.rip, CODE_RIP);
+    assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX);
+    assert_eq!(session.admissions(), 0);
+
+    // MOV RCX,[RBX] (`48 8B 0B`) is a JIT-compilable form the interpreter
+    // profile does not allow: still one interpreter run, Unsupported, no effects.
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let mut oracle_bus = make_fetch_bus(FetchLayout::CLEAN);
+    patch(&mut oracle_bus, &[0x48, 0x8b, 0x0b]);
+    let mut bus = make_fetch_bus(FetchLayout::CLEAN);
+    patch(&mut bus, &[0x48, 0x8b, 0x0b]);
+    let (outcome, state) = dispatch_equals_interpreter(
+        "MOV RCX,[RBX]",
+        &mut session,
+        oracle_bus,
+        &mut bus,
+        PrivilegeLevel::Ring0,
+        |_| {},
+    );
+    let od_host::PagedStepOutcome::Interpreter { report, .. } = &outcome else {
+        panic!("unsupported form must be interpreted, got {outcome:?}");
+    };
+    assert!(matches!(
+        report.cpu.exit,
+        od_isa::execute::RunExit::Unsupported { .. }
+    ));
+    assert_eq!(state.gpr[Register::Rcx as usize], 0);
+    assert_eq!(state.rip, CODE_RIP);
+
+    // MOV [RBX],RCX (`48 89 0B`): not a JIT form here (the store is S4-15d),
+    // but the interpreter implements it, so the dispatcher executes the store
+    // once through it: the data qword changes and the dirty bit is set.
+    let store_value = 0x1357_9bdf_0246_8ace;
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let mut oracle_bus = make_fetch_bus(FetchLayout::CLEAN);
+    patch(&mut oracle_bus, &[0x48, 0x89, 0x0b]);
+    let mut bus = make_fetch_bus(FetchLayout::CLEAN);
+    patch(&mut bus, &[0x48, 0x89, 0x0b]);
+    let (outcome, state) = dispatch_equals_interpreter(
+        "MOV [RBX],RCX",
+        &mut session,
+        oracle_bus,
+        &mut bus,
+        PrivilegeLevel::Ring0,
+        |state| state.gpr[Register::Rcx as usize] = store_value,
+    );
+    assert_eq!(outcome.path(), od_host::PagedStepPath::Interpreter);
+    assert_eq!(state.rip, CODE_RIP + 3);
+    assert_eq!(entry(&mut bus, DATA_PHYSICAL + 0x120), store_value);
+    assert_ne!(
+        entry(&mut bus, 0x7000) & DIRTY,
+        0,
+        "store sets D on the leaf"
+    );
+    assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX);
+
+    // The same store aimed at the MMIO window: the device sees exactly one
+    // write, so the step was not executed twice (a RAM store alone is
+    // idempotent and could not show that).
+    let journal = DeviceJournal::default();
+    let oracle_journal = DeviceJournal::default();
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let mut oracle_bus = make_mmio_fetch_bus(&oracle_journal);
+    patch(&mut oracle_bus, &[0x48, 0x89, 0x0b]);
+    let mut bus = make_mmio_fetch_bus(&journal);
+    patch(&mut bus, &[0x48, 0x89, 0x0b]);
+    let (outcome, _) = dispatch_equals_interpreter(
+        "MOV [RBX],RCX to MMIO",
+        &mut session,
+        oracle_bus,
+        &mut bus,
+        PrivilegeLevel::Ring0,
+        |state| state.gpr[Register::Rcx as usize] = store_value,
+    );
+    assert_eq!(outcome.path(), od_host::PagedStepPath::Interpreter);
+    assert_eq!(
+        *journal.lock().unwrap(),
+        [DeviceCall::Write(
+            mmio_access(DATA_LINEAR & 0xfff),
+            store_value
+        )]
+    );
+    assert_eq!(*oracle_journal.lock().unwrap(), *journal.lock().unwrap());
+}
+
+#[test]
+fn s4_15c_invalid_rflags_definedness_is_refused_before_any_effect() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let mut bus = make_fetch_bus(FetchLayout::CLEAN);
+    let ram_before = ram_image(&mut bus);
+    let mut state = fetch_state(CODE_RIP);
+    let before = state.clone();
+    let invalid = !od_isa::INTEGER_FLAGS | 1;
+    let error = session
+        .execute_or_interpret(
+            &mut state,
+            &mut bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+            invalid,
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        od_host::PagedStepError::Interpreter(od_machine::PagedMovStepError::CpuInput(
+            od_isa::execute::RunInputError::InvalidRflagsDefined { value: invalid }
+        ))
+    );
+    // Neither the fetch walk's Accessed bits nor the registers changed.
+    assert_eq!(state, before);
+    assert_eq!(ram_image(&mut bus), ram_before);
+    assert_eq!(session.admissions(), 0);
+}
+
+#[test]
+fn s4_15c_publish_refusal_falls_back_to_the_interpreter() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // The host owns one executable region. While another session's block is
+    // live the publish is refused after the fetch walk committed its Accessed
+    // bits; the step still completes, once, on the interpreter.
+    let mut holder = od_host::PagedFetchedLoadSession::new();
+    let mut holder_bus = make_fetch_bus(FetchLayout::CLEAN);
+    let mut holder_state = fetch_state(CODE_RIP);
+    holder
+        .execute(
+            &mut holder_state,
+            &mut holder_bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap();
+    assert!(holder.has_admitted_block());
+
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let mut bus = make_fetch_bus(FetchLayout::CLEAN);
+    let (outcome, state) = dispatch_equals_interpreter(
+        "publish refused",
+        &mut session,
+        make_fetch_bus(FetchLayout::CLEAN),
+        &mut bus,
+        PrivilegeLevel::Ring0,
+        |_| {},
+    );
+    let od_host::PagedStepOutcome::Interpreter {
+        reason,
+        committed_writes,
+        ..
+    } = &outcome
+    else {
+        panic!("publish refusal must fall back, got {outcome:?}");
+    };
+    assert_eq!(
+        reason,
+        &od_host::PagedStepFallbackReason::Refused(od_host::PagedFetchedLoadErrorKind::Publish(
+            od_host::ExecutableMemoryError::MappingAlreadyLive
+        ))
+    );
+    assert_eq!(state.gpr[Register::Rax as usize], LOADED_VALUE);
+    assert_eq!(state.rip, CODE_RIP + 3);
+    // Code walk (committed by the refused attempt) then data walk, each once.
+    let expected: Vec<(u64, u64)> = CODE_WALK_RANGES
+        .into_iter()
+        .map(|(a, l)| (a, l as u64))
+        .chain(DATA_WALK_RANGES)
+        .collect();
+    assert_eq!(range_pairs(committed_writes), expected);
+    assert!(!session.has_admitted_block());
 }

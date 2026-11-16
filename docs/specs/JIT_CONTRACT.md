@@ -4586,6 +4586,25 @@ levels already committed. The Linux kernel text is usually mapped with 2 MiB
 pages, so on a real kernel this path will almost certainly refuse. Support for
 2 MiB code pages is a separate slice (S4-15e or S4-16).
 
+### S4-15c: one-step fallback dispatcher
+
+`PagedFetchedLoadSession::execute_or_interpret` runs the S4-15b JIT path and,
+when that path refuses without having executed the instruction, runs
+`od_machine::step_paged_mov` exactly once on the same state and bus; the result
+names the path (`PagedStepPath::{Jit, Interpreter}`). An executed JIT step
+(completed, or a guest `#PF` with its committed Accessed bits) is final and is
+never repeated. A refusal before execution (CPU context, operand range,
+instruction fetch including a fetch `#PF`, unsupported form, compile or publish
+refusal, or a RAM-only adapter refusal of the data operand such as MMIO) leaves
+RAX, RIP, RFLAGS and guest data untouched and reaches no device; its only
+possible effects are page-walk Accessed bits, which a second walk does not
+commit again, and the refused attempt's writes are prepended to the reported
+list so it equals a pure interpreter step. Any other JIT helper failure is
+returned as `PagedStepError::JitHostFailure` and is not retried. The
+interpreter's own allowlist (`48 8B 03`, `48 89 0B`) still applies: other forms
+end in its explicit `Unsupported` exit. Store JIT, new forms, reset/retirement
+and the contract text as a whole remain S4-15d-g.
+
 ### S4-16a: production tracked loader patch for two inactive code aliases
 
 `od-host::PagedCodeSession` borrows one `MachineBus` exclusively and fixes one
