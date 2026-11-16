@@ -21508,9 +21508,10 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(dst, src.effective_address(state, next_rip));
             state.rip = next_rip;
         }
-        // S7-04: the helper computes `RCX + 8` into R10 with exact
-        // `4C 8D 51 08`. REX.R selects the qword destination; LEA calculates
-        // the effective offset without a memory access or canonicality check.
+        // S7-04: the helper computes `RCX + 8` or `RCX + 0x18` into R10 with
+        // exact `4C 8D 51 08` / `4C 8D 51 18`. REX.R selects the qword
+        // destination; LEA calculates the effective offset without a memory
+        // access or canonicality check.
         Operation::Lea { dst, src }
             if base_profile
                 && instruction.opcode.map == OpcodeMap::Primary
@@ -21526,7 +21527,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 && src.base == AddressBase::Register(Register::Rcx)
                 && src.index.is_none()
                 && src.scale == 1
-                && src.displacement == 8
+                && matches!(src.displacement, 8 | 0x18)
                 && src.address_size == OperandSize::Qword
                 && src.size == OperandSize::Qword =>
         {

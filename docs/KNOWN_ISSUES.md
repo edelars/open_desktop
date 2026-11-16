@@ -3790,10 +3790,20 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Следующий шаг:** verify exact qword LEA address arithmetic, state preservation, and fetch-fault atomicity for ISSUE-252.
 
 
-### ISSUE-252 — S7-04: helper `LEA R10,[RCX+0x18]` (`4C 8D 51 18`) remains outside paged CPU profile
+### ISSUE-252 — S7-04: exact helper `LEA R10,[RCX+0x18]` (`4C 8D 51 18`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-251.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20159E`.
+- **Статус:** решена в S7-04; exact qword LEA is admitted and independently reviewed with no findings.
+- **Суть и последствия:** exact qword LEA computes wrapping `RCX+0x18` into R10 without memory access; other GPRs, RFLAGS and definedness are preserved.
+- **Проверка:** four focused tests cover ordinary/high/noncanonical/wrapping inputs, R10-only mutation, flags/definedness preservation, no memory/I/O, final-byte fetch-fault atomicity, adjacent displacement/base/destination/REX/width/prefix/SIB forms, CPL3 and other-profile isolation. Firmware retires 8,943 instructions and stops at ISSUE-253; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue252.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x159E` are `4C 8D 51 18`; runner budget 10000.
+- **Следующий шаг:** verify exact JA rel32 condition/target/fault behavior for ISSUE-253.
+
+
+### ISSUE-253 — S7-04: helper `JA rel32 +0x2ee` (`0F 87 EE 02 00 00`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-252.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015A5`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8,941 instructions and stopped on `4C 8D 51 18`, `Unsupported { opcode: 141 }`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue251.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x159E` are `4C 8D 51 18`; runner budget 10000.
-- **Следующий шаг:** verify exact qword LEA address arithmetic, state preservation, and fetch-fault atomicity for ISSUE-252.
+- **Суть и последствия:** runner retired 8,943 instructions and stopped on `0F 87 EE 02 00 00`, `Unsupported { opcode: 135 }`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue252.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15A5` are `0F 87 EE 02 00 00`; runner budget 10000.
+- **Следующий шаг:** verify exact JA rel32 condition, signed target calculation, taken-only canonicality and fetch-fault atomicity for ISSUE-253.
