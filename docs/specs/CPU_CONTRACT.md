@@ -27761,3 +27761,7 @@ Four focused profile tests cover result and logical flag values, AF definedness,
 ### Stage 7 paged-profile JNZ rel8 `+0x0a`
 
 `PagedCpl0ProbeV1` admits exact bytes `75 0A`. ZF selects between next RIP plus signed rel8 `+0x0a` when ZF=0 and fall-through when ZF=1. Flags and definedness remain unchanged. Canonicality is checked only on a taken target; a noncanonical fall-through is deferred until the next instruction fetch. A displacement-fetch fault commits no state. Other displacements, prefixes and profiles remain unsupported.
+
+### Stage 7 paged-profile LEA R12,[RCX+RAX]
+
+`PagedCpl0ProbeV1` admits exact bytes `4C 8D 24 01`. REX.R selects qword R12; the SIB adds qword RCX and RAX with scale 1 and no displacement. The effective offset wraps at 64 bits. Only R12 and RIP change; flags/definedness are preserved. LEA neither accesses memory nor checks canonicality. Other encodings and profiles remain unsupported.
