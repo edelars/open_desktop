@@ -21024,6 +21024,29 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: exact helper transfer `4D 89 E1` copies full-width R12 to
+        // R9. REX.R extends the ModRM reg source and REX.B extends the r/m
+        // destination; only R9/RIP change, with flags untouched.
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x89
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x4d),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R9, OperandSize::Qword)
+            && source == RegisterView::low(Register::R12, OperandSize::Qword) =>
+        {
+            let value = state.read(source);
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: the Rust helper copies the handoff argument into RBX with
         // exactly `48 89 FB` (MOV RBX,RDI). Other register MOVs stay refused.
         Operation::Mov {

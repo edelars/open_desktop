@@ -1223,13 +1223,22 @@
 - **Проверка:** four focused profile tests pass for full-width high-bit transfer/state retention, fetch-fault atomicity, neighboring register/REX/opcode/width/prefix forms and CPL3; other-profile isolation passes. Full od-isa suites pass. Runner retired 8920 instructions and stopped at ISSUE-238: `4D 89 E1` (`MOV R9,R12`), RIP `0x200fdf`, `Unsupported { opcode: 137 }`, `com1_bytes=0`; full firmware handoff validation remains incomplete.
 - **Следующий шаг:** review exact REX.R/REX.B routing and ISSUE-238 profile boundary.
 
-### ISSUE-238 — S7-04: Rust helper `MOV R9,R12` (`4D 89 E1`) remains outside paged CPU profile
+### ISSUE-238 — S7-04: Rust helper `MOV R9,R12` (`4D 89 E1`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-237.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200fdf`.
+- **Статус:** решена узко; independently reviewed and approved with no findings.
+- **Суть и результат:** exact REX.W/REX.R/REX.B/opcode/ModRM copies full-width R12 to R9. Only R9/RIP change; flags/definedness and other GPRs are preserved. No additional operand width is admitted by this slice; the pre-existing exact dword `45 89 E1` (`MOV R9D,R12D`) remains separately admitted. Other registers/REX combinations, opcode directions, prefixes, CPL3 and profiles remain unsupported.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue238.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xfdf` are `4D 89 E1`; runner budget 10000.
+- **Проверка:** four focused profile tests pass for full-width high-bit transfer/state retention, fetch-fault atomicity, neighboring register/REX/opcode/width/prefix forms and CPL3; other-profile isolation passes. Full od-isa suites pass. Runner retired 8921 instructions and stopped at ISSUE-239: `E8 79 05 00 00` (`CALL rel32 +0x579`), RIP `0x200fe2`, `Unsupported { opcode: 232 }`, `com1_bytes=0`; full firmware handoff validation remains incomplete.
+- **Следующий шаг:** review exact REX.R/REX.B register-copy semantics and ISSUE-239 call boundary.
+
+### ISSUE-239 — S7-04: Rust helper `CALL rel32 +0x579` (`E8 79 05 00 00`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-238.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200fe2`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8920 instructions and stopped at `4D 89 E1`, `Unsupported { opcode: 137 }`, `RIP=0x200fdf`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue237.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xfdf` are `4D 89 E1`; runner budget 10000.
-- **Следующий шаг:** verify exact REX.R/REX.B routing and narrow profile admission for ISSUE-238.
+- **Суть и последствия:** runner retired 8921 instructions and stopped at `E8 79 05 00 00`, `Unsupported { opcode: 232 }`, `RIP=0x200fe2`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue238.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xfe2` are `E8 79 05 00 00`; runner budget 10000.
+- **Следующий шаг:** verify exact call target/stack semantics and narrow profile admission for ISSUE-239.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.
