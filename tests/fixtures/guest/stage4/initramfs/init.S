@@ -8,8 +8,8 @@
  *   83 mkdir, 165 mount, 257 openat.
  *
  * Flow: mkdir /proc and mount proc on it (the kernel does not mount /proc in an
- * initramfs), read /proc/cmdline, find the token "od.nonce=<value>", write
- * "OD_NONCE=<value>\n" to fd 1, getpid, nanosleep 1 ms, exit(0).
+ * initramfs), read /proc/cmdline, find the token "od.nonce=<value>", nanosleep
+ * 1 ms, write "OD_NONCE=<value>\n" to fd 1, getpid, exit(0).
  * Without a usable od.nonce token: write "OD_NONCE=MISSING\n", exit(1).
  * The nonce is never part of the archive; the host passes it on the command line.
  *
@@ -124,6 +124,13 @@ val_done:
 	test	%rcx, %rcx
 	jz	missing
 	mov	%rcx, %r9
+	/* nanosleep(&{0 s, 1000000 ns}, NULL): must return 0 */
+	lea	sleep_ts(%rip), %rdi
+	xor	%esi, %esi
+	mov	$SYS_nanosleep, %eax
+	syscall
+	test	%rax, %rax
+	jnz	fail_sleep
 
 	/* outbuf = "OD_NONCE=" + value + "\n" */
 	lea	outbuf(%rip), %rdi
@@ -149,14 +156,6 @@ val_done:
 	syscall
 	test	%rax, %rax
 	jle	fail_getpid
-
-	/* nanosleep(&{0 s, 1000000 ns}, NULL): must return 0 */
-	lea	sleep_ts(%rip), %rdi
-	xor	%esi, %esi
-	mov	$SYS_nanosleep, %eax
-	syscall
-	test	%rax, %rax
-	jnz	fail_sleep
 
 	xor	%edi, %edi
 	jmp	do_exit
