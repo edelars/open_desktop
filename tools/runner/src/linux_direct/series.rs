@@ -141,6 +141,7 @@ struct SeriesCli {
     scenario_id: String,
     expected_stop_kind: String,
     expected_s5_marker_keys: Vec<String>,
+    capture_execution_observations: bool,
     out: PathBuf,
     forwarded: Vec<String>,
 }
@@ -184,6 +185,15 @@ pub(super) fn run(args: &[String]) -> ExitCode {
             .to_string_lossy()
             .into_owned(),
     ]);
+    if cli.capture_execution_observations {
+        preflight_args.extend([
+            "--execution-observations-out".into(),
+            series_dir
+                .join("preflight-execution-observations.json")
+                .to_string_lossy()
+                .into_owned(),
+        ]);
+    }
     if let Err(error) = parse(&preflight_args) {
         return invalid_input(&error);
     }
@@ -224,6 +234,15 @@ pub(super) fn run(args: &[String]) -> ExitCode {
             "--out".into(),
             raw_path.to_string_lossy().into_owned(),
         ]);
+        if cli.capture_execution_observations {
+            run_args.extend([
+                "--execution-observations-out".into(),
+                run_dir
+                    .join("execution-observations.json")
+                    .to_string_lossy()
+                    .into_owned(),
+            ]);
+        }
         let options = match parse(&run_args) {
             Ok(value) => value,
             Err(error) => return invalid_input(&error),
@@ -441,10 +460,18 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     let mut expected_stop_kind = None;
     let mut out = None;
     let mut expected_s5_marker_keys = Vec::new();
+    let mut capture_execution_observations = false;
     let mut forwarded = Vec::new();
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
+        if name == "--execution-observations" {
+            if std::mem::replace(&mut capture_execution_observations, true) {
+                return Err("duplicate --execution-observations".into());
+            }
+            index += 1;
+            continue;
+        }
         if matches!(
             name,
             "--stack-context-out"
@@ -549,6 +576,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
         scenario_id,
         expected_stop_kind,
         expected_s5_marker_keys,
+        capture_execution_observations,
         out,
         forwarded,
     })
@@ -2046,6 +2074,7 @@ mod tests {
         let parsed = parse_series_args(&base).unwrap();
         assert_eq!(parsed.requested_runs, 2);
         assert_eq!(parsed.expected_s5_marker_keys, ["A_FILE", "A_PASS"]);
+        assert!(!parsed.capture_execution_observations);
         assert!(
             !parsed
                 .forwarded
@@ -2057,11 +2086,21 @@ mod tests {
         diagnostic.extend(["--stack-context-out".into(), "context.json".into()]);
         assert!(parse_series_args(&diagnostic).is_err());
         let mut execution_observations = base.clone();
-        execution_observations.extend([
+        execution_observations.push("--execution-observations".into());
+        let parsed = parse_series_args(&execution_observations).unwrap();
+        assert!(parsed.capture_execution_observations);
+        execution_observations.push("--execution-observations".into());
+        assert!(
+            parse_series_args(&execution_observations)
+                .unwrap_err()
+                .contains("duplicate --execution-observations")
+        );
+        let mut direct_sidecar_path = base.clone();
+        direct_sidecar_path.extend([
             "--execution-observations-out".into(),
             "observations.json".into(),
         ]);
-        let error = parse_series_args(&execution_observations).unwrap_err();
+        let error = parse_series_args(&direct_sidecar_path).unwrap_err();
         assert!(error.contains("--execution-observations-out"), "{error}");
         let mut post_iret = base.clone();
         post_iret.extend([
