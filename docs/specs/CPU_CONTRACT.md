@@ -27461,3 +27461,10 @@ Five focused tests cover all CF/ZF combinations and definedness masks, taken/fal
 Base `PagedCpl0ProbeV1` admits only exact no-prefix `0F B7 5C 24 40`. The word at `[RSP+0x40]` is read through the tracked memory path and zero-extended into EBX. Only EBX/RIP change; RFLAGS and definedness are preserved. A failing data read or final-byte instruction fetch does not commit the destination. A noncanonical RSP-based effective address faults with #SS before data access. Neighboring destination/displacement/base/index/width/prefix forms, CPL3 and other paged profiles remain unsupported.
 
 Six focused tests cover successful tracked reads and zero-extension, fault atomicity, noncanonical RSP, instruction-fetch faults, neighbor forms and CPL3 isolation. Firmware advances after 8,951 retired instructions to `44 8B 14 08` (`MOV R10D,dword ptr [RAX+RCX]`, ISSUE-259) at RIP `0x2015CA`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `MOV R10D,dword ptr [RAX+RCX]` (ISSUE-259)
+
+Base `PagedCpl0ProbeV1` admits only exact `44 8B 14 08`. REX.R selects R10D, and the SIB computes a 64-bit effective address with RAX base, RCX scale-1 index and no displacement. The tracked dword read is zero-extended into R10D; only R10/RIP change, and RFLAGS/definedness are preserved. A failing read or final-byte fetch fault does not commit the register. A noncanonical effective address faults before data access. Other base/index/scale/displacement/prefix/width forms, CPL3 and other paged profiles remain unsupported.
+
+Six focused tests cover register routing/address calculation, zero-extension, state preservation, read/fetch faults, noncanonical address, neighboring encodings and isolation. A four-level machine test covers the tracked read and accessed bits without dirty/data writes. Firmware advances after 8,952 retired instructions to `66 83 FB 02` (`CMP BX,2`, ISSUE-260) at RIP `0x2015CE`; COM1 remains empty. Independent review approved with no findings.

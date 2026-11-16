@@ -3860,10 +3860,21 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Следующий шаг:** verify exact dword read and R10D zero-extension for ISSUE-259.
 
 
-### ISSUE-259 — S7-04: helper `MOV R10D,dword ptr [RAX+RCX]` (`44 8B 14 08`) remains outside paged CPU profile
+### ISSUE-259 — S7-04: exact helper `MOV R10D,dword ptr [RAX+RCX]` (`44 8B 14 08`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-258.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015CA`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner retired 8,951 instructions and stopped on `44 8B 14 08`, `Unsupported { opcode: 139 }`; COM1 remains empty.
+- **Статус:** implemented in S7-04; independent review approved with no findings.
+- **Суть и последствия:** exact REX.R dword load computes the 64-bit effective address `RAX + RCX` (SIB scale 1, no displacement), reads a dword through the tracked path, and zero-extends it into R10D. Only R10/RIP change; flags and definedness are preserved, and state commits only after a successful read.
+- **Проверка:** six focused tests cover register routing, address calculation, zero-extension, state/flag preservation, read/noncanonical/fetch faults, neighboring SIB/displacement/prefix/width forms, CPL3 and other-profile isolation. A four-level machine test verifies the data address, accessed-bit updates, no dirty/data writes, and R10D result.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15CA` are `44 8B 14 08`; runner budget 10000.
-- **Следующий шаг:** verify exact REX.R memory dword load through the tracked read path, zero-extension, page-walk/fault atomicity, and profile isolation for ISSUE-259.
+- **Проверки исполнения:** firmware retires 8,952 instructions and stops at ISSUE-260; COM1 remains empty.
+- **Следующий шаг:** verify exact 16-bit CMP semantics and immediate handling for ISSUE-260.
+
+
+### ISSUE-260 — S7-04: helper `CMP BX,2` (`66 83 FB 02`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-259.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015CE`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner retired 8,952 instructions and stopped on `66 83 FB 02`, `Unsupported { opcode: 131 }`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15CE` are `66 83 FB 02`; runner budget 10000.
+- **Следующий шаг:** verify exact BX destination, sign-extended imm8, 16-bit arithmetic flags/definedness, and profile isolation for ISSUE-260.

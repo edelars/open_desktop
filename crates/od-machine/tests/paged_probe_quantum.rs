@@ -930,6 +930,37 @@ fn paged_probe_mov_r8d_dword_rsi_disp8_44_uses_tracked_four_level_walk() {
 }
 
 #[test]
+fn paged_probe_mov_r10d_rax_plus_rcx_uses_tracked_four_level_walk() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x44, 0x8b, 0x14, 0x08]);
+    let source = 0x89ab_cdefu32;
+    put_bytes_at(&mut bus, DATA_PHYSICAL + 0x40, &source.to_le_bytes());
+    let mut state = initial_state(0x20);
+    state.gpr[Register::Rax as usize] = DATA_LINEAR + 0x20;
+    state.gpr[Register::R10 as usize] = 0xaabb_ccdd_eeff_0011;
+    let before_flags = state.rflags;
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.page_fault, None);
+    assert_eq!(result.memory_error, None);
+    assert_eq!(state.rip, CODE_LINEAR + 4);
+    assert_eq!(state.gpr[Register::R10 as usize], u64::from(source));
+    assert_eq!(state.gpr[Register::Rax as usize], DATA_LINEAR + 0x20);
+    assert_eq!(state.gpr[Register::Rcx as usize], 0x20);
+    assert_eq!(state.rflags, before_flags);
+    assert_eq!(qword(&mut bus, DATA_PHYSICAL + 0x40), u64::from(source));
+    assert_eq!(qword(&mut bus, ROOT), ROOT + 0x1007 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x1000), ROOT + 0x2007 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x2020), ROOT + 0x4007 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x3000), CODE_PHYSICAL | 7 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x4000), DATA_PHYSICAL | 7 | (1 << 5));
+}
+
+#[test]
 fn paged_probe_mov_rsp_disp8_rdx_store_uses_tracked_four_level_walk() {
     let (mut bus, _) = fixture();
     put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x48, 0x89, 0x54, 0x24, 0x30]);
