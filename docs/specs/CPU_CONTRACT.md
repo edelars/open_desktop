@@ -27114,3 +27114,10 @@ Four focused tests cover full qword result and state, CF/SZP values, AF/OF defin
 Base `PagedCpl0ProbeV1` admits only exact bytes `4C 01 FF`: primary opcode `01` (r/m destination, reg source), exact REX `4C` (W+R), and register-direct ModRM `FF`. The decoder selects qword RDI as destination and qword R15 as source. Shared qword ADD semantics update CF/PF/AF/ZF/SF/OF and mark all six arithmetic flags defined. Among GPRs only RDI changes; all other GPRs, including source R15, are retained. Other directions, registers, widths, prefixes, memory forms, CPL3 and other profiles remain unsupported.
 
 Four focused tests cover representative sums and flag combinations, carry/zero/parity, signed overflow, source/destination retention, full-state and definedness, final-ModRM fetch-fault atomicity, neighboring encodings and CPL3 isolation. The other-profile isolation test passes. Firmware now advances to ISSUE-208: `48 39 EF` (`CMP RDI,RBP`) at RIP `0x200ef3`.
+
+
+### S7-04: exact Rust-helper `CMP RDI,RBP` (ISSUE-208)
+
+Base `PagedCpl0ProbeV1` admits only exact bytes `48 39 EF`: primary opcode `39` (r/m destination, reg source), exact REX.W `48`, and register-direct ModRM `EF`. This selects qword RDI as the compared destination and qword RBP as the source; shared qword CMP semantics compute RDI−RBP for CF/PF/AF/ZF/SF/OF and mark all six arithmetic flags defined. CMP changes no GPRs. Other register pairs, reverse opcode direction, widths, prefixes, memory operands, CPL3 and other profiles remain unsupported.
+
+Four focused tests cover equality, borrow, parity and signed overflow flags, complete GPR/state retention, arithmetic flag definedness, final-ModRM fetch-fault atomicity, neighboring encodings and CPL3 isolation. The other-profile isolation test passes. Firmware now advances to ISSUE-209: `77 3D` (`JA rel8 +0x3d`) at RIP `0x200ef6`.

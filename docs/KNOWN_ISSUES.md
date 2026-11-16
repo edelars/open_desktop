@@ -956,10 +956,19 @@
 ### ISSUE-208 — S7-04: Rust helper `CMP RDI,RBP` (`48 39 EF`) remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `ADD RDI,R15`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200ef3`.
+- **Статус:** решена узко для exact `48 39 EF` в base `PagedCpl0ProbeV1`; независимое review одобрило; ожидает коммита. Other registers, opcode directions, widths, prefixes and profiles remain unsupported.
+- **Суть и результат:** opcode `39` uses Intel r/m destination, reg source order. Exact REX.W `48` and ModRM `EF` compare qword RDI against qword RBP, update arithmetic flags and mark all six arithmetic flags defined. No GPR changes.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue208.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xef3` are `48 39 EF`; runner budget 10000.
+- **Проверка:** four focused tests cover equality, carry/borrow, parity, signed overflow, no-GPR-mutation, full flags-definedness, final-ModRM fetch-fault atomicity, neighboring forms, CPL3 and profile isolation. Runner retired 8890 and stopped at `77 3D` (`JA rel8 +0x3d`, ISSUE-209), RIP `0x200ef6`, `Unsupported { opcode: 119 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
+- **Следующий шаг:** independently review this exact CMP admission and continue S7-04 at ISSUE-209.
+
+### ISSUE-209 — S7-04: Rust helper `JA rel8 +0x3d` (`77 3D`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact `CMP RDI,RBP`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200ef6`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8889 instructions and stopped at `48 39 EF`, `Unsupported { opcode: 57 }`, `RIP=0x200ef3`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue207.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xef3` are `48 39 EF`; runner budget 10000.
-- **Следующий шаг:** inspect exact comparison operand order, flag semantics and definedness before considering narrow admission.
+- **Суть и последствия:** runner retired 8890 instructions and stopped at `77 3D`, `Unsupported { opcode: 119 }`, `RIP=0x200ef6`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue208.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xef6` are `77 3D`; runner budget 10000.
+- **Следующий шаг:** inspect exact condition/displacement and branch-target behavior before considering narrow admission.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.
