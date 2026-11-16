@@ -1,9 +1,11 @@
 //! DSDT built from the board manifest (S7-12).
 //!
-//! The namespace is `\_SB` with one child per device that the manifest marks `PRESENT`:
-//! `PCI0` (PCIe root, from the PCIe ECAM entry, type 7), `ECAM` (`PNP0C02`, the same entry) and `COM1` (type 1). Devices that are
-//! not described here (RTC, HPET, TPM CRB) belong to S7-14 and S7-22 and are not
-//! emitted; `_S5` is added only by `build_dsdt_with_s5` (S4-31e); see `docs/specs/ACPI_SMBIOS_TABLES.md`, section "AML and DSDT".
+//! The namespace is `\_SB` with the fixed one-CPU profile device `CPU0` (`_HID` `ACPI0007`,
+//! integer `_UID` 0) followed by devices that the manifest marks `PRESENT`: `PCI0` (PCIe root,
+//! from the PCIe ECAM entry, type 7), `ECAM` (`PNP0C02`, the same entry) and `COM1` (type 1).
+//! `CPU0` matches the UID 0 Local APIC record emitted by MADT. Devices that are not described
+//! here (RTC, HPET, TPM CRB) belong to S7-14 and S7-22 and are not emitted; `_S5` is added only by
+//! `build_dsdt_with_s5` (S4-31e); see `docs/specs/ACPI_SMBIOS_TABLES.md`, section "AML and DSDT".
 //!
 //! The PCIe ECAM entry (S4-31b) is checked by the same rules as the MCFG serializer
 //! (`mcfg::EcamWindow::from_entry`, S4-31a: a memory window of `(end_bus - start_bus + 1) << 20`
@@ -67,7 +69,9 @@ impl From<TableError> for DsdtError {
 /// Builds the DSDT into `out` and returns its length. The manifest entries are checked first;
 /// the result is checked by [`validate_dsdt`] before it is returned.
 ///
-/// With a `PRESENT` PCIe ECAM entry the table has `\_SB.PCI0` (`_CRS`: bus number range and
+/// The fixed one-CPU profile always emits `\_SB.CPU0` (`_HID` `ACPI0007`, integer `_UID` 0),
+/// matching the UID 0 Local APIC record in MADT. With a `PRESENT` PCIe ECAM entry the table then
+/// has `\_SB.PCI0` (`_CRS`: bus number range and
 /// `IO(Decode16, 0xCF8, 0xCF8, 1, 8)`), then `\_SB.ECAM` (`_HID` `PNP0C02`, `_UID` 0, `_CRS` =
 /// `Memory32Fixed(ReadWrite, base, 0x10_0000)`), then `COM<n>` if present. Without the entry the
 /// table has no PCI0 and no ECAM device.
@@ -120,7 +124,8 @@ const fn build_dsdt_inner(
     let aml_len = {
         let mut builder = AmlBuilder::new(tail_mut(out, SDT_HEADER_LEN));
         let scope = tri!(builder.begin_scope("\\_SB"), DsdtError::Aml);
-        // Order is fixed (PCI0, ECAM reservation, COM1) so the output is deterministic.
+        tri!(emit_cpu0(&mut builder), DsdtError::Aml);
+        // Order is fixed (CPU0, PCI0, ECAM reservation, COM1) so the output is deterministic.
         if let Some(pci) = &pci {
             tri!(pci.emit(&mut builder), DsdtError::Aml);
         }
@@ -150,6 +155,14 @@ const fn build_dsdt_inner(
     tri!(finish_checksum(head_mut(out, total)), DsdtError::Table);
     tri!(validate_dsdt(head_mut(out, total)));
     Ok(total)
+}
+
+/// The stage-4 profile has one processor: Device(CPU0) with ACPI processor HID and integer UID 0.
+const fn emit_cpu0(builder: &mut AmlBuilder<'_>) -> Result<(), AmlError> {
+    let device = tri!(builder.begin_device("CPU0"));
+    tri!(builder.name_string("_HID", "ACPI0007"));
+    tri!(builder.name_integer("_UID", 0));
+    builder.end(device)
 }
 
 /// `Name(\_S5, Package() { typ, typ, 0, 0 })`. With `typ` = 5 the bytes are
