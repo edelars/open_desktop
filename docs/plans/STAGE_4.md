@@ -651,6 +651,22 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   reset/handle (15f), закрытие (15g) не сделаны. См. раздел S4-15c в
   [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
 
+#### S4-15d. JIT-store `48 89 03` через tracked write-адаптер
+
+- Реализовано (ожидает независимого ревью, чекбокс S4-15 не ставится):
+  `PagedFetchedLoadSession::execute_with_store` / `execute_or_interpret`
+  допускают `MOV [RBX],RAX` из того же fetch-снимка, что и load. Запись идёт
+  через `od_machine::with_paged_mov_store_memory` (tracked walk: права
+  Present/Write/User, A-биты, D-бит, затем байты). До commit отказывают: guest
+  #PF (финальный результат JIT, данные не тронуты), не-RAM операнд и операнд на
+  собственной code page или операнд, который probe не может транслировать,
+  например 2 MiB лист (`StoreTargetRefused`, без каких-либо effects; шаг
+  уходит в интерпретатор по правилу S4-15c, где `48 89 03` даёт `Unsupported`).
+  Store в другую code page допустим: повторный вход сверяет байты и generation.
+  Тесты `s4_15d_*`. Активный блок (S4-16i), расширение форм (15e),
+  reset/handle (15f), закрытие (15g) не сделаны. См. раздел S4-15d в
+  [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
+
 ### S4-16. Physical aliases и инвалидация исполняемого кода
 
 - [ ] Принято после ревью.
