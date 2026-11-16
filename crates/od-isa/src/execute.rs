@@ -21310,8 +21310,8 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(dst, src.effective_address(state, next_rip));
             state.rip = next_rip;
         }
-        // S7-04: the Rust helper computes its stack-local address with either
-        // exact `48 8D 7C 24 08` or `48 8D 7C 24 50`. LEA uses the decoded
+        // S7-04: the Rust helper computes its stack-local address with exact
+        // `48 8D 7C 24 08`, `48 8D 7C 24 18` or `48 8D 7C 24 50`. LEA uses the decoded
         // effective address only; it does not read guest memory.
         Operation::Lea { dst, src }
             if base_profile
@@ -21328,7 +21328,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 && src.base == AddressBase::Register(Register::Rsp)
                 && src.index.is_none()
                 && src.scale == 1
-                && matches!(src.displacement, 8 | 0x50)
+                && matches!(src.displacement, 8 | 0x18 | 0x50)
                 && src.address_size == OperandSize::Qword
                 && src.size == OperandSize::Qword =>
         {

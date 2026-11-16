@@ -27283,3 +27283,10 @@ Five focused tests cover the CF/ZF truth table with defined and undefined flags,
 Base `PagedCpl0ProbeV1` admits only exact `89 1C 24`: opcode 89 with ModRM/SIB selecting dword EBX to `[RSP]`. The shared tracked write path writes the low four source bytes. GPRs and flags are unchanged. Other sources, widths, addressing forms, prefixes, CPL3 and other profiles remain unsupported.
 
 Five focused ISA tests cover exact bytes/address/value, state preservation, injected write and fetch faults, neighboring encodings and CPL3; other-profile isolation passes. Four-level machine tests verify tracked A/D-bit updates on success and atomic supervisor write-protection failure with no leaf D bit. Firmware advances to ISSUE-233: `48 8D 7C 24 18` (`LEA RDI,[RSP+0x18]`) at RIP `0x200fca`.
+
+
+### S7-04: exact Rust-helper `LEA RDI,[RSP+0x18]` (ISSUE-233)
+
+Base `PagedCpl0ProbeV1` admits only exact `48 8D 7C 24 18`. The REX.W qword SIB form computes `RSP + 0x18` into RDI. It does not access memory or check canonicality; only RDI and RIP change, while flags and their definedness remain unchanged. Neighboring displacements, indexed forms (including REX.X), displacement widths, prefixes, CPL3 and other profiles stay unsupported.
+
+Four focused profile tests cover effective-address/state behavior, fetch-fault atomicity, nearby SIB/displacement/prefix forms and CPL3; other-profile isolation is covered by the existing profile suite. Full od-isa suites and all 49 `paged_probe_quantum` machine tests pass. Firmware advances to ISSUE-234: `48 8B 74 24 10` (`MOV RSI,qword ptr [RSP+0x10]`) at RIP `0x200fcf`, after 8916 retired instructions.

@@ -1178,13 +1178,22 @@
 - **Проверка:** independent review approved with no findings. Five focused ISA tests cover the exact dword store/value/address, complete CPU-state preservation, injected write-fault and instruction-fetch-fault atomicity, neighboring addressing/source/width/prefix forms and CPL3; other-profile isolation passes. Two four-level machine tests pass: success sets the tracked translation A/D bits and writes exactly four data bytes; supervisor WP fault preserves data/state and leaves leaf D clear. All od-isa suites and the full `paged_probe_quantum` suite pass. Runner retired 8915 and stopped at ISSUE-233: `48 8D 7C 24 18` (`LEA RDI,[RSP+0x18]`), RIP `0x200fca`, `Unsupported { opcode: 141 }`, `com1_bytes=0`; full firmware handoff validation remains incomplete. Полные проверки см. в отчёте S7.
 - **Следующий шаг:** verify exact qword LEA `[RSP+0x18]` address calculation and profile boundary for ISSUE-233.
 
-### ISSUE-233 — S7-04: Rust helper `LEA RDI,[RSP+0x18]` (`48 8D 7C 24 18`) remains outside paged CPU profile
+### ISSUE-233 — S7-04: Rust helper `LEA RDI,[RSP+0x18]` (`48 8D 7C 24 18`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact dword RSP store.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200fca`.
+- **Статус:** решена узко для exact qword SIB LEA в base `PagedCpl0ProbeV1`; независимое ревью одобрило без замечаний.
+- **Суть и результат:** exact REX.W/opcode/ModRM/SIB/disp8 form computes `RSP + 0x18` into RDI. It accesses no memory, checks no canonical address, leaves flags/definedness and other GPRs unchanged. Other displacements, SIB indexes, widths, prefixes, CPL3 and profiles remain unsupported.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue233.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xfca` are `48 8D 7C 24 18`; runner budget 10000.
+- **Проверка:** four focused profile tests pass for effective-address result/state preservation, fetch-fault atomicity, neighbor/prefix rejection and CPL3 isolation. Full od-isa and paged-quantum machine suites pass. Runner retired 8916 instructions and stopped at ISSUE-234: `48 8B 74 24 10` (`MOV RSI,qword ptr [RSP+0x10]`), RIP `0x200fcf`, `Unsupported { opcode: 139 }`, `com1_bytes=0`; full firmware handoff validation remains incomplete.
+- **Следующий шаг:** review the exact tracked qword stack-load semantics and ISSUE-234 profile boundary.
+
+### ISSUE-234 — S7-04: Rust helper `MOV RSI,qword ptr [RSP+0x10]` (`48 8B 74 24 10`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-233.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200fcf`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8915 instructions and stopped at `48 8D 7C 24 18`, `Unsupported { opcode: 141 }`, `RIP=0x200fca`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue232.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xfca` are `48 8D 7C 24 18`; runner budget 10000. Decodes as `LEA RDI,[RSP+0x18]`.
-- **Следующий шаг:** determine the exact address arithmetic and narrow profile admission.
+- **Суть и последствия:** runner retired 8916 instructions and stopped at `48 8B 74 24 10`, `Unsupported { opcode: 139 }`, `RIP=0x200fcf`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue233.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xfcf` are `48 8B 74 24 10`; runner budget 10000.
+- **Следующий шаг:** verify qword tracked-load semantics and narrow profile admission for ISSUE-234.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.
