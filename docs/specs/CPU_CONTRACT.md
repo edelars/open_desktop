@@ -27664,3 +27664,10 @@ Four focused tests cover imm64 value and R15 routing, full state/flags preservat
 Base `PagedCpl0ProbeV1` admits only exact `4D 01 D6`. Opcode 01 uses ModRM r/m as destination; REX.B selects qword R14 and REX.R selects qword R10, so the operation is R14 += R10. Shared arithmetic semantics update result and all arithmetic flags/definedness, including AF. Only R14/RIP change. A final ModRM-byte fetch fault is atomic. Other register routes/directions/widths/opcodes/prefixes, CPL3 and other paged profiles remain unsupported.
 
 Four focused tests cover qword routing, carry/auxiliary-carry/zero/sign/overflow/parity results, full GPR preservation, fetch-fault atomicity, neighbors and CPL3/profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/829/7/15); all 61 paged machine tests, scoped check, formatting and diff-check pass. Firmware advances after 8,984 retired instructions to `41 0F 92 C2` (`SETB R10B`, ISSUE-288) at RIP `0x20164d`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `SETB R10B` (ISSUE-288)
+
+Base `PagedCpl0ProbeV1` admits only exact `41 0F 92 C2`. REX.B selects low byte R10B from ModRM r/m=2. SETB writes `u8(CF)` to that byte only; upper R10 bits and all other GPRs are preserved. RFLAGS and definedness are unchanged; the condition reads CF only. The exact form retires only after full instruction fetch, so a ModRM fetch fault commits nothing. Neighbor forms, CPL3 and other paged profiles remain unsupported.
+
+Four focused tests cover CF true/false with defined and undefined CF, partial-byte/state preservation, fetch-fault atomicity, neighbors and CPL3/profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/833/7/15); all 61 paged machine tests, scoped check, formatting and diff-check pass. Firmware advances after 8,985 retired instructions to `4D 39 FE` (`CMP R14,R15`, ISSUE-289) at RIP `0x201651`; COM1 remains empty. Independent review pending.

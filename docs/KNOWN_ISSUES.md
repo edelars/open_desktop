@@ -4167,8 +4167,18 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-288 — S7-04: exact helper `SETB R10B` (`41 0F 92 C2`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-287.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20164d`.
-- **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact SETB byte-register form; subsequent firmware execution is blocked.
+- **Статус:** реализована в S7-04; независимое ревью ожидается.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact `41 0F 92 C2`. SETB tests CF and writes 0/1 to R10B, preserving upper R10, all other GPRs, RFLAGS and definedness.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x164d` are `41 0F 92 C2`; runner budget 10000.
-- **Проверки исполнения:** after ISSUE-287, firmware retires 8,984 instructions and stops with `Unsupported { opcode: 146 }`; COM1 remains empty.
-- **Следующий шаг:** admit only exact `SETB R10B`, preserving the upper R10 bits and flags/definedness.
+- **Проверки исполнения:** four focused tests cover CF true/false with defined and undefined CF, upper-byte/state/flag preservation, final ModRM fetch-fault atomicity, neighbors and CPL3; other paged profiles keep it unsupported. Full od-isa suite passes (2,322 library, 1,591 profile-set, 126 execution, 29 boundary, 6 flags, 833 paged-profile, 7 profile-isolation, 15 descriptor, 0 doc tests); all 61 paged machine tests pass. Scoped cargo check, formatting and diff-check pass; cargo check reports only the existing unused page-walk helper warning. Firmware retires 8,985 instructions and stops at `4D 39 FE` (`CMP R14,R15`, ISSUE-289) at RIP `0x201651`, `Unsupported { opcode: 57 }`; COM1 remains empty. Independent review pending.
+- **Следующий шаг:** handle exact `CMP R14,R15` as ISSUE-289.
+
+
+### ISSUE-289 — S7-04: exact helper `CMP R14,R15` (`4D 39 FE`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-288.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201651`.
+- **Статус:** открыта.
+- **Суть и последствия:** the base profile does not yet admit this exact qword register compare; subsequent firmware execution is blocked.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1651` are `4D 39 FE`; runner budget 10000. Opcode 39 compares the r/m64 operand R14 against the REX.R-extended source R15.
+- **Проверки исполнения:** after ISSUE-288, firmware retires 8,985 instructions and stops with `Unsupported { opcode: 57 }`; COM1 remains empty.
+- **Следующий шаг:** admit only exact `CMP R14,R15` with qword arithmetic flags and no GPR writes.

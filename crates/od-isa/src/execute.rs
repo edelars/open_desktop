@@ -20557,6 +20557,29 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, u64::from(condition.evaluate(state.rflags)));
             state.rip = next_rip;
         }
+        // S7-04: exact `41 0F 92 C2` writes the unsigned-below result only
+        // to R10B. REX.B extends ModRM r/m=2; preserve the rest of R10 and
+        // leave flags and their definedness untouched.
+        Operation::SetCondition {
+            condition,
+            dst: Operand::Register(destination),
+            raw_modrm,
+        } if base_profile
+            && condition == ConditionCode::Below
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x92
+            && instruction.length == 4
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x41),
+                    ..Prefixes::default()
+                })
+            && raw_modrm == 0xc2
+            && destination == RegisterView::low(Register::R10, OperandSize::Byte) =>
+        {
+            state.write(destination, u64::from(condition.evaluate(state.rflags)));
+            state.rip = next_rip;
+        }
         // S7-04: the helper materializes equality only in DIL with exact
         // `40 0F 94 C7`; preserve the precise condition, REX, and raw ModRM.
         Operation::SetCondition {
