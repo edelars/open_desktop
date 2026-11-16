@@ -12,6 +12,16 @@
 
 ## Записи
 
+<a id="issue-101-s4-31-dsdt-missing-cpu-device"></a>
+
+### ISSUE-101 — S4-31 DSDT не объявляет processor device для Local APIC
+
+- **Дата обнаружения:** 2026-11-16, при независимом ревью S4-31f.
+- **Компонент:** `firmware/uefi/src/acpi/dsdt.rs`, `firmware/uefi/src/acpi/madt.rs`, S4-31.
+- **Статус:** открыта; полный ACPI-контракт для одноядерного APIC-профиля не подтверждён.
+- **Основание и последствия:** MADT объявляет один Processor Local APIC record с UID 0, но текущая DSDT не содержит matching processor device object. ACPI 6.4 §5.2.12.2 требует для каждого процессора и запись в MADT, и processor device object в DSDT; с 6.3 device object использует `_HID = ACPI0007` и целочисленный `_UID` ([официальная спецификация](https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html)). Это пробел соответствия и CPU enumeration; отказ текущей загрузки Linux этим не доказан.
+- **Следующий шаг:** добавить в `\_SB` device `CPU0` с `_HID = ACPI0007` и `_UID = 0`, покрыть совпадение с MADT независимой AML-проверкой и тестами; затем закрыть запись по результатам ревью. До этого S4-31 остаётся открытым и S5-08 нельзя принять по его prerequisite.
+
 <a id="issue-100-stage4-uart-echo-cli-test-exit-code-mismatch"></a>
 
 ### ISSUE-100 — S4 UART echo CLI test: exit-code assertion mismatch

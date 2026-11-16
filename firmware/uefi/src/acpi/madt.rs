@@ -343,9 +343,10 @@ pub const fn validate_madt(table: &[u8]) -> Result<(), MadtError> {
                 if entry[2] != CPU_UID || entry[3] != CPU_APIC_ID {
                     return Err(MadtError::BadField("Local APIC: UID and APIC ID must be 0"));
                 }
-                // Enabled is set, only the two defined bits are used (Online Capable is bit 1).
+                // This one-CPU profile requires Enabled=1 and Online Capable=0 (ACPI 6.4
+                // Table 5.23); the validator therefore accepts exactly the Enabled bit.
                 let flags = le32(entry, 4);
-                if flags & LOCAL_APIC_ENABLED == 0 || flags >> 2 != 0 {
+                if flags != LOCAL_APIC_ENABLED {
                     return Err(MadtError::BadField("Local APIC: flags"));
                 }
             }
