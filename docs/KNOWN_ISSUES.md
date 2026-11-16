@@ -175,6 +175,8 @@
 
 - **RDTSC localization in the same norandmaps pair:** sidecars recorded all 22 CPL0 sites with no overflow or unattributed reads. Total differed by 6,976; 6,905 came from 0xffffffff8271b34d, resolved through the matching debug ELF to rdtsc_ordered in Linux delay_tsc (arch/x86/lib/delay.c:72). The staged source shows this loop continues until the requested TSC interval elapses, but actual elapsed-cycle values were not captured. Cause and benignity remain unproved; comparator counts stay strict.
 
+- **Same-input replay control (2026-11-16):** two separate direct single runs with the same nonce and identical guest inputs produced byte-identical UART, identical complete stop/machine observations and byte-identical schema-v5 sidecars. Both reached the same budget stop and exact marker. This pair had no run-to-run variation on the current fixture, but the prior RDTSC N=2 evidence used ACPI blob `b1ba6078…` while this replay used the current 1104-byte CPU0 blob `6fc25b09…`; it therefore does not isolate nonce or reproduce the prior artifact set. It does not prove nonce changes caused earlier variation or exclude guest-internal randomness. The duplicate-nonce pair is diagnostic only, not S5-07 acceptance; strict unique-nonce N=2 and explanation of earlier differences remain required. [Evidence log](reports/data/stage5/s5-07-identical-input-replay-20261116.log).
+
 <a id="issue-080-s5-06-guest-suite-unverified-and-f-endpoint-blocked"></a>
 
 

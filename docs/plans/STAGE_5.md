@@ -417,6 +417,8 @@ Same-run panic-context follow-up (2026-11-16): counted run `OD5CTX20261115xxxxxx
 
 The same treatment sidecars localize 6,905 of the 6,976-read RDTSC delta to the rdtsc_ordered instruction inside Linux delay_tsc (arch/x86/lib/delay.c:72). The loop polls until its requested cycle interval passes; the sidecar does not capture actual elapsed-cycle values. Treat this as source localization, not proof the timing variation is harmless, and do not normalize the remaining machine observations.
 
+Дополнение (2026-11-16, same-input replay): два отдельных direct single runs с одинаковыми текущими guest inputs и одним nonce дали byte-identical UART, полные одинаковые stop/machine observations и одинаковые schema-v5 sidecars. Предыдущий RDTSC N=2 pair использовал старый ACPI blob (`b1ba6078…`), а replay — blob с CPU0 (`6fc25b09…`), поэтому это не изолирует nonce и не проверяет повтор старого artifact set. Дубликат nonce не является зачётной N=2 серией; S5-07 остаётся blocked/unaccepted до strict-clean unique-nonce automatic N=2 и объяснения предыдущих различий. [Evidence](../reports/data/stage5/s5-07-identical-input-replay-20261116.log).
+
 ### S5-17. Host-side отказы и ограниченные ресурсы
 
 - [x] Принято после независимого ревью. Гостевая часть (гость видит ошибку по контракту) — отдельным шагом, **blocked до `S4-39`**. Пересечение с `S9-18` разрешается решением `S5-00` п.4(а).
