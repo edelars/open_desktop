@@ -3918,8 +3918,19 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-264 — S7-04: exact helper `SETAE R14B` (`41 0F 93 C6`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-263.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015DE`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware stops on exact SETAE byte-register form `41 0F 93 C6`, currently outside the profile.
+- **Статус:** реализована в S7-04; независимое ревью одобрило без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact `41 0F 93 C6`. REX.B selects R14B, SETAE reads CF only and replaces only R14's low byte with 1 iff CF=0; all other R14 bits and RFLAGS/definedness are preserved.
+- **Проверка:** four focused tests cover both CF values with defined/undefined CF, partial-byte state, flag/definedness preservation, final-byte fetch-fault atomicity, condition/register/REX/prefix/memory neighbors and CPL3/profile isolation.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15DE` are `41 0F 93 C6`; runner budget 10000.
-- **Проверки исполнения:** firmware retires 8,956 instructions and stops with `Unsupported { opcode: 147 }`; COM1 remains empty.
-- **Следующий шаг:** verify REX.B selection of R14B, CF-only SETAE predicate and exact profile isolation for ISSUE-264.
+- **Проверки исполнения:** firmware retires 8,958 instructions and advances to ISSUE-265 at RIP `0x2015E5`; COM1 remains empty.
+- **Следующий шаг:** verify exact `41 83 FF F4` (`CMP R15D,-0x0c`) sign extension and dword flags for ISSUE-265.
+
+
+### ISSUE-265 — S7-04: exact helper `CMP R15D,-0x0c` (`41 83 FF F4`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-264.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015E5`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware stops on exact dword compare `41 83 FF F4`, currently outside the profile.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15E5` are `41 83 FF F4`; runner budget 10000.
+- **Проверки исполнения:** firmware retires 8,958 instructions and stops with `Unsupported { opcode: 131 }`; COM1 remains empty.
+- **Следующий шаг:** verify REX.B selection of R15D, sign-extended imm8 `-0x0c`, dword CMP flags/definedness and exact profile isolation for ISSUE-265.
