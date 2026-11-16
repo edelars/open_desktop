@@ -1,8 +1,8 @@
-//! Execution of the first four instruction groups of the AP trampoline in real mode
-//! (S6-14d, S6-14e, S6-14f, S6-14g).
+//! Execution of the first five instruction groups of the AP trampoline in real mode
+//! (S6-14d, S6-14e, S6-14f, S6-14g, S6-14i).
 //!
 //! Scope is the closed set of forms from the S6-14a profile (CPU_CONTRACT.md, sections
-//! "S6-14d", "S6-14e", "S6-14f" and "S6-14g"), block 1 of the trampoline at blob offsets
+//! "S6-14d", "S6-14e", "S6-14f", "S6-14g" and "S6-14i"), block 1 of the trampoline at blob offsets
 //! `0x1000..0x1027` (through `MOV ESP, imm32` at `0x101e` and `CALL verify_cpu` at `0x1024`),
 //! plus the forms of block 2 (`verify_cpu`, `0x1080..0x11a8`) and block 3 (`0x1027..0x102b`)
 //! without the vendor-specific (Intel/AMD, `RDMSR`/`WRMSR`) branches:
@@ -38,12 +38,32 @@
 //! | `66 81 e2` / `f2 imm32`  | `AND` / `XOR EDX, imm32`     | S6-14g |
 //! | `31 ff`                  | `XOR DI, DI`                 | S6-14g |
 //! | `0f a2`                  | `CPUID` (leaves 0, 1, `0x80000000`, `0x80000001`) | S6-14g |
+//! | `66 0f 01 16 d d`        | `LGDT m16&32` (DS:d16, 32-bit base) | S6-14i |
+//! | `66 0f 01 1e d d`        | `LIDT m16&32` (DS:d16, 32-bit base) | S6-14i |
+//! | `ba lo hi`               | `MOV DX, imm16`              | S6-14i |
+//! | `0f 22 c0`               | `MOV CR0, EAX`               | S6-14i |
 //!
 //! Everything else (`HLT`, the padding `NOP`, `RDMSR`/`WRMSR`, `BTR`, `TEST DI, DI`, any
 //! other prefix byte or prefix order, any other ModRM form, `BT`/`BTR`/`BTC`, unlocked or
 //! 16-bit `BTS`) is an explicit [`RealModeRefusal::Unsupported`] with the address and the
 //! bytes, and the state is not changed. The Intel/AMD branches of `verify_cpu`
-//! (`0x10bb..0x1126`, `0x1184..0x1199`) and block 4 belong to later slices.
+//! (`0x10bb..0x1126`, `0x1184..0x1199`) belong to later slices. S6-14i adds block 4 of the
+//! trampoline (`0x102c..0x1044`: `LIDT`, `LGDT`, `MOV DX`, `MOV CR0, EAX`); the far jump of
+//! block 5 and everything in protected mode are not part of this module.
+//!
+//! S6-14i `MOV CR0, EAX` stores EAX with `ET` forced to 1 (the oracle observed it, but its
+//! input already had `ET = 1`; per the SDM `ET` is fixed on P6 and later, and KVM sets it in
+//! software, so this is hypervisor evidence, not silicon evidence). A value with `PG`, any
+//! reserved bit (6-15, 17, 19-28) or `NW` set while `CD` is clear is refused as
+//! [`RealModeRefusal::Cr0WriteUnmodelled`] without a state change. This is a conservative
+//! model refusal, not a hardware effect: per the SDM (from memory) `#GP(0)` is raised only for
+//! `PG = 1` with `PE = 0` and for `NW = 1` with `CD = 0`; `PG = 1` with `PE = 1` is the legal way
+//! to enable paging (not modelled), and reserved bits are ignored on a write. Writing `PE = 1` enters
+//! "protected mode entered": CR0.PE is 1, EIP is the next instruction and every segment keeps
+//! its real-mode base, limit and selector (no descriptor is loaded); the next [`RealModeCpu::step`]
+//! returns [`RealModeRefusal::NotRealMode`] and changes nothing. `LGDT`/`LIDT` load GDTR/IDTR
+//! (limit 16 bits, base 32 bits: the `66` prefix selects the 32-bit base) from six bytes at
+//! `DS:disp16`; the table contents are not read.
 //!
 //! S6-14g `CPUID` is executed only for EAX in {0, 1, `0x80000000`, `0x80000001`}, from the
 //! [`CpuidSource`] stored in the state (a profile of `cpuid.rs` by default); any other leaf is
@@ -78,7 +98,7 @@
 //! from memory; its section number is not checked.
 
 use crate::cpuid::{CpuidProfile, CpuidResult};
-use crate::legacy_mode::{RealModeState, RealSegment};
+use crate::legacy_mode::{CR0_ET, RealModeState, RealSegment};
 
 /// Index of a 32-bit general-purpose register in [`RealModeCpu::gpr`] (x86 encoding order).
 pub const EAX: usize = 0;
@@ -119,6 +139,15 @@ const EFLAGS_POPF_MASK: u32 = 0x7FD5;
 /// The upper reserved bits, VM, VIF and VIP are not written (see
 /// [`RealModeRefusal::PopfdUnmodelledFlags`]); RF is cleared, not written.
 const EFLAGS_POPFD_MASK: u32 = EFLAGS_POPF_MASK | (1 << 18) | (1 << 21);
+
+/// CR0 bits a `MOV CR0, EAX` may set (SDM Vol. 3A section 2.5, by memory): PE, MP, EM, TS, ET, NE,
+/// WP, AM, NW, CD. PG (legal with PE = 1 per the SDM, but paging is out of scope) and the
+/// reserved bits (ignored on write per the SDM) are refused conservatively by the model.
+const CR0_WRITABLE: u32 =
+    0x1 | 0x2 | 0x4 | 0x8 | CR0_ET | 0x20 | 0x1_0000 | 0x4_0000 | 0x2000_0000 | 0x4000_0000;
+/// CR0.NW and CR0.CD: `NW = 1` with `CD = 0` is a `#GP(0)` per the SDM (not modelled, refused).
+const CR0_NW: u32 = 0x2000_0000;
+const CR0_CD: u32 = 0x4000_0000;
 
 /// Number of bytes copied into [`RealModeRefusal::Unsupported::bytes`] at most.
 pub const UNSUPPORTED_BYTES_MAX: usize = 8;
@@ -183,6 +212,23 @@ impl CpuidSource {
                 .find(|(l, _)| *l == leaf)
                 .map(|(_, r)| *r)
                 .unwrap_or_default(),
+        }
+    }
+}
+
+/// GDTR or IDTR: a 16-bit limit and a 32-bit linear base (no attributes).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TableRegister {
+    pub base: u32,
+    pub limit: u16,
+}
+
+impl TableRegister {
+    /// Value after INIT: base 0, limit `0xFFFF` (SMP_CONTRACT section 4, Intel SDM Table 12-1).
+    pub const fn after_init() -> Self {
+        Self {
+            base: 0,
+            limit: 0xFFFF,
         }
     }
 }
@@ -252,6 +298,14 @@ pub enum RealInstruction {
     XorDiDi,
     /// `0F A2` (S6-14g): `CPUID`.
     Cpuid,
+    /// `66 0F 01 16 d_lo d_hi` (S6-14i): `LGDT m16&32` at `DS:disp16`.
+    Lgdt { disp: u16 },
+    /// `66 0F 01 1E d_lo d_hi` (S6-14i): `LIDT m16&32` at `DS:disp16`.
+    Lidt { disp: u16 },
+    /// `BA lo hi` (S6-14i): `MOV DX, imm16` (only DX is written).
+    MovDxImm16 { imm: u16 },
+    /// `0F 22 C0` (S6-14i): `MOV CR0, EAX`.
+    MovCr0Eax,
 }
 
 /// Memory for instruction fetch and the data operands (the `LOCK BTS` operand and the stack
@@ -361,6 +415,11 @@ pub enum RealModeRefusal {
     PopfdUnmodelledFlags { cs: u16, ip: u32, flags: u32 },
     /// `CPUID` with an EAX outside {0, 1, `0x80000000`, `0x80000001`}.
     CpuidLeafUnmodelled { cs: u16, ip: u32, leaf: u32 },
+    /// `MOV CR0, EAX` with `PG` or another reserved bit set, or `NW = 1` with `CD = 0`
+    /// (`value` is EAX). A conservative model refusal, not a hardware effect: per the SDM
+    /// `#GP(0)` is only for `PG = 1` with `PE = 0` and for `NW = 1` with `CD = 0`, `PG = 1`
+    /// with `PE = 1` is legal (paging is not modelled) and reserved bits are ignored on write.
+    Cr0WriteUnmodelled { cs: u16, ip: u32, value: u32 },
 }
 
 /// Result of [`RealModeCpu::run`].
@@ -423,6 +482,10 @@ pub struct RealModeCpu {
     /// replaces it. The profiles of `cpuid.rs` do not implement the full target table of
     /// `CPU_CONTRACT.md` (see the S6-14g contract section).
     pub cpuid: CpuidSource,
+    /// GDTR (S6-14i): base 0 and limit `0xFFFF` after INIT; loaded by `LGDT`.
+    pub gdtr: TableRegister,
+    /// IDTR (S6-14i): base 0 and limit `0xFFFF` after INIT; loaded by `LIDT`.
+    pub idtr: TableRegister,
 }
 
 impl RealModeCpu {
@@ -436,6 +499,8 @@ impl RealModeCpu {
             gpr,
             mov_ss_shadow: false,
             cpuid: CpuidSource::Profile(CpuidProfile::DiagnosticV1),
+            gdtr: TableRegister::after_init(),
+            idtr: TableRegister::after_init(),
         }
     }
 
@@ -539,6 +604,11 @@ impl RealModeCpu {
             0x0F => match self.fetch(mem, 1)? {
                 0x09 => Ok((RealInstruction::Wbinvd, 2)),
                 0xA2 => Ok((RealInstruction::Cpuid, 2)),
+                // `0F 22 C0`: MOV CR0, EAX (ModRM C0 = mod 11, reg CR0, rm EAX); no prefix.
+                0x22 => match self.fetch(mem, 2)? {
+                    0xC0 => Ok((RealInstruction::MovCr0Eax, 3)),
+                    _ => Err(self.unsupported(mem)),
+                },
                 op @ (0x82 | 0x84) => {
                     let lo = self.fetch(mem, 2)?;
                     let hi = self.fetch(mem, 3)?;
@@ -687,6 +757,27 @@ impl RealModeCpu {
                     let imm = self.fetch_u32(mem, 3)?;
                     Ok((RealInstruction::Alu32Imm { op, reg, imm }, 7))
                 }
+                // `66 0F 01 /2` (LGDT, ModRM 16) and `66 0F 01 /3` (LIDT, ModRM 1E): mod 00,
+                // rm 110 (disp16 only). The `66` prefix selects the 32-bit base; the unprefixed
+                // 24-bit-base form is not in the profile.
+                0x0F => {
+                    if self.fetch(mem, 2)? != 0x01 {
+                        return Err(self.unsupported(mem));
+                    }
+                    let modrm = self.fetch(mem, 3)?;
+                    if modrm != 0x16 && modrm != 0x1E {
+                        return Err(self.unsupported(mem));
+                    }
+                    let lo = self.fetch(mem, 4)?;
+                    let hi = self.fetch(mem, 5)?;
+                    let disp = u16::from_le_bytes([lo, hi]);
+                    let insn = if modrm == 0x16 {
+                        RealInstruction::Lgdt { disp }
+                    } else {
+                        RealInstruction::Lidt { disp }
+                    };
+                    Ok((insn, 6))
+                }
                 _ => Err(self.unsupported(mem)),
             },
             0x73 => Ok((
@@ -695,6 +786,17 @@ impl RealModeCpu {
                 },
                 2,
             )),
+            // `BA imm16`: MOV DX, imm16 (the only 16-bit register immediate in the profile).
+            0xBA => {
+                let lo = self.fetch(mem, 1)?;
+                let hi = self.fetch(mem, 2)?;
+                Ok((
+                    RealInstruction::MovDxImm16 {
+                        imm: u16::from_le_bytes([lo, hi]),
+                    },
+                    3,
+                ))
+            }
             0xEB => Ok((
                 RealInstruction::JmpShort {
                     rel: self.fetch(mem, 1)? as i8,
@@ -808,6 +910,23 @@ impl RealModeCpu {
                 leaf: self.gpr[EAX],
             });
         }
+        if matches!(insn, RealInstruction::MovCr0Eax) {
+            let value = self.gpr[EAX];
+            let nw_without_cd = value & CR0_NW != 0 && value & CR0_CD == 0;
+            if value & !CR0_WRITABLE != 0 || nw_without_cd {
+                return Err(RealModeRefusal::Cr0WriteUnmodelled {
+                    cs: self.mode.cs.selector,
+                    ip: self.mode.eip,
+                    value,
+                });
+            }
+        }
+        let table_operand = match insn {
+            RealInstruction::Lgdt { disp } | RealInstruction::Lidt { disp } => {
+                Some(self.read_table_operand(mem, disp)?)
+            }
+            _ => None,
+        };
         let bts_operand = match insn {
             RealInstruction::LockBtsImm8 { disp, .. } => Some(self.check_dword_operand(mem, disp)?),
             _ => None,
@@ -969,6 +1088,27 @@ impl RealModeCpu {
                 self.gpr[EDX] = r.edx;
                 self.mode.eip = next_eip;
             }
+            RealInstruction::Lgdt { .. } => {
+                self.gdtr = table_operand.expect("operand read for LGDT");
+                self.mode.eip = next_eip;
+            }
+            RealInstruction::Lidt { .. } => {
+                self.idtr = table_operand.expect("operand read for LIDT");
+                self.mode.eip = next_eip;
+            }
+            RealInstruction::MovDxImm16 { imm } => {
+                self.gpr[EDX] = (self.gpr[EDX] & 0xFFFF_0000) | u32::from(imm);
+                self.mode.eip = next_eip;
+            }
+            RealInstruction::MovCr0Eax => {
+                // ET is forced to 1; the other bits are as written (checked above). With
+                // PE = 1 the next `step` is refused as `NotRealMode`: no descriptor is loaded.
+                // Flags: per the SDM they are undefined after MOV CR (OF, SF, ZF, AF, PF, CF);
+                // the model keeps them. The oracle (image a) saw ZF/PF kept after TEST, which
+                // is only partial evidence (CF, OF, SF, AF were 0 on input).
+                self.mode.cr0 = self.gpr[EAX] | CR0_ET;
+                self.mode.eip = next_eip;
+            }
             RealInstruction::MovAxFromCs => {
                 // 16-bit operand: only AX is written, the upper half of EAX is kept. This is
                 // from memory, not confirmed by the oracle (its input EAX is 0); the SDM note
@@ -1043,6 +1183,41 @@ impl RealModeCpu {
             value |= u32::from(byte) << (8 * i);
         }
         Ok((linear, value))
+    }
+
+    /// Reads the six-byte `m16&32` operand of `LGDT`/`LIDT` at `DS:disp`: the whole operand must
+    /// lie under the DS limit (no wrap) and be readable; it need not be writable. Limit is bytes
+    /// 0..2, base is bytes 2..6 (32 bits). Nothing is changed.
+    fn read_table_operand<M: RealModeMemory>(
+        &self,
+        mem: &M,
+        disp: u16,
+    ) -> Result<TableRegister, RealModeRefusal> {
+        let (cs, ip) = (self.mode.cs.selector, self.mode.eip);
+        let offset = u32::from(disp);
+        if offset + 5 > self.mode.ds.limit {
+            return Err(RealModeRefusal::DataBeyondLimit {
+                cs,
+                ip,
+                offset: offset.max(self.mode.ds.limit + 1),
+            });
+        }
+        let linear = self.mode.ds.base.wrapping_add(offset);
+        let mut bytes = [0u8; 6];
+        for (i, slot) in bytes.iter_mut().enumerate() {
+            let byte_linear = linear.wrapping_add(i as u32);
+            *slot = mem
+                .read_u8(byte_linear)
+                .ok_or(RealModeRefusal::DataUnreadable {
+                    cs,
+                    ip,
+                    linear: byte_linear,
+                })?;
+        }
+        Ok(TableRegister {
+            limit: u16::from_le_bytes([bytes[0], bytes[1]]),
+            base: u32::from_le_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]),
+        })
     }
 
     /// Replaces SP and keeps the upper half of ESP (16-bit stack size).
@@ -1360,8 +1535,7 @@ mod tests {
             (&[0x90], "NOP"),
             (&[0xF4], "HLT"),
             // Near-misses of the S6-14f forms are in `s6_14f_near_misses_are_refused`.
-            (&[0x0F, 0x22, 0xC0], "MOV CR0,EAX"),
-            (&[0x66, 0x0F, 0x01, 0x1E, 0x60, 0x00], "LIDT"),
+            // Near-misses of the S6-14i forms are in `s6_14i_near_misses_are_refused`.
             // Near-miss forms of admitted opcodes: other ModRM, prefixes.
             (&[0x8C, 0xD8], "MOV AX,DS"),
             (&[0x8C, 0xC0], "MOV AX,ES"),
@@ -4047,28 +4221,31 @@ mod tests {
             0x1174, 0x117B, 0x1182, // JE taken -> 0x11a4
             0x11A4, 0x11A5, 0x11A8, // popf; xor eax,eax; ret -> 0x1027
             0x1027, 0x102A, // test eax,eax; jne not taken -> 0x102c
+            0x102C, 0x1032, 0x1038, 0x103B, 0x1041, // S6-14i: block 4 (lidt .. mov cr0,eax)
         ]);
         assert_eq!(trace, expected);
-        // Stops at the LIDT of block 4 (not in this slice): `66 0f 01 1e 60 00`.
-        match stop {
-            RealModeRefusal::Unsupported { ip, bytes, .. } => {
-                assert_eq!(ip, 0x102C);
-                assert_eq!(&bytes[..4], &[0x66, 0x0F, 0x01, 0x1E]);
-            }
-            other => panic!("{other:?}"),
-        }
-        // Final state, by hand: EAX = 0 (xor), EBX = leaf 1 EBX 0x100 (last CPUID), ECX = 0, EDX
-        // = 0x781a379 & 0x6000000 = 0x6000000 (AND, then CMP only), DI = 0, ESP = 0x6020 (balanced
-        // call/ret and push/pop), flags from `test eax,eax` = ZF, PF; the ID bit (21) written by
-        // the POPFD at 0x1093 stays set (the 16-bit POPF at 0x11a4 does not touch it).
-        assert_eq!(cpu.gpr[EAX], 0);
+        // S6-14i: MOV CR0,EAX at 0x1041 sets PE, so the far jump of block 5 at 0x1044 is not
+        // fetched: the next step is refused as `NotRealMode`, EIP = 0x1044, state unchanged.
+        assert_eq!(stop, RealModeRefusal::NotRealMode { cr0: 0x0005_0033 });
+        // On return from verify_cpu (before block 4), by hand: EAX = 0 (xor), EBX = leaf 1 EBX
+        // 0x100 (last CPUID), ECX = 0, EDX = 0x781a379 & 0x6000000 = 0x6000000 (AND, then CMP
+        // only), DI = 0, ESP = 0x6020 (balanced call/ret and push/pop), flags from `test eax,eax`
+        // = ZF, PF; the ID bit (21) written by the POPFD at 0x1093 stays set (the 16-bit POPF at
+        // 0x11a4 does not touch it).
+        // S6-14i: EAX = 0x50033 (mov eax,imm32), DX = 0x18 with EDX[31:16] kept (0x0600), CR0 =
+        // 0x50033 (ET already set, PG clear). The table bytes at DS:0x30 and DS:0x60 are zero in
+        // this image (only the code bytes are placed), so both registers get limit 0, base 0.
+        assert_eq!(cpu.gpr[EAX], 0x0005_0033);
         assert_eq!(cpu.gpr[EBX], 0x100);
         assert_eq!(cpu.gpr[ECX], 0);
-        assert_eq!(cpu.gpr[EDX], 0x0600_0000);
+        assert_eq!(cpu.gpr[EDX], 0x0600_0018);
         assert_eq!(cpu.gpr[ESP], 0x6020);
         assert_eq!(cpu.gpr[EDI], 0);
         assert_eq!(cpu.mode.eflags, 0x0020_0046);
-        assert_eq!(cpu.mode.eip, 0x102C);
+        assert_eq!(cpu.mode.eip, 0x1044);
+        assert_eq!(cpu.mode.cr0, 0x0005_0033);
+        assert_eq!(cpu.gdtr, TableRegister { base: 0, limit: 0 });
+        assert_eq!(cpu.idtr, TableRegister { base: 0, limit: 0 });
     }
 
     #[test]
@@ -4083,21 +4260,19 @@ mod tests {
         expected.extend_from_slice(&VERIFY_TO_1142);
         expected.extend_from_slice(&[
             0x1144, 0x114A, 0x114C, 0x1152, 0x1154, 0x115A, 0x115C, 0x1163, 0x116A, 0x116C, 0x1172,
-            0x1174, 0x117B, 0x1182, 0x11A4, 0x11A5, 0x11A8, 0x1027, 0x102A,
+            0x1174, 0x117B, 0x1182, 0x11A4, 0x11A5, 0x11A8, 0x1027, 0x102A, 0x102C, 0x1032, 0x1038,
+            0x103B, 0x1041,
         ]);
         assert_eq!(trace, expected);
         assert!(!trace.contains(&0x119B), "the failure tail is not taken");
-        assert!(matches!(
-            stop,
-            RealModeRefusal::Unsupported { ip: 0x102C, .. }
-        ));
-        assert_eq!(cpu.gpr[EAX], 0);
+        assert_eq!(stop, RealModeRefusal::NotRealMode { cr0: 0x0005_0033 });
+        assert_eq!(cpu.gpr[EAX], 0x0005_0033);
         assert_eq!(cpu.gpr[EBX], 0x100);
         assert_eq!(cpu.gpr[ECX], 0);
-        assert_eq!(cpu.gpr[EDX], 0x0600_0000);
+        assert_eq!(cpu.gpr[EDX], 0x0600_0018);
         assert_eq!(cpu.gpr[ESP], 0x6020);
         assert_eq!(cpu.mode.eflags, 0x0020_0046);
-        assert_eq!(cpu.mode.eip, 0x102C);
+        assert_eq!(cpu.mode.eip, 0x1044);
     }
 
     #[test]
@@ -4286,5 +4461,586 @@ mod tests {
         3,
         0x102C,
         &[]
+    );
+    // ---- S6-14i: LGDT/LIDT, MOV DX,imm16 and MOV CR0,EAX (block 4) ----------------------
+    //
+    // Expected values below are worked out by hand from the SDM (Vol. 2 `LGDT`/`LIDT`/`MOV`
+    // to control register, Vol. 3A section 2.5 CR0, by memory), not read back from the code.
+
+    const LGDT_30: [u8; 6] = [0x66, 0x0F, 0x01, 0x16, 0x30, 0x00];
+    const LIDT_60: [u8; 6] = [0x66, 0x0F, 0x01, 0x1E, 0x60, 0x00];
+
+    #[test]
+    fn s6_14i_lgdt_and_lidt_load_a_16_bit_limit_and_a_full_32_bit_base() {
+        // Operand bytes: limit 0x001F, base 0xA2345678 (the top byte is NOT dropped: the `66`
+        // prefix selects the 32-bit base; the 24-bit base is the unprefixed form, refused here).
+        let table = [0x1F, 0x00, 0x78, 0x56, 0x34, 0xA2];
+        let (before, cpu, _, r) =
+            g_step(&LGDT_30, |_, ram| ram[0x30..0x36].copy_from_slice(&table));
+        assert_eq!(r, Ok(RealInstruction::Lgdt { disp: 0x30 }));
+        let mut expected = before;
+        expected.gdtr = TableRegister {
+            base: 0xA234_5678,
+            limit: 0x1F,
+        };
+        expected.mode.eip = 0x1006;
+        assert_eq!(cpu, expected, "only GDTR and EIP change");
+        assert_eq!(before.idtr, TableRegister::after_init());
+
+        let table = [0xCD, 0xAB, 0x98, 0xBA, 0xDC, 0xFE];
+        let (before, cpu, _, r) =
+            g_step(&LIDT_60, |_, ram| ram[0x60..0x66].copy_from_slice(&table));
+        assert_eq!(r, Ok(RealInstruction::Lidt { disp: 0x60 }));
+        let mut expected = before;
+        expected.idtr = TableRegister {
+            base: 0xFEDC_BA98,
+            limit: 0xABCD,
+        };
+        expected.mode.eip = 0x1006;
+        assert_eq!(cpu, expected, "only IDTR and EIP change");
+    }
+
+    #[test]
+    fn s6_14i_table_registers_start_as_after_init() {
+        let cpu = RealModeCpu::at_cs_ip(0, 0, 0, 0);
+        assert_eq!(
+            cpu.gdtr,
+            TableRegister {
+                base: 0,
+                limit: 0xFFFF
+            }
+        );
+        assert_eq!(
+            cpu.idtr,
+            TableRegister {
+                base: 0,
+                limit: 0xFFFF
+            }
+        );
+        let cpu = RealModeCpu::after_sipi(0x9F, 0, 0);
+        assert_eq!(
+            cpu.gdtr,
+            TableRegister {
+                base: 0,
+                limit: 0xFFFF
+            }
+        );
+        assert_eq!(
+            cpu.idtr,
+            TableRegister {
+                base: 0,
+                limit: 0xFFFF
+            }
+        );
+    }
+
+    #[test]
+    fn s6_14i_lgdt_operand_goes_through_ds_and_may_sit_in_read_only_memory() {
+        // DS = 0x0200 (base 0x2000), disp 0x0010: the operand is at linear 0x2010.
+        let (_, cpu, _, r) = g_step(&[0x66, 0x0F, 0x01, 0x16, 0x10, 0x00], |c, ram| {
+            c.mode.ds = RealSegment {
+                selector: 0x200,
+                base: 0x2000,
+                limit: 0xFFFF,
+            };
+            ram[0x2010..0x2016].copy_from_slice(&[0x07, 0x00, 0x00, 0x10, 0x00, 0x00]);
+            ram[0x10..0x16].copy_from_slice(&[0xFF; 6]); // the wrong (DS = 0) place
+        });
+        assert!(r.is_ok());
+        assert_eq!(
+            cpu.gdtr,
+            TableRegister {
+                base: 0x1000,
+                limit: 7
+            }
+        );
+        // Read-only memory (`ImageMemory`): the operand is only read.
+        let image = [
+            0x66, 0x0F, 0x01, 0x1E, 0x06, 0x10, // lidt ds:0x1006
+            0x03, 0x00, 0x11, 0x22, 0x33, 0x44,
+        ];
+        let mut cpu = RealModeCpu::at_cs_ip(0, 0x1000, 0, 0);
+        let mut m = mem(0x1000, &image);
+        assert_eq!(cpu.step(&mut m), Ok(RealInstruction::Lidt { disp: 0x1006 }));
+        assert_eq!(
+            cpu.idtr,
+            TableRegister {
+                base: 0x4433_2211,
+                limit: 3
+            }
+        );
+    }
+
+    #[test]
+    fn s6_14i_table_operand_must_fit_under_the_ds_limit_without_wrapping() {
+        // Six bytes at 0xFFFA..=0xFFFF fit; 0xFFFB does not (offset 0x10000 is beyond).
+        let (_, cpu, _, r) = g_step(&[0x66, 0x0F, 0x01, 0x16, 0xFA, 0xFF], |_, ram| {
+            ram[0xFFFA..].copy_from_slice(&[1, 0, 2, 0, 0, 0]);
+        });
+        assert!(r.is_ok());
+        assert_eq!(cpu.gdtr, TableRegister { base: 2, limit: 1 });
+        let (before, cpu, _, r) = g_step(&[0x66, 0x0F, 0x01, 0x16, 0xFB, 0xFF], |_, _| {});
+        assert_eq!(
+            r,
+            Err(RealModeRefusal::DataBeyondLimit {
+                cs: 0,
+                ip: 0x1000,
+                offset: 0x1_0000
+            })
+        );
+        assert_eq!(cpu, before);
+        // A smaller DS limit: operand 0x00FB..=0x0100 fits under limit 0x0100, 0x00FC does not.
+        for (disp, fits) in [(0x00FBu16, true), (0x00FC, false)] {
+            let code = [0x66, 0x0F, 0x01, 0x1E, disp as u8, (disp >> 8) as u8];
+            let (before, cpu, _, r) = g_step(&code, |c, _| c.mode.ds.limit = 0x100);
+            if fits {
+                assert!(r.is_ok());
+            } else {
+                assert_eq!(
+                    r,
+                    Err(RealModeRefusal::DataBeyondLimit {
+                        cs: 0,
+                        ip: 0x1000,
+                        offset: 0x101
+                    })
+                );
+                assert_eq!(cpu, before);
+            }
+        }
+    }
+
+    #[test]
+    fn s6_14i_unreadable_table_operand_is_refused_unchanged() {
+        // RAM ends at 0x1008: the operand at 0x1004 reads 0x1004..=0x1009; 0x1008 is missing.
+        let mut ram = vec![0u8; 0x1008];
+        ram[0x1000..0x1006].copy_from_slice(&[0x66, 0x0F, 0x01, 0x16, 0x04, 0x10]);
+        let mut cpu = RealModeCpu::at_cs_ip(0, 0x1000, 0, 0);
+        let before = cpu;
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        assert_eq!(
+            cpu.step(&mut m),
+            Err(RealModeRefusal::DataUnreadable {
+                cs: 0,
+                ip: 0x1000,
+                linear: 0x1008
+            })
+        );
+        assert_eq!(cpu, before);
+    }
+
+    #[test]
+    fn s6_14i_mov_dx_imm16_writes_only_dx() {
+        for (edx, imm, expected) in [
+            (0xABCD_1234u32, 0x0018u16, 0xABCD_0018u32),
+            (0x0000_0000, 0xFFFF, 0x0000_FFFF),
+            (0xFFFF_FFFF, 0x0000, 0xFFFF_0000),
+        ] {
+            let code = [0xBA, imm as u8, (imm >> 8) as u8];
+            let (before, cpu, _, r) = g_step(&code, |c, _| {
+                c.gpr[EDX] = edx;
+                c.mode.eflags = ALL_ARITH;
+                c.mov_ss_shadow = true;
+            });
+            assert_eq!(r, Ok(RealInstruction::MovDxImm16 { imm }));
+            assert_eq!(cpu.gpr[EDX], expected);
+            let mut want = before;
+            want.gpr[EDX] = expected;
+            want.mode.eip = 0x1003;
+            want.mov_ss_shadow = false; // the shadow of an earlier MOV SS ends here
+            assert_eq!(cpu, want, "{imm:#x}");
+        }
+    }
+
+    /// `MOV EAX, eax_value` is not needed: EAX is set directly. Runs `MOV CR0, EAX` once.
+    fn cr0_step(
+        eax: u32,
+        cr0: u32,
+    ) -> (
+        RealModeCpu,
+        RealModeCpu,
+        Result<RealInstruction, RealModeRefusal>,
+    ) {
+        let (before, cpu, _, r) = g_step(&[0x0F, 0x22, 0xC0], |c, _| {
+            c.gpr[EAX] = eax;
+            c.mode.cr0 = cr0;
+            c.mode.eflags = ALL_ARITH;
+        });
+        (before, cpu, r)
+    }
+
+    #[test]
+    fn s6_14i_mov_cr0_eax_with_pe_stores_the_value_and_changes_nothing_else() {
+        // The trampoline value 0x50033: PE, MP, ET, NE, WP, AM (no PG, no CD/NW).
+        let (before, cpu, r) = cr0_step(0x0005_0033, 0x6000_0010);
+        assert_eq!(r, Ok(RealInstruction::MovCr0Eax));
+        let mut want = before;
+        want.mode.cr0 = 0x0005_0033;
+        want.mode.eip = 0x1003;
+        assert_eq!(
+            cpu, want,
+            "flags, registers, segments, tables are untouched"
+        );
+    }
+
+    #[test]
+    fn s6_14i_next_step_after_pe_is_refused_as_not_real_mode_and_changes_nothing() {
+        let mut ram = vec![0u8; 0x1_0000];
+        // mov cr0,eax; then bytes that WOULD decode in real mode (cli) and a far jump.
+        ram[0x1000..0x1004].copy_from_slice(&[0x0F, 0x22, 0xC0, 0xFA]);
+        let mut cpu = RealModeCpu::at_cs_ip(0, 0x1000, 0x6000_0010, 0);
+        cpu.gpr[EAX] = 0x0005_0033;
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        assert_eq!(cpu.step(&mut m), Ok(RealInstruction::MovCr0Eax));
+        let entered = cpu;
+        assert_eq!(cpu.mode.eip, 0x1003, "EIP is the next instruction");
+        // Every segment still holds its real-mode selector, base and limit (nothing loaded).
+        assert_eq!(cpu.mode.cs, entered.mode.cs);
+        assert_eq!(
+            cpu.mode.cs,
+            RealSegment {
+                selector: 0,
+                base: 0,
+                limit: 0xFFFF
+            }
+        );
+        for _ in 0..3 {
+            assert_eq!(
+                cpu.step(&mut m),
+                Err(RealModeRefusal::NotRealMode { cr0: 0x0005_0033 })
+            );
+            assert_eq!(cpu, entered);
+        }
+        let run = cpu.run(&mut m, 10);
+        assert_eq!(run.steps, 0);
+        assert_eq!(
+            run.stop,
+            Some(RealModeRefusal::NotRealMode { cr0: 0x0005_0033 })
+        );
+    }
+
+    #[test]
+    fn s6_14i_mov_cr0_without_pe_stays_in_real_mode() {
+        let mut ram = vec![0u8; 0x1_0000];
+        ram[0x1000..0x1004].copy_from_slice(&[0x0F, 0x22, 0xC0, 0xFA]);
+        let mut cpu = RealModeCpu::at_cs_ip(0, 0x1000, 0x6000_0010, 0);
+        cpu.gpr[EAX] = 0x6000_0000;
+        cpu.mode.eflags |= EFLAGS_IF;
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        assert_eq!(cpu.step(&mut m), Ok(RealInstruction::MovCr0Eax));
+        assert_eq!(cpu.mode.cr0, 0x6000_0010, "CD and NW written, ET forced");
+        assert_eq!(
+            cpu.step(&mut m),
+            Ok(RealInstruction::Cli),
+            "still real mode"
+        );
+    }
+
+    #[test]
+    fn s6_14i_mov_cr0_forces_et_and_accepts_each_defined_bit() {
+        for (eax, want) in [
+            (0u32, 0x10u32),
+            (0x20, 0x30),
+            (0x10, 0x10),
+            (0x6000_0000, 0x6000_0010),
+        ] {
+            let (_, cpu, r) = cr0_step(eax, 0x6000_0010);
+            assert!(r.is_ok(), "{eax:#x}");
+            assert_eq!(cpu.mode.cr0, want, "{eax:#x}");
+        }
+        // PE, MP, EM, TS, NE, WP, AM, CD (NW needs CD, see the refusal test).
+        for bit in [0x1u32, 0x2, 0x4, 0x8, 0x20, 0x1_0000, 0x4_0000, 0x4000_0000] {
+            let (_, cpu, r) = cr0_step(bit, 0x10);
+            assert!(r.is_ok(), "{bit:#x}");
+            assert_eq!(cpu.mode.cr0, bit | 0x10, "{bit:#x}");
+        }
+        let (_, cpu, r) = cr0_step(0x6000_0000, 0x10);
+        assert!(r.is_ok());
+        assert_eq!(cpu.mode.cr0, 0x6000_0010, "NW with CD is accepted");
+    }
+
+    #[test]
+    fn s6_14i_mov_cr0_with_pg_reserved_bits_or_nw_without_cd_is_refused_unchanged() {
+        for value in [
+            0x8000_0000u32, // PG
+            0x8000_0033,    // PE with PG
+            0x0000_0040,    // reserved bit 6
+            0x0000_8000,    // reserved bit 15
+            0x0002_0000,    // reserved bit 17
+            0x0008_0000,    // reserved bit 19
+            0x1000_0000,    // reserved bit 28
+            0x2000_0000,    // NW without CD (#GP)
+            0x2005_0033,    // NW without CD, with PE
+        ] {
+            let (before, cpu, r) = cr0_step(value, 0x6000_0010);
+            assert_eq!(
+                r,
+                Err(RealModeRefusal::Cr0WriteUnmodelled {
+                    cs: 0,
+                    ip: 0x1000,
+                    value
+                }),
+                "{value:#x}"
+            );
+            assert_eq!(cpu, before, "{value:#x}");
+        }
+    }
+
+    #[test]
+    fn s6_14i_near_misses_are_refused() {
+        let cases: &[(&[u8], &str)] = &[
+            (
+                &[0x0F, 0x01, 0x16, 0x30, 0x00],
+                "LGDT without 66 (24-bit base form)",
+            ),
+            (&[0x0F, 0x01, 0x1E, 0x60, 0x00], "LIDT without 66"),
+            (&[0x66, 0x0F, 0x01, 0x06, 0x30, 0x00], "SGDT"),
+            (&[0x66, 0x0F, 0x01, 0x0E, 0x60, 0x00], "SIDT"),
+            (&[0x66, 0x0F, 0x01, 0x26, 0x30, 0x00], "SMSW"),
+            (&[0x66, 0x0F, 0x01, 0x36, 0x30, 0x00], "LMSW"),
+            (&[0x66, 0x0F, 0x01, 0x3E, 0x30, 0x00], "INVLPG"),
+            (&[0x66, 0x0F, 0x01, 0x17, 0x30, 0x00], "LGDT [BX]"),
+            (&[0x66, 0x0F, 0x01, 0x56, 0x30, 0x00], "LGDT [BP+d8]"),
+            (&[0x66, 0x0F, 0x01, 0x96, 0x30, 0x00], "LGDT [BP+d16]"),
+            (&[0x66, 0x0F, 0x01, 0xD0, 0x00, 0x00], "XGETBV"),
+            (&[0x66, 0x0F, 0x01, 0xD6, 0x00, 0x00], "register form of /2"),
+            (&[0x67, 0x66, 0x0F, 0x01, 0x16, 0x30], "67 before 66"),
+            (&[0x66, 0x67, 0x0F, 0x01, 0x16, 0x30], "66 67"),
+            (&[0x2E, 0x66, 0x0F, 0x01, 0x16, 0x30], "CS override"),
+            (&[0xF0, 0x66, 0x0F, 0x01, 0x16, 0x30], "LOCK LGDT"),
+            (&[0x66, 0x0F, 0x00, 0x16, 0x30, 0x00], "LLDT"),
+            (&[0x66, 0x0F, 0x02, 0x16, 0x30, 0x00], "66 0F 02"),
+            (&[0x0F, 0x22, 0xC8], "MOV CR1,EAX"),
+            (&[0x0F, 0x22, 0xD0], "MOV CR2,EAX"),
+            (&[0x0F, 0x22, 0xD8], "MOV CR3,EAX"),
+            (&[0x0F, 0x22, 0xE0], "MOV CR4,EAX"),
+            (&[0x0F, 0x22, 0xC1], "MOV CR0,ECX"),
+            (&[0x0F, 0x22, 0xC3], "MOV CR0,EBX"),
+            (&[0x66, 0x0F, 0x22, 0xC0], "66 MOV CR0,EAX"),
+            (&[0x0F, 0x20, 0xC0], "MOV EAX,CR0"),
+            (&[0x0F, 0x23, 0xC0], "MOV DR0,EAX"),
+            (&[0x0F, 0x21, 0xC0], "MOV EAX,DR0"),
+            (&[0xB9, 0x18, 0x00], "MOV CX,imm16"),
+            (&[0xBB, 0x18, 0x00], "MOV BX,imm16"),
+            (&[0xB8, 0x18, 0x00], "MOV AX,imm16"),
+            (&[0xBC, 0x18, 0x00], "MOV SP,imm16"),
+            (&[0x66, 0xBA, 0x18, 0x00, 0x00, 0x00], "MOV EDX,imm32"),
+            (&[0x66, 0xB9, 0x18, 0x00, 0x00, 0x00], "MOV ECX,imm32"),
+            (&[0x2E, 0xBA, 0x18, 0x00], "CS-prefixed MOV DX"),
+            (&[0xB2, 0x18], "MOV DL,imm8"),
+        ];
+        for (code, what) in cases {
+            let (before, cpu, ram, r) = g_step(code, |_, _| {});
+            let mut bytes = code.to_vec();
+            bytes.resize(UNSUPPORTED_BYTES_MAX, 0);
+            assert_eq!(
+                r,
+                Err(RealModeRefusal::Unsupported {
+                    cs: 0,
+                    ip: 0x1000,
+                    linear: 0x1000,
+                    bytes
+                }),
+                "{what}"
+            );
+            assert_eq!(cpu, before, "{what}");
+            assert_eq!(&ram[0x1000..0x1000 + code.len()], *code, "{what}");
+        }
+    }
+
+    #[test]
+    fn s6_14i_truncated_forms_are_fetch_refusals() {
+        for code in [
+            &LGDT_30[..],
+            &LIDT_60[..],
+            &[0x0F, 0x22, 0xC0][..],
+            &[0xBA, 0x18, 0x00][..],
+        ] {
+            for n in 1..code.len() {
+                let mut cpu = RealModeCpu::at_cs_ip(0, 0x1000, 0, 0);
+                let before = cpu;
+                let mut m = mem(0x1000, &code[..n]);
+                assert_eq!(
+                    cpu.step(&mut m),
+                    Err(RealModeRefusal::FetchUnreadable {
+                        cs: 0,
+                        ip: 0x1000,
+                        linear: 0x1000 + n as u32
+                    }),
+                    "{code:02x?} cut to {n}"
+                );
+                assert_eq!(cpu, before);
+            }
+        }
+    }
+
+    #[test]
+    fn s6_14i_block_3_and_4_by_hand_from_the_linked_bytes() {
+        // Bytes 0x1027..0x1044 of 16bit-objdump.txt: test eax,eax; jne 0x104c; lidtd ds:0x60;
+        // lgdtd ds:0x30; mov dx,0x18; mov eax,0x50033; mov cr0,eax. Then the far jump of block 5
+        // (66 ea ...), which must not be fetched: PE = 1 stops the module first.
+        let code: [u8; 0x1C] = [
+            0x66, 0x85, 0xC0, 0x75, 0x20, 0x66, 0x0F, 0x01, 0x1E, 0x60, 0x00, 0x66, 0x0F, 0x01,
+            0x16, 0x30, 0x00, 0xBA, 0x18, 0x00, 0x66, 0xB8, 0x33, 0x00, 0x05, 0x00, 0x0F, 0x22,
+        ];
+        let mut ram = vec![0u8; 0x1_0000];
+        ram[0x1027..0x1027 + code.len()].copy_from_slice(&code);
+        ram[0x1043] = 0xC0;
+        ram[0x1044..0x104C].copy_from_slice(&[0x66, 0xEA, 0x00, 0x20, 0x00, 0x00, 0x08, 0x00]);
+        // GDT pointer at DS:0x30 (limit 0x27, base 0x00009F40), IDT pointer at DS:0x60 (empty).
+        ram[0x30..0x36].copy_from_slice(&[0x27, 0x00, 0x40, 0x9F, 0x00, 0x00]);
+        let mut cpu = RealModeCpu::at_cs_ip(0, 0x1027, 0, 0x0003_06A9);
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        let run = cpu.run(&mut m, 100);
+        assert_eq!(
+            run.steps, 7,
+            "test, jne (not taken), lidt, lgdt, mov dx, mov eax, mov cr0"
+        );
+        assert_eq!(
+            run.stop,
+            Some(RealModeRefusal::NotRealMode { cr0: 0x0005_0033 })
+        );
+        assert_eq!(cpu.mode.eip, 0x1044);
+        assert_eq!(cpu.gpr[EDX], 0x0003_0018, "DX = 0x18, EDX[31:16] kept");
+        assert_eq!(cpu.gpr[EAX], 0x0005_0033);
+        assert_eq!(cpu.mode.cr0, 0x0005_0033);
+        assert_eq!(
+            cpu.gdtr,
+            TableRegister {
+                base: 0x9F40,
+                limit: 0x27
+            }
+        );
+        assert_eq!(cpu.idtr, TableRegister { base: 0, limit: 0 });
+        assert_eq!(cpu.mode.eflags, 0x46, "TEST EAX,EAX with EAX = 0: ZF, PF");
+        assert_eq!(cpu.mode.cs.selector, 0);
+    }
+
+    // ---- Comparison with the KVM oracle (S6-14i) ---------------------------------------
+    //
+    // Files in docs/reports/data/stage6/s6-14i/ (run-oracle.sh). Every image is entered at
+    // 0000:0000 and ends in a HLT placed right after the last instruction; with PE = 1 the
+    // oracle executes that HLT in protected mode (CS cache unchanged) and stops with
+    // `guest_hlt`. The model stops at that byte: `Unsupported` (PE = 0) or `NotRealMode` (PE = 1).
+    // Compared: GPRs, segments, EIP (oracle RIP - 1), EFLAGS, CR0, GDTR, IDTR and the captured
+    // memory block. The CS of the PE = 1 images is compared too (it did not change in KVM).
+    fn compare_with_oracle_i(
+        image: &[u8],
+        json: &str,
+        expected_steps: u64,
+        expected_hlt_ip: u32,
+        pe: bool,
+    ) {
+        assert!(json.contains("\"stop_reason\":\"guest_hlt\""));
+        assert!(json.contains("\"exits\":[{\"kind\":\"hlt\"}]"));
+        let mut cpu = RealModeCpu::at_cs_ip(0, 0, 0x6000_0010, oracle_signature(json));
+        let mut ram = vec![0u8; 0x1_0000];
+        ram[..image.len()].copy_from_slice(image);
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        let run = cpu.run(&mut m, 100);
+        assert_eq!(run.steps, expected_steps);
+        match run.stop {
+            Some(RealModeRefusal::NotRealMode { cr0 }) if pe => {
+                assert_eq!(cr0, cpu.mode.cr0);
+                assert_eq!(cr0 & CR0_PE, 1);
+            }
+            Some(RealModeRefusal::Unsupported { bytes, .. }) if !pe => {
+                assert_eq!(bytes[0], 0xF4, "stops at HLT");
+            }
+            other => panic!("unexpected stop {other:?}"),
+        }
+        assert_eq!(cpu.mode.eip, expected_hlt_ip);
+        assert_eq!(
+            ram[expected_hlt_ip as usize], 0xF4,
+            "the stop is the HLT byte"
+        );
+        assert_final_state_matches(json, &cpu);
+        let get = |name: &str| oracle_num(json, &["final_state", "tables", name]);
+        assert_eq!(u64::from(cpu.gdtr.base), get("gdtr_base"), "GDTR base");
+        assert_eq!(u64::from(cpu.gdtr.limit), get("gdtr_limit"), "GDTR limit");
+        assert_eq!(u64::from(cpu.idtr.base), get("idtr_base"), "IDTR base");
+        assert_eq!(u64::from(cpu.idtr.limit), get("idtr_limit"), "IDTR limit");
+        let (gpa, oracle_bytes) = oracle_result_block(json);
+        let start = gpa as usize;
+        assert_eq!(
+            &ram[start..start + oracle_bytes.len()],
+            &oracle_bytes[..],
+            "memory at {gpa:#x}"
+        );
+    }
+    macro_rules! oracle_case_i {
+        ($name:ident, $stem:literal, $steps:expr, $hlt_ip:expr, $pe:expr) => {
+            #[test]
+            fn $name() {
+                let image: &[u8] = include_bytes!(concat!(
+                    "../../../docs/reports/data/stage6/s6-14i/",
+                    $stem,
+                    ".bin"
+                ));
+                let json: &str = include_str!(concat!(
+                    "../../../docs/reports/data/stage6/s6-14i/oracle-",
+                    $stem,
+                    ".json"
+                ));
+                compare_with_oracle_i(image, json, $steps, $hlt_ip, $pe);
+            }
+        };
+    }
+    // a: far jmp 0:0x1027, then the linked bytes 0x1027..0x1044 (test; jne not taken; lidtd
+    // ds:0x60; lgdtd ds:0x30; mov dx,0x18; mov eax,0x50033; mov cr0,eax), HLT at 0x1044 where
+    // the far jump of block 5 would be: 8 steps, PE = 1.
+    oracle_case_i!(
+        oracle_i_a_block4_verbatim,
+        "a-block4-verbatim-0000-0000",
+        8,
+        0x1044,
+        true
+    );
+    // b: mov eax,0x200; mov ds,ax; lidtd ds:0x60; lgdtd ds:0x30 with the tables at linear 0x2060
+    // and 0x2030 and the 32-bit bases 0xFEDCBA98 and 0xA2345678 (top byte non-zero): 4 steps.
+    oracle_case_i!(
+        oracle_i_b_ds_base_and_full_32_bit_base,
+        "b-ds-base-high-base-byte-0000-0000",
+        4,
+        0x14,
+        false
+    );
+    // c: CR0 := 0x20 (no ET in the value): the oracle shows 0x30 (KVM sets ET; hypervisor evidence); PE = 0.
+    oracle_case_i!(
+        oracle_i_c_cr0_et_forced_without_pe,
+        "c-cr0-no-pe-et-forced-0000-0000",
+        2,
+        9,
+        false
+    );
+    // d: CR0 := 0x6005003f (CD, NW, AM, WP, NE, ET, TS, EM, MP, PE): 2 steps, PE = 1.
+    oracle_case_i!(
+        oracle_i_d_cr0_pe_with_extra_bits,
+        "d-cr0-pe-extra-bits-0000-0000",
+        2,
+        9,
+        true
+    );
+    // e: CR0 := 0x60000000 (CD and NW, no PE): the oracle shows 0x60000010.
+    oracle_case_i!(
+        oracle_i_e_cr0_cd_nw_without_pe,
+        "e-cr0-cd-nw-no-pe-0000-0000",
+        2,
+        9,
+        false
     );
 }

@@ -1,0 +1,17 @@
+S6-14i KVM real-mode oracle evidence
+Date: 2026-11-16
+Host: mini (senya@192.168.1.39), Linux mini 7.0.0-42-generic #42-Ubuntu SMP PREEMPT_DYNAMIC Thu Oct 15 08:06:44 UTC 2026 x86_64 GNU/Linux
+model name	: Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz
+gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+Host work dir: /tmp/od-s6-14i (kvm_runner rebuilt there from tools/kvm-runner/kvm_runner.c)
+Build: gcc -O2 -Wall -Wextra -Werror -std=c11 kvm_runner.c -o kvm_runner
+Run: see run-oracle.sh (from the repo root); each run adds --result-block GPA:SIZE (descriptor-table area or image head)
+SHA-256 (host, /tmp/od-s6-14i):
+969ce3a20af037bb8849d05482b31f881320e9420ee9630701728fd0da4ce7f0  kvm_runner.c
+5f6a2aac6f4a49fc92c1ab611daeecc0e7474fe1ae6c2551647464ea10bf11b7  kvm_runner
+8c3bd67d595494c5f6585b9a9fbd216342097abd6b22df69ed9bd6a9764fd30b  a-block4-verbatim-0000-0000.bin
+3be2e44891fe4c2d1314aba5f9af1e0e66a3b6570121fc38a23a9d2f80c1966c  b-ds-base-high-base-byte-0000-0000.bin
+3e23d46f2bc5ad72350f200ae9f9b39d031d6167f38072c1395c70f49d09c813  c-cr0-no-pe-et-forced-0000-0000.bin
+546e3b3cea0c4eeb89be8d608a0814420a92ca50a00b1f387f0abca90e0d982e  d-cr0-pe-extra-bits-0000-0000.bin
+8c000a1cdb9391a5dc7c5765aeccaea13a8e102ab678cd9365e4e19894239461  e-cr0-cd-nw-no-pe-0000-0000.bin
+SHA-256 of kvm_runner.c in the repo (local): 969ce3a20af037bb8849d05482b31f881320e9420ee9630701728fd0da4ce7f0
