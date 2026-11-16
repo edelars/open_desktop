@@ -21388,6 +21388,41 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: the helper subtracts 0x20 from qword R8 with exact
+        // `49 83 C0 E0`; opcode 83 sign-extends the encoded imm8 -32.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Add,
+            dst: Operand::Register(destination),
+            src: Operand::Immediate(0xffff_ffff_ffff_ffe0),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x83
+            && instruction.length == 4
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x49),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R8, OperandSize::Qword) =>
+        {
+            let lhs = state.read(destination);
+            let (value, flags) = arithmetic_result(
+                OperandSize::Qword,
+                ArithmeticKind::Add,
+                lhs,
+                0xffff_ffff_ffff_ffe0,
+                state.rflags,
+            );
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: the Rust entry/helper reserves exactly 0x58/0x38 bytes with
         // `48 83 EC 58`/`48 83 EC 38`. This is register arithmetic only: no
         // stack access or canonical-address check occurs until a later use of RSP.

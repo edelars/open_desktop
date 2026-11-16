@@ -4323,9 +4323,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-307 — S7-04: exact helper `ADD R8,-0x20` (`49 83 C0 E0`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-306.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2016d3`.
-- **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact qword immediate ADD; firmware stops before later helper operations.
+- **Статус:** решена; независимое ревью одобрило без замечаний.
+- **Результат:** base `PagedCpl0ProbeV1` admits only exact qword `ADD R8,imm8`. REX.W/B select R8; opcode 83 sign-extends `0xe0` to -32. Shared ADD semantics update arithmetic flags/definedness. Only R8 and RIP change.
+- **Проверки исполнения:** four focused tests cover negative imm8 sign-extension, wrap/carry/AF/OF/PF/SF/ZF outcomes, high-bit values, complete state retention, immediate-fetch-fault atomicity, neighboring immediates/operations/registers/widths/prefixes, CPL3 and other-profile isolation. Full od-isa suites pass (profile suite: 896), all 65 paged machine tests pass, scoped cargo check/fmt/diff-check pass; only the pre-existing unused page-walk helper warning remains. Runner image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retires 9,004 instructions and stops at `41 BB 01 00 00 00` (`MOV R11D,1`, ISSUE-308), RIP `0x2016d7`, `Unsupported { opcode: 187 }`; COM1 remains empty. Independent review approved with no findings.
 - **Основание:** runner with the Stage 7 firmware image and budget 10000 retired 9,003 instructions and reported `Unsupported { opcode: 131 }`; file offset `0x16d3` contains `49 83 C0 E0`.
-- **Следующий шаг:** admit only this exact qword ADD form, sign-extending imm8 -0x20 and preserving shared arithmetic flags/definedness.
+
+### ISSUE-308 — S7-04: exact helper `MOV R11D,1` (`41 BB 01 00 00 00`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-307.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2016d7`.
+- **Статус:** открыта.
+- **Суть и последствия:** the base profile does not yet admit this exact dword immediate move; firmware stops before later helper operations.
+- **Основание:** runner with the Stage 7 firmware image and budget 10000 retired 9,004 instructions and reported `Unsupported { opcode: 187 }`; file offset `0x16d7` contains `41 BB 01 00 00 00`.
+- **Следующий шаг:** admit only this exact MOV R11D immediate form and verify dword zero-extension/state preservation.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.
