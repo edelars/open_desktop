@@ -26616,8 +26616,19 @@ NMI, cleared by a retired `IRETQ`. `od_isa::deliver_nmi_cpl0_set` delivers vecto
 `Halted` CPU is `Running` after a delivered NMI; `Shutdown`, `WaitForSipi` and an
 unmodelled activity refuse with `ActivityOutsideProfile`. The one-instruction STI
 shadow holds the NMI back (conservative, SDM by memory). Any refusal or abort leaves
-the state, the flag included, unchanged. IST other than 0 in the gate is not modelled
-(`UnsupportedIst`). `IRETQ` clears the flag at the one commit point of each of its two
+the state, the flag included, unchanged. IST (S6-12c): an NMI gate with IST = n (1..=7;
+Linux uses IST 2) takes the new stack from `TSS.IST[n]` (8 bytes at `TR.base + 0x24 + 8 *
+(n - 1)`, read as a descriptor-table access with the rules of `TSS.RSP0`) instead of the
+current RSP (CPL0) or `TSS.RSP0` (CPL3), aligned down to 16; the frame is the same five
+words with the interrupted SS and RSP, SS is not reloaded at CPL0 (null SS from CPL3 as
+without IST). No task register, an entry beyond the TR limit (`TssIstBeyondLimit`), a
+non-canonical address or value (`NonCanonicalIst`) are refusals before any write; a failed
+read is `Aborted(TssIstRead)`. IST = 0 is the delivery as before. IST is supported only by
+`deliver_nmi_cpl0_set`: `#PF`, `#GP`, `INT3` and an external vector through a gate with
+IST != 0 are still `Refused(UnsupportedIst)`. An NMI gate with IST != 0 that is a trap gate
+gives `TrapGateNotSupported` (IST is allowed for NMI, a trap gate for NMI is not modelled);
+for an external vector IST != 0 gives `UnsupportedIst`. (SDM Vol. 3A 7.7 and 6.14.5, by memory: the
+text is not in the repository.) `IRETQ` clears the flag at the one commit point of each of its two
 implementations (`iretq_cpl0` in `execute.rs`, `step_iretq` in `iretq.rs`); a refused
 `IRETQ` does not.
 

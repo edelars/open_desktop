@@ -54914,7 +54914,7 @@ fn a_refused_or_aborted_nmi_does_not_set_blocking() {
         );
         assert_eq!((state, memory.writes), (before, 0));
     }
-    // IST != 0 in the gate is not modelled.
+    // IST != 0 in the gate without a task register (S6-12c: IST is read from the TSS).
     let (mut state, mut memory) = nmi_state();
     ext_put_gate(
         &mut memory,
@@ -54924,7 +54924,7 @@ fn a_refused_or_aborted_nmi_does_not_set_blocking() {
     let before = state.clone();
     assert_eq!(
         nmi_deliver(&mut state, &mut memory),
-        D::Refused(R::UnsupportedIst(2))
+        D::Refused(R::MissingTaskRegister)
     );
     assert_eq!((state, memory.writes), (before, 0));
     // No gate (P = 0).
@@ -55014,4 +55014,335 @@ fn nmi_from_cpl3_uses_tss_rsp0_and_blocks() {
     );
     assert_eq!(pf_qword(&memory, frame - 16), U3_USER_RSP);
     assert!(state.nmi_blocked);
+}
+
+// ---- S6-12c: IST of the NMI gate (the stack comes from TSS.IST[n]) -----------
+
+/// The IST stack top of the NMI tests, deliberately not 16-aligned; the frame lies below
+/// `NMI_IST_STACK & !15`, clear of `PF_RSP` and `U3_RSP0`.
+const NMI_IST_STACK: u64 = STACK + 0x608;
+/// Offset of `IST1` in the 64-bit TSS; `ISTn` is at `TSS_IST1 + 8 * (n - 1)`.
+const TSS_IST1: u64 = 0x24;
+
+fn tss_ist_address(ist: u8) -> u64 {
+    U3_TSS + TSS_IST1 + 8 * (u64::from(ist) - 1)
+}
+
+/// `nmi_state` (CPL0, `RSP = PF_RSP`) with a task register over the TSS at `U3_TSS`, IDT gate 2 an
+/// interrupt gate with IST = `ist` and `NMI_IST_STACK` in `TSS.IST[ist]`; every other IST slot and
+/// `RSP0` hold stacks that must not be used.
+fn nmi_ist_state(ist: u8) -> (LongModeState, LretqMemory) {
+    let (mut state, mut memory) = nmi_state();
+    state.tr = Some(od_isa::TaskRegisterCache {
+        selector: 0x40,
+        base: U3_TSS,
+        limit: 0x67,
+        access: 0x8b,
+        flags: 0,
+    });
+    memory.put(U3_TSS + 4, STACK + 0xa08);
+    for other in 1..=7 {
+        memory.put(tss_ist_address(other), STACK + 0xb08);
+    }
+    memory.put(tss_ist_address(ist), NMI_IST_STACK);
+    ext_put_gate(
+        &mut memory,
+        NMI_GATE_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, ist, 0x8e),
+    );
+    (state, memory)
+}
+
+#[test]
+fn nmi_through_an_ist_gate_stores_the_frame_on_the_tss_ist_stack() {
+    let (mut state, mut memory) = nmi_ist_state(2);
+    state.rflags = 0x4_0243;
+    let before = state.clone();
+    let top = NMI_IST_STACK & !15;
+    assert_eq!(
+        nmi_deliver(&mut state, &mut memory),
+        od_isa::Cpl0ExternalInterruptDelivery::Delivered {
+            target_rip: EXT_HANDLER,
+            new_rsp: top - 40,
+        }
+    );
+    // The frame is on the IST2 stack with the interrupted SS and RSP; the old stack is untouched.
+    assert_eq!(pf_qword(&memory, top - 8), 0x18);
+    assert_eq!(pf_qword(&memory, top - 16), PF_RSP);
+    assert_eq!(pf_qword(&memory, top - 24), 0x4_0243);
+    assert_eq!(pf_qword(&memory, top - 32), 0x10);
+    assert_eq!(pf_qword(&memory, top - 40), before.rip);
+    assert_eq!(pf_qword(&memory, PF_RSP - 8), 0);
+    assert_eq!(memory.writes, 5);
+    assert!(
+        memory
+            .write_log
+            .iter()
+            .all(|(address, bytes, _)| bytes.len() == 8 && (top - 40..top).contains(address))
+    );
+    // IST2 is the qword at TSS + 0x2c, read as a descriptor-table access; RSP0 is not read.
+    assert!(
+        memory
+            .reads
+            .contains(&(U3_TSS + 0x2c, 8, AccessOrigin::DescriptorTable))
+    );
+    assert!(
+        !memory
+            .reads
+            .iter()
+            .any(|(address, _, _)| *address == U3_TSS + 4)
+    );
+    // SS is not reloaded at CPL0; RSP is the IST frame; the NMI is blocked until IRETQ.
+    assert_eq!(state.ss_selector, before.ss_selector);
+    assert_eq!(state.ss_unusable, before.ss_unusable);
+    assert_eq!(state.gpr[Register::Rsp as usize], top - 40);
+    assert_eq!(state.rip, EXT_HANDLER);
+    assert!(state.nmi_blocked);
+    assert_eq!(state.rflags & IF, 0);
+}
+
+#[test]
+fn every_ist_entry_of_the_tss_is_read_at_its_own_offset() {
+    for ist in 1..=7_u8 {
+        let (mut state, mut memory) = nmi_ist_state(ist);
+        // IST7 ends at TSS byte 0x5b, inside the limit 0x67.
+        let top = NMI_IST_STACK & !15;
+        assert_eq!(
+            nmi_deliver(&mut state, &mut memory),
+            od_isa::Cpl0ExternalInterruptDelivery::Delivered {
+                target_rip: EXT_HANDLER,
+                new_rsp: top - 40,
+            },
+            "IST {ist}"
+        );
+    }
+    assert_eq!(tss_ist_address(7), U3_TSS + 0x54);
+}
+
+#[test]
+fn nmi_with_ist_zero_ignores_the_tss_at_cpl0() {
+    let (mut state, mut memory) = nmi_ist_state(2);
+    ext_put_gate(
+        &mut memory,
+        NMI_GATE_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 0, 0x8e),
+    );
+    assert_eq!(
+        nmi_deliver(&mut state, &mut memory),
+        od_isa::Cpl0ExternalInterruptDelivery::Delivered {
+            target_rip: EXT_HANDLER,
+            new_rsp: PF_RSP - 40,
+        }
+    );
+    assert!(
+        !memory
+            .reads
+            .iter()
+            .any(|(address, _, _)| (U3_TSS..U3_TSS + 0x68).contains(address))
+    );
+}
+
+#[test]
+fn nmi_through_an_ist_gate_refuses_a_missing_or_bad_tss_without_any_write() {
+    use od_isa::Cpl0ExternalInterruptDelivery as D;
+    use od_isa::Cpl0ExternalInterruptRefusal as R;
+    let cases: Vec<(&str, fn(&mut LongModeState, &mut LretqMemory), R)> = vec![
+        ("no TR", |state, _| state.tr = None, R::MissingTaskRegister),
+        (
+            "limit below the end of IST2",
+            |state, _| state.tr.as_mut().unwrap().limit = 0x32,
+            R::TssIstBeyondLimit,
+        ),
+        (
+            "limit 0",
+            |state, _| state.tr.as_mut().unwrap().limit = 0,
+            R::TssIstBeyondLimit,
+        ),
+        (
+            "non-canonical IST2",
+            |_, memory| memory.put(tss_ist_address(2), 0x0000_8000_0000_0000),
+            R::NonCanonicalIst,
+        ),
+        (
+            "TSS span overflows",
+            |state, _| state.tr.as_mut().unwrap().base = u64::MAX - 8,
+            R::NonCanonicalIst,
+        ),
+        (
+            "non-canonical TSS base",
+            |state, _| state.tr.as_mut().unwrap().base = 0x0000_8000_0000_0000,
+            R::NonCanonicalIst,
+        ),
+        (
+            "IST2 below the frame size",
+            |_, memory| memory.put(tss_ist_address(2), 0x2f),
+            R::StackAddressOverflow,
+        ),
+    ];
+    for (name, change, refusal) in cases {
+        let (mut state, mut memory) = nmi_ist_state(2);
+        change(&mut state, &mut memory);
+        let before = state.clone();
+        assert_eq!(
+            nmi_deliver(&mut state, &mut memory),
+            D::Refused(refusal),
+            "{name}"
+        );
+        assert_eq!(state, before, "{name}");
+        assert!(!state.nmi_blocked, "{name}");
+        assert_eq!(memory.writes, 0, "{name}");
+    }
+    // The limit of exactly 0x33 covers IST2 (bytes 0x2c..=0x33).
+    let (mut state, mut memory) = nmi_ist_state(2);
+    state.tr.as_mut().unwrap().limit = 0x33;
+    assert!(matches!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Delivered { .. }
+    ));
+}
+
+#[test]
+fn nmi_through_an_ist_gate_aborts_on_a_failed_tss_read_and_changes_nothing() {
+    let (mut state, mut memory) = nmi_ist_state(2);
+    memory.fault_pages = vec![U3_TSS & !0xfff];
+    let before = state.clone();
+    assert!(matches!(
+        nmi_deliver(&mut state, &mut memory),
+        od_isa::Cpl0ExternalInterruptDelivery::Aborted {
+            phase: od_isa::Cpl0ExternalInterruptPhase::TssIstRead,
+            ..
+        }
+    ));
+    assert_eq!(state, before);
+    assert!(!state.nmi_blocked);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn nmi_from_cpl3_through_an_ist_gate_uses_the_ist_stack_not_rsp0() {
+    let (mut state, mut memory) = u3_ext_state();
+    memory.put(tss_ist_address(2), NMI_IST_STACK);
+    ext_put_gate(
+        &mut memory,
+        NMI_GATE_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 2, 0x8e),
+    );
+    let delivered =
+        od_isa::deliver_nmi_cpl0_set(&mut state, &mut memory, context(PrivilegeLevel::Ring3));
+    let top = NMI_IST_STACK & !15;
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0ExternalInterruptDelivery::Delivered {
+            target_rip: EXT_HANDLER,
+            new_rsp: top - 40,
+        }
+    );
+    assert_eq!(pf_qword(&memory, top - 8), u64::from(U3_USER_SS));
+    assert_eq!(pf_qword(&memory, top - 16), U3_USER_RSP);
+    assert_eq!(pf_qword(&memory, top - 32), u64::from(U3_USER_CS));
+    // The privilege change still applies: null SS, frame stored at CPL0, RSP0 not read.
+    assert_eq!(state.ss_selector, Some(0));
+    assert!(state.ss_unusable);
+    assert!(
+        memory
+            .write_privileges
+            .iter()
+            .all(|privilege| *privilege == PrivilegeLevel::Ring0)
+    );
+    assert!(
+        !memory
+            .reads
+            .iter()
+            .any(|(address, _, _)| *address == U3_TSS + 4)
+    );
+    assert!(state.nmi_blocked);
+}
+
+#[test]
+fn nmi_from_cpl3_with_an_unreadable_ist_does_not_fall_back_to_rsp0() {
+    use od_isa::Cpl0ExternalInterruptDelivery as D;
+    let (mut state, mut memory) = u3_ext_state();
+    // RSP0 is valid (`U3_RSP0`) and IST2 is in the TSS, but the limit 0x32 ends before IST2
+    // (bytes 0x2c..=0x33): the delivery is refused, not redirected to RSP0.
+    memory.put(tss_ist_address(2), NMI_IST_STACK);
+    state.tr.as_mut().unwrap().limit = 0x32;
+    ext_put_gate(
+        &mut memory,
+        NMI_GATE_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 2, 0x8e),
+    );
+    let before = state.clone();
+    assert_eq!(
+        od_isa::deliver_nmi_cpl0_set(&mut state, &mut memory, context(PrivilegeLevel::Ring3)),
+        D::Refused(od_isa::Cpl0ExternalInterruptRefusal::TssIstBeyondLimit)
+    );
+    assert_eq!(state, before);
+    assert!(!state.nmi_blocked);
+    assert_eq!(memory.writes, 0);
+    assert!(
+        !memory
+            .reads
+            .iter()
+            .any(|(address, _, _)| *address == U3_TSS + 4)
+    );
+}
+
+#[test]
+fn ist7_limit_boundary_is_0x5b() {
+    use od_isa::Cpl0ExternalInterruptDelivery as D;
+    // IST7 occupies TSS bytes 0x54..=0x5b: the limit 0x5a is one byte short, 0x5b covers it.
+    let (mut state, mut memory) = nmi_ist_state(7);
+    state.tr.as_mut().unwrap().limit = 0x5a;
+    let before = state.clone();
+    assert_eq!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Refused(od_isa::Cpl0ExternalInterruptRefusal::TssIstBeyondLimit)
+    );
+    assert_eq!(state, before);
+    assert_eq!(memory.writes, 0);
+    let (mut state, mut memory) = nmi_ist_state(7);
+    state.tr.as_mut().unwrap().limit = 0x5b;
+    assert!(matches!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Delivered { .. }
+    ));
+}
+
+#[test]
+fn nmi_through_a_trap_gate_with_ist_reports_the_trap_gate() {
+    // IST is allowed for the NMI, a trap gate for the NMI is not modelled.
+    let (mut state, mut memory) = nmi_ist_state(2);
+    ext_put_gate(
+        &mut memory,
+        NMI_GATE_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 2, 0x8f),
+    );
+    let before = state.clone();
+    assert_eq!(
+        nmi_deliver(&mut state, &mut memory),
+        od_isa::Cpl0ExternalInterruptDelivery::Refused(
+            od_isa::Cpl0ExternalInterruptRefusal::TrapGateNotSupported
+        )
+    );
+    assert_eq!((state, memory.writes), (before, 0));
+}
+
+#[test]
+fn ist_is_only_supported_for_the_nmi_delivery() {
+    // An external interrupt (and, by the existing tests, #PF, #GP and INT3) through a gate with
+    // IST != 0 stays refused, also over a TSS with an IST entry.
+    let (mut state, mut memory) = nmi_ist_state(2);
+    ext_put_gate(
+        &mut memory,
+        EXT_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 2, 0x8e),
+    );
+    let before = state.clone();
+    assert_eq!(
+        ext_deliver(&mut state, &mut memory),
+        od_isa::Cpl0ExternalInterruptDelivery::Refused(
+            od_isa::Cpl0ExternalInterruptRefusal::UnsupportedIst(2)
+        )
+    );
+    assert_eq!((state, memory.writes), (before, 0));
 }

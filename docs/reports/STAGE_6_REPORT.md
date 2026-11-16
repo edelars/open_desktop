@@ -329,7 +329,7 @@ GPR, EDX-сигнатура, GDTR/IDTR, LDTR/TR, CR3/CR4 из `legacy_mode.rs` (
 - `od-isa/tests/cpl0_profile_set.rs`: `nmi_uses_vector_two_ignores_if_writes_the_frame_and_sets_blocking`, `a_second_nmi_is_refused_while_blocked_and_delivered_after_iretq`, `a_refused_or_aborted_nmi_does_not_set_blocking` (STI-окно, IST ≠ 0, шлюз без P, сбой записи кадра), `nmi_wakes_a_halted_cpu_and_leaves_other_activities_untouched`, `nmi_from_cpl3_uses_tss_rsp0_and_blocks`. `iretq::tests::a_retired_iretq_ends_nmi_blocking_and_a_refused_one_keeps_it` (путь `iretq.rs`), `state::tests::nmi_blocking_is_off_by_default_and_is_preserved_by_state_clone`.
 
 Ограничения (честно):
-- IST в шлюзе NMI не поддержан (`UnsupportedIst`): Linux ставит IST 2 для вектора 2, поэтому реальное ядро NMI пока не получит. Нужен отдельный срез (TSS IST).
+- IST в шлюзе NMI на момент среза S6-12b не был поддержан (`UnsupportedIst`); снято срезом S6-12c (см. ниже).
 - Доставки в `WaitForSipi` и `Shutdown` нет (`Held`: NMI не теряется). SDM для `Shutdown` с `hardware_reset_only` (SMP_CONTRACT §3, таблица) не моделируется.
 - AP после SIPI получает защёлку, но доставить через плату не может: у его `LongModeState` нет CR0/CR4/paging (S6-16); `deliver_pending_nmi` вернёт ошибку платы, пока AP не исполняет Long64.
 - Вызова из исполняющего цикла нет: `deliver_pending_nmi` вызывается явно; планировщик S6-15 должен вызывать его на границе адресата перед выбором vCPU. Цикл CPL0-набора (`deliver_pending_irq`) NMI не опрашивает.
@@ -363,6 +363,24 @@ GPR, EDX-сигнатура, GDTR/IDTR, LDTR/TR, CR3/CR4 из `legacy_mode.rs` (
 2. `cargo check --workspace --all-targets --offline`: успешно (прежние предупреждения `MEMORY_CORPUS_SEQUENCES`, `scale`; предупреждение `access_long64_4k_internal_with_writer` в `page_walk.rs` относится к lib-сборке и не из среза).
 3. `cargo test -p od-isa --locked --offline`: все наборы без отказов (2335 + 1601 + 126 + 29 + 6 + 76 + 7 + 15 = 4195 тестов; было 4188, +7).
 4. `cargo test -p od-machine --offline -- --test-threads=1`: lib 1423 passed, 0 failed, 7 ignored; все остальные наборы без отказов.
+
+### S6-12c — IST для шлюза NMI (принято ревью Claude Opus/high (2026-11-16), замечания закрыты)
+
+Что сделано (`crates/od-isa/src/interrupt.rs`):
+- `read_tss_ist(state, memory, context, ist)` рядом с `read_tss_rsp0`: `ISTn` (n = 1..=7) — qword по `TR.base + 0x24 + 8·(n−1)` (IST7 — байты `0x54..=0x5b`), чтение как обращение к таблице дескрипторов. Правила как у RSP0: нет TR — `MissingTaskRegister`; лимит TR меньше `offset + 7` — `TssIstBeyondLimit`; неканонический адрес (в том числе переполнение `base + offset`) или неканоническое значение — `NonCanonicalIst`; сбой чтения памяти — `Aborted(TssIstRead)`. Все отказы до записи, состояние не меняется, `nmi_blocked` не взводится. Значение стека, не вмещающее кадр, даёт прежний `StackAddressOverflow`.
+- `resolve_cpl0_gate` принимает параметр `allow_ist`; `ResolvedGate` получил `ist`, `privilege_change` и `new_stack` (вместо `kernel_rsp`). В `deliver_interrupt_through_gate` при IST ≠ 0 (разрешён только для NMI) стек — `TSS.IST[n]` (приоритетнее RSP0, и из CPL3), кадр те же пять слов со старыми SS и RSP, выровнен вниз до 16; SS на CPL0 не перезагружается, из CPL3 — null SS, как без IST. IST = 0 — поведение прежнее (RSP0 при CPL3, иначе текущий RSP; TSS на CPL0 не читается).
+- Заменены поля: `PF`/`GP` и внешняя доставка теперь пишут `gate.new_stack`; поведение без IST не менялось.
+- Добавлены `Cpl0ExternalInterruptRefusal::{TssIstBeyondLimit, NonCanonicalIst}` и `Cpl0ExternalInterruptPhase::TssIstRead`.
+
+Тесты (`od-isa/tests/cpl0_profile_set.rs`, 7 новых + 1 исправлен; после ревью добавлены `nmi_from_cpl3_with_an_unreadable_ist_does_not_fall_back_to_rsp0` и `nmi_through_a_trap_gate_with_ist_reports_the_trap_gate`, `ist7_limit_boundary_is_0x5b` (лимит `0x5a` — отказ, `0x5b` — доставка), из `every_ist_entry_of_the_tss_is_read_at_its_own_offset` убрана тавтологичная проверка): `nmi_through_an_ist_gate_stores_the_frame_on_the_tss_ist_stack` (кадр на IST2 `TSS+0x2c`, старый стек нетронут, RSP0 не читается, SS не меняется, `nmi_blocked`), `every_ist_entry_of_the_tss_is_read_at_its_own_offset` (IST1..IST7), `nmi_with_ist_zero_ignores_the_tss_at_cpl0`, `nmi_through_an_ist_gate_refuses_a_missing_or_bad_tss_without_any_write` (нет TR, лимит `0x32`/`0`, неканонические значение, база и переполнение, малый стек; лимит `0x33` проходит), `nmi_through_an_ist_gate_aborts_on_a_failed_tss_read_and_changes_nothing`, `nmi_from_cpl3_through_an_ist_gate_uses_the_ist_stack_not_rsp0`, `ist_is_only_supported_for_the_nmi_delivery`. Тест `a_refused_or_aborted_nmi_does_not_set_blocking`: проверка «IST 2 — `UnsupportedIst`» заменена на «IST 2 без TR — `MissingTaskRegister`» (IST для NMI теперь поддержан). Остальные тесты `UnsupportedIst` (`#PF`, `#GP`, `INT3`, внешний вектор) не менялись и проходят.
+
+Ограничения (честно):
+- IST поддержан только для NMI (`deliver_nmi_cpl0_set`). `#PF`, `#GP`, `INT3` и внешний вектор через шлюз с IST ≠ 0 по-прежнему `Refused(UnsupportedIst)` (план: «не менять IST для других векторов»); расширение — снятие запрета `allow_ist` в `resolve_cpl0_gate` и выбор TSS-пути в соответствующей обёртке.
+- Вложенный NMI на том же IST-стеке не моделируется как отдельный случай: пока `nmi_blocked`, второй NMI отказывает `NmiBlocked`; стек `IST[n]` при каждой доставке берётся с вершины заново, как по SDM.
+- Источник SDM (Vol. 3A 7.7, 6.14.5) по памяти: текста нет в репозитории. Ошибки TSS, которые CPU сообщил бы как `#TS`/`#SS`, здесь явные отказы, без доставки (как у RSP0).
+- Адаптер `od-machine` (`paged_memory_adapter.rs`) не менялся. Чтение TSS через общий `GuestMemory`; тестов на уровне платы с IST≠0 нет — критерий «Linux-образец шлюза NMI принимается» подтверждён на уровне od-isa (шлюз 0x8E, CS 0x10, IST 2); плата-тест с IST 2 и TSS — до S6-18.
+
+Проверки (2026-11-16): `cargo fmt -p od-isa -p od-machine -p od-testkit -- --check` — чисто; `cargo check --workspace --all-targets --offline` — без ошибок (прежние предупреждения вне среза); `cargo test -p od-isa --locked --offline` — без отказов (2335 + 1608 + 126 + 29 + 6 + 76 + 7 + 15; было 1601 в `cpl0_profile_set`, +7); `cargo test -p od-machine --offline -- --test-threads=1` — lib 1426 passed, 0 failed, 7 ignored, остальные наборы без отказов.
 
 ### S6-10 — вынос состояния vCPU (реализовано, ожидает ревью)
 
