@@ -22303,8 +22303,10 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         // `44 8B 76 34` (MOV R14D,dword ptr [RSI+0x34]), and exact
         // `44 8B 6E 3C` (MOV R13D,dword ptr [RSI+0x3c]), `44 8B 66 40`
         // (MOV R12D,dword ptr [RSI+0x40]) and `44 8B 46 44`
-        // (MOV R8D,dword ptr [RSI+0x44]). Reuse the tracked
-        // faulting read and 32-bit write; other load forms remain unsupported.
+        // (MOV R8D,dword ptr [RSI+0x44]). The exact `0F B7 5C 24 40`
+        // (MOVZX EBX,word ptr [RSP+0x40]) stack form is admitted here too.
+        // Reuse the tracked faulting read and 32-bit write; other load forms
+        // remain unsupported.
         Operation::Extend {
             dst: destination,
             src: Operand::Memory(source),
@@ -22312,14 +22314,19 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Escape0f
             && instruction.opcode.byte == 0xb7
-            && instruction.length == 4
+            && (instruction.length == 4 || instruction.length == 5)
             && instruction.operand_size == OperandSize::Dword
             && instruction.prefixes == Prefixes::default()
-            && ((destination == RegisterView::low(Register::Rdi, OperandSize::Dword)
-                && source.displacement == 8)
-                || (destination == RegisterView::low(Register::Rbx, OperandSize::Dword)
-                    && source.displacement == 0x0a))
-            && source.base == AddressBase::Register(Register::Rsi)
+            && ((instruction.length == 4
+                && ((destination == RegisterView::low(Register::Rdi, OperandSize::Dword)
+                    && source.displacement == 8)
+                    || (destination == RegisterView::low(Register::Rbx, OperandSize::Dword)
+                        && source.displacement == 0x0a))
+                && source.base == AddressBase::Register(Register::Rsi))
+                || (instruction.length == 5
+                    && destination == RegisterView::low(Register::Rbx, OperandSize::Dword)
+                    && source.base == AddressBase::Register(Register::Rsp)
+                    && source.displacement == 0x40))
             && source.index.is_none()
             && source.scale == 1
             && source.address_size == OperandSize::Qword

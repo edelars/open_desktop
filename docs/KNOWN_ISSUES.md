@@ -3850,10 +3850,20 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Следующий шаг:** verify exact MOVZX dword destination/source form and fetch-fault behavior for ISSUE-258.
 
 
-### ISSUE-258 — S7-04: helper `MOVZX EBX,word ptr [RSP+0x40]` (`0F B7 5C 24 40`) remains outside paged CPU profile
+### ISSUE-258 — S7-04: exact helper `MOVZX EBX,word ptr [RSP+0x40]` (`0F B7 5C 24 40`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-257.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015C5`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner retired 8,950 instructions and stopped on `0F B7 5C 24 40`, `Unsupported { opcode: 183 }`; COM1 remains empty.
+- **Статус:** implemented in S7-04; independent review approved with no findings.
+- **Суть и последствия:** exact no-prefix word read at `[RSP+0x40]` zero-extends to EBX; only EBX/RIP change, while flags and definedness are preserved. It uses the tracked memory read path and commits only after a successful read.
+- **Проверка:** six focused tests cover zero-extension/state preservation, tracked read faults, noncanonical stack address (`#SS` before data read), final-byte fetch-fault atomicity, displacement/SIB/register/width/prefix neighbors and CPL3 isolation. Other paged profiles keep this exact form unsupported. Firmware retires 8,951 instructions and stops at ISSUE-259; COM1 remains empty.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15C5` are `0F B7 5C 24 40`; runner budget 10000.
-- **Следующий шаг:** verify exact word load through the tracked read path, EBX zero-extension, page-walk/fault atomicity, and profile isolation for ISSUE-258.
+- **Следующий шаг:** verify exact dword read and R10D zero-extension for ISSUE-259.
+
+
+### ISSUE-259 — S7-04: helper `MOV R10D,dword ptr [RAX+RCX]` (`44 8B 14 08`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-258.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015CA`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner retired 8,951 instructions and stopped on `44 8B 14 08`, `Unsupported { opcode: 139 }`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15CA` are `44 8B 14 08`; runner budget 10000.
+- **Следующий шаг:** verify exact REX.R memory dword load through the tracked read path, zero-extension, page-walk/fault atomicity, and profile isolation for ISSUE-259.

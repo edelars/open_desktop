@@ -27454,3 +27454,10 @@ Four focused tests cover ordinary/high/noncanonical/wrapping inputs, R10-only mu
 Base `PagedCpl0ProbeV1` admits only exact no-prefix `0F 87 A3 02 00 00`. The signed rel32 `+0x2a3` is added to next RIP; JA is taken iff CF=0 and ZF=0. RFLAGS and definedness remain unchanged. The target is checked for canonicality only when taken. Final-byte instruction-fetch faults do not retire or mutate state. Neighboring displacements/conditions, operand/REX prefixes, short branches, CPL3 and other paged profiles remain unsupported.
 
 Five focused tests cover all CF/ZF combinations and definedness masks, taken/fall-through RIP, taken-only canonicality, fetch-fault atomicity, neighboring encodings, CPL3 and profile isolation. Firmware advances after 8,950 retired instructions to `0F B7 5C 24 40` (`MOVZX EBX,word ptr [RSP+0x40]`, ISSUE-258) at RIP `0x2015C5`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `MOVZX EBX,word ptr [RSP+0x40]` (ISSUE-258)
+
+Base `PagedCpl0ProbeV1` admits only exact no-prefix `0F B7 5C 24 40`. The word at `[RSP+0x40]` is read through the tracked memory path and zero-extended into EBX. Only EBX/RIP change; RFLAGS and definedness are preserved. A failing data read or final-byte instruction fetch does not commit the destination. A noncanonical RSP-based effective address faults with #SS before data access. Neighboring destination/displacement/base/index/width/prefix forms, CPL3 and other paged profiles remain unsupported.
+
+Six focused tests cover successful tracked reads and zero-extension, fault atomicity, noncanonical RSP, instruction-fetch faults, neighbor forms and CPL3 isolation. Firmware advances after 8,951 retired instructions to `44 8B 14 08` (`MOV R10D,dword ptr [RAX+RCX]`, ISSUE-259) at RIP `0x2015CA`; COM1 remains empty. Independent review approved with no findings.
