@@ -727,3 +727,7 @@ With exact `48 8D 34 01` admitted, the Stage 7 firmware runner retires 9,007 ins
 ### Stage 7 runner frontier after ISSUE-310
 
 With exact `48 83 C6 24` admitted, the Stage 7 firmware runner retires 9,009 instructions and stops at RIP `0x2016ea`, bytes `0F 87 52 01 00 00` (`JA rel32 +0x152`, ISSUE-311). COM1 remains empty.
+
+### Stage 7 runner frontier after ISSUE-311
+
+With exact `0F 87 52 01 00 00` admitted, the Stage 7 firmware runner retires 9,010 instructions and stops at RIP `0x2016f0`, bytes `4C 8D 14 01` (`LEA R10,[RCX+RAX]`, ISSUE-312). COM1 remains empty.
