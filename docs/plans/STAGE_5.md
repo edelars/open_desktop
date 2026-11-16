@@ -437,6 +437,8 @@ The same treatment sidecars localize 6,905 of the 6,976-read RDTSC delta to the 
 
 Дополнение (2026-11-16, `norandmaps` same-input controls): direct rerun каждого source run с тем же nonce и guest artifacts точно повторил его machine stop object, UART bytes и schema-v5 sidecar; runner JSON отличается только sidecar output path. Каждый run воспроизводится при собственном input, но это не доказывает причинность nonce и не объясняет cross-run разницу. Strict N=2 comparator остаётся false; S5-07 не принят. [Evidence и hashes](../reports/data/stage5/s5-07-canonical-norandmaps-same-input-replay-n2-20261116.log).
 
+Дополнение (2026-11-16, `norandmaps` UART semantic diff): после замены nonce и printk timestamps остаются три ordered differences: available memory 62,064/62,040 KiB; разные `sched_clock` calibration values; differing region terminal panic unwind содержит 3 optional frames в run 0001 и 11 в run 0002, включая `tty_ldisc_deref` во втором run. Первый raw byte mismatch — printk timestamp `Zone ranges`, с разницей 1 мкс. Diff локализует текстовые различия, но не объясняет их и не объявляет benign; strict comparator остаётся false, S5-07 не принят. [Evidence](../reports/data/stage5/s5-07-canonical-norandmaps-uart-semantic-diff-20261116.log).
+
 ### S5-17. Host-side отказы и ограниченные ресурсы
 
 - [x] Принято после независимого ревью. Гостевая часть (гость видит ошибку по контракту) — отдельным шагом, **blocked до `S4-39`**. Пересечение с `S9-18` разрешается решением `S5-00` п.4(а).
