@@ -744,13 +744,23 @@
 - **Следующий шаг:** inspect the exact qword ADD immediate and flag semantics before considering narrow admission.
 
 <a id="issue-186-s7-04-rust-helper-add-r11-2-unsupported"></a>
-### ISSUE-186 — S7-04: Rust helper `ADD R11,2` remains outside paged CPU profile
-- **Дата обнаружения:** 2026-11-15, runner-прогон после exact memory XOR.
+### ISSUE-186 — S7-04: точная форма Rust helper `ADD R11,2` admitted
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact SIB memory XOR.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e49`.
+- **Статус:** решена только для exact `49 83 C3 02` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Результат:** REX `49`, opcode `83 /0`, ModRM `C3`, qword destination R11 and decoded sign-extended immediate `2` are exact-guarded. Shared qword ADD computes the result and flags. Other immediates, operators, registers, widths and prefixes remain outside the allowlist.
+- **Проверка:** four focused tests cover qword results and arithmetic flags/definedness (including carry, zero, sign and overflow), immediate encoding/sign-extension neighbors, final immediate-byte fetch-fault atomicity, neighboring forms, CPL3 and other-profile isolation; all 428 `paged_probe_profile` tests and `cargo check --offline -p od-isa --all-targets` passed. Firmware image `/private/tmp/od-fw-s7-04-issue186.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner retired 89 instructions then stopped at ISSUE-187 (`RIP=0x200e4d`), COM1 remains empty.
+- **Основание:** same image; runner budget 10000.
+- **Следующий шаг:** inspect the exact qword CMP register routing and flag contract before narrow admission.
+
+<a id="issue-187-s7-04-rust-helper-cmp-rbp-r11-unsupported"></a>
+### ISSUE-187 — S7-04: Rust helper `CMP RBP,R11` remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `ADD R11,2`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e4d`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 88 instructions, then stopped at `49 83 C3 02` (`ADD R11,2`), `Unsupported { opcode: 131 }`, `RIP=0x200e49`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue185.bin`; bytes at offset `0xe49` begin `49 83 c3 02`; runner budget 10000.
-- **Следующий шаг:** verify immediate sign-extension, qword arithmetic flags and exact register routing before narrow profile admission.
+- **Суть и последствия:** runner retired 89 instructions, then stopped at `4C 39 DD` (`CMP RBP,R11`), `Unsupported { opcode: 57 }`, `RIP=0x200e4d`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue186.bin`; bytes at offset `0xe4d` begin `4c 39 dd`; runner budget 10000.
+- **Следующий шаг:** confirm Intel operand order and flags-only behavior before considering narrow profile admission.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
