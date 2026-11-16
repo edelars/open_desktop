@@ -21177,9 +21177,10 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // S7-04: Rust helper exact memory XOR `46 33 24 8D 80 26 20 00`
-        // (XOR R12D,dword ptr [R9*4+0x202680]). Read through the tracked
-        // operand path before committing destination or flags.
+        // S7-04: Rust helper exact memory XOR forms `46 33 24 8D 80 26 20 00`
+        // (XOR R12D,[R9*4+0x202680]) and `46 33 0C B5 80 26 20 00`
+        // (XOR R9D,[R14*4+0x202680]). Read through the tracked operand path
+        // before committing destination or flags.
         Operation::Logic {
             kind: LogicKind::Xor,
             dst: Operand::Register(destination),
@@ -21194,9 +21195,11 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     rex: Some(0x46),
                     ..Prefixes::default()
                 })
-            && destination == RegisterView::low(Register::R12, OperandSize::Dword)
+            && ((destination == RegisterView::low(Register::R12, OperandSize::Dword)
+                && source.index == Some(Register::R9))
+                || (destination == RegisterView::low(Register::R9, OperandSize::Dword)
+                    && source.index == Some(Register::R14)))
             && source.base == AddressBase::None
-            && source.index == Some(Register::R9)
             && source.scale == 4
             && source.displacement == 0x202680
             && source.address_size == OperandSize::Qword

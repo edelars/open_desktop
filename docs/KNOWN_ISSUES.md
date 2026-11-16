@@ -734,13 +734,23 @@
 - **Следующий шаг:** inspect the exact SIB-addressed dword XOR and tracked-read contract before considering narrow admission.
 
 <a id="issue-185-s7-04-rust-helper-xor-r9d-sib-unsupported"></a>
-### ISSUE-185 — S7-04: Rust helper `XOR R9D,dword ptr [R14*4+0x202680]` remains outside paged CPU profile
+### ISSUE-185 — S7-04: точная форма Rust helper `XOR R9D,dword ptr [R14*4+0x202680]` admitted
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `XOR R14D,R15D`.
-- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, tracked guest memory), Rust helper at firmware address `0x200e41`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`, tracked guest memory in `crates/od-machine/`), Rust helper at firmware address `0x200e41`.
+- **Статус:** решена только для exact `46 33 0C B5 80 26 20 00` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Результат:** REX `46`, opcode `33 /r`, ModRM/SIB, dword width, no-base index R14 scaled by four and positive disp32 `0x202680` are all exact-guarded. The effective address is read through the tracked dword path before CPU writes; a read fault preserves destination and flags. Shared XOR writes/zero-extends R9D and applies normal logic flags/AF undefinedness.
+- **Проверка:** six focused paged-profile tests cover exact address/width, result/flags/definedness, injected read fault, noncanonical effective address, final-displacement fetch fault, neighbors and CPL3/profile isolation; `paged_probe_xor_r9d_r14_sib_dword_uses_tracked_four_level_walk` verifies the real tracked four-level translation and Accessed bits in the code and data leaf PTEs (no cross-page claim). All 424 `paged_probe_profile` and all 35 `paged_probe_quantum` tests, other-profile isolation and `cargo check --offline -p od-isa -p od-machine --all-targets` passed. Firmware image `/private/tmp/od-fw-s7-04-issue185.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner retired 88 instructions then stopped at ISSUE-186 (`RIP=0x200e49`), COM1 remains empty.
+- **Основание:** same image; runner budget 10000.
+- **Следующий шаг:** inspect the exact qword ADD immediate and flag semantics before considering narrow admission.
+
+<a id="issue-186-s7-04-rust-helper-add-r11-2-unsupported"></a>
+### ISSUE-186 — S7-04: Rust helper `ADD R11,2` remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact memory XOR.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e49`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 87 instructions, then stopped at `46 33 0C B5 80 26 20 00` (`XOR R9D,dword ptr [R14*4+0x202680]`), `Unsupported { opcode: 51 }`, `RIP=0x200e41`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue184.bin`; bytes at offset `0xe41` decode to the exact SIB memory form; runner budget 10000.
-- **Следующий шаг:** verify existing tracked dword read and page-walk behavior for this exact REX/SIB/destination tuple before narrowly extending admission.
+- **Суть и последствия:** runner retired 88 instructions, then stopped at `49 83 C3 02` (`ADD R11,2`), `Unsupported { opcode: 131 }`, `RIP=0x200e49`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue185.bin`; bytes at offset `0xe49` begin `49 83 c3 02`; runner budget 10000.
+- **Следующий шаг:** verify immediate sign-extension, qword arithmetic flags and exact register routing before narrow profile admission.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
