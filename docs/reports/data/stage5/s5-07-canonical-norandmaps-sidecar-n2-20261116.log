@@ -1,0 +1,65 @@
+# S5-07 canonical initramfs `norandmaps` sidecar diagnostic
+
+Date: 2026-11-16
+
+## Scope
+
+Run the canonical Stage 4 initramfs in the existing automatic unique-nonce
+N=2 `stage4a --user-mode --set-cpl0` profile with the opt-in Linux
+`norandmaps` command-line parameter. Collect schema-v5 per-event page-fault
+and CPL0 RDTSC sidecars to check whether the no-`norandmaps` run-to-run fault
+and timing differences recur. This is a diagnostic, not counted acceptance
+evidence. No comparator or normalization rules changed.
+
+Series: `stage5-s5-07-canonical-norandmaps-n2-20261116-a`.
+The runner source revision is `b6d5e7803c63f9b586776a1f5493440fd3526efb`.
+Both runs used the same kernel, initramfs, CPU0 ACPI blob and manifest, 128 MiB
+RAM, 3,000,000,000 retired-instruction budget, `nokaslr norandmaps`, and
+distinct generated nonce values. The manifests identify the series as
+`diagnostic_not_counted`; the sidecars have schema version 5.
+
+## Results
+
+Both guest scenarios passed, validated the exact nonce marker, and stopped
+with `budget_exhausted` at `retired=2,999,999,998`. Each sidecar captured 33
+delivered `#PF` events, all events present, and 22 CPL0 RDTSC sites with no
+overflow or unattributed reads. The ordered `(RIP, error_code, CR2)` page-fault
+signatures match between the two runs. This confirms that the differing CR2
+in event 30 from the canonical no-`norandmaps` pair did not recur here; it does
+not by itself establish ASLR as the cause of that earlier difference.
+
+CPL0 RDTSC totals were 34,426,507 and 34,414,296 (delta −12,211). Six sites
+differed; the largest contribution was −12,144 at RIP
+`0xffffffff8271b34d`, previously resolved against this kernel's matching
+debug ELF to `delay_tsc+0x4d`. The source of the changed loop iteration count
+is not established. UART lengths were 23,513 and 23,893 bytes. The strict
+automatic comparator returned `matches=false`, with unexplained differences
+in `machine_observations` and `ordered_uart_bytes` after nonce normalization.
+The UART difference begins in early boot output. Equal page-fault signatures
+therefore do not make this pair deterministic or acceptance-clean. S5-07
+remains blocked/unaccepted; no observed variation is classified as benign.
+
+## Inputs and raw evidence
+
+| Input | SHA-256 |
+|---|---|
+| Kernel | `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e` |
+| Canonical initramfs | `65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7` |
+| CPU0 ACPI blob | `6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d` |
+| ACPI manifest | `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2` |
+
+Raw outputs are retained locally under
+`work/stage5/stage5-s5-07-canonical-norandmaps-n2-20261116-a/`.
+
+| File | SHA-256 |
+|---|---|
+| `series.json` | `3733ebf6cf09e8e0fed0a8c4628653957563133f654892c79d97cd0e3dcd655e` |
+| `comparison.json` | `989064d1f1ec9b4732e55fb44c4f28eb73dd41a9422163b0b14af4c5d558654e` |
+| Run 0001 manifest | `bf5b217ba4a31950535f7a3685677af90378066504ca4292aef9cf9d062b79d0` |
+| Run 0001 runner JSON | `a7082d89554b781ab97babab10c69c57df58222f27ec5f5abc1a98a6332490e0` |
+| Run 0001 sidecar | `d7cf4c1554b804d696f8001b997e9310319f30bb12294e7475cc42046893e060` |
+| Run 0001 UART | `5e1aa859b8f8098f4f299f777edd0fec8d7f6a7f4b702f8661741bcc2a0a124f` |
+| Run 0002 manifest | `77f31cf763ff28abb0d8ed1bbba0195eab27973f1ea1fab3066e5fdfbc22a4b7` |
+| Run 0002 runner JSON | `d5c4ed829d0eeeed361c0919b850d13252c427b84295fa356c3ba0b942f32855` |
+| Run 0002 sidecar | `10f3a48851fab75d39da0028bdb37a054837b9729738375189480cb04260bbb7` |
+| Run 0002 UART | `f8420be3e44d602884a051ae7e157f2c945f162628d5fccb5c003566547c7bf3` |
