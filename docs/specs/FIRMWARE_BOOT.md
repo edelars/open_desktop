@@ -683,3 +683,7 @@ Four focused profile tests cover result and logical flag values, AF definedness,
 ### Stage 7 runner frontier after ISSUE-299
 
 With exact `74 11` admitted, the Stage 7 firmware runner retires 8,996 instructions and stops at RIP `0x2016a4`, bytes `83 3C 30 00` (`CMP dword ptr [RAX+RSI],0`, ISSUE-300). COM1 remains empty. This is the next unsupported helper form in the bounded paged CPL0 profile.
+
+### Stage 7 runner frontier after ISSUE-300
+
+With exact `83 3C 30 00` admitted, the Stage 7 firmware runner retires 8,997 instructions and stops at RIP `0x2016a8`, bytes `74 0D` (`JZ rel8 +0x0d`, ISSUE-301). COM1 remains empty.

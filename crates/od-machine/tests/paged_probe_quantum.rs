@@ -930,6 +930,77 @@ fn paged_probe_mov_r8d_dword_rsi_disp8_44_uses_tracked_four_level_walk() {
 }
 
 #[test]
+fn paged_probe_cmp_dword_rax_rsi_imm8_uses_tracked_four_level_read() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x83, 0x3c, 0x30, 0x00]);
+    let compared = 0u32;
+    put_bytes_at(&mut bus, DATA_PHYSICAL + 0x30, &compared.to_le_bytes());
+    let mut state = initial_state(0);
+    state.gpr[Register::Rax as usize] = DATA_LINEAR + 0x20;
+    state.gpr[Register::Rsi as usize] = 0x10;
+    let before_flags = state.rflags;
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.page_fault, None);
+    assert_eq!(result.memory_error, None);
+    assert_eq!(state.rip, CODE_LINEAR + 4);
+    assert_eq!(state.gpr[Register::Rax as usize], DATA_LINEAR + 0x20);
+    assert_eq!(state.gpr[Register::Rsi as usize], 0x10);
+    let arithmetic_flags = (1 << 0) | (1 << 2) | (1 << 4) | (1 << 6) | (1 << 7) | (1 << 11);
+    assert_eq!(state.rflags & arithmetic_flags, (1 << 6) | (1 << 2));
+    assert_eq!(
+        state.rflags & !arithmetic_flags,
+        before_flags & !arithmetic_flags
+    );
+    assert!(
+        !writes.contains(&range(DATA_PHYSICAL + 0x30)),
+        "CMP must not write the compared data"
+    );
+    assert_eq!(qword(&mut bus, DATA_PHYSICAL + 0x30), u64::from(compared));
+    assert_eq!(qword(&mut bus, ROOT), ROOT + 0x1007 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x1000), ROOT + 0x2007 | (1 << 5));
+    assert_ne!(qword(&mut bus, ROOT + 0x2020) & (1 << 5), 0);
+    assert_eq!(qword(&mut bus, ROOT + 0x2020) & (1 << 6), 0);
+    assert_eq!(qword(&mut bus, ROOT + 0x3000), CODE_PHYSICAL | 7 | (1 << 5));
+    assert_ne!(qword(&mut bus, ROOT + 0x4000) & (1 << 5), 0);
+    assert_eq!(qword(&mut bus, ROOT + 0x4000) & (1 << 6), 0);
+}
+
+#[test]
+fn paged_probe_cmp_dword_rax_rsi_imm8_read_fault_is_atomic() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x83, 0x3c, 0x30, 0x00]);
+    put(&mut bus, ROOT + 0x4000, 0); // Data PTE is not present.
+    let mut state = initial_state(0);
+    state.gpr[Register::Rax as usize] = DATA_LINEAR + 0x20;
+    state.gpr[Register::Rsi as usize] = 0x10;
+    let before = state.clone();
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    let expected_fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(DATA_LINEAR + 0x30),
+    };
+    assert_eq!(result.exit, PagedProbeExit::Fault(expected_fault.clone()));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    let record = result
+        .page_fault
+        .as_ref()
+        .expect("CMP data-read page fault");
+    assert_eq!(record.fault(), &expected_fault);
+    assert_eq!(record.access(), AccessKind::Read);
+    assert!(!writes.contains(&range(DATA_PHYSICAL + 0x30)));
+}
+
+#[test]
 fn paged_probe_mov_r10d_rax_plus_rcx_uses_tracked_four_level_walk() {
     let (mut bus, _) = fixture();
     put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x44, 0x8b, 0x14, 0x08]);
