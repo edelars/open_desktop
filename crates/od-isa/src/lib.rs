@@ -15,6 +15,7 @@ pub mod hlt;
 pub mod integer_flags;
 pub mod interrupt;
 pub mod iretq;
+pub mod legacy_mode;
 pub mod long_decode;
 pub mod lretq;
 pub mod memory;

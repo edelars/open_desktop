@@ -206,6 +206,41 @@ that this KVM host executes a small real-mode guest and that the oracle reports
 state. It does not execute the Linux AP trampoline, implement AP execution, or
 accept S6-14 as a whole; S6-14c and later remain separate work.
 
+### S6-14c — представление real/protected mode (принято ревью)
+
+Добавлен модуль `crates/od-isa/src/legacy_mode.rs` (подключён строкой
+`pub mod legacy_mode;` в `crates/od-isa/src/lib.rs`). Это только представление
+состояния и разбор данных, без исполнения инструкций.
+
+Что сделано:
+
+- Константы состояния после INIT/SIPI: `INIT_CS_SELECTOR` = `0xF000`,
+  `INIT_CS_BASE` = `0xFFFF_0000`, `INIT_EIP` = `0xFFF0`, `INIT_EFLAGS` = `0x2`,
+  `REAL_MODE_LIMIT` = `0xFFFF`, `CR0_ET`, `CR0_INIT_PRESERVED_MASK`
+  (`0x6000_0000`) и `REAL_MODE_DEFAULT_OPERAND_SIZE`. Источники: Intel SDM
+  Table 12-1 (значения после INIT), её сноска 2 (сохранение CD/NW в CR0) и
+  SIPI, §11.4.3 шаг 6.
+- `RealModeState::after_init(old_cr0)`, `after_sipi(vector)` и
+  `fetch_linear_address()`: состояние после INIT, применение вектора SIPI к
+  CS/EIP и линейный адрес выборки.
+- `ProtectedSegment::from_descriptor(selector, [u8; 8])` разбирает 8-байтный
+  дескриптор (base, limit с учётом гранулярности, access, flags), а
+  `default_operand_size()` выводит размер операнда по биту D/B.
+
+Что НЕ сделано: исполнение инструкций; S6-13; атрибуты сегментов real mode;
+CR2/CR3/CR4; EFER; GDTR/IDTR; LDTR/TR; GPR; EDX-сигнатура после INIT;
+состояние `WaitForSipi`. S6-14d и далее не начаты.
+
+Независимое ревью Claude Opus / high: вердикт «принять» с условием исправить
+замечания 1-3; исполнитель исправил замечания 1-8.
+
+Проверки: `cargo test -p od-isa --locked --offline --lib legacy_mode` — 9 тестов
+прошли; `cargo fmt` — чисто. Полный набор тестов не запускался.
+
+Ограничения: сверка с Intel SDM выполнена по памяти, первоисточник офлайн
+недоступен. Линия S4-38 завершена владельцем 2026-11-16 и не блокирует правки
+`od-isa`. Чекбокс S6-14 в целом не отмечен.
+
 ### S6-10 — вынос состояния vCPU (реализовано, ожидает ревью)
 
 Основание: решением владельца 2026-11-15 остатки S4-21 переданы этапу 6, S6-10 разблокирован. Чекбокс в плане не отмечен: его ставит ревью.
