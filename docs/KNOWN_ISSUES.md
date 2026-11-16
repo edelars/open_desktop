@@ -3984,8 +3984,19 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-270 — S7-04: exact helper `CMP EBP,0x100` (`81 FD 00 01 00 00`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-269.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015FF`.
-- **Статус:** открыта.
-- **Суть и последствия:** base `PagedCpl0ProbeV1` does not yet admit the exact dword register compare against imm32 `0x100`.
+- **Статус:** реализована в S7-04; независимое ревью одобрило без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact no-prefix `81 FD 00 01 00 00`. Opcode 81 /7 compares the low dword EBP against imm32 0x100; it updates dword arithmetic flags/definedness and writes no GPR.
+- **Проверка:** four focused tests cover equality, carry/sign/overflow cases, high qword/upper dword values (including a dword-vs-word distinction), flag-definedness, immediate-fetch atomicity, neighboring immediates/groups/registers/widths/prefixes and CPL3 isolation; other paged profiles keep this encoding unsupported.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15FF` are `81 FD 00 01 00 00`; runner budget 10000.
-- **Проверки исполнения:** firmware retires 8,964 instructions and stops with `Unsupported { opcode: 129 }`; COM1 remains empty.
-- **Следующий шаг:** verify exact opcode/group/register/imm32 decoding, dword flags and definedness for ISSUE-270.
+- **Проверки исполнения:** firmware retires 8,965 instructions and advances to exact `41 0F 92 C3` (`SETB R11B`) at RIP `0x201605`; COM1 remains empty.
+- **Следующий шаг:** verify CF-only SETB result and REX.B byte-register selection for ISSUE-271.
+
+
+### ISSUE-271 — S7-04: exact helper `SETB R11B` (`41 0F 92 C3`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-270.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201605`.
+- **Статус:** открыта.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` does not yet admit the exact REX.B-selected SETB destination R11B.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1605` are `41 0F 92 C3`; runner budget 10000.
+- **Проверки исполнения:** firmware retires 8,965 instructions and stops with `Unsupported { opcode: 146 }`; COM1 remains empty.
+- **Следующий шаг:** admit this exact condition/register form and verify partial-byte semantics, fault behavior and profile isolation for ISSUE-271.

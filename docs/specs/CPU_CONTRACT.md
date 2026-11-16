@@ -27538,3 +27538,10 @@ Five focused tests cover both ZF values with defined and undefined ZF, exact tak
 Base `PagedCpl0ProbeV1` admits only exact no-prefix `8B 6C 08 04`. The SIB computes a 64-bit address from RAX+RCX plus sign-extended disp8 +4. The tracked dword read writes EBP and zero-extends the result into RBP; only RBP/RIP change on success, while flags and definedness are preserved. Data-read and noncanonical-address faults do not commit the destination, and a final displacement-byte fetch fault is atomic. Other SIB bases/indexes/scales/displacements, destinations, widths, prefixes, CPL3 and other paged profiles remain unsupported.
 
 Six focused profile tests cover address/load behavior, zero-extension, flags/state preservation, read/noncanonical/fetch faults, neighbors and CPL3 isolation. Two machine tests cover a successful four-level read with accessed bits set and dirty bits clear, and a precise unmapped-data page fault without state commit. Firmware advances after 8,964 retired instructions to `81 FD 00 01 00 00` (`CMP EBP,0x100`, ISSUE-270) at RIP `0x2015FF`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `CMP EBP,0x100` (ISSUE-270)
+
+Base `PagedCpl0ProbeV1` admits only exact no-prefix `81 FD 00 01 00 00`. Opcode 81 /7 compares the dword EBP operand to imm32 0x100 using shared dword CMP semantics. Arithmetic flags and definedness update; all GPRs and memory remain unchanged. A fault fetching any immediate byte is atomic. Other register/group/immediate/width/prefix forms, CPL3 and other paged profiles remain unsupported.
+
+Four focused tests cover equality, carry/sign and high dword values that distinguish dword from word semantics, GPR preservation, arithmetic flag results/definedness, immediate-fetch atomicity, neighbors and CPL3/profile isolation. Firmware advances after 8,965 retired instructions to `41 0F 92 C3` (`SETB R11B`, ISSUE-271) at RIP `0x201605`; COM1 remains empty. Independent review approved with no findings.
