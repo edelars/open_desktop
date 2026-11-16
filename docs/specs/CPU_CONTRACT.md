@@ -27510,3 +27510,10 @@ Four focused tests cover both CF values with defined and undefined CF, partial-r
 Base `PagedCpl0ProbeV1` admits only exact `41 83 FF F4`. REX.B selects R15D; opcode `83 /7` sign-extends imm8 `0xf4` to dword -12 and applies shared dword CMP semantics. Arithmetic flags and definedness update; GPRs and memory remain unchanged. An immediate-byte fetch fault is atomic. Other immediate values, registers/groups, widths, prefixes, memory operands, CPL3 and other paged profiles remain unsupported.
 
 Four focused tests cover sign extension, dword-vs-word comparison behavior, arithmetic flags/definedness, GPR preservation, final-byte fetch-fault atomicity, neighboring forms, and CPL3/profile isolation. Firmware advances after 8,959 retired instructions to `0F 82 30 02 00 00` (`JB rel32 +0x230`, ISSUE-266) at RIP `0x2015E9`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `JB rel32 +0x230` (ISSUE-266)
+
+Base `PagedCpl0ProbeV1` admits only exact no-prefix `0F 82 30 02 00 00`. JB reads CF only and adds signed rel32 `+0x230` to next RIP when taken. RFLAGS and definedness remain unchanged; target canonicality is checked only when taken. A fetch fault on the final displacement byte does not retire or mutate state. Other conditions/displacements, prefixes, short branches, CPL3 and other paged profiles remain unsupported.
+
+Five focused tests cover CF/ZF combinations and CF definedness, taken/fall-through RIP, taken-only canonicality, final-byte fetch-fault atomicity, adjacent conditions/displacements/prefixes/short/JMP forms and CPL3/profile isolation. Firmware advances after 8,960 retired instructions to `44 20 F5` (`AND BPL,R14B`, ISSUE-267) at RIP `0x2015EF`; COM1 remains empty. Independent review approved with no findings.

@@ -3940,8 +3940,19 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-266 — S7-04: exact helper `JB rel32 +0x230` (`0F 82 30 02 00 00`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-265.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015E9`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware stops on exact near JB branch `0F 82 30 02 00 00`, currently outside the profile.
+- **Статус:** реализована в S7-04; независимое ревью одобрило без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact `0F 82 30 02 00 00`. JB reads CF only, adds signed rel32 `+0x230` to next RIP when taken, preserves flags/definedness and checks target canonicality only when taken.
+- **Проверка:** five focused tests cover CF/ZF values and CF definedness, target/fall-through, taken-only canonicality, final displacement fetch-fault atomicity, neighboring condition/displacement/prefix/short/JMP forms, and CPL3/profile isolation.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15E9` are `0F 82 30 02 00 00`; runner budget 10000.
-- **Проверки исполнения:** firmware retires 8,959 instructions and stops with `Unsupported { opcode: 130 }`; COM1 remains empty.
-- **Следующий шаг:** verify signed rel32 target, CF-only JB predicate, taken-only canonicality and exact profile isolation for ISSUE-266.
+- **Проверки исполнения:** firmware retires 8,960 instructions and advances to ISSUE-267 at RIP `0x2015EF`; COM1 remains empty.
+- **Следующий шаг:** verify exact `44 20 F5` (`AND BPL,R14B`) byte-register routing and logical flags for ISSUE-267.
+
+
+### ISSUE-267 — S7-04: exact helper `AND BPL,R14B` (`44 20 F5`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-266.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015EF`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware stops on exact byte-register AND `44 20 F5`, currently outside the profile.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15EF` are `44 20 F5`; runner budget 10000.
+- **Проверки исполнения:** firmware retires 8,960 instructions and stops with `Unsupported { opcode: 32 }`; COM1 remains empty.
+- **Следующий шаг:** verify REX.R/B byte-register routing, BPL/R14B order, byte logical flags and AF definedness for ISSUE-267.
