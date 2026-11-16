@@ -4389,15 +4389,23 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201705`.
 - **Статус:** решена; реализация и независимое ревью завершены.
 - **Суть и последствия:** the base profile admits only this exact qword ADD immediate form. Opcode 83 sign-extends imm8 `0x30`; shared arithmetic semantics update flags/definedness, and only RSI/RIP change.
-- **Основание:** four focused tests cover qword result, wrap and arithmetic flags/definedness, final-immediate fetch-fault atomicity, neighboring encodings, CPL3 and other-profile isolation. Runner advances after 9,017 retired to ISSUE-316; all od-isa suites, 65 paged machine tests, scoped cargo check, rustfmt and diff-check pass, with only the existing page-walk dead-code warning; independent review is pending.
+- **Основание:** four focused tests cover qword result, wrap and arithmetic flags/definedness, final-immediate fetch-fault atomicity, neighboring encodings, CPL3 and other-profile isolation. Runner advances after 9,017 retired to ISSUE-316; all od-isa suites, 65 paged machine tests, scoped cargo check, rustfmt and diff-check pass, with only the existing page-walk dead-code warning; independent reviewer approved with no findings.
 - **Следующий шаг:** complete full validation and independent review.
 
 ### ISSUE-316 — S7-04: exact helper `JA rel32 +0x168` (`0F 87 68 01 00 00`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-315.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20170c`.
+- **Статус:** решена; реализация и независимое ревью завершены.
+- **Суть и последствия:** the base profile admits only this exact JA rel32 form. The predicate is `CF=0 && ZF=0`; signed rel32 is added to next RIP. Flags/definedness remain unchanged and target canonicality is checked only when taken.
+- **Основание:** five focused tests cover predicate truth table/definedness, exact targets, taken-only canonicality, rel32 fetch-fault atomicity, neighboring forms and CPL3/profile isolation. Runner advances after 9,019 retired to ISSUE-317; all od-isa suites, 65 paged machine tests, scoped cargo check, rustfmt and diff-check pass, with only the existing page-walk dead-code warning; independent review is pending.
+- **Следующий шаг:** complete full validation and independent review.
+
+### ISSUE-317 — S7-04: exact helper `ADD R10,0x38` (`49 83 C2 38`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-316.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201716`.
 - **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact JA rel32 form; firmware stops before the following helper instruction.
-- **Основание:** runner image `/private/tmp/od-fw-s7-04-issue256.bin`, budget 10000, retired 9,017 instructions; file offset `0x170c` contains `0F 87 68 01 00 00` and reports `Unsupported { opcode: 135 }`; COM1 is empty.
+- **Суть и последствия:** the base profile does not yet admit this exact qword ADD immediate form; firmware stops before the following helper instruction.
+- **Основание:** runner image `/private/tmp/od-fw-s7-04-issue256.bin`, budget 10000, retired 9,019 instructions; file offset `0x1716` contains `49 83 C2 38` and reports `Unsupported { opcode: 131 }`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only the exact firmware instruction in a separate Stage 7 slice.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.
