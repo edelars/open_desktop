@@ -27670,4 +27670,11 @@ Four focused tests cover qword routing, carry/auxiliary-carry/zero/sign/overflow
 
 Base `PagedCpl0ProbeV1` admits only exact `41 0F 92 C2`. REX.B selects low byte R10B from ModRM r/m=2. SETB writes `u8(CF)` to that byte only; upper R10 bits and all other GPRs are preserved. RFLAGS and definedness are unchanged; the condition reads CF only. The exact form retires only after full instruction fetch, so a ModRM fetch fault commits nothing. Neighbor forms, CPL3 and other paged profiles remain unsupported.
 
-Four focused tests cover CF true/false with defined and undefined CF, partial-byte/state preservation, fetch-fault atomicity, neighbors and CPL3/profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/833/7/15); all 61 paged machine tests, scoped check, formatting and diff-check pass. Firmware advances after 8,985 retired instructions to `4D 39 FE` (`CMP R14,R15`, ISSUE-289) at RIP `0x201651`; COM1 remains empty. Independent review pending.
+Four focused tests cover CF true/false with defined and undefined CF, partial-byte/state preservation, fetch-fault atomicity, neighbors and CPL3/profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/833/7/15); all 61 paged machine tests, scoped check, formatting and diff-check pass. Firmware advances after 8,985 retired instructions to `4D 39 FE` (`CMP R14,R15`, ISSUE-289) at RIP `0x201651`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `CMP R14,R15` (ISSUE-289)
+
+This slice admits only exact `4D 39 FE` in base `PagedCpl0ProbeV1`. REX.W/R/B selects qword r/m destination R14 and reg source R15. Opcode 39 computes R14−R15, writes arithmetic flags and does not change either operand register. Shared qword arithmetic semantics set CF/PF/AF/ZF/SF/OF and their definedness while preserving non-arithmetic flag values. A fetch fault on ModRM commits no state. The neighbor tests reject the listed alternate routes, directions, widths and prefixes; existing exact CMP admissions remain unchanged, and CPL3/other paged profiles do not gain this form.
+
+Four focused tests cover qword routing, arithmetic/definedness cases, register preservation, fetch-fault atomicity, neighbors and CPL3/profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/837/7/15); all 61 paged machine tests, scoped check, formatting and diff-check pass. Firmware advances after 8,986 retired instructions to `41 0F 97 C3` (`SETA R11B`, ISSUE-290) at RIP `0x201654`; COM1 remains empty. Independent review approved with no findings.
