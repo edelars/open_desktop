@@ -22549,6 +22549,31 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(dst, src.effective_address(state, next_rip));
             state.rip = next_rip;
         }
+        // S7-04: exact `45 8D 6A F3` computes the low-dword LEA result for
+        // R13D from R10 plus signed disp8 -0x0d. REX.R selects R13D; the
+        // address is 64-bit, then the dword write zero-extends. No memory access.
+        Operation::Lea { dst, src }
+            if base_profile
+                && instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0x8d
+                && instruction.length == 4
+                && instruction.operand_size == OperandSize::Dword
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x45),
+                        ..Prefixes::default()
+                    })
+                && dst == RegisterView::low(Register::R13, OperandSize::Dword)
+                && src.base == AddressBase::Register(Register::R10)
+                && src.index.is_none()
+                && src.scale == 1
+                && src.displacement == -0x0d
+                && src.address_size == OperandSize::Qword
+                && src.size == OperandSize::Dword =>
+        {
+            state.write(dst, src.effective_address(state, next_rip));
+            state.rip = next_rip;
+        }
         // S7-04: `_start` loads __bss_end into RCX with exactly
         // `48 8D 0D 02 2B 00 00` (LEA RCX,[RIP+0x2b02]).
         Operation::Lea { dst, src }

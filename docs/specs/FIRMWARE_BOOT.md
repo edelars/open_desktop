@@ -805,3 +805,13 @@ With exact `45 8B 54 04 E4` admitted, the Stage 7 firmware runner retires 9,032 
 ### Stage 7 runner frontier after ISSUE-324
 
 With exact `40 0F 92 C6` admitted, the Stage 7 firmware runner retires 9,033 instructions and stops at RIP `0x201752`, bytes `45 8D 6A F3` (`LEA R13D,[R10-0xd]`, ISSUE-325), `Unsupported { opcode: 141 }`. COM1 remains empty.
+
+
+### Stage 7 paged-profile LEA R13D,[R10-0xd]
+
+`PagedCpl0ProbeV1` admits exact bytes `45 8D 6A F3`. REX.R/B select R13D/R10, and disp8 `0xf3` is -0x0d. The 64-bit effective-address calculation wraps, then the dword result is truncated and zero-extended into R13. LEA does not access memory or check canonicality; flags and definedness are preserved.
+
+
+### Stage 7 runner frontier after ISSUE-325
+
+With exact `45 8D 6A F3` admitted, the Stage 7 firmware runner retires 9,035 instructions and stops at RIP `0x20175a`, bytes `40 0F 93 C5` (`SETAE BPL`, ISSUE-326), `Unsupported { opcode: 147 }`. COM1 remains empty.

@@ -27857,3 +27857,8 @@ Four focused profile tests cover result and logical flag values, AF definedness,
 ### Stage 7 paged-profile SETB SIL
 
 `PagedCpl0ProbeV1` admits exact bytes `40 0F 92 C6` for this slice. The mandatory REX byte selects SIL rather than DH; raw ModRM is pinned to `0xC6`. SETB writes `1` iff CF is set, otherwise `0`, to only RSI[7:0]. Upper RSI bits, other registers, flags and flag-definedness remain unchanged. Missing instruction bytes fault before any architectural state update. This slice adds no other destination, condition or prefix form; existing exact SETcc admissions remain unchanged.
+
+
+### Stage 7 paged-profile LEA R13D,[R10-0xd]
+
+`PagedCpl0ProbeV1` admits exact bytes `45 8D 6A F3`. REX.R selects R13D and REX.B selects R10; disp8 `0xf3` sign-extends to -0x0d. LEA computes the 64-bit effective address with wrapping arithmetic, then the dword destination truncates and zero-extends into R13. No memory access or canonicality check occurs, and flags/definedness remain unchanged. A fetch fault prevents all state changes. Other address, destination, width and prefix forms remain outside this exact admission.

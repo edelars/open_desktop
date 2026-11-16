@@ -4467,9 +4467,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-325 — S7-04: exact helper `LEA R13D,[R10-0xd]` (`45 8D 6A F3`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-324.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201752`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** the base profile admits only this dword LEA encoding. REX.R selects R13D and REX.B selects R10 as the 64-bit address base; disp8 `0xf3` sign-extends to -0x0d. The effective address wraps at 64 bits, then is truncated to 32 bits and zero-extended into R13. LEA makes no memory access or canonicality check and preserves flags.
+- **Проверка:** four focused tests cover signed displacement, dword truncation/zero-extension, address wrap, acceptance of a noncanonical effective address without memory access, flags and full-state preservation, final-byte fetch-fault atomicity, exact neighboring rejects and CPL3 rejection; cross-profile isolation passes. All od-isa suites pass (2,322/1,591/126/29/6/976/7/15; 0 doc tests), all 65 paged machine quantum tests and scoped cargo check/fmt/diff-check pass, with only the existing page-walk dead-code warning. Runner image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, retires 9,035 instructions and stops at RIP `0x20175a`, bytes `40 0F 93 C5` (`SETAE BPL`, ISSUE-326), `Unsupported { opcode: 147 }`; COM1 is empty. Independent review approved with no findings.
+- **Следующий шаг:** implement only ISSUE-326's exact `SETAE BPL` form in a separate Stage 7 slice.
+
+### ISSUE-326 — S7-04: exact helper `SETAE BPL` (`40 0F 93 C5`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-325.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20175a`.
 - **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact dword LEA; firmware stops before the following helper instruction.
-- **Основание:** runner image `/private/tmp/od-fw-s7-04-issue256.bin`, budget 10000, retired 9,033 instructions; file offset `0x1752` contains `45 8D 6A F3` and reports `Unsupported { opcode: 141 }`; COM1 is empty.
+- **Суть и последствия:** the base profile does not yet admit this exact SETcc form; firmware stops before the following helper instruction. Mandatory REX presence selects BPL rather than CH; SETAE reads CF and writes 0/1 to only BPL.
+- **Основание:** runner image `/private/tmp/od-fw-s7-04-issue256.bin`, budget 10000, retired 9,035 instructions; file offset `0x175a` contains `40 0F 93 C5` and reports `Unsupported { opcode: 147 }`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.
