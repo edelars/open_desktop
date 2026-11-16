@@ -1,0 +1,138 @@
+# S5-07 `norandmaps` post-IRET fault-sequence pair, 2026-11-15
+
+Purpose: determine whether the startup-stack write `#PF` signature observed in
+counted Stage 4A user-mode runs recurs when Linux address-space randomization is
+disabled. Diagnostic single runs only; this is not acceptance evidence.
+
+## Source and inputs
+
+- Worktree/branch: `codex`; source revision
+  `65b86251d2ada4d978dc43bfe719c5baed88beab`. The two treatment runs started
+  from a clean tree. The later same-binary control ran while only documentation
+  evidence edits were uncommitted; no Rust source or executable changed.
+- Host: macOS 26.7.1, arm64.
+- Release runner SHA-256:
+  `90c5db937de8fff1501c1ce24f0b3a35a546b557dbe24c5a73bd24be6d6b343f`.
+- Kernel SHA-256:
+  `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`.
+- Initramfs SHA-256:
+  `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`.
+- ACPI blob SHA-256:
+  `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`.
+- ACPI manifest SHA-256:
+  `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`.
+- Each run used the 3,000,000,000-instruction Stage 4A user-mode profile with
+  `--linux-norandmaps`, schema-v5 execution observations, and post-IRET selection
+  at zero-based `#PF` ordinal 30. Both were marked `diagnostic_not_counted`.
+- A matched-length control used the same runner binary and guest inputs without
+  `--linux-norandmaps`. Its 33-character nonce makes the full command line 114
+  bytes, equal to the 114-byte treatment command lines; the token values and
+  lengths differ to compensate for the 11-byte `norandmaps` parameter.
+
+## Commands
+
+```sh
+target/release/od-runner linux-direct \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs /Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --nonce od5norandmaps20261115a \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --out work/stage5/stage5-s5-07-norandmaps-postiret-20261115-a/run.json \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --linux-norandmaps \
+  --execution-observations-out work/stage5/stage5-s5-07-norandmaps-postiret-20261115-a/observations.json \
+  --execution-observations-post-iret-index 30
+
+target/release/od-runner linux-direct \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs /Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --nonce od5norandmaps20261115b \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --out work/stage5/stage5-s5-07-norandmaps-postiret-20261115-b/run.json \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --linux-norandmaps \
+  --execution-observations-out work/stage5/stage5-s5-07-norandmaps-postiret-20261115-b/observations.json \
+  --execution-observations-post-iret-index 30
+
+target/release/od-runner linux-direct \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs /Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --nonce od5control20261115xxxxxxxxxxxxxxx \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --out work/stage5/stage5-s5-07-cmdline-length-control-20261115-c/run.json \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --execution-observations-out work/stage5/stage5-s5-07-cmdline-length-control-20261115-c/observations.json \
+  --execution-observations-post-iret-index 30
+```
+
+## Results
+
+Both guests loaded, emitted the exact nonce, and stopped at
+`retired=2,999,999,998` with `budget_exhausted`. Each recorded 33 delivered
+`#PF`, zero omitted events, and one `#GP(0)`. Their full ordered
+`(RIP, access, CPL, error_code)` fault signatures are identical across all 33
+events. Neither sequence contains the known startup-stack store RIP
+`0xffffffff8271a9c1` (`rep_movs_alternative+0x11`) or the additional
+`__put_user_8` RIP `0xffffffff8271ec4d`.
+
+At ordinal 30, both runs instead captured a CPL3 instruction-fetch fault at
+RIP/CR2 `0x4000b0`, error code `0x14`. The post-IRET snapshot matched RIP, CS,
+CPL and RSP, then translated CR2 to physical `0x443d0b0` through PT leaf
+`0x443d025`. The user RSP was `0x7fffffffee10` in both runs. The table-page
+physical addresses differed between runs, while the leaf value and translation
+matched.
+
+The matched-length control used the same runner binary and guest input hashes,
+omitted `norandmaps`, and kept the complete cmdline at 114 bytes. Its nonce is
+33 characters rather than the 22-character treatment nonce so that the
+command-line lengths match; this is the remaining token-content difference.
+The control reached the same budget with 34 complete `#PF` events. At ordinal
+30 it captured the CPL0 write at `rep_movs_alternative+0x11`, error code `0x2`,
+to CR2 `0x7ffd5195a8d9`. Its post-IRET walk matched the fault context and
+translated CR2 to `0x39fe8d9` through repaired PT leaf `0x39fe867`. The first 30
+signatures (indices 0–29) match the treatment pair; at index 30 the control
+store is replaced by the CPL3 fetch in both treatment runs. The older counted
+C/D pair also had the store at ordinal 30 in both runs; C additionally had the
+`__put_user_8` store at ordinal 31, while D did not.
+
+This same-binary, equal-cmdline-length control and the repeated treatment pair
+provide direct evidence that the startup-stack write fault is sensitive to the
+`norandmaps` intervention in this workload. The nonce token differs in value
+and length to preserve total cmdline length, and the matched control is one
+single run, so this does not prove that every such fault is benign or that the
+full counted S5-07 series is reproducible.
+
+The separate automatic `norandmaps` N=2 series still returned
+`matches=false` for `machine_observations` and `ordered_uart_bytes`; its RDTSC,
+IRQ/quanta and UART differences remain unresolved. These single-run sidecars
+were not passed through the series comparator and do not change acceptance or
+normalization rules. S5-07 remains blocked/unaccepted.
+
+## Evidence hashes
+
+- Runner binary: `90c5db937de8fff1501c1ce24f0b3a35a546b557dbe24c5a73bd24be6d6b343f`.
+- Run A JSON / schema-v5 sidecar:
+  `b56a20785b1f7b6c25e5cd0428213f6320abb6eb1db89a74996153320018d9ba` /
+  `aa1c2a5a4f1b30f351f539e86a0c0aebf2425f3ab35432fb623ec9c5ee47a4c7`.
+- Run B JSON / schema-v5 sidecar:
+  `d5c8156b7cb0f909be78bf8c29c6afc6800b77f3452a980f9d6b9c9f7530726d` /
+  `bc51eba1c551f7ae99023fa3d8807b2d90c0953615266bc9ad0cee6b187f45d3`.
+- Same-binary, equal-cmdline-length control JSON / schema-v5 sidecar:
+  `f3934e11941c29a35a9b778dee97017fb396dd3e80f0b6ebae1af0230ed477ce` /
+  `3cd9502e3d65209de5844cc888992ceb09f63af42ed226a1fa673cbae8c3c3d2`.
+- Counted control C/D sidecar hashes:
+  `ae2c68cff9bfc44aa8085a3e207ff1c3cd7c72c4e88284475733a4dfc24ac1e0` /
+  `e57876a5398d09105173c6aa267d880d0fa0617306b2cca0ce8a29efeb9403c6`.
+
+Raw norandmaps artifacts are retained in ignored `work/stage5/` directories
+`stage5-s5-07-norandmaps-postiret-20261115-a/` and
+`stage5-s5-07-norandmaps-postiret-20261115-b/`.
