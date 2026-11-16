@@ -818,10 +818,21 @@
 ### ISSUE-193 — S7-04: Rust helper `LEA EDI,[R14-1]` (`41 8D 7E FF`) remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `MOV R14D,dword ptr [RSI+0x34]`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e5e`.
-- **Статус:** открыта.
-- **Суть и последствия:** after 8875 retire runner stopped on `41 8D 7E FF` (`LEA EDI,[R14-1]`), `Unsupported { opcode: 141 }`, `RIP=0x200e5e`; COM1 remains empty.
+- **Статус:** решена узко для exact `41 8D 7E FF` в base `PagedCpl0ProbeV1`; implementation awaits review/commit. Full handoff validation remains incomplete.
+- **Суть и результат:** exact REX `41` (REX.B), opcode `8D`, ModRM `7E`, signed disp8 `-1`, dword destination EDI and qword R14 base reuse LEA's decoded effective-address calculation. The 64-bit result is truncated by the EDI write and zero-extended into RDI; LEA performs no memory access and does not update flags or check canonicality. Other displacements, register selections, widths, address forms and profiles remain outside the allowlist.
+- **Проверка:** four focused `rust_helper_lea_edi_r14_minus_one_*` tests and other-profile isolation passed; all 450 `paged_probe_profile` tests and `cargo check --offline -p od-isa --all-targets` passed. Coverage includes signed disp8, low-32 wrap/zero-extension, noncanonical wrapped EA, unchanged flags/definedness, no memory/PIO effects, final disp8 fetch-fault atomicity, neighboring forms and CPL3/profile isolation. Scoped rustfmt and `git diff --check` passed. Firmware image `/private/tmp/od-fw-s7-04-issue193.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner retired 8876 instructions and stopped at ISSUE-194 (`RIP=0x200e62`), COM1 remains empty.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue192.bin`; bytes at offset `0xe5e` begin `41 8d 7e ff`; runner budget 10000.
-- **Следующий шаг:** inspect exact REX.B / ModRM / disp8 decoded LEA shape and existing address-size semantics before considering narrow admission.
+- **Следующий шаг:** inspect exact `81 FF 80 00 00 00` CMP immediate semantics and adjacent forms before considering narrow admission.
+- **Ссылка:** [S7-04 exact LEA EDI,[R14-1] slice](reports/STAGE_7_REPORT.md#s7-04-exact-lea-edi-r14-minus-one).
+
+<a id="issue-194-s7-04-rust-helper-cmp-edi-0x80-unsupported"></a>
+### ISSUE-194 — S7-04: Rust helper `CMP EDI,0x80` (`81 FF 80 00 00 00`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `LEA EDI,[R14-1]`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e62`.
+- **Статус:** открыта.
+- **Суть и последствия:** after 8876 retire runner stopped on `81 FF 80 00 00 00` (`CMP EDI,0x80`), `Unsupported { opcode: 129 }`, `RIP=0x200e62`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue193.bin`; bytes at offset `0xe62` begin `81 ff 80 00 00 00`; runner budget 10000.
+- **Следующий шаг:** inspect exact dword immediate CMP decoder form, operand direction and sign-extension behavior before considering narrow admission.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки

@@ -21149,6 +21149,32 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(dst, src.effective_address(state, next_rip));
             state.rip = next_rip;
         }
+        // S7-04: the Rust helper subtracts one from R14 and writes the low
+        // dword with exactly `41 8D 7E FF` (LEA EDI,[R14-1]). The REX.B bit
+        // selects R14 as the address base; LEA performs no memory access and
+        // the EDI write truncates the 64-bit effective address then zero-extends.
+        Operation::Lea { dst, src }
+            if base_profile
+                && instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0x8d
+                && instruction.length == 4
+                && instruction.operand_size == OperandSize::Dword
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x41),
+                        ..Prefixes::default()
+                    })
+                && dst == RegisterView::low(Register::Rdi, OperandSize::Dword)
+                && src.base == AddressBase::Register(Register::R14)
+                && src.index.is_none()
+                && src.scale == 1
+                && src.displacement == -1
+                && src.address_size == OperandSize::Qword
+                && src.size == OperandSize::Dword =>
+        {
+            state.write(dst, src.effective_address(state, next_rip));
+            state.rip = next_rip;
+        }
         // S7-04: `_start` loads __bss_end into RCX with exactly
         // `48 8D 0D 02 2B 00 00` (LEA RCX,[RIP+0x2b02]).
         Operation::Lea { dst, src }
