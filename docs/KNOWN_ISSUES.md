@@ -4435,9 +4435,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-321 — S7-04: exact helper `ADD R10,0x40` (`49 83 C2 40`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-320.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201738`.
+- **Статус:** решена; реализация и независимое ревью завершены.
+- **Суть и последствия:** the base profile admits only this exact qword ADD immediate form. REX.W/B select R10; opcode 83 sign-extends imm8 `0x40`; shared arithmetic semantics update flags/definedness, and only R10/RIP change.
+- **Основание:** four focused tests cover qword result/wrap, parity/carry/auxiliary-carry/overflow flags and definedness, final-immediate fetch-fault atomicity, adjacent immediates/opcode/register/width/prefix forms, CPL3 and other-profile isolation. Runner advances after 9,029 retired to ISSUE-322. All od-isa suites, 65 paged machine tests, scoped cargo check, rustfmt and diff-check pass; cargo check reports only the existing page-walk dead-code warning. Independent reviewer approved with no findings.
+- **Следующий шаг:** implement only ISSUE-322's exact JA rel32 form in a separate Stage 7 slice.
+
+### ISSUE-322 — S7-04: exact helper `JA rel32 +0x123` (`0F 87 23 01 00 00`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-321.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20173f`.
 - **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact qword ADD immediate form; firmware stops before the following helper instruction.
-- **Основание:** runner image `/private/tmp/od-fw-s7-04-issue256.bin`, budget 10000, retired 9,027 instructions; file offset `0x1738` contains `49 83 C2 40` and reports `Unsupported { opcode: 131 }`; COM1 is empty.
+- **Суть и последствия:** the base profile does not yet admit this exact JA rel32 form; firmware stops before the following helper instruction.
+- **Основание:** runner image `/private/tmp/od-fw-s7-04-issue256.bin`, budget 10000, retired 9,029 instructions; file offset `0x173f` contains `0F 87 23 01 00 00` and reports `Unsupported { opcode: 135 }`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only the exact firmware instruction in a separate Stage 7 slice.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.
