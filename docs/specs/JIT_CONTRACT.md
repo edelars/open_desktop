@@ -4559,6 +4559,33 @@ and `od-isa::execute::paged_cr3_probe_tests::paged_cr3_profile_keeps_lock_mov_cr
 this JIT slice does not alter CPU semantics. See
 [S4-01b evidence](../reports/STAGE_4_S4-01B_2026-11-06.md).
 
+### S4-15b: fetch-snapshot admission from guest RAM
+
+`od_host::PagedFetchedLoadSession` admits the exact `48 8B 03` (`MOV RAX,[RBX]`)
+from bytes read out of guest RAM instead of a caller-supplied constant. Each
+call performs a tracked instruction fetch of the 3 bytes at RIP through the
+machine bus page walker (execute/NX/U/S for the caller's CPL; code Accessed
+writes commit as effects and are reported), recording the physical page and its
+`PhysicalMemory::code_page_generation`. The block is compiled and published
+from the snapshot bytes with `entry_rip` = RIP. A cached block is reused only
+while RIP, physical page, generation and bytes all match; otherwise it is
+dropped before the new admission (one executable region) and any bytes other
+than `48 8B 03` are refused without running a stale block. Fetch rights are
+re-checked on every call. The data operand still runs through
+`with_paged_mov_memory` with scoped `GuestMemory`; no host pointer to guest RAM.
+Fetch faults return the exact `#PF` record before any operand walk. Stores,
+other forms, cross-page code, reset/retirement and interpreter fallback are
+outside this slice (S4-15c-f); the contract text for production owner
+integration as a whole is updated in S4-15g.
+
+Limit: re-admission and fetch work only for 4 KiB code pages.
+`tracked_code_snapshot_with_callback` goes through the 4 KiB walker
+(`access_long64_4k_ram`); a PDE with PS=1 yields the typed refusal
+`Fetch(Access(UnsupportedPageSize))`, possibly with Accessed bits of the upper
+levels already committed. The Linux kernel text is usually mapped with 2 MiB
+pages, so on a real kernel this path will almost certainly refuse. Support for
+2 MiB code pages is a separate slice (S4-15e or S4-16).
+
 ### S4-16a: production tracked loader patch for two inactive code aliases
 
 `od-host::PagedCodeSession` borrows one `MachineBus` exclusively and fixes one

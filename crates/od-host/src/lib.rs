@@ -1017,29 +1017,7 @@ impl PublishedCode {
         >,
         PagedMemoryLoadV2Error,
     > {
-        use od_isa::memory::{InstructionMode, PrivilegeLevel};
-
-        if access_context.mode != InstructionMode::Long64 {
-            return Err(PagedMemoryLoadV2Error::UnsupportedMode);
-        }
-        if !matches!(
-            access_context.privilege,
-            PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3
-        ) {
-            return Err(PagedMemoryLoadV2Error::UnsupportedPrivilege(
-                access_context.privilege,
-            ));
-        }
-        if let Some(activity) = state.activity
-            && activity != od_isa::state::CpuActivity::Running
-        {
-            return Err(PagedMemoryLoadV2Error::UnsupportedCpuActivity(activity));
-        }
-        if let Some(shadow) = state.sti_shadow
-            && shadow != od_isa::state::StiShadow::Clear
-        {
-            return Err(PagedMemoryLoadV2Error::UnsupportedInterruptShadow(shadow));
-        }
+        check_paged_load_v2_context(state, access_context)?;
         let metadata = self
             .memory_operation_metadata_v2
             .as_ref()
@@ -1801,6 +1779,257 @@ pub enum PagedMemoryLoadV2Error {
     EntryRipMismatch { expected: u64, actual: u64 },
     UnsupportedCpuCr3 { value: u64 },
     Paging(od_machine::ProbeConfigError),
+}
+
+/// The only instruction form S4-15b admits from guest RAM: `MOV RAX,[RBX]`.
+pub const PAGED_FETCHED_LOAD_V2_BYTES: [u8; 3] = [0x48, 0x8b, 0x03];
+
+/// Whether a call executed a block admitted by an earlier call or admitted a
+/// fresh one from the bytes it had just fetched.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PagedFetchAdmission {
+    Admitted,
+    Reused,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedFetchedLoadErrorKind {
+    /// Refused before the instruction fetch: CPU context, CR3 ownership,
+    /// operand range or paging controls. No page walk happened.
+    Load(PagedMemoryLoadV2Error),
+    /// Tracked instruction fetch failed (execute rights, NX, U/S, missing
+    /// translation, non-RAM or cross-page code). Nothing was executed.
+    Fetch(od_machine::TrackedCodeSnapshotError),
+    /// The fetched bytes are not exactly `48 8B 03`. Any previously admitted
+    /// block was dropped and nothing was executed.
+    UnsupportedForm {
+        bytes: Vec<u8>,
+    },
+    Compile(od_jit::memory_load_v2::MemoryLoadCompileErrorV2),
+    Publish(ExecutableMemoryError),
+}
+
+/// Refusal plus every page-walk write the instruction fetch had already
+/// committed (Accessed bits are an effect even when the fetch later faults).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedFetchedLoadError {
+    pub kind: PagedFetchedLoadErrorKind,
+    pub fetch_committed_writes: Vec<od_machine::GuestPhysicalRange>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedFetchedLoadReport {
+    pub fetched_linear_base: u64,
+    pub fetched_physical_page: od_machine::GuestPhysicalAddress,
+    pub fetched_generation: u64,
+    pub fetched_bytes: [u8; 3],
+    pub fetch_committed_writes: Vec<od_machine::GuestPhysicalRange>,
+    pub admission: PagedFetchAdmission,
+    pub execution: od_machine::PagedMovMemoryScope<
+        Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
+    >,
+}
+
+struct AdmittedFetchedLoad {
+    linear_base: u64,
+    physical_page: od_machine::GuestPhysicalAddress,
+    generation: u64,
+    bytes: [u8; 3],
+    published: PublishedCode,
+}
+
+/// S4-15b: a JIT session whose block is compiled from bytes read out of guest
+/// RAM. Every call performs a tracked instruction fetch of the code bytes at
+/// RIP (execute/NX/U/S checked for the caller's CPL, code Accessed bits
+/// committed), so rights are re-checked on each execution. A block admitted
+/// earlier is reused only while the fetched bytes, the physical code page and
+/// that page's write generation are all unchanged; otherwise the block is
+/// dropped and the form is admitted again from the new bytes.
+///
+/// The session owns at most one published block (the host has one MAP_JIT
+/// region). The data operand runs through `execute_paged_mov_rax_rbx_v2`, so
+/// it reaches RAM only via the scoped tracked adapter.
+#[derive(Default)]
+pub struct PagedFetchedLoadSession {
+    admitted: Option<AdmittedFetchedLoad>,
+    admissions: u64,
+}
+
+impl PagedFetchedLoadSession {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of blocks compiled and published from fetched bytes so far.
+    pub fn admissions(&self) -> u64 {
+        self.admissions
+    }
+
+    pub fn has_admitted_block(&self) -> bool {
+        self.admitted.is_some()
+    }
+
+    pub fn execute(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+    ) -> Result<PagedFetchedLoadReport, PagedFetchedLoadError> {
+        let refuse = |kind| PagedFetchedLoadError {
+            kind,
+            fetch_committed_writes: Vec::new(),
+        };
+        let load = |error| refuse(PagedFetchedLoadErrorKind::Load(error));
+        check_paged_load_v2_context(state, access_context).map_err(load)?;
+        if let Some(value) = state.cr3 {
+            return Err(load(PagedMemoryLoadV2Error::UnsupportedCpuCr3 { value }));
+        }
+        let operand_address = state.gpr[od_isa::Register::Rbx as usize];
+        if (operand_address & 0xfff) + 8 > 4096 {
+            return Err(load(PagedMemoryLoadV2Error::UnsupportedOperandRange {
+                address: operand_address,
+                length: 8,
+            }));
+        }
+        let paging = od_machine::Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+            .map_err(|error| load(PagedMemoryLoadV2Error::Paging(error)))?;
+
+        let rip = state.rip;
+        let mut fetch_committed_writes = Vec::new();
+        let snapshot = bus
+            .tracked_code_snapshot_with_callback(
+                &paging,
+                rip,
+                PAGED_FETCHED_LOAD_V2_BYTES.len(),
+                access_context,
+                |range| fetch_committed_writes.push(range),
+            )
+            .map_err(|error| PagedFetchedLoadError {
+                kind: PagedFetchedLoadErrorKind::Fetch(error),
+                fetch_committed_writes: fetch_committed_writes.clone(),
+            })?;
+        let fail = |kind, writes: &Vec<_>| PagedFetchedLoadError {
+            kind,
+            fetch_committed_writes: writes.clone(),
+        };
+        let fetched_bytes: [u8; 3] = snapshot.bytes.as_slice().try_into().map_err(|_| {
+            fail(
+                PagedFetchedLoadErrorKind::UnsupportedForm {
+                    bytes: snapshot.bytes.clone(),
+                },
+                &fetch_committed_writes,
+            )
+        })?;
+
+        let reusable = self.admitted.as_ref().is_some_and(|admitted| {
+            admitted.linear_base == snapshot.linear_base
+                && admitted.physical_page == snapshot.physical_base
+                && admitted.generation == snapshot.backing_generation
+                && admitted.bytes == fetched_bytes
+        });
+        let admission = if reusable {
+            PagedFetchAdmission::Reused
+        } else {
+            // Drop the stale block first: the host has one executable region
+            // and an old block must never run against new bytes.
+            self.admitted = None;
+            if fetched_bytes != PAGED_FETCHED_LOAD_V2_BYTES {
+                return Err(fail(
+                    PagedFetchedLoadErrorKind::UnsupportedForm {
+                        bytes: fetched_bytes.to_vec(),
+                    },
+                    &fetch_committed_writes,
+                ));
+            }
+            let view = od_jit::block::CodeView::new(rip, &fetched_bytes).map_err(|_| {
+                fail(
+                    PagedFetchedLoadErrorKind::UnsupportedForm {
+                        bytes: fetched_bytes.to_vec(),
+                    },
+                    &fetch_committed_writes,
+                )
+            })?;
+            let block = od_jit::memory_load_v2::compile_memory_load_block_v2(view, rip).map_err(
+                |error| {
+                    fail(
+                        PagedFetchedLoadErrorKind::Compile(error),
+                        &fetch_committed_writes,
+                    )
+                },
+            )?;
+            let published = PublishedCode::publish_memory_load_v2(&block).map_err(|error| {
+                fail(
+                    PagedFetchedLoadErrorKind::Publish(error),
+                    &fetch_committed_writes,
+                )
+            })?;
+            self.admitted = Some(AdmittedFetchedLoad {
+                linear_base: snapshot.linear_base,
+                physical_page: snapshot.physical_base,
+                generation: snapshot.backing_generation,
+                bytes: fetched_bytes,
+                published,
+            });
+            self.admissions += 1;
+            PagedFetchAdmission::Admitted
+        };
+        let admitted = self
+            .admitted
+            .as_ref()
+            .expect("admitted block is present after admission or reuse");
+        let execution = admitted
+            .published
+            .execute_paged_mov_rax_rbx_v2(state, bus, cr3, efer, access_context)
+            .map_err(|error| {
+                fail(
+                    PagedFetchedLoadErrorKind::Load(error),
+                    &fetch_committed_writes,
+                )
+            })?;
+        Ok(PagedFetchedLoadReport {
+            fetched_linear_base: snapshot.linear_base,
+            fetched_physical_page: snapshot.physical_base,
+            fetched_generation: snapshot.backing_generation,
+            fetched_bytes,
+            fetch_committed_writes,
+            admission,
+            execution,
+        })
+    }
+}
+
+/// CPU-context gate shared by every paged V2 load entry. It runs before any
+/// page walk or commit, so an unsupported context leaves guest memory untouched.
+fn check_paged_load_v2_context(
+    state: &od_isa::LongModeState,
+    access_context: od_isa::memory::AccessContext,
+) -> Result<(), PagedMemoryLoadV2Error> {
+    use od_isa::memory::{InstructionMode, PrivilegeLevel};
+
+    if access_context.mode != InstructionMode::Long64 {
+        return Err(PagedMemoryLoadV2Error::UnsupportedMode);
+    }
+    if !matches!(
+        access_context.privilege,
+        PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3
+    ) {
+        return Err(PagedMemoryLoadV2Error::UnsupportedPrivilege(
+            access_context.privilege,
+        ));
+    }
+    if let Some(activity) = state.activity
+        && activity != od_isa::state::CpuActivity::Running
+    {
+        return Err(PagedMemoryLoadV2Error::UnsupportedCpuActivity(activity));
+    }
+    if let Some(shadow) = state.sti_shadow
+        && shadow != od_isa::state::StiShadow::Clear
+    {
+        return Err(PagedMemoryLoadV2Error::UnsupportedInterruptShadow(shadow));
+    }
+    Ok(())
 }
 
 fn reject_cpu_owned_cr3(

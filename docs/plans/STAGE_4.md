@@ -625,6 +625,18 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   Ограниченный срез принят после независимого ревью; родительский S4-15
   остаётся открытым.
 
+#### S4-15b. Memory-блок JIT из байтов guest RAM
+
+- Реализовано (ожидает независимого ревью, чекбокс S4-15 не ставится):
+  `PagedFetchedLoadSession` в `od-host` делает tracked instruction fetch
+  exact `48 8B 03` по RIP (execute/NX/U/S, A-биты кода как effect),
+  хранит физическую страницу и generation, компилирует блок из этих байтов и
+  исполняет операнд через `with_paged_mov_memory`. Изменение байта/страницы
+  кода даёт повторный допуск или отказ, старый блок не исполняется. Тесты
+  `s4_15b_*` в `tests/system/stage4_memory_fault.rs`. Store, новые формы,
+  reset/retirement и fallback — S4-15c–f. См. раздел S4-15b в
+  [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
+
 ### S4-16. Physical aliases и инвалидация исполняемого кода
 
 - [ ] Принято после ревью.
