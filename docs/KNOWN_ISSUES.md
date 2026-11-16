@@ -680,10 +680,19 @@
 ### ISSUE-179 — S7-04: Rust helper `XOR R9D,R14D` remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `MOVZX R9D,R9B`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e28`.
+- **Статус:** решена узко для exact `45 31 F1` в base `PagedCpl0ProbeV1`.
+- **Результат:** admitted only dword XOR with `R9D` as ModRM r/m destination and `R14D` as ModRM reg source. Reuses logical XOR result/flag semantics; destination write zero-extends R9, while concrete AF is retained and AF-definedness is cleared.
+- **Проверка:** three focused `rust_helper_xor_r9d_r14d` tests; all 396 `paged_probe_profile` tests; CPL3 and other-profile isolation; `cargo check --offline -p od-isa --all-targets`, scoped rustfmt and diff-check passed. Tests verify operand/result routing, full state, flags/definedness, 32-bit zero-extension, final-ModRM fetch-fault atomicity and adjacent operation/register/width/prefix forms. Firmware image `/private/tmp/od-fw-s7-04-issue179.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`); runner retired 82 instructions and stopped at `46 33 24 8D 80 26 20 00` (`XOR R12D,dword ptr [R9*4+0x202680]`, ISSUE-180), RIP `0x200e2b`, `Unsupported { opcode: 51 }`, `com1_bytes=0`. Full handoff validation remains incomplete.
+- **Ссылка:** [paged CPU-profile contract](specs/CPU_CONTRACT.md#s7-04-exact-rust-helper-xor-r9d-r14d).
+
+<a id="issue-180-s7-04-rust-helper-xor-r12d-memory-unsupported"></a>
+### ISSUE-180 — S7-04: Rust helper `XOR R12D,dword ptr [R9*4+0x202680]` remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `XOR R9D,R14D`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e2b`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 81 instructions, then stops at `45 31 F1` (`XOR R9D,R14D`), `Unsupported { opcode: 49 }`, `RIP=0x200e28`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue178.bin`; bytes at offset `0xe28` are `45 31 f1`; runner budget 10000.
-- **Следующий шаг:** inspect the exact dword register XOR operand order and shared logical/flags semantics, then consider only this pairing in the base paged profile.
+- **Суть и последствия:** runner retired 82 instructions, then stops at `46 33 24 8D 80 26 20 00`, `Unsupported { opcode: 51 }`, `RIP=0x200e2b`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue179.bin`; bytes at offset `0xe2b` are `46 33 24 8d 80 26 20 00`; runner budget 10000.
+- **Следующий шаг:** inspect this exact SIB memory-source XOR form, signed displacement/address calculation and tracked read contract before considering a narrow profile admission.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.

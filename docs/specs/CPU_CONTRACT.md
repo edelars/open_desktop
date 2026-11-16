@@ -902,6 +902,13 @@ Base `PagedCpl0ProbeV1` additionally admits only `45 0F B6 C9`: opcode `0F B6`, 
 
 Checks: four focused `rust_helper_movzx_r9d_r9b` tests and other-profile isolation passed; all 393 `paged_probe_profile` tests and `cargo check --offline -p od-isa --all-targets` passed. Coverage includes low-byte alias mapping, zero-extension, complete state/flags/definedness retention, final-ModRM fetch-fault atomicity, neighboring source/destination aliases, opcode/width/prefix forms and CPL/profile isolation. Scoped rustfmt and `git diff --check` passed. Image `/private/tmp/od-fw-s7-04-issue178.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 81 instructions then stopped at `45 31 F1` (`XOR R9D,R14D`, ISSUE-179), `RIP=0x200e28`, `Unsupported { opcode: 49 }`, `com1_bytes=0`; full handoff validation remains incomplete.
 
+<a id="s7-04-exact-rust-helper-xor-r9d-r14d"></a>
+#### Расширение S7-04: exact Rust-helper `XOR R9D,R14D`
+
+Base `PagedCpl0ProbeV1` additionally admits only `45 31 F1`: primary opcode `31`, exact REX `45`, ModRM `F1`, dword width and length 3. Opcode `31` writes the ModRM r/m destination, so the exact operand order is R9D destination XOR R14D source. Existing logical-XOR result and flag semantics are reused. The R9D write zero-extends R9; other GPRs are preserved. CF/PF/ZF/SF/OF update per the dword result; AF's concrete bit is preserved while its definedness is cleared. This form is register-only and has no data-memory access. Neighboring tuples/opcodes/widths/prefixes, CPL3 and other paged profiles remain unsupported.
+
+Checks: three focused `rust_helper_xor_r9d_r14d` tests passed; CPL3 and other-profile isolation passed; all 396 `paged_probe_profile` tests and `cargo check --offline -p od-isa --all-targets` passed. Coverage includes operand/result routing, full-state/flags/definedness, dword zero-extension, AF definedness, final-ModRM fetch-fault atomicity, neighbors and profile isolation. Scoped rustfmt and `git diff --check` passed. Image `/private/tmp/od-fw-s7-04-issue179.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 82 instructions then stopped at `46 33 24 8D 80 26 20 00` (`XOR R12D,dword ptr [R9*4+0x202680]`, ISSUE-180), `RIP=0x200e2b`, `Unsupported { opcode: 51 }`, `com1_bytes=0`; full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции
