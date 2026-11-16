@@ -27311,3 +27311,10 @@ Five focused tests cover qword result/state, injected read-fault and instruction
 Base `PagedCpl0ProbeV1` admits only exact `4C 89 F9`. REX.W selects qword width and REX.R selects R15 as the source; the ModRM r/m field selects RCX as destination. The full 64-bit value is copied. Only RCX and RIP change; flags/definedness and other GPRs remain unchanged. Neighboring registers, REX bits, opcode directions, widths, prefixes, CPL3 and other profiles remain unsupported.
 
 Four focused tests cover high-bit qword values, complete CPU/flags-definedness preservation, instruction-fetch-fault atomicity, neighboring forms and CPL3; other-profile isolation passes. Firmware advances to ISSUE-237: `4D 89 F0` (`MOV R8,R14`) at RIP `0x200fdc`, after 8919 retired instructions.
+
+
+### S7-04: exact Rust-helper `MOV R8,R14` (ISSUE-237)
+
+Base `PagedCpl0ProbeV1` admits only exact `4D 89 F0`. REX.W selects qword width, REX.R extends the ModRM reg source to R14, and REX.B extends the r/m destination to R8. The full 64-bit value is copied. Only R8 and RIP change; flags/definedness and other GPRs remain unchanged. Neighboring REX/register forms, opcode direction, widths, prefixes, CPL3 and other profiles remain unsupported.
+
+Four focused tests cover high-bit qword values, full-state and flags-definedness retention, instruction-fetch-fault atomicity, neighboring register/REX/opcode/width/prefix forms and CPL3; other-profile isolation passes. Firmware advances to ISSUE-238: `4D 89 E1` (`MOV R9,R12`) at RIP `0x200fdf`, after 8920 retired instructions.
