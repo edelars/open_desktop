@@ -21983,6 +21983,48 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: the Rust helper spills RDX with exactly
+        // `48 89 54 24 30` (MOV qword ptr [RSP+0x30],RDX). The decoded
+        // address tuple and length pin the ModRM/SIB/disp8 form; route the
+        // write through the tracked GuestMemory path before advancing RIP.
+        Operation::Mov {
+            dst: Operand::Memory(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x89
+            && instruction.length == 5
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x48),
+                    ..Prefixes::default()
+                })
+            && destination.base == AddressBase::Register(Register::Rsp)
+            && destination.index.is_none()
+            && destination.scale == 1
+            && destination.displacement == 0x30
+            && destination.address_size == OperandSize::Qword
+            && destination.size == OperandSize::Qword
+            && source == RegisterView::low(Register::Rdx, OperandSize::Qword) =>
+        {
+            let value = state.read(source);
+            if let Err(error) = write_operand(
+                state,
+                memory,
+                context,
+                next_rip,
+                Operand::Memory(destination),
+                value,
+            ) {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+            return result(PagedProbeExit::Retired, 1);
+        }
         // S7-04: the Rust helper compares the qword handoff magic at [RSI]
         // against RDI with exactly `48 39 3E`. Reuse the potentially faulting
         // memory read and qword CMP semantics; no other addressing form is admitted.
