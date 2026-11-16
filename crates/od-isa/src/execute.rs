@@ -22410,6 +22410,43 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: exact `4D 01 D6` adds R10 into R14. Opcode 01 uses the
+        // ModRM r/m destination; REX.R/B select R10/R14 respectively.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Add,
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x01
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x4d),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R14, OperandSize::Qword)
+            && source == RegisterView::low(Register::R10, OperandSize::Qword) =>
+        {
+            let lhs = state.read(destination);
+            let rhs = state.read(source);
+            let (sum, flags) = arithmetic_result(
+                OperandSize::Qword,
+                ArithmeticKind::Add,
+                lhs,
+                rhs,
+                state.rflags,
+            );
+            state.write(destination, sum);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: the Rust helper compares RSI against RDX with exact
         // `48 39 D6`; opcode 39 keeps r/m as destination and reg as source.
         Operation::Arithmetic {

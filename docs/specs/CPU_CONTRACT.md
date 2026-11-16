@@ -27657,3 +27657,10 @@ Five focused tests cover ZF outcomes and definedness, taken/fall-through RIP, ta
 Base `PagedCpl0ProbeV1` admits only exact `49 BF 00 00 00 00 10 00 00 00`. REX.W/B select qword R15 and the instruction transfers the full imm64 `0x1000000000`, rather than sign-extending an imm32. Only R15/RIP change; RFLAGS/definedness are preserved. A final immediate-byte fetch fault is atomic. Other values/registers/widths/opcodes/REX or prefix forms, CPL3 and other paged profiles remain unsupported.
 
 Four focused tests cover imm64 value and R15 routing, full state/flags preservation, final-byte fetch-fault atomicity, neighboring encodings, CPL3 and profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/825/7/15); scoped check, formatting and diff-check pass. Firmware advances after 8,983 retired instructions to `4D 01 D6` (`ADD R14,R10`, ISSUE-287) at RIP `0x20164a`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `ADD R14,R10` (ISSUE-287)
+
+Base `PagedCpl0ProbeV1` admits only exact `4D 01 D6`. Opcode 01 uses ModRM r/m as destination; REX.B selects qword R14 and REX.R selects qword R10, so the operation is R14 += R10. Shared arithmetic semantics update result and all arithmetic flags/definedness, including AF. Only R14/RIP change. A final ModRM-byte fetch fault is atomic. Other register routes/directions/widths/opcodes/prefixes, CPL3 and other paged profiles remain unsupported.
+
+Four focused tests cover qword routing, carry/auxiliary-carry/zero/sign/overflow/parity results, full GPR preservation, fetch-fault atomicity, neighbors and CPL3/profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/829/7/15); all 61 paged machine tests, scoped check, formatting and diff-check pass. Firmware advances after 8,984 retired instructions to `41 0F 92 C2` (`SETB R10B`, ISSUE-288) at RIP `0x20164d`; COM1 remains empty. Independent review approved with no findings.
