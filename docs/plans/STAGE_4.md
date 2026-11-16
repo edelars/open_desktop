@@ -685,6 +685,26 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   reset/handle (15f), закрытие (15g). См. раздел S4-15e в
   [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
 
+#### S4-15f. Reset и освобождение MAP_JIT-региона на production owner
+
+- Реализовано (ожидает независимого ревью, чекбокс S4-15 не ставится):
+  `PagedFetchedLoadSession::reset(&mut self) -> bool` на safe point между
+  вызовами роняет допущенный блок (`PublishedCode`: `munmap` и lease единственного
+  MAP_JIT-региона); следующий вход — `Admitted`, а не `Reused`; повторный reset —
+  no-op. Блок вызова живёт до возврата вызова (`&mut self`), освобождается
+  только reset, инвалидацией (смена generation) или Drop сессии. Добавлены
+  `map_jit_region_live()` и `resets()`. Путь Drop арены при занятом borrow
+  (`PublishedArenaBlock`, например handle роняется из callback владельца во
+  время нативного вызова) больше не теряет слот: release откладывается через
+  `ArenaSlot::pending_release` и применяется при следующем изменяемом доступе;
+  `available_slots()` его учитывает. Тесты: 5 `s4_15f_*` в
+  `stage4_memory_fault.rs` (свободных слотов 16 → 0 → 16 после reset и после
+  Drop, `Admitted` после reset с равенством интерпретатору, чужой/двойной
+  release невозможен, инвалидация не течёт) и 3 lib-теста `s4_15f_*` (арена).
+  Не сделаны: SMP и отложенное освобождение между vCPU (S3-25, G7), grace
+  period, интеграция reset в диспетчер/runner, закрытие (15g). См. раздел
+  S4-15f в [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
+
 ### S4-16. Physical aliases и инвалидация исполняемого кода
 
 - [ ] Принято после ревью.

@@ -4663,6 +4663,29 @@ displacement or RIP-relative form. Multi-instruction blocks, 2 MiB code pages,
 the dispatcher integration, reset/handle (S4-15f) and the closing contract text
 (S4-15g) are not part of this slice.
 
+### S4-15f: session reset and release of the executable region
+
+`PagedFetchedLoadSession` owns its admitted block through `PublishedCode`, i.e.
+the process's single MAP_JIT region, not through an arena slot. The region is
+released only (1) by `PagedFetchedLoadSession::reset(&mut self)`, (2) when a
+later call drops a stale block (changed bytes, physical page or write
+generation) before compiling, or (3) when the session drops. Dropping the block
+unmaps the region and ends the process-wide lease. `reset` is a safe-point
+operation between calls: like every execute entry it takes `&mut self`, so it
+cannot run inside an executing block, and a call's block stays alive until that
+call returns. After a reset the next entry admits the form again (`Admitted`).
+`reset` on an empty session does nothing and cannot release a region owned by
+another session. Guest CPU state and RAM are not touched. `map_jit_region_live()`
+exposes the lease. Scope: one vCPU, synchronous release; SMP and deferred
+retirement with a grace period (S3-25, G7) are not part of this slice.
+
+For the bounded arena, a `PublishedArenaBlock` that drops while the arena is
+borrowed (for example from an owner callback during a native call, where the
+executing handle holds the shared borrow) never frees its slot under that
+borrow and never leaks it: the release is recorded and applied at the next
+mutable arena access, and `available_slots()` counts it as free. Releasing a
+slot that is already free, or of a stale generation, is a no-op.
+
 ### S4-16a: production tracked loader patch for two inactive code aliases
 
 `od-host::PagedCodeSession` borrows one `MachineBus` exclusively and fixes one

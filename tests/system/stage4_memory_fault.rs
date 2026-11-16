@@ -3650,3 +3650,314 @@ fn s4_15e_the_existing_forms_through_execute_forms_equal_the_interpreter() {
     assert_eq!(ram_image(&mut bus), ram_image(&mut oracle_bus));
     assert_eq!(entry(&mut bus, DATA_QWORD), INITIAL_RAX);
 }
+
+// ---------------------------------------------------------------------------
+// S4-15f: reset and release of the JIT region on the production owner
+//
+// The session owns its block through `PublishedCode`, i.e. the process's single
+// MAP_JIT region. The number of free "slots" is observed in two independent
+// ways: `map_jit_region_live()` and a probe arena (capacity 16) that can only be
+// created when the region is free and then reports all its slots available.
+// ---------------------------------------------------------------------------
+
+/// Free MAP_JIT slots of the process: 0 while a session holds the region, the
+/// full probe capacity while it is free. Cross-checked with the lease flag.
+fn jit_free_slots() -> usize {
+    let live = od_host::map_jit_region_live();
+    let slots = match od_host::PublishedArenaBackend::new(od_host::MAX_PUBLISHED_ARENA_BLOCKS) {
+        Ok(arena) => {
+            let free = arena.available_slots();
+            assert_eq!(free, arena.capacity(), "a fresh probe arena is all free");
+            free
+        }
+        Err(od_host::PublishedArenaError::MappingAlreadyLive) => 0,
+        Err(other) => panic!("unexpected probe failure: {other:?}"),
+    };
+    assert_eq!(slots == 0, live, "probe and lease flag must agree");
+    slots
+}
+
+const ALL_FREE: usize = od_host::MAX_PUBLISHED_ARENA_BLOCKS;
+
+fn run_load(
+    session: &mut od_host::PagedFetchedLoadSession,
+    bus: &mut MachineBus,
+) -> (LongModeState, od_host::PagedFetchedLoadReport) {
+    let mut state = fetch_state(CODE_RIP);
+    let report = session
+        .execute(
+            &mut state,
+            bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap();
+    (state, report)
+}
+
+#[test]
+fn s4_15f_reset_between_two_entries_readmits_and_equals_the_interpreter() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(jit_free_slots(), ALL_FREE);
+
+    // Interpreter oracle: the same two entries on its own identical RAM.
+    let mut oracle_bus = make_fetch_bus(FetchLayout::CLEAN);
+    let mut oracle = Vec::new();
+    for _ in 0..2 {
+        let mut state = fetch_state(CODE_RIP);
+        oracle.push(observe_interpreter(
+            &mut oracle_bus,
+            &mut state,
+            PrivilegeLevel::Ring0,
+        ));
+    }
+
+    let mut bus = make_fetch_bus(FetchLayout::CLEAN);
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let mut observed = Vec::new();
+    let mut admissions = Vec::new();
+    for entry_index in 0..2 {
+        let mut state = fetch_state(CODE_RIP);
+        let (jit, report) =
+            observe_fetched_jit(&mut session, &mut bus, &mut state, PrivilegeLevel::Ring0).unwrap();
+        observed.push(jit);
+        admissions.push(report.admission);
+        if entry_index == 0 {
+            assert!(session.has_admitted_block());
+            assert!(session.reset(), "the admitted block is released");
+            assert!(!session.has_admitted_block());
+            assert_eq!(jit_free_slots(), ALL_FREE);
+        }
+    }
+    assert_eq!(
+        admissions,
+        vec![
+            od_host::PagedFetchAdmission::Admitted,
+            od_host::PagedFetchAdmission::Admitted
+        ],
+        "after a reset the next entry admits again, it never reuses"
+    );
+    assert_eq!(observed, oracle, "RAX, flags, RIP, writes and RAM equal");
+    assert_eq!(observed[1].gprs[Register::Rax as usize], LOADED_VALUE);
+    assert_eq!(session.admissions(), 2);
+    assert_eq!(session.resets(), 1);
+
+    // Control: without a reset the same second entry reuses the block, so the
+    // `Admitted` above is caused by the reset and not by the fixture.
+    let (_, reused) = run_load(&mut session, &mut bus);
+    assert_eq!(reused.admission, od_host::PagedFetchAdmission::Reused);
+    assert_eq!(session.admissions(), 2);
+}
+
+#[test]
+fn s4_15f_free_slots_return_to_the_initial_count_after_reset_and_after_drop() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let initial = jit_free_slots();
+    assert_eq!(initial, ALL_FREE);
+
+    let mut bus = make_fetch_bus(FetchLayout::CLEAN);
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    assert!(!session.reset(), "nothing admitted, nothing to release");
+    assert_eq!(jit_free_slots(), initial);
+
+    let _ = run_load(&mut session, &mut bus);
+    assert!(od_host::map_jit_region_live());
+    assert_eq!(jit_free_slots(), 0, "one slot is owned after admission");
+
+    assert!(session.reset());
+    assert_eq!(jit_free_slots(), initial, "reset returns the slot");
+
+    let _ = run_load(&mut session, &mut bus);
+    assert_eq!(jit_free_slots(), 0);
+    drop(session);
+    assert_eq!(jit_free_slots(), initial, "dropping the session returns it");
+
+    // The store form owns its block the same way.
+    let mut store_bus = forms_bus(&STORE_CODE, &no_tweak);
+    let mut store_state = fetch_state(CODE_RIP);
+    let mut store_session = od_host::PagedFetchedLoadSession::new();
+    store_session
+        .execute_with_store(
+            &mut store_state,
+            &mut store_bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap();
+    assert_eq!(jit_free_slots(), 0);
+    assert!(store_session.reset());
+    assert_eq!(jit_free_slots(), initial);
+    drop(store_session);
+    assert_eq!(jit_free_slots(), initial);
+}
+
+#[test]
+fn s4_15f_the_block_stays_owned_after_its_execution_until_reset_or_drop() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut bus = make_fetch_bus(FetchLayout::CLEAN);
+    let mut session = od_host::PagedFetchedLoadSession::new();
+
+    // A completed execution does not release the block on its way out.
+    let (state, first) = run_load(&mut session, &mut bus);
+    assert_eq!(state.gpr[Register::Rax as usize], LOADED_VALUE);
+    assert_eq!(first.admission, od_host::PagedFetchAdmission::Admitted);
+    assert!(session.has_admitted_block());
+    assert_eq!(jit_free_slots(), 0);
+    let (state, second) = run_load(&mut session, &mut bus);
+    assert_eq!(state.gpr[Register::Rax as usize], LOADED_VALUE);
+    assert_eq!(second.admission, od_host::PagedFetchAdmission::Reused);
+    assert_eq!(jit_free_slots(), 0);
+
+    // A guest #PF raised by the executing block does not release it either.
+    let mut fault_bus = make_fetch_bus(FetchLayout {
+        data_leaf_present: false,
+        ..FetchLayout::CLEAN
+    });
+    let mut fault_session = od_host::PagedFetchedLoadSession::new();
+    assert!(session.reset());
+    assert_eq!(jit_free_slots(), ALL_FREE);
+    let mut fault_state = fetch_state(CODE_RIP);
+    let fault_report = fault_session
+        .execute(
+            &mut fault_state,
+            &mut fault_bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap();
+    assert!(matches!(
+        fault_report
+            .execution
+            .callback_result
+            .as_ref()
+            .unwrap()
+            .exit,
+        MemoryOperationExecutionExitV2::GuestFault(_)
+    ));
+    assert_eq!(fault_state.gpr[Register::Rax as usize], INITIAL_RAX);
+    assert!(fault_session.has_admitted_block());
+    assert_eq!(jit_free_slots(), 0, "still owned after the faulting call");
+    assert!(fault_session.reset());
+    assert_eq!(jit_free_slots(), ALL_FREE);
+
+    // `reset(&mut self)` and every execute entry take `&mut self`: a reset can
+    // only run between calls, never from inside a block. The inside-callback
+    // case of the arena owner is covered by the od-host lib tests.
+}
+
+#[test]
+fn s4_15f_repeated_reset_and_late_drop_never_release_another_sessions_region() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut bus_a = make_fetch_bus(FetchLayout::CLEAN);
+    let mut bus_b = make_fetch_bus(FetchLayout::CLEAN);
+    let mut a = od_host::PagedFetchedLoadSession::new();
+    let mut b = od_host::PagedFetchedLoadSession::new();
+
+    let _ = run_load(&mut a, &mut bus_a);
+    // One region per process: B cannot publish while A owns it.
+    let mut state_b = fetch_state(CODE_RIP);
+    let refused = b
+        .execute(
+            &mut state_b,
+            &mut bus_b,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        refused.kind,
+        od_host::PagedFetchedLoadErrorKind::Publish(
+            od_host::ExecutableMemoryError::MappingAlreadyLive
+        )
+    ));
+    assert_eq!(state_b.gpr[Register::Rax as usize], INITIAL_RAX);
+    assert!(!b.has_admitted_block());
+
+    assert!(a.reset());
+    let (state, report) = run_load(&mut b, &mut bus_b);
+    assert_eq!(report.admission, od_host::PagedFetchAdmission::Admitted);
+    assert_eq!(state.gpr[Register::Rax as usize], LOADED_VALUE);
+    assert_eq!(jit_free_slots(), 0);
+
+    // A second reset of A, and A's drop, release nothing: the region now
+    // belongs to B and stays live and usable.
+    assert!(!a.reset(), "a second reset is a no-op");
+    assert_eq!(a.resets(), 1);
+    assert!(od_host::map_jit_region_live());
+    drop(a);
+    assert!(
+        od_host::map_jit_region_live(),
+        "A's drop must not free B's region"
+    );
+    assert_eq!(jit_free_slots(), 0);
+    let (state, again) = run_load(&mut b, &mut bus_b);
+    assert_eq!(again.admission, od_host::PagedFetchAdmission::Reused);
+    assert_eq!(state.gpr[Register::Rax as usize], LOADED_VALUE);
+
+    assert!(b.reset());
+    assert!(!b.reset());
+    assert_eq!(jit_free_slots(), ALL_FREE);
+    drop(b);
+    assert_eq!(jit_free_slots(), ALL_FREE);
+}
+
+#[test]
+fn s4_15f_generation_invalidation_replaces_the_block_without_leaking_the_region() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut bus = make_fetch_bus(FetchLayout::CLEAN);
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let (_, first) = run_load(&mut session, &mut bus);
+    let mut generation = first.fetched_generation;
+    assert_eq!(jit_free_slots(), 0);
+
+    // Rewriting the same byte moves the generation: a fresh block replaces
+    // the stale one and the single region is never held twice or lost.
+    for round in 1..=5_u64 {
+        tracked_patch(&mut bus, CODE_RIP + 2, CODE_PHYSICAL, 0x03);
+        let (state, report) = run_load(&mut session, &mut bus);
+        assert_eq!(report.admission, od_host::PagedFetchAdmission::Admitted);
+        assert!(report.fetched_generation > generation);
+        generation = report.fetched_generation;
+        assert_eq!(state.gpr[Register::Rax as usize], LOADED_VALUE);
+        assert_eq!(session.admissions(), 1 + round);
+        assert_eq!(
+            jit_free_slots(),
+            0,
+            "exactly the new block's region is live"
+        );
+    }
+
+    // Patching to bytes outside the allowlist drops the stale block and admits
+    // nothing: the region is free again without any reset.
+    tracked_patch(&mut bus, CODE_RIP + 2, CODE_PHYSICAL, 0x0b);
+    let mut state = fetch_state(CODE_RIP);
+    let error = session
+        .execute(
+            &mut state,
+            &mut bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error.kind,
+        od_host::PagedFetchedLoadErrorKind::UnsupportedForm { .. }
+    ));
+    assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX);
+    assert!(!session.has_admitted_block());
+    assert_eq!(jit_free_slots(), ALL_FREE, "invalidation freed the region");
+    assert!(!session.reset(), "nothing left to reset");
+
+    tracked_patch(&mut bus, CODE_RIP + 2, CODE_PHYSICAL, 0x03);
+    let (state, restored) = run_load(&mut session, &mut bus);
+    assert_eq!(restored.admission, od_host::PagedFetchAdmission::Admitted);
+    assert_eq!(state.gpr[Register::Rax as usize], LOADED_VALUE);
+    assert_eq!(jit_free_slots(), 0);
+    assert!(session.reset());
+    assert_eq!(jit_free_slots(), ALL_FREE);
+}

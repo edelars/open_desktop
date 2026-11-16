@@ -21,7 +21,10 @@ pub mod storage_policy;
 use std::ptr::NonNull;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExecutableMemoryError {
@@ -103,6 +106,22 @@ pub type ExecutableMemory = PublishedCode;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 static MAP_JIT_REGION_LIVE: AtomicBool = AtomicBool::new(false);
+
+/// S4-15f: whether the process's single MAP_JIT region is currently owned by a
+/// [`PublishedCode`] or a [`PublishedArenaBackend`]. It is `true` from a
+/// successful publication until the owning value (and, for an arena, every
+/// handle) has dropped, so it shows when a JIT session has released its region.
+/// Always `false` where MAP_JIT is unsupported.
+pub fn map_jit_region_live() -> bool {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        MAP_JIT_REGION_LIVE.load(Ordering::Acquire)
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        false
+    }
+}
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 struct MapJitLease;
@@ -2105,6 +2124,7 @@ struct AdmittedFetchedLoad {
 pub struct PagedFetchedLoadSession {
     admitted: Option<AdmittedFetchedLoad>,
     admissions: u64,
+    resets: u64,
 }
 
 impl PagedFetchedLoadSession {
@@ -2119,6 +2139,33 @@ impl PagedFetchedLoadSession {
 
     pub fn has_admitted_block(&self) -> bool {
         self.admitted.is_some()
+    }
+
+    /// Number of resets that released an admitted block (S4-15f).
+    pub fn resets(&self) -> u64 {
+        self.resets
+    }
+
+    /// S4-15f: session reset. Drops the admitted block, which releases its
+    /// MAP_JIT region (munmap and the process-wide lease), so the next entry
+    /// admits the form again (`Admitted`, never `Reused`). Returns whether a
+    /// block was released; a reset with nothing admitted does nothing, so it
+    /// is idempotent and can never release a region twice.
+    ///
+    /// A reset takes `&mut self`, as do all execution entries: the borrow
+    /// checker makes it a safe point between calls and rules out a reset from
+    /// inside an executing block. The block of a call is therefore alive until
+    /// that call returns and is released only here, on invalidation (the next
+    /// call dropping a stale block before it compiles), or when the session
+    /// drops. `admissions` is cumulative and survives a reset. The guest CPU
+    /// state and RAM are not touched. Single vCPU, synchronous only: deferred
+    /// retirement for other vCPUs is not part of this contract.
+    pub fn reset(&mut self) -> bool {
+        let released = self.admitted.take().is_some();
+        if released {
+            self.resets += 1;
+        }
+        released
     }
 
     /// S4-15b entry: admits only the load `48 8B 03`. Any other bytes
@@ -3620,6 +3667,11 @@ pub enum PublishedArenaError {
 
 struct ArenaSlot {
     generation: u64,
+    /// S4-15f: generation of a handle that dropped while the arena was borrowed
+    /// (for example from inside an owner callback during a native call), or 0.
+    /// The release is applied at the next mutable access; until then the slot is
+    /// counted as available but its metadata stays intact.
+    pending_release: Cell<u64>,
     metadata: Option<BlockMetadata>,
     memory_operation_metadata_v2: Option<MemoryOperationMetadataV2>,
     direct_memory_metadata_v2: Option<DirectMemoryMetadataV2>,
@@ -3631,6 +3683,52 @@ struct ArenaInner {
     mapping_bytes: usize,
     slots: Vec<ArenaSlot>,
     free_slots: Vec<usize>,
+}
+
+impl ArenaInner {
+    /// Frees `slot_index` if it still holds the artifact of `generation`.
+    /// Releasing an already free slot or a stale generation is a no-op, so a
+    /// slot can never be pushed onto the free stack twice.
+    fn release_slot(&mut self, slot_index: usize, generation: u64) -> bool {
+        let Some(slot) = self.slots.get_mut(slot_index) else {
+            return false;
+        };
+        if slot.generation != generation {
+            return false;
+        }
+        let block_metadata = slot.metadata.take();
+        let memory_metadata = slot.memory_operation_metadata_v2.take();
+        let direct_memory_metadata = slot.direct_memory_metadata_v2.take();
+        let active_code_metadata = slot.active_code_metadata_v3.take();
+        let occupied = block_metadata.is_some()
+            || memory_metadata.is_some()
+            || direct_memory_metadata.is_some()
+            || active_code_metadata.is_some();
+        if !occupied {
+            return false;
+        }
+        // The stack was preallocated to the fixed slot count and each live
+        // handle returns at most one slot.
+        self.free_slots.push(slot_index);
+        true
+    }
+
+    /// Applies releases deferred by handles that dropped under a borrow.
+    fn drain_pending_releases(&mut self) {
+        for slot_index in 0..self.slots.len() {
+            let generation = self.slots[slot_index].pending_release.replace(0);
+            if generation != 0 {
+                self.release_slot(slot_index, generation);
+            }
+        }
+    }
+
+    fn pending_release_count(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|slot| slot.pending_release.get() != 0)
+            .count()
+    }
 }
 
 /// Single MAP_JIT region divided into fixed, bounded block slots. The backend
@@ -3681,6 +3779,7 @@ impl PublishedArenaBackend {
             let mut slots = Vec::with_capacity(max_blocks);
             slots.resize_with(max_blocks, || ArenaSlot {
                 generation: 0,
+                pending_release: Cell::new(0),
                 metadata: None,
                 memory_operation_metadata_v2: None,
                 direct_memory_metadata_v2: None,
@@ -3719,15 +3818,20 @@ impl PublishedArenaBackend {
             .slots
             .iter()
             .filter(|slot| {
-                slot.memory_operation_metadata_v2.is_some()
-                    || slot.active_code_metadata_v3.is_some()
+                slot.pending_release.get() == 0
+                    && (slot.memory_operation_metadata_v2.is_some()
+                        || slot.active_code_metadata_v3.is_some())
             })
             .count();
         arena.slots.len().saturating_sub(reserved)
     }
 
+    /// Free slots, counting releases deferred by handles that dropped while the
+    /// arena was borrowed (S4-15f): those slots are reused by the next
+    /// publication.
     pub fn available_slots(&self) -> usize {
-        self.arena.borrow().free_slots.len()
+        let arena = self.arena.borrow();
+        arena.free_slots.len() + arena.pending_release_count()
     }
 
     /// Actual page-rounded MAP_JIT reservation size for benchmark reporting.
@@ -3738,27 +3842,26 @@ impl PublishedArenaBackend {
 
 impl Drop for PublishedArenaBlock {
     fn drop(&mut self) {
-        let Ok(mut arena) = self.arena.try_borrow_mut() else {
-            return;
-        };
-        let Some(slot) = arena.slots.get_mut(self.slot_index) else {
-            return;
-        };
-        if slot.generation == self.generation {
-            let block_metadata = slot.metadata.take();
-            let memory_metadata = slot.memory_operation_metadata_v2.take();
-            let direct_memory_metadata = slot.direct_memory_metadata_v2.take();
-            let active_code_metadata = slot.active_code_metadata_v3.take();
-            let occupied = block_metadata.is_some()
-                || memory_metadata.is_some()
-                || direct_memory_metadata.is_some()
-                || active_code_metadata.is_some();
-            if !occupied {
-                return;
+        match self.arena.try_borrow_mut() {
+            Ok(mut arena) => {
+                arena.release_slot(self.slot_index, self.generation);
+                arena.drain_pending_releases();
             }
-            // The stack was preallocated to the fixed slot count and each
-            // live handle returns at most one slot.
-            arena.free_slots.push(self.slot_index);
+            Err(_) => {
+                // S4-15f: the arena is borrowed, e.g. this handle dropped from
+                // an owner callback while a native call of another handle holds
+                // the shared borrow. Never free the slot under that borrow and
+                // never leak it: record the release in the slot's `Cell`, which
+                // needs only a shared borrow, and let the next mutable access
+                // apply it. Only a concurrent mutable borrow would still fail
+                // here; the arena holds no mutable borrow across any callback.
+                if let Ok(arena) = self.arena.try_borrow()
+                    && let Some(slot) = arena.slots.get(self.slot_index)
+                    && slot.generation == self.generation
+                {
+                    slot.pending_release.set(self.generation);
+                }
+            }
         }
     }
 }
@@ -4331,6 +4434,7 @@ impl PublishedArenaBackend {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let mut arena = self.arena.borrow_mut();
+            arena.drain_pending_releases();
             let slot_index = *arena
                 .free_slots
                 .last()
@@ -4419,6 +4523,7 @@ impl PublishedArenaBackend {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let mut arena = self.arena.borrow_mut();
+            arena.drain_pending_releases();
             let slot_index = *arena
                 .free_slots
                 .last()
@@ -4500,6 +4605,7 @@ impl od_jit::dispatch::CachedBlockBackend for PublishedArenaBackend {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let mut arena = self.arena.borrow_mut();
+            arena.drain_pending_releases();
             let slot_index = *arena
                 .free_slots
                 .last()
@@ -5646,6 +5752,9 @@ pub(crate) mod tests {
         request_stop_on_write: bool,
         stop_byte: Option<std::sync::Arc<AtomicU8>>,
         dirty_output: Option<*mut u32>,
+        /// S4-15f: run once at the start of the next preflight, i.e. while the
+        /// native call of the executing handle holds the arena borrow.
+        drop_in_preflight: Option<Box<dyn FnOnce()>>,
     }
 
     impl TrackedCodeFixture {
@@ -5752,6 +5861,7 @@ pub(crate) mod tests {
                 request_stop_on_write: false,
                 stop_byte: None,
                 dirty_output: None,
+                drop_in_preflight: None,
             }
         }
 
@@ -6385,6 +6495,9 @@ pub(crate) mod tests {
             _: AccessContext,
         ) {
             self.preflight_calls += 1;
+            if let Some(hook) = self.drop_in_preflight.take() {
+                hook();
+            }
             self.pending = None;
             self.preflight_rejection = None;
             self.write_attempted = false;
@@ -73356,6 +73469,180 @@ pub(crate) mod tests {
         let replacement_handle = arena.publish_memory_store_v2(&replacement).unwrap();
         assert_eq!(replacement_handle.pc_map().unwrap(), expected_store_map);
         assert_eq!(stale.pc_map(), Err(PublishedArenaError::StaleHandle));
+    }
+
+    fn s4_15f_store_block() -> od_jit::memory_load_v2::MemoryStoreBlockV2 {
+        let view = CodeView::new(0x1000, &[0x48, 0x89, 0x18]).unwrap();
+        od_jit::memory_load_v2::compile_memory_store_block_v2(view, 0x1000).unwrap()
+    }
+
+    #[test]
+    fn s4_15f_arena_release_is_exact_and_a_duplicate_release_is_a_no_op() {
+        let _guard = jit_test_lock();
+        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            return;
+        }
+        let store = s4_15f_store_block();
+        let mut arena = PublishedArenaBackend::new(2).unwrap();
+        assert_eq!(arena.available_slots(), 2);
+        let handle = arena.publish_memory_store_v2(&store).unwrap();
+        assert_eq!(arena.available_slots(), 1);
+
+        // A forged second owner of the same slot and generation models a
+        // double release: only the first drop may return the slot.
+        let duplicate = PublishedArenaBlock {
+            arena: handle._block.arena.clone(),
+            owner_id: handle._block.owner_id.clone(),
+            slot_index: handle._block.slot_index,
+            generation: handle._block.generation,
+        };
+        drop(handle);
+        assert_eq!(arena.available_slots(), 2);
+        drop(duplicate);
+        assert_eq!(arena.available_slots(), 2, "second release must be a no-op");
+        assert_eq!(arena.arena.borrow().free_slots.len(), 2);
+
+        // Releasing a free slot directly (no handle) is also a no-op.
+        assert!(!arena.arena.borrow_mut().release_slot(0, 1));
+        assert_eq!(arena.available_slots(), 2);
+
+        // Churn: every publish gets a fresh generation and nothing leaks.
+        let mut last_generation = 0;
+        for _ in 0..40 {
+            let handle = arena.publish_memory_store_v2(&store).unwrap();
+            assert!(handle._block.generation > last_generation);
+            last_generation = handle._block.generation;
+            assert_eq!(arena.available_slots(), 1);
+            drop(handle);
+            assert_eq!(arena.available_slots(), 2);
+        }
+        assert!(
+            last_generation >= 20,
+            "slots are reused with new generations"
+        );
+    }
+
+    #[test]
+    fn s4_15f_handle_dropped_under_a_borrow_is_deferred_not_leaked() {
+        let _guard = jit_test_lock();
+        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            return;
+        }
+        let store = s4_15f_store_block();
+        let mut arena = PublishedArenaBackend::new(2).unwrap();
+        let first = arena.publish_memory_store_v2(&store).unwrap();
+        let second = arena.publish_memory_store_v2(&store).unwrap();
+        assert_eq!(arena.available_slots(), 0);
+        let first_slot = first._block.slot_index;
+
+        {
+            let held = arena.arena.borrow();
+            assert!(held.slots[first_slot].direct_memory_metadata_v2.is_some());
+            drop(first);
+            // The slot is not freed under the borrow: its metadata is intact
+            // and nothing was pushed to the free stack, but it is accounted
+            // as available for the next publication.
+            assert!(held.slots[first_slot].direct_memory_metadata_v2.is_some());
+            assert!(held.free_slots.is_empty());
+            assert_eq!(held.pending_release_count(), 1);
+        }
+        assert_eq!(arena.available_slots(), 1);
+        assert_eq!(
+            arena.cached_block_capacity(),
+            1,
+            "pending slot is not reserved"
+        );
+
+        // The next publication applies the deferred release instead of
+        // reporting CapacityFull.
+        let third = arena.publish_memory_store_v2(&store).unwrap();
+        assert_eq!(arena.available_slots(), 0);
+        assert_eq!(arena.arena.borrow().pending_release_count(), 0);
+        drop(second);
+        drop(third);
+        assert_eq!(arena.available_slots(), 2);
+        assert_eq!(arena.arena.borrow().free_slots.len(), 2);
+    }
+
+    #[test]
+    fn s4_15f_handle_dropped_by_the_owner_during_a_native_call_is_freed_after_return() {
+        let _guard = jit_test_lock();
+        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            return;
+        }
+        let store_source = [0x48, 0x89, 0x18]; // MOV [RAX], RBX
+        let mut owner = TrackedCodeFixture::new(
+            &store_source,
+            &[0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0],
+            &[0x48, 0xB8, 9, 0, 0, 0, 0, 0, 0, 0],
+        );
+        let store = s4_15f_store_block();
+        let mut arena = PublishedArenaBackend::new(2).unwrap();
+        let executing = arena.publish_memory_store_v2(&store).unwrap();
+        let victim = Rc::new(RefCell::new(Some(
+            arena.publish_memory_store_v2(&store).unwrap(),
+        )));
+        assert_eq!(arena.available_slots(), 0);
+
+        // (free slots, deferred slots, victim metadata still present) as seen
+        // from inside the preflight callback, i.e. during the native call.
+        let observed = Rc::new(Cell::new(None));
+        {
+            let victim = victim.clone();
+            let inner = arena.arena.clone();
+            let observed = observed.clone();
+            owner.drop_in_preflight = Some(Box::new(move || {
+                let slot_index = victim.borrow().as_ref().unwrap()._block.slot_index;
+                let dropped = victim.borrow_mut().take();
+                drop(dropped);
+                let state = inner.borrow();
+                observed.set(Some((
+                    state.free_slots.len(),
+                    state.pending_release_count(),
+                    state.slots[slot_index].direct_memory_metadata_v2.is_some(),
+                )));
+            }));
+        }
+        let mut state = od_isa::LongModeState {
+            cr3: None,
+            rip: 0x1000,
+            rflags: 0xA55,
+            ..od_isa::LongModeState::default()
+        };
+        state.gpr[0] = 0x4000; // RAX: destination inside the unrelated backing
+        state.gpr[3] = 0x1122_3344_5566_7788;
+        let result = executing
+            .execute_tracked_code_store_v2(
+                &mut state,
+                &mut owner,
+                AccessContext::default(),
+                1,
+                None,
+                &AtomicU8::new(0),
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(result.exit, MemoryOperationExecutionExitV2::Complete);
+        assert_eq!(result.retired_instructions, 1);
+        assert_eq!(owner.write_count, 1);
+        assert_eq!(
+            observed.get(),
+            Some((0, 1, true)),
+            "the dropped handle's slot stays intact until the call returns"
+        );
+        assert_eq!(
+            arena.available_slots(),
+            1,
+            "released after return, not leaked"
+        );
+
+        let reuse = arena
+            .publish_memory_store_v2(&store)
+            .expect("deferred slot is reusable, not CapacityFull");
+        assert_eq!(arena.available_slots(), 0);
+        drop(reuse);
+        drop(executing);
+        assert_eq!(arena.available_slots(), 2);
     }
 
     #[test]
