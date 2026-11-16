@@ -6186,34 +6186,40 @@ fn firmware_entry_rep_stosb_is_unsupported_in_cpl3_profile() {
 
 #[test]
 fn firmware_entry_jnz_taken_and_not_taken_preserve_flags_and_definedness() {
-    let defined = DEFINED & !(1 << 6);
-    for displacement in [0x20u8, 0x24, 0x2a, 0x38, 0x4a, 0x50, 0x77, 0xae] {
-        let code = [0x75, displacement];
-        let target = RIP
-            .wrapping_add(2)
-            .wrapping_add_signed(i64::from(displacement as i8));
-        for (zero, expected_rip) in [(false, target), (true, RIP + 2)] {
-            let mut memory = Memory::new(&code);
-            let mut cpu = state();
-            cpu.gpr = gpr_patterns();
-            cpu.rflags = 0x2 | (1 << 9) | (1 << 10) | (1 << 18) | if zero { 1 << 6 } else { 0 };
-            let before = cpu.clone();
-            let mut pio = Pio::default();
+    for zf_defined in [false, true] {
+        let defined = if zf_defined {
+            DEFINED
+        } else {
+            DEFINED & !(1 << 6)
+        };
+        for displacement in [0x0a_u8, 0x20, 0x24, 0x2a, 0x38, 0x4a, 0x50, 0x77, 0xae] {
+            let code = [0x75, displacement];
+            let target = RIP
+                .wrapping_add(2)
+                .wrapping_add_signed(i64::from(displacement as i8));
+            for (zero, expected_rip) in [(false, target), (true, RIP + 2)] {
+                let mut memory = Memory::new(&code);
+                let mut cpu = state();
+                cpu.gpr = gpr_patterns();
+                cpu.rflags = 0x2 | (1 << 9) | (1 << 10) | (1 << 18) | if zero { 1 << 6 } else { 0 };
+                let before = cpu.clone();
+                let mut pio = Pio::default();
 
-            let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+                let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
 
-            assert_eq!(
-                result.exit,
-                PagedProbeExit::Retired,
-                "disp={displacement:#x}"
-            );
-            assert_eq!(result.instructions_executed, 1);
-            assert_eq!(result.rflags_defined, defined);
-            let mut expected = before;
-            expected.rip = expected_rip;
-            assert_eq!(cpu, expected, "disp={displacement:#x}, ZF={zero}");
-            assert_eq!((memory.reads, memory.writes), (0, 0));
-            assert!(pio.reads.is_empty() && pio.writes.is_empty());
+                assert_eq!(
+                    result.exit,
+                    PagedProbeExit::Retired,
+                    "disp={displacement:#x}"
+                );
+                assert_eq!(result.instructions_executed, 1);
+                assert_eq!(result.rflags_defined, defined);
+                let mut expected = before;
+                expected.rip = expected_rip;
+                assert_eq!(cpu, expected, "disp={displacement:#x}, ZF={zero}");
+                assert_eq!((memory.reads, memory.writes), (0, 0));
+                assert!(pio.reads.is_empty() && pio.writes.is_empty());
+            }
         }
     }
 }
@@ -6705,7 +6711,7 @@ fn rust_helper_jb_plus_2a_is_unsupported_in_cpl3_profile() {
 
 #[test]
 fn firmware_entry_jnz_checks_canonicality_only_when_taken() {
-    for displacement in [0x20u8, 0x24, 0x2a, 0x38, 0x4a, 0x50, 0x77, 0xae] {
+    for displacement in [0x0a_u8, 0x20, 0x24, 0x2a, 0x38, 0x4a, 0x50, 0x77, 0xae] {
         // Positive targets cross the lower canonical boundary from the final low page;
         // the negative target crosses the upper canonical boundary from the first high page.
         let start = if (displacement as i8) < 0 {
@@ -6765,7 +6771,7 @@ fn firmware_entry_jnz_checks_canonicality_only_when_taken() {
 #[test]
 fn firmware_entry_jnz_fetch_fault_on_rel8_does_not_commit() {
     // Put the opcode at the last byte of a mapped code page so every admitted rel8 faults.
-    for displacement in [0x20u8, 0x24, 0x2a, 0x38, 0x4a, 0x50, 0x77, 0xae] {
+    for displacement in [0x0a_u8, 0x20, 0x24, 0x2a, 0x38, 0x4a, 0x50, 0x77, 0xae] {
         let mut memory = Memory::new(&[]);
         memory.bytes[CODE_PHYSICAL + 0xfff] = 0x75;
         let mut cpu = state();
@@ -6804,6 +6810,12 @@ fn firmware_entry_jnz_fetch_fault_on_rel8_does_not_commit() {
 #[test]
 fn firmware_entry_jnz_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
+        (&[0x75, 0x09], 0x75),                // neighbor below +0x0a
+        (&[0x75, 0x0b], 0x75),                // neighbor above +0x0a
+        (&[0x74, 0x0a], 0x74),                // JZ with same displacement
+        (&[0x66, 0x75, 0x0a], 0x75),          // operand-size prefix
+        (&[0x40, 0x75, 0x0a], 0x75),          // REX prefix
+        (&[0x0f, 0x85, 0x0a, 0, 0, 0], 0x85), // near JNZ
         (&[0x75, 0x1f], 0x75),                // neighbor below +0x20
         (&[0x75, 0x21], 0x75),                // neighbor above +0x20
         (&[0x75, 0x23], 0x75),                // different displacement
@@ -6855,6 +6867,7 @@ fn firmware_entry_jnz_neighbours_stay_unsupported_without_mutation() {
 #[test]
 fn firmware_entry_jnz_is_unsupported_in_cpl3_profile() {
     let cases: &[&[u8]] = &[
+        &[0x75, 0x0a],
         &[0x75, 0x20],
         &[0x75, 0x24],
         &[0x75, 0x2a],
@@ -26916,6 +26929,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x44, 0x39, 0xcf][..], 0x39),
         (&[0x66, 0x39, 0xcb][..], 0x39),
         (&[0x75, 0x20][..], 0x75),
+        (&[0x75, 0x0a][..], 0x75),
         (&[0x75, 0x24][..], 0x75),
         (&[0x75, 0x2a][..], 0x75),
         (&[0x75, 0x38][..], 0x75),
