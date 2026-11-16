@@ -20945,6 +20945,43 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     | (crate::ARITHMETIC_FLAGS & !crate::AF),
             };
         }
+        // S7-04: exact `4D 85 F6` tests qword R14 against itself. TEST leaves
+        // the register value untouched and marks AF undefined through shared
+        // logical-flag semantics.
+        Operation::Logic {
+            kind: LogicKind::Test,
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x85
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x4d),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R14, OperandSize::Qword)
+            && source == RegisterView::low(Register::R14, OperandSize::Qword) =>
+        {
+            let value = state.read(destination);
+            let (_, flags) = logic_result(
+                OperandSize::Qword,
+                LogicKind::Test,
+                value,
+                value,
+                state.rflags,
+            );
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: (initial_rflags_defined & !crate::AF)
+                    | (crate::ARITHMETIC_FLAGS & !crate::AF),
+            };
+        }
         // S7-04: the Rust helper uses only `41 F7 D1` (NOT R9D). Reuse the
         // shared width-truncated NOT result; this operation leaves flags unchanged.
         Operation::Logic {

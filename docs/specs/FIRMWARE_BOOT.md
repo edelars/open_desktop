@@ -539,3 +539,10 @@ Four focused tests cover equality, borrow, sign/overflow, auxiliary carry and pa
 Base `PagedCpl0ProbeV1` admits only exact `4C 8B 74 08 10`. REX.W/R select qword R14 destination; SIB computes RAX + RCX + sign-extended disp8 0x10 in 64-bit address size. The tracked qword read commits R14 and RIP only, preserving flags and other GPRs. Canonicality and memory faults occur before architectural commit. Neighboring destinations/base/index/scale/displacement/width/prefix forms, CPL3 and other paged profiles remain unsupported.
 
 Six focused profile tests cover qword value/address, read/noncanonical/fetch fault atomicity, neighbors and CPL3/profile isolation. A four-level machine test confirms the tracked read sets page-table accessed bits and leaves dirty bits clear. Firmware advances after 8,975 retired instructions to `4D 85 F6` (`TEST R14,R14`, ISSUE-279) at RIP `0x201628`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `TEST R14,R14` (ISSUE-279)
+
+Base `PagedCpl0ProbeV1` admits only exact `4D 85 F6`. The qword self-TEST writes no GPR; shared logical semantics clear CF/OF, derive SF/ZF/PF from R14, preserve unrelated flag values, and mark AF undefined. A final ModRM-byte fetch fault is atomic. Neighboring registers, directions, widths, memory operands, prefixes, CPL3 and other paged profiles remain unsupported.
+
+Four focused profile tests cover qword values, full state preservation, AF definedness, fetch-fault atomicity, neighboring forms and CPL3/profile isolation. Firmware advances after 8,976 retired instructions to `74 33` (`JZ rel8 +0x33`, ISSUE-280) at RIP `0x20162B`; COM1 remains empty. Independent review approved with no findings.
