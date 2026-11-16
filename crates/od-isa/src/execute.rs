@@ -20645,6 +20645,34 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     | (crate::ARITHMETIC_FLAGS & !crate::AF),
             };
         }
+        // S7-04: the Rust helper tests ECX against itself with exact `85 C9`.
+        // TEST changes logical flags only and leaves AF undefined; registers stay untouched.
+        Operation::Logic {
+            kind: LogicKind::Test,
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x85
+            && instruction.length == 2
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes == Prefixes::default()
+            && destination == RegisterView::low(Register::Rcx, OperandSize::Dword)
+            && source == RegisterView::low(Register::Rcx, OperandSize::Dword) =>
+        {
+            let lhs = state.read(destination);
+            let rhs = state.read(source);
+            let (_, flags) =
+                logic_result(OperandSize::Dword, LogicKind::Test, lhs, rhs, state.rflags);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: (initial_rflags_defined & !crate::AF)
+                    | (crate::ARITHMETIC_FLAGS & !crate::AF),
+            };
+        }
         // S7-04: the Rust helper uses only `41 F7 D1` (NOT R9D). Reuse the
         // shared width-truncated NOT result; this operation leaves flags unchanged.
         Operation::Logic {

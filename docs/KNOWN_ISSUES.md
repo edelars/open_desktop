@@ -1001,10 +1001,19 @@
 ### ISSUE-213 — S7-04: Rust helper `TEST ECX,ECX` (`85 C9`) remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `MOV R8D,dword ptr [RSI+0x44]`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200f04`.
+- **Статус:** решена узко для exact `85 C9` в base `PagedCpl0ProbeV1`; независимое review одобрило изменение без оставшихся замечаний, ожидает коммита. Other register pairs, widths, prefixes, immediate/memory forms and profiles remain unsupported.
+- **Суть и результат:** exact opcode `85`, ModRM `C9`, dword width and ECX/ECX register pair use shared TEST semantics. No GPR changes; CF/OF clear, SZP reflect the 32-bit AND, AF is undefined while its concrete value is retained, and the logical flags become defined.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue213.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf04` are `85 C9`; runner budget 10000.
+- **Проверка:** four focused tests cover result flags, unchanged GPRs, preservation of unrelated flags and AF value with AF marked undefined, fetch-fault atomicity, neighboring forms and CPL3 isolation. The other-profile isolation test also confirms rejection. Runner retired 8895 and stopped at `74 35` (`JZ rel8 +0x35`, ISSUE-214), RIP `0x200f06`, `Unsupported { opcode: 116 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
+- **Следующий шаг:** independently review this exact TEST admission and continue S7-04 at ISSUE-214.
+
+### ISSUE-214 — S7-04: Rust helper `JZ rel8 +0x35` (`74 35`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact `TEST ECX,ECX`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200f06`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8894 instructions and stopped at `85 C9`, `Unsupported { opcode: 133 }`, `RIP=0x200f04`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue212.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf04` are `85 C9`; runner budget 10000.
-- **Следующий шаг:** inspect TEST ECX,ECX flag/definedness semantics and exact profile boundaries before considering narrow admission.
+- **Суть и последствия:** runner retired 8895 instructions and stopped at `74 35`, `Unsupported { opcode: 116 }`, `RIP=0x200f06`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue213.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf06` are `74 35`; runner budget 10000.
+- **Следующий шаг:** inspect ZF branch semantics, target handling and exact profile boundaries before considering narrow admission.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.

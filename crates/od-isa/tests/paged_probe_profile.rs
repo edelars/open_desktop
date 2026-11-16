@@ -7152,6 +7152,140 @@ fn rust_helper_test_r15b_imm8_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn rust_helper_test_ecx_ecx_updates_only_logic_flags() {
+    const CF: u64 = 1 << 0;
+    const PF: u64 = 1 << 2;
+    const AF: u64 = 1 << 4;
+    const ZF: u64 = 1 << 6;
+    const SF: u64 = 1 << 7;
+    const OF: u64 = 1 << 11;
+    const LOGIC_DEFINED: u64 = CF | PF | ZF | SF | OF;
+    let code = [0x85, 0xc9]; // TEST ECX,ECX
+    let defined = (DEFINED & !ZF) | AF;
+    for ecx in [0u32, 1, 3, 0x80, 0x8000_0000, 0xffff_ffff] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::Rcx as usize] = 0xaaaa_bbbb_0000_0000 | u64::from(ecx);
+        cpu.rflags = 0x2 | (1 << 9) | (1 << 10) | (1 << 18) | CF | AF | SF | OF;
+        let before = cpu.clone();
+        let mut result_flags = 0;
+        if ecx == 0 {
+            result_flags |= ZF;
+        }
+        if ecx & 0x8000_0000 != 0 {
+            result_flags |= SF;
+        }
+        if (ecx as u8).count_ones() % 2 == 0 {
+            result_flags |= PF;
+        }
+
+        let result =
+            step_with_defined(&mut cpu, &mut memory, &mut Pio::default(), ring0(), defined);
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, (defined | LOGIC_DEFINED) & !AF);
+        let mut expected = before;
+        expected.rflags = (expected.rflags & !LOGIC_DEFINED) | result_flags;
+        // TEST leaves AF's concrete bit unchanged while making it undefined.
+        expected.rip += code.len() as u64;
+        assert_eq!(cpu, expected, "ECX={ecx:#010x}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(memory.write_addresses.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_test_ecx_ecx_fetch_fault_is_atomic() {
+    let rip = RIP + 0xfff;
+    let code = [0x85];
+    let mut memory = memory_with_code_at(&code, rip);
+    memory.fail_fetch_at = Some((rip + 1, page_fault(0x10, rip + 1)));
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    cpu.rflags = 0x8d7;
+    let before = cpu.clone();
+    let defined = DEFINED | (1 << 4);
+
+    let result = step_with_defined(&mut cpu, &mut memory, &mut Pio::default(), ring0(), defined);
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 1),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, defined);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(memory.write_addresses.is_empty());
+}
+
+#[test]
+fn rust_helper_test_ecx_ecx_neighbours_stay_unsupported_without_mutation() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x85, 0xc8], 0x85),             // TEST ECX,EAX
+        (&[0x85, 0xd2], 0x85),             // TEST EDX,EDX
+        (&[0x84, 0xc9], 0x84),             // byte width
+        (&[0x66, 0x85, 0xc9], 0x85),       // word width
+        (&[0x48, 0x85, 0xc9], 0x85),       // qword width
+        (&[0x40, 0x85, 0xc9], 0x85),       // redundant REX
+        (&[0xf3, 0x85, 0xc9], 0x85),       // REP prefix
+        (&[0x67, 0x85, 0xc9], 0x85),       // address-size prefix
+        (&[0x85, 0x09], 0x85),             // memory operand
+        (&[0x89, 0xc9], 0x89),             // MOV ECX,ECX
+        (&[0xa9, 0, 0, 0, 0], 0xa9),       // TEST EAX,imm32
+        (&[0xf7, 0xc1, 0, 0, 0, 0], 0xf7), // TEST ECX,imm32
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "{bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(memory.write_addresses.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_test_ecx_ecx_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x85, 0xc9];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x85 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn rust_helper_ja_rel8_obeys_cf_zf_truth_table_and_preserves_definedness() {
     let code = [0x77, 0x0e]; // JA/JNBE +0x0e
     let defined = DEFINED & !((1 << 0) | (1 << 6));
@@ -15891,6 +16025,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x44, 0x8b, 0x6e, 0x3c][..], 0x8b),
         (&[0x44, 0x8b, 0x66, 0x40][..], 0x8b),
         (&[0x44, 0x8b, 0x46, 0x44][..], 0x8b),
+        (&[0x85, 0xc9][..], 0x85),
         (&[0xe8, 0x83, 0x01, 0, 0][..], 0xe8),
         (&[0xe8, 0x8d, 0x02, 0, 0][..], 0xe8),
         (&[0xe8, 0x59, 0x08, 0, 0][..], 0xe8),
