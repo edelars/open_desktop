@@ -27781,3 +27781,7 @@ Four focused profile tests cover result and logical flag values, AF definedness,
 ### Stage 7 paged-profile MOV R11D,1
 
 `PagedCpl0ProbeV1` admits exact bytes `41 BB 01 00 00 00`. REX.B selects dword R11D; the immediate32 value 1 is written to that dword view and zero-extends into R11. Flags/definedness and all other architectural state are unchanged. Other registers, immediate values/widths, prefixes and profiles remain unsupported.
+
+### Stage 7 paged-profile LEA RSI,[RCX+RAX]
+
+`PagedCpl0ProbeV1` admits exact bytes `48 8D 34 01`. REX.W selects qword RSI; the SIB adds qword RCX and RAX with scale 1 and zero displacement. The effective offset wraps at 64 bits. Only RSI and RIP change; flags/definedness are preserved. LEA does not access memory or check canonicality. Other register, SIB, displacement, prefix and profile forms remain unsupported.

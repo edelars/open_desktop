@@ -4339,9 +4339,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-309 — S7-04: exact helper `LEA RSI,[RCX+RAX]` (`48 8D 34 01`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-308.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2016df`.
-- **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact qword LEA SIB form; firmware stops before later helper operations.
+- **Статус:** решена; независимое ревью одобрило без замечаний.
+- **Результат:** base `PagedCpl0ProbeV1` admits only this exact qword SIB form. The SIB adds RCX and RAX with scale 1; only RSI/RIP change. Flags/definedness are preserved, and LEA performs no memory access or canonicality check.
+- **Проверки исполнения:** four focused tests cover qword sums, wrapping and noncanonical effective offsets, complete state/flag preservation, final-SIB-byte fetch-fault atomicity, neighboring forms and CPL3/other-profile isolation. All od-isa suites pass (2,322/1,591/126/29/6/904/7/15; 0 doc tests), and all 65 `paged_probe_quantum` tests pass. Scoped cargo check, rustfmt and diff-check pass; only the pre-existing unused page-walk helper warning remains. Runner image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retires 9,007 instructions and stops at `48 83 C6 24` (`ADD RSI,0x24`, ISSUE-310), RIP `0x2016e3`, `Unsupported { opcode: 131 }`; COM1 remains empty. Independent review approved with no findings.
 - **Основание:** runner with the Stage 7 firmware image and budget 10000 retired 9,006 instructions and reported `Unsupported { opcode: 141 }`; file offset `0x16df` contains `48 8D 34 01`.
-- **Следующий шаг:** admit only this exact qword LEA SIB form, without memory access, and preserve flags.
+
+### ISSUE-310 — S7-04: exact helper `ADD RSI,0x24` (`48 83 C6 24`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-309.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2016e3`.
+- **Статус:** открыта.
+- **Суть и последствия:** the base profile does not yet admit this qword ADD immediate form; firmware stops before later helper operations.
+- **Основание:** runner with the Stage 7 firmware image and budget 10000 retired 9,007 instructions and reported `Unsupported { opcode: 131 }`; file offset `0x16e3` contains `48 83 C6 24`.
+- **Следующий шаг:** analyze and admit only the exact firmware instruction in a separate Stage 7 slice.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.
