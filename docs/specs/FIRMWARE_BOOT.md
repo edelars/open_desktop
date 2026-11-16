@@ -845,3 +845,13 @@ With exact `41 83 FD F4` admitted, the Stage 7 firmware runner retires 9,037 ins
 ### Stage 7 runner frontier after ISSUE-328
 
 With exact `0F 82 B7 00 00 00` admitted, the Stage 7 firmware runner retires 9,038 instructions and stops at RIP `0x201768`, bytes `40 20 EE` (`AND SIL,BPL`, ISSUE-329), `Unsupported { opcode: 32 }`. COM1 remains empty.
+
+
+### Stage 7 paged-profile AND SIL,BPL
+
+`PagedCpl0ProbeV1` admits exact bytes `40 20 EE`. Bare REX selects SIL/BPL, opcode 20 makes SIL the destination and BPL the source. Only SIL[7:0] is written. CF/OF clear, SF/ZF/PF reflect the result, AF becomes undefined, and other state remains unchanged.
+
+
+### Stage 7 runner frontier after ISSUE-329
+
+With exact `40 20 EE` admitted, the Stage 7 firmware runner retires 9,039 instructions and stops at RIP `0x20176b`, bytes `0F 85 AE 00 00 00` (`JNZ rel32 +0xae`, ISSUE-330), `Unsupported { opcode: 133 }`. COM1 remains empty.
