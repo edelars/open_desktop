@@ -139,6 +139,134 @@ pub fn step_paged_invlpg(
     Ok(report)
 }
 
+/// Fetch-only adapter used by the exact control-register steps below (S4-16f):
+/// tracked RAM instruction fetch, committed A/D callbacks, no operand access.
+fn fetch_only_adapter<'a>(
+    bus: &'a mut MachineBus,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
+) -> PagedMovMemoryAdapter<'a> {
+    PagedMovMemoryAdapter {
+        bus: bus.into(),
+        paging,
+        instruction_rip,
+        committed_write,
+        page_fault: None,
+        memory_error: None,
+        access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
+        committed_ad_updates: None,
+        committed_writes: None,
+        capture_effects: false,
+        dword_read_profile: false,
+        word_read_profile: false,
+        ram_only: true,
+        reject_crossing_qword: false,
+        read_only_qword: false,
+        large_ram_profile: false,
+        dword_write_profile: false,
+        cpl0_set_dword_read: false,
+        cpl0_set_byte_read: false,
+        cpl0_set_word_read: false,
+        cpl0_set_narrow_write: false,
+        cpl0_set_cross_page_fetch: false,
+        cpl0_set_cross_page_store: false,
+        cpl0_set_cross_page_read: false,
+        fetch_cache: None,
+        walks: None,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedMovCr3StepReport {
+    pub cpu: od_isa::MovCr3Result,
+    /// Retains the walker's precise saved RIP, linear address, and PFEC.
+    pub page_fault: Option<PageFaultRecord>,
+    /// Retains the original tracked-walker classification, including faults.
+    pub access_error: Option<TrackedAccessError>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedMovCr3StepError {
+    Configuration(crate::ProbeConfigError),
+    CpuInput(od_isa::MovCr3InputError),
+}
+
+/// Execute exactly one bare `MOV CR3,RAX` (CR0.WP = 0 or 1) through tracked
+/// physical RAM fetches (S4-16f). The CPU profile owns decode, validation and
+/// the retired `Cr3Write` effect; the adapter supplies the pre-write paging
+/// snapshot and forwards committed walker A/D writes. A new snapshot for the
+/// written CR3 is the caller's decision.
+pub fn step_paged_mov_cr3_wp(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedMovCr3StepReport, PagedMovCr3StepError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+        .map_err(PagedMovCr3StepError::Configuration)?;
+    let instruction_rip = state.rip;
+    let mut memory = fetch_only_adapter(bus, paging, instruction_rip, &mut committed_write);
+    let cpu = od_isa::step_mov_cr3_wp(
+        od_isa::MovCr3WpLong64V1,
+        state,
+        &mut memory,
+        context,
+        efer,
+        rflags_defined,
+    )
+    .map_err(PagedMovCr3StepError::CpuInput)?;
+    Ok(PagedMovCr3StepReport {
+        cpu,
+        page_fault: memory.page_fault,
+        access_error: memory.access_error,
+    })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedMovCr0StepReport {
+    pub cpu: od_isa::PagedProbeResult<std::convert::Infallible>,
+    /// Retains the walker's precise saved RIP, linear address, and PFEC.
+    pub page_fault: Option<PageFaultRecord>,
+    /// Retains the original tracked-walker classification, including faults.
+    pub access_error: Option<TrackedAccessError>,
+}
+
+/// Execute exactly one bare `MOV CR0,RAX` WP toggle through tracked physical
+/// RAM fetches (S4-16f). The CPU profile commits CR0 and reports a retired
+/// `Cr0Write` effect; adopting the new snapshot is the caller's decision.
+pub fn step_paged_mov_cr0_wp(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedMovCr0StepReport, crate::ProbeConfigError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)?;
+    let instruction_rip = state.rip;
+    let mut memory = fetch_only_adapter(bus, paging, instruction_rip, &mut committed_write);
+    let cpu = od_isa::step_mov_cr0_wp(
+        od_isa::MovCr0WpLong64V1,
+        state,
+        &mut memory,
+        context,
+        efer,
+        rflags_defined,
+    );
+    Ok(PagedMovCr0StepReport {
+        cpu,
+        page_fault: memory.page_fault,
+        access_error: memory.access_error,
+    })
+}
+
 /// Report of one exact paged one-byte state step (`STI` or `HLT`, S4-27i4a).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PagedStateOpStepReport {

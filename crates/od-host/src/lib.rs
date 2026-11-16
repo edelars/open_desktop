@@ -4735,6 +4735,115 @@ pub struct PagedCodeSession<'a> {
     aliases: [Option<u64>; 2],
     caches: [od_jit::dispatch::SingleEntryBlockCache<PublishedArenaBlock>; 2],
     backend: PublishedArenaBackend,
+    /// Current translation context key (S4-16f), derived from `paging` and the
+    /// access privilege. Every admitted entry belongs to this key.
+    context: PagedCodeTranslationContext,
+    /// Context each cache slot was admitted under.
+    alias_contexts: [Option<PagedCodeTranslationContext>; 2],
+    /// Monotonic execution-context generation handed to the dispatch caches
+    /// (they require a strictly advancing `ExecutionContextId`). Advances on
+    /// every key change, never on resets that keep the key.
+    context_generation: u64,
+    /// Number of full session resets caused by context events (key change,
+    /// retired MOV CR3, delivered #PF); retired INVLPG resets are counted too.
+    context_resets: u64,
+}
+
+/// Translation-relevant part of the controls that decide what a guest linear
+/// alias means (S4-16f). Two admissions with equal keys see the same page-walk
+/// semantics; any differing component gives a distinct address-space id and a
+/// full session reset (see `PagedCodeSession::observe_controls`).
+///
+/// Components: CR3 page-table root (bits 35:12; PWT/PCD low bits do not affect
+/// translation and CR4.PCIDE is not admitted by `Long64ProbeConfig`, so there
+/// is no PCID), CR0.WP, CR4.PSE, CR4.PGE, EFER.NXE and the access privilege
+/// (CPL). CR0.PG/PE, CR4.PAE and EFER.LME/LMA are required constants of the
+/// admitted Long64 snapshot and therefore cannot differ. Other CR0/CR4/EFER
+/// bits (TS, EM, MP, NE, AM, OSFXSR, OSXMMEXCPT, SCE) are not in the key.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PagedCodeTranslationContext {
+    cr3_root: u64,
+    wp: bool,
+    pse: bool,
+    pge: bool,
+    nxe: bool,
+    cpl: u8,
+}
+
+impl PagedCodeTranslationContext {
+    const ROOT_MASK: u64 = ((1u64 << 36) - 1) & !0xfff;
+
+    fn new(
+        paging: &od_machine::Long64ProbeConfig,
+        privilege: od_isa::memory::PrivilegeLevel,
+    ) -> Self {
+        use od_isa::memory::PrivilegeLevel;
+        Self {
+            cr3_root: paging.cr3() & Self::ROOT_MASK,
+            wp: paging.cr0() & (1 << 16) != 0,
+            pse: paging.cr4() & (1 << 4) != 0,
+            pge: paging.cr4() & (1 << 7) != 0,
+            nxe: paging.efer() & (1 << 11) != 0,
+            cpl: match privilege {
+                PrivilegeLevel::Ring0 => 0,
+                PrivilegeLevel::Ring1 => 1,
+                PrivilegeLevel::Ring2 => 2,
+                PrivilegeLevel::Ring3 => 3,
+            },
+        }
+    }
+
+    /// Injective, nonzero packing of the key: 24 bits of root page number,
+    /// four flag bits and two CPL bits, plus one.
+    pub fn id(&self) -> u64 {
+        let flags = u64::from(self.wp)
+            | u64::from(self.pse) << 1
+            | u64::from(self.pge) << 2
+            | u64::from(self.nxe) << 3;
+        ((self.cr3_root >> 12) | flags << 24 | u64::from(self.cpl) << 28) + 1
+    }
+
+    pub fn cr3_root(&self) -> u64 {
+        self.cr3_root
+    }
+
+    pub fn write_protect(&self) -> bool {
+        self.wp
+    }
+
+    pub fn cpl(&self) -> u8 {
+        self.cpl
+    }
+}
+
+/// Outcome of one interpreted `MOV CR3,RAX` executed between native calls.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedCodeMovCr3Result {
+    pub step: od_machine::PagedMovCr3StepReport,
+    /// Physical RAM writes committed by the instruction fetch walk.
+    pub committed_writes: Vec<od_machine::GuestPhysicalRange>,
+    /// True when the retired CR3 write (including a same-value write) cleared
+    /// both idle caches and released the backing/alias admission.
+    pub session_reset: bool,
+}
+
+/// Outcome of one interpreted `MOV CR0,RAX` executed between native calls.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedCodeMovCr0Result {
+    pub step: od_machine::PagedMovCr0StepReport,
+    /// Physical RAM writes committed by the instruction fetch walk.
+    pub committed_writes: Vec<od_machine::GuestPhysicalRange>,
+    /// True when the retired CR0 write changed a context-key component (WP).
+    pub session_reset: bool,
+}
+
+/// Outcome of one interpreted guest store under either CR0.WP state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedCodeWpStoreResult {
+    pub step: od_machine::PagedCr0WpMovStepReport,
+    /// Physical RAM writes committed by the page walker, including A/D updates.
+    pub committed_writes: Vec<od_machine::GuestPhysicalRange>,
+    pub code_invalidated: bool,
 }
 
 /// Outcome of one interpreted guest store issued between native code calls.
@@ -4783,9 +4892,26 @@ pub enum PagedCodeSessionError {
     Dispatch(od_jit::dispatch::DispatchError<PublishedArenaError>),
     Patch(od_machine::MemoryAccessError),
     TrackedPatch(od_machine::TrackedCodePatchError),
+    /// Controls are missing from the CPU state, the instruction mode is not
+    /// Long64, or the observed controls are not a valid Long64 snapshot. A
+    /// valid change of a context-key component is not an error: it resets the
+    /// session (S4-16f).
     PagingControlsMismatch,
     StoreStep(od_machine::PagedMovStepError),
     InvlpgStep(od_machine::PagedInvlpgStepError),
+    /// A configuration or context input was rejected. `ContextRejected` does
+    /// not reset the session when the rejection happens before any effect is
+    /// applied (`set_efer` with an invalid EFER, the pre-step CPL check against
+    /// the CS selector of the state, a failed pre-step `MOV CR0` configuration
+    /// in `execute_mov_cr0`); only the branches that reject an already retired
+    /// control-register write (`execute_mov_cr3` / `execute_mov_cr0` after the
+    /// step) reset the session, which must then be re-synchronized.
+    ContextRejected(od_machine::ProbeConfigError),
+    /// The retired CR0/CR3 effect disagrees with the session snapshot or the
+    /// CPU state; the session was reset.
+    ContextEffectMismatch,
+    Cr3Step(od_machine::PagedMovCr3StepError),
+    WpStoreStep(od_machine::PagedExceptionDeliveryError),
 }
 
 impl<'a> PagedCodeSession<'a> {
@@ -4805,6 +4931,7 @@ impl<'a> PagedCodeSession<'a> {
             od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
         )
         .map_err(PagedCodeSessionError::Cache)?;
+        let context = PagedCodeTranslationContext::new(&paging, access_context.privilege);
         Ok(Self {
             bus,
             paging,
@@ -4815,7 +4942,139 @@ impl<'a> PagedCodeSession<'a> {
             aliases: [None, None],
             caches: [cache0, cache1],
             backend,
+            context,
+            alias_contexts: [None, None],
+            context_generation: 1,
+            context_resets: 0,
         })
+    }
+
+    /// Translation context key under which new admissions are made.
+    pub fn translation_context(&self) -> PagedCodeTranslationContext {
+        self.context
+    }
+
+    /// Number of full session resets caused by context events so far.
+    pub fn context_resets(&self) -> u64 {
+        self.context_resets
+    }
+
+    /// Clear both idle caches and release the backing/range/alias binding.
+    /// Conservative reset used by every context event (S4-16f rule).
+    fn reset_session(&mut self) {
+        for cache in &mut self.caches {
+            cache.clear();
+        }
+        self.backing_page = None;
+        self.code_page_offset = None;
+        self.code_length = None;
+        self.aliases = [None, None];
+        self.alias_contexts = [None, None];
+        self.context_resets += 1;
+    }
+
+    /// Adopt `candidate` as the session snapshot. Only a change of a key
+    /// component resets the session; other control bits are adopted silently.
+    fn adopt_paging(
+        &mut self,
+        candidate: od_machine::Long64ProbeConfig,
+        privilege: od_isa::memory::PrivilegeLevel,
+    ) -> bool {
+        let context = PagedCodeTranslationContext::new(&candidate, privilege);
+        self.paging = candidate;
+        self.access_context.privilege = privilege;
+        if context == self.context {
+            return false;
+        }
+        self.context = context;
+        self.context_generation += 1;
+        self.reset_session();
+        true
+    }
+
+    /// Compare CPU-owned controls with the session snapshot (S4-16f). Replaces
+    /// the former fixed-fixture equality check: a changed key component (CR3
+    /// root, CR0.WP, CR4.PSE/PGE) resets the session and re-keys it; changed
+    /// non-key bits are adopted without reset; an invalid snapshot is
+    /// `PagingControlsMismatch`. Returns true when the session was reset.
+    fn observe_controls(
+        &mut self,
+        cr0: u64,
+        cr3: u64,
+        cr4: u64,
+    ) -> Result<bool, PagedCodeSessionError> {
+        if (cr0, cr3, cr4) == (self.paging.cr0(), self.paging.cr3(), self.paging.cr4()) {
+            return Ok(false);
+        }
+        let candidate = od_machine::Long64ProbeConfig::new(cr0, cr3, cr4, self.paging.efer())
+            .map_err(|_| PagedCodeSessionError::PagingControlsMismatch)?;
+        Ok(self.adopt_paging(candidate, self.access_context.privilege))
+    }
+
+    /// S4-16f: the CPL of the context key is updated only through
+    /// `set_privilege`. When the state carries a CS selector, its RPL must
+    /// equal the key CPL; otherwise nothing is applied (no reset, no change of
+    /// the state) and `ContextRejected(CplMismatch)` is returned. A state
+    /// without a CS selector (`None`) keeps the session's CPL; that is a
+    /// documented limitation (the host must call `set_privilege`).
+    fn check_state_cpl(&self, state: &od_isa::LongModeState) -> Result<(), PagedCodeSessionError> {
+        if let Some(selector) = state.cs_selector {
+            let key_cpl = self.context.cpl();
+            if (selector & 3) as u8 != key_cpl {
+                return Err(PagedCodeSessionError::ContextRejected(
+                    od_machine::ProbeConfigError::CplMismatch {
+                        cs_selector: selector,
+                        key_cpl,
+                    },
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Strict variant for interpreted steps: all three controls and Long64
+    /// mode are required. Also checks the CS-selector CPL (see
+    /// `check_state_cpl`).
+    fn observe_state_controls(
+        &mut self,
+        state: &od_isa::LongModeState,
+    ) -> Result<bool, PagedCodeSessionError> {
+        self.check_state_cpl(state)?;
+        let (Some(cr0), Some(cr3), Some(cr4)) = (state.cr0, state.cr3, state.cr4) else {
+            return Err(PagedCodeSessionError::PagingControlsMismatch);
+        };
+        if self.access_context.mode != od_isa::memory::InstructionMode::Long64 {
+            return Err(PagedCodeSessionError::PagingControlsMismatch);
+        }
+        self.observe_controls(cr0, cr3, cr4)
+    }
+
+    /// Host-visible CPL change (for example after a CPL3 entry). A different
+    /// privilege is a different key component: the session is reset.
+    /// Returns true when it was reset.
+    pub fn set_privilege(&mut self, privilege: od_isa::memory::PrivilegeLevel) -> bool {
+        self.adopt_paging(self.paging, privilege)
+    }
+
+    /// Host-visible EFER change (for example WRMSR). EFER.NXE is a key
+    /// component; the snapshot must remain a valid Long64 configuration.
+    /// Returns true when the session was reset.
+    pub fn set_efer(&mut self, efer: u64) -> Result<bool, PagedCodeSessionError> {
+        let candidate = od_machine::Long64ProbeConfig::new(
+            self.paging.cr0(),
+            self.paging.cr3(),
+            self.paging.cr4(),
+            efer,
+        )
+        .map_err(PagedCodeSessionError::ContextRejected)?;
+        Ok(self.adopt_paging(candidate, self.access_context.privilege))
+    }
+
+    /// Notify the session that a `#PF` was delivered to the guest. Conservative
+    /// S4-14h rule: any delivered page fault clears the aliases. A fault that
+    /// an interpreted step merely reports is not a delivery.
+    pub fn note_delivered_page_fault(&mut self) {
+        self.reset_session();
     }
 
     pub fn resident_entries(&self) -> usize {
@@ -4832,12 +5091,23 @@ impl<'a> PagedCodeSession<'a> {
         state: &mut od_isa::LongModeState,
         budget: u64,
     ) -> Result<od_jit::dispatch::FallbackDispatchResult, PagedCodeSessionError> {
+        // S4-16f: a CS-selector CPL that disagrees with the key CPL (host
+        // skipped `set_privilege`) is rejected before any lookup or effect.
+        self.check_state_cpl(state)?;
         if state.rip != linear_start {
             return Err(PagedCodeSessionError::UnsupportedAlias);
         }
-        if state.cr3 != Some(self.paging.cr3()) {
+        let Some(cr3) = state.cr3 else {
             return Err(PagedCodeSessionError::UnsupportedAlias);
-        }
+        };
+        // S4-16f: the CPU-owned controls define the translation context. A
+        // changed key component resets the session before the lookup; CR0/CR4
+        // that the caller does not carry keep the session's values.
+        self.observe_controls(
+            state.cr0.unwrap_or(self.paging.cr0()),
+            cr3,
+            state.cr4.unwrap_or(self.paging.cr4()),
+        )?;
         let mut committed_writes = Vec::new();
         let snapshot = self.bus.tracked_code_snapshot_with_callback(
             &self.paging,
@@ -4891,8 +5161,15 @@ impl<'a> PagedCodeSession<'a> {
         self.code_page_offset = Some(code_page_offset);
         self.code_length = Some(code_length);
         self.aliases[cache_index] = Some(alias_base);
+        let context_id = self.context.id();
+        // Revalidate: an entry admitted under another key must not be reused
+        // (reset on key change already clears it; this guards that invariant).
+        if self.alias_contexts[cache_index].is_some_and(|admitted| admitted != self.context) {
+            self.caches[cache_index].clear();
+        }
+        self.alias_contexts[cache_index] = Some(self.context);
         let identity = od_jit::translation::CodeIdentity {
-            address_space: od_jit::translation::AddressSpaceId::new(nz(1)?),
+            address_space: od_jit::translation::AddressSpaceId::new(nz(context_id)?),
             mapping,
             mapping_version: od_jit::translation::MappingVersion::new(nz(1)?),
             backing,
@@ -4911,7 +5188,8 @@ impl<'a> PagedCodeSession<'a> {
             },
         );
         let context = od_jit::translation::ExecutionContextSnapshot::native_register_v1_fixture(
-            od_jit::translation::ExecutionContextId::from_u64(1).unwrap(),
+            od_jit::translation::ExecutionContextId::from_u64(self.context_generation)
+                .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
         );
         let stop = AtomicU8::new(0);
         let control = od_jit::dispatch::DispatchControl {
@@ -5052,13 +5330,9 @@ impl<'a> PagedCodeSession<'a> {
         let Some(_) = self.backing_page else {
             return Err(PagedCodeSessionError::UnsupportedAlias);
         };
-        if state.cr0 != Some(self.paging.cr0())
-            || state.cr3 != Some(self.paging.cr3())
-            || state.cr4 != Some(self.paging.cr4())
-            || self.access_context.mode != od_isa::memory::InstructionMode::Long64
-        {
-            return Err(PagedCodeSessionError::PagingControlsMismatch);
-        }
+        // S4-16f: a changed key component resets the session (and releases
+        // the binding), so the store is interpreted without a bound backing.
+        self.observe_state_controls(state)?;
         let mut committed_writes = Vec::new();
         // The machine profile receives CR3 as a separate paging input and
         // rejects a populated state.cr3. Keep the caller's paging controls
@@ -5104,13 +5378,7 @@ impl<'a> PagedCodeSession<'a> {
         state: &mut od_isa::LongModeState,
         rflags_defined: u64,
     ) -> Result<PagedCodeInvlpgResult, PagedCodeSessionError> {
-        if state.cr0 != Some(self.paging.cr0())
-            || state.cr3 != Some(self.paging.cr3())
-            || state.cr4 != Some(self.paging.cr4())
-            || self.access_context.mode != od_isa::memory::InstructionMode::Long64
-        {
-            return Err(PagedCodeSessionError::PagingControlsMismatch);
-        }
+        self.observe_state_controls(state)?;
         let mut committed_writes = Vec::new();
         let mut execution_state = state.clone();
         let step = od_machine::step_paged_invlpg(
@@ -5131,16 +5399,196 @@ impl<'a> PagedCodeSession<'a> {
                 od_isa::execute::InvlpgExit::TranslationInvalidation(_)
             );
         if session_reset {
-            for cache in &mut self.caches {
-                cache.clear();
-            }
-            self.backing_page = None;
-            self.code_page_offset = None;
-            self.code_length = None;
-            self.aliases = [None, None];
+            self.reset_session();
         }
         *state = execution_state;
         Ok(PagedCodeInvlpgResult {
+            step,
+            committed_writes,
+            session_reset,
+        })
+    }
+
+    /// Interpret exactly one guest qword store at CPL0 under either CR0.WP
+    /// state (S4-16f; `step_guest_mov` only admits WP=1). Committed physical
+    /// writes, including A/D, are reconciled with the code page before return,
+    /// exactly as in `step_guest_mov`.
+    pub fn step_guest_mov_wp(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        rflags_defined: u64,
+    ) -> Result<PagedCodeWpStoreResult, PagedCodeSessionError> {
+        self.observe_state_controls(state)?;
+        let mut committed_writes = Vec::new();
+        let step = od_machine::step_paged_cr0_wp_mov(
+            state,
+            self.bus,
+            self.paging.cr3(),
+            self.paging.efer(),
+            self.access_context,
+            rflags_defined,
+            |range| committed_writes.push(range),
+        );
+        let code_invalidated = self.reconcile_code_writes(&committed_writes)?;
+        let step = step.map_err(PagedCodeSessionError::WpStoreStep)?;
+        Ok(PagedCodeWpStoreResult {
+            step,
+            committed_writes,
+            code_invalidated,
+        })
+    }
+
+    /// Interpret exactly one `MOV CR3,RAX` between native calls (S4-16f). Every
+    /// retired CR3 write, including a same-value write (S4-14d/h rule), adopts
+    /// the new snapshot and conservatively clears both idle caches and the
+    /// backing/alias binding; an old-context block is never reused after a
+    /// return to the previous CR3 without a fresh admission. Faults and
+    /// rejected inputs do not reset.
+    pub fn execute_mov_cr3(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        rflags_defined: u64,
+    ) -> Result<PagedCodeMovCr3Result, PagedCodeSessionError> {
+        self.observe_state_controls(state)?;
+        let old_cr3 = self.paging.cr3();
+        let mut committed_writes = Vec::new();
+        let step = od_machine::step_paged_mov_cr3_wp(
+            state,
+            self.bus,
+            old_cr3,
+            self.paging.efer(),
+            self.access_context,
+            rflags_defined,
+            |range| committed_writes.push(range),
+        );
+        let reconcile = self.reconcile_code_writes(&committed_writes);
+        let step = step.map_err(PagedCodeSessionError::Cr3Step)?;
+
+        let mut session_reset = false;
+        if let od_isa::MovCr3Exit::TranslationContextChange(effect) = &step.cpu.exit {
+            let od_isa::TranslationContextChange::Cr3Write {
+                old_cr3: effect_old,
+                new_cr3,
+            } = *effect
+            else {
+                // `state` is already modified (CR3 written, RIP advanced);
+                // this branch is unreachable with the od-isa profiles. If such
+                // a path appears, the caller must treat `state` as corrupted.
+                self.reset_session();
+                return Err(PagedCodeSessionError::ContextEffectMismatch);
+            };
+            if effect_old != old_cr3 || state.cr3 != Some(new_cr3) {
+                // `state` is already modified (CR3 written, RIP advanced);
+                // this branch is unreachable with the od-isa profiles. If such
+                // a path appears, the caller must treat `state` as corrupted.
+                self.reset_session();
+                return Err(PagedCodeSessionError::ContextEffectMismatch);
+            }
+            match od_machine::Long64ProbeConfig::from_cpu_state(state, new_cr3, self.paging.efer())
+            {
+                Ok(candidate) => {
+                    if !self.adopt_paging(candidate, self.access_context.privilege) {
+                        self.reset_session();
+                    }
+                    session_reset = true;
+                }
+                Err(error) => {
+                    // `state` is already modified (CR3 written, RIP advanced);
+                    // this branch is unreachable with the od-isa profiles. If
+                    // such a path appears, the caller must treat `state` as
+                    // corrupted.
+                    self.reset_session();
+                    return Err(PagedCodeSessionError::ContextRejected(error));
+                }
+            }
+        }
+        reconcile?;
+        Ok(PagedCodeMovCr3Result {
+            step,
+            committed_writes,
+            session_reset,
+        })
+    }
+
+    /// Interpret exactly one `MOV CR0,RAX` WP toggle between native calls
+    /// (S4-16f). A retired write adopts the new snapshot; the session is reset
+    /// only when a key component changed (WP). A same-value write and writes of
+    /// bits outside the key do not reset.
+    pub fn execute_mov_cr0(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        rflags_defined: u64,
+    ) -> Result<PagedCodeMovCr0Result, PagedCodeSessionError> {
+        self.observe_state_controls(state)?;
+        let old_cr0 = self.paging.cr0();
+        let mut committed_writes = Vec::new();
+        let step = od_machine::step_paged_mov_cr0_wp(
+            state,
+            self.bus,
+            self.paging.cr3(),
+            self.paging.efer(),
+            self.access_context,
+            rflags_defined,
+            |range| committed_writes.push(range),
+        );
+        let reconcile = self.reconcile_code_writes(&committed_writes);
+        // A configuration error of the pre-step snapshot is rejected before
+        // any effect is applied: `ContextRejected` here does not reset the
+        // session.
+        let step = step.map_err(PagedCodeSessionError::ContextRejected)?;
+
+        let mut session_reset = false;
+        match &step.cpu.exit {
+            od_isa::PagedProbeExit::TranslationContextChange(effect) => {
+                let od_isa::TranslationContextChange::Cr0Write {
+                    old_cr0: effect_old,
+                    new_cr0,
+                } = *effect
+                else {
+                    // `state` is already modified (CR0 written, RIP advanced);
+                    // this branch is unreachable with the od-isa profiles. If
+                    // such a path appears, the caller must treat `state` as
+                    // corrupted.
+                    self.reset_session();
+                    return Err(PagedCodeSessionError::ContextEffectMismatch);
+                };
+                if effect_old != old_cr0 || state.cr0 != Some(new_cr0) {
+                    // `state` is already modified (CR0 written, RIP advanced);
+                    // this branch is unreachable with the od-isa profiles. If
+                    // such a path appears, the caller must treat `state` as
+                    // corrupted.
+                    self.reset_session();
+                    return Err(PagedCodeSessionError::ContextEffectMismatch);
+                }
+                match od_machine::Long64ProbeConfig::from_cpu_state(
+                    state,
+                    self.paging.cr3(),
+                    self.paging.efer(),
+                ) {
+                    Ok(candidate) => {
+                        session_reset = self.adopt_paging(candidate, self.access_context.privilege);
+                    }
+                    Err(error) => {
+                        // `state` is already modified (CR0 written, RIP
+                        // advanced); this branch is unreachable with the
+                        // od-isa profiles. If such a path appears, the caller
+                        // must treat `state` as corrupted.
+                        self.reset_session();
+                        return Err(PagedCodeSessionError::ContextRejected(error));
+                    }
+                }
+            }
+            od_isa::PagedProbeExit::Retired => {
+                // `state` is already modified (RIP advanced); this branch is
+                // unreachable with the od-isa profiles. If such a path
+                // appears, the caller must treat `state` as corrupted.
+                self.reset_session();
+                return Err(PagedCodeSessionError::ContextEffectMismatch);
+            }
+            _ => {}
+        }
+        reconcile?;
+        Ok(PagedCodeMovCr0Result {
             step,
             committed_writes,
             session_reset,
@@ -115917,6 +116365,660 @@ pub(crate) mod tests {
         assert_eq!(session.code_page_offset, Some((ALIAS_C & 0xfff) as usize));
         assert_eq!(session.code_length, Some(11));
         assert_eq!(session.aliases, [Some(ALIAS_C & !0xfff), None]);
+    }
+
+    /// S4-16f: translation context (CR3 root, CR0.WP, CR4.PSE/PGE, EFER.NXE,
+    /// CPL) is part of the alias admission key. Two roots map the same linear
+    /// alias to different code pages; a second identical bus is the oracle.
+    mod s4_16f {
+        use super::*;
+        use od_isa::memory::{AccessOrigin, InstructionMode, PrivilegeLevel};
+        use od_machine::{
+            AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
+            MemoryRegionKind, MemoryRegionSpec, RamLimits,
+        };
+
+        const ALIAS: u64 = 0x0040_1100;
+        const DATA_RO: u64 = 0x0040_2000;
+        const SYS: u64 = 0x0040_3000;
+        const ALIAS_S: u64 = 0x0040_4100;
+        const DATA_W: u64 = 0x0040_5000;
+        const CR3_RIP: u64 = SYS + 0x100;
+        const CR0_RIP: u64 = SYS + 0x200;
+        const STORE_RIP: u64 = SYS + 0x300;
+        const LOAD_RIP: u64 = SYS + 0x400;
+        const ROOT_A: u64 = 0x1000;
+        const ROOT_B: u64 = 0x5000;
+        const CR0_WP1: u64 = 0x8001_0033;
+        const CR0_WP0: u64 = 0x8000_0033;
+        const CR4: u64 = 1 << 5;
+        const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
+        const IMM_A: u64 = 0x1111_2222_3333_4444;
+        const IMM_B: u64 = 0xa1b2_c3d4_e5f6_0718;
+        const IMM_S: u64 = 0x0102_0304_0506_0708;
+        const RAX: usize = od_isa::Register::Rax as usize;
+        const RBX: usize = od_isa::Register::Rbx as usize;
+        const RCX: usize = od_isa::Register::Rcx as usize;
+
+        fn ctx(privilege: PrivilegeLevel) -> AccessContext {
+            AccessContext {
+                mode: InstructionMode::Long64,
+                privilege,
+                origin: AccessOrigin::Explicit,
+            }
+        }
+
+        fn make_bus() -> MachineBus {
+            const RAM_BYTES: u64 = 0x10000;
+            let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_BYTES).unwrap();
+            let map =
+                MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                    .unwrap();
+            let mut bus =
+                MachineBus::new(map, RamLimits::new(RAM_BYTES), vec![], vec![], vec![]).unwrap();
+            // Root A (CR3 0x1000) and root B (CR3 0x5000): same linear layout,
+            // different code page behind ALIAS. PT leaf flags: 0x7 user RW,
+            // 0x1 supervisor read-only, 0x3 supervisor RW.
+            let mut entries = vec![
+                (0x1000u64, 0x2007u64),
+                (0x2000, 0x3007),
+                (0x3010, 0x4007),
+                (0x4008, 0xa007),
+                (0x5000, 0x6007),
+                (0x6000, 0x7007),
+                (0x7010, 0x8007),
+                (0x8008, 0xb007),
+            ];
+            for pt in [0x4000u64, 0x8000] {
+                entries.extend([
+                    (pt + 0x10, 0xc001),
+                    (pt + 0x18, 0xd007),
+                    (pt + 0x20, 0xe003),
+                    (pt + 0x28, 0xf007),
+                ]);
+            }
+            for (address, value) in entries {
+                bus.write_physical(
+                    GuestPhysicalAddress::new(address),
+                    AccessWidth::Qword,
+                    value,
+                    |_| {},
+                )
+                .unwrap();
+            }
+            let mov = |value: u64| {
+                let mut bytes = vec![0x48, 0xb8];
+                bytes.extend_from_slice(&value.to_le_bytes());
+                bytes
+            };
+            for (address, bytes) in [
+                (0xa100u64, mov(IMM_A)),
+                (0xb100, mov(IMM_B)),
+                (0xe100, mov(IMM_S)),
+                (0xd100, vec![0x0f, 0x22, 0xd8]),
+                (0xd200, vec![0x0f, 0x22, 0xc0]),
+                (0xd300, vec![0x48, 0x89, 0x0b]),
+                (0xd400, vec![0x48, 0x8b, 0x03]),
+            ] {
+                bus.patch_physical_ram(GuestPhysicalAddress::new(address), &bytes)
+                    .unwrap();
+            }
+            bus
+        }
+
+        fn alias_state(cr3: u64, rip: u64) -> od_isa::LongModeState {
+            od_isa::LongModeState {
+                cr3: Some(cr3),
+                rip,
+                ..Default::default()
+            }
+        }
+
+        fn sys_state(rip: u64, cr0: u64, cr3: u64) -> od_isa::LongModeState {
+            od_isa::LongModeState {
+                rip,
+                cr0: Some(cr0),
+                cr3: Some(cr3),
+                cr4: Some(CR4),
+                activity: Some(od_isa::state::CpuActivity::Running),
+                sti_shadow: Some(od_isa::state::StiShadow::Clear),
+                ..Default::default()
+            }
+        }
+
+        fn mem_state(rip: u64, cr0: u64, cr3: Option<u64>) -> od_isa::LongModeState {
+            od_isa::LongModeState {
+                rip,
+                cr0: Some(cr0),
+                cr3,
+                cr4: Some(CR4),
+                ..Default::default()
+            }
+        }
+
+        /// Oracle: interpret `MOV RAX,[RBX]` on the oracle bus. Returns
+        /// (retired, faulted, loaded value).
+        fn oracle_load(
+            bus: &mut MachineBus,
+            cr3: u64,
+            cr0: u64,
+            privilege: PrivilegeLevel,
+            address: u64,
+        ) -> (u64, bool, u64) {
+            let mut state = mem_state(LOAD_RIP, cr0, None);
+            state.gpr[RBX] = address;
+            let report =
+                od_machine::step_paged_mov(&mut state, bus, cr3, EFER, ctx(privilege), 0, |_| {})
+                    .unwrap();
+            (
+                report.cpu.instructions_executed,
+                report.page_fault.is_some(),
+                state.gpr[RAX],
+            )
+        }
+
+        fn run_alias(
+            session: &mut PagedCodeSession<'_>,
+            cr3: u64,
+            alias: u64,
+        ) -> Result<u64, PagedCodeSessionError> {
+            let mut state = alias_state(cr3, alias);
+            session.execute_alias(alias, 10, &mut state, 1)?;
+            Ok(state.gpr[RAX])
+        }
+
+        #[test]
+        fn mov_cr3_a_b_a_rekeys_and_never_reuses_old_block() {
+            let _guard = jit_test_lock();
+            let mut bus = make_bus();
+            let mut oracle = make_bus();
+            let paging = od_machine::Long64ProbeConfig::new(CR0_WP1, ROOT_A, CR4, EFER).unwrap();
+            let mut session =
+                PagedCodeSession::new(&mut bus, paging, ctx(PrivilegeLevel::Ring0)).unwrap();
+            let context_a = session.translation_context();
+
+            let rax = run_alias(&mut session, ROOT_A, ALIAS).unwrap();
+            assert_eq!(rax, IMM_A);
+            assert_eq!(
+                oracle_load(
+                    &mut oracle,
+                    ROOT_A,
+                    CR0_WP1,
+                    PrivilegeLevel::Ring0,
+                    ALIAS + 2
+                )
+                .2,
+                IMM_A
+            );
+            assert_eq!(session.resident_entries(), 1);
+            assert_eq!(session.alias_contexts[0], Some(context_a));
+
+            // Guest MOV CR3 A -> B; the oracle runs the same instruction.
+            let mut sys = sys_state(CR3_RIP, CR0_WP1, ROOT_A);
+            sys.gpr[RAX] = ROOT_B;
+            let mut oracle_sys = sys.clone();
+            let moved = session
+                .execute_mov_cr3(&mut sys, od_isa::INTEGER_FLAGS)
+                .unwrap();
+            let oracle_moved = od_machine::step_paged_mov_cr3_wp(
+                &mut oracle_sys,
+                &mut oracle,
+                ROOT_A,
+                EFER,
+                ctx(PrivilegeLevel::Ring0),
+                od_isa::INTEGER_FLAGS,
+                |_| {},
+            )
+            .unwrap();
+            assert_eq!(moved.step, oracle_moved);
+            assert_eq!(sys, oracle_sys);
+            assert_eq!(moved.step.cpu.instructions_executed, 1);
+            assert_eq!(sys.cr3, Some(ROOT_B));
+            assert!(moved.session_reset);
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(session.backing_page, None);
+            assert_eq!(session.aliases, [None, None]);
+            assert_eq!(session.alias_contexts, [None, None]);
+            let context_b = session.translation_context();
+            assert_ne!(context_a, context_b);
+            assert_ne!(context_a.id(), context_b.id());
+            assert_eq!(context_b.cr3_root(), ROOT_B);
+
+            // The same linear alias now means root B's code page.
+            let rax = run_alias(&mut session, ROOT_B, ALIAS).unwrap();
+            assert_eq!(rax, IMM_B);
+            assert_eq!(
+                oracle_load(
+                    &mut oracle,
+                    ROOT_B,
+                    CR0_WP1,
+                    PrivilegeLevel::Ring0,
+                    ALIAS + 2
+                )
+                .2,
+                IMM_B
+            );
+            assert_eq!(
+                session.backing_page,
+                Some(GuestPhysicalAddress::new(0xb000))
+            );
+            assert_eq!(session.alias_contexts[0], Some(context_b));
+            assert_eq!(session.resident_entries(), 1);
+
+            // B -> A: the context-A block admitted earlier is gone and the
+            // alias is admitted afresh under the original key.
+            sys.rip = CR3_RIP;
+            sys.gpr[RAX] = ROOT_A;
+            let back = session
+                .execute_mov_cr3(&mut sys, od_isa::INTEGER_FLAGS)
+                .unwrap();
+            assert!(back.session_reset);
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(session.backing_page, None);
+            let rax = run_alias(&mut session, ROOT_A, ALIAS).unwrap();
+            assert_eq!(rax, IMM_A);
+            assert_eq!(
+                session.backing_page,
+                Some(GuestPhysicalAddress::new(0xa000))
+            );
+            assert_eq!(session.translation_context(), context_a);
+            assert_eq!(session.alias_contexts[0], Some(context_a));
+            assert_eq!(session.resident_entries(), 1);
+
+            // CR3 observed on the CPU state without an interpreted MOV CR3
+            // (host-side switch) is also a key change: no stale IMM_A.
+            let resets = session.context_resets();
+            let rax = run_alias(&mut session, ROOT_B, ALIAS).unwrap();
+            assert_eq!(rax, IMM_B);
+            assert_eq!(session.context_resets(), resets + 1);
+            assert_eq!(session.translation_context(), context_b);
+            assert_eq!(
+                session.backing_page,
+                Some(GuestPhysicalAddress::new(0xb000))
+            );
+            assert_eq!(session.resident_entries(), 1);
+        }
+
+        #[test]
+        fn mov_cr3_same_value_resets_session() {
+            let _guard = jit_test_lock();
+            let mut bus = make_bus();
+            let paging = od_machine::Long64ProbeConfig::new(CR0_WP1, ROOT_A, CR4, EFER).unwrap();
+            let mut session =
+                PagedCodeSession::new(&mut bus, paging, ctx(PrivilegeLevel::Ring0)).unwrap();
+            let context = session.translation_context();
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+            assert_eq!(session.resident_entries(), 1);
+            let resets = session.context_resets();
+
+            let mut sys = sys_state(CR3_RIP, CR0_WP1, ROOT_A);
+            sys.gpr[RAX] = ROOT_A;
+            let result = session
+                .execute_mov_cr3(&mut sys, od_isa::INTEGER_FLAGS)
+                .unwrap();
+            assert_eq!(result.step.cpu.instructions_executed, 1);
+            assert!(result.session_reset);
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(session.backing_page, None);
+            assert_eq!(session.context_resets(), resets + 1);
+            assert_eq!(session.translation_context(), context);
+
+            // A rejected (non-retiring) MOV CR3 does not reset.
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+            let resets = session.context_resets();
+            let mut bad = sys_state(CR3_RIP, CR0_WP1, ROOT_A);
+            bad.gpr[RAX] = ROOT_B;
+            let rejected = session.execute_mov_cr3(&mut bad, 1 << 63);
+            assert!(matches!(rejected, Err(PagedCodeSessionError::Cr3Step(_))));
+            assert_eq!(session.context_resets(), resets);
+            assert_eq!(session.resident_entries(), 1);
+        }
+
+        #[test]
+        fn cpl_change_gives_distinct_entries_and_user_supervisor_check() {
+            let _guard = jit_test_lock();
+            let mut bus = make_bus();
+            let mut oracle = make_bus();
+            let paging = od_machine::Long64ProbeConfig::new(CR0_WP1, ROOT_A, CR4, EFER).unwrap();
+            let mut session =
+                PagedCodeSession::new(&mut bus, paging, ctx(PrivilegeLevel::Ring0)).unwrap();
+            let context0 = session.translation_context();
+            assert_eq!(context0.cpl(), 0);
+
+            // CPL0 admits the supervisor-only alias.
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS_S).unwrap(), IMM_S);
+            assert_eq!(session.resident_entries(), 1);
+            assert_eq!(session.alias_contexts[0], Some(context0));
+            assert_eq!(
+                oracle_load(
+                    &mut oracle,
+                    ROOT_A,
+                    CR0_WP1,
+                    PrivilegeLevel::Ring0,
+                    ALIAS_S + 2
+                ),
+                (1, false, IMM_S)
+            );
+
+            // CPL0 -> CPL3 is a key change: entries are dropped, the id differs.
+            assert!(session.set_privilege(PrivilegeLevel::Ring3));
+            let context3 = session.translation_context();
+            assert_eq!(context3.cpl(), 3);
+            assert_ne!(context0, context3);
+            assert_ne!(context0.id(), context3.id());
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(session.backing_page, None);
+            // Same privilege again is not a change.
+            assert!(!session.set_privilege(PrivilegeLevel::Ring3));
+
+            // U/S: the supervisor-only page is not fetchable at CPL3 and
+            // nothing is bound or cached; the oracle load faults the same way.
+            assert!(matches!(
+                run_alias(&mut session, ROOT_A, ALIAS_S),
+                Err(PagedCodeSessionError::Snapshot(_))
+            ));
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(session.backing_page, None);
+            let (retired, faulted, _) = oracle_load(
+                &mut oracle,
+                ROOT_A,
+                CR0_WP1,
+                PrivilegeLevel::Ring3,
+                ALIAS_S + 2,
+            );
+            assert_eq!((retired, faulted), (0, true));
+            // The user-accessible alias admits under the CPL3 key.
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+            assert_eq!(session.alias_contexts[0], Some(context3));
+            assert_eq!(
+                oracle_load(
+                    &mut oracle,
+                    ROOT_A,
+                    CR0_WP1,
+                    PrivilegeLevel::Ring3,
+                    ALIAS + 2
+                ),
+                (1, false, IMM_A)
+            );
+
+            // Back to CPL0: fresh admission under the CPL0 key again.
+            assert!(session.set_privilege(PrivilegeLevel::Ring0));
+            assert_eq!(session.translation_context(), context0);
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS_S).unwrap(), IMM_S);
+            assert_eq!(session.alias_contexts[0], Some(context0));
+        }
+
+        #[test]
+        fn cs_selector_cpl_mismatch_is_rejected_without_effect() {
+            let _guard = jit_test_lock();
+            let mut bus = make_bus();
+            let paging = od_machine::Long64ProbeConfig::new(CR0_WP1, ROOT_A, CR4, EFER).unwrap();
+            let mut session =
+                PagedCodeSession::new(&mut bus, paging, ctx(PrivilegeLevel::Ring0)).unwrap();
+            assert_eq!(session.translation_context().cpl(), 0);
+            let resets = session.context_resets();
+
+            // The host skipped `set_privilege`: the state is at CPL3 (CS RPL 3)
+            // while the key says CPL0. The supervisor-only alias must not be
+            // admitted with Ring0 rights.
+            let mut state = alias_state(ROOT_A, ALIAS_S);
+            state.cs_selector = Some(0x1b);
+            assert_eq!(state.cs_selector.unwrap() & 3, 3);
+            let before = state.clone();
+            let result = session.execute_alias(ALIAS_S, 10, &mut state, 1);
+            assert!(matches!(
+                result,
+                Err(PagedCodeSessionError::ContextRejected(
+                    od_machine::ProbeConfigError::CplMismatch {
+                        cs_selector: 0x1b,
+                        key_cpl: 0
+                    }
+                ))
+            ));
+            assert_eq!(state, before);
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(session.backing_page, None);
+            assert_eq!(session.context_resets(), resets);
+
+            // Interpreted steps reject the same mismatch without touching the
+            // state or the session.
+            let mut sys = sys_state(CR3_RIP, CR0_WP1, ROOT_A);
+            sys.cs_selector = Some(0x1b);
+            sys.gpr[RAX] = ROOT_B;
+            let sys_before = sys.clone();
+            assert!(matches!(
+                session.execute_mov_cr3(&mut sys, od_isa::INTEGER_FLAGS),
+                Err(PagedCodeSessionError::ContextRejected(
+                    od_machine::ProbeConfigError::CplMismatch { .. }
+                ))
+            ));
+            assert_eq!(sys, sys_before);
+            assert_eq!(session.context_resets(), resets);
+
+            // A matching selector (CPL0) behaves as before: the supervisor
+            // alias is admitted. Without a CS selector the session CPL is used.
+            let mut ok = alias_state(ROOT_A, ALIAS_S);
+            ok.cs_selector = Some(0x08);
+            session.execute_alias(ALIAS_S, 10, &mut ok, 1).unwrap();
+            assert_eq!(ok.gpr[RAX], IMM_S);
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS_S).unwrap(), IMM_S);
+
+            // After `set_privilege(Ring3)` the CPL3 selector matches and the
+            // supervisor-only alias is refused by the U/S check, not by CPL.
+            assert!(session.set_privilege(PrivilegeLevel::Ring3));
+            let mut user = alias_state(ROOT_A, ALIAS_S);
+            user.cs_selector = Some(0x1b);
+            assert!(matches!(
+                session.execute_alias(ALIAS_S, 10, &mut user, 1),
+                Err(PagedCodeSessionError::Snapshot(_))
+            ));
+        }
+
+        #[test]
+        fn cr0_wp_change_gives_distinct_entries_and_store_result() {
+            let _guard = jit_test_lock();
+            let mut bus = make_bus();
+            let mut oracle = make_bus();
+            let paging = od_machine::Long64ProbeConfig::new(CR0_WP1, ROOT_A, CR4, EFER).unwrap();
+            let mut session =
+                PagedCodeSession::new(&mut bus, paging, ctx(PrivilegeLevel::Ring0)).unwrap();
+            let context_wp1 = session.translation_context();
+            assert!(context_wp1.write_protect());
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+            assert_eq!(session.resident_entries(), 1);
+
+            let value = 0x5555_6666_7777_8888u64;
+            let store = |session: &mut PagedCodeSession<'_>, cr0: u64| {
+                let mut state = sys_state(STORE_RIP, cr0, ROOT_A);
+                state.gpr[RBX] = DATA_RO;
+                state.gpr[RCX] = value;
+                let result = session.step_guest_mov_wp(&mut state, 0).unwrap();
+                (
+                    result.step.cpu.instructions_executed,
+                    result.step.page_fault.is_some(),
+                )
+            };
+            let oracle_store = |oracle: &mut MachineBus, cr0: u64| {
+                let mut state = sys_state(STORE_RIP, cr0, ROOT_A);
+                state.gpr[RBX] = DATA_RO;
+                state.gpr[RCX] = value;
+                let report = od_machine::step_paged_cr0_wp_mov(
+                    &mut state,
+                    oracle,
+                    ROOT_A,
+                    EFER,
+                    ctx(PrivilegeLevel::Ring0),
+                    0,
+                    |_| {},
+                )
+                .unwrap();
+                (
+                    report.cpu.instructions_executed,
+                    report.page_fault.is_some(),
+                )
+            };
+            let read_data = |bus: &mut MachineBus| {
+                bus.read_physical(GuestPhysicalAddress::new(0xc000), AccessWidth::Qword)
+                    .unwrap()
+            };
+
+            // WP=1: the supervisor write to a read-only page faults.
+            assert_eq!(store(&mut session, CR0_WP1), (0, true));
+            assert_eq!(oracle_store(&mut oracle, CR0_WP1), (0, true));
+            assert_eq!(read_data(&mut *session.bus), 0);
+            assert_eq!(read_data(&mut oracle), 0);
+            assert_eq!(session.resident_entries(), 1);
+
+            // Guest MOV CR0 clears WP: key change, session reset.
+            let mut sys = sys_state(CR0_RIP, CR0_WP1, ROOT_A);
+            sys.gpr[RAX] = CR0_WP0;
+            let toggled = session
+                .execute_mov_cr0(&mut sys, od_isa::INTEGER_FLAGS)
+                .unwrap();
+            assert_eq!(toggled.step.cpu.instructions_executed, 1);
+            assert_eq!(sys.cr0, Some(CR0_WP0));
+            assert!(toggled.session_reset);
+            let context_wp0 = session.translation_context();
+            assert!(!context_wp0.write_protect());
+            assert_ne!(context_wp0.id(), context_wp1.id());
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(session.backing_page, None);
+
+            // WP=0: the same store now commits (same result as the oracle).
+            assert_eq!(store(&mut session, CR0_WP0), (1, false));
+            assert_eq!(oracle_store(&mut oracle, CR0_WP0), (1, false));
+            assert_eq!(read_data(&mut *session.bus), value);
+            assert_eq!(read_data(&mut oracle), value);
+
+            // Admission under WP=0; a same-value MOV CR0 and a non-key CR0
+            // bit (TS) do not reset it.
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+            assert_eq!(session.alias_contexts[0], Some(context_wp0));
+            let resets = session.context_resets();
+            sys.rip = CR0_RIP;
+            sys.gpr[RAX] = CR0_WP0;
+            let same = session
+                .execute_mov_cr0(&mut sys, od_isa::INTEGER_FLAGS)
+                .unwrap();
+            assert_eq!(same.step.cpu.instructions_executed, 1);
+            assert!(!same.session_reset);
+            assert_eq!(session.context_resets(), resets);
+            assert_eq!(session.resident_entries(), 1);
+            let mut with_ts = alias_state(ROOT_A, ALIAS);
+            with_ts.cr0 = Some(CR0_WP0 | (1 << 3));
+            with_ts.cr4 = Some(CR4 | (1 << 9));
+            session.execute_alias(ALIAS, 10, &mut with_ts, 1).unwrap();
+            assert_eq!(with_ts.gpr[RAX], IMM_A);
+            assert_eq!(session.context_resets(), resets);
+            assert_eq!(session.translation_context(), context_wp0);
+            assert_eq!(session.resident_entries(), 1);
+
+            // WP=1 again: reset, then a fresh admission under the WP=1 key.
+            sys.rip = CR0_RIP;
+            sys.gpr[RAX] = CR0_WP1;
+            let restored = session
+                .execute_mov_cr0(&mut sys, od_isa::INTEGER_FLAGS)
+                .unwrap();
+            assert!(restored.session_reset);
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+            assert_eq!(session.translation_context(), context_wp1);
+        }
+
+        #[test]
+        fn routine_control_changes_are_not_paging_controls_mismatch() {
+            let _guard = jit_test_lock();
+            let mut bus = make_bus();
+            let paging = od_machine::Long64ProbeConfig::new(CR0_WP1, ROOT_A, CR4, EFER).unwrap();
+            let mut session =
+                PagedCodeSession::new(&mut bus, paging, ctx(PrivilegeLevel::Ring0)).unwrap();
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+            assert_eq!(session.resident_entries(), 1);
+            let resets = session.context_resets();
+
+            // CR3 changed under the session: previously PagingControlsMismatch,
+            // now a key change that resets it; the store still executes.
+            let mut store = mem_state(STORE_RIP, CR0_WP1, Some(ROOT_B));
+            store.gpr[RBX] = DATA_W;
+            store.gpr[RCX] = 0x42;
+            let result = session.step_guest_mov(&mut store, 0).unwrap();
+            assert_eq!(result.step.cpu.instructions_executed, 1);
+            assert_eq!(session.context_resets(), resets + 1);
+            assert_eq!(session.translation_context().cr3_root(), ROOT_B);
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(
+                session
+                    .bus
+                    .read_physical(GuestPhysicalAddress::new(0xf000), AccessWidth::Qword)
+                    .unwrap(),
+                0x42
+            );
+
+            // Non-key bits (CR0.TS, CR4.OSFXSR) change nothing in the key.
+            assert_eq!(run_alias(&mut session, ROOT_B, ALIAS).unwrap(), IMM_B);
+            let resets = session.context_resets();
+            let mut store = mem_state(STORE_RIP, CR0_WP1 | (1 << 3), Some(ROOT_B));
+            store.cr4 = Some(CR4 | (1 << 9));
+            store.gpr[RBX] = DATA_W;
+            store.gpr[RCX] = 0x43;
+            session.step_guest_mov(&mut store, 0).unwrap();
+            assert_eq!(session.context_resets(), resets);
+            assert_eq!(session.resident_entries(), 1);
+
+            // Genuinely invalid or missing controls stay a mismatch and
+            // leave the session untouched.
+            let mut no_pg = mem_state(STORE_RIP, CR0_WP1 & !(1 << 31), Some(ROOT_B));
+            no_pg.gpr[RBX] = DATA_W;
+            assert!(matches!(
+                session.step_guest_mov(&mut no_pg, 0),
+                Err(PagedCodeSessionError::PagingControlsMismatch)
+            ));
+            let mut no_cr4 = mem_state(STORE_RIP, CR0_WP1, Some(ROOT_B));
+            no_cr4.cr4 = None;
+            assert!(matches!(
+                session.step_guest_mov(&mut no_cr4, 0),
+                Err(PagedCodeSessionError::PagingControlsMismatch)
+            ));
+            assert_eq!(session.context_resets(), resets);
+            assert_eq!(session.resident_entries(), 1);
+        }
+
+        #[test]
+        fn efer_nxe_and_delivered_page_fault_reset_session() {
+            let _guard = jit_test_lock();
+            let mut bus = make_bus();
+            let paging = od_machine::Long64ProbeConfig::new(CR0_WP1, ROOT_A, CR4, EFER).unwrap();
+            let mut session =
+                PagedCodeSession::new(&mut bus, paging, ctx(PrivilegeLevel::Ring0)).unwrap();
+            let context = session.translation_context();
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+
+            // EFER.NXE is a key component; SCE is not; an invalid EFER is refused.
+            assert!(!session.set_efer(EFER | 1).unwrap());
+            assert_eq!(session.resident_entries(), 1);
+            assert!(matches!(
+                session.set_efer(1 << 11),
+                Err(PagedCodeSessionError::ContextRejected(_))
+            ));
+            assert_eq!(session.resident_entries(), 1);
+            assert!(session.set_efer(EFER & !(1 << 11)).unwrap());
+            assert_ne!(session.translation_context().id(), context.id());
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+            assert!(session.set_efer(EFER).unwrap());
+            assert_eq!(session.translation_context(), context);
+
+            // Conservative S4-14h rule: a delivered #PF clears the aliases.
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+            assert_eq!(session.resident_entries(), 1);
+            let resets = session.context_resets();
+            session.note_delivered_page_fault();
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(session.backing_page, None);
+            assert_eq!(session.context_resets(), resets + 1);
+            assert_eq!(session.translation_context(), context);
+        }
     }
 
     #[test]
