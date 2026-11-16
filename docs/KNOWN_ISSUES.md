@@ -4531,9 +4531,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-333 — S7-04: exact helper `XOR R13D,R13D` (`45 31 ED`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-332.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201782`.
-- **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this self-XOR; REX.R and REX.B both extend the ModRM fields to R13D, and firmware stops before the following helper instruction.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact `45 31 ED` is admitted. REX.R and REX.B extend both ModRM fields to R13D; dword self-XOR produces zero and zero-extends R13. Shared logical flags clear CF/OF, set ZF/PF, clear SF, and retain AF's concrete value while marking it undefined.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, retired 9,044 instructions; file offset `0x1782` contains `45 31 ED` and runner reports `Unsupported { opcode: 49 }`; COM1 is empty.
+- **Проверка:** four focused tests cover varied initial R13/high halves, flags/definedness including AF, final-ModRM fetch-fault atomicity, neighboring registers/directions/REX/width/prefix/memory forms, CPL3 and other-profile rejection. All od-isa suites pass (2,322/1,591/126/29/6/1,012/7/15; 0 doc tests); all 67 paged machine quantum tests and scoped check/fmt/diff-check pass. Runner advances after 9,046 retired instructions to ISSUE-334: `41 0F 94 C5` (`SETE R13B`; REX.B extends ModRM r/m=5 to R13B) at RIP `0x201787`, `Unsupported { opcode: 148 }`; COM1 remains empty. Independent review approved with no remaining findings. ISSUE-201 remains the unrelated pair of stale CLD-unsupported expectations in full `od-machine` tests.
+
+### ISSUE-334 — S7-04: exact helper `SETE R13B` (`41 0F 94 C5`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-333.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201787`.
+- **Статус:** открыта.
+- **Суть и последствия:** the base profile does not yet admit this REX.B byte-register SETcc; REX.B extends ModRM r/m=5 from BPL to R13B, and firmware stops before the following helper instruction.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, retired 9,046 instructions; file offset `0x1787` contains `41 0F 94 C5` and runner reports `Unsupported { opcode: 148 }`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.
