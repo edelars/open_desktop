@@ -4037,8 +4037,18 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-275 — S7-04: exact helper `CMP R10D,6` (`41 83 FA 06`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-274.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201612`.
-- **Статус:** открыта.
-- **Суть и последствия:** base `PagedCpl0ProbeV1` does not yet admit the exact dword CMP of R10D against sign-extended imm8 6.
+- **Статус:** реализована в S7-04; независимое ревью одобрило изменение без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact `41 83 FA 06`; REX.B selects R10D, the operation is dword CMP, and imm8 6 is sign-extended to the operand size. It writes no GPR and updates arithmetic flags/definedness through shared CMP semantics.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1612` are `41 83 FA 06`; runner budget 10000.
-- **Проверки исполнения:** firmware retires 8,969 instructions and stops with `Unsupported { opcode: 131 }`; COM1 remains empty.
-- **Следующий шаг:** admit only exact `41 83 FA 06`, preserving all GPRs and validating dword arithmetic flags for ISSUE-275.
+- **Проверки исполнения:** four focused tests cover dword/imm8 arithmetic flags and high qword/word-distinguishing cases, GPR preservation, immediate-fetch fault atomicity, neighboring forms and CPL3; other paged profiles keep it unsupported. Firmware retires 8,970 instructions and advances to `45 0F 44 F3` (`CMOVE R14D,R11D`) at RIP `0x201616`; COM1 remains empty.
+- **Следующий шаг:** admit only exact CMOVE R14D,R11D and validate ZF-gated dword register write for ISSUE-276.
+
+
+### ISSUE-276 — S7-04: exact helper `CMOVE R14D,R11D` (`45 0F 44 F3`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-275.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201616`.
+- **Статус:** открыта.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` does not yet admit the exact ZF-conditioned dword move from R11D to R14D.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1616` are `45 0F 44 F3`; runner budget 10000.
+- **Проверки исполнения:** firmware retires 8,970 instructions and stops with `Unsupported { opcode: 68 }`; COM1 remains empty.
+- **Следующий шаг:** admit only exact CMOVE R14D,R11D and validate taken/not-taken register and flag behavior for ISSUE-276.

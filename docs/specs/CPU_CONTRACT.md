@@ -27573,3 +27573,10 @@ Four focused tests cover flag results/definedness, AF, full GPR preservation, fe
 Base `PagedCpl0ProbeV1` admits only exact `41 0F 94 C6`. REX.B extends ModRM r/m=6 to R14B. SETE reads ZF and writes 1 or 0 only to R14's low byte; upper R14 and all flags/definedness are preserved, whether ZF is defined or undefined. A final ModRM-byte fetch fault is atomic. Neighboring conditions/registers/ModRM/REX/prefix forms, memory destinations, CPL3 and other paged profiles remain unsupported.
 
 Four focused tests cover ZF true/false with defined and undefined ZF, low-byte-only mutation and full-state preservation, final-byte fetch-fault atomicity, neighbors and CPL3/profile isolation. Firmware advances after 8,969 retired instructions to `41 83 FA 06` (`CMP R10D,6`, ISSUE-275) at RIP `0x201612`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `CMP R10D,6` (ISSUE-275)
+
+Base `PagedCpl0ProbeV1` admits only exact `41 83 FA 06`. REX.B selects R10D; CMP uses dword operands and sign-extends imm8 6 to that width. No GPR is written; shared arithmetic semantics update all arithmetic flags and their definedness. An immediate-byte fetch fault is atomic. Other immediates/registers/opcodes, byte/word/qword widths, prefixes, memory operands, CPL3 and other paged profiles remain unsupported.
+
+Four focused tests cover equal/borrow/signed-overflow/sign/parity cases, high qword and word-vs-dword distinction, full GPR preservation, immediate-fetch atomicity, neighbors and CPL3/profile isolation. Firmware advances after 8,970 retired instructions to `45 0F 44 F3` (`CMOVE R14D,R11D`, ISSUE-276) at RIP `0x201616`; COM1 remains empty. Independent review approved with no findings.
