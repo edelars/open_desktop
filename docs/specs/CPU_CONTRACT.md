@@ -27749,3 +27749,7 @@ Four focused profile tests cover result and logical flag values, AF definedness,
 ### Stage 7 paged-profile CMP dword `[RAX+RSI],0`
 
 `PagedCpl0ProbeV1` admits exact bytes `83 3C 30 00`. This is opcode-83 group /7 CMP with a dword memory operand at the 64-bit SIB address RAX + RSI and imm8 zero sign-extended to dword. The implementation performs a tracked dword read and applies shared CMP arithmetic flags and definedness without writing GPRs. A read fault leaves architectural CPU state unchanged; successful reads set paging accessed bits and do not set dirty bits. Other SIB tuples, widths, immediates, prefixes and profiles are not admitted.
+
+### Stage 7 paged-profile JZ rel8 `+0x0d`
+
+`PagedCpl0ProbeV1` admits exact bytes `74 0D`. ZF selects whether RIP becomes next RIP plus signed rel8 `+0x0d` or falls through. Flags and flag-definedness are unchanged. Canonicality is checked only for a taken target; a noncanonical fall-through is deferred to the subsequent fetch. A displacement-fetch fault commits no state. Other displacements/branch encodings and other CPL/profile combinations remain unsupported.

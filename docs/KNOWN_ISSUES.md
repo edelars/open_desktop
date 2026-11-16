@@ -4269,15 +4269,23 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2016a4`.
 - **Статус:** решена; base profile admits only this exact SIB-addressed dword compare.
 - **Результат:** the tracked read fetches a dword from `[RAX+RSI]`; the decoded opcode-83 imm8 `0` is sign-extended as a dword and compared with shared CMP arithmetic flags/definedness. Only RFLAGS and RIP change. The data translation sets accessed bits and does not set dirty bits.
-- **Проверки исполнения:** five focused profile tests cover dword values/flags, register preservation, read and immediate-fetch fault atomicity, neighbors and CPL3/other-profile isolation. Two machine tests cover four-level A/no-D behavior and a non-present data-page read fault with no CPU state commit. Full od-isa suites pass; 65 paged machine tests pass. Scoped cargo check, formatting and diff-check pass; only the existing unused page-walk helper warning remains. Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retires 8,997 instructions and stops at `74 0D` (`JZ rel8 +0x0d`, ISSUE-301), RIP `0x2016a8`, `Unsupported { opcode: 116 }`; COM1 remains empty. Independent review pending.
+- **Проверки исполнения:** five focused profile tests cover dword values/flags, register preservation, read and immediate-fetch fault atomicity, neighbors and CPL3/other-profile isolation. Two machine tests cover four-level A/no-D behavior and a non-present data-page read fault with no CPU state commit. Full od-isa suites pass; 65 paged machine tests pass. Scoped cargo check, formatting and diff-check pass; only the existing unused page-walk helper warning remains. Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retires 8,997 instructions and stops at `74 0D` (`JZ rel8 +0x0d`, ISSUE-301), RIP `0x2016a8`, `Unsupported { opcode: 116 }`; COM1 remains empty. Independent review approved with no findings.
 - **Основание:** runner with the Stage 7 firmware image and budget 10000 retired 8,996 instructions and reported `Unsupported { opcode: 131 }`; file offset `0x16a4` contains `83 3C 30 00`, encoding CMP dword `[RAX+RSI],0`.
 
 ### ISSUE-301 — S7-04: exact helper `JZ rel8 +0x0d` (`74 0D`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-300.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2016a8`.
-- **Статус:** открыта.
-- **Суть и последствия:** base profile does not yet admit this exact conditional branch displacement; firmware stops before later helper operations.
+- **Статус:** решена; base profile admits only this exact JZ displacement.
+- **Результат:** JZ reads ZF and uses signed rel8 `+0x0d` from next RIP only when ZF=1; ZF=0 falls through. Flags and definedness are unchanged, and canonicality is checked only for the taken target.
+- **Проверки исполнения:** five focused tests cover both ZF outcomes/definedness, target and fall-through boundaries, taken-only canonicality, displacement-fetch atomicity, neighbors and CPL3/other-profile isolation. Full od-isa suites pass; all 65 paged machine tests pass. Scoped cargo check, formatting and diff-check pass; only the existing unused page-walk helper warning remains. Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retires 8,998 instructions and stops at `49 83 F8 01` (`CMP R8,1`, ISSUE-302), RIP `0x2016b7`, `Unsupported { opcode: 131 }`; COM1 remains empty. Independent review approved with no findings.
 - **Основание:** runner with the Stage 7 firmware image and budget 10000 retired 8,997 instructions and reported `Unsupported { opcode: 116 }`; file offset `0x16a8` contains `74 0D`.
-- **Следующий шаг:** admit only JZ rel8 +0x0d with the existing ZF, taken-target canonicality and fetch-fault semantics.
+
+### ISSUE-302 — S7-04: exact helper `CMP R8,1` (`49 83 F8 01`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-301.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2016b7`.
+- **Статус:** открыта.
+- **Суть и последствия:** base profile does not yet admit this exact qword register compare; firmware stops before later helper operations.
+- **Основание:** runner with the Stage 7 firmware image and budget 10000 retired 8,998 instructions and reported `Unsupported { opcode: 131 }`; file offset `0x16b7` contains `49 83 F8 01`, encoding CMP R8,1.
+- **Следующий шаг:** admit only the exact qword R8 immediate compare and use shared CMP flags/definedness without modifying GPRs.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.
