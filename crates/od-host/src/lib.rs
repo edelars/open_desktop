@@ -4730,6 +4730,9 @@ pub struct PagedCodeSession<'a> {
     paging: od_machine::Long64ProbeConfig,
     access_context: od_isa::memory::AccessContext,
     backing_page: Option<od_machine::GuestPhysicalAddress>,
+    /// Physical page of the part of a cross-page block that lies on the next
+    /// 4 KiB guest page (S4-16g). `None` for a block inside one page.
+    second_backing_page: Option<od_machine::GuestPhysicalAddress>,
     code_page_offset: Option<usize>,
     code_length: Option<usize>,
     aliases: [Option<u64>; 2],
@@ -4937,6 +4940,7 @@ impl<'a> PagedCodeSession<'a> {
             paging,
             access_context,
             backing_page: None,
+            second_backing_page: None,
             code_page_offset: None,
             code_length: None,
             aliases: [None, None],
@@ -4966,6 +4970,7 @@ impl<'a> PagedCodeSession<'a> {
             cache.clear();
         }
         self.backing_page = None;
+        self.second_backing_page = None;
         self.code_page_offset = None;
         self.code_length = None;
         self.aliases = [None, None];
@@ -5109,7 +5114,11 @@ impl<'a> PagedCodeSession<'a> {
             state.cr4.unwrap_or(self.paging.cr4()),
         )?;
         let mut committed_writes = Vec::new();
-        let snapshot = self.bus.tracked_code_snapshot_with_callback(
+        // S4-16g: the block may continue onto the next 4 KiB page. Each page
+        // is walked separately and carries its own physical base and
+        // generation. A block that fits neither one nor two pages is
+        // `InvalidLength` before any walk.
+        let snapshot = self.bus.tracked_code_snapshot_two_pages_with_callback(
             &self.paging,
             linear_start,
             code_length,
@@ -5118,10 +5127,15 @@ impl<'a> PagedCodeSession<'a> {
         );
         self.reconcile_code_writes(&committed_writes)?;
         let snapshot = snapshot.map_err(PagedCodeSessionError::Snapshot)?;
+        let code_bytes = snapshot.bytes();
+        let first_page = &snapshot.first;
+        let second_page = snapshot.second.as_ref();
+        let second_physical = second_page.map(|page| page.physical_base);
         let code_page_offset = (linear_start & 0xfff) as usize;
         if self
             .backing_page
-            .is_some_and(|physical| physical != snapshot.physical_base)
+            .is_some_and(|physical| physical != first_page.physical_base)
+            || (self.backing_page.is_some() && self.second_backing_page != second_physical)
             || self
                 .code_page_offset
                 .is_some_and(|offset| offset != code_page_offset)
@@ -5145,19 +5159,20 @@ impl<'a> PagedCodeSession<'a> {
         use std::num::NonZeroU64;
         let nz =
             |value: u64| NonZeroU64::new(value).ok_or(PagedCodeSessionError::UnsupportedIdentity);
-        let backing_number = snapshot.physical_base.get() / 0x1000 + 1;
+        let backing_number = first_page.physical_base.get() / 0x1000 + 1;
         let mapping_number = (linear_start & !0xfff) / 0x1000 + 1;
-        let version = od_jit::translation::BackingVersion::new(nz(snapshot.backing_generation)?);
+        let version = od_jit::translation::BackingVersion::new(nz(first_page.backing_generation)?);
         let backing = od_jit::translation::BackingId::new(nz(backing_number)?);
         let mapping = od_jit::translation::MappingId::new(nz(mapping_number)?);
-        let view = od_jit::block::CodeView::new(linear_start, &snapshot.bytes)
+        let view = od_jit::block::CodeView::new(linear_start, &code_bytes)
             .map_err(|_| PagedCodeSessionError::UnsupportedAlias)?;
         let admission = od_jit::block::NativeRegisterV1Admission::from_code(view)
             .map_err(PagedCodeSessionError::Admission)?;
         // Bind the session only after the complete code range has passed
         // NativeRegisterV1 admission. A rejected candidate must not reserve
         // this session's backing, range, or alias slot.
-        self.backing_page = Some(snapshot.physical_base);
+        self.backing_page = Some(first_page.physical_base);
+        self.second_backing_page = second_physical;
         self.code_page_offset = Some(code_page_offset);
         self.code_length = Some(code_length);
         self.aliases[cache_index] = Some(alias_base);
@@ -5176,17 +5191,50 @@ impl<'a> PagedCodeSession<'a> {
             backing_version: version,
             executable: true,
         };
-        let dependencies = [od_jit::translation::CodeDependencySpan {
-            start_rip: view.base_rip(),
-            end_rip: view.code_end(),
-            identity,
-        }];
-        self.caches[cache_index].invalidate(
-            od_jit::dispatch::CodeInvalidation::BackingContentChanged {
-                backing,
-                current_version: version,
-            },
-        );
+        // One dependency span per 4 KiB page the block bytes occupy (S4-16g):
+        // the first covers RIP..page end with the first backing/generation,
+        // the second covers the rest with the second backing/generation and
+        // its own mapping id. A cross-page block therefore depends on both.
+        let mut dependencies = Vec::with_capacity(2);
+        let mut backing_versions = vec![(backing, version)];
+        if let Some(second) = second_page {
+            let boundary = linear_start - (linear_start & 0xfff) + 0x1000;
+            let second_backing =
+                od_jit::translation::BackingId::new(nz(second.physical_base.get() / 0x1000 + 1)?);
+            let second_version =
+                od_jit::translation::BackingVersion::new(nz(second.backing_generation)?);
+            let second_mapping = od_jit::translation::MappingId::new(nz(mapping_number + 1)?);
+            dependencies.push(od_jit::translation::CodeDependencySpan {
+                start_rip: view.base_rip(),
+                end_rip: boundary,
+                identity,
+            });
+            dependencies.push(od_jit::translation::CodeDependencySpan {
+                start_rip: boundary,
+                end_rip: view.code_end(),
+                identity: od_jit::translation::CodeIdentity {
+                    mapping: second_mapping,
+                    backing: second_backing,
+                    backing_version: second_version,
+                    ..identity
+                },
+            });
+            backing_versions.push((second_backing, second_version));
+        } else {
+            dependencies.push(od_jit::translation::CodeDependencySpan {
+                start_rip: view.base_rip(),
+                end_rip: view.code_end(),
+                identity,
+            });
+        }
+        for (backing, current_version) in backing_versions {
+            self.caches[cache_index].invalidate(
+                od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                    backing,
+                    current_version,
+                },
+            );
+        }
         let context = od_jit::translation::ExecutionContextSnapshot::native_register_v1_fixture(
             od_jit::translation::ExecutionContextId::from_u64(self.context_generation)
                 .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
@@ -5282,39 +5330,50 @@ impl<'a> PagedCodeSession<'a> {
         &mut self,
         committed_writes: &[od_machine::GuestPhysicalRange],
     ) -> Result<bool, PagedCodeSessionError> {
-        let Some(code_page) = self.backing_page else {
+        let Some(first_page) = self.backing_page else {
             return Ok(false);
         };
-        let code_page_start = u128::from(code_page.get());
-        let code_page_end = code_page_start + 0x1000;
-        let code_page_written = committed_writes.iter().any(|range| {
-            let write_start = u128::from(range.start().get());
-            let write_end = range.end_exclusive();
-            write_start < code_page_end && code_page_start < write_end
-        });
-        if !code_page_written {
-            return Ok(false);
-        }
-
-        let current_generation = self
-            .bus
-            .code_page_generation(code_page)
-            .map_err(PagedCodeSessionError::Patch)?;
-        let backing = od_jit::translation::BackingId::new(
-            std::num::NonZeroU64::new(code_page.get() / 0x1000 + 1)
-                .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
-        );
-        let current_version = od_jit::translation::BackingVersion::new(
-            std::num::NonZeroU64::new(current_generation)
-                .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
-        );
-        for cache in &mut self.caches {
-            cache.invalidate(od_jit::dispatch::CodeInvalidation::BackingContentChanged {
-                backing,
-                current_version,
+        // S4-16g: a cross-page block depends on both 4 KiB backing pages. A
+        // committed write to either one reconciles that page's generation; a
+        // write to any other page (even inside the same 16 KiB host page) does
+        // not.
+        let mut invalidated = false;
+        for code_page in [Some(first_page), self.second_backing_page]
+            .into_iter()
+            .flatten()
+        {
+            let code_page_start = u128::from(code_page.get());
+            let code_page_end = code_page_start + 0x1000;
+            let code_page_written = committed_writes.iter().any(|range| {
+                let write_start = u128::from(range.start().get());
+                let write_end = range.end_exclusive();
+                write_start < code_page_end && code_page_start < write_end
             });
+            if !code_page_written {
+                continue;
+            }
+
+            let current_generation = self
+                .bus
+                .code_page_generation(code_page)
+                .map_err(PagedCodeSessionError::Patch)?;
+            let backing = od_jit::translation::BackingId::new(
+                std::num::NonZeroU64::new(code_page.get() / 0x1000 + 1)
+                    .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
+            );
+            let current_version = od_jit::translation::BackingVersion::new(
+                std::num::NonZeroU64::new(current_generation)
+                    .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
+            );
+            for cache in &mut self.caches {
+                cache.invalidate(od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                    backing,
+                    current_version,
+                });
+            }
+            invalidated = true;
         }
-        Ok(true)
+        Ok(invalidated)
     }
 
     /// Interpret exactly one admitted paged MOV load/store while native blocks
@@ -116113,6 +116172,621 @@ pub(crate) mod tests {
             0x2027,
             "the failed fetch's committed root A update must remain visible"
         );
+    }
+
+    // ---- S4-16g: code across a 4 KiB page boundary --------------------------------
+
+    const S4_16G_CR0: u64 = 0x8001_0033;
+    const S4_16G_CR3: u64 = 0x1000;
+    const S4_16G_CR4: u64 = 1 << 5;
+    const S4_16G_EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
+    const S4_16G_RAM_BYTES: u64 = 0x9000;
+    /// `MOV RAX,imm64` at page offset 0xffd: `48 b8 11` on the first page and
+    /// `22 33 44 55 66 77 88` on the next.
+    const S4_16G_ALIAS_A: u64 = 0x0040_1ffd;
+    const S4_16G_ALIAS_B: u64 = 0x0060_1ffd;
+    const S4_16G_FIRST_PAGE: u64 = 0x7000;
+    const S4_16G_SECOND_PAGE: u64 = 0x5000;
+    const S4_16G_CODE: [u8; 10] = [0x48, 0xb8, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+    const S4_16G_IMMEDIATE: u64 = 0x8877_6655_4433_2211;
+
+    /// Two linear aliases (PD[2], PD[3]) of the same page table: linear page 1
+    /// maps the first code page 0x7000 and linear page 2 maps the second code
+    /// page 0x5000 (not adjacent), through the supplied leaf entry.
+    fn s4_16g_bus(second_leaf: u64) -> od_machine::MachineBus {
+        use od_machine::{
+            AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
+            MemoryRegionKind, MemoryRegionSpec, RamLimits,
+        };
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), S4_16G_RAM_BYTES).unwrap();
+        let map =
+            MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                .unwrap();
+        let mut bus = MachineBus::new(
+            map,
+            RamLimits::new(S4_16G_RAM_BYTES),
+            vec![],
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3010, 0x4007),
+            (0x3018, 0x4007),
+            (0x4008, S4_16G_FIRST_PAGE | 7),
+            (0x4010, second_leaf),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(S4_16G_FIRST_PAGE + 0xffd),
+            &S4_16G_CODE[..3],
+        )
+        .unwrap();
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(S4_16G_SECOND_PAGE),
+            &S4_16G_CODE[3..],
+        )
+        .unwrap();
+        bus
+    }
+
+    fn s4_16g_paging() -> od_machine::Long64ProbeConfig {
+        od_machine::Long64ProbeConfig::new(S4_16G_CR0, S4_16G_CR3, S4_16G_CR4, S4_16G_EFER).unwrap()
+    }
+
+    fn s4_16g_state(rip: u64) -> od_isa::LongModeState {
+        od_isa::LongModeState {
+            cr3: Some(S4_16G_CR3),
+            rip,
+            ..Default::default()
+        }
+    }
+
+    /// Every RAM byte, to compare complete physical effects of two buses.
+    fn s4_16g_ram(bus: &mut od_machine::MachineBus) -> Vec<u8> {
+        use od_machine::{AccessWidth, GuestPhysicalAddress};
+        let mut bytes = Vec::new();
+        for address in (0..S4_16G_RAM_BYTES).step_by(8) {
+            bytes.extend_from_slice(
+                &bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                    .unwrap()
+                    .to_le_bytes(),
+            );
+        }
+        bytes
+    }
+
+    fn s4_16g_publications(session: &PagedCodeSession<'_>) -> u64 {
+        session
+            .backend
+            .arena
+            .borrow()
+            .slots
+            .iter()
+            .map(|slot| slot.generation)
+            .sum()
+    }
+
+    /// Run the cross-page block at `rip` with a zeroed RAX and one retired
+    /// instruction of budget.
+    fn s4_16g_run(
+        session: &mut PagedCodeSession<'_>,
+        rip: u64,
+        length: usize,
+    ) -> (
+        Result<od_jit::dispatch::FallbackDispatchResult, PagedCodeSessionError>,
+        od_isa::LongModeState,
+    ) {
+        let mut state = s4_16g_state(rip);
+        let result = session.execute_alias(rip, length, &mut state, 1);
+        (result, state)
+    }
+
+    const RAX: usize = od_isa::Register::Rax as usize;
+
+    /// The interpreter oracle for the fetch of one cross-page instruction: the
+    /// paged MOV profile fetches byte by byte through the page walker.
+    fn s4_16g_oracle(
+        bus: &mut od_machine::MachineBus,
+        context: AccessContext,
+    ) -> (
+        od_machine::PagedMovStepReport,
+        od_isa::LongModeState,
+        Vec<od_machine::GuestPhysicalRange>,
+    ) {
+        let mut state = s4_16g_state(S4_16G_ALIAS_A);
+        state.cr0 = Some(S4_16G_CR0);
+        state.cr4 = Some(S4_16G_CR4);
+        state.cr3 = None;
+        let mut writes = Vec::new();
+        let report = od_machine::step_paged_mov(
+            &mut state,
+            bus,
+            S4_16G_CR3,
+            S4_16G_EFER,
+            context,
+            0,
+            |range| writes.push(range),
+        )
+        .unwrap();
+        (report, state, writes)
+    }
+
+    #[test]
+    fn s4_16g_cross_page_block_is_admitted_with_two_backings_and_matches_oracle() {
+        use od_machine::GuestPhysicalAddress;
+
+        // Oracle: the interpreter fetches the same instruction through both
+        // pages (its MOV profile reports `MOV RAX,imm64` as unsupported but
+        // only after the complete fetch), so its page-walk effects are the
+        // reference for the physical memory the native path must leave.
+        let mut oracle_bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        let (oracle, oracle_state, oracle_writes) =
+            s4_16g_oracle(&mut oracle_bus, AccessContext::default());
+        assert!(oracle.page_fault.is_none());
+        assert_eq!(oracle_state.rip, S4_16G_ALIAS_A);
+        let oracle_ram = s4_16g_ram(&mut oracle_bus);
+        // PML4, PDPT, PD, PT[1] for the first page; PT[2] for the second.
+        assert_eq!(oracle_writes.len(), 5);
+
+        // Control: the same instruction wholly inside one page.
+        let mut control_bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        control_bus
+            .patch_physical_ram(
+                GuestPhysicalAddress::new(S4_16G_FIRST_PAGE + 0x100),
+                &S4_16G_CODE,
+            )
+            .unwrap();
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        let _guard = jit_test_lock();
+        let (control_result, control_state) = {
+            let mut control_session =
+                PagedCodeSession::new(&mut control_bus, s4_16g_paging(), AccessContext::default())
+                    .unwrap();
+            s4_16g_run(&mut control_session, 0x0040_1100, 10)
+        };
+        let control_result = control_result.unwrap();
+        assert_eq!(control_state.gpr[RAX], S4_16G_IMMEDIATE);
+
+        let paging = s4_16g_paging();
+        let snapshot = bus
+            .tracked_code_snapshot_two_pages_with_callback(
+                &paging,
+                S4_16G_ALIAS_A,
+                10,
+                AccessContext::default(),
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(snapshot.bytes(), S4_16G_CODE);
+        assert_eq!(snapshot.first.bytes, S4_16G_CODE[..3]);
+        assert_eq!(snapshot.second.as_ref().unwrap().bytes, S4_16G_CODE[3..]);
+        assert_eq!(snapshot.first.physical_base.get(), S4_16G_FIRST_PAGE);
+        assert_eq!(
+            snapshot.second.as_ref().unwrap().physical_base.get(),
+            S4_16G_SECOND_PAGE
+        );
+
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        let result = result.unwrap();
+        assert_eq!(result, control_result);
+        assert_eq!(result.retired_native, 1);
+        assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE);
+        assert_eq!(state.rip, S4_16G_ALIAS_A + 10);
+        assert_eq!(state.cr3, Some(S4_16G_CR3));
+        assert_eq!(session.resident_entries(), 1);
+        assert_eq!(s4_16g_publications(&session), 1);
+        assert_eq!(
+            session.backing_page,
+            Some(GuestPhysicalAddress::new(S4_16G_FIRST_PAGE))
+        );
+        assert_eq!(
+            session.second_backing_page,
+            Some(GuestPhysicalAddress::new(S4_16G_SECOND_PAGE))
+        );
+        assert_eq!(s4_16g_ram(session.bus), oracle_ram);
+
+        // Re-entry through the same alias reuses the entry (no new publication);
+        // the second alias has its own cache slot and mapping ids.
+        let (again, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        again.unwrap();
+        assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE);
+        assert_eq!(s4_16g_publications(&session), 1);
+        let (alias_b, state) = s4_16g_run(&mut session, S4_16G_ALIAS_B, 10);
+        alias_b.unwrap();
+        assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE);
+        assert_eq!(session.resident_entries(), 2);
+        assert_eq!(s4_16g_publications(&session), 2);
+    }
+
+    /// Warm both aliases of the cross-page block.
+    fn s4_16g_warm(session: &mut PagedCodeSession<'_>) {
+        for rip in [S4_16G_ALIAS_A, S4_16G_ALIAS_B] {
+            let (result, state) = s4_16g_run(session, rip, 10);
+            result.unwrap();
+            assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE);
+        }
+        assert_eq!(session.resident_entries(), 2);
+        assert_eq!(s4_16g_publications(session), 2);
+    }
+
+    #[test]
+    fn s4_16g_write_to_first_page_invalidates_the_block() {
+        use od_machine::GuestPhysicalAddress;
+
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        let _guard = jit_test_lock();
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+        s4_16g_warm(&mut session);
+
+        let first = GuestPhysicalAddress::new(S4_16G_FIRST_PAGE);
+        let second = GuestPhysicalAddress::new(S4_16G_SECOND_PAGE);
+        let first_generation = session.bus.code_page_generation(first).unwrap();
+        let second_generation = session.bus.code_page_generation(second).unwrap();
+
+        // Tracked patch of the last byte on the first page (guest 0x401fff)
+        // through the first alias: the immediate's low byte 0x11 becomes 0x99.
+        session.patch_alias_byte(S4_16G_ALIAS_A + 2, 0x99).unwrap();
+        assert!(session.bus.code_page_generation(first).unwrap() > first_generation);
+        assert_eq!(
+            session.bus.code_page_generation(second).unwrap(),
+            second_generation,
+            "the second page was not written"
+        );
+        assert_eq!(session.resident_entries(), 0);
+
+        let patched = S4_16G_IMMEDIATE & !0xff | 0x99;
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_B, 10);
+        result.unwrap();
+        assert_eq!(state.gpr[RAX], patched, "stale bytes were not executed");
+        assert_eq!(s4_16g_publications(&session), 3);
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        result.unwrap();
+        assert_eq!(state.gpr[RAX], patched);
+        assert_eq!(s4_16g_publications(&session), 4);
+
+        // A physical write to the first page through the session API.
+        let write = session
+            .write_physical_ram(
+                GuestPhysicalAddress::new(S4_16G_FIRST_PAGE + 0xfff),
+                &[0x77],
+            )
+            .unwrap();
+        assert!(write.code_invalidated);
+        assert_eq!(session.resident_entries(), 0);
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        result.unwrap();
+        assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE & !0xff | 0x77);
+    }
+
+    #[test]
+    fn s4_16g_write_to_second_page_invalidates_the_block() {
+        use od_machine::GuestPhysicalAddress;
+
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        // Store code `MOV [RBX],RCX` on its own page, linear 0x403100.
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x8100), &[0x48, 0x89, 0x0b])
+            .unwrap();
+        bus.write_physical(
+            GuestPhysicalAddress::new(0x4018),
+            od_machine::AccessWidth::Qword,
+            0x8007,
+            |_| {},
+        )
+        .unwrap();
+        let _guard = jit_test_lock();
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+        s4_16g_warm(&mut session);
+
+        let first = GuestPhysicalAddress::new(S4_16G_FIRST_PAGE);
+        let second = GuestPhysicalAddress::new(S4_16G_SECOND_PAGE);
+        let first_generation = session.bus.code_page_generation(first).unwrap();
+        let second_generation = session.bus.code_page_generation(second).unwrap();
+
+        // Physical loader write into the second page only.
+        let write = session
+            .write_physical_ram(GuestPhysicalAddress::new(S4_16G_SECOND_PAGE + 6), &[0xee])
+            .unwrap();
+        assert!(write.code_invalidated);
+        assert_eq!(
+            session.bus.code_page_generation(first).unwrap(),
+            first_generation,
+            "the first page was not written"
+        );
+        assert!(session.bus.code_page_generation(second).unwrap() > second_generation);
+        assert_eq!(session.resident_entries(), 0);
+        let patched = S4_16G_IMMEDIATE & !(0xff << 56) | 0xee << 56;
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        result.unwrap();
+        assert_eq!(state.gpr[RAX], patched, "stale bytes were not executed");
+        assert_eq!(s4_16g_publications(&session), 3);
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_B, 10);
+        result.unwrap();
+        assert_eq!(state.gpr[RAX], patched);
+        assert_eq!(session.resident_entries(), 2);
+
+        // One interpreted guest qword store through the second page's linear
+        // alias (0x402002 -> physical 0x5002) rewrites immediate bytes 3..7.
+        let replacement = 0x0102_0304_0506_0708u64;
+        let mut store = od_isa::LongModeState {
+            rip: 0x0040_3100,
+            cr0: Some(S4_16G_CR0),
+            cr3: Some(S4_16G_CR3),
+            cr4: Some(S4_16G_CR4),
+            ..Default::default()
+        };
+        store.gpr[od_isa::Register::Rbx as usize] = 0x0040_2002;
+        store.gpr[od_isa::Register::Rcx as usize] = replacement;
+        let stored = session.step_guest_mov(&mut store, 0).unwrap();
+        assert_eq!(stored.step.cpu.instructions_executed, 1);
+        assert!(stored.code_invalidated);
+        assert_eq!(session.resident_entries(), 0);
+        let mut bytes = S4_16G_CODE;
+        bytes[9] = 0xee;
+        bytes[5..10].copy_from_slice(&replacement.to_le_bytes()[..5]);
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        result.unwrap();
+        assert_eq!(
+            state.gpr[RAX],
+            u64::from_le_bytes(bytes[2..10].try_into().unwrap())
+        );
+        assert_eq!(s4_16g_publications(&session), 5);
+    }
+
+    #[test]
+    fn s4_16g_write_to_unrelated_page_keeps_the_block_at_4k_granularity() {
+        use od_machine::GuestPhysicalAddress;
+
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        let _guard = jit_test_lock();
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+        s4_16g_warm(&mut session);
+
+        let first = GuestPhysicalAddress::new(S4_16G_FIRST_PAGE);
+        let second = GuestPhysicalAddress::new(S4_16G_SECOND_PAGE);
+        let first_generation = session.bus.code_page_generation(first).unwrap();
+        let second_generation = session.bus.code_page_generation(second).unwrap();
+
+        // 0x6000 lies inside the same aligned 16 KiB host page
+        // (0x4000..0x8000) as both code pages and between them; 0x8000 is in
+        // the next 16 KiB page. Neither is a dependency of the block.
+        for unrelated in [0x6000u64, 0x4800, 0x8000] {
+            let page = GuestPhysicalAddress::new(unrelated & !0xfff);
+            let generation = session.bus.code_page_generation(page).unwrap();
+            let write = session
+                .write_physical_ram(GuestPhysicalAddress::new(unrelated), &[0x5a])
+                .unwrap();
+            assert!(!write.code_invalidated, "write at {unrelated:#x}");
+            assert!(session.bus.code_page_generation(page).unwrap() > generation);
+            assert_eq!(
+                session.bus.code_page_generation(first).unwrap(),
+                first_generation
+            );
+            assert_eq!(
+                session.bus.code_page_generation(second).unwrap(),
+                second_generation
+            );
+            assert_eq!(session.resident_entries(), 2);
+            let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+            result.unwrap();
+            assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE);
+            assert_eq!(s4_16g_publications(&session), 2, "entry was reused");
+        }
+
+        // Dependencies are tracked per backing page, not per byte range: a
+        // write elsewhere on the first code page (outside the three block
+        // bytes) still invalidates, as in S4-16c.
+        let write = session
+            .write_physical_ram(GuestPhysicalAddress::new(S4_16G_FIRST_PAGE + 0x10), &[1])
+            .unwrap();
+        assert!(write.code_invalidated);
+        assert_eq!(session.resident_entries(), 0);
+    }
+
+    #[test]
+    fn s4_16g_second_page_fetch_fault_is_exact_and_falls_back_to_the_interpreter() {
+        use od_machine::{GuestPhysicalAddress, TrackedAccessError, TrackedCodeSnapshotError};
+
+        let nx = 1u64 << 63;
+        for (label, leaf, pfec) in [
+            ("not present", S4_16G_SECOND_PAGE | 6, 0x14u32),
+            ("no-execute", S4_16G_SECOND_PAGE | 7 | nx, 0x15),
+            ("supervisor-only", S4_16G_SECOND_PAGE | 3, 0x15),
+        ] {
+            let mut oracle_bus = s4_16g_bus(leaf);
+            let (oracle, oracle_state, _) =
+                s4_16g_oracle(&mut oracle_bus, AccessContext::default());
+            let oracle_record = oracle.page_fault.clone().expect(label);
+            assert_eq!(oracle_record.saved_rip(), S4_16G_ALIAS_A, "{label}");
+            assert_eq!(oracle_record.cr2_value(), 0x0040_2000, "{label}");
+            assert_eq!(oracle_record.fault().error_code, Some(pfec), "{label}");
+            assert_eq!(oracle_state.rip, S4_16G_ALIAS_A, "{label}");
+            assert_eq!(oracle_state.gpr[RAX], 0, "{label}");
+            let oracle_ram = s4_16g_ram(&mut oracle_bus);
+
+            let mut bus = s4_16g_bus(leaf);
+            let _guard = jit_test_lock();
+            let mut session =
+                PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+            let before = s4_16g_state(S4_16G_ALIAS_A);
+            let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+            let Err(PagedCodeSessionError::Snapshot(TrackedCodeSnapshotError::Access(
+                TrackedAccessError::PageFault { record, .. },
+            ))) = result
+            else {
+                panic!("{label}: expected a second-page fetch fault, got {result:?}");
+            };
+            assert_eq!(record, oracle_record, "{label}");
+            assert_eq!(state, before, "{label}: RIP/RAX/state unchanged");
+            assert_eq!(session.resident_entries(), 0, "{label}");
+            assert_eq!(s4_16g_publications(&session), 0, "{label}: not compiled");
+            assert_eq!(session.backing_page, None, "{label}: nothing bound");
+            assert_eq!(session.second_backing_page, None, "{label}");
+            // The first-page walk and the faulting second walk commit exactly
+            // the A bits the interpreter's byte-wise fetch commits.
+            assert_eq!(s4_16g_ram(session.bus), oracle_ram, "{label}");
+
+            // S4-15c rule: the JIT refused before executing anything, so the
+            // interpreter runs the step once on the same state and bus and
+            // reports the identical fault and the identical memory.
+            let mut fallback = before.clone();
+            fallback.cr0 = Some(S4_16G_CR0);
+            fallback.cr4 = Some(S4_16G_CR4);
+            fallback.cr3 = None;
+            let report = od_machine::step_paged_mov(
+                &mut fallback,
+                session.bus,
+                S4_16G_CR3,
+                S4_16G_EFER,
+                AccessContext::default(),
+                0,
+                |_| {},
+            )
+            .unwrap();
+            assert_eq!(report, oracle, "{label}");
+            assert_eq!(fallback, oracle_state, "{label}");
+            assert_eq!(s4_16g_ram(session.bus), oracle_ram, "{label}");
+            drop(session);
+        }
+
+        // A block that was resident while the second page was valid is not run
+        // once the second page faults: the fetch walk precedes the lookup.
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        let _guard = jit_test_lock();
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+        s4_16g_warm(&mut session);
+        let publications = s4_16g_publications(&session);
+        session
+            .write_physical_ram(
+                GuestPhysicalAddress::new(0x4010),
+                &(S4_16G_SECOND_PAGE | 6).to_le_bytes(),
+            )
+            .unwrap();
+        for rip in [S4_16G_ALIAS_A, S4_16G_ALIAS_B] {
+            let before = s4_16g_state(rip);
+            let (result, state) = s4_16g_run(&mut session, rip, 10);
+            assert!(
+                matches!(
+                    result,
+                    Err(PagedCodeSessionError::Snapshot(
+                        TrackedCodeSnapshotError::Access(TrackedAccessError::PageFault { .. })
+                    ))
+                ),
+                "{result:?}"
+            );
+            assert_eq!(state, before);
+            assert_eq!(state.gpr[RAX], 0, "the resident block did not run");
+        }
+        assert_eq!(s4_16g_publications(&session), publications);
+    }
+
+    #[test]
+    fn s4_16g_block_that_does_not_fit_two_pages_is_rejected_without_state_change() {
+        use od_machine::TrackedCodeSnapshotError;
+
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        let ram_before = s4_16g_ram(&mut bus);
+        let _guard = jit_test_lock();
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+
+        // Offset 0xffd leaves 3 bytes on the first page and 4096 on the next:
+        // 0x1003 is the largest range; one byte more spans three pages and is
+        // refused before any page walk, as is an empty range.
+        for length in [0x1004usize, 0x2000, 0] {
+            let before = s4_16g_state(S4_16G_ALIAS_A);
+            let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, length);
+            assert!(
+                matches!(
+                    result,
+                    Err(PagedCodeSessionError::Snapshot(
+                        TrackedCodeSnapshotError::InvalidLength
+                    ))
+                ),
+                "length {length:#x}: {result:?}"
+            );
+            assert_eq!(state, before);
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(session.backing_page, None);
+            assert_eq!(session.second_backing_page, None);
+            assert_eq!(s4_16g_publications(&session), 0);
+            assert_eq!(s4_16g_ram(session.bus), ram_before, "no page walk ran");
+        }
+
+        // Two pages that fit but are not register-only past the first
+        // instruction (zero bytes decode as a memory ADD) are rejected by
+        // admission without binding the session.
+        let before = s4_16g_state(S4_16G_ALIAS_A);
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 0x1003);
+        assert!(
+            matches!(result, Err(PagedCodeSessionError::Admission(_))),
+            "{result:?}"
+        );
+        assert_eq!(state, before);
+        assert_eq!(session.backing_page, None);
+        assert_eq!(session.second_backing_page, None);
+        assert_eq!(session.resident_entries(), 0);
+        assert_eq!(s4_16g_publications(&session), 0);
+
+        // The session is intact: the valid block still runs afterwards.
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        result.unwrap();
+        assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE);
+        assert_eq!(s4_16g_publications(&session), 1);
+    }
+
+    #[test]
+    fn s4_16g_second_walk_ad_write_into_first_code_page_keeps_versions_consistent() {
+        use od_machine::{AccessWidth, GuestPhysicalAddress};
+
+        // The page table itself lives in the first code page: PT = 0x7000 with
+        // PT[1] -> 0x7000 and PT[2] -> 0x5000. The first walk's Accessed write
+        // lands before the first-page bytes are read; the second walk's lands
+        // after, so the first generation must be refreshed.
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        for (address, value) in [
+            (0x3010, 0x7007u64),
+            (0x3018, 0x7007),
+            (0x7008, S4_16G_FIRST_PAGE | 7),
+            (0x7010, S4_16G_SECOND_PAGE | 7),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let _guard = jit_test_lock();
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        result.unwrap();
+        assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE);
+        assert_eq!(s4_16g_publications(&session), 1);
+        // No further walk writes remain, so the snapshot generations are stable
+        // and the entry built from the refreshed first generation is reused.
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        result.unwrap();
+        assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE);
+        assert_eq!(s4_16g_publications(&session), 1);
+        assert_eq!(session.resident_entries(), 1);
     }
 
     #[test]

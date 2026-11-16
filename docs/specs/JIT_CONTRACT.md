@@ -5012,3 +5012,35 @@ Host obligations and key boundary (S4-16f):
   session when the rejection happens before any effect is applied (`set_efer`,
   the CPL check, the pre-step configuration of `execute_mov_cr0`); only the
   rejection of an already retired write resets it.
+
+### S4-16g: code across a 4 KiB page boundary
+
+A `PagedCodeSession` block may start in one guest 4 KiB page and continue into
+the next one (at most two pages; a longer range is `InvalidLength` before the walk (length outside `0 < length <= 0x2000 - offset`); the exception is an address overflow in the last page of the address space: there the rejection happens after the walk of the first page, its Accessed bits are committed, the block is not bound and not executed; recorded as a limitation, the interpreter performs the same first-page walk; otherwise the state, the session binding and the page tables are left untouched). The first page is walked as an instruction fetch at the block RIP;
+the second page gets its own fetch walk at the page boundary with the block RIP
+as the instruction RIP, so a fault there carries the same `PageFaultRecord` as
+a byte-wise interpreter fetch (saved RIP = block RIP, CR2 = boundary address).
+Each page keeps its own physical base and generation; the physical pages need
+not be adjacent. The block has two dependency spans, `[RIP, boundary)` and
+`[boundary, end)`, with distinct mapping ids, backings and backing versions.
+A committed physical write to either backing page advances that page's
+generation and invalidates the entry (for a write reported through an empty
+callback, invalidation is reached by the key mismatch at the next lookup, not by
+removing the entry immediately); a write to any other page, including one
+inside the same 16 KiB host page, does not (generations are per 4 KiB page).
+Page granularity is conservative: a write elsewhere on a dependency page still
+invalidates, as in S4-16c. The snapshot is taken before every lookup, so a
+resident block is not executed when a page walk now faults. A fault on either
+page returns no snapshot, binds nothing and executes nothing; the interpreter
+fallback of S4-15c is the caller's step. If the second walk writes Accessed bits
+into the first code page, the first page is re-read so both parts describe
+memory as of the return from the snapshot (this is not byte-wise oracle
+equivalence). Limitation: for a layout where the page tables live in the first
+code page, the JIT may decode the bytes after the Accessed bit of the second
+walk is set, while the interpreter reads them before; such a layout is not
+covered by tests; the variant that matches the oracle exactly is not to re-read
+the first page and to rely on the subsequent version check (recorded as an open
+question). Not covered: active-block mutation (S4-16i), arbitrary
+writers (S4-16h), 2 MiB code pages, multi-instruction blocks, patching the
+second page through `patch_alias_byte` (`UnsupportedAlias`). No performance
+claim is made.
