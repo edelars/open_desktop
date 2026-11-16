@@ -145,6 +145,7 @@ struct SeriesCli {
     execution_observations_rdtsc_rip: Option<u64>,
     execution_observations_rdtsc_stride: Option<u64>,
     execution_observations_rdtsc_entry_rip: Option<u64>,
+    execution_observations_rdtsc_window: Option<od_machine::RdtscSampleWindow>,
     out: PathBuf,
     forwarded: Vec<String>,
 }
@@ -195,6 +196,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
             cli.execution_observations_rdtsc_rip,
             cli.execution_observations_rdtsc_stride,
             cli.execution_observations_rdtsc_entry_rip,
+            cli.execution_observations_rdtsc_window,
         );
     }
     if let Err(error) = parse(&preflight_args) {
@@ -245,6 +247,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
                 cli.execution_observations_rdtsc_rip,
                 cli.execution_observations_rdtsc_stride,
                 cli.execution_observations_rdtsc_entry_rip,
+                cli.execution_observations_rdtsc_window,
             );
         }
         let options = match parse(&run_args) {
@@ -466,6 +469,7 @@ fn append_execution_observations_args(
     selected_rip: Option<u64>,
     stride: Option<u64>,
     entry_rip: Option<u64>,
+    window: Option<od_machine::RdtscSampleWindow>,
 ) {
     args.extend([
         "--execution-observations-out".into(),
@@ -489,6 +493,12 @@ fn append_execution_observations_args(
             format!("0x{rip:x}"),
         ]);
     }
+    if let Some(window) = window {
+        args.extend([
+            "--execution-observations-rdtsc-window".into(),
+            format!("{}:{}", window.first_hit, window.last_hit),
+        ]);
+    }
 }
 
 fn supported_schema_version(version: u32) -> bool {
@@ -506,6 +516,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     let mut execution_observations_rdtsc_rip = None;
     let mut execution_observations_rdtsc_stride = None;
     let mut execution_observations_rdtsc_entry_rip = None;
+    let mut execution_observations_rdtsc_window = None;
     let mut forwarded = Vec::new();
     let mut index = 0;
     while index < args.len() {
@@ -587,6 +598,13 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
                     })?,
                 );
             }
+            "--execution-observations-rdtsc-window" => {
+                if execution_observations_rdtsc_window.is_some() {
+                    return Err("duplicate --execution-observations-rdtsc-window".into());
+                }
+                execution_observations_rdtsc_window =
+                    Some(super::parse_rdtsc_sample_window(value)?);
+            }
             "--test-runs" => {
                 if requested_runs.is_some() {
                     return Err("duplicate --test-runs".into());
@@ -654,6 +672,17 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     {
         return Err("--execution-observations-rdtsc-stride needs --execution-observations and --execution-observations-rdtsc-rip".into());
     }
+    if execution_observations_rdtsc_window.is_some()
+        && (execution_observations_rdtsc_rip.is_none() || !capture_execution_observations)
+    {
+        return Err("--execution-observations-rdtsc-window needs --execution-observations and --execution-observations-rdtsc-rip".into());
+    }
+    if let Some(window) = execution_observations_rdtsc_window {
+        super::validate_rdtsc_sample_window_capacity(
+            window,
+            execution_observations_rdtsc_stride.unwrap_or(1),
+        )?;
+    }
     for key in &expected_s5_marker_keys {
         if !valid_marker_key(key) {
             return Err(format!("invalid --expected-s5-marker key '{key}'"));
@@ -690,6 +719,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
         execution_observations_rdtsc_rip,
         execution_observations_rdtsc_stride,
         execution_observations_rdtsc_entry_rip,
+        execution_observations_rdtsc_window,
         out,
         forwarded,
     })
@@ -1062,7 +1092,7 @@ fn validate_execution_observations_sidecar(
         .map_err(|error| format!("invalid execution-observations sidecar JSON: {error}"))?;
     let schema_version = sidecar_json["schema_version"]
         .as_u64()
-        .filter(|version| matches!(version, 7 | 8))
+        .filter(|version| matches!(version, 7 | 8 | 9))
         .ok_or_else(|| {
             "execution-observations sidecar schema_version is missing, invalid, or unsupported"
                 .to_string()
@@ -1080,7 +1110,7 @@ fn validate_execution_observations_sidecar(
             "execution-observations sidecar summary does not match raw runner metadata".into(),
         );
     }
-    if schema_version == 8 {
+    if schema_version >= 8 {
         let entry_rip_is_canonical = match sidecar.get("entry_rip") {
             Some(Value::Null) => true,
             Some(Value::String(rip)) => canonical_hex64(rip),
@@ -1123,7 +1153,67 @@ fn validate_execution_observations_sidecar(
             );
         }
     }
+    if schema_version == 9 {
+        let metadata_window = parse_sidecar_sample_window(sidecar.get("sample_window"))?;
+        let raw_window = parse_sidecar_sample_window(sidecar_json.get("rdtsc_sample_window"))?;
+        let stride = sidecar["stride"].as_u64().unwrap_or(0);
+        let selected_hits = sidecar["selected_site_hits"].as_u64().unwrap_or(0);
+        let sample_count = sidecar["sample_count"].as_u64().unwrap_or(0);
+        let samples_omitted = sidecar["samples_omitted"].as_u64().unwrap_or(0);
+        let accounted_samples = sample_count
+            .checked_add(samples_omitted)
+            .ok_or_else(|| "execution-observations sample window counts overflow".to_string())?;
+        if metadata_window != raw_window {
+            return Err(
+                "execution-observations sample window does not match raw runner metadata".into(),
+            );
+        }
+        if let Some(window) = raw_window {
+            let candidates = window.last_hit / stride - (window.first_hit - 1) / stride;
+            if !selected_rip_is_canonical_not_null(sidecar.get("selected_rip"))
+                || candidates > od_machine::LINUX_RDTSC_SAMPLE_CAPACITY as u64
+                || accounted_samples > candidates
+                || (selected_hits >= window.last_hit && accounted_samples != candidates)
+            {
+                return Err("execution-observations sample window counts are invalid".into());
+            }
+        }
+    }
     Ok(())
+}
+
+fn selected_rip_is_canonical_not_null(value: Option<&Value>) -> bool {
+    matches!(value, Some(Value::String(rip)) if canonical_hex64(rip))
+}
+
+fn parse_sidecar_sample_window(
+    value: Option<&Value>,
+) -> Result<Option<od_machine::RdtscSampleWindow>, String> {
+    match value {
+        Some(Value::Null) => Ok(None),
+        Some(Value::Object(fields)) if fields.len() == 2 => {
+            let first_hit = fields
+                .get("first_hit")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    "execution-observations sample window first_hit is invalid".to_string()
+                })?;
+            let last_hit = fields
+                .get("last_hit")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    "execution-observations sample window last_hit is invalid".to_string()
+                })?;
+            if first_hit == 0 || last_hit < first_hit {
+                return Err("execution-observations sample window bounds are invalid".into());
+            }
+            Ok(Some(od_machine::RdtscSampleWindow {
+                first_hit,
+                last_hit,
+            }))
+        }
+        _ => Err("execution-observations sample window is missing or invalid".into()),
+    }
 }
 
 fn canonical_hex64(value: &str) -> bool {
@@ -2431,7 +2521,7 @@ mod tests {
             );
         }
 
-        for version in [None, Some(Value::Null), Some(json!("8")), Some(json!(9))] {
+        for version in [None, Some(Value::Null), Some(json!("8")), Some(json!(10))] {
             let mut malformed_sidecar = sidecar_value.clone();
             if let Some(value) = version {
                 malformed_sidecar["schema_version"] = value;
@@ -2447,6 +2537,74 @@ mod tests {
                 "schema_version is missing, invalid, or unsupported",
             );
         }
+
+        let window = json!({"first_hit": 512, "last_hit": 1024});
+        let mut v9_sidecar = sidecar_value.clone();
+        v9_sidecar["schema_version"] = json!(9);
+        v9_sidecar["rdtsc_sample_window"] = window.clone();
+        v9_sidecar["rdtsc_site_samples"] = json!([{}, {}]);
+        let mut v9_metadata = metadata.clone();
+        v9_metadata["sample_window"] = window;
+        v9_metadata["sample_count"] = json!(2);
+        let mut v9_bytes = serde_json::to_vec_pretty(&v9_sidecar).unwrap();
+        v9_bytes.push(b'\n');
+        fs::write(&sidecar_path, &v9_bytes).unwrap();
+        v9_metadata["byte_count"] = json!(v9_bytes.len());
+        v9_metadata["sha256"] = json!(od_testkit::sha256_hex(&v9_bytes));
+        update_metadata(v9_metadata.clone());
+        let loaded = fresh_manifest(&series_path).unwrap();
+        assert!(load_run_manifest(&series_path, &loaded.runs[0]).is_ok());
+
+        for malformed in [
+            None,
+            Some(Value::Null),
+            Some(json!("512:1024")),
+            Some(json!({"first_hit": 0, "last_hit": 1024})),
+            Some(json!({"first_hit": 1024, "last_hit": 512})),
+        ] {
+            let mut bad_metadata = v9_metadata.clone();
+            if let Some(value) = malformed {
+                bad_metadata["sample_window"] = value;
+            } else {
+                bad_metadata
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("sample_window");
+            }
+            assert_rejected(v9_sidecar.clone(), bad_metadata, "sample window");
+        }
+        for malformed in [
+            None,
+            Some(Value::Null),
+            Some(json!("512:1024")),
+            Some(json!({"first_hit": 0, "last_hit": 1024})),
+            Some(json!({"first_hit": 1024, "last_hit": 512})),
+        ] {
+            let mut bad_sidecar = v9_sidecar.clone();
+            if let Some(value) = malformed {
+                bad_sidecar["rdtsc_sample_window"] = value;
+            } else {
+                bad_sidecar
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("rdtsc_sample_window");
+            }
+            assert_rejected(bad_sidecar, v9_metadata.clone(), "sample window");
+        }
+
+        let mut v9_null_sidecar = sidecar_value.clone();
+        v9_null_sidecar["schema_version"] = json!(9);
+        v9_null_sidecar["rdtsc_sample_window"] = Value::Null;
+        let mut v9_null_metadata = metadata.clone();
+        v9_null_metadata["sample_window"] = Value::Null;
+        let mut v9_null_bytes = serde_json::to_vec_pretty(&v9_null_sidecar).unwrap();
+        v9_null_bytes.push(b'\n');
+        fs::write(&sidecar_path, &v9_null_bytes).unwrap();
+        v9_null_metadata["byte_count"] = json!(v9_null_bytes.len());
+        v9_null_metadata["sha256"] = json!(od_testkit::sha256_hex(&v9_null_bytes));
+        update_metadata(v9_null_metadata);
+        let loaded = fresh_manifest(&series_path).unwrap();
+        assert!(load_run_manifest(&series_path, &loaded.runs[0]).is_ok());
 
         let mut legacy_sidecar = sidecar_value.clone();
         legacy_sidecar["schema_version"] = json!(7);
@@ -2804,6 +2962,45 @@ mod tests {
             .extend(["--execution-observations-rdtsc-stride".into(), "512".into()]);
         let parsed = parse_series_args(&selected_rdtsc_stride).unwrap();
         assert_eq!(parsed.execution_observations_rdtsc_stride, Some(512));
+        let mut selected_window = selected_rdtsc.clone();
+        selected_window.extend([
+            "--execution-observations-rdtsc-window".into(),
+            "1150000:1200000".into(),
+        ]);
+        let parsed = parse_series_args(&selected_window).unwrap();
+        assert_eq!(
+            parsed.execution_observations_rdtsc_window,
+            Some(od_machine::RdtscSampleWindow {
+                first_hit: 1_150_000,
+                last_hit: 1_200_000,
+            })
+        );
+        let mut invalid_window = selected_rdtsc.clone();
+        invalid_window.extend([
+            "--execution-observations-rdtsc-window".into(),
+            "0:10".into(),
+        ]);
+        assert!(parse_series_args(&invalid_window).is_err());
+        let mut window_without_selected = execution_observations.clone();
+        window_without_selected.extend([
+            "--execution-observations-rdtsc-window".into(),
+            "1:10".into(),
+        ]);
+        assert!(
+            parse_series_args(&window_without_selected)
+                .unwrap_err()
+                .contains("needs")
+        );
+        let mut oversized_window = selected_rdtsc.clone();
+        oversized_window.extend([
+            "--execution-observations-rdtsc-window".into(),
+            format!("1:{}", od_machine::LINUX_RDTSC_SAMPLE_CAPACITY + 1),
+        ]);
+        assert!(
+            parse_series_args(&oversized_window)
+                .unwrap_err()
+                .contains("sample cap")
+        );
         let mut selected_entry = selected_rdtsc.clone();
         selected_entry.extend([
             "--execution-observations-rdtsc-entry-rip".into(),
@@ -2895,6 +3092,10 @@ mod tests {
             rip,
             stride,
             entry_rip,
+            Some(od_machine::RdtscSampleWindow {
+                first_hit: 1_150_000,
+                last_hit: 1_200_000,
+            }),
         );
         let mut second = vec!["--run".into()];
         append_execution_observations_args(
@@ -2903,10 +3104,17 @@ mod tests {
             rip,
             stride,
             entry_rip,
+            Some(od_machine::RdtscSampleWindow {
+                first_hit: 1_150_000,
+                last_hit: 1_200_000,
+            }),
         );
         assert_ne!(first[2], second[2]);
         assert!(first.windows(2).any(|pair| {
             pair[0] == "--execution-observations-rdtsc-entry-rip" && pair[1] == "0xffffffff8271b31b"
+        }));
+        assert!(first.windows(2).any(|pair| {
+            pair[0] == "--execution-observations-rdtsc-window" && pair[1] == "1150000:1200000"
         }));
         for args in [&first, &second] {
             assert!(

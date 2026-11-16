@@ -190,7 +190,7 @@ pub use execution_observations::{
     DeliveredPageFaultObservation, FaultingPageFaultContext, FaultingPageWalkContext,
     LINUX_PAGE_FAULT_EVENT_CAPACITY, LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
     LINUX_RDTSC_SAMPLE_CAPACITY, LINUX_RDTSC_SITE_CAPACITY, LinuxExecutionObservations,
-    PostIretPageWalkSnapshot, RdtscEntrySample, RdtscSiteCount, RdtscSiteSample,
+    PostIretPageWalkSnapshot, RdtscEntrySample, RdtscSampleWindow, RdtscSiteCount, RdtscSiteSample,
 };
 pub use firmware_board::{
     FIRMWARE_ACPI_FACS_BASE, FIRMWARE_ACPI_FACS_BYTES, FIRMWARE_ACPI_TABLES_BASE,

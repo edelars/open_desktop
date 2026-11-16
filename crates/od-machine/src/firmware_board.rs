@@ -2188,6 +2188,7 @@ impl LoadedFirmwareBoard {
             None,
             1,
             None,
+            None,
         )
     }
 
@@ -2203,6 +2204,7 @@ impl LoadedFirmwareBoard {
         selected_rdtsc_sample_rip: Option<u64>,
         selected_rdtsc_sample_stride: u64,
         selected_rdtsc_entry_sample_rip: Option<u64>,
+        selected_rdtsc_sample_window: Option<crate::RdtscSampleWindow>,
     ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
         let context = AccessContext {
             mode: InstructionMode::Long64,
@@ -2221,6 +2223,7 @@ impl LoadedFirmwareBoard {
                 .with_rdtsc_sample_rip(selected_rdtsc_sample_rip)
                 .with_rdtsc_sample_stride(selected_rdtsc_sample_stride)
                 .with_rdtsc_entry_sample_rip(selected_rdtsc_entry_sample_rip)
+                .with_rdtsc_sample_window(selected_rdtsc_sample_window)
         });
         let mut cpl3_retired = 0u64;
         let mut syscall_journal = crate::linux_direct::SyscallJournal::default();

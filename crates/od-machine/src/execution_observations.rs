@@ -46,6 +46,14 @@ pub struct RdtscEntrySample {
     pub cr3: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RdtscSampleWindow {
+    /// Inclusive, 1-based selected-site hit ordinal.
+    pub first_hit: u64,
+    /// Inclusive, 1-based selected-site hit ordinal.
+    pub last_hit: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultingPageFaultContext {
     /// Guest CR3 at the faulting instruction boundary.
@@ -117,6 +125,7 @@ pub struct LinuxExecutionObservations {
     pub rdtsc_cpl0_sites: Vec<RdtscSiteCount>,
     pub rdtsc_sample_rip: Option<u64>,
     pub rdtsc_sample_stride: u64,
+    pub rdtsc_sample_window: Option<RdtscSampleWindow>,
     pub rdtsc_sample_site_hits: u64,
     pub rdtsc_site_samples: Vec<RdtscSiteSample>,
     pub rdtsc_site_samples_omitted: u64,
@@ -141,6 +150,7 @@ pub struct LinuxExecutionObservations {
 pub(crate) struct LinuxExecutionObservationCollector {
     rdtsc_sample_rip: Option<u64>,
     rdtsc_sample_stride: u64,
+    rdtsc_sample_window: Option<RdtscSampleWindow>,
     rdtsc_sample_site_hits: u64,
     rdtsc_site_samples: Vec<RdtscSiteSample>,
     rdtsc_site_samples_omitted: u64,
@@ -179,6 +189,11 @@ impl LinuxExecutionObservationCollector {
         self
     }
 
+    pub(crate) fn with_rdtsc_sample_window(mut self, window: Option<RdtscSampleWindow>) -> Self {
+        self.rdtsc_sample_window = window;
+        self
+    }
+
     pub(crate) fn with_rdtsc_entry_sample_rip(mut self, rip: Option<u64>) -> Self {
         self.rdtsc_entry_sample_rip = rip;
         self
@@ -214,6 +229,12 @@ impl LinuxExecutionObservationCollector {
         };
         self.rdtsc_sample_site_hits = self.rdtsc_sample_site_hits.saturating_add(1);
         let hit_ordinal = self.rdtsc_sample_site_hits;
+        if self
+            .rdtsc_sample_window
+            .is_some_and(|window| !(window.first_hit..=window.last_hit).contains(&hit_ordinal))
+        {
+            return;
+        }
         if hit_ordinal % self.rdtsc_sample_stride.max(1) != 0 {
             return;
         }
@@ -339,6 +360,7 @@ impl LinuxExecutionObservationCollector {
                 .collect(),
             rdtsc_sample_rip: self.rdtsc_sample_rip,
             rdtsc_sample_stride: self.rdtsc_sample_stride.max(1),
+            rdtsc_sample_window: self.rdtsc_sample_window,
             rdtsc_sample_site_hits: self.rdtsc_sample_site_hits,
             rdtsc_site_samples: self.rdtsc_site_samples,
             rdtsc_site_samples_omitted: self.rdtsc_site_samples_omitted,
@@ -674,6 +696,63 @@ mod tests {
             vec![3, 6]
         );
         assert_eq!(observations.rdtsc_site_samples_omitted, 0);
+    }
+
+    #[test]
+    fn selected_rdtsc_window_keeps_global_stride_phase_and_total_hits() {
+        use od_isa::LongModeState;
+        const RIP: u64 = 0xffff_ffff_8271_b34d;
+        let state = LongModeState::default();
+        let window = RdtscSampleWindow {
+            first_hit: 2,
+            last_hit: 8,
+        };
+        let mut collector = LinuxExecutionObservationCollector::default()
+            .with_rdtsc_sample_rip(Some(RIP))
+            .with_rdtsc_sample_stride(3)
+            .with_rdtsc_sample_window(Some(window));
+        for _ in 0..10 {
+            collector.record_rdtsc_site_sample(Some(RIP), &state);
+        }
+        let observations = collector.finish();
+        assert_eq!(observations.rdtsc_sample_window, Some(window));
+        assert_eq!(observations.rdtsc_sample_site_hits, 10);
+        assert_eq!(
+            observations
+                .rdtsc_site_samples
+                .iter()
+                .map(|sample| sample.hit_ordinal)
+                .collect::<Vec<_>>(),
+            vec![3, 6]
+        );
+        assert_eq!(observations.rdtsc_site_samples_omitted, 0);
+    }
+
+    #[test]
+    fn window_beyond_execution_prefix_keeps_entry_stream_and_has_no_omissions() {
+        use od_isa::LongModeState;
+        const POLL_RIP: u64 = 0xffff_ffff_8271_b34d;
+        const ENTRY_RIP: u64 = 0xffff_ffff_8271_b31b;
+        let state = LongModeState::default();
+        let window = RdtscSampleWindow {
+            first_hit: 20,
+            last_hit: 25,
+        };
+        let mut collector = LinuxExecutionObservationCollector::default()
+            .with_rdtsc_sample_rip(Some(POLL_RIP))
+            .with_rdtsc_sample_window(Some(window))
+            .with_rdtsc_entry_sample_rip(Some(ENTRY_RIP));
+        for _ in 0..10 {
+            collector.record_rdtsc_site_sample(Some(ENTRY_RIP), &state);
+            collector.record_rdtsc_site_sample(Some(POLL_RIP), &state);
+        }
+        let observations = collector.finish();
+        assert_eq!(observations.rdtsc_sample_site_hits, 10);
+        assert_eq!(observations.rdtsc_site_samples.len(), 0);
+        assert_eq!(observations.rdtsc_site_samples_omitted, 0);
+        assert_eq!(observations.rdtsc_entry_sample_hits, 10);
+        assert_eq!(observations.rdtsc_entry_samples.len(), 10);
+        assert_eq!(observations.rdtsc_entry_samples_omitted, 0);
     }
 
     #[test]

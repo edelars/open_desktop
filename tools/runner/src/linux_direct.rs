@@ -88,7 +88,7 @@ pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>]]]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>] [--execution-observations-rdtsc-window <start:end>]]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -146,6 +146,8 @@ struct Options {
     execution_observations_rdtsc_entry_rip: Option<u64>,
     /// Capture every Nth hit at the selected CPL0 RDTSC RIP.
     execution_observations_rdtsc_stride: Option<u64>,
+    /// Inclusive 1-based selected-site hit range for focused poll samples.
+    execution_observations_rdtsc_window: Option<od_machine::RdtscSampleWindow>,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -609,6 +611,7 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                         options.execution_observations_rdtsc_rip,
                         options.execution_observations_rdtsc_stride.unwrap_or(1),
                         options.execution_observations_rdtsc_entry_rip,
+                        options.execution_observations_rdtsc_window,
                     )
                 } else if options.set_cpl0 {
                     run_linux_direct_board_set_observed(
@@ -1222,6 +1225,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut execution_observations_rdtsc_rip = None;
     let mut execution_observations_rdtsc_entry_rip = None;
     let mut execution_observations_rdtsc_stride = None;
+    let mut execution_observations_rdtsc_window = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1360,6 +1364,17 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 index += 2;
                 continue;
             }
+            "--execution-observations-rdtsc-window" => {
+                let parsed = parse_rdtsc_sample_window(value)?;
+                if execution_observations_rdtsc_window
+                    .replace(parsed)
+                    .is_some()
+                {
+                    return Err(format!("duplicate option {name}; usage: {USAGE}"));
+                }
+                index += 2;
+                continue;
+            }
             other => {
                 return Err(format!("unexpected option {other}; usage: {USAGE}"));
             }
@@ -1478,6 +1493,19 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--execution-observations-rdtsc-stride needs --execution-observations-out and --execution-observations-rdtsc-rip; usage: {USAGE}"
         ));
     }
+    if execution_observations_rdtsc_window.is_some()
+        && (execution_observations_out.is_none() || execution_observations_rdtsc_rip.is_none())
+    {
+        return Err(format!(
+            "--execution-observations-rdtsc-window needs --execution-observations-out and --execution-observations-rdtsc-rip; usage: {USAGE}"
+        ));
+    }
+    if let Some(window) = execution_observations_rdtsc_window {
+        validate_rdtsc_sample_window_capacity(
+            window,
+            execution_observations_rdtsc_stride.unwrap_or(1),
+        )?;
+    }
     // The board loop accepts both observers, but the public execution-observation runs of
     // od-machine do not take a checkpoint table and the pair is untested (ISSUE-108); refuse it
     // explicitly rather than drop one of the two.
@@ -1548,7 +1576,52 @@ fn parse(args: &[String]) -> Result<Options, String> {
         execution_observations_rdtsc_rip,
         execution_observations_rdtsc_entry_rip,
         execution_observations_rdtsc_stride,
+        execution_observations_rdtsc_window,
     })
+}
+
+pub(super) fn parse_rdtsc_sample_window(
+    value: &str,
+) -> Result<od_machine::RdtscSampleWindow, String> {
+    let (first, last) = value.split_once(':').ok_or_else(|| {
+        format!("invalid --execution-observations-rdtsc-window '{value}': expected START:END")
+    })?;
+    if last.contains(':') {
+        return Err(format!(
+            "invalid --execution-observations-rdtsc-window '{value}': expected START:END"
+        ));
+    }
+    let parse = |part: &str| part.parse::<u64>().ok().filter(|_| !part.starts_with('+'));
+    let first_hit = parse(first).ok_or_else(|| {
+        format!("invalid --execution-observations-rdtsc-window '{value}': START must be positive")
+    })?;
+    let last_hit = parse(last).ok_or_else(|| {
+        format!("invalid --execution-observations-rdtsc-window '{value}': END must be positive")
+    })?;
+    if first_hit == 0 || last_hit < first_hit {
+        return Err(format!(
+            "invalid --execution-observations-rdtsc-window '{value}': require 1 <= START <= END"
+        ));
+    }
+    Ok(od_machine::RdtscSampleWindow {
+        first_hit,
+        last_hit,
+    })
+}
+
+pub(super) fn validate_rdtsc_sample_window_capacity(
+    window: od_machine::RdtscSampleWindow,
+    stride: u64,
+) -> Result<(), String> {
+    let stride = stride.max(1);
+    let candidates = window.last_hit / stride - (window.first_hit - 1) / stride;
+    if candidates > od_machine::LINUX_RDTSC_SAMPLE_CAPACITY as u64 {
+        return Err(format!(
+            "--execution-observations-rdtsc-window selects {candidates} samples at stride {stride}, exceeding the {} sample cap",
+            od_machine::LINUX_RDTSC_SAMPLE_CAPACITY
+        ));
+    }
+    Ok(())
 }
 
 fn match_existing_file_identity(first: &str, second: &str) -> Result<bool, String> {
@@ -2073,8 +2146,8 @@ fn write_execution_observations_sidecar(
         })
     });
     let value = json!({
-        "schema_version": 8,
-        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, and an optional bounded every-hit entry-RDTSC stream",
+        "schema_version": 9,
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, an optional bounded every-hit entry-RDTSC stream, and an optional inclusive hit-ordinal window for selected-site samples",
         "limits": {
             "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
             "rdtsc_site_samples": od_machine::LINUX_RDTSC_SAMPLE_CAPACITY,
@@ -2089,6 +2162,10 @@ fn write_execution_observations_sidecar(
         "rdtsc_cpl0_site_overflow_reads": observations.rdtsc_cpl0_site_overflow_reads,
         "rdtsc_sample_rip": observations.rdtsc_sample_rip.map(hex64),
         "rdtsc_sample_stride": observations.rdtsc_sample_stride,
+        "rdtsc_sample_window": observations.rdtsc_sample_window.map(|window| json!({
+            "first_hit": window.first_hit,
+            "last_hit": window.last_hit,
+        })),
         "rdtsc_sample_site_hits": observations.rdtsc_sample_site_hits,
         "rdtsc_site_samples": poll_samples,
         "rdtsc_site_samples_omitted": observations.rdtsc_site_samples_omitted,
@@ -2138,6 +2215,10 @@ fn execution_observations_sidecar_metadata(
         "write_error": null,
         "selected_rip": observations.rdtsc_sample_rip.map(hex64),
         "stride": observations.rdtsc_sample_stride,
+        "sample_window": observations.rdtsc_sample_window.map(|window| json!({
+            "first_hit": window.first_hit,
+            "last_hit": window.last_hit,
+        })),
         "selected_site_hits": observations.rdtsc_sample_site_hits,
         "sample_count": observations.rdtsc_site_samples.len(),
         "samples_omitted": observations.rdtsc_site_samples_omitted,
@@ -2302,6 +2383,7 @@ mod tests {
                 execution_observations_rdtsc_rip: None,
                 execution_observations_rdtsc_entry_rip: None,
                 execution_observations_rdtsc_stride: None,
+                execution_observations_rdtsc_window: None,
             };
             Self { dir, options }
         }
@@ -3986,6 +4068,40 @@ mod tests {
             selected_entry.execution_observations_rdtsc_entry_rip,
             Some(0xffff_ffff_8271_b31b)
         );
+        let selected_window = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-rdtsc-rip",
+                    "0xffffffff8271b34d",
+                    "--execution-observations-rdtsc-window",
+                    "1150000:1200000",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(
+            selected_window.execution_observations_rdtsc_window,
+            Some(od_machine::RdtscSampleWindow {
+                first_hit: 1_150_000,
+                last_hit: 1_200_000,
+            })
+        );
+        assert!(parse_rdtsc_sample_window("0:10").is_err());
+        assert!(parse_rdtsc_sample_window("10:9").is_err());
+        assert!(parse_rdtsc_sample_window("10").is_err());
+        assert!(parse_rdtsc_sample_window("10:11:12").is_err());
+        assert!(parse_rdtsc_sample_window("1:+10").is_err());
+        assert!(parse_rdtsc_sample_window("1:18446744073709551616").is_err());
+        let too_many = od_machine::RdtscSampleWindow {
+            first_hit: 1,
+            last_hit: od_machine::LINUX_RDTSC_SAMPLE_CAPACITY as u64 + 1,
+        };
+        assert!(validate_rdtsc_sample_window_capacity(too_many, 1).is_err());
+        assert!(validate_rdtsc_sample_window_capacity(too_many, 2).is_ok());
         let mut entry_without_selected = run.to_vec();
         entry_without_selected.extend([
             "--execution-observations-out",
@@ -4709,6 +4825,10 @@ mod tests {
             }],
             rdtsc_sample_rip: Some(0xffff_ffff_8271_b34d),
             rdtsc_sample_stride: 512,
+            rdtsc_sample_window: Some(od_machine::RdtscSampleWindow {
+                first_hit: 1024,
+                last_hit: 1536,
+            }),
             rdtsc_sample_site_hits: 19_000_000,
             rdtsc_site_samples: vec![od_machine::RdtscSiteSample {
                 rip: 0xffff_ffff_8271_b34d,
@@ -4721,7 +4841,7 @@ mod tests {
                 rsp: 0x2000,
                 cr3: Some(0x4000),
             }],
-            rdtsc_site_samples_omitted: 7,
+            rdtsc_site_samples_omitted: 1,
             rdtsc_entry_sample_rip: Some(0xffff_ffff_8271_b31b),
             rdtsc_entry_sample_hits: 12,
             rdtsc_entry_samples: vec![od_machine::RdtscEntrySample {
@@ -4810,9 +4930,11 @@ mod tests {
         assert_eq!(metadata["stride"], 512);
         assert_eq!(metadata["selected_site_hits"], 19_000_000);
         assert_eq!(metadata["sample_count"], 1);
-        assert_eq!(metadata["samples_omitted"], 7);
+        assert_eq!(metadata["samples_omitted"], 1);
+        assert_eq!(metadata["sample_window"]["first_hit"], 1024);
+        assert_eq!(metadata["sample_window"]["last_hit"], 1536);
         let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema_version"], 8);
+        assert_eq!(value["schema_version"], 9);
         assert_eq!(value["post_iret_selected_ordinal"], 3);
         assert_eq!(value["post_iret_page_walk_status"], "captured");
         assert_eq!(
@@ -4851,6 +4973,8 @@ mod tests {
         );
         assert_eq!(value["rdtsc_sample_rip"], "0xffffffff8271b34d");
         assert_eq!(value["rdtsc_sample_stride"], 512);
+        assert_eq!(value["rdtsc_sample_window"]["first_hit"], 1024);
+        assert_eq!(value["rdtsc_sample_window"]["last_hit"], 1536);
         assert_eq!(value["rdtsc_sample_site_hits"], 19_000_000);
         assert_eq!(value["rdtsc_site_samples"][0]["hit_ordinal"], 1024);
         assert_eq!(value["rdtsc_site_samples"][0]["requested_cycles"], "0x1234");
@@ -4858,7 +4982,7 @@ mod tests {
         assert_eq!(value["rdtsc_site_samples"][0]["observed_tsc"], "0x1235");
         assert_eq!(value["rdtsc_site_samples"][0]["elapsed_cycles"], "0x235");
         assert_eq!(value["rdtsc_site_samples"][0]["cr3"], "0x4000");
-        assert_eq!(value["rdtsc_site_samples_omitted"], 7);
+        assert_eq!(value["rdtsc_site_samples_omitted"], 1);
         assert_eq!(value["rdtsc_entry_sample_rip"], "0xffffffff8271b31b");
         assert_eq!(value["rdtsc_entry_sample_hits"], 12);
         assert_eq!(value["rdtsc_entry_samples"][0]["hit_ordinal"], 12);
@@ -5475,6 +5599,7 @@ mod tests {
             execution_observations_rdtsc_rip: None,
             execution_observations_rdtsc_entry_rip: None,
             execution_observations_rdtsc_stride: None,
+            execution_observations_rdtsc_window: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -5527,6 +5652,7 @@ mod tests {
             execution_observations_rdtsc_rip: None,
             execution_observations_rdtsc_entry_rip: None,
             execution_observations_rdtsc_stride: None,
+            execution_observations_rdtsc_window: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -5583,6 +5709,7 @@ mod tests {
             execution_observations_rdtsc_rip: None,
             execution_observations_rdtsc_entry_rip: None,
             execution_observations_rdtsc_stride: None,
+            execution_observations_rdtsc_window: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -5660,6 +5787,7 @@ mod tests {
             execution_observations_rdtsc_rip: None,
             execution_observations_rdtsc_entry_rip: None,
             execution_observations_rdtsc_stride: None,
+            execution_observations_rdtsc_window: None,
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");
