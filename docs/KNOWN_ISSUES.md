@@ -1025,22 +1025,31 @@
 - **Проверка:** four focused tests cover equal/less/greater/overflowing dword operands, 32-bit operand selection vs word-sized and qword-high-bit mistakes, full-GPR retention, arithmetic flags/definedness, final-immediate fetch-fault atomicity, adjacent immediates/groups/destinations/prefixes, CPL3 and other-profile isolation. Runner retired 8897 and stopped at `74 D0` (`JZ rel8 -0x30`, ISSUE-216), RIP `0x200f41`, `Unsupported { opcode: 116 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
 - **Следующий шаг:** independently review this exact dword CMP admission and continue S7-04 at ISSUE-216.
 
-### ISSUE-216 — S7-04: Rust helper `JZ rel8 -0x30` (`74 D0`) remains outside paged CPU profile
+### ISSUE-216 — S7-04: Rust helper `JZ rel8 -0x30` (`74 D0`) admitted narrowly
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `CMP R12D,7`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200f41`.
-- **Статус:** решена узко для exact `74 D0` в base `PagedCpl0ProbeV1`; независимо проверена и одобрена, ожидает коммита. Other conditions, displacements, prefixes and profiles remain unsupported.
+- **Статус:** решена узко для exact `74 D0` в base `PagedCpl0ProbeV1`; независимо проверена и одобрена, коммит `edc52c9`. Other conditions, displacements, prefixes and profiles remain unsupported.
 - **Суть и результат:** exact no-prefix short JZ reads only ZF; taken target is `next_rip-0x30`, not-taken target is the two-byte fall-through. RFLAGS and definedness remain unchanged, and canonicality is checked only for a taken target.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue216.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf41` are `74 D0`; runner budget 10000.
 - **Проверка:** existing JZ rel8 tests also exercise -0x30 with both ZF values and defined/undefined input metadata, exact taken/fall-through targets, negative taken-only canonicality, rel8 displacement-fetch-fault atomicity, adjacent branch/displacement/prefix forms, CPL3 and other-profile isolation. Runner retired 8898 and stopped at `41 83 F8 30` (`CMP R8D,0x30`, ISSUE-217), RIP `0x200f13`, `Unsupported { opcode: 131 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
-- **Следующий шаг:** commit the independently approved narrow admission and continue S7-04 at ISSUE-217.
+- **Следующий шаг:** continue S7-04 at ISSUE-217.
 
-### ISSUE-217 — S7-04: Rust helper `CMP R8D,0x30` (`41 83 F8 30`) remains outside paged CPU profile
+### ISSUE-217 — S7-04: Rust helper `CMP R8D,0x30` (`41 83 F8 30`) admitted narrowly
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `JZ rel8 -0x30`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200f13`.
+- **Статус:** решена узко для exact `41 83 F8 30` в base `PagedCpl0ProbeV1`; независимо проверена и одобрена, ожидает коммита. Other registers, immediates, widths, prefixes and profiles remain unsupported.
+- **Суть и результат:** exact REX `41`, opcode `83` group `/7`, ModRM `F8`, imm8 `30` selects dword CMP R8D,0x30. Shared arithmetic semantics update CF/PF/AF/ZF/SF/OF and mark them defined; all GPRs remain unchanged. Only low 32 bits of R8 participate.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue217.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf13` are `41 83 F8 30`; runner budget 10000.
+- **Проверка:** four focused tests cover >16-bit dword selection vs word comparison, ignored upper qword bits, full GPR retention, flags/definedness, final-immediate fetch-fault atomicity, immediate/group/register/width/prefix neighbors, CPL3 and other-profile isolation. Runner retired 8900 and stopped at `48 89 54 24 30` (`MOV [RSP+0x30],RDX`, ISSUE-218), RIP `0x200f19`, `Unsupported { opcode: 137 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
+- **Следующий шаг:** commit the independently approved narrow admission and continue S7-04 at ISSUE-218.
+
+### ISSUE-218 — S7-04: Rust helper `MOV qword ptr [RSP+0x30],RDX` (`48 89 54 24 30`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact `CMP R8D,0x30`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200f19`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8898 instructions and stopped at `41 83 F8 30`, `Unsupported { opcode: 131 }`, `RIP=0x200f13`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue216.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf13` are `41 83 F8 30`; runner budget 10000.
-- **Следующий шаг:** inspect exact R8D CMP width and immediate semantics and profile boundaries before considering narrow admission.
+- **Суть и последствия:** runner retired 8900 instructions and stopped at `48 89 54 24 30`, `Unsupported { opcode: 137 }`, `RIP=0x200f19`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue217.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf19` are `48 89 54 24 30`; runner budget 10000.
+- **Следующий шаг:** inspect exact stack-relative qword store behavior and profile boundaries before considering narrow admission.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.

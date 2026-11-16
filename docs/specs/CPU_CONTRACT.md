@@ -27177,3 +27177,9 @@ Four focused tests cover equality, borrow, greater-than and signed overflow, val
 Base `PagedCpl0ProbeV1` admits only exact no-prefix bytes `74 D0`: short JZ with signed displacement -0x30. The branch reads only ZF, preserves RFLAGS and `rflags_defined`, selects `next_rip-0x30` when taken or the two-byte fall-through otherwise. Only a taken target is checked for canonicality; a not-taken fall-through is deferred to the next fetch. Other conditions, displacements, prefixes, near forms, CPL3 and other profiles remain unsupported.
 
 The existing JZ rel8 profile tests now also cover -0x30 with both ZF values and defined/undefined input metadata, exact taken/fall-through destinations, negative-target canonicality only when taken, rel8 displacement-fetch-fault atomicity, neighboring branches/displacements/prefixes and CPL3 isolation. The other-profile isolation test confirms rejection. Firmware now advances to ISSUE-217: `41 83 F8 30` (`CMP R8D,0x30`) at RIP `0x200f13`.
+
+### S7-04: exact Rust-helper `CMP R8D,0x30` (ISSUE-217)
+
+Base `PagedCpl0ProbeV1` admits only exact bytes `41 83 F8 30`: REX `41`, opcode `83` group `/7`, ModRM `F8`, and imm8 `30`. The selected operand size is dword; shared arithmetic semantics compare low R8D with 0x30, update CF/PF/AF/ZF/SF/OF, and mark those flags defined. CMP writes no GPR. Values above 16 bits distinguish this dword form from a word compare; upper 32 bits of R8 do not participate. Other immediates, groups, destinations, widths, prefixes, CPL3 and other profiles remain unsupported.
+
+Four focused tests cover equality, less-than, greater-than, signed overflow, values above 16 bits, ignored upper qword bits, full GPR retention, arithmetic flags/definedness, final-immediate fetch-fault atomicity, neighboring immediate/group/register/width/prefix forms, and CPL3/other-profile isolation. Firmware now advances to ISSUE-218: `48 89 54 24 30` (`MOV qword ptr [RSP+0x30],RDX`) at RIP `0x200f19`.
