@@ -21782,7 +21782,8 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         // `8B 7E 14`/`8B 7E 38` (MOV EDI,dword ptr [RSI+0x14/+0x38]), exact
         // `44 8B 7E 30` (MOV R15D,dword ptr [RSI+0x30]) and the existing
         // `44 8B 76 34` (MOV R14D,dword ptr [RSI+0x34]), and exact
-        // `44 8B 6E 3C` (MOV R13D,dword ptr [RSI+0x3c]). Reuse the tracked
+        // `44 8B 6E 3C` (MOV R13D,dword ptr [RSI+0x3c]) and `44 8B 66 40`
+        // (MOV R12D,dword ptr [RSI+0x40]). Reuse the tracked
         // faulting read and 32-bit write; other load forms remain unsupported.
         Operation::Extend {
             dst: destination,
@@ -21928,7 +21929,10 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                             && source.displacement == 0x30)
                         || (destination
                             == RegisterView::low(Register::R13, OperandSize::Dword)
-                            && source.displacement == 0x3c))
+                            && source.displacement == 0x3c)
+                        || (destination
+                            == RegisterView::low(Register::R12, OperandSize::Dword)
+                            && source.displacement == 0x40))
                     && instruction.length == 4))
             && source.base == AddressBase::Register(Register::Rsi)
             && source.index.is_none()
