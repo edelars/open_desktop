@@ -865,3 +865,10 @@ With exact `40 20 EE` admitted, the Stage 7 firmware runner retires 9,039 instru
 ### Stage 7 runner frontier after ISSUE-330
 
 With exact `0F 85 AE 00 00 00` admitted, the Stage 7 firmware runner retires 9,040 instructions and stops at RIP `0x201771`, bytes `41 8B 6C 04 E8` (`MOV EBP,dword ptr [R12+RAX-0x18]`, ISSUE-331), `Unsupported { opcode: 139 }`. COM1 remains empty.
+
+
+### Stage 7 runner frontier after ISSUE-331
+
+With exact `41 8B 6C 04 E8` admitted, the runner retires 9,041 instructions and stops at RIP `0x201776`, bytes `31 F6` (`XOR ESI,ESI`, ISSUE-332), `Unsupported { opcode: 49 }`. Runner image `/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1 output remains empty.
+
+The admitted load uses a 64-bit SIB effective address `R12 + RAX - 0x18`, with signed disp8 and a tracked dword read. It writes EBP with the loaded low dword, thereby zero-extending RBP; it preserves flags. Read or fetch faults do not partially update CPU state. The exact form remains limited to the base `PagedCpl0ProbeV1` profile.

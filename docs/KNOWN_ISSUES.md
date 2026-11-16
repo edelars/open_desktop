@@ -4515,9 +4515,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-331 — S7-04: exact helper `MOV EBP,dword ptr [R12+RAX-0x18]` (`41 8B 6C 04 E8`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-330.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201771`.
-- **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact SIB dword load; firmware stops before the following helper instruction.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `41 8B 6C 04 E8` are admitted. REX.B selects R12 as SIB base; RAX is the scale-1 index; disp8 `0xe8` sign-extends to -0x18; the dword load writes EBP and zero-extends RBP. The tracked read commits EBP/RIP only after success and leaves flags unchanged.
 - **Основание:** runner image `/private/tmp/od-fw-s7-04-issue256.bin`, budget 10000, retired 9,040 instructions; file offset `0x1771` contains `41 8B 6C 04 E8` and reports `Unsupported { opcode: 139 }`; COM1 is empty.
+- **Проверка:** six focused profile tests cover normal and wrapped effective addresses, dword data and RBP zero-extension, full state/flags, tracked-read fault atomicity, noncanonical-address #GP before read, final-byte instruction-fetch fault, neighboring encodings, CPL3 and other-profile rejection. Two `paged_probe_quantum` tests verify four-level tracked read/A bits with no D bit and a precise data-page #PF without state commit. Runner advances after 9,041 retired instructions to ISSUE-332: `31 F6` (`XOR ESI,ESI`) at RIP `0x201776`, `Unsupported { opcode: 49 }`; COM1 remains empty. Full validation and independent review are recorded in the Stage 7 report and CPU contract.
+
+### ISSUE-332 — S7-04: exact helper `XOR ESI,ESI` (`31 F6`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-331.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201776`.
+- **Статус:** открыта.
+- **Суть и последствия:** the base profile does not yet admit this register-direct dword XOR; firmware stops before the next helper instruction.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, retired 9,041 instructions; file offset `0x1776` contains `31 F6` and runner reports `Unsupported { opcode: 49 }`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.

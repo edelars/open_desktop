@@ -724,6 +724,10 @@
 
 Остановить задачу и записать blocker, если: контракт входа противоречит `MACHINE_CONTRACT.md` или `CPU_CONTRACT.md`; нужен PCI (S4-30), 2 MiB страницы (S4-10), Linux (этап 5), SMP (этап 6) или установленная Windows (этап 8), которых нет; требуется чужая прошивка, TPM-реализация, `.aml` или драйвер; спецификация недоступна и источника нет; проверка подписи или TPM проходит только с обходом; замер показывает, что путь не укладывается в бюджет, а оптимизация требует нарушить контракт (CRC, границы, атомарность записи NVRAM).
 
+### S7-04 firmware CPU handoff progress: ISSUE-331
+
+Current bounded CPU-profile progress: ISSUE-331 admits only `41 8B 6C 04 E8` (`MOV EBP,dword ptr [R12+RAX-0x18]`) in `PagedCpl0ProbeV1`. Tests cover the tracked dword read, RBP zero-extension, faults, exact-neighbor/CPL/profile isolation and four-level paging A/D behavior. The firmware runner advances from 9,040 to 9,041 retired instructions and stops at ISSUE-332, `31 F6` (`XOR ESI,ESI`) at RIP `0x201776`, with empty COM1. This CPU compatibility slice does not change the broader UEFI task status or claim full firmware handoff completion. ISSUE-201's unrelated stale CLD expectations remain open; see `KNOWN_ISSUES.md`.
+
 ## 9. Готовый промпт на одну задачу
 
 ```text
