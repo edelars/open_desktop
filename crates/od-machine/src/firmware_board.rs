@@ -17,7 +17,7 @@ use crate::execution_observations::{
 };
 use crate::fetch_cache_report::{CallObservation, FetchCacheAccumulator, LinuxFetchCacheReport};
 use crate::fetch_cache_sweep::{FetchCacheSweep, FetchSweepReport, SweepConfig};
-use crate::fetch_translation_cache::FetchCacheInvalidation;
+use crate::fetch_translation_cache::{FetchCacheInvalidation, FetchCacheTag};
 use crate::idle_arbiter::{SchedActivity, WakeView};
 use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters, NoIrqSource};
 use crate::linux_checkpoints::{
@@ -1188,6 +1188,8 @@ pub struct LoadedFirmwareBoard {
     /// S4-13c: the shadow caches requested for the next runs (diagnostics only) and the result the
     /// last run left.
     fetch_cache_sweep_configs: Option<Vec<SweepConfig>>,
+    /// S4-13d: what one entry of the CPL0-set loop's fetch cache covers; 4 KiB unless asked.
+    fetch_cache_tag: FetchCacheTag,
     fetch_cache_sweep_report: Option<FetchSweepReport>,
     /// True when the assembly was given a PIT or LAPIC-timer clock other than the board clock
     /// (a test injection of S4-37a1/a4): their deadlines are in another time domain, so the
@@ -1230,6 +1232,34 @@ impl LoadedFirmwareBoard {
 
     pub fn bus_mut(&mut self) -> &mut MachineBus {
         &mut self.bus
+    }
+
+    /// S4-13d diagnostics: SHA-256 over the bytes of every plain-RAM region in address order,
+    /// read-only (the end state of a run, to tell two runs of the same guest apart or equal).
+    /// It copies all of RAM into one buffer first (a peak of two to three times the RAM size);
+    /// a streaming hash is a separate task. A region that cannot be read is an error naming it,
+    /// never a hash over the rest.
+    pub fn ram_sha256(&mut self) -> Result<[u8; 32], String> {
+        let (memory, _) = self.bus.split_for_pio_step();
+        let regions: Vec<_> = memory
+            .region_specs()
+            .filter(|spec| spec.kind == MemoryRegionKind::Ram)
+            .collect();
+        let mut data = Vec::new();
+        for spec in regions {
+            let mut bytes = vec![0u8; spec.range.len() as usize];
+            memory
+                .read_bytes(spec.range.start(), &mut bytes)
+                .map_err(|error| {
+                    format!(
+                        "RAM region at {:#x} (len {:#x}) is unreadable: {error:?}",
+                        spec.range.start().get(),
+                        spec.range.len()
+                    )
+                })?;
+            data.extend_from_slice(&bytes);
+        }
+        Ok(crate::acpi_blob::sha256(&data))
     }
 
     /// COM1 bytes recorded by the latest `run_boot`, including those of a run
@@ -1550,6 +1580,14 @@ impl LoadedFirmwareBoard {
     /// checkpoint recorder. Off by default.
     pub fn enable_fetch_cache_sweep(&mut self, configs: Vec<SweepConfig>) {
         self.fetch_cache_sweep_configs = Some(configs);
+    }
+
+    /// S4-13d: let the fetch cache of the CPL0-set loop's next runs tag a walk that ended at a
+    /// 2 MiB leaf (plain RAM) with the whole leaf instead of the 4 KiB page. The answers do not
+    /// change (permissions, accessed/dirty bits, faults and flushes are those of the 4 KiB tag);
+    /// only the number of page walks does. Off by default (4 KiB tag); needs the fetch cache on.
+    pub fn enable_fetch_cache_leaf_2m_tag(&mut self) {
+        self.fetch_cache_tag = FetchCacheTag::Leaf2M;
     }
 
     /// S4-13c: the result of the last run (also after a failed run) and the request removed;
@@ -2321,6 +2359,7 @@ impl LoadedFirmwareBoard {
                 self.checkpoints.as_mut(),
                 execution_observations.as_mut(),
                 fetch_sweep.as_ref(),
+                self.fetch_cache_tag,
             );
             quanta += 1;
             partial_rep = matches!(
@@ -2513,7 +2552,12 @@ impl LoadedFirmwareBoard {
         // back what it had.
         self.vcpus[BOOT_VCPU_INDEX].guest_cr2 = self.vcpus[BOOT_VCPU_INDEX].state.cr2;
         self.vcpus[BOOT_VCPU_INDEX].state.cr2 = prior_cr2;
-        self.fetch_cache_report = fetch_report.map(FetchCacheAccumulator::finish);
+        let leaf_2m_tag = fetch_cache && self.fetch_cache_tag == FetchCacheTag::Leaf2M;
+        self.fetch_cache_report = fetch_report.map(|accumulator| {
+            let mut report = accumulator.finish();
+            report.leaf_2m_tag = leaf_2m_tag;
+            report
+        });
         self.fetch_cache_sweep_report = fetch_sweep.map(|sweep| sweep.report());
         let (run, set_exit_detail, cpuid_divergence_leaf, user_entry) = result?;
         irq_counters.irq0_edges = self.irq_source.irq0_edges();
@@ -3028,6 +3072,7 @@ impl AssembledBoard {
             fetch_cache_report_enabled: false,
             fetch_cache_report: None,
             fetch_cache_sweep_configs: None,
+            fetch_cache_tag: FetchCacheTag::Page4K,
             fetch_cache_sweep_report: None,
             foreign_timer_clock,
             #[cfg(test)]
@@ -3099,6 +3144,7 @@ impl AssembledBoard {
             fetch_cache_report_enabled: false,
             fetch_cache_report: None,
             fetch_cache_sweep_configs: None,
+            fetch_cache_tag: FetchCacheTag::Page4K,
             fetch_cache_sweep_report: None,
             foreign_timer_clock,
             #[cfg(test)]

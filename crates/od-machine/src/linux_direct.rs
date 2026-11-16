@@ -12896,6 +12896,7 @@ mod tests {
                 None,
                 None,
                 Some(&sweep),
+                crate::fetch_translation_cache::FetchCacheTag::Page4K,
             );
             let stats = report.fetch_cache_stats.take().expect("the cache is on");
             assert_eq!(stats, plain.stats, "the real cache counts the same");
@@ -13738,6 +13739,829 @@ mod tests {
         assert_eq!(two.exit, PagedCpl0SetExit::Run(RunExit::Halted), "{two:?}");
         assert_eq!(state.gpr[Register::Rdx as usize], NEW_MARKER);
         assert_eq!(stats_of(&two).host_flushes, 2, "{:?}", stats_of(&two));
+    }
+
+    // ---- S4-13d: the 2 MiB leaf tag of the real cache and the extended differential gate ----
+    //
+    // Every case runs three times over the same layout: with no cache, with the 4 KiB cache and
+    // with the cache that tags a 2 MiB leaf as one entry; the three must agree on the CPU state,
+    // the report (exit, fault record, context changes), every committed write in order and the
+    // bytes of the frames listed by the case (page tables with their accessed/dirty bits, code
+    // and data). The cache is the default `WriteWatch` one.
+
+    use crate::fetch_translation_cache::FetchCacheTag;
+
+    const GATE_LEAF1: u64 = 0x0600_0000;
+    const GATE_LEAF2: u64 = 0x0620_0000;
+    const GATE_LEAF3: u64 = 0x0640_0000;
+    const GATE_FRAME3: u64 = 0x0500_a000;
+    const GATE_DATA_FRAME: u64 = 0x0500_b000;
+    /// Where the code of every layout starts: page 1 of the leaf, offset 0x800 (so also GVA
+    /// `SPLIT_VA + 0x1000 + 0x800` for the 4 KiB layout, whose PTE 1 maps that page).
+    const GATE_CODE_VA: u64 = SPLIT_VA + 0x1800;
+    /// The second 2 MiB leaf (PD index 10) of the data cases.
+    const GATE_OTHER_LEAF_VA: u64 = SPLIT_VA + 0x40_0000;
+    const MID_MARKER: u64 = 0x2222;
+    const MOV_RBX_RAX_STORE: [u8; 3] = [0x48, 0x89, 0x03];
+    const MOV_RBX_RCX_STORE: [u8; 3] = [0x48, 0x89, 0x0B];
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum CacheMode {
+        Plain,
+        Tag4k,
+        Tag2m,
+    }
+
+    struct ModeOutcome {
+        state: LongModeState,
+        report: PagedCpl0SetReport,
+        writes: Vec<(u64, u64)>,
+        memory: Vec<u8>,
+        stats: Option<FetchCacheStats>,
+    }
+
+    /// One run of the case `build` lays out, with the cache mode `mode`; `frames` are the
+    /// `(address, length)` ranges whose bytes are returned (concatenated) after the run.
+    fn run_mode_case(
+        build: &dyn Fn(&mut LinuxDirectBoot) -> LongModeState,
+        set: &Cpl0ProfileSet<'_>,
+        budget: u64,
+        mode: CacheMode,
+        policy: FetchCacheInvalidation,
+        frames: &[(u64, usize)],
+    ) -> ModeOutcome {
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let mut state = build(&mut boot);
+        let efer = boot.board.efer();
+        let cr3 = state.cr3.expect("the case runs with a CPU-owned CR3");
+        let cache = match mode {
+            CacheMode::Plain => None,
+            CacheMode::Tag4k => Some(FetchTranslationCache::with_invalidation(policy)),
+            CacheMode::Tag2m => Some(
+                FetchTranslationCache::with_invalidation(policy).with_tag(FetchCacheTag::Leaf2M),
+            ),
+        };
+        let mut writes = Vec::new();
+        let mut report = run_cpl0_set_paged_2m_ram_with_cache(
+            &mut state,
+            boot.board.bus_mut(),
+            cr3,
+            efer,
+            long64(),
+            budget,
+            INTEGER_FLAGS,
+            set,
+            None,
+            || false,
+            |range| writes.push((range.start().get(), range.len())),
+            true,
+            cache.as_ref(),
+            None,
+            None,
+            None,
+        );
+        let stats = report.fetch_cache_stats.take();
+        let mut memory = Vec::new();
+        for &(start, len) in frames {
+            let mut bytes = vec![0u8; len];
+            read(&mut boot.board, start, &mut bytes).expect("frames are RAM");
+            memory.extend(bytes);
+        }
+        ModeOutcome {
+            state,
+            report,
+            writes,
+            memory,
+            stats,
+        }
+    }
+
+    struct ModesAgree {
+        /// The outcome of the run with the 2 MiB tag.
+        tagged: ModeOutcome,
+        stats_4k: FetchCacheStats,
+        stats_2m: FetchCacheStats,
+        /// Instruction-fetch walks of the plain, the 4 KiB and the 2 MiB run.
+        fetch_walks: [u64; 3],
+    }
+
+    /// The differential gate: no cache, the 4 KiB cache and the 2 MiB-tag cache agree on
+    /// everything the guest or a device can see; data walks are equal and the caches can only
+    /// remove instruction-fetch walks.
+    fn assert_modes_agree(
+        build: &dyn Fn(&mut LinuxDirectBoot) -> LongModeState,
+        set: &Cpl0ProfileSet<'_>,
+        budget: u64,
+        frames: &[(u64, usize)],
+    ) -> ModesAgree {
+        assert_modes_agree_with(
+            FetchCacheInvalidation::WriteWatch,
+            build,
+            set,
+            budget,
+            frames,
+        )
+    }
+
+    /// [`assert_modes_agree`] with the invalidation policy of both caches chosen. Only a case in
+    /// which the guest itself performs every invalidation the policy relies on may use
+    /// `GuestOnly` (a TLB-like cache is allowed to differ from an uncached run otherwise).
+    fn assert_modes_agree_with(
+        policy: FetchCacheInvalidation,
+        build: &dyn Fn(&mut LinuxDirectBoot) -> LongModeState,
+        set: &Cpl0ProfileSet<'_>,
+        budget: u64,
+        frames: &[(u64, usize)],
+    ) -> ModesAgree {
+        let mut plain = run_mode_case(build, set, budget, CacheMode::Plain, policy, frames);
+        let mut k4 = run_mode_case(build, set, budget, CacheMode::Tag4k, policy, frames);
+        let mut k2 = run_mode_case(build, set, budget, CacheMode::Tag2m, policy, frames);
+        assert_eq!(plain.stats, None);
+        let walks = [
+            plain.report.walk_counts,
+            k4.report.walk_counts,
+            k2.report.walk_counts,
+        ];
+        for counts in &walks[1..] {
+            assert_eq!(counts.data_read, walks[0].data_read);
+            assert_eq!(counts.data_write, walks[0].data_write);
+            assert!(counts.fetch <= walks[0].fetch, "{counts:?} {:?}", walks[0]);
+        }
+        for outcome in [&mut plain, &mut k4, &mut k2] {
+            outcome.report.walk_counts = Default::default();
+        }
+        for (name, other) in [("4k", &k4), ("2m", &k2)] {
+            assert_eq!(other.report, plain.report, "{name}");
+            assert_eq!(other.state, plain.state, "{name}");
+            assert_eq!(other.writes, plain.writes, "{name}");
+            assert!(other.memory == plain.memory, "{name}: frame bytes differ");
+        }
+        let stats_4k = k4.stats.take().expect("4k cache stats");
+        let stats_2m = k2.stats.take().expect("2m cache stats");
+        ModesAgree {
+            stats_4k,
+            stats_2m,
+            fetch_walks: [walks[0].fetch, walks[1].fetch, walks[2].fetch],
+            tagged: k2,
+        }
+    }
+
+    /// The two layouts of the gate: the page the code runs on is a 4 KiB page behind a PT, or
+    /// a page of a 2 MiB leaf (PD entry with the page-size bit).
+    #[derive(Clone, Copy, Debug)]
+    enum Leaf {
+        Small,
+        Large,
+    }
+
+    impl Leaf {
+        /// The 4 KiB frame (`Small`, `variant` 0..3) or 2 MiB leaf (`Large`) behind the code.
+        fn backing(self, variant: usize) -> u64 {
+            match self {
+                Leaf::Small => [SPLIT_PAGE1, ALT_PAGE1, GATE_FRAME3][variant],
+                Leaf::Large => [GATE_LEAF1, GATE_LEAF2, GATE_LEAF3][variant],
+            }
+        }
+
+        /// Physical address of the instruction at `GATE_CODE_VA` for the variant.
+        fn code_phys(self, variant: usize) -> u64 {
+            match self {
+                Leaf::Small => self.backing(variant) + 0x800,
+                Leaf::Large => self.backing(variant) + 0x1800,
+            }
+        }
+
+        /// The bytes of the page of the code, per variant, for the frame comparison.
+        fn code_frames(self) -> Vec<(u64, usize)> {
+            (0..3)
+                .map(|variant| (self.code_phys(variant) & !0xfff, 0x1000))
+                .collect()
+        }
+
+        /// Flags of the leaf entry: present, writable, and the accessed/dirty bits asked for
+        /// (plus the page-size bit for a 2 MiB leaf).
+        fn flags(self, accessed: bool, dirty: bool) -> u64 {
+            let base = match self {
+                Leaf::Small => 0x03,
+                Leaf::Large => 0x83,
+            };
+            base | if accessed { 0x20 } else { 0 } | if dirty { 0x40 } else { 0 }
+        }
+
+        /// The tree `pml4` (PML4 -> PDPT -> PD [-> PT]) that maps `SPLIT_VA + 0x1000` (`Small`,
+        /// PTE 1) or `SPLIT_VA` (`Large`, PD entry 8) to the variant; `window` maps `WINDOW_VA`
+        /// to a table frame (see `write_tree`).
+        fn install(
+            self,
+            boot: &mut LinuxDirectBoot,
+            pml4: u64,
+            variant: usize,
+            flags: u64,
+            window: Option<u64>,
+        ) {
+            match self {
+                Leaf::Small => {
+                    write_tree(boot, pml4, &[(1, self.backing(variant) | flags)], window)
+                }
+                Leaf::Large => {
+                    write_tree(boot, pml4, &[], window);
+                    write_phys(
+                        boot,
+                        pml4 + 0x2000 + 8 * 8,
+                        &(self.backing(variant) | flags).to_le_bytes(),
+                    );
+                }
+            }
+        }
+
+        /// The table frame and the offset in it of the leaf entry of tree A (`TREE_PML4`).
+        fn leaf_entry_of_tree_a(self) -> (u64, u64) {
+            match self {
+                Leaf::Small => (TREE_PML4 + 0x3000, 8),
+                Leaf::Large => (TREE_PML4 + 0x2000, 8 * 8),
+            }
+        }
+    }
+
+    /// `head`, then `MOV RDX, marker; HLT`.
+    fn with_marker(head: &[u8], marker: u64) -> Vec<u8> {
+        let mut code = head.to_vec();
+        code.extend(mov_imm32(2, marker as u32));
+        code.push(0xF4);
+        code
+    }
+
+    /// Page tables of the first tree and the second tree as `[(address, len)]` frame ranges.
+    const GATE_TREE_FRAMES: [(u64, usize); 2] = [(TREE_PML4, 0x5000), (TREE2_PML4, 0x5000)];
+
+    fn frames_of(leaf: Leaf, extra: &[(u64, usize)]) -> Vec<(u64, usize)> {
+        let mut frames = GATE_TREE_FRAMES.to_vec();
+        frames.extend(leaf.code_frames());
+        frames.extend_from_slice(extra);
+        frames
+    }
+
+    fn assert_halted(outcome: &ModeOutcome, marker: u64) {
+        assert_eq!(
+            outcome.report.exit,
+            PagedCpl0SetExit::Run(RunExit::Halted),
+            "{:?}",
+            outcome.report
+        );
+        assert_eq!(outcome.state.gpr[Register::Rdx as usize], marker);
+    }
+
+    // -- the 2 MiB tag itself --
+
+    /// 640 `MOV RAX, i` (7 bytes each) straight through three 4 KiB pages of ONE 2 MiB leaf
+    /// (from offset 0xf00 of the leaf to 0x2080), then `HLT`. The 4 KiB cache takes a walk per
+    /// page; the 2 MiB-tag cache takes one for the leaf and serves the bytes of every page of it
+    /// from the entry with the offset of each request: a wrong offset or frame would decode
+    /// other bytes and end elsewhere than the uncached run, whose `RAX` is the last immediate.
+    #[test]
+    fn cache_2m_tag_serves_every_4k_page_of_a_leaf_from_one_entry() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let start = 0xf00u64;
+        let build = |boot: &mut LinuxDirectBoot| {
+            Leaf::Large.install(boot, TREE_PML4, 0, Leaf::Large.flags(true, true), None);
+            let mut code = Vec::new();
+            for value in 0..640u32 {
+                code.extend(mov_imm32(0, value));
+            }
+            code.push(0xF4);
+            write_phys(boot, GATE_LEAF1 + start, &code);
+            tree_state(boot, TREE_PML4, SPLIT_VA + start)
+        };
+        let frames = [(TREE_PML4, 0x5000usize), (GATE_LEAF1, 0x3000)];
+        let agreed = assert_modes_agree(&build, &switch_set(&cli, &halt), 1000, &frames);
+        assert_eq!(
+            agreed.tagged.report.exit,
+            PagedCpl0SetExit::Run(RunExit::Halted),
+            "{:?}",
+            agreed.tagged.report
+        );
+        assert_eq!(agreed.tagged.state.gpr[Register::Rax as usize], 639);
+        assert_eq!(agreed.tagged.report.instructions_executed, 641);
+        // Three pages of the leaf: three entries with the 4 KiB tag, one with the 2 MiB tag.
+        assert_eq!(agreed.stats_4k.inserts, 3, "{:?}", agreed.stats_4k);
+        assert_eq!(agreed.stats_2m.inserts, 1, "{:?}", agreed.stats_2m);
+        assert!(agreed.stats_2m.misses < agreed.stats_4k.misses);
+        assert_eq!(
+            agreed.stats_2m.hits + agreed.stats_2m.misses,
+            agreed.stats_4k.hits + agreed.stats_4k.misses,
+            "the same lookups, only answered differently"
+        );
+        assert!(
+            agreed.fetch_walks[2] < agreed.fetch_walks[1]
+                && agreed.fetch_walks[1] < agreed.fetch_walks[0],
+            "{:?}",
+            agreed.fetch_walks
+        );
+    }
+
+    // -- a 4 KiB leaf whose frame is congruent with its address modulo 2 MiB --
+
+    /// Lays out a PT in which page 1 (GVA `SPLIT_VA + 0x1000`) maps the frame at
+    /// `GATE_LEAF1 + 0x1000`: its physical address minus the offset of the request inside the
+    /// 2 MiB region is the 2 MiB-aligned `GATE_LEAF1`, plain RAM, which is exactly what a
+    /// 2 MiB leaf would look like to the cache tag. Page 2 is `page2` (another PTE). The code
+    /// is one 7-byte `MOV RAX` that ends page 1 and, on page 2, `MOV RDX, marker; HLT`; the
+    /// bytes at `GATE_LEAF1 + 0x2000` (where a wrongly 2 MiB-tagged entry would read page 2)
+    /// are a decoy that ends with another marker.
+    fn congruent_4k_leaf_case(boot: &mut LinuxDirectBoot, page2: u64) -> LongModeState {
+        let congruent = GATE_LEAF1 + 0x1000;
+        write_tree(boot, TREE_PML4, &[(1, congruent | 0x23), (2, page2)], None);
+        write_phys(boot, congruent + 0xff9, &mov_imm32(0, 7));
+        write_phys(boot, GATE_LEAF1 + 0x2000, &with_marker(&[], NEW_MARKER));
+        write_phys(boot, GATE_FRAME3, &with_marker(&[], OLD_MARKER));
+        tree_state(boot, TREE_PML4, SPLIT_VA + 0x1ff9)
+    }
+
+    fn congruent_4k_frames() -> Vec<(u64, usize)> {
+        let mut frames = GATE_TREE_FRAMES.to_vec();
+        frames.extend([
+            (GATE_LEAF1 + 0x1000, 0x1000),
+            (GATE_LEAF1 + 0x2000, 0x1000),
+            (GATE_FRAME3, 0x1000),
+        ]);
+        frames
+    }
+
+    /// A 4 KiB page with a frame congruent modulo 2 MiB stays a 4 KiB entry under the 2 MiB
+    /// tag: the NEXT page of the same PT maps another frame, and the fetch of it must read that
+    /// frame (marker `OLD_MARKER`), not the bytes that a 2 MiB entry for `GATE_LEAF1` would
+    /// serve at the same offset (`NEW_MARKER`). Two 4 KiB entries are inserted, never one leaf.
+    #[test]
+    fn gate_2m_congruent_4k_page_stays_a_4k_entry_and_the_next_page_is_its_own() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| congruent_4k_leaf_case(boot, GATE_FRAME3 | 0x23);
+        let agreed =
+            assert_modes_agree(&build, &switch_set(&cli, &halt), 16, &congruent_4k_frames());
+        assert_halted(&agreed.tagged, OLD_MARKER);
+        assert_eq!(agreed.tagged.state.gpr[Register::Rax as usize], 7);
+        assert_eq!(agreed.stats_2m.inserts, 2, "{:?}", agreed.stats_2m);
+        assert_eq!(agreed.stats_4k.inserts, 2, "{:?}", agreed.stats_4k);
+    }
+
+    /// The same layout with the next PTE not present: the fetch of page 2 is the precise `#PF`
+    /// (not present, instruction fetch: 0x10) with either cache; a 2 MiB entry for the
+    /// congruent page would have run the decoy instead.
+    #[test]
+    fn gate_2m_congruent_4k_page_next_pte_not_present_faults_like_without_the_cache() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| congruent_4k_leaf_case(boot, 0);
+        let agreed =
+            assert_modes_agree(&build, &switch_set(&cli, &halt), 16, &congruent_4k_frames());
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &agreed.tagged.report.exit else {
+            panic!("{:?}", agreed.tagged.report);
+        };
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(0x10), Some(SPLIT_VA + 0x2000))
+        );
+        assert_eq!(agreed.stats_2m.inserts, 1, "{:?}", agreed.stats_2m);
+    }
+
+    // -- (a) remap and NX of a 2 MiB leaf under WriteWatch --
+
+    /// The code of a 2 MiB leaf stores into the PD entry of its own leaf (through a window onto
+    /// the PD frame): `MOV RBX, window + offset; MOV RAX, value; store`. Leaf 1 holds the old
+    /// marker after the store, leaf 2 the new one, at the same offsets.
+    fn leaf_pde_store_case(
+        boot: &mut LinuxDirectBoot,
+        offset: u64,
+        value: u32,
+        wide: bool,
+    ) -> LongModeState {
+        let leaf = Leaf::Large;
+        leaf.install(
+            boot,
+            TREE_PML4,
+            0,
+            leaf.flags(true, true),
+            Some(TREE_PML4 + 0x2000),
+        );
+        let mut head = mov_imm32(3, (WINDOW_VA + offset) as u32);
+        head.extend(mov_imm32(0, value));
+        head.extend(if wide {
+            MOV_RBX_RAX_STORE.to_vec()
+        } else {
+            // `MOV [RBX], EAX`: a 32-bit store of the low half of RAX.
+            vec![0x89, 0x03]
+        });
+        for (variant, marker) in [(0, OLD_MARKER), (1, NEW_MARKER)] {
+            write_phys(boot, leaf.code_phys(variant), &with_marker(&head, marker));
+        }
+        tree_state(boot, TREE_PML4, GATE_CODE_VA)
+    }
+
+    fn leaf_store_frames() -> Vec<(u64, usize)> {
+        frames_of(Leaf::Large, &[])
+    }
+
+    /// Remap of the leaf the code runs on: the guest stores a new PD entry (another 2 MiB
+    /// leaf); the next instruction is fetched through it. The 2 MiB entry covers the whole leaf,
+    /// so a stale one would run the old marker. Same stop record, same state, same writes.
+    #[test]
+    fn gate_2m_leaf_remap_under_write_watch_runs_the_new_leaf() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let new_pde = (GATE_LEAF2 | Leaf::Large.flags(true, true)) as u32;
+        let build = |boot: &mut LinuxDirectBoot| leaf_pde_store_case(boot, 8 * 8, new_pde, true);
+        let agreed = assert_modes_agree(&build, &switch_set(&cli, &halt), 16, &leaf_store_frames());
+        assert_halted(&agreed.tagged, NEW_MARKER);
+        for stats in [agreed.stats_4k, agreed.stats_2m] {
+            assert_eq!(stats.write_flushes, 1, "{stats:?}");
+            assert_eq!(stats.context_flushes, 0, "{stats:?}");
+            assert!(stats.hits > 0, "{stats:?}");
+        }
+        // The PD entry is the new one in the end.
+        let pde = u64::from_le_bytes(agreed.tagged.memory[0x2040..0x2048].try_into().unwrap());
+        assert_eq!(pde, GATE_LEAF2 | 0xE3);
+    }
+
+    /// NX set on the PD entry of the leaf the code runs on: the next fetch is the same precise
+    /// `#PF` (present, instruction fetch: error code 0x11, linear address and saved RIP of the
+    /// next instruction) with the cache of either tag: a hit would have run the instruction.
+    #[test]
+    fn gate_2m_leaf_nx_store_faults_like_without_the_cache() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        // The high dword of the PD entry at offset 0x40 gets bit 31 (bit 63 of the entry).
+        let build =
+            |boot: &mut LinuxDirectBoot| leaf_pde_store_case(boot, 8 * 8 + 4, 0x8000_0000, false);
+        let agreed = assert_modes_agree(&build, &switch_set(&cli, &halt), 16, &leaf_store_frames());
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &agreed.tagged.report.exit else {
+            panic!("{:?}", agreed.tagged.report);
+        };
+        // MOV RBX (7) + MOV RAX (7) + the 32-bit store (2) = 16 bytes retired before the fault.
+        let next = GATE_CODE_VA + 16;
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(0x11), Some(next))
+        );
+        assert_eq!(
+            agreed
+                .tagged
+                .report
+                .page_fault
+                .as_ref()
+                .map(|r| r.saved_rip()),
+            Some(next)
+        );
+        assert_eq!(agreed.tagged.report.instructions_executed, 3);
+        for stats in [agreed.stats_4k, agreed.stats_2m] {
+            assert_eq!(stats.write_flushes, 1, "{stats:?}");
+        }
+    }
+
+    /// The guest clears the present bit of the PD entry of its own leaf: the next fetch is the
+    /// same `#PF` (not present, instruction fetch: 0x10); a failed walk is never cached.
+    #[test]
+    fn gate_2m_leaf_unmap_store_faults_like_without_the_cache() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| leaf_pde_store_case(boot, 8 * 8, 0, true);
+        let agreed = assert_modes_agree(&build, &switch_set(&cli, &halt), 16, &leaf_store_frames());
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &agreed.tagged.report.exit else {
+            panic!("{:?}", agreed.tagged.report);
+        };
+        let next = GATE_CODE_VA + 17;
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(0x10), Some(next))
+        );
+        assert_eq!(agreed.tagged.report.instructions_executed, 3);
+        for stats in [agreed.stats_4k, agreed.stats_2m] {
+            assert_eq!(stats.write_flushes, 1, "{stats:?}");
+        }
+    }
+
+    // -- (b) the accessed bit cleared at every level of the path --
+
+    #[derive(Clone, Copy, Debug)]
+    enum Level {
+        Pml4e,
+        Pdpte,
+        Pde,
+    }
+
+    /// The table frame, the offset of the entry in it and the new value (accessed bit CLEAR,
+    /// same target) of the entry of `level` on the path of the code.
+    fn level_entry(level: Level, leaf: Leaf) -> (u64, u64, u64) {
+        match (level, leaf) {
+            (Level::Pml4e, _) => (TREE_PML4, 0, (TREE_PML4 + 0x1000) | 0x03),
+            (Level::Pdpte, _) => (TREE_PML4 + 0x1000, 0, (TREE_PML4 + 0x2000) | 0x03),
+            (Level::Pde, Leaf::Small) => (TREE_PML4 + 0x2000, 8 * 8, (TREE_PML4 + 0x3000) | 0x03),
+            (Level::Pde, Leaf::Large) => (
+                TREE_PML4 + 0x2000,
+                8 * 8,
+                GATE_LEAF1 | leaf.flags(false, true),
+            ),
+        }
+    }
+
+    /// The guest rewrites an entry of the path of its own code with the accessed bit clear (the
+    /// same target) through a window: the next fetch must walk again and set the bit again, as
+    /// without the cache. A cache that kept the old translation would leave the bit clear in RAM.
+    fn assert_clear_accessed_is_set_again(level: Level, leaf: Leaf) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let (frame, offset, new_value) = level_entry(level, leaf);
+        let build = |boot: &mut LinuxDirectBoot| {
+            leaf.install(
+                boot,
+                TREE_PML4,
+                0,
+                leaf.flags(true, matches!(leaf, Leaf::Large)),
+                Some(frame),
+            );
+            let mut head = mov_imm32(3, (WINDOW_VA + offset) as u32);
+            head.extend(mov_imm32(0, new_value as u32));
+            head.extend(MOV_RBX_RAX_STORE);
+            write_phys(boot, leaf.code_phys(0), &with_marker(&head, OLD_MARKER));
+            tree_state(boot, TREE_PML4, GATE_CODE_VA)
+        };
+        let agreed =
+            assert_modes_agree(&build, &switch_set(&cli, &halt), 16, &frames_of(leaf, &[]));
+        let what = format!("{level:?} {leaf:?}");
+        assert_halted(&agreed.tagged, OLD_MARKER);
+        let at = (frame - TREE_PML4 + offset) as usize;
+        let entry = u64::from_le_bytes(agreed.tagged.memory[at..at + 8].try_into().unwrap());
+        assert_eq!(entry & 0x20, 0x20, "{what}: accessed bit is set again");
+        assert_eq!(
+            agreed.tagged.writes.last().copied(),
+            Some((frame + offset, 8)),
+            "{what}: the last committed write is that accessed-bit commit"
+        );
+        for stats in [agreed.stats_4k, agreed.stats_2m] {
+            assert_eq!(stats.write_flushes, 1, "{what}: {stats:?}");
+            assert!(stats.hits > 0, "{what}: {stats:?}");
+        }
+    }
+
+    #[test]
+    fn gate_cleared_accessed_bit_of_a_pde_is_set_again_on_the_next_fetch() {
+        for leaf in [Leaf::Small, Leaf::Large] {
+            assert_clear_accessed_is_set_again(Level::Pde, leaf);
+        }
+    }
+
+    #[test]
+    fn gate_cleared_accessed_bit_of_a_pdpte_is_set_again_on_the_next_fetch() {
+        for leaf in [Leaf::Small, Leaf::Large] {
+            assert_clear_accessed_is_set_again(Level::Pdpte, leaf);
+        }
+    }
+
+    #[test]
+    fn gate_cleared_accessed_bit_of_a_pml4e_is_set_again_on_the_next_fetch() {
+        for leaf in [Leaf::Small, Leaf::Large] {
+            assert_clear_accessed_is_set_again(Level::Pml4e, leaf);
+        }
+    }
+
+    // -- (c) the dirty bit committed in a table of the cached code --
+
+    /// The code stores to data whose leaf entry has the dirty bit clear: the walk of the store
+    /// commits the bit into the table frame the cached code translation watches. The commit is a
+    /// write to a watched frame: the cache drops the entry (one write flush), the next fetch
+    /// walks again, and the dirty bit, the data and the committed writes equal the uncached run.
+    /// `same_page`: the data is on the page of the code (the same entry); else on another page
+    /// of the same PT (`Small`) or in another 2 MiB leaf of the same PD (`Large`).
+    fn assert_dirty_commit_in_the_table_of_the_code(leaf: Leaf, same_page: bool) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let (data_va, data_phys, entry_at) = match (leaf, same_page) {
+            (_, true) => {
+                let (frame, offset) = leaf.leaf_entry_of_tree_a();
+                (
+                    GATE_CODE_VA + 0x100,
+                    leaf.code_phys(0) + 0x100,
+                    frame + offset,
+                )
+            }
+            (Leaf::Small, false) => (
+                SPLIT_VA + 0x2000 + 0x100,
+                GATE_DATA_FRAME + 0x100,
+                TREE_PML4 + 0x3000 + 2 * 8,
+            ),
+            (Leaf::Large, false) => (
+                GATE_OTHER_LEAF_VA + 0x100,
+                GATE_LEAF2 + 0x100,
+                TREE_PML4 + 0x2000 + 10 * 8,
+            ),
+        };
+        let build = |boot: &mut LinuxDirectBoot| {
+            leaf.install(boot, TREE_PML4, 0, leaf.flags(true, false), None);
+            if !same_page {
+                match leaf {
+                    Leaf::Small => write_phys(
+                        boot,
+                        TREE_PML4 + 0x3000 + 2 * 8,
+                        &(GATE_DATA_FRAME | leaf.flags(true, false)).to_le_bytes(),
+                    ),
+                    Leaf::Large => write_phys(
+                        boot,
+                        TREE_PML4 + 0x2000 + 10 * 8,
+                        &(GATE_LEAF2 | leaf.flags(true, false)).to_le_bytes(),
+                    ),
+                }
+            }
+            let mut head = mov_imm32(3, data_va as u32);
+            head.extend(mov_imm32(0, 0x5a5a));
+            head.extend(MOV_RBX_RAX_STORE);
+            write_phys(boot, leaf.code_phys(0), &with_marker(&head, OLD_MARKER));
+            tree_state(boot, TREE_PML4, GATE_CODE_VA)
+        };
+        let data_frame = (data_phys & !0xfff, 0x1000usize);
+        let agreed = assert_modes_agree(
+            &build,
+            &switch_set(&cli, &halt),
+            16,
+            &frames_of(leaf, &[data_frame]),
+        );
+        let what = format!("{leaf:?} same_page={same_page}");
+        assert_halted(&agreed.tagged, OLD_MARKER);
+        let memory = &agreed.tagged.memory;
+        let entry_index = (entry_at - TREE_PML4) as usize;
+        let entry = u64::from_le_bytes(memory[entry_index..entry_index + 8].try_into().unwrap());
+        assert_eq!(entry & 0x40, 0x40, "{what}: the dirty bit is committed");
+        let data_index = memory.len() - 0x1000 + (data_phys & 0xfff) as usize;
+        assert_eq!(
+            &memory[data_index..data_index + 2],
+            &[0x5a, 0x5a],
+            "{what}: the data is stored"
+        );
+        for stats in [agreed.stats_4k, agreed.stats_2m] {
+            assert_eq!(stats.write_flushes, 1, "{what}: {stats:?}");
+            assert!(
+                stats.inserts >= 2,
+                "{what}: refilled after the flush {stats:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn gate_dirty_commit_on_the_page_of_the_cached_code_matches_the_uncached_run() {
+        for leaf in [Leaf::Small, Leaf::Large] {
+            assert_dirty_commit_in_the_table_of_the_code(leaf, true);
+        }
+    }
+
+    #[test]
+    fn gate_dirty_commit_for_another_page_of_the_same_table_matches_the_uncached_run() {
+        for leaf in [Leaf::Small, Leaf::Large] {
+            assert_dirty_commit_in_the_table_of_the_code(leaf, false);
+        }
+    }
+
+    // -- (d) CR3 A -> B -> A with the tables of A edited in between --
+
+    /// One run: the code starts under tree A on the page behind variant 0, loads tree B
+    /// (`MOV CR3`), where the same linear page is variant 1; in B it rewrites the entry of that
+    /// page in tree A (through a window onto A's table) to variant 2 and loads A again. The
+    /// instruction after the second `MOV CR3` must come from variant 2: neither the entry cached
+    /// under A before the first switch (variant 0, an old translation) nor the one cached under
+    /// B (variant 1) may serve it.
+    fn assert_cr3_a_b_a_runs_the_edited_tables_of_a(leaf: Leaf, policy: FetchCacheInvalidation) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let (frame, offset) = leaf.leaf_entry_of_tree_a();
+        let new_entry = leaf.backing(2) | leaf.flags(true, matches!(leaf, Leaf::Large));
+        let mut prefix = mov_imm32(0, TREE2_PML4 as u32);
+        prefix.extend(MOV_CR3_RAX);
+        let mut b_phase = mov_imm32(3, (WINDOW_VA + offset) as u32);
+        b_phase.extend(mov_imm32(1, new_entry as u32));
+        b_phase.extend(MOV_RBX_RCX_STORE);
+        b_phase.extend(mov_imm32(0, TREE_PML4 as u32));
+        b_phase.extend(MOV_CR3_RAX);
+        let (after_first, after_second) = (prefix.len(), prefix.len() + b_phase.len());
+        let build = |boot: &mut LinuxDirectBoot| {
+            let dirty = matches!(leaf, Leaf::Large);
+            leaf.install(boot, TREE_PML4, 0, leaf.flags(true, dirty), None);
+            leaf.install(boot, TREE2_PML4, 1, leaf.flags(true, dirty), Some(frame));
+            // Variant 0 (tree A, old): the prefix, and the OLD marker wherever it would be fetched
+            // from after a switch that was not honoured or a stale entry.
+            let old = leaf.code_phys(0);
+            write_phys(boot, old, &prefix);
+            write_phys(
+                boot,
+                old + after_first as u64,
+                &with_marker(&[], OLD_MARKER),
+            );
+            write_phys(
+                boot,
+                old + after_second as u64,
+                &with_marker(&[], OLD_MARKER),
+            );
+            // Variant 1 (tree B): the B phase, then the MID marker if A were not restored.
+            let mid = leaf.code_phys(1);
+            write_phys(boot, mid + after_first as u64, &b_phase);
+            write_phys(
+                boot,
+                mid + after_second as u64,
+                &with_marker(&[], MID_MARKER),
+            );
+            // Variant 2 (tree A, edited): the NEW marker.
+            write_phys(
+                boot,
+                leaf.code_phys(2) + after_second as u64,
+                &with_marker(&[], NEW_MARKER),
+            );
+            tree_state(boot, TREE_PML4, GATE_CODE_VA)
+        };
+        let agreed = assert_modes_agree_with(
+            policy,
+            &build,
+            &switch_set(&cli, &halt),
+            32,
+            &frames_of(leaf, &[]),
+        );
+        let what = format!("{leaf:?} {policy:?}");
+        assert_halted(&agreed.tagged, NEW_MARKER);
+        assert_eq!(agreed.tagged.report.cr3, TREE_PML4, "{what}");
+        assert_eq!(
+            agreed.tagged.report.translation_context_changes.len(),
+            2,
+            "{what}"
+        );
+        for stats in [agreed.stats_4k, agreed.stats_2m] {
+            assert_eq!(stats.context_flushes, 2, "{what}: {stats:?}");
+            assert!(stats.hits > 0, "{what}: {stats:?}");
+            // `GuestOnly` never drops an entry for a table write: `MOV CR3` is the only thing that
+            // keeps the old translation of A from being served after A's table was edited.
+            if policy == FetchCacheInvalidation::GuestOnly {
+                assert_eq!(stats.write_flushes, 0, "{what}: {stats:?}");
+            }
+        }
+    }
+
+    /// Under `WriteWatch` the store into A's table also drops the entries that watch it; under
+    /// `GuestOnly` (a TLB: the store drops nothing) only the guest's `MOV CR3` does, so the second
+    /// policy is the one that fails if the flush at `MOV CR3` is lost or the key ignores CR3.
+    #[test]
+    fn gate_cr3_a_b_a_with_a_4k_page_runs_the_edited_tables_of_a() {
+        for policy in [
+            FetchCacheInvalidation::WriteWatch,
+            FetchCacheInvalidation::GuestOnly,
+        ] {
+            assert_cr3_a_b_a_runs_the_edited_tables_of_a(Leaf::Small, policy);
+        }
+    }
+
+    #[test]
+    fn gate_cr3_a_b_a_with_a_2m_leaf_runs_the_edited_tables_of_a() {
+        for policy in [
+            FetchCacheInvalidation::WriteWatch,
+            FetchCacheInvalidation::GuestOnly,
+        ] {
+            assert_cr3_a_b_a_runs_the_edited_tables_of_a(Leaf::Large, policy);
+        }
+    }
+
+    // -- the board: the option, the report and the stop record --
+
+    /// One board run of the CR3-switch program (two 4 KiB trees) with the report on.
+    fn run_board_with_tag(
+        mode: CacheMode,
+        enable_tag: bool,
+    ) -> (String, crate::LinuxFetchCacheReport) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let (mut boot, _) = boot_with_entry(&cr3_switch_program(TREE_PML4, 0x1111));
+        install_second_tree(&mut boot, 0x2222);
+        boot.board.enable_fetch_cache_report();
+        if enable_tag {
+            boot.board.enable_fetch_cache_leaf_2m_tag();
+        }
+        let report = boot
+            .board
+            .run_linux_boot_cpl0_set(
+                64,
+                &switch_set(&cli, &halt),
+                false,
+                mode != CacheMode::Plain,
+                false,
+            )
+            .expect("runs");
+        let fetch = boot.board.take_fetch_cache_report().expect("requested");
+        (format!("{report:?}"), fetch)
+    }
+
+    /// The tag is off unless asked: the report says so; with it the run report is the same text
+    /// as without the cache and with the 4 KiB cache; asking for the tag with the cache off
+    /// changes nothing and reports `false`. This checks only the opt-in and the equality of the
+    /// `Debug` text of the report; it does not catch a wrong offset or frame of a 2 MiB entry
+    /// (the synthetic `gate_2m_*` and `cache_2m_*` cases do).
+    #[test]
+    fn the_2m_tag_is_opt_in_on_the_board_and_leaves_the_run_report_unchanged() {
+        let (plain, plain_fetch) = run_board_with_tag(CacheMode::Plain, false);
+        let (plain_tagged, plain_tagged_fetch) = run_board_with_tag(CacheMode::Plain, true);
+        let (default, default_fetch) = run_board_with_tag(CacheMode::Tag4k, false);
+        let (tagged, tagged_fetch) = run_board_with_tag(CacheMode::Tag2m, true);
+        assert!(!plain_fetch.leaf_2m_tag && !default_fetch.leaf_2m_tag);
+        assert!(!plain_tagged_fetch.leaf_2m_tag, "no cache, no tag");
+        assert!(tagged_fetch.leaf_2m_tag);
+        for text in [&plain_tagged, &default, &tagged] {
+            assert_eq!(text, &plain);
+        }
+        let (d, t) = (default_fetch.total.walks, tagged_fetch.total.walks);
+        assert_eq!((d.data_read, d.data_write), (t.data_read, t.data_write));
+        assert!(t.fetch <= d.fetch, "{t:?} {d:?}");
     }
 
     /// The same check on the real kernel: the 2M-instruction prefix of the Linux board run ends

@@ -481,6 +481,12 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   кэш; переменная раннера `OD_FETCH_CACHE_SWEEP=1` (вместе с `OD_FETCH_CACHE_STATS`) добавляет в sidecar ключ
   `fetch_cache_sweep`; без неё отчёт и поведение прежние. Данные: `docs/reports/data/stage4/s4-13c-sweep-2026-11-16.json`.
   См. раздел S4-13c в [отчёте](../reports/STAGE_4_REPORT.md).
+- S4-13d (реализовано, ревью не проведено; чекбокс не ставится, S4-13 остаётся открытым): опция тега 2 MiB в настоящем кэше
+  выборки (`FetchCacheTag::Leaf2M`; по умолчанию 4 KiB; раннер: `OD_FETCH_CACHE_TAG=2m`; плата: `enable_fetch_cache_leaf_2m_tag`)
+  и расширенный дифференциальный гейт: синтетика (remap/NX/unmap 2 MiB-листа, сброс A-бита на PDE/PDPTE/PML4E, D-бит в таблице
+  кэшированного кода, CR3 A→B→A с правкой таблиц A, обе политики) и ядро (фаза ядра 2,33·10⁹ и `--user-mode` 3·10⁹ в режимах
+  4k / 2m / без кэша: отчёт, RAM и обходы данных равны побайтно; тег 2 MiB: misses 38,5 M → 7,7 M, обходы выборки 12,0 M → 2,7 M).
+  Данные: `docs/reports/data/stage4/s4-13d-differential-2026-11-16.json`. См. раздел S4-13d в [отчёте](../reports/STAGE_4_REPORT.md).
 - **Где:** `od-machine`, `tools/bench/`, отчёт и небольшие данные этапа.
 - **Сделать:** сохранить uncached baseline, сделать минимальный bounded TLB prototype. Ключ/tag отражает address space, access/context, размер страницы и все влияющие на перевод permissions; исключить хранение невалидных указателей на RAM.
 - **Проверка:** одинаковые translations/faults/A/D effects cached/uncached; рабочие наборы разного размера, повторные прогоны, hit/miss, latency и память. Сначала измерить реальные случаи, затем выбрать структуру/размер.
