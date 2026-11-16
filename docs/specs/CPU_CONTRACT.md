@@ -27545,3 +27545,10 @@ Six focused profile tests cover address/load behavior, zero-extension, flags/sta
 Base `PagedCpl0ProbeV1` admits only exact no-prefix `81 FD 00 01 00 00`. Opcode 81 /7 compares the dword EBP operand to imm32 0x100 using shared dword CMP semantics. Arithmetic flags and definedness update; all GPRs and memory remain unchanged. A fault fetching any immediate byte is atomic. Other register/group/immediate/width/prefix forms, CPL3 and other paged profiles remain unsupported.
 
 Four focused tests cover equality, carry/sign and high dword values that distinguish dword from word semantics, GPR preservation, arithmetic flag results/definedness, immediate-fetch atomicity, neighbors and CPL3/profile isolation. Firmware advances after 8,965 retired instructions to `41 0F 92 C3` (`SETB R11B`, ISSUE-271) at RIP `0x201605`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `SETB R11B` (ISSUE-271)
+
+Base `PagedCpl0ProbeV1` admits only exact `41 0F 92 C3`. REX.B extends ModRM r/m=3 to R11B. SETB reads CF only, writing 1 when set and 0 when clear into only R11's low byte; upper R11 bits, RFLAGS and definedness remain unchanged, including when CF is undefined. A final ModRM-byte fetch fault is atomic. Other SETcc conditions/registers/ModRM/REX/prefix forms, memory destinations, CPL3 and other paged profiles remain unsupported.
+
+Four focused tests cover both CF values with defined and undefined CF, both ZF values, partial-register/full-state preservation, fetch-fault atomicity, neighbors and CPL3/profile isolation. Firmware advances after 8,966 retired instructions to `45 31 F6` (`XOR R14D,R14D`, ISSUE-272) at RIP `0x201609`; COM1 remains empty. Independent review approved with no findings.
