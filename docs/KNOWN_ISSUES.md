@@ -1019,10 +1019,19 @@
 ### ISSUE-215 — S7-04: Rust helper `CMP R12D,7` (`41 83 FC 07`) remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `JZ rel8 +0x35`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200f3d`.
+- **Статус:** решена узко для exact `41 83 FC 07` в base `PagedCpl0ProbeV1`; независимое review одобрило изменение без оставшихся замечаний, ожидает коммита. Other registers, immediates, widths, prefixes, and profiles remain unsupported.
+- **Суть и результат:** exact REX `41`, opcode `83` /7, ModRM `FC`, imm8 `07` compare R12D against 7 at dword width. The shared arithmetic helper updates 32-bit CMP flags and marks them defined; all GPRs remain unchanged. Tests include values above 16 bits to distinguish dword from word semantics and high-qword bits that must be ignored.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue215.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf3d` are `41 83 FC 07`; runner budget 10000.
+- **Проверка:** four focused tests cover equal/less/greater/overflowing dword operands, 32-bit operand selection vs word-sized and qword-high-bit mistakes, full-GPR retention, arithmetic flags/definedness, final-immediate fetch-fault atomicity, adjacent immediates/groups/destinations/prefixes, CPL3 and other-profile isolation. Runner retired 8897 and stopped at `74 D0` (`JZ rel8 -0x30`, ISSUE-216), RIP `0x200f41`, `Unsupported { opcode: 116 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
+- **Следующий шаг:** independently review this exact dword CMP admission and continue S7-04 at ISSUE-216.
+
+### ISSUE-216 — S7-04: Rust helper `JZ rel8 -0x30` (`74 D0`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact `CMP R12D,7`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200f41`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8896 instructions and stopped at `41 83 FC 07`, `Unsupported { opcode: 131 }`, `RIP=0x200f3d`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue214.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf3d` are `41 83 FC 07`; runner budget 10000.
-- **Следующий шаг:** inspect the exact R12D CMP encoding, shared arithmetic flag semantics and profile boundaries before considering narrow admission.
+- **Суть и последствия:** runner retired 8897 instructions and stopped at `74 D0`, `Unsupported { opcode: 116 }`, `RIP=0x200f41`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue215.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf41` are `74 D0`; runner budget 10000.
+- **Следующий шаг:** inspect ZF branch behavior for this exact negative rel8 displacement and profile boundaries before considering narrow admission.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.
