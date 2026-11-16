@@ -851,10 +851,21 @@
 ### ISSUE-196 — S7-04: Rust helper `MOV EDI,dword ptr [RSI+0x38]` (`8B 7E 38`) remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `JAE +0x4C`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e6a`.
-- **Статус:** открыта.
-- **Суть и последствия:** after 8878 retire runner stopped on `8B 7E 38` (`MOV EDI,dword ptr [RSI+0x38]`), `Unsupported { opcode: 139 }`, `RIP=0x200e6a`; COM1 remains empty.
+- **Статус:** решена узко для exact `8B 7E 38` в base `PagedCpl0ProbeV1`; implementation awaits review/commit. Full handoff validation remains incomplete.
+- **Суть и результат:** exact no-prefix primary opcode `8B`, ModRM `7E`, disp8 `0x38`, dword destination EDI and qword RSI-based address reuse the tracked dword `read_operand` path. A successful dword write zero-extends RDI; memory faults occur before CPU-state commit. Other destinations, displacements, widths, addressing forms and profiles remain outside the allowlist.
+- **Проверка:** six focused `rust_helper_mov_edi_dword_handoff_field_38_*` tests, other-profile isolation and `paged_probe_mov_edi_dword_rsi_disp8_38_uses_tracked_four_level_walk` passed. The machine test verifies Accessed bits through code/data leaf PTEs and no data write; no cross-page behavior is claimed. All 465 `paged_probe_profile` tests, 37 `paged_probe_quantum` tests, `cargo check --offline -p od-isa -p od-machine --all-targets`, scoped rustfmt and `git diff --check` passed. Firmware image `/private/tmp/od-fw-s7-04-issue196.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner retired 8879 instructions and stopped at ISSUE-197 (`RIP=0x200e6d`), COM1 remains empty.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue195.bin`; bytes at offset `0xe6a` begin `8b 7e 38`; runner budget 10000.
-- **Следующий шаг:** inspect exact disp8/destination form and existing tracked dword-read contract before considering narrow admission.
+- **Следующий шаг:** inspect exact `83 FF 20` imm8 CMP semantics, flags and sign-extension before considering narrow admission.
+- **Ссылка:** [S7-04 exact MOV EDI,[RSI+0x38] slice](reports/STAGE_7_REPORT.md#s7-04-exact-mov-edi-rsi-plus-0x38).
+
+<a id="issue-197-s7-04-rust-helper-cmp-edi-0x20-unsupported"></a>
+### ISSUE-197 — S7-04: Rust helper `CMP EDI,0x20` (`83 FF 20`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact `MOV EDI,dword ptr [RSI+0x38]`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e6d`.
+- **Статус:** открыта.
+- **Суть и последствия:** after 8879 retire runner stopped on `83 FF 20` (`CMP EDI,0x20`), `Unsupported { opcode: 131 }`, `RIP=0x200e6d`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue196.bin`; bytes at offset `0xe6d` begin `83 ff 20`; runner budget 10000.
+- **Следующий шаг:** inspect exact dword CMP imm8 sign-extension and flag semantics before considering narrow admission.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
