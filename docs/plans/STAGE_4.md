@@ -536,6 +536,10 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   смена CR0/CR4 (CR4.PGE) и каждый доставленный гостю `#PF`. Умолчание раннера и Linux (`WriteWatch`), od-isa и
   жизненный цикл кэша (новый на вызов, постоянный — S4-14i) не менялись. См.
   раздел S4-14h в [отчёте](../reports/STAGE_4_REPORT.md) и CPU_CONTRACT.
+- S4-14i (реализовано, ревью не проведено; чекбокс не ставится, S4-14 остаётся открытым): opt-in постоянный кэш выборки между вызовами цикла набора
+  (`FetchTranslationCache::persistent`, `run_cpl0_set_paged_2m_ram_with_cache`). Границу вызова кэш переживает; запись хоста между вызовами
+  ловит сверка поколений кадров таблиц и ключа контекста перевода (после ревью P3: сверка безусловна для любого переданного кэша), явные формы — `flush_for_host_event` и `reset`. К раннеру и плате не подключён. См. раздел S4-14i в
+  [отчёте](../reports/STAGE_4_REPORT.md) и CPU_CONTRACT.
 - **Где:** `od-machine`, system instruction effects `od-isa`.
 - **Сделать:** CR3/context transitions, INVLPG, paging/permission-control changes, reset; global/PCID/INVPCID — только при объявленной поддержке. Развести software-cache generations и архитектурную семантику guest page tables.
 - **Проверка:** remap A→B, tighten/relax rights с обязательной invalidation, stale entry после context switch, huge-page coverage, код/данные, разные guest pages внутри host page. Поведение без invalidation проверять в пределах разрешённого стандартом, не требовать несуществующей гарантии.

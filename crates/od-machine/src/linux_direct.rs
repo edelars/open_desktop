@@ -13219,6 +13219,448 @@ mod tests {
         );
     }
 
+    // ---- S4-14i: the fetch cache that outlives a call of the set loop ----
+
+    use crate::fetch_translation_cache::FetchTranslationCache;
+    use crate::paged_memory_adapter::run_cpl0_set_paged_2m_ram_with_cache;
+
+    /// One call of the set loop over `cache` (`None`: no cache). A cache built with
+    /// `with_invalidation` and dropped afterwards is the per-call cache of every earlier caller.
+    fn run_call_with_cache(
+        boot: &mut LinuxDirectBoot,
+        state: &mut LongModeState,
+        set: &Cpl0ProfileSet<'_>,
+        budget: u64,
+        cache: Option<&FetchTranslationCache>,
+    ) -> PagedCpl0SetReport {
+        let efer = boot.board.efer();
+        let cr3 = state.cr3.expect("the case runs with a CPU-owned CR3");
+        run_cpl0_set_paged_2m_ram_with_cache(
+            state,
+            boot.board.bus_mut(),
+            cr3,
+            efer,
+            long64(),
+            budget,
+            INTEGER_FLAGS,
+            set,
+            None,
+            || false,
+            |_| {},
+            true,
+            cache,
+            None,
+            None,
+            None,
+        )
+    }
+
+    /// Two calls over the remap layout of S4-14h (`sync` between the store and the marker). The
+    /// first call retires `first` instructions (3 stop right after the PTE store, 4 after the
+    /// instruction behind it), the second runs to the `HLT`. `between` is the host's action
+    /// between the calls (it gets the board and the cache). With `persistent` the same cache
+    /// serves both calls, otherwise each call gets a fresh one. Returns the end state, the report
+    /// of the first and of the second call (their `fetch_cache_stats` are the cache's counters
+    /// at the end of that call: cumulative for a persistent cache).
+    fn run_two_calls(
+        sync: &[u8],
+        policy: FetchCacheInvalidation,
+        persistent: bool,
+        first: u64,
+        between: &dyn Fn(&mut LinuxDirectBoot, &FetchTranslationCache),
+    ) -> (LongModeState, PagedCpl0SetReport, PagedCpl0SetReport) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let set = switch_set(&cli, &halt);
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let mut state = remap_case(&mut boot, &[], sync, None);
+        let shared = if persistent {
+            FetchTranslationCache::persistent(policy)
+        } else {
+            FetchTranslationCache::with_invalidation(policy)
+        };
+        let call = |boot: &mut LinuxDirectBoot, state: &mut LongModeState, budget: u64| {
+            if persistent {
+                run_call_with_cache(boot, state, &set, budget, Some(&shared))
+            } else {
+                let fresh = FetchTranslationCache::with_invalidation(policy);
+                run_call_with_cache(boot, state, &set, budget, Some(&fresh))
+            }
+        };
+        let one = call(&mut boot, &mut state, first);
+        assert_eq!(
+            one.exit,
+            PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
+            "{one:?}"
+        );
+        assert_eq!(one.instructions_executed, first);
+        between(&mut boot, &shared);
+        let two = call(&mut boot, &mut state, 16);
+        assert_eq!(two.exit, PagedCpl0SetExit::Run(RunExit::Halted), "{two:?}");
+        (state, one, two)
+    }
+
+    fn stats_of(report: &PagedCpl0SetReport) -> FetchCacheStats {
+        report.fetch_cache_stats.expect("the cache is on")
+    }
+
+    /// The cache survives the end of a call. After the PTE store of call 1 the page the code
+    /// runs on is still cached with its old frame, and call 2 (no event in between, no flush of
+    /// the policy) fetches through it and runs the old marker: the hit counter grows over the
+    /// boundary. The per-call cache, with the same two calls, has lost it and walks the new PTE.
+    #[test]
+    fn persistent_cache_keeps_its_entries_over_the_call_boundary() {
+        let none = |_: &mut LinuxDirectBoot, _: &FetchTranslationCache| {};
+        let (state, one, two) =
+            run_two_calls(&NOP3, FetchCacheInvalidation::GuestOnly, true, 3, &none);
+        assert_eq!(state.gpr[Register::Rdx as usize], OLD_MARKER);
+        let (after_one, after_two) = (stats_of(&one), stats_of(&two));
+        assert!(
+            after_two.hits > after_one.hits,
+            "{after_one:?} {after_two:?}"
+        );
+        assert_eq!(
+            (
+                after_two.host_flushes,
+                after_two.invlpg_flushes,
+                after_two.control_flushes,
+                after_two.context_flushes,
+                after_two.write_flushes,
+                after_two.fault_flushes
+            ),
+            (0, 0, 0, 0, 0, 0),
+            "{after_two:?}"
+        );
+        // Call 2 inserted nothing: the entries of call 1 served it.
+        assert_eq!(after_two.inserts, after_one.inserts, "{after_two:?}");
+
+        let (state, _, two) =
+            run_two_calls(&NOP3, FetchCacheInvalidation::GuestOnly, false, 3, &none);
+        assert_eq!(state.gpr[Register::Rdx as usize], NEW_MARKER);
+        assert!(stats_of(&two).inserts >= 1);
+    }
+
+    /// 40 `MOV RAX, imm32` and a `HLT` on one page behind a PT entry with its accessed bit
+    /// already walked, run in two calls (10 instructions, then to the `HLT`). `between` is the host's
+    /// action between the calls. Returns the end state and the two reports.
+    fn run_straight_line_two_calls(
+        policy: FetchCacheInvalidation,
+        persistent: bool,
+        between: &dyn Fn(&mut LinuxDirectBoot),
+    ) -> (LongModeState, [PagedCpl0SetReport; 2]) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let set = switch_set(&cli, &halt);
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        write_tree(&mut boot, TREE_PML4, &[(0, SPLIT_PAGE0 | 3)], None);
+        let mut code = Vec::new();
+        for value in 0..40u32 {
+            code.extend(mov_imm32(0, value));
+        }
+        code.push(0xF4);
+        write_phys(&mut boot, SPLIT_PAGE0 + 0x200, &code);
+        let mut state = tree_state(&boot, TREE_PML4, SPLIT_VA + 0x200);
+        let shared = FetchTranslationCache::persistent(policy);
+        let call = |boot: &mut LinuxDirectBoot, state: &mut LongModeState, budget: u64| {
+            if persistent {
+                run_call_with_cache(boot, state, &set, budget, Some(&shared))
+            } else {
+                let fresh = FetchTranslationCache::with_invalidation(policy);
+                run_call_with_cache(boot, state, &set, budget, Some(&fresh))
+            }
+        };
+        let one = call(&mut boot, &mut state, 10);
+        assert_eq!(
+            one.exit,
+            PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted)
+        );
+        between(&mut boot);
+        let two = call(&mut boot, &mut state, 100);
+        assert_eq!(two.exit, PagedCpl0SetExit::Run(RunExit::Halted), "{two:?}");
+        (state, [one, two])
+    }
+
+    /// Straight-line code over two calls, in both policies: the persistent cache walks the code
+    /// page once for both calls (one insert), the per-call cache once per call, and the end state
+    /// and the retired count are the same.
+    #[test]
+    fn persistent_cache_changes_no_result_and_saves_the_second_walk() {
+        for policy in [
+            FetchCacheInvalidation::WriteWatch,
+            FetchCacheInvalidation::GuestOnly,
+        ] {
+            let none = |_: &mut LinuxDirectBoot| {};
+            let (state, reports) = run_straight_line_two_calls(policy, true, &none);
+            let (plain_state, plain) = run_straight_line_two_calls(policy, false, &none);
+            assert_eq!(state, plain_state, "{policy:?}");
+            assert_eq!(state.gpr[Register::Rax as usize], 39);
+            assert_eq!(
+                reports[1].instructions_executed,
+                plain[1].instructions_executed
+            );
+            let total = stats_of(&reports[1]);
+            assert_eq!(total.inserts, 1, "{policy:?} {total:?}");
+            assert_eq!(total.host_flushes, 0, "{policy:?} {total:?}");
+            assert!(total.hits > stats_of(&reports[0]).hits, "{policy:?}");
+            // The per-call cache of call 2 had to walk the page again.
+            assert_eq!(stats_of(&plain[1]).inserts, 1);
+            assert!(stats_of(&plain[1]).misses >= 1);
+            assert_eq!(stats_of(&plain[1]).host_flushes, 0, "{policy:?}");
+        }
+    }
+
+    /// The host rewrites the PTE of the cached code page between the calls (same value, new
+    /// page generation: only the generation shows it), in both policies: call 2 starts with an
+    /// empty cache and walks the page again. A write to another frame keeps the cache.
+    #[test]
+    fn persistent_cache_drops_entries_for_a_host_write_to_a_watched_table_frame() {
+        let pte = TREE_PML4 + 0x3000;
+        for policy in [
+            FetchCacheInvalidation::WriteWatch,
+            FetchCacheInvalidation::GuestOnly,
+        ] {
+            // The first walk set the accessed bit: the value the PTE has now.
+            let rewrite = |boot: &mut LinuxDirectBoot| {
+                write_phys(boot, pte, &(SPLIT_PAGE0 | 0x23).to_le_bytes());
+            };
+            let (state, reports) = run_straight_line_two_calls(policy, true, &rewrite);
+            assert_eq!(state.gpr[Register::Rax as usize], 39);
+            let total = stats_of(&reports[1]);
+            assert_eq!(total.host_flushes, 1, "{policy:?} {total:?}");
+            assert_eq!(total.inserts, 2, "{policy:?} {total:?}");
+            // Not a table of any entry, and not code.
+            let unrelated = |boot: &mut LinuxDirectBoot| {
+                write_phys(boot, SPLIT_PAGE2, &[0xAA; 8]);
+            };
+            let (_, reports) = run_straight_line_two_calls(policy, true, &unrelated);
+            let total = stats_of(&reports[1]);
+            assert_eq!((total.host_flushes, total.inserts), (0, 1), "{total:?}");
+        }
+    }
+
+    /// A retired `INVLPG` at the end of call 1 drops the stale entry; call 2 fetches through the
+    /// new frame. The same program with a `NOP` in its place (the persistent test above) runs the
+    /// old code, so this fails if the flush does not reach the cache that crosses the boundary.
+    #[test]
+    fn persistent_cache_after_a_guest_invlpg_runs_the_new_code_in_the_next_call() {
+        let none = |_: &mut LinuxDirectBoot, _: &FetchTranslationCache| {};
+        let (state, one, two) = run_two_calls(
+            &INVLPG_RBX,
+            FetchCacheInvalidation::GuestOnly,
+            true,
+            4,
+            &none,
+        );
+        assert_eq!(state.gpr[Register::Rdx as usize], NEW_MARKER);
+        assert_eq!(stats_of(&one).invlpg_flushes, 1);
+        assert_eq!(stats_of(&two).invlpg_flushes, 1);
+        assert_eq!(stats_of(&two).host_flushes, 0);
+    }
+
+    /// The write-watching policy over the boundary: the guest's PTE store in call 1 dropped the
+    /// entry then, so call 2 runs the new code.
+    #[test]
+    fn persistent_write_watch_cache_sees_the_pte_store_of_the_previous_call() {
+        let none = |_: &mut LinuxDirectBoot, _: &FetchTranslationCache| {};
+        let (state, one, two) =
+            run_two_calls(&NOP3, FetchCacheInvalidation::WriteWatch, true, 3, &none);
+        assert_eq!(state.gpr[Register::Rdx as usize], NEW_MARKER);
+        assert_eq!(stats_of(&one).write_flushes, 1);
+        assert_eq!(stats_of(&two).write_flushes, 1);
+    }
+
+    /// `GuestOnly` keeps the stale translation of the guest's own PTE store over the boundary
+    /// (the test above); the host then rewrites that PTE between the calls (the loader or a
+    /// harness through the host API, a DMA: none of them reaches `note_write`). The generation of
+    /// the table frame has moved, so call 2 starts with an empty cache and runs the new code.
+    /// A write to a frame that holds no table of an entry keeps the cache.
+    #[test]
+    fn persistent_guest_only_cache_drops_the_stale_entry_on_a_host_pte_write() {
+        let rewrite = |boot: &mut LinuxDirectBoot, _: &FetchTranslationCache| {
+            write_phys(boot, TREE_PML4 + 0x3000 + 8, &(ALT_PAGE1 | 3).to_le_bytes());
+        };
+        let (state, _, two) =
+            run_two_calls(&NOP3, FetchCacheInvalidation::GuestOnly, true, 3, &rewrite);
+        assert_eq!(state.gpr[Register::Rdx as usize], NEW_MARKER);
+        assert_eq!(stats_of(&two).host_flushes, 1, "{:?}", stats_of(&two));
+        let unrelated = |boot: &mut LinuxDirectBoot, _: &FetchTranslationCache| {
+            write_phys(boot, SPLIT_PAGE2, &[0xAA; 8]);
+        };
+        let (state, _, two) = run_two_calls(
+            &NOP3,
+            FetchCacheInvalidation::GuestOnly,
+            true,
+            3,
+            &unrelated,
+        );
+        assert_eq!(state.gpr[Register::Rdx as usize], OLD_MARKER);
+        assert_eq!(stats_of(&two).host_flushes, 0);
+    }
+
+    /// A host write to the code bytes of the cached frame is seen at once: the cache holds the
+    /// frame, never the byte.
+    #[test]
+    fn persistent_cache_reads_the_code_bytes_fresh_from_the_cached_frame() {
+        // The marker immediate of the old frame: the dword of `MOV RDX, imm32` is replaced.
+        let patch = |boot: &mut LinuxDirectBoot, _: &FetchTranslationCache| {
+            // The frame bytes of page X after the store are `NOP3; MOV RDX, imm32; HLT`: the store
+            // has one byte on X, so the immediate sits at offset 1 + 3 + 3.
+            write_phys(boot, SPLIT_PAGE1 + 7, &0x7777u32.to_le_bytes());
+        };
+        let (state, _, two) =
+            run_two_calls(&NOP3, FetchCacheInvalidation::GuestOnly, true, 3, &patch);
+        assert_eq!(state.gpr[Register::Rdx as usize], 0x7777);
+        assert_eq!(stats_of(&two).host_flushes, 0);
+    }
+
+    /// The explicit host events: `flush_for_host_event` and `reset` (a cache object handed to a
+    /// new machine session) both make call 2 walk the new PTE, though no table generation moved.
+    #[test]
+    fn persistent_cache_is_dropped_by_the_explicit_host_event_and_by_reset() {
+        let flush = |_: &mut LinuxDirectBoot, cache: &FetchTranslationCache| {
+            cache.flush_for_host_event();
+        };
+        let (state, _, two) =
+            run_two_calls(&NOP3, FetchCacheInvalidation::GuestOnly, true, 3, &flush);
+        assert_eq!(state.gpr[Register::Rdx as usize], NEW_MARKER);
+        assert_eq!(stats_of(&two).host_flushes, 1);
+        let reset = |_: &mut LinuxDirectBoot, cache: &FetchTranslationCache| cache.reset();
+        let (state, _, two) =
+            run_two_calls(&NOP3, FetchCacheInvalidation::GuestOnly, true, 3, &reset);
+        assert_eq!(state.gpr[Register::Rdx as usize], NEW_MARKER);
+        // The counters restarted with the reset: only call 2 is in them.
+        assert_eq!(stats_of(&two).host_flushes, 0);
+        assert_eq!(stats_of(&two).inserts, 1, "{:?}", stats_of(&two));
+    }
+
+    /// Two calls of the remap layout over ONE cache built with `with_invalidation` (not
+    /// `persistent`): the loop seals and checks every cache it is given (S4-14i, review), so the
+    /// constructor does not decide whether a host event between the calls is seen.
+    fn run_two_calls_over_one_plain_cache(
+        policy: FetchCacheInvalidation,
+        first: u64,
+        between: &dyn Fn(&mut LinuxDirectBoot),
+    ) -> (LongModeState, PagedCpl0SetReport, PagedCpl0SetReport) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let set = switch_set(&cli, &halt);
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let mut state = remap_case(&mut boot, &[], &NOP3, None);
+        let cache = FetchTranslationCache::with_invalidation(policy);
+        assert!(!cache.is_persistent());
+        let one = run_call_with_cache(&mut boot, &mut state, &set, first, Some(&cache));
+        assert_eq!(one.instructions_executed, first);
+        between(&mut boot);
+        let two = run_call_with_cache(&mut boot, &mut state, &set, 16, Some(&cache));
+        assert_eq!(two.exit, PagedCpl0SetExit::Run(RunExit::Halted), "{two:?}");
+        (state, one, two)
+    }
+
+    /// A cache that is not `persistent` and is handed to a second call is sealed and checked like
+    /// any other (it was not, before the S4-14i review: a `WriteWatch` cache then lost a host write
+    /// to a table frame, against the promise that such a write always flushes). `GuestOnly`: the
+    /// host rewrites the PTE of the entry's table (same value, new generation) and call 2 walks it
+    /// again; before, the stale translation served call 2 and ran `OLD_MARKER`. `WriteWatch`: the
+    /// guest's own store dropped the old entry in call 1, call 1 cached the new frame; the host
+    /// points the PTE back to the old frame and call 2 must follow it. Without a host write the
+    /// entry survives the boundary in both.
+    #[test]
+    fn a_cache_that_is_not_persistent_is_sealed_and_checked_like_any_other() {
+        let pte_x = TREE_PML4 + 0x3000 + 8;
+        let none = |_: &mut LinuxDirectBoot| {};
+        for policy in [
+            FetchCacheInvalidation::WriteWatch,
+            FetchCacheInvalidation::GuestOnly,
+        ] {
+            let (state, _, two) = run_two_calls_over_one_plain_cache(policy, 4, &none);
+            let expected = match policy {
+                // The guest store already dropped the old entry (and `sync` ran on the new frame).
+                FetchCacheInvalidation::WriteWatch => NEW_MARKER,
+                FetchCacheInvalidation::GuestOnly => OLD_MARKER,
+            };
+            assert_eq!(state.gpr[Register::Rdx as usize], expected, "{policy:?}");
+            assert_eq!(stats_of(&two).host_flushes, 0, "{policy:?}");
+            assert!(
+                stats_of(&two).hits > 0 && stats_of(&two).inserts >= 1,
+                "{policy:?} {:?}",
+                stats_of(&two)
+            );
+        }
+        // GuestOnly: a host write to the watched PTE page, after the guest's ignored store.
+        let rewrite = |boot: &mut LinuxDirectBoot| {
+            write_phys(boot, pte_x, &(ALT_PAGE1 | 3).to_le_bytes());
+        };
+        let (state, one, two) =
+            run_two_calls_over_one_plain_cache(FetchCacheInvalidation::GuestOnly, 3, &rewrite);
+        assert_eq!(state.gpr[Register::Rdx as usize], NEW_MARKER);
+        assert_eq!(stats_of(&one).host_flushes, 0);
+        assert_eq!(stats_of(&two).host_flushes, 1, "{:?}", stats_of(&two));
+        // WriteWatch: the host redirects the PTE to the old frame behind the cached new one.
+        let redirect = |boot: &mut LinuxDirectBoot| {
+            write_phys(boot, pte_x, &(SPLIT_PAGE1 | 3).to_le_bytes());
+        };
+        let (state, one, two) =
+            run_two_calls_over_one_plain_cache(FetchCacheInvalidation::WriteWatch, 4, &redirect);
+        assert_eq!(state.gpr[Register::Rdx as usize], OLD_MARKER);
+        assert_eq!(stats_of(&one).host_flushes, 0);
+        assert_eq!(stats_of(&two).host_flushes, 1, "{:?}", stats_of(&two));
+    }
+
+    /// The ordinary paths of a one-shot `WriteWatch` cache (the default of every caller) are what
+    /// they were: the per-call cache of the `_observed` entry point and the S4-13 counters show no
+    /// host flush, and the end state is the one of the run without any cache.
+    #[test]
+    fn a_one_shot_write_watch_cache_never_counts_a_host_flush() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let set = switch_set(&cli, &halt);
+        let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], &NOP3, None);
+        let cached = run_policy_case(&build, &set, 16, FetchCacheInvalidation::WriteWatch);
+        assert_halted_with_marker(&cached, NEW_MARKER);
+        assert_eq!(cached.stats.host_flushes, 0, "{:?}", cached.stats);
+        assert_eq!(cached.stats.write_flushes, 1, "{:?}", cached.stats);
+        let plain = run_cache_case(&build, &set, 16, false);
+        let with = run_cache_case(&build, &set, 16, true);
+        assert_eq!(with.state, plain.state);
+        assert_eq!(with.writes, plain.writes);
+        assert!(with.memory == plain.memory, "frame bytes differ");
+        assert_eq!(
+            with.report
+                .fetch_cache_stats
+                .expect("cache stats")
+                .host_flushes,
+            0
+        );
+    }
+
+    /// The host changes CR3 between the calls (not a guest `MOV CR3`, no flush of the loop) and
+    /// then puts it back. The entry of the code page (`GuestOnly`: stale after the guest's PTE
+    /// store, which the ignored write leaves in place) is dropped by the first check that sees the
+    /// other context, so the return does not find it, though no table generation moved after the
+    /// call under the other CR3 sealed its own. Without the switch the same entry serves call 2
+    /// (`persistent_cache_keeps_its_entries_over_the_call_boundary`), which the key check does not
+    /// touch: one flush for the call under B, one for the return to A (CR3 differs from the seal).
+    #[test]
+    fn the_host_switching_cr3_between_calls_drops_the_cache() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let set = switch_set(&cli, &halt);
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let mut state = remap_case(&mut boot, &[], &NOP3, None);
+        let root_a = state.cr3.expect("CPU-owned CR3");
+        let root_b = root_a + 0x8000;
+        let cache = FetchTranslationCache::persistent(FetchCacheInvalidation::GuestOnly);
+        let one = run_call_with_cache(&mut boot, &mut state, &set, 3, Some(&cache));
+        assert_eq!(stats_of(&one).host_flushes, 0);
+        state.cr3 = Some(root_b);
+        let other = run_call_with_cache(&mut boot, &mut state, &set, 0, Some(&cache));
+        assert_eq!(
+            other.exit,
+            PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted)
+        );
+        assert_eq!(stats_of(&other).host_flushes, 1, "{:?}", stats_of(&other));
+        state.cr3 = Some(root_a);
+        let two = run_call_with_cache(&mut boot, &mut state, &set, 16, Some(&cache));
+        assert_eq!(two.exit, PagedCpl0SetExit::Run(RunExit::Halted), "{two:?}");
+        assert_eq!(state.gpr[Register::Rdx as usize], NEW_MARKER);
+        assert_eq!(stats_of(&two).host_flushes, 2, "{:?}", stats_of(&two));
+    }
+
     /// The same check on the real kernel: the 2M-instruction prefix of the Linux board run ends
     /// with the same stop record and leaves byte-identical guest RAM (hence identical page-table
     /// accessed/dirty bits) with the fetch translation cache on and off.
