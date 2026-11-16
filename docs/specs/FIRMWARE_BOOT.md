@@ -504,3 +504,10 @@ Four focused tests cover zero-extension, full register/flag state, AF definednes
 Base `PagedCpl0ProbeV1` admits only exact no-prefix `85 ED`. Dword TEST on EBP writes no GPRs; shared logical TEST semantics clear CF/OF, set SF/ZF/PF from the value, preserve AF concrete state while marking AF undefined, and preserve unrelated flags/definedness. A final ModRM-byte fetch fault is atomic. Neighboring registers, byte/word/qword forms, prefixes, CPL3 and other paged profiles remain unsupported.
 
 Four focused tests cover flag results/definedness, AF, full GPR preservation, fetch-fault atomicity, neighboring forms and CPL3/profile isolation. Firmware advances after 8,968 retired instructions to `41 0F 94 C6` (`SETE R14B`, ISSUE-274) at RIP `0x20160E`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `SETE R14B` (ISSUE-274)
+
+Base `PagedCpl0ProbeV1` admits only exact `41 0F 94 C6`. REX.B extends ModRM r/m=6 to R14B. SETE reads ZF and writes 1 or 0 only to R14's low byte; upper R14 and all flags/definedness are preserved, whether ZF is defined or undefined. A final ModRM-byte fetch fault is atomic. Neighboring conditions/registers/ModRM/REX/prefix forms, memory destinations, CPL3 and other paged profiles remain unsupported.
+
+Four focused tests cover ZF true/false with defined and undefined ZF, low-byte-only mutation and full-state preservation, final-byte fetch-fault atomicity, neighbors and CPL3/profile isolation. Firmware advances after 8,969 retired instructions to `41 83 FA 06` (`CMP R10D,6`, ISSUE-275) at RIP `0x201612`; COM1 remains empty. Independent review approved with no findings.

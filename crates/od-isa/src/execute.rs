@@ -20546,6 +20546,30 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, u64::from(condition.evaluate(state.rflags)));
             state.rip = next_rip;
         }
+        // S7-04: the helper writes equality only to R14B with exact
+        // `41 0F 94 C6`. REX.B extends ModRM r/m=6 to R14B; SETE reads ZF
+        // and preserves the rest of R14 and all flags/definedness.
+        Operation::SetCondition {
+            condition,
+            dst: Operand::Register(destination),
+            raw_modrm,
+        } if base_profile
+            && condition == ConditionCode::Equal
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x94
+            && instruction.length == 4
+            && instruction.operand_size == OperandSize::Byte
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x41),
+                    ..Prefixes::default()
+                })
+            && raw_modrm == 0xc6
+            && destination == RegisterView::low(Register::R14, OperandSize::Byte) =>
+        {
+            state.write(destination, u64::from(condition.evaluate(state.rflags)));
+            state.rip = next_rip;
+        }
         // S7-04: the helper combines the condition bytes with exact
         // `40 08 CF` (OR DIL,CL). Reuse the byte logic result, including its
         // architecturally undefined AF metadata, without admitting neighbors.
