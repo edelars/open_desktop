@@ -23429,6 +23429,27 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: the helper loads exact imm64 `49 BF 00 00 00 00 10 00 00 00`
+        // into R15. Keep REX.W/B, destination and the full 64-bit value exact.
+        Operation::MovImmediate {
+            dst: Operand::Register(destination),
+            value,
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xbf
+            && instruction.length == 10
+            && instruction.operand_size == OperandSize::Qword
+            && destination == RegisterView::low(Register::R15, OperandSize::Qword)
+            && value == 0x0000_0010_0000_0000
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x49),
+                    ..Prefixes::default()
+                }) =>
+        {
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: the helper initializes exactly `41 B9 FF FF FF FF`
         // (MOV R9D,0xffffffff). The dword write zero-extends into R9;
         // keep the register, immediate and REX encoding exact.

@@ -4147,8 +4147,18 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-286 — S7-04: exact helper `MOV R15,0x1000000000` (`49 BF 00 00 00 00 10 00 00 00`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-285.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201640`.
-- **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact REX.B MOV-imm64 form; subsequent firmware execution is blocked.
+- **Статус:** реализована в S7-04; независимое ревью одобрило без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact REX.W/B `49 BF` plus imm64 `0x1000000000`; it writes R15 and preserves flags/other state. This is an imm64 value, not a sign-extended imm32.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1640` are `49 BF 00 00 00 00 10 00 00 00`; runner budget 10000.
-- **Проверки исполнения:** after ISSUE-285, firmware retires 8,982 instructions and stops with `Unsupported { opcode: 191 }`; COM1 remains empty.
-- **Следующий шаг:** admit only the exact immediate MOV encoding and verify R15 routing, value and fetch-fault atomicity.
+- **Проверки исполнения:** four focused tests cover full imm64 routing, unchanged flags/other GPRs, immediate-fetch atomicity, neighboring destination/REX/width/opcode forms and CPL3; other paged profiles keep the instruction unsupported. Full od-isa suites pass (2,322 library, 1,591 profile-set, 126 execution, 29 boundary, 6 flags, 825 paged-profile, 7 profile-isolation, 15 descriptor); scoped cargo check, formatting and diff-check pass. Cargo check reports only the existing unused page-walk helper warning. Firmware retires 8,983 instructions and stops at `4D 01 D6` (`ADD R14,R10`, ISSUE-287) at RIP `0x20164a`; COM1 remains empty. Independent review approved with no findings.
+- **Следующий шаг:** handle exact `ADD R14,R10` as ISSUE-287.
+
+
+### ISSUE-287 — S7-04: exact helper `ADD R14,R10` (`4D 01 D6`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-286.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20164a`.
+- **Статус:** открыта.
+- **Суть и последствия:** the base profile does not yet admit this exact qword register-add encoding; subsequent firmware execution is blocked.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x164a` are `4D 01 D6`; runner budget 10000.
+- **Проверки исполнения:** after ISSUE-286, firmware retires 8,983 instructions and stops with `Unsupported { opcode: 1 }`; COM1 remains empty.
+- **Следующий шаг:** admit only the exact ADD R14,R10 form and verify qword result, flags/definedness, source/destination routing and fetch-fault atomicity.

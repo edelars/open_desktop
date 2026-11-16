@@ -3948,6 +3948,109 @@ fn rust_helper_mov_r8_imm64_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn rust_helper_mov_r15_imm64_0x1000000000_sets_only_r15() {
+    let bytes = [0x49, 0xbf, 0, 0, 0, 0, 0x10, 0, 0, 0];
+    let value = 0x0000_0010_0000_0000;
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::R15 as usize] = 0xdead_beef_dead_beef;
+    cpu.rflags = 0x8d7;
+    let before = cpu.clone();
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    let mut expected = before;
+    expected.gpr[Register::R15 as usize] = value;
+    expected.rip += bytes.len() as u64;
+    assert_eq!(cpu, expected);
+    assert_ne!(value, 0x0000_0000_1000_0000); // not a sign-extended imm32
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn rust_helper_mov_r15_imm64_0x1000000000_neighbours_stay_unsupported_without_mutation() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x49, 0xbf, 1, 0, 0, 0, 0x10, 0, 0, 0], 0xbf), // adjacent imm64
+        (&[0x48, 0xbf, 0, 0, 0, 0, 0x10, 0, 0, 0], 0xbf), // RDI
+        (&[0x49, 0xbe, 0, 0, 0, 0, 0x10, 0, 0, 0], 0xbe), // R14
+        (&[0x4d, 0xbf, 0, 0, 0, 0, 0x10, 0, 0, 0], 0xbf), // extra REX.R
+        (&[0x41, 0xbf, 0, 0, 0, 0x10], 0xbf),             // R15D,imm32
+        (&[0x49, 0xc7, 0xc7, 0, 0, 0, 0x10], 0xc7),       // sign-extended imm32
+        (&[0x66, 0x49, 0xbf, 0, 0, 0, 0, 0x10, 0, 0, 0], 0xbf), // operand prefix
+        (&[0xf3, 0x49, 0xbf, 0, 0, 0, 0, 0x10, 0, 0, 0], 0xbf), // REP prefix
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: *opcode });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "{bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn rust_helper_mov_r15_imm64_0x1000000000_fetch_fault_is_atomic() {
+    let bytes = [0x49, 0xbf, 0, 0, 0, 0, 0x10, 0, 0, 0];
+    let rip = RIP + 0xff7;
+    let mut memory = Memory::new(&[]);
+    memory.bytes[CODE_PHYSICAL + 0xff7..CODE_PHYSICAL + 0x1000].copy_from_slice(&bytes[..9]);
+    memory.fail_fetch_at = Some((rip + 9, page_fault(0x10, rip + 9)));
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 9),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn rust_helper_mov_r15_imm64_0x1000000000_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x49, 0xbf, 0, 0, 0, 0, 0x10, 0, 0, 0];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x49 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn rust_helper_mov_r9d_imm32_zero_extends_and_preserves_state() {
     let bytes = [0x41, 0xb9, 0xff, 0xff, 0xff, 0xff]; // MOV R9D,0xffffffff
     let mut memory = Memory::new(&bytes);
@@ -25044,6 +25147,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
             &[0x49, 0xb8, 0xfc, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f][..],
             0xb8,
         ),
+        (&[0x49, 0xbf, 0, 0, 0, 0, 0x10, 0, 0, 0][..], 0xbf),
         (&[0x41, 0xb9, 0xff, 0xff, 0xff, 0xff][..], 0xb9),
         (&[0xbe, 0, 0, 0x10, 0][..], 0xbe),
         (&[0xba, 0, 0, 1, 0][..], 0xba),
