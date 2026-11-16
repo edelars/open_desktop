@@ -3882,10 +3882,21 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Следующий шаг:** verify exact SETB BPL byte-register selection, flags, and profile isolation for ISSUE-261.
 
 
-### ISSUE-261 — S7-04: helper `SETB BPL` (`40 0F 92 C5`) remains outside paged CPU profile
+### ISSUE-261 — S7-04: exact helper `SETB BPL` (`40 0F 92 C5`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-260.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015D2`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner retired 8,953 instructions and stopped on `40 0F 92 C5`, `Unsupported { opcode: 146 }`; COM1 remains empty.
+- **Статус:** implemented in S7-04; independent review approved with no findings.
+- **Суть и последствия:** exact bare REX `0x40` selects BPL for SETB instead of the legacy high-byte register. SETB reads CF only, writes `0` or `1` to BPL while preserving the upper 56 bits of RBP, and leaves flags/definedness unchanged.
+- **Проверка:** four focused tests cover both CF values with defined and undefined CF, partial BPL update, ZF independence, full flags/definedness preservation, final ModRM fetch-fault atomicity, REX/no-REX/ModRM/register/memory/prefix neighbors and CPL3 isolation. Other paged profiles keep this exact form unsupported.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15D2` are `40 0F 92 C5`; runner budget 10000.
-- **Следующий шаг:** verify exact REX byte-register selection, CF predicate, flags/definedness preservation and profile isolation for ISSUE-261.
+- **Проверки исполнения:** firmware retires 8,954 instructions and stops at ISSUE-262; COM1 remains empty.
+- **Следующий шаг:** verify exact qword-effective-address to dword LEA semantics for ISSUE-262.
+
+
+### ISSUE-262 — S7-04: helper `LEA R15D,[R10-0x0d]` (`45 8D 7A F3`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-261.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015D6`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner retired 8,954 instructions and stopped on `45 8D 7A F3`, `Unsupported { opcode: 141 }`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15D6` are `45 8D 7A F3`; runner budget 10000.
+- **Следующий шаг:** verify exact REX.R/B routing, signed disp8 `-0x0d`, dword destination zero-extension and profile isolation for ISSUE-262.

@@ -27475,3 +27475,10 @@ Six focused tests cover register routing/address calculation, zero-extension, st
 Base `PagedCpl0ProbeV1` admits only exact `66 83 FB 02`. The 16-bit operand-size override selects BX; opcode `83 /7` sign-extends imm8 `0x02` to 16 bits and uses shared word CMP semantics. Arithmetic flags and definedness update, while no GPR or memory changes. The immediate-byte fetch fault does not retire or mutate CPU state. This slice adds only BX,2 and retains the previously admitted exact BX,3 and DI,1 forms. Other immediate values, destinations/groups, widths, prefixes, memory operands, CPL3 and other paged profiles remain unsupported.
 
 Four focused tests prove high RBX bits do not affect the comparison, check flags/definedness, fault atomicity, neighboring encodings and CPL3/profile isolation. Firmware advances after 8,953 retired instructions to `40 0F 92 C5` (`SETB BPL`, ISSUE-261) at RIP `0x2015D2`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `SETB BPL` (ISSUE-261)
+
+Base `PagedCpl0ProbeV1` admits only exact `40 0F 92 C5`. Bare REX selects BPL for byte register code 5 rather than the legacy high-byte register. The SETB condition reads CF only; its value replaces only the low byte of RBP, preserving upper bits. RFLAGS and definedness remain unchanged, even when CF is marked undefined. A final ModRM-byte fetch fault does not retire or mutate CPU state. This slice adds only exact SETB BPL and retains previously admitted exact SETcc forms. Other conditions/registers, ModRM/REX/prefix variants, memory destinations, CPL3 and other paged profiles remain unsupported.
+
+Four focused tests cover CF values/definedness, ZF independence, partial-register mutation, flag/state preservation, fetch-fault atomicity, neighbor forms and isolation. Firmware advances after 8,954 retired instructions to `45 8D 7A F3` (`LEA R15D,[R10-0x0d]`, ISSUE-262) at RIP `0x2015D6`; COM1 remains empty. Independent review approved with no findings.

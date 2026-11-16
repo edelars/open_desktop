@@ -20454,6 +20454,29 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, u64::from(condition.evaluate(state.rflags)));
             state.rip = next_rip;
         }
+        // S7-04: the helper materializes unsigned-below only in BPL with
+        // exact `40 0F 92 C5`. Bare REX selects BPL instead of the legacy
+        // high-byte register; pin raw ModRM and preserve all other state.
+        Operation::SetCondition {
+            condition,
+            dst: Operand::Register(destination),
+            raw_modrm,
+        } if base_profile
+            && condition == ConditionCode::Below
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x92
+            && instruction.length == 4
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x40),
+                    ..Prefixes::default()
+                })
+            && raw_modrm == 0xc5
+            && destination == RegisterView::low(Register::Rbp, OperandSize::Byte) =>
+        {
+            state.write(destination, u64::from(condition.evaluate(state.rflags)));
+            state.rip = next_rip;
+        }
         // S7-04: the helper materializes equality only in DIL with exact
         // `40 0F 94 C7`; preserve the precise condition, REX, and raw ModRM.
         Operation::SetCondition {
