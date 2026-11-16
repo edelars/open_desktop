@@ -825,3 +825,13 @@ With exact `45 8D 6A F3` admitted, the Stage 7 firmware runner retires 9,035 ins
 ### Stage 7 runner frontier after ISSUE-326
 
 With exact `40 0F 93 C5` admitted, the Stage 7 firmware runner retires 9,036 instructions and stops at RIP `0x20175e`, bytes `41 83 FD F4` (`CMP R13D,-12`, ISSUE-327), `Unsupported { opcode: 131 }`. COM1 remains empty.
+
+
+### Stage 7 paged-profile CMP R13D,-12
+
+`PagedCpl0ProbeV1` admits exact bytes `41 83 FD F4`. Opcode 83 sign-extends imm8 to dword -12; REX.B selects R13D. Shared dword subtraction updates flags/definedness without changing R13 or memory.
+
+
+### Stage 7 runner frontier after ISSUE-327
+
+With exact `41 83 FD F4` admitted, the Stage 7 firmware runner retires 9,037 instructions and stops at RIP `0x201762`, bytes `0F 82 B7 00 00 00` (`JB rel32 +0xb7`, ISSUE-328), `Unsupported { opcode: 130 }`. COM1 remains empty.

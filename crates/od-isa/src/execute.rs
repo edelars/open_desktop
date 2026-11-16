@@ -24184,8 +24184,8 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         // `EDI,0x20` with exact `83 FF 20`, `R8D,0x30` with exact
         // `41 83 F8 30`, `R10D,0x0b` / `R10D,6` with exact `41 83 FA 0B` /
         // `41 83 FA 06`, and
-        // `R15D,-0x0c` with exact `41 83 FF F4`, and `R13D,-1` with exact
-        // `41 83 FD FF`. The decoder sign-extends imm8;
+        // `R15D,-0x0c` with exact `41 83 FF F4`, and `R13D,-1/-0x0c` with
+        // exact `41 83 FD FF/F4`. The decoder sign-extends imm8;
         // keep width, prefix, register and immediate tuples exact here.
         Operation::Arithmetic {
             kind: ArithmeticKind::Cmp,
@@ -24224,6 +24224,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                         && destination
                             == RegisterView::low(Register::R15, OperandSize::Dword))
                     || (immediate == u64::MAX
+                        && destination
+                            == RegisterView::low(Register::R13, OperandSize::Dword))
+                    || (immediate == 0xffff_ffff_ffff_fff4
                         && destination
                             == RegisterView::low(Register::R13, OperandSize::Dword))))
                 || (instruction.length == 4
