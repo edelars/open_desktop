@@ -12854,6 +12854,73 @@ mod tests {
         assert_eq!(outcome.stats.invlpg_flushes, 0);
     }
 
+    /// S4-13c: the shadows of a `WriteWatch` run see the guest's `INVLPG` (detected by a peek that
+    /// bypasses the cache) and the table write, and the run itself is the one without the sweep:
+    /// same state, same report, same counters of the real cache.
+    #[test]
+    fn sweep_shadows_see_the_guest_invlpg_of_a_write_watch_run_without_changing_it() {
+        use crate::paged_memory_adapter::run_cpl0_set_paged_2m_ram_observed_with_sweep;
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let set = switch_set(&cli, &halt);
+        let shadow = |invalidation| crate::SweepConfig {
+            invalidation,
+            ..crate::SweepConfig::REFERENCE
+        };
+        let configs = [
+            shadow(crate::SweepInvalidation::WriteWatch),
+            shadow(crate::SweepInvalidation::GuestOnly),
+        ];
+        for (sync, invlpgs) in [(&INVLPG_RBX, 1u64), (&NOP3, 0)] {
+            let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], sync, None);
+            let plain = run_policy_case(&build, &set, 16, FetchCacheInvalidation::WriteWatch);
+            let sweep = std::rc::Rc::new(crate::fetch_cache_sweep::FetchCacheSweep::new(&configs));
+            let (mut boot, _) = boot_with_entry(&[0xF4]);
+            let mut state = build(&mut boot);
+            let efer = boot.board.efer();
+            let cr3 = state.cr3.expect("the case runs with a CPU-owned CR3");
+            let mut report = run_cpl0_set_paged_2m_ram_observed_with_sweep(
+                &mut state,
+                boot.board.bus_mut(),
+                cr3,
+                efer,
+                long64(),
+                16,
+                INTEGER_FLAGS,
+                &set,
+                None,
+                || false,
+                |_| {},
+                true,
+                Some(FetchCacheInvalidation::WriteWatch),
+                None,
+                None,
+                None,
+                Some(&sweep),
+            );
+            let stats = report.fetch_cache_stats.take().expect("the cache is on");
+            assert_eq!(stats, plain.stats, "the real cache counts the same");
+            assert_eq!(state.gpr, plain.state.gpr);
+            assert_eq!(state.rip, plain.state.rip);
+            assert_eq!(
+                format!("{report:?}"),
+                format!("{:?}", {
+                    let mut other = plain.report;
+                    other.fetch_cache_stats = None;
+                    other
+                })
+            );
+            let report = sweep.report();
+            let (watch, guest) = (&report.configs[0].total, &report.configs[1].total);
+            // The write-watch shadow is the real cache, whatever the guest invalidates.
+            assert_eq!(*watch, stats);
+            assert_eq!((watch.invlpg_flushes, watch.ignored_table_writes), (0, 0));
+            assert_eq!(guest.invlpg_flushes, invlpgs, "{guest:?}");
+            assert_eq!(guest.write_flushes, 0, "{guest:?}");
+            assert!(guest.ignored_table_writes >= 1, "{guest:?}");
+            assert_eq!(report.events.calls, 1);
+        }
+    }
+
     /// `MOV CR3` with the value it already has, after the remap: no table is written afterwards
     /// and the paging snapshot is unchanged, so only the flush of the retired `MOV CR3` makes the
     /// next fetch walk the new frame.
@@ -17165,6 +17232,75 @@ mod tests {
         assert_eq!(report.before_c5, report.total);
         assert_eq!(report.after_c5, crate::LinuxFetchCachePhase::default());
         assert_eq!(report.total.retired, 5);
+    }
+
+    // ---- S4-13c: the opt-in shadow caches of the board loop ----
+
+    /// `run_switch_with_fetch_report` with the sweep asked for or not (the fetch report is on in
+    /// both runs); returns the `Debug` text of the run report and both reports.
+    fn run_switch_with_sweep(
+        sweep_on: bool,
+        fetch_cache: bool,
+    ) -> (
+        String,
+        Option<crate::LinuxFetchCacheReport>,
+        Option<crate::FetchSweepReport>,
+    ) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let (mut boot, _) = boot_with_entry(&cr3_switch_program(TREE_PML4, 0x1111));
+        install_second_tree(&mut boot, 0x2222);
+        boot.board
+            .enable_checkpoints(crate::LinuxCheckpointTable {
+                targets: vec![target_at(
+                    5,
+                    "e_entry",
+                    Some(ENTRY + 0x12),
+                    TREE_CODE + 0x212,
+                )],
+            })
+            .expect("valid table");
+        boot.board.enable_fetch_cache_report();
+        if sweep_on {
+            boot.board
+                .enable_fetch_cache_sweep(crate::SweepConfig::full_grid());
+        }
+        let report = boot
+            .board
+            .run_linux_boot_cpl0_set(64, &switch_set(&cli, &halt), false, fetch_cache, false)
+            .expect("runs");
+        let fetch_report = boot.board.take_fetch_cache_report();
+        let sweep = boot.board.take_fetch_cache_sweep();
+        // Taking the result ends the request.
+        assert_eq!(boot.board.take_fetch_cache_sweep(), None);
+        (format!("{report:?}"), fetch_report, sweep)
+    }
+
+    /// The sweep leaves the run and the real cache's counters as they were, the reference shadow
+    /// counts exactly like the real cache in both phases and in total, and no sweep is built
+    /// without the cache or without the request.
+    #[test]
+    fn the_sweep_leaves_the_board_run_unchanged_and_the_reference_shadow_equals_the_real_cache() {
+        let (plain, plain_fetch, none) = run_switch_with_sweep(false, true);
+        assert_eq!(none, None, "no request, no sweep");
+        let (observed, fetch, sweep) = run_switch_with_sweep(true, true);
+        assert_eq!(observed, plain, "the run report is the same byte for byte");
+        assert_eq!(fetch, plain_fetch, "the real cache counts the same");
+        let sweep = sweep.expect("requested");
+        assert!(sweep.c5_reached);
+        assert_eq!(sweep.configs.len(), 112);
+        let reference = sweep
+            .find(crate::SweepConfig::REFERENCE)
+            .expect("the grid has the reference");
+        let fetch = fetch.expect("report on");
+        assert_eq!(reference.total, fetch.total.cache);
+        assert_eq!(reference.before_c5, fetch.before_c5.cache);
+        assert_eq!(reference.after_c5, fetch.after_c5.cache);
+        assert!(reference.total.hits > 0 && reference.total.context_flushes > 0);
+        // One call, hence one start of the shadows.
+        assert_eq!(sweep.events.calls, fetch.total.calls);
+        // Without the cache there are no events and no sweep.
+        let (_, _, without_cache) = run_switch_with_sweep(true, false);
+        assert_eq!(without_cache, None);
     }
 
     #[test]

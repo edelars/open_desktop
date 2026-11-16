@@ -16,6 +16,7 @@ use crate::execution_observations::{
     LinuxExecutionObservationCollector, LinuxExecutionObservations,
 };
 use crate::fetch_cache_report::{CallObservation, FetchCacheAccumulator, LinuxFetchCacheReport};
+use crate::fetch_cache_sweep::{FetchCacheSweep, FetchSweepReport, SweepConfig};
 use crate::fetch_translation_cache::FetchCacheInvalidation;
 use crate::idle_arbiter::{SchedActivity, WakeView};
 use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters, NoIrqSource};
@@ -24,7 +25,7 @@ use crate::linux_checkpoints::{
 };
 use crate::page_walk::translate_long64_2m_ram_read_only;
 use crate::paged_memory_adapter::{
-    IrqDeliveryFailure, PagedCpl0SetExit, run_cpl0_set_paged_2m_ram_observed,
+    IrqDeliveryFailure, PagedCpl0SetExit, run_cpl0_set_paged_2m_ram_observed_with_sweep,
 };
 use crate::paged_probe::run_paged_probe_2m_ram;
 use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
@@ -1184,6 +1185,10 @@ pub struct LoadedFirmwareBoard {
     /// `fetch_cache_report`.
     fetch_cache_report_enabled: bool,
     fetch_cache_report: Option<LinuxFetchCacheReport>,
+    /// S4-13c: the shadow caches requested for the next runs (diagnostics only) and the result the
+    /// last run left.
+    fetch_cache_sweep_configs: Option<Vec<SweepConfig>>,
+    fetch_cache_sweep_report: Option<FetchSweepReport>,
     /// True when the assembly was given a PIT or LAPIC-timer clock other than the board clock
     /// (a test injection of S4-37a1/a4): their deadlines are in another time domain, so the
     /// clock owner is refused.
@@ -1536,6 +1541,22 @@ impl LoadedFirmwareBoard {
     pub fn take_fetch_cache_report(&mut self) -> Option<LinuxFetchCacheReport> {
         self.fetch_cache_report_enabled = false;
         self.fetch_cache_report.take()
+    }
+
+    /// S4-13c: ask the CPL0-set loop for shadow caches (the grid of capacity, replacement, tag
+    /// granularity, lifecycle and invalidation) over the events of the fetch cache of its next
+    /// runs. They only observe; the run, its report and the real cache's counters are unchanged.
+    /// Needs the fetch cache on (without it there are no events); the phases around C5 need the
+    /// checkpoint recorder. Off by default.
+    pub fn enable_fetch_cache_sweep(&mut self, configs: Vec<SweepConfig>) {
+        self.fetch_cache_sweep_configs = Some(configs);
+    }
+
+    /// S4-13c: the result of the last run (also after a failed run) and the request removed;
+    /// `None` when it was not enabled or the run used no fetch cache.
+    pub fn take_fetch_cache_sweep(&mut self) -> Option<FetchSweepReport> {
+        self.fetch_cache_sweep_configs = None;
+        self.fetch_cache_sweep_report.take()
     }
 
     /// S4-23j: opt in to the single clock owner for the CPL0-set loop. The owner claims the board
@@ -2190,6 +2211,12 @@ impl LoadedFirmwareBoard {
             .fetch_cache_report_enabled
             .then(|| FetchCacheAccumulator::new(fetch_cache, self.checkpoints.is_some()));
         self.fetch_cache_report = None;
+        self.fetch_cache_sweep_report = None;
+        let fetch_sweep = self
+            .fetch_cache_sweep_configs
+            .as_deref()
+            .filter(|_| fetch_cache)
+            .map(|configs| std::rc::Rc::new(FetchCacheSweep::new(configs)));
         // The next call resumes a partial REP: its first boundary is inside the REP.
         let mut partial_rep = false;
         // S4-38L5a/c: the set models CR2 for `MOV RAX, CR2`, and a delivered `#PF` writes it
@@ -2270,7 +2297,7 @@ impl LoadedFirmwareBoard {
                     recorder.begin_call(retired, quanta + 1, ns_at_start);
                 }
             }
-            let report = run_cpl0_set_paged_2m_ram_observed(
+            let report = run_cpl0_set_paged_2m_ram_observed_with_sweep(
                 &mut self.vcpus[BOOT_VCPU_INDEX].state,
                 &mut self.bus,
                 self.page_table_root,
@@ -2293,6 +2320,7 @@ impl LoadedFirmwareBoard {
                 }),
                 self.checkpoints.as_mut(),
                 execution_observations.as_mut(),
+                fetch_sweep.as_ref(),
             );
             quanta += 1;
             partial_rep = matches!(
@@ -2486,6 +2514,7 @@ impl LoadedFirmwareBoard {
         self.vcpus[BOOT_VCPU_INDEX].guest_cr2 = self.vcpus[BOOT_VCPU_INDEX].state.cr2;
         self.vcpus[BOOT_VCPU_INDEX].state.cr2 = prior_cr2;
         self.fetch_cache_report = fetch_report.map(FetchCacheAccumulator::finish);
+        self.fetch_cache_sweep_report = fetch_sweep.map(|sweep| sweep.report());
         let (run, set_exit_detail, cpuid_divergence_leaf, user_entry) = result?;
         irq_counters.irq0_edges = self.irq_source.irq0_edges();
         Ok(LinuxSetRunReport {
@@ -2998,6 +3027,8 @@ impl AssembledBoard {
             checkpoints: None,
             fetch_cache_report_enabled: false,
             fetch_cache_report: None,
+            fetch_cache_sweep_configs: None,
+            fetch_cache_sweep_report: None,
             foreign_timer_clock,
             #[cfg(test)]
             suppress_pm_tick: false,
@@ -3067,6 +3098,8 @@ impl AssembledBoard {
             checkpoints: None,
             fetch_cache_report_enabled: false,
             fetch_cache_report: None,
+            fetch_cache_sweep_configs: None,
+            fetch_cache_sweep_report: None,
             foreign_timer_clock,
             #[cfg(test)]
             suppress_pm_tick: false,
