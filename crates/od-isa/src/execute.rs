@@ -21983,10 +21983,10 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
-        // S7-04: the Rust helper spills RDX with exactly
-        // `48 89 54 24 30` (MOV qword ptr [RSP+0x30],RDX). The decoded
-        // address tuple and length pin the ModRM/SIB/disp8 form; route the
-        // write through the tracked GuestMemory path before advancing RIP.
+        // S7-04: the Rust helper spills with exactly `48 89 54 24 30`
+        // (MOV [RSP+0x30],RDX) and `48 89 74 24 10`
+        // (MOV [RSP+0x10],RSI). The decoded address tuple and length pin the
+        // ModRM/SIB/disp8 form; route the write through tracked GuestMemory.
         Operation::Mov {
             dst: Operand::Memory(destination),
             src: Operand::Register(source),
@@ -22003,10 +22003,12 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             && destination.base == AddressBase::Register(Register::Rsp)
             && destination.index.is_none()
             && destination.scale == 1
-            && destination.displacement == 0x30
             && destination.address_size == OperandSize::Qword
             && destination.size == OperandSize::Qword
-            && source == RegisterView::low(Register::Rdx, OperandSize::Qword) =>
+            && ((destination.displacement == 0x30
+                && source == RegisterView::low(Register::Rdx, OperandSize::Qword))
+                || (destination.displacement == 0x10
+                    && source == RegisterView::low(Register::Rsi, OperandSize::Qword))) =>
         {
             let value = state.read(source);
             if let Err(error) = write_operand(

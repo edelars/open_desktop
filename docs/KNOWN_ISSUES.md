@@ -1046,19 +1046,28 @@
 ### ISSUE-218 — S7-04: Rust helper `MOV qword ptr [RSP+0x30],RDX` (`48 89 54 24 30`) admitted narrowly
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `CMP R8D,0x30`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200f19`.
-- **Статус:** решена узко для exact `48 89 54 24 30` в base `PagedCpl0ProbeV1`; независимо проверена и одобрена, ожидает коммита. Other store forms remain unsupported.
+- **Статус:** решена узко для exact `48 89 54 24 30` в base `PagedCpl0ProbeV1`; независимо проверена и одобрена, коммит `1020422`. Other store forms remain unsupported.
 - **Суть и результат:** exact REX.W `48`, opcode `89`, ModRM `54`, SIB `24`, disp8 `30` stores all 64 bits of RDX to `[RSP+0x30]` through the tracked GuestMemory write path. On success only RIP changes; GPRs, RFLAGS and definedness are preserved. For the tested same-page supervisor write-protection #PF, the instruction does not retire and CPU state remains unchanged; tracked page-walk Accessed updates persist, while the denied write does not set leaf Dirty. This does not establish general backend rollback or cross-page behavior (ISSUE-054).
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue218.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf19` are `48 89 54 24 30`; runner budget 10000.
 - **Проверка:** five focused ISA tests cover qword value, state preservation, injected write page-fault atomicity, final-displacement fetch-fault atomicity, adjacent displacements/sources/SIB/addressing/width/prefixes, CPL3 and other-profile isolation. Two machine tests cover a successful four-level tracked write with A/D bits and callbacks, plus write-protection fault precision, no data commit and no D bit. Runner retired 8901 and stopped at `48 89 74 24 10` (`MOV qword ptr [RSP+0x10],RSI`, ISSUE-219), RIP `0x200f1e`, `Unsupported { opcode: 137 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
-- **Следующий шаг:** commit the independently approved narrow store and continue S7-04 at ISSUE-219.
+- **Следующий шаг:** continue S7-04 at ISSUE-219.
 
-### ISSUE-219 — S7-04: Rust helper `MOV qword ptr [RSP+0x10],RSI` (`48 89 74 24 10`) remains outside paged CPU profile
+### ISSUE-219 — S7-04: Rust helper `MOV qword ptr [RSP+0x10],RSI` (`48 89 74 24 10`) admitted narrowly
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact stack-relative RDX store.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200f1e`.
+- **Статус:** решена узко для exact `48 89 74 24 10` в base `PagedCpl0ProbeV1`; независимо проверена и одобрена, ожидает коммита. Other source/base/displacement/addressing forms remain unsupported.
+- **Суть и результат:** exact REX.W `48`, opcode `89`, ModRM `74`, SIB `24`, disp8 `10` stores all 64 bits of RSI to `[RSP+0x10]` through the tracked GuestMemory write path. On success only RIP changes; GPRs, RFLAGS and definedness are preserved. For the tested same-page supervisor write-protection #PF, the instruction does not retire and CPU state remains unchanged; tracked page-walk Accessed updates persist, while the denied write does not set leaf Dirty. General backend rollback and cross-page behavior remain outside evidence (ISSUE-054).
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue219.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf1e` are `48 89 74 24 10`; runner budget 10000.
+- **Проверка:** five focused ISA tests cover qword value, state preservation, injected write page-fault atomicity, final-displacement fetch-fault atomicity, adjacent displacements/sources/SIB/addressing/width/prefixes, CPL3 and other-profile isolation. Two machine tests cover successful four-level tracked write with A/D bits/callbacks and a same-page write-protection fault with no data commit or D bit. Runner retired 8902 and stopped at `41 F6 C5 07` (`TEST R13B,7`, ISSUE-220), RIP `0x200f23`, `Unsupported { opcode: 246 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
+- **Следующий шаг:** commit the independently approved narrow store and continue S7-04 at ISSUE-220.
+
+### ISSUE-220 — S7-04: Rust helper `TEST R13B,7` (`41 F6 C5 07`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact RSI-to-stack qword store.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200f23`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8901 instructions and stopped at `48 89 74 24 10`, `Unsupported { opcode: 137 }`, `RIP=0x200f1e`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue218.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf1e` are `48 89 74 24 10`; runner budget 10000.
-- **Следующий шаг:** inspect exact stack-relative qword store semantics and profile boundaries before considering narrow admission.
+- **Суть и последствия:** runner retired 8902 instructions and stopped at `41 F6 C5 07`, `Unsupported { opcode: 246 }`, `RIP=0x200f23`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue219.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf23` are `41 F6 C5 07`; runner budget 10000.
+- **Следующий шаг:** inspect REX.B byte-register selection and shared TEST flag semantics before considering narrow admission.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.
