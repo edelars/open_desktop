@@ -895,6 +895,13 @@ Base `PagedCpl0ProbeV1` additionally admits only `45 0F 44 FA`: escape-map opcod
 
 Checks: four focused `rust_helper_cmovz_r15d_r10d` tests passed; other-profile isolation passed; all 389 `paged_probe_profile` tests and `cargo check --offline -p od-isa --all-targets` passed. Vectors cover taken/not-taken with defined/undefined ZF, full-state and flag retention, false-path zero-extension, final-ModRM fetch-fault atomicity, neighbors and CPL/profile isolation. Scoped rustfmt and `git diff --check` passed. Image `/private/tmp/od-fw-s7-04-issue177.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 80 instructions then stopped at `45 0F B6 C9` (`MOVZX R9D,R9B`, ISSUE-178), `RIP=0x200e24`, `Unsupported { opcode: 182 }`, `com1_bytes=0`; full handoff validation remains incomplete.
 
+<a id="s7-04-exact-rust-helper-movzx-r9d-r9b"></a>
+#### Расширение S7-04: exact Rust-helper `MOVZX R9D,R9B`
+
+Base `PagedCpl0ProbeV1` additionally admits only `45 0F B6 C9`: opcode `0F B6`, exact REX `45`, ModRM `C9`, dword destination, byte source and length 4. REX.R selects R9D and REX.B selects the low-byte alias R9B. The existing unsigned register `Operation::Extend` semantics are reused: source R9B is read before R9D is written, the dword result zero-extends R9, and flags are unchanged. This register-only form has no data-memory access; an instruction-fetch fault does not commit state. Other byte registers, sources, widths, prefixes, CPL3 and other paged profiles remain unsupported.
+
+Checks: four focused `rust_helper_movzx_r9d_r9b` tests and other-profile isolation passed; all 393 `paged_probe_profile` tests and `cargo check --offline -p od-isa --all-targets` passed. Coverage includes low-byte alias mapping, zero-extension, complete state/flags/definedness retention, final-ModRM fetch-fault atomicity, neighboring source/destination aliases, opcode/width/prefix forms and CPL/profile isolation. Scoped rustfmt and `git diff --check` passed. Image `/private/tmp/od-fw-s7-04-issue178.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 81 instructions then stopped at `45 31 F1` (`XOR R9D,R14D`, ISSUE-179), `RIP=0x200e28`, `Unsupported { opcode: 49 }`, `com1_bytes=0`; full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции

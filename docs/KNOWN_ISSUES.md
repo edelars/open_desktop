@@ -671,10 +671,19 @@
 ### ISSUE-178 — S7-04: Rust helper `MOVZX R9D,R9B` remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `CMOVZ R15D,R10D`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e24`.
+- **Статус:** решена узко для exact `45 0F B6 C9` в base `PagedCpl0ProbeV1`.
+- **Результат:** admitted only exact `MOVZX R9D,R9B`: REX `45` sets REX.R and REX.B, ModRM `C9` selects R9D destination and low-byte alias R9B source. Existing unsigned register `Extend` read/write semantics zero-extend R9 and preserve flags.
+- **Проверка:** four focused `rust_helper_movzx_r9d_r9b` tests; all 393 `paged_probe_profile` tests; other-profile isolation; `cargo check --offline -p od-isa --all-targets`, scoped rustfmt and diff-check passed. Tests verify byte alias value, upper-half zeroing, full-state/flags/definedness retention, final-ModRM fetch-fault atomicity, neighboring aliases/prefixes and CPL3 isolation. Firmware image `/private/tmp/od-fw-s7-04-issue178.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`); runner retired 81 instructions and stopped at `45 31 F1` (`XOR R9D,R14D`, ISSUE-179), RIP `0x200e28`, `Unsupported { opcode: 49 }`, `com1_bytes=0`. Full handoff validation remains incomplete.
+- **Ссылка:** [paged CPU-profile contract](specs/CPU_CONTRACT.md#s7-04-exact-rust-helper-movzx-r9d-r9b).
+
+<a id="issue-179-s7-04-rust-helper-xor-r9d-r14d-unsupported"></a>
+### ISSUE-179 — S7-04: Rust helper `XOR R9D,R14D` remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `MOVZX R9D,R9B`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e28`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 80 instructions, then stops at `45 0F B6 C9` (`MOVZX R9D,R9B`), `Unsupported { opcode: 182 }`, `RIP=0x200e24`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue177.bin`; bytes at offset `0xe24` are `45 0f b6 c9`; runner budget 10000.
-- **Следующий шаг:** inspect the exact decoded self-byte-to-dword extension and shared write semantics, then consider only this form in the base paged profile.
+- **Суть и последствия:** runner retired 81 instructions, then stops at `45 31 F1` (`XOR R9D,R14D`), `Unsupported { opcode: 49 }`, `RIP=0x200e28`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue178.bin`; bytes at offset `0xe28` are `45 31 f1`; runner budget 10000.
+- **Следующий шаг:** inspect the exact dword register XOR operand order and shared logical/flags semantics, then consider only this pairing in the base paged profile.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.
