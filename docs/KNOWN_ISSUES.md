@@ -4252,9 +4252,16 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-298 — S7-04: exact helper `TEST R10B,R11B` (`45 84 DA`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-297.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20168e`.
+- **Статус:** решена; base profile admits only this exact byte-register TEST.
+- **Результат:** REX.B/R select R10B as r/m and R11B as reg source; TEST computes byte AND for flags only. CF/OF clear, ZF/SF/PF reflect the result, AF becomes undefined; no GPR is written.
+- **Проверки исполнения:** four focused profile tests cover values/logic flags/AF-definedness, unchanged GPRs, ModRM fetch-fault atomicity, neighbors and CPL3/other-profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/871/7/15); 63 paged machine tests pass. Scoped check, formatting and diff-check pass; only the existing unused page-walk helper warning remains. Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retires 8,995 instructions and stops at `74 11` (`JZ rel8 +0x11`, ISSUE-299), RIP `0x201691`, `Unsupported { opcode: 116 }`; COM1 remains empty. Independent review pending.
+
+### ISSUE-299 — S7-04: exact helper `JZ rel8 +0x11` (`74 11`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-298.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201691`.
 - **Статус:** открыта.
-- **Суть и последствия:** base profile does not yet admit this exact byte TEST register form; firmware stops before the following helper branch.
-- **Основание:** runner using image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after 8,994 retired instructions it reports `Unsupported { opcode: 132 }`. Bytes at file offset `0x168e` are `45 84 DA`.
-- **Следующий шаг:** admit only byte TEST R10B,R11B with logical flag/AF-definedness semantics and no GPR result.
+- **Суть и последствия:** base profile does not yet admit this exact conditional branch displacement; firmware stops before later helper operations.
+- **Основание:** runner using image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after 8,995 retired instructions it reports `Unsupported { opcode: 116 }`. Bytes at file offset `0x1691` are `74 11`.
+- **Следующий шаг:** admit only JZ rel8 +0x11 with the existing ZF, taken-target canonicality and fetch-fault semantics.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.

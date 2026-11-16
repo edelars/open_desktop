@@ -21050,6 +21050,39 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     | (crate::ARITHMETIC_FLAGS & !crate::AF),
             };
         }
+        // S7-04: exact `45 84 DA` tests R10B against R11B. REX.B extends
+        // ModRM r/m to R10B and REX.R extends reg to R11B; TEST changes flags
+        // only and leaves AF undefined.
+        Operation::Logic {
+            kind: LogicKind::Test,
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x84
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Byte
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x45),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R10, OperandSize::Byte)
+            && source == RegisterView::low(Register::R11, OperandSize::Byte) =>
+        {
+            let lhs = state.read(destination);
+            let rhs = state.read(source);
+            let (_, flags) =
+                logic_result(OperandSize::Byte, LogicKind::Test, lhs, rhs, state.rflags);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: (initial_rflags_defined & !crate::AF)
+                    | (crate::ARITHMETIC_FLAGS & !crate::AF),
+            };
+        }
         // S7-04: the Rust helper tests ECX against itself with exact `85 C9`.
         // TEST changes logical flags only and leaves AF undefined; registers stay untouched.
         Operation::Logic {
