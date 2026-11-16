@@ -413,6 +413,8 @@ Target startup-stack write follow-up (2026-11-15): two counted schema-v5 single 
 
 Диагностическая пара execution-observations (2026-11-15): два одиночных counted runs на том же source и input hashes сохранили все 22 RDTSC sites и все 33/34 delivered `#PF` records без усечения. Большинство RDTSC variation приходится на повтор `delay_tsc+0x4d`; дополнительный `#PF` во втором запуске — единственная вставка в последовательности событий (после 30 одинаковых records и перед общим CPL3 fetch fault) на kernel byte store `rep_movs_alternative+0x11`; оставшиеся три events также совпадают. Причина вставки неизвестна. Exact nonce markers прошли, но UART nonce/`Run /init` ordering и terminal panic frames различаются. Это не acceptance pair; strict-clean automatic N=2 ещё требуется. Данные и hashes: [execution-observations diagnostic pair](../reports/data/stage5/s5-07-execution-observations-pair-20261115.log).
 
+The same treatment sidecars localize 6,905 of the 6,976-read RDTSC delta to the rdtsc_ordered instruction inside Linux delay_tsc (arch/x86/lib/delay.c:72). The loop polls until its requested cycle interval passes; the sidecar does not capture actual elapsed-cycle values. Treat this as source localization, not proof the timing variation is harmless, and do not normalize the remaining machine observations.
+
 ### S5-17. Host-side отказы и ограниченные ресурсы
 
 - [x] Принято после независимого ревью. Гостевая часть (гость видит ошибку по контракту) — отдельным шагом, **blocked до `S4-39`**. Пересечение с `S9-18` разрешается решением `S5-00` п.4(а).

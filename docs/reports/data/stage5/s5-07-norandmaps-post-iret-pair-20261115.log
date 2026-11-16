@@ -111,6 +111,20 @@ and length to preserve total cmdline length, and the matched control is one
 single run, so this does not prove that every such fault is benign or that the
 full counted S5-07 series is reproducible.
 
+The same treatment sidecars also captured all 22 CPL0 RDTSC sites with zero
+overflow and zero unattributed reads. Total RDTSC reads differ by 6,976 between
+A (34,429,007) and B (34,422,031); 6,905 of that delta is at RIP
+`0xffffffff8271b34d`. The matching staged debug ELF
+(`vmlinux-debug-7.0.0-38-generic`, SHA-256
+`7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f`)
+resolves the site to `rdtsc_ordered`, inlined at `delay_tsc` line 72 of
+`arch/x86/lib/delay.c`; the source archive shows that this loop samples the TSC
+until `(now - bclock) >= cycles`, pausing via `native_pause()` between
+samples. This localizes most of this pair's RDTSC-count difference to the
+kernel delay-poll loop. The sidecar does not record each loop's elapsed-cycle
+value, so the reason for the iteration-count difference and its benignity are
+not established; no comparator normalization follows from this localization.
+
 The separate automatic `norandmaps` N=2 series still returned
 `matches=false` for `machine_observations` and `ordered_uart_bytes`; its RDTSC,
 IRQ/quanta and UART differences remain unresolved. These single-run sidecars
@@ -129,6 +143,8 @@ normalization rules. S5-07 remains blocked/unaccepted.
 - Same-binary, equal-cmdline-length control JSON / schema-v5 sidecar:
   `f3934e11941c29a35a9b778dee97017fb396dd3e80f0b6ebae1af0230ed477ce` /
   `3cd9502e3d65209de5844cc888992ceb09f63af42ed226a1fa673cbae8c3c3d2`.
+- Debug ELF used for RDTSC symbol resolution:
+  `7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f`.
 - Counted control C/D sidecar hashes:
   `ae2c68cff9bfc44aa8085a3e207ff1c3cd7c72c4e88284475733a4dfc24ac1e0` /
   `e57876a5398d09105173c6aa267d880d0fa0617306b2cca0ce8a29efeb9403c6`.

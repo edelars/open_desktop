@@ -161,6 +161,8 @@
 
 - **`norandmaps` sidecar pair plus matched control (2026-11-15):** два schema-v5 treatment runs при одинаковых kernel/initramfs/ACPI inputs имеют одинаковые полные fault signatures — по 33 `#PF`, без omissions; в обоих отсутствуют known startup-stack store RIP `0xffffffff8271a9c1` (`rep_movs_alternative+0x11`) и `0xffffffff8271ec4d` (`__put_user_8`). Ordinal 30 — одинаковый CPL3 fetch fault `0x4000b0`, post-IRET walk переводит его через leaf `0x443d025`. Добавленный same-binary control без `norandmaps` имеет такую же 114-byte cmdline и одинаковые guest input hashes; более длинный nonce компенсирует отсутствующий параметр, поэтому token value различается. В этой одиночной control run stack-store fault вернулся на ordinal 30; после IRETQ leaf `0x39fe867` переводит fault address. Это прямое evidence связи события с `norandmaps` intervention в данном профиле, но control — один run; общая benignity и acceptance не установлены. Автоматический strict N=2 по-прежнему расходится по machine/timing observations и UART; нормализатор не менялся. [Sidecar and matched-control evidence](reports/data/stage5/s5-07-norandmaps-post-iret-pair-20261115.log).
 
+- **RDTSC localization in the same norandmaps pair:** sidecars recorded all 22 CPL0 sites with no overflow or unattributed reads. Total differed by 6,976; 6,905 came from 0xffffffff8271b34d, resolved through the matching debug ELF to rdtsc_ordered in Linux delay_tsc (arch/x86/lib/delay.c:72). The staged source shows this loop continues until the requested TSC interval elapses, but actual elapsed-cycle values were not captured. Cause and benignity remain unproved; comparator counts stay strict.
+
 <a id="issue-080-s5-06-guest-suite-unverified-and-f-endpoint-blocked"></a>
 
 
