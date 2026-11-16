@@ -3951,8 +3951,19 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-267 — S7-04: exact helper `AND BPL,R14B` (`44 20 F5`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-266.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015EF`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware stops on exact byte-register AND `44 20 F5`, currently outside the profile.
+- **Статус:** реализована в S7-04; независимое ревью одобрило без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact `44 20 F5`. REX.R selects R14B as source, and REX presence makes r/m=5 select BPL as destination. Byte AND writes only BPL, clears CF/OF, derives SF/ZF/PF from the result, and leaves AF undefined; other GPR bits and unrelated state are preserved.
+- **Проверка:** four focused tests cover byte results/flags/definedness, only-low-byte BPL update, R14 preservation, no memory/I/O, fetch-fault atomicity, operand-order/register/REX/prefix/memory neighbors and CPL3/profile isolation.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15EF` are `44 20 F5`; runner budget 10000.
-- **Проверки исполнения:** firmware retires 8,960 instructions and stops with `Unsupported { opcode: 32 }`; COM1 remains empty.
-- **Следующий шаг:** verify REX.R/B byte-register routing, BPL/R14B order, byte logical flags and AF definedness for ISSUE-267.
+- **Проверки исполнения:** firmware retires 8,961 instructions and advances to ISSUE-268 at RIP `0x2015F2`; COM1 remains empty.
+- **Следующий шаг:** verify exact `0F 85 27 02 00 00` (`JNZ rel32 +0x227`) condition and target behavior for ISSUE-268.
+
+
+### ISSUE-268 — S7-04: exact helper `JNZ rel32 +0x227` (`0F 85 27 02 00 00`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-267.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015F2`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware stops on exact near JNZ branch `0F 85 27 02 00 00`, currently outside the profile.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15F2` are `0F 85 27 02 00 00`; runner budget 10000.
+- **Проверки исполнения:** firmware retires 8,961 instructions and stops with `Unsupported { opcode: 133 }`; COM1 remains empty.
+- **Следующий шаг:** verify signed rel32 target, ZF-only JNZ predicate, taken-only canonicality and exact profile isolation for ISSUE-268.

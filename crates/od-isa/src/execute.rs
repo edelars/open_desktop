@@ -20590,6 +20590,40 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     | (crate::ARITHMETIC_FLAGS & !crate::AF),
             };
         }
+        // S7-04: the Rust helper computes the byte AND with exact
+        // `44 20 F5` (AND BPL,R14B). REX.R selects R14B; REX presence makes
+        // r/m=5 name BPL. Keep the exact direction and register pair.
+        Operation::Logic {
+            kind: LogicKind::And,
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x20
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Byte
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x44),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rbp, OperandSize::Byte)
+            && source == RegisterView::low(Register::R14, OperandSize::Byte) =>
+        {
+            let lhs = state.read(destination);
+            let rhs = state.read(source);
+            let (value, flags) =
+                logic_result(OperandSize::Byte, LogicKind::And, lhs, rhs, state.rflags);
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: (initial_rflags_defined & !crate::AF)
+                    | (crate::ARITHMETIC_FLAGS & !crate::AF),
+            };
+        }
         // S7-04: after saving R11 in R15, the Rust helper combines it with
         // R8 using only `4D 21 C7` (AND R15,R8). Other widths and pairs stay refused.
         Operation::Logic {

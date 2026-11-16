@@ -455,3 +455,10 @@ Four focused tests cover R15D routing, sign extension and dword-vs-word results,
 Base `PagedCpl0ProbeV1` admits only exact no-prefix `0F 82 30 02 00 00`. JB evaluates CF only; if taken, the signed rel32 `+0x230` is added to next RIP. Flags and definedness are preserved, and target canonicality is checked only for a taken branch. A final displacement-byte fetch fault is atomic. Other condition/displacement/prefix/short-branch forms, CPL3 and other profiles remain unsupported.
 
 Five focused tests cover CF-only condition with varying ZF and definedness, target/fall-through, taken-only canonicality, fetch-fault atomicity, neighbors, and CPL3/profile isolation. Firmware advances after 8,960 retired instructions to `44 20 F5` (`AND BPL,R14B`, ISSUE-267) at RIP `0x2015EF`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `AND BPL,R14B` (ISSUE-267)
+
+Base `PagedCpl0ProbeV1` admits only exact `44 20 F5`. REX.R selects R14B as the source; REX presence selects low-byte BPL as the destination. The instruction changes only BPL. Shared byte AND semantics clear CF/OF, set SF/ZF/PF from the result, and mark AF undefined while retaining its concrete bit; other flags and definedness are preserved. The final ModRM-byte fetch fault is atomic. Other register orders, REX/prefix forms, memory operands, CPL3 and other profiles remain unsupported.
+
+Four focused tests cover byte result and flags, AF definedness, partial-register/state preservation, fetch-fault atomicity, neighbors, and CPL3/profile isolation. Firmware advances after 8,961 retired instructions to `0F 85 27 02 00 00` (`JNZ rel32 +0x227`, ISSUE-268) at RIP `0x2015F2`; COM1 remains empty. Independent review approved with no findings.
