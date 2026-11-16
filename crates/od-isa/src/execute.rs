@@ -22028,6 +22028,42 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: the Rust helper compares RSI against RDX with exact
+        // `48 39 D6`; opcode 39 keeps r/m as destination and reg as source.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Cmp,
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x39
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x48),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rsi, OperandSize::Qword)
+            && source == RegisterView::low(Register::Rdx, OperandSize::Qword) =>
+        {
+            let lhs = state.read(destination);
+            let rhs = state.read(source);
+            let (_, flags) = arithmetic_result(
+                OperandSize::Qword,
+                ArithmeticKind::Cmp,
+                lhs,
+                rhs,
+                state.rflags,
+            );
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: the helper compares RBP against R11 with exact `4C 39 DD`.
         // Opcode 39 keeps the Intel destination/source order; CMP writes flags only.
         Operation::Arithmetic {

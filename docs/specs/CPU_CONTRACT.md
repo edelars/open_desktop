@@ -27363,3 +27363,10 @@ Four focused profile tests cover high-bit values and full-state preservation, fi
 Base `PagedCpl0ProbeV1` admits only exact `48 8D 71 04`. The decoded qword LEA uses RCX as the base and signed disp8 +4, writes the wrapping effective offset to RSI, and performs no memory access or canonicality check. Only RSI and RIP change; flags, definedness and other GPRs remain unchanged. Final-byte fetch faults do not commit state. Other displacements/registers, prefixes, CPL3 and other profiles remain unsupported.
 
 Four focused profile tests cover high/noncanonical offsets, wrapping, full-state preservation, fetch-fault atomicity, neighbors, CPL3 and profile isolation. Firmware advances after 8,933 retired instructions to `48 39 D6` (`CMP RSI,RDX`, ISSUE-245) at RIP `0x20157B`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04: exact helper `CMP RSI,RDX` (ISSUE-245)
+
+Base `PagedCpl0ProbeV1` admits only exact `48 39 D6`. Opcode 39 uses r/m as the qword destination operand RSI and ModRM reg as source operand RDX, evaluating RSI−RDX with shared CMP semantics. No GPR is written; arithmetic flags and definedness are updated. Final-byte instruction-fetch faults do not retire or mutate state. Other register orders, opcode direction, widths, prefixes, CPL3 and other profiles remain unsupported.
+
+Four focused profile tests cover equality, carry, overflow, sign/parity/AF and high-bit cases, full GPR preservation, flag definedness, fetch-fault atomicity, neighbors, CPL3 and profile isolation. Firmware advances after 8,934 retired instructions to `0F 87 CD 02 00 00` (`JA rel32 +0x2cd`, ISSUE-246) at RIP `0x20157E`; COM1 remains empty. Independent review approved with no findings.
