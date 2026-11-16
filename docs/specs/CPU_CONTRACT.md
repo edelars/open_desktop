@@ -1082,6 +1082,8 @@ i5-3210M, лист 1 EAX `0x306a9`) даёт значения, не совпад
 `MOV CR0,EAX`), переход в protected mode и далее (блоки 5–8); решение по расхождению профиля
 `cpuid.rs` и таблицы цели (см. выше); подключение модуля к циклу исполнения машины, S6-13 и S6-16.
 
+**S6-14h** — добавлен профиль `OdX8664V1Neutral` с полной таблицей цели; по умолчанию не выбирается; путь успеха `verify_cpu` проверен unit-тестом с этим профилем; сравнение с оракулом невозможно (оракул — хост Intel i5-3210M).
+
 ### S2-39a — Legacy FXSAVE/FXRSTOR contract (evidence-only)
 
 This section records the selected target's normative legacy FP/SIMD memory

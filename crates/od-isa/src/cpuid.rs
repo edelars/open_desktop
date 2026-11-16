@@ -10,6 +10,10 @@
 //! and FXSR bits are declared, but only `FNINIT` and the plain `FXSAVE` of the set's FP member are
 //! implemented: every other x87/FXSR form, e.g. `FXRSTOR`, stays `Unsupported`). It is not the
 //! full target table and not an Ubuntu boot contract.
+//!
+//! `OdX8664V1Neutral` (S6-14h) is the full CPUID table of that target (leaves 0, 1, 0x80000000,
+//! 0x80000001 and 0x80000008). It is selected only explicitly and declares feature bits whose
+//! behaviour the engine does not implement yet, so no existing path uses it.
 
 /// The four architecturally 32-bit outputs of CPUID.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -35,6 +39,11 @@ pub enum CpuidProfile {
     /// the same profile). x2APIC (ECX[21]), TSC-deadline (ECX[24]) and the hypervisor bit (ECX[31])
     /// stay clear; leaves 6, 0xB, 0x15 and 0x16 stay zero.
     X8664V1Stage4AApic,
+    /// S6-14h: the complete table of `od-x86-64-v1-neutral-v0.1` (`CPU_CONTRACT.md`): leaf 1 EDX
+    /// `0x0781A379` (FPU, PSE, TSC, MSR, PAE, CX8, APIC, PGE, CMOV, PAT, MMX, FXSR, SSE, SSE2),
+    /// leaf 1 ECX 0, and 0x80000001 EDX `0x20100800` (SYSCALL, NX, LM). Never the default; the
+    /// Stage 4 board gates (`is_stage4a_family`) do not treat it as a member of that family.
+    OdX8664V1Neutral,
 }
 
 /// CPUID.01H:EDX bit 9 (APIC), declared by `X8664V1Stage4AApic` since S4-38L8d. From the Intel SDM,
@@ -49,6 +58,12 @@ const LEAF1_EDX_FPU: u32 = 1 << 0;
 /// same member. SSE (25) and SSE2 (26) are NOT declared: no SSE instruction is implemented. From the
 /// Intel SDM, from memory.
 const LEAF1_EDX_FXSR: u32 = 1 << 24;
+/// CPUID.01H:EDX of the full target table (S6-14h), the contract's `0x0781A379`: bits 0 FPU, 3 PSE,
+/// 4 TSC, 5 MSR, 6 PAE, 8 CX8, 9 APIC, 13 PGE, 15 CMOV, 16 PAT, 23 MMX, 24 FXSR, 25 SSE, 26 SSE2.
+const NEUTRAL_LEAF1_EDX: u32 = 0x0781_A379;
+/// CPUID.80000001H:EDX of the full target table (S6-14h), the contract's `0x20100800`: bits 11
+/// SYSCALL, 20 NX, 29 LM.
+const NEUTRAL_EXT1_EDX: u32 = 0x2010_0800;
 
 impl CpuidProfile {
     /// Whether the profile is `X8664V1Stage4A` or a variant of it (`X8664V1Stage4AApic`): the family
@@ -65,6 +80,7 @@ impl CpuidProfile {
             Self::X8664V1Stage4AApic => {
                 LEAF1_EDX_FPU | LEAF1_EDX_TSC | LEAF1_EDX_APIC | LEAF1_EDX_FXSR
             }
+            Self::OdX8664V1Neutral => NEUTRAL_LEAF1_EDX,
         };
         match leaf {
             0 => CpuidResult {
@@ -84,6 +100,12 @@ impl CpuidProfile {
                 ebx: 0,
                 ecx: 0,
                 edx: 0,
+            },
+            0x8000_0001 if matches!(self, Self::OdX8664V1Neutral) => CpuidResult {
+                eax: 0,
+                ebx: 0,
+                ecx: 0,
+                edx: NEUTRAL_EXT1_EDX,
             },
             0x8000_0008 => CpuidResult {
                 eax: 0x3024,
@@ -342,5 +364,99 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// S6-14h. Oracles by hand from the contract table: leaf 1 EDX bits 0 (1), 3 (0x8), 4 (0x10),
+    /// 5 (0x20), 6 (0x40), 8 (0x100), 9 (0x200), 13 (0x2000), 15 (0x8000), 16 (0x1_0000),
+    /// 23 (0x80_0000), 24/25/26 (0x700_0000); 0x80000001 EDX bits 11 (0x800), 20 (0x10_0000),
+    /// 29 (0x2000_0000).
+    #[test]
+    fn neutral_declares_the_full_target_table() {
+        let p = CpuidProfile::OdX8664V1Neutral;
+        let leaf0 = p.query(0, 0);
+        assert_eq!(leaf0.eax, 1);
+        assert_eq!(leaf0.ebx, 0x6E65_704F, "ASCII Open");
+        assert_eq!(leaf0.ecx, 0x2070_6F74, "ASCII top ");
+        assert_eq!(leaf0.edx, 0x6B73_6544, "ASCII Desk");
+        let leaf1 = p.query(1, 0);
+        assert_eq!(leaf1.eax, 0x0000_0600);
+        assert_eq!(leaf1.ebx, 0x0000_0100);
+        assert_eq!(leaf1.ecx, 0, "no XSAVE, OSXSAVE, AVX, hypervisor");
+        let want = 0x1
+            + 0x8
+            + 0x10
+            + 0x20
+            + 0x40
+            + 0x100
+            + 0x200
+            + 0x2000
+            + 0x8000
+            + 0x1_0000
+            + 0x80_0000
+            + 0x700_0000;
+        assert_eq!(want, 0x0781_A379);
+        assert_eq!(leaf1.edx, want);
+        assert_eq!(leaf1.edx & (1 << 11), 0, "SEP stays clear");
+        let ext = p.query(0x8000_0000, 0);
+        assert_eq!(ext.eax, 0x8000_0008);
+        assert_eq!((ext.ebx, ext.ecx, ext.edx), (0, 0, 0));
+        let ext1 = p.query(0x8000_0001, 0);
+        assert_eq!((ext1.eax, ext1.ebx, ext1.ecx), (0, 0, 0));
+        assert_eq!(ext1.edx, 0x800 + 0x10_0000 + 0x2000_0000);
+        assert_eq!(ext1.edx, 0x2010_0800);
+        let widths = p.query(0x8000_0008, 0);
+        assert_eq!(widths.eax, 0x0000_3024);
+        assert_eq!((widths.ebx, widths.ecx, widths.edx), (0, 0, 0));
+    }
+
+    #[test]
+    fn neutral_unlisted_leaves_are_zero_and_ecx_is_ignored() {
+        let p = CpuidProfile::OdX8664V1Neutral;
+        for leaf in [
+            2,
+            4,
+            7,
+            0xB,
+            0x0D,
+            0x8000_0002,
+            0x8000_0007,
+            0x8000_0009,
+            0x4000_0000,
+            u32::MAX,
+        ] {
+            for subleaf in [0, 1, u32::MAX] {
+                assert_eq!(p.query(leaf, subleaf), CpuidResult::default(), "{leaf:#x}");
+            }
+        }
+        for leaf in [0, 1, 0x8000_0000, 0x8000_0001, 0x8000_0008] {
+            for subleaf in [1, 7, u32::MAX] {
+                assert_eq!(p.query(leaf, subleaf), p.query(leaf, 0), "{leaf:#x}");
+            }
+        }
+    }
+
+    /// S6-14h: the new profile is chosen only explicitly; the earlier profiles are unchanged and
+    /// it is not a member of the Stage 4 family.
+    #[test]
+    fn neutral_is_explicit_and_leaves_earlier_profiles_unchanged() {
+        assert_eq!(CpuidProfile::DiagnosticV1.query(1, 0).edx, 0);
+        assert_eq!(
+            CpuidProfile::DiagnosticV1.query(0x8000_0001, 0),
+            CpuidResult::default()
+        );
+        assert_eq!(CpuidProfile::X8664V1Stage4A.query(1, 0).edx, 0x0100_0011);
+        assert_eq!(
+            CpuidProfile::X8664V1Stage4AApic.query(1, 0).edx,
+            0x0100_0211
+        );
+        for p in [
+            CpuidProfile::DiagnosticV1,
+            CpuidProfile::X8664V1Stage4A,
+            CpuidProfile::X8664V1Stage4AApic,
+        ] {
+            assert_eq!(p.query(0x8000_0001, 0), CpuidResult::default());
+            assert_ne!(p, CpuidProfile::OdX8664V1Neutral);
+        }
+        assert!(!CpuidProfile::OdX8664V1Neutral.is_stage4a_family());
     }
 }

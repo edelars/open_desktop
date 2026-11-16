@@ -4072,6 +4072,35 @@ mod tests {
     }
 
     #[test]
+    fn s6_14h_verify_cpu_success_path_on_the_neutral_profile() {
+        // The same expectations as the table-from-test run above, now with the cpuid.rs profile
+        // `OdX8664V1Neutral` (the contract's full target table): 0x781a379 & 0x7008161 ==
+        // 0x7008161 (xor 0: JNE at 0x1142 not taken); 0x20100800 & 0x20000000 = 0x20000000 (xor
+        // 0: JNE at 0x116a not taken); 0x781a379 & 0x6000000 == 0x6000000: JE at 0x1182 taken to
+        // 0x11a4; verify_cpu returns 0, JNE at 0x102a not taken.
+        let (trace, cpu, _, stop) = run_blob(CpuidSource::Profile(CpuidProfile::OdX8664V1Neutral));
+        let mut expected: Vec<u32> = BLOCK1_TRACE.to_vec();
+        expected.extend_from_slice(&VERIFY_TO_1142);
+        expected.extend_from_slice(&[
+            0x1144, 0x114A, 0x114C, 0x1152, 0x1154, 0x115A, 0x115C, 0x1163, 0x116A, 0x116C, 0x1172,
+            0x1174, 0x117B, 0x1182, 0x11A4, 0x11A5, 0x11A8, 0x1027, 0x102A,
+        ]);
+        assert_eq!(trace, expected);
+        assert!(!trace.contains(&0x119B), "the failure tail is not taken");
+        assert!(matches!(
+            stop,
+            RealModeRefusal::Unsupported { ip: 0x102C, .. }
+        ));
+        assert_eq!(cpu.gpr[EAX], 0);
+        assert_eq!(cpu.gpr[EBX], 0x100);
+        assert_eq!(cpu.gpr[ECX], 0);
+        assert_eq!(cpu.gpr[EDX], 0x0600_0000);
+        assert_eq!(cpu.gpr[ESP], 0x6020);
+        assert_eq!(cpu.mode.eflags, 0x0020_0046);
+        assert_eq!(cpu.mode.eip, 0x102C);
+    }
+
+    #[test]
     fn s6_14g_verify_cpu_on_the_cpuid_rs_profiles_takes_the_failure_path() {
         // cpuid.rs declares leaf 1 EDX = FPU | TSC | FXSR (| APIC) only: no MSR, PAE, CX8, CMOV,
         // SSE or SSE2, and 0x80000001 is all zero. By hand: EDX & 0x7008161 = 0x1000001 (bits 0
