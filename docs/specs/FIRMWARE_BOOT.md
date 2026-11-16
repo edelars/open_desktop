@@ -420,3 +420,10 @@ Four focused tests use distinct upper RBX patterns to prove only BX participates
 Base `PagedCpl0ProbeV1` admits only exact `40 0F 92 C5`. Bare REX `0x40` selects low-byte BPL for ModRM r/m=5; without REX the byte register would be CH. SETB evaluates CF only, writes the resulting byte into BPL while preserving all other RBP bits, and leaves RFLAGS/definedness unchanged. The final ModRM-byte fetch fault is atomic. This slice adds only exact SETB BPL and retains previously admitted exact SETcc forms. Other conditions, byte registers, ModRM values, REX/prefix forms, memory destinations, CPL3 and other paged profiles remain unsupported.
 
 Four focused tests cover CF true/false and definedness, ZF independence, partial-register state, flag preservation, final-byte fetch faults, neighbors and CPL3/profile isolation. Firmware advances after 8,954 retired instructions to `45 8D 7A F3` (`LEA R15D,[R10-0x0d]`, ISSUE-262) at RIP `0x2015D6`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `LEA R15D,[R10-0x0d]` (ISSUE-262)
+
+Base `PagedCpl0ProbeV1` admits only exact `45 8D 7A F3`. REX.R/B select R15D and R10. LEA adds signed disp8 `-0x0d` to R10 using 64-bit wrapping address arithmetic, then writes the low 32 bits to R15D, zero-extending the result. No memory access or canonicality check occurs; other GPRs, flags and definedness remain unchanged. A fault while fetching the final byte does not retire or mutate state. Neighboring displacement/register/base/REX/width/prefix encodings, CPL3 and other paged profiles remain unsupported.
+
+Four focused tests cover normal/wrapping/noncanonical address values, destination truncation and zero-extension, full state/flags preservation, no memory/I/O, fetch-fault atomicity, neighboring forms and CPL3/profile isolation. Firmware advances after 8,955 retired instructions to `41 83 FA 0B` (`CMP R10D,11`, ISSUE-263) at RIP `0x2015DA`; COM1 remains empty. Independent review approved with no findings.

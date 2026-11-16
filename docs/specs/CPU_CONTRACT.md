@@ -27482,3 +27482,10 @@ Four focused tests prove high RBX bits do not affect the comparison, check flags
 Base `PagedCpl0ProbeV1` admits only exact `40 0F 92 C5`. Bare REX selects BPL for byte register code 5 rather than the legacy high-byte register. The SETB condition reads CF only; its value replaces only the low byte of RBP, preserving upper bits. RFLAGS and definedness remain unchanged, even when CF is marked undefined. A final ModRM-byte fetch fault does not retire or mutate CPU state. This slice adds only exact SETB BPL and retains previously admitted exact SETcc forms. Other conditions/registers, ModRM/REX/prefix variants, memory destinations, CPL3 and other paged profiles remain unsupported.
 
 Four focused tests cover CF values/definedness, ZF independence, partial-register mutation, flag/state preservation, fetch-fault atomicity, neighbor forms and isolation. Firmware advances after 8,954 retired instructions to `45 8D 7A F3` (`LEA R15D,[R10-0x0d]`, ISSUE-262) at RIP `0x2015D6`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `LEA R15D,[R10-0x0d]` (ISSUE-262)
+
+Base `PagedCpl0ProbeV1` admits only exact `45 8D 7A F3`. REX.R/B select R15D and R10. LEA computes the effective address with 64-bit wrapping and signed disp8 `-0x0d`, then writing R15D truncates to 32 bits and zero-extends into R15. It does not access memory or check address canonicality; all other GPRs, RFLAGS and definedness remain unchanged. A final-byte fetch fault does not retire or mutate state. Neighboring displacement/destination/base/REX/width/prefix forms, CPL3 and other paged profiles remain unsupported.
+
+Four focused tests cover ordinary, wrapping and noncanonical inputs; dword truncation/zero-extension; preserved state and no memory/I/O; fetch-fault atomicity; neighbors; and CPL3/profile isolation. Firmware advances after 8,955 retired instructions to `41 83 FA 0B` (`CMP R10D,11`, ISSUE-263) at RIP `0x2015DA`; COM1 remains empty. Independent review approved with no findings.
