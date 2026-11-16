@@ -20970,6 +20970,49 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     .apply(initial_rflags_defined),
             };
         }
+        // S7-04: the Rust helper shifts R9D by 8 with only
+        // `41 C1 E9 08`; preserve the existing count/flag rules.
+        Operation::Shift {
+            kind: ShiftKind::Shr,
+            dst: Operand::Register(destination),
+            source: None,
+            count: Operand::Immediate(8),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xc1
+            && instruction.length == 4
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x41),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R9, OperandSize::Dword) =>
+        {
+            let kind = ShiftKind::Shr;
+            let raw_count = 8;
+            let count = shift_count(kind, instruction.operand_size, raw_count);
+            let lhs = state.read(destination);
+            let (result, flags) = shift_result(
+                instruction.operand_size,
+                kind,
+                lhs,
+                0,
+                count,
+                raw_count & 0x1f,
+                state.rflags,
+            );
+            state.write(destination, result);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction
+                    .flag_effects_for_count(raw_count)
+                    .apply(initial_rflags_defined),
+            };
+        }
         // S7-04: the firmware entry loads __bss_start into RDI with exactly
         // `48 8D 3D 09 2B 00 00` (LEA RDI,[RIP+0x2b09]). Reuse the decoder's
         // next-RIP-relative effective-address calculation without a data read.
