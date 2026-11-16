@@ -754,13 +754,23 @@
 - **Следующий шаг:** inspect the exact qword CMP register routing and flag contract before narrow admission.
 
 <a id="issue-187-s7-04-rust-helper-cmp-rbp-r11-unsupported"></a>
-### ISSUE-187 — S7-04: Rust helper `CMP RBP,R11` remains outside paged CPU profile
+### ISSUE-187 — S7-04: точная форма Rust helper `CMP RBP,R11` admitted
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `ADD R11,2`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e4d`.
+- **Статус:** решена только для exact `4C 39 DD` в base `PagedCpl0ProbeV1`; full handoff validation не завершена.
+- **Результат:** exact REX `4C`, opcode `39 /r`, ModRM `DD`, qword operand size and register views route RBP as Intel destination and R11 as source. Shared CMP computes flags as RBP−R11, changes no GPRs, advances RIP by three, and defines arithmetic flags. Neighbors remain outside the allowlist.
+- **Проверка:** four focused tests cover distinct operand order, equal/borrow/non-borrow/overflow flags and definedness, no GPR mutation, final-ModRM fetch-fault atomicity, neighboring tuples and CPL3/other-profile isolation; all 432 `paged_probe_profile` tests and `cargo check --offline -p od-isa --all-targets` passed. Firmware image `/private/tmp/od-fw-s7-04-issue187.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner retired 90 instructions then stopped at ISSUE-188 (`RIP=0x200e50`), COM1 remains empty.
+- **Основание:** same image; runner budget 10000.
+- **Следующий шаг:** inspect the exact short JNZ displacement/flag contract before narrow admission.
+
+<a id="issue-188-s7-04-rust-helper-jnz-minus-0x52-unsupported"></a>
+### ISSUE-188 — S7-04: Rust helper `JNZ -0x52` (`75 AE`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `CMP RBP,R11`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e50`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 89 instructions, then stopped at `4C 39 DD` (`CMP RBP,R11`), `Unsupported { opcode: 57 }`, `RIP=0x200e4d`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue186.bin`; bytes at offset `0xe4d` begin `4c 39 dd`; runner budget 10000.
-- **Следующий шаг:** confirm Intel operand order and flags-only behavior before considering narrow profile admission.
+- **Суть и последствия:** runner retired 90 instructions, then stopped at `75 AE` (`JNZ rel8 -0x52`), `Unsupported { opcode: 117 }`, `RIP=0x200e50`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue187.bin`; bytes at offset `0xe50` begin `75 ae`; runner budget 10000.
+- **Следующий шаг:** verify taken/not-taken ZF behavior, signed displacement target and taken-only canonicality before narrow admission.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
