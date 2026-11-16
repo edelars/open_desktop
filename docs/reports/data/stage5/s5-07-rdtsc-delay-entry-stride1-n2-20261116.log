@@ -1,0 +1,107 @@
+S5-07 delay_tsc entry-site RDTSC N=2 diagnostic
+Date: 2026-11-16
+Host: macOS/aarch64, local Codex worktree
+Runner production source revision: 5fc701d00ac4abbb7f6c17eb82599d2944a6dc76 (clean)
+
+Purpose
+-------
+The stride-512 poll-site trace showed differences in sampled threshold
+outcomes. This diagnostic sampled every initial RDTSC at the entry to
+delay_tsc, before its poll loop, to compare requested-cycle and stack
+sequences in a fresh unique-nonce pair. It does not correlate an entry sample
+to the poll reads within that invocation.
+
+Invocation
+----------
+Series: stage5-s5-07-rdtsc-entry-rip-stride1-n2-20261116-a
+Scenario: stage4-init-nonce; two automatic runs; smoke_not_acceptance.
+CPU: stage4a CPL0 set, user mode, diagnostic_past_c7=false.
+Linux options: norandmaps, randomize_kstack_offset=off.
+Budget: 3,000,000,000; expected stop: budget_exhausted.
+Selected RIP: 0xffffffff8271b31b; stride: 1.
+
+Inputs:
+- vmlinuz SHA-256: 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e
+- initramfs SHA-256: 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7
+- ACPI blob SHA-256: 6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d
+- ACPI manifest SHA-256: 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2
+
+```sh
+target/release/od-runner linux-direct \
+  --test-runs 2 \
+  --series-id stage5-s5-07-rdtsc-entry-rip-stride1-n2-20261116-a \
+  --scenario-id stage4-init-nonce \
+  --expected-stop-kind budget_exhausted \
+  --out work/stage5/stage5-s5-07-rdtsc-entry-rip-stride1-n2-20261116-a/series.json \
+  --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --run --budget 3000000000 --set-cpl0 \
+  --cpuid-profile stage4a --user-mode --linux-norandmaps \
+  --linux-no-randomize-kstack-offset --execution-observations \
+  --execution-observations-rdtsc-rip 0xffffffff8271b31b \
+  --execution-observations-rdtsc-stride 1
+```
+
+Both runs loaded Linux, validated exact unique nonce markers, and reached
+retired=2,999,999,998. Sidecars are schema v7, retained every selected-site
+hit, and report zero omissions: 43,883 samples in run 0001 and 43,892 in run
+0002. Each sidecar records 33 delivered #PF events. The series outcome is
+`passed` for the smoke scenario, but the comparison is `matches=false` with
+unexplained `machine_observations` and nonce-normalized `ordered_uart_bytes`.
+The run profile is `smoke_not_acceptance`; acceptance is
+`diagnostic_not_counted`.
+
+Entry-sequence analysis
+----------------------
+Across all 43,883 shared hit ordinals, `requested_cycles`, RBP, and RSP are
+identical in order. Run 0002 has nine additional samples at the tail; each
+has requested_cycles `0xf4217` and RBP/RSP `0xffffc9000000fdf8`. This pair
+therefore shows no request or stack-sequence difference among the shared
+entry hits. It does not establish why run 0002 has additional tail hits.
+
+CR3 differs from ordinal 10,022 onward in the shared sequence: `0x6484000`
+in run 0001 and `0x648e000` in run 0002. The stack and request sequence still
+matches at those ordinals. This records different physical page-table roots;
+the cause and relevance are not established, and the difference is not
+classified as benign.
+
+The TSC value at each entry is an absolute counter sample. Comparing
+consecutive-entry increments (current observed_tsc minus prior observed_tsc)
+removes the starting-counter offset: 4,815 of 43,882 shared increments
+differ. The first is the interval ending at hit ordinal 2: `0x53b4` in run
+0001 versus `0x6ac4` in run 0002, while request `0x7d0` and RBP/RSP match.
+These are between-entry increments, not elapsed cycles for an individual
+delay_tsc call. They quantify variation but do not identify its cause.
+
+At the selected entry RIP, RDI still contains the input cycle count, so the
+sidecar's derived `start_tsc` and `elapsed_cycles` fields are not delay-loop
+elapsed measurements. `requested_cycles` (R8), `observed_tsc` (EDX:EAX), and
+the stack registers are the relevant fields here.
+
+This entry-site pair has a different unique-nonce pair from the prior
+stride-512 poll-site series; it cannot be joined hit-for-hit to that series.
+Both series remain diagnostic and do not explain the strict machine/UART
+differences or satisfy the counted S5-07 acceptance gate. A next observer
+would need to tag poll samples with the corresponding delay_tsc entry-call
+ordinal to compare poll counts per invocation.
+
+Artifact hashes
+---------------
+Series SHA-256: db5f6d750732afaa259a5b1e6088686d58a5eae0145b036680d0eab5296f90ba
+Comparison SHA-256: 989064d1f1ec9b4732e55fb44c4f28eb73dd41a9422163b0b14af4c5d558654e
+Run 0001 manifest SHA-256: af334ebc7c3d1abfcf6d1c081d6498fb3e06cc2fbd501033b3a4f21f0435114a
+Run 0001 runner JSON SHA-256: 16cd1f1e2dffc2dbf5c450eab090bbb0f10394f7cd77238c41990187ca8c6faa
+Run 0001 UART SHA-256: 8717e27536e4f4121ba6857066e0abca80a416fe2e7627b88e5fb5d177c37276
+Run 0001 sidecar SHA-256: 583a999051b92836510439701f0adc3aa1728e1878761e3ac3a96c95799039c8
+Run 0002 manifest SHA-256: 673dd0c5edd71ebc9cf8bc475278a9c84cd159478f703f7da5a54aea7ca14686
+Run 0002 runner JSON SHA-256: 6d3380f49dc45704d3815d3f19e54eb143255102626ca55af52d6d56e3ab4971
+Run 0002 UART SHA-256: f37a5e625bc6325128bcf98e24f025c4a19f976575233a82b5f68d384b33128d
+Run 0002 sidecar SHA-256: b4c1edeab5a7a62ff2420c1afe5ec881081b136056dab0a4cf41e4f36024b99b
+
+S5-07 remains blocked/unaccepted. No comparator normalization or CPU
+semantics changed. Raw artifacts are under the ignored work/stage5 directory
+named by the series ID above.
