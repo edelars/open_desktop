@@ -1222,16 +1222,27 @@ impl PublishedCode {
     ///
     /// Crate-private: its only caller is [`PagedFetchedLoadSession`], which
     /// derives `active_code_page` from the tracked fetch snapshot. The helper
-    /// trusts that argument for the self-modifying-code refusal only; memory
+    /// trusts that argument for the code-invalidation report only; memory
     /// safety does not depend on it (see the SAFETY comment below).
     ///
     /// `active_code_page` is the guest physical page the block's bytes were
     /// fetched from. Before anything is walked or written the adapter refuses a
-    /// store whose operand is not wholly ordinary RAM or lies on that page (see
+    /// store whose operand is not wholly ordinary RAM (see
     /// [`od_machine::with_paged_mov_store_memory`]); the refusal is reported in
     /// `PagedMovStoreScope::refusal` and the helper leaves the CPU state
     /// unchanged. A guest `#PF` is reported before the operand bytes were
     /// written (Accessed bits of the walk stay committed).
+    ///
+    /// S4-16i: a store onto `active_code_page` is not refused. It commits by
+    /// the ordinary rules (walk, rights, Dirty bit, bytes) and the instruction
+    /// retires with RAX/RIP exactly as any other store. Because the block is
+    /// this single store, the block ends right after it, so the architectural
+    /// observation point is the end of the store and no later instruction is
+    /// run from the old bytes. The helper then turns the exit `Complete` into
+    /// [`MemoryOperationExecutionExitV2::CodeInvalidated`] when any committed
+    /// write range intersects the active page, so the caller must treat the
+    /// block as stale. The compiled block stays owned by the caller while this
+    /// borrowed call runs; it is not released here.
     pub(crate) fn execute_paged_mov_rbx_rax_store_v2(
         &self,
         state: &mut od_isa::LongModeState,
@@ -1296,47 +1307,53 @@ impl PublishedCode {
         let paging = od_machine::Long64ProbeConfig::from_cpu_state(state, cr3, efer)
             .map_err(PagedMemoryLoadV2Error::Paging)?;
         let stop_requested = AtomicU8::new(0);
-        Ok(od_machine::with_paged_mov_store_memory(
-            bus,
-            paging,
-            state.rip,
-            active_code_page,
-            |memory| {
-                // SAFETY: `execute_memory_store_v2` requires private synchronous
-                // ordinary RAM with no shared aliases, devices or re-entry.
-                // - The adapter writes only after a read-only probe proved the
-                //   operand wholly ordinary RAM (never MMIO, ROM or
-                //   framebuffer) and the tracked RAM walker (`access_tracked_ram`)
-                //   never dispatches a device.
-                // - `bus` is an exclusive `&mut` for the whole call, so no other
-                //   vCPU, DMA engine or host writer runs concurrently; effects
-                //   are synchronous and immediate.
-                // - `PhysicalMemory::write_bytes` validates the whole 8-byte
-                //   range before committing, so a failed write leaves RAM
-                //   unchanged.
-                // - The compiled block lives in the host MAP_JIT mapping and guest
-                //   RAM is a separate heap allocation, so a guest store can
-                //   never overwrite executable host code whatever
-                //   `active_code_page` holds: that argument does not take part
-                //   in memory safety. It only decides the SMC refusal (an
-                //   operand on the page the block's source bytes were fetched
-                //   from is refused, not executed). Writes to any other code
-                //   page are allowed: the session re-keys on bytes and page
-                //   generation before every entry.
-                // - The adapter only pushes to local Vecs: it never calls back
-                //   into this runtime and does not unwind through the block.
-                unsafe {
-                    self.execute_memory_store_v2(
-                        state,
-                        memory,
-                        access_context,
-                        1,
-                        None,
-                        &stop_requested,
-                    )
-                }
-            },
-        ))
+        let mut scope = od_machine::with_paged_mov_store_memory(bus, paging, state.rip, |memory| {
+            // SAFETY: `execute_memory_store_v2` requires private synchronous
+            // ordinary RAM with no shared aliases, devices or re-entry.
+            // - The adapter writes only after a read-only probe proved the
+            //   operand wholly ordinary RAM (never MMIO, ROM or
+            //   framebuffer) and the tracked RAM walker (`access_tracked_ram`)
+            //   never dispatches a device.
+            // - `bus` is an exclusive `&mut` for the whole call, so no other
+            //   vCPU, DMA engine or host writer runs concurrently; effects
+            //   are synchronous and immediate.
+            // - `PhysicalMemory::write_bytes` validates the whole 8-byte
+            //   range before committing, so a failed write leaves RAM
+            //   unchanged.
+            // - The compiled block lives in the host MAP_JIT mapping and guest
+            //   RAM is a separate heap allocation, so a guest store can
+            //   never overwrite executable host code whatever
+            //   `active_code_page` holds: that argument does not take part
+            //   in memory safety. It only decides the `CodeInvalidated`
+            //   report (S4-16i) for a store on the page the block's source
+            //   bytes were fetched from. Writes to any other code page are
+            //   allowed too: the session re-keys on bytes and page
+            //   generation before every entry.
+            // - The adapter only pushes to local Vecs: it never calls back
+            //   into this runtime and does not unwind through the block.
+            unsafe {
+                self.execute_memory_store_v2(
+                    state,
+                    memory,
+                    access_context,
+                    1,
+                    None,
+                    &stop_requested,
+                )
+            }
+        });
+        let page_start = active_code_page.get() & !0xfff;
+        let page_end = u128::from(page_start) + 0x1000;
+        if let Ok(result) = &mut scope.memory.callback_result
+            && result.exit == MemoryOperationExecutionExitV2::Complete
+            && scope.memory.committed_writes.iter().any(|range| {
+                u128::from(range.start().get()) < page_end
+                    && range.end_exclusive() > u128::from(page_start)
+            })
+        {
+            result.exit = MemoryOperationExecutionExitV2::CodeInvalidated;
+        }
+        Ok(scope)
     }
 
     /// Execute a verified V2 MOV store using only a backend whose ownership
@@ -2095,8 +2112,10 @@ pub struct PagedFetchedLoadReport {
         Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
     >,
     /// S4-15d: set when the store adapter refused the operand before any walk
-    /// or write (non-RAM target, the block's own code page, or an operand the
-    /// probe cannot translate). Always `None` for the load form.
+    /// or write (non-RAM target or an operand the probe cannot translate).
+    /// Always `None` for the load form. A store onto the block's own code page
+    /// is not a refusal since S4-16i: it commits and reports the exit
+    /// `CodeInvalidated` in `execution`.
     pub store_refusal: Option<od_machine::PagedStoreRefusal>,
 }
 
@@ -2106,6 +2125,11 @@ struct AdmittedFetchedLoad {
     generation: u64,
     bytes: Vec<u8>,
     form: PagedFetchedForm,
+    /// S4-16i: set once the block's own store reported `CodeInvalidated`. A
+    /// retired block is never reused, whatever the key says: the next entry
+    /// drops it and admits the form again from the new bytes. Its executable
+    /// memory stays owned until then (or until reset or drop).
+    retired: bool,
     published: PublishedCode,
 }
 
@@ -2168,6 +2192,24 @@ impl PagedFetchedLoadSession {
         released
     }
 
+    /// S4-16i: marks the admitted block retired when its own store reported
+    /// `CodeInvalidated`. Called after the execution call has returned, so the
+    /// block was borrowed (hence alive) for the whole native call; nothing is
+    /// released here. Release happens at the next admission, reset or drop.
+    fn retire_after_code_invalidation(
+        &mut self,
+        execution: &od_machine::PagedMovMemoryScope<
+            Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
+        >,
+    ) {
+        if let Ok(result) = &execution.callback_result
+            && result.exit == MemoryOperationExecutionExitV2::CodeInvalidated
+            && let Some(admitted) = self.admitted.as_mut()
+        {
+            admitted.retired = true;
+        }
+    }
+
     /// S4-15b entry: admits only the load `48 8B 03`. Any other bytes
     /// (including the store `48 89 03`) are `UnsupportedForm`. This also holds
     /// when the same session already holds a store block admitted through
@@ -2191,8 +2233,12 @@ impl PagedFetchedLoadSession {
     /// ([`od_machine::with_paged_mov_store_memory`]): page walk checks (Present,
     /// Write, User), Accessed bits, then the Dirty bit and the operand bytes. It
     /// is refused before any walk or write when the operand is not wholly
-    /// ordinary RAM or lies on the block's own code page
-    /// (`PagedFetchedLoadReport::store_refusal`).
+    /// ordinary RAM (`PagedFetchedLoadReport::store_refusal`). A store onto the
+    /// block's own code page (S4-16i) commits and ends in the exit
+    /// `CodeInvalidated`: the admitted block is retired, so the next entry
+    /// admits the form again from the new bytes and the old block never runs
+    /// again. The retired block's executable memory stays owned by the session
+    /// until the next admission, [`Self::reset`] or drop.
     pub fn execute_with_store(
         &mut self,
         state: &mut od_isa::LongModeState,
@@ -2260,7 +2306,8 @@ impl PagedFetchedLoadSession {
         })?;
 
         let reusable = self.admitted.as_ref().is_some_and(|admitted| {
-            admitted.linear_base == snapshot.linear_base
+            !admitted.retired
+                && admitted.linear_base == snapshot.linear_base
                 && admitted.physical_page == snapshot.physical_base
                 && admitted.generation == snapshot.backing_generation
                 && admitted.bytes == fetched_bytes
@@ -2332,6 +2379,7 @@ impl PagedFetchedLoadSession {
                 } else {
                     PagedFetchedForm::QwordLoadRbx
                 },
+                retired: false,
                 published,
             });
             self.admissions += 1;
@@ -2367,6 +2415,7 @@ impl PagedFetchedLoadSession {
                 .map_err(load_error)?;
             (scope, None)
         };
+        self.retire_after_code_invalidation(&execution);
         Ok(PagedFetchedLoadReport {
             fetched_linear_base: snapshot.linear_base,
             fetched_physical_page: snapshot.physical_base,
@@ -2482,7 +2531,8 @@ pub struct PagedFetchedFormReport {
         Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
     >,
     /// Set when the store adapter refused the operand before any walk or write.
-    /// Always `None` for a load form.
+    /// Always `None` for a load form. A store onto the block's own page is not
+    /// a refusal (S4-16i): see `execution` for `CodeInvalidated`.
     pub store_refusal: Option<od_machine::PagedStoreRefusal>,
 }
 
@@ -2578,7 +2628,8 @@ impl PagedFetchedLoadSession {
         }
 
         let reusable = self.admitted.as_ref().is_some_and(|admitted| {
-            admitted.linear_base == snapshot.linear_base
+            !admitted.retired
+                && admitted.linear_base == snapshot.linear_base
                 && admitted.physical_page == snapshot.physical_base
                 && admitted.generation == snapshot.backing_generation
                 && admitted.bytes == snapshot.bytes
@@ -2640,6 +2691,7 @@ impl PagedFetchedLoadSession {
                 generation: snapshot.backing_generation,
                 bytes: snapshot.bytes.clone(),
                 form,
+                retired: false,
                 published,
             });
             self.admissions += 1;
@@ -2694,6 +2746,7 @@ impl PagedFetchedLoadSession {
                 None,
             ),
         };
+        self.retire_after_code_invalidation(&execution);
         Ok(PagedFetchedFormReport {
             form,
             fetched_linear_base: snapshot.linear_base,
@@ -2730,8 +2783,8 @@ pub enum PagedStepFallbackReason {
     /// unchanged and never reached a device.
     OperandMemoryError(MemoryOperationMemoryErrorV2),
     /// S4-15d: the store adapter refused the operand before any page walk or
-    /// write (non-RAM target, the block's own code page, or an operand the
-    /// probe cannot translate, e.g. a 2 MiB leaf). No RAM byte, Accessed or
+    /// write (non-RAM target or an operand the probe cannot translate, e.g. a
+    /// 2 MiB leaf). No RAM byte, Accessed or
     /// Dirty bit of the data walk changed; the CPU state is unchanged. The
     /// interpreter then runs once as for any refusal; its allowlist has
     /// `48 89 0B` but not `48 89 03`, so it reports `Unsupported` and retires
@@ -2790,7 +2843,7 @@ impl PagedFetchedLoadSession {
     /// refused attempt can have are page-walk Accessed-bit commits (instruction
     /// fetch, or for a load the data walk before the RAM-only adapter refused a
     /// non-RAM operand). A refused store commits no data-walk bit at all: the
-    /// store adapter decides (non-RAM, own code page, untranslatable operand)
+    /// store adapter decides (non-RAM, untranslatable operand)
     /// from a read-only probe before it walks, so only the fetch writes remain,
     /// as in a pure interpreter step. Re-walking is idempotent for the bits
     /// that were committed, so the interpreter commits nothing twice, and the
@@ -2830,15 +2883,18 @@ impl PagedFetchedLoadSession {
                     }
                     Err(error) => return Err(PagedStepError::JitHostFailure(error.clone())),
                     Ok(result) => match result.exit {
+                        // `CodeInvalidated` (S4-16i): the store retired and
+                        // wrote into its own code page. A final JIT result:
+                        // the instruction ran and must not be repeated.
                         MemoryOperationExecutionExitV2::Complete
+                        | MemoryOperationExecutionExitV2::CodeInvalidated
                         | MemoryOperationExecutionExitV2::GuestFault(_) => {
                             return Ok(PagedStepOutcome::Jit(report));
                         }
-                        // A single-load block never ends in any other way. If it
-                        // does, the instruction may have run: report it, never
-                        // retry it on the interpreter.
-                        MemoryOperationExecutionExitV2::CodeInvalidated
-                        | MemoryOperationExecutionExitV2::BudgetExhausted
+                        // A single-instruction block never ends in any other
+                        // way. If it does, the instruction may have run: report
+                        // it, never retry it on the interpreter.
+                        MemoryOperationExecutionExitV2::BudgetExhausted
                         | MemoryOperationExecutionExitV2::StopRequested
                         | MemoryOperationExecutionExitV2::StopAddress => {
                             return Err(PagedStepError::JitHostFailure(

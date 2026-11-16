@@ -4594,7 +4594,8 @@ has the interpreter fallback; a form that the JIT refuses there and that the
 interpreter does not execute ends in the interpreter's explicit
 `RunExit::Unsupported` (0 retired, RIP/RAX untouched, reported, never a silent
 success). That is the case for `48 89 03` after a refused store (non-RAM target,
-the block's own code page, untranslatable operand). For the forms that only
+untranslatable operand; a store into the block's own code page is not refused
+since S4-16i, see below). For the forms that only
 `execute_forms` admits this follows from `execute_or_interpret` calling
 `execute_with_store`; there is no dedicated dispatcher test for them.
 
@@ -4669,8 +4670,9 @@ S4-15b-f sections of `docs/reports/STAGE_4_REPORT.md`.
   explicitly.
 - Performance: no speed claim; the cost of the repeated tracked fetch and of
   the probe plus the walk on a store was not measured.
-- Store into the active block and its invalidation (S4-16i); aliases and
-  cache invalidation are S4-16.
+- Store into the active block (S4-16i, done for the single-store block of
+  `PagedFetchedLoadSession`: see the S4-16i section); aliases and cache
+  invalidation are S4-16.
 - `JitHostFailure` branches have no test (not reachable from the public API).
 
 ### S4-15b: fetch-snapshot admission from guest RAM
@@ -4734,20 +4736,22 @@ order through the committed-write callback. The `unsafe` contract of
 (a read-only probe refuses MMIO, ROM, framebuffer and any operand the probe
 cannot translate, e.g. a 2 MiB leaf, before any walk that commits), never reaches a device, runs under an exclusive `&mut MachineBus`,
 relies on `PhysicalMemory::write_bytes` validating the whole range first, never
-calls back into the runtime, and refuses an operand on the guest page the block
-was fetched from (the compiled block itself lives in the host MAP_JIT mapping,
-so memory safety does not depend on that refusal, which only keeps the store out
-of the page being executed). The host helper is crate-private; the load-only
+calls back into the runtime (the compiled block itself lives in the host
+MAP_JIT mapping, so memory safety never depended on the page the store lands
+on). S4-15d refused an operand on the guest page the block was fetched from;
+**S4-16i replaced that refusal**: such a store now commits and ends in the exit
+`CodeInvalidated` (section S4-16i). The host helper is crate-private; the load-only
 `execute` entry refuses `48 89 03` even when a store block was admitted through
 `execute_with_store` on the same session.
 A guest `#PF` precedes the Dirty bit and the write and is a final JIT result. A
-refusal (`StoreTargetRefused`: non-RAM target, the block's own code page, or an
+refusal (`StoreTargetRefused`: non-RAM target or an
 operand the probe cannot translate) commits no data-walk bit, no Dirty bit and
 no data; only the fetch's Accessed bits remain, so the merged write list and the
 RAM image equal a pure interpreter step. It falls back to one `step_paged_mov`,
 whose allowlist lacks `48 89 03` and reports `Unsupported`. A store into another code page is allowed:
 the next entry re-fetches and compares bytes, page and generation. A store into
-the active block is not part of this slice (S4-16i); more forms, reset/handle
+the active block was not part of this slice and is S4-16i (it replaced the
+refusal described in the S4-15d report); more forms, reset/handle
 and the closing contract text were added in S4-15e-g.
 
 ### S4-15e: wider operand forms through `execute_forms`
@@ -5061,3 +5065,42 @@ blocks at once (one process-wide MAP_JIT region), so a JIT store never runs
 while a cached alias block exists. Covered by `tests::s4_16h_*`. Not covered: a
 host that actually forwards NVMe/loader/delivery ranges to the session, active
 blocks (S4-16i). No performance claim is made.
+
+### S4-16i: store into the active block
+`PagedFetchedLoadSession` (`execute_with_store`, `execute_forms`,
+`execute_or_interpret`): a `48 89 03` whose operand lies on the physical page the
+block was fetched from is no longer refused (`PagedStoreRefusal::ActiveCodePage`
+and the `active_code_page` argument of `with_paged_mov_store_memory` are gone).
+It is walked, checked (Present, Write, User, WP) and committed like any store:
+Accessed bits, leaf Dirty bit, the 8 bytes. A `#PF` precedes the commit exactly
+as before (`GuestFault`, no write, block kept). On a committed write the
+instruction retires with RAX/RFLAGS/RIP as the interpreter's equivalent store
+(RIP = `next_rip`, never inside the rewritten bytes), and the host helper turns
+the exit `Complete` into `MemoryOperationExecutionExitV2::CodeInvalidated` when
+a committed write range intersects the active physical page (the data bytes or,
+rarely, a table entry on that page). `execute_or_interpret` returns it as a final
+`PagedStepOutcome::Jit` (never `JitHostFailure`, never repeated on the
+interpreter). Observation point: the end of the retired store. The block is this
+one instruction, so no later instruction of the old bytes can run; the next
+entry fetches again.
+The admitted block is marked `retired`: it is never reused. Re-admission is
+ensured by the page generation, which grows on any committed write to RAM (a
+store of the same three bytes included); `retired` is an additional
+defence in depth. `retired` is not caught by a single-mutation test (the
+generation alone rejects the block), and a test of `retired` with an unchanged
+generation is impossible without a code change, since a committed write to the
+active page always raises the generation. The next entry drops it and admits from the new bytes
+(`Admitted`, `admissions` + 1). Its executable memory is borrowed (alive) for
+the whole native call, is not released by the call that retires it, and is freed
+at the next entry that reaches the key check (even if it then ends in
+`UnsupportedForm`, `Compile` or `Publish`; an entry refused earlier - context,
+CR3, operand range, fetch `#PF` - does not free it), `reset()` or drop of the session (S4-15f mechanism;
+`jit_free_slots()` stays 0 after the exit and returns to all-free after reset
+or drop). A store into another code page is unchanged (exit `Complete`, block
+reused, key re-check on the next entry).
+Not covered: SMP and deferred retirement with a grace period (S3-25), blocks of
+more than one instruction (a store in the middle of a block, mid-block exit and
+re-entry), 2 MiB code pages, writes by other writers into the active page while
+the block runs (single vCPU, synchronous only), `PagedCodeSession` active
+blocks. No performance claim is made. Covered by `s4_16i_*` in
+`tests/system/stage4_memory_fault.rs`.

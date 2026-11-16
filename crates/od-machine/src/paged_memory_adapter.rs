@@ -490,15 +490,16 @@ fn with_paged_mov_read_memory<R>(
 /// Why the S4-15d store adapter refused a store before it walked or wrote
 /// anything. A refusal is not an architectural result: no RAM byte, Accessed or
 /// Dirty bit changed, and no device was reached.
+///
+/// S4-16i: a store onto the physical page the executing block was fetched from
+/// is no longer a refusal. It is walked, checked and committed like any other
+/// store; the host reports the resulting code invalidation (see
+/// `MemoryOperationExecutionExitV2::CodeInvalidated`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PagedStoreRefusal {
     /// The translated operand is not wholly ordinary RAM (MMIO, ROM,
     /// framebuffer or unmapped). The interpreter owns every such store.
     NonRamTarget { physical: GuestPhysicalAddress },
-    /// The operand lies on the 4 KiB physical page the executing block was
-    /// fetched from. A store into the page that backs the running block is not
-    /// admitted on the JIT path (it is the self-modifying-code case).
-    ActiveCodePage { page: GuestPhysicalAddress },
     /// The read-only probe could not translate the operand at all (a
     /// non-canonical address, a 2 MiB or 1 GiB leaf that the 4 KiB walker does
     /// not serve, or an unreadable table entry). The JIT does not own such a
@@ -525,8 +526,11 @@ pub struct PagedMovStoreScope<R> {
 /// Dirty bit before the operand bytes are written). Everything else (fetch,
 /// read, atomics, other widths, a page-crossing operand) is a typed backend
 /// error. Before the walk that commits anything, a read-only probe translates
-/// the operand; if it translates to anything other than whole ordinary RAM, or
-/// to `active_code_page`, the store is refused with no effect at all. A probe
+/// the operand; if it translates to anything other than whole ordinary RAM, the
+/// store is refused with no effect at all. A store onto the page the executing
+/// block was fetched from (S4-16i) is committed like any other: the adapter has
+/// no notion of an active page, and the caller derives the code invalidation
+/// from the committed write ranges. A probe
 /// that cannot translate the operand (any probe error: unsupported page size,
 /// non-canonical address, unreadable table) is refused the same way
 /// ([`PagedStoreRefusal::ProbeUnsupported`]), so the tracked walk never commits
@@ -541,14 +545,12 @@ pub fn with_paged_mov_store_memory<R>(
     bus: &mut MachineBus,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
-    active_code_page: GuestPhysicalAddress,
     callback: impl FnOnce(&mut dyn GuestMemory) -> R,
 ) -> PagedMovStoreScope<R> {
     let mut memory = PagedMovStoreMemory {
         bus,
         paging,
         instruction_rip,
-        active_code_page: active_code_page.get() & !0xfff,
         page_fault: None,
         access_error: None,
         refusal: None,
@@ -572,8 +574,6 @@ struct PagedMovStoreMemory<'a> {
     bus: &'a mut MachineBus,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
-    /// Page-aligned physical address of the executing block's code page.
-    active_code_page: u64,
     page_fault: Option<PageFaultRecord>,
     access_error: Option<TrackedAccessError>,
     refusal: Option<PagedStoreRefusal>,
@@ -640,11 +640,6 @@ impl GuestMemory for PagedMovStoreMemory<'_> {
                     .is_ok_and(|range| self.bus.tracked_physical_range_is_ram(range));
                 if !is_ram {
                     return Err(self.refuse(PagedStoreRefusal::NonRamTarget { physical }));
-                }
-                if physical.get() & !0xfff == self.active_code_page {
-                    return Err(self.refuse(PagedStoreRefusal::ActiveCodePage {
-                        page: GuestPhysicalAddress::new(self.active_code_page),
-                    }));
                 }
             }
             // A probe fault is not decided here: the tracked access below
