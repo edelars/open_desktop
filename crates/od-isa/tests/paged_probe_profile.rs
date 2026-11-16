@@ -13117,10 +13117,70 @@ fn rust_helper_mov_r14d_dword_handoff_field_zero_extends_and_preserves_flags() {
 }
 
 #[test]
+fn rust_helper_mov_r15d_dword_handoff_field_30_zero_extends_and_preserves_flags() {
+    let code = [0x44, 0x8b, 0x7e, 0x30]; // MOV R15D,dword ptr [RSI+0x30]
+    let rip = 0x200e72;
+    let value = 0x7654_3210u32;
+    let mut memory = memory_with_code_at(&code, rip);
+    memory.bytes[DATA_PHYSICAL + 0x30..DATA_PHYSICAL + 0x34].copy_from_slice(&value.to_le_bytes());
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsi as usize] = DATA;
+    cpu.gpr[Register::R15 as usize] = 0xaabb_ccdd_eeff_0011;
+    cpu.rflags = 0x8d7;
+    let before = cpu.clone();
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    let mut expected = before;
+    expected.gpr[Register::R15 as usize] = u64::from(value);
+    expected.rip = rip + code.len() as u64;
+    assert_eq!(cpu, expected);
+    assert_eq!(memory.reads, 1);
+    assert_eq!(memory.read_addresses, [(DATA + 0x30, 4)]);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
 fn rust_helper_mov_r14d_dword_handoff_field_read_fault_preserves_state() {
     let code = [0x44, 0x8b, 0x76, 0x34];
     let rip = 0x200e5a;
     let fault_address = DATA + 0x34;
+    let mut memory = memory_with_code_at(&code, rip);
+    memory.fail_read_at = Some((fault_address, page_fault(0, fault_address)));
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsi as usize] = DATA;
+    let before = cpu.clone();
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(fault_address),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.reads, 1);
+    assert_eq!(memory.read_addresses, [(fault_address, 4)]);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn rust_helper_mov_r15d_dword_handoff_field_30_read_fault_preserves_state() {
+    let code = [0x44, 0x8b, 0x7e, 0x30];
+    let rip = 0x200e72;
+    let fault_address = DATA + 0x30;
     let mut memory = memory_with_code_at(&code, rip);
     memory.fail_read_at = Some((fault_address, page_fault(0, fault_address)));
     let mut cpu = state();
@@ -13172,6 +13232,30 @@ fn rust_helper_mov_r14d_dword_handoff_field_noncanonical_address_faults_before_r
 }
 
 #[test]
+fn rust_helper_mov_r15d_dword_handoff_field_30_noncanonical_address_faults_before_read() {
+    let code = [0x44, 0x8b, 0x7e, 0x30];
+    let rip = 0x200e72;
+    let mut memory = memory_with_code_at(&code, rip);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr[Register::Rsi as usize] = 0x0000_8000_0000_0000;
+    let before = cpu.clone();
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    match result.exit {
+        PagedProbeExit::Fault(fault) => assert_eq!(fault.vector, 13),
+        other => panic!("expected #GP for noncanonical RSI+0x30, got {other:?}"),
+    }
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.reads, 0);
+    assert!(memory.read_addresses.is_empty());
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
 fn rust_helper_mov_r14d_dword_handoff_field_fetch_fault_preserves_state() {
     let code = [0x44, 0x8b, 0x76, 0x34];
     let rip = 0x200e5a;
@@ -13200,8 +13284,39 @@ fn rust_helper_mov_r14d_dword_handoff_field_fetch_fault_preserves_state() {
 }
 
 #[test]
+fn rust_helper_mov_r15d_dword_handoff_field_30_fetch_fault_preserves_state() {
+    let code = [0x44, 0x8b, 0x7e, 0x30];
+    let rip = 0x200e72;
+    let mut memory = memory_with_code_at(&code[..3], rip);
+    memory.fail_fetch_at = Some((rip + 3, page_fault(0x10, rip + 3)));
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 3),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.reads, 0);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
 fn rust_helper_mov_r14d_dword_handoff_field_neighbours_stay_unsupported() {
     let cases: &[(&[u8], u8)] = &[
+        (&[0x44, 0x8b, 0x7e, 0x2f], 0x8b), // ISSUE-199 neighboring displacement
+        (&[0x44, 0x8b, 0x7e, 0x31], 0x8b),
+        (&[0x44, 0x8b, 0x76, 0x30], 0x8b), // R14D destination
         (&[0x44, 0x8b, 0x76, 0x33], 0x8b), // neighboring displacement
         (&[0x44, 0x8b, 0x76, 0x35], 0x8b),
         (&[0x44, 0x8b, 0x7e, 0x34], 0x8b),       // R15D destination
@@ -13234,6 +13349,27 @@ fn rust_helper_mov_r14d_dword_handoff_field_neighbours_stay_unsupported() {
 #[test]
 fn rust_helper_mov_r14d_dword_handoff_field_is_unsupported_in_cpl3_profile() {
     let bytes = [0x44, 0x8b, 0x76, 0x34];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    let before = cpu.clone();
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x44 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn rust_helper_mov_r15d_dword_handoff_field_30_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x44, 0x8b, 0x7e, 0x30];
     let mut memory = Memory::new(&bytes);
     let mut cpu = state();
     cpu.cr3 = Some(0x1000);

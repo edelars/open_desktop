@@ -875,17 +875,35 @@
 - **Статус:** решена узко для точных байтов `75 50`; остальные формы JNZ и ветвления не допущены. Независимое review пройдено без замечаний; ожидает коммита.
 - **Суть и последствия:** до исправления после 8880 retire runner останавливался на `75 50`, `Unsupported { opcode: 117 }`, `RIP=0x200e70`; COM1 оставался пустым.
 - **Реализация:** базовый `PagedCpl0ProbeV1` допускает no-prefix `75 50` через существующий `ConditionCode::NotEqual`: ZF=0 берёт `next_rip+0x50`, ZF=1 исполняет fall-through; flags и `rflags_defined` не меняются, canonicality проверяется только для взятой цели. Точный допуск `+0x50` изолирован от соседних displacement/condition/prefix forms и CPL3.
-- **Проверка:** 5 focused `firmware_entry_jnz_*` тестов и все 469 `paged_probe_profile` tests прошли; `cargo check --offline -p od-isa -p od-machine -p od-runner --all-targets` прошёл. Firmware image `/private/tmp/od-fw-s7-04-issue198.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner retired 8881 and stopped at `44 8B 7E 30` (`MOV R14D,dword ptr [RSI+0x30]`, ISSUE-199), RIP `0x200e72`, `Unsupported { opcode: 139 }`, `com1_bytes=0`; full handoff validation remains incomplete. Scoped `rustfmt --edition 2024 --check` passed.
+- **Проверка:** 5 focused `firmware_entry_jnz_*` тестов и все 469 `paged_probe_profile` tests прошли; `cargo check --offline -p od-isa -p od-machine -p od-runner --all-targets` прошёл. Firmware image `/private/tmp/od-fw-s7-04-issue198.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner retired 8881 and stopped at `44 8B 7E 30` (`MOV R15D,dword ptr [RSI+0x30]`, ISSUE-199), RIP `0x200e72`, `Unsupported { opcode: 139 }`, `com1_bytes=0`; full handoff validation remains incomplete. Scoped `rustfmt --edition 2024 --check` passed.
 - **Основание:** исходный image `/private/tmp/od-fw-s7-04-issue197.bin`; bytes at offset `0xe70` begin `75 50 44 8b 7e 30`; runner budget 10000.
 - **Следующий шаг:** continue the S7-04 CPU profile at ISSUE-199; this slice is ready for commit.
 
-### ISSUE-199 — S7-04: Rust helper `MOV R14D,dword ptr [RSI+0x30]` (`44 8B 7E 30`) remains outside paged CPU profile
+### ISSUE-199 — S7-04: Rust helper `MOV R15D,dword ptr [RSI+0x30]` (`44 8B 7E 30`) remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `JNZ rel8 +0x50`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e72`.
+- **Статус:** решена узко для exact `44 8B 7E 30` в base `PagedCpl0ProbeV1`; независимое review ожидается. Full handoff validation remains incomplete.
+- **Суть и результат:** decoder confirms exact bytes select R15D (ModRM reg=7 extended by REX.R), not R14D. The exact R15D dword load from qword RSI+0x30 reuses tracked `read_operand`; successful R15D write zero-extends, memory faults do not commit CPU state. Existing `44 8B 76 34` remains the separate exact R14D form; other destinations, offsets, widths, address forms and CPL3 remain unsupported.
+- **Проверка:** five focused `rust_helper_mov_r15d_dword_handoff_field_30_*` tests and all 474 `paged_probe_profile` tests passed. `paged_probe_mov_r15d_dword_rsi_disp8_30_uses_tracked_four_level_walk` passed: source qword retained, R15D received its low dword, R14 unchanged, and code/data leaf Accessed bits were set. All 38 `paged_probe_quantum` tests passed. Firmware image `/private/tmp/od-fw-s7-04-issue199.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner retired 8882 and stopped at `41 F6 C7 07` (`TEST R15B,7`, ISSUE-200), RIP `0x200e76`, `Unsupported { opcode: 246 }`, `com1_bytes=0`; full handoff validation remains incomplete. `cargo check`, scoped Rust 2024 rustfmt and diff-check results are in the Stage 7 report.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue198.bin`; bytes at offset `0xe72` are `44 8b 7e 30`; runner budget 10000.
+- **Следующий шаг:** independent review this exact R15D admission, then continue S7-04 at ISSUE-200.
+- **Ссылка:** [S7-04 exact MOV R15D load slice](reports/STAGE_7_REPORT.md#s7-04-cpu-profile-slice-exact-rust-helper-mov-r15d-dword-rsi-plus-0x30).
+
+### ISSUE-200 — S7-04: Rust helper `TEST R15B,7` (`41 F6 C7 07`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact `MOV R15D,dword ptr [RSI+0x30]`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e76`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8881 instructions, затем остановился на `44 8B 7E 30`, `Unsupported { opcode: 139 }`, `RIP=0x200e72`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue198.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xe72` are `44 8b 7e 30`; runner budget 10000.
-- **Следующий шаг:** inspect the exact tracked dword read semantics, effective address and R14D zero-extension before considering narrow admission.
+- **Суть и последствия:** runner retired 8882 instructions and stopped at `41 F6 C7 07`, `Unsupported { opcode: 246 }`, `RIP=0x200e76`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue199.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xe76` are `41 f6 c7 07`; runner budget 10000.
+- **Следующий шаг:** inspect exact TEST group/register/width and flag semantics before considering narrow admission.
+
+### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
+- **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.
+- **Компонент:** `crates/od-machine/src/linux_direct.rs`, `linux_direct::tests`.
+- **Статус:** открыта; оба теста воспроизведены изолированно. Наблюдаемый stop на CLI согласуется с тем, что базовый профиль разрешает bare `CLD` для firmware path.
+- **Суть и последствия:** `cld_outside_the_allowlist_is_the_unsupported_stop_before_retirement` expects `Unsupported { opcode: 0xFC }` for `FC FA 31 C0`, but execution retires CLD and stops at CLI with `Unsupported { opcode: 0xFA }`. `set_facade_prologue_runs_the_null_segment_loads_over_the_loader_caches` has the same stale base-profile expectation. This makes the full `od-machine` library suite fail; it does not affect the ISSUE-199 load tests or paged-profile integration test.
+- **Основание:** `cargo test --offline -p od-machine --quiet` produced both failures; isolated reruns of both tests reproduced expected 0xFC vs actual 0xFA.
+- **Следующий шаг:** clarify whether Linux direct boot should use a narrower CPU-profile set or update these expectations to the current base-profile contract; add an explicit test for the selected boundary.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки

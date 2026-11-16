@@ -21609,6 +21609,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         // S7-04: the Rust helper reads exact handoff fields with MOVZX Word at
         // +8/+0xA, `8B 4E 0C`/`8B 4E 10` (MOV ECX,dword ptr [RSI+0xC/+0x10]),
         // `8B 7E 14`/`8B 7E 38` (MOV EDI,dword ptr [RSI+0x14/+0x38]) and exact
+        // `44 8B 7E 30` (MOV R15D,dword ptr [RSI+0x30]) and the existing
         // `44 8B 76 34` (MOV R14D,dword ptr [RSI+0x34]). Reuse the tracked
         // faulting read and 32-bit write; other load forms remain unsupported.
         Operation::Extend {
@@ -21747,8 +21748,12 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                         rex: Some(0x44),
                         ..Prefixes::default()
                     })
-                    && destination == RegisterView::low(Register::R14, OperandSize::Dword)
-                    && source.displacement == 0x34
+                    && ((destination
+                        == RegisterView::low(Register::R14, OperandSize::Dword)
+                        && source.displacement == 0x34)
+                        || (destination
+                            == RegisterView::low(Register::R15, OperandSize::Dword)
+                            && source.displacement == 0x30))
                     && instruction.length == 4))
             && source.base == AddressBase::Register(Register::Rsi)
             && source.index.is_none()
