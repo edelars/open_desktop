@@ -96,26 +96,26 @@ pub(crate) enum FetchCacheInvalidation {
 
 /// Counters of one cache, for tests and diagnostics.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct FetchCacheStats {
-    pub(crate) hits: u64,
-    pub(crate) misses: u64,
-    pub(crate) inserts: u64,
+pub struct FetchCacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub inserts: u64,
     /// Entries dropped by a write to a watched table frame.
-    pub(crate) write_flushes: u64,
+    pub write_flushes: u64,
     /// Explicit flushes (translation context changes).
-    pub(crate) context_flushes: u64,
+    pub context_flushes: u64,
     /// `GuestOnly`: flushes after a retired `INVLPG`.
-    pub(crate) invlpg_flushes: u64,
+    pub invlpg_flushes: u64,
     /// `GuestOnly`: flushes after a change of CR0 or CR4.
-    pub(crate) control_flushes: u64,
+    pub control_flushes: u64,
     /// `GuestOnly`: flushes at a `#PF` delivered to the guest.
-    pub(crate) fault_flushes: u64,
+    pub fault_flushes: u64,
     /// `GuestOnly`: committed writes that touched a watched table frame and dropped nothing.
-    pub(crate) ignored_table_writes: u64,
+    pub ignored_table_writes: u64,
     /// Flushes caused by the host between calls: a watched table frame was written outside the
     /// loop, the translation context key changed (CR0/CR3/CR4/EFER, privilege, access context),
     /// or an explicit host event. Counted for any cache passed to the call-boundary path.
-    pub(crate) host_flushes: u64,
+    pub host_flushes: u64,
 }
 
 #[derive(Default)]

@@ -5,6 +5,7 @@ use crate::execution_observations::{
     DeliveredPageFaultObservation, FaultingPageFaultContext, FaultingPageWalkContext,
     LinuxExecutionObservationCollector, PendingPostIretObservation, PostIretPageWalkSnapshot,
 };
+use crate::fetch_cache_report::{C5Split, LinuxWalkCounts, WalkCounter};
 use crate::fetch_translation_cache::{
     FetchCacheInvalidation, FetchCacheStats, FetchTranslationCache, TranslationKey,
 };
@@ -115,6 +116,7 @@ pub fn step_paged_invlpg(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = cpu_step_invlpg(
         InvlpgLong64V1,
@@ -240,6 +242,7 @@ fn step_paged_state_op(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = match op {
         StateOp::Sti => od_isa::step_paged_sti(
@@ -314,6 +317,7 @@ pub fn with_paged_mov_memory<R>(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let callback_result = callback(&mut memory);
     PagedMovMemoryScope {
@@ -375,6 +379,7 @@ pub fn step_paged_mov(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -435,6 +440,7 @@ pub fn step_paged_mov_2m_ram(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -811,6 +817,13 @@ pub(crate) struct PagedCpl0SetReport {
     pub(crate) syscall_events: Vec<SyscallEvent>,
     /// Last instruction boundary reached when opt-in execution observations were enabled.
     pub(crate) last_instruction_rip: Option<u64>,
+    /// S4-13b: the tracked page walks of the instruction adapter in this call (measurement only,
+    /// see `fetch_cache_report`). They differ with and without the fetch cache by design.
+    pub(crate) walk_counts: LinuxWalkCounts,
+    /// S4-13b: checkpoint C5 was already recorded when this call started.
+    pub(crate) c5_at_call_start: bool,
+    /// S4-13b: the counters at the boundary where this call recorded checkpoint C5.
+    pub(crate) c5_split: Option<C5Split>,
 }
 
 /// Run the CPL0 profile set through the RAM-only 4 KiB/2 MiB tracked walker,
@@ -1090,9 +1103,18 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
                 cpl3_retired: 0,
                 syscall_events: Vec::new(),
                 last_instruction_rip: None,
+                walk_counts: LinuxWalkCounts::default(),
+                c5_at_call_start: false,
+                c5_split: None,
             };
         }
     };
+    // S4-13b: measurement only; the loop never reads these counters back.
+    let walks = WalkCounter::default();
+    let c5_at_call_start = checkpoints
+        .as_deref()
+        .is_some_and(|recorder| recorder.is_recorded(C5_CHECKPOINT));
+    let mut c5_split: Option<C5Split> = None;
     let mut syscall_events = std::collections::VecDeque::new();
     let mut instructions_executed = 0u64;
     let mut cpl3_retired = 0u64;
@@ -1189,6 +1211,14 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
             recorder.boundary(&view, &mut || {
                 observed_fetch_view(state.rip, bus, &paging, context)
             });
+            // S4-13b: the boundary at which C5 is recorded splits the phases of the report.
+            if !c5_at_call_start && c5_split.is_none() && recorder.is_recorded(C5_CHECKPOINT) {
+                c5_split = Some(C5Split {
+                    retired: instructions_executed,
+                    walks: walks.snapshot(),
+                    cache: cache.map(FetchTranslationCache::stats),
+                });
+            }
         }
         if cpuid_boundary
             && let Some(leaf) = cpuid_leaf
@@ -1226,8 +1256,15 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
             inner: io.port_io(),
             pit_written: false,
         };
-        let mut memory =
-            set_loop_adapter(ram, Some(&io), paging, instruction_rip, &mut watch, cache);
+        let mut memory = set_loop_adapter(
+            ram,
+            Some(&io),
+            paging,
+            instruction_rip,
+            &mut watch,
+            cache,
+            Some(&walks),
+        );
         memory.capture_page_fault_trace = execution_observations.is_some();
         let run_config = RunConfig {
             instruction_budget: 1,
@@ -1544,6 +1581,9 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
         cpl3_retired,
         syscall_events: syscall_events.into_iter().collect(),
         last_instruction_rip,
+        walk_counts: walks.snapshot(),
+        c5_at_call_start,
+        c5_split,
     }
 }
 
@@ -1580,6 +1620,7 @@ fn set_loop_adapter<'a>(
     instruction_rip: u64,
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
     fetch_cache: Option<&'a FetchTranslationCache>,
+    walks: Option<&'a WalkCounter>,
 ) -> PagedMovMemoryAdapter<'a> {
     PagedMovMemoryAdapter {
         bus: match mmio {
@@ -1612,6 +1653,7 @@ fn set_loop_adapter<'a>(
         cpl0_set_cross_page_store: true,
         cpl0_set_cross_page_read: true,
         fetch_cache,
+        walks,
     }
 }
 
@@ -1664,6 +1706,9 @@ impl<P: od_isa::PortIo> od_isa::PortIo for PitWriteWatch<P> {
     }
 }
 
+/// Checkpoint C5 (the first fetch at `e_entry`), the split of the phases of the fetch cache report.
+const C5_CHECKPOINT: u8 = 5;
+
 /// RFLAGS.IF, bit 9.
 const RFLAGS_IF: u64 = 1 << 9;
 
@@ -1714,7 +1759,7 @@ fn deliver_pending_irq(
         return IrqBoundaryOutcome::None;
     }
     let (ram, _port) = bus.split_for_pio_step();
-    let mut memory = set_loop_adapter(ram, None, *paging, state.rip, watch, cache);
+    let mut memory = set_loop_adapter(ram, None, *paging, state.rip, watch, cache, None);
     let delivery = deliver_external_interrupt_cpl0_set(state, &mut memory, vector, context);
     let failure = match delivery {
         Cpl0ExternalInterruptDelivery::Delivered { .. } => {
@@ -1850,6 +1895,7 @@ pub fn step_paged_mov_word_read(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = cpu_step_paged_mov_word_read(
         PagedMovCrossPageWordReadLong64V1,
@@ -1930,6 +1976,7 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = cpu_step_paged_mov_word_read_cross_page_fetch(
         PagedMovCrossPageWordFetchLong64V1,
@@ -1992,6 +2039,7 @@ pub fn step_paged_mov_dword_read(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = cpu_step_paged_mov_dword_read(
         PagedMovCrossPageDwordReadLong64V1,
@@ -2063,6 +2111,7 @@ pub fn step_paged_mov_dword_store(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = od_isa::step_paged_mov_dword_store(
         od_isa::PagedMovDwordStoreLong64V1,
@@ -2302,6 +2351,9 @@ pub struct PagedMovMemoryAdapter<'a> {
     /// `fetch_translation_cache`). Used by `fetch` only, and only with the set's cross-page
     /// fetch; `None` everywhere else, which keeps the byte-per-walk behaviour.
     fetch_cache: Option<&'a FetchTranslationCache>,
+    /// S4-13b: counts the tracked walks of this adapter (measurement only); `None` outside the
+    /// set loop's instruction adapter.
+    walks: Option<&'a WalkCounter>,
 }
 
 fn faulting_page_walk_context(
@@ -2476,6 +2528,15 @@ impl PagedMovMemoryAdapter<'_> {
             context,
             operation,
         };
+        if let Some(walks) = self.walks {
+            match operation {
+                RamAccessOperation::Fetch => walks.note_fetch(),
+                RamAccessOperation::Read { .. } | RamAccessOperation::ReadPseudoDescriptor => {
+                    walks.note_read()
+                }
+                RamAccessOperation::Write { .. } => walks.note_write(),
+            }
+        }
         let vcpu = self.bus.vcpu();
         let report = if self.capture_effects {
             let mut writes = Vec::new();
@@ -3035,6 +3096,7 @@ mod tests {
             cpl0_set_cross_page_store: false,
             cpl0_set_cross_page_read: false,
             fetch_cache: None,
+            walks: None,
         }
     }
 
@@ -3320,6 +3382,7 @@ mod tests {
             paging,
             0x0040_0000,
             &mut committed,
+            None,
             None,
         );
         memory.capture_page_fault_trace = true;

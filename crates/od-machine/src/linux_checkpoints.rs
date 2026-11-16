@@ -213,6 +213,14 @@ impl CheckpointRecorder {
         self.pending_page_fault = true;
     }
 
+    /// Whether checkpoint `id` has been recorded (S4-13b: the phase rule of the fetch cache
+    /// report asks for C5; read-only).
+    pub(crate) fn is_recorded(&self, id: u8) -> bool {
+        self.records
+            .get(usize::from(id))
+            .is_some_and(Option::is_some)
+    }
+
     /// The records, in id order, of the checkpoints reached so far.
     pub(crate) fn records(&self) -> Vec<LinuxCheckpointRecord> {
         self.records.iter().flatten().cloned().collect()

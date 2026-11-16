@@ -15,6 +15,7 @@ use crate::console_output_context::{
 use crate::execution_observations::{
     LinuxExecutionObservationCollector, LinuxExecutionObservations,
 };
+use crate::fetch_cache_report::{CallObservation, FetchCacheAccumulator, LinuxFetchCacheReport};
 use crate::fetch_translation_cache::FetchCacheInvalidation;
 use crate::idle_arbiter::{SchedActivity, WakeView};
 use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters, NoIrqSource};
@@ -1177,6 +1178,12 @@ pub struct LoadedFirmwareBoard {
     /// The opt-in checkpoint recorder of the CPL0-set loop (S4-38L4i, observation only). `None`
     /// until [`Self::enable_checkpoints`]; then the loop shows it every instruction boundary.
     checkpoints: Option<CheckpointRecorder>,
+    /// S4-13b: the opt-in report of the fetch cache and the page walks of the CPL0-set loop
+    /// (measurement only). `fetch_cache_report_enabled` is set by
+    /// [`Self::enable_fetch_cache_report`]; the loop leaves the report of its last run in
+    /// `fetch_cache_report`.
+    fetch_cache_report_enabled: bool,
+    fetch_cache_report: Option<LinuxFetchCacheReport>,
     /// True when the assembly was given a PIT or LAPIC-timer clock other than the board clock
     /// (a test injection of S4-37a1/a4): their deadlines are in another time domain, so the
     /// clock owner is refused.
@@ -1515,6 +1522,20 @@ impl LoadedFirmwareBoard {
     /// when none was enabled.
     pub(crate) fn take_checkpoints(&mut self) -> Option<Vec<LinuxCheckpointRecord>> {
         self.checkpoints.take().map(|recorder| recorder.records())
+    }
+
+    /// S4-13b: ask the CPL0-set loop for the fetch cache report of its next runs (page walks by
+    /// purpose, the cache counters summed over the calls, the phases around C5). It only
+    /// observes. Off by default.
+    pub fn enable_fetch_cache_report(&mut self) {
+        self.fetch_cache_report_enabled = true;
+    }
+
+    /// S4-13b: the report the last run left (also after a failed run, with what was counted up to
+    /// the failure) and the request removed; `None` when it was not enabled.
+    pub fn take_fetch_cache_report(&mut self) -> Option<LinuxFetchCacheReport> {
+        self.fetch_cache_report_enabled = false;
+        self.fetch_cache_report.take()
     }
 
     /// S4-23j: opt in to the single clock owner for the CPL0-set loop. The owner claims the board
@@ -2165,6 +2186,10 @@ impl LoadedFirmwareBoard {
         }
         self.vcpus[BOOT_VCPU_INDEX].state.cr3 = Some(self.page_table_root);
         let mut irq_counters = IrqCounters::default();
+        let mut fetch_report = self
+            .fetch_cache_report_enabled
+            .then(|| FetchCacheAccumulator::new(fetch_cache, self.checkpoints.is_some()));
+        self.fetch_cache_report = None;
         // The next call resumes a partial REP: its first boundary is inside the REP.
         let mut partial_rep = false;
         // S4-38L5a/c: the set models CR2 for `MOV RAX, CR2`, and a delivered `#PF` writes it
@@ -2289,6 +2314,15 @@ impl LoadedFirmwareBoard {
             }
             retired += report.instructions_executed;
             remaining = remaining.saturating_sub(report.instructions_executed);
+            if let Some(accumulator) = fetch_report.as_mut() {
+                accumulator.add_call(&CallObservation {
+                    retired: report.instructions_executed,
+                    walks: report.walk_counts,
+                    cache: report.fetch_cache_stats,
+                    c5_at_start: report.c5_at_call_start,
+                    c5_split: report.c5_split,
+                });
+            }
             // S4-39i: a THR write clears the THRE condition and the pump below raises it again
             // before the next instruction boundary; the source samples the level on both sides
             // so that the fall and the rise are both seen (one edge on IR4 per byte).
@@ -2451,6 +2485,7 @@ impl LoadedFirmwareBoard {
         // back what it had.
         self.vcpus[BOOT_VCPU_INDEX].guest_cr2 = self.vcpus[BOOT_VCPU_INDEX].state.cr2;
         self.vcpus[BOOT_VCPU_INDEX].state.cr2 = prior_cr2;
+        self.fetch_cache_report = fetch_report.map(FetchCacheAccumulator::finish);
         let (run, set_exit_detail, cpuid_divergence_leaf, user_entry) = result?;
         irq_counters.irq0_edges = self.irq_source.irq0_edges();
         Ok(LinuxSetRunReport {
@@ -2961,6 +2996,8 @@ impl AssembledBoard {
             pit_ioapic_source: None,
             clock_driver: BoardClock::Standalone,
             checkpoints: None,
+            fetch_cache_report_enabled: false,
+            fetch_cache_report: None,
             foreign_timer_clock,
             #[cfg(test)]
             suppress_pm_tick: false,
@@ -3028,6 +3065,8 @@ impl AssembledBoard {
             pit_ioapic_source: None,
             clock_driver: BoardClock::Standalone,
             checkpoints: None,
+            fetch_cache_report_enabled: false,
+            fetch_cache_report: None,
             foreign_timer_clock,
             #[cfg(test)]
             suppress_pm_tick: false,

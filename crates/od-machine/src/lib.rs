@@ -12,6 +12,7 @@ mod display_device;
 mod dma_page;
 mod event_queue;
 mod execution_observations;
+mod fetch_cache_report;
 mod fetch_translation_cache;
 mod firmware_board;
 mod identity_memory_adapter;
@@ -157,6 +158,10 @@ pub use stage4_interrupt_pump_paged_probe::{
     load_stage4_interrupt_pump_paged_probe,
 };
 
+pub use fetch_cache_report::{
+    FETCH_CACHE_PHASE_RULE_C5, FETCH_CACHE_PHASE_RULE_NONE, FetchCacheStats, LinuxFetchCachePhase,
+    LinuxFetchCacheReport, LinuxWalkCounts,
+};
 pub use linux_boot::{LinuxBzImageHeader, LinuxHeaderError, parse_linux_bzimage_header};
 pub use linux_checkpoints::{
     LINUX_CHECKPOINT_COUNT, LinuxCheckpointRecord, LinuxCheckpointTable, LinuxCheckpointTableError,

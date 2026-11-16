@@ -203,6 +203,27 @@ pub fn run(args: &[String]) -> ExitCode {
 /// 3 unreadable input). Without `--run` the guest is not started; with `--run` it runs until the
 /// budget or its first stop, after the load has succeeded.
 fn evaluate(options: &Options) -> (Value, u8) {
+    evaluate_with_env(options, &DiagnosticEnv::from_process())
+}
+
+/// The environment variables of the diagnostic runs, read once (S4-13, S4-13b); a test gives its
+/// own instead of touching the environment shared by the parallel tests.
+#[derive(Default)]
+struct DiagnosticEnv {
+    no_fetch_cache: Option<std::ffi::OsString>,
+    fetch_cache_stats: Option<std::ffi::OsString>,
+}
+
+impl DiagnosticEnv {
+    fn from_process() -> Self {
+        Self {
+            no_fetch_cache: std::env::var_os(NO_FETCH_CACHE_ENV),
+            fetch_cache_stats: std::env::var_os(FETCH_CACHE_STATS_ENV),
+        }
+    }
+}
+
+fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
     let mut evidence = json!({
         "retired": 0,
         "guest_started": false,
@@ -451,10 +472,77 @@ fn evaluate(options: &Options) -> (Value, u8) {
                         }
                     }
                 }
+                // S4-13b: the opt-in sidecar of the fetch cache counters. Reserved before the run
+                // like the other sidecars; the default run (no `OD_FETCH_CACHE_STATS`) does none
+                // of this and its report is the one it always was.
+                let fetch_stats_path = match fetch_cache_stats_path(env.fetch_cache_stats.clone()) {
+                    Ok(path) => path,
+                    Err(detail) => {
+                        let cleanup = cleanup_sidecar_reservation(
+                            options.stack_context_out.as_deref(),
+                            &mut sidecar_file,
+                        );
+                        let mut value = refusal(
+                            "diagnostic_sidecar_reservation_failed",
+                            "fetch_cache_stats_sidecar",
+                            detail,
+                            evidence,
+                        );
+                        value["_skip_report_write"] = json!(true);
+                        let _ = cleanup;
+                        return (value, 4);
+                    }
+                };
+                let mut fetch_stats_file = None;
+                if let Some(path) = &fetch_stats_path {
+                    let reserved = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(path)
+                        .map_err(|error| format!("{path}: {error}"))
+                        .and_then(|file| {
+                            // `--out` is written later; it must not be the same file.
+                            match file_matches_existing_path(&file, path, &options.out) {
+                                Ok(false) => Ok(file),
+                                Ok(true) => {
+                                    let _ = discard_sidecar_reservation(path, file);
+                                    Err("--out resolves to the reserved sidecar file".to_string())
+                                }
+                                Err(detail) => {
+                                    let _ = discard_sidecar_reservation(path, file);
+                                    Err(detail)
+                                }
+                            }
+                        });
+                    match reserved {
+                        Ok(file) => fetch_stats_file = Some(file),
+                        Err(detail) => {
+                            let stack_cleanup = cleanup_sidecar_reservation(
+                                options.stack_context_out.as_deref(),
+                                &mut sidecar_file,
+                            );
+                            let observations_cleanup = execution_observations_file
+                                .take()
+                                .zip(options.execution_observations_out.as_deref())
+                                .map(|(file, path)| discard_sidecar_reservation(path, file));
+                            let mut value = refusal(
+                                "diagnostic_sidecar_reservation_failed",
+                                "fetch_cache_stats_sidecar",
+                                detail,
+                                evidence,
+                            );
+                            value["_skip_report_write"] = json!(true);
+                            let _ = (stack_cleanup, observations_cleanup);
+                            return (value, 4);
+                        }
+                    }
+                    boot.board.enable_fetch_cache_report();
+                }
                 let members = LinuxCpl0SetMembers {
                     // S4-13 diagnostics: `OD_NO_FETCH_CACHE=1` runs without the fetch
-                    // translation cache (same results, more page walks).
-                    fetch_cache: std::env::var_os("OD_NO_FETCH_CACHE").is_none(),
+                    // translation cache (same results, more page walks); the sidecar of
+                    // `OD_FETCH_CACHE_STATS` says which way the run went.
+                    fetch_cache: fetch_cache_enabled(env.no_fetch_cache.as_deref()),
                     diagnostic_past_c7: options.diagnostic_past_c7,
                     cpuid_profile: options.cpuid_profile,
                     // S4-38L9c: with the TSC-only subset the kernel's `tdx_init` reads
@@ -471,6 +559,7 @@ fn evaluate(options: &Options) -> (Value, u8) {
                     int3: options.cpuid_profile.is_stage4a_family(),
                     ..LinuxCpl0SetMembers::linux_default()
                 };
+                let run_started = std::time::Instant::now();
                 let result = if let Some(index) = options.execution_observations_post_iret_index {
                     run_linux_direct_board_set_user_mode_with_post_iret_index(
                         &mut boot,
@@ -498,6 +587,41 @@ fn evaluate(options: &Options) -> (Value, u8) {
                 } else {
                     run_linux_direct_board(&mut boot, &machine_input, budget)
                 };
+                let run_wall_seconds = run_started.elapsed().as_secs_f64();
+                if let Some(path) = &fetch_stats_path {
+                    let write_error = match (
+                        boot.board.take_fetch_cache_report(),
+                        fetch_stats_file.as_mut(),
+                    ) {
+                        (Some(report), Some(file)) => write_fetch_cache_stats_sidecar(
+                            file,
+                            path,
+                            &report,
+                            result.is_ok(),
+                            run_wall_seconds,
+                        )
+                        .err(),
+                        // Only the CPL0 set loop (`--set-cpl0`) builds the report; the empty
+                        // reservation is removed rather than left looking like a result.
+                        (None, _) => {
+                            let cleanup = fetch_stats_file
+                                .take()
+                                .and_then(|file| discard_sidecar_reservation(path, file).err());
+                            Some(match cleanup {
+                                None => "the run left no fetch cache report (needs --set-cpl0)"
+                                    .to_string(),
+                                Some(error) => format!(
+                                    "the run left no fetch cache report (needs --set-cpl0); {error}"
+                                ),
+                            })
+                        }
+                        (_, None) => Some("sidecar reservation is missing".into()),
+                    };
+                    evidence["fetch_cache_stats_sidecar"] = json!({
+                        "path": path,
+                        "write_error": write_error,
+                    });
+                }
                 if let Some(path) = &options.stack_context_out {
                     let snapshots = boot.board.take_console_output_context_diagnostic();
                     let uart_diagnostic = boot.board.take_uart_output_context_diagnostic();
@@ -1380,6 +1504,117 @@ fn write_stack_context_sidecar(
         });
     }
     Ok(())
+}
+
+/// Environment variable that turns the fetch cache off for a diagnostic run (S4-13).
+const NO_FETCH_CACHE_ENV: &str = "OD_NO_FETCH_CACHE";
+/// Environment variable with the path of the opt-in fetch cache sidecar (S4-13b).
+const FETCH_CACHE_STATS_ENV: &str = "OD_FETCH_CACHE_STATS";
+
+/// Whether the run keeps the fetch translation cache, from the value of `OD_NO_FETCH_CACHE`
+/// (S4-13b). Unset, empty or `0` keep it (the default); any other value turns it off. Before
+/// S4-13b any value, an empty one and `0` included, turned it off.
+fn fetch_cache_enabled(no_fetch_cache: Option<&std::ffi::OsStr>) -> bool {
+    match no_fetch_cache {
+        None => true,
+        Some(value) => value.is_empty() || value == "0",
+    }
+}
+
+/// The sidecar path from the value of `OD_FETCH_CACHE_STATS`: unset or empty is no sidecar; a
+/// value that is not UTF-8 is refused (the report paths are strings).
+fn fetch_cache_stats_path(value: Option<std::ffi::OsString>) -> Result<Option<String>, String> {
+    match value {
+        None => Ok(None),
+        Some(value) if value.is_empty() => Ok(None),
+        Some(value) => value
+            .into_string()
+            .map(Some)
+            .map_err(|_| format!("{FETCH_CACHE_STATS_ENV} is not valid UTF-8")),
+    }
+}
+
+fn per_instruction(count: u64, retired: u64) -> Value {
+    if retired == 0 {
+        Value::Null
+    } else {
+        json!(count as f64 / retired as f64)
+    }
+}
+
+fn fetch_cache_phase_json(phase: &od_machine::LinuxFetchCachePhase) -> Value {
+    let (walks, cache) = (&phase.walks, &phase.cache);
+    let lookups = cache.hits + cache.misses;
+    json!({
+        "calls": phase.calls,
+        "retired": phase.retired,
+        "walks": {
+            "fetch": walks.fetch,
+            "data_read": walks.data_read,
+            "data_write": walks.data_write,
+        },
+        "walks_per_instruction": {
+            "fetch": per_instruction(walks.fetch, phase.retired),
+            "data_read": per_instruction(walks.data_read, phase.retired),
+            "data_write": per_instruction(walks.data_write, phase.retired),
+        },
+        "cache": {
+            "hits": cache.hits,
+            "misses": cache.misses,
+            "inserts": cache.inserts,
+            "write_flushes": cache.write_flushes,
+            "context_flushes": cache.context_flushes,
+            "host_flushes": cache.host_flushes,
+            "invlpg_flushes": cache.invlpg_flushes,
+            "control_flushes": cache.control_flushes,
+            "fault_flushes": cache.fault_flushes,
+            "ignored_table_writes": cache.ignored_table_writes,
+            "lookups_per_instruction": per_instruction(lookups, phase.retired),
+            "hit_rate": if lookups == 0 { Value::Null } else { json!(cache.hits as f64 / lookups as f64) },
+        },
+    })
+}
+
+/// The content of the `OD_FETCH_CACHE_STATS` sidecar (S4-13b). `run_completed` is false when the
+/// run ended in `run_failed`: the counters are then what was counted up to the failure.
+fn fetch_cache_stats_json(
+    report: &od_machine::LinuxFetchCacheReport,
+    run_completed: bool,
+    run_wall_seconds: f64,
+) -> Value {
+    json!({
+        "schema_version": 1,
+        "capture_scope": "fetch translation cache counters and tracked page walks of the CPL0 set loop, summed over its calls; measurement only",
+        "fetch_cache_enabled": report.cache_enabled,
+        "run_completed": run_completed,
+        "run_wall_seconds": run_wall_seconds,
+        "phase_rule": report.phase_rule,
+        "c5_reached": report.c5_reached,
+        "notes": [
+            "walks: tracked walks of the instruction adapter only (fetch bytes not served by the cache, data reads, data writes); the read-only peeks and the cache fill walk are not counted; exception delivery (#PF, #GP: IDT, GDT, TSS and frame accesses) is counted as data reads and writes; external interrupt delivery is not counted",
+            "cache: counters of one cache per call (quantum), summed; its lookups include the peeks of the loop",
+            "phase 1 is before the boundary at which checkpoint C5 is recorded, phase 2 from it on; without the checkpoint recorder nothing is split",
+        ],
+        "total": fetch_cache_phase_json(&report.total),
+        "before_c5": fetch_cache_phase_json(&report.before_c5),
+        "after_c5": fetch_cache_phase_json(&report.after_c5),
+    })
+}
+
+fn write_fetch_cache_stats_sidecar(
+    file: &mut File,
+    path: &str,
+    report: &od_machine::LinuxFetchCacheReport,
+    run_completed: bool,
+    run_wall_seconds: f64,
+) -> Result<(), String> {
+    let value = fetch_cache_stats_json(report, run_completed, run_wall_seconds);
+    file_matches_existing_path(file, path, path)?;
+    let bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
+    use std::io::Write;
+    file.write_all(&bytes)
+        .and_then(|()| file.write_all(b"\n"))
+        .map_err(|error| format!("{path}: {error}"))
 }
 
 fn write_execution_observations_sidecar(
@@ -3342,6 +3577,229 @@ mod tests {
         );
         drop(file);
         std::fs::remove_file(path).unwrap();
+    }
+
+    // ---- S4-13b: the fetch cache switch and the opt-in sidecar ----
+
+    #[test]
+    fn od_no_fetch_cache_unset_empty_and_zero_keep_the_cache_anything_else_turns_it_off() {
+        use std::ffi::OsStr;
+        assert!(fetch_cache_enabled(None));
+        assert!(fetch_cache_enabled(Some(OsStr::new(""))));
+        assert!(fetch_cache_enabled(Some(OsStr::new("0"))));
+        assert!(!fetch_cache_enabled(Some(OsStr::new("1"))));
+        assert!(!fetch_cache_enabled(Some(OsStr::new("true"))));
+        assert!(!fetch_cache_enabled(Some(OsStr::new("00"))));
+    }
+
+    #[test]
+    fn fetch_cache_stats_path_is_the_opt_in() {
+        use std::ffi::OsString;
+        assert_eq!(fetch_cache_stats_path(None), Ok(None));
+        assert_eq!(fetch_cache_stats_path(Some(OsString::new())), Ok(None));
+        assert_eq!(
+            fetch_cache_stats_path(Some(OsString::from("/tmp/stats.json"))),
+            Ok(Some("/tmp/stats.json".to_string()))
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            assert!(fetch_cache_stats_path(Some(OsString::from_vec(vec![0xff, 0xfe]))).is_err());
+        }
+    }
+
+    #[test]
+    fn fetch_cache_stats_sidecar_names_the_cache_state_the_rule_and_the_rates() {
+        let cache = od_machine::FetchCacheStats {
+            hits: 90,
+            misses: 10,
+            inserts: 4,
+            write_flushes: 1,
+            context_flushes: 2,
+            host_flushes: 3,
+            ..Default::default()
+        };
+        let phase = od_machine::LinuxFetchCachePhase {
+            calls: 5,
+            retired: 20,
+            walks: od_machine::LinuxWalkCounts {
+                fetch: 10,
+                data_read: 40,
+                data_write: 5,
+            },
+            cache,
+        };
+        let report = od_machine::LinuxFetchCacheReport {
+            cache_enabled: false,
+            phase_rule: od_machine::FETCH_CACHE_PHASE_RULE_C5,
+            c5_reached: true,
+            total: phase,
+            before_c5: phase,
+            after_c5: od_machine::LinuxFetchCachePhase::default(),
+        };
+        let value = fetch_cache_stats_json(&report, true, 1.5);
+        // A run without the cache is told apart from the ordinary one.
+        assert_eq!(value["fetch_cache_enabled"], false);
+        assert_eq!(value["run_completed"], true);
+        assert_eq!(value["phase_rule"], "c5_first_fetch_at_e_entry");
+        assert_eq!(value["c5_reached"], true);
+        let total = &value["total"];
+        assert_eq!(total["calls"], 5);
+        assert_eq!(total["retired"], 20);
+        assert_eq!(total["walks"]["fetch"], 10);
+        assert_eq!(total["walks"]["data_read"], 40);
+        assert_eq!(total["walks"]["data_write"], 5);
+        assert_eq!(total["walks_per_instruction"]["fetch"], 0.5);
+        assert_eq!(total["walks_per_instruction"]["data_read"], 2.0);
+        assert_eq!(total["cache"]["hits"], 90);
+        assert_eq!(total["cache"]["misses"], 10);
+        assert_eq!(total["cache"]["hit_rate"], 0.9);
+        assert_eq!(total["cache"]["lookups_per_instruction"], 5.0);
+        // An empty phase has no rates, not a division by zero.
+        let after = &value["after_c5"];
+        assert_eq!(after["retired"], 0);
+        assert_eq!(after["walks_per_instruction"]["fetch"], Value::Null);
+        assert_eq!(after["cache"]["hit_rate"], Value::Null);
+    }
+
+    fn run_case_with_env(name: &str, code: &[u8], budget: u64, env: &DiagnosticEnv) -> Value {
+        let mut case = Case::new(name, &bzimage_with_entry(code), &[0xAB; 4688], BLOB);
+        case.options.budget = Some(budget);
+        // The report is built by the CPL0 set loop only.
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate_with_env(&case.options, env);
+        assert_eq!(exit, 0, "{value:#}");
+        value
+    }
+
+    /// The opt-in adds the sidecar (and its entry in the evidence) and changes nothing else: the
+    /// evidence of a run with `OD_FETCH_CACHE_STATS` equals the default one but for that entry,
+    /// with the cache on and off. Without the variable there is no trace of the sidecar.
+    #[test]
+    fn fetch_cache_stats_opt_in_adds_only_its_sidecar() {
+        // 20 CLI, then an HLT the default set does not run: the run stops there, after 20
+        // instructions and enough bytes for the cache to hit.
+        let mut code = vec![0xFA; 20];
+        code.push(0xF4);
+        for no_fetch_cache in [None, Some("1")] {
+            let name = format!("fetch-stats-{}", no_fetch_cache.unwrap_or("on"));
+            let plain_env = DiagnosticEnv {
+                no_fetch_cache: no_fetch_cache.map(Into::into),
+                fetch_cache_stats: None,
+            };
+            let plain = run_case_with_env(&format!("{name}-plain"), &code, 100, &plain_env);
+            assert!(
+                plain.get("fetch_cache_stats_sidecar").is_none(),
+                "{plain:#}"
+            );
+            assert_eq!(plain["stop"]["exit_kind"], "unsupported");
+            assert_eq!(plain["retired"], 20);
+
+            let dir = std::env::temp_dir().join(format!(
+                "od-runner-fetch-stats-{}-{name}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let sidecar = dir.join("stats.json");
+            let env = DiagnosticEnv {
+                no_fetch_cache: plain_env.no_fetch_cache.clone(),
+                fetch_cache_stats: Some(sidecar.clone().into_os_string()),
+            };
+            let mut observed = run_case_with_env(&format!("{name}-stats"), &code, 100, &env);
+            let entry = observed
+                .as_object_mut()
+                .unwrap()
+                .remove("fetch_cache_stats_sidecar")
+                .expect("the opt-in leaves its entry");
+            assert_eq!(entry["write_error"], Value::Null, "{entry:#}");
+            let differing: Vec<&String> = observed
+                .as_object()
+                .unwrap()
+                .iter()
+                // `inputs` holds the paths of the case's own input files.
+                .filter(|(key, value)| {
+                    key.as_str() != "inputs" && plain.get(key.as_str()) != Some(*value)
+                })
+                .map(|(key, _)| key)
+                .collect();
+            assert_eq!(differing, Vec::<&String>::new());
+            assert_eq!(
+                observed.as_object().unwrap().len(),
+                plain.as_object().unwrap().len()
+            );
+
+            let written: Value = serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+            assert_eq!(written["fetch_cache_enabled"], no_fetch_cache.is_none());
+            assert_eq!(written["run_completed"], true);
+            assert_eq!(written["phase_rule"], "none_checkpoints_disabled");
+            assert_eq!(written["c5_reached"], false);
+            assert_eq!(written["total"]["retired"], 20);
+            assert_eq!(written["before_c5"]["retired"], 20);
+            assert!(written["total"]["walks"]["fetch"].as_u64().unwrap() > 0);
+            let hits = written["total"]["cache"]["hits"].as_u64().unwrap();
+            assert_eq!(hits > 0, no_fetch_cache.is_none(), "{written:#}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// Without `--set-cpl0` there is no report: the evidence says so and no empty sidecar stays.
+    #[test]
+    fn fetch_cache_stats_without_the_set_loop_leaves_no_empty_sidecar() {
+        let dir =
+            std::env::temp_dir().join(format!("od-runner-fetch-stats-base-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sidecar = dir.join("stats.json");
+        let mut case = Case::new(
+            "fetch-stats-base",
+            &bzimage_with_entry(&[0xF4]),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(10);
+        let env = DiagnosticEnv {
+            no_fetch_cache: None,
+            fetch_cache_stats: Some(sidecar.clone().into_os_string()),
+        };
+        let (value, exit) = evaluate_with_env(&case.options, &env);
+        assert_eq!(exit, 0, "{value:#}");
+        let error = value["fetch_cache_stats_sidecar"]["write_error"]
+            .as_str()
+            .expect("the evidence says why there is no sidecar");
+        assert!(error.contains("--set-cpl0"), "{error}");
+        assert!(!sidecar.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An existing file at the sidecar path is refused before the guest starts, and never
+    /// overwritten.
+    #[test]
+    fn fetch_cache_stats_sidecar_refuses_an_existing_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "od-runner-fetch-stats-existing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sidecar = dir.join("stats.json");
+        std::fs::write(&sidecar, b"keep").unwrap();
+        let mut case = Case::new(
+            "fetch-stats-existing",
+            &bzimage_with_entry(&[0xF4]),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(10);
+        let env = DiagnosticEnv {
+            no_fetch_cache: None,
+            fetch_cache_stats: Some(sidecar.clone().into_os_string()),
+        };
+        let (value, exit) = evaluate_with_env(&case.options, &env);
+        assert_eq!(exit, 4, "{value:#}");
+        assert_eq!(value["guest_started"], false);
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"keep");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
