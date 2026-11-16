@@ -27765,3 +27765,7 @@ Four focused profile tests cover result and logical flag values, AF definedness,
 ### Stage 7 paged-profile LEA R12,[RCX+RAX]
 
 `PagedCpl0ProbeV1` admits exact bytes `4C 8D 24 01`. REX.R selects qword R12; the SIB adds qword RCX and RAX with scale 1 and no displacement. The effective offset wraps at 64 bits. Only R12 and RIP change; flags/definedness are preserved. LEA neither accesses memory nor checks canonicality. Other encodings and profiles remain unsupported.
+
+### Stage 7 paged-profile ADD R12,0x3c
+
+`PagedCpl0ProbeV1` admits exact bytes `49 83 C4 3C`. REX.W/B select qword R12; opcode 83 sign-extends imm8 `0x3c` to the qword operand. Shared ADD semantics update CF/PF/AF/ZF/SF/OF and their definedness. Only R12 and RIP change. Other immediates, operation groups, widths, prefixes and profiles remain unsupported.

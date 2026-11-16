@@ -4307,9 +4307,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-305 — S7-04: exact helper `ADD R12,0x3c` (`49 83 C4 3C`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-304.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2016cb`.
-- **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact qword immediate ADD; firmware stops before later helper operations.
+- **Статус:** решена; независимое ревью одобрило без замечаний.
+- **Результат:** base `PagedCpl0ProbeV1` admits only this qword ADD immediate form. REX.W/B select R12, opcode 83 sign-extends imm8 `0x3c` to qword, and shared ADD semantics update the six arithmetic flags and their definedness. Only R12 and RIP change.
+- **Проверки исполнения:** four focused tests cover qword values and high bits, CF/PF/AF/ZF/SF/OF outcomes and definedness, full state retention, final-immediate fetch-fault atomicity, neighbors, CPL3 and other-profile isolation. Full od-isa suites pass (profile suite: 888), all 65 paged machine tests pass, scoped cargo check/fmt/diff-check pass; only the pre-existing unused page-walk helper warning remains. Runner image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retires 9,002 instructions and stops at `49 C1 E0 05` (`SHL R8,5`, ISSUE-306), RIP `0x2016cf`, `Unsupported { opcode: 193 }`; COM1 remains empty. Independent review approved with no findings.
 - **Основание:** runner with the Stage 7 firmware image and budget 10000 retired 9,001 instructions and reported `Unsupported { opcode: 131 }`; file offset `0x16cb` contains `49 83 C4 3C`.
-- **Следующий шаг:** admit only this exact qword ADD form and preserve shared arithmetic flags/definedness.
+
+### ISSUE-306 — S7-04: exact helper `SHL R8,5` (`49 C1 E0 05`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-305.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2016cf`.
+- **Статус:** открыта.
+- **Суть и последствия:** the base profile does not yet admit this exact qword shift; firmware stops before later helper operations.
+- **Основание:** runner with the Stage 7 firmware image and budget 10000 retired 9,002 instructions and reported `Unsupported { opcode: 193 }`; file offset `0x16cf` contains `49 C1 E0 05`.
+- **Следующий шаг:** admit only this exact qword SHL form and preserve shared shift flags/definedness.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.
