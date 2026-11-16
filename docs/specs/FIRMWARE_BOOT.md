@@ -745,3 +745,8 @@ With exact `49 83 C2 28` admitted, the Stage 7 firmware runner retires 9,013 ins
 ### Stage 7 runner frontier after ISSUE-314
 
 With exact `0F 87 5F 01 00 00` admitted, the Stage 7 firmware runner retires 9,015 instructions and stops at RIP `0x201705`, bytes `48 83 C6 30` (`ADD RSI,0x30`, ISSUE-315), `Unsupported { opcode: 131 }`. COM1 remains empty.
+
+
+### Stage 7 runner frontier after ISSUE-315
+
+With exact `48 83 C6 30` admitted, the Stage 7 firmware runner retires 9,017 instructions and stops at RIP `0x20170c`, bytes `0F 87 68 01 00 00` (`JA rel32 +0x168`, ISSUE-316), `Unsupported { opcode: 135 }`. COM1 remains empty.

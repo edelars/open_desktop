@@ -21459,6 +21459,42 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: the helper advances qword RSI by exactly 0x30 with
+        // `48 83 C6 30`. Opcode 83 sign-extends the positive imm8; reuse the
+        // shared qword ADD result and arithmetic flags.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Add,
+            dst: Operand::Register(destination),
+            src: Operand::Immediate(0x30),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x83
+            && instruction.length == 4
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x48),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rsi, OperandSize::Qword) =>
+        {
+            let lhs = state.read(destination);
+            let (value, flags) = arithmetic_result(
+                OperandSize::Qword,
+                ArithmeticKind::Add,
+                lhs,
+                0x30,
+                state.rflags,
+            );
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: the helper advances qword R10 by exactly 0x28 with
         // `49 83 C2 28`. REX.W/B select R10; opcode 83 sign-extends imm8.
         Operation::Arithmetic {
