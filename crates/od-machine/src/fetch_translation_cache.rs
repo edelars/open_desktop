@@ -27,6 +27,14 @@
 //!
 //! The cache is off unless the caller asks for it.
 //!
+//! S4-13d: what one entry covers is a choice of the caller ([`FetchCacheTag`]). By default an entry
+//! is one 4 KiB page. With [`FetchCacheTag::Leaf2M`] a walk that ended at a 2 MiB leaf whose whole
+//! 2 MiB span is plain RAM makes ONE entry for the leaf, tagged with the 2 MiB-aligned linear
+//! address; a hit from any 4 KiB page of the leaf reads the byte at the offset of the request
+//! inside the leaf (the entry holds the leaf's base, not an offset). Permissions, accessed/dirty
+//! bits, faults and every flush are those of the 4 KiB tag: the three tables of the walk are
+//! watched, and a 4 KiB leaf stays a 4 KiB entry.
+//!
 //! S4-14h: the invalidation policy is a choice of the caller ([`FetchCacheInvalidation`]).
 //! `WriteWatch` (the S4-13 behaviour, the default of every caller) drops entries on a write to a
 //! watched table frame, so the cache is exact against a TLB-less reference. `GuestOnly` models a
@@ -73,13 +81,30 @@ pub(crate) const NO_TABLE: u64 = u64::MAX;
 
 #[derive(Clone, Copy)]
 struct Entry {
+    /// The linear address of the entry shifted right by `shift`: the 4 KiB page, or the 2 MiB leaf
+    /// of an entry of the 2 MiB tag (S4-13d).
     linear_page: u64,
+    /// 12 for a 4 KiB entry, 21 for an entry that covers a whole 2 MiB leaf.
+    shift: u32,
     paging: Long64ProbeConfig,
     context: AccessContext,
-    /// The plain-RAM 4 KiB frame the linear page maps to.
+    /// The plain-RAM 4 KiB frame the linear page maps to (the 2 MiB span for a 2 MiB entry).
     frame: RamFrame,
     /// Physical page numbers (address >> 12) of the tables on the path, [`NO_TABLE`] when unused.
     tables: [u64; 4],
+}
+
+/// What one entry of the cache covers (S4-13d). The tag of an entry is the linear address shifted
+/// by 12 (a 4 KiB page) or by 21 (a whole 2 MiB leaf); the byte offset inside the page or the leaf
+/// is always taken from the address of the request, never from the entry.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum FetchCacheTag {
+    /// S4-13: one entry per 4 KiB page, also for a page inside a 2 MiB leaf (the default).
+    #[default]
+    Page4K,
+    /// A walk that ended at a 2 MiB leaf whose 2 MiB span is plain RAM makes one entry for the
+    /// whole leaf (tag: the 2 MiB-aligned linear address); a 4 KiB leaf stays a 4 KiB entry.
+    Leaf2M,
 }
 
 /// How the cache learns that a cached translation may be stale (S4-14h).
@@ -163,6 +188,8 @@ impl TranslationKey {
 pub(crate) struct FetchTranslationCache {
     inner: RefCell<Inner>,
     invalidation: FetchCacheInvalidation,
+    /// S4-13d: what one entry covers; `Page4K` unless asked (the behaviour of every earlier slice).
+    tag: FetchCacheTag,
     /// Built by [`Self::persistent`]: the caller keeps the cache across calls of the set loop. It
     /// only names the intent: the loop seals and checks every cache it is given, whatever the
     /// constructor (S4-14i, review), so that no cache loses a host event at a call boundary.
@@ -198,6 +225,17 @@ impl FetchTranslationCache {
             persistent: true,
             ..Self::default()
         }
+    }
+
+    /// The same cache with the 2 MiB leaf tag ([`FetchCacheTag::Leaf2M`], S4-13d). Off unless
+    /// asked: the default tag is 4 KiB.
+    pub(crate) fn with_tag(mut self, tag: FetchCacheTag) -> Self {
+        self.tag = tag;
+        self
+    }
+
+    pub(crate) fn tag(&self) -> FetchCacheTag {
+        self.tag
     }
 
     /// Attach the shadow caches of S4-13c. Counts as the start of a call for them (a cache built
@@ -282,11 +320,12 @@ impl FetchTranslationCache {
         context: AccessContext,
         kind: LookupKind,
     ) -> Option<RamFrame> {
-        let page = address >> 12;
         let mut inner = self.inner.borrow_mut();
         let matches = |slot: &Option<Entry>| {
             slot.as_ref().is_some_and(|entry| {
-                entry.linear_page == page && entry.paging == *paging && entry.context == context
+                entry.linear_page == address >> entry.shift
+                    && entry.paging == *paging
+                    && entry.context == context
             })
         };
         let slot = if matches(&inner.entries[inner.recent]) {
@@ -335,9 +374,17 @@ impl FetchTranslationCache {
             sweep.insert(address, paging, context, tables);
         }
         let mut inner = self.inner.borrow_mut();
-        let page = address >> 12;
+        // A 2 MiB span handle makes a 2 MiB entry; only the 2 MiB tag is given one (the caller
+        // asks `tag()`), and a 4 KiB handle is a 4 KiB entry in either tag.
+        let shift = if frame.is_large() && self.tag == FetchCacheTag::Leaf2M {
+            21
+        } else {
+            12
+        };
+        let page = address >> shift;
         let entry = Entry {
             linear_page: page,
+            shift,
             paging: *paging,
             context,
             frame,
@@ -349,7 +396,10 @@ impl FetchTranslationCache {
             .iter()
             .position(|held| {
                 held.is_some_and(|held| {
-                    held.linear_page == page && held.paging == *paging && held.context == context
+                    held.shift == shift
+                        && held.linear_page == page
+                        && held.paging == *paging
+                        && held.context == context
                 })
             })
             .unwrap_or_else(|| {
@@ -1015,5 +1065,234 @@ mod tests {
         for base in [0x1_0000, 0x2_0000, 0x8001] {
             assert_eq!(memory.ram_frame(GuestPhysicalAddress::new(base)), None);
         }
+    }
+    // ---- S4-13d: the 2 MiB leaf tag ----
+
+    /// 7 MiB of RAM at 0 (so the 2 MiB spans at 0x20_0000 and 0x40_0000 are RAM and the one at
+    /// 0x60_0000 is only partly RAM) and a ROM page after it.
+    fn big_memory() -> PhysicalMemory {
+        let specs = [
+            MemoryRegionSpec::new(range(0, 0x70_0000), MemoryRegionKind::Ram),
+            MemoryRegionSpec::new(range(0x70_0000, 0x1000), MemoryRegionKind::Rom),
+        ];
+        PhysicalMemory::new(
+            &MachineMemoryMap::new(36, specs.to_vec()).unwrap(),
+            RamLimits::new(16 << 20),
+        )
+        .unwrap()
+    }
+
+    fn leaf(memory: &PhysicalMemory, base: u64) -> RamFrame {
+        memory.ram_leaf_2m(GuestPhysicalAddress::new(base)).unwrap()
+    }
+
+    /// A walk that ended at a 2 MiB leaf has three tables.
+    const LEAF_TABLES: [Option<u64>; 4] = [Some(0x1000), Some(0x2000), Some(0x3000), None];
+    /// The 2 MiB-aligned linear address of the leaf of these cases.
+    const LEAF_VA: u64 = 0x0100_0000;
+
+    fn tagged() -> FetchTranslationCache {
+        FetchTranslationCache::new().with_tag(FetchCacheTag::Leaf2M)
+    }
+
+    /// The default tag is 4 KiB; only a handle to a 2 MiB-aligned span that is wholly plain RAM
+    /// exists (a base that is not aligned, a span ending in ROM or in a hole, and a span that
+    /// leaves the RAM region have none).
+    #[test]
+    fn the_default_tag_is_4k_and_a_2m_handle_needs_a_wholly_ram_aligned_span() {
+        assert_eq!(FetchTranslationCache::new().tag(), FetchCacheTag::Page4K);
+        assert_eq!(
+            FetchTranslationCache::default().tag(),
+            FetchCacheTag::Page4K
+        );
+        assert_eq!(tagged().tag(), FetchCacheTag::Leaf2M);
+        let memory = big_memory();
+        for base in [0x20_0000, 0x40_0000] {
+            let handle = memory.ram_leaf_2m(GuestPhysicalAddress::new(base)).unwrap();
+            assert!(handle.is_large());
+        }
+        assert!(!frame(&memory, 0x8000).is_large());
+        // Not 2 MiB aligned, partly beyond the RAM (0x60_0000 + 2 MiB > 7 MiB), in the ROM, in a
+        // hole.
+        for base in [0x20_1000, 0x60_0000, 0x70_0000, 0x100_0000] {
+            assert_eq!(memory.ram_leaf_2m(GuestPhysicalAddress::new(base)), None);
+        }
+    }
+
+    /// One entry covers the whole leaf: any 4 KiB page of it hits, and the byte is read at the
+    /// offset of the REQUEST inside the leaf (never the offset of the request that made the
+    /// entry), so the physical address is `leaf base + offset`. The neighbouring leaves, another
+    /// CR3 and another privilege do not hit.
+    #[test]
+    fn a_2m_entry_serves_every_page_of_its_leaf_with_the_offset_of_the_request() {
+        let mut memory = big_memory();
+        for offset in [0u64, 0x1, 0x1000, 0x1234, 0x1f_f000, 0x1f_ffff] {
+            memory
+                .write_u8(
+                    GuestPhysicalAddress::new(0x20_0000 + offset),
+                    (offset % 251) as u8 + 1,
+                    |_| {},
+                )
+                .unwrap();
+        }
+        let cache = tagged();
+        let ring0 = context(PrivilegeLevel::Ring0);
+        // The entry is made by a fetch deep inside the leaf.
+        cache.insert(
+            LEAF_VA + 0x1234,
+            &paging(0x1000),
+            ring0,
+            leaf(&memory, 0x20_0000),
+            LEAF_TABLES,
+        );
+        for offset in [0u64, 0x1, 0x1000, 0x1234, 0x1f_f000, 0x1f_ffff] {
+            let frame = cache
+                .lookup(LEAF_VA + offset, &paging(0x1000), ring0)
+                .unwrap_or_else(|| panic!("offset {offset:#x} must hit"));
+            assert_eq!(
+                memory.read_ram_frame_u8(frame, LEAF_VA + offset),
+                memory
+                    .read_u8(GuestPhysicalAddress::new(0x20_0000 + offset))
+                    .ok(),
+                "offset {offset:#x}"
+            );
+        }
+        assert_eq!(cache.lookup(LEAF_VA - 1, &paging(0x1000), ring0), None);
+        assert_eq!(
+            cache.lookup(LEAF_VA + 0x20_0000, &paging(0x1000), ring0),
+            None
+        );
+        assert_eq!(cache.lookup(LEAF_VA, &paging(0x5000), ring0), None);
+        assert_eq!(
+            cache.lookup(LEAF_VA, &paging(0x1000), context(PrivilegeLevel::Ring3)),
+            None
+        );
+        let stats = cache.stats();
+        assert_eq!((stats.hits, stats.inserts), (6, 1));
+        assert_eq!(stats.misses, 4);
+    }
+
+    /// A 4 KiB handle stays a 4 KiB entry whatever the tag (a 4 KiB leaf of a cache with the 2 MiB
+    /// tag), and the default tag never widens an entry. A 2 MiB entry and a 4 KiB entry of
+    /// another leaf live side by side; a key is replaced in place.
+    #[test]
+    fn a_4k_handle_is_a_4k_entry_in_either_tag_and_entries_of_both_sizes_coexist() {
+        let memory = big_memory();
+        let ring0 = context(PrivilegeLevel::Ring0);
+        let cache = tagged();
+        cache.insert(
+            LEAF_VA,
+            &paging(0x1000),
+            ring0,
+            frame(&memory, 0x8000),
+            TABLES,
+        );
+        assert!(
+            cache
+                .lookup(LEAF_VA + 0xfff, &paging(0x1000), ring0)
+                .is_some()
+        );
+        assert_eq!(cache.lookup(LEAF_VA + 0x1000, &paging(0x1000), ring0), None);
+        // A 2 MiB entry for the next leaf next to it, then the same key again: replaced in place.
+        let next = LEAF_VA + 0x20_0000;
+        cache.insert(
+            next,
+            &paging(0x1000),
+            ring0,
+            leaf(&memory, 0x20_0000),
+            LEAF_TABLES,
+        );
+        cache.insert(
+            next + 0x5000,
+            &paging(0x1000),
+            ring0,
+            leaf(&memory, 0x40_0000),
+            LEAF_TABLES,
+        );
+        assert_eq!(
+            cache.lookup(next + 0x10_0000, &paging(0x1000), ring0),
+            Some(leaf(&memory, 0x40_0000))
+        );
+        assert!(cache.lookup(LEAF_VA, &paging(0x1000), ring0).is_some());
+        // The default tag keeps even a 2 MiB handle to its 4 KiB page.
+        let plain = FetchTranslationCache::new();
+        plain.insert(
+            next,
+            &paging(0x1000),
+            ring0,
+            leaf(&memory, 0x20_0000),
+            LEAF_TABLES,
+        );
+        assert!(plain.lookup(next + 0xfff, &paging(0x1000), ring0).is_some());
+        assert_eq!(plain.lookup(next + 0x1000, &paging(0x1000), ring0), None);
+    }
+
+    /// Every flush of a 4 KiB entry drops a 2 MiB entry too: a write to any of the three tables of
+    /// the walk (a PD frame included), `MOV CR3`, `INVLPG`, a `#PF`, a CR0/CR4 change and the host
+    /// events; a write to a frame that is none of them does not.
+    #[test]
+    fn a_2m_entry_is_dropped_by_the_events_that_drop_a_4k_entry() {
+        let memory = big_memory();
+        let ring0 = context(PrivilegeLevel::Ring0);
+        let fresh = |invalidation| {
+            let cache = FetchTranslationCache::with_invalidation(invalidation)
+                .with_tag(FetchCacheTag::Leaf2M);
+            cache.insert(
+                LEAF_VA + 0x3000,
+                &paging(0x1000),
+                ring0,
+                leaf(&memory, 0x20_0000),
+                LEAF_TABLES,
+            );
+            cache
+        };
+        let live = |cache: &FetchTranslationCache| {
+            cache
+                .lookup(LEAF_VA + 0x10_0000, &paging(0x1000), ring0)
+                .is_some()
+        };
+        for (write, flushes) in [
+            (range(0x1000, 8), true),
+            (range(0x2ff8, 16), true),
+            (range(0x3040, 8), true),
+            // The frame a 4 KiB walk would have as its fourth table is not watched.
+            (range(0x4000, 8), false),
+            (range(0x20_0000, 8), false),
+        ] {
+            let cache = fresh(FetchCacheInvalidation::WriteWatch);
+            cache.note_write(write);
+            assert_eq!(live(&cache), !flushes, "{write:?}");
+            assert_eq!(cache.stats().write_flushes, u64::from(flushes), "{write:?}");
+        }
+        // `GuestOnly`: the table write is only counted, the guest invalidations drop the entry.
+        let cache = fresh(FetchCacheInvalidation::GuestOnly);
+        cache.note_write(range(0x3040, 8));
+        assert!(live(&cache));
+        assert_eq!(cache.stats().ignored_table_writes, 1);
+        let events: [(&str, fn(&FetchTranslationCache)); 5] = [
+            ("mov cr3", FetchTranslationCache::flush),
+            ("invlpg", FetchTranslationCache::flush_after_invlpg),
+            ("#pf", FetchTranslationCache::flush_after_page_fault),
+            ("cr0/cr4", FetchTranslationCache::flush_after_control_change),
+            ("host", FetchTranslationCache::flush_for_host_event),
+        ];
+        for (name, event) in events {
+            let cache = fresh(FetchCacheInvalidation::GuestOnly);
+            assert!(live(&cache), "{name}");
+            event(&cache);
+            assert!(!live(&cache), "{name}");
+        }
+        // The call boundary: another CR3 handed over by the host, or a written table frame.
+        let cache = fresh(FetchCacheInvalidation::WriteWatch);
+        cache.seal(key(0x1000, PrivilegeLevel::Ring0), &|_| Some(1));
+        cache.revalidate(key(0x1000, PrivilegeLevel::Ring0), &|_| Some(1));
+        assert!(live(&cache));
+        cache.revalidate(key(0x5000, PrivilegeLevel::Ring0), &|_| Some(1));
+        assert!(!live(&cache));
+        let cache = fresh(FetchCacheInvalidation::WriteWatch);
+        cache.seal(key(0x1000, PrivilegeLevel::Ring0), &|_| Some(1));
+        cache.revalidate(key(0x1000, PrivilegeLevel::Ring0), &|_| Some(2));
+        assert!(!live(&cache));
+        assert_eq!(cache.stats().host_flushes, 1);
     }
 }

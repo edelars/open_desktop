@@ -214,6 +214,8 @@ struct DiagnosticEnv {
     fetch_cache_stats: Option<std::ffi::OsString>,
     /// S4-13c: shadow caches, only together with `OD_FETCH_CACHE_STATS`.
     fetch_cache_sweep: Option<std::ffi::OsString>,
+    /// S4-13d: `2m` makes one fetch cache entry per 2 MiB leaf (default: per 4 KiB page).
+    fetch_cache_tag: Option<std::ffi::OsString>,
 }
 
 impl DiagnosticEnv {
@@ -222,6 +224,7 @@ impl DiagnosticEnv {
             no_fetch_cache: std::env::var_os(NO_FETCH_CACHE_ENV),
             fetch_cache_stats: std::env::var_os(FETCH_CACHE_STATS_ENV),
             fetch_cache_sweep: std::env::var_os(FETCH_CACHE_SWEEP_ENV),
+            fetch_cache_tag: std::env::var_os(FETCH_CACHE_TAG_ENV),
         }
     }
 }
@@ -546,6 +549,19 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                             .enable_fetch_cache_sweep(od_machine::SweepConfig::full_grid());
                     }
                 }
+                // S4-13d: the 2 MiB leaf tag of the real cache, only with `OD_FETCH_CACHE_TAG=2m`
+                // and, like the sweep, only together with the sidecar (`OD_FETCH_CACHE_STATS`);
+                // without it the request is ignored and said so on stderr.
+                let (apply_tag, tag_warning) = fetch_cache_leaf_2m_tag_decision(
+                    env.fetch_cache_tag.as_deref(),
+                    fetch_stats_path.is_some(),
+                );
+                if let Some(warning) = tag_warning {
+                    eprintln!("{warning}");
+                }
+                if apply_tag {
+                    boot.board.enable_fetch_cache_leaf_2m_tag();
+                }
                 let members = LinuxCpl0SetMembers {
                     // S4-13 diagnostics: `OD_NO_FETCH_CACHE=1` runs without the fetch
                     // translation cache (same results, more page walks); the sidecar of
@@ -598,6 +614,7 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                 let run_wall_seconds = run_started.elapsed().as_secs_f64();
                 if let Some(path) = &fetch_stats_path {
                     let sweep_report = boot.board.take_fetch_cache_sweep();
+                    let final_ram_sha256 = boot.board.ram_sha256();
                     let write_error = match (
                         boot.board.take_fetch_cache_report(),
                         fetch_stats_file.as_mut(),
@@ -609,6 +626,7 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                             sweep_report.as_ref(),
                             result.is_ok(),
                             run_wall_seconds,
+                            final_ram_sha256,
                         )
                         .err(),
                         // Only the CPL0 set loop (`--set-cpl0`) builds the report; the empty
@@ -1522,6 +1540,37 @@ const NO_FETCH_CACHE_ENV: &str = "OD_NO_FETCH_CACHE";
 const FETCH_CACHE_STATS_ENV: &str = "OD_FETCH_CACHE_STATS";
 /// Environment variable that adds the shadow cache sweep (S4-13c) to the fetch cache sidecar.
 const FETCH_CACHE_SWEEP_ENV: &str = "OD_FETCH_CACHE_SWEEP";
+/// Environment variable that gives the real fetch cache the 2 MiB leaf tag (S4-13d); only `2m`
+/// does, unset, empty and any other value keep the 4 KiB tag.
+const FETCH_CACHE_TAG_ENV: &str = "OD_FETCH_CACHE_TAG";
+
+/// Whether the 2 MiB leaf tag is requested: the value is exactly `2m`.
+fn fetch_cache_leaf_2m_tag_enabled(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| value == "2m")
+}
+
+/// What a run does with `OD_FETCH_CACHE_TAG`: whether the 2 MiB tag is applied and the warning
+/// to print. Like `OD_FETCH_CACHE_SWEEP` the tag is a diagnostic that rides on the sidecar: with
+/// `2m` but without `OD_FETCH_CACHE_STATS` it is NOT applied (the default 4 KiB tag stays) and
+/// the warning says so.
+fn fetch_cache_leaf_2m_tag_decision(
+    tag: Option<&std::ffi::OsStr>,
+    sidecar_requested: bool,
+) -> (bool, Option<String>) {
+    if !fetch_cache_leaf_2m_tag_enabled(tag) {
+        return (false, None);
+    }
+    if sidecar_requested {
+        return (true, None);
+    }
+    (
+        false,
+        Some(format!(
+            "warning: {FETCH_CACHE_TAG_ENV}=2m is ignored without {FETCH_CACHE_STATS_ENV} \
+             (the 2 MiB tag is a diagnostic that needs the sidecar); the 4 KiB tag stays"
+        )),
+    )
+}
 
 /// Whether the sweep is requested: set, not empty and not `0`.
 fn fetch_cache_sweep_enabled(value: Option<&std::ffi::OsStr>) -> bool {
@@ -1604,6 +1653,7 @@ fn fetch_cache_stats_json(
         "schema_version": 1,
         "capture_scope": "fetch translation cache counters and tracked page walks of the CPL0 set loop, summed over its calls; measurement only",
         "fetch_cache_enabled": report.cache_enabled,
+        "fetch_cache_tag": if report.leaf_2m_tag { "2m" } else { "4k" },
         "run_completed": run_completed,
         "run_wall_seconds": run_wall_seconds,
         "phase_rule": report.phase_rule,
@@ -1727,8 +1777,18 @@ fn write_fetch_cache_stats_sidecar(
     sweep: Option<&od_machine::FetchSweepReport>,
     run_completed: bool,
     run_wall_seconds: f64,
+    final_ram_sha256: Result<[u8; 32], String>,
 ) -> Result<(), String> {
-    let value = fetch_cache_stats_json(report, sweep, run_completed, run_wall_seconds);
+    let mut value = fetch_cache_stats_json(report, sweep, run_completed, run_wall_seconds);
+    // S4-13d: the end state of guest RAM, to compare two runs of the same guest.
+    // A hash that could not be computed is `null` with the reason, never a hash of part of RAM.
+    match &final_ram_sha256 {
+        Ok(hash) => value["final_ram_sha256"] = json!(hex(hash)),
+        Err(reason) => {
+            value["final_ram_sha256"] = Value::Null;
+            value["final_ram_sha256_error"] = json!(reason);
+        }
+    }
     file_matches_existing_path(file, path, path)?;
     let bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
     use std::io::Write;
@@ -3751,6 +3811,7 @@ mod tests {
         };
         let report = od_machine::LinuxFetchCacheReport {
             cache_enabled: false,
+            leaf_2m_tag: false,
             phase_rule: od_machine::FETCH_CACHE_PHASE_RULE_C5,
             c5_reached: true,
             total: phase,
@@ -3807,6 +3868,7 @@ mod tests {
                 no_fetch_cache: no_fetch_cache.map(Into::into),
                 fetch_cache_stats: None,
                 fetch_cache_sweep: None,
+                fetch_cache_tag: None,
             };
             let plain = run_case_with_env(&format!("{name}-plain"), &code, 100, &plain_env);
             assert!(
@@ -3827,6 +3889,7 @@ mod tests {
                 no_fetch_cache: plain_env.no_fetch_cache.clone(),
                 fetch_cache_stats: Some(sidecar.clone().into_os_string()),
                 fetch_cache_sweep: None,
+                fetch_cache_tag: None,
             };
             let mut observed = run_case_with_env(&format!("{name}-stats"), &code, 100, &env);
             let entry = observed
@@ -3866,6 +3929,89 @@ mod tests {
     }
 
     #[test]
+    fn od_fetch_cache_tag_is_exactly_2m_or_the_4k_default() {
+        use std::ffi::OsStr;
+        assert!(!fetch_cache_leaf_2m_tag_enabled(None));
+        for value in ["", "0", "1", "4k", "2M", "2m "] {
+            assert!(
+                !fetch_cache_leaf_2m_tag_enabled(Some(OsStr::new(value))),
+                "{value:?}"
+            );
+        }
+        assert!(fetch_cache_leaf_2m_tag_enabled(Some(OsStr::new("2m"))));
+    }
+
+    /// S4-13d: like the sweep, the tag needs the sidecar: `2m` without `OD_FETCH_CACHE_STATS` is
+    /// not applied and warns; with the sidecar it is applied silently; anything but `2m` is the
+    /// 4 KiB default without a warning.
+    #[test]
+    fn od_fetch_cache_tag_2m_without_the_sidecar_is_ignored_with_a_warning() {
+        use std::ffi::OsStr;
+        let two_m = Some(OsStr::new("2m"));
+        let (apply, warning) = fetch_cache_leaf_2m_tag_decision(two_m, false);
+        assert!(!apply);
+        let warning = warning.expect("a warning");
+        assert!(
+            warning.contains("OD_FETCH_CACHE_TAG=2m")
+                && warning.contains("OD_FETCH_CACHE_STATS")
+                && warning.contains("4 KiB"),
+            "{warning}"
+        );
+        assert_eq!(fetch_cache_leaf_2m_tag_decision(two_m, true), (true, None));
+        for sidecar in [false, true] {
+            for value in [None, Some(OsStr::new("")), Some(OsStr::new("4k"))] {
+                assert_eq!(
+                    fetch_cache_leaf_2m_tag_decision(value, sidecar),
+                    (false, None)
+                );
+            }
+        }
+    }
+
+    /// S4-13d: `OD_FETCH_CACHE_TAG=2m` gives the real cache the 2 MiB leaf tag and changes nothing
+    /// in the evidence of the run (it equals the 4 KiB run but for `inputs` and the sidecar
+    /// entry, whose path differs); the sidecar names the tag and carries the end state hash of
+    /// guest RAM, equal for the 4 KiB and the 2 MiB tag and for a run without the cache.
+    #[test]
+    fn fetch_cache_tag_2m_changes_no_evidence_and_the_sidecar_names_it() {
+        let mut code = vec![0xFA; 20];
+        code.push(0xF4);
+        let dir = std::env::temp_dir().join(format!("od-runner-fetch-tag-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut runs = Vec::new();
+        for (name, no_cache, tag) in [
+            ("tag4k", None, None),
+            ("tag2m", None, Some("2m")),
+            ("nocache", Some("1"), None),
+        ] {
+            let sidecar = dir.join(format!("{name}.json"));
+            let env = DiagnosticEnv {
+                no_fetch_cache: no_cache.map(Into::into),
+                fetch_cache_stats: Some(sidecar.clone().into_os_string()),
+                fetch_cache_sweep: None,
+                fetch_cache_tag: tag.map(Into::into),
+            };
+            let mut evidence = run_case_with_env(name, &code, 100, &env);
+            let object = evidence.as_object_mut().unwrap();
+            object.remove("fetch_cache_stats_sidecar");
+            object.remove("inputs");
+            let written: Value = serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+            runs.push((evidence, written));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(runs[0].1["fetch_cache_tag"], "4k");
+        assert_eq!(runs[1].1["fetch_cache_tag"], "2m");
+        assert_eq!(runs[2].1["fetch_cache_tag"], "4k");
+        for run in &runs[1..] {
+            assert_eq!(run.0, runs[0].0);
+            assert_eq!(run.1["final_ram_sha256"], runs[0].1["final_ram_sha256"]);
+        }
+        let hash = runs[0].1["final_ram_sha256"].as_str().unwrap();
+        assert_eq!(hash.len(), 64, "{hash}");
+    }
+
+    #[test]
     fn od_fetch_cache_sweep_is_an_opt_in_flag() {
         use std::ffi::OsStr;
         assert!(!fetch_cache_sweep_enabled(None));
@@ -3892,6 +4038,7 @@ mod tests {
                 no_fetch_cache: None,
                 fetch_cache_stats: stats.then(|| sidecar.clone().into_os_string()),
                 fetch_cache_sweep: sweep.then(|| "1".into()),
+                fetch_cache_tag: None,
             };
             let mut evidence = run_case_with_env(name, &code, 100, &env);
             if let Some(object) = evidence.as_object_mut() {
@@ -3964,6 +4111,7 @@ mod tests {
             no_fetch_cache: None,
             fetch_cache_stats: Some(sidecar.clone().into_os_string()),
             fetch_cache_sweep: None,
+            fetch_cache_tag: None,
         };
         let (value, exit) = evaluate_with_env(&case.options, &env);
         assert_eq!(exit, 0, "{value:#}");
@@ -3998,6 +4146,7 @@ mod tests {
             no_fetch_cache: None,
             fetch_cache_stats: Some(sidecar.clone().into_os_string()),
             fetch_cache_sweep: None,
+            fetch_cache_tag: None,
         };
         let (value, exit) = evaluate_with_env(&case.options, &env);
         assert_eq!(exit, 4, "{value:#}");

@@ -8,7 +8,7 @@ use crate::execution_observations::{
 use crate::fetch_cache_report::{C5Split, LinuxWalkCounts, WalkCounter};
 use crate::fetch_cache_sweep::FetchCacheSweep;
 use crate::fetch_translation_cache::{
-    FetchCacheInvalidation, FetchCacheStats, FetchTranslationCache, TranslationKey,
+    FetchCacheInvalidation, FetchCacheStats, FetchCacheTag, FetchTranslationCache, TranslationKey,
 };
 use crate::irq_source::IrqBoundaryHook;
 use crate::linux_checkpoints::{BoundaryView, CheckpointRecorder};
@@ -1029,6 +1029,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
         checkpoints,
         execution_observations,
         None,
+        FetchCacheTag::Page4K,
     )
 }
 
@@ -1038,7 +1039,8 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
 /// act on: a retired `INVLPG` (peeked through the read-only walk WITHOUT the cache, so the counters
 /// of the cache do not move), a `#PF` delivered to the guest and a change of CR0/CR4. Nothing the
 /// loop reads comes back from the shadows: the run is the one of
-/// [`run_cpl0_set_paged_2m_ram_observed`]. Without a cache `sweep` is ignored.
+/// [`run_cpl0_set_paged_2m_ram_observed`]. Without a cache `sweep` is ignored. `tag` is what one
+/// entry of the call's cache covers (S4-13d): `Page4K` is the default of every other caller.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
     state: &mut LongModeState,
@@ -1058,10 +1060,11 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
     checkpoints: Option<&mut CheckpointRecorder>,
     execution_observations: Option<&mut LinuxExecutionObservationCollector>,
     sweep: Option<&Rc<FetchCacheSweep>>,
+    tag: FetchCacheTag,
 ) -> PagedCpl0SetReport {
     // S4-13: the translation cache of the instruction fetch lives in this call only.
     let cache = fetch_cache.map(|invalidation| {
-        let cache = FetchTranslationCache::with_invalidation(invalidation);
+        let cache = FetchTranslationCache::with_invalidation(invalidation).with_tag(tag);
         match sweep {
             Some(sweep) => cache.with_sweep(Rc::clone(sweep)),
             None => cache,
@@ -2729,8 +2732,18 @@ impl PagedMovMemoryAdapter<'_> {
                 )
             };
             let tables = tables.map(|table| table.map(GuestPhysicalAddress::get));
-            if let Some(frame) =
-                memory.ram_frame(GuestPhysicalAddress::new(physical.get() & !0xfff))
+            // S4-13d: with the 2 MiB tag a walk that ended at a 2 MiB leaf (three tables) whose
+            // whole 2 MiB span is plain RAM is remembered for the whole leaf; the span's base is
+            // the physical address minus the offset of the request inside the leaf. Anything else
+            // (a 4 KiB leaf, a span that is not wholly RAM, a base that is not 2 MiB aligned)
+            // stays a 4 KiB entry, as without the tag.
+            let leaf_frame = (cache.tag() == FetchCacheTag::Leaf2M
+                && tables[2].is_some()
+                && tables[3].is_none())
+            .then(|| physical.get().wrapping_sub(address & 0x1f_ffff))
+            .and_then(|base| memory.ram_leaf_2m(GuestPhysicalAddress::new(base)));
+            if let Some(frame) = leaf_frame
+                .or_else(|| memory.ram_frame(GuestPhysicalAddress::new(physical.get() & !0xfff)))
                 && tables.iter().flatten().all(|table| is_ram(*table & !0xfff))
             {
                 cache.insert(address, &self.paging, context, frame, tables);

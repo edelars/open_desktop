@@ -231,11 +231,20 @@ struct Region {
     page_generations: Vec<u64>,
 }
 
-/// Handle to one plain-RAM 4 KiB frame of a [`PhysicalMemory`] (see `PhysicalMemory::ram_frame`).
+/// Handle to one plain-RAM 4 KiB frame of a [`PhysicalMemory`] (see `PhysicalMemory::ram_frame`),
+/// or, with `large` set, to one 2 MiB-aligned plain-RAM span (`PhysicalMemory::ram_leaf_2m`, S4-13d).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RamFrame {
     region: usize,
     offset: usize,
+    large: bool,
+}
+
+impl RamFrame {
+    /// A 2 MiB span from `PhysicalMemory::ram_leaf_2m` (not a 4 KiB frame).
+    pub(crate) fn is_large(self) -> bool {
+        self.large
+    }
 }
 
 /// The sole owner of production RAM backing in this crate.
@@ -548,17 +557,39 @@ impl PhysicalMemory {
             RamFrame {
                 region: index,
                 offset,
+                large: false,
             },
         )
     }
 
-    /// One byte of a frame from [`Self::ram_frame`]. `in_frame` is below 4096. `None` is not
-    /// expected for a handle of this memory; the caller then takes the ordinary read.
+    /// S4-13d: a handle to the plain-RAM 2 MiB span at `base` (2 MiB aligned), or `None` unless
+    /// the whole span lies inside one `Ram` region with backing. The fetch translation cache with
+    /// the 2 MiB leaf tag keeps one per entry; the byte offset inside the span comes from the
+    /// address of each read, never from the handle.
+    pub(crate) fn ram_leaf_2m(&self, base: GuestPhysicalAddress) -> Option<RamFrame> {
+        if base.0 & 0x1f_ffff != 0 {
+            return None;
+        }
+        let (index, offset) = self.locate_index(base, 0x20_0000).ok()?;
+        let region = &self.regions[index];
+        (region.spec.kind == MemoryRegionKind::Ram && region.backing.is_some()).then_some(
+            RamFrame {
+                region: index,
+                offset,
+                large: true,
+            },
+        )
+    }
+
+    /// One byte of a frame from [`Self::ram_frame`] (or of a span from [`Self::ram_leaf_2m`]).
+    /// `in_frame` is any address: only its low 12 bits (low 21 bits for a 2 MiB span) are used.
+    /// `None` is not expected for a handle of this memory; the caller then takes the ordinary read.
     pub(crate) fn read_ram_frame_u8(&self, frame: RamFrame, in_frame: u64) -> Option<u8> {
         let region = self.regions.get(frame.region)?;
+        let mask = if frame.large { 0x1f_ffff } else { 0xfff };
         let at = frame
             .offset
-            .checked_add(usize::try_from(in_frame & 0xfff).ok()?)?;
+            .checked_add(usize::try_from(in_frame & mask).ok()?)?;
         region.backing.as_ref()?.get(at).copied()
     }
 

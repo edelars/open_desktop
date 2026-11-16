@@ -173,6 +173,8 @@ impl AddAssign for LinuxFetchCachePhase {
 pub struct LinuxFetchCacheReport {
     /// Whether the fetch cache was on (a run with `OD_NO_FETCH_CACHE` is told apart by this).
     pub cache_enabled: bool,
+    /// S4-13d: the cache tagged a 2 MiB leaf as one entry (false: the 4 KiB tag, the default).
+    pub leaf_2m_tag: bool,
     /// [`FETCH_CACHE_PHASE_RULE_C5`] or [`FETCH_CACHE_PHASE_RULE_NONE`].
     pub phase_rule: &'static str,
     /// C5 was recorded during the run (always false without the checkpoint recorder).
@@ -253,6 +255,7 @@ impl FetchCacheAccumulator {
     pub(crate) fn finish(self) -> LinuxFetchCacheReport {
         LinuxFetchCacheReport {
             cache_enabled: self.cache_enabled,
+            leaf_2m_tag: false,
             phase_rule: if self.checkpoints_enabled {
                 FETCH_CACHE_PHASE_RULE_C5
             } else {
