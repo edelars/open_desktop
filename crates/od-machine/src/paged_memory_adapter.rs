@@ -6,6 +6,7 @@ use crate::execution_observations::{
     LinuxExecutionObservationCollector, PendingPostIretObservation, PostIretPageWalkSnapshot,
 };
 use crate::fetch_cache_report::{C5Split, LinuxWalkCounts, WalkCounter};
+use crate::fetch_cache_sweep::FetchCacheSweep;
 use crate::fetch_translation_cache::{
     FetchCacheInvalidation, FetchCacheStats, FetchTranslationCache, TranslationKey,
 };
@@ -43,6 +44,7 @@ use od_isa::{
     deliver_page_fault_cpl0_set,
 };
 use od_isa::{IretqUserEntry, LongModeState};
+use std::rc::Rc;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PagedMovStepError {
@@ -990,6 +992,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_policy(
 /// The fetch cache (if any) is created here and lives in this call only; the loop itself is
 /// [`run_cpl0_set_paged_2m_ram_with_cache`].
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
     state: &mut LongModeState,
     bus: &mut MachineBus,
@@ -1008,8 +1011,62 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
     checkpoints: Option<&mut CheckpointRecorder>,
     execution_observations: Option<&mut LinuxExecutionObservationCollector>,
 ) -> PagedCpl0SetReport {
+    run_cpl0_set_paged_2m_ram_observed_with_sweep(
+        state,
+        bus,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        set,
+        rdtsc,
+        stop,
+        committed_write,
+        cpuid_boundary,
+        fetch_cache,
+        irq,
+        checkpoints,
+        execution_observations,
+        None,
+    )
+}
+
+/// [`run_cpl0_set_paged_2m_ram_observed`] with the opt-in shadow caches of S4-13c (diagnostics
+/// only). With `sweep` and a cache (`fetch_cache` is `Some`) the call's cache forwards every event
+/// to the shadows, and the loop tells them of the guest invalidations a `WriteWatch` cache does not
+/// act on: a retired `INVLPG` (peeked through the read-only walk WITHOUT the cache, so the counters
+/// of the cache do not move), a `#PF` delivered to the guest and a change of CR0/CR4. Nothing the
+/// loop reads comes back from the shadows: the run is the one of
+/// [`run_cpl0_set_paged_2m_ram_observed`]. Without a cache `sweep` is ignored.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    cpuid_boundary: bool,
+    fetch_cache: Option<FetchCacheInvalidation>,
+    irq: Option<IrqBoundaryHook<'_>>,
+    checkpoints: Option<&mut CheckpointRecorder>,
+    execution_observations: Option<&mut LinuxExecutionObservationCollector>,
+    sweep: Option<&Rc<FetchCacheSweep>>,
+) -> PagedCpl0SetReport {
     // S4-13: the translation cache of the instruction fetch lives in this call only.
-    let cache = fetch_cache.map(FetchTranslationCache::with_invalidation);
+    let cache = fetch_cache.map(|invalidation| {
+        let cache = FetchTranslationCache::with_invalidation(invalidation);
+        match sweep {
+            Some(sweep) => cache.with_sweep(Rc::clone(sweep)),
+            None => cache,
+        }
+    });
     run_cpl0_set_paged_2m_ram_with_cache(
         state,
         bus,
@@ -1218,6 +1275,9 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
                     walks: walks.snapshot(),
                     cache: cache.map(FetchTranslationCache::stats),
                 });
+                if let Some(cache) = cache {
+                    cache.sweep_mark_c5();
+                }
             }
         }
         if cpuid_boundary
@@ -1250,6 +1310,12 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
         // peeked before the step (read-only, through the cache like the fetch itself); CR0/CR4
         // are compared around it.
         let invlpg_pending = guest_only && invlpg_at_rip(state, bus, &paging, context, cache);
+        // S4-13c: the shadows of a `WriteWatch` cache learn of a retired `INVLPG` too. The peek
+        // bypasses the cache (read-only walk), so neither the counters nor the order of the cache
+        // move; a `GuestOnly` cache tells them itself.
+        let sweep_invlpg_pending = !guest_only
+            && cache.is_some_and(FetchTranslationCache::sweep_active)
+            && invlpg_at_rip(state, bus, &paging, context, None);
         let control_before = (state.cr0, state.cr4);
         let (ram, io) = bus.split_for_set_step();
         let mut port = PitWriteWatch {
@@ -1383,8 +1449,12 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
                         // cited from memory, not checked against the primary source). Under
                         // `GuestOnly` the whole cache is dropped, which is always allowed; the
                         // handler may repair the page tables without `INVLPG`.
-                        if guest_only && let Some(cache) = cache {
-                            cache.flush_after_page_fault();
+                        if let Some(cache) = cache {
+                            if guest_only {
+                                cache.flush_after_page_fault();
+                            } else {
+                                cache.sweep_guest_page_fault();
+                            }
                         }
                         delivered_exceptions += 1;
                         delivered_page_faults += 1;
@@ -1541,6 +1611,14 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
             }
             if control_before != (state.cr0, state.cr4) {
                 cache.flush_after_control_change();
+            }
+        } else if let Some(cache) = cache {
+            // S4-13c: observation only, for the shadows.
+            if sweep_invlpg_pending && result.instructions_executed > 0 {
+                cache.sweep_guest_invlpg();
+            }
+            if cache.sweep_active() && control_before != (state.cr0, state.cr4) {
+                cache.sweep_guest_control_change();
             }
         }
         if let Some(exit) = handle_set_exit(
@@ -2622,7 +2700,7 @@ impl PagedMovMemoryAdapter<'_> {
             origin: od_isa::memory::AccessOrigin::Explicit,
             ..context
         };
-        if let Some(frame) = cache.lookup(address, &self.paging, context)
+        if let Some(frame) = cache.lookup_fetch(address, &self.paging, context)
             && let Some(memory) = self.bus.ram_ref()
             && let Some(byte) = memory.read_ram_frame_u8(frame, address)
         {

@@ -212,6 +212,8 @@ fn evaluate(options: &Options) -> (Value, u8) {
 struct DiagnosticEnv {
     no_fetch_cache: Option<std::ffi::OsString>,
     fetch_cache_stats: Option<std::ffi::OsString>,
+    /// S4-13c: shadow caches, only together with `OD_FETCH_CACHE_STATS`.
+    fetch_cache_sweep: Option<std::ffi::OsString>,
 }
 
 impl DiagnosticEnv {
@@ -219,6 +221,7 @@ impl DiagnosticEnv {
         Self {
             no_fetch_cache: std::env::var_os(NO_FETCH_CACHE_ENV),
             fetch_cache_stats: std::env::var_os(FETCH_CACHE_STATS_ENV),
+            fetch_cache_sweep: std::env::var_os(FETCH_CACHE_SWEEP_ENV),
         }
     }
 }
@@ -537,6 +540,11 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                         }
                     }
                     boot.board.enable_fetch_cache_report();
+                    // S4-13c: the shadow caches ride on the sidecar and add one key to it.
+                    if fetch_cache_sweep_enabled(env.fetch_cache_sweep.as_deref()) {
+                        boot.board
+                            .enable_fetch_cache_sweep(od_machine::SweepConfig::full_grid());
+                    }
                 }
                 let members = LinuxCpl0SetMembers {
                     // S4-13 diagnostics: `OD_NO_FETCH_CACHE=1` runs without the fetch
@@ -589,6 +597,7 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                 };
                 let run_wall_seconds = run_started.elapsed().as_secs_f64();
                 if let Some(path) = &fetch_stats_path {
+                    let sweep_report = boot.board.take_fetch_cache_sweep();
                     let write_error = match (
                         boot.board.take_fetch_cache_report(),
                         fetch_stats_file.as_mut(),
@@ -597,6 +606,7 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                             file,
                             path,
                             &report,
+                            sweep_report.as_ref(),
                             result.is_ok(),
                             run_wall_seconds,
                         )
@@ -1510,6 +1520,13 @@ fn write_stack_context_sidecar(
 const NO_FETCH_CACHE_ENV: &str = "OD_NO_FETCH_CACHE";
 /// Environment variable with the path of the opt-in fetch cache sidecar (S4-13b).
 const FETCH_CACHE_STATS_ENV: &str = "OD_FETCH_CACHE_STATS";
+/// Environment variable that adds the shadow cache sweep (S4-13c) to the fetch cache sidecar.
+const FETCH_CACHE_SWEEP_ENV: &str = "OD_FETCH_CACHE_SWEEP";
+
+/// Whether the sweep is requested: set, not empty and not `0`.
+fn fetch_cache_sweep_enabled(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| !value.is_empty() && value != "0")
+}
 
 /// Whether the run keeps the fetch translation cache, from the value of `OD_NO_FETCH_CACHE`
 /// (S4-13b). Unset, empty or `0` keep it (the default); any other value turns it off. Before
@@ -1579,10 +1596,11 @@ fn fetch_cache_phase_json(phase: &od_machine::LinuxFetchCachePhase) -> Value {
 /// run ended in `run_failed`: the counters are then what was counted up to the failure.
 fn fetch_cache_stats_json(
     report: &od_machine::LinuxFetchCacheReport,
+    sweep: Option<&od_machine::FetchSweepReport>,
     run_completed: bool,
     run_wall_seconds: f64,
 ) -> Value {
-    json!({
+    let mut value = json!({
         "schema_version": 1,
         "capture_scope": "fetch translation cache counters and tracked page walks of the CPL0 set loop, summed over its calls; measurement only",
         "fetch_cache_enabled": report.cache_enabled,
@@ -1598,6 +1616,107 @@ fn fetch_cache_stats_json(
         "total": fetch_cache_phase_json(&report.total),
         "before_c5": fetch_cache_phase_json(&report.before_c5),
         "after_c5": fetch_cache_phase_json(&report.after_c5),
+    });
+    // S4-13c: present only when the sweep was asked for.
+    if let Some(sweep) = sweep {
+        value["fetch_cache_sweep"] = fetch_cache_sweep_json(sweep, report);
+    }
+    value
+}
+
+/// The counters of one cache (real or shadow) in a phase.
+fn sweep_counters_json(stats: &od_machine::FetchCacheStats) -> Value {
+    let lookups = stats.hits + stats.misses;
+    json!({
+        "hits": stats.hits,
+        "misses": stats.misses,
+        "inserts": stats.inserts,
+        "write_flushes": stats.write_flushes,
+        "context_flushes": stats.context_flushes,
+        "host_flushes": stats.host_flushes,
+        "invlpg_flushes": stats.invlpg_flushes,
+        "control_flushes": stats.control_flushes,
+        "fault_flushes": stats.fault_flushes,
+        "ignored_table_writes": stats.ignored_table_writes,
+        "hit_rate": if lookups == 0 { Value::Null } else { json!(stats.hits as f64 / lookups as f64) },
+    })
+}
+
+/// The `fetch_cache_sweep` key of the sidecar (S4-13c): every shadow's counters by phase, and the
+/// check that the reference shadow counted exactly like the real cache of the run.
+fn fetch_cache_sweep_json(
+    sweep: &od_machine::FetchSweepReport,
+    report: &od_machine::LinuxFetchCacheReport,
+) -> Value {
+    use od_machine::{SweepInvalidation, SweepLifecycle, SweepReplacement, SweepTag};
+    let configs: serde_json::Map<String, Value> = sweep
+        .configs
+        .iter()
+        .map(|entry| {
+            let config = &entry.config;
+            (
+                entry.label.clone(),
+                json!({
+                    "capacity": config.capacity,
+                    "replacement": match config.replacement {
+                        SweepReplacement::Fifo => "fifo",
+                        SweepReplacement::Lru => "lru",
+                    },
+                    "tag": match config.tag {
+                        SweepTag::Page4K => "4k_page",
+                        SweepTag::Leaf2M => "2m_leaf",
+                    },
+                    "lifecycle": match config.lifecycle {
+                        SweepLifecycle::PerCall => "per_call",
+                        SweepLifecycle::Persistent => "persistent",
+                    },
+                    "invalidation": match config.invalidation {
+                        SweepInvalidation::WriteWatch => "write_watch",
+                        SweepInvalidation::GuestOnly => "guest_only",
+                    },
+                    "phase1_before_c5": sweep_counters_json(&entry.before_c5),
+                    "phase2_after_c5": sweep_counters_json(&entry.after_c5),
+                    "total": sweep_counters_json(&entry.total),
+                }),
+            )
+        })
+        .collect();
+    let reference = sweep.find(od_machine::SweepConfig::REFERENCE);
+    let self_check = match reference {
+        Some(reference) => json!({
+            "reference": reference.label,
+            "total_equals_real": reference.total == report.total.cache,
+            "phase1_equals_real": reference.before_c5 == report.before_c5.cache,
+            "phase2_equals_real": reference.after_c5 == report.after_c5.cache,
+            "all_ten_counters_compared": true,
+        }),
+        None => Value::Null,
+    };
+    json!({
+        "schema_version": 1,
+        "capture_scope": "shadow fetch caches fed with the event stream of the real cache; diagnostics only, their output is not part of any board report",
+        "c5_reached": sweep.c5_reached,
+        "notes": [
+            "each shadow counts the ten counters of the real cache; phase 1 is before the boundary of checkpoint C5, phase 2 from it on",
+            "per_call: emptied at the start of every call (quantum), like the real cache of the board; persistent: kept across calls with the S4-14i rules (a changed translation context, or a write to a watched table frame outside the loop, flushes it)",
+            "4k_page: one entry tags one 4 KiB page (the real cache); 2m_leaf: a walk that ended at a 2 MiB leaf is one entry for the 2 MiB page",
+            "write_watch: a committed write to a table frame of an entry drops every entry (the real cache); guest_only: such a write is only counted, INVLPG, a delivered #PF and a change of CR0/CR4 flush. guest_only is a hypothesis: a shadow keeps serving translations the run itself would not trust, and the writes of the host between calls are seen only through the page generations",
+            "INVLPG for the guest_only shadows is detected by a read-only peek at RIP that bypasses the real cache",
+            "a real GuestOnly cache finds INVLPG by a peek through the cache (the Peek lookup is added to its hits/misses); a guest_only shadow under a WriteWatch run bypasses the cache, so the hits/misses of a guest_only shadow on the board can differ from those of a real GuestOnly cache; the set of flushing events (INVLPG, #PF, CR0/CR4, MOV CR3) is the same",
+            "the shadows receive the lookup trace of the run and the walk result of the real cache; this equals an independent cache only for a WriteWatch run; on a fetch miss each shadow decides hit or miss itself and takes the insert only if it missed",
+        ],
+        "events": {
+            "calls": sweep.events.calls,
+            "lookups": sweep.events.lookups,
+            "bulk_lookups": sweep.events.bulk_lookups,
+            "inserts": sweep.events.inserts,
+            "writes": sweep.events.writes,
+            "writes_checked_against_shadows": sweep.events.writes_checked,
+        },
+        "watched_table_pages": sweep.watched_table_pages,
+        "distinct_translation_contexts": sweep.distinct_contexts,
+        "self_check": self_check,
+        "configs": configs,
     })
 }
 
@@ -1605,10 +1724,11 @@ fn write_fetch_cache_stats_sidecar(
     file: &mut File,
     path: &str,
     report: &od_machine::LinuxFetchCacheReport,
+    sweep: Option<&od_machine::FetchSweepReport>,
     run_completed: bool,
     run_wall_seconds: f64,
 ) -> Result<(), String> {
-    let value = fetch_cache_stats_json(report, run_completed, run_wall_seconds);
+    let value = fetch_cache_stats_json(report, sweep, run_completed, run_wall_seconds);
     file_matches_existing_path(file, path, path)?;
     let bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
     use std::io::Write;
@@ -3637,7 +3757,7 @@ mod tests {
             before_c5: phase,
             after_c5: od_machine::LinuxFetchCachePhase::default(),
         };
-        let value = fetch_cache_stats_json(&report, true, 1.5);
+        let value = fetch_cache_stats_json(&report, None, true, 1.5);
         // A run without the cache is told apart from the ordinary one.
         assert_eq!(value["fetch_cache_enabled"], false);
         assert_eq!(value["run_completed"], true);
@@ -3686,6 +3806,7 @@ mod tests {
             let plain_env = DiagnosticEnv {
                 no_fetch_cache: no_fetch_cache.map(Into::into),
                 fetch_cache_stats: None,
+                fetch_cache_sweep: None,
             };
             let plain = run_case_with_env(&format!("{name}-plain"), &code, 100, &plain_env);
             assert!(
@@ -3705,6 +3826,7 @@ mod tests {
             let env = DiagnosticEnv {
                 no_fetch_cache: plain_env.no_fetch_cache.clone(),
                 fetch_cache_stats: Some(sidecar.clone().into_os_string()),
+                fetch_cache_sweep: None,
             };
             let mut observed = run_case_with_env(&format!("{name}-stats"), &code, 100, &env);
             let entry = observed
@@ -3743,6 +3865,86 @@ mod tests {
         }
     }
 
+    #[test]
+    fn od_fetch_cache_sweep_is_an_opt_in_flag() {
+        use std::ffi::OsStr;
+        assert!(!fetch_cache_sweep_enabled(None));
+        assert!(!fetch_cache_sweep_enabled(Some(OsStr::new(""))));
+        assert!(!fetch_cache_sweep_enabled(Some(OsStr::new("0"))));
+        assert!(fetch_cache_sweep_enabled(Some(OsStr::new("1"))));
+    }
+
+    /// S4-13c: with `OD_FETCH_CACHE_SWEEP` the stats sidecar gains one key, the sweep, whose
+    /// reference shadow equals the real cache; the evidence of the run is the one of the run with
+    /// the stats sidecar alone. Without the flag the sidecar has no such key, and the flag alone
+    /// (no sidecar) does nothing.
+    #[test]
+    fn fetch_cache_sweep_adds_only_its_key_to_the_stats_sidecar() {
+        let mut code = vec![0xFA; 20];
+        code.push(0xF4);
+        let dir =
+            std::env::temp_dir().join(format!("od-runner-fetch-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |name: &str, stats: bool, sweep: bool| {
+            let sidecar = dir.join(format!("{name}.json"));
+            let env = DiagnosticEnv {
+                no_fetch_cache: None,
+                fetch_cache_stats: stats.then(|| sidecar.clone().into_os_string()),
+                fetch_cache_sweep: sweep.then(|| "1".into()),
+            };
+            let mut evidence = run_case_with_env(name, &code, 100, &env);
+            if let Some(object) = evidence.as_object_mut() {
+                object.remove("fetch_cache_stats_sidecar");
+                object.remove("inputs");
+            }
+            let written = std::fs::read(&sidecar)
+                .ok()
+                .map(|bytes| serde_json::from_slice::<Value>(&bytes).unwrap());
+            (evidence, written)
+        };
+        let (plain, none) = run("plain", false, false);
+        assert!(none.is_none());
+        let (flag_only, none) = run("flag-only", false, true);
+        assert_eq!(flag_only, plain);
+        assert!(none.is_none(), "the flag alone writes nothing");
+        let (stats_only, stats_only_written) = run("stats", true, false);
+        assert_eq!(stats_only, plain);
+        let stats_only_written = stats_only_written.unwrap();
+        assert!(stats_only_written.get("fetch_cache_sweep").is_none());
+        let (swept, written) = run("sweep", true, true);
+        assert_eq!(swept, plain, "the sweep changes nothing in the evidence");
+        let mut written = written.unwrap();
+        let sweep = written
+            .as_object_mut()
+            .unwrap()
+            .remove("fetch_cache_sweep")
+            .expect("the flag adds the key");
+        // The rest of the sidecar is the one without the flag (the wall clock differs).
+        let mut expected = stats_only_written;
+        for value in [&mut written, &mut expected] {
+            value.as_object_mut().unwrap().remove("run_wall_seconds");
+        }
+        assert_eq!(written, expected);
+        assert_eq!(sweep["configs"].as_object().unwrap().len(), 112);
+        let check = &sweep["self_check"];
+        assert_eq!(check["reference"], "cap4-fifo-4k-per_call-write_watch");
+        assert_eq!(check["total_equals_real"], true, "{sweep:#}");
+        assert_eq!(check["phase1_equals_real"], true);
+        assert_eq!(check["phase2_equals_real"], true);
+        let reference = &sweep["configs"]["cap4-fifo-4k-per_call-write_watch"];
+        assert_eq!(
+            reference["total"]["hits"],
+            written["total"]["cache"]["hits"]
+        );
+        assert!(reference["total"]["hits"].as_u64().unwrap() > 0);
+        assert_eq!(
+            sweep["configs"]["cap64-lru-2m-persistent-guest_only"]["capacity"],
+            64
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Without `--set-cpl0` there is no report: the evidence says so and no empty sidecar stays.
     #[test]
     fn fetch_cache_stats_without_the_set_loop_leaves_no_empty_sidecar() {
@@ -3761,6 +3963,7 @@ mod tests {
         let env = DiagnosticEnv {
             no_fetch_cache: None,
             fetch_cache_stats: Some(sidecar.clone().into_os_string()),
+            fetch_cache_sweep: None,
         };
         let (value, exit) = evaluate_with_env(&case.options, &env);
         assert_eq!(exit, 0, "{value:#}");
@@ -3794,6 +3997,7 @@ mod tests {
         let env = DiagnosticEnv {
             no_fetch_cache: None,
             fetch_cache_stats: Some(sidecar.clone().into_os_string()),
+            fetch_cache_sweep: None,
         };
         let (value, exit) = evaluate_with_env(&case.options, &env);
         assert_eq!(exit, 4, "{value:#}");

@@ -32,23 +32,24 @@
 //! watched table frame, so the cache is exact against a TLB-less reference. `GuestOnly` models a
 //! TLB: a write to a page table does not touch an entry, only the invalidations the guest itself
 //! performs do (`INVLPG`, `MOV CR3`, a change of CR0/CR4, and a delivered `#PF` for its own
-//! page), so a stale translation may still be used until the guest asks for a flush, as on hardware.
+//! page), so a stale translation may still be used until the guest asks for a flush, as on
+//! hardware.
 //!
-//! S4-14i: a cache owned by the caller ([`FetchTranslationCache::persistent`]) survives the end of a
-//! call of the set loop. Nothing is flushed at a call boundary by itself: the events that flush are
-//! the ones of the policy (they happen inside the loop, so a flush that happened in call N is
+//! S4-14i: a cache owned by the caller ([`FetchTranslationCache::persistent`]) survives the end of
+//! a call of the set loop. Nothing is flushed at a call boundary by itself: the events that flush
+//! are the ones of the policy (they happen inside the loop, so a flush that happened in call N is
 //! already in effect when call N + 1 starts) and the host events below. Every cache the loop is
 //! given is sealed when the call ends and checked when the next call starts, whatever its
 //! constructor (a one-shot cache has nothing to compare, so nothing changes for it). The seal holds
 //! the translation context the call left (the paging snapshot CR0/CR3/CR4/EFER and the access
-//! context, [`TranslationKey`]) and the page generation of every table frame the cache watches.
-//! The check drops every entry (`host_flushes`) in two cases:
-//! - the host hands over another translation context than the one the seal holds (it changed
-//!   CR0/CR3/CR4/EFER, the mode or the privilege between the calls, not by a guest `MOV CR3`). This
-//!   is a flush even if the cache is empty, and a later return to the old context finds no entry:
-//!   writes to the old tables made meanwhile, which `GuestOnly` ignores, must not be sealed away;
-//! - a watched table frame was written by anyone since the seal (a loader or harness through the
-//!   host API, a device DMA between calls: they never reach [`FetchTranslationCache::note_write`]).
+//! context, [`TranslationKey`]) and the page generation of every table frame the cache watches. The
+//! check drops every entry (`host_flushes`) in two cases: - the host hands over another translation
+//! context than the one the seal holds (it changed   CR0/CR3/CR4/EFER, the mode or the privilege
+//! between the calls, not by a guest `MOV CR3`). This   is a flush even if the cache is empty, and
+//! a later return to the old context finds no entry:   writes to the old tables made meanwhile,
+//! which `GuestOnly` ignores, must not be sealed away; - a watched table frame was written by
+//! anyone since the seal (a loader or harness through the   host API, a device DMA between calls:
+//! they never reach [`FetchTranslationCache::note_write`]).
 //!
 //! This is the conservative rule, valid in both policies: a host write to a watched table frame
 //! always flushes, a host write to any other frame (code bytes included, they are never cached)
@@ -58,15 +59,17 @@
 //! bound to the memory of one machine session: a new session (a reset board is a new board) needs a
 //! new cache or a `reset()`.
 
+use crate::fetch_cache_sweep::{FetchCacheSweep, LookupKind};
 use crate::page_walk::Long64ProbeConfig;
 use crate::physical_memory::{GuestPhysicalRange, RamFrame};
 use od_isa::memory::AccessContext;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 /// Entries kept at once. Kernel text and the immediate callee pages are a handful of pages.
 const SLOTS: usize = 4;
 /// A table slot that holds no table (a 2 MiB leaf ends the walk one level early).
-const NO_TABLE: u64 = u64::MAX;
+pub(crate) const NO_TABLE: u64 = u64::MAX;
 
 #[derive(Clone, Copy)]
 struct Entry {
@@ -146,8 +149,8 @@ struct Sealed {
 /// continues the previous one only when both are equal to what the previous call left.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) struct TranslationKey {
-    paging: Long64ProbeConfig,
-    access: AccessContext,
+    pub(crate) paging: Long64ProbeConfig,
+    pub(crate) access: AccessContext,
 }
 
 impl TranslationKey {
@@ -164,6 +167,13 @@ pub(crate) struct FetchTranslationCache {
     /// only names the intent: the loop seals and checks every cache it is given, whatever the
     /// constructor (S4-14i, review), so that no cache loses a host event at a call boundary.
     persistent: bool,
+    /// S4-13c: shadow caches that receive every event of this cache (diagnostics only; `None` is
+    /// no sweep and costs one branch per event).
+    sweep: Option<Rc<FetchCacheSweep>>,
+    /// The sweep was told of the start of the call by [`Self::with_sweep`] and the first
+    /// [`Self::revalidate`] of that call must not tell it again; every later `revalidate` (a cache
+    /// that serves several calls) starts a call for the shadows.
+    sweep_call_open: Cell<bool>,
 }
 
 impl FetchTranslationCache {
@@ -190,6 +200,48 @@ impl FetchTranslationCache {
         }
     }
 
+    /// Attach the shadow caches of S4-13c. Counts as the start of a call for them (a cache built
+    /// per call is attached once, when it is built; one that serves several calls starts a call
+    /// for the shadows at every later [`Self::revalidate`]). They observe only: this cache answers
+    /// and counts exactly as without them.
+    pub(crate) fn with_sweep(mut self, sweep: Rc<FetchCacheSweep>) -> Self {
+        sweep.begin_call();
+        self.sweep = Some(sweep);
+        self.sweep_call_open.set(true);
+        self
+    }
+
+    pub(crate) fn sweep_active(&self) -> bool {
+        self.sweep.is_some()
+    }
+
+    /// The guest invalidations a `WriteWatch` cache does not act on, told to the shadows only
+    /// (a `GuestOnly` cache flushes itself and forwards through its own flush methods).
+    pub(crate) fn sweep_guest_invlpg(&self) {
+        if let Some(sweep) = &self.sweep {
+            sweep.invlpg();
+        }
+    }
+
+    pub(crate) fn sweep_guest_page_fault(&self) {
+        if let Some(sweep) = &self.sweep {
+            sweep.page_fault();
+        }
+    }
+
+    pub(crate) fn sweep_guest_control_change(&self) {
+        if let Some(sweep) = &self.sweep {
+            sweep.control_change();
+        }
+    }
+
+    /// The boundary of checkpoint C5 was reached: the shadows keep their counters of phase 1.
+    pub(crate) fn sweep_mark_c5(&self) {
+        if let Some(sweep) = &self.sweep {
+            sweep.mark_c5();
+        }
+    }
+
     pub(crate) fn invalidation(&self) -> FetchCacheInvalidation {
         self.invalidation
     }
@@ -200,12 +252,35 @@ impl FetchTranslationCache {
     }
 
     /// The RAM frame of `address` when its page has a live entry for exactly this paging
-    /// snapshot and access context; the byte is at `address & 0xfff` in it.
+    /// snapshot and access context; the byte is at `address & 0xfff` in it. A peek of the loop
+    /// (CPUID, `IRETQ`, `INVLPG`, `SYSRETQ`): a miss is not followed by an insert.
     pub(crate) fn lookup(
         &self,
         address: u64,
         paging: &Long64ProbeConfig,
         context: AccessContext,
+    ) -> Option<RamFrame> {
+        self.lookup_of(address, paging, context, LookupKind::Peek)
+    }
+
+    /// [`Self::lookup`] for the fetch of an instruction byte: a miss is followed by a walk and an
+    /// insert. The answer and the counters are the same; only the shadow caches of S4-13c tell the
+    /// two apart.
+    pub(crate) fn lookup_fetch(
+        &self,
+        address: u64,
+        paging: &Long64ProbeConfig,
+        context: AccessContext,
+    ) -> Option<RamFrame> {
+        self.lookup_of(address, paging, context, LookupKind::Fetch)
+    }
+
+    fn lookup_of(
+        &self,
+        address: u64,
+        paging: &Long64ProbeConfig,
+        context: AccessContext,
+        kind: LookupKind,
     ) -> Option<RamFrame> {
         let page = address >> 12;
         let mut inner = self.inner.borrow_mut();
@@ -219,14 +294,28 @@ impl FetchTranslationCache {
         } else {
             (0..SLOTS).find(|slot| matches(&inner.entries[*slot]))
         };
-        match slot.and_then(|slot| inner.entries[slot].map(|entry| (slot, entry.frame))) {
-            Some((slot, frame)) => {
+        // Only the frame and the tables leave the slot (the hot path copies no more).
+        let hit = slot.and_then(|slot| {
+            inner.entries[slot]
+                .as_ref()
+                .map(|entry| (slot, entry.frame, entry.tables))
+        });
+        match hit {
+            Some((slot, frame, tables)) => {
                 inner.recent = slot;
                 inner.stats.hits += 1;
+                drop(inner);
+                if let Some(sweep) = &self.sweep {
+                    sweep.lookup(address, paging, context, kind, Some(tables));
+                }
                 Some(frame)
             }
             None => {
                 inner.stats.misses += 1;
+                drop(inner);
+                if let Some(sweep) = &self.sweep {
+                    sweep.lookup(address, paging, context, kind, None);
+                }
                 None
             }
         }
@@ -242,6 +331,9 @@ impl FetchTranslationCache {
         frame: RamFrame,
         tables: [Option<u64>; 4],
     ) {
+        if let Some(sweep) = &self.sweep {
+            sweep.insert(address, paging, context, tables);
+        }
         let mut inner = self.inner.borrow_mut();
         let page = address >> 12;
         let entry = Entry {
@@ -275,6 +367,9 @@ impl FetchTranslationCache {
     pub(crate) fn note_write(&self, range: GuestPhysicalRange) {
         let first = range.start().get() >> 12;
         let last = ((range.end_exclusive() - 1) >> 12) as u64;
+        if let Some(sweep) = &self.sweep {
+            sweep.note_write(first, last);
+        }
         let mut inner = self.inner.borrow_mut();
         let touched = inner.entries.iter().flatten().any(|entry| {
             entry
@@ -297,6 +392,9 @@ impl FetchTranslationCache {
     /// Drop every entry after a retired `MOV CR3` (or another translation context change the
     /// set reports), in either policy.
     pub(crate) fn flush(&self) {
+        if let Some(sweep) = &self.sweep {
+            sweep.flush();
+        }
         let mut inner = self.inner.borrow_mut();
         inner.entries = [None; SLOTS];
         inner.stats.context_flushes += 1;
@@ -305,6 +403,9 @@ impl FetchTranslationCache {
     /// Drop every entry after a retired `INVLPG` (`GuestOnly`; the flush is of the whole cache,
     /// not of the page the operand names).
     pub(crate) fn flush_after_invlpg(&self) {
+        if let Some(sweep) = &self.sweep {
+            sweep.invlpg();
+        }
         let mut inner = self.inner.borrow_mut();
         inner.entries = [None; SLOTS];
         inner.stats.invlpg_flushes += 1;
@@ -312,6 +413,9 @@ impl FetchTranslationCache {
 
     /// Drop every entry when a `#PF` is delivered to the guest (`GuestOnly`).
     pub(crate) fn flush_after_page_fault(&self) {
+        if let Some(sweep) = &self.sweep {
+            sweep.page_fault();
+        }
         let mut inner = self.inner.borrow_mut();
         inner.entries = [None; SLOTS];
         inner.stats.fault_flushes += 1;
@@ -320,6 +424,9 @@ impl FetchTranslationCache {
     /// Drop every entry after CR0 or CR4 changed (`GuestOnly`; a toggle of CR4.PGE is a global
     /// TLB flush, and any other change is flushed too, which is always allowed).
     pub(crate) fn flush_after_control_change(&self) {
+        if let Some(sweep) = &self.sweep {
+            sweep.control_change();
+        }
         let mut inner = self.inner.borrow_mut();
         inner.entries = [None; SLOTS];
         inner.stats.control_flushes += 1;
@@ -333,6 +440,9 @@ impl FetchTranslationCache {
     /// `host_flushes`.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn flush_for_host_event(&self) {
+        if let Some(sweep) = &self.sweep {
+            sweep.host_event();
+        }
         let mut inner = self.inner.borrow_mut();
         inner.entries = [None; SLOTS];
         inner.sealed = None;
@@ -343,6 +453,9 @@ impl FetchTranslationCache {
     /// the seal and the counters; policy and persistence stay.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn reset(&self) {
+        if let Some(sweep) = &self.sweep {
+            sweep.reset();
+        }
         *self.inner.borrow_mut() = Inner::default();
     }
 
@@ -354,6 +467,9 @@ impl FetchTranslationCache {
         key: Option<TranslationKey>,
         generation_of: &dyn Fn(u64) -> Option<u64>,
     ) {
+        if let Some(sweep) = &self.sweep {
+            sweep.seal(key, generation_of);
+        }
         let mut inner = self.inner.borrow_mut();
         let mut pages: Vec<u64> = inner
             .entries
@@ -387,6 +503,14 @@ impl FetchTranslationCache {
         key: Option<TranslationKey>,
         generation_of: &dyn Fn(u64) -> Option<u64>,
     ) {
+        if let Some(sweep) = &self.sweep {
+            // The call that attached the sweep already began for it; any later call of the same
+            // cache begins here, before the check, so that the `PerCall` shadows are emptied.
+            if !self.sweep_call_open.replace(false) {
+                sweep.begin_call();
+            }
+            sweep.revalidate(key, generation_of);
+        }
         let changed = {
             let inner = self.inner.borrow();
             inner.sealed.as_ref().is_some_and(|sealed| {
