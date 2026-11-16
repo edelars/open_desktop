@@ -99,7 +99,7 @@ pub use bus::{
     AccessWidth, BusAccessError, BusBuildError, BusDevice, DeviceAccess, DeviceError,
     DisplayBindingError, FramebufferBinding, IoSpace, MachineBus, MmioBinding, PortAddress,
     PortRange, PortRegionBinding, TrackedCodePatchError, TrackedCodeSnapshot,
-    TrackedCodeSnapshotError,
+    TrackedCodeSnapshotError, TrackedCrossPageCodeSnapshot,
 };
 
 pub use console_output_context::{
