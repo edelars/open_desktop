@@ -26939,3 +26939,10 @@ Checks: six focused `rust_helper_xor_r12d_sib` profile tests passed, including e
 Base `PagedCpl0ProbeV1` admits only bytes `45 0F B6 F4`: opcode `0F B6 /r` with REX `45` selects R14D as the dword destination through REX.R and R12B as the byte source through REX.B. The guard requires the exact prefix, opcode map/opcode, length 4, operand size Dword, and decoded register views. Existing unsigned `Operation::Extend` semantics read R12B and write its zero-extended value to R14D, clearing R14[63:32]; flags and `rflags_defined` remain unchanged. No memory access occurs. Neighboring aliases, widths, prefixes, memory sources, and profiles remain unsupported.
 
 Checks: four focused `rust_helper_movzx_r14d_r12b` tests plus other-profile isolation passed; all 406 `paged_probe_profile` tests and `cargo check --offline -p od-isa --all-targets` passed. The runner image built and retired 84 instructions, stopping at `45 89 E1` (`MOV R9D,R12D`, ISSUE-182), RIP `0x200e37`, `Unsupported { opcode: 137 }`, `com1_bytes=0`. Full handoff validation remains incomplete.
+
+
+### S7-04: exact Rust-helper `MOV R9D,R12D`
+
+Base `PagedCpl0ProbeV1` admits only bytes `45 89 E1`: opcode `89 /r`, exact REX `45`, ModRM `E1`, length 3 and dword operand size. ModRM.r/m with REX.B is destination R9D; ModRM.reg with REX.R is source R12D. Existing register MOV semantics read the source low dword and write the destination, zero-extending R9; R12 remains unchanged. Flags and `rflags_defined` are preserved, and there is no memory access. Other source/destination tuples, directions, widths, prefixes and profiles remain unsupported.
+
+Checks: four focused `rust_helper_mov_r9d_r12d` tests, the other-profile isolation test, all 410 `paged_probe_profile` tests, and `cargo check --offline -p od-isa --all-targets` passed. Coverage includes routing/zero-extension, full state/flags, final-ModRM fetch-fault atomicity, neighboring encodings and CPL3/profile isolation. The runner image built and retired 85 instructions, stopping at `41 C1 E9 08` (`SHR R9D,8`, ISSUE-183), RIP `0x200e3a`, `Unsupported { opcode: 193 }`, `com1_bytes=0`. Full handoff validation remains incomplete.

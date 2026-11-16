@@ -20883,6 +20883,28 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: the Rust helper copies R12D to R9D with exact `45 89 E1`;
+        // writing the 32-bit destination zero-extends R9.
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x89
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x45),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R9, OperandSize::Dword)
+            && source == RegisterView::low(Register::R12, OperandSize::Dword) =>
+        {
+            let value = state.read(source);
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: the Rust helper copies R9D into R12D with exact `45 89 CC`;
         // the dword register write zero-extends R12.
         Operation::Mov {
