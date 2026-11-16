@@ -18207,4 +18207,8 @@ mod tests {
     }
 
     const CHECKPOINT_PROGRAM_HLT: [u8; 1] = [0xF4];
+
+    // ---- S4-09f: system acceptance of the A/D bits through the set loop ----
+
+    mod stage4_ad_acceptance;
 }
