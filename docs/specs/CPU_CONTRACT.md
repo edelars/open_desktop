@@ -27384,3 +27384,10 @@ Five focused profile tests cover the CF/ZF truth table and definedness, exact ta
 Base `PagedCpl0ProbeV1` admits only exact `4C 8D 51 08`. REX.R extends the ModRM reg destination to R10; qword LEA uses RCX base and signed disp8 +8. The wrapping effective offset is written to R10 without memory access or canonicality checking. Only R10 and RIP change; flags, definedness and other GPRs are preserved. Final-byte fetch faults do not retire or mutate state. Neighboring registers/displacements/widths/prefixes, CPL3 and other profiles remain unsupported.
 
 Four focused profile tests cover high/noncanonical and wrapping offsets, full-state/flag-definedness preservation, no memory access, fetch-fault atomicity, neighbors, CPL3 and profile isolation. Firmware advances after 8,936 retired instructions to `49 39 D2` (`CMP R10,RDX`, ISSUE-248) at RIP `0x201588`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04: exact helper `CMP R10,RDX` (ISSUE-248)
+
+Base `PagedCpl0ProbeV1` admits only exact `49 39 D2`. REX.B selects R10 as qword r/m destination; the ModRM reg field selects RDX as source. Shared CMP semantics evaluate R10−RDX, update arithmetic flags/definedness, and leave every GPR unchanged. Final-byte instruction-fetch faults do not retire or mutate state. Other register orders, reverse opcode, widths, prefixes, CPL3 and other profiles remain unsupported.
+
+Four focused profile tests cover equality, carry, overflow, sign/parity/AF, high-bit correctness, GPR preservation, flag definedness, fetch-fault atomicity, neighboring forms, CPL3 and profile isolation. Firmware advances after 8,937 retired instructions to `0F 87 D7 02 00 00` (`JA rel32 +0x2d7`, ISSUE-249) at RIP `0x20158B`; COM1 remains empty. Independent review approved with no findings.

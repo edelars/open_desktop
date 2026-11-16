@@ -3750,10 +3750,20 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Следующий шаг:** verify exact qword CMP operand order and arithmetic flag semantics for ISSUE-248.
 
 
-### ISSUE-248 — S7-04: helper `CMP R10,RDX` (`49 39 D2`) remains outside paged CPU profile
+### ISSUE-248 — S7-04: helper `CMP R10,RDX` (`49 39 D2`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-247.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201588`.
+- **Статус:** решена в S7-04; exact qword compare form is admitted and independently reviewed with no findings.
+- **Суть и последствия:** REX.B selects R10 as the r/m destination and ModRM reg selects RDX as the source, so shared CMP computes R10−RDX. No GPR is written; arithmetic flags and definedness are updated.
+- **Проверка:** equal, carry, overflow, sign/parity/AF and high-bit cases pass; tests verify full GPR preservation, flag definedness, fetch-fault atomicity, operand-order/REX/width/prefix neighbors, CPL3 and other-profile isolation. Runner retires 8,937 instructions and stops at `0F 87 D7 02 00 00` (`JA rel32 +0x2d7`, ISSUE-249) at RIP `0x20158B`; COM1 remains empty.
+- **Основание:** firmware image `/private/tmp/od-fw-s7-04-issue248.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner budget 10000.
+- **Следующий шаг:** verify exact JA rel32 condition, branch target and fetch-fault semantics for ISSUE-249.
+
+
+### ISSUE-249 — S7-04: helper `JA rel32 +0x2d7` (`0F 87 D7 02 00 00`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-248.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20158B`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8,936 instructions and stopped on `49 39 D2`, `Unsupported { opcode: 57 }`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue247.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1588` begin `49 39 D2`; runner budget 10000.
-- **Следующий шаг:** verify REX.B destination selection, qword compare order, flags and definedness for ISSUE-248.
+- **Суть и последствия:** runner retired 8,937 instructions and stopped on `0F 87 D7 02 00 00`, `Unsupported { opcode: 135 }`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue248.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x158B` begin `0F 87 D7 02 00 00`; runner budget 10000.
+- **Следующий шаг:** verify exact JA rel32 condition, signed target calculation, taken-only canonicality and fetch-fault atomicity for ISSUE-249.
