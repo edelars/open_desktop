@@ -4006,8 +4006,19 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-272 — S7-04: exact helper `XOR R14D,R14D` (`45 31 F6`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-271.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201609`.
-- **Статус:** открыта.
-- **Суть и последствия:** base `PagedCpl0ProbeV1` does not yet admit the exact dword register XOR with R14D as both destination and source.
+- **Статус:** реализована в S7-04; независимое ревью одобрило изменение без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact `45 31 F6`. REX.R/B both extend the ModRM reg and r/m fields to R14D; self-XOR writes zero to R14D, zero-extending R14, and uses shared dword XOR flags/definedness (CF/OF clear, ZF/PF set, SF clear, AF undefined). R14 is the only GPR changed; RIP and logical flags/AF definedness also update.
+- **Проверка:** four focused tests cover R14 zero-extension, flags/definedness including AF, fetch-fault atomicity, neighboring registers/directions/REX/width/prefix/memory forms, and CPL3 isolation; other paged profiles keep this form unsupported.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1609` are `45 31 F6`; runner budget 10000.
-- **Проверки исполнения:** firmware retires 8,966 instructions and stops with `Unsupported { opcode: 49 }`; COM1 remains empty.
-- **Следующий шаг:** admit exact REX.R/B register routing and validate shared dword logical flags/definedness for ISSUE-272.
+- **Проверки исполнения:** firmware retires 8,967 instructions and advances to exact `85 ED` (`TEST EBP,EBP`) at RIP `0x20160C`; COM1 remains empty.
+- **Следующий шаг:** verify 32-bit TEST semantics, no register write, and AF undefinedness for ISSUE-273.
+
+
+### ISSUE-273 — S7-04: exact helper `TEST EBP,EBP` (`85 ED`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-272.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20160C`.
+- **Статус:** открыта.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` does not yet admit the exact dword self-TEST on EBP.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x160C` are `85 ED`; runner budget 10000.
+- **Проверки исполнения:** firmware retires 8,967 instructions and stops with `Unsupported { opcode: 133 }`; COM1 remains empty.
+- **Следующий шаг:** admit only exact EBP,EBP dword TEST and verify logical flag/definedness behavior for ISSUE-273.

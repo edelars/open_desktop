@@ -4609,7 +4609,6 @@ fn rust_helper_xor_r14d_r15d_fetch_fault_on_modrm_does_not_commit() {
 #[test]
 fn rust_helper_xor_r14d_r15d_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
-        (&[0x45, 0x31, 0xf6], 0x31),       // XOR R14D,R14D
         (&[0x45, 0x31, 0xf7], 0x31),       // XOR R15D,R14D
         (&[0x45, 0x31, 0xee], 0x31),       // XOR R14D,R13D
         (&[0x45, 0x33, 0xfe], 0x33),       // reverse-direction opcode
@@ -4642,6 +4641,122 @@ fn rust_helper_xor_r14d_r15d_neighbours_stay_unsupported_without_mutation() {
 #[test]
 fn rust_helper_xor_r14d_r15d_is_unsupported_in_cpl3_profile() {
     let bytes = [0x45, 0x31, 0xfe];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x45 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn rust_helper_xor_r14d_r14d_zero_extends_and_updates_logical_flags() {
+    const CF: u64 = 1 << 0;
+    const PF: u64 = 1 << 2;
+    const AF: u64 = 1 << 4;
+    const ZF: u64 = 1 << 6;
+    const SF: u64 = 1 << 7;
+    const OF: u64 = 1 << 11;
+    const LOGIC_FLAGS: u64 = CF | PF | ZF | SF | OF;
+    let code = [0x45, 0x31, 0xf6]; // XOR R14D,R14D
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::R14 as usize] = 0xdead_beef_a5a5_5a5a;
+    cpu.rflags = 0x2 | (1 << 9) | (1 << 10) | (1 << 18) | CF | AF | SF | OF;
+    let before = cpu.clone();
+    let initial_defined = (DEFINED & !ZF) | AF;
+
+    let result = step_with_defined(
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        initial_defined,
+    );
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, (initial_defined | LOGIC_FLAGS) & !AF);
+    let mut expected = before;
+    expected.gpr[Register::R14 as usize] = 0;
+    expected.rflags = (expected.rflags & !LOGIC_FLAGS) | PF | ZF;
+    // XOR leaves AF's concrete bit unchanged while marking it undefined.
+    expected.rip += code.len() as u64;
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(memory.write_addresses.is_empty());
+}
+
+#[test]
+fn rust_helper_xor_r14d_r14d_fetch_fault_on_modrm_does_not_commit() {
+    let rip = RIP + 0xffe;
+    let code = [0x45, 0x31];
+    let mut memory = memory_with_code_at(&code, rip);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    memory.fail_fetch_at = Some((rip + 2, page_fault(0x10, rip + 2)));
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 2),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn rust_helper_xor_r14d_r14d_neighbours_stay_unsupported() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x45, 0x31, 0xf7], 0x31),       // XOR R15D,R14D
+        (&[0x45, 0x31, 0xee], 0x31),       // XOR R14D,R13D
+        (&[0x45, 0x33, 0xf6], 0x33),       // reverse-direction opcode
+        (&[0x4d, 0x31, 0xf6], 0x31),       // qword width
+        (&[0x66, 0x45, 0x31, 0xf6], 0x31), // word width
+        (&[0x44, 0x31, 0xf6], 0x31),       // REX.R without B selects ESI destination
+        (&[0x41, 0x31, 0xf6], 0x31),       // REX.B without R selects ESI source
+        (&[0xf3, 0x45, 0x31, 0xf6], 0x31), // prefix
+        (&[0x45, 0x31, 0x76, 0x01], 0x31), // memory operand
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: *opcode });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "{bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn rust_helper_xor_r14d_r14d_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x45, 0x31, 0xf6];
     let mut memory = Memory::new(&bytes);
     let mut cpu = state();
     cpu.cr3 = Some(0x1000);
@@ -23480,6 +23595,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x45, 0x31, 0xd2][..], 0x31),
         (&[0x45, 0x31, 0xf1][..], 0x31),
         (&[0x45, 0x31, 0xfe][..], 0x31),
+        (&[0x45, 0x31, 0xf6][..], 0x31),
         (&[0x41, 0xf7, 0xd1][..], 0xf7),
         (&[0x46, 0x33, 0x24, 0x8d, 0x80, 0x26, 0x20, 0][..], 0x33),
         (&[0x46, 0x33, 0x0c, 0xb5, 0x80, 0x26, 0x20, 0][..], 0x33),

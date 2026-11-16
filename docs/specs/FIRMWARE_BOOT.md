@@ -490,3 +490,10 @@ Four focused tests cover equality, carry/sign and high dword values that disting
 Base `PagedCpl0ProbeV1` admits only exact `41 0F 92 C3`. REX.B extends ModRM r/m=3 to R11B. SETB reads CF only, writing 1 when set and 0 when clear into only R11's low byte; upper R11 bits, RFLAGS and definedness remain unchanged, including when CF is undefined. A final ModRM-byte fetch fault is atomic. Other SETcc conditions/registers/ModRM/REX/prefix forms, memory destinations, CPL3 and other paged profiles remain unsupported.
 
 Four focused tests cover both CF values with defined and undefined CF, both ZF values, partial-register/full-state preservation, fetch-fault atomicity, neighbors and CPL3/profile isolation. Firmware advances after 8,966 retired instructions to `45 31 F6` (`XOR R14D,R14D`, ISSUE-272) at RIP `0x201609`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `XOR R14D,R14D` (ISSUE-272)
+
+Base `PagedCpl0ProbeV1` admits only exact `45 31 F6`. REX.R and REX.B extend both ModRM register fields to R14D. Dword self-XOR produces zero and zero-extends into R14; R14 is the only GPR changed, while RIP and logical flags/AF definedness also update. Shared logical XOR semantics clear CF/OF, set ZF/PF, clear SF, preserve AF's concrete bit while marking AF undefined, and preserve unrelated flags/definedness. A ModRM-byte fetch fault is atomic. Neighboring registers, operand directions, REX/width/prefix forms, CPL3 and other paged profiles remain unsupported.
+
+Four focused tests cover zero-extension, full register/flag state, AF definedness, final-byte fetch-fault atomicity, neighbors and CPL3/profile isolation. Firmware advances after 8,967 retired instructions to `85 ED` (`TEST EBP,EBP`, ISSUE-273) at RIP `0x20160C`; COM1 remains empty. Independent review approved with no findings.
