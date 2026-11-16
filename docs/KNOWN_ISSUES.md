@@ -4331,9 +4331,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-308 — S7-04: exact helper `MOV R11D,1` (`41 BB 01 00 00 00`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-307.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2016d7`.
-- **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact dword immediate move; firmware stops before later helper operations.
+- **Статус:** решена; независимое ревью одобрило без замечаний.
+- **Результат:** base `PagedCpl0ProbeV1` admits only this exact R11D immediate move. REX.B selects R11D; writing dword value 1 zero-extends into R11. Flags/definedness and other CPU state are unchanged.
+- **Проверки исполнения:** four focused tests cover dword immediate routing/zero-extension from a nonzero high qword, flags and full state, last-immediate fetch-fault atomicity, nearby immediate/register/width/prefix forms, CPL3 and other-profile isolation. Full od-isa suites pass (profile suite: 900), all 65 paged machine tests pass, scoped cargo check/fmt/diff-check pass; only the pre-existing unused page-walk helper warning remains. Runner image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retires 9,006 instructions and stops at `48 8D 34 01` (`LEA RSI,[RCX+RAX]`, ISSUE-309), RIP `0x2016df`, `Unsupported { opcode: 141 }`; COM1 remains empty. Independent review approved with no findings.
 - **Основание:** runner with the Stage 7 firmware image and budget 10000 retired 9,004 instructions and reported `Unsupported { opcode: 187 }`; file offset `0x16d7` contains `41 BB 01 00 00 00`.
-- **Следующий шаг:** admit only this exact MOV R11D immediate form and verify dword zero-extension/state preservation.
+
+### ISSUE-309 — S7-04: exact helper `LEA RSI,[RCX+RAX]` (`48 8D 34 01`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-308.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2016df`.
+- **Статус:** открыта.
+- **Суть и последствия:** the base profile does not yet admit this exact qword LEA SIB form; firmware stops before later helper operations.
+- **Основание:** runner with the Stage 7 firmware image and budget 10000 retired 9,006 instructions and reported `Unsupported { opcode: 141 }`; file offset `0x16df` contains `48 8D 34 01`.
+- **Следующий шаг:** admit only this exact qword LEA SIB form, without memory access, and preserve flags.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.

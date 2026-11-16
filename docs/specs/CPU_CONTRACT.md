@@ -27777,3 +27777,7 @@ Four focused profile tests cover result and logical flag values, AF definedness,
 ### Stage 7 paged-profile ADD R8,-0x20
 
 `PagedCpl0ProbeV1` admits exact bytes `49 83 C0 E0`. REX.W/B select qword R8; opcode 83 sign-extends imm8 `0xe0` to -32. Shared ADD semantics update CF/PF/AF/ZF/SF/OF and their definedness. Only R8 and RIP change. Other immediate values, operation groups, registers, widths, prefixes and profiles remain unsupported.
+
+### Stage 7 paged-profile MOV R11D,1
+
+`PagedCpl0ProbeV1` admits exact bytes `41 BB 01 00 00 00`. REX.B selects dword R11D; the immediate32 value 1 is written to that dword view and zero-extends into R11. Flags/definedness and all other architectural state are unchanged. Other registers, immediate values/widths, prefixes and profiles remain unsupported.
