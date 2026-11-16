@@ -5104,3 +5104,31 @@ re-entry), 2 MiB code pages, writes by other writers into the active page while
 the block runs (single vCPU, synchronous only), `PagedCodeSession` active
 blocks. No performance claim is made. Covered by `s4_16i_*` in
 `tests/system/stage4_memory_fault.rs`.
+
+### S4-16: code aliases and invalidation (closure, S4-16j)
+Summary of S4-16a-i; the tests-to-plan table and the limits list are in the
+"S4-16 — итог" section of `docs/reports/STAGE_4_REPORT.md`. No code changed in S4-16j.
+- Key: a block depends on physical code pages (backing page, per-4 KiB-page
+  generation from `PhysicalMemory`, the code bytes) and on the translation context
+  (CR3 root, CR0.WP, CR4.PSE, CR4.PGE, EFER.NXE, CPL). Two linear aliases of one
+  physical page are two cache entries sharing one backing. Code across a 4 KiB
+  boundary has two dependency spans (two pages, at most).
+- Every lookup re-takes a tracked snapshot (fetch walk, bytes, generations) and builds
+  the key from it, so a stale block is never found; the explicit invalidation after a
+  committed write only frees the entry at once (defence in depth).
+- Reset rules (whole session: both entries, backing, range, alias): a change of any key
+  component, any retired `MOV CR3` (same value too), a retired canonical `INVLPG`, a
+  delivered `#PF` reported by the host. Bits outside the key do not reset.
+- Tracked: committed writes by the session itself (guest store, loader patch, A/D
+  bits of the walker) reconcile against the dependency pages before the result is
+  returned, also on faults. A store into the active block page commits, the block exits
+  with `CodeInvalidated` at the end of the retired instruction, is marked `retired`
+  and is re-admitted from the new bytes; its allocation is freed at a later entry,
+  `reset()` or drop (S4-15f).
+- Not covered: writers are not wired to the session in production (NVMe DMA, loader,
+  display, interrupt frames, JIT store: safety rests on the key at the next lookup);
+  one vCPU, no SMP or deferred retirement (S3-25); 2 MiB code pages; multi-instruction
+  blocks; three or more pages; store/dword forms with a displacement outside the
+  fallback; `retired` is defence in depth only; first-page re-read in the "page tables
+  in the first code page" layout differs from the byte-wise oracle (S4-16g); a
+  non-canonical boundary address (`#GP`) is not modelled. No performance claim.

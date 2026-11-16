@@ -728,7 +728,8 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-16. Physical aliases и инвалидация исполняемого кода
 
-- [ ] Принято после ревью.
+- [x] S4-16 принят с ограничениями (gate-ревью Claude Opus, high, 2026-11-16: вердикт (б)).
+- S4-16 принят с ограничениями (закрытие S4-16j): итог, таблица «пункт плана → чем покрыт» и список ограничений — раздел «S4-16 — итог» в [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md); контракт — раздел «S4-16: code aliases and invalidation (closure, S4-16j)» в [JIT_CONTRACT.md](../specs/JIT_CONTRACT.md).
 - **Где:** writers `od-machine`, code dependencies/cache/dispatch `od-jit`, system tests.
 - **Сделать:** связать блоки с физическими code bytes и нужным translation context. Уведомлять о committed write через любой разрешённый writer; обработать page-table remap и изменение текущего active block.
 - **Проверка:** write alias→execute alias, одна guest page внутри host page, loader patch, cross-page code, fail-before-commit, byte write в active block, повторный lookup после invalidation.
@@ -909,7 +910,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-16f. Контекст трансляции в ключе алиасов кода
 
-- Реализовано (ревью ещё не проводилось; чекбокс S4-16 не ставится). Фиксированные
+- Реализовано (ревью Claude Opus, high — принято с ограничениями, см. отчёт). Фиксированные
   `AddressSpaceId(1)` / `ExecutionContextId(1)` и сверка controls «равно снимку сессии»
   в `PagedCodeSession` заменены ключом `PagedCodeTranslationContext`: CR3 root
   (биты 35:12), CR0.WP, CR4.PSE, CR4.PGE, EFER.NXE, CPL. PCID/PCIDE в
@@ -938,7 +939,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-16g. Код через границу 4 KiB-страницы
 
-- Реализовано (ревью ещё не проводилось; чекбокс S4-16 не ставится). Блок
+- Реализовано (ревью Claude Opus, high — принято с ограничениями, см. отчёт). Блок
   `PagedCodeSession::execute_alias`, чьи байты лежат на двух физических страницах,
   допускается с двумя dependency spans и двумя backing: первая страница — от RIP до
   границы, вторая — с начала следующей guest-страницы, каждая с отдельным tracked
@@ -959,7 +960,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-16h. Покрытие записывающих путей (writers)
 
-- Реализовано (ревью ещё не проводилось; чекбокс S4-16 не ставится). Классы writers,
+- Реализовано (ревью Claude Opus, high — принято с ограничениями, см. отчёт). Классы writers,
   которые не уведомляют `PagedCodeSession` (NVMe DMA `BusDma`, Linux loader,
   host display, стек/IDT при доставке прерывания `deliver_paged_external_interrupt`,
   JIT store `PagedFetchedLoadSession::execute_with_store`), покрыты тестами
@@ -976,7 +977,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-16i. Запись в байты активного блока
 
-- Реализовано (ревью ещё не проводилось; чекбокс S4-16 не ставится). Отказ S4-15d
+- Реализовано (ревью Claude Opus, high — принято с ограничениями, см. отчёт). Отказ S4-15d
   `ActiveCodePage` заменён разрешением: JIT-store `48 89 03` в физическую
   страницу выполняющегося блока проходит walk, права, A/D и запись как обычный store,
   команда завершается (RAX/RIP как у interpreter `MOV [RBX],RCX`), выход блока —
@@ -990,6 +991,10 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   (store в середине блока), 2 MiB код-страницы, активные блоки `PagedCodeSession`
   не сделаны. Единица инвалидации — страница. См. раздел S4-16i в
   [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md) и S4-16i в `JIT_CONTRACT`.
+
+#### S4-16j. Закрытие S4-16 (документы)
+
+- Срезы S4-16a–i приняты по отдельности (ревью Claude Opus, «принято с ограничениями»); сведены в итог: таблица «пункт плана → тест», список ограничений — раздел «S4-16 — итог» в [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md); сводный контракт — раздел «S4-16: code aliases and invalidation (closure, S4-16j)» в [JIT_CONTRACT.md](../specs/JIT_CONTRACT.md). Код не менялся. S4-16 принят с ограничениями (gate-ревью Claude Opus, high, 2026-11-16: вердикт (б)); чекбокс S4-16 проставлен.
 
 ### S4-17. Собрать локальный memory/fault differential набор
 
@@ -1477,6 +1482,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 ### S4-21. Жизненный цикл одного vCPU
 
 - [ ] Принято после ревью.
+- Остатки S4-21 переданы этапу 6 решением владельца 2026-11-15 (см. docs/plans/STAGE_6.md, S6-10, и docs/reports/STAGE_6_REPORT.md, решение 2026-11-15). S4-21 как задача этапа 4 не принят полностью; чекбокс оставлен `[ ]`.
 - **Где:** `od-machine`, CPU interruptibility contract `od-isa`, runner orchestration.
 - **Сделать:** определить reset/entry, running, halted, paused, stopping/stopped, guest shutdown и faulted host session. Ввести bounded execution/poll points, сохранение точного состояния и единый STOP path.
 - **Проверка:** STOP во время исполнения и HLT, pause/resume без потерянного состояния, отсутствие busy loop у остановленной машины, корректный reset без старых pending events.
