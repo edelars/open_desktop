@@ -4507,9 +4507,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-330 — S7-04: exact helper `JNZ rel32 +0xae` (`0F 85 AE 00 00 00`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-329.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20176b`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact no-prefix `0F 85 AE 00 00 00` is admitted. JNZ reads ZF, adds signed rel32 +0xae to next RIP only when ZF=0, preserves flags/definedness, and checks target canonicality only when taken.
+- **Проверка:** five focused tests cover both ZF outcomes and defined/undefined ZF metadata, taken/fall-through RIP, taken-only canonicality, final displacement-byte fetch-fault atomicity, neighboring displacements/conditions/prefixes, CPL3 rejection and cross-profile isolation. All od-isa suites pass (2,322/1,591/126/29/6/998/7/15; 0 doc tests), all 65 paged machine quantum tests pass, and scoped cargo check/fmt/diff-check pass; cargo check emits only the existing page-walk dead-code warning. Runner image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, retires 9,040 instructions and stops at RIP `0x201771`, bytes `41 8B 6C 04 E8` (`MOV EBP,dword ptr [R12+RAX-0x18]`, ISSUE-331), `Unsupported { opcode: 139 }`; COM1 is empty. Independent review approved with no findings.
+- **Следующий шаг:** implement only ISSUE-331's exact dword load form in a separate Stage 7 slice.
+
+### ISSUE-331 — S7-04: exact helper `MOV EBP,dword ptr [R12+RAX-0x18]` (`41 8B 6C 04 E8`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-330.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201771`.
 - **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact near conditional branch; firmware stops before the following helper instruction.
-- **Основание:** runner image `/private/tmp/od-fw-s7-04-issue256.bin`, budget 10000, retired 9,039 instructions; file offset `0x176b` contains `0F 85 AE 00 00 00` and reports `Unsupported { opcode: 133 }`; COM1 is empty.
+- **Суть и последствия:** the base profile does not yet admit this exact SIB dword load; firmware stops before the following helper instruction.
+- **Основание:** runner image `/private/tmp/od-fw-s7-04-issue256.bin`, budget 10000, retired 9,040 instructions; file offset `0x1771` contains `41 8B 6C 04 E8` and reports `Unsupported { opcode: 139 }`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.

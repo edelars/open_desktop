@@ -855,3 +855,13 @@ With exact `0F 82 B7 00 00 00` admitted, the Stage 7 firmware runner retires 9,0
 ### Stage 7 runner frontier after ISSUE-329
 
 With exact `40 20 EE` admitted, the Stage 7 firmware runner retires 9,039 instructions and stops at RIP `0x20176b`, bytes `0F 85 AE 00 00 00` (`JNZ rel32 +0xae`, ISSUE-330), `Unsupported { opcode: 133 }`. COM1 remains empty.
+
+
+### Stage 7 paged-profile JNZ rel32 +0xae
+
+`PagedCpl0ProbeV1` admits exact no-prefix bytes `0F 85 AE 00 00 00`. ZF=0 takes the branch to next RIP plus signed displacement +0xae; ZF=1 falls through. Flags/definedness remain unchanged, and canonicality is checked only for a taken target.
+
+
+### Stage 7 runner frontier after ISSUE-330
+
+With exact `0F 85 AE 00 00 00` admitted, the Stage 7 firmware runner retires 9,040 instructions and stops at RIP `0x201771`, bytes `41 8B 6C 04 E8` (`MOV EBP,dword ptr [R12+RAX-0x18]`, ISSUE-331), `Unsupported { opcode: 139 }`. COM1 remains empty.

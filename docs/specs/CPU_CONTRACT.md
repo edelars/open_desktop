@@ -27882,3 +27882,8 @@ Four focused profile tests cover result and logical flag values, AF definedness,
 ### Stage 7 paged-profile AND SIL,BPL
 
 `PagedCpl0ProbeV1` admits exact bytes `40 20 EE`. Bare REX selects SIL as the r/m8 destination and BPL as the reg8 source; without REX those fields would name high-byte registers. The byte AND writes only SIL[7:0], clears CF and OF, updates SF/ZF/PF from the result, and marks AF undefined using shared logic semantics. Upper RSI, all other registers and non-result state are preserved. A fetch fault leaves state unchanged; other directions, registers and prefixes remain outside this exact admission.
+
+
+### Stage 7 paged-profile JNZ rel32 +0xae
+
+`PagedCpl0ProbeV1` admits only exact no-prefix bytes `0F 85 AE 00 00 00`. JNZ tests ZF alone: when ZF=0, the signed rel32 is added to next RIP; otherwise RIP falls through. Flags and their definedness are preserved. The branch target is checked for canonicality only when taken, and instruction-fetch faults leave state unchanged. Other displacements, conditions and prefixes remain outside this exact admission.

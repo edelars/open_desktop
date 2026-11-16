@@ -21343,7 +21343,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     && instruction.length == 6
                     && matches!(
                         (condition, instruction.opcode.byte, displacement),
-                        (ConditionCode::NotEqual, 0x85, 0xd6 | 0x227)
+                        (ConditionCode::NotEqual, 0x85, 0xae | 0xd6 | 0x227)
                             | (ConditionCode::Equal, 0x84, 0xb4 | 0x149)
                             | (
                                 ConditionCode::Above,
