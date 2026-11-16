@@ -16644,6 +16644,137 @@ fn rust_helper_shr_r9d_8_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn rust_helper_shl_rax_4_uses_raw_group_four_and_qword_shift_semantics() {
+    let code = [0x48, 0xc1, 0xe0, 0x04]; // SHL RAX,4
+    let defined = DEFINED | (1 << 4) | (1 << 11); // AF and OF start defined.
+    let arithmetic_flags = 0x8d5;
+    for (input, result_value, result_flags) in [
+        (0x0123_4567_89ab_cdefu64, 0x1234_5678_9abc_def0, 0x816),
+        (0x0f00_0000_0000_0000, 0xf000_0000_0000_0000, 0x896),
+        (0x0800_0000_0000_0000, 0x8000_0000_0000_0000, 0x896),
+        (0x8000_0000_0000_0000, 0, 0x856),
+        (0, 0, 0x856),
+        (0x1000_0000_0000_0000, 0, 0x857),
+    ] {
+        assert_eq!(input.wrapping_shl(4), result_value);
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::Rax as usize] = input;
+        cpu.rflags = 0x8d7;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+
+        let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(
+            result.rflags_defined,
+            (defined & !(0x10 | 0x800)) | (arithmetic_flags & !(0x10 | 0x800))
+        );
+        let mut expected = before;
+        expected.gpr[Register::Rax as usize] = result_value;
+        expected.rflags = (expected.rflags & !(arithmetic_flags & !0x10)) | result_flags;
+        expected.rip = RIP + code.len() as u64;
+        assert_eq!(cpu, expected, "RAX={input:#018x}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(memory.write_addresses.is_empty());
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_shl_rax_4_fetch_fault_is_atomic() {
+    let rip = RIP + 0xffd;
+    let code = [0x48, 0xc1, 0xe0];
+    let mut memory = memory_with_code_at(&code, rip);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rax as usize] = 0x8123_4567_89ab_cdef;
+    cpu.rflags = 0x8d7;
+    let before = cpu.clone();
+    memory.fail_fetch_at = Some((rip + 3, page_fault(0x10, rip + 3)));
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 3),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn rust_helper_shl_rax_4_neighbours_stay_unsupported() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x48, 0xc1, 0xe0, 0x03], 0xc1),       // neighboring immediate
+        (&[0x48, 0xc1, 0xe0, 0x05], 0xc1),       // neighboring immediate
+        (&[0x48, 0xc1, 0xe8, 0x04], 0xc1),       // SHR RAX,4
+        (&[0x48, 0xc1, 0xf0, 0x04], 0xc1),       // /6 SAL alias, not raw /4
+        (&[0x48, 0xc1, 0xe1, 0x04], 0xc1),       // SHL RCX,4
+        (&[0x49, 0xc1, 0xe0, 0x04], 0xc1),       // SHL R8,4
+        (&[0xc1, 0xe0, 0x04], 0xc1),             // dword SHL EAX,4
+        (&[0x66, 0x48, 0xc1, 0xe0, 0x04], 0xc1), // operand-size prefix
+        (&[0xf3, 0x48, 0xc1, 0xe0, 0x04], 0xc1), // REP prefix
+        (&[0x40, 0x48, 0xc1, 0xe0, 0x04], 0xc1), // redundant REX prefix
+        (&[0x48, 0xd1, 0xe0], 0xd1),             // implicit count 1
+        (&[0x48, 0xd3, 0xe0], 0xd3),             // count from CL
+        (&[0x48, 0xc1, 0x20, 0x04], 0xc1),       // memory destination
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "{bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(memory.write_addresses.is_empty());
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_shl_rax_4_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x48, 0xc1, 0xe0, 0x04];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0xc1 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn rust_helper_shl_rdi_5_uses_qword_result_and_shift_flags() {
     let code = [0x48, 0xc1, 0xe7, 0x05]; // SHL RDI,5
     let defined = DEFINED | (1 << 4) | (1 << 11); // AF and OF start defined.
@@ -17327,6 +17458,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x41, 0xc1, 0xec, 0x08][..], 0xc1),
         (&[0x41, 0xc1, 0xe9, 0x08][..], 0xc1),
         (&[0x48, 0xc1, 0xe7, 0x05][..], 0xc1),
+        (&[0x48, 0xc1, 0xe0, 0x04][..], 0xc1),
         (&[0x4c, 0x01, 0xff][..], 0x01),
         (&[0x49, 0x83, 0xff, 0x14][..], 0x83),
         (&[0x49, 0x83, 0xc3, 0x02][..], 0x83),

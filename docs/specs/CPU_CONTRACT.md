@@ -27237,3 +27237,10 @@ Five focused tests cover taken/not-taken targets with defined and undefined CF, 
 Base `PagedCpl0ProbeV1` admits only `4B 8D 04 64`. REX.W selects qword RAX; REX.X extends SIB index 4 to R12; REX.B extends SIB base 4 to R12; scale 2 yields wrapping qword `R12 + 2*R12`. The decoded effective offset is written to RAX. LEA does not access memory or check canonicality, and preserves RFLAGS and definedness. Other REX/SIB/base/index/scale/destination/width/displacement/prefix forms, CPL3 and other profiles remain unsupported.
 
 Four focused tests cover operand routing, wrapping and noncanonical results, full state/flags retention, no memory or PIO effects, final-SIB fetch-fault atomicity, neighboring forms and CPL3; other-profile isolation passes. Firmware advances to ISSUE-226: `48 C1 E0 04` (`SHL RAX,4`) at RIP `0x200f94`.
+
+
+### S7-04: exact Rust-helper `SHL RAX,4` (ISSUE-226)
+
+Base `PagedCpl0ProbeV1` admits only exact `48 C1 E0 04`: REX.W, opcode `C1`, raw ModRM `E0` selecting group `/4` and RAX, immediate count 4. The raw selector guard is intentional because `/6` SAL normalizes to the same decoded shift kind. Shared qword shift semantics perform the masked count/result calculation; RAX is the only GPR modified. For count 4, CF/PF/ZF/SF are defined and AF/OF are undefined; RFLAGS concrete bits follow the shared shift helper. Other groups, registers, counts, count encodings, widths, memory destinations, prefixes, CPL3 and other profiles remain unsupported.
+
+Four focused tests cover qword edge values, result and flags/definedness, only-RAX mutation, final-immediate fetch-fault atomicity, `/6` and other neighbors, prefixes, CPL3 and profile isolation. Firmware advances to ISSUE-227: `4C 01 E8` (`ADD RAX,R13`) at RIP `0x200f98`.
