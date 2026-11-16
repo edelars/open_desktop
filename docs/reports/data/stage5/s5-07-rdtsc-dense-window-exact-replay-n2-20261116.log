@@ -68,10 +68,14 @@ context-mismatched records.
 
 Per-call poll sequence comparison
 ---------------------------------
-The 53 shared entry ordinals represented in the window have 49,988 paired
-records at matching per-entry poll positions. Nine predicates
-`elapsed_cycles >= requested_cycles` differ at the same local poll position.
-The first is entry ordinal 10,196, poll read 975: run 0001 has elapsed
+The 53 shared entry ordinals represented in the window include 51 complete
+interior calls, identified by contiguous global poll ordinals, first/last hits
+strictly within the window, and a final threshold-true sample. Two window-edge
+calls may be partial and are excluded from exact count claims. Across the 51
+complete calls, 49,710 local poll positions can be paired by entry ordinal
+and read index; nine predicates `elapsed_cycles >= requested_cycles` differ
+at the same local poll position. The first is entry ordinal 10,196, poll read
+975: run 0001 has elapsed
 `0xf3be0` (false) and continues through read 977, where it reaches `0xf43d0`
 (true); run 0002 has elapsed `0xf4452` (true) at read 975 and exits that
 poll sequence there. The full call has 977 reads in run 0001 and 975 in run
