@@ -840,10 +840,21 @@
 ### ISSUE-195 — S7-04: Rust helper `JAE +0x4C` (`73 4C`) remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `CMP EDI,0x80`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e68`.
-- **Статус:** открыта.
-- **Суть и последствия:** after 8877 retire runner stopped on `73 4C` (JAE/JNB rel8 +0x4C), `Unsupported { opcode: 115 }`, `RIP=0x200e68`; COM1 remains empty.
+- **Статус:** решена узко для exact `73 4C` в base `PagedCpl0ProbeV1`; implementation awaits review/commit. Full handoff validation remains incomplete.
+- **Суть и результат:** exact no-prefix short JAE/JNB with signed disp8 `+0x4C` reuses `ConditionCode::AboveOrEqual`: CF=0 selects the taken target, CF=1 selects fall-through. Flags and definedness are preserved; only a taken target is checked for canonicality. Other conditions/displacements and profiles remain outside the allowlist.
+- **Проверка:** five focused `rust_helper_jae_plus_4c_*` tests and other-profile isolation passed; all 459 `paged_probe_profile` tests and `cargo check --offline -p od-isa --all-targets` passed. Coverage includes both CF outcomes and target calculation, undefined-CF retention, taken-only canonicality, rel8 fetch-fault atomicity, neighbors and CPL3/profile isolation. Scoped rustfmt and `git diff --check` passed. Firmware image `/private/tmp/od-fw-s7-04-issue195.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner retired 8878 instructions and stopped at ISSUE-196 (`RIP=0x200e6a`), COM1 remains empty.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue194.bin`; bytes at offset `0xe68` begin `73 4c`; runner budget 10000.
-- **Следующий шаг:** inspect exact `ConditionCode::AboveOrEqual` branch allowlist and shared taken-target/fault semantics before considering narrow admission.
+- **Следующий шаг:** inspect exact `8B 7E 38` disp8/destination form and existing tracked dword-read contract before considering narrow admission.
+- **Ссылка:** [S7-04 exact JAE +0x4C slice](reports/STAGE_7_REPORT.md#s7-04-exact-jae-plus-0x4c).
+
+<a id="issue-196-s7-04-rust-helper-mov-edi-dword-rsi-plus-0x38-unsupported"></a>
+### ISSUE-196 — S7-04: Rust helper `MOV EDI,dword ptr [RSI+0x38]` (`8B 7E 38`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact `JAE +0x4C`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e6a`.
+- **Статус:** открыта.
+- **Суть и последствия:** after 8878 retire runner stopped on `8B 7E 38` (`MOV EDI,dword ptr [RSI+0x38]`), `Unsupported { opcode: 139 }`, `RIP=0x200e6a`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue195.bin`; bytes at offset `0xe6a` begin `8b 7e 38`; runner budget 10000.
+- **Следующий шаг:** inspect exact disp8/destination form and existing tracked dword-read contract before considering narrow admission.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки

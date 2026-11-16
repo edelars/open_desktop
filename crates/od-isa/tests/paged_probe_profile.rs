@@ -4680,6 +4680,168 @@ fn firmware_entry_jnz_taken_and_not_taken_preserve_flags_and_definedness() {
 }
 
 #[test]
+fn rust_helper_jae_plus_4c_taken_and_not_taken_preserve_flags_and_definedness() {
+    let code = [0x73, 0x4c]; // JAE/JNB rel8 +0x4c
+    let defined = DEFINED & !(1 << 0);
+    let target = RIP + code.len() as u64 + 0x4c;
+    for (carry, expected_rip) in [(false, target), (true, RIP + 2)] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.rflags = 0x8d7 & !(1 << 0) | if carry { 1 } else { 0 };
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+
+        let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined);
+        let mut expected = before;
+        expected.rip = expected_rip;
+        assert_eq!(cpu, expected, "CF={carry}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_jae_plus_4c_checks_canonicality_only_when_taken() {
+    let start = 0x0000_7fff_ffff_ffb4;
+    let code = [0x73, 0x4c];
+    let mut memory = Memory::new(&[]);
+    memory.pages.insert(start & !0xfff, CODE_PHYSICAL);
+    let code_offset = (start & 0xfff) as usize;
+    memory.bytes[CODE_PHYSICAL + code_offset..CODE_PHYSICAL + code_offset + 2]
+        .copy_from_slice(&code);
+
+    let mut cpu = state();
+    cpu.rip = start;
+    cpu.rflags &= !(1 << 0); // CF=0: target is noncanonical.
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None,
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+
+    let mut memory = Memory::new(&[]);
+    memory.pages.insert(start & !0xfff, CODE_PHYSICAL);
+    memory.bytes[CODE_PHYSICAL + code_offset..CODE_PHYSICAL + code_offset + 2]
+        .copy_from_slice(&code);
+    let mut cpu = state();
+    cpu.rip = start;
+    cpu.rflags |= 1 << 0; // CF=1: fall-through remains canonical.
+    let before = cpu.clone();
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    let mut expected = before;
+    expected.rip = start + 2;
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn rust_helper_jae_plus_4c_fetch_fault_on_rel8_does_not_commit() {
+    let mut memory = Memory::new(&[]);
+    memory.bytes[CODE_PHYSICAL + 0xfff] = 0x73;
+    let mut cpu = state();
+    cpu.rip = RIP + 0xfff;
+    cpu.gpr = gpr_patterns();
+    cpu.rflags &= !(1 << 0);
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    memory.fail_fetch_at = Some((cpu.rip + 1, page_fault(0x10, cpu.rip + 1)));
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(RIP + 0x1000),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert!(
+        memory
+            .fetches
+            .iter()
+            .any(|(address, _)| *address == RIP + 0x1000)
+    );
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_helper_jae_plus_4c_neighbours_stay_unsupported() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x73, 0x4b], 0x73), // adjacent displacement
+        (&[0x73, 0x4d], 0x73),
+        (&[0x72, 0x4c], 0x72), // JB with same target
+        (&[0x77, 0x4c], 0x77), // JA with same target
+        (&[0x75, 0x4c], 0x75), // JNZ with same target
+        (&[0x66, 0x73, 0x4c], 0x73),
+        (&[0x40, 0x73, 0x4c], 0x73),
+        (&[0x0f, 0x83, 0x4c, 0, 0, 0], 0x83), // near JAE
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_jae_plus_4c_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x73, 0x4c];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    let before = cpu.clone();
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x73 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn firmware_entry_jnz_checks_canonicality_only_when_taken() {
     for displacement in [0x24u8, 0x2a, 0x38, 0x4a, 0x77, 0xae] {
         // Positive targets cross the lower canonical boundary from the final low page;
@@ -13645,6 +13807,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x75, 0x77][..], 0x75),
         (&[0x75, 0xae][..], 0x75),
         (&[0x75, 0x4a][..], 0x75),
+        (&[0x73, 0x4c][..], 0x73),
         (&[0x74, 0x3b][..], 0x74),
         (&[0x77, 0x0e][..], 0x77),
         (&[0x49, 0x89, 0xf8][..], 0x89),

@@ -20643,7 +20643,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             return result(PagedProbeExit::Retired, 1);
         }
         // S7-04: startup/helper use only observed literal conditional branch
-        // encodings, including these exact near JNZ/JZ forms; other branches stay outside.
+        // encodings, including these exact Jcc forms; other branches stay outside.
         Operation::Branch {
             condition,
             displacement,
@@ -20658,6 +20658,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                         0x75,
                         0x24 | 0x2a | 0x38 | 0x4a | 0x77 | -0x52
                     ) | (ConditionCode::Above, 0x77, 0x0e)
+                        | (ConditionCode::AboveOrEqual, 0x73, 0x4c)
                         | (ConditionCode::Equal, 0x74, 0x3b)
                 ))
                 || (instruction.opcode.map == OpcodeMap::Escape0f
