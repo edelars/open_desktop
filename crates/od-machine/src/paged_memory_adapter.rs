@@ -6,7 +6,7 @@ use crate::execution_observations::{
     LinuxExecutionObservationCollector, PendingPostIretObservation, PostIretPageWalkSnapshot,
 };
 use crate::fetch_translation_cache::{
-    FetchCacheInvalidation, FetchCacheStats, FetchTranslationCache,
+    FetchCacheInvalidation, FetchCacheStats, FetchTranslationCache, TranslationKey,
 };
 use crate::irq_source::IrqBoundaryHook;
 use crate::linux_checkpoints::{BoundaryView, CheckpointRecorder};
@@ -973,8 +973,66 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_policy(
 /// feeds the collector with delivered and faulting `#PF` contexts, page walks, fault-time frame
 /// chains and the selected post-`IRETQ` boundary; the collector only observes. Checkpoints and
 /// execution observations are independent: either, both or none may be given.
+///
+/// The fetch cache (if any) is created here and lives in this call only; the loop itself is
+/// [`run_cpl0_set_paged_2m_ram_with_cache`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    cpuid_boundary: bool,
+    fetch_cache: Option<FetchCacheInvalidation>,
+    irq: Option<IrqBoundaryHook<'_>>,
+    checkpoints: Option<&mut CheckpointRecorder>,
+    execution_observations: Option<&mut LinuxExecutionObservationCollector>,
+) -> PagedCpl0SetReport {
+    // S4-13: the translation cache of the instruction fetch lives in this call only.
+    let cache = fetch_cache.map(FetchTranslationCache::with_invalidation);
+    run_cpl0_set_paged_2m_ram_with_cache(
+        state,
+        bus,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        set,
+        rdtsc,
+        stop,
+        committed_write,
+        cpuid_boundary,
+        cache.as_ref(),
+        irq,
+        checkpoints,
+        execution_observations,
+    )
+}
+
+/// The set loop of [`run_cpl0_set_paged_2m_ram_observed`] over a fetch cache owned by the caller
+/// (S4-14i). `None` is no cache. A cache built with [`FetchTranslationCache::with_invalidation`]
+/// and dropped after the call is what `_observed` does. A cache the caller passes again to the next
+/// call of the same machine session (typically one built with [`FetchTranslationCache::persistent`])
+/// keeps its entries, flushed only by the events of its policy, which happen inside the loop
+/// (`MOV CR3`, and for `GuestOnly` also `INVLPG`, CR0/CR4 changes and a delivered `#PF`; for
+/// `WriteWatch` a write to a watched table frame), and by the host events. Every cache handed to
+/// this function is sealed when the call ends and checked when it starts, whatever its
+/// constructor: the check drops every entry (`host_flushes`) when the translation context handed
+/// over (CR0/CR3/CR4/EFER, mode, privilege) differs from the one the seal holds, or when the page
+/// generation of a table frame it watches differs (a host or device write between calls);
+/// `flush_for_host_event` and `reset` are the explicit forms. For a cache used by one call only
+/// the check has nothing to compare. `PagedCpl0SetReport::fetch_cache_stats` of a cache that
+/// serves several calls are cumulative over all of them.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
     state: &mut LongModeState,
     bus: &mut MachineBus,
     cr3: u64,
@@ -987,7 +1045,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
     mut stop: impl FnMut() -> bool,
     mut committed_write: impl FnMut(GuestPhysicalRange),
     cpuid_boundary: bool,
-    fetch_cache: Option<FetchCacheInvalidation>,
+    cache: Option<&FetchTranslationCache>,
     mut irq: Option<IrqBoundaryHook<'_>>,
     mut checkpoints: Option<&mut CheckpointRecorder>,
     mut execution_observations: Option<&mut LinuxExecutionObservationCollector>,
@@ -996,13 +1054,20 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
         origin: od_isa::memory::AccessOrigin::Explicit,
         ..context
     };
-    // S4-13: the translation cache of the instruction fetch lives in this call only. Every
-    // committed RAM write of the loop (guest stores, walker A/D commits, exception frames) passes
-    // through `watch`, which lets the cache drop entries whose tables were written.
-    let cache = fetch_cache.map(FetchTranslationCache::with_invalidation);
-    let guest_only = fetch_cache == Some(FetchCacheInvalidation::GuestOnly);
+    // S4-14i: any cache first learns of a changed translation context and of writes made outside
+    // the loop since its last call (one-shot caches have no seal yet, so nothing changes for them).
+    if let Some(cache) = cache {
+        cache.revalidate(continuation_key(state, cr3, efer, context), &|page| {
+            bus.code_page_generation(GuestPhysicalAddress::new(page << 12))
+                .ok()
+        });
+    }
+    // Every committed RAM write of the loop (guest stores, walker A/D commits, exception frames)
+    // passes through `watch`, which lets the cache drop entries whose tables were written.
+    let guest_only =
+        cache.is_some_and(|cache| cache.invalidation() == FetchCacheInvalidation::GuestOnly);
     let mut watch = |range: GuestPhysicalRange| {
-        if let Some(cache) = &cache {
+        if let Some(cache) = cache {
             cache.note_write(range);
         }
         committed_write(range);
@@ -1094,15 +1159,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
             context
         };
         if let Some(hook) = irq.as_mut() {
-            match deliver_pending_irq(
-                hook,
-                state,
-                bus,
-                &paging,
-                context,
-                &mut watch,
-                cache.as_ref(),
-            ) {
+            match deliver_pending_irq(hook, state, bus, &paging, context, &mut watch, cache) {
                 IrqBoundaryOutcome::None => {}
                 IrqBoundaryOutcome::Delivered => {
                     if let Some(observations) = execution_observations.as_deref_mut() {
@@ -1116,7 +1173,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
         // S4-38L4i: one peek serves the CPUID boundary and the recorder (no guest state is
         // written; the cache statistics move, see the doc of this function).
         let cpuid_leaf = if cpuid_boundary || checkpoints.is_some() {
-            cpuid_leaf_at_rip(state, bus, &paging, context, cache.as_ref())
+            cpuid_leaf_at_rip(state, bus, &paging, context, cache)
         } else {
             None
         };
@@ -1152,7 +1209,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
             .as_deref()
             .and_then(LinuxExecutionObservationCollector::pending_post_iret);
         let resume_flag_is_iretq =
-            resume_flag_before && iretq_at_rip(state, bus, &paging, context, cache.as_ref());
+            resume_flag_before && iretq_at_rip(state, bus, &paging, context, cache);
         // The selected diagnostic uses the same opcode check but bypasses the fetch cache so it
         // does not perturb cache hit/miss counters while waiting for the selected return.
         let selected_return_is_iretq =
@@ -1162,22 +1219,15 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
         // S4-14h: under `GuestOnly` the guest's own invalidations flush the cache. `INVLPG` is
         // peeked before the step (read-only, through the cache like the fetch itself); CR0/CR4
         // are compared around it.
-        let invlpg_pending =
-            guest_only && invlpg_at_rip(state, bus, &paging, context, cache.as_ref());
+        let invlpg_pending = guest_only && invlpg_at_rip(state, bus, &paging, context, cache);
         let control_before = (state.cr0, state.cr4);
         let (ram, io) = bus.split_for_set_step();
         let mut port = PitWriteWatch {
             inner: io.port_io(),
             pit_written: false,
         };
-        let mut memory = set_loop_adapter(
-            ram,
-            Some(&io),
-            paging,
-            instruction_rip,
-            &mut watch,
-            cache.as_ref(),
-        );
+        let mut memory =
+            set_loop_adapter(ram, Some(&io), paging, instruction_rip, &mut watch, cache);
         memory.capture_page_fault_trace = execution_observations.is_some();
         let run_config = RunConfig {
             instruction_budget: 1,
@@ -1296,7 +1346,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
                         // cited from memory, not checked against the primary source). Under
                         // `GuestOnly` the whole cache is dropped, which is always allowed; the
                         // handler may repair the page tables without `INVLPG`.
-                        if guest_only && let Some(cache) = &cache {
+                        if guest_only && let Some(cache) = cache {
                             cache.flush_after_page_fault();
                         }
                         delivered_exceptions += 1;
@@ -1413,7 +1463,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
                         rip: state.gpr[od_isa::Register::Rcx as usize],
                     })
             } else if matches!(result.exit, Cpl0ProfileSetExit::UserModeEntered(_))
-                && sysretq_at(instruction_rip, bus, &paging, context, cache.as_ref())
+                && sysretq_at(instruction_rip, bus, &paging, context, cache)
             {
                 Some(SyscallEvent::Exit {
                     rax: state.gpr[od_isa::Register::Rax as usize],
@@ -1436,7 +1486,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
         // S4-13: a retired `MOV CR3` (or any other translation context change) invalidates
         // every cached fetch translation.
         if matches!(result.exit, Cpl0ProfileSetExit::TranslationContextChange(_))
-            && let Some(cache) = &cache
+            && let Some(cache) = cache
         {
             cache.flush();
         }
@@ -1448,7 +1498,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
             recorder.note_cr3_write();
         }
         // S4-14h: a retired `INVLPG` and a change of CR0/CR4 flush the whole cache (`GuestOnly`).
-        if guest_only && let Some(cache) = &cache {
+        if guest_only && let Some(cache) = cache {
             if invlpg_pending && result.instructions_executed > 0 {
                 cache.flush_after_invlpg();
             }
@@ -1468,6 +1518,17 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
             break (exit, page_fault, memory_error);
         }
     };
+    // S4-14i: the end of the call seals the cache with the context a continuing call is handed;
+    // a change of it or a write by anyone before the next call starts is caught by the check there.
+    if let Some(cache) = cache {
+        cache.seal(
+            continuation_key(state, reported_cr3, efer, context),
+            &|page| {
+                bus.code_page_generation(GuestPhysicalAddress::new(page << 12))
+                    .ok()
+            },
+        );
+    }
     PagedCpl0SetReport {
         exit,
         instructions_executed,
@@ -1479,11 +1540,35 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
         delivered_exceptions,
         delivered_page_faults,
         delivered_general_protection_faults,
-        fetch_cache_stats: cache.as_ref().map(FetchTranslationCache::stats),
+        fetch_cache_stats: cache.map(FetchTranslationCache::stats),
         cpl3_retired,
         syscall_events: syscall_events.into_iter().collect(),
         last_instruction_rip,
     }
+}
+
+/// The translation context a call that continues this one is handed (S4-14i): the paging snapshot
+/// of `cr3` and the state, and the access context of the loop for the CPL of the state. The same
+/// function computes the seal of the end of a call and the check of the start of the next.
+fn continuation_key(
+    state: &LongModeState,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+) -> Option<TranslationKey> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer).ok()?;
+    let privilege = if state.cs_selector.is_some_and(|selector| selector & 3 == 3) {
+        od_isa::memory::PrivilegeLevel::Ring3
+    } else {
+        context.privilege
+    };
+    Some(TranslationKey::new(
+        paging,
+        AccessContext {
+            privilege,
+            ..context
+        },
+    ))
 }
 
 /// The adapter of the set loop for one instruction or one interrupt delivery: RAM only, the
