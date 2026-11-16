@@ -992,10 +992,19 @@
 ### ISSUE-212 — S7-04: Rust helper `MOV R8D,dword ptr [RSI+0x44]` (`44 8B 46 44`) remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `MOV R12D,dword ptr [RSI+0x40]`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200f00`.
+- **Статус:** решена узко для exact `44 8B 46 44` в base `PagedCpl0ProbeV1`; независимое review одобрило изменение без оставшихся замечаний, ожидает коммита. Other destinations, displacements, widths, prefixes and profiles remain unsupported.
+- **Суть и результат:** exact REX `44` extends ModRM.reg=0 to R8D; opcode `8B`, ModRM `46` and disp8 `44` select `[RSI+0x44]`. The tracked dword read completes before the dword write zero-extends R8; flags and other GPRs remain unchanged. This narrow read test does not establish general rollback or cross-page behavior (ISSUE-054).
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue212.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf00` are `44 8B 46 44`; runner budget 10000.
+- **Проверка:** six focused tests cover loaded dword/R8 zero-extension, full-state and flags retention, data-read faults, noncanonical addresses, final-disp8 fetch-fault atomicity, neighbors, CPL3 and other-profile isolation. The four-level machine test confirms the high dword of a known qword is loaded and the code/data leaf Accessed bits are set. Runner retired 8894 and stopped at `85 C9` (`TEST ECX,ECX`, ISSUE-213), RIP `0x200f04`, `Unsupported { opcode: 133 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
+- **Следующий шаг:** independently review this exact R8D load and continue S7-04 at ISSUE-213.
+
+### ISSUE-213 — S7-04: Rust helper `TEST ECX,ECX` (`85 C9`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact `MOV R8D,dword ptr [RSI+0x44]`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200f04`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8893 instructions and stopped at `44 8B 46 44`, `Unsupported { opcode: 139 }`, `RIP=0x200f00`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue211.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf00` are `44 8B 46 44`; runner budget 10000.
-- **Следующий шаг:** inspect tracked dword read and R8D zero-extension behavior before considering narrow admission.
+- **Суть и последствия:** runner retired 8894 instructions and stopped at `85 C9`, `Unsupported { opcode: 133 }`, `RIP=0x200f04`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue212.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf04` are `85 C9`; runner budget 10000.
+- **Следующий шаг:** inspect TEST ECX,ECX flag/definedness semantics and exact profile boundaries before considering narrow admission.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.
