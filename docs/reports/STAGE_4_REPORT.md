@@ -2439,9 +2439,9 @@ IRQ, новый nonce на прогон), IRQ из CPL3 (S4-39h) и stage4a с S
 - Активные блоки `PagedCodeSession` (alias-кэш) не поддержаны; production-обёртка «JIT или интерпретатор» для `PagedCodeSession` отсутствует.
 - Производительность не измерялась (полный сброс при смене ключа и повторные snapshot консервативны); speed claim не делается.
 
-## S4-09d/e — сводный контракт A/D и одно место коммита D (реализовано, ожидает ревью)
+## S4-09d/e — сводный контракт A/D и одно место коммита D (реализовано; ревью Claude Opus, high: принято с ограничениями)
 
-Чекбокс S4-09 не ставится: его ставит ревью после остальных срезов.
+Вердикт ревью: принято с ограничениями. P3 закрыты: поправлен счёт (3.5 — частично; 30/5/3 до S4-09f), оговорки grep-теста.
 
 **S4-09e (код, без изменения поведения).** Раньше бит D листа коммитился в двух местах: в tracked access (через `table_writer`) и в транзакции LTR (прямой `PhysicalMemory::write_u64`, в обход seam). Теперь есть `commit_leaf_dirty` (`crates/od-machine/src/page_walk.rs`, перед `walk_long64_4k`): возвращает `Ok(None)`, если D уже стоит, `Ok(Some(AdUpdate))` после записи через `table_writer`, и `TrackedAccessError::TableWrite { bit: Dirty }` при отказе. Через него идут оба пути: `access_long64_4k_internal_windowed` и `commit_paged_ltr_descriptor_with_writer`. Публичная `commit_paged_ltr_descriptor` делегирует ей с `write_tracked_table_entry`; оба walk LTR теперь идут через `walk_long64_4k_with_writer` с тем же writer-ом (по умолчанию тот же байтовый эффект). Записи A остаются только в `walk_long64_4k_with_writer`; поиск по `AdBit::`, `1 << 5`/`1 << 6` и `write_u64` других мест записи A/D в production-коде не нашёл.
 
@@ -2458,9 +2458,9 @@ IRQ, новый nonce на прогон), IRQ из CPL3 (S4-39h) и stage4a с S
 
 **Проверки.** `cargo fmt --all -- --check`: код 1 только из-за известных расхождений `od-host/src/storage_abi_v1.rs` и `tools/image-tool/tests/cli.rs`; в `page_walk.rs` отличий нет. `cargo check --workspace --all-targets --offline`: 0. `cargo test -p od-machine --offline --lib -- --test-threads=1 accessed dirty _ad_ tracked_access_tests`: 58 passed (55 прежних и три новых). `cargo test -p od-host --offline --test stage4_memory_fault`: 44 passed. `cargo test -p od-machine --offline --lib`: 1386 passed, 7 ignored (1383 и три новых).
 
-## S4-09f — системная приёмка A/D через production-цикл набора (реализовано, ожидает ревью)
+## S4-09f — системная приёмка A/D через production-цикл набора (реализовано; ревью Claude Opus, high: принято с ограничениями)
 
-Чекбокс S4-09 не ставится: его ставит ревью координатора.
+Вердикт ревью: принято с ограничениями. Литералы A/D — SDM для битов, порядок и число записей — контракт S4-09d/зеркало; журнал без значений; настройка GDT с A=1 у дескрипторов — вне охвата, записано.
 
 **Где живёт тест.** `run_cpl0_set_paged_2m_ram` (и вся цепочка `..._with_cpuid_boundary` -> `_with_policy` -> `_observed` -> `_with_cache`) помечен `#[cfg(test)]` и `pub(crate)` в `od-machine`, поэтому из `tests/system` (интеграционные тесты `od-host`) он недоступен. Сценарии лежат в `crates/od-machine/src/linux_direct/tests/stage4_ad_acceptance.rs` (подмодуль тестов `linux_direct`, рядом с остальными тестами цикла набора на плате Linux; доступ к ECAM даёт `LinuxDirectBoot`). Публичный API и поведение продукта не менялись; в `linux_direct.rs` добавлена одна строка `mod stage4_ad_acceptance;`.
 
@@ -2505,3 +2505,7 @@ IRQ, новый nonce на прогон), IRQ из CPL3 (S4-39h) и stage4a с S
 - Независимый интерпретатор-оракул не использован (см. выше).
 
 **Проверки.** `cargo fmt --all -- --check`: код 1 только из-за известных расхождений `od-host/src/storage_abi_v1.rs` и `tools/image-tool/tests/cli.rs`; в новом файле и в `linux_direct.rs` отличий нет. `cargo check --workspace --all-targets --offline`: 0. `cargo test -p od-host --offline --test stage4_memory_fault`: 44 passed (файл не менялся). `cargo test -p od-machine --offline --lib -- --test-threads=1 accessed dirty _ad_ tracked_access_tests`: 61 passed (58 прежних и три новых: имя модуля `stage4_ad_acceptance` содержит `_ad_`). `cargo test -p od-machine --offline --lib -- --test-threads=1 a_d_acceptance`: 3 passed.
+
+## S4-09 — итог (закрытие)
+
+Вердикт gate-ревью S4-09 (Claude Opus, high, 2026-11-16, по S4-09f): принять с ограничениями. Ограничения: U/S из CPL3 и 2 MiB nonpresent/protection системно не проверены; MMIO кроме ECAM и отказ backend — не системно; RMW/LOCK с fault (ячейка 4.2) — не покрыто тестом на биты таблицы; атомарность A/D (CAS) — S6-25; 1 GiB — S4-10; проверка A/D на реальном Linux (S4-09g) не делалась (опционально).

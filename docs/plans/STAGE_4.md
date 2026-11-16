@@ -346,14 +346,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-09d/e. Сводный контракт A/D и одно место коммита D
 
-- Статус: реализовано, ожидает ревью; чекбокс S4-09 не ставится (его ставит ревью после остальных срезов).
+- Статус: реализовано; ревью Claude Opus, high — принято с ограничениями (см. отчёт). P3 закрыты: поправлен счёт (3.5 — частично; 30/5/3 до S4-09f), оговорки grep-теста.
 - S4-09e (код, поведение прежнее): D листа коммитится одним helper-ом `commit_leaf_dirty` в `crates/od-machine/src/page_walk.rs` через seam `table_writer`; им пользуются tracked access и транзакция LTR (`commit_paged_ltr_descriptor_with_writer`; раньше LTR писал D прямым `write_u64`). Новые тесты: `ltr_dirty_write_failure_commits_no_d_and_no_descriptor_image`, `ltr_table_entry_writes_go_through_the_writer_seam`, `leaf_dirty_is_committed_only_by_the_helper`.
 - S4-09d (документ): таблица «путь × исход → A по уровням, D, операнд, callbacks» с ссылкой на существующий тест в каждой ячейке (38 ячеек: 30 покрыто полностью, 5 частично, 3 не покрыты тестом) в [контракте машины](../specs/MACHINE_CONTRACT.md#ad-summary-contract-s4-09d); решение «A на denied entry» записано как принятая семантика S4-09c; ссылка добавлена в `CPU_CONTRACT.md`.
 - Не входит: атомарность A/D и повтор обхода (S6-25, `MEMORY_MODEL.md:28`), 1 GiB (S4-10), тесты на биты таблицы для RMW и `LOCK` (ячейки 4.1-4.3 помечены «не покрыто тестом (покрыто чтением)»). Отчёт: раздел «S4-09d/e» в [STAGE_4_REPORT.md](../reports/STAGE_4_REPORT.md).
 
 #### S4-09f. Системная приёмка A/D через production-цикл набора
 
-- Статус: реализовано, ожидает ревью; чекбокс S4-09 не ставится (его ставит ревью координатора).
+- Статус: реализовано; ревью Claude Opus, high — принято с ограничениями (см. отчёт). Принято с ограничениями: литералы A/D — SDM для битов, порядок и число записей — контракт S4-09d/зеркало; журнал без значений; настройка GDT с A=1 у дескрипторов — вне охвата, записано.
 - Что сделано: три сквозных теста `run_cpl0_set_paged_2m_ram` над смешанным деревом 4 KiB/2 MiB, все A/D стартуют с 0 (`crates/od-machine/src/linux_direct/tests/stage4_ad_acceptance.rs`; цикл `cfg(test)` и `pub(crate)`, поэтому тест живёт в `od-machine`, а не в `tests/system`). Шаги: выборка, чтение, запись, RMW (`ADD m, r`), `LOCK ADD`, `PUSH`/`CALL`, межстраничная запись, ECAM-store, 2 MiB read/write/RMW/fetch, `#PF` nonpresent -> доставка через IDT -> обработчик чинит PTE -> `IRETQ` -> повтор; protection fault (R/W=0 на PTE и на PDE) и fault на второй странице межстраничной записи. После каждой инструкции сверяются литералы изменившихся entries и порядок committed writes; дифференциальный прогон на дереве с предустановленными A/D сверяет регистры и RAM.
 - Мутации (4 из 4 роняют сценарий): нет D на write; A на nonpresent entry; D на read; D до проверки прав. Подробности: [отчёт S4-09f](../reports/STAGE_4_REPORT.md).
 - Не покрыто: protection fault из CPL3 (U/S) с проверкой битов, RMW/`LOCK` с fault, 2 MiB nonpresent/protection на системном уровне, независимый интерпретатор-оракул (`step_paged_mov` умеет только qword `MOV`). Таблица A/D в [контракте машины](../specs/MACHINE_CONTRACT.md#ad-summary-contract-s4-09d) помечена «покрыто системно» в ячейках, где биты проверены.
