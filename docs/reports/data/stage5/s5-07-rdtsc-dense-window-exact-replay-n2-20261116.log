@@ -98,6 +98,24 @@ variation, identify the first unsampled divergence over the whole guest run,
 or establish benignity. The overall automatic comparator remains false;
 these direct replays are diagnostic and are not acceptance evidence.
 
+Bounded machine-counter comparison
+----------------------------------
+The two replay sidecars also captured CPL0 RDTSC counts by RIP and delivered
+page-fault events. Across the 19 retained RDTSC sites, totals are 34,386,280
+for run 0001 and 34,382,959 for run 0002 (difference +3,321); both report
+zero unattributed reads and zero site-overflow reads. The selected poll RIP
+`0xffffffff8271b34d` accounts for +3,387 reads (33,994,592 versus
+33,991,205). Other per-RIP differences partly offset it: `0xffffffff813afa20`
++9, `0xffffffff8184f2f1` -2, `0xffffffff81c02515` +4,
+`0xffffffff8200713e` +3, `0xffffffff8200796e` -88,
+`0xffffffff8271b31b` +3, and `0xffffffff82726060` +5. Each run delivered 33
+page faults, with the same RIP distribution. This localizes most of the
+bounded counter delta to poll reads already known to have different per-call
+counts, but does not identify why those calls differ or explain UART and
+other machine observations. These counters came from exact-nonce diagnostic
+replays on the local macOS/aarch64 host; they are not a cross-host performance
+comparison and do not establish acceptance.
+
 Artifacts
 ---------
 Automatic source series SHA-256:
