@@ -3871,10 +3871,21 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Следующий шаг:** verify exact 16-bit CMP semantics and immediate handling for ISSUE-260.
 
 
-### ISSUE-260 — S7-04: helper `CMP BX,2` (`66 83 FB 02`) remains outside paged CPU profile
+### ISSUE-260 — S7-04: exact helper `CMP BX,2` (`66 83 FB 02`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-259.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015CE`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner retired 8,952 instructions and stopped on `66 83 FB 02`, `Unsupported { opcode: 131 }`; COM1 remains empty.
+- **Статус:** implemented in S7-04; independent review approved with no findings.
+- **Суть и последствия:** exact word-size `CMP BX,2` sign-extends imm8 `0x02` to a 16-bit operand, updates arithmetic flags/definedness using shared semantics and never writes a register.
+- **Проверка:** four focused tests cover low-word comparison with nonzero upper RBX bits, flags/definedness, exact fetch-fault atomicity, immediate/destination/group/width/prefix/memory neighbors, and CPL3 isolation. Other paged profiles keep the exact instruction unsupported.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15CE` are `66 83 FB 02`; runner budget 10000.
-- **Следующий шаг:** verify exact BX destination, sign-extended imm8, 16-bit arithmetic flags/definedness, and profile isolation for ISSUE-260.
+- **Проверки исполнения:** firmware retires 8,953 instructions and stops at ISSUE-261; COM1 remains empty.
+- **Следующий шаг:** verify exact SETB BPL byte-register selection, flags, and profile isolation for ISSUE-261.
+
+
+### ISSUE-261 — S7-04: helper `SETB BPL` (`40 0F 92 C5`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-260.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2015D2`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner retired 8,953 instructions and stopped on `40 0F 92 C5`, `Unsupported { opcode: 146 }`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x15D2` are `40 0F 92 C5`; runner budget 10000.
+- **Следующий шаг:** verify exact REX byte-register selection, CF predicate, flags/definedness preservation and profile isolation for ISSUE-261.

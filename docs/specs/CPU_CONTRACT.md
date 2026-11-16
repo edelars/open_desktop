@@ -27468,3 +27468,10 @@ Six focused tests cover successful tracked reads and zero-extension, fault atomi
 Base `PagedCpl0ProbeV1` admits only exact `44 8B 14 08`. REX.R selects R10D, and the SIB computes a 64-bit effective address with RAX base, RCX scale-1 index and no displacement. The tracked dword read is zero-extended into R10D; only R10/RIP change, and RFLAGS/definedness are preserved. A failing read or final-byte fetch fault does not commit the register. A noncanonical effective address faults before data access. Other base/index/scale/displacement/prefix/width forms, CPL3 and other paged profiles remain unsupported.
 
 Six focused tests cover register routing/address calculation, zero-extension, state preservation, read/fetch faults, noncanonical address, neighboring encodings and isolation. A four-level machine test covers the tracked read and accessed bits without dirty/data writes. Firmware advances after 8,952 retired instructions to `66 83 FB 02` (`CMP BX,2`, ISSUE-260) at RIP `0x2015CE`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `CMP BX,2` (ISSUE-260)
+
+Base `PagedCpl0ProbeV1` admits only exact `66 83 FB 02`. The 16-bit operand-size override selects BX; opcode `83 /7` sign-extends imm8 `0x02` to 16 bits and uses shared word CMP semantics. Arithmetic flags and definedness update, while no GPR or memory changes. The immediate-byte fetch fault does not retire or mutate CPU state. This slice adds only BX,2 and retains the previously admitted exact BX,3 and DI,1 forms. Other immediate values, destinations/groups, widths, prefixes, memory operands, CPL3 and other paged profiles remain unsupported.
+
+Four focused tests prove high RBX bits do not affect the comparison, check flags/definedness, fault atomicity, neighboring encodings and CPL3/profile isolation. Firmware advances after 8,953 retired instructions to `40 0F 92 C5` (`SETB BPL`, ISSUE-261) at RIP `0x2015D2`; COM1 remains empty. Independent review approved with no findings.

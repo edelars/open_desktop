@@ -22831,14 +22831,14 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
-        // S7-04: helpers compare `DI,1` / `BX,3` with exact word forms,
+        // S7-04: helpers compare `DI,1` / `BX,2` / `BX,3` with exact word forms,
         // `EDI,0x20` with exact `83 FF 20`, and `R8D,0x30` with exact
         // `41 83 F8 30`. The decoder sign-extends imm8; keep width, prefix,
         // register and immediate tuples exact here.
         Operation::Arithmetic {
             kind: ArithmeticKind::Cmp,
             dst: Operand::Register(destination),
-            src: Operand::Immediate(immediate @ (1 | 3 | 0x20 | 0x30)),
+            src: Operand::Immediate(immediate @ (1 | 2 | 3 | 0x20 | 0x30)),
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x83
@@ -22862,6 +22862,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                         && destination
                             == RegisterView::low(Register::Rdi, OperandSize::Word))
                         || (immediate == 3
+                            && destination
+                                == RegisterView::low(Register::Rbx, OperandSize::Word))
+                        || (immediate == 2
                             && destination
                                 == RegisterView::low(Register::Rbx, OperandSize::Word))))
                 || (instruction.length == 3
