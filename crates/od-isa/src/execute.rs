@@ -20650,6 +20650,29 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, u64::from(condition.evaluate(state.rflags)));
             state.rip = next_rip;
         }
+        // S7-04: exact `40 0F 92 C6` writes SETB's CF result only to SIL.
+        // REX presence selects SIL rather than DH; pin raw ModRM as well.
+        Operation::SetCondition {
+            condition,
+            dst: Operand::Register(destination),
+            raw_modrm,
+        } if base_profile
+            && condition == ConditionCode::Below
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x92
+            && instruction.length == 4
+            && instruction.operand_size == OperandSize::Byte
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x40),
+                    ..Prefixes::default()
+                })
+            && raw_modrm == 0xc6
+            && destination == RegisterView::low(Register::Rsi, OperandSize::Byte) =>
+        {
+            state.write(destination, u64::from(condition.evaluate(state.rflags)));
+            state.rip = next_rip;
+        }
         // S7-04: exact `41 0F 97 C3` writes unsigned-above only to R11B.
         // REX.B selects r/m=3 as R11B; the condition reads CF and ZF only.
         Operation::SetCondition {

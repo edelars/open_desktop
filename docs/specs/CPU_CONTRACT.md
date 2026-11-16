@@ -27852,3 +27852,8 @@ Four focused profile tests cover result and logical flag values, AF definedness,
 ### Stage 7 paged-profile MOV R10D,dword ptr [R12+RAX-0x1c]
 
 `PagedCpl0ProbeV1` admits exact bytes `45 8B 54 04 E4`. REX.R selects R10D, REX.B selects SIB base R12, SIB index is RAX with scale 1, and disp8 `0xe4` sign-extends to -0x1c. Effective-address addition wraps at 64 bits and is checked for canonicality before a tracked four-byte read. The dword result zero-extends into R10. Flags and definedness are unchanged; a fetch or data fault retires no instruction and does not partially update R10. Other addressing forms and profiles remain unsupported.
+
+
+### Stage 7 paged-profile SETB SIL
+
+`PagedCpl0ProbeV1` admits exact bytes `40 0F 92 C6` for this slice. The mandatory REX byte selects SIL rather than DH; raw ModRM is pinned to `0xC6`. SETB writes `1` iff CF is set, otherwise `0`, to only RSI[7:0]. Upper RSI bits, other registers, flags and flag-definedness remain unchanged. Missing instruction bytes fault before any architectural state update. This slice adds no other destination, condition or prefix form; existing exact SETcc admissions remain unchanged.

@@ -4459,9 +4459,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-324 — S7-04: exact helper `SETB SIL` (`40 0F 92 C6`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-323.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20174e`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** the exact SETB form is admitted only for SIL. REX presence selects low byte SIL rather than DH; CF determines 0/1, only low RSI changes, upper RSI and all flags/definedness are preserved.
+- **Проверка:** four focused tests cover both CF values, defined and undefined CF metadata, preservation of upper RSI/other CPU state and flags, final-byte fetch-fault atomicity, wrong condition/destination/REX/high-byte and memory neighbors, CPL3 rejection, and cross-profile isolation. All od-isa suites pass (2,322/1,591/126/29/6/972/7/15; 0 doc tests); all 65 paged machine quantum tests and scoped cargo check/fmt/diff-check pass, with only the existing page-walk dead-code warning. The runner advances after 9,033 retired instructions to ISSUE-325 `45 8D 6A F3` (`LEA R13D,[R10-0xd]`) at RIP `0x201752`; COM1 is empty. Independent review approved with no findings.
+- **Следующий шаг:** implement only ISSUE-325's exact `LEA R13D,[R10-0xd]` form in a separate Stage 7 slice.
+
+### ISSUE-325 — S7-04: exact helper `LEA R13D,[R10-0xd]` (`45 8D 6A F3`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-324.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201752`.
 - **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact SETcc form; execution stops before the following helper instruction. REX presence selects low byte SIL rather than DH; SETB writes 0 or 1 from CF and preserves the remaining register bits and flags.
-- **Основание:** runner image `/private/tmp/od-fw-s7-04-issue256.bin`, budget 10000, retired 9,032 instructions; file offset `0x174e` contains `40 0F 92 C6` and reports `Unsupported { opcode: 146 }`; COM1 is empty.
+- **Суть и последствия:** the base profile does not yet admit this exact dword LEA; firmware stops before the following helper instruction.
+- **Основание:** runner image `/private/tmp/od-fw-s7-04-issue256.bin`, budget 10000, retired 9,033 instructions; file offset `0x1752` contains `45 8D 6A F3` and reports `Unsupported { opcode: 141 }`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.

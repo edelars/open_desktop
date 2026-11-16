@@ -795,3 +795,13 @@ With exact `0F 87 23 01 00 00` admitted, the Stage 7 firmware runner retires 9,0
 ### Stage 7 runner frontier after ISSUE-323
 
 With exact `45 8B 54 04 E4` admitted, the Stage 7 firmware runner retires 9,032 instructions and stops at RIP `0x20174e`, bytes `40 0F 92 C6` (`SETB SIL`, ISSUE-324), `Unsupported { opcode: 146 }`. COM1 remains empty.
+
+
+### Stage 7 paged-profile SETB SIL
+
+`PagedCpl0ProbeV1` admits exact bytes `40 0F 92 C6`. Mandatory REX selects SIL instead of DH. CF controls the byte result; only RSI's low byte changes, with upper RSI, flags and definedness preserved. An instruction-fetch fault leaves state unchanged.
+
+
+### Stage 7 runner frontier after ISSUE-324
+
+With exact `40 0F 92 C6` admitted, the Stage 7 firmware runner retires 9,033 instructions and stops at RIP `0x201752`, bytes `45 8D 6A F3` (`LEA R13D,[R10-0xd]`, ISSUE-325), `Unsupported { opcode: 141 }`. COM1 remains empty.
