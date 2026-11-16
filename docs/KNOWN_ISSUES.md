@@ -4057,8 +4057,18 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-277 — S7-04: exact helper `CMP R14B,1` (`41 80 FE 01`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-276.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20161A`.
-- **Статус:** открыта.
-- **Суть и последствия:** base `PagedCpl0ProbeV1` does not yet admit the exact byte CMP of R14B against imm8 1.
+- **Статус:** реализована в S7-04; независимое ревью одобрило изменение без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact `41 80 FE 01`; REX.B selects the low byte R14B. The byte CMP writes no register and applies shared arithmetic flags/definedness, leaving upper R14 untouched.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x161A` are `41 80 FE 01`; runner budget 10000.
-- **Проверки исполнения:** firmware retires 8,971 instructions and stops with `Unsupported { opcode: 128 }`; COM1 remains empty.
-- **Следующий шаг:** admit only exact CMP R14B,1, preserving other R14 bits and validating byte flags for ISSUE-277.
+- **Проверки исполнения:** four focused tests cover byte-result flags, upper-R14 and full-GPR preservation, immediate-fetch fault atomicity, neighboring forms and CPL3; other paged profiles keep it unsupported. Firmware retires 8,973 instructions and advances to `4C 8B 74 08 10` (`MOV R14,qword ptr [RAX+RCX+0x10]`) at RIP `0x201620`; COM1 remains empty.
+- **Следующий шаг:** admit the exact tracked qword load to R14 using RAX+RCX+disp8 addressing for ISSUE-278.
+
+
+### ISSUE-278 — S7-04: exact helper `MOV R14,[RAX+RCX+0x10]` (`4C 8B 74 08 10`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-277.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201620`.
+- **Статус:** открыта.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` does not yet admit the exact qword load into R14 from `[RAX+RCX+0x10]`.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1620` are `4C 8B 74 08 10`; runner budget 10000.
+- **Проверки исполнения:** firmware retires 8,973 instructions and stops with `Unsupported { opcode: 139 }`; COM1 remains empty.
+- **Следующий шаг:** admit only exact tracked qword read, preserving fault atomicity and page-walk accessed/dirty semantics for ISSUE-278.
