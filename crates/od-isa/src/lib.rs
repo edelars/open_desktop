@@ -22,6 +22,7 @@ pub mod memory;
 pub mod msr;
 pub mod port_io;
 mod rational_rounding;
+pub mod real_mode_exec;
 pub mod sep;
 pub mod state;
 pub mod sti;

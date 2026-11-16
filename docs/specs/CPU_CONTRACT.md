@@ -761,6 +761,46 @@ decodes), 29 protected-mode rows, one long-mode trampoline row, and two common
 entry instructions. It did not execute the guest. The profile and its limits
 are recorded in the [S6-14a report](../reports/STAGE_6_REPORT.md#s6-14a--ap-startup-trampoline-profile).
 
+### S6-14d — первая группа исполнения real mode
+
+Реализация: `crates/od-isa/src/real_mode_exec.rs` (`RealModeCpu`). Только блок 1
+trampoline по таблице S6-14a (blob `0x1000`–`0x1024`), без `WBINVD`, `LOCK BTS`,
+`JAE`/`PAUSE`, `CALL verify_cpu` и загрузки ESP; они остаются за срезами S6-14e и
+далее. Профиль S6-14a выше не изменён.
+
+Состояние: `RealModeState` из S6-14c плюс восемь 32-битных регистров общего назначения
+и признак теневого периода после `MOV SS`. `LongModeState` не используется. Режим
+real mode означает `CR0.PE = 0`; при `PE = 1` шаг отказывает (`NotRealMode`).
+Размер операнда и адреса — 16 бит; ни один префикс не допускается. Выборка идёт
+через CS: байт по смещению `IP + i`, смещение проверяется по пределу CS, линейный
+адрес `CS.base + смещение` (без страничной трансляции, без A20 и переноса через
+1 МиБ).
+
+| Форма | Байты | Эффект (SDM Vol. 2; база сегмента `selector << 4` — Vol. 3A §12.1.4, по памяти) |
+|---|---|---|
+| `CLI` | `fa` | `EFLAGS.IF = 0` (при `PE = 0` безусловно); `IP += 1` |
+| `JMP ptr16:16` | `ea o_lo o_hi s_lo s_hi` | `CS.selector = s`, `CS.base = s << 4`, `EIP = o` (нулевое расширение); предел CS не меняется; `o > CS.limit` — отказ `TargetBeyondLimit` без изменения состояния |
+| `MOV AX, CS` | `8c c8` | `AX = CS.selector`; запись только в AX, `EAX[31:16]` сохраняется — по памяти, не подтверждено оракулом (на входе EAX = 0); примечание SDM о верхних битах для 16-битного операнда двусмысленно; оракул с ненулевым входным EAX — опция в будущем; `IP += 2` |
+| `MOV DS, AX` | `8e d8` | `DS.selector = AX`, `DS.base = AX << 4`; предел сохраняется (по памяти, номер раздела SDM не сверен); `IP += 2` |
+| `MOV ES, AX` | `8e c0` | то же для ES |
+| `MOV SS, AX` | `8e d0` | то же для SS; дополнительно взводится теневой период (прерывания, NMI и ловушки отладки откладываются до конца следующей инструкции); `IP += 2`. Подряд идущие `MOV SS` продлевают период (выбор консервативен): по SDM (Vol. 3A §6.8.3, по памяти) гарантирована только первая, последующие «may or may not»; тест `mov_ss_arms_shadow_for_one_instruction` закрепляет продление |
+
+Допускаются ровно эти байтовые формы. Любые другие — `Unsupported` с `CS`, `IP`,
+линейным адресом и первыми (до 8) читаемыми байтами; состояние не меняется. Это
+относится в том числе к другим сегментным регистрам и источникам `MOV`, `MOV CS, AX`,
+формам с памятью, префиксам `66`/`67`/`2e`/`f0`/`f3`, `NOP` (`90`; байт `0x104f` —
+недостижимое выравнивание), `HLT`, `WBINVD`. Отказы выборки: `FetchBeyondLimit`
+(байт за пределом CS) и `FetchUnreadable` (адрес не читается). `IP` после инструкции в
+конце сегмента хранится без обёртки (`0x10000`); следующая выборка откажет `FetchBeyondLimit` с `CS:IP` (тест `instruction_ending_at_ffff_leaves_ip_10000_then_fetch_refuses`, `MOV AX,CS` по `0xFFFE`). `FetchUnreadable` и `FetchBeyondLimit` несут `CS` и `IP` начала инструкции; `FetchUnreadable` — ещё линейный адрес нечитаемого байта.
+
+Данные оракула (KVM на Intel Mini, `--real-mode CS:IP`) и образцы лежат в
+[`s6-14d`](../reports/data/stage6/s6-14d/); команды — `run-oracle.sh`. Четыре образа
+(`CLI`, дальний `JMP`, `MOV AX,CS`, `MOV DS/ES/SS,AX`, затем `HLT` как стоп) прогнаны на
+оракуле и в `od-isa` с тем же входом; регистры, сегменты (selector, base, limit),
+EFLAGS и CR0 совпали. Оракул не проверяет: эффект `CLI` (входной IF уже 0), сохранение
+старшей половины EAX (входной EAX = 0), теневой период `MOV SS`, а также все отказы.
+Они проверены только unit-тестами по SDM.
+
 ### S2-39a — Legacy FXSAVE/FXRSTOR contract (evidence-only)
 
 This section records the selected target's normative legacy FP/SIMD memory
