@@ -20672,6 +20672,38 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     | (crate::ARITHMETIC_FLAGS & !crate::AF),
             };
         }
+        // S7-04: the helper uses exact `81 E5 FF 0F 00 00` (AND EBP,0xfff).
+        // The dword write zero-extends RBP; shared logic semantics undefine AF.
+        Operation::Logic {
+            kind: LogicKind::And,
+            dst: Operand::Register(destination),
+            src: Operand::Immediate(0x0fff),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x81
+            && instruction.length == 6
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes == Prefixes::default()
+            && destination == RegisterView::low(Register::Rbp, OperandSize::Dword) =>
+        {
+            let lhs = state.read(destination);
+            let (value, flags) = logic_result(
+                OperandSize::Dword,
+                LogicKind::And,
+                lhs,
+                0x0fff,
+                state.rflags,
+            );
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: (initial_rflags_defined & !crate::AF)
+                    | (crate::ARITHMETIC_FLAGS & !crate::AF),
+            };
+        }
         // S7-04: the helper combines condition bytes with exact
         // `41 20 F8` (AND R8B,DIL); reuse byte AND semantics and AF undefinedness.
         Operation::Logic {

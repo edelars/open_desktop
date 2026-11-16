@@ -574,3 +574,10 @@ Four focused tests cover dword source routing/zero-extension, state and flags, f
 Base `PagedCpl0ProbeV1` admits only exact `44 09 D5`. REX.R selects the R10D source and EBP is the dword destination; its write zero-extends RBP. OR clears CF/OF, computes SF/ZF/PF and leaves AF undefined; other flags and registers are preserved. A final ModRM-byte fetch fault is atomic. Neighboring routes, widths, operations and prefixes, CPL3 and other paged profiles remain unsupported.
 
 Four focused tests cover source/destination routing, dword result/zero-extension, flags/definedness, fetch faults, neighbors and CPL3/profile isolation. Firmware advances after 8,980 retired instructions to `81 E5 FF 0F 00 00` (`AND EBP,0xfff`, ISSUE-284) at RIP `0x201638`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `AND EBP,0xfff` (ISSUE-284)
+
+Base `PagedCpl0ProbeV1` admits only exact no-prefix `81 E5 FF 0F 00 00`. The dword AND writes EBP and zero-extends RBP. Shared logical semantics clear CF/OF, compute SF/ZF/PF and mark AF undefined while preserving unrelated flags. The final immediate-byte fetch fault is atomic. Other registers/groups/immediates/widths/prefixes, CPL3 and other paged profiles remain unsupported.
+
+Four focused tests cover dword masking and zero-extension, flags/definedness, full state preservation, final-byte fetch-fault atomicity, neighbors and CPL3/profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/821/7/15); all 61 paged machine tests, scoped check, formatting and diff-check pass. Firmware advances after 8,981 retired instructions to `75 20` (`JNZ rel8 +0x20`, ISSUE-285) at RIP `0x20163e`; COM1 remains empty. Independent review approved with no findings.
