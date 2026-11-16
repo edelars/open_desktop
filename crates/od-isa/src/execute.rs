@@ -21103,6 +21103,51 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
+        // S7-04: Rust helper exact memory XOR `46 33 24 8D 80 26 20 00`
+        // (XOR R12D,dword ptr [R9*4+0x202680]). Read through the tracked
+        // operand path before committing destination or flags.
+        Operation::Logic {
+            kind: LogicKind::Xor,
+            dst: Operand::Register(destination),
+            src: Operand::Memory(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x33
+            && instruction.length == 8
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x46),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R12, OperandSize::Dword)
+            && source.base == AddressBase::None
+            && source.index == Some(Register::R9)
+            && source.scale == 4
+            && source.displacement == 0x202680
+            && source.address_size == OperandSize::Qword
+            && source.size == OperandSize::Dword =>
+        {
+            let rhs = match read_operand(state, memory, context, next_rip, Operand::Memory(source))
+            {
+                Ok(value) => value,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            let lhs = state.read(destination);
+            let (value, flags) =
+                logic_result(OperandSize::Dword, LogicKind::Xor, lhs, rhs, state.rflags);
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
         // S7-04: admit only firmware's bare address-size-64 `F3 AA` REP STOSB.
         // Bound one paged instruction invocation to REP_ITERATION_WORK_LIMIT
         // stores; larger counts are refused before any memory/state mutation.

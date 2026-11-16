@@ -740,6 +740,44 @@ fn paged_probe_mov_edi_dword_rsi_disp8_uses_tracked_four_level_walk() {
 }
 
 #[test]
+fn paged_probe_xor_r12d_sib_dword_uses_tracked_four_level_walk() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(
+        &mut bus,
+        CODE_PHYSICAL,
+        &[0x46, 0x33, 0x24, 0x8d, 0x80, 0x26, 0x20, 0x00],
+    );
+    put_bytes_at(&mut bus, DATA_PHYSICAL, &0xa5a5_5a5au32.to_le_bytes());
+    let mut state = initial_state(0);
+    state.gpr[Register::R9 as usize] = 0x17f660; // R9*4 + 0x202680 == DATA_LINEAR.
+    state.gpr[Register::R12 as usize] = 0xdead_beef_0000_0001;
+    let before_flags = state.rflags;
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.page_fault, None);
+    assert_eq!(result.memory_error, None);
+    assert_eq!(state.rip, CODE_LINEAR + 8);
+    assert_eq!(state.gpr[Register::R12 as usize], 0xa5a5_5a5b);
+    assert_eq!(state.gpr[Register::R9 as usize], 0x17f660);
+    assert_eq!(state.rflags & (1 << 7), 1 << 7); // Result bit 31 sets SF.
+    assert_eq!(
+        state.rflags & ((1 << 0) | (1 << 2) | (1 << 6) | (1 << 11)),
+        0
+    );
+    assert_eq!(state.rflags & (1 << 4), before_flags & (1 << 4)); // AF is undefined, bit retained.
+    assert_eq!(qword(&mut bus, DATA_PHYSICAL) & 0xffff_ffff, 0xa5a5_5a5a);
+    assert_eq!(qword(&mut bus, ROOT), ROOT + 0x1007 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x1000), ROOT + 0x2007 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x2020), ROOT + 0x4007 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x3000), CODE_PHYSICAL | 7 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x4000), DATA_PHYSICAL | 7 | (1 << 5));
+}
+
+#[test]
 fn tracked_ram_backend_failure_is_distinct_from_guest_page_fault() {
     let (mut bus, _) = fixture();
     // This page is present, but its physical target is outside configured RAM.
