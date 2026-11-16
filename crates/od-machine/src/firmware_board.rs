@@ -2185,6 +2185,7 @@ impl LoadedFirmwareBoard {
             irq_hook,
             capture_execution_observations,
             None,
+            None,
         )
     }
 
@@ -2197,6 +2198,7 @@ impl LoadedFirmwareBoard {
         irq_hook: bool,
         capture_execution_observations: bool,
         selected_post_iret_ordinal: Option<u64>,
+        selected_rdtsc_sample_rip: Option<u64>,
     ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
         let context = AccessContext {
             mode: InstructionMode::Long64,
@@ -2212,6 +2214,7 @@ impl LoadedFirmwareBoard {
         let mut general_protection_faults_delivered = 0u64;
         let mut execution_observations = capture_execution_observations.then(|| {
             LinuxExecutionObservationCollector::with_post_iret_ordinal(selected_post_iret_ordinal)
+                .with_rdtsc_sample_rip(selected_rdtsc_sample_rip)
         });
         let mut cpl3_retired = 0u64;
         let mut syscall_journal = crate::linux_direct::SyscallJournal::default();
@@ -2450,6 +2453,8 @@ impl LoadedFirmwareBoard {
                     && let Some(observations) = execution_observations.as_mut()
                 {
                     observations.record_cpl0_rdtsc(report.last_instruction_rip);
+                    observations
+                        .record_rdtsc_site_sample(report.last_instruction_rip, self.state());
                 }
                 let tick_ns = RDTSC_TICK_NS;
                 #[cfg(test)]

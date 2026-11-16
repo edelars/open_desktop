@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 /// Maximum distinct CPL0 RDTSC instruction addresses retained in one diagnostic run.
 pub const LINUX_RDTSC_SITE_CAPACITY: usize = 128;
+/// Maximum post-instruction register samples retained for one selected CPL0 RDTSC RIP.
+pub const LINUX_RDTSC_SAMPLE_CAPACITY: usize = 16_384;
 /// Maximum successful delivered page-fault events retained in one diagnostic run.
 pub const LINUX_PAGE_FAULT_EVENT_CAPACITY: usize = 256;
 pub const LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY: usize = 4;
@@ -10,6 +12,23 @@ pub const LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY: usize = 4;
 pub struct RdtscSiteCount {
     pub rip: u64,
     pub reads: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RdtscSiteSample {
+    pub rip: u64,
+    /// R8 at the instruction boundary, as used by the selected kernel delay loop.
+    pub requested_cycles: u64,
+    /// RDI at the instruction boundary, as used by the selected kernel delay loop.
+    pub start_tsc: u64,
+    /// TSC value returned in EDX:EAX by this RDTSC instruction.
+    pub observed_tsc: u64,
+    /// Wrapping `observed_tsc - start_tsc` for direct comparison with the request.
+    pub elapsed_cycles: u64,
+    /// Post-instruction guest stack context for correlating the sample with its caller.
+    pub rbp: u64,
+    pub rsp: u64,
+    pub cr3: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -81,6 +100,9 @@ pub struct DeliveredPageFaultObservation {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LinuxExecutionObservations {
     pub rdtsc_cpl0_sites: Vec<RdtscSiteCount>,
+    pub rdtsc_sample_rip: Option<u64>,
+    pub rdtsc_site_samples: Vec<RdtscSiteSample>,
+    pub rdtsc_site_samples_omitted: u64,
     /// CPL0 RDTSC reads for which the set loop did not report an instruction RIP.
     pub rdtsc_cpl0_unattributed_reads: u64,
     /// CPL0 RDTSC reads at new sites after the distinct-site table reached its capacity.
@@ -96,6 +118,9 @@ pub struct LinuxExecutionObservations {
 
 #[derive(Default)]
 pub(crate) struct LinuxExecutionObservationCollector {
+    rdtsc_sample_rip: Option<u64>,
+    rdtsc_site_samples: Vec<RdtscSiteSample>,
+    rdtsc_site_samples_omitted: u64,
     rdtsc_sites: BTreeMap<u64, u64>,
     rdtsc_unattributed_reads: u64,
     rdtsc_site_overflow_reads: u64,
@@ -115,6 +140,41 @@ impl LinuxExecutionObservationCollector {
             selected_post_iret_ordinal,
             ..Self::default()
         }
+    }
+
+    pub(crate) fn with_rdtsc_sample_rip(mut self, rip: Option<u64>) -> Self {
+        self.rdtsc_sample_rip = rip;
+        self
+    }
+
+    pub(crate) fn record_rdtsc_site_sample(
+        &mut self,
+        rip: Option<u64>,
+        state: &od_isa::LongModeState,
+    ) {
+        let Some(rip) = rip.filter(|rip| Some(*rip) == self.rdtsc_sample_rip) else {
+            return;
+        };
+        if self.rdtsc_site_samples.len() >= LINUX_RDTSC_SAMPLE_CAPACITY {
+            self.rdtsc_site_samples_omitted = self.rdtsc_site_samples_omitted.saturating_add(1);
+            return;
+        }
+
+        use od_isa::Register;
+        let rax = state.gpr[Register::Rax as usize] & u64::from(u32::MAX);
+        let rdx = state.gpr[Register::Rdx as usize] & u64::from(u32::MAX);
+        let observed_tsc = (rdx << 32) | rax;
+        let start_tsc = state.gpr[Register::Rdi as usize];
+        self.rdtsc_site_samples.push(RdtscSiteSample {
+            rip,
+            requested_cycles: state.gpr[Register::R8 as usize],
+            start_tsc,
+            observed_tsc,
+            elapsed_cycles: observed_tsc.wrapping_sub(start_tsc),
+            rbp: state.gpr[Register::Rbp as usize],
+            rsp: state.gpr[Register::Rsp as usize],
+            cr3: state.cr3,
+        });
     }
 
     pub(crate) fn record_cpl0_rdtsc(&mut self, rip: Option<u64>) {
@@ -214,6 +274,9 @@ impl LinuxExecutionObservationCollector {
                 .into_iter()
                 .map(|(rip, reads)| RdtscSiteCount { rip, reads })
                 .collect(),
+            rdtsc_sample_rip: self.rdtsc_sample_rip,
+            rdtsc_site_samples: self.rdtsc_site_samples,
+            rdtsc_site_samples_omitted: self.rdtsc_site_samples_omitted,
             rdtsc_cpl0_unattributed_reads: self.rdtsc_unattributed_reads,
             rdtsc_cpl0_site_overflow_reads: self.rdtsc_site_overflow_reads,
             page_faults_delivered: self.page_faults_delivered,
@@ -410,6 +473,55 @@ mod tests {
         );
         assert_eq!(observations.rdtsc_cpl0_site_overflow_reads, 1);
         assert_eq!(observations.rdtsc_cpl0_unattributed_reads, 1);
+    }
+
+    #[test]
+    fn selected_rdtsc_rip_keeps_post_instruction_context_and_caps_samples() {
+        use od_isa::{LongModeState, Register};
+
+        const RIP: u64 = 0xffff_ffff_8271_b34d;
+        let mut collector =
+            LinuxExecutionObservationCollector::default().with_rdtsc_sample_rip(Some(RIP));
+        let mut state = LongModeState::default();
+        state.gpr[Register::R8 as usize] = 0x1234;
+        state.gpr[Register::Rdi as usize] = 0xffff_ffff_ffff_ff00;
+        state.gpr[Register::Rdx as usize] = 0;
+        state.gpr[Register::Rax as usize] = 0x250;
+        state.gpr[Register::Rbp as usize] = 0x8000;
+        state.gpr[Register::Rsp as usize] = 0x7ff0;
+        state.cr3 = Some(0x9000);
+
+        collector.record_rdtsc_site_sample(Some(RIP + 2), &state);
+        collector.record_rdtsc_site_sample(Some(RIP), &state);
+        let observations = collector.finish();
+        assert_eq!(observations.rdtsc_sample_rip, Some(RIP));
+        assert_eq!(observations.rdtsc_site_samples.len(), 1);
+        assert_eq!(observations.rdtsc_site_samples_omitted, 0);
+        assert_eq!(
+            observations.rdtsc_site_samples[0],
+            RdtscSiteSample {
+                rip: RIP,
+                requested_cycles: 0x1234,
+                start_tsc: 0xffff_ffff_ffff_ff00,
+                observed_tsc: 0x250,
+                elapsed_cycles: 0x350,
+                rbp: 0x8000,
+                rsp: 0x7ff0,
+                cr3: Some(0x9000),
+            }
+        );
+
+        let mut capped =
+            LinuxExecutionObservationCollector::default().with_rdtsc_sample_rip(Some(RIP));
+        for _ in 0..=LINUX_RDTSC_SAMPLE_CAPACITY {
+            capped.record_rdtsc_site_sample(Some(RIP), &state);
+        }
+        let observations = capped.finish();
+        assert_eq!(
+            observations.rdtsc_site_samples.len(),
+            LINUX_RDTSC_SAMPLE_CAPACITY
+        );
+        assert_eq!(observations.rdtsc_site_samples_omitted, 1);
     }
 
     #[test]

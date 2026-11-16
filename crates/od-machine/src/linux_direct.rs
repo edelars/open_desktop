@@ -1179,6 +1179,26 @@ pub fn run_linux_direct_board_set_user_mode_with_execution_observations(
     instruction_budget: u64,
     members: LinuxCpl0SetMembers,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
+    run_linux_direct_board_set_user_mode_with_execution_observations_options(
+        boot,
+        input,
+        instruction_budget,
+        members,
+        None,
+        None,
+    )
+}
+
+/// One-shot user-mode run with execution observations and optional focused RDTSC and post-IRET
+/// captures. A selected RDTSC RIP records bounded post-instruction register samples only.
+pub fn run_linux_direct_board_set_user_mode_with_execution_observations_options(
+    boot: &mut LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    instruction_budget: u64,
+    members: LinuxCpl0SetMembers,
+    selected_post_iret_ordinal: Option<u64>,
+    selected_rdtsc_sample_rip: Option<u64>,
+) -> Result<LinuxStopRecord, LinuxDirectError> {
     run_linux_direct_board_set_with_post_iret_index(
         boot,
         input,
@@ -1187,7 +1207,8 @@ pub fn run_linux_direct_board_set_user_mode_with_execution_observations(
         true,
         None,
         true,
-        None,
+        selected_post_iret_ordinal,
+        selected_rdtsc_sample_rip,
     )
 }
 
@@ -1208,6 +1229,7 @@ pub fn run_linux_direct_board_set_user_mode_with_post_iret_index(
         None,
         true,
         Some(delivered_page_fault_ordinal),
+        None,
     )
 }
 
@@ -1229,6 +1251,7 @@ fn run_linux_direct_board_set_with(
         checkpoint_table,
         capture_execution_observations,
         None,
+        None,
     )
 }
 
@@ -1242,6 +1265,7 @@ fn run_linux_direct_board_set_with_post_iret_index(
     checkpoint_table: Option<LinuxCheckpointTable>,
     capture_execution_observations: bool,
     selected_post_iret_ordinal: Option<u64>,
+    selected_rdtsc_sample_rip: Option<u64>,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
     let pm_timer_reads_before = boot.board.acpi_pm().map(|pm| pm.timer_reads());
     // S4-39g: only the user-mode run of a board with the Linux-profile PIT and 8259 gets the
@@ -1468,6 +1492,7 @@ fn run_linux_direct_board_set_with_post_iret_index(
             members.irq,
             true,
             selected_post_iret_ordinal,
+            selected_rdtsc_sample_rip,
         )
     } else {
         boot.board.run_linux_boot_cpl0_set(

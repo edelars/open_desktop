@@ -142,6 +142,7 @@ struct SeriesCli {
     expected_stop_kind: String,
     expected_s5_marker_keys: Vec<String>,
     capture_execution_observations: bool,
+    execution_observations_rdtsc_rip: Option<u64>,
     out: PathBuf,
     forwarded: Vec<String>,
 }
@@ -193,6 +194,12 @@ pub(super) fn run(args: &[String]) -> ExitCode {
                 .to_string_lossy()
                 .into_owned(),
         ]);
+        if let Some(rip) = cli.execution_observations_rdtsc_rip {
+            preflight_args.extend([
+                "--execution-observations-rdtsc-rip".into(),
+                format!("0x{rip:x}"),
+            ]);
+        }
     }
     if let Err(error) = parse(&preflight_args) {
         return invalid_input(&error);
@@ -242,6 +249,12 @@ pub(super) fn run(args: &[String]) -> ExitCode {
                     .to_string_lossy()
                     .into_owned(),
             ]);
+            if let Some(rip) = cli.execution_observations_rdtsc_rip {
+                run_args.extend([
+                    "--execution-observations-rdtsc-rip".into(),
+                    format!("0x{rip:x}"),
+                ]);
+            }
         }
         let options = match parse(&run_args) {
             Ok(value) => value,
@@ -461,6 +474,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     let mut out = None;
     let mut expected_s5_marker_keys = Vec::new();
     let mut capture_execution_observations = false;
+    let mut execution_observations_rdtsc_rip = None;
     let mut forwarded = Vec::new();
     let mut index = 0;
     while index < args.len() {
@@ -500,6 +514,22 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
             .filter(|value| !value.starts_with("--"))
             .ok_or_else(|| format!("{name} requires a value"))?;
         match name {
+            "--execution-observations-rdtsc-rip" => {
+                if execution_observations_rdtsc_rip.is_some() {
+                    return Err("duplicate --execution-observations-rdtsc-rip".into());
+                }
+                let hex = value
+                    .strip_prefix("0x")
+                    .or_else(|| value.strip_prefix("0X"))
+                    .filter(|digits| !digits.is_empty())
+                    .ok_or_else(|| {
+                        format!("invalid --execution-observations-rdtsc-rip '{value}': expected 0x-prefixed hexadecimal")
+                    })?;
+                execution_observations_rdtsc_rip =
+                    Some(u64::from_str_radix(hex, 16).map_err(|_| {
+                        format!("invalid --execution-observations-rdtsc-rip '{value}'")
+                    })?);
+            }
             "--test-runs" => {
                 if requested_runs.is_some() {
                     return Err("duplicate --test-runs".into());
@@ -549,6 +579,9 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     if !forwarded.iter().any(|value| value == "--run") {
         return Err("series requires --run --budget".into());
     }
+    if execution_observations_rdtsc_rip.is_some() && !capture_execution_observations {
+        return Err("--execution-observations-rdtsc-rip needs --execution-observations".into());
+    }
     for key in &expected_s5_marker_keys {
         if !valid_marker_key(key) {
             return Err(format!("invalid --expected-s5-marker key '{key}'"));
@@ -582,6 +615,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
         expected_stop_kind,
         expected_s5_marker_keys,
         capture_execution_observations,
+        execution_observations_rdtsc_rip,
         out,
         forwarded,
     })
@@ -2320,6 +2354,32 @@ mod tests {
         execution_observations.push("--execution-observations".into());
         let parsed = parse_series_args(&execution_observations).unwrap();
         assert!(parsed.capture_execution_observations);
+        let mut selected_rdtsc = execution_observations.clone();
+        selected_rdtsc.extend([
+            "--execution-observations-rdtsc-rip".into(),
+            "0xffffffff8271b34d".into(),
+        ]);
+        let parsed = parse_series_args(&selected_rdtsc).unwrap();
+        assert!(parsed.capture_execution_observations);
+        assert_eq!(
+            parsed.execution_observations_rdtsc_rip,
+            Some(0xffff_ffff_8271_b34d)
+        );
+        let mut rdtsc_without_observations = base.clone();
+        rdtsc_without_observations
+            .extend(["--execution-observations-rdtsc-rip".into(), "0x1234".into()]);
+        assert!(
+            parse_series_args(&rdtsc_without_observations)
+                .unwrap_err()
+                .contains("needs --execution-observations")
+        );
+        let mut invalid_rdtsc = execution_observations.clone();
+        invalid_rdtsc.extend(["--execution-observations-rdtsc-rip".into(), "1234".into()]);
+        assert!(
+            parse_series_args(&invalid_rdtsc)
+                .unwrap_err()
+                .contains("0x-prefixed")
+        );
         execution_observations.push("--execution-observations".into());
         assert!(
             parse_series_args(&execution_observations)

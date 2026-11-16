@@ -72,8 +72,7 @@ use od_machine::{
     LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput,
     LinuxExecutionObservations, LinuxStopRecord, MachineStopReason, load_linux_direct_board,
     run_linux_direct_board, run_linux_direct_board_set_observed,
-    run_linux_direct_board_set_user_mode_with_execution_observations,
-    run_linux_direct_board_set_user_mode_with_post_iret_index,
+    run_linux_direct_board_set_user_mode_with_execution_observations_options,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -89,7 +88,7 @@ pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-post-iret-index <n>]]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex>]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -141,6 +140,8 @@ struct Options {
     execution_observations_out: Option<String>,
     /// Zero-based delivered-#PF ordinal for the opt-in post-IRET page-walk snapshot.
     execution_observations_post_iret_index: Option<u64>,
+    /// Selected CPL0 RDTSC RIP for bounded post-instruction register samples.
+    execution_observations_rdtsc_rip: Option<u64>,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -594,20 +595,14 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                     ..LinuxCpl0SetMembers::linux_default()
                 };
                 let run_started = std::time::Instant::now();
-                let result = if let Some(index) = options.execution_observations_post_iret_index {
-                    run_linux_direct_board_set_user_mode_with_post_iret_index(
+                let result = if options.execution_observations_out.is_some() {
+                    run_linux_direct_board_set_user_mode_with_execution_observations_options(
                         &mut boot,
                         &machine_input,
                         budget,
                         members,
-                        index,
-                    )
-                } else if options.execution_observations_out.is_some() {
-                    run_linux_direct_board_set_user_mode_with_execution_observations(
-                        &mut boot,
-                        &machine_input,
-                        budget,
-                        members,
+                        options.execution_observations_post_iret_index,
+                        options.execution_observations_rdtsc_rip,
                     )
                 } else if options.set_cpl0 {
                     run_linux_direct_board_set_observed(
@@ -1203,6 +1198,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut stack_context_out = None;
     let mut execution_observations_out = None;
     let mut execution_observations_post_iret_index = None;
+    let mut execution_observations_rdtsc_rip = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1287,6 +1283,22 @@ fn parse(args: &[String]) -> Result<Options, String> {
                     .replace(parsed)
                     .is_some()
                 {
+                    return Err(format!("duplicate option {name}; usage: {USAGE}"));
+                }
+                index += 2;
+                continue;
+            }
+            "--execution-observations-rdtsc-rip" => {
+                let hex = value
+                    .strip_prefix("0x")
+                    .or_else(|| value.strip_prefix("0X"))
+                    .filter(|digits| !digits.is_empty())
+                    .ok_or_else(|| {
+                        format!("invalid --execution-observations-rdtsc-rip '{value}': expected 0x-prefixed hexadecimal")
+                    })?;
+                let parsed = u64::from_str_radix(hex, 16)
+                    .map_err(|_| format!("invalid --execution-observations-rdtsc-rip '{value}'"))?;
+                if execution_observations_rdtsc_rip.replace(parsed).is_some() {
                     return Err(format!("duplicate option {name}; usage: {USAGE}"));
                 }
                 index += 2;
@@ -1386,6 +1398,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--execution-observations-post-iret-index needs --execution-observations-out; usage: {USAGE}"
         ));
     }
+    if execution_observations_rdtsc_rip.is_some() && execution_observations_out.is_none() {
+        return Err(format!(
+            "--execution-observations-rdtsc-rip needs --execution-observations-out; usage: {USAGE}"
+        ));
+    }
     // The board loop accepts both observers, but the public execution-observation runs of
     // od-machine do not take a checkpoint table and the pair is untested (ISSUE-108); refuse it
     // explicitly rather than drop one of the two.
@@ -1453,6 +1470,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         stack_context_out,
         execution_observations_out,
         execution_observations_post_iret_index,
+        execution_observations_rdtsc_rip,
     })
 }
 
@@ -1878,10 +1896,11 @@ fn write_execution_observations_sidecar(
     observations: &LinuxExecutionObservations,
 ) -> Result<(), String> {
     let value = json!({
-        "schema_version": 5,
-        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, and an optional selected post-IRET page-walk snapshot",
+        "schema_version": 6,
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, and optional post-instruction registers at one selected CPL0 RDTSC RIP",
         "limits": {
             "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
+            "rdtsc_site_samples": od_machine::LINUX_RDTSC_SAMPLE_CAPACITY,
             "page_fault_events": od_machine::LINUX_PAGE_FAULT_EVENT_CAPACITY,
             "frame_links_per_page_fault": od_machine::LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY,
             "page_walk_entries_per_fault": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
@@ -1893,6 +1912,18 @@ fn write_execution_observations_sidecar(
         })).collect::<Vec<_>>(),
         "rdtsc_cpl0_unattributed_reads": observations.rdtsc_cpl0_unattributed_reads,
         "rdtsc_cpl0_site_overflow_reads": observations.rdtsc_cpl0_site_overflow_reads,
+        "rdtsc_sample_rip": observations.rdtsc_sample_rip.map(hex64),
+        "rdtsc_site_samples": observations.rdtsc_site_samples.iter().map(|sample| json!({
+            "rip": hex64(sample.rip),
+            "requested_cycles": hex64(sample.requested_cycles),
+            "start_tsc": hex64(sample.start_tsc),
+            "observed_tsc": hex64(sample.observed_tsc),
+            "elapsed_cycles": hex64(sample.elapsed_cycles),
+            "rbp": hex64(sample.rbp),
+            "rsp": hex64(sample.rsp),
+            "cr3": sample.cr3.map(hex64),
+        })).collect::<Vec<_>>(),
+        "rdtsc_site_samples_omitted": observations.rdtsc_site_samples_omitted,
         "page_faults_delivered": observations.page_faults_delivered,
         "page_fault_events": observations.page_fault_events.iter().map(|event| json!({
             "rip": hex64(event.rip),
@@ -2123,6 +2154,7 @@ mod tests {
                 stack_context_out: None,
                 execution_observations_out: None,
                 execution_observations_post_iret_index: None,
+                execution_observations_rdtsc_rip: None,
             };
             Self { dir, options }
         }
@@ -3752,6 +3784,23 @@ mod tests {
             accepted.execution_observations_out.as_deref(),
             Some("observations.json")
         );
+        let selected_rip = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-rdtsc-rip",
+                    "0xffffffff8271b34d",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(
+            selected_rip.execution_observations_rdtsc_rip,
+            Some(0xffff_ffff_8271_b34d)
+        );
         let selected = parse_base(
             &[
                 &run[..],
@@ -3767,6 +3816,22 @@ mod tests {
         .unwrap();
         assert_eq!(selected.execution_observations_post_iret_index, Some(30));
         assert!(parse_base(&["--execution-observations-post-iret-index", "30"]).is_err());
+        assert!(parse_base(&["--execution-observations-rdtsc-rip", "0x1234"]).is_err());
+        assert!(
+            parse_base(
+                &[
+                    &run[..],
+                    &[
+                        "--execution-observations-out",
+                        "observations.json",
+                        "--execution-observations-rdtsc-rip",
+                        "1234"
+                    ],
+                ]
+                .concat(),
+            )
+            .is_err()
+        );
         assert!(
             parse_base(
                 &[
@@ -4403,6 +4468,18 @@ mod tests {
                 rip: 0xffff_ffff_8100_1234,
                 reads: 19,
             }],
+            rdtsc_sample_rip: Some(0xffff_ffff_8271_b34d),
+            rdtsc_site_samples: vec![od_machine::RdtscSiteSample {
+                rip: 0xffff_ffff_8271_b34d,
+                requested_cycles: 0x1234,
+                start_tsc: 0x1000,
+                observed_tsc: 0x1235,
+                elapsed_cycles: 0x235,
+                rbp: 0x3000,
+                rsp: 0x2000,
+                cr3: Some(0x4000),
+            }],
+            rdtsc_site_samples_omitted: 7,
             rdtsc_cpl0_unattributed_reads: 2,
             rdtsc_cpl0_site_overflow_reads: 3,
             page_faults_delivered: 5,
@@ -4466,7 +4543,7 @@ mod tests {
         write_execution_observations_sidecar(&mut file, path.to_str().unwrap(), &observations)
             .unwrap();
         let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema_version"], 5);
+        assert_eq!(value["schema_version"], 6);
         assert_eq!(value["post_iret_selected_ordinal"], 3);
         assert_eq!(value["post_iret_page_walk_status"], "captured");
         assert_eq!(
@@ -4499,6 +4576,17 @@ mod tests {
         assert_eq!(value["rdtsc_cpl0_sites"][0]["rip"], "0xffffffff81001234");
         assert_eq!(value["rdtsc_cpl0_sites"][0]["reads"], 19);
         assert_eq!(value["rdtsc_cpl0_site_overflow_reads"], 3);
+        assert_eq!(
+            value["limits"]["rdtsc_site_samples"],
+            od_machine::LINUX_RDTSC_SAMPLE_CAPACITY
+        );
+        assert_eq!(value["rdtsc_sample_rip"], "0xffffffff8271b34d");
+        assert_eq!(value["rdtsc_site_samples"][0]["requested_cycles"], "0x1234");
+        assert_eq!(value["rdtsc_site_samples"][0]["start_tsc"], "0x1000");
+        assert_eq!(value["rdtsc_site_samples"][0]["observed_tsc"], "0x1235");
+        assert_eq!(value["rdtsc_site_samples"][0]["elapsed_cycles"], "0x235");
+        assert_eq!(value["rdtsc_site_samples"][0]["cr3"], "0x4000");
+        assert_eq!(value["rdtsc_site_samples_omitted"], 7);
         assert_eq!(value["page_faults_delivered"], 5);
         assert_eq!(value["page_fault_events"][0]["rip"], "0xffffffff81005678");
         assert_eq!(value["page_fault_events"][0]["cr2"], "0x402000");
@@ -5103,6 +5191,7 @@ mod tests {
             stack_context_out: None,
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
+            execution_observations_rdtsc_rip: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -5152,6 +5241,7 @@ mod tests {
             stack_context_out: None,
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
+            execution_observations_rdtsc_rip: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -5205,6 +5295,7 @@ mod tests {
             stack_context_out: None,
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
+            execution_observations_rdtsc_rip: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -5279,6 +5370,7 @@ mod tests {
             stack_context_out: None,
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
+            execution_observations_rdtsc_rip: None,
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");
