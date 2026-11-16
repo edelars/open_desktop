@@ -1965,8 +1965,14 @@
       "status": "accepted_bounded_profile",
       "mode": "Long64",
       "cpl": 0,
-      "accepted_bytes": ["87 /r memory dword", "F0 87 /r memory dword"],
-      "gate": "Selected Cpl0ProfileSet member, Ring0, operand_size=Dword, no REX.W, opcode 87 memory form; no 66/67 or segment prefixes, at most one LOCK group-1 prefix; address/fault/commit rules are the bounded CPU_CONTRACT rules. One vCPU with synchronous memory; no multi-vCPU atomicity. Static candidate matching does not infer runtime address validity or CPL3 support.",
+      "families": [
+        {
+          "task": "S4-38L9p",
+          "encoding": "[REX] 87 /r dword memory; optional F0 LOCK",
+          "gate": "Selected Cpl0ProfileSet member, Ring0, operand_size=Dword, no REX.W; no 66/67 or segment prefixes, at most one LOCK group-1 prefix; address/fault/commit rules are the bounded CPU_CONTRACT rules. One vCPU with synchronous memory; no multi-vCPU atomicity.",
+          "outcome": "Accepted bounded CPL0 form; do not infer runtime address validity or CPL3 support."
+        }
+      ],
       "outcome": "Accepted Stage 4 profile. The observed S5-21 overlay covers only the 13 exact unprefixed base-only forms recorded in the compact inventories; matching rows stay unclassified and outside evidence_scope/proven_supported.",
       "source": [
         "docs/specs/CPU_CONTRACT.md:24992-25015",

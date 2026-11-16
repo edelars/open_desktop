@@ -46,6 +46,17 @@ def exact_form(prefix, modrm, address, count, binary, classification):
 
 
 class NormalizedFormTests(unittest.TestCase):
+    def test_profile_registry_matcher_bytes_are_exact_and_l9p_is_family_scoped(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        registry = json.loads((repo_root / "tools/build/stage5_isa_profile_forms.json").read_text())
+        exact_matchers, exclusion_matchers = analyzer.profile_matcher_maps(registry)
+        self.assertTrue(exact_matchers)
+        self.assertTrue(all(all(0 <= byte <= 0xFF for byte in key) for key in exact_matchers))
+        self.assertTrue(all(all(0 <= byte <= 0xFF for byte in key) for key in exclusion_matchers))
+        l9p = next(profile for profile in registry["profiles"] if profile["task"] == "S4-38L9p")
+        self.assertNotIn("accepted_bytes", l9p)
+        self.assertEqual(l9p["families"][0]["encoding"], "[REX] 87 /r dword memory; optional F0 LOCK")
+
     def test_cpl0_candidate_annotation_roundtrips_head_compacts_and_binary_maps(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         cases = (
