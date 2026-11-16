@@ -27622,3 +27622,10 @@ Five focused tests cover ZF and definedness, branch/fall-through targets, taken-
 Base `PagedCpl0ProbeV1` admits only exact `4C 8B 54 08 08`. REX.W/R select qword R10; SIB computes 64-bit RAX + RCX + signed disp8 8. The tracked qword read commits R10 and RIP only after success, preserving flags and other registers. Canonicality and read faults leave architectural state unchanged. Neighboring registers, address tuples, displacements, widths and prefixes, CPL3 and other paged profiles remain unsupported.
 
 Six focused profile tests cover effective address/value, full state, read/noncanonical/fetch faults, neighboring forms and CPL3/profile isolation. Two machine tests verify the four-level accessed/no-dirty read behavior and an unmapped-data #PF without destination commit. Firmware advances after 8,978 retired instructions to `44 89 F5` (`MOV EBP,R14D`, ISSUE-282) at RIP `0x201632`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `MOV EBP,R14D` (ISSUE-282)
+
+Base `PagedCpl0ProbeV1` admits only exact `44 89 F5`. REX.R extends the ModRM reg source to R14D; ModRM r/m selects EBP. The dword write zero-extends RBP. Only RBP/RIP change, with flags/definedness and other GPRs preserved. Final ModRM-byte fetch faults are atomic. Other register routes, directions, widths and prefixes, CPL3 and other paged profiles remain unsupported.
+
+Four focused tests cover R14D source selection and high dword values, EBP zero-extension, full state/flag preservation, final-byte fetch-fault atomicity, neighboring encodings and CPL3/profile isolation. Firmware advances after 8,979 retired instructions to `44 09 D5` (`OR EBP,R10D`, ISSUE-283) at RIP `0x201635`; COM1 remains empty. Independent review approved with no findings.

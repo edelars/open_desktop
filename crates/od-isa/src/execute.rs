@@ -21440,6 +21440,28 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: the helper copies R14D into EBP with exact `44 89 F5`.
+        // REX.R selects the source register; the dword EBP write zero-extends RBP.
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x89
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x44),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rbp, OperandSize::Dword)
+            && source == RegisterView::low(Register::R14, OperandSize::Dword) =>
+        {
+            let value = state.read(source);
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: the Rust helper copies R12D to R9D with exact `45 89 E1`;
         // writing the 32-bit destination zero-extends R9.
         Operation::Mov {

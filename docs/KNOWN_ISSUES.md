@@ -4107,8 +4107,18 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-282 — S7-04: exact helper `MOV EBP,R14D` (`44 89 F5`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-281.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201632`.
-- **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact dword register move; subsequent firmware execution is blocked.
+- **Статус:** реализована в S7-04; независимое ревью одобрило изменение без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact `44 89 F5`; REX.R selects R14D as the source and the dword EBP write zero-extends RBP.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1632` are `44 89 F5`; runner budget 10000.
-- **Проверки исполнения:** after ISSUE-281, firmware retires 8,978 instructions and stops with `Unsupported { opcode: 137 }`; COM1 remains empty.
-- **Следующий шаг:** admit only the exact R14D-to-EBP copy and validate dword zero-extension and state preservation.
+- **Проверки исполнения:** four focused tests cover REX.R source selection, dword zero-extension, state/flags, final-byte fetch-fault atomicity, neighbors and CPL3; the other-paged-profile matrix keeps it unsupported. Firmware retires 8,979 instructions and advances to `44 09 D5` (`OR EBP,R10D`, ISSUE-283) at RIP `0x201635`; COM1 remains empty. Independent review approved with no findings.
+- **Следующий шаг:** handle exact `OR EBP,R10D` as ISSUE-283.
+
+
+### ISSUE-283 — S7-04: exact helper `OR EBP,R10D` (`44 09 D5`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-282.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201635`.
+- **Статус:** открыта.
+- **Суть и последствия:** the base profile does not yet admit this exact dword logical OR register form; subsequent firmware execution is blocked.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x1635` are `44 09 D5`; runner budget 10000.
+- **Проверки исполнения:** after ISSUE-282, firmware retires 8,979 instructions and stops with `Unsupported { opcode: 9 }`; COM1 remains empty.
+- **Следующий шаг:** admit only this exact OR form and validate dword result, flags/definedness and EBP zero-extension.
