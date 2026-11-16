@@ -892,10 +892,20 @@
 ### ISSUE-200 — S7-04: Rust helper `TEST R15B,7` (`41 F6 C7 07`) remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `MOV R15D,dword ptr [RSI+0x30]`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e76`.
-- **Статус:** открыта.
-- **Суть и последствия:** runner retired 8882 instructions and stopped at `41 F6 C7 07`, `Unsupported { opcode: 246 }`, `RIP=0x200e76`; COM1 remains empty.
+- **Статус:** решена узко для exact `41 F6 C7 07` в base `PagedCpl0ProbeV1`; ожидает независимого review. Остальные TEST формы остаются вне allowlist.
+- **Суть и результат:** exact byte TEST computes `R15B & 7` through shared logic semantics, changes only CF/PF/ZF/SF/OF and preserves all GPRs; AF keeps its concrete value but becomes undefined in `rflags_defined`. Neighboring immediates/registers/widths/prefixes, memory forms and CPL3 remain unsupported.
+- **Проверка:** four focused `rust_helper_test_r15b_imm8_*` tests and all 478 `paged_probe_profile` tests passed. Coverage checks resulting logical flags, undefined AF, unchanged R15 and complete state, final-imm8 fetch-fault atomicity, neighboring forms and CPL3 isolation. Firmware image `/private/tmp/od-fw-s7-04-issue200.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; runner retired 8883 and stopped at `74 64` (`JZ rel8 +0x64`, ISSUE-202), RIP `0x200e7a`, `Unsupported { opcode: 116 }`, `com1_bytes=0`; full handoff validation remains incomplete. `cargo check`, scoped rustfmt and diff-check results are recorded in the Stage 7 report.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue199.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xe76` are `41 f6 c7 07`; runner budget 10000.
-- **Следующий шаг:** inspect exact TEST group/register/width and flag semantics before considering narrow admission.
+- **Следующий шаг:** independently review the exact TEST admission and continue S7-04 at ISSUE-202.
+- **Ссылка:** [S7-04 exact TEST R15B slice](reports/STAGE_7_REPORT.md#s7-04-cpu-profile-slice-exact-rust-helper-test-r15b7-issue-200).
+
+### ISSUE-202 — S7-04: Rust helper `JZ rel8 +0x64` (`74 64`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact `TEST R15B,7`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e7a`.
+- **Статус:** открыта.
+- **Суть и последствия:** runner retired 8883 instructions and stopped at `74 64`, `Unsupported { opcode: 116 }`, `RIP=0x200e7a`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue200.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xe7a` are `74 64`; runner budget 10000.
+- **Следующий шаг:** inspect exact JZ condition, signed target/fall-through and flag-definedness before considering narrow admission.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.
