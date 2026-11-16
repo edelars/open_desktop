@@ -1049,6 +1049,45 @@ fn paged_probe_mov_rsp_disp8_rsi_store_uses_tracked_four_level_walk() {
 }
 
 #[test]
+fn paged_probe_mov_rsi_rsp_disp8_load_uses_tracked_four_level_walk() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x48, 0x8b, 0x74, 0x24, 0x10]);
+    let value = 0x0123_4567_89ab_cdefu64;
+    put_bytes_at(&mut bus, DATA_PHYSICAL + 0x10, &value.to_le_bytes());
+    let mut state = initial_state(0);
+    state.gpr[Register::Rsp as usize] = DATA_LINEAR;
+    state.gpr[Register::Rsi as usize] = 0xfeed_face_cafe_beef;
+    let before = state.clone();
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.page_fault, None);
+    assert_eq!(result.memory_error, None);
+    let mut expected = before;
+    expected.gpr[Register::Rsi as usize] = value;
+    expected.rip += 5;
+    assert_eq!(state, expected);
+    assert!(!writes.contains(&range(DATA_PHYSICAL + 0x10)));
+    assert!(writes.contains(&range(0x1000)));
+    assert!(writes.contains(&range(0x2000)));
+    assert!(writes.contains(&range(0x3010)));
+    assert!(writes.contains(&range(0x4000)));
+    assert!(writes.contains(&range(0x3020)));
+    assert!(writes.contains(&range(0x5000)));
+    assert_eq!(qword(&mut bus, ROOT), ROOT + 0x1007 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x1000), ROOT + 0x2007 | (1 << 5));
+    let data_pde = qword(&mut bus, ROOT + 0x2020);
+    assert_ne!(data_pde & (1 << 5), 0);
+    assert_eq!(data_pde & (1 << 6), 0, "read does not set dirty");
+    let data_pte = qword(&mut bus, ROOT + 0x4000);
+    assert_ne!(data_pte & (1 << 5), 0);
+    assert_eq!(data_pte & (1 << 6), 0, "read does not set dirty");
+}
+
+#[test]
 fn paged_probe_mov_rsp_disp8_rsi_write_protection_fault_is_atomic() {
     let (mut bus, _) = fixture();
     put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x48, 0x89, 0x74, 0x24, 0x10]);

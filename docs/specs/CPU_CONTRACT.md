@@ -27078,7 +27078,7 @@ Checks: four focused `rust_helper_test_r15b_imm8_*` tests cover result flags for
 
 Base `PagedCpl0ProbeV1` admits only no-prefix bytes `74 64`: short opcode `74`, displacement `+0x64`. Shared `ConditionCode::Equal` tests ZF and leaves RFLAGS and `rflags_defined` unchanged, including when ZF is undefined. ZF=1 selects `next_rip+0x64`; ZF=0 selects the fall-through. Only a taken target is canonicality-checked. Neighboring displacements/opcodes, prefixes, near branches and other profiles remain unsupported.
 
-Five focused tests cover both outcomes with defined and undefined ZF, complete-state retention, taken-only canonicality, rel8 fetch-fault atomicity, neighboring encodings and CPL3 isolation. Firmware now advances to ISSUE-203: `41 81 FF A0 00 00 00` at RIP `0x200ee0`.
+Six focused tests cover both outcomes with defined and undefined ZF, complete-state retention, taken-only canonicality, rel8 fetch-fault atomicity, neighboring encodings and CPL3 isolation. Firmware now advances to ISSUE-203: `41 81 FF A0 00 00 00` at RIP `0x200ee0`.
 
 
 ### S7-04: exact Rust-helper `CMP R15D,0xA0` (ISSUE-203)
@@ -27092,7 +27092,7 @@ Four focused tests cover flag values/definedness, complete-state retention, fina
 
 Base `PagedCpl0ProbeV1` admits only no-prefix bytes `72 4C`. Shared `ConditionCode::Below` tests CF and leaves RFLAGS and `rflags_defined` unchanged. CF=1 selects `next_rip+0x4c`; CF=0 selects fall-through. Only a taken target is canonicality-checked. Other conditions/displacements, prefixes, near branches, CPL3 and other profiles remain unsupported.
 
-Five focused tests cover taken/not-taken paths with CF defined and undefined, full state retention, target/fall-through, taken-only canonicality including deferred noncanonical fall-through, rel8 fetch-fault atomicity, adjacent forms and CPL3 isolation. Firmware now advances to ISSUE-205: `4C 89 F7` (`MOV RDI,R14`) at RIP `0x200ee9`.
+Six focused tests cover taken/not-taken paths with CF defined and undefined, full state retention, target/fall-through, taken-only canonicality including deferred noncanonical fall-through, rel8 fetch-fault atomicity, adjacent forms and CPL3 isolation. Firmware now advances to ISSUE-205: `4C 89 F7` (`MOV RDI,R14`) at RIP `0x200ee9`.
 
 
 ### S7-04: exact Rust-helper `MOV RDI,R14` (ISSUE-205)
@@ -27127,7 +27127,7 @@ Four focused tests cover equality, borrow, parity and signed overflow flags, com
 
 Base `PagedCpl0ProbeV1` admits only exact no-prefix bytes `77 3D`: short `JA/JNBE`, signed displacement +0x3d. The shared `ConditionCode::Above` condition is `CF=0 && ZF=0`. The branch preserves RFLAGS and `rflags_defined`; it selects `next_rip+0x3d` when taken and fall-through otherwise. Only a taken target is canonicality-checked. Other displacements, conditions, prefixes, near forms, CPL3 and other profiles remain unsupported.
 
-Five focused tests cover all CF/ZF combinations with defined and undefined inputs, exact target/fall-through and full-state retention, taken-only canonicality, rel8 fetch-fault atomicity, adjacent conditions/displacements/prefixes and CPL3 isolation. All 508 `paged_probe_profile` tests pass; all `od-isa` package suites pass. Scoped check, Rust 2024 rustfmt and diff-check pass. The full `od-machine` suite reports 1,195 passed, 2 failed, 6 ignored; both failures are the registered ISSUE-201 stale CLD expectations (actual unsupported opcode 250, expected 252). Firmware now advances to ISSUE-210: `44 8B 6E 3C` (`MOV R13D,dword ptr [RSI+0x3c]`) at RIP `0x200ef8`.
+Six focused tests cover all CF/ZF combinations with defined and undefined inputs, exact target/fall-through and full-state retention, taken-only canonicality, rel8 fetch-fault atomicity, adjacent conditions/displacements/prefixes and CPL3 isolation. All 508 `paged_probe_profile` tests pass; all `od-isa` package suites pass. Scoped check, Rust 2024 rustfmt and diff-check pass. The full `od-machine` suite reports 1,195 passed, 2 failed, 6 ignored; both failures are the registered ISSUE-201 stale CLD expectations (actual unsupported opcode 250, expected 252). Firmware now advances to ISSUE-210: `44 8B 6E 3C` (`MOV R13D,dword ptr [RSI+0x3c]`) at RIP `0x200ef8`.
 
 
 ### S7-04: exact Rust-helper `MOV R13D,dword ptr [RSI+0x3c]` (ISSUE-210)
@@ -27229,7 +27229,7 @@ Four focused tests cover equality, less-than, greater-than, signed overflow, val
 
 Base `PagedCpl0ProbeV1` admits only the exact no-prefix bytes `72 2A`. The shared branch condition reads CF only; the branch leaves all RFLAGS and definedness unchanged, sets RIP to the signed-rel8 target when CF=1 and to fall-through when CF=0, and checks canonicality only for the taken target. Neighboring displacements/conditions, prefixed and rel32 forms, CPL3 and other profiles remain unsupported.
 
-Five focused tests cover taken/not-taken targets with defined and undefined CF, state/definedness retention, taken-only canonicality, rel8 fetch-fault atomicity, neighbors and CPL3; other-profile isolation passes. Firmware advances to ISSUE-225: `4B 8D 04 64` (`LEA RAX,[R12+R12*2]`) at RIP `0x200f90`.
+Six focused tests cover taken/not-taken targets with defined and undefined CF, state/definedness retention, taken-only canonicality, rel8 fetch-fault atomicity, neighbors and CPL3; other-profile isolation passes. Firmware advances to ISSUE-225: `4B 8D 04 64` (`LEA RAX,[R12+R12*2]`) at RIP `0x200f90`.
 
 
 ### S7-04: exact Rust-helper `LEA RAX,[R12+R12*2]` (ISSUE-225)
@@ -27264,7 +27264,7 @@ Four focused tests cover equality, borrow, signed overflow, high-bit qword opera
 
 Base `PagedCpl0ProbeV1` admits only exact no-prefix `77 1A`. The shared JA condition reads CF=0 and ZF=0, preserves RFLAGS and definedness, selects the taken signed-rel8 target or fall-through, and checks canonicality only for a taken target. Other displacements/conditions, prefixes/near form, CPL3 and other profiles remain unsupported.
 
-Five focused tests cover the CF/ZF truth table with defined and undefined flags, state preservation, taken-only canonicality, rel8 fetch-fault atomicity, neighbors and CPL3; other-profile isolation passes. Firmware advances to ISSUE-230: `4C 39 EF` (`CMP RDI,R13`) at RIP `0x200fa0`.
+Six focused tests cover the CF/ZF truth table with defined and undefined flags, state preservation, taken-only canonicality, rel8 fetch-fault atomicity, neighbors and CPL3; other-profile isolation passes. Firmware advances to ISSUE-230: `4C 39 EF` (`CMP RDI,R13`) at RIP `0x200fa0`.
 
 ### S7-04: exact Rust-helper `CMP RDI,R13` (ISSUE-230)
 
@@ -27276,7 +27276,7 @@ Four focused tests cover equality, borrow, signed overflow, high-bit qword opera
 
 Base `PagedCpl0ProbeV1` admits only exact no-prefix `76 22`. The shared JBE condition reads CF=1 or ZF=1, preserves RFLAGS and definedness, selects the signed rel8 target or fall-through, and checks canonicality only for a taken target. Other displacements/conditions, prefixes/near form, CPL3 and other profiles remain unsupported.
 
-Five focused tests cover the CF/ZF truth table with defined and undefined flags, state preservation, taken-only canonicality, rel8 fetch-fault atomicity, neighbors and CPL3; other-profile isolation passes. Firmware advances to ISSUE-232: `89 1C 24` (`MOV dword ptr [RSP],EBX`) at RIP `0x200fc7`.
+Six focused tests cover the CF/ZF truth table with defined and undefined flags, state preservation, taken-only canonicality, rel8 fetch-fault atomicity, neighbors and CPL3; other-profile isolation passes. Firmware advances to ISSUE-232: `89 1C 24` (`MOV dword ptr [RSP],EBX`) at RIP `0x200fc7`.
 
 ### S7-04: exact Rust-helper `MOV dword ptr [RSP],EBX` (ISSUE-232)
 
@@ -27290,3 +27290,10 @@ Five focused ISA tests cover exact bytes/address/value, state preservation, inje
 Base `PagedCpl0ProbeV1` admits only exact `48 8D 7C 24 18`. The REX.W qword SIB form computes `RSP + 0x18` into RDI. It does not access memory or check canonicality; only RDI and RIP change, while flags and their definedness remain unchanged. Neighboring displacements, indexed forms (including REX.X), displacement widths, prefixes, CPL3 and other profiles stay unsupported.
 
 Four focused profile tests cover effective-address/state behavior, fetch-fault atomicity, nearby SIB/displacement/prefix forms and CPL3; other-profile isolation is covered by the existing profile suite. Full od-isa suites and all 49 `paged_probe_quantum` machine tests pass. Firmware advances to ISSUE-234: `48 8B 74 24 10` (`MOV RSI,qword ptr [RSP+0x10]`) at RIP `0x200fcf`, after 8916 retired instructions.
+
+
+### S7-04: exact Rust-helper `MOV RSI,qword ptr [RSP+0x10]` (ISSUE-234)
+
+Base `PagedCpl0ProbeV1` admits only exact `48 8B 74 24 10`. REX.W selects qword width, ModRM selects RSI, and SIB selects RSP as base with no index and disp8 `0x10`. The operation reads through the tracked memory path, then commits RSI/RIP; a data fault leaves CPU state unchanged. Other GPRs and flags/definedness are preserved. Neighbor registers/displacements/addressing forms, widths, prefixes, CPL3 and other profiles remain unsupported.
+
+Six focused tests cover qword result/state, injected read-fault, instruction-fetch-fault and noncanonical/cross-boundary #SS(0) atomicity, adjacent displacement/register/index/width/prefix forms and CPL3; other-profile isolation passes. A four-level machine test confirms the qword value is loaded, page-walk accessed bits are set, and dirty bits remain clear. Full od-isa and paged-quantum suites pass. Firmware advances to ISSUE-235: `48 8B 54 24 30` (`MOV RDX,qword ptr [RSP+0x30]`) at RIP `0x200fd4`, after 8917 retired instructions.
