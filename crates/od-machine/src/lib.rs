@@ -237,8 +237,8 @@ pub use paged_memory_adapter::{
     PagedMovStepError, PagedMovStepReport, PagedMovStoreScope, PagedStateOpStepReport,
     PagedStoreRefusal, step_paged_hlt, step_paged_invlpg, step_paged_mov, step_paged_mov_2m_ram,
     step_paged_mov_dword_read, step_paged_mov_dword_store, step_paged_mov_word_read,
-    step_paged_mov_word_read_cross_page_fetch, step_paged_sti, with_paged_mov_memory,
-    with_paged_mov_store_memory,
+    step_paged_mov_word_read_cross_page_fetch, step_paged_sti, with_paged_mov_dword_memory,
+    with_paged_mov_memory, with_paged_mov_store_memory,
 };
 pub use paged_pio_step::{PagedPioU8StepReport, step_paged_pio_u8};
 pub use paged_probe::{

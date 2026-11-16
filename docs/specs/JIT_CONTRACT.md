@@ -4634,6 +4634,35 @@ the next entry re-fetches and compares bytes, page and generation. A store into
 the active block (S4-16i), more forms (S4-15e), reset/handle (S4-15f) and the
 closing contract text (S4-15g) are not part of this slice.
 
+### S4-15e: wider operand forms through `execute_forms`
+
+`PagedFetchedLoadSession::execute_forms` admits, from the same tracked fetch
+snapshot and the same reuse key (RIP, physical page, generation, bytes), the
+forms below; the S4-15b/c/d entries are unchanged. The instruction length is
+not fixed: 2 bytes are fetched first, then 3, then 4 or 7 as the opcode needs
+(code that does not fit the 4 KiB page of RIP is a `Fetch(InvalidLength)`
+refusal, not a fault). The effective address is the full 64-bit base (RBX, or
+the RIP of the *next* instruction) plus the sign-extended displacement,
+computed on every call from the CPU state, never stored in the block; the host
+executor checks the published metadata against the form and cross-checks the
+decoder's address. The operand must lie inside one 4 KiB page (checked after
+the fetch, before any data walk).
+
+| Form | Bytes | Operand | JIT | Interpreter paged allowlist |
+|---|---|---|---|---|
+| `MOV RAX,[RBX]` | `48 8B 03` | qword | yes | yes |
+| `MOV [RBX],RAX` | `48 89 03` | qword | yes (S4-15d) | no (`48 89 0B` only) |
+| `MOV EAX,[RBX]` | `8B 03` | dword, zero-extended into RAX | yes (`with_paged_mov_dword_memory`) | yes (dword profile) |
+| `MOV RAX,[RBX+disp8]` | `48 8B 43 ib` | qword | yes | no |
+| `MOV RAX,[RBX+disp32]` | `48 8B 83 id` | qword | yes | no |
+| `MOV RAX,[RIP+disp32]` | `48 8B 05 id` | qword | yes | no |
+| `67`-prefixed forms, stores with a displacement, dword with a displacement | | | `UnsupportedForm` | no (wait for `od-isa`) |
+
+There is no interpreter fallback on this entry: the interpreter has no
+displacement or RIP-relative form. Multi-instruction blocks, 2 MiB code pages,
+the dispatcher integration, reset/handle (S4-15f) and the closing contract text
+(S4-15g) are not part of this slice.
+
 ### S4-16a: production tracked loader patch for two inactive code aliases
 
 `od-host::PagedCodeSession` borrows one `MachineBus` exclusively and fixes one

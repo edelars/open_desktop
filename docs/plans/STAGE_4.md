@@ -667,6 +667,24 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   reset/handle (15f), закрытие (15g) не сделаны. См. раздел S4-15d в
   [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
 
+#### S4-15e. Расширение допустимых форм: dword, disp8/disp32, RIP-relative
+
+- Реализовано (ожидает независимого ревью, чекбокс S4-15 не ставится):
+  новый вход `PagedFetchedLoadSession::execute_forms` (старые входы не менялись)
+  допускает из того же fetch-снимка `8B 03` (dword, zero-extend в RAX),
+  `48 8B 43 ib`, `48 8B 83 id` (qword `[RBX+disp]`) и `48 8B 05 id` (qword
+  `[RIP+disp32]`, от RIP следующей инструкции) вместе с `48 8B 03` / `48 89 03`.
+  Эффективный адрес считается заново на каждом вызове из RIP и регистров;
+  operand range проверяется после fetch от эффективного адреса. Dword читается
+  через `od_machine::with_paged_mov_dword_memory`. Остальные формы
+  (`67`-формы, store со смещением, dword со смещением) — `UnsupportedForm`: в
+  интерпретаторе их нет, ждут форм в `od-isa`. Тесты `s4_15e_*` (13); oracle для
+  dword — `step_paged_mov_dword_read`, для disp/RIP-relative — эквивалентный
+  `48 8B 03` с RBX = эффективный адрес. Не сделаны: интеграция в
+  `execute_or_interpret`, многоинструкционные блоки, 2 MiB код-страницы,
+  reset/handle (15f), закрытие (15g). См. раздел S4-15e в
+  [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
+
 ### S4-16. Physical aliases и инвалидация исполняемого кода
 
 - [ ] Принято после ревью.
