@@ -872,3 +872,10 @@ With exact `0F 85 AE 00 00 00` admitted, the Stage 7 firmware runner retires 9,0
 With exact `41 8B 6C 04 E8` admitted, the runner retires 9,041 instructions and stops at RIP `0x201776`, bytes `31 F6` (`XOR ESI,ESI`, ISSUE-332), `Unsupported { opcode: 49 }`. Runner image `/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1 output remains empty.
 
 The admitted load uses a 64-bit SIB effective address `R12 + RAX - 0x18`, with signed disp8 and a tracked dword read. It writes EBP with the loaded low dword, thereby zero-extending RBP; it preserves flags. Read or fetch faults do not partially update CPU state. The exact form remains limited to the base `PagedCpl0ProbeV1` profile.
+
+
+### Stage 7 runner frontier after ISSUE-332
+
+With exact `31 F6` admitted, the firmware runner retires 9,044 instructions and stops at RIP `0x201782`, bytes `45 31 ED` (`XOR R13D,R13D`, ISSUE-333), `Unsupported { opcode: 49 }`. Image `/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1 remains empty.
+
+The admitted instruction is dword ESI self-XOR: ESI and thus all of RSI become zero. Shared XOR semantics set CF/OF=0, ZF/PF=1, SF=0 and mark AF undefined while preserving its concrete bit. Only RSI and the logical flags/AF definedness change, along with RIP. Admission remains exact and base-profile-only.

@@ -22658,7 +22658,8 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         // S7-04: `_start` clears EAX (`31 C0`) and ECX (`31 C9`); the Rust
         // helper clears R10D (`45 31 D2`) and R11D (`45 31 DB`), combines
         // R14D into R9D (`45 31 F1`), and combines R15D into R14D (`45 31 FE`).
-        // It also clears R14D with exact self-XOR `45 31 F6`.
+        // It also clears R14D with exact self-XOR `45 31 F6`, and the
+        // helper clears ESI with no-prefix self-XOR `31 F6`.
         // Admit only these dword forms.
         // Writes zero-extend; AF remains concrete but undefined per shared XOR logic.
         Operation::Logic {
@@ -22717,7 +22718,11 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     })
                     && instruction.length == 3
                     && destination == RegisterView::low(Register::R14, OperandSize::Dword)
-                    && source == RegisterView::low(Register::R14, OperandSize::Dword))) =>
+                    && source == RegisterView::low(Register::R14, OperandSize::Dword))
+                || (instruction.prefixes == Prefixes::default()
+                    && instruction.length == 2
+                    && destination == RegisterView::low(Register::Rsi, OperandSize::Dword)
+                    && source == RegisterView::low(Register::Rsi, OperandSize::Dword))) =>
         {
             let lhs = state.read(destination);
             let rhs = state.read(source);

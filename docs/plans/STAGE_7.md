@@ -728,6 +728,10 @@
 
 Current bounded CPU-profile progress: ISSUE-331 admits only `41 8B 6C 04 E8` (`MOV EBP,dword ptr [R12+RAX-0x18]`) in `PagedCpl0ProbeV1`. Tests cover the tracked dword read, RBP zero-extension, faults, exact-neighbor/CPL/profile isolation and four-level paging A/D behavior. The firmware runner advances from 9,040 to 9,041 retired instructions and stops at ISSUE-332, `31 F6` (`XOR ESI,ESI`) at RIP `0x201776`, with empty COM1. This CPU compatibility slice does not change the broader UEFI task status or claim full firmware handoff completion. ISSUE-201's unrelated stale CLD expectations remain open; see `KNOWN_ISSUES.md`.
 
+### S7-04 firmware CPU handoff progress: ISSUE-332
+
+Current bounded CPU-profile progress: exact no-prefix `31 F6` (`XOR ESI,ESI`) is admitted in `PagedCpl0ProbeV1`. It zeroes ESI and therefore zero-extends RSI; shared logic semantics clear CF/OF, set ZF/PF, clear SF and leave AF undefined. Four focused tests cover multiple upper-RSI values, flag/definedness behavior, fetch-fault atomicity and neighbors/CPL/profile isolation. Firmware advances to ISSUE-333, `45 31 ED` (`XOR R13D,R13D`) at RIP `0x201782` after 9,044 retired instructions; COM1 remains empty. This does not change the broader UEFI task status. ISSUE-201's unrelated stale CLD expectations remain open; see `KNOWN_ISSUES.md`.
+
 ## 9. Готовый промпт на одну задачу
 
 ```text
