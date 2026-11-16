@@ -4017,8 +4017,18 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-273 — S7-04: exact helper `TEST EBP,EBP` (`85 ED`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-272.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20160C`.
-- **Статус:** открыта.
-- **Суть и последствия:** base `PagedCpl0ProbeV1` does not yet admit the exact dword self-TEST on EBP.
+- **Статус:** реализована в S7-04; независимое ревью одобрило изменение без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits only exact no-prefix `85 ED` (`TEST EBP,EBP`). It writes no GPRs; shared dword TEST semantics clear CF/OF, set SF/ZF/PF from EBP, preserve AF's concrete bit while marking AF undefined, and preserve unrelated flags/definedness.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x160C` are `85 ED`; runner budget 10000.
-- **Проверки исполнения:** firmware retires 8,967 instructions and stops with `Unsupported { opcode: 133 }`; COM1 remains empty.
-- **Следующий шаг:** admit only exact EBP,EBP dword TEST and verify logical flag/definedness behavior for ISSUE-273.
+- **Проверки исполнения:** four focused tests cover result flags/AF definedness and GPR preservation, ModRM fetch-fault atomicity, neighbor/prefix/width forms and CPL3; other paged profiles keep it unsupported. Firmware retires 8,968 instructions and advances to `41 0F 94 C6` (`SETE R14B`) at RIP `0x20160E`; COM1 remains empty.
+- **Следующий шаг:** admit only exact REX.B SETE R14B and validate ZF/partial-byte semantics for ISSUE-274.
+
+
+### ISSUE-274 — S7-04: exact helper `SETE R14B` (`41 0F 94 C6`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-273.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20160E`.
+- **Статус:** открыта.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` does not yet admit the exact ZF-conditioned byte write to R14B.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x160E` are `41 0F 94 C6`; runner budget 10000.
+- **Проверки исполнения:** firmware retires 8,968 instructions and stops with `Unsupported { opcode: 148 }`; COM1 remains empty.
+- **Следующий шаг:** admit exact SETE R14B, preserving upper R14 and flags/definedness, for ISSUE-274.
