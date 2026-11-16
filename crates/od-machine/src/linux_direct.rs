@@ -15240,6 +15240,221 @@ mod tests {
         }
     }
 
+    // ---- S6-12b: NMI through vector 2, blocking until IRETQ, one remembered NMI ----
+
+    mod nmi {
+        use super::irq_hook::{CLD, IRQ_HANDLER_AT, IRQ_IDT_AT, irq_board};
+        use super::*;
+        use crate::FirmwareBoardError;
+        use crate::vcpu::NmiBoundary;
+        use od_isa::{StiProfile, StiShadow};
+
+        /// ICR_LOW of an NMI to the physical APIC ID in ICR_HIGH (delivery mode 100).
+        const NMI_ICR: u32 = 4 << 8;
+        const IRETQ: [u8; 2] = [0x48, 0xCF];
+
+        /// A board whose entry is eight `CLD`s, IF = 1 (the IRQ board), with the IDT gate of
+        /// vector 2 an interrupt gate (CS 0x10) to a handler that is one `IRETQ`.
+        fn nmi_board() -> LinuxDirectBoot {
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            write_phys(&mut boot, IRQ_HANDLER_AT, &IRETQ);
+            let mut gate = [0u8; 16];
+            gate[0..2].copy_from_slice(&(IRQ_HANDLER_AT as u16).to_le_bytes());
+            gate[2..4].copy_from_slice(&0x10u16.to_le_bytes());
+            gate[5] = 0x8E;
+            gate[6..8].copy_from_slice(&((IRQ_HANDLER_AT >> 16) as u16).to_le_bytes());
+            write_phys(&mut boot, IRQ_IDT_AT + 2 * 16, &gate);
+            boot
+        }
+
+        /// An NMI IPI from vCPU 0 to the APIC ID 0 (itself: physical addressing names an ID).
+        fn send_nmi(boot: &LinuxDirectBoot) {
+            boot.board
+                .local_apic()
+                .write_icr(0, 0, NMI_ICR)
+                .expect("NMI IPI");
+        }
+
+        /// Run `budget` instructions of the set from the board's state and keep the result.
+        fn run(boot: &mut LinuxDirectBoot, budget: u64) -> PagedCpl0SetReport {
+            let cli = CliProfile::NonPviLong64V1;
+            let sti = StiProfile::NonPviLong64V1;
+            let set = minimal_set(&cli).with_sti(&sti);
+            let (state, report) = run_set(boot, true, budget, &set);
+            assert_eq!(report.instructions_executed, budget, "{report:?}");
+            *boot.board.state_mut() = state;
+            report
+        }
+
+        #[test]
+        fn an_nmi_is_delivered_through_vector_2_whatever_the_interrupt_flag() {
+            for interrupt_flag in [0, 1 << 9] {
+                let mut boot = nmi_board();
+                boot.board.state_mut().rflags = 2 | interrupt_flag;
+                let rsp = boot.board.state().gpr[Register::Rsp as usize];
+                assert_eq!(
+                    boot.board.deliver_pending_nmi(0),
+                    Ok(NmiBoundary::NoPending)
+                );
+                send_nmi(&boot);
+                assert!(boot.board.local_apic().pending_nmi());
+                assert_eq!(
+                    boot.board.deliver_pending_nmi(0),
+                    Ok(NmiBoundary::Delivered)
+                );
+                // The handler has control: RIP is the gate offset, CS the gate selector, the
+                // frame (RIP, CS, RFLAGS, old RSP, SS) is on the stack, IF is cleared and the
+                // latch is free again.
+                let state = boot.board.state().clone();
+                assert_eq!(state.rip, IRQ_HANDLER_AT);
+                assert_eq!(state.cs_selector, Some(0x10));
+                assert!(state.nmi_blocked);
+                assert_eq!(state.rflags & (1 << 9), 0);
+                let frame = state.gpr[Register::Rsp as usize];
+                assert_eq!(frame, (rsp & !15) - 40);
+                assert_eq!(read_qword(&mut boot, frame), ENTRY);
+                assert_eq!(read_qword(&mut boot, frame + 8), 0x10);
+                assert_eq!(read_qword(&mut boot, frame + 16) & (1 << 9), interrupt_flag);
+                assert_eq!(read_qword(&mut boot, frame + 24), rsp);
+                assert!(!boot.board.local_apic().pending_nmi());
+            }
+        }
+
+        #[test]
+        fn the_second_nmi_during_the_handler_is_delivered_after_iretq_and_the_third_is_lost() {
+            let mut boot = nmi_board();
+            let rsp = boot.board.state().gpr[Register::Rsp as usize];
+            // First NMI: delivered, the handler (one IRETQ) has not run yet.
+            send_nmi(&boot);
+            assert_eq!(
+                boot.board.deliver_pending_nmi(0),
+                Ok(NmiBoundary::Delivered)
+            );
+            assert_eq!(boot.board.state().rip, IRQ_HANDLER_AT);
+            // Second and third NMI arrive during the handler: one is remembered, the other lost.
+            // NMI blocking holds the remembered one: no second frame, RIP and RSP unchanged.
+            send_nmi(&boot);
+            send_nmi(&boot);
+            let in_handler = boot.board.state().clone();
+            assert_eq!(boot.board.deliver_pending_nmi(0), Ok(NmiBoundary::Held));
+            assert_eq!(*boot.board.state(), in_handler);
+            assert!(boot.board.local_apic().pending_nmi());
+            // The handler's IRETQ retires: blocking ends and the interrupted code is resumed.
+            run(&mut boot, 1);
+            let state = boot.board.state().clone();
+            assert!(!state.nmi_blocked);
+            assert_eq!(state.rip, ENTRY);
+            assert_eq!(state.gpr[Register::Rsp as usize], rsp);
+            assert!(boot.board.local_apic().pending_nmi(), "still waiting");
+            // The second NMI is delivered now: the handler has control again.
+            assert_eq!(
+                boot.board.deliver_pending_nmi(0),
+                Ok(NmiBoundary::Delivered)
+            );
+            assert_eq!(boot.board.state().rip, IRQ_HANDLER_AT);
+            assert!(boot.board.state().nmi_blocked);
+            assert!(!boot.board.local_apic().pending_nmi());
+            // After the second IRETQ nothing waits: the third NMI was lost.
+            run(&mut boot, 1);
+            assert_eq!(boot.board.state().rip, ENTRY);
+            assert_eq!(
+                boot.board.deliver_pending_nmi(0),
+                Ok(NmiBoundary::NoPending)
+            );
+            assert_eq!(boot.board.state().rip, ENTRY);
+            assert!(!boot.board.state().nmi_blocked);
+        }
+
+        #[test]
+        fn an_nmi_under_the_sti_shadow_waits_one_instruction_and_is_never_dropped() {
+            let mut boot = nmi_board();
+            boot.board.state_mut().sti_shadow = Some(StiShadow::Blocking);
+            send_nmi(&boot);
+            let before = boot.board.state().clone();
+            assert_eq!(boot.board.deliver_pending_nmi(0), Ok(NmiBoundary::Held));
+            assert_eq!(*boot.board.state(), before);
+            assert!(boot.board.local_apic().pending_nmi());
+            // One `CLD` retires and ends the shadow; then the NMI is delivered.
+            run(&mut boot, 1);
+            assert_eq!(
+                boot.board.deliver_pending_nmi(0),
+                Ok(NmiBoundary::Delivered)
+            );
+            assert_eq!(boot.board.state().rip, IRQ_HANDLER_AT);
+        }
+
+        #[test]
+        fn a_halted_vcpu_wakes_for_an_nmi() {
+            let mut boot = nmi_board();
+            boot.board.state_mut().activity = Some(CpuActivity::Halted);
+            // IF = 0: only an NMI can wake it.
+            boot.board.state_mut().rflags = 2;
+            send_nmi(&boot);
+            assert_eq!(
+                boot.board.deliver_pending_nmi(0),
+                Ok(NmiBoundary::Delivered)
+            );
+            assert_eq!(boot.board.state().activity, Some(CpuActivity::Running));
+            assert_eq!(boot.board.state().rip, IRQ_HANDLER_AT);
+        }
+
+        #[test]
+        fn a_state_that_is_not_modelled_is_an_error_not_a_hold() {
+            // Activity `None` and STI shadow `None` say nothing about the processor: the board
+            // does not guess a hold, it refuses before any change and the NMI stays pending.
+            let mut boot = nmi_board();
+            boot.board.state_mut().activity = None;
+            send_nmi(&boot);
+            let before = boot.board.state().clone();
+            assert_eq!(
+                boot.board.deliver_pending_nmi(0),
+                Err(FirmwareBoardError::Config(
+                    "deliver_pending_nmi: vCPU activity not modelled"
+                ))
+            );
+            assert_eq!(*boot.board.state(), before);
+            assert!(boot.board.local_apic().pending_nmi());
+
+            let mut boot = nmi_board();
+            boot.board.state_mut().sti_shadow = None;
+            send_nmi(&boot);
+            let before = boot.board.state().clone();
+            assert_eq!(
+                boot.board.deliver_pending_nmi(0),
+                Err(FirmwareBoardError::Config(
+                    "deliver_pending_nmi: STI shadow not modelled"
+                ))
+            );
+            assert_eq!(*boot.board.state(), before);
+            assert!(boot.board.local_apic().pending_nmi());
+        }
+
+        #[test]
+        fn a_gate_that_cannot_deliver_is_an_error_and_the_nmi_stays_pending() {
+            let mut boot = nmi_board();
+            write_phys(&mut boot, IRQ_IDT_AT + 2 * 16, &[0u8; 16]);
+            send_nmi(&boot);
+            let before = boot.board.state().clone();
+            let error = boot.board.deliver_pending_nmi(0).expect_err("no gate");
+            assert!(
+                matches!(
+                    &error,
+                    FirmwareBoardError::ExternalInterruptDelivery { vector: 2, failure, .. }
+                        if failure == "Refused(GateNotPresent)"
+                ),
+                "{error:?}"
+            );
+            assert_eq!(*boot.board.state(), before);
+            assert!(boot.board.local_apic().pending_nmi());
+            assert_eq!(
+                boot.board.deliver_pending_nmi(7),
+                Err(FirmwareBoardError::Config(
+                    "deliver_pending_nmi: no such vCPU"
+                ))
+            );
+        }
+    }
+
     // ---- S4-38L8c: the PIT -> IOAPIC INTIN2 source on a synthetic guest ----
 
     /// The source of the board (PIT OUT0 -> IOAPIC INTIN2 -> Local APIC) driven by a flat guest

@@ -29238,6 +29238,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             let before = state.clone();
             assert_eq!(

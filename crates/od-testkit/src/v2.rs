@@ -1247,6 +1247,12 @@ impl TryFrom<&LongModeState> for IntegerState {
                 reason: "wait-for-SIPI activity is not represented by this snapshot schema".into(),
             });
         }
+        if state.nmi_blocked {
+            return Err(FormatError::InvalidField {
+                field: "state.nmi_blocked",
+                reason: "NMI blocking is not represented by this snapshot schema".into(),
+            });
+        }
         if state.cr2.is_some() {
             return Err(FormatError::InvalidField {
                 field: "state.cr2",
@@ -1984,6 +1990,7 @@ impl IntegerState {
                 ) => Some(sse.to_cpu()?),
                 _ => None,
             },
+            nmi_blocked: false,
         })
     }
 
@@ -2004,6 +2011,12 @@ impl IntegerState {
             return Err(invalid(
                 "state.activity",
                 "wait-for-SIPI activity is not representable in the V2 snapshot format",
+            ));
+        }
+        if state.nmi_blocked {
+            return Err(invalid(
+                "state.nmi_blocked",
+                "NMI blocking is not representable in the V2 snapshot format",
             ));
         }
         match (profile, state.kernel_gs_base) {

@@ -24,6 +24,7 @@ use crate::linux_checkpoints::{
     CheckpointRecorder, LinuxCheckpointRecord, LinuxCheckpointTable, LinuxCheckpointTableError,
 };
 use crate::page_walk::translate_long64_2m_ram_read_only;
+use crate::paged_memory_adapter::deliver_nmi_at_boundary;
 use crate::paged_memory_adapter::{
     IrqDeliveryFailure, PagedCpl0SetExit, run_cpl0_set_paged_2m_ram_observed_with_sweep,
 };
@@ -32,7 +33,7 @@ use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
 use crate::pit_pic_irq_source::PitPicIrqSource;
 use crate::uart_ioapic_irq_source::UartIoapicIrqSource;
 use crate::uart_pic_irq_source::UartPicIrqSource;
-use crate::vcpu::{BOOT_VCPU_INDEX, MAX_VCPUS, StartupApplied, Vcpu, vcpu_set};
+use crate::vcpu::{BOOT_VCPU_INDEX, MAX_VCPUS, NmiBoundary, StartupApplied, Vcpu, vcpu_set};
 use crate::{
     ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AbsentPortRegion, AbsentPorts,
     AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError, DISPLAY_FRAMEBUFFER_BASE,
@@ -1254,6 +1255,104 @@ impl LoadedFirmwareBoard {
             .take_startup()
             .map_err(|_| FirmwareBoardError::Config("apply_pending_startup: INIT reset failed"))?;
         Ok(vcpu.apply_startup(pending))
+    }
+
+    /// The vCPU `index` delivers the NMI waiting in its own Local APIC through vector 2 on its own
+    /// boundary (S6-12b), if it can: nothing waits (`NoPending`); the vCPU holds the NMI back, so
+    /// the latch stays set (`Held`, only for architectural holds: NMI blocked until the running
+    /// handler executes `IRETQ`, an STI shadow in force (`Some(Blocking)`), or an activity that
+    /// takes no NMI: `Shutdown`, `WaitForSipi`); or the frame is on the guest stack and the vCPU
+    /// is in the handler (`Delivered`: the latch is taken, `nmi_blocked` is set, a `Halted` vCPU
+    /// is `Running`). Nothing calls it on a schedule yet: the scheduler of S6-15 does, before it
+    /// picks a vCPU, together with [`Self::apply_pending_startup`]; until then tests call it by
+    /// hand. A gate that cannot deliver (not present, IST other than 0, a failed frame store) and
+    /// a state the board cannot deliver through are errors, not holds: a state that is not
+    /// modelled (activity or STI shadow `None`), a vCPU with a real-mode state (`real_mode` is
+    /// `Some`: NMI in real mode is not modelled, S6-16), paging the walker rejects (the EFER is
+    /// the vCPU's own `guest_efer`). On an error the vCPU is unchanged and the NMI stays pending,
+    /// never silently dropped.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn deliver_pending_nmi(
+        &mut self,
+        index: usize,
+    ) -> Result<NmiBoundary, FirmwareBoardError> {
+        use od_isa::Cpl0ExternalInterruptDelivery as Delivery;
+        use od_isa::Cpl0ExternalInterruptRefusal as Refusal;
+        const NO_VCPU: FirmwareBoardError =
+            FirmwareBoardError::Config("deliver_pending_nmi: no such vCPU");
+        let apic = self.lapic.for_cpu(index).ok_or(NO_VCPU)?;
+        let vcpu = self.vcpus.get_mut(index).ok_or(NO_VCPU)?;
+        if !apic.pending_nmi() {
+            return Ok(NmiBoundary::NoPending);
+        }
+        // Holds first, only for what the architecture itself holds back: NMI blocking, and an
+        // activity that takes no NMI (`Shutdown`, `WaitForSipi`; an application processor that
+        // waits for SIPI has no paging to deliver through and must not be an error). A state the
+        // board does not model (activity `None`) is not a hold but an error, before any change.
+        if vcpu.state.nmi_blocked {
+            return Ok(NmiBoundary::Held);
+        }
+        match vcpu.state.activity {
+            Some(CpuActivity::Running | CpuActivity::Halted) => {}
+            Some(CpuActivity::Shutdown | CpuActivity::WaitForSipi) => {
+                return Ok(NmiBoundary::Held);
+            }
+            None => {
+                return Err(FirmwareBoardError::Config(
+                    "deliver_pending_nmi: vCPU activity not modelled",
+                ));
+            }
+        }
+        // A started application processor (or one reset by INIT) holds its state in
+        // `real_mode`; the long-mode `state` is not rewritten from it, so delivering through the
+        // long-mode IDT would be wrong. Real-mode NMI delivery is not modelled (S6-16).
+        if vcpu.real_mode.is_some() {
+            return Err(FirmwareBoardError::Config(
+                "deliver_pending_nmi: NMI in real mode not modelled",
+            ));
+        }
+        match vcpu.state.sti_shadow {
+            Some(od_isa::StiShadow::Clear) => {}
+            Some(od_isa::StiShadow::Blocking) => return Ok(NmiBoundary::Held),
+            None => {
+                return Err(FirmwareBoardError::Config(
+                    "deliver_pending_nmi: STI shadow not modelled",
+                ));
+            }
+        }
+        // The walker's EFER is the vCPU's own guest EFER (the guest may change only `SCE`).
+        let paging =
+            Long64ProbeConfig::from_cpu_state(&vcpu.state, self.page_table_root, vcpu.guest_efer)
+                .map_err(|_| {
+                FirmwareBoardError::Config("deliver_pending_nmi: no paging for the vCPU")
+            })?;
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: if vcpu.state.cs_selector.is_some_and(|cs| cs & 3 == 3) {
+                PrivilegeLevel::Ring3
+            } else {
+                PrivilegeLevel::Ring0
+            },
+            origin: AccessOrigin::Explicit,
+        };
+        let failure =
+            |vcpu: &Vcpu, failure: String| FirmwareBoardError::ExternalInterruptDelivery {
+                vector: od_isa::NMI_VECTOR,
+                failure,
+                rip: vcpu.state.rip,
+                cs_selector: vcpu.state.cs_selector,
+            };
+        match deliver_nmi_at_boundary(&mut vcpu.state, &mut self.bus, &paging, context) {
+            Delivery::Delivered { .. } => {
+                apic.take_nmi();
+                Ok(NmiBoundary::Delivered)
+            }
+            // The holds above already decided these; kept as holds, never as drops.
+            Delivery::Refused(Refusal::NmiBlocked | Refusal::StiShadowActive) => {
+                Ok(NmiBoundary::Held)
+            }
+            other => Err(failure(vcpu, format!("{other:?}"))),
+        }
     }
 
     pub fn bus_mut(&mut self) -> &mut MachineBus {

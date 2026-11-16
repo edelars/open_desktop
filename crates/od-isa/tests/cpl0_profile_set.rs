@@ -54779,3 +54779,239 @@ fn segment_push_is_not_reachable_from_cpl3() {
     assert_eq!(state, before);
     assert!(memory.reads.is_empty() && memory.writes.is_empty());
 }
+
+// ---- S6-12b: NMI delivery through vector 2 and NMI blocking until IRETQ ------
+
+const NMI_GATE_VECTOR: u8 = 2;
+
+/// `ext_state` with IDT gate 2 an interrupt gate to `EXT_HANDLER` (the handler is `IRETQ`).
+fn nmi_state() -> (LongModeState, LretqMemory) {
+    let (state, mut memory) = ext_state();
+    ext_put_gate(
+        &mut memory,
+        NMI_GATE_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 0, 0x8e),
+    );
+    (state, memory)
+}
+
+fn nmi_deliver(
+    state: &mut LongModeState,
+    memory: &mut LretqMemory,
+) -> od_isa::Cpl0ExternalInterruptDelivery {
+    od_isa::deliver_nmi_cpl0_set(state, memory, context(PrivilegeLevel::Ring0))
+}
+
+#[test]
+fn nmi_uses_vector_two_ignores_if_writes_the_frame_and_sets_blocking() {
+    assert_eq!(od_isa::NMI_VECTOR, 2);
+    // IF = 0: a maskable interrupt is refused, the NMI is delivered.
+    let (mut state, mut memory) = nmi_state();
+    state.rflags = 0x4_0243 & !IF;
+    let before = state.clone();
+    assert!(!before.nmi_blocked);
+    let delivered = nmi_deliver(&mut state, &mut memory);
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0ExternalInterruptDelivery::Delivered {
+            target_rip: EXT_HANDLER,
+            new_rsp: PF_RSP - 40,
+        }
+    );
+    // The frame is the one of an external interrupt: SS, old RSP, RFLAGS (no IF here), CS, RIP.
+    assert_eq!(pf_qword(&memory, PF_RSP - 8), 0x18);
+    assert_eq!(pf_qword(&memory, PF_RSP - 16), PF_RSP);
+    assert_eq!(pf_qword(&memory, PF_RSP - 24), 0x4_0043);
+    assert_eq!(pf_qword(&memory, PF_RSP - 32), 0x10);
+    assert_eq!(pf_qword(&memory, PF_RSP - 40), before.rip);
+    assert_eq!(memory.writes, 5);
+    assert_eq!(
+        memory.reads[0],
+        (PF_IDT + 2 * 16, 8, AccessOrigin::DescriptorTable),
+        "the gate of vector 2 is read"
+    );
+    assert_eq!(state.rip, EXT_HANDLER);
+    assert_eq!(state.gpr[Register::Rsp as usize], PF_RSP - 40);
+    assert!(state.nmi_blocked);
+    // The same state refuses a maskable interrupt.
+    let (mut masked, mut masked_memory) = nmi_state();
+    masked.rflags &= !IF;
+    assert_eq!(
+        ext_deliver(&mut masked, &mut masked_memory),
+        od_isa::Cpl0ExternalInterruptDelivery::Refused(
+            od_isa::Cpl0ExternalInterruptRefusal::InterruptsMasked
+        )
+    );
+    // With IF = 1 the NMI is delivered as well, IF is cleared by the interrupt gate.
+    let (mut state, mut memory) = nmi_state();
+    assert!(matches!(
+        nmi_deliver(&mut state, &mut memory),
+        od_isa::Cpl0ExternalInterruptDelivery::Delivered { .. }
+    ));
+    assert_eq!(state.rflags & IF, 0);
+    assert_ne!(pf_qword(&memory, PF_RSP - 24) & IF, 0);
+}
+
+#[test]
+fn a_second_nmi_is_refused_while_blocked_and_delivered_after_iretq() {
+    use od_isa::Cpl0ExternalInterruptDelivery as D;
+    use od_isa::Cpl0ExternalInterruptRefusal as R;
+    let (mut state, mut memory) = nmi_state();
+    state.rflags = 0x4_0243;
+    let start = state.clone();
+    assert!(matches!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Delivered { .. }
+    ));
+    assert!(state.nmi_blocked);
+    // Handler running (RIP = the IRETQ): the next NMI is refused before any write and nothing,
+    // the flag included, changes.
+    let during = state.clone();
+    let writes = memory.writes;
+    let ram = memory.ram.clone();
+    assert_eq!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Refused(R::NmiBlocked)
+    );
+    assert_eq!(
+        (state.clone(), memory.writes, memory.ram.clone()),
+        (during, writes, ram)
+    );
+    // A maskable interrupt is not gated by NMI blocking (IF is clear here: refused for IF).
+    assert_eq!(
+        ext_deliver(&mut state, &mut memory),
+        D::Refused(R::InterruptsMasked)
+    );
+    // The handler's IRETQ retires: blocking ends, the CPU is back at the interrupted RIP.
+    let result = run_lretq(&mut state, &mut memory);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert!(!state.nmi_blocked);
+    assert_eq!(state, start);
+    // The NMI that waited is delivered now, with the same frame as the first.
+    assert_eq!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Delivered {
+            target_rip: EXT_HANDLER,
+            new_rsp: PF_RSP - 40,
+        }
+    );
+    assert!(state.nmi_blocked);
+}
+
+#[test]
+fn a_refused_or_aborted_nmi_does_not_set_blocking() {
+    use od_isa::Cpl0ExternalInterruptDelivery as D;
+    use od_isa::Cpl0ExternalInterruptRefusal as R;
+    // The one-instruction STI shadow holds the NMI back (conservative), as does an unknown one.
+    for shadow in [Some(StiShadow::Blocking), None] {
+        let (mut state, mut memory) = nmi_state();
+        state.sti_shadow = shadow;
+        let before = state.clone();
+        assert_eq!(
+            nmi_deliver(&mut state, &mut memory),
+            D::Refused(R::StiShadowActive)
+        );
+        assert_eq!((state, memory.writes), (before, 0));
+    }
+    // IST != 0 in the gate is not modelled.
+    let (mut state, mut memory) = nmi_state();
+    ext_put_gate(
+        &mut memory,
+        NMI_GATE_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 2, 0x8e),
+    );
+    let before = state.clone();
+    assert_eq!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Refused(R::UnsupportedIst(2))
+    );
+    assert_eq!((state, memory.writes), (before, 0));
+    // No gate (P = 0).
+    let (mut state, mut memory) = nmi_state();
+    ext_put_gate(&mut memory, NMI_GATE_VECTOR, [0; 16]);
+    let before = state.clone();
+    assert_eq!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Refused(R::GateNotPresent)
+    );
+    assert_eq!(state, before);
+    // The first frame store fails: the CPU is unchanged and NMI delivery is not blocked.
+    let (mut state, mut memory) = nmi_state();
+    memory.fail_write_number = Some(1);
+    let before = state.clone();
+    assert!(matches!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Aborted {
+            phase: od_isa::Cpl0ExternalInterruptPhase::StackWrite { .. },
+            ..
+        }
+    ));
+    assert_eq!(state, before);
+    assert!(!state.nmi_blocked);
+}
+
+#[test]
+fn nmi_wakes_a_halted_cpu_and_leaves_other_activities_untouched() {
+    use od_isa::Cpl0ExternalInterruptDelivery as D;
+    use od_isa::Cpl0ExternalInterruptRefusal as R;
+    let (mut state, mut memory) = nmi_state();
+    state.activity = Some(CpuActivity::Halted);
+    // IF is irrelevant to the wake-up: a halted CPU with IF = 0 takes the NMI.
+    state.rflags &= !IF;
+    assert!(matches!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Delivered { .. }
+    ));
+    assert_eq!(state.activity, Some(CpuActivity::Running));
+    assert!(state.nmi_blocked);
+    assert_eq!(state.rip, EXT_HANDLER);
+    // A halted CPU that is NMI-blocked stays halted and nothing is delivered.
+    let (mut state, mut memory) = nmi_state();
+    state.activity = Some(CpuActivity::Halted);
+    state.nmi_blocked = true;
+    let before = state.clone();
+    assert_eq!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Refused(R::NmiBlocked)
+    );
+    assert_eq!((state, memory.writes), (before, 0));
+    // Shutdown, WaitForSipi and an unknown activity are outside the profile.
+    for activity in [
+        Some(CpuActivity::Shutdown),
+        Some(CpuActivity::WaitForSipi),
+        None,
+    ] {
+        let (mut state, mut memory) = nmi_state();
+        state.activity = activity;
+        let before = state.clone();
+        assert_eq!(
+            nmi_deliver(&mut state, &mut memory),
+            D::Refused(R::ActivityOutsideProfile),
+            "{activity:?}"
+        );
+        assert_eq!((state, memory.writes), (before, 0), "{activity:?}");
+    }
+}
+
+#[test]
+fn nmi_from_cpl3_uses_tss_rsp0_and_blocks() {
+    let (mut state, mut memory) = u3_ext_state();
+    ext_put_gate(
+        &mut memory,
+        NMI_GATE_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 0, 0x8e),
+    );
+    let delivered =
+        od_isa::deliver_nmi_cpl0_set(&mut state, &mut memory, context(PrivilegeLevel::Ring3));
+    let frame = U3_RSP0 & !15;
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0ExternalInterruptDelivery::Delivered {
+            target_rip: EXT_HANDLER,
+            new_rsp: frame - 40,
+        }
+    );
+    assert_eq!(pf_qword(&memory, frame - 16), U3_USER_RSP);
+    assert!(state.nmi_blocked);
+}

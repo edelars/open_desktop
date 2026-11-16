@@ -306,6 +306,64 @@ GPR, EDX-сигнатура, GDTR/IDTR, LDTR/TR, CR3/CR4 из `legacy_mode.rs` (
 - Поведение BSP `activity: None` -> `Running` (`Vcpu::activity`) выбрано по смыслу «состояние активности не моделируется».
 - INIT-reset LAPIC обнуляет и ICR адресата, и LVT/таймер; точный список регистров по SDM §13.4.7.3 сверен по памяти.
 
+### S6-12b — NMI (реализовано, исправлено по ревью, ожидает повторного ревью)
+
+Дата: 2026-11-16. Чекбокс S6-12 в `STAGE_6.md` не отмечен (пункт 2 «Сделать» закрыт этим срезом, остальное принято в S6-12a). Контракт: [`MACHINE_CONTRACT.md`](../specs/MACHINE_CONTRACT.md#nmi-s6-12b), [`CPU_CONTRACT.md`](../specs/CPU_CONTRACT.md) (раздел S6-12b), [`SMP_CONTRACT.md`](../specs/SMP_CONTRACT.md) §5 и §7. SDM (§6.7.1, §10.8.1) — по памяти, источник в репозитории недоступен.
+
+Что сделано:
+- `od-isa/state.rs`: поле `LongModeState::nmi_blocked: bool` (по умолчанию `false`). Прочая семантика состояния не менялась; полные литералы `LongModeState { .. }` без `..Default` (85 в тестах `execute.rs`, по одному в `long_decode.rs`, `state.rs`, `od-testkit/src/execution_tests.rs`, `od-testkit/src/v2.rs`) получили `nmi_blocked: false`.
+- `od-isa/interrupt.rs`: `deliver_nmi_cpl0_set` и `NMI_VECTOR = 2`. Общее тело с `deliver_external_interrupt_cpl0_set` (то же `deliver_interrupt_through_gate`; внешний путь вызывает его с `nmi = false`, порядок проверок и результаты внешних прерываний не менялись). Для NMI: IF не условие; `nmi_blocked` — условие (`Cpl0ExternalInterruptRefusal::NmiBlocked`, новый вариант); `Halted` принимается и становится `Running`; `Shutdown`/`WaitForSipi`/неизвестная активность — `ActivityOutsideProfile`; STI-окно держит NMI (`StiShadowActive`). При `Delivered` ставится `nmi_blocked`.
+- Снятие блокировки: `IRETQ`. Путей два, точка фиксации в каждом одна: `iretq_cpl0` в `execute.rs` (CPL0-набор, включая возврат в CPL3 — `Retired` и `UserCommitted` проходят через одну фиксацию) и `step_iretq` в `iretq.rs` (локальные профили, paged и CPL3). Флаг сбрасывается только на фиксации; отказавший `IRETQ` его не меняет.
+- `od-machine/local_apic.rs`, `apic_pair.rs`: `State::pending_nmi` (одна защёлка); `IpiCommand::Nmi`; `decode_icr` режим `100`: physical без shorthand и All-but-self с `(Level, Trigger) = (0,0)`, поле вектора игнорируется; NMI Self/All и прочее — `UnsupportedConfiguration` до изменения состояния; `PairState::queue_nmi` (все или никто; глобально выключенный LAPIC адресата отказывает всей IPI); `LocalApicHandle::pending_nmi`/`take_nmi`.
+- Граница адресата: `LoadedFirmwareBoard::deliver_pending_nmi(index)` (`pub(crate)`, как `apply_pending_startup`: планировщика нет, вызывают тесты) и `NmiBoundary { NoPending, Held, Delivered }` в `vcpu.rs`; `deliver_nmi_at_boundary` в `paged_memory_adapter.rs` (тот же RAM-адаптер, что у `deliver_pending_irq`, без запуска инструкций).
+- Документы: раздел «NMI (S6-12b)» в `MACHINE_CONTRACT.md` (заменил абзац «NMI — не реализован (blocked)», поправлены места S6-12a), раздел в `CPU_CONTRACT.md`, фразы в `SMP_CONTRACT.md` §6 и «Not yet», статус S6-12 в `STAGE_6.md`.
+
+Вектор: 2 (шлюз IDT 16 байт по `idtr.base + 32`). Блокировка снимается `IRETQ` (любого из двух путей исполнения); ровно один запомненный NMI: вторая заявка во время блокировки остаётся в защёлке LAPIC, доставляется после `IRETQ`, третья сливается с ней и теряется.
+
+Изменённые существующие тесты: `local_apic::tests::matrix_cells_for_nmi_are_refused_until_they_are_implemented` (S6-12a, ожидал отказ обеих строк NMI) удалён и заменён пятью тестами ниже; остальные ожидания (NMI Self/All — отказ; все прочие клетки) сохранены в `matrix_cells_marked_as_an_error_...` без изменений.
+
+Новые тесты:
+- `local_apic::tests`: `nmi_physical_is_pending_in_the_target_lapic_only_and_ignores_the_vector_field`, `nmi_all_but_self_is_pending_in_every_other_lapic_and_not_in_the_sender` (в том числе один vCPU), `nmi_self_all_and_every_other_encoding_are_refused_without_a_change`, `nmi_to_a_globally_disabled_lapic_is_refused_and_a_broadcast_is_all_or_none` (EN = 0 отказывает, SVR-выключенный принимает), `nmi_keeps_one_pending_event_and_further_ones_are_lost` (три NMI — одно событие; INIT-reset очищает защёлку).
+- `vcpu::tests::an_nmi_to_a_vcpu_waiting_for_sipi_stays_pending_and_the_sender_has_none`: трёхвCPU-плата, All-but-self и targeted, AP в `WaitForSipi` — `Held`, состояние не меняется.
+- `linux_direct::tests::nmi` (плата Linux direct-boot, настоящие кадры и `IRETQ` через CPL0-набор): NMI доставляется через вектор 2 при IF = 0 и IF = 1 (RIP = обработчик, CS шлюза, кадр RIP/CS/RFLAGS/старый RSP/SS, IF сброшен); «второй NMI во время обработчика доставляется после `IRETQ`, третий теряется» (`the_second_nmi_during_the_handler_is_delivered_after_iretq_and_the_third_is_lost`); NMI под STI-окном ждёт одну инструкцию и не теряется; `Halted` просыпается по NMI с IF = 0; шлюз без P — ошибка платы, NMI остаётся ожидающим, нет vCPU — ошибка.
+- `od-isa/tests/cpl0_profile_set.rs`: `nmi_uses_vector_two_ignores_if_writes_the_frame_and_sets_blocking`, `a_second_nmi_is_refused_while_blocked_and_delivered_after_iretq`, `a_refused_or_aborted_nmi_does_not_set_blocking` (STI-окно, IST ≠ 0, шлюз без P, сбой записи кадра), `nmi_wakes_a_halted_cpu_and_leaves_other_activities_untouched`, `nmi_from_cpl3_uses_tss_rsp0_and_blocks`. `iretq::tests::a_retired_iretq_ends_nmi_blocking_and_a_refused_one_keeps_it` (путь `iretq.rs`), `state::tests::nmi_blocking_is_off_by_default_and_is_preserved_by_state_clone`.
+
+Ограничения (честно):
+- IST в шлюзе NMI не поддержан (`UnsupportedIst`): Linux ставит IST 2 для вектора 2, поэтому реальное ядро NMI пока не получит. Нужен отдельный срез (TSS IST).
+- Доставки в `WaitForSipi` и `Shutdown` нет (`Held`: NMI не теряется). SDM для `Shutdown` с `hardware_reset_only` (SMP_CONTRACT §3, таблица) не моделируется.
+- AP после SIPI получает защёлку, но доставить через плату не может: у его `LongModeState` нет CR0/CR4/paging (S6-16); `deliver_pending_nmi` вернёт ошибку платы, пока AP не исполняет Long64.
+- Вызова из исполняющего цикла нет: `deliver_pending_nmi` вызывается явно; планировщик S6-15 должен вызывать его на границе адресата перед выбором vCPU. Цикл CPL0-набора (`deliver_pending_irq`) NMI не опрашивает.
+- STI-окно (и MOV SS) держит NMI одну инструкцию: консервативно; точное поведение SDM по памяти.
+- INIT-reset, сброс LAPIC и глобальное выключение стирают защёлку вместе с `State::default()`: решение реализации, SDM не сверен (открытый вопрос).
+- `FragmentState::try_from` (JIT/фрагменты) поле `nmi_blocked` не проверяет: у состояния, в котором оно может быть `true`, `activity`/`sti_shadow` уже `Some`, и адаптер его отвергает.
+- NMI от LINT1 и PMU не входят.
+
+#### Исправления по ревью (2026-11-16)
+
+Ревью Opus: принять с условием. Статус: реализовано, исправлено по ревью, ожидает повторного ревью (правки меняют код `vcpu.rs`, `firmware_board.rs`, `od-testkit/src/v2.rs`).
+
+Решения владельца (не обсуждались):
+- (а) INIT-reset и `IA32_APIC_BASE.EN = 0` стирают защёлку NMI, как в срезе; оставлено. Дополнение по пункту 3: INIT сбрасывает и `nmi_blocked`.
+- (г) NMI, принятый в ICR, до S6-15 не доставляется рабочим циклом; доставка на границе — явный вызов `deliver_pending_nmi` (тесты). Условие S6-15: планировщик вызывает её на границе каждого vCPU.
+- (б) IST шлюза NMI: заведена задача **S6-12c** (чтение `IST[n]` из TSS рядом с `read_tss_rsp0`, `blocked`: нет, обязательна до приёмки S6-18) — в `STAGE_6.md` отдельный раздел «S6-12c» после S6-12 и строка в таблице задач; нумерация прежних задач не менялась.
+
+Исправления:
+1. (документы) `IRETQ`, завершившийся fault (`#GP`/`#PF`), `nmi_blocked` не меняет; SDM снимает блокировку и при `IRET` с fault. Записано как сознательное отступление (блокировка снимается только успешным `IRETQ`, при fault остаётся до следующего успешного; по памяти, не сверено) в `CPU_CONTRACT.md` (S6-12b), `MACHINE_CONTRACT.md` (блокировка) и `SMP_CONTRACT.md` §7. Код не менялся.
+2. (документы) NMI в `Shutdown` (`hardware_reset_only=false`): SMP_CONTRACT §3 требует handler вектора 2, реализация даёт `Held`. Записано в `SMP_CONTRACT.md` §6 как открытое расхождение, владелец — S6-15 (планировщик) либо отдельный срез; до тех пор не реализовано. Код не менялся.
+3. (код) `Vcpu::apply_startup` (INIT) сбрасывает `state.nmi_blocked = false` вместе с остальным INIT-reset. Тест `vcpu::tests::init_ends_the_nmi_blocked_state_of_an_ap_and_of_the_bsp` (AP и BSP; SIPI блокировку не трогает).
+4. (код) `deliver_pending_nmi`: `real_mode.is_some()` — явная ошибка платы `Config("deliver_pending_nmi: NMI in real mode not modelled")` до изменения состояния, NMI остаётся ожидающим (выбрана ошибка, а не `Held`: `Held` означал бы, что NMI ждёт архитектурного события, а в реальном режиме доставка в модели невозможна вообще, и планировщик S6-15 не должен молча ждать). Проверка стоит после архитектурных удержаний, поэтому AP в `WaitForSipi` остаётся `Held`. Paging берётся из `vcpu.guest_efer` (без расширения API; guest меняет только `SCE`, он допустим в `Long64ProbeConfig`), а не из `FIRMWARE_EFER`; для vCPU с `guest_efer` без LME/LMA — ошибка «no paging for the vCPU». Тест `vcpu::tests::a_started_ap_in_real_mode_is_an_error_for_an_nmi_and_the_nmi_stays_pending`. Ограничение: остальные ходоки платы по-прежнему берут константу `FIRMWARE_EFER` (это прежнее решение S4-38L7f, не менялось).
+5. (код) `Held` — только для архитектурных удержаний: `nmi_blocked`, `sti_shadow = Some(Blocking)`, активность `Shutdown`/`WaitForSipi`. `activity: None` и `sti_shadow: None` — явная ошибка платы (`"deliver_pending_nmi: vCPU activity not modelled"`, `"deliver_pending_nmi: STI shadow not modelled"`) до любого изменения состояния. Doc-комментарий обновлён, «never silently dropped» сохранено. Тест `linux_direct::tests::nmi::a_state_that_is_not_modelled_is_an_error_not_a_hold` (оба случая: ошибка, состояние неизменно, защёлка взведена); существующие тесты `Held` (STI-окно `Some(Blocking)`, `WaitForSipi`, блокировка) проходят без изменений.
+6. (код) `od-testkit/src/v2.rs`: `IntegerState::try_from(&LongModeState)` и `IntegerState::from_cpu_for` при `nmi_blocked = true` отказывают `FormatError::InvalidField { field: "state.nmi_blocked", .. }`, по образцу `WaitForSipi`/`Shutdown`. Тест `v2_tests::integer_snapshot_export_rejects_nmi_blocking_instead_of_dropping_it` (оба пути; состояние по умолчанию экспортируется).
+7. (документы) Ссылки на SDM в `SMP_CONTRACT.md` приведены к нумерации `MACHINE_CONTRACT.md` (Vol. 3A 6.7.1, 10.8.1; пометка «по памяти, источник недоступен»); `§7.7.1–7.7.3` убраны. Фраза в §10: «доставка NMI из планировщика и на границе AP — S6-15/S6-16». Примечание: строка 9 SMP_CONTRACT по-прежнему называет издание 093 как источник остальных разделов (11.4.1, 12.1.1, 13.x) — их нумерацию не сверяли.
+
+Проверки после правок: `cargo fmt -p od-isa -p od-machine -p od-testkit -- --check` — чисто; `cargo check --workspace --all-targets --offline` — без ошибок (предупреждения вне среза: `page_walk.rs` неиспользуемая функция, `od-host`); `cargo test -p od-isa --locked --offline` — все прошли (lib 2335, `cpl0_profile_set` 1601, 0 упавших); `cargo test -p od-machine --offline -- --test-threads=1` — 1713 прошли, 0 упавших, 7 ignored. Новый тест `od-testkit` собран `cargo check --all-targets`, отдельно не запускался.
+
+Проверки (2026-11-16):
+1. `cargo fmt -p od-isa -p od-machine -p od-testkit -- --check`: чисто (после `cargo fmt` по этим пакетам; известные вне-срезовые файлы `crates/od-host/src/storage_abi_v1.rs`, `tools/image-tool/tests/cli.rs` не трогались).
+2. `cargo check --workspace --all-targets --offline`: успешно (прежние предупреждения `MEMORY_CORPUS_SEQUENCES`, `scale`; предупреждение `access_long64_4k_internal_with_writer` в `page_walk.rs` относится к lib-сборке и не из среза).
+3. `cargo test -p od-isa --locked --offline`: все наборы без отказов (2335 + 1601 + 126 + 29 + 6 + 76 + 7 + 15 = 4195 тестов; было 4188, +7).
+4. `cargo test -p od-machine --offline -- --test-threads=1`: lib 1423 passed, 0 failed, 7 ignored; все остальные наборы без отказов.
+
 ### S6-10 — вынос состояния vCPU (реализовано, ожидает ревью)
 
 Основание: решением владельца 2026-11-15 остатки S4-21 переданы этапу 6, S6-10 разблокирован. Чекбокс в плане не отмечен: его ставит ревью.

@@ -40,7 +40,7 @@ use od_isa::{
     Cpl0ExternalInterruptDelivery, Cpl0ExternalInterruptPhase, Cpl0ExternalInterruptRefusal,
     Cpl0GeneralProtectionDelivery, Cpl0GeneralProtectionPhase, Cpl0GeneralProtectionRefusal,
     Cpl0PageFaultDelivery, Cpl0PageFaultDeliveryPhase, Cpl0PageFaultRefusal,
-    deliver_external_interrupt_cpl0_set, deliver_general_protection_cpl0_set,
+    deliver_external_interrupt_cpl0_set, deliver_general_protection_cpl0_set, deliver_nmi_cpl0_set,
     deliver_page_fault_cpl0_set,
 };
 use od_isa::{IretqUserEntry, LongModeState};
@@ -2257,6 +2257,32 @@ fn deliver_pending_irq(
         memory.page_fault,
         memory.memory_error,
     ))
+}
+
+/// Deliver a non-maskable interrupt through vector 2 at an instruction boundary outside a run of
+/// the set loop (S6-12b), through the same RAM-only paged adapter as [`deliver_pending_irq`]: the
+/// frame goes onto the guest stack, `state` enters the handler of the IDT gate of vector 2 and
+/// `state.nmi_blocked` is set until the handler's `IRETQ`. Nothing is retired. The result is the
+/// one of [`deliver_nmi_cpl0_set`]: a refusal (blocked, STI shadow, activity) is the caller's to
+/// hold the NMI pending for, and every refusal and abort leaves `state` unchanged.
+pub(crate) fn deliver_nmi_at_boundary(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+) -> Cpl0ExternalInterruptDelivery {
+    let (ram, _port) = bus.split_for_pio_step();
+    let mut committed_write = |_: GuestPhysicalRange| {};
+    let mut memory = set_loop_adapter(
+        ram,
+        None,
+        *paging,
+        state.rip,
+        &mut committed_write,
+        None,
+        None,
+    );
+    deliver_nmi_cpl0_set(state, &mut memory, context)
 }
 
 /// What the set loop does with the exit of one set call: `None` continues with the next

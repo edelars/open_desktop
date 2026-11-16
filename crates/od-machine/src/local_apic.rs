@@ -5,7 +5,8 @@
 //! entries (Timer, LINT0, LINT1, Error). LINT0/LINT1/Error LVT, DFR, LDR and
 //! ESR only store state: there is no LINT pin or error source, and no CPU
 //! interrupt delivery is performed. An ICR write raises a Fixed edge request in the IRR of its
-//! targets (S6-12: self, a physical APIC ID, all, all but self); NMI is refused. INIT assert and
+//! targets (S6-12: self, a physical APIC ID, all, all but self). An NMI (S6-12b: a physical APIC ID
+//! or all but self) is remembered as one pending latch in the LAPIC of every target. INIT assert and
 //! SIPI (S6-13) are queued as pending events in the LAPIC of the target, which the target applies
 //! itself on its own boundary ([`LocalApicHandle::take_startup`]); INIT deassert is accepted and
 //! changes nothing.
@@ -58,6 +59,12 @@ pub(crate) struct State {
     /// leaves `WaitForSipi` on it and ignores the rest. An INIT assert drops a SIPI accepted
     /// before it (SMP_CONTRACT.md 3); a SIPI accepted after it is kept.
     pub(crate) pending_sipi: Option<u8>,
+    /// An NMI waits for the target to deliver it through vector 2 (S6-12b, SMP_CONTRACT.md 7).
+    /// One latch: requests that arrive before the target takes it, or while the target's NMI
+    /// delivery is blocked until `IRETQ`, are the same event, so at most one NMI is remembered
+    /// and the rest are lost. Reset to `false` with the rest of the state by a LAPIC reset, an
+    /// INIT reset and a global disable.
+    pub(crate) pending_nmi: bool,
 }
 
 /// Version register: version 0x14 (integrated APIC), Max LVT entry 3 (four
@@ -93,6 +100,7 @@ impl Default for State {
             esr_pending: 0,
             pending_init: false,
             pending_sipi: None,
+            pending_nmi: false,
         }
     }
 }
@@ -238,6 +246,17 @@ impl LocalApicHandle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take_startup(self.1)
+    }
+    /// Whether an NMI waits in this LAPIC, without consuming it (S6-12b).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn pending_nmi(&self) -> bool {
+        self.with_state(|s| s.pending_nmi)
+    }
+    /// Take the pending NMI of this LAPIC: `true` when one was waiting (S6-12b). The owning vCPU
+    /// calls it only after the NMI was delivered through vector 2.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn take_nmi(&self) -> bool {
+        self.with_state(|s| std::mem::take(&mut s.pending_nmi))
     }
     /// Test helper: vCPU `sender` writes `destination` to ICR_HIGH and then `low` to ICR_LOW.
     #[cfg(test)]
@@ -538,12 +557,15 @@ enum IpiCommand {
     InitDeassert,
     /// SIPI: queue the start-up vector in the LAPIC of `target` (S6-13).
     Startup { target: usize, vector: u8 },
+    /// NMI: remember one NMI in the LAPIC of every target (S6-12b).
+    Nmi { targets: Vec<usize> },
 }
 
 /// The closed set of ICR commands of SMP_CONTRACT.md 5 that this model accepts: Fixed (LAPIC
-/// indices to raise an edge in, and the vector), INIT assert/deassert and SIPI (S6-13). Everything
-/// else is a device error, decided before any state changes: reserved bits, NMI (in the matrix but
-/// not implemented yet) and the delivery modes the matrix refuses, Fixed vectors below 16, INIT
+/// indices to raise an edge in, and the vector), NMI (S6-12b: LAPIC indices to latch an NMI in),
+/// INIT assert/deassert and SIPI (S6-13). Everything
+/// else is a device error, decided before any state changes: reserved bits, NMI Self and All and the
+/// delivery modes the matrix refuses, Fixed vectors below 16, INIT
 /// assert addressed to the boot processor (deferred to S6-15/S6-16), INIT with a non-zero
 /// vector, INIT and SIPI with a shorthand, logical destination mode without
 /// shorthand, a destination APIC ID no vCPU has (this includes the xAPIC broadcast ID 0xFF, which
@@ -581,6 +603,20 @@ fn decode_icr(pair: &PairState, sender: usize, value: u64) -> Result<IpiCommand,
                 _ => return Err(refused),
             };
             Ok(IpiCommand::Fixed { targets, vector })
+        }
+        // NMI (100): physical destination without shorthand, or all-but-self; the vector field is
+        // ignored. Self and All are refused (SMP_CONTRACT.md 5).
+        4 => {
+            let targets = match shorthand {
+                ICR_SHORTHAND_NONE if value & (1 << 11) == 0 && level_trigger == 0b00 => {
+                    vec![physical_target()?]
+                }
+                ICR_SHORTHAND_OTHERS if level_trigger == 0b00 => {
+                    (0..count).filter(|&cpu| cpu != sender).collect()
+                }
+                _ => return Err(refused),
+            };
+            Ok(IpiCommand::Nmi { targets })
         }
         // INIT (101) and Start-up (110): physical destination, no shorthand.
         5 | 6 => {
@@ -790,6 +826,7 @@ impl BusDevice for LocalApic {
                         IpiCommand::Startup { target, vector } => {
                             pair.queue_sipi(target, vector)?
                         }
+                        IpiCommand::Nmi { targets } => pair.queue_nmi(&targets)?,
                     }
                     pair.cpus[cpu].local.icr_low = value as u32 & !ICR_DELIVERY_STATUS;
                     Ok(())
@@ -3016,18 +3053,151 @@ mod tests {
         assert_eq!(holders(&device, 0x61), [1]);
     }
 
+    // S6-12b: NMI waits as one latch in the LAPIC of the target.
+
+    const NMI: u64 = 4;
+
+    fn nmi_holders(device: &LocalApic) -> Vec<usize> {
+        (0..device.handle().cpu_count())
+            .filter(|&cpu| device.handle_for(cpu).unwrap().pending_nmi())
+            .collect()
+    }
+
     #[test]
-    fn matrix_cells_for_nmi_are_refused_until_they_are_implemented() {
-        // The NMI rows are in the matrix as deliverable but their delivery belongs to the rest of
-        // S6-12. A write is an explicit error and changes nothing, not a silent drop.
+    fn nmi_physical_is_pending_in_the_target_lapic_only_and_ignores_the_vector_field() {
+        let mut device = LocalApic::with_cpus(3).unwrap();
+        device.write_from_cpu(0, dword(0x310), 2 << 24).unwrap();
+        // Linux emits vector 0; any value is ignored (SMP_CONTRACT.md 5).
+        for vector in [0u8, 0x44] {
+            let command = icr(NMI, PHYSICAL, NO_SHORTHAND, LT_00, vector);
+            device.write_from_cpu(0, dword(0x300), command).unwrap();
+            assert_eq!(nmi_holders(&device), [2], "{vector:#x}");
+            // Delivery Status reads Idle, the sender keeps the command, no IRR bit is raised and no
+            // INIT or SIPI is pending: the NMI is a separate event.
+            assert_eq!(device.read_from_cpu(0, dword(0x300)), Ok(command));
+            assert_eq!(holders(&device, vector), Vec::<usize>::new());
+            assert_eq!(startup_of(&device, 2), PendingStartup::default());
+            assert!(device.handle_for(2).unwrap().take_nmi());
+            assert_eq!(nmi_holders(&device), Vec::<usize>::new());
+        }
+        // A target may be the sender itself: physical addressing names an APIC ID.
+        device.write_from_cpu(0, dword(0x310), 0).unwrap();
+        device
+            .write_from_cpu(0, dword(0x300), icr(NMI, PHYSICAL, NO_SHORTHAND, LT_00, 0))
+            .unwrap();
+        assert_eq!(nmi_holders(&device), [0]);
+    }
+
+    #[test]
+    fn nmi_all_but_self_is_pending_in_every_other_lapic_and_not_in_the_sender() {
+        let mut device = LocalApic::with_cpus(3).unwrap();
+        // The destination byte and Destination Mode are ignored with a shorthand.
+        device.write_from_cpu(1, dword(0x310), 0xff << 24).unwrap();
+        for command in [
+            icr(NMI, PHYSICAL, OTHERS_SH, LT_00, 0),
+            icr(NMI, 1 << 11, OTHERS_SH, LT_00, 0),
+        ] {
+            device.write_from_cpu(1, dword(0x300), command).unwrap();
+            assert_eq!(nmi_holders(&device), [0, 2], "{command:#x}");
+            for cpu in [0, 2] {
+                assert!(device.handle_for(cpu).unwrap().take_nmi());
+            }
+        }
+        // One vCPU has no other target: accepted, nothing pending.
+        let mut single = LocalApic::with_cpus(1).unwrap();
+        single
+            .write_from_cpu(0, dword(0x300), icr(NMI, PHYSICAL, OTHERS_SH, LT_00, 0))
+            .unwrap();
+        assert_eq!(nmi_holders(&single), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn nmi_self_all_and_every_other_encoding_are_refused_without_a_change() {
         let mut device = LocalApic::with_cpus(2).unwrap();
         device.write_from_cpu(0, dword(0x310), 1 << 24).unwrap();
-        for command in [
-            icr(4, PHYSICAL, NO_SHORTHAND, LT_00, 0), // NMI targeted
-            icr(4, PHYSICAL, OTHERS_SH, LT_00, 0),    // NMI all-but-self
-        ] {
-            assert_ipi_refused(&mut device, 0, command);
+        // NMI Self and All, with every pair.
+        for shorthand in [SELF_SH, ALL_SH] {
+            for level_trigger in [LT_00, LT_10, LT_01, LT_11] {
+                assert_ipi_refused(
+                    &mut device,
+                    0,
+                    icr(NMI, PHYSICAL, shorthand, level_trigger, 0),
+                );
+            }
         }
+        // Pairs the row does not name, for both rows.
+        for shorthand in [NO_SHORTHAND, OTHERS_SH] {
+            for level_trigger in [LT_10, LT_01, LT_11] {
+                assert_ipi_refused(
+                    &mut device,
+                    0,
+                    icr(NMI, PHYSICAL, shorthand, level_trigger, 0),
+                );
+            }
+        }
+        // Logical destination without shorthand, a destination no vCPU has (the broadcast ID
+        // included) and reserved bits on an otherwise legal command.
+        assert_ipi_refused(&mut device, 0, icr(NMI, 1 << 11, NO_SHORTHAND, LT_00, 0));
+        for destination in [2u64, 3, 0xff] {
+            device
+                .write_from_cpu(0, dword(0x310), destination << 24)
+                .unwrap();
+            assert_ipi_refused(&mut device, 0, icr(NMI, PHYSICAL, NO_SHORTHAND, LT_00, 0));
+        }
+        device.write_from_cpu(0, dword(0x310), 1 << 24).unwrap();
+        let legal = icr(NMI, PHYSICAL, NO_SHORTHAND, LT_00, 0);
+        for bit in [13u32, 16, 17, 20, 31, 32] {
+            assert_ipi_refused(&mut device, 0, legal | (1 << bit));
+        }
+        assert_eq!(nmi_holders(&device), Vec::<usize>::new());
+        // The legal command is accepted afterwards.
+        device.write_from_cpu(0, dword(0x300), legal).unwrap();
+        assert_eq!(nmi_holders(&device), [1]);
+    }
+
+    #[test]
+    fn nmi_to_a_globally_disabled_lapic_is_refused_and_a_broadcast_is_all_or_none() {
+        let mut device = LocalApic::with_cpus(3).unwrap();
+        device
+            .handle_for(2)
+            .unwrap()
+            .set_global_enabled(false)
+            .unwrap();
+        device.write_from_cpu(0, dword(0x310), 2 << 24).unwrap();
+        assert_ipi_refused(&mut device, 0, icr(NMI, PHYSICAL, NO_SHORTHAND, LT_00, 0));
+        // All-but-self with one refusing target: no LAPIC gets the NMI.
+        assert_ipi_refused(&mut device, 0, icr(NMI, PHYSICAL, OTHERS_SH, LT_00, 0));
+        assert_eq!(nmi_holders(&device), Vec::<usize>::new());
+        // The enabled target alone accepts it. Software disable through SVR does not refuse.
+        device.write_from_cpu(0, dword(0x310), 1 << 24).unwrap();
+        device.write_from_cpu(1, dword(0xf0), 0xff).unwrap();
+        device
+            .write_from_cpu(0, dword(0x300), icr(NMI, PHYSICAL, NO_SHORTHAND, LT_00, 0))
+            .unwrap();
+        assert_eq!(nmi_holders(&device), [1]);
+    }
+
+    #[test]
+    fn nmi_keeps_one_pending_event_and_further_ones_are_lost() {
+        let mut device = LocalApic::with_cpus(2).unwrap();
+        device.write_from_cpu(0, dword(0x310), 1 << 24).unwrap();
+        let command = icr(NMI, PHYSICAL, NO_SHORTHAND, LT_00, 0);
+        for _ in 0..3 {
+            device.write_from_cpu(0, dword(0x300), command).unwrap();
+        }
+        let target = device.handle_for(1).unwrap();
+        assert!(target.take_nmi(), "one NMI is remembered");
+        assert!(!target.take_nmi(), "the other two were the same event");
+        assert!(!device.handle().take_nmi());
+        // An INIT reset takes the latch with the rest of the LAPIC state; a plain read of the
+        // pending flag does not consume it.
+        device.write_from_cpu(0, dword(0x300), command).unwrap();
+        assert!(target.pending_nmi() && target.pending_nmi());
+        device
+            .write_from_cpu(0, dword(0x300), icr(INIT, PHYSICAL, NO_SHORTHAND, LT_11, 0))
+            .unwrap();
+        target.take_startup().unwrap();
+        assert!(!target.pending_nmi());
     }
 
     // S6-13: INIT and SIPI wait in the LAPIC of the target.

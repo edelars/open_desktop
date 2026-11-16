@@ -409,6 +409,8 @@ fn step_iretq(
     });
     state.activity = Some(CpuActivity::Running);
     state.sti_shadow = Some(StiShadow::Clear);
+    // A retired IRETQ ends NMI blocking (S6-12b).
+    state.nmi_blocked = false;
     IretqResult::Retired
 }
 
@@ -1204,6 +1206,31 @@ mod tests {
         });
         assert_eq!(cpu, expected);
         assert_eq!(defined, INTEGER_FLAGS);
+    }
+
+    #[test]
+    fn a_retired_iretq_ends_nmi_blocking_and_a_refused_one_keeps_it() {
+        // S6-12b: the local-profile IRETQ is one of the two commit points that clear the flag.
+        let mut cpu = paged_state();
+        cpu.nmi_blocked = true;
+        let mut memory = Memory::setup();
+        let mut defined = INTEGER_FLAGS;
+        assert_eq!(
+            step_paged_iretq(&mut cpu, &mut memory, ring0(), &mut defined, 0xd00),
+            IretqResult::Retired
+        );
+        assert!(!cpu.nmi_blocked);
+        // A refused IRETQ (bad frame RFLAGS) changes nothing, the flag included.
+        let mut cpu = paged_state();
+        cpu.nmi_blocked = true;
+        let mut memory = Memory::setup();
+        memory.bytes[(FRAME + 16) as usize] &= !2;
+        let mut defined = INTEGER_FLAGS;
+        assert_eq!(
+            step_paged_iretq(&mut cpu, &mut memory, ring0(), &mut defined, 0xd00),
+            IretqResult::Unsupported
+        );
+        assert!(cpu.nmi_blocked);
     }
 
     #[test]

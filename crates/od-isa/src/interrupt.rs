@@ -1271,6 +1271,9 @@ pub enum Cpl0ExternalInterruptRefusal {
     ActivityOutsideProfile,
     /// RFLAGS.IF = 0: a maskable external interrupt is not accepted.
     InterruptsMasked,
+    /// [`deliver_nmi_cpl0_set`] only: NMI delivery is blocked until the running NMI handler
+    /// executes `IRETQ` (`LongModeState::nmi_blocked`, S6-12b).
+    NmiBlocked,
     /// The one-instruction interrupt shadow after `STI` is active (or unknown).
     StiShadowActive,
     MissingCurrentSelectors,
@@ -1371,15 +1374,56 @@ pub fn deliver_external_interrupt_cpl0_set(
     vector: u8,
     context: AccessContext,
 ) -> Cpl0ExternalInterruptDelivery {
+    deliver_interrupt_through_gate(state, memory, vector, context, false)
+}
+
+/// The vector of a non-maskable interrupt (Intel SDM Vol. 3A 6.3, from memory: source not
+/// available in the repository).
+pub const NMI_VECTOR: u8 = 2;
+
+/// Deliver a non-maskable interrupt (S6-12b, SMP_CONTRACT.md 7) to the vector [`NMI_VECTOR`]
+/// through its IDT gate, with the frame and the gate rules of
+/// [`deliver_external_interrupt_cpl0_set`], and these differences:
+/// - RFLAGS.IF is not a delivery condition: an NMI is taken with IF = 0 or 1.
+/// - `state.nmi_blocked` is a delivery condition: while it is set (an NMI handler has not yet
+///   executed `IRETQ`) the delivery is `Refused(NmiBlocked)` before any write, and the caller
+///   keeps the request pending. A `Delivered` NMI sets `nmi_blocked`; `IRETQ` clears it.
+/// - A `Halted` CPU is woken: it is `Running` after a `Delivered` NMI (SMP_CONTRACT.md 3). A CPU in
+///   `Shutdown` or `WaitForSipi` is `Refused(ActivityOutsideProfile)`.
+///
+/// Not modelled: the IST of the gate (Linux uses IST 2 for the NMI gate; any IST other than 0 is
+/// `Refused(UnsupportedIst)`) and holding the NMI under the one-instruction STI/MOV SS shadow is
+/// conservative (the NMI waits one instruction; whether an NMI is held there is by memory, not
+/// checked against the SDM).
+pub fn deliver_nmi_cpl0_set(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+) -> Cpl0ExternalInterruptDelivery {
+    deliver_interrupt_through_gate(state, memory, NMI_VECTOR, context, true)
+}
+
+fn deliver_interrupt_through_gate(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    vector: u8,
+    context: AccessContext,
+    nmi: bool,
+) -> Cpl0ExternalInterruptDelivery {
     use Cpl0ExternalInterruptRefusal as Refusal;
     let refuse = Cpl0ExternalInterruptDelivery::Refused;
     let Some(from_cpl3) = delivery_source(state, context) else {
         return refuse(Refusal::NotRing0Long64);
     };
-    if state.activity != Some(crate::CpuActivity::Running) {
+    let was_halted = state.activity == Some(crate::CpuActivity::Halted);
+    if state.activity != Some(crate::CpuActivity::Running) && !(nmi && was_halted) {
         return refuse(Refusal::ActivityOutsideProfile);
     }
-    if state.rflags & (1 << 9) == 0 {
+    if nmi {
+        if state.nmi_blocked {
+            return refuse(Refusal::NmiBlocked);
+        }
+    } else if state.rflags & (1 << 9) == 0 {
         return refuse(Refusal::InterruptsMasked);
     }
     if state.sti_shadow != Some(crate::StiShadow::Clear) {
@@ -1401,10 +1445,16 @@ pub fn deliver_external_interrupt_cpl0_set(
     let saved_rflags = (state.rflags & !(1 << 16)) | (1 << 1);
     let saved_rip = state.rip;
     match commit_cpl0_gate(state, memory, context, &gate, saved_rflags, saved_rip, None) {
-        Ok((target_rip, new_rsp)) => Cpl0ExternalInterruptDelivery::Delivered {
-            target_rip,
-            new_rsp,
-        },
+        Ok((target_rip, new_rsp)) => {
+            if nmi {
+                state.nmi_blocked = true;
+                state.activity = Some(crate::CpuActivity::Running);
+            }
+            Cpl0ExternalInterruptDelivery::Delivered {
+                target_rip,
+                new_rsp,
+            }
+        }
         Err(failure) => external_gate_failure(failure),
     }
 }

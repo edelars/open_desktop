@@ -26605,3 +26605,26 @@ board executes only vCPU 0, so this is not reachable yet.
 INIT, SIPI and the real-mode start state of an application processor are in
 [MACHINE_CONTRACT.md](MACHINE_CONTRACT.md#init-sipi-и-ожидание-sipi-s6-13); the
 state itself (`RealModeState`) is the S6-14c representation, without execution.
+
+### S6-12b: NMI delivery and `LongModeState::nmi_blocked`
+
+`LongModeState::nmi_blocked` (default `false`) is NMI blocking: set by a delivered
+NMI, cleared by a retired `IRETQ`. `od_isa::deliver_nmi_cpl0_set` delivers vector 2
+(`od_isa::NMI_VECTOR`) through its IDT gate with the frame and gate rules of
+`deliver_external_interrupt_cpl0_set`, except that RFLAGS.IF is not a condition and
+`nmi_blocked` is (`Cpl0ExternalInterruptRefusal::NmiBlocked`, before any write). A
+`Halted` CPU is `Running` after a delivered NMI; `Shutdown`, `WaitForSipi` and an
+unmodelled activity refuse with `ActivityOutsideProfile`. The one-instruction STI
+shadow holds the NMI back (conservative, SDM by memory). Any refusal or abort leaves
+the state, the flag included, unchanged. IST other than 0 in the gate is not modelled
+(`UnsupportedIst`). `IRETQ` clears the flag at the one commit point of each of its two
+implementations (`iretq_cpl0` in `execute.rs`, `step_iretq` in `iretq.rs`); a refused
+`IRETQ` does not.
+
+Deliberate deviation from the SDM (S6-12b review): the blocking is lifted only by a
+successful `IRETQ`; when `IRETQ` itself faults (`#GP`, `#PF`), the blocking stays until
+the next successful `IRETQ`. The SDM lifts NMI blocking on an `IRET` that faults too. The
+source is from memory and is not checked against the manual (Intel SDM Vol. 3A 6.7.1,
+not available in the repository); the code is not changed. The same deviation is in
+[MACHINE_CONTRACT.md](MACHINE_CONTRACT.md#nmi-s6-12b) and SMP_CONTRACT.md 7. The pending-NMI latch, the target's boundary and the board call are
+in [MACHINE_CONTRACT.md](MACHINE_CONTRACT.md#nmi-s6-12b).

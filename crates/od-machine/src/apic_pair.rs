@@ -314,6 +314,23 @@ impl PairState {
         Ok(())
     }
 
+    /// Remember one NMI in the LAPIC of every target (S6-12b): all or none. A target whose LAPIC
+    /// is globally disabled refuses the whole NMI before any LAPIC changes, as for Fixed, INIT and
+    /// SIPI. The latch is one bit: an NMI that finds one already waiting is the same event, and
+    /// is lost (SMP_CONTRACT.md 7).
+    pub fn queue_nmi(&mut self, targets: &[usize]) -> Result<(), DeviceError> {
+        if targets
+            .iter()
+            .any(|&cpu| !self.cpus[cpu].local.global_enabled)
+        {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
+        for &cpu in targets {
+            self.cpus[cpu].local.pending_nmi = true;
+        }
+        Ok(())
+    }
+
     /// Take the pending INIT and SIPI of the LAPIC `cpu`. A pending INIT puts the LAPIC into its
     /// INIT-reset state (SMP_CONTRACT.md 4, SDM 13.4.7.3): every register, request and timer
     /// returns to its reset value except that the LAPIC stays globally enabled and keeps its APIC

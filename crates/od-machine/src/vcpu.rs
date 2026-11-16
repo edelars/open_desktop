@@ -41,6 +41,19 @@ pub(crate) struct StartupApplied {
     pub(crate) started: bool,
 }
 
+/// What a vCPU did with the NMI waiting in its Local APIC at one boundary (S6-12b).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) enum NmiBoundary {
+    /// No NMI waits.
+    NoPending,
+    /// An NMI waits and cannot be delivered now: it stays pending (the one latch).
+    Held,
+    /// The NMI was delivered through vector 2: the vCPU is in the handler with NMI blocked, and
+    /// the latch is free for one more NMI.
+    Delivered,
+}
+
 /// CPU state and the guest-visible register cells of one virtual processor.
 #[derive(Debug)]
 pub(crate) struct Vcpu {
@@ -139,6 +152,7 @@ impl Vcpu {
     /// - INIT: the real-mode state after INIT replaces `real_mode`, keeping only CD and NW of the
     ///   old CR0, and the guest `IA32_EFER` and CR2 cells go to `0` (Table 12-1). CR2 becomes
     ///   `Some(0)`, not `None`: `None` would let the board fall back to the stale CR2 of `state`.
+    ///   `nmi_blocked` is cleared too.
     ///   An application processor enters `WaitForSipi`. The boot processor keeps its role and is
     ///   not put to wait: it is `Running`.
     /// - SIPI: only a processor in `WaitForSipi` takes it; it becomes `Running` with CS and EIP
@@ -163,6 +177,9 @@ impl Vcpu {
             self.real_mode = Some(RealModeState::after_init(old_cr0));
             self.guest_efer = 0;
             self.guest_cr2 = Some(0);
+            // INIT-reset also ends the NMI-blocked state (the LAPIC latch goes with it, owner's
+            // decision S6-12b (a)): the processor restarts in real mode with no handler running.
+            self.state.nmi_blocked = false;
             self.state.activity = Some(if self.index == BOOT_VCPU_INDEX {
                 CpuActivity::Running
             } else {
@@ -271,6 +288,90 @@ mod tests {
         assert_eq!(vcpu.guest_kernel_gs_base, 0);
         assert_eq!(vcpu.guest_fp, GuestFpState::initial());
         assert_eq!(vcpu.real_mode, None);
+    }
+
+    // S6-12b: NMI to another vCPU waits in its LAPIC.
+
+    #[test]
+    fn an_nmi_to_a_vcpu_waiting_for_sipi_stays_pending_and_the_sender_has_none() {
+        let mut board = assembled(3).unwrap();
+        // vCPU 0 sends the NMI to everyone else (all-but-self, delivery mode 100).
+        board
+            .local_apic_of(0)
+            .unwrap()
+            .write_icr(0, 0, (4 << 8) | (3 << 18))
+            .unwrap();
+        assert!(!board.local_apic_of(0).unwrap().pending_nmi());
+        for cpu in [1, 2] {
+            assert!(board.local_apic_of(cpu).unwrap().pending_nmi());
+        }
+        assert_eq!(board.deliver_pending_nmi(0), Ok(NmiBoundary::NoPending));
+        // An application processor waits for SIPI: it takes no NMI, the NMI is neither delivered
+        // nor lost, and its state is untouched.
+        let before = board.vcpu(1).unwrap().state.clone();
+        assert_eq!(board.deliver_pending_nmi(1), Ok(NmiBoundary::Held));
+        assert_eq!(board.vcpu(1).unwrap().state, before);
+        assert!(board.local_apic_of(1).unwrap().pending_nmi());
+        // A targeted NMI reaches only its target; the other latch is untouched.
+        assert!(board.local_apic_of(2).unwrap().take_nmi());
+        assert!(board.local_apic_of(1).unwrap().take_nmi());
+        board
+            .local_apic_of(0)
+            .unwrap()
+            .write_icr(0, 2, 4 << 8)
+            .unwrap();
+        assert!(board.local_apic_of(2).unwrap().pending_nmi());
+        assert!(!board.local_apic_of(1).unwrap().pending_nmi());
+        assert!(!board.local_apic_of(0).unwrap().pending_nmi());
+    }
+
+    #[test]
+    fn a_started_ap_in_real_mode_is_an_error_for_an_nmi_and_the_nmi_stays_pending() {
+        let mut board = assembled(2).unwrap();
+        board
+            .local_apic_of(0)
+            .unwrap()
+            .write_icr(0, 1, (6 << 8) | 0x08)
+            .unwrap();
+        board.apply_pending_startup(1).unwrap();
+        assert_eq!(board.vcpu(1).unwrap().activity(), CpuActivity::Running);
+        board
+            .local_apic_of(0)
+            .unwrap()
+            .write_icr(0, 1, 4 << 8)
+            .unwrap();
+        let before = board.vcpu(1).unwrap().state.clone();
+        assert_eq!(
+            board.deliver_pending_nmi(1),
+            Err(FirmwareBoardError::Config(
+                "deliver_pending_nmi: NMI in real mode not modelled"
+            ))
+        );
+        assert_eq!(board.vcpu(1).unwrap().state, before);
+        assert!(board.local_apic_of(1).unwrap().pending_nmi());
+    }
+
+    #[test]
+    fn init_ends_the_nmi_blocked_state_of_an_ap_and_of_the_bsp() {
+        for index in [1, BOOT_VCPU_INDEX] {
+            let mut vcpu = if index == BOOT_VCPU_INDEX {
+                Vcpu::new(index, LongModeState::default())
+            } else {
+                Vcpu::new_ap(index)
+            };
+            vcpu.state.nmi_blocked = true;
+            // SIPI alone does not touch the blocking; INIT clears it.
+            vcpu.apply_startup(PendingStartup {
+                init: false,
+                sipi: Some(0x08),
+            });
+            assert!(vcpu.state.nmi_blocked, "vcpu {index}");
+            vcpu.apply_startup(PendingStartup {
+                init: true,
+                sipi: None,
+            });
+            assert!(!vcpu.state.nmi_blocked, "vcpu {index}");
+        }
     }
 
     // S6-13: start-up states of the application processors.
