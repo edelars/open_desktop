@@ -27170,3 +27170,10 @@ The existing JZ rel8 profile tests now cover +0x35 with both ZF values and defin
 Base `PagedCpl0ProbeV1` admits only exact bytes `41 83 FC 07`: REX `41`, opcode `83` group `/7`, ModRM `FC`, and immediate byte `07`. The selected operand size is dword; the shared arithmetic helper compares the low 32 bits of R12 against the sign-extended imm8 value 7, updates CF/PF/AF/ZF/SF/OF and marks all arithmetic flags defined. CMP changes no GPRs. Values above 16 bits are required to distinguish this dword form from a word comparison; upper 32 bits of R12 do not participate. Other destinations, immediates, widths, prefixes, groups, CPL3 and other profiles remain unsupported.
 
 Four focused tests cover equality, borrow, greater-than and signed overflow, values above 16 bits, ignored upper qword bits, full GPR/state retention, arithmetic flags and definedness, final-immediate fetch-fault atomicity, neighboring forms and CPL3 isolation. The other-profile isolation test confirms this encoding remains refused there. Firmware now advances to ISSUE-216: `74 D0` (`JZ rel8 -0x30`) at RIP `0x200f41`.
+
+
+### S7-04: exact Rust-helper `JZ rel8 -0x30` (ISSUE-216)
+
+Base `PagedCpl0ProbeV1` admits only exact no-prefix bytes `74 D0`: short JZ with signed displacement -0x30. The branch reads only ZF, preserves RFLAGS and `rflags_defined`, selects `next_rip-0x30` when taken or the two-byte fall-through otherwise. Only a taken target is checked for canonicality; a not-taken fall-through is deferred to the next fetch. Other conditions, displacements, prefixes, near forms, CPL3 and other profiles remain unsupported.
+
+The existing JZ rel8 profile tests now also cover -0x30 with both ZF values and defined/undefined input metadata, exact taken/fall-through destinations, negative-target canonicality only when taken, rel8 displacement-fetch-fault atomicity, neighboring branches/displacements/prefixes and CPL3 isolation. The other-profile isolation test confirms rejection. Firmware now advances to ISSUE-217: `41 83 F8 30` (`CMP R8D,0x30`) at RIP `0x200f13`.

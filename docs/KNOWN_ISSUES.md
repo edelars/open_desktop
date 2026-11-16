@@ -1028,10 +1028,19 @@
 ### ISSUE-216 — S7-04: Rust helper `JZ rel8 -0x30` (`74 D0`) remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `CMP R12D,7`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200f41`.
+- **Статус:** решена узко для exact `74 D0` в base `PagedCpl0ProbeV1`; независимо проверена и одобрена, ожидает коммита. Other conditions, displacements, prefixes and profiles remain unsupported.
+- **Суть и результат:** exact no-prefix short JZ reads only ZF; taken target is `next_rip-0x30`, not-taken target is the two-byte fall-through. RFLAGS and definedness remain unchanged, and canonicality is checked only for a taken target.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue216.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf41` are `74 D0`; runner budget 10000.
+- **Проверка:** existing JZ rel8 tests also exercise -0x30 with both ZF values and defined/undefined input metadata, exact taken/fall-through targets, negative taken-only canonicality, rel8 displacement-fetch-fault atomicity, adjacent branch/displacement/prefix forms, CPL3 and other-profile isolation. Runner retired 8898 and stopped at `41 83 F8 30` (`CMP R8D,0x30`, ISSUE-217), RIP `0x200f13`, `Unsupported { opcode: 131 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
+- **Следующий шаг:** commit the independently approved narrow admission and continue S7-04 at ISSUE-217.
+
+### ISSUE-217 — S7-04: Rust helper `CMP R8D,0x30` (`41 83 F8 30`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact `JZ rel8 -0x30`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200f13`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8897 instructions and stopped at `74 D0`, `Unsupported { opcode: 116 }`, `RIP=0x200f41`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue215.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf41` are `74 D0`; runner budget 10000.
-- **Следующий шаг:** inspect ZF branch behavior for this exact negative rel8 displacement and profile boundaries before considering narrow admission.
+- **Суть и последствия:** runner retired 8898 instructions and stopped at `41 83 F8 30`, `Unsupported { opcode: 131 }`, `RIP=0x200f13`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue216.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf13` are `41 83 F8 30`; runner budget 10000.
+- **Следующий шаг:** inspect exact R8D CMP width and immediate semantics and profile boundaries before considering narrow admission.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.

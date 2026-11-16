@@ -5603,8 +5603,8 @@ fn rust_helper_jz_rel32_is_unsupported_in_cpl3_profile() {
 
 #[test]
 fn rust_helper_jz_rel8_obeys_zf_and_preserves_flags_and_definedness() {
-    for displacement in [0x35u8, 0x3b, 0x64] {
-        let code = [0x74, displacement]; // observed exact JZ rel8 forms
+    for displacement in [0x35i8, 0x3b, 0x64, -0x30] {
+        let code = [0x74, displacement as u8]; // observed exact JZ rel8 forms
         for zero in [false, true] {
             for zf_defined in [false, true] {
                 let defined = if zf_defined {
@@ -5618,7 +5618,8 @@ fn rust_helper_jz_rel8_obeys_zf_and_preserves_flags_and_definedness() {
                 cpu.rflags = (state().rflags & !(1 << 6)) | if zero { 1 << 6 } else { 0 };
                 let before = cpu.clone();
                 let expected_rip = if zero {
-                    RIP + 2 + u64::from(displacement)
+                    RIP.wrapping_add(2)
+                        .wrapping_add_signed(i64::from(displacement))
                 } else {
                     RIP + 2
                 };
@@ -5644,14 +5645,16 @@ fn rust_helper_jz_rel8_obeys_zf_and_preserves_flags_and_definedness() {
 
 #[test]
 fn rust_helper_jz_rel8_checks_canonicality_only_when_taken() {
-    let rip = 0x0000_7fff_ffff_fffe;
-    for displacement in [0x35u8, 0x3b, 0x64] {
-        let code = [0x74, displacement];
+    for displacement in [0x35i8, 0x3b, 0x64, -0x30] {
+        let code = [0x74, displacement as u8];
+
+        let fallthrough_rip = 0x0000_7fff_ffff_fffe;
         let mut memory = Memory::new(&[]);
-        memory.pages.insert(rip & !0xfff, CODE_PHYSICAL);
-        memory.bytes[CODE_PHYSICAL + 0xffe..CODE_PHYSICAL + 0x1000].copy_from_slice(&code);
+        memory.pages.insert(fallthrough_rip & !0xfff, CODE_PHYSICAL);
+        let code_offset = CODE_PHYSICAL + (fallthrough_rip as usize & 0xfff);
+        memory.bytes[code_offset..code_offset + code.len()].copy_from_slice(&code);
         let mut cpu = state();
-        cpu.rip = rip;
+        cpu.rip = fallthrough_rip;
         cpu.rflags &= !(1 << 6); // Not taken: noncanonical fall-through is deferred.
         let before = cpu.clone();
 
@@ -5662,13 +5665,19 @@ fn rust_helper_jz_rel8_checks_canonicality_only_when_taken() {
         assert_eq!(result.rflags_defined, DEFINED);
         let mut expected = before;
         expected.rip = 0x0000_8000_0000_0000;
-        assert_eq!(cpu, expected, "disp={displacement:#x}, not taken");
+        assert_eq!(cpu, expected, "disp={displacement}, not taken");
 
+        let taken_rip = if displacement < 0 {
+            0xffff_8000_0000_001e
+        } else {
+            0x0000_7fff_ffff_fffe
+        };
         let mut memory = Memory::new(&[]);
-        memory.pages.insert(rip & !0xfff, CODE_PHYSICAL);
-        memory.bytes[CODE_PHYSICAL + 0xffe..CODE_PHYSICAL + 0x1000].copy_from_slice(&code);
+        memory.pages.insert(taken_rip & !0xfff, CODE_PHYSICAL);
+        let code_offset = CODE_PHYSICAL + (taken_rip as usize & 0xfff);
+        memory.bytes[code_offset..code_offset + code.len()].copy_from_slice(&code);
         let mut cpu = state();
-        cpu.rip = rip;
+        cpu.rip = taken_rip;
         cpu.rflags |= 1 << 6; // Taken target is noncanonical.
         let before = cpu.clone();
 
@@ -5720,25 +5729,31 @@ fn rust_helper_jz_rel8_fetch_fault_is_atomic() {
 #[test]
 fn rust_helper_jz_rel8_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
-        (&[0x74, 0x34], 0x74),                // displacement below +0x35
-        (&[0x74, 0x36], 0x74),                // displacement above +0x35
-        (&[0x75, 0x35], 0x75),                // JNZ with same displacement
-        (&[0x66, 0x74, 0x35], 0x74),          // operand-size prefix
-        (&[0x40, 0x74, 0x35], 0x74),          // REX prefix
-        (&[0x0f, 0x84, 0x35, 0, 0, 0], 0x84), // near JZ
-        (&[0x74, 0x63], 0x74),                // displacement below +0x64
-        (&[0x74, 0x65], 0x74),                // displacement above +0x64
-        (&[0x75, 0x64], 0x75),                // JNZ with same displacement
-        (&[0x66, 0x74, 0x64], 0x74),          // operand-size prefix
-        (&[0x40, 0x74, 0x64], 0x74),          // REX prefix
-        (&[0x0f, 0x84, 0x64, 0, 0, 0], 0x84), // near JZ
-        (&[0x74, 0x3a], 0x74),                // displacement below +0x3b
-        (&[0x74, 0x3c], 0x74),                // displacement above +0x3b
-        (&[0x75, 0x3b], 0x75),                // JNZ with same displacement
-        (&[0x74, 0x24], 0x74),                // another firmware Jcc displacement
-        (&[0x66, 0x74, 0x3b], 0x74),          // operand-size prefix
-        (&[0x40, 0x74, 0x3b], 0x74),          // REX prefix
-        (&[0x0f, 0x84, 0x3b, 0, 0, 0], 0x84), // near JZ
+        (&[0x74, 0xcf], 0x74),                         // displacement below -0x30
+        (&[0x74, 0xd1], 0x74),                         // displacement above -0x30
+        (&[0x75, 0xd0], 0x75),                         // JNZ with same displacement
+        (&[0x66, 0x74, 0xd0], 0x74),                   // operand-size prefix
+        (&[0x40, 0x74, 0xd0], 0x74),                   // REX prefix
+        (&[0x0f, 0x84, 0xd0, 0xff, 0xff, 0xff], 0x84), // near JZ
+        (&[0x74, 0x34], 0x74),                         // displacement below +0x35
+        (&[0x74, 0x36], 0x74),                         // displacement above +0x35
+        (&[0x75, 0x35], 0x75),                         // JNZ with same displacement
+        (&[0x66, 0x74, 0x35], 0x74),                   // operand-size prefix
+        (&[0x40, 0x74, 0x35], 0x74),                   // REX prefix
+        (&[0x0f, 0x84, 0x35, 0, 0, 0], 0x84),          // near JZ
+        (&[0x74, 0x63], 0x74),                         // displacement below +0x64
+        (&[0x74, 0x65], 0x74),                         // displacement above +0x64
+        (&[0x75, 0x64], 0x75),                         // JNZ with same displacement
+        (&[0x66, 0x74, 0x64], 0x74),                   // operand-size prefix
+        (&[0x40, 0x74, 0x64], 0x74),                   // REX prefix
+        (&[0x0f, 0x84, 0x64, 0, 0, 0], 0x84),          // near JZ
+        (&[0x74, 0x3a], 0x74),                         // displacement below +0x3b
+        (&[0x74, 0x3c], 0x74),                         // displacement above +0x3b
+        (&[0x75, 0x3b], 0x75),                         // JNZ with same displacement
+        (&[0x74, 0x24], 0x74),                         // another firmware Jcc displacement
+        (&[0x66, 0x74, 0x3b], 0x74),                   // operand-size prefix
+        (&[0x40, 0x74, 0x3b], 0x74),                   // REX prefix
+        (&[0x0f, 0x84, 0x3b, 0, 0, 0], 0x84),          // near JZ
     ];
     for (bytes, opcode) in cases {
         let mut memory = Memory::new(bytes);
@@ -5763,7 +5778,7 @@ fn rust_helper_jz_rel8_neighbours_stay_unsupported_without_mutation() {
 
 #[test]
 fn rust_helper_jz_rel8_is_unsupported_in_cpl3_profile() {
-    let bytes = [0x74, 0x35];
+    let bytes = [0x74, 0xd0];
     let mut memory = Memory::new(&bytes);
     let mut cpu = state();
     cpu.cr3 = Some(0x1000);
@@ -16122,6 +16137,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x74, 0x3b][..], 0x74),
         (&[0x74, 0x64][..], 0x74),
         (&[0x74, 0x35][..], 0x74),
+        (&[0x74, 0xd0][..], 0x74),
         (&[0x77, 0x0e][..], 0x77),
         (&[0x77, 0x3d][..], 0x77),
         (&[0x49, 0x89, 0xf8][..], 0x89),
