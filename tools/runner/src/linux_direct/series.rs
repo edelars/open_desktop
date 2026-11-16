@@ -457,7 +457,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
         }
         if matches!(
             name,
-            "--run" | "--set-cpl0" | "--diagnostic-past-c7" | "--user-mode"
+            "--run" | "--set-cpl0" | "--diagnostic-past-c7" | "--user-mode" | "--linux-norandmaps"
         ) {
             forwarded.push(name.to_string());
             index += 1;
@@ -2046,6 +2046,12 @@ mod tests {
         let parsed = parse_series_args(&base).unwrap();
         assert_eq!(parsed.requested_runs, 2);
         assert_eq!(parsed.expected_s5_marker_keys, ["A_FILE", "A_PASS"]);
+        assert!(
+            !parsed
+                .forwarded
+                .iter()
+                .any(|argument| argument == "--linux-norandmaps")
+        );
         assert!(parse_series_args(&base[2..]).is_err());
         let mut diagnostic = base.clone();
         diagnostic.extend(["--stack-context-out".into(), "context.json".into()]);
@@ -2093,6 +2099,7 @@ mod tests {
             "--run".into(),
             "--set-cpl0".into(),
             "--user-mode".into(),
+            "--linux-norandmaps".into(),
             "--cpuid-profile".into(),
             "stage4a".into(),
             "--budget".into(),
@@ -2105,6 +2112,12 @@ mod tests {
                 .forwarded
                 .iter()
                 .any(|argument| argument == "--user-mode")
+        );
+        assert!(
+            parsed
+                .forwarded
+                .iter()
+                .any(|argument| argument == "--linux-norandmaps")
         );
         assert!(
             parsed

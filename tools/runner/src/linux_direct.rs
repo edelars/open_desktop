@@ -85,7 +85,7 @@ pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a] [--user-mode] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-post-iret-index <n>]]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a] [--user-mode [--linux-norandmaps]] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-post-iret-index <n>]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -124,6 +124,8 @@ struct Options {
     /// `--user-mode` (S4-39c, only with `--set-cpl0 --cpuid-profile stage4a`): a committed `IRETQ`
     /// to CPL3 continues with the CPL3 entry instead of stopping at `user_entry`.
     user_mode: bool,
+    /// Opt-in user-stack diagnostic: append Linux's `norandmaps` cmdline parameter.
+    linux_norandmaps: bool,
     /// Separate, opt-in sidecar for bounded console-output stack context; single run only.
     stack_context_out: Option<String>,
     /// Separate, opt-in sidecar for CPL0 RDTSC sites and delivered #PF events; single user-mode run only.
@@ -205,6 +207,7 @@ fn evaluate(options: &Options) -> (Value, u8) {
     mark_acceptance(
         &mut evidence,
         options.diagnostic_past_c7,
+        options.linux_norandmaps,
         options.cpuid_profile,
     );
     let io_failure = |evidence: Value, stage: &str, detail: String| {
@@ -290,7 +293,7 @@ fn evaluate(options: &Options) -> (Value, u8) {
     });
 
     // 6 (cmdline). The runner builds the line; od-machine checks it.
-    let cmdline = cmdline(&options.nonce);
+    let cmdline = cmdline(&options.nonce, options.linux_norandmaps);
     evidence["cmdline"] = json!(cmdline);
 
     // 4-8. od-machine.
@@ -544,9 +547,9 @@ fn evaluate(options: &Options) -> (Value, u8) {
 
 /// S4-38L7: the acceptance marker, set right after the arguments are parsed so that every result
 /// (a refusal of an early step, of the machine or of the run included) carries it. Always
-/// present: `acceptance` is `counted` without `--diagnostic-past-c7` and `diagnostic_not_counted`
-/// with it (CPUID boundary off, DiagnosticV1 answers leaf 1 and 0x80000001, result NOT counted).
-/// The marker follows the request of the flag, not its effect.
+/// present: `acceptance` is `counted` without diagnostic flags and `diagnostic_not_counted` with
+/// `--diagnostic-past-c7` or `--linux-norandmaps`. The marker follows the requested flags, not
+/// their observed effect.
 ///
 /// S4-38L9a: with `--cpuid-profile stage4a` the CPUID boundary is off by the profile (it declares
 /// a subset of the target: TSC, since S4-38L9d also FPU and FXSR) and `cpuid_profile` says
@@ -554,12 +557,19 @@ fn evaluate(options: &Options) -> (Value, u8) {
 /// `diagnostic_past_c7` still follows its flag.
 ///
 /// S4-39j: the profile alone no longer makes the result not counted. Stage4a is the counted
-/// profile of the plan: `acceptance` is `counted` without `--diagnostic-past-c7` for both
-/// profiles and `diagnostic_not_counted` with it; the board and `exit_kind` do not depend on it.
-fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool, cpuid_profile: CpuidProfile) {
+/// profile of the plan. Diagnostic flags control whether a result is counted; the board and
+/// `exit_kind` do not depend on them.
+fn mark_acceptance(
+    evidence: &mut Value,
+    diagnostic_past_c7: bool,
+    linux_norandmaps: bool,
+    cpuid_profile: CpuidProfile,
+) {
     let subset = cpuid_profile != CpuidProfile::DiagnosticV1;
     evidence["diagnostic_past_c7"] = json!(diagnostic_past_c7);
-    evidence["acceptance"] = json!(if diagnostic_past_c7 {
+    evidence["linux_norandmaps"] = json!(linux_norandmaps);
+    let diagnostic = diagnostic_past_c7 || linux_norandmaps;
+    evidence["acceptance"] = json!(if diagnostic {
         "diagnostic_not_counted"
     } else {
         "counted"
@@ -584,8 +594,13 @@ fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool, cpuid_profile
              profile of the target CPU"
         });
     }
+    if linux_norandmaps {
+        parts.push(
+            "--linux-norandmaps disables Linux address-space randomization for the user-stack diagnostic",
+        );
+    }
     if !parts.is_empty() {
-        let verdict = if diagnostic_past_c7 {
+        let verdict = if diagnostic {
             "the result is NOT counted"
         } else {
             "the result is counted (stage4a is the counted profile)"
@@ -633,9 +648,15 @@ fn read_capped(path: &str, limit: u64) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// The kernel command line: the S4-29g template with the operator's nonce, then `nokaslr`.
-fn cmdline(nonce: &str) -> String {
-    format!("{CMDLINE_PREFIX} od.nonce={nonce} {CMDLINE_SUFFIX}")
+/// The kernel command line: the S4-29g template with the operator's nonce, `nokaslr`, and the
+/// optional user-stack `norandmaps` diagnostic.
+fn cmdline(nonce: &str, linux_norandmaps: bool) -> String {
+    let base = format!("{CMDLINE_PREFIX} od.nonce={nonce} {CMDLINE_SUFFIX}");
+    if linux_norandmaps {
+        format!("{base} norandmaps")
+    } else {
+        base
+    }
 }
 
 fn merge(target: &mut Value, source: Value) {
@@ -961,6 +982,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut set_cpl0 = false;
     let mut diagnostic_past_c7 = false;
     let mut user_mode = false;
+    let mut linux_norandmaps = false;
     let mut budget = None;
     let mut cpuid_profile_text: Option<String> = None;
     let mut stack_context_out = None;
@@ -996,6 +1018,15 @@ fn parse(args: &[String]) -> Result<Options, String> {
         if name == "--user-mode" {
             if std::mem::replace(&mut user_mode, true) {
                 return Err(format!("duplicate option --user-mode; usage: {USAGE}"));
+            }
+            index += 1;
+            continue;
+        }
+        if name == "--linux-norandmaps" {
+            if std::mem::replace(&mut linux_norandmaps, true) {
+                return Err(format!(
+                    "duplicate option --linux-norandmaps; usage: {USAGE}"
+                ));
             }
             index += 1;
             continue;
@@ -1089,6 +1120,14 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--user-mode needs --run, --set-cpl0 and --cpuid-profile stage4a; usage: {USAGE}"
         ));
     }
+    if linux_norandmaps
+        && !(run && set_cpl0 && cpuid_profile == CpuidProfile::X8664V1Stage4A && user_mode)
+    {
+        return Err(
+            "--linux-norandmaps needs --run, --set-cpl0, --cpuid-profile stage4a and --user-mode"
+                .into(),
+        );
+    }
     if stack_context_out.is_some() && !(run && set_cpl0) {
         return Err(format!(
             "--stack-context-out needs --run and --set-cpl0; usage: {USAGE}"
@@ -1157,6 +1196,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         diagnostic_past_c7,
         cpuid_profile,
         user_mode,
+        linux_norandmaps,
         stack_context_out,
         execution_observations_out,
         execution_observations_post_iret_index,
@@ -1561,6 +1601,7 @@ mod tests {
                 diagnostic_past_c7: false,
                 cpuid_profile: CpuidProfile::DiagnosticV1,
                 user_mode: false,
+                linux_norandmaps: false,
                 stack_context_out: None,
                 execution_observations_out: None,
                 execution_observations_post_iret_index: None,
@@ -2615,6 +2656,73 @@ mod tests {
     }
 
     #[test]
+    fn linux_norandmaps_is_opt_in_and_requires_the_full_user_mode_profile() {
+        assert!(!parse_base(&[]).unwrap().linux_norandmaps);
+        let enabled = parse_base(&[
+            "--run",
+            "--budget",
+            "1",
+            "--set-cpl0",
+            "--cpuid-profile",
+            "stage4a",
+            "--user-mode",
+            "--linux-norandmaps",
+        ])
+        .unwrap();
+        assert!(enabled.linux_norandmaps);
+
+        for bad in [
+            vec!["--linux-norandmaps"],
+            vec!["--run", "--budget", "1", "--linux-norandmaps"],
+            vec!["--run", "--budget", "1", "--set-cpl0", "--linux-norandmaps"],
+            vec![
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--cpuid-profile",
+                "stage4a",
+                "--linux-norandmaps",
+            ],
+            vec![
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--cpuid-profile",
+                "diagnostic",
+                "--user-mode",
+                "--linux-norandmaps",
+            ],
+            vec![
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--cpuid-profile",
+                "stage4a",
+                "--user-mode",
+                "--linux-norandmaps",
+                "--linux-norandmaps",
+            ],
+        ] {
+            assert!(parse_base(&bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn linux_norandmaps_cmdline_suffix_is_opt_in() {
+        assert_eq!(
+            cmdline("N0nce-1", false),
+            "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=N0nce-1 nokaslr"
+        );
+        assert_eq!(
+            cmdline("N0nce-1", true),
+            "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=N0nce-1 nokaslr norandmaps"
+        );
+    }
+
+    #[test]
     fn user_mode_runs_the_board_into_cpl3_and_the_record_says_so() {
         let mut case = Case::new(
             "set-user-mode",
@@ -2776,7 +2884,7 @@ mod tests {
         };
         for (flag, acceptance) in [(true, "diagnostic_not_counted"), (false, "counted")] {
             let mut base = json!({"retired": 0, "guest_started": false, "nonce": "n"});
-            mark_acceptance(&mut base, flag, CpuidProfile::DiagnosticV1);
+            mark_acceptance(&mut base, flag, false, CpuidProfile::DiagnosticV1);
             let value = run_failure(&error, base);
             assert_eq!(value["status"], "refused");
             assert_eq!(value["diagnostic_past_c7"], flag, "{value:#}");
@@ -3677,45 +3785,61 @@ mod tests {
 
     #[test]
     fn diagnostic_note_has_both_explanations_with_both_flags() {
-        let note = |past_c7: bool, profile: CpuidProfile| {
+        let note = |past_c7: bool, norandmaps: bool, profile: CpuidProfile| {
             let mut evidence = json!({});
-            mark_acceptance(&mut evidence, past_c7, profile);
+            mark_acceptance(&mut evidence, past_c7, norandmaps, profile);
             evidence
                 .get("diagnostic_note")
                 .and_then(Value::as_str)
                 .map(str::to_string)
         };
-        let both = note(true, CpuidProfile::X8664V1Stage4A).expect("note");
+        let both = note(true, false, CpuidProfile::X8664V1Stage4A).expect("note");
         assert!(both.contains("X8664V1Stage4A declares a subset"), "{both}");
         assert!(both.contains("--diagnostic-past-c7"), "{both}");
         assert!(both.contains("NOT counted"), "{both}");
-        let subset = note(false, CpuidProfile::X8664V1Stage4A).expect("note");
+        let subset = note(false, false, CpuidProfile::X8664V1Stage4A).expect("note");
         assert!(subset.contains("subset") && !subset.contains("--diagnostic-past-c7"));
         assert!(
             subset.contains("is counted") && !subset.contains("NOT counted"),
             "{subset}"
         );
-        let diag = note(true, CpuidProfile::DiagnosticV1).expect("note");
+        let diag = note(true, false, CpuidProfile::DiagnosticV1).expect("note");
         assert!(diag.contains("DiagnosticV1 answers CPUID leaf 1"), "{diag}");
-        assert_eq!(note(false, CpuidProfile::DiagnosticV1), None);
+        let norandmaps = note(false, true, CpuidProfile::X8664V1Stage4A).expect("note");
+        assert!(
+            norandmaps.contains("address-space randomization"),
+            "{norandmaps}"
+        );
+        assert!(norandmaps.contains("NOT counted"), "{norandmaps}");
+        assert_eq!(note(false, false, CpuidProfile::DiagnosticV1), None);
     }
 
     #[test]
     fn acceptance_is_counted_for_both_profiles_without_the_flag_and_not_with_it() {
-        let acceptance = |past_c7: bool, profile: CpuidProfile| {
+        let acceptance = |past_c7: bool, norandmaps: bool, profile: CpuidProfile| {
             let mut evidence = json!({});
-            mark_acceptance(&mut evidence, past_c7, profile);
+            mark_acceptance(&mut evidence, past_c7, norandmaps, profile);
             evidence["acceptance"].as_str().unwrap().to_string()
         };
-        assert_eq!(acceptance(false, CpuidProfile::X8664V1Stage4A), "counted");
         assert_eq!(
-            acceptance(true, CpuidProfile::X8664V1Stage4A),
+            acceptance(false, false, CpuidProfile::X8664V1Stage4A),
+            "counted"
+        );
+        assert_eq!(
+            acceptance(true, false, CpuidProfile::X8664V1Stage4A),
+            "diagnostic_not_counted"
+        );
+        assert_eq!(
+            acceptance(false, true, CpuidProfile::X8664V1Stage4A),
             "diagnostic_not_counted"
         );
         // The default profile keeps its earlier marking: counted without the flag, not with it.
-        assert_eq!(acceptance(false, CpuidProfile::DiagnosticV1), "counted");
         assert_eq!(
-            acceptance(true, CpuidProfile::DiagnosticV1),
+            acceptance(false, false, CpuidProfile::DiagnosticV1),
+            "counted"
+        );
+        assert_eq!(
+            acceptance(true, false, CpuidProfile::DiagnosticV1),
             "diagnostic_not_counted"
         );
     }
@@ -3752,6 +3876,7 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
+            linux_norandmaps: false,
             stack_context_out: None,
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
@@ -3798,6 +3923,7 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
+            linux_norandmaps: false,
             stack_context_out: None,
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
@@ -3851,6 +3977,7 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
+            linux_norandmaps: false,
             stack_context_out: None,
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
@@ -3943,7 +4070,7 @@ mod tests {
             Self {
                 vmlinuz: bzimage_with_entry(code),
                 initramfs: vec![0xAB; 4688],
-                cmdline: cmdline("N0nce-1"),
+                cmdline: cmdline("N0nce-1", false),
             }
         }
 
