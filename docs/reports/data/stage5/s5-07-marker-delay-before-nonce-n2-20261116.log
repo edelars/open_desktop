@@ -1,0 +1,100 @@
+# S5-07 marker ordering experiment with a pre-marker guest delay
+
+Date: 2026-11-16
+
+## Purpose and scope
+
+Test whether moving the existing checked 1 ms `nanosleep` in Stage 4 `/init`
+before its nonce write prevents Linux's deferred `Run /init as init process`
+printk from being concatenated with `OD_NONCE=...`. This was an isolated
+diagnostic: the tracked Stage 4 fixture, runner, marker validator, comparator,
+and acceptance rules were not modified.
+
+An initial 500,000,000-retirement run stopped at virtual time 0.5 s, before
+`/init`; UART was empty, so it provides no evidence about marker ordering. The
+useful experiment below ran an automatic unique-nonce N=2 series to 2.6 billion
+retirements per run.
+
+## Candidate initramfs
+
+The candidate `/init` source was built in a temporary directory by moving the
+fixture's existing checked 1 ms `nanosleep` block before the marker-output
+block. The `getpid` check remains after marker output. The original fixture was
+not edited.
+
+- Tracked `init.S` SHA-256: `6c7bb5bbaa84e9d0a1e27351c12c9f6a8d0efb6006b2eef982582ded9620f728`.
+- Candidate source SHA-256: `3ee342e45095f1c4dc0ed1e47f7451609607063aedb34b1e4689b6c8ab271151`.
+- Candidate `/init` ELF SHA-256: `fad513259cd88ba9d50c51aeccd1a8d50a1d09ab8a98f80cec9d11b36c00daff`.
+- Candidate initramfs SHA-256: `65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7`.
+- Build tools: Apple clang 21.0.0 and LLD 23.1.1.
+
+The candidate input and build manifest are retained under the ignored
+`work/stage5/s5-07-marker-delay-before-nonce/` directory.
+
+## Series command and inputs
+
+The exact command was:
+
+```sh
+target/release/od-runner linux-direct \
+  --test-runs 2 \
+  --series-id stage5-s5-07-marker-delay-before-nonce-n2-20261116-a \
+  --scenario-id stage4-init-nonce \
+  --expected-stop-kind budget_exhausted \
+  --out work/stage5/stage5-s5-07-marker-delay-before-nonce-n2-20261116-a/series.json \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage5/s5-07-marker-delay-before-nonce/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --run --budget 2600000000 --set-cpl0 \
+  --cpuid-profile stage4a --user-mode --execution-observations
+```
+
+`--linux-norandmaps` was not used. The command exited 1 because the strict
+within-series comparator found unexplained differences; both guest scenarios
+themselves passed.
+
+| Input | SHA-256 |
+|---|---|
+| Linux 7.0.0-38-generic kernel | `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e` |
+| Candidate initramfs | `65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7` |
+| CPU0 ACPI blob | `6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d` |
+| ACPI manifest | `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2` |
+
+## Results
+
+| Run | Scenario | Exact nonce marker | Retired / stop | Delivered #PF | UART bytes / SHA-256 |
+|---|---|---|---|---:|---|
+| 0001 | passed | valid | 2,599,999,998 / `budget_exhausted` | 34 | 24,074 / `3382510911f37fe024fe601c9bfd5925e34d9ee872a15827e4efa463e14533fe` |
+| 0002 | passed | valid | 2,599,999,998 / `budget_exhausted` | 33 | 24,131 / `f05bd2209b3277597ae76d960292ad8c66a534a11cdba9f987ea8a6fa62ffb9c` |
+
+In both UART captures, `[    2.271...] Run /init as init process` appears on its
+own line before the exact `OD_NONCE=<run nonce>` line. Both nonce values were
+unique and validated exactly. This reproduces the desired marker order in two
+consecutive runs with the candidate guest fixture.
+
+The strict comparator still returned `matches=false`. Its unexplained
+differences were `run[1].machine_observations` and
+`run[1].ordered_uart_bytes` after existing nonce normalization. The delivered
+page-fault counts also differ (34 versus 33); the UART captures differ in
+length and hash. No new normalization was introduced, and no remaining
+differences were declared benign. Thus this
+experiment supports the timing hypothesis for the marker interleaving only;
+it does not make S5-07 acceptable and does not explain the remaining machine or
+UART variation.
+
+## Raw evidence
+
+Raw series, comparison, manifests, runner JSON, UART, and schema-v5 sidecars
+are retained under
+`work/stage5/stage5-s5-07-marker-delay-before-nonce-n2-20261116-a/`.
+
+- `series.json` SHA-256: `f9fc27418121cd49f4795a8988a2b91b812c1c55b37c88445b85179fd0766351`.
+- `comparison.json` SHA-256: `989064d1f1ec9b4732e55fb44c4f28eb73dd41a9422163b0b14af4c5d558654e`.
+- Run 0001 manifest SHA-256: `6a526979eb1105a9aac0877d509462a623c1f4a9c87775dfa4bfa5859d5ee885`.
+- Run 0002 manifest SHA-256: `7a6e0f16d8909ec46c76bc48293310f506c1652c08bf5cb0ab4a1e08a5fe8867`.
+
+S5-07 remains blocked/unaccepted pending resolution of strict machine and UART
+differences on the canonical fixture and a strict-clean unique-nonce series.
