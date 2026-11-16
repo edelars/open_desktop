@@ -907,6 +907,35 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - См. [S4-16e report](../reports/STAGE_4_S4-16E_2026-11-06.md) и
   [manifest](../reports/data/stage4/s4-16e-invlpg-remap-2026-11-06.json).
 
+#### S4-16f. Контекст трансляции в ключе алиасов кода
+
+- Реализовано (ревью ещё не проводилось; чекбокс S4-16 не ставится). Фиксированные
+  `AddressSpaceId(1)` / `ExecutionContextId(1)` и сверка controls «равно снимку сессии»
+  в `PagedCodeSession` заменены ключом `PagedCodeTranslationContext`: CR3 root
+  (биты 35:12), CR0.WP, CR4.PSE, CR4.PGE, EFER.NXE, CPL. PCID/PCIDE в
+  `Long64ProbeConfig` не допускаются; PG/PE/PAE/LME/LMA — обязательные константы
+  снимка. Прочие биты (CR0.TS/EM/MP/NE/AM, CR4.OSFXSR/OSXMMEXCPT, EFER.SCE) в ключ
+  не входят и сброса не вызывают.
+- Правило сброса (консервативное, полный сброс сессии: обе кэш-записи, backing,
+  диапазон и alias): смена любого компонента ключа (наблюдаемая в CPU state
+  или через `set_privilege`/`set_efer`/retired `MOV CR0`), любой retired `MOV CR3`
+  (включая то же значение), retired canonical `INVLPG` (S4-16e), доставленный `#PF`
+  (`note_delivered_page_fault`). Возврат на прежний ключ допускает блок заново.
+  `PagingControlsMismatch` остаётся только для отсутствующих/невалидных controls
+  и не-Long64 режима. Интерпретатор для `MOV CR3` и `MOV CR0` — новые
+  `od_machine::step_paged_mov_cr3_wp` / `step_paged_mov_cr0_wp` над существующими
+  профилями od-isa; store при WP=0 — `step_guest_mov_wp`.
+- Правки по ревью: CS-селектор в state с RPL, не равным CPL ключа, даёт
+  `ContextRejected(CplMismatch)` без эффекта (state без селектора — CPL сессии, хост
+  обязан вызвать `set_privilege`); доставку `#PF` и смену CPL сообщает хост
+  (`note_delivered_page_fault`, `set_privilege`); SMEP/SMAP/PKE/PKS/LA57/PCIDE/CD/NW
+  не в ключе и не допускаются валидацией CR0/CR4; `execute_mov_cr3`/`execute_mov_cr0`
+  меняют state на месте, недостижимые ветви ошибок оставляют state повреждённым.
+- **Граница:** активный блок (S4-16i), writers (S4-16h), cross-page code (S4-16g),
+  PCID/INVPCID/global pages, связь с `FetchTranslationCache` и итоговый текст
+  инвалидации в `JIT_CONTRACT` не сделаны. См. раздел S4-16f в
+  [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
+
 ### S4-17. Собрать локальный memory/fault differential набор
 
 - [ ] Принято после ревью.

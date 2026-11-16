@@ -185,6 +185,12 @@ pub enum ProbeConfigError {
         value: u64,
         offending_bits: u64,
     },
+    /// The CPL requested by the CS selector RPL of the CPU state disagrees
+    /// with the CPL of the translation-context key (S4-16f).
+    CplMismatch {
+        cs_selector: u16,
+        key_cpl: u8,
+    },
 }
 
 impl fmt::Display for ProbeConfigError {

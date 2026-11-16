@@ -4964,3 +4964,51 @@ The bounded S4-16e result has no production TLB, general remap notification,
 cross-page code, arbitrary writer, MMIO/DMA, SMP, or active-block retirement
 semantics. Parent S4-16 and Stage 4 remain open; no performance claim is made.
 See the [S4-16e report](../reports/STAGE_4_S4-16E_2026-11-06.md).
+
+### S4-16f: translation context in the code-alias key
+
+`PagedCodeSession` derives its admission identity from a
+`PagedCodeTranslationContext` instead of a fixed fixture: CR3 root (bits
+35:12), CR0.WP, CR4.PSE, CR4.PGE, EFER.NXE and CPL form the key; its injective
+id is the `CodeIdentity::address_space`, while `ExecutionContextId` is a
+monotonic generation advanced on every key change (the dispatch caches require
+a strictly advancing id). Any key change (observed in CPU state, retired
+`MOV CR0` WP toggle, `set_privilege`, `set_efer`), every retired `MOV CR3`
+(including a same-value write), every retired canonical `INVLPG` and every
+delivered `#PF` (`note_delivered_page_fault`) conservatively resets the whole
+session: both cache entries and the backing/range/alias binding. A block
+admitted under another key is never reused; returning to an earlier key needs a
+fresh admission. Bits outside the key (CR0.TS/EM, CR4.OSFXSR, EFER.SCE) do not
+reset. `PagingControlsMismatch` remains only for missing or invalid controls.
+Not covered: active-block retirement (S4-16i), arbitrary writers (S4-16h),
+cross-page code (S4-16g), PCID/global pages, a shared invalidation contract with
+`FetchTranslationCache`; the consolidated S4-16 invalidation contract is still
+to be written. No performance claim is made.
+
+Host obligations and key boundary (S4-16f):
+
+- A delivered `#PF` is reported by the host through
+  `note_delivered_page_fault`. If the host does not call it, the session is not
+  reset, but a walk over the new PTEs gives `UnsupportedAlias` (or a snapshot
+  fault), never execution of stale code: the snapshot is recomputed on every
+  `execute_alias`.
+- A CPL change is reported by the host through `set_privilege`. A state that
+  carries a CS selector must agree with the key: if `(cs_selector & 3)` differs
+  from the CPL of the key, `execute_alias`, `step_guest_mov`, `execute_invlpg`,
+  `step_guest_mov_wp`, `execute_mov_cr3` and `execute_mov_cr0` return
+  `ContextRejected(ProbeConfigError::CplMismatch)` before any effect: no reset,
+  no change of the state. Limitation: a state without a CS selector
+  (`cs_selector == None`) is not checked and keeps the session's CPL, so the
+  host must call `set_privilege` itself in that case.
+- SMEP, SMAP, PKE, PKS, LA57, PCIDE, CR0.CD and CR0.NW are neither in the key
+  nor admitted: the CR0/CR4 validation of `Long64ProbeConfig` rejects them, so
+  "not in the key" is safe (a session can never hold a snapshot in which they
+  would change translation or access rules).
+- `execute_mov_cr3` / `execute_mov_cr0` modify the caller's `state` in place. On
+  `ContextEffectMismatch` or on `ContextRejected` after the instruction retired
+  the state may already hold the written CR and the advanced RIP; these branches
+  are unreachable with the current od-isa profiles. If such a path appears, the
+  caller must treat `state` as corrupted. `ContextRejected` does not reset the
+  session when the rejection happens before any effect is applied (`set_efer`,
+  the CPL check, the pre-step configuration of `execute_mov_cr0`); only the
+  rejection of an already retired write resets it.
