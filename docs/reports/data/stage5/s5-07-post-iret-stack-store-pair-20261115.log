@@ -1,0 +1,57 @@
+# S5-07 paired post-IRET startup-stack page walks, 2026-11-15
+
+## Purpose and scope
+
+Repeat the schema-v5 post-IRET capture for the selected startup-stack store at zero-based delivered-#PF ordinal 30. Compare the ordered page-fault signatures from the two independent runs to identify the difference in their delivered-#PF totals. These are counted single-run diagnostics, not an automatic N=2 series and not acceptance evidence.
+
+## Inputs and build
+
+- Runner SHA-256: `c3467f73ed5f5e2d8ac50593ceccd545d3f220eb796c86e47bca996e47ad3917`
+- Kernel SHA-256: `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`
+- Initramfs SHA-256: `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`
+- ACPI blob SHA-256: `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`
+- ACPI manifest hash: `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`
+- Staged debug ELF SHA-256: `7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f`
+- Host: macOS/aarch64; RAM: 128 MiB; profile: `stage4a`, `--user-mode`; budget: 3,000,000,000 instructions.
+
+The debug ELF resolves the C-only fault RIP `0xffffffff8271ec4d` to `__put_user_8` at `arch/x86/lib/putuser.S:115` using `/opt/homebrew/opt/binutils/bin/addr2line`.
+
+## Runs and raw artifact hashes
+
+| Run | Nonce | Status / stop | #PF / #GP(0) | Runner JSON SHA-256 | Sidecar SHA-256 |
+|---|---|---|---:|---|---|
+| C | `od5postiretstack20261115c` | `loaded`, `budget_exhausted`, retired `2,999,999,998` | 35 / 1 | `ac259305d5ae23ca0a2f92560528eaeacdb1e9530cbd6b6f3d1ebb30f7db37df` | `ae2c68cff9bfc44aa8085a3e207ff1c3cd7c72c4e88284475733a4dfc24ac1e0` |
+| D | `od5postiretstack20261115d` | `loaded`, `budget_exhausted`, retired `2,999,999,998` | 34 / 1 | `c7443923ed8d9c40136fd28b243f024542def43fe591bc1cae26e7a06ee982b6` | `e57876a5398d09105173c6aa267d880d0fa0617306b2cca0ce8a29efeb9403c6` |
+
+Both runs started the guest, emitted the exact `OD_NONCE=<nonce>` marker, and retained all delivered-#PF events (`page_fault_events_omitted=0`). They used identical kernel, initramfs, ACPI blob, manifest, and runner hashes.
+
+## Selected startup-stack store
+
+Ordinal 30 has the same event signature in both runs: RIP `0xffffffff8271a9c1` (`rep_movs_alternative+0x11`), access `Write`, CPL 0, error code `0x2`, `RCX=7`, and RSI `0xffffffff82fdeb8f` (kernel `.rodata`). Its CR2/RDI is run-specific: `0x7ffc939c4169` in C and `0x7fff20d3f7f9` in D. The original guest page walk in each run ended at a zero PT leaf (`NotPresent { level: Pt }`).
+
+After IRETQ, both captures match the selected fault's RIP, CS `0x0010`, CPL 0, RSP `0xffffc9000000fc80`, and unchanged per-run CR3. The same PT entry then contains `0x39fe867`, translating the saved CR2 to `0x39fe169` in C and `0x39fe7f9` in D. This independently confirms that the selected page was mapped by the matching return boundary in both runs. It still does not observe retirement of the retried REP instruction or TLB state.
+
+## Difference in the #PF sequences
+
+Comparing ordered `(RIP, access, CPL, error_code)` signatures found exactly one extra event in C at ordinal 31; the remaining signatures align in order. That C-only event is a CPL0 `Write` at RIP `0xffffffff8271ec4d`, error code `0x2`, CR2 `0x7ffc939c3fb0`, with an original zero PT leaf. `addr2line` resolves the RIP to `__put_user_8` at `putuser.S:115`. No event with that signature occurs in D.
+
+This isolates the 35-versus-34 #PF count difference for this pair to a second user-stack write fault in C; ordinal 30's `rep_movs_alternative` fault occurred in both. C later reached the expected budget stop, but this capture did not select ordinal 31, so its post-IRET mapping was not observed. The dynamic user-stack addresses and event difference are consistent with run-dependent stack layout; they do not by themselves prove ASLR caused the event or prove it benign. They also do not explain the different #PF delta in the separate automatic series `stage5-s5-07-stage4a-rdtsc-by-cpl-20261115-f`. The strict comparator was not run for these single-run diagnostics, and its rules were not changed.
+
+## Exact command form
+
+```sh
+target/release/od-runner linux-direct \
+  --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs /Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --nonce od5postiretstack20261115d --ram-mib 128 \
+  --out work/stage5/stage5-s5-07-post-iret-stack-store-20261115-d/run.json \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --execution-observations-out work/stage5/stage5-s5-07-post-iret-stack-store-20261115-d/execution-observations.json \
+  --execution-observations-post-iret-index 30
+```
+
+The C invocation is preserved in [the single-run evidence log](s5-07-post-iret-stack-store-single-20261115.log); both raw JSON artifacts remain in ignored `work/stage5/`.
