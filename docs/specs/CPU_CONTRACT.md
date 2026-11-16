@@ -27202,3 +27202,10 @@ The store uses the tracked `GuestMemory::write_integer` path. On success only RI
 Base `PagedCpl0ProbeV1` admits only the exact bytes `41 F6 C5 07` with REX byte `41` and no other prefixes: REX `41`, primary opcode `F6` group `/0`, ModRM `C5` and imm8 `07`, with byte operand size. REX.B extends ModRM.rm from 5 to R13B; the analogous `40 F6 C5 07` selects BPL. The shared TEST helper ANDs the selected byte with 7 without writing the register. CF and OF clear, ZF and PF reflect the result, SF is clear for this immediate mask, and AF retains its concrete bit while becoming undefined; unrelated flags and their definedness are preserved. Other low-byte registers, immediate values, groups, widths, prefixes, CPL3 and other profiles remain unsupported.
 
 Four focused tests cover values 0, 1, 3, 7, 8, 0x80 and 0xff in the low byte while checking distinct upper R13 bits, all-GPR retention, result flags and AF definedness, final-immediate fetch-fault atomicity, neighboring forms, CPL3 and other-profile isolation. Firmware advances to ISSUE-221: `74 59` (`JZ rel8 +0x59`) at RIP `0x200f27`.
+
+
+### S7-04: exact Rust-helper `JZ rel8 +0x59` (ISSUE-221)
+
+Base `PagedCpl0ProbeV1` admits only exact no-prefix bytes `74 59`: short JZ with signed displacement +0x59. The branch reads only ZF, preserves RFLAGS and `rflags_defined`, and selects `next_rip+0x59` when ZF=1 or the two-byte fall-through otherwise. Only a taken target is checked for canonicality; a not-taken fall-through is deferred to the next fetch. Neighboring conditions/displacements, prefixes, near forms, CPL3 and other profiles remain unsupported.
+
+The JZ rel8 tests cover both ZF outcomes with defined and undefined ZF metadata, exact target/fall-through RIP, taken-only canonicality, displacement-fetch-fault atomicity, neighboring forms, CPL3 and other-profile isolation. Firmware advances to ISSUE-222: `48 89 44 24 08` (`MOV qword ptr [RSP+8],RAX`) at RIP `0x200f82`.

@@ -1070,13 +1070,22 @@
 - **Проверка:** four focused ISA tests cover byte-value outcomes, all GPRs and flags, AF definedness, immediate-fetch fault atomicity, neighbor encodings, CPL3 and other-profile isolation. Runner retired 8903 and stopped at `74 59` (`JZ rel8 +0x59`, ISSUE-221), RIP `0x200f27`, `Unsupported { opcode: 116 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
 - **Следующий шаг:** continue S7-04 at ISSUE-221.
 
-### ISSUE-221 — S7-04: Rust helper `JZ rel8 +0x59` (`74 59`) remains outside paged CPU profile
+### ISSUE-221 — S7-04: exact Rust-helper `JZ rel8 +0x59` (`74 59`) admitted narrowly
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `TEST R13B,7`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200f27`.
+- **Статус:** решена узко для exact `74 59` в base `PagedCpl0ProbeV1`; независимо проверена и одобрена, ожидает коммита. Other conditions, displacements, prefixes, near forms, CPL3 and profiles remain unsupported.
+- **Суть и результат:** JZ reads only ZF and preserves RFLAGS and definedness. ZF=1 selects `next_rip+0x59`; ZF=0 selects fall-through. Canonicality is checked only for a taken target.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue221.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf27` are `74 59`; runner budget 10000.
+- **Проверка:** five focused JZ rel8 tests cover both ZF values, defined/undefined ZF, exact targets, taken-only canonicality and rel8 fetch-fault atomicity. Neighboring displacement/condition/prefix/near forms, CPL3 and other-profile isolation are covered. Runner retired 8904 and stopped at `48 89 44 24 08` (`MOV qword ptr [RSP+8],RAX`, ISSUE-222), RIP `0x200f82`, `Unsupported { opcode: 137 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
+- **Следующий шаг:** continue S7-04 at ISSUE-222.
+
+### ISSUE-222 — S7-04: Rust helper `MOV qword ptr [RSP+8],RAX` (`48 89 44 24 08`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact JZ rel8 +0x59.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200f82`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8903 instructions and stopped at `74 59`, `Unsupported { opcode: 116 }`, `RIP=0x200f27`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue220.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf27` begin `74 59`; runner budget 10000.
-- **Следующий шаг:** inspect the exact branch predicate, signed target and existing JZ rel8 semantics before narrow admission.
+- **Суть и последствия:** runner retired 8904 instructions and stopped at `48 89 44 24 08`, `Unsupported { opcode: 137 }`, `RIP=0x200f82`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue221.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf82` begin `48 89 44 24 08`; runner budget 10000.
+- **Следующий шаг:** inspect the exact stack store tuple, tracked write path, and existing store fault tests before narrow admission.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.

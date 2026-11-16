@@ -5918,7 +5918,7 @@ fn rust_helper_jz_rel32_is_unsupported_in_cpl3_profile() {
 
 #[test]
 fn rust_helper_jz_rel8_obeys_zf_and_preserves_flags_and_definedness() {
-    for displacement in [0x35i8, 0x3b, 0x64, -0x30] {
+    for displacement in [0x35i8, 0x3b, 0x59, 0x64, -0x30] {
         let code = [0x74, displacement as u8]; // observed exact JZ rel8 forms
         for zero in [false, true] {
             for zf_defined in [false, true] {
@@ -5960,7 +5960,7 @@ fn rust_helper_jz_rel8_obeys_zf_and_preserves_flags_and_definedness() {
 
 #[test]
 fn rust_helper_jz_rel8_checks_canonicality_only_when_taken() {
-    for displacement in [0x35i8, 0x3b, 0x64, -0x30] {
+    for displacement in [0x35i8, 0x3b, 0x59, 0x64, -0x30] {
         let code = [0x74, displacement as u8];
 
         let fallthrough_rip = 0x0000_7fff_ffff_fffe;
@@ -6062,6 +6062,12 @@ fn rust_helper_jz_rel8_neighbours_stay_unsupported_without_mutation() {
         (&[0x66, 0x74, 0x64], 0x74),                   // operand-size prefix
         (&[0x40, 0x74, 0x64], 0x74),                   // REX prefix
         (&[0x0f, 0x84, 0x64, 0, 0, 0], 0x84),          // near JZ
+        (&[0x74, 0x58], 0x74),                         // displacement below +0x59
+        (&[0x74, 0x5a], 0x74),                         // displacement above +0x59
+        (&[0x75, 0x59], 0x75),                         // JNZ with same displacement
+        (&[0x66, 0x74, 0x59], 0x74),                   // operand-size prefix
+        (&[0x40, 0x74, 0x59], 0x74),                   // REX prefix
+        (&[0x0f, 0x84, 0x59, 0, 0, 0], 0x84),          // near JZ
         (&[0x74, 0x3a], 0x74),                         // displacement below +0x3b
         (&[0x74, 0x3c], 0x74),                         // displacement above +0x3b
         (&[0x75, 0x3b], 0x75),                         // JNZ with same displacement
@@ -6093,7 +6099,7 @@ fn rust_helper_jz_rel8_neighbours_stay_unsupported_without_mutation() {
 
 #[test]
 fn rust_helper_jz_rel8_is_unsupported_in_cpl3_profile() {
-    let bytes = [0x74, 0xd0];
+    let bytes = [0x74, 0x59];
     let mut memory = Memory::new(&bytes);
     let mut cpu = state();
     cpu.cr3 = Some(0x1000);
@@ -16720,6 +16726,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x74, 0x64][..], 0x74),
         (&[0x74, 0x35][..], 0x74),
         (&[0x74, 0xd0][..], 0x74),
+        (&[0x74, 0x59][..], 0x74),
         (&[0x41, 0x83, 0xf8, 0x30][..], 0x83),
         (&[0x77, 0x0e][..], 0x77),
         (&[0x77, 0x3d][..], 0x77),
