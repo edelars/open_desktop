@@ -1,0 +1,36 @@
+S5-06 mini address refresh and restricted physical Linux preflight
+Date: 2026-11-16
+SSH target: senya@192.168.1.39
+Host: mini; Ubuntu x86_64; Linux 7.0.0-42-generic.
+Compiler: /usr/bin/gcc-15, GCC 15.2.0-16ubuntu1.
+No software installation was needed. The host also has sh, bash, python3, file,
+tar, and sha256sum.
+
+The owner-authorized source directories were staged under
+`/tmp/codex-s5-06-preflight-20261116/guest/linux/tests/` and
+`/tmp/codex-s5-06-preflight-20261116/tests/fixtures/guest/stage5/`. SHA-256
+comparison counted 15 local and 15 remote files; every relative path and hash
+matched. The exact hashes are listed in
+[the original physical preflight manifest](s5-06-physical-linux-preflight-20261114.log).
+
+Checks run against the transferred copy:
+
+- `sh -n` passed for all seven `s5_*.sh` scripts.
+- All seven scripts rejected the invalid nonce `bad nonce` with exit 64 and
+  the nonce-validation marker.
+- A with nonce `physical-preflight-20261116a` and no guest opt-in returned
+  `OD_S5_A_NOT_RUN`/78; no poweroff was attempted.
+- C returned `OD_S5_C_PASS`.
+- D returned `OD_S5_D_RESULT ... sum=5050` and `OD_S5_D_PASS`.
+- E returned `OD_S5_E_RESULT ... first=41 second=42 nx=denied` and
+  `OD_S5_E_PASS profile=interpreter jit_claim=none`.
+- F with no endpoint returned `OD_S5_F_BLOCKED`/78 before network activity.
+- G with `S5_G_MEMORY_MIB=129` returned exit 64 before persistent writes.
+- `gcc-15 -std=c11 -O2 -Wall -Wextra -Werror -fno-ident -fsyntax-only`
+  passed for all six fixture `.c` files.
+- The unique C/D/E directories under `/var/tmp/open-desktop-stage5/` were
+  inspected, removed, and confirmed absent.
+
+Scope: this is physical-host script/compiler evidence only. No Linux guest was
+booted. B positive persistence write/verify, A poweroff, G stop orchestration,
+and F network transfer were not attempted. S5-06 remains blocked/unaccepted.
