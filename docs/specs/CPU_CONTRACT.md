@@ -27093,3 +27093,10 @@ Four focused tests cover flag values/definedness, complete-state retention, fina
 Base `PagedCpl0ProbeV1` admits only no-prefix bytes `72 4C`. Shared `ConditionCode::Below` tests CF and leaves RFLAGS and `rflags_defined` unchanged. CF=1 selects `next_rip+0x4c`; CF=0 selects fall-through. Only a taken target is canonicality-checked. Other conditions/displacements, prefixes, near branches, CPL3 and other profiles remain unsupported.
 
 Five focused tests cover taken/not-taken paths with CF defined and undefined, full state retention, target/fall-through, taken-only canonicality including deferred noncanonical fall-through, rel8 fetch-fault atomicity, adjacent forms and CPL3 isolation. Firmware now advances to ISSUE-205: `4C 89 F7` (`MOV RDI,R14`) at RIP `0x200ee9`.
+
+
+### S7-04: exact Rust-helper `MOV RDI,R14` (ISSUE-205)
+
+Base `PagedCpl0ProbeV1` admits only exact bytes `4C 89 F7`. Opcode `89` uses Intel operand order (r/m destination, reg source); REX.W enables qword width and REX.R extends ModRM.reg from R6 to R14. The operation copies all 64 bits from R14 to RDI, advances RIP, and preserves other GPRs, RFLAGS and `rflags_defined`. Neighboring registers, directions, widths, prefixes, CPL3 and other profiles remain unsupported.
+
+Four focused tests cover representative 64-bit values, full-state and flags retention, final-ModRM fetch-fault atomicity, neighboring encodings and profile/CPL isolation. Firmware now advances to ISSUE-206: `48 C1 E7 05` (`SHL RDI,5`) at RIP `0x200eec`.

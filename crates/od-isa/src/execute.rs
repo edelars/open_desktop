@@ -20894,6 +20894,28 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: the Rust helper copies R14 to RDI with exact
+        // `4C 89 F7`; REX.R selects R14 and the ModRM r/m field selects RDI.
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x89
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x4c),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rdi, OperandSize::Qword)
+            && source == RegisterView::low(Register::R14, OperandSize::Qword) =>
+        {
+            let value = state.read(source);
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: the Rust helper copies the handoff argument into RBX with
         // exactly `48 89 FB` (MOV RBX,RDI). Other register MOVs stay refused.
         Operation::Mov {

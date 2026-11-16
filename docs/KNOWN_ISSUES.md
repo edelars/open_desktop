@@ -920,7 +920,7 @@
 ### ISSUE-204 — S7-04: Rust helper `JB rel8 +0x4c` (`72 4C`) remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `CMP R15D,0xA0`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200ee7`.
-- **Статус:** решена узко для exact `72 4C` в base `PagedCpl0ProbeV1`; независимое review пройдено, ожидает коммита. Другие условия, смещения, prefixes and profiles остаются вне allowlist.
+- **Статус:** решена узко для exact `72 4C` в base `PagedCpl0ProbeV1`; review пройдено, коммит `f879927`. Другие условия, смещения, prefixes and profiles остаются вне allowlist.
 - **Суть и результат:** exact JB rel8 использует shared `ConditionCode::Below`, проверяет CF, сохраняет RFLAGS и `rflags_defined`, переходит к `next_rip + 0x4c` только при CF=1 и иначе выбирает fall-through. Каноничность проверяется только для взятой цели.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue204.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xee7` are `72 4C`; runner budget 10000.
 - **Проверка:** пять focused `rust_helper_jb_plus_4c_*` тестов покрывают оба значения CF и definedness, RIP цели/fall-through, noncanonical fall-through и taken-target #GP, rel8 fetch-fault atomicity, соседние branch/prefix forms и CPL3; общий isolation test покрывает другие paged profiles. Firmware runner retired 8886 and stopped at `4C 89 F7` (`MOV RDI,R14`, ISSUE-205), RIP `0x200ee9`, `Unsupported { opcode: 137 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
@@ -929,10 +929,19 @@
 ### ISSUE-205 — S7-04: Rust helper `MOV RDI,R14` (`4C 89 F7`) remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `JB rel8 +0x4c`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200ee9`.
+- **Статус:** решена узко для exact `4C 89 F7` в base `PagedCpl0ProbeV1`; ожидает независимого review. Other register moves, widths, prefix variants and profiles remain unsupported.
+- **Суть и результат:** exact Intel-order MOV uses opcode `89`, ModRM `F7`, REX.W+R (`4C`) to copy the full 64-bit R14 value into RDI. All other GPRs, flags and flag-definedness remain unchanged.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue205.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xee9` are `4C 89 F7`; runner budget 10000.
+- **Проверка:** four focused tests cover full-width values, state/flag retention, fetch-fault atomicity on ModRM, neighboring sources/destinations/opcodes/widths/prefixes and CPL3 isolation; other-profile isolation is covered by the shared profile test. Runner retired 8887 and stopped at `48 C1 E7 05` (`SHL RDI,5`, ISSUE-206), RIP `0x200eec`, `Unsupported { opcode: 193 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
+- **Следующий шаг:** independently review this exact MOV admission and continue S7-04 at ISSUE-206.
+
+### ISSUE-206 — S7-04: Rust helper `SHL RDI,5` (`48 C1 E7 05`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact `MOV RDI,R14`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200eec`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8886 instructions and stopped at `4C 89 F7`, `Unsupported { opcode: 137 }`, `RIP=0x200ee9`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue204.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xee9` are `4C 89 F7`; runner budget 10000.
-- **Следующий шаг:** inspect exact source/destination register selection, operand width and mutation semantics before considering narrow admission.
+- **Суть и последствия:** runner retired 8887 instructions and stopped at `48 C1 E7 05`, `Unsupported { opcode: 193 }`, `RIP=0x200eec`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue205.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xeec` are `48 C1 E7 05`; runner budget 10000.
+- **Следующий шаг:** inspect exact shift width/count/destination and definedness before considering narrow admission.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.
