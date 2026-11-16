@@ -630,3 +630,10 @@ Four focused tests cover the condition/definedness truth table, R11 partial-byte
 This slice admits only exact `45 08 D3` in base `PagedCpl0ProbeV1`. REX.B/R select R11B as the destination and R10B as the source. The operation changes only low R11, clears CF/OF, sets SF/ZF/PF from the byte result, and marks AF undefined. The focused neighbor matrix rejects listed other routes/opcodes/prefixes/memory forms; other profiles and CPL3 remain unchanged.
 
 Four focused tests cover byte result/flags, REX routing, upper R11 and full-state preservation, fault atomicity, neighbors and CPL3/profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/845/7/15); all 61 paged machine tests, scoped check, formatting and diff-check pass. Firmware advances after 8,988 retired instructions to `74 1D` (`JZ rel8 +0x1d`, ISSUE-292) at RIP `0x20165b`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `JZ rel8 +0x1d` (ISSUE-292)
+
+This slice admits only exact no-prefix `74 1D` in base `PagedCpl0ProbeV1`. ZF=1 takes signed rel8 +0x1d from next RIP; ZF=0 falls through. It preserves flags and definedness, and checks canonicality only for the taken target. A displacement fetch fault commits no state. The neighbor tests reject the listed adjacent branch/displacement/prefix forms; existing exact Jcc admissions remain unchanged, and CPL3/other paged profiles do not gain this form.
+
+Five focused tests cover the ZF truth/definedness matrix, taken/fall-through targets, taken-only canonicality, fetch-fault atomicity, neighbors and CPL3/profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/845/7/15); all 61 paged machine tests, scoped check, formatting and diff-check pass. Firmware advances after 8,989 retired instructions to `44 8B 6C 08 18` (`MOV R13D,dword ptr [RAX+RCX+0x18]`, ISSUE-293) at RIP `0x20167a`; COM1 remains empty. Independent review approved with no findings.

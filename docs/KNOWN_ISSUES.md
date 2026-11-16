@@ -4207,8 +4207,18 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-292 — S7-04: exact helper `JZ rel8 +0x1d` (`74 1D`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-291.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20165b`.
-- **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact short JZ displacement; subsequent firmware execution is blocked.
+- **Статус:** реализована в S7-04; независимое ревью одобрило без замечаний.
+- **Суть и последствия:** base `PagedCpl0ProbeV1` admits the exact no-prefix rel8 displacement `74 1D`; ZF controls taken/fall-through and branch flags/definedness are preserved.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x165b` are `74 1D`; runner budget 10000.
-- **Проверки исполнения:** after ISSUE-291, firmware retires 8,988 instructions and stops with `Unsupported { opcode: 116 }`; COM1 remains empty.
-- **Следующий шаг:** admit exact `JZ rel8 +0x1d` with ZF semantics and precise taken/fall-through handling.
+- **Проверки исполнения:** five focused tests cover ZF true/false with defined and undefined ZF, both RIP outcomes, taken-only canonicality, displacement-fetch atomicity, neighbors and CPL3; the other-profile matrix keeps this branch unsupported. Full od-isa suites pass (2,322 library, 1,591 profile-set, 126 execution, 29 boundary, 6 flags, 845 paged-profile, 7 profile-isolation, 15 descriptor, 0 doc tests); all 61 paged machine tests pass. Scoped cargo check, formatting and diff-check pass; cargo check reports only the existing unused page-walk helper warning. Firmware retires 8,989 instructions and stops at `44 8B 6C 08 18` (`MOV R13D,dword ptr [RAX+RCX+0x18]`, ISSUE-293) at RIP `0x20167a`, `Unsupported { opcode: 139 }`; COM1 remains empty. Independent review approved with no findings.
+- **Следующий шаг:** handle exact `MOV R13D,dword ptr [RAX+RCX+0x18]` as ISSUE-293.
+
+
+### ISSUE-293 — S7-04: exact helper `MOV R13D,dword ptr [RAX+RCX+0x18]` (`44 8B 6C 08 18`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-292.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20167a`.
+- **Статус:** открыта.
+- **Суть и последствия:** the base profile does not yet admit this exact indexed dword load; subsequent firmware execution is blocked.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x167a` are `44 8B 6C 08 18`; runner budget 10000. REX.R selects R13D, SIB computes RAX+RCX, and disp8 is +0x18.
+- **Проверки исполнения:** after ISSUE-292, firmware retires 8,989 instructions and stops with `Unsupported { opcode: 139 }`; COM1 remains empty.
+- **Следующий шаг:** admit only this R13D indexed dword load with zero extension and tracked read semantics.
