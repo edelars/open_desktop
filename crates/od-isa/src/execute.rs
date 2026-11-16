@@ -22809,7 +22809,8 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         // (MOV R12D,dword ptr [RSI+0x40]), `44 8B 46 44`
         // (MOV R8D,dword ptr [RSI+0x44]), and exact `44 8B 14 08`
         // (MOV R10D,dword ptr [RAX+RCX]) and exact `8B 6C 08 04`
-        // (MOV EBP,dword ptr [RAX+RCX+4]). The exact `0F B7 5C 24 40`
+        // (MOV EBP,dword ptr [RAX+RCX+4]), plus exact `44 8B 6C 08 18`
+        // (MOV R13D,dword ptr [RAX+RCX+0x18]). The exact `0F B7 5C 24 40`
         // (MOVZX EBX,word ptr [RSP+0x40]) stack form is admitted here too.
         // Reuse the tracked faulting read and 32-bit write; other load forms
         // remain unsupported.
@@ -22986,6 +22987,42 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 && source.index.is_none())
                 || (source.base == AddressBase::Register(Register::Rax)
                     && source.index == Some(Register::Rcx)))
+            && source.scale == 1
+            && source.address_size == OperandSize::Qword
+            && source.size == OperandSize::Dword =>
+        {
+            let value =
+                match read_operand(state, memory, context, next_rip, Operand::Memory(source)) {
+                    Ok(value) => value,
+                    Err(MemoryError::Architectural(fault)) => {
+                        return result(PagedProbeExit::Fault(fault), 0);
+                    }
+                    Err(error) => return result(PagedProbeExit::Backend(error), 0),
+                };
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
+        // S7-04: the helper reads exact `44 8B 6C 08 18`
+        // (MOV R13D,dword ptr [RAX+RCX+0x18]). REX.R selects R13D, and the
+        // dword register write zero-extends R13. Reuse the tracked read and
+        // commit the destination/RIP only after it succeeds.
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Memory(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x8b
+            && instruction.length == 5
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x44),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R13, OperandSize::Dword)
+            && source.displacement == 0x18
+            && source.base == AddressBase::Register(Register::Rax)
+            && source.index == Some(Register::Rcx)
             && source.scale == 1
             && source.address_size == OperandSize::Qword
             && source.size == OperandSize::Dword =>

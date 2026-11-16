@@ -4217,8 +4217,16 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-293 — S7-04: exact helper `MOV R13D,dword ptr [RAX+RCX+0x18]` (`44 8B 6C 08 18`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-292.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20167a`.
+- **Статус:** решена; базовый `PagedCpl0ProbeV1` допускает только эту точную форму.
+- **Результат:** tracked dword read uses 64-bit RAX+RCX+disp8 `0x18`; REX.R selects R13D and dword write zero-extends R13. Read faults commit neither R13 nor RIP; flags and other GPRs are preserved. Four-level machine evidence confirms accessed bits without dirty bits.
+- **Проверки исполнения:** six focused profile tests cover result/address/zero-extension, state and flags, read/fetch faults, noncanonical address, neighbors and CPL3/other-profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/851/7/15); 63 paged machine tests pass. Scoped check, formatting and diff-check pass; cargo check has only the existing unused-helper warning. Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retires 8,990 instructions and stops at `41 83 FD FF` (`CMP R13D,-1`, ISSUE-294), RIP `0x20167f`, `Unsupported { opcode: 131 }`; COM1 remains empty. Independent review approved with no findings.
+
+### ISSUE-294 — S7-04: exact helper `CMP R13D,-1` (`41 83 FD FF`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-293.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20167f`.
 - **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact indexed dword load; subsequent firmware execution is blocked.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at file offset `0x167a` are `44 8B 6C 08 18`; runner budget 10000. REX.R selects R13D, SIB computes RAX+RCX, and disp8 is +0x18.
-- **Проверки исполнения:** after ISSUE-292, firmware retires 8,989 instructions and stops with `Unsupported { opcode: 139 }`; COM1 remains empty.
-- **Следующий шаг:** admit only this R13D indexed dword load with zero extension and tracked read semantics.
+- **Суть и последствия:** base profile does not yet admit this exact dword register-immediate compare; firmware stops before later helper operations.
+- **Основание:** runner using image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after 8,990 retired instructions it reports `Unsupported { opcode: 131 }`. Bytes at file offset `0x167f` are `41 83 FD FF`.
+- **Следующий шаг:** admit only this dword CMP R13D, sign-extended imm8 -1 form with arithmetic flags and no GPR mutation.
+
+ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.
