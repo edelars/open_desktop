@@ -231,6 +231,8 @@ accept S6-14 as a whole; S6-14c and later remain separate work.
 CR2/CR3/CR4; EFER; GDTR/IDTR; LDTR/TR; GPR; EDX-сигнатура после INIT;
 состояние `WaitForSipi`. S6-14d и далее не начаты.
 
+GPR, EDX-сигнатура, GDTR/IDTR, LDTR/TR, CR3/CR4 из `legacy_mode.rs` (список «Not modelled here») — срез-преемник: S6-14d/S6-16 (исполнение и трамплин); activity `WaitForSipi` представлен в S6-13.
+
 Независимое ревью Claude Opus / high: вердикт «принять» с условием исправить
 замечания 1-3; исполнитель исправил замечания 1-8.
 
@@ -240,6 +242,69 @@ CR2/CR3/CR4; EFER; GDTR/IDTR; LDTR/TR; GPR; EDX-сигнатура после IN
 Ограничения: сверка с Intel SDM выполнена по памяти, первоисточник офлайн
 недоступен. Линия S4-38 завершена владельцем 2026-11-16 и не блокирует правки
 `od-isa`. Чекбокс S6-14 в целом не отмечен.
+
+### S6-13 — INIT, SIPI и ожидание SIPI (реализовано, исправлено по ревью, ожидает повторного ревью)
+
+Дата: 2026-11-16. Чекбокс S6-13 в `STAGE_6.md` не отмечен. Контракт: [`MACHINE_CONTRACT.md`](../specs/MACHINE_CONTRACT.md#init-sipi-и-ожидание-sipi-s6-13).
+
+Что сделано:
+- `od-isa`: `CpuActivity::WaitForSipi`. Исчерпывающих `match` по `CpuActivity` было два вне `od-isa`: `SchedActivity::from` в `idle_arbiter.rs` (теперь отображает в `SchedActivity::WaitForSipi`, который арбитр и раньше никогда не выбирал) и снимок V2 в `od-testkit/src/v2.rs` (`WaitForSipi` отвергается, как `Shutdown`: в схеме снимка его нет). Поведение прежних путей не менялось. Only the CPL0 profile set refuses non-Running activity with `NotRunning`. Other entry points do not check WaitForSipi, among them `od_isa::execute::run`, `step`, `run_with_maskable_request` and the `run_configured`-based runners (the loop checks only Halted; `!= Running` is checked only under paged CR0 profiles). The board executes only vCPU 0, so this is not reachable yet; закрыть до S6-15.
+- `vcpu.rs`: у `Vcpu` поле `real_mode: Option<RealModeState>`; `Vcpu::new_ap` (активность `WaitForSipi`, `real_mode = after_init(0x6000_0010)`); `Vcpu::activity()`; `Vcpu::apply_startup(PendingStartup)`: INIT (затем SIPI) по SMP_CONTRACT §3/§4. AP: INIT даёт `RealModeState::after_init(old_cr0)` и `WaitForSipi`, SIPI в `WaitForSipi` даёт `after_sipi(vector)` и `Running`, иначе SIPI игнорируется. BSP: INIT устройство не принимает (см. исправления по ревью); ветка `apply_startup` для BSP достижима только прямым вызовом; SIPI игнорируется. `LongModeState` меняется только полем `activity`.
+- `local_apic.rs`/`apic_pair.rs`: `decode_icr` возвращает `IpiCommand` (Fixed, INIT assert, INIT deassert, SIPI). В `State` добавлены `pending_init` и `pending_sipi`; запись ICR только ставит событие (INIT assert сбрасывает ранее принятый SIPI, из нескольких SIPI ждёт первый). `take_startup` отдаёт ожидающие события и при INIT приводит LAPIC к INIT-reset (включён, APIC ID = индекс, регистры/IRR/таймер сброшены, Remote IRR маршрута IOAPIC не снимается: как на железе, его снимает только EOI). LAPIC адресата, глобально выключенный, отказывает INIT assert и SIPI, как Fixed.
+- `firmware_board.rs`: `LoadedFirmwareBoard::apply_pending_startup(index)` (`pub(crate)`, вызывается явно, планировщика нет) и `vcpu(index)`.
+- Документы: раздел «INIT, SIPI и ожидание SIPI (S6-13)» в `MACHINE_CONTRACT.md`, поправлены места S6-12a, где INIT/SIPI числились неподдержанными; обновлена фраза в SMP_CONTRACT §6.
+
+Изменённые существующие тесты (контракт §5, строки INIT и SIPI):
+- `local_apic::tests::matrix_cells_for_nmi_init_and_sipi_are_refused_until_they_are_implemented` (S6-12a) ожидал отказ INIT assert, INIT deassert и SIPI. Переименован в `matrix_cells_for_nmi_are_refused_until_they_are_implemented`, остались только строки NMI; INIT и SIPI теперь принимаются, их поведение проверяют новые тесты.
+- `vcpu::tests::the_vcpu_set_numbers_the_processors_and_gives_the_boot_state_to_the_first` (S6-10/S6-11) ждал у AP `LongModeState::default()`; теперь у AP `activity = Some(WaitForSipi)`, остальное по умолчанию.
+- `idle_arbiter::tests::wait_for_sipi_and_shutdown_are_never_picked`: убран комментарий «отображение не имеет WaitForSipi», добавлена проверка `SchedActivity::from(WaitForSipi)`.
+- `state::tests::fragment_adapter_rejects_any_modeled_cpu_activity`: в перечень добавлен `WaitForSipi`; `cpl0_profile_set.rs`: в таблицу отказов входа добавлен случай `wait for sipi` -> `NotRunning`.
+Тесты `matrix_cells_marked_as_an_error_...` и прочие S6-12a (INIT/SIPI с shorthand, вектор Fixed < 0x10 и т. д.) прошли без изменений.
+
+Новые тесты: `local_apic` — INIT assert ждёт только в адресате; INIT deassert без изменений; вектор SIPI (0x00..0xFF); первый из нескольких SIPI, INIT сбрасывает SIPI до себя; INIT к BSP отказывает, SIPI к BSP ждёт; все неверные кодировки INIT/SIPI отказывают без изменений состояния; EN=0 отказывает, SVR-выключенный принимает; INIT-reset LAPIC; Remote IRR не снимается. `vcpu` — BSP `Running`/AP `WaitForSipi` после включения; AP не исполняет до SIPI (состояние неизменно, INIT, deassert и SIPI к BSP его не запускают); SIPI применяется только на границе адресата (адрес `vector << 12`); второй SIPI игнорируется; INIT работающему AP; CD/NW в old CR0, Halted и Shutdown; INIT и SIPI на одной границе; INIT deassert; INIT к BSP отказывает, SIPI к BSP не меняет состояния; прямой INIT вектора BSP; EFER/CR2 после INIT; адресат вне набора vCPU.
+
+Исправления по ревью (2026-11-16):
+Решения владельца: (А) INIT не снимает Remote IRR в IOAPIC, как на железе (по SDM его снимает только EOI); (Б) отказ при `IA32_APIC_BASE.EN = 0` распространяется на INIT и SIPI, как для Fixed; программное выключение через SVR (бит 8 сброшен, `SVR = 0xFF`, `EN = 1`) INIT и SIPI принимает (SDM 10.4.3, по памяти). Записаны в SMP_CONTRACT §3, §5, §6 и MACHINE_CONTRACT.
+1. (major) INIT assert, адресованный BSP, — отказ устройства `UnsupportedConfiguration` до изменения состояния (`decode_icr`, комментарий «BSP INIT is deferred to S6-15/S6-16»). Тесты, ждавшие приём INIT к BSP, переписаны на отказ (`local_apic::...init_to_the_boot_processor_is_refused_and_sipi_to_it_is_pending`, `vcpu::...init_to_the_bsp_is_refused_by_the_device...`). SIPI и INIT deassert к BSP принимаются. SMP_CONTRACT §6 исправлен: применяют только для AP, до S6-15 — тесты или ручной вызов.
+2. (major) `new_ap` задаёт `guest_efer = 0`; INIT (`apply_startup`) задаёт `guest_efer = 0`, `guest_cr2 = Some(0)`. Выбор `Some(0)`, а не `None`: у BSP при включении `None` читается платой как CR2 0, но `.or(prior_cr2)` при `None` вернул бы устаревший CR2 из `state`; `Some(0)` сбрасывает явно. У `new_ap` оставлено `None` (как у BSP при включении, читается как 0). Тест `init_resets_efer_and_cr2_of_an_ap_and_keeps_the_other_guest_cells`: STAR, LSTAR, CSTAR, SYSENTER, SYSCALL_MASK, KERNEL_GS_BASE, FP и `LongModeState` (кроме `activity`) не меняются.
+3. (major) Старый CR0 BSP без `real_mode` и без CR0 в состоянии — `FIRMWARE_CR0` (0x8001_0033), не CR0 включения. Тест `a_direct_init_of_the_bsp_vcpu_takes_cr0_from_the_board_not_from_power_on` ждёт литерал `0x0000_0010` (и `0x4000_0010` для CR0 с CD), посчитанный вручную по формуле `(old & 0x6000_0000) | 0x10`; согласуется с `RealModeState::after_init` (`legacy_mode.rs`, `CR0_INIT_PRESERVED_MASK`, `CR0_ET`).
+4. (major, формулировка) Утверждение про `NotRunning` сужено в `MACHINE_CONTRACT.md`, этом отчёте, комментарии `CpuActivity::WaitForSipi` в `state.rs` и новом разделе `CPU_CONTRACT.md`. `execute.rs` не менялся. Формулировка уточнена повторным ревью: only the CPL0 profile set refuses non-Running activity with `NotRunning`; other entry points do not check WaitForSipi, among them `od_isa::execute::run`, `step`, `run_with_maskable_request` and the `run_configured`-based runners (the loop checks only Halted; `!= Running` is checked only under paged CR0 profiles). Закрыть до S6-15.
+5. (владелец А) Снятие Remote IRR убрано из `take_startup`; тест `taking_an_init_does_not_clear_the_remote_irr_of_a_level_route_to_this_lapic` заменил прежний.
+6. (владелец Б) Тест `init_and_sipi_to_a_target_with_ia32_apic_base_en_clear_are_refused_like_fixed` (INIT, SIPI и Fixed отказывают при EN=0, принимаются после включения) и `a_target_with_the_svr_software_enable_clear_accepts_init_and_sipi`. Записано в SMP_CONTRACT §5.
+7. (minor) `CPU_CONTRACT.md`: в перечень значений `LongModeState::activity` добавлен `WaitForSipi`; в конец добавлен раздел «S6-13: `CpuActivity::WaitForSipi`…».
+8. (minor) Тест «AP не исполняет до SIPI»: счётчика инструкций AP в плате нет, плата исполняет только vCPU 0; прогон BSP на N шагов без trampoline и Linux-загрузки недоступен. Выбран честный вариант: проверка через неизменность `LongModeState` и `real_mode` AP на всех границах (INIT deassert, SIPI к BSP, пустая граница); оговорка записана в комментарии теста. Плановый «счётчик инструкций AP равен 0» не выполнен буквально — остаётся на S6-15.
+9. (minor) `apply_pending_startup` берёт `vcpus.get_mut(index)` и отказывает при отсутствии вместо индексации.
+10. (minor, перенесено в S6-15) `idle_to` в `firmware_board.rs` считает все AP `WaitForSipi`; не переделывалось.
+11. (minor) Комментарий ICR в `local_apic.rs` переписан короче (в пределах ширины).
+12. (minor) Две заметки «решить до S6-13» из раздела S6-11 перенесены в «Перенесено в S6-15» ниже.
+
+Перенесено в S6-15:
+- Сброс платы (`reset_checked`/`reset_pair`) не возвращает AP в `WaitForSipi` и не чистит ожидающие события (INIT/SIPI, IRR) в чужих LAPIC.
+- Риск записи broadcast `0xFF` в старший dword маршрута IOAPIC: `set_dest` отказывает APIC ID, которого нет среди vCPU, и это фатальная ошибка MMIO.
+- `idle_to` считает все AP в `WaitForSipi` (пункт 10).
+- Закрыть до S6-15: все точки входа, кроме CPL0 profile set, проверяют `WaitForSipi` (список в пункте 4).
+- Решение владельца (INIT не снимает Remote IRR) при INIT-reset очищает ISR; последующий EOI — no-op; Remote IRR level-маршрута к этому AP остаётся; `LocalApicHandle::reset` этого CPU, `reset_io` и `set_dest` маршрута отказывают; сброс платы в модели блокируется. На железе hardware reset это снимает: артефакт модели, устранить в S6-15 (сброс платы). Места: `crates/od-machine/src/apic_pair.rs` (~322, ~581–585).
+
+Перенесено в S6-16:
+- `vcpu.rs` (~159–162): старый CR0 для INIT берётся из `real_mode` раньше, чем из `state.cr0`. После SIPI `real_mode` всегда `Some` и `state` из него не переписывается. Когда S6-16 начнёт исполнять AP и тот уйдёт в protected/long mode, следующий INIT возьмёт устаревший `real_mode.cr0`. Условие S6-16: синхронизировать или сбрасывать `real_mode` при выходе из real mode.
+
+Открыто (оставлено как есть): гостевой WRMSR `IA32_APIC_BASE` (EN) у AP; `hardware_reset_only` у `Shutdown` не моделируется; поведение BSP `activity: None` -> `Running`.
+
+Не сделано: исполнение trampoline и режимов (S6-16, S6-14d+); планировщик, вызов `apply_pending_startup` на границе (S6-15; сейчас только тесты); NMI (S6-12 п. 2); CPUID/MADT/handoff для `N > 1` (S6-15/S7-02); запись `real_mode` в `LongModeState` (в нём нет представления real mode).
+
+Проверки (после исправлений по ревью 2026-11-16):
+1. `cargo fmt -p od-isa -p od-machine -p od-testkit`: выполнено, затронуты только файлы среза (первый запуск упал на моей ошибке в `state.rs`, исправлено и повторено). Известные вне-срезовые ошибки `cargo fmt --all` (`crates/od-host/src/storage_abi_v1.rs`, `tools/image-tool/tests/cli.rs`) не трогались.
+2. `cargo check --workspace --all-targets --offline`: успешно (прежние предупреждения `MEMORY_CORPUS_SEQUENCES`, `scale`).
+3. `cargo test -p od-isa --locked --offline`: все наборы без отказов (9 наборов, 4188 тестов).
+4. `cargo test -p od-machine --offline -- --test-threads=1`: lib 1412 passed, 0 failed, 7 ignored; все остальные наборы без отказов.
+
+Ограничения и открытые вопросы:
+- Риск из ревью S6-12a: Linux All-but-self (Fixed) к CPU с глобально выключенным LAPIC отказывает всей IPI. Для INIT/SIPI принято то же правило. Проверить на S6-15/S6-18, не нужен ли приём INIT/SIPI выключенным LAPIC (SDM 10.4.3).
+- Гостевой WRMSR `IA32_APIC_BASE` (`step_apic_base_msr`) может выключить LAPIC AP; тогда последующие INIT/SIPI к нему отклоняются. Сочетание с INIT-reset (LAPIC после INIT остаётся включённым) отдельно не проверялось.
+- INIT к BSP отказывает устройство (отложено до S6-15/S6-16). Нужно решение, как S6-16 переведёт процессор, на котором реально исполняется Linux, в состояние INIT (для BSP в SMP-сценариях Linux INIT к BSP не шлёт).
+- `hardware_reset_only` у `Shutdown` не моделируется; INIT всегда возвращает AP из `Shutdown` в `WaitForSipi`.
+- Поведение BSP `activity: None` -> `Running` (`Vcpu::activity`) выбрано по смыслу «состояние активности не моделируется».
+- INIT-reset LAPIC обнуляет и ICR адресата, и LVT/таймер; точный список регистров по SDM §13.4.7.3 сверен по памяти.
 
 ### S6-10 — вынос состояния vCPU (реализовано, ожидает ревью)
 
@@ -313,8 +378,8 @@ od-runner linux-direct --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-
 - Исполняется только процессор 0; AP существуют как `Vcpu` с `LongModeState::default()` и своим LAPIC. Путь CPL0-цикла (`SetStepMmio`) по-прежнему обслуживает только ECAM, поэтому доступ vCPU 1 к окну LAPIC проверен через paged-адаптер, а не через цикл `run_boot`; диагностические `IdentityMemoryAdapter`/`DiagnosticVcpuSession` и `read_physical`/`write_physical` — процессор 0.
 - Блок передачи управления, ACPI blob (MADT/DSDT) и CPUID описывают один процессор при любом `vcpu_count` (S6-15/S7-02, SMP_CONTRACT §2).
 - Предел `vcpu_count = 4` взят из SMP_CONTRACT §2; там же сказано, что `N = 4` поддерживается после gate S6-38, плата это не проверяет.
-- `reset_checked`/`reset_pair` сбрасывают LAPIC своего процессора и маршруты IOAPIC; общая семантика сброса платы с несколькими LAPIC уточняется с S6-13.
-- Риск для S6-13 (решить до S6-13): гость, пишущий broadcast `0xFF` в старший dword маскированного входа IOAPIC, получит фатальную ошибку MMIO, потому что `set_dest` отказывает APIC ID, которого нет среди vCPU (Linux при `clear_IO_APIC`/маскировании может писать такое значение).
+- `reset_checked`/`reset_pair` сбрасывают LAPIC своего процессора и маршруты IOAPIC; общая семантика сброса платы с несколькими LAPIC не решена в S6-13: перенесено в S6-15 (см. раздел S6-13).
+- Риск (не решён в S6-13, перенесён в S6-15): гость, пишущий broadcast `0xFF` в старший dword маскированного входа IOAPIC, получит фатальную ошибку MMIO, потому что `set_dest` отказывает APIC ID, которого нет среди vCPU (Linux при `clear_IO_APIC`/маскировании может писать такое значение).
 - Риск для S6-15 (решить в S6-15): при N > 1 смена affinity level-входа записью «старший dword, потом младший» отказывается `set_dest`, если вход ждёт EOI или линия высока (SMP affinity в Linux меняет адресат уже работающего входа); отказ — фатальная ошибка MMIO.
 - Риск для S6-13/S6-15 (провести до запуска AP): индекс vCPU не проводится от `Vcpu` на рабочих путях MMIO — `SetStepMmio` (CPL0-цикл), `read_physical`/`write_physical` и `AdapterBus::RamMmio` всегда обслуживают процессор 0; индекс несёт только `AdapterBus::Machine(bus, vcpu)`, и пока его создаёт лишь тест.
 - Graphify: перед правками `graphify query` не выполнялся (в worktree графа не было); после правок `GRAPHIFY_MAX_WORKERS=8 graphify update .` выполнен (46426 узлов, 129065 рёбер).

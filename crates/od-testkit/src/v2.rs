@@ -1241,6 +1241,12 @@ impl TryFrom<&LongModeState> for IntegerState {
                 reason: "shutdown activity is not represented by this snapshot schema".into(),
             });
         }
+        if state.activity == Some(od_isa::CpuActivity::WaitForSipi) {
+            return Err(FormatError::InvalidField {
+                field: "state.activity",
+                reason: "wait-for-SIPI activity is not represented by this snapshot schema".into(),
+            });
+        }
         if state.cr2.is_some() {
             return Err(FormatError::InvalidField {
                 field: "state.cr2",
@@ -1329,6 +1335,9 @@ impl TryFrom<&LongModeState> for IntegerState {
                 od_isa::CpuActivity::Running => CpuActivitySnapshot::Running,
                 od_isa::CpuActivity::Halted => CpuActivitySnapshot::Halted,
                 od_isa::CpuActivity::Shutdown => unreachable!("shutdown is rejected above"),
+                od_isa::CpuActivity::WaitForSipi => {
+                    unreachable!("wait-for-SIPI is rejected above")
+                }
             }),
         })
     }
@@ -1989,6 +1998,12 @@ impl IntegerState {
             return Err(invalid(
                 "state.activity",
                 "shutdown activity is not representable in the V2 snapshot format",
+            ));
+        }
+        if state.activity == Some(od_isa::CpuActivity::WaitForSipi) {
+            return Err(invalid(
+                "state.activity",
+                "wait-for-SIPI activity is not representable in the V2 snapshot format",
             ));
         }
         match (profile, state.kernel_gs_base) {

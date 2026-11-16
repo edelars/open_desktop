@@ -285,6 +285,13 @@ pub enum CpuActivity {
     Running,
     Halted,
     Shutdown,
+    /// An application processor after power-on or INIT: it executes nothing until a start-up
+    /// IPI (SMP_CONTRACT.md 3). Only the CPL0 profile set refuses non-Running activity with
+    /// `NotRunning`. Other entry points do not check WaitForSipi, among them
+    /// `od_isa::execute::run`, `step`, `run_with_maskable_request` and the `run_configured`-based
+    /// runners (the loop checks only Halted; `!= Running` is checked only under paged CR0
+    /// profiles). The board executes only vCPU 0, so this is not reachable yet.
+    WaitForSipi,
 }
 
 /// One-instruction interrupt inhibition after STI; `Clear` records a modeled
@@ -800,7 +807,11 @@ mod tests {
 
     #[test]
     fn fragment_adapter_rejects_any_modeled_cpu_activity() {
-        for activity in [CpuActivity::Running, CpuActivity::Halted] {
+        for activity in [
+            CpuActivity::Running,
+            CpuActivity::Halted,
+            CpuActivity::WaitForSipi,
+        ] {
             let state = LongModeState {
                 cr3: None,
                 cr4: None,

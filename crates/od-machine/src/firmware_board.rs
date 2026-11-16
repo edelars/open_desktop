@@ -32,7 +32,7 @@ use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
 use crate::pit_pic_irq_source::PitPicIrqSource;
 use crate::uart_ioapic_irq_source::UartIoapicIrqSource;
 use crate::uart_pic_irq_source::UartPicIrqSource;
-use crate::vcpu::{BOOT_VCPU_INDEX, MAX_VCPUS, Vcpu, vcpu_set};
+use crate::vcpu::{BOOT_VCPU_INDEX, MAX_VCPUS, StartupApplied, Vcpu, vcpu_set};
 use crate::{
     ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AbsentPortRegion, AbsentPorts,
     AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError, DISPLAY_FRAMEBUFFER_BASE,
@@ -1228,6 +1228,32 @@ impl LoadedFirmwareBoard {
     /// Handle of the LAPIC of vCPU `index` (its APIC ID), `None` when the board has no such vCPU.
     pub fn local_apic_of(&self, index: usize) -> Option<LocalApicHandle> {
         self.lapic.for_cpu(index)
+    }
+
+    /// The state of vCPU `index`, `None` when the board has no such vCPU.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn vcpu(&self, index: usize) -> Option<&Vcpu> {
+        self.vcpus.get(index)
+    }
+
+    /// The vCPU `index` applies the INIT and SIPI waiting in its own Local APIC (S6-13), on its
+    /// own boundary: the LAPIC hands them over and the vCPU changes its state
+    /// ([`Vcpu::apply_startup`]). Nothing calls it on a schedule yet: the scheduler of S6-15 does,
+    /// before it picks a vCPU; until then tests call it by hand. No such vCPU, or a LAPIC that
+    /// cannot reset its timer for an INIT, is an error and nothing is applied.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn apply_pending_startup(
+        &mut self,
+        index: usize,
+    ) -> Result<StartupApplied, FirmwareBoardError> {
+        const NO_VCPU: FirmwareBoardError =
+            FirmwareBoardError::Config("apply_pending_startup: no such vCPU");
+        let apic = self.lapic.for_cpu(index).ok_or(NO_VCPU)?;
+        let vcpu = self.vcpus.get_mut(index).ok_or(NO_VCPU)?;
+        let pending = apic
+            .take_startup()
+            .map_err(|_| FirmwareBoardError::Config("apply_pending_startup: INIT reset failed"))?;
+        Ok(vcpu.apply_startup(pending))
     }
 
     pub fn bus_mut(&mut self) -> &mut MachineBus {

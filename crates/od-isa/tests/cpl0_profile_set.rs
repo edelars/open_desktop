@@ -326,6 +326,12 @@ fn admission_rejects_before_any_fetch_and_without_mutation() {
             Cpl0ProfileSetInputError::NotRunning,
         ),
         (
+            // S6-13: an AP waiting for SIPI is never selected for execution.
+            "wait for sipi",
+            |s| s.activity = Some(CpuActivity::WaitForSipi),
+            Cpl0ProfileSetInputError::NotRunning,
+        ),
+        (
             "shadow missing",
             |s| s.sti_shadow = None,
             Cpl0ProfileSetInputError::StiShadowMissing,

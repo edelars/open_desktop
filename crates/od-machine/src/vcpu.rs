@@ -6,8 +6,11 @@
 //! back, and nothing else. Device handles, memory and the interrupt source stay on the board.
 
 use crate::FIRMWARE_EFER;
-use od_isa::LongModeState;
+use crate::apic_pair::PendingStartup;
+use crate::firmware_board::FIRMWARE_CR0;
 use od_isa::execute::GuestFpState;
+use od_isa::legacy_mode::RealModeState;
+use od_isa::{CpuActivity, LongModeState};
 
 /// Index of the boot processor (BSP); with one vCPU, the only one.
 pub(crate) const BOOT_VCPU_INDEX: usize = 0;
@@ -15,12 +18,27 @@ pub(crate) const BOOT_VCPU_INDEX: usize = 0;
 /// Most vCPUs a board may have (SMP_CONTRACT.md 2: values above 4 are outside version 1).
 pub(crate) const MAX_VCPUS: usize = 4;
 
+/// CR0 of a processor after power-on (SDM Vol. 3A Table 12-1): `CD`, `NW` and `ET`.
+pub(crate) const POWER_ON_CR0: u32 = 0x6000_0010;
+
 /// The board's vCPU set: the boot processor on `boot_state`, then `count - 1` application
-/// processors on `LongModeState::default()` (never run: INIT/SIPI start-up is S6-13).
+/// processors on `LongModeState::default()` in `WaitForSipi` (S6-13). Only INIT and SIPI, applied
+/// by the processor itself ([`Vcpu::apply_startup`]), take an application processor out of it;
+/// nothing executes one yet (S6-15, S6-16).
 pub(crate) fn vcpu_set(boot_state: LongModeState, count: usize) -> Vec<Vcpu> {
     let mut vcpus = vec![Vcpu::new(BOOT_VCPU_INDEX, boot_state)];
-    vcpus.extend((1..count).map(|index| Vcpu::new(index, LongModeState::default())));
+    vcpus.extend((1..count).map(Vcpu::new_ap));
     vcpus
+}
+
+/// What a vCPU did with the INIT and SIPI it took from its Local APIC.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct StartupApplied {
+    /// An INIT was applied: the real-mode reset state was loaded.
+    pub(crate) init: bool,
+    /// A SIPI took the processor out of `WaitForSipi` and set its start address.
+    pub(crate) started: bool,
 }
 
 /// CPU state and the guest-visible register cells of one virtual processor.
@@ -64,6 +82,11 @@ pub(crate) struct Vcpu {
     /// MXCSR and XMM. `GuestFpState::initial()` until a run with the member changes it; carried
     /// between runs like the MSR cells.
     pub(crate) guest_fp: GuestFpState,
+    /// The real-mode state INIT loaded ([`RealModeState::after_init`]) and a SIPI then moved to the
+    /// start address (S6-13); `None` for the boot processor until it has received an INIT. An
+    /// application processor has the power-on reset state from the start. Representation only: the
+    /// interpreter does not run real mode yet (S6-16), and `state` is not rewritten from it.
+    pub(crate) real_mode: Option<RealModeState>,
 }
 
 impl Vcpu {
@@ -83,7 +106,82 @@ impl Vcpu {
             guest_syscall_mask: 0,
             guest_kernel_gs_base: 0,
             guest_fp: GuestFpState::initial(),
+            real_mode: None,
         }
+    }
+
+    /// An application processor after power-on: `WaitForSipi` with the real-mode reset state
+    /// (SMP_CONTRACT.md 3, first rows). `IA32_EFER` is `0` (Table 12-1: no long mode before the
+    /// guest enables it), not the boot processor's `FIRMWARE_EFER`. `guest_cr2` stays `None`, as
+    /// for the boot processor at power-on: the board reads `None` as CR2 `0`.
+    pub(crate) fn new_ap(index: usize) -> Self {
+        let mut vcpu = Self::new(
+            index,
+            LongModeState {
+                activity: Some(CpuActivity::WaitForSipi),
+                ..LongModeState::default()
+            },
+        );
+        vcpu.guest_efer = 0;
+        vcpu.real_mode = Some(RealModeState::after_init(POWER_ON_CR0));
+        vcpu
+    }
+
+    /// The activity of this processor. A state that models no activity (`None`, the boot
+    /// processor's before the first run) is a `Running` boot processor.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn activity(&self) -> CpuActivity {
+        self.state.activity.unwrap_or(CpuActivity::Running)
+    }
+
+    /// Apply the INIT and SIPI this processor took from its own Local APIC, on its own boundary
+    /// (SMP_CONTRACT.md 3 and 4). INIT first, then SIPI.
+    /// - INIT: the real-mode state after INIT replaces `real_mode`, keeping only CD and NW of the
+    ///   old CR0, and the guest `IA32_EFER` and CR2 cells go to `0` (Table 12-1). CR2 becomes
+    ///   `Some(0)`, not `None`: `None` would let the board fall back to the stale CR2 of `state`.
+    ///   An application processor enters `WaitForSipi`. The boot processor keeps its role and is
+    ///   not put to wait: it is `Running`.
+    /// - SIPI: only a processor in `WaitForSipi` takes it; it becomes `Running` with CS and EIP
+    ///   set from the vector. In any other state, and for the boot processor, it is ignored.
+    ///
+    /// `state` is changed only in `activity`: the interpreter has no real-mode execution, so the
+    /// long-mode registers stay as they were. The other guest cells (STAR, LSTAR, SYSENTER, FP)
+    /// are kept: INIT does not clear them (SMP_CONTRACT.md 4).
+    ///
+    /// The device refuses an INIT addressed to the boot processor (BSP INIT is deferred to
+    /// S6-15/S6-16), so the boot processor's INIT branch is reached only by a direct call.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn apply_startup(&mut self, pending: PendingStartup) -> StartupApplied {
+        let mut applied = StartupApplied::default();
+        if pending.init {
+            // The boot processor models no real-mode CR0 before its first INIT: its CR0 is the
+            // board's (`FIRMWARE_CR0`) unless the state carries one.
+            let old_cr0 = match self.real_mode {
+                Some(mode) => mode.cr0,
+                None => self.state.cr0.map_or(FIRMWARE_CR0 as u32, |cr0| cr0 as u32),
+            };
+            self.real_mode = Some(RealModeState::after_init(old_cr0));
+            self.guest_efer = 0;
+            self.guest_cr2 = Some(0);
+            self.state.activity = Some(if self.index == BOOT_VCPU_INDEX {
+                CpuActivity::Running
+            } else {
+                CpuActivity::WaitForSipi
+            });
+            applied.init = true;
+        }
+        if let Some(vector) = pending.sipi
+            && self.index != BOOT_VCPU_INDEX
+            && self.state.activity == Some(CpuActivity::WaitForSipi)
+        {
+            let reset = self
+                .real_mode
+                .unwrap_or_else(|| RealModeState::after_init(POWER_ON_CR0));
+            self.real_mode = Some(reset.after_sipi(vector));
+            self.state.activity = Some(CpuActivity::Running);
+            applied.started = true;
+        }
+        applied
     }
 }
 
@@ -112,11 +210,12 @@ mod tests {
             [0, 1, 2]
         );
         assert_eq!(set[BOOT_VCPU_INDEX].state, boot);
-        assert!(
-            set[1..]
-                .iter()
-                .all(|vcpu| vcpu.state == LongModeState::default())
-        );
+        // The application processors wait for SIPI (S6-13); nothing else of them differs.
+        assert!(set[1..].iter().all(|vcpu| vcpu.state
+            == LongModeState {
+                activity: Some(CpuActivity::WaitForSipi),
+                ..LongModeState::default()
+            }));
         assert_eq!(vcpu_set(boot, 1).len(), 1);
     }
 
@@ -171,5 +270,452 @@ mod tests {
         assert_eq!(vcpu.guest_syscall_mask, 0);
         assert_eq!(vcpu.guest_kernel_gs_base, 0);
         assert_eq!(vcpu.guest_fp, GuestFpState::initial());
+        assert_eq!(vcpu.real_mode, None);
+    }
+
+    // S6-13: start-up states of the application processors.
+
+    use od_isa::legacy_mode::{INIT_EIP, RealSegment};
+
+    /// ICR_LOW of INIT assert, INIT deassert and SIPI with `vector`: physical, no shorthand.
+    const INIT_ASSERT: u32 = (5 << 8) | (3 << 14);
+    const INIT_DEASSERT: u32 = (5 << 8) | (1 << 15);
+    fn sipi(vector: u8) -> u32 {
+        (6 << 8) | u32::from(vector)
+    }
+    const INIT_ONLY: PendingStartup = PendingStartup {
+        init: true,
+        sipi: None,
+    };
+
+    fn sipi_only(vector: u8) -> PendingStartup {
+        PendingStartup {
+            init: false,
+            sipi: Some(vector),
+        }
+    }
+
+    #[test]
+    fn after_power_on_the_bsp_runs_and_every_ap_waits_for_sipi() {
+        let board = assembled(4).unwrap();
+        assert_eq!(
+            board.vcpu(BOOT_VCPU_INDEX).unwrap().activity(),
+            CpuActivity::Running
+        );
+        for index in 1..4 {
+            let ap = board.vcpu(index).unwrap();
+            assert_eq!(ap.activity(), CpuActivity::WaitForSipi, "vcpu {index}");
+            // Power-on reset state of real mode: the INIT state with CD and NW set.
+            assert_eq!(ap.real_mode, Some(RealModeState::after_init(POWER_ON_CR0)));
+            assert_eq!(ap.real_mode.unwrap().cr0, 0x6000_0010);
+            // No long mode at power-on: EFER 0 (the BSP's cell holds FIRMWARE_EFER), CR2 0.
+            assert_eq!(ap.guest_efer, 0, "vcpu {index}");
+            assert_eq!(ap.guest_cr2, None, "vcpu {index}");
+        }
+        assert_eq!(
+            board.vcpu(BOOT_VCPU_INDEX).unwrap().guest_efer,
+            FIRMWARE_EFER
+        );
+        // With one vCPU there is only the BSP, and it runs.
+        let one = assembled(1).unwrap();
+        assert_eq!(one.vcpu_count(), 1);
+        assert_eq!(one.vcpu(0).unwrap().activity(), CpuActivity::Running);
+        assert!(one.vcpu(1).is_none());
+    }
+
+    #[test]
+    fn an_ap_executes_nothing_before_sipi() {
+        let mut board = assembled(2).unwrap();
+        let before = board.vcpu(1).unwrap().state.clone();
+        // The board has no per-AP instruction counter and runs only vCPU 0, so "executes
+        // nothing" is checked through what execution would change: the whole `LongModeState` and
+        // the real-mode state stay the initial ones over every boundary below. (The CPL0 set
+        // also refuses the activity: od-isa `cpl0_profile_set.rs`, case "wait for sipi".)
+        assert_eq!(
+            before,
+            LongModeState {
+                activity: Some(CpuActivity::WaitForSipi),
+                ..LongModeState::default()
+            }
+        );
+        assert_eq!(
+            board.apply_pending_startup(1),
+            Ok(StartupApplied::default())
+        );
+        assert_eq!(board.vcpu(1).unwrap().state, before);
+        assert_eq!(board.vcpu(1).unwrap().real_mode.unwrap().eip, INIT_EIP);
+        // An INIT alone, a deassert and a SIPI to the BSP do not start it either.
+        board
+            .local_apic_of(0)
+            .unwrap()
+            .write_icr(0, 1, INIT_ASSERT)
+            .unwrap();
+        board
+            .local_apic_of(0)
+            .unwrap()
+            .write_icr(0, 1, INIT_DEASSERT)
+            .unwrap();
+        board.apply_pending_startup(1).unwrap();
+        board
+            .local_apic_of(0)
+            .unwrap()
+            .write_icr(0, 0, sipi(0x08))
+            .unwrap();
+        board.apply_pending_startup(0).unwrap();
+        assert_eq!(board.vcpu(1).unwrap().activity(), CpuActivity::WaitForSipi);
+        assert_eq!(board.vcpu(1).unwrap().state, before);
+        assert_eq!(
+            board.vcpu(1).unwrap().real_mode,
+            Some(RealModeState::after_init(POWER_ON_CR0))
+        );
+    }
+
+    #[test]
+    fn the_target_applies_a_pending_sipi_only_at_its_own_boundary() {
+        let mut board = assembled(2).unwrap();
+        let sender = board.local_apic_of(0).unwrap();
+        sender.write_icr(0, 1, sipi(0x08)).unwrap();
+        // Written by vCPU 0, pending in the LAPIC of vCPU 1, nothing changed in vCPU 1 yet.
+        assert_eq!(
+            board.local_apic_of(1).unwrap().pending_startup(),
+            sipi_only(0x08)
+        );
+        assert_eq!(board.vcpu(1).unwrap().activity(), CpuActivity::WaitForSipi);
+        assert_eq!(
+            board.vcpu(1).unwrap().real_mode,
+            Some(RealModeState::after_init(POWER_ON_CR0))
+        );
+        // The boundary of vCPU 0 takes nothing of vCPU 1's.
+        assert_eq!(
+            board.apply_pending_startup(0),
+            Ok(StartupApplied::default())
+        );
+        assert_eq!(
+            board.local_apic_of(1).unwrap().pending_startup(),
+            sipi_only(0x08)
+        );
+        // The boundary of vCPU 1 starts it at vector << 12.
+        assert_eq!(
+            board.apply_pending_startup(1),
+            Ok(StartupApplied {
+                init: false,
+                started: true
+            })
+        );
+        let ap = board.vcpu(1).unwrap();
+        assert_eq!(ap.activity(), CpuActivity::Running);
+        let mode = ap.real_mode.unwrap();
+        assert_eq!(mode.cs.selector, 0x0800);
+        assert_eq!(mode.cs.base, 0x8000);
+        assert_eq!(mode.eip, 0);
+        assert_eq!(mode.fetch_linear_address(), 0x8000);
+        assert_eq!(
+            board.local_apic_of(1).unwrap().pending_startup(),
+            PendingStartup::default()
+        );
+        assert_eq!(
+            board.apply_pending_startup(5),
+            Err(FirmwareBoardError::Config(
+                "apply_pending_startup: no such vCPU"
+            ))
+        );
+    }
+
+    #[test]
+    fn a_second_sipi_to_a_started_ap_is_ignored() {
+        let mut board = assembled(2).unwrap();
+        let sender = board.local_apic_of(0).unwrap();
+        sender.write_icr(0, 1, sipi(0x08)).unwrap();
+        board.apply_pending_startup(1).unwrap();
+        let started = board.vcpu(1).unwrap().real_mode;
+        let state = board.vcpu(1).unwrap().state.clone();
+        sender.write_icr(0, 1, sipi(0x20)).unwrap();
+        assert_eq!(
+            board.apply_pending_startup(1),
+            Ok(StartupApplied::default())
+        );
+        assert_eq!(board.vcpu(1).unwrap().real_mode, started);
+        assert_eq!(board.vcpu(1).unwrap().state, state);
+        assert_eq!(board.vcpu(1).unwrap().activity(), CpuActivity::Running);
+        // The ignored SIPI is consumed, not left to start the AP after a later INIT.
+        assert_eq!(
+            board.local_apic_of(1).unwrap().pending_startup(),
+            PendingStartup::default()
+        );
+        // Two SIPIs queued before the first is applied: the first one starts the AP.
+        let mut board = assembled(2).unwrap();
+        let sender = board.local_apic_of(0).unwrap();
+        sender.write_icr(0, 1, sipi(0x08)).unwrap();
+        sender.write_icr(0, 1, sipi(0x20)).unwrap();
+        assert_eq!(
+            board.apply_pending_startup(1),
+            Ok(StartupApplied {
+                init: false,
+                started: true
+            })
+        );
+        assert_eq!(board.vcpu(1).unwrap().real_mode.unwrap().cs.base, 0x8000);
+    }
+
+    #[test]
+    fn init_to_a_running_ap_returns_it_to_wait_for_sipi_with_the_init_state() {
+        let mut board = assembled(2).unwrap();
+        let sender = board.local_apic_of(0).unwrap();
+        sender.write_icr(0, 1, sipi(0x08)).unwrap();
+        board.apply_pending_startup(1).unwrap();
+        assert_eq!(board.vcpu(1).unwrap().activity(), CpuActivity::Running);
+        // A request waiting in the AP's LAPIC is local interrupt state that INIT clears.
+        board
+            .local_apic_of(1)
+            .unwrap()
+            .request_fixed_edge(0x61)
+            .unwrap();
+        sender.write_icr(0, 1, INIT_ASSERT).unwrap();
+        assert_eq!(
+            board.apply_pending_startup(1),
+            Ok(StartupApplied {
+                init: true,
+                started: false
+            })
+        );
+        let ap = board.vcpu(1).unwrap();
+        assert_eq!(ap.activity(), CpuActivity::WaitForSipi);
+        // CD and NW of the old CR0 are kept, everything else is the state of Table 12-1.
+        assert_eq!(ap.real_mode, Some(RealModeState::after_init(POWER_ON_CR0)));
+        assert_eq!(ap.real_mode.unwrap().cs.base, 0xFFFF_0000);
+        assert_eq!(ap.real_mode.unwrap().eip, INIT_EIP);
+        assert_eq!(board.local_apic_of(1).unwrap().pending(), None);
+        assert!(
+            board.local_apic_of(1).unwrap().take_startup().unwrap() == PendingStartup::default()
+        );
+    }
+
+    #[test]
+    fn init_resets_the_old_cr0_of_an_ap_keeping_cd_and_nw_and_a_halted_ap_waits_again() {
+        let mut ap = Vcpu::new_ap(1);
+        ap.real_mode = Some(RealModeState {
+            cr0: 0xE000_003B,
+            ..RealModeState::after_init(0)
+        });
+        ap.state.activity = Some(CpuActivity::Halted);
+        assert_eq!(
+            ap.apply_startup(INIT_ONLY),
+            StartupApplied {
+                init: true,
+                started: false
+            }
+        );
+        assert_eq!(ap.activity(), CpuActivity::WaitForSipi);
+        assert_eq!(ap.real_mode, Some(RealModeState::after_init(0x6000_0000)));
+        assert_eq!(ap.real_mode.unwrap().cr0, 0x6000_0010);
+        // A processor that shut down is also taken back by INIT (hardware_reset_only is not
+        // modelled yet, so the `false` row of SMP_CONTRACT.md 3 applies).
+        ap.state.activity = Some(CpuActivity::Shutdown);
+        ap.apply_startup(INIT_ONLY);
+        assert_eq!(ap.activity(), CpuActivity::WaitForSipi);
+    }
+
+    #[test]
+    fn a_sipi_after_an_init_in_the_same_boundary_starts_the_ap_and_a_sipi_alone_does_not_start_a_halted_one()
+     {
+        let mut ap = Vcpu::new_ap(2);
+        ap.state.activity = Some(CpuActivity::Running);
+        let applied = ap.apply_startup(PendingStartup {
+            init: true,
+            sipi: Some(0x10),
+        });
+        assert_eq!(
+            applied,
+            StartupApplied {
+                init: true,
+                started: true
+            }
+        );
+        assert_eq!(ap.activity(), CpuActivity::Running);
+        let mode = ap.real_mode.unwrap();
+        assert_eq!(
+            (mode.cs.selector, mode.cs.base, mode.eip),
+            (0x1000, 0x10000, 0)
+        );
+        // The other segments, EFLAGS and CR0 are those of INIT.
+        assert_eq!(mode.ds, RealSegment::reset_zero());
+        assert_eq!(mode.eflags, 2);
+        assert_eq!(mode.cr0, 0x6000_0010);
+        // A SIPI alone does not take a halted AP out of HLT.
+        let mut halted = Vcpu::new_ap(1);
+        halted.state.activity = Some(CpuActivity::Halted);
+        let before = halted.real_mode;
+        assert_eq!(
+            halted.apply_startup(sipi_only(0x08)),
+            StartupApplied::default()
+        );
+        assert_eq!(halted.activity(), CpuActivity::Halted);
+        assert_eq!(halted.real_mode, before);
+    }
+
+    #[test]
+    fn init_deassert_changes_no_vcpu_state() {
+        let mut board = assembled(2).unwrap();
+        let sender = board.local_apic_of(0).unwrap();
+        sender.write_icr(0, 1, sipi(0x08)).unwrap();
+        board.apply_pending_startup(1).unwrap();
+        let ap_state = board.vcpu(1).unwrap().state.clone();
+        let ap_mode = board.vcpu(1).unwrap().real_mode;
+        let bsp_state = board.vcpu(0).unwrap().state.clone();
+        for target in [0, 1] {
+            sender.write_icr(0, target, INIT_DEASSERT).unwrap();
+            assert_eq!(
+                board
+                    .local_apic_of(usize::from(target))
+                    .unwrap()
+                    .pending_startup(),
+                PendingStartup::default()
+            );
+            assert_eq!(
+                board.apply_pending_startup(usize::from(target)),
+                Ok(StartupApplied::default())
+            );
+        }
+        assert_eq!(board.vcpu(1).unwrap().state, ap_state);
+        assert_eq!(board.vcpu(1).unwrap().real_mode, ap_mode);
+        assert_eq!(board.vcpu(0).unwrap().state, bsp_state);
+        assert_eq!(board.vcpu(0).unwrap().real_mode, None);
+    }
+
+    #[test]
+    fn init_to_the_bsp_is_refused_by_the_device_and_a_sipi_to_it_changes_nothing() {
+        // BSP INIT is deferred to S6-15/S6-16: the device refuses it before anything changes.
+        let mut board = assembled(2).unwrap();
+        let sender = board.local_apic_of(1).unwrap();
+        let bsp_state = board.vcpu(0).unwrap().state.clone();
+        assert_eq!(
+            sender.write_icr(1, 0, INIT_ASSERT),
+            Err(crate::DeviceError::UnsupportedConfiguration)
+        );
+        assert_eq!(
+            board.local_apic_of(0).unwrap().pending_startup(),
+            PendingStartup::default()
+        );
+        assert_eq!(
+            board.apply_pending_startup(0),
+            Ok(StartupApplied::default())
+        );
+        // A SIPI to the BSP is consumed and changes nothing.
+        sender.write_icr(1, 0, sipi(0x08)).unwrap();
+        assert_eq!(
+            board.apply_pending_startup(0),
+            Ok(StartupApplied::default())
+        );
+        let bsp = board.vcpu(0).unwrap();
+        assert_eq!(bsp.state, bsp_state);
+        assert_eq!(bsp.real_mode, None);
+        assert_eq!(bsp.activity(), CpuActivity::Running);
+        // With one vCPU the INIT addressed to itself is refused too.
+        let one = assembled(1).unwrap();
+        assert_eq!(
+            one.local_apic_of(0).unwrap().write_icr(0, 0, INIT_ASSERT),
+            Err(crate::DeviceError::UnsupportedConfiguration)
+        );
+        assert_eq!(
+            one.local_apic_of(0).unwrap().pending_startup(),
+            PendingStartup::default()
+        );
+    }
+
+    #[test]
+    fn a_direct_init_of_the_bsp_vcpu_takes_cr0_from_the_board_not_from_power_on() {
+        // Not reachable through the device (see above); the branch itself must still be right.
+        // Expected values are worked out by hand from Table 12-1 footnote 2,
+        // CR0 = (old & 0x6000_0000) | 0x10.
+        // FIRMWARE_CR0 0x8001_0033 has CD and NW clear: 0x0000_0010 (not the power-on 0x6000_0010).
+        let mut bsp = Vcpu::new(BOOT_VCPU_INDEX, LongModeState::default());
+        assert_eq!(
+            bsp.apply_startup(INIT_ONLY),
+            StartupApplied {
+                init: true,
+                started: false
+            }
+        );
+        assert_eq!(bsp.real_mode.unwrap().cr0, 0x0000_0010);
+        assert_eq!(bsp.activity(), CpuActivity::Running);
+        // A CR0 carried by the state is used instead: CD set, NW clear -> 0x4000_0010.
+        let mut bsp = Vcpu::new(
+            BOOT_VCPU_INDEX,
+            LongModeState {
+                cr0: Some(0x4001_0033),
+                ..LongModeState::default()
+            },
+        );
+        bsp.apply_startup(INIT_ONLY);
+        assert_eq!(bsp.real_mode.unwrap().cr0, 0x4000_0010);
+        // A SIPI at the same boundary is still ignored by the BSP.
+        let applied = bsp.apply_startup(PendingStartup {
+            init: true,
+            sipi: Some(0x08),
+        });
+        assert!(applied.init && !applied.started);
+        assert_eq!(bsp.real_mode.unwrap().eip, INIT_EIP);
+        assert_eq!(bsp.activity(), CpuActivity::Running);
+    }
+
+    #[test]
+    fn init_resets_efer_and_cr2_of_an_ap_and_keeps_the_other_guest_cells() {
+        let mut ap = Vcpu::new_ap(1);
+        ap.state.activity = Some(CpuActivity::Running);
+        ap.state.cr2 = Some(0x1111);
+        ap.guest_efer = 0xD01;
+        ap.guest_cr2 = Some(0xFFFF_8000_1234_5678);
+        ap.guest_star = 1;
+        ap.guest_lstar = 2;
+        ap.guest_cstar = 3;
+        ap.guest_sysenter_cs = 4;
+        ap.guest_sysenter_esp = 5;
+        ap.guest_sysenter_eip = 6;
+        ap.guest_syscall_mask = 7;
+        ap.guest_kernel_gs_base = 8;
+        let mut fp = GuestFpState::initial();
+        fp.sse.mxcsr = 0x1F00;
+        ap.guest_fp = fp.clone();
+        let state_before = ap.state.clone();
+        ap.apply_startup(INIT_ONLY);
+        assert_eq!(ap.guest_efer, 0);
+        assert_eq!(ap.guest_cr2, Some(0));
+        // Only `activity` of the long-mode state changed (including its stale CR2 field).
+        assert_eq!(
+            ap.state,
+            LongModeState {
+                activity: Some(CpuActivity::WaitForSipi),
+                ..state_before
+            }
+        );
+        // Table 12-1 and SMP_CONTRACT.md 4: STAR, LSTAR, SYSENTER and FP are not cleared by INIT;
+        // the remaining MSR cells are not named there and stay as they were.
+        assert_eq!(
+            (
+                ap.guest_star,
+                ap.guest_lstar,
+                ap.guest_cstar,
+                ap.guest_sysenter_cs,
+                ap.guest_sysenter_esp,
+                ap.guest_sysenter_eip,
+                ap.guest_syscall_mask,
+                ap.guest_kernel_gs_base
+            ),
+            (1, 2, 3, 4, 5, 6, 7, 8)
+        );
+        assert_eq!(ap.guest_fp, fp);
+    }
+
+    #[test]
+    fn an_init_or_sipi_to_a_vcpu_the_board_does_not_have_is_refused() {
+        let board = assembled(1).unwrap();
+        let apic = board.local_apic_of(0).unwrap();
+        for command in [INIT_ASSERT, sipi(0x08)] {
+            assert_eq!(
+                apic.write_icr(0, 1, command),
+                Err(crate::DeviceError::UnsupportedConfiguration)
+            );
+        }
+        assert_eq!(apic.pending_startup(), PendingStartup::default());
     }
 }

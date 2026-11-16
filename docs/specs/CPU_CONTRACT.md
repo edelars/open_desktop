@@ -14168,9 +14168,11 @@ and [S2-27l Linux evidence](../reports/STAGE_2_LINUX_PROFILE.md#s2-27l-lretq-evi
 ### S2-27j — exact Long64 HLT and synchronous maskable wake
 
 `HaltProfile::Long64V1` admits bare `F4` in Long64 with an explicit
-`LongModeState::activity`. `None` means a legacy caller does not model CPU
-activity; the HLT profile requires `Some(Running)` at entry and a modeled STI
-shadow (`Some(Clear)` or `Some(Blocking)`). Halted plus Blocking is invalid.
+`LongModeState::activity`. The values are `Running`, `Halted`, `Shutdown` and
+`WaitForSipi` (S6-13, see the S6-13 section at the end of this file). `None` means a legacy
+caller does not model CPU activity; the HLT profile requires `Some(Running)` at
+entry and a modeled STI shadow (`Some(Clear)` or `Some(Blocking)`). Halted plus
+Blocking is invalid.
 The bounded assumptions are one vCPU, private synchronous RAM, VMX/SMM/debug/
 NMI disabled, and no MOV-SS inhibition. CPL is `AccessContext::privilege`.
 
@@ -26584,3 +26586,22 @@ grouped physical spans and post-commit callbacks.
 ### S4-45: статус независимого итогового ревью этапа 4
 
 Ревью S4-45 проведено моделью Opus с уровнем high, read-only, по всему этапу 4. Внешние модели `gpt-6.1-sol` и `gpt-6-astra`, названные в плане S4-45, недоступны в среде; ревью ими не проводилось. Записи «независимое ревью Sol/Astra» в более ранних разделах этого контракта и плана этапа 4 не относятся к ревью S4-45, их происхождение этим ревью не проверялось; они сохранены как записи соответствующих срезов и не считаются итоговым ревью. Результаты и список учтённых замечаний — [STAGE_4_REPORT.md](../reports/STAGE_4_REPORT.md), раздел «S4-45»; отклонения от плана — пометки S4-46 в [STAGE_4.md](../plans/STAGE_4.md). Для гейта S4-39j это ревью напоминает: гейт не проверяет `exit_kind` и `cpuid_profile`, nonce фиксированный `s4-38l4a`, зачётность `counted` для stage4a — решение пользователя без записанного ревью. Контракт CPU/плата не менялись.
+
+### S6-13: `CpuActivity::WaitForSipi`, the wait for a start-up IPI
+
+`CpuActivity::WaitForSipi` is the activity of an application processor after
+power-on or INIT: it executes nothing until a SIPI (SMP_CONTRACT.md 3). Only the
+board sets it, in `vcpu.rs`; the interpreter never produces it, and the S2-27j
+HLT profile and the V2 snapshot schema (`od-testkit`) refuse it like `Shutdown`.
+
+Only the CPL0 profile set refuses non-Running activity with
+`Cpl0ProfileSetInputError::NotRunning` at admission and no mutation (test case
+"wait for sipi" in `crates/od-isa/tests/cpl0_profile_set.rs`). Other entry points
+do not check `WaitForSipi`, among them `od_isa::execute::run`, `step`,
+`run_with_maskable_request` and the `run_configured`-based runners (the loop
+checks only Halted; `!= Running` is checked only under paged CR0 profiles). The
+board executes only vCPU 0, so this is not reachable yet.
+
+INIT, SIPI and the real-mode start state of an application processor are in
+[MACHINE_CONTRACT.md](MACHINE_CONTRACT.md#init-sipi-и-ожидание-sipi-s6-13); the
+state itself (`RealModeState`) is the S6-14c representation, without execution.

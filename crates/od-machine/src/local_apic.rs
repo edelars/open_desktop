@@ -5,8 +5,12 @@
 //! entries (Timer, LINT0, LINT1, Error). LINT0/LINT1/Error LVT, DFR, LDR and
 //! ESR only store state: there is no LINT pin or error source, and no CPU
 //! interrupt delivery is performed. An ICR write raises a Fixed edge request in the IRR of its
-//! targets (S6-12: self, a physical APIC ID, all, all but self); NMI, INIT and SIPI are refused.
-use crate::apic_pair::{CpuApic, MASK, PERIODIC, PairState, Timer};
+//! targets (S6-12: self, a physical APIC ID, all, all but self); NMI is refused. INIT assert and
+//! SIPI (S6-13) are queued as pending events in the LAPIC of the target, which the target applies
+//! itself on its own boundary ([`LocalApicHandle::take_startup`]); INIT deassert is accepted and
+//! changes nothing.
+//! Optional ESR reporting for an invalid vector written to a masked LVT is not modelled.
+use crate::apic_pair::{CpuApic, MASK, PERIODIC, PairState, PendingStartup, Timer};
 use crate::vcpu::{BOOT_VCPU_INDEX, MAX_VCPUS};
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace};
 use std::sync::{Arc, Mutex};
@@ -47,6 +51,13 @@ pub(crate) struct State {
     /// ESR write. Nothing sets `esr_pending` in this model.
     pub(crate) esr: u32,
     pub(crate) esr_pending: u32,
+    /// An INIT assert waits for the target to apply it (S6-13, SMP_CONTRACT.md 3). One bit: INIT
+    /// is level-triggered and a second assert before the first is applied is the same event.
+    pub(crate) pending_init: bool,
+    /// A SIPI vector waits for the target to apply it. The first of several wins: the target
+    /// leaves `WaitForSipi` on it and ignores the rest. An INIT assert drops a SIPI accepted
+    /// before it (SMP_CONTRACT.md 3); a SIPI accepted after it is kept.
+    pub(crate) pending_sipi: Option<u8>,
 }
 
 /// Version register: version 0x14 (integrated APIC), Max LVT entry 3 (four
@@ -80,6 +91,8 @@ impl Default for State {
             ldr: 0,
             esr: 0,
             esr_pending: 0,
+            pending_init: false,
+            pending_sipi: None,
         }
     }
 }
@@ -207,6 +220,41 @@ impl LocalApicHandle {
     }
     fn with_state<R>(&self, f: impl FnOnce(&mut State) -> R) -> R {
         f(&mut self.0.lock().unwrap_or_else(|e| e.into_inner()).cpus[self.1].local)
+    }
+    /// The INIT and SIPI waiting in this LAPIC, without consuming them (S6-13).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn pending_startup(&self) -> PendingStartup {
+        self.with_state(|s| PendingStartup {
+            init: s.pending_init,
+            sipi: s.pending_sipi,
+        })
+    }
+    /// Take the pending INIT and SIPI of this LAPIC for the owning vCPU to apply on its own
+    /// boundary (S6-13). A pending INIT also puts this LAPIC into its INIT-reset state (see
+    /// [`PairState::take_startup`]). On an error nothing is taken.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn take_startup(&self) -> Result<PendingStartup, DeviceError> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take_startup(self.1)
+    }
+    /// Test helper: vCPU `sender` writes `destination` to ICR_HIGH and then `low` to ICR_LOW.
+    #[cfg(test)]
+    pub(crate) fn write_icr(
+        &self,
+        sender: usize,
+        destination: u8,
+        low: u32,
+    ) -> Result<(), DeviceError> {
+        let mut device = LocalApic(self.0.clone());
+        let access = |offset| DeviceAccess {
+            space: IoSpace::Mmio,
+            offset,
+            width: AccessWidth::Dword,
+        };
+        device.write_from_cpu(sender, access(0x310), u64::from(destination) << 24)?;
+        device.write_from_cpu(sender, access(0x300), u64::from(low))
     }
     /// Reset only the Local APIC; a level request awaiting EOI vetoes reset.
     pub fn reset(&self) -> Result<(), DeviceError> {
@@ -479,42 +527,90 @@ const ICR_SHORTHAND_SELF: u64 = 1;
 const ICR_SHORTHAND_ALL: u64 = 2;
 const ICR_SHORTHAND_OTHERS: u64 = 3;
 
-/// The closed set of ICR commands of SMP_CONTRACT.md 5 that this model delivers, as the LAPIC
-/// indices to raise a Fixed edge in and the vector. Everything else is a device error, decided
-/// before any state changes: reserved bits, delivery modes other than Fixed (NMI, INIT and SIPI
-/// are in the matrix but not implemented yet; the rest are refused by it), vectors below 16,
-/// logical destination mode without shorthand, a destination APIC ID no vCPU has (this includes
-/// the xAPIC broadcast ID 0xFF, which the matrix does not list) and any `(Level, Trigger)` pair
-/// the row does not name. Shorthand ignores the destination byte and Destination Mode.
-fn decode_icr(
-    pair: &PairState,
-    sender: usize,
-    value: u64,
-) -> Result<(Vec<usize>, u8), DeviceError> {
+/// A command of the closed set of ICR commands of SMP_CONTRACT.md 5, decoded and validated.
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum IpiCommand {
+    /// A Fixed edge request in the IRR of every LAPIC in `targets`.
+    Fixed { targets: Vec<usize>, vector: u8 },
+    /// INIT assert: queue an INIT in the LAPIC of `target` (S6-13).
+    InitAssert { target: usize },
+    /// INIT deassert: accepted, no change to any CPU or LAPIC state.
+    InitDeassert,
+    /// SIPI: queue the start-up vector in the LAPIC of `target` (S6-13).
+    Startup { target: usize, vector: u8 },
+}
+
+/// The closed set of ICR commands of SMP_CONTRACT.md 5 that this model accepts: Fixed (LAPIC
+/// indices to raise an edge in, and the vector), INIT assert/deassert and SIPI (S6-13). Everything
+/// else is a device error, decided before any state changes: reserved bits, NMI (in the matrix but
+/// not implemented yet) and the delivery modes the matrix refuses, Fixed vectors below 16, INIT
+/// assert addressed to the boot processor (deferred to S6-15/S6-16), INIT with a non-zero
+/// vector, INIT and SIPI with a shorthand, logical destination mode without
+/// shorthand, a destination APIC ID no vCPU has (this includes the xAPIC broadcast ID 0xFF, which
+/// the matrix does not list) and any `(Level, Trigger)` pair the row does not name. Shorthand
+/// ignores the destination byte and Destination Mode.
+fn decode_icr(pair: &PairState, sender: usize, value: u64) -> Result<IpiCommand, DeviceError> {
     let refused = DeviceError::UnsupportedConfiguration;
     let count = pair.cpus.len();
-    let fixed = (value >> 8) & 7 == 0;
-    let vector = value as u8;
-    if value > u64::from(u32::MAX) || value & ICR_RESERVED != 0 || !fixed || vector < 16 {
+    if value > u64::from(u32::MAX) || value & ICR_RESERVED != 0 {
         return Err(refused);
     }
+    let mode = (value >> 8) & 7;
+    let vector = value as u8;
     let level_trigger = (value >> 14) & 3;
-    let targets = match (value >> 18) & 3 {
-        ICR_SHORTHAND_NONE if value & (1 << 11) == 0 && level_trigger == 0b00 => {
-            let apic_id = usize::from((pair.cpus[sender].local.icr_high >> 24) as u8);
-            if apic_id >= count {
+    let shorthand = (value >> 18) & 3;
+    let physical_target = || {
+        let apic_id = usize::from((pair.cpus[sender].local.icr_high >> 24) as u8);
+        (apic_id < count).then_some(apic_id).ok_or(refused.clone())
+    };
+    match mode {
+        // Fixed.
+        0 => {
+            if vector < 16 {
                 return Err(refused);
             }
-            vec![apic_id]
+            let targets = match shorthand {
+                ICR_SHORTHAND_NONE if value & (1 << 11) == 0 && level_trigger == 0b00 => {
+                    vec![physical_target()?]
+                }
+                ICR_SHORTHAND_SELF if matches!(level_trigger, 0b00 | 0b01) => vec![sender],
+                ICR_SHORTHAND_ALL if level_trigger == 0b00 => (0..count).collect(),
+                ICR_SHORTHAND_OTHERS if level_trigger == 0b00 => {
+                    (0..count).filter(|&cpu| cpu != sender).collect()
+                }
+                _ => return Err(refused),
+            };
+            Ok(IpiCommand::Fixed { targets, vector })
         }
-        ICR_SHORTHAND_SELF if matches!(level_trigger, 0b00 | 0b01) => vec![sender],
-        ICR_SHORTHAND_ALL if level_trigger == 0b00 => (0..count).collect(),
-        ICR_SHORTHAND_OTHERS if level_trigger == 0b00 => {
-            (0..count).filter(|&cpu| cpu != sender).collect()
+        // INIT (101) and Start-up (110): physical destination, no shorthand.
+        5 | 6 => {
+            if shorthand != ICR_SHORTHAND_NONE || value & (1 << 11) != 0 {
+                return Err(refused);
+            }
+            match (mode, level_trigger, vector) {
+                (5, 0b11, 0) => {
+                    let target = physical_target()?;
+                    // BSP INIT is deferred to S6-15/S6-16: nothing could apply it yet, so an
+                    // INIT assert addressed to the boot processor is refused, before any state
+                    // changes, instead of staying pending for ever.
+                    if target == BOOT_VCPU_INDEX {
+                        return Err(refused);
+                    }
+                    Ok(IpiCommand::InitAssert { target })
+                }
+                (5, 0b10, 0) => {
+                    physical_target()?;
+                    Ok(IpiCommand::InitDeassert)
+                }
+                (6, 0b00, _) => Ok(IpiCommand::Startup {
+                    target: physical_target()?,
+                    vector,
+                }),
+                _ => Err(refused),
+            }
         }
-        _ => return Err(refused),
-    };
-    Ok((targets, vector))
+        _ => Err(refused),
+    }
 }
 
 fn validate(a: DeviceAccess) -> Result<u64, DeviceError> {
@@ -622,8 +718,11 @@ impl BusDevice for LocalApic {
                 }
                 match offset {
                     0x320 => {
+                        // A masked LVT is accepted even when its vector is below 16. The SDM
+                        // permits an APIC to report that illegal vector through ESR regardless
+                        // of the mask bit; that optional ESR source is outside this model.
                         if value & !u64::from(MASK | PERIODIC | 0xff) != 0
-                            || value & 0xff < 16
+                            || (value & u64::from(MASK) == 0 && value & 0xff < 16)
                             || ((value as u32 ^ timer.lvt) & PERIODIC != 0
                                 && !timer.queue.is_empty())
                             || (value & u64::from(MASK) == 0
@@ -678,13 +777,20 @@ impl BusDevice for LocalApic {
                     Ok(())
                 }
                 0xb0 if value == 0 => pair.eoi(cpu),
-                // Interprocessor interrupt by the matrix of SMP_CONTRACT.md 5 (S6-12). Delivery
-                // completes here: the request is in the IRR of every target when the write
-                // returns, so Delivery Status (bit 12, device-owned) is always Idle and is
-                // dropped from the stored command. A refused command changes nothing.
+                // Interprocessor interrupt by the matrix of SMP_CONTRACT.md 5 (S6-12, S6-13).
+                // Delivery completes here: a Fixed request is in the IRR of every target, an INIT
+                // or SIPI is pending in the LAPIC of its target. Delivery Status (bit 12) is
+                // device-owned, always Idle, and dropped from the stored command. A refused
+                // command changes nothing.
                 0x300 => {
-                    let (targets, vector) = decode_icr(&pair, cpu, value)?;
-                    pair.edge_all(&targets, vector)?;
+                    match decode_icr(&pair, cpu, value)? {
+                        IpiCommand::Fixed { targets, vector } => pair.edge_all(&targets, vector)?,
+                        IpiCommand::InitAssert { target } => pair.queue_init(target)?,
+                        IpiCommand::InitDeassert => {}
+                        IpiCommand::Startup { target, vector } => {
+                            pair.queue_sipi(target, vector)?
+                        }
+                    }
                     pair.cpus[cpu].local.icr_low = value as u32 & !ICR_DELIVERY_STATUS;
                     Ok(())
                 }
@@ -1159,17 +1265,19 @@ mod tests {
     }
 
     #[test]
-    fn timer_lvt_vector_validation_includes_masked_entries() {
+    fn timer_lvt_rejects_low_unmasked_vectors_and_accepts_masked_vectors() {
         let (mut bus, apic) = timer_setup(1_000_000_000);
         for vector in 0..16 {
-            for mask in [0, MASK] {
-                let before = apic.0.lock().unwrap().clone();
-                assert_eq!(
-                    write(&mut bus, 0x320, u64::from(mask | vector)),
-                    Err(error(DeviceError::UnsupportedConfiguration))
-                );
-                assert_eq!(*apic.0.lock().unwrap(), before);
-            }
+            let before = apic.0.lock().unwrap().clone();
+            assert_eq!(
+                write(&mut bus, 0x320, u64::from(vector)),
+                Err(error(DeviceError::UnsupportedConfiguration))
+            );
+            assert_eq!(*apic.0.lock().unwrap(), before);
+
+            let masked = u64::from(MASK | vector);
+            write(&mut bus, 0x320, masked).unwrap();
+            assert_eq!(read(&mut bus, 0x320), Ok(masked));
         }
         for vector in [16, 255] {
             for mask in [0, MASK] {
@@ -1178,6 +1286,26 @@ mod tests {
                 assert_eq!(read(&mut bus, 0x320), Ok(value));
             }
         }
+    }
+
+    #[test]
+    fn masked_timer_vector_zero_consumes_expiry_without_delivery_and_cannot_be_unmasked() {
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        write(&mut bus, 0x320, u64::from(MASK)).unwrap();
+        write(&mut bus, 0x3e0, 0xb).unwrap();
+        write(&mut bus, 0x380, 2).unwrap();
+        apic.advance_timer_ns(2).unwrap();
+
+        assert!(apic.dispatch_timer().unwrap());
+        assert_eq!(apic.pending(), None);
+        assert_eq!(read(&mut bus, 0x390), Ok(0));
+
+        let before = snapshot(&apic);
+        assert_eq!(
+            write(&mut bus, 0x320, 0),
+            Err(error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(snapshot(&apic), before);
     }
 
     #[test]
@@ -1920,13 +2048,21 @@ mod tests {
         let before = apic.with_state(|s| s.clone());
 
         // Masked expiry: consumed, no IRR/ISR/TMR change.
-        write(&mut bus, 0x320, u64::from(MASK | 0x44)).unwrap();
+        write(&mut bus, 0x320, u64::from(MASK)).unwrap();
         write(&mut bus, 0x380, 2).unwrap();
         apic.advance_timer_ns(2).unwrap();
         assert!(apic.dispatch_timer().unwrap());
         assert_eq!(apic.with_state(|s| s.clone()), before);
         assert_eq!(read(&mut bus, 0x390), Ok(0));
-        // Unmasking does not replay the dropped event.
+
+        // An illegal low vector cannot be unmasked; refusal preserves the timer and LAPIC.
+        assert_eq!(
+            write(&mut bus, 0x320, 0),
+            Err(error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(apic.with_state(|s| s.clone()), before);
+
+        // Reprogramming a valid vector does not replay the dropped event.
         write(&mut bus, 0x320, 0x44).unwrap();
         assert_eq!(apic.with_state(|s| s.clone()), before);
         apic.advance_timer_ns(1000).unwrap();
@@ -2182,7 +2318,6 @@ mod tests {
             (0x310, 0x0100_0001, UC),
             (0x310, 0x1_0000_0000, UC),
             (0x320, 0x0f, UC),
-            (0x320, u64::from(MASK | 0x0f), UC),
             (0x320, u64::from(1u32 << 18 | 0x40), UC),
             (0x320, 0x1040, UC), // delivery status is read-only, reserved here
             (0x320, 0x2040, UC),
@@ -2882,21 +3017,385 @@ mod tests {
     }
 
     #[test]
-    fn matrix_cells_for_nmi_init_and_sipi_are_refused_until_they_are_implemented() {
-        // These rows are in the matrix as deliverable but their delivery belongs to later
-        // slices (NMI: rest of S6-12, INIT and SIPI: S6-13). A write is an explicit error and
-        // changes nothing, not a silent drop.
+    fn matrix_cells_for_nmi_are_refused_until_they_are_implemented() {
+        // The NMI rows are in the matrix as deliverable but their delivery belongs to the rest of
+        // S6-12. A write is an explicit error and changes nothing, not a silent drop.
         let mut device = LocalApic::with_cpus(2).unwrap();
         device.write_from_cpu(0, dword(0x310), 1 << 24).unwrap();
         for command in [
-            icr(4, PHYSICAL, NO_SHORTHAND, LT_00, 0),    // NMI targeted
-            icr(4, PHYSICAL, OTHERS_SH, LT_00, 0),       // NMI all-but-self
-            icr(5, PHYSICAL, NO_SHORTHAND, LT_11, 0),    // INIT assert
-            icr(5, PHYSICAL, NO_SHORTHAND, LT_01, 0),    // INIT deassert
-            icr(6, PHYSICAL, NO_SHORTHAND, LT_00, 0x08), // SIPI
+            icr(4, PHYSICAL, NO_SHORTHAND, LT_00, 0), // NMI targeted
+            icr(4, PHYSICAL, OTHERS_SH, LT_00, 0),    // NMI all-but-self
         ] {
             assert_ipi_refused(&mut device, 0, command);
         }
+    }
+
+    // S6-13: INIT and SIPI wait in the LAPIC of the target.
+
+    const INIT: u64 = 5;
+    const SIPI: u64 = 6;
+
+    fn startup_of(device: &LocalApic, cpu: usize) -> PendingStartup {
+        device.handle_for(cpu).unwrap().pending_startup()
+    }
+
+    #[test]
+    fn init_assert_is_pending_in_the_target_lapic_only() {
+        let mut device = LocalApic::with_cpus(3).unwrap();
+        device.write_from_cpu(0, dword(0x310), 2 << 24).unwrap();
+        let command = icr(INIT, PHYSICAL, NO_SHORTHAND, LT_11, 0);
+        device.write_from_cpu(0, dword(0x300), command).unwrap();
+        assert_eq!(
+            startup_of(&device, 2),
+            PendingStartup {
+                init: true,
+                sipi: None
+            }
+        );
+        assert_eq!(startup_of(&device, 0), PendingStartup::default());
+        assert_eq!(startup_of(&device, 1), PendingStartup::default());
+        // The sender keeps the command; Delivery Status reads Idle; no IRR bit anywhere.
+        assert_eq!(device.read_from_cpu(0, dword(0x300)), Ok(command));
+        assert_eq!(holders(&device, 0), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn init_deassert_is_accepted_and_changes_no_cpu_or_lapic_state() {
+        let mut device = LocalApic::with_cpus(2).unwrap();
+        device.write_from_cpu(0, dword(0x310), 1 << 24).unwrap();
+        device
+            .write_from_cpu(0, dword(0x300), icr(INIT, PHYSICAL, NO_SHORTHAND, LT_11, 0))
+            .unwrap();
+        device
+            .handle_for(1)
+            .unwrap()
+            .request_fixed_edge(0x61)
+            .unwrap();
+        let mut before = device.handle().0.lock().unwrap().clone();
+        let command = icr(INIT, PHYSICAL, NO_SHORTHAND, LT_01, 0);
+        device.write_from_cpu(0, dword(0x300), command).unwrap();
+        // Only the ICR of the sender differs; the pending INIT stays pending and is not repeated.
+        before.cpus[0].local.icr_low = command as u32;
+        assert_eq!(*device.handle().0.lock().unwrap(), before);
+        assert!(startup_of(&device, 1).init);
+        // Deassert of an INIT that was never asserted pends nothing.
+        let mut single = LocalApic::with_cpus(2).unwrap();
+        single.write_from_cpu(0, dword(0x310), 1 << 24).unwrap();
+        single.write_from_cpu(0, dword(0x300), command).unwrap();
+        assert_eq!(startup_of(&single, 1), PendingStartup::default());
+        // A destination that no vCPU has is still an error.
+        single.write_from_cpu(0, dword(0x310), 2 << 24).unwrap();
+        assert_ipi_refused(&mut single, 0, command);
+    }
+
+    #[test]
+    fn sipi_is_pending_with_its_vector_for_every_vector_in_the_target_lapic() {
+        let mut device = LocalApic::with_cpus(2).unwrap();
+        device.write_from_cpu(0, dword(0x310), 1 << 24).unwrap();
+        for vector in [0x00u8, 0x01, 0x08, 0x9f, 0xff] {
+            let command = icr(SIPI, PHYSICAL, NO_SHORTHAND, LT_00, vector);
+            device.write_from_cpu(0, dword(0x300), command).unwrap();
+            assert_eq!(
+                startup_of(&device, 1),
+                PendingStartup {
+                    init: false,
+                    sipi: Some(vector)
+                },
+                "{vector:#x}"
+            );
+            assert_eq!(startup_of(&device, 0), PendingStartup::default());
+            // Taking it consumes it.
+            device.handle_for(1).unwrap().take_startup().unwrap();
+            assert_eq!(startup_of(&device, 1), PendingStartup::default());
+        }
+    }
+
+    #[test]
+    fn the_first_of_several_sipi_waits_and_an_init_drops_only_the_sipi_before_it() {
+        let mut device = LocalApic::with_cpus(2).unwrap();
+        device.write_from_cpu(0, dword(0x310), 1 << 24).unwrap();
+        let sipi = |vector| icr(SIPI, PHYSICAL, NO_SHORTHAND, LT_00, vector);
+        device.write_from_cpu(0, dword(0x300), sipi(0x08)).unwrap();
+        device.write_from_cpu(0, dword(0x300), sipi(0x09)).unwrap();
+        assert_eq!(startup_of(&device, 1).sipi, Some(0x08));
+        // INIT: the SIPI accepted before it is dropped, the SIPI after it is kept.
+        let init = icr(INIT, PHYSICAL, NO_SHORTHAND, LT_11, 0);
+        device.write_from_cpu(0, dword(0x300), init).unwrap();
+        assert_eq!(
+            startup_of(&device, 1),
+            PendingStartup {
+                init: true,
+                sipi: None
+            }
+        );
+        device.write_from_cpu(0, dword(0x300), sipi(0x0a)).unwrap();
+        // A second INIT before the first is applied is the same single event.
+        device.write_from_cpu(0, dword(0x300), init).unwrap();
+        assert_eq!(
+            startup_of(&device, 1),
+            PendingStartup {
+                init: true,
+                sipi: None
+            }
+        );
+    }
+
+    #[test]
+    fn init_to_the_boot_processor_is_refused_and_sipi_to_it_is_pending() {
+        let mut device = LocalApic::with_cpus(2).unwrap();
+        // Sender 1 targets itself (an application processor): INIT is pending.
+        device.write_from_cpu(1, dword(0x310), 1 << 24).unwrap();
+        device
+            .write_from_cpu(1, dword(0x300), icr(INIT, PHYSICAL, NO_SHORTHAND, LT_11, 0))
+            .unwrap();
+        assert!(startup_of(&device, 1).init);
+        // INIT assert to vCPU 0, from itself or from another vCPU: BSP INIT is deferred to
+        // S6-15/S6-16, so the device refuses it and nothing changes.
+        for sender in [0, 1] {
+            device.write_from_cpu(sender, dword(0x310), 0).unwrap();
+            assert_ipi_refused(
+                &mut device,
+                sender,
+                icr(INIT, PHYSICAL, NO_SHORTHAND, LT_11, 0),
+            );
+            assert_eq!(startup_of(&device, 0), PendingStartup::default());
+        }
+        // INIT deassert and SIPI to the boot processor are accepted (SIPI is ignored by the vCPU).
+        device
+            .write_from_cpu(0, dword(0x300), icr(INIT, PHYSICAL, NO_SHORTHAND, LT_01, 0))
+            .unwrap();
+        device
+            .write_from_cpu(
+                0,
+                dword(0x300),
+                icr(SIPI, PHYSICAL, NO_SHORTHAND, LT_00, 0x10),
+            )
+            .unwrap();
+        assert_eq!(
+            startup_of(&device, 0),
+            PendingStartup {
+                init: false,
+                sipi: Some(0x10)
+            }
+        );
+    }
+
+    #[test]
+    fn init_and_sipi_matrix_cells_with_any_other_encoding_are_refused() {
+        let mut device = LocalApic::with_cpus(2).unwrap();
+        device.write_from_cpu(0, dword(0x310), 1 << 24).unwrap();
+        for level_trigger in [LT_00, LT_10, LT_01, LT_11] {
+            for vector in [0u8, 1, 0x10, 0xff] {
+                // INIT: only vector 0 with (1,1) assert or (0,1) deassert.
+                let init = icr(INIT, PHYSICAL, NO_SHORTHAND, level_trigger, vector);
+                if vector == 0 && matches!(level_trigger, LT_11 | LT_01) {
+                    device.write_from_cpu(0, dword(0x300), init).unwrap();
+                } else {
+                    assert_ipi_refused(&mut device, 0, init);
+                }
+                // SIPI: only (0,0), any vector.
+                let sipi = icr(SIPI, PHYSICAL, NO_SHORTHAND, level_trigger, vector);
+                if level_trigger == LT_00 {
+                    device.write_from_cpu(0, dword(0x300), sipi).unwrap();
+                } else {
+                    assert_ipi_refused(&mut device, 0, sipi);
+                }
+            }
+        }
+        // Logical destination mode and every shorthand, for both modes.
+        for mode in [INIT, SIPI] {
+            let level_trigger = if mode == INIT { LT_11 } else { LT_00 };
+            assert_ipi_refused(
+                &mut device,
+                0,
+                icr(mode, LOGICAL, NO_SHORTHAND, level_trigger, 0),
+            );
+            for shorthand in [SELF_SH, ALL_SH, OTHERS_SH] {
+                assert_ipi_refused(
+                    &mut device,
+                    0,
+                    icr(mode, PHYSICAL, shorthand, level_trigger, 0),
+                );
+            }
+            // No vCPU has this APIC ID, including the xAPIC broadcast ID.
+            for destination in [2u64, 0xff] {
+                device
+                    .write_from_cpu(0, dword(0x310), destination << 24)
+                    .unwrap();
+                assert_ipi_refused(
+                    &mut device,
+                    0,
+                    icr(mode, PHYSICAL, NO_SHORTHAND, level_trigger, 0),
+                );
+            }
+            device.write_from_cpu(0, dword(0x310), 1 << 24).unwrap();
+            // A reserved bit does not become legal.
+            assert_ipi_refused(
+                &mut device,
+                0,
+                icr(mode, PHYSICAL, NO_SHORTHAND, level_trigger, 0) | (1 << 13),
+            );
+        }
+    }
+
+    #[test]
+    fn init_and_sipi_to_a_target_with_ia32_apic_base_en_clear_are_refused_like_fixed() {
+        // Owner decision 2026-11-16: the refusal for EN=0 (IA32_APIC_BASE.EN, the global enable
+        // `set_global_enabled(false)` models) covers INIT and SIPI as well as Fixed.
+        let mut device = LocalApic::with_cpus(2).unwrap();
+        let target = device.handle_for(1).unwrap();
+        target.set_global_enabled(false).unwrap();
+        device.write_from_cpu(0, dword(0x310), 1 << 24).unwrap();
+        assert_ipi_refused(&mut device, 0, icr(INIT, PHYSICAL, NO_SHORTHAND, LT_11, 0));
+        assert_ipi_refused(
+            &mut device,
+            0,
+            icr(SIPI, PHYSICAL, NO_SHORTHAND, LT_00, 0x08),
+        );
+        assert_ipi_refused(
+            &mut device,
+            0,
+            icr(FIXED, PHYSICAL, NO_SHORTHAND, LT_00, 0x61),
+        );
+        assert_eq!(startup_of(&device, 1), PendingStartup::default());
+        // With EN set again, the same commands are accepted.
+        target.set_global_enabled(true).unwrap();
+        device
+            .write_from_cpu(0, dword(0x300), icr(INIT, PHYSICAL, NO_SHORTHAND, LT_11, 0))
+            .unwrap();
+        device
+            .write_from_cpu(
+                0,
+                dword(0x300),
+                icr(SIPI, PHYSICAL, NO_SHORTHAND, LT_00, 0x08),
+            )
+            .unwrap();
+        assert_eq!(
+            startup_of(&device, 1),
+            PendingStartup {
+                init: true,
+                sipi: Some(0x08)
+            }
+        );
+    }
+
+    #[test]
+    fn init_deassert_to_a_target_with_ia32_apic_base_en_clear_is_accepted_without_change() {
+        // MACHINE_CONTRACT.md (S6-13): with EN=0 INIT assert and SIPI are refused, but a deassert
+        // changes nothing and is accepted for an existing target.
+        let mut device = LocalApic::with_cpus(2).unwrap();
+        device.write_from_cpu(0, dword(0x310), 1 << 24).unwrap();
+        device
+            .handle_for(1)
+            .unwrap()
+            .set_global_enabled(false)
+            .unwrap();
+        let mut before = device.handle().0.lock().unwrap().clone();
+        let command = icr(INIT, PHYSICAL, NO_SHORTHAND, LT_01, 0);
+        device.write_from_cpu(0, dword(0x300), command).unwrap();
+        // Only the ICR of the sender differs; nothing is pending and EN stays clear.
+        before.cpus[0].local.icr_low = command as u32;
+        assert_eq!(*device.handle().0.lock().unwrap(), before);
+        assert_eq!(startup_of(&device, 1), PendingStartup::default());
+    }
+
+    #[test]
+    fn a_target_with_the_svr_software_enable_clear_accepts_init_and_sipi() {
+        // Owner decision 2026-11-16 (SDM 10.4.3, from memory): a program disable through the
+        // SVR (APIC Software Enable, bit 8, clear; here SVR = 0xFF) with EN set still takes INIT
+        // and SIPI, unlike EN=0.
+        let mut device = LocalApic::with_cpus(2).unwrap();
+        device.write_from_cpu(1, dword(0xf0), 0xff).unwrap();
+        assert_eq!(device.read_from_cpu(1, dword(0xf0)), Ok(0xff));
+        device.write_from_cpu(0, dword(0x310), 1 << 24).unwrap();
+        device
+            .write_from_cpu(
+                0,
+                dword(0x300),
+                icr(SIPI, PHYSICAL, NO_SHORTHAND, LT_00, 0x08),
+            )
+            .unwrap();
+        assert_eq!(startup_of(&device, 1).sipi, Some(0x08));
+        device
+            .write_from_cpu(0, dword(0x300), icr(INIT, PHYSICAL, NO_SHORTHAND, LT_11, 0))
+            .unwrap();
+        assert_eq!(
+            startup_of(&device, 1),
+            PendingStartup {
+                init: true,
+                sipi: None
+            }
+        );
+    }
+
+    #[test]
+    fn taking_a_pending_init_puts_the_lapic_into_its_init_reset_state() {
+        let (mut device, _clock) = smp_timer_device(2);
+        let (cpu0, cpu1) = (device.handle(), device.handle_for(1).unwrap());
+        for cpu in 0..2 {
+            device.write_from_cpu(cpu, dword(0xf0), 0x1ff).unwrap();
+            device.write_from_cpu(cpu, dword(0x80), 0x20).unwrap();
+            device.write_from_cpu(cpu, dword(0x320), 0x40).unwrap();
+            device.write_from_cpu(cpu, dword(0x380), 100).unwrap();
+        }
+        cpu0.request_fixed_edge(0x70).unwrap();
+        cpu1.request_fixed_edge(0x70).unwrap();
+        device.write_from_cpu(0, dword(0x310), 1 << 24).unwrap();
+        let init = icr(INIT, PHYSICAL, NO_SHORTHAND, LT_11, 0);
+        device.write_from_cpu(0, dword(0x300), init).unwrap();
+        let cpu0_before = cpu0.0.lock().unwrap().cpus[0].clone();
+        // Nothing of the target changes until it takes the INIT itself.
+        assert_eq!(cpu1.pending(), Some(0x70));
+        assert_eq!(
+            cpu1.take_startup(),
+            Ok(PendingStartup {
+                init: true,
+                sipi: None
+            })
+        );
+        let pair = cpu1.0.lock().unwrap();
+        assert_eq!(
+            pair.cpus[1].local,
+            State {
+                global_enabled: true,
+                ..State::default()
+            }
+        );
+        assert_eq!(pair.cpus[1].timer.as_ref().unwrap().lvt, MASK);
+        assert!(pair.cpus[1].timer.as_ref().unwrap().queue.is_empty());
+        // The other LAPIC is untouched, and the one taken is not taken twice.
+        assert_eq!(pair.cpus[0], cpu0_before);
+        drop(pair);
+        assert_eq!(cpu1.take_startup(), Ok(PendingStartup::default()));
+        // The APIC ID is the index, so it survives.
+        assert_eq!(device.read_from_cpu(1, dword(0x20)), Ok(1 << 24));
+    }
+
+    #[test]
+    fn taking_an_init_does_not_clear_the_remote_irr_of_a_level_route_to_this_lapic() {
+        // Owner decision 2026-11-16: as on hardware, INIT leaves the IOAPIC's Remote IRR alone;
+        // only the EOI clears it (SDM).
+        let mut device = LocalApic::with_cpus(2).unwrap();
+        let cpu1 = device.handle_for(1).unwrap();
+        device.write_from_cpu(1, dword(0xf0), 0x1ff).unwrap();
+        {
+            let mut pair = cpu1.0.lock().unwrap();
+            pair.route.low = LEVEL | 0x50;
+            pair.route.dest[4] = 1;
+            pair.route.remote_irr = true;
+            pair.route.sci_remote_irr = false;
+        }
+        device.write_from_cpu(0, dword(0x310), 1 << 24).unwrap();
+        device
+            .write_from_cpu(0, dword(0x300), icr(INIT, PHYSICAL, NO_SHORTHAND, LT_11, 0))
+            .unwrap();
+        assert!(cpu1.0.lock().unwrap().awaits_eoi(1));
+        let route_before = cpu1.0.lock().unwrap().route.clone();
+        cpu1.take_startup().unwrap();
+        let pair = cpu1.0.lock().unwrap();
+        assert!(pair.awaits_eoi(1));
+        assert!(pair.route.remote_irr);
+        assert_eq!(pair.route, route_before);
     }
 
     #[test]
