@@ -27489,3 +27489,10 @@ Four focused tests cover CF values/definedness, ZF independence, partial-registe
 Base `PagedCpl0ProbeV1` admits only exact `45 8D 7A F3`. REX.R/B select R15D and R10. LEA computes the effective address with 64-bit wrapping and signed disp8 `-0x0d`, then writing R15D truncates to 32 bits and zero-extends into R15. It does not access memory or check address canonicality; all other GPRs, RFLAGS and definedness remain unchanged. A final-byte fetch fault does not retire or mutate state. Neighboring displacement/destination/base/REX/width/prefix forms, CPL3 and other paged profiles remain unsupported.
 
 Four focused tests cover ordinary, wrapping and noncanonical inputs; dword truncation/zero-extension; preserved state and no memory/I/O; fetch-fault atomicity; neighbors; and CPL3/profile isolation. Firmware advances after 8,955 retired instructions to `41 83 FA 0B` (`CMP R10D,11`, ISSUE-263) at RIP `0x2015DA`; COM1 remains empty. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact helper `CMP R10D,0x0b` (ISSUE-263)
+
+Base `PagedCpl0ProbeV1` admits only exact `41 83 FA 0B`. REX.B selects R10D; opcode `83 /7` sign-extends imm8 `0x0b` to 32 bits and uses shared dword CMP semantics. Arithmetic flags and definedness update, while every GPR and memory remain unchanged. A final immediate-byte fetch fault is atomic. Other immediates, register/group/width/prefix and memory forms, CPL3 and other paged profiles remain unsupported.
+
+Four focused tests cover R10D routing and dword-specific values, flag results/definedness, GPR preservation, fetch-fault atomicity, neighbors, and CPL3/profile isolation. Firmware advances after 8,956 retired instructions to `41 0F 93 C6` (`SETAE R14B`, ISSUE-264) at RIP `0x2015DE`; COM1 remains empty. Independent review approved with no findings.
