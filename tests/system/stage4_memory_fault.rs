@@ -1821,3 +1821,896 @@ fn s4_15c_publish_refusal_falls_back_to_the_interpreter() {
     assert_eq!(range_pairs(committed_writes), expected);
     assert!(!session.has_admitted_block());
 }
+
+// ---------------------------------------------------------------------------
+// S4-15d: `48 89 03` (MOV [RBX],RAX) on the JIT path of the dispatcher, through
+// the tracked store adapter. A guest #PF is a final JIT result (like S4-15c);
+// a refusal that changed nothing (non-RAM target, the block's own code page)
+// falls back to the interpreter exactly once. The interpreter's store
+// allowlist is `48 89 0B` (MOV [RBX],RCX), not `48 89 03`, so that fallback
+// reports Unsupported: the refused store is not executed by either engine.
+// ---------------------------------------------------------------------------
+
+const STORE_CODE: [u8; 3] = [0x48, 0x89, 0x03];
+/// The same store with RCX as the source: what the interpreter implements.
+const STORE_RCX_CODE: [u8; 3] = [0x48, 0x89, 0x0b];
+/// Data qword the store targets: leaf 0x7000 maps `DATA_LINEAR` to this address.
+const DATA_QWORD: u64 = DATA_PHYSICAL + 0x120;
+/// Second data page (PT entry 0x7008): `DATA_LINEAR`'s page plus 4 KiB.
+const DATA2_LINEAR: u64 = 0x0000_0080_0000_1120;
+const DATA_LEAF_ADDRESS: u64 = 0x7000;
+const DATA2_LEAF_ADDRESS: u64 = 0x7008;
+
+/// A fetch-layout bus whose code at `CODE_RIP` is `MOV [RBX],RAX` and whose
+/// data leaf carries exactly `data_leaf_flags` (0x7 = present, writable, user).
+fn make_store_bus(data_leaf_flags: u64) -> MachineBus {
+    let mut bus = make_fetch_bus(FetchLayout::CLEAN);
+    prepare_store_bus(&mut bus, data_leaf_flags);
+    bus
+}
+
+fn prepare_store_bus(bus: &mut MachineBus, data_leaf_flags: u64) {
+    bus.patch_physical_ram(GuestPhysicalAddress::new(CODE_PHYSICAL), &STORE_CODE)
+        .unwrap();
+    put_qword(bus, DATA_LEAF_ADDRESS, DATA_PHYSICAL | data_leaf_flags);
+}
+
+/// Runs the dispatcher on `bus` for an executed JIT store of `MOV [RBX],RAX` and
+/// asserts it equals the interpreter's `MOV [RBX],RCX` (same store, source
+/// register RCX = RAX) on identical RAM: registers, RIP, full CPU state,
+/// PageFaultRecord, the ordered committed writes and the whole RAM image (the
+/// oracle's code byte is restored first). The JIT result must be final.
+fn store_equals_rcx_interpreter(
+    label: &str,
+    session: &mut od_host::PagedFetchedLoadSession,
+    make_bus: &dyn Fn() -> MachineBus,
+    bus: &mut MachineBus,
+    privilege: PrivilegeLevel,
+    prepare: impl Fn(&mut LongModeState),
+) -> (od_host::PagedStepOutcome, LongModeState) {
+    let mut oracle_bus = make_bus();
+    oracle_bus
+        .patch_physical_ram(GuestPhysicalAddress::new(CODE_PHYSICAL), &STORE_RCX_CODE)
+        .unwrap();
+    let init = |state: &mut LongModeState| {
+        prepare(state);
+        state.gpr[Register::Rcx as usize] = state.gpr[Register::Rax as usize];
+    };
+    let mut oracle_state = fetch_state(CODE_RIP);
+    init(&mut oracle_state);
+    let (oracle_report, _) = pure_interpreter(&mut oracle_bus, &mut oracle_state, privilege);
+    oracle_bus
+        .patch_physical_ram(GuestPhysicalAddress::new(CODE_PHYSICAL), &STORE_CODE)
+        .unwrap();
+
+    let mut state = fetch_state(CODE_RIP);
+    init(&mut state);
+    let outcome = session
+        .execute_or_interpret(
+            &mut state,
+            bus,
+            CR3,
+            EFER,
+            fetch_context(privilege),
+            RFLAGS_DEFINED,
+        )
+        .unwrap_or_else(|error| panic!("{label}: dispatcher error {error:?}"));
+    let od_host::PagedStepOutcome::Jit(report) = &outcome else {
+        panic!("{label}: expected the JIT to execute the store, got {outcome:?}");
+    };
+    let execution = report.execution.callback_result.as_ref().unwrap();
+    match &execution.exit {
+        MemoryOperationExecutionExitV2::Complete => {
+            assert_eq!(
+                oracle_report.cpu.exit,
+                od_isa::execute::RunExit::StopAddress,
+                "{label}"
+            );
+            assert_eq!(oracle_report.page_fault, None, "{label}");
+        }
+        MemoryOperationExecutionExitV2::GuestFault(fault) => {
+            assert_eq!(
+                oracle_report.cpu.exit,
+                od_isa::execute::RunExit::Fault(fault.clone()),
+                "{label}"
+            );
+            assert_eq!(
+                report.execution.page_fault, oracle_report.page_fault,
+                "{label}"
+            );
+        }
+        other => panic!("{label}: unexpected JIT exit {other:?}"),
+    }
+    assert_eq!(
+        execution.retired_instructions, oracle_report.cpu.instructions_executed,
+        "{label}"
+    );
+    assert_eq!(report.store_refusal, None, "{label}");
+    let writes = jit_writes(&outcome);
+    // The oracle's own write list, recomputed on the same oracle step.
+    let mut oracle_bus = make_bus();
+    oracle_bus
+        .patch_physical_ram(GuestPhysicalAddress::new(CODE_PHYSICAL), &STORE_RCX_CODE)
+        .unwrap();
+    let mut replay_state = fetch_state(CODE_RIP);
+    init(&mut replay_state);
+    let mut oracle_writes = Vec::new();
+    od_machine::step_paged_mov(
+        &mut replay_state,
+        &mut oracle_bus,
+        CR3,
+        EFER,
+        fetch_context(privilege),
+        RFLAGS_DEFINED,
+        |range| oracle_writes.push(range),
+    )
+    .unwrap();
+    oracle_bus
+        .patch_physical_ram(GuestPhysicalAddress::new(CODE_PHYSICAL), &STORE_CODE)
+        .unwrap();
+    assert_eq!(
+        writes,
+        range_pairs(&oracle_writes),
+        "{label}: committed writes"
+    );
+    assert_eq!(
+        ram_image(bus),
+        ram_image(&mut oracle_bus),
+        "{label}: RAM image"
+    );
+    assert_eq!(state, oracle_state, "{label}: full LongModeState");
+    (outcome, state)
+}
+
+fn store_page_fault(outcome: &od_host::PagedStepOutcome) -> &od_isa::memory::PageFaultRecord {
+    let od_host::PagedStepOutcome::Jit(report) = outcome else {
+        panic!("a store #PF is a final JIT result, got {outcome:?}");
+    };
+    let execution = report.execution.callback_result.as_ref().unwrap();
+    assert!(
+        matches!(
+            execution.exit,
+            MemoryOperationExecutionExitV2::GuestFault(_)
+        ),
+        "{:?}",
+        execution.exit
+    );
+    report.execution.page_fault.as_ref().unwrap()
+}
+
+fn jit_writes(outcome: &od_host::PagedStepOutcome) -> Vec<(u64, u64)> {
+    let od_host::PagedStepOutcome::Jit(report) = outcome else {
+        panic!("expected a JIT outcome, got {outcome:?}");
+    };
+    let mut writes = range_pairs(&report.fetch_committed_writes);
+    writes.extend(range_pairs(&report.execution.committed_writes));
+    writes
+}
+
+#[test]
+fn s4_15d_store_on_ram_equals_the_interpreter_and_sets_the_dirty_bit() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    for (label, leaf_flags, privilege) in [
+        ("CPL0 user leaf", 0x7, PrivilegeLevel::Ring0),
+        ("CPL3 user leaf", 0x7, PrivilegeLevel::Ring3),
+        // Supervisor pages are writable at CPL0: U/S only restricts CPL3.
+        ("CPL0 supervisor leaf", 0x3, PrivilegeLevel::Ring0),
+        // NX is an instruction-fetch right: it must not affect a data write.
+        ("CPL0 NX data leaf", 0x7 | NX, PrivilegeLevel::Ring0),
+        // A Dirty bit that is already set is not written again.
+        ("CPL0 leaf with D preset", 0x47, PrivilegeLevel::Ring0),
+    ] {
+        let mut session = od_host::PagedFetchedLoadSession::new();
+        let mut bus = make_store_bus(leaf_flags);
+        let (outcome, state) = store_equals_rcx_interpreter(
+            label,
+            &mut session,
+            &|| make_store_bus(leaf_flags),
+            &mut bus,
+            privilege,
+            |_| {},
+        );
+        let od_host::PagedStepOutcome::Jit(report) = &outcome else {
+            unreachable!();
+        };
+        assert_eq!(report.fetched_bytes, STORE_CODE, "{label}");
+        assert_eq!(report.admission, od_host::PagedFetchAdmission::Admitted);
+        assert_eq!(session.admissions(), 1, "{label}");
+        // The operand qword is RAX; RAX, RIP and the data are as the oracle
+        // has them, and the store retired once: the following
+        // `mov [rbx],rcx` (RCX = RAX here, so also distinguishable by RIP)
+        // did not run.
+        assert_eq!(entry(&mut bus, DATA_QWORD), INITIAL_RAX, "{label}");
+        assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX, "{label}");
+        assert_eq!(state.rip, CODE_RIP + 3, "{label}");
+        // Order: code walk, data walk (Accessed), Dirty on the leaf, operand.
+        let writes = jit_writes(&outcome);
+        assert_eq!(writes.last(), Some(&(DATA_QWORD, 8)), "{label}");
+        let leaf_writes = writes
+            .iter()
+            .filter(|&&(address, _)| address == DATA_LEAF_ADDRESS)
+            .count();
+        assert_eq!(
+            leaf_writes,
+            if leaf_flags & DIRTY != 0 { 1 } else { 2 },
+            "{label}"
+        );
+        // Dirty is set on the data leaf by the write, never on the code leaf
+        // (the fetch is a read) and never on an upper level.
+        assert_ne!(entry(&mut bus, DATA_LEAF_ADDRESS) & DIRTY, 0, "{label}");
+        for address in CODE_WALK_ENTRIES
+            .into_iter()
+            .chain(DATA_WALK_ENTRIES[..3].iter().copied())
+        {
+            assert_eq!(entry(&mut bus, address) & DIRTY, 0, "{label}: {address:#x}");
+        }
+        for address in CODE_WALK_ENTRIES.into_iter().chain(DATA_WALK_ENTRIES) {
+            assert_ne!(
+                entry(&mut bus, address) & ACCESSED,
+                0,
+                "{label}: {address:#x}"
+            );
+        }
+
+        // The same bytes at the same generation reuse the block: the store
+        // wrote no code page, so nothing invalidated it.
+        let mut again = fetch_state(CODE_RIP);
+        again.gpr[Register::Rax as usize] = 0x1111_2222_3333_4444;
+        let second = session
+            .execute_or_interpret(
+                &mut again,
+                &mut bus,
+                CR3,
+                EFER,
+                fetch_context(privilege),
+                RFLAGS_DEFINED,
+            )
+            .unwrap();
+        let od_host::PagedStepOutcome::Jit(second) = second else {
+            panic!("{label}: second store must stay on the JIT");
+        };
+        assert_eq!(
+            second.admission,
+            od_host::PagedFetchAdmission::Reused,
+            "{label}"
+        );
+        assert_eq!(
+            entry(&mut bus, DATA_QWORD),
+            0x1111_2222_3333_4444,
+            "{label}"
+        );
+        assert_eq!(session.admissions(), 1, "{label}");
+    }
+}
+
+#[test]
+fn s4_15d_store_faults_precede_the_write_and_equal_the_interpreter() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // PFEC bits: P=0x1, W=0x2, U/S=0x4. The leaf is the only level that denies.
+    for (label, leaf_flags, privilege, pfec) in [
+        ("not-present leaf CPL0", 0x6, PrivilegeLevel::Ring0, 0x2u32),
+        // CR0.WP is set: a read-only page faults even at CPL0.
+        ("read-only leaf CPL0", 0x5, PrivilegeLevel::Ring0, 0x3),
+        ("read-only leaf CPL3", 0x5, PrivilegeLevel::Ring3, 0x7),
+        ("not-present leaf CPL3", 0x6, PrivilegeLevel::Ring3, 0x6),
+    ] {
+        let mut session = od_host::PagedFetchedLoadSession::new();
+        let mut bus = make_store_bus(leaf_flags);
+        let ram_before = ram_image(&mut bus);
+        let (outcome, state) = store_equals_rcx_interpreter(
+            label,
+            &mut session,
+            &|| make_store_bus(leaf_flags),
+            &mut bus,
+            privilege,
+            |_| {},
+        );
+        // Not re-run on the interpreter: the fault is the JIT's executed result.
+        assert_eq!(outcome.path(), od_host::PagedStepPath::Jit, "{label}");
+        let record = store_page_fault(&outcome);
+        assert_eq!(record.fault().vector, 14, "{label}");
+        assert_eq!(record.fault().error_code, Some(pfec), "{label}");
+        assert_eq!(record.cr2_value(), DATA_LINEAR, "{label}");
+        assert_eq!(record.saved_rip(), CODE_RIP, "{label}");
+        assert_eq!(
+            record.access(),
+            od_isa::memory::AccessKind::Write,
+            "{label}"
+        );
+        // Nothing was stored, nothing retired, no Dirty bit anywhere.
+        assert_eq!(entry(&mut bus, DATA_QWORD), LOADED_VALUE, "{label}");
+        assert_eq!(state.rip, CODE_RIP, "{label}");
+        assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX, "{label}");
+        for address in CODE_WALK_ENTRIES.into_iter().chain(DATA_WALK_ENTRIES) {
+            assert_eq!(entry(&mut bus, address) & DIRTY, 0, "{label}: {address:#x}");
+        }
+        // No committed write is the operand, and the only RAM words that
+        // changed against the start are page-table Accessed bits.
+        let writes = jit_writes(&outcome);
+        assert!(!writes.contains(&(DATA_QWORD, 8)), "{label}: {writes:?}");
+        let ram_after = ram_image(&mut bus);
+        for (index, (before, after)) in ram_before.iter().zip(&ram_after).enumerate() {
+            if before != after {
+                let address = index as u64 * 8;
+                assert!(
+                    CODE_WALK_ENTRIES
+                        .into_iter()
+                        .chain(DATA_WALK_ENTRIES)
+                        .any(|entry| entry == address)
+                        && before | ACCESSED == *after,
+                    "{label}: unexpected change at {address:#x}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn s4_15d_cpl3_store_to_a_supervisor_page_faults_before_the_write() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // Present and writable but U/S = 0: CPL3 may not touch it.
+    let leaf_flags = 0x3;
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let mut bus = make_store_bus(leaf_flags);
+    let (outcome, state) = store_equals_rcx_interpreter(
+        "CPL3 supervisor leaf",
+        &mut session,
+        &|| make_store_bus(leaf_flags),
+        &mut bus,
+        PrivilegeLevel::Ring3,
+        |_| {},
+    );
+    assert_eq!(outcome.path(), od_host::PagedStepPath::Jit);
+    let record = store_page_fault(&outcome);
+    // Protection violation of a user write: P | W | U.
+    assert_eq!(record.fault().error_code, Some(0x7));
+    assert_eq!(record.cr2_value(), DATA_LINEAR);
+    assert_eq!(record.saved_rip(), CODE_RIP);
+    assert_eq!(entry(&mut bus, DATA_QWORD), LOADED_VALUE);
+    assert_eq!(entry(&mut bus, DATA_LEAF_ADDRESS) & DIRTY, 0);
+    assert_eq!(state.rip, CODE_RIP);
+    assert!(!jit_writes(&outcome).contains(&(DATA_QWORD, 8)));
+
+    // The JIT attempt alone, without the dispatcher: same fault, store never
+    // committed, and the block stays admitted for a later retry. (The host has
+    // one executable region: release the dispatcher session's block first.)
+    drop(session);
+    let mut jit_only = od_host::PagedFetchedLoadSession::new();
+    let mut bus = make_store_bus(leaf_flags);
+    let mut state = fetch_state(CODE_RIP);
+    let report = jit_only
+        .execute_with_store(
+            &mut state,
+            &mut bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring3),
+        )
+        .unwrap();
+    assert!(matches!(
+        report.execution.callback_result.as_ref().unwrap().exit,
+        MemoryOperationExecutionExitV2::GuestFault(_)
+    ));
+    assert_eq!(entry(&mut bus, DATA_QWORD), LOADED_VALUE);
+    assert!(jit_only.has_admitted_block());
+    // The S4-15b entry still refuses the store form: it was not widened.
+    drop(jit_only);
+    let mut legacy = od_host::PagedFetchedLoadSession::new();
+    let mut bus = make_store_bus(0x7);
+    let mut state = fetch_state(CODE_RIP);
+    let error = legacy
+        .execute(
+            &mut state,
+            &mut bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.kind,
+        od_host::PagedFetchedLoadErrorKind::UnsupportedForm {
+            bytes: STORE_CODE.to_vec()
+        }
+    );
+    assert_eq!(entry(&mut bus, DATA_QWORD), LOADED_VALUE);
+}
+
+#[test]
+fn s4_15d_mmio_store_is_refused_before_any_effect_and_not_executed() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let offset = DATA_LINEAR & 0xfff;
+    let make = |journal: &DeviceJournal| {
+        let mut bus = make_mmio_fetch_bus(journal);
+        bus.patch_physical_ram(GuestPhysicalAddress::new(CODE_PHYSICAL), &STORE_CODE)
+            .unwrap();
+        bus
+    };
+
+    // JIT attempt alone: the adapter refuses the non-RAM operand before it
+    // walks, so not one data-walk bit changed and the device saw nothing.
+    let attempt_journal = DeviceJournal::default();
+    let mut attempt_bus = make(&attempt_journal);
+    let mut attempt_session = od_host::PagedFetchedLoadSession::new();
+    let mut attempt_state = fetch_state(CODE_RIP);
+    let before = attempt_state.clone();
+    let attempt = attempt_session
+        .execute_with_store(
+            &mut attempt_state,
+            &mut attempt_bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap();
+    assert!(matches!(
+        attempt.execution.callback_result,
+        Err(od_host::MemoryOperationExecutionErrorV2::MemoryError(_))
+    ));
+    assert!(matches!(
+        attempt.store_refusal,
+        Some(od_machine::PagedStoreRefusal::NonRamTarget { physical })
+            if physical.get() == MMIO_BASE + offset
+    ));
+    assert_eq!(attempt_state, before);
+    assert!(attempt.execution.committed_writes.is_empty());
+    assert!(
+        attempt_journal.lock().unwrap().is_empty(),
+        "JIT: 0 device calls"
+    );
+    for address in DATA_WALK_ENTRIES {
+        assert_eq!(
+            entry(&mut attempt_bus, address) & ACCESSED,
+            0,
+            "{address:#x}"
+        );
+    }
+    drop(attempt_session);
+
+    // The dispatcher equals a pure interpreter step on the same `48 89 03`
+    // (Unsupported, nothing retired): a leaked JIT effect (an Accessed or
+    // Dirty bit of the data walk, a device write) would differ from it.
+    let journal = DeviceJournal::default();
+    let oracle_journal = DeviceJournal::default();
+    let mut bus = make(&journal);
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let (outcome, state) = dispatch_equals_interpreter(
+        "MMIO store",
+        &mut session,
+        make(&oracle_journal),
+        &mut bus,
+        PrivilegeLevel::Ring0,
+        |_| {},
+    );
+    let od_host::PagedStepOutcome::Interpreter {
+        reason,
+        report,
+        committed_writes,
+    } = &outcome
+    else {
+        panic!("an MMIO store must be interpreted, got {outcome:?}");
+    };
+    assert!(matches!(
+        reason,
+        od_host::PagedStepFallbackReason::StoreTargetRefused(
+            od_machine::PagedStoreRefusal::NonRamTarget { .. }
+        )
+    ));
+    assert!(matches!(
+        report.cpu.exit,
+        od_isa::execute::RunExit::Unsupported { .. }
+    ));
+    assert!(journal.lock().unwrap().is_empty(), "0 device calls");
+    assert!(oracle_journal.lock().unwrap().is_empty());
+    assert_eq!(state.rip, CODE_RIP);
+    assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX);
+    // Only the code-walk Accessed bits (the fetch) were committed, once.
+    assert_eq!(
+        range_pairs(committed_writes),
+        CODE_WALK_RANGES
+            .into_iter()
+            .map(|(a, l)| (a, l as u64))
+            .collect::<Vec<_>>()
+    );
+    for address in DATA_WALK_ENTRIES {
+        assert_eq!(entry(&mut bus, address) & ACCESSED, 0, "{address:#x}");
+    }
+}
+
+#[test]
+fn s4_15d_store_into_another_code_page_makes_the_old_bytes_unreachable() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // Page 0xa000 holds `48 8B 03` (a load) at offset 0x80, reached at
+    // CODE_RIP_2. The store block at CODE_RIP (page 0x8000) rewrites those
+    // bytes to `48 89 03` through the data leaf, which now maps that page.
+    let rewritten = u64::from_le_bytes([0x48, 0x89, 0x03, 0, 0, 0, 0, 0]);
+    let code2_linear = 0x0000_0080_0000_0080;
+    let marker = 0x0bad_f00d_dead_beef;
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let mut bus = make_fetch_bus(FetchLayout::CLEAN);
+    prepare_store_bus(&mut bus, 0x7);
+    put_qword(&mut bus, DATA_LEAF_ADDRESS, CODE_PHYSICAL_2 | 0x7);
+    put_qword(&mut bus, DATA2_LEAF_ADDRESS, DATA_PHYSICAL | 0x7);
+    let code2 = GuestPhysicalAddress::new(CODE_PHYSICAL_2);
+    let step = |session: &mut od_host::PagedFetchedLoadSession,
+                bus: &mut MachineBus,
+                state: &mut LongModeState| {
+        let outcome = session
+            .execute_or_interpret(
+                state,
+                bus,
+                CR3,
+                EFER,
+                fetch_context(PrivilegeLevel::Ring0),
+                RFLAGS_DEFINED,
+            )
+            .unwrap();
+        let od_host::PagedStepOutcome::Jit(report) = outcome else {
+            panic!("every step of this scenario is a JIT step: {outcome:?}");
+        };
+        report
+    };
+    let store_state = || {
+        let mut state = fetch_state(CODE_RIP);
+        state.gpr[Register::Rax as usize] = rewritten;
+        state.gpr[Register::Rbx as usize] = code2_linear;
+        state
+    };
+
+    // 1. The load at CODE_RIP_2 runs first and is admitted. The data leaf maps
+    // the same page, so it loads the (zero) qword at 0xa120.
+    let generation_before = bus.code_page_generation(code2).unwrap();
+    let mut state = fetch_state(CODE_RIP_2);
+    let load = step(&mut session, &mut bus, &mut state);
+    assert_eq!(load.admission, od_host::PagedFetchAdmission::Admitted);
+    assert_eq!(load.fetched_bytes, CODE);
+    assert_eq!(state.gpr[Register::Rax as usize], 0);
+
+    // 2. The store at CODE_RIP rewrites the load's bytes in page 0xa000.
+    let mut state = store_state();
+    let first_store = step(&mut session, &mut bus, &mut state);
+    assert_eq!(
+        first_store.admission,
+        od_host::PagedFetchAdmission::Admitted
+    );
+    assert_eq!(first_store.fetched_physical_page.get(), CODE_PHYSICAL);
+    assert_eq!(state.rip, CODE_RIP + 3);
+    assert_eq!(
+        entry(&mut bus, CODE_PHYSICAL_2 + 0x80) & 0xff_ffff,
+        0x03_8948,
+        "the bytes in the other code page changed"
+    );
+    let generation_after = bus.code_page_generation(code2).unwrap();
+    assert!(generation_after > generation_before);
+
+    // 3. The same store again: writing another code page did not invalidate
+    // the block that is running, so it is reused, not compiled again.
+    let mut state = store_state();
+    let second_store = step(&mut session, &mut bus, &mut state);
+    assert_eq!(second_store.admission, od_host::PagedFetchAdmission::Reused);
+    assert_eq!(
+        second_store.fetched_generation,
+        first_store.fetched_generation
+    );
+    assert!(bus.code_page_generation(code2).unwrap() > generation_after);
+
+    // 4. CODE_RIP_2 again. The old load, if it were run or reused, would load
+    // RAX from the data qword. What is fetched now is a store: it is compiled
+    // from the new bytes and writes RAX (the marker) to the second data page.
+    let mut state = fetch_state(CODE_RIP_2);
+    state.gpr[Register::Rax as usize] = marker;
+    state.gpr[Register::Rbx as usize] = DATA2_LINEAR;
+    let rewritten_run = step(&mut session, &mut bus, &mut state);
+    assert_eq!(
+        rewritten_run.admission,
+        od_host::PagedFetchAdmission::Admitted
+    );
+    assert_eq!(rewritten_run.fetched_bytes, STORE_CODE);
+    assert!(rewritten_run.fetched_generation > load.fetched_generation);
+    assert_eq!(state.gpr[Register::Rax as usize], marker);
+    assert_eq!(state.rip, CODE_RIP_2 + 3);
+    assert_eq!(entry(&mut bus, DATA_QWORD), marker);
+    // Load, store, rewritten store: three compilations, one reuse.
+    assert_eq!(session.admissions(), 3);
+}
+
+#[test]
+fn s4_15d_store_into_the_executing_code_page_is_refused_before_commit() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // The data leaf maps the page the store block itself is fetched from.
+    let make = || {
+        let mut bus = make_fetch_bus(FetchLayout::CLEAN);
+        prepare_store_bus(&mut bus, 0x7);
+        put_qword(&mut bus, DATA_LEAF_ADDRESS, CODE_PHYSICAL | 0x7);
+        bus
+    };
+    let code_page = |bus: &mut MachineBus| -> Vec<u64> {
+        (0..0x1000u64)
+            .step_by(8)
+            .map(|offset| entry(bus, CODE_PHYSICAL + offset))
+            .collect()
+    };
+    let refusal = od_machine::PagedStoreRefusal::ActiveCodePage {
+        page: GuestPhysicalAddress::new(CODE_PHYSICAL),
+    };
+
+    // Two operands on the page: beside the block's bytes (offset 0x120, the
+    // DATA_LINEAR default) and over them (offset 0, RAX = NOPs).
+    let nops = 0x9090_9090_9090_9090;
+    for (label, operand, value) in [
+        ("beside the block", DATA_LINEAR, INITIAL_RAX),
+        ("over the block", 0x0000_0080_0000_0000, nops),
+    ] {
+        let prepare = |state: &mut LongModeState| {
+            state.gpr[Register::Rax as usize] = value;
+            state.gpr[Register::Rbx as usize] = operand;
+        };
+        // JIT attempt alone: refused before the operand walk and any write.
+        let mut bus = make();
+        let mut session = od_host::PagedFetchedLoadSession::new();
+        let mut state = fetch_state(CODE_RIP);
+        prepare(&mut state);
+        let before = state.clone();
+        let code_before = code_page(&mut bus);
+        let attempt = session
+            .execute_with_store(
+                &mut state,
+                &mut bus,
+                CR3,
+                EFER,
+                fetch_context(PrivilegeLevel::Ring0),
+            )
+            .unwrap();
+        assert_eq!(attempt.store_refusal, Some(refusal), "{label}");
+        assert!(
+            matches!(
+                attempt.execution.callback_result,
+                Err(od_host::MemoryOperationExecutionErrorV2::MemoryError(_))
+            ),
+            "{label}"
+        );
+        assert_eq!(state, before, "{label}");
+        assert!(attempt.execution.committed_writes.is_empty(), "{label}");
+        for address in DATA_WALK_ENTRIES {
+            assert_eq!(entry(&mut bus, address) & ACCESSED, 0, "{label}");
+        }
+        assert_eq!(code_page(&mut bus), code_before, "{label}: page unchanged");
+        drop(session);
+
+        // The dispatcher equals a pure interpreter step on the same bytes
+        // (Unsupported, nothing retired): the block is not corrupted, the
+        // refused store is not executed, and no JIT effect leaked.
+        let mut session = od_host::PagedFetchedLoadSession::new();
+        let mut bus = make();
+        let (outcome, state) = dispatch_equals_interpreter(
+            label,
+            &mut session,
+            make(),
+            &mut bus,
+            PrivilegeLevel::Ring0,
+            prepare,
+        );
+        let od_host::PagedStepOutcome::Interpreter { reason, report, .. } = &outcome else {
+            panic!("{label}: a store into the executing page is not a JIT step: {outcome:?}");
+        };
+        assert_eq!(
+            *reason,
+            od_host::PagedStepFallbackReason::StoreTargetRefused(refusal),
+            "{label}"
+        );
+        assert!(matches!(
+            report.cpu.exit,
+            od_isa::execute::RunExit::Unsupported { .. }
+        ));
+        assert_eq!(state.rip, CODE_RIP, "{label}");
+        assert_eq!(code_page(&mut bus), code_before, "{label}");
+
+        // Entering again: nothing changed, so the same block is reused and
+        // refuses the same store again, still without any effect.
+        let ram = ram_image(&mut bus);
+        let mut state = fetch_state(CODE_RIP);
+        prepare(&mut state);
+        let again = session
+            .execute_with_store(
+                &mut state,
+                &mut bus,
+                CR3,
+                EFER,
+                fetch_context(PrivilegeLevel::Ring0),
+            )
+            .unwrap();
+        assert_eq!(
+            again.admission,
+            od_host::PagedFetchAdmission::Reused,
+            "{label}"
+        );
+        assert_eq!(again.store_refusal, Some(refusal), "{label}");
+        assert_eq!(ram_image(&mut bus), ram, "{label}");
+        assert_eq!(session.admissions(), 1, "{label}");
+    }
+}
+
+#[test]
+fn s4_15d_load_only_entry_never_runs_a_store_block_admitted_by_the_store_entry() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut session = od_host::PagedFetchedLoadSession::new();
+    let mut bus = make_store_bus(0x7);
+
+    // The store entry admits `48 89 03` and executes it.
+    let mut state = fetch_state(CODE_RIP);
+    let first = session
+        .execute_with_store(
+            &mut state,
+            &mut bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap();
+    assert_eq!(first.admission, od_host::PagedFetchAdmission::Admitted);
+    assert!(matches!(
+        first.execution.callback_result.as_ref().unwrap().exit,
+        MemoryOperationExecutionExitV2::Complete
+    ));
+    assert_eq!(entry(&mut bus, DATA_QWORD), INITIAL_RAX);
+    assert!(session.has_admitted_block());
+
+    // Same session, same bytes, same generation: the load-only entry must
+    // refuse the form, not reuse the store block. Nothing is stored and RIP and
+    // RAX stay as they were (the fetch's Accessed bits are already set).
+    let ram_before = ram_image(&mut bus);
+    let other_rax = 0x1111_2222_3333_4444;
+    let mut state = fetch_state(CODE_RIP);
+    state.gpr[Register::Rax as usize] = other_rax;
+    let before = state.clone();
+    let error = session
+        .execute(
+            &mut state,
+            &mut bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.kind,
+        od_host::PagedFetchedLoadErrorKind::UnsupportedForm {
+            bytes: STORE_CODE.to_vec()
+        }
+    );
+    assert_eq!(state, before);
+    assert_eq!(state.rip, CODE_RIP);
+    assert_eq!(state.gpr[Register::Rax as usize], other_rax);
+    assert_eq!(entry(&mut bus, DATA_QWORD), INITIAL_RAX);
+    assert_eq!(ram_image(&mut bus), ram_before);
+    assert_eq!(session.admissions(), 1);
+
+    // The refusal is not sticky: the store entry still reuses the block.
+    let mut state = fetch_state(CODE_RIP);
+    state.gpr[Register::Rax as usize] = other_rax;
+    let again = session
+        .execute_with_store(
+            &mut state,
+            &mut bus,
+            CR3,
+            EFER,
+            fetch_context(PrivilegeLevel::Ring0),
+        )
+        .unwrap();
+    assert_eq!(again.admission, od_host::PagedFetchAdmission::Reused);
+    assert_eq!(entry(&mut bus, DATA_QWORD), other_rax);
+    assert_eq!(session.admissions(), 1);
+}
+
+#[test]
+fn s4_15d_store_with_an_untranslatable_operand_is_refused_without_any_data_walk_effect() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // A 2 MiB data PDE (present, writable, user, PS = 0x87 at 0x5000) is not a
+    // 4 KiB leaf: the probe reports UnsupportedPageSize.
+    for label in ["2 MiB data PDE"] {
+        let make = || {
+            let mut bus = make_store_bus(0x7);
+            put_qword(&mut bus, 0x5000, 0x87);
+            bus
+        };
+        let prepare = |_: &mut LongModeState| {};
+        let refusal = od_machine::PagedStoreRefusal::ProbeUnsupported;
+
+        // JIT attempt alone: refused before the data walk, not one write.
+        let mut bus = make();
+        let ram_before = ram_image(&mut bus);
+        let mut session = od_host::PagedFetchedLoadSession::new();
+        let mut state = fetch_state(CODE_RIP);
+        prepare(&mut state);
+        let before = state.clone();
+        let attempt = session
+            .execute_with_store(
+                &mut state,
+                &mut bus,
+                CR3,
+                EFER,
+                fetch_context(PrivilegeLevel::Ring0),
+            )
+            .unwrap();
+        assert_eq!(attempt.store_refusal, Some(refusal), "{label}");
+        assert!(
+            matches!(
+                attempt.execution.callback_result,
+                Err(od_host::MemoryOperationExecutionErrorV2::MemoryError(_))
+            ),
+            "{label}"
+        );
+        assert_eq!(state, before, "{label}");
+        assert!(attempt.execution.committed_writes.is_empty(), "{label}");
+        assert!(attempt.execution.committed_ad_updates.is_empty(), "{label}");
+        for address in DATA_WALK_ENTRIES {
+            assert_eq!(
+                entry(&mut bus, address) & (ACCESSED | DIRTY),
+                0,
+                "{label}: {address:#x}"
+            );
+        }
+        // Only the fetch's Accessed bits changed in RAM.
+        let ram_after = ram_image(&mut bus);
+        for (index, (before, after)) in ram_before.iter().zip(&ram_after).enumerate() {
+            if before != after {
+                let address = index as u64 * 8;
+                assert!(
+                    CODE_WALK_ENTRIES.contains(&address) && before | ACCESSED == *after,
+                    "{label}: unexpected change at {address:#x}"
+                );
+            }
+        }
+        drop(session);
+
+        // The dispatcher equals a pure interpreter step (Unsupported, nothing
+        // retired): the same writes (the fetch walk only) and the same RAM.
+        let mut session = od_host::PagedFetchedLoadSession::new();
+        let mut bus = make();
+        let (outcome, state) = dispatch_equals_interpreter(
+            label,
+            &mut session,
+            make(),
+            &mut bus,
+            PrivilegeLevel::Ring0,
+            prepare,
+        );
+        let od_host::PagedStepOutcome::Interpreter {
+            reason,
+            report,
+            committed_writes,
+        } = &outcome
+        else {
+            panic!("{label}: an untranslatable store must be interpreted, got {outcome:?}");
+        };
+        assert_eq!(
+            *reason,
+            od_host::PagedStepFallbackReason::StoreTargetRefused(refusal),
+            "{label}"
+        );
+        assert!(
+            matches!(
+                report.cpu.exit,
+                od_isa::execute::RunExit::Unsupported { .. }
+            ),
+            "{label}"
+        );
+        assert_eq!(state.rip, CODE_RIP, "{label}");
+        assert_eq!(state.gpr[Register::Rax as usize], INITIAL_RAX, "{label}");
+        assert_eq!(
+            range_pairs(committed_writes),
+            CODE_WALK_RANGES
+                .into_iter()
+                .map(|(a, l)| (a, l as u64))
+                .collect::<Vec<_>>(),
+            "{label}"
+        );
+        for address in DATA_WALK_ENTRIES {
+            assert_eq!(
+                entry(&mut bus, address) & (ACCESSED | DIRTY),
+                0,
+                "{label}: {address:#x}"
+            );
+        }
+    }
+}

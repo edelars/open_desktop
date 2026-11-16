@@ -1077,6 +1077,130 @@ impl PublishedCode {
         ))
     }
 
+    /// S4-15d: execute exactly one V2 `MOV [RBX],RAX` (`48 89 03`) through the
+    /// tracked machine RAM store adapter. The temporary `GuestMemory` borrow is
+    /// confined to this synchronous call and is not retained by the published
+    /// mapping.
+    ///
+    /// Crate-private: its only caller is [`PagedFetchedLoadSession`], which
+    /// derives `active_code_page` from the tracked fetch snapshot. The helper
+    /// trusts that argument for the self-modifying-code refusal only; memory
+    /// safety does not depend on it (see the SAFETY comment below).
+    ///
+    /// `active_code_page` is the guest physical page the block's bytes were
+    /// fetched from. Before anything is walked or written the adapter refuses a
+    /// store whose operand is not wholly ordinary RAM or lies on that page (see
+    /// [`od_machine::with_paged_mov_store_memory`]); the refusal is reported in
+    /// `PagedMovStoreScope::refusal` and the helper leaves the CPU state
+    /// unchanged. A guest `#PF` is reported before the operand bytes were
+    /// written (Accessed bits of the walk stay committed).
+    pub(crate) fn execute_paged_mov_rbx_rax_store_v2(
+        &self,
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+        active_code_page: od_machine::GuestPhysicalAddress,
+    ) -> Result<
+        od_machine::PagedMovStoreScope<
+            Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
+        >,
+        PagedMemoryLoadV2Error,
+    > {
+        check_paged_load_v2_context(state, access_context)?;
+        let metadata = self
+            .memory_operation_metadata_v2
+            .as_ref()
+            .ok_or(PagedMemoryLoadV2Error::UnsupportedBlock)?;
+        let source_len = usize::from(metadata.source_len);
+        let site = metadata.site;
+        let operand = site.operand();
+        if metadata.compile_flavor != od_jit::translation::CompileFlavor::S3_20bMemoryStoreV2
+            || source_len != 3
+            || metadata.source_bytes[..source_len] != PAGED_FETCHED_STORE_V2_BYTES
+            || !site.matches_source_bytes(
+                &metadata.source_bytes[..source_len],
+                od_jit::runtime::MemorySiteOperationV2::Store,
+            )
+            || site.operation() != od_jit::runtime::MemorySiteOperationV2::Store
+            || site.instruction_index() != 0
+            || site.guest_rip() != metadata.entry_rip
+            || metadata.entry_rip.checked_add(source_len as u64) != Some(site.next_rip())
+            || !site.has_supported_profile()
+            || site.source() != Some(od_isa::Register::Rax as u8)
+            || site.destination().is_some()
+            || operand.base != od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+            || operand.index.is_some()
+            || operand.scale != 1
+            || operand.displacement != 0
+            || operand.address_size != od_isa::OperandSize::Qword
+            || operand.size != od_isa::OperandSize::Qword
+        {
+            return Err(PagedMemoryLoadV2Error::UnsupportedBlock);
+        }
+        if state.rip != metadata.entry_rip {
+            return Err(PagedMemoryLoadV2Error::EntryRipMismatch {
+                expected: metadata.entry_rip,
+                actual: state.rip,
+            });
+        }
+        if let Some(value) = state.cr3 {
+            return Err(PagedMemoryLoadV2Error::UnsupportedCpuCr3 { value });
+        }
+        let operand_address = state.gpr[od_isa::Register::Rbx as usize];
+        if (operand_address & 0xfff) + 8 > 4096 {
+            return Err(PagedMemoryLoadV2Error::UnsupportedOperandRange {
+                address: operand_address,
+                length: 8,
+            });
+        }
+        let paging = od_machine::Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+            .map_err(PagedMemoryLoadV2Error::Paging)?;
+        let stop_requested = AtomicU8::new(0);
+        Ok(od_machine::with_paged_mov_store_memory(
+            bus,
+            paging,
+            state.rip,
+            active_code_page,
+            |memory| {
+                // SAFETY: `execute_memory_store_v2` requires private synchronous
+                // ordinary RAM with no shared aliases, devices or re-entry.
+                // - The adapter writes only after a read-only probe proved the
+                //   operand wholly ordinary RAM (never MMIO, ROM or
+                //   framebuffer) and the tracked RAM walker (`access_tracked_ram`)
+                //   never dispatches a device.
+                // - `bus` is an exclusive `&mut` for the whole call, so no other
+                //   vCPU, DMA engine or host writer runs concurrently; effects
+                //   are synchronous and immediate.
+                // - `PhysicalMemory::write_bytes` validates the whole 8-byte
+                //   range before committing, so a failed write leaves RAM
+                //   unchanged.
+                // - The compiled block lives in the host MAP_JIT mapping and guest
+                //   RAM is a separate heap allocation, so a guest store can
+                //   never overwrite executable host code whatever
+                //   `active_code_page` holds: that argument does not take part
+                //   in memory safety. It only decides the SMC refusal (an
+                //   operand on the page the block's source bytes were fetched
+                //   from is refused, not executed). Writes to any other code
+                //   page are allowed: the session re-keys on bytes and page
+                //   generation before every entry.
+                // - The adapter only pushes to local Vecs: it never calls back
+                //   into this runtime and does not unwind through the block.
+                unsafe {
+                    self.execute_memory_store_v2(
+                        state,
+                        memory,
+                        access_context,
+                        1,
+                        None,
+                        &stop_requested,
+                    )
+                }
+            },
+        ))
+    }
+
     /// Execute a verified V2 MOV store using only a backend whose ownership
     /// and write semantics satisfy the private synchronous RAM contract.
     ///
@@ -1784,6 +1908,9 @@ pub enum PagedMemoryLoadV2Error {
 /// The only instruction form S4-15b admits from guest RAM: `MOV RAX,[RBX]`.
 pub const PAGED_FETCHED_LOAD_V2_BYTES: [u8; 3] = [0x48, 0x8b, 0x03];
 
+/// The one store form S4-15d adds next to the load: `MOV [RBX],RAX`.
+pub const PAGED_FETCHED_STORE_V2_BYTES: [u8; 3] = [0x48, 0x89, 0x03];
+
 /// Whether a call executed a block admitted by an earlier call or admitted a
 /// fresh one from the bytes it had just fetched.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1800,8 +1927,9 @@ pub enum PagedFetchedLoadErrorKind {
     /// Tracked instruction fetch failed (execute rights, NX, U/S, missing
     /// translation, non-RAM or cross-page code). Nothing was executed.
     Fetch(od_machine::TrackedCodeSnapshotError),
-    /// The fetched bytes are not exactly `48 8B 03`. Any previously admitted
-    /// block was dropped and nothing was executed.
+    /// The fetched bytes are not an admitted form: exactly `48 8B 03`, or also
+    /// `48 89 03` on the entries that admit the store (S4-15d). Any previously
+    /// admitted block was dropped and nothing was executed.
     UnsupportedForm {
         bytes: Vec<u8>,
     },
@@ -1828,6 +1956,10 @@ pub struct PagedFetchedLoadReport {
     pub execution: od_machine::PagedMovMemoryScope<
         Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
     >,
+    /// S4-15d: set when the store adapter refused the operand before any walk
+    /// or write (non-RAM target, the block's own code page, or an operand the
+    /// probe cannot translate). Always `None` for the load form.
+    pub store_refusal: Option<od_machine::PagedStoreRefusal>,
 }
 
 struct AdmittedFetchedLoad {
@@ -1869,6 +2001,12 @@ impl PagedFetchedLoadSession {
         self.admitted.is_some()
     }
 
+    /// S4-15b entry: admits only the load `48 8B 03`. Any other bytes
+    /// (including the store `48 89 03`) are `UnsupportedForm`. This also holds
+    /// when the same session already holds a store block admitted through
+    /// [`Self::execute_with_store`] for the same bytes: that block is not run
+    /// through this entry (the refusal has no effect beyond the fetch's
+    /// Accessed bits and leaves the block admitted).
     pub fn execute(
         &mut self,
         state: &mut od_isa::LongModeState,
@@ -1876,6 +2014,37 @@ impl PagedFetchedLoadSession {
         cr3: u64,
         efer: u64,
         access_context: od_isa::memory::AccessContext,
+    ) -> Result<PagedFetchedLoadReport, PagedFetchedLoadError> {
+        self.execute_form(state, bus, cr3, efer, access_context, false)
+    }
+
+    /// S4-15d entry: like [`Self::execute`] but also admits the store
+    /// `48 89 03` (`MOV [RBX],RAX`) from the same tracked fetch snapshot. The
+    /// store runs through the tracked store adapter
+    /// ([`od_machine::with_paged_mov_store_memory`]): page walk checks (Present,
+    /// Write, User), Accessed bits, then the Dirty bit and the operand bytes. It
+    /// is refused before any walk or write when the operand is not wholly
+    /// ordinary RAM or lies on the block's own code page
+    /// (`PagedFetchedLoadReport::store_refusal`).
+    pub fn execute_with_store(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+    ) -> Result<PagedFetchedLoadReport, PagedFetchedLoadError> {
+        self.execute_form(state, bus, cr3, efer, access_context, true)
+    }
+
+    fn execute_form(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+        admit_store: bool,
     ) -> Result<PagedFetchedLoadReport, PagedFetchedLoadError> {
         let refuse = |kind| PagedFetchedLoadError {
             kind,
@@ -1930,12 +2099,26 @@ impl PagedFetchedLoadSession {
                 && admitted.bytes == fetched_bytes
         });
         let admission = if reusable {
+            // The reuse key does not know which entry admitted the block. A
+            // store block admitted through `execute_with_store` must not run
+            // through the load-only entry: refuse it as an unsupported form,
+            // before anything executes (the block stays admitted for the
+            // store entry; only the fetch's Accessed bits were committed).
+            if !admit_store && fetched_bytes == PAGED_FETCHED_STORE_V2_BYTES {
+                return Err(fail(
+                    PagedFetchedLoadErrorKind::UnsupportedForm {
+                        bytes: fetched_bytes.to_vec(),
+                    },
+                    &fetch_committed_writes,
+                ));
+            }
             PagedFetchAdmission::Reused
         } else {
             // Drop the stale block first: the host has one executable region
             // and an old block must never run against new bytes.
             self.admitted = None;
-            if fetched_bytes != PAGED_FETCHED_LOAD_V2_BYTES {
+            let is_store = fetched_bytes == PAGED_FETCHED_STORE_V2_BYTES;
+            if fetched_bytes != PAGED_FETCHED_LOAD_V2_BYTES && !(admit_store && is_store) {
                 return Err(fail(
                     PagedFetchedLoadErrorKind::UnsupportedForm {
                         bytes: fetched_bytes.to_vec(),
@@ -1951,20 +2134,27 @@ impl PagedFetchedLoadSession {
                     &fetch_committed_writes,
                 )
             })?;
-            let block = od_jit::memory_load_v2::compile_memory_load_block_v2(view, rip).map_err(
-                |error| {
-                    fail(
-                        PagedFetchedLoadErrorKind::Compile(error),
-                        &fetch_committed_writes,
-                    )
-                },
-            )?;
-            let published = PublishedCode::publish_memory_load_v2(&block).map_err(|error| {
+            let compile_error = |error| {
+                fail(
+                    PagedFetchedLoadErrorKind::Compile(error),
+                    &fetch_committed_writes,
+                )
+            };
+            let publish_error = |error| {
                 fail(
                     PagedFetchedLoadErrorKind::Publish(error),
                     &fetch_committed_writes,
                 )
-            })?;
+            };
+            let published = if is_store {
+                let block = od_jit::memory_load_v2::compile_memory_store_block_v2(view, rip)
+                    .map_err(compile_error)?;
+                PublishedCode::publish_memory_store_v2(&block).map_err(publish_error)?
+            } else {
+                let block = od_jit::memory_load_v2::compile_memory_load_block_v2(view, rip)
+                    .map_err(compile_error)?;
+                PublishedCode::publish_memory_load_v2(&block).map_err(publish_error)?
+            };
             self.admitted = Some(AdmittedFetchedLoad {
                 linear_base: snapshot.linear_base,
                 physical_page: snapshot.physical_base,
@@ -1979,15 +2169,32 @@ impl PagedFetchedLoadSession {
             .admitted
             .as_ref()
             .expect("admitted block is present after admission or reuse");
-        let execution = admitted
-            .published
-            .execute_paged_mov_rax_rbx_v2(state, bus, cr3, efer, access_context)
-            .map_err(|error| {
-                fail(
-                    PagedFetchedLoadErrorKind::Load(error),
-                    &fetch_committed_writes,
+        let load_error = |error| {
+            fail(
+                PagedFetchedLoadErrorKind::Load(error),
+                &fetch_committed_writes,
+            )
+        };
+        let (execution, store_refusal) = if admitted.bytes == PAGED_FETCHED_STORE_V2_BYTES {
+            let scope = admitted
+                .published
+                .execute_paged_mov_rbx_rax_store_v2(
+                    state,
+                    bus,
+                    cr3,
+                    efer,
+                    access_context,
+                    snapshot.physical_base,
                 )
-            })?;
+                .map_err(load_error)?;
+            (scope.memory, scope.refusal)
+        } else {
+            let scope = admitted
+                .published
+                .execute_paged_mov_rax_rbx_v2(state, bus, cr3, efer, access_context)
+                .map_err(load_error)?;
+            (scope, None)
+        };
         Ok(PagedFetchedLoadReport {
             fetched_linear_base: snapshot.linear_base,
             fetched_physical_page: snapshot.physical_base,
@@ -1996,6 +2203,7 @@ impl PagedFetchedLoadSession {
             fetch_committed_writes,
             admission,
             execution,
+            store_refusal,
         })
     }
 }
@@ -2021,6 +2229,15 @@ pub enum PagedStepFallbackReason {
     /// operand (MMIO or another non-RAM target). The helper left the CPU state
     /// unchanged and never reached a device.
     OperandMemoryError(MemoryOperationMemoryErrorV2),
+    /// S4-15d: the store adapter refused the operand before any page walk or
+    /// write (non-RAM target, the block's own code page, or an operand the
+    /// probe cannot translate, e.g. a 2 MiB leaf). No RAM byte, Accessed or
+    /// Dirty bit of the data walk changed; the CPU state is unchanged. The
+    /// interpreter then runs once as for any refusal; its allowlist has
+    /// `48 89 0B` but not `48 89 03`, so it reports `Unsupported` and retires
+    /// nothing: such a store is not executed at all (it was not before S4-15d
+    /// either).
+    StoreTargetRefused(od_machine::PagedStoreRefusal),
 }
 
 /// A JIT result that must not be repeated by the interpreter.
@@ -2062,7 +2279,8 @@ impl PagedStepOutcome {
 impl PagedFetchedLoadSession {
     /// S4-15c: one step with an interpreter fallback.
     ///
-    /// The JIT path of [`Self::execute`] runs first. If it executed the
+    /// The JIT path of [`Self::execute_with_store`] (the load of S4-15b and, since
+    /// S4-15d, the store `48 89 03`) runs first. If it executed the
     /// instruction (success or a guest #PF with its committed Accessed bits)
     /// that result is final and the interpreter is never invoked. If it refused
     /// without executing the instruction, `od_machine::step_paged_mov` runs
@@ -2070,10 +2288,13 @@ impl PagedFetchedLoadSession {
     ///
     /// A refusal has no instruction effects by construction: the only effects a
     /// refused attempt can have are page-walk Accessed-bit commits (instruction
-    /// fetch, or the data walk before the RAM-only adapter refused a non-RAM
-    /// operand). Re-walking is idempotent for those bits, so the interpreter
-    /// commits nothing twice, and the attempt's writes are prepended to the
-    /// reported list. A JIT helper failure that does not prove the state is
+    /// fetch, or for a load the data walk before the RAM-only adapter refused a
+    /// non-RAM operand). A refused store commits no data-walk bit at all: the
+    /// store adapter decides (non-RAM, own code page, untranslatable operand)
+    /// from a read-only probe before it walks, so only the fetch writes remain,
+    /// as in a pure interpreter step. Re-walking is idempotent for the bits
+    /// that were committed, so the interpreter commits nothing twice, and the
+    /// attempt's writes are prepended to the reported list. A JIT helper failure that does not prove the state is
     /// unchanged is returned as an error and never retried.
     pub fn execute_or_interpret(
         &mut self,
@@ -2095,39 +2316,42 @@ impl PagedFetchedLoadSession {
                 ),
             ));
         }
-        let (reason, mut attempt_writes) = match self.execute(state, bus, cr3, efer, access_context)
-        {
-            Ok(report) => match &report.execution.callback_result {
-                Err(MemoryOperationExecutionErrorV2::MemoryError(error)) => {
-                    let reason = PagedStepFallbackReason::OperandMemoryError(*error);
-                    let mut writes = report.fetch_committed_writes.clone();
-                    writes.extend(report.execution.committed_writes.iter().copied());
-                    (reason, writes)
-                }
-                Err(error) => return Err(PagedStepError::JitHostFailure(error.clone())),
-                Ok(result) => match result.exit {
-                    MemoryOperationExecutionExitV2::Complete
-                    | MemoryOperationExecutionExitV2::GuestFault(_) => {
-                        return Ok(PagedStepOutcome::Jit(report));
+        let (reason, mut attempt_writes) =
+            match self.execute_with_store(state, bus, cr3, efer, access_context) {
+                Ok(report) => match &report.execution.callback_result {
+                    Err(MemoryOperationExecutionErrorV2::MemoryError(error)) => {
+                        let reason = match report.store_refusal {
+                            Some(refusal) => PagedStepFallbackReason::StoreTargetRefused(refusal),
+                            None => PagedStepFallbackReason::OperandMemoryError(*error),
+                        };
+                        let mut writes = report.fetch_committed_writes.clone();
+                        writes.extend(report.execution.committed_writes.iter().copied());
+                        (reason, writes)
                     }
-                    // A single-load block never ends in any other way. If it
-                    // does, the instruction may have run: report it, never
-                    // retry it on the interpreter.
-                    MemoryOperationExecutionExitV2::CodeInvalidated
-                    | MemoryOperationExecutionExitV2::BudgetExhausted
-                    | MemoryOperationExecutionExitV2::StopRequested
-                    | MemoryOperationExecutionExitV2::StopAddress => {
-                        return Err(PagedStepError::JitHostFailure(
-                            MemoryOperationExecutionErrorV2::InvalidOutcome,
-                        ));
-                    }
+                    Err(error) => return Err(PagedStepError::JitHostFailure(error.clone())),
+                    Ok(result) => match result.exit {
+                        MemoryOperationExecutionExitV2::Complete
+                        | MemoryOperationExecutionExitV2::GuestFault(_) => {
+                            return Ok(PagedStepOutcome::Jit(report));
+                        }
+                        // A single-load block never ends in any other way. If it
+                        // does, the instruction may have run: report it, never
+                        // retry it on the interpreter.
+                        MemoryOperationExecutionExitV2::CodeInvalidated
+                        | MemoryOperationExecutionExitV2::BudgetExhausted
+                        | MemoryOperationExecutionExitV2::StopRequested
+                        | MemoryOperationExecutionExitV2::StopAddress => {
+                            return Err(PagedStepError::JitHostFailure(
+                                MemoryOperationExecutionErrorV2::InvalidOutcome,
+                            ));
+                        }
+                    },
                 },
-            },
-            Err(error) => (
-                PagedStepFallbackReason::Refused(error.kind),
-                error.fetch_committed_writes,
-            ),
-        };
+                Err(error) => (
+                    PagedStepFallbackReason::Refused(error.kind),
+                    error.fetch_committed_writes,
+                ),
+            };
         let mut interpreter_writes = Vec::new();
         let report = od_machine::step_paged_mov(
             state,

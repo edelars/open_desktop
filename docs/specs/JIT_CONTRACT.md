@@ -4605,6 +4605,35 @@ interpreter's own allowlist (`48 8B 03`, `48 89 0B`) still applies: other forms
 end in its explicit `Unsupported` exit. Store JIT, new forms, reset/retirement
 and the contract text as a whole remain S4-15d-g.
 
+### S4-15d: tracked store `48 89 03` on the production owner
+
+`PagedFetchedLoadSession::execute_with_store` (and `execute_or_interpret`) also
+admits exactly `MOV [RBX],RAX` (`48 89 03`) from the same tracked fetch snapshot
+and reuse key as the load. The store runs through `with_paged_mov_store_memory`,
+a store-only `GuestMemory` over `MachineBus::access_tracked_ram`: the page walk
+checks Present, Write (CR0.WP at CPL0) and User (CPL3), NX does not apply, then
+Accessed bits, the leaf Dirty bit and the 8 operand bytes are committed in that
+order through the committed-write callback. The `unsafe` contract of
+`execute_memory_store_v2` holds because the adapter writes only ordinary RAM
+(a read-only probe refuses MMIO, ROM, framebuffer and any operand the probe
+cannot translate, e.g. a 2 MiB leaf, before any walk that commits), never reaches a device, runs under an exclusive `&mut MachineBus`,
+relies on `PhysicalMemory::write_bytes` validating the whole range first, never
+calls back into the runtime, and refuses an operand on the guest page the block
+was fetched from (the compiled block itself lives in the host MAP_JIT mapping,
+so memory safety does not depend on that refusal, which only keeps the store out
+of the page being executed). The host helper is crate-private; the load-only
+`execute` entry refuses `48 89 03` even when a store block was admitted through
+`execute_with_store` on the same session.
+A guest `#PF` precedes the Dirty bit and the write and is a final JIT result. A
+refusal (`StoreTargetRefused`: non-RAM target, the block's own code page, or an
+operand the probe cannot translate) commits no data-walk bit, no Dirty bit and
+no data; only the fetch's Accessed bits remain, so the merged write list and the
+RAM image equal a pure interpreter step. It falls back to one `step_paged_mov`,
+whose allowlist lacks `48 89 03` and reports `Unsupported`. A store into another code page is allowed:
+the next entry re-fetches and compares bytes, page and generation. A store into
+the active block (S4-16i), more forms (S4-15e), reset/handle (S4-15f) and the
+closing contract text (S4-15g) are not part of this slice.
+
 ### S4-16a: production tracked loader patch for two inactive code aliases
 
 `od-host::PagedCodeSession` borrows one `MachineBus` exclusively and fixes one
