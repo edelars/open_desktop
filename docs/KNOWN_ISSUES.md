@@ -4283,9 +4283,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-302 — S7-04: exact helper `CMP R8,1` (`49 83 F8 01`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-301.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2016b7`.
-- **Статус:** открыта.
-- **Суть и последствия:** base profile does not yet admit this exact qword register compare; firmware stops before later helper operations.
+- **Статус:** решена; base profile admits only this exact qword register compare.
+- **Результат:** REX.W/B select qword R8; opcode 83 sign-extends imm8 `1` to qword width. Shared CMP updates arithmetic flags and definedness, including AF, without modifying GPRs.
+- **Проверки исполнения:** four focused tests cover qword edge values including high bits, flags/AF definedness, immediate-fetch fault atomicity, neighboring immediate/register/width/prefix forms and CPL3/other-profile isolation. Full od-isa suites pass; all 65 paged machine tests pass. Scoped cargo check, formatting and diff-check pass; only the existing unused page-walk helper warning remains. Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retires 8,999 instructions and stops at `75 0A` (`JNZ rel8 +0x0a`, ISSUE-303), RIP `0x2016bb`, `Unsupported { opcode: 117 }`; COM1 remains empty. Independent review approved with no findings.
 - **Основание:** runner with the Stage 7 firmware image and budget 10000 retired 8,998 instructions and reported `Unsupported { opcode: 131 }`; file offset `0x16b7` contains `49 83 F8 01`, encoding CMP R8,1.
-- **Следующий шаг:** admit only the exact qword R8 immediate compare and use shared CMP flags/definedness without modifying GPRs.
+
+### ISSUE-303 — S7-04: exact helper `JNZ rel8 +0x0a` (`75 0A`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-302.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2016bb`.
+- **Статус:** открыта.
+- **Суть и последствия:** base profile does not yet admit this exact conditional branch displacement; firmware stops before later helper operations.
+- **Основание:** runner with the Stage 7 firmware image and budget 10000 retired 8,999 instructions and reported `Unsupported { opcode: 117 }`; file offset `0x16bb` contains `75 0A`.
+- **Следующий шаг:** admit only JNZ rel8 +0x0a with the existing ZF, taken-target canonicality and fetch-fault semantics.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.

@@ -27753,3 +27753,7 @@ Four focused profile tests cover result and logical flag values, AF definedness,
 ### Stage 7 paged-profile JZ rel8 `+0x0d`
 
 `PagedCpl0ProbeV1` admits exact bytes `74 0D`. ZF selects whether RIP becomes next RIP plus signed rel8 `+0x0d` or falls through. Flags and flag-definedness are unchanged. Canonicality is checked only for a taken target; a noncanonical fall-through is deferred to the subsequent fetch. A displacement-fetch fault commits no state. Other displacements/branch encodings and other CPL/profile combinations remain unsupported.
+
+### Stage 7 paged-profile qword CMP R8,1
+
+`PagedCpl0ProbeV1` admits exact bytes `49 83 F8 01`. REX.W/B select qword R8; opcode 83 sign-extends imm8 `1` to qword. Shared CMP semantics update the six arithmetic flags and their definedness, including AF, while preserving every GPR. A final immediate-byte fetch fault commits no state. Other immediate, register, width, prefix and profile forms are not admitted.
