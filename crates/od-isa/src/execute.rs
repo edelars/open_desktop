@@ -21425,6 +21425,29 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: exact helper byte alias `45 0F B6 F4` (MOVZX R14D,R12B).
+        // REX.R/B select R14D/R12B; the shared dword write zero-extends R14.
+        Operation::Extend {
+            dst: destination,
+            src: Operand::Register(source),
+            signed: false,
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0xb6
+            && instruction.length == 4
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x45),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R14, OperandSize::Dword)
+            && source == RegisterView::low(Register::R12, OperandSize::Byte) =>
+        {
+            let value = state.read(source);
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: the helper reads one byte through R14D/R15D with only the
         // exact `46 0F B6 34 1E` and `46 0F B6 7C 1E 01` forms. Reuse the
         // tracked faulting byte read and dword write; other MOVZX forms stay out.

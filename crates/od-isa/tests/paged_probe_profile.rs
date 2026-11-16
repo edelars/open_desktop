@@ -10091,6 +10091,118 @@ fn rust_helper_movzx_r9d_r9b_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn rust_helper_movzx_r14d_r12b_zero_extends_alias_and_preserves_flags() {
+    let code = [0x45, 0x0f, 0xb6, 0xf4]; // MOVZX R14D,R12B
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::R12 as usize] = 0xdead_beef_1234_56ab;
+    cpu.gpr[Register::R14 as usize] = 0xaabb_ccdd_eeff_0011;
+    cpu.rflags = 0x8d7;
+    let defined = DEFINED & !(1 << 6);
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, defined);
+    let mut expected = before;
+    expected.gpr[Register::R14 as usize] = 0xab; // R12B read, R14D write zero-extends.
+    expected.rip = RIP + code.len() as u64;
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(memory.write_addresses.is_empty());
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_helper_movzx_r14d_r12b_fetch_fault_is_atomic() {
+    let rip = RIP + 0xffd;
+    let code = [0x45, 0x0f, 0xb6];
+    let mut memory = memory_with_code_at(&code, rip);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    memory.fail_fetch_at = Some((rip + 3, page_fault(0x10, rip + 3)));
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 3),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(memory.write_addresses.is_empty());
+}
+
+#[test]
+fn rust_helper_movzx_r14d_r12b_neighbours_stay_unsupported_without_mutation() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x45, 0x0f, 0xb6, 0xfc], 0xb6),       // R15D,R12B
+        (&[0x41, 0x0f, 0xb6, 0xf4], 0xb6),       // ESI,R12B
+        (&[0x44, 0x0f, 0xb6, 0xf4], 0xb6),       // R14D,SPL
+        (&[0x45, 0x0f, 0xb6, 0xf5], 0xb6),       // R14D,R13B
+        (&[0x45, 0x0f, 0xb7, 0xf4], 0xb7),       // word source
+        (&[0x45, 0x0f, 0xbe, 0xf4], 0xbe),       // sign extension
+        (&[0x49, 0x0f, 0xb6, 0xf4], 0xb6),       // qword destination
+        (&[0x66, 0x45, 0x0f, 0xb6, 0xf4], 0xb6), // operand-size prefix
+        (&[0xf3, 0x45, 0x0f, 0xb6, 0xf4], 0xb6), // REP prefix
+        (&[0x45, 0x0f, 0xb6, 0x34, 0x24], 0xb6), // memory source
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "{bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0), "{bytes:02x?}");
+        assert!(memory.write_addresses.is_empty());
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_movzx_r14d_r12b_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x45, 0x0f, 0xb6, 0xf4];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    let before = cpu.clone();
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x45 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn rust_helper_movzx_ecx_bx_zero_extends_and_preserves_flags() {
     let code = [0x0f, 0xb7, 0xcb]; // MOVZX ECX,BX
     let mut memory = Memory::new(&code);
@@ -12083,6 +12195,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x46, 0x0f, 0xb6, 0x34, 0x1e][..], 0xb6),
         (&[0x46, 0x0f, 0xb6, 0x7c, 0x1e, 0x01][..], 0xb6),
         (&[0x45, 0x0f, 0xb6, 0xc9][..], 0xb6),
+        (&[0x45, 0x0f, 0xb6, 0xf4][..], 0xb6),
         (&[0x4d, 0x89, 0xdf][..], 0x89),
         (&[0x4d, 0x21, 0xc7][..], 0x21),
         (&[0x45, 0x89, 0xcc][..], 0x89),
