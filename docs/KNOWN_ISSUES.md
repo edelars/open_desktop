@@ -644,10 +644,19 @@
 ### ISSUE-175 — S7-04: Rust helper `CMOVZ R14D,R10D` remains outside paged CPU profile
 - **Дата обнаружения:** 2026-11-15, runner-прогон после exact `CMP R15,0x14`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e16`.
+- **Статус:** решена узко для exact `45 0F 44 F2` в base `PagedCpl0ProbeV1`.
+- **Результат:** допускается только `CMOVZ R14D,R10D`; REX.R/B расширяют destination/source до R14D/R10D. Условие читает concrete ZF; на taken path записывается R10D, на untaken path сохраняется старый low R14D, и в обоих случаях 32-bit write zero-extends R14. Flags и `rflags_defined` не меняются.
+- **Проверка:** четыре focused `rust_helper_cmovz_r14d_r10d` tests, other-profile isolation, all 380 `paged_probe_profile` tests, all-target od-isa check, scoped rustfmt and diff-check passed. Firmware image `/private/tmp/od-fw-s7-04-issue175.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`); runner retired 78 instructions and stopped at `46 0F B6 7C 1E 01` (`MOVZX R15D,byte ptr [RSI+R11+1]`, ISSUE-176), RIP `0x200e1a`, `Unsupported { opcode: 182 }`, `com1_bytes=0`. Full handoff validation remains incomplete.
+- **Ссылка:** [paged CPU-profile contract](specs/CPU_CONTRACT.md#s7-04-exact-rust-helper-cmovz-r14d-r10d).
+
+<a id="issue-176-s7-04-rust-helper-movzx-r15d-rsi-r11-plus-one-unsupported"></a>
+### ISSUE-176 — S7-04: Rust helper `MOVZX R15D,byte ptr [RSI+R11+1]` remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-15, runner-прогон после exact `CMOVZ R14D,R10D`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), Rust helper at firmware address `0x200e1a`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 77 instructions, then stops at `45 0F 44 F2` (`CMOVZ R14D,R10D`), `Unsupported { opcode: 68 }`, `RIP=0x200e16`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue174.bin`; bytes at offset `0xe16` are `45 0f 44 f2`; runner budget 10000.
-- **Следующий шаг:** inspect the exact decoded conditional-move tuple and existing condition/definedness semantics, then consider only this encoding in the base paged profile.
+- **Суть и последствия:** runner retired 78 instructions, then stops at `46 0F B6 7C 1E 01` (`MOVZX R15D,byte ptr [RSI+R11+1]`), `Unsupported { opcode: 182 }`, `RIP=0x200e1a`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue175.bin`; bytes at offset `0xe1a` are `46 0f b6 7c 1e 01`; runner budget 10000.
+- **Следующий шаг:** inspect the exact decoded byte-load tuple and tracked-memory semantics, then consider only this encoding in the base paged profile.
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
 ### ISSUE-104 — S7-04: paged CPU profile не допускает `MOV R8,RDI` из entry прошивки
 - **Дата обнаружения:** 2026-11-15, runner-прогон после узкого допуска `JNZ`.

@@ -874,6 +874,13 @@ Base `PagedCpl0ProbeV1` admits only `49 83 FF 14`: primary opcode `83`, exact RE
 
 Checks: four focused `rust_helper_cmp_r15_imm8` tests passed; all 376 `paged_probe_profile` tests passed. Vectors cover equality, borrow, non-borrow, high qword bits, overflow, flag definedness/full state, final-immediate fetch fault, neighboring encodings and CPL/profile isolation. `cargo check --offline -p od-isa --all-targets`, scoped rustfmt and `git diff --check` passed. Image `/private/tmp/od-fw-s7-04-issue174.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 77 instructions then stopped at `45 0F 44 F2` (`CMOVZ R14D,R10D`, ISSUE-175), `RIP=0x200e16`, `Unsupported { opcode: 68 }`, `com1_bytes=0`; full handoff validation remains incomplete.
 
+<a id="s7-04-exact-rust-helper-cmovz-r14d-r10d"></a>
+#### Расширение S7-04: exact Rust-helper `CMOVZ R14D,R10D`
+
+Base `PagedCpl0ProbeV1` admits only `45 0F 44 F2`: escape-map opcode `44` (CMOVZ), exact REX `45`, ModRM `F2`, dword width, and length 4. REX.R/B extend the ModRM destination/source to R14D/R10D. Existing conditional-move semantics are reused; concrete ZF selects the move even when its definedness is clear, and both taken and untaken dword CMOV paths zero-extend the destination; the untaken path preserves its old low dword. Flags and `rflags_defined` are preserved. The source is register-only, so this slice has no data-memory access; fetch faults do not commit state. Neighboring conditions/registers/widths/prefixes/memory sources, CPL3 and other paged profiles remain unsupported.
+
+Checks: four focused `rust_helper_cmovz_r14d_r10d` tests passed; other-profile isolation passed; all 380 `paged_probe_profile` tests passed. Vectors cover taken/not-taken with defined and undefined ZF, source/destination zero-extension and full-state/flags/definedness retention, final-ModRM fetch-fault atomicity, neighbors and CPL/profile isolation. `cargo check --offline -p od-isa --all-targets`, scoped rustfmt and `git diff --check` passed. Image `/private/tmp/od-fw-s7-04-issue175.bin` built (4 MiB, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). Runner retired 78 instructions then stopped at `46 0F B6 7C 1E 01` (`MOVZX R15D,byte ptr [RSI+R11+1]`, ISSUE-176), `RIP=0x200e1a`, `Unsupported { opcode: 182 }`, `com1_bytes=0`; full handoff validation remains incomplete.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции

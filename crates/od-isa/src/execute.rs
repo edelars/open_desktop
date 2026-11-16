@@ -20309,6 +20309,42 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::DF,
             };
         }
+        // S7-04: the Rust helper conditionally copies R10D to R14D with only
+        // `45 0F 44 F2`. Exact REX.R/B extend the decoded registers; the dword
+        // destination write zero-extends R14, and the condition leaves flags alone.
+        Operation::ConditionalMove {
+            condition,
+            dst: destination,
+            src: Operand::Register(source),
+        } if base_profile
+            && condition == ConditionCode::Equal
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x44
+            && instruction.length == 4
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x45),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R14, OperandSize::Dword)
+            && source == RegisterView::low(Register::R10, OperandSize::Dword) =>
+        {
+            let value = if condition.evaluate(state.rflags) {
+                state.read(source)
+            } else {
+                state.read(destination)
+            };
+            // Match shared CMOV semantics: even a false dword CMOV writes the
+            // old low dword back, zero-extending the architectural destination.
+            state.write(destination, value);
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined,
+            };
+        }
         // S7-04: the Rust helper stores the unsigned-greater result only in CL
         // with exact `0F 97 C1` (SETA CL). Condition evaluation reads CF/ZF but
         // neither the flags nor their definedness are modified.
