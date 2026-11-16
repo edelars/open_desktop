@@ -1127,19 +1127,28 @@
 ### ISSUE-227 — S7-04: exact Rust helper `ADD RAX,R13` (`4C 01 E8`) admitted narrowly
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `SHL RAX,4`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200f98`.
-- **Статус:** решена узко для exact `4C 01 E8` в base `PagedCpl0ProbeV1`; независимо проверена и одобрена, ожидает коммита.
+- **Статус:** решена узко для exact `4C 01 E8` в base `PagedCpl0ProbeV1`; независимо проверена и committed `180e6f3`.
 - **Суть и результат:** REX.W/R selects qword RAX destination and R13 source through opcode `01` ModRM `E8`; shared qword ADD updates RAX and arithmetic flags/definedness while preserving all other GPRs. Other register directions, sources, destinations, widths, prefixes, CPL3 and profiles remain unsupported.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue227.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf98` are `4C 01 E8`; runner budget 10000.
 - **Проверка:** four focused ISA tests cover qword carry/overflow/sign/zero, high-bit operand values, source/destination routing, only-RAX mutation, arithmetic flags/definedness, ModRM fetch-fault atomicity, adjacent opcode/register/REX/width/prefix/memory forms and CPL3; other-profile isolation passes. Runner retired 8910 and stopped at `48 39 E8` (`CMP RAX,RBP`, ISSUE-228), RIP `0x200f9b`, `Unsupported { opcode: 57 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
 - **Следующий шаг:** continue S7-04 at ISSUE-228.
 
-### ISSUE-228 — S7-04: Rust helper `CMP RAX,RBP` (`48 39 E8`) remains outside paged CPU profile
+### ISSUE-228 — S7-04: exact Rust helper `CMP RAX,RBP` (`48 39 E8`) admitted narrowly
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `ADD RAX,R13`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200f9b`.
+- **Статус:** решена узко для exact `48 39 E8` в base `PagedCpl0ProbeV1`; независимо проверена и одобрена, ожидает коммита.
+- **Суть и результат:** opcode `39` uses Intel r/m-destination, reg-source order: qword RAX is compared against RBP. Shared arithmetic semantics update/define CF/PF/AF/ZF/SF/OF; no GPR is written. Other operand direction/registers, widths, prefixes, CPL3 and profiles remain unsupported.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue228.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf9b` are `48 39 E8`; runner budget 10000.
+- **Проверка:** four focused ISA tests cover equality, unsigned borrow, signed overflow, high-bit qword operands, full GPR retention, arithmetic flags/definedness, ModRM fetch-fault atomicity, neighboring opcode/register/REX/width/prefix/memory forms and CPL3; other-profile isolation passes. Runner retired 8911 and stopped at `77 1A` (`JA rel8 +0x1a`, ISSUE-229), RIP `0x200f9e`, `Unsupported { opcode: 119 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
+- **Следующий шаг:** continue S7-04 at ISSUE-229.
+
+### ISSUE-229 — S7-04: Rust helper `JA rel8 +0x1A` (`77 1A`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact `CMP RAX,RBP`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200f9e`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8910 instructions and stopped at `48 39 E8`, `Unsupported { opcode: 57 }`, `RIP=0x200f9b`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue227.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf9b` are `48 39 E8`; runner budget 10000.
-- **Следующий шаг:** verify exact CMP destination/source routing and qword flags before narrow admission.
+- **Суть и последствия:** runner retired 8911 instructions and stopped at `77 1A`, `Unsupported { opcode: 119 }`, `RIP=0x200f9e`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue228.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf9e` are `77 1A`; runner budget 10000.
+- **Следующий шаг:** verify the unsigned-above CF/ZF condition, signed rel8 target, and taken-only canonicality before narrow admission.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.

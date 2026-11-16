@@ -27251,3 +27251,10 @@ Four focused tests cover qword edge values, result and flags/definedness, only-R
 Base `PagedCpl0ProbeV1` admits only exact `4C 01 E8`: REX.W/R, primary opcode `01`, ModRM `E8`, qword destination RAX and source R13. Intel operand direction is preserved. Shared qword ADD writes only RAX among GPRs and updates arithmetic flags/definedness; other register pairs/directions, operand sizes, prefixes, CPL3 and other profiles remain unsupported.
 
 Four focused tests cover carry, signed overflow, sign/zero results, high-bit operands, routing, only-RAX mutation, arithmetic flags/definedness, final-ModRM fetch-fault atomicity, adjacent forms, CPL3 and profile isolation. Firmware advances to ISSUE-228: `48 39 E8` (`CMP RAX,RBP`) at RIP `0x200f9b`.
+
+
+### S7-04: exact Rust-helper `CMP RAX,RBP` (ISSUE-228)
+
+Base `PagedCpl0ProbeV1` admits only exact `48 39 E8`: REX.W, opcode `39`, qword r/m destination RAX, reg source RBP. It computes RAX−RBP in Intel operand order with shared arithmetic semantics, updates/defines CF/PF/AF/ZF/SF/OF, and leaves every GPR unchanged. Reverse opcode direction, other registers/widths, prefixes, CPL3 and other profiles remain unsupported.
+
+Four focused tests cover equality, borrow, signed overflow, high-bit qword operands, register preservation, flag/definedness results, final-ModRM fetch-fault atomicity, neighbors, CPL3 and profile isolation. Firmware advances to ISSUE-229: `77 1A` (`JA rel8 +0x1a`) at RIP `0x200f9e`.
