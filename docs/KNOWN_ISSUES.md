@@ -4491,9 +4491,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-328 — S7-04: exact helper `JB rel32 +0xb7` (`0F 82 B7 00 00 00`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-327.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201762`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact no-prefix `0F 82 B7 00 00 00` is admitted. JB reads CF, adds signed rel32 +0xb7 to next RIP only when CF=1, preserves flags/definedness, and checks target canonicality only when taken.
+- **Проверка:** five focused tests cover CF outcomes with ZF variation and defined/undefined CF metadata, taken/fall-through targets, taken-only canonicality, final displacement-byte fetch-fault atomicity, neighboring displacements/conditions/prefixes, CPL3 rejection and cross-profile isolation. All od-isa suites pass (2,322/1,591/126/29/6/989/7/15; 0 doc tests), all 65 paged machine quantum tests pass, and scoped cargo check/fmt/diff-check pass; cargo check emits only the existing page-walk dead-code warning. Runner image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, retires 9,038 instructions and stops at RIP `0x201768`, bytes `40 20 EE` (`AND SIL,BPL`, ISSUE-329), `Unsupported { opcode: 32 }`; COM1 is empty. Independent review approved with no findings.
+- **Следующий шаг:** implement only ISSUE-329's exact `AND SIL,BPL` form in a separate Stage 7 slice.
+
+### ISSUE-329 — S7-04: exact helper `AND SIL,BPL` (`40 20 EE`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-328.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201768`.
 - **Статус:** открыта.
-- **Суть и последствия:** the base profile does not yet admit this exact near conditional branch; firmware stops before the following helper instruction.
-- **Основание:** runner image `/private/tmp/od-fw-s7-04-issue256.bin`, budget 10000, retired 9,037 instructions; file offset `0x1762` contains `0F 82 B7 00 00 00` and reports `Unsupported { opcode: 130 }`; COM1 is empty.
+- **Суть и последствия:** the base profile does not yet admit this exact byte AND form; firmware stops before the next helper instruction.
+- **Основание:** runner image `/private/tmp/od-fw-s7-04-issue256.bin`, budget 10000, retired 9,038 instructions; file offset `0x1768` contains `40 20 EE` and reports `Unsupported { opcode: 32 }`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.

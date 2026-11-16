@@ -27872,3 +27872,8 @@ Four focused profile tests cover result and logical flag values, AF definedness,
 ### Stage 7 paged-profile CMP R13D,-12
 
 `PagedCpl0ProbeV1` admits exact bytes `41 83 FD F4`. REX.B selects R13D; opcode 83 sign-extends imm8 `0xf4` to the dword value -12. CMP subtracts using dword operands and updates arithmetic flags/definedness through shared arithmetic semantics. No register or memory operand is written. A missing immediate byte faults before flags or RIP change. Other immediates, groups, registers, widths and prefixes remain outside this exact admission.
+
+
+### Stage 7 paged-profile JB rel32 +0xb7
+
+`PagedCpl0ProbeV1` admits only exact no-prefix bytes `0F 82 B7 00 00 00`. JB tests CF alone: when CF=1, the signed rel32 is added to next RIP; otherwise RIP falls through. Flags and their definedness are preserved. The branch target is checked for canonicality only when taken, and instruction-fetch faults leave state unchanged. Other displacements, conditions and prefixes remain outside this exact admission.

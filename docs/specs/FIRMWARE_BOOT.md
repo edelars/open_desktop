@@ -835,3 +835,13 @@ With exact `40 0F 93 C5` admitted, the Stage 7 firmware runner retires 9,036 ins
 ### Stage 7 runner frontier after ISSUE-327
 
 With exact `41 83 FD F4` admitted, the Stage 7 firmware runner retires 9,037 instructions and stops at RIP `0x201762`, bytes `0F 82 B7 00 00 00` (`JB rel32 +0xb7`, ISSUE-328), `Unsupported { opcode: 130 }`. COM1 remains empty.
+
+
+### Stage 7 paged-profile JB rel32 +0xb7
+
+`PagedCpl0ProbeV1` admits exact no-prefix bytes `0F 82 B7 00 00 00`. CF=1 takes the branch to next RIP plus signed displacement +0xb7; CF=0 falls through. Flags/definedness remain unchanged, and canonicality is checked only for a taken target.
+
+
+### Stage 7 runner frontier after ISSUE-328
+
+With exact `0F 82 B7 00 00 00` admitted, the Stage 7 firmware runner retires 9,038 instructions and stops at RIP `0x201768`, bytes `40 20 EE` (`AND SIL,BPL`, ISSUE-329), `Unsupported { opcode: 32 }`. COM1 remains empty.
