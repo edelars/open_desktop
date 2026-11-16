@@ -27230,3 +27230,10 @@ Four focused tests cover equality, less-than, greater-than, signed overflow, val
 Base `PagedCpl0ProbeV1` admits only the exact no-prefix bytes `72 2A`. The shared branch condition reads CF only; the branch leaves all RFLAGS and definedness unchanged, sets RIP to the signed-rel8 target when CF=1 and to fall-through when CF=0, and checks canonicality only for the taken target. Neighboring displacements/conditions, prefixed and rel32 forms, CPL3 and other profiles remain unsupported.
 
 Five focused tests cover taken/not-taken targets with defined and undefined CF, state/definedness retention, taken-only canonicality, rel8 fetch-fault atomicity, neighbors and CPL3; other-profile isolation passes. Firmware advances to ISSUE-225: `4B 8D 04 64` (`LEA RAX,[R12+R12*2]`) at RIP `0x200f90`.
+
+
+### S7-04: exact Rust-helper `LEA RAX,[R12+R12*2]` (ISSUE-225)
+
+Base `PagedCpl0ProbeV1` admits only `4B 8D 04 64`. REX.W selects qword RAX; REX.X extends SIB index 4 to R12; REX.B extends SIB base 4 to R12; scale 2 yields wrapping qword `R12 + 2*R12`. The decoded effective offset is written to RAX. LEA does not access memory or check canonicality, and preserves RFLAGS and definedness. Other REX/SIB/base/index/scale/destination/width/displacement/prefix forms, CPL3 and other profiles remain unsupported.
+
+Four focused tests cover operand routing, wrapping and noncanonical results, full state/flags retention, no memory or PIO effects, final-SIB fetch-fault atomicity, neighboring forms and CPL3; other-profile isolation passes. Firmware advances to ISSUE-226: `48 C1 E0 04` (`SHL RAX,4`) at RIP `0x200f94`.

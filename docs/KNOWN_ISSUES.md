@@ -1100,19 +1100,28 @@
 ### ISSUE-224 — S7-04: exact Rust helper `JB/JNAE rel8 +0x2A` (`72 2A`) admitted narrowly
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact dword CMP R13D,0xA0.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200f8e`.
-- **Статус:** решена узко для exact `72 2A` в base `PagedCpl0ProbeV1`; независимо проверена и одобрена, ожидает коммита.
+- **Статус:** решена узко для exact `72 2A` в base `PagedCpl0ProbeV1`; независимо проверена и committed `597bf68`.
 - **Суть и результат:** exact no-prefix rel8 JB reads CF only, preserves RFLAGS and their definedness, chooses taken/fall-through RIP correctly, and validates canonicality only for a taken target. Adjacent branch conditions/displacements, CPL3 and other profiles remain unsupported.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue224.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf8e` are `72 2A`; runner budget 10000.
 - **Проверка:** five focused branch tests cover taken/not-taken with defined and undefined CF, flags/definedness preservation, taken-only canonicality, rel8 fetch-fault atomicity, neighbors and CPL3; cross-profile isolation passes. Runner retired 8907 and stopped at `4B 8D 04 64` (`LEA RAX,[R12+R12*2]`, ISSUE-225), RIP `0x200f90`, `Unsupported { opcode: 141 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
 - **Следующий шаг:** continue S7-04 at ISSUE-225.
 
-### ISSUE-225 — S7-04: Rust helper `LEA RAX,[R12+R12*2]` (`4B 8D 04 64`) remains outside paged CPU profile
+### ISSUE-225 — S7-04: exact Rust helper `LEA RAX,[R12+R12*2]` (`4B 8D 04 64`) admitted narrowly
 - **Дата обнаружения:** 2026-11-16, runner-прогон после exact `JB/JNAE rel8 +0x2A`.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200f90`.
+- **Статус:** решена узко для exact `4B 8D 04 64` в base `PagedCpl0ProbeV1`; независимо проверена и одобрена, ожидает коммита.
+- **Суть и результат:** REX.W selects qword destination RAX, REX.X/B extend SIB index/base fields to R12, and SIB scale 2 computes `R12 + 2*R12` with wrapping qword arithmetic. LEA changes only RAX and RIP, preserves flags/definedness, and performs no memory access or canonicality check; noncanonical effective offsets are valid results. Other REX/SIB forms, widths, prefixes, CPL3 and profiles remain unsupported.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue225.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf90` are `4B 8D 04 64`; runner budget 10000.
+- **Проверка:** four focused tests cover REX/SIB operand routing, qword overflow and noncanonical values, flags/definedness, no memory/PIO effects, final-SIB fetch-fault atomicity, adjacent base/index/destination/width/displacement/prefix forms and CPL3; cross-profile isolation passes. Runner retired 8908 and stopped at `48 C1 E0 04` (`SHL RAX,4`, ISSUE-226), RIP `0x200f94`, `Unsupported { opcode: 193 }`, `com1_bytes=0`; full handoff validation remains incomplete. Полные проверки см. в отчёте S7.
+- **Следующий шаг:** continue S7-04 at ISSUE-226.
+
+### ISSUE-226 — S7-04: Rust helper `SHL RAX,4` (`48 C1 E0 04`) remains outside paged CPU profile
+- **Дата обнаружения:** 2026-11-16, runner-прогон после exact `LEA RAX,[R12+R12*2]`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x200f94`.
 - **Статус:** открыта.
-- **Суть и последствия:** runner retired 8907 instructions and stopped at `4B 8D 04 64`, `Unsupported { opcode: 141 }`, `RIP=0x200f90`; COM1 remains empty.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue224.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf90` are `4B 8D 04 64`; runner budget 10000.
-- **Следующий шаг:** verify REX/SIB routing, effective-address arithmetic and dword/qword LEA semantics before narrow admission.
+- **Суть и последствия:** runner retired 8908 instructions and stopped at `48 C1 E0 04`, `Unsupported { opcode: 193 }`, `RIP=0x200f94`; COM1 remains empty.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue225.bin`, SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; bytes at offset `0xf94` are `48 C1 E0 04`; runner budget 10000.
+- **Следующий шаг:** verify exact qword shift form, count masking, result flags and undefinedness before narrow admission.
 
 ### ISSUE-201 — Linux direct boot tests expect the base paged profile to reject CLD
 - **Дата обнаружения:** 2026-11-16, full `od-machine` test run during ISSUE-199 validation.
