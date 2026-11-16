@@ -4224,9 +4224,16 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-294 — S7-04: exact helper `CMP R13D,-1` (`41 83 FD FF`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-293.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20167f`.
+- **Статус:** решена; base `PagedCpl0ProbeV1` admits only this exact dword compare form.
+- **Результат:** opcode 83 sign-extends imm8 `0xff` to dword all-ones and compares it with R13D; upper R13 is ignored. No GPR is written. Shared CMP semantics set arithmetic flags and their definedness, including AF.
+- **Проверки исполнения:** four focused tests cover dword/sign-extension edge values, equality, carry/sign/overflow/AF, no GPR mutation, immediate-fetch atomicity, neighbors and CPL3/other-profile isolation. Full od-isa suites pass (2,322/1,591/126/29/6/855/7/15); 63 paged machine tests pass. Scoped check, formatting and diff-check pass; only the existing unused page-walk helper warning remains. Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retires 8,991 instructions and stops at `41 0F 95 C2` (`SETNE R10B`, ISSUE-295), RIP `0x201683`, `Unsupported { opcode: 149 }`; COM1 remains empty. Independent review approved with no findings.
+
+### ISSUE-295 — S7-04: exact helper `SETNE R10B` (`41 0F 95 C2`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-294.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201683`.
 - **Статус:** открыта.
-- **Суть и последствия:** base profile does not yet admit this exact dword register-immediate compare; firmware stops before later helper operations.
-- **Основание:** runner using image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after 8,990 retired instructions it reports `Unsupported { opcode: 131 }`. Bytes at file offset `0x167f` are `41 83 FD FF`.
-- **Следующий шаг:** admit only this dword CMP R13D, sign-extended imm8 -1 form with arithmetic flags and no GPR mutation.
+- **Суть и последствия:** base profile does not yet admit this exact condition-code byte-register write; firmware stops before later helper operations.
+- **Основание:** runner using image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after 8,991 retired instructions it reports `Unsupported { opcode: 149 }`. Bytes at file offset `0x1683` are `41 0F 95 C2`.
+- **Следующий шаг:** admit only `SETNE R10B`, preserving upper R10 and all flag state.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.
