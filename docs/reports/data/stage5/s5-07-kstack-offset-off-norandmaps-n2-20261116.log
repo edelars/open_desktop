@@ -1,0 +1,50 @@
+# S5-07 kernel stack-offset diagnostic N=2, 2026-11-16
+
+## Question
+
+The canonical `norandmaps` N=2 pair had identical 33-event `#PF` signatures, but its UART differed in three regions. In particular, the terminal panic unwind region contained 3 optional frames in run 0001 and 11 in run 0002. This diagnostic tests the same profile with Linux kernel stack-offset randomization disabled. It is a security-hardening intervention and is diagnostic-only.
+
+## Command
+
+```sh
+target/release/od-runner linux-direct \
+  --test-runs 2 \
+  --series-id stage5-s5-07-kstack-offset-off-norandmaps-n2-20261116-a \
+  --scenario-id stage4-init-nonce \
+  --expected-stop-kind budget_exhausted \
+  --out work/stage5/stage5-s5-07-kstack-offset-off-norandmaps-n2-20261116-a/series.json \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --run --budget 3000000000 --set-cpl0 \
+  --cpuid-profile stage4a --user-mode \
+  --linux-norandmaps --linux-no-randomize-kstack-offset \
+  --execution-observations
+```
+
+The release runner was built from codex commit `ab2f778`, which includes the reviewed diagnostic option from `b23fe6d`. Both runs used the same kernel, initramfs and 1104-byte CPU0 ACPI blob as the canonical `norandmaps` series:
+
+| Input | SHA-256 |
+|---|---|
+| Linux 7.0.0-38-generic kernel | `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e` |
+| Canonical initramfs | `65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7` |
+| CPU0 ACPI blob | `6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d` |
+| ACPI manifest | `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2` |
+
+## Results
+
+The schema-v2 series outcome is `passed` with `run_profile=smoke_not_acceptance`; the strict within-series comparator returns `matches=false`. Both runs passed exact nonce-marker validation and stopped at `budget_exhausted`, with `retired=2,999,999,998` of 3,000,000,000. Runner JSON marks both `diagnostic_not_counted`; the cmdline ends with `nokaslr norandmaps randomize_kstack_offset=off`. Each run recorded 33 delivered `#PF`, one `#GP(0)`, 19 CPL0 RDTSC sites, and no omitted PF events, overflow reads or unattributed RDTSC reads. Ordered `(RIP, error_code, CR2)` signatures match exactly between the two runs.
+
+| Run | RDTSC reads | UART bytes | Manifest SHA-256 | Runner JSON SHA-256 | UART SHA-256 | Observation sidecar SHA-256 |
+|---|---:|---:|---|---|---|---|
+| 0001 | 34,406,677 | 23,356 | `f46baeb134771d165016c22b101b1bcf5d1331ce367a966321e5d0231a47991d` | `199fc75896e9e6d568e150a3e6041bed6fa81fcf4c294aac88d535749a25da6c` | `4432e46d82405219a077be76939cdd01da9b7407cdaa370c5dce6b55c5bf6191` | `5ebdbe1c9b844f6252c291be741e4b71f0255dabf3dc48a420a6630a554a9ba2` |
+| 0002 | 34,399,879 | 23,356 | `fd01a0ec1e9484e1afc4dda92dc6f78af3ebf7d2e0dfe120e4a6161b6fa8d868` | `e9309e1e34de4e28eb1e29d50d8eb227ac77b4e215225dcd01501024cd5ed641` | `54eea4f7da82de5b3ad2aa9c2efcd0eebbaa79e2f50be72be2e96dba5face289` | `fe77055e907af097c5427660fa3a94b933d5a9b71f0586714fa58e991429af78` |
+
+The total CPL0 RDTSC count differs by 6,798 reads; 6,750 are at `0xffffffff8271b34d` (`delay_tsc+0x4d`). The baseline `norandmaps` pair differed by 12,211 total reads, including 12,144 at the same site. Other stop fields also differ, including virtual time, quanta, IRQ counters and the budget-cut register/CR3 context; machine observations remain strict.
+
+After replacing each nonce and normalizing leading Linux printk timestamps for diagnosis, the two UART streams have two differing regions: available memory (62,020 KiB versus 62,048 KiB) and `sched_clock` calibration values. The terminal panic unwind region now matches between these runs; the 3-versus-11 optional-frame difference from the baseline `norandmaps` pair did not recur. The UART streams are still not byte-identical and the production comparison remains `matches=false`, with unexplained differences in `machine_observations` and `ordered_uart_bytes` after nonce normalization. `series.json` SHA-256 is `ce879933f4369b4bf1c3825145b832d5fa533b9b9e27d8133ebbc7e04a4fe0bc`; `comparison.json` SHA-256 is `989064d1f1ec9b4732e55fb44c4f28eb73dd41a9422163b0b14af4c5d558654e`.
+
+The disappearance of the terminal unwind variation is consistent with kernel stack-offset randomization contributing to that difference, but this N=2 diagnostic does not prove causality or establish general benignity. The memory and `sched_clock` UART differences remain unexplained, as do machine observations. No comparator normalization or acceptance gate changed; S5-07 remains blocked/unaccepted. Raw artifacts are retained locally in ignored `work/stage5/stage5-s5-07-kstack-offset-off-norandmaps-n2-20261116-a/`.
