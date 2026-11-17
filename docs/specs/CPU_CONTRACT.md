@@ -29753,3 +29753,14 @@ A noncanonical address raises #SS(0) before the read. Data and final
 immediate fetch faults preserve architectural state. The other CPL0
 probes and the paged CPL3 MOV probe refuse this form.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-459 — bounded JZ rel8 +0x71
+
+The base paged CPL0 profile admits exact unprefixed `74 71`. JZ uses the
+concrete ZF value and preserves flags and their definedness. With ZF=1 the
+executor adds signed rel8 +0x71 to next RIP using 64-bit wrapping arithmetic
+and checks target canonicality. With ZF=0 it advances to next RIP and leaves
+address validation to the next fetch. A taken noncanonical target raises
+#GP(0). This fault and a displacement fetch fault preserve architectural
+state. The other CPL0 probes and the paged CPL3 MOV probe refuse this form.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

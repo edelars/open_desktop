@@ -16204,7 +16204,9 @@ fn rust_helper_jnz_rel8_0x23_is_unsupported_in_cpl3_profile() {
 
 #[test]
 fn rust_helper_jz_rel8_obeys_zf_and_preserves_flags_and_definedness() {
-    for displacement in [0x0d_i8, 0x11, 0x1d, 0x33, 0x35, 0x3b, 0x59, 0x64, -0x30] {
+    for displacement in [
+        0x0d_i8, 0x11, 0x1d, 0x33, 0x35, 0x3b, 0x59, 0x64, 0x71, -0x30,
+    ] {
         let code = [0x74, displacement as u8]; // observed exact JZ rel8 forms
         for zero in [false, true] {
             for zf_defined in [false, true] {
@@ -16246,7 +16248,9 @@ fn rust_helper_jz_rel8_obeys_zf_and_preserves_flags_and_definedness() {
 
 #[test]
 fn rust_helper_jz_rel8_checks_canonicality_only_when_taken() {
-    for displacement in [0x0d_i8, 0x11, 0x1d, 0x33, 0x35, 0x3b, 0x59, 0x64, -0x30] {
+    for displacement in [
+        0x0d_i8, 0x11, 0x1d, 0x33, 0x35, 0x3b, 0x59, 0x64, 0x71, -0x30,
+    ] {
         let code = [0x74, displacement as u8];
 
         let fallthrough_rip = 0x0000_7fff_ffff_fffe;
@@ -16385,6 +16389,12 @@ fn rust_helper_jz_rel8_neighbours_stay_unsupported_without_mutation() {
         (&[0x66, 0x74, 0x3b], 0x74),                   // operand-size prefix
         (&[0x40, 0x74, 0x3b], 0x74),                   // REX prefix
         (&[0x0f, 0x84, 0x3b, 0, 0, 0], 0x84),          // near JZ
+        (&[0x74, 0x70], 0x74),                         // displacement below +0x71
+        (&[0x74, 0x72], 0x74),                         // displacement above +0x71
+        (&[0x75, 0x71], 0x75),                         // JNZ with same displacement
+        (&[0x66, 0x74, 0x71], 0x74),                   // operand-size prefix
+        (&[0x40, 0x74, 0x71], 0x74),                   // REX prefix
+        (&[0x0f, 0x84, 0x71, 0, 0, 0], 0x84),          // near JZ
     ];
     for (bytes, opcode) in cases {
         let mut memory = Memory::new(bytes);
@@ -16409,25 +16419,27 @@ fn rust_helper_jz_rel8_neighbours_stay_unsupported_without_mutation() {
 
 #[test]
 fn rust_helper_jz_rel8_is_unsupported_in_cpl3_profile() {
-    let bytes = [0x74, 0x0d];
-    let mut memory = Memory::new(&bytes);
-    let mut cpu = state();
-    cpu.cr3 = Some(0x1000);
-    let before = cpu.clone();
+    for displacement in [0x0d, 0x71] {
+        let bytes = [0x74, displacement];
+        let mut memory = Memory::new(&bytes);
+        let mut cpu = state();
+        cpu.cr3 = Some(0x1000);
+        let before = cpu.clone();
 
-    let result = execute::step_paged_cpl3_mov(
-        &mut cpu,
-        &mut memory,
-        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
-        0xd00,
-        DEFINED,
-    );
+        let result = execute::step_paged_cpl3_mov(
+            &mut cpu,
+            &mut memory,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+            0xd00,
+            DEFINED,
+        );
 
-    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x74 });
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(result.rflags_defined, DEFINED);
-    assert_eq!(cpu, before);
-    assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x74 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
 }
 
 #[test]
@@ -48190,6 +48202,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x74, 0x0d][..], 0x74),
         (&[0x74, 0x3b][..], 0x74),
         (&[0x74, 0x64][..], 0x74),
+        (&[0x74, 0x71][..], 0x74),
         (&[0x74, 0x1d][..], 0x74),
         (&[0x74, 0x35][..], 0x74),
         (&[0x74, 0x33][..], 0x74),

@@ -2738,3 +2738,14 @@ the CPL3 MOV probe and other CPL0 probes. With budget 20000 the runner
 retires 10,301 instructions and stops at RIP `0x201400` on `74 71`
 (JZ rel8 +0x71, ISSUE-459). It reports Unsupported opcode 116 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-459 — exact JZ rel8 +0x71 (`74 71`)
+
+Base `PagedCpl0ProbeV1` admits the exact unprefixed JZ. ZF=1 branches to
+next RIP plus signed rel8. The taken target must be canonical. Both outcomes
+preserve flags and their definedness. Tests cover ZF values and definedness,
+target and fall-through, displacement fetch fault, neighbors, the CPL3 MOV
+probe and the other CPL0 probes. With budget 20000 the runner retires 10,302
+instructions and stops at RIP `0x201402` on `B8 02 00 00 00` (MOV EAX,2,
+ISSUE-460). It reports Unsupported opcode 184 with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
