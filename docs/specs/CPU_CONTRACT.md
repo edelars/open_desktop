@@ -28886,7 +28886,22 @@ tests), paged machine quantum passes (110/110), workspace all-targets offline
 check passes with existing warnings, and scoped rustfmt/diff-check pass.
 Independent review is pending.
 
-### ISSUE-396 — `0F 87 4C 02 00 00` frontier
+### ISSUE-396 — `0F 87 4C 02 00 00` (`JA rel32 +0x24c`)
 
-The next exact base-profile candidate is JA rel32 +0x24c. Its contract must
-preserve flags/definedness and check canonicality only on the taken path.
+Admit this exact conditional branch only in the base paged profile. JA tests
+CF=0 && ZF=0; signed rel32 is added to next RIP, flags and definedness are
+preserved, and canonicality is checked only on a taken target. Focused tests
+pass (5/5) and the other-profile matrix passes (1/1). ISSUE-201 remains the
+unrelated CLD caveat.
+
+The runner advances to `48 83 C0 10` (ADD RAX,0x10, ISSUE-397), RIP `0x20129d`,
+after 9,878 retired instructions, `Unsupported { opcode: 131 }`; COM1 is empty.
+Full od-isa passes (2,322/1,591/126/29/6/1,305/7/15; zero doc tests), paged
+machine quantum passes (110/110), workspace all-targets offline check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review
+is pending.
+
+### ISSUE-397 — `48 83 C0 10` frontier
+
+The next exact helper instruction is qword `ADD RAX,0x10`; validate its signed
+imm8, qword result and arithmetic flags before admitting it.

@@ -1701,8 +1701,25 @@ machine quantum passes (110/110), workspace all-targets offline check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review
 is pending.
 
-### ISSUE-396 — `0F 87 4C 02 00 00` frontier
+### ISSUE-396 — `0F 87 4C 02 00 00` (`JA rel32 +0x24c`)
 
-Firmware next reaches exact JA rel32 +0x24c. Keep the next admission pinned to
-this displacement, preserving flags/definedness and checking canonicality only
-when taken. ISSUE-201 remains the unrelated CLD caveat.
+The base paged profile admits only this exact displacement. JA branches when
+CF=0 && ZF=0; the signed rel32 is relative to next RIP. Flags/definedness are
+preserved, with target canonicality checked only when taken. Focused tests pass
+(5/5), and the other-profile matrix passes (1/1). ISSUE-201 remains the
+unrelated CLD caveat.
+
+With image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, runner
+advances to `48 83 C0 10` (ADD RAX,0x10, ISSUE-397), RIP `0x20129d`, after
+9,878 retired instructions, `Unsupported { opcode: 131 }`; COM1 is empty. Full
+od-isa passes (2,322/1,591/126/29/6/1,305/7/15; zero doc tests), paged machine
+quantum passes (110/110), workspace all-targets offline check passes with
+existing warnings, and scoped rustfmt/diff-check pass. Independent review is
+pending.
+
+### ISSUE-397 — `48 83 C0 10` frontier
+
+Firmware next reaches this exact qword RAX ADD immediate form. Keep the next
+admission limited to its observed bytes and preserve arithmetic flags. ISSUE-201
+remains the unrelated CLD caveat.
