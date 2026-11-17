@@ -4707,7 +4707,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-354 — S7-04: exact helper `CMP dword ptr [R12+RAX],0` frontier (`41 83 3C 04 00`)
 - **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-353.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017f7`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `41 83 3C 04 00` compare dword `[R12+RAX]` against sign-extended imm8 zero. The tracked read updates arithmetic flags/definedness but writes no GPR or memory; read/fetch faults leave state unchanged.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner now stops at `Unsupported { opcode: 133 }` at RIP `0x2017fc` after 9,073 retired instructions; bytes are `0F 85 AB FE FF FF`; COM1 is empty.
+- **Проверка:** five focused profile tests cover dword result/flags/definedness, tracked-read fault and final-immediate fetch-fault atomicity, neighboring encodings and CPL3; the other-profile matrix rejects this form. Two four-level machine tests verify accessed/no-dirty effects and absent-data-page fault atomicity. Full od-isa (2,322/1,591/126/29/6/1,111/7/15; zero doc tests), paged machine quantum (79/79), scoped cargo check, rustfmt and diff-check pass. Cargo check reports only the existing unused page-walk helper warning. Independent review approved with no findings.
+
+### ISSUE-355 — S7-04: exact helper `JNZ rel32 -0x155` frontier (`0F 85 AB FE FF FF`)
+- **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-354.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017fc`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this memory compare after 9,072 retired instructions. The bounded base profile does not yet admit the exact REX.B/SIB form.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 131 }` at RIP `0x2017f7`; COM1 is empty.
-- **Следующий шаг:** analyze the exact dword tracked-read/CMP form in a separate Stage 7 slice.
+- **Суть и последствия:** firmware reaches this near conditional branch after 9,073 retired instructions. The bounded base profile does not yet admit this exact displacement.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 133 }` at RIP `0x2017fc`; COM1 is empty.
+- **Следующий шаг:** analyze and admit only this exact firmware JNZ rel32 in a separate Stage 7 slice.

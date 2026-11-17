@@ -1053,3 +1053,19 @@ remain unrelated and open. Full od-isa (2,322/1,591/126/29/6/1,106/7/15;
 zero doc tests), paged machine quantum (77/77), scoped cargo check, rustfmt and
 diff-check pass; cargo check reports only the existing unused page-walk helper
 warning. Independent review approved with no remaining findings.
+
+### ISSUE-354 — exact memory CMP dword [R12+RAX],0
+
+Admitted only exact bytes `41 83 3C 04 00` in base `PagedCpl0ProbeV1`.
+REX.B selects R12 as the SIB base, RAX is the scale-1 index, and opcode 83 /7
+compares the tracked dword read with sign-extended imm8 zero. Shared dword CMP
+updates arithmetic flags/definedness without changing GPRs or memory; failed
+reads and final immediate fetch faults do not retire. Five focused profile
+tests and two four-level machine tests cover flags/definedness, exact read,
+A/no-D effects, data-page fault atomicity, neighboring forms, CPL3 and other
+profiles. Firmware now stops at ISSUE-355, `0F 85 AB FE FF FF` (`JNZ rel32
+-0x155`) at RIP `0x2017fc`, retired=9,073, COM1 empty. ISSUE-201's unrelated
+CLD expectation caveat remains open. Full od-isa (2,322/1,591/126/29/6/1,111/
+7/15; zero doc tests), paged machine quantum (79/79), scoped cargo check,
+rustfmt and diff-check pass; the existing unused page-walk helper warning
+remains. Independent review approved with no findings.

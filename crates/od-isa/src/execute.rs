@@ -24476,6 +24476,59 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: the helper compares the dword at `[R12+RAX]` against zero
+        // with exact `41 83 3C 04 00`. REX.B extends the SIB base to R12;
+        // opcode 83 /7 sign-extends imm8. Keep the address tuple exact and
+        // use tracked memory so read faults commit neither flags nor RIP.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Cmp,
+            dst: Operand::Memory(destination),
+            src: Operand::Immediate(0),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x83
+            && instruction.length == 5
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x41),
+                    ..Prefixes::default()
+                })
+            && destination.base == AddressBase::Register(Register::R12)
+            && destination.index == Some(Register::Rax)
+            && destination.scale == 1
+            && destination.displacement == 0
+            && destination.address_size == OperandSize::Qword
+            && destination.size == OperandSize::Dword =>
+        {
+            let lhs = match read_operand(
+                state,
+                memory,
+                context,
+                next_rip,
+                Operand::Memory(destination),
+            ) {
+                Ok(value) => value,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            let (_, flags) = arithmetic_result(
+                OperandSize::Dword,
+                ArithmeticKind::Cmp,
+                lhs,
+                0,
+                state.rflags,
+            );
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: the Rust entry checks the handoff GPA with exactly
         // `48 81 FF 00 00 10 00` (CMP RDI,0x00100000). Reuse the qword CMP
         // flags semantics; the destination register is never written.

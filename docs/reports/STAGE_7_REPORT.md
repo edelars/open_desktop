@@ -2343,3 +2343,17 @@ caveat remains open. Full od-isa suites pass (2,322/1,591/126/29/6/1,106/7/15;
 zero doc tests), paged machine quantum passes (77/77), scoped cargo check passes
 with one existing unused page-walk helper warning, and scoped rustfmt/diff-check
 pass. Independent review approved with no remaining findings.
+
+### ISSUE-354 — CMP dword ptr [R12+RAX],0
+
+The base profile admits only `41 83 3C 04 00`. The REX.B/SIB form reads a dword
+through tracked memory and compares it with sign-extended imm8 zero using
+shared dword CMP flags and definedness; it writes no GPR or memory. Five
+focused profile tests and two four-level machine tests cover flag outcomes,
+read/fetch faults, A/no-D page-walk effects, encoding neighbors and profile
+isolation. The runner advances to ISSUE-355 (`0F 85 AB FE FF FF`, JNZ rel32
+-0x155) at RIP `0x2017fc`, retired=9,073; COM1 is empty. ISSUE-201's unrelated
+CLD expectation caveat remains open. Full od-isa (2,322/1,591/126/29/6/1,111/
+7/15; zero doc tests), paged machine quantum (79/79), scoped cargo check,
+rustfmt and diff-check pass; cargo check reports only the existing unused
+page-walk helper warning. Independent review approved with no findings.

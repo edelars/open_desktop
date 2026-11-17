@@ -28119,6 +28119,7 @@ quantum passes (77/77), scoped cargo check passes with one existing unused
 page-walk helper warning, and scoped rustfmt/diff-check pass. Independent review
 approved with no remaining findings.
 
+
 ### S7-04 CPU-profile slice: exact memory `TEST` (ISSUE-352)
 
 `PagedCpl0ProbeV1` admits only exact bytes `40 84 6C 24 07`. The instruction
@@ -28138,3 +28139,19 @@ passes (77/77), scoped cargo check passes with one existing unused page-walk
 helper warning, and scoped rustfmt/diff-check pass. Independent review approved with no findings. Firmware advances to ISSUE-353 (`0F 85 9F FE FF FF`, `JNZ rel32
 -0x161`) at RIP `0x2017f1` after 9,071 retired instructions; COM1 is empty.
 ISSUE-201's unrelated CLD expectation caveat remains open.
+
+### S7-04 CPU-profile slice: exact memory CMP dword (ISSUE-354)
+
+`PagedCpl0ProbeV1` admits only exact bytes `41 83 3C 04 00`. REX.B extends
+the SIB base to R12; RAX is the scale-1 index, address size is 64-bit, and the
+effective offset is read as a dword through tracked guest memory. Opcode 83 /7
+sign-extends imm8 zero, and shared dword CMP semantics update arithmetic flags
+and definedness without writing a GPR or memory. Read and instruction-fetch
+faults do not commit flags or RIP. Other SIB/base/index/immediate/group/width/
+prefix forms, CPL3 and other profiles remain unsupported. Firmware advances to
+`0F 85 AB FE FF FF` (`JNZ rel32 -0x155`, ISSUE-355) at RIP `0x2017fc` after
+9,073 retired instructions; COM1 is empty. ISSUE-201's unrelated CLD expectation
+caveat remains open. Full od-isa (2,322/1,591/126/29/6/1,111/7/15; zero doc
+tests), paged machine quantum (79/79), scoped cargo check, rustfmt and
+diff-check pass; the existing unused page-walk helper warning remains.
+Independent review approved with no findings.
