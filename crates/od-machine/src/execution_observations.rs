@@ -27,12 +27,53 @@ pub const LINUX_PAGE_FAULT_EVENT_CAPACITY: usize = 256;
 pub const LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY: usize = 4;
 pub const LINUX_ELF_STACK_COPY_PROFILE: &str = "s5-07-elf-stack-platform-copy-v1";
 pub const LINUX_ELF_STACK_COPY_RIP: u64 = 0xffff_ffff_8199_9bd4;
+/// Function entry RIPs from the matching S5-07 kernel debug ELF used by the current exact replay.
+pub const LINUX_ELF_STACK_COPY_BOUNDARIES: [(u64, &str); 3] = [
+    (0xffff_ffff_818f_4570, "kernel_execve"),
+    (0xffff_ffff_8199_c220, "load_elf_binary"),
+    (0xffff_ffff_8199_9b40, "create_elf_tables"),
+];
 pub const LINUX_ELF_STACK_COPY_PROBE_CAPACITY: usize = 4;
 pub const LINUX_ELF_STACK_COPY_WALK_ENTRY_CAPACITY: usize = 4;
 pub const LINUX_ELF_STACK_COPY_CR3_EVENT_CAPACITY: usize = 64;
 pub const LINUX_ELF_STACK_COPY_RDTSC_SITE_CAPACITY: usize = 64;
 pub const LINUX_ELF_STACK_COPY_PF_EVENT_CAPACITY: usize = 64;
 pub const LINUX_ELF_STACK_COPY_RETIRED_CAPACITY: u64 = 1_000_000;
+/// Maximum CR3 writes retained from observation accounting start through the ELF-copy gate.
+pub const LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY: usize = 32_768;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ElfStackCopyCr3LedgerStatus {
+    Complete,
+    IncompleteOverflow,
+    RunEndedBeforeTarget,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyPreCopyCr3Event {
+    pub sequence: u64,
+    pub rip: u64,
+    pub old_cr3: u64,
+    pub new_cr3: u64,
+    pub cpl: u8,
+    pub retired_instructions_through_current: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyBoundaryMarker {
+    pub name: &'static str,
+    pub rip: u64,
+    pub retired_instructions_before_current: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyPreCopyCr3Ledger {
+    pub status: ElfStackCopyCr3LedgerStatus,
+    pub event_count: u64,
+    pub events_omitted: u64,
+    pub events: Vec<ElfStackCopyPreCopyCr3Event>,
+    pub boundary_markers: Vec<ElfStackCopyBoundaryMarker>,
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ElfStackCopyInvocationStatus {
@@ -145,6 +186,7 @@ pub struct ElfStackCopySnapshot {
     pub error: Option<String>,
     pub return_rip: Option<u64>,
     pub platform_string_matches: Option<bool>,
+    pub pre_copy_cr3_ledger: Option<ElfStackCopyPreCopyCr3Ledger>,
     pub invocation: Option<ElfStackCopyInvocation>,
 }
 
@@ -193,6 +235,7 @@ impl ElfStackCopySnapshot {
             error: None,
             return_rip: None,
             platform_string_matches: None,
+            pre_copy_cr3_ledger: None,
             invocation: None,
         }
     }
@@ -555,6 +598,11 @@ pub(crate) struct LinuxExecutionObservationCollector {
     post_iret_context_mismatch: bool,
     nested_iret_depth: u64,
     elf_stack_copy: Option<ElfStackCopySnapshot>,
+    pre_copy_cr3_events: Vec<ElfStackCopyPreCopyCr3Event>,
+    pre_copy_cr3_events_omitted: u64,
+    pre_copy_cr3_ledger_overflow: bool,
+    pre_copy_cr3_ledger_frozen: bool,
+    pre_copy_boundary_markers: Vec<ElfStackCopyBoundaryMarker>,
     retired_total: u64,
     delivered_exception_total: u64,
     cr3_change_total: u64,
@@ -576,6 +624,18 @@ impl LinuxExecutionObservationCollector {
     pub(crate) fn record_elf_stack_copy(&mut self, snapshot: ElfStackCopySnapshot) {
         if self.wants_elf_stack_copy() {
             let mut snapshot = snapshot;
+            snapshot.pre_copy_cr3_ledger = Some(ElfStackCopyPreCopyCr3Ledger {
+                status: if self.pre_copy_cr3_ledger_overflow {
+                    ElfStackCopyCr3LedgerStatus::IncompleteOverflow
+                } else {
+                    ElfStackCopyCr3LedgerStatus::Complete
+                },
+                event_count: self.cr3_change_total,
+                events_omitted: self.pre_copy_cr3_events_omitted,
+                events: std::mem::take(&mut self.pre_copy_cr3_events),
+                boundary_markers: std::mem::take(&mut self.pre_copy_boundary_markers),
+            });
+            self.pre_copy_cr3_ledger_frozen = true;
             if snapshot.status == ElfStackCopyStatus::Captured
                 && snapshot.platform_string_matches == Some(true)
                 && snapshot.return_rip.is_some()
@@ -610,6 +670,31 @@ impl LinuxExecutionObservationCollector {
             }
             self.elf_stack_copy = Some(snapshot);
         }
+    }
+
+    pub(crate) fn observe_elf_stack_copy_boundary(&mut self, rip: u64) {
+        if self.pre_copy_cr3_ledger_frozen || !self.wants_elf_stack_copy() {
+            return;
+        }
+        let Some((_, name)) = LINUX_ELF_STACK_COPY_BOUNDARIES
+            .iter()
+            .find(|(boundary_rip, _)| *boundary_rip == rip)
+        else {
+            return;
+        };
+        if self
+            .pre_copy_boundary_markers
+            .iter()
+            .any(|marker| marker.name == *name)
+        {
+            return;
+        }
+        self.pre_copy_boundary_markers
+            .push(ElfStackCopyBoundaryMarker {
+                name,
+                rip,
+                retired_instructions_before_current: self.retired_total,
+            });
     }
 
     fn elf_copy_counters(&self, cr3: u64) -> ElfStackCopyCounterSnapshot {
@@ -739,12 +824,28 @@ impl LinuxExecutionObservationCollector {
         }
     }
 
-    pub(crate) fn record_elf_copy_cr3(&mut self, rip: u64, old_cr3: u64, new_cr3: u64) {
+    pub(crate) fn record_elf_copy_cr3(&mut self, rip: u64, old_cr3: u64, new_cr3: u64, cpl: u8) {
         if !self.tracks_elf_copy_counters() {
             return;
         }
         self.cr3_change_total = self.cr3_change_total.saturating_add(1);
         let retired = self.retired_total;
+        if !self.pre_copy_cr3_ledger_frozen {
+            if self.pre_copy_cr3_events.len() < LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY {
+                self.pre_copy_cr3_events.push(ElfStackCopyPreCopyCr3Event {
+                    sequence: self.cr3_change_total,
+                    rip,
+                    old_cr3,
+                    new_cr3,
+                    cpl,
+                    retired_instructions_through_current: retired,
+                });
+            } else {
+                self.pre_copy_cr3_events_omitted =
+                    self.pre_copy_cr3_events_omitted.saturating_add(1);
+                self.pre_copy_cr3_ledger_overflow = true;
+            }
+        }
         let Some(capture) = self
             .elf_stack_copy
             .as_mut()
@@ -1537,6 +1638,17 @@ impl LinuxExecutionObservationCollector {
             elf_stack_copy: self.elf_stack_copy.map(|mut snapshot| {
                 if snapshot.status == ElfStackCopyStatus::AwaitingTarget {
                     snapshot.status = ElfStackCopyStatus::RunEndedBeforeTarget;
+                    snapshot.pre_copy_cr3_ledger = Some(ElfStackCopyPreCopyCr3Ledger {
+                        status: if self.pre_copy_cr3_ledger_overflow {
+                            ElfStackCopyCr3LedgerStatus::IncompleteOverflow
+                        } else {
+                            ElfStackCopyCr3LedgerStatus::RunEndedBeforeTarget
+                        },
+                        event_count: self.cr3_change_total,
+                        events_omitted: self.pre_copy_cr3_events_omitted,
+                        events: self.pre_copy_cr3_events,
+                        boundary_markers: self.pre_copy_boundary_markers,
+                    });
                 }
                 if let Some(invocation) = snapshot.invocation.as_mut()
                     && invocation.status == ElfStackCopyInvocationStatus::InProgress
@@ -1572,6 +1684,111 @@ mod tests {
         assert!(!collector.wants_elf_stack_copy());
     }
 
+    #[test]
+    fn elf_stack_copy_cr3_prefix_is_ordered_reconciled_and_stops_at_the_gate() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        collector.observe_elf_stack_copy_boundary(LINUX_ELF_STACK_COPY_BOUNDARIES[0].0);
+        collector.record_elf_copy_retired(5);
+        collector.observe_elf_stack_copy_boundary(LINUX_ELF_STACK_COPY_BOUNDARIES[1].0);
+        collector.record_elf_copy_cr3(0x1010, 0x1000, 0x2000, 0);
+        collector.record_elf_copy_retired(2);
+        collector.observe_elf_stack_copy_boundary(LINUX_ELF_STACK_COPY_BOUNDARIES[2].0);
+        collector.record_elf_copy_cr3(0x2020, 0x2000, 0x3000, 0);
+        let mut snapshot = ElfStackCopySnapshot::empty(ElfStackCopyStatus::Captured);
+        snapshot.rip = Some(LINUX_ELF_STACK_COPY_RIP);
+        snapshot.cr3 = Some(0x3000);
+        snapshot.return_rip = Some(LINUX_ELF_STACK_COPY_RIP + 5);
+        snapshot.platform_string_matches = Some(true);
+        collector.record_elf_stack_copy(snapshot);
+
+        collector.record_elf_copy_cr3(0x3030, 0x3000, 0x4000, 0);
+        let capture = collector.finish().elf_stack_copy.unwrap();
+        let ledger = capture.pre_copy_cr3_ledger.unwrap();
+        assert_eq!(ledger.status, ElfStackCopyCr3LedgerStatus::Complete);
+        assert_eq!(ledger.event_count, 2);
+        assert_eq!(ledger.events_omitted, 0);
+        assert_eq!(ledger.events.len(), 2);
+        assert_eq!(ledger.events[0].sequence, 1);
+        assert_eq!(ledger.events[0].rip, 0x1010);
+        assert_eq!(ledger.events[0].old_cr3, 0x1000);
+        assert_eq!(ledger.events[0].new_cr3, 0x2000);
+        assert_eq!(ledger.events[0].cpl, 0);
+        assert_eq!(ledger.events[0].retired_instructions_through_current, 5);
+        assert_eq!(ledger.events[1].sequence, 2);
+        assert_eq!(ledger.events[1].old_cr3, 0x2000);
+        assert_eq!(ledger.events[1].new_cr3, 0x3000);
+        assert_eq!(ledger.events[1].retired_instructions_through_current, 7);
+        assert_eq!(ledger.boundary_markers.len(), 3);
+        assert_eq!(ledger.boundary_markers[0].name, "kernel_execve");
+        assert_eq!(
+            ledger.boundary_markers[0].retired_instructions_before_current,
+            0
+        );
+        assert_eq!(ledger.boundary_markers[1].name, "load_elf_binary");
+        assert_eq!(ledger.boundary_markers[2].name, "create_elf_tables");
+        assert_eq!(capture.invocation.unwrap().entry.unwrap().cr3_changes, 2);
+    }
+
+    #[test]
+    fn elf_stack_copy_cr3_prefix_overflow_is_explicit() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        for index in 0..=LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY {
+            collector.record_elf_copy_cr3(0x1000 + index as u64, index as u64, index as u64 + 1, 0);
+        }
+        let mut snapshot = ElfStackCopySnapshot::empty(ElfStackCopyStatus::Captured);
+        snapshot.rip = Some(LINUX_ELF_STACK_COPY_RIP);
+        snapshot.cr3 = Some(LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY as u64 + 1);
+        snapshot.return_rip = Some(LINUX_ELF_STACK_COPY_RIP + 5);
+        snapshot.platform_string_matches = Some(true);
+        collector.record_elf_stack_copy(snapshot);
+
+        let capture = collector.finish().elf_stack_copy.unwrap();
+        let ledger = capture.pre_copy_cr3_ledger.unwrap();
+        assert_eq!(
+            ledger.status,
+            ElfStackCopyCr3LedgerStatus::IncompleteOverflow
+        );
+        assert_eq!(
+            ledger.event_count,
+            LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY as u64 + 1
+        );
+        assert_eq!(ledger.events_omitted, 1);
+        assert_eq!(
+            ledger.events.len(),
+            LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY
+        );
+
+        let mut ended_before_target =
+            LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        for index in 0..=LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY {
+            ended_before_target.record_elf_copy_cr3(
+                0x2000 + index as u64,
+                index as u64,
+                index as u64 + 1,
+                0,
+            );
+        }
+        let ledger = ended_before_target
+            .finish()
+            .elf_stack_copy
+            .unwrap()
+            .pre_copy_cr3_ledger
+            .unwrap();
+        assert_eq!(
+            ledger.status,
+            ElfStackCopyCr3LedgerStatus::IncompleteOverflow
+        );
+        assert_eq!(
+            ledger.event_count,
+            LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY as u64 + 1
+        );
+        assert_eq!(ledger.events_omitted, 1);
+        assert_eq!(
+            ledger.events.len(),
+            LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY
+        );
+    }
+
     fn start_elf_copy_invocation() -> LinuxExecutionObservationCollector {
         let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
         let mut snapshot = ElfStackCopySnapshot::empty(ElfStackCopyStatus::Captured);
@@ -1587,7 +1804,7 @@ mod tests {
     fn elf_stack_copy_invocation_snapshots_cumulative_counters_at_return_and_stop() {
         let mut collector = start_elf_copy_invocation();
         collector.record_elf_copy_retired(2);
-        collector.record_elf_copy_cr3(0xffff_ffff_8199_9c00, 0x1000, 0x2000);
+        collector.record_elf_copy_cr3(0xffff_ffff_8199_9c00, 0x1000, 0x2000, 0);
         collector.record_cpl0_rdtsc(Some(0xffff_ffff_8199_9c10));
         collector.record_elf_copy_retired(3);
         collector.finish_elf_copy_invocation(LINUX_ELF_STACK_COPY_RIP + 5, 0x2000);
@@ -1665,7 +1882,7 @@ mod tests {
     fn elf_stack_copy_cr3_and_rdtsc_caps_mark_capture_incomplete() {
         let mut cr3 = start_elf_copy_invocation();
         for index in 0..=LINUX_ELF_STACK_COPY_CR3_EVENT_CAPACITY {
-            cr3.record_elf_copy_cr3(0x1000 + index as u64, index as u64, index as u64 + 1);
+            cr3.record_elf_copy_cr3(0x1000 + index as u64, index as u64, index as u64 + 1, 0);
         }
         let cr3_capture = cr3.finish().elf_stack_copy.unwrap().invocation.unwrap();
         assert_eq!(
@@ -1765,7 +1982,7 @@ mod tests {
     fn elf_stack_copy_overflow_keeps_first_return_boundary_only() {
         let mut collector = start_elf_copy_invocation();
         for index in 0..=LINUX_ELF_STACK_COPY_CR3_EVENT_CAPACITY {
-            collector.record_elf_copy_cr3(0x1000 + index as u64, index as u64, index as u64 + 1);
+            collector.record_elf_copy_cr3(0x1000 + index as u64, index as u64, index as u64 + 1, 0);
         }
         collector.record_elf_copy_retired(10);
         collector.finish_elf_copy_invocation(LINUX_ELF_STACK_COPY_RIP + 5, 0x2000);
@@ -1812,7 +2029,7 @@ mod tests {
         assert!(!collector.tracks_elf_copy_counters());
         assert_eq!(collector.elf_copy_return_rip(), None);
         collector.record_elf_copy_retired(5);
-        collector.record_elf_copy_cr3(0x1000, 0x2000, 0x3000);
+        collector.record_elf_copy_cr3(0x1000, 0x2000, 0x3000, 0);
         collector.record_elf_copy_general_protection();
         assert_eq!(collector.retired_total, 0);
         assert_eq!(collector.cr3_change_total, 0);

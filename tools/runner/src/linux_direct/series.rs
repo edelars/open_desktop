@@ -1907,10 +1907,19 @@ fn validate_execution_observations_sidecar(
                             && snapshot.get("invocation").is_some_and(|invocation| {
                                 valid_elf_stack_copy_invocation(invocation, snapshot, runner)
                             }));
+                let pre_copy_cr3_ledger_valid = schema_version < 17
+                    || snapshot.get("pre_copy_cr3_ledger").is_some_and(|ledger| {
+                        valid_elf_stack_copy_pre_copy_cr3_ledger_with_runner(
+                            ledger,
+                            snapshot,
+                            Some(runner),
+                        )
+                    });
                 let status_data_valid = match status {
                     Some("captured") => {
                         snapshot_has_complete_capture
                             && invocation_valid
+                            && pre_copy_cr3_ledger_valid
                             && elf_stack_copy_gate_matches(snapshot)
                             && mismatch_reasons.is_some_and(Vec::is_empty)
                             && error.is_some_and(Value::is_null)
@@ -1931,15 +1940,19 @@ fn validate_execution_observations_sidecar(
                                 })
                             });
                         mismatch_reasons.is_some_and(|reasons| !reasons.is_empty())
+                            && pre_copy_cr3_ledger_valid
                             && (!elf_stack_copy_gate_matches(snapshot) || invocation_gate_mismatch)
                             && probes.is_some_and(Vec::is_empty)
                             && error.is_some_and(Value::is_null)
                     }
                     Some("read_error") => {
-                        error.is_some_and(Value::is_string) && probes.is_some_and(Vec::is_empty)
+                        pre_copy_cr3_ledger_valid
+                            && error.is_some_and(Value::is_string)
+                            && probes.is_some_and(Vec::is_empty)
                     }
                     Some("run_ended_before_target") => {
-                        probes.is_some_and(Vec::is_empty)
+                        pre_copy_cr3_ledger_valid
+                            && probes.is_some_and(Vec::is_empty)
                             && mismatch_reasons.is_some_and(Vec::is_empty)
                             && error.is_some_and(Value::is_null)
                     }
@@ -1968,7 +1981,172 @@ fn validate_execution_observations_sidecar(
 }
 
 fn supported_execution_observations_schema_version(version: u64) -> bool {
-    (1..=16).contains(&version)
+    (1..=17).contains(&version)
+}
+
+#[cfg(test)]
+fn valid_elf_stack_copy_pre_copy_cr3_ledger(
+    value: &Value,
+    snapshot: &serde_json::Map<String, Value>,
+) -> bool {
+    valid_elf_stack_copy_pre_copy_cr3_ledger_with_runner(value, snapshot, None)
+}
+
+fn valid_elf_stack_copy_pre_copy_cr3_ledger_with_runner(
+    value: &Value,
+    snapshot: &serde_json::Map<String, Value>,
+    runner: Option<&Value>,
+) -> bool {
+    let Some(ledger) = value.as_object() else {
+        return false;
+    };
+    let status = ledger.get("status").and_then(Value::as_str);
+    let Some(event_count) = ledger.get("event_count").and_then(Value::as_u64) else {
+        return false;
+    };
+    let Some(events_omitted) = ledger.get("events_omitted").and_then(Value::as_u64) else {
+        return false;
+    };
+    let Some(events) = ledger.get("events").and_then(Value::as_array) else {
+        return false;
+    };
+    let Some(markers) = ledger.get("boundary_markers").and_then(Value::as_array) else {
+        return false;
+    };
+    let Some(retained_and_omitted) = (events.len() as u64).checked_add(events_omitted) else {
+        return false;
+    };
+    if events.len() > od_machine::LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY
+        || markers.len() > od_machine::LINUX_ELF_STACK_COPY_BOUNDARIES.len()
+        || retained_and_omitted != event_count
+        || !matches!(
+            status,
+            Some("complete" | "incomplete_overflow" | "run_ended_before_target")
+        )
+        || (status == Some("complete") && events_omitted != 0)
+        || (status == Some("run_ended_before_target") && events_omitted != 0)
+        || (status == Some("incomplete_overflow")
+            && (events_omitted == 0
+                || events.len() != od_machine::LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY))
+    {
+        return false;
+    }
+    let captured_entry_retired =
+        if snapshot.get("status").and_then(Value::as_str) == Some("captured") {
+            let Some(retired) = snapshot
+                .get("invocation")
+                .and_then(|invocation| invocation.get("entry"))
+                .and_then(|entry| entry.get("retired_instructions_through_current"))
+                .and_then(Value::as_u64)
+            else {
+                return false;
+            };
+            if status == Some("run_ended_before_target") {
+                return false;
+            }
+            Some(retired)
+        } else {
+            None
+        };
+    let mut previous_marker_index = None;
+    let mut previous_marker_retired = None;
+    for marker in markers {
+        let (Some(name), Some(rip), Some(retired)) = (
+            marker.get("name").and_then(Value::as_str),
+            marker.get("rip").and_then(Value::as_str),
+            marker
+                .get("retired_instructions_before_current")
+                .and_then(Value::as_u64),
+        ) else {
+            return false;
+        };
+        let Some(index) = od_machine::LINUX_ELF_STACK_COPY_BOUNDARIES.iter().position(
+            |(expected_rip, expected_name)| {
+                name == *expected_name && rip == format!("0x{expected_rip:016x}")
+            },
+        ) else {
+            return false;
+        };
+        if previous_marker_index.is_some_and(|previous| index <= previous)
+            || previous_marker_retired.is_some_and(|previous| retired < previous)
+            || captured_entry_retired.is_some_and(|entry_retired| retired > entry_retired)
+        {
+            return false;
+        }
+        previous_marker_index = Some(index);
+        previous_marker_retired = Some(retired);
+    }
+    let mut previous_retired = 0;
+    let mut previous_new_cr3 = None;
+    for (index, event) in events.iter().enumerate() {
+        let Some(sequence) = event.get("sequence").and_then(Value::as_u64) else {
+            return false;
+        };
+        let (Some(rip), Some(old_cr3), Some(new_cr3)) = (
+            event.get("rip").and_then(Value::as_str),
+            event.get("old_cr3").and_then(Value::as_str),
+            event.get("new_cr3").and_then(Value::as_str),
+        ) else {
+            return false;
+        };
+        let Some(retired) = event
+            .get("retired_instructions_through_current")
+            .and_then(Value::as_u64)
+        else {
+            return false;
+        };
+        let cpl_valid = event.get("cpl").and_then(Value::as_u64) == Some(0);
+        if sequence != index as u64 + 1
+            || !canonical_hex64(rip)
+            || !canonical_hex64(old_cr3)
+            || !canonical_hex64(new_cr3)
+            || !cpl_valid
+            || retired < previous_retired
+            || captured_entry_retired.is_some_and(|entry_retired| retired > entry_retired)
+            || previous_new_cr3.is_some_and(|expected| old_cr3 != expected)
+        {
+            return false;
+        }
+        previous_retired = retired;
+        previous_new_cr3 = Some(new_cr3);
+    }
+    if captured_entry_retired.is_some() {
+        let Some(invocation) = snapshot.get("invocation") else {
+            return false;
+        };
+        let Some(entry_changes) = invocation
+            .get("entry")
+            .and_then(|entry| entry.get("cr3_changes"))
+            .and_then(Value::as_u64)
+        else {
+            return false;
+        };
+        if event_count != entry_changes {
+            return false;
+        }
+        let entry_cr3 = invocation
+            .get("entry")
+            .and_then(|entry| entry.get("cr3"))
+            .and_then(Value::as_str);
+        if status == Some("complete")
+            && previous_new_cr3.is_some_and(|new_cr3| Some(new_cr3) != entry_cr3)
+        {
+            return false;
+        }
+    }
+    if snapshot.get("status").and_then(Value::as_str) == Some("run_ended_before_target") {
+        let Some(run_stop_cr3_changes) = runner
+            .and_then(|runner| runner.get("stop"))
+            .and_then(|stop| stop.get("cr3_changes"))
+            .and_then(Value::as_u64)
+        else {
+            return false;
+        };
+        if event_count != run_stop_cr3_changes {
+            return false;
+        }
+    }
+    true
 }
 
 fn valid_elf_stack_copy_invocation(
@@ -3894,7 +4072,7 @@ mod tests {
             byte_count,
             sha256,
         );
-        assert_eq!(raw["schema_version"], 16);
+        assert_eq!(raw["schema_version"], 17);
         assert_eq!(
             raw["delay_tsc_call_summary"]["entries"][0]["frame_chain_end"],
             "read_failed"
@@ -4123,7 +4301,8 @@ mod tests {
         assert!(supported_execution_observations_schema_version(14));
         assert!(supported_execution_observations_schema_version(15));
         assert!(supported_execution_observations_schema_version(16));
-        assert!(!supported_execution_observations_schema_version(17));
+        assert!(supported_execution_observations_schema_version(17));
+        assert!(!supported_execution_observations_schema_version(18));
         assert!(!supported_execution_observations_schema_version(u64::MAX));
     }
 
@@ -4133,6 +4312,207 @@ mod tests {
         let over_cap = vec![Value::Null; od_machine::LINUX_ELF_STACK_COPY_PROBE_CAPACITY + 1];
         assert!(elf_stack_copy_probe_count_valid(&within_cap));
         assert!(!elf_stack_copy_probe_count_valid(&over_cap));
+    }
+
+    #[test]
+    fn elf_stack_copy_pre_copy_cr3_ledger_requires_complete_order_and_entry_reconciliation() {
+        let markers = od_machine::LINUX_ELF_STACK_COPY_BOUNDARIES
+            .iter()
+            .enumerate()
+            .map(|(index, (rip, name))| {
+                json!({
+                    "name": name,
+                    "rip": format!("0x{rip:016x}"),
+                    "retired_instructions_before_current": index as u64 + 1,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut snapshot = json!({
+            "status": "captured",
+            "invocation": {"entry": {
+                "cr3": "0x3000",
+                "cr3_changes": 2,
+                "retired_instructions_through_current": 20
+            }}
+        });
+        let mut ledger = json!({
+            "status": "complete",
+            "event_count": 2,
+            "events_omitted": 0,
+            "events": [
+                {
+                    "sequence": 1,
+                    "rip": "0xffffffff81001000",
+                    "old_cr3": "0x1000",
+                    "new_cr3": "0x2000",
+                    "cpl": 0,
+                    "retired_instructions_through_current": 10
+                },
+                {
+                    "sequence": 2,
+                    "rip": "0xffffffff81002000",
+                    "old_cr3": "0x2000",
+                    "new_cr3": "0x3000",
+                    "cpl": 0,
+                    "retired_instructions_through_current": 12
+                }
+            ],
+            "boundary_markers": markers.clone()
+        });
+        assert!(
+            valid_elf_stack_copy_pre_copy_cr3_ledger(&ledger, snapshot.as_object().unwrap()),
+            "ledger={ledger:#}; snapshot={snapshot:#}"
+        );
+        ledger["status"] = json!("run_ended_before_target");
+        assert!(!valid_elf_stack_copy_pre_copy_cr3_ledger(
+            &ledger,
+            snapshot.as_object().unwrap()
+        ));
+        ledger["status"] = json!("complete");
+        ledger["boundary_markers"].as_array_mut().unwrap().pop();
+        assert!(valid_elf_stack_copy_pre_copy_cr3_ledger(
+            &ledger,
+            snapshot.as_object().unwrap()
+        ));
+        ledger["boundary_markers"] = json!(markers);
+        ledger["boundary_markers"][1]["retired_instructions_before_current"] = json!(0);
+        assert!(!valid_elf_stack_copy_pre_copy_cr3_ledger(
+            &ledger,
+            snapshot.as_object().unwrap()
+        ));
+        ledger["boundary_markers"] = json!(markers);
+
+        ledger["event_count"] = json!(1);
+        assert!(!valid_elf_stack_copy_pre_copy_cr3_ledger(
+            &ledger,
+            snapshot.as_object().unwrap()
+        ));
+        ledger["event_count"] = json!(2);
+        ledger["events"][1]["sequence"] = json!(3);
+        assert!(!valid_elf_stack_copy_pre_copy_cr3_ledger(
+            &ledger,
+            snapshot.as_object().unwrap()
+        ));
+        ledger["events"][1]["sequence"] = json!(2);
+        ledger["events"][1]["retired_instructions_through_current"] = json!(21);
+        assert!(!valid_elf_stack_copy_pre_copy_cr3_ledger(
+            &ledger,
+            snapshot.as_object().unwrap()
+        ));
+        ledger["events"][1]["retired_instructions_through_current"] = json!(12);
+        ledger["events"][1]["cpl"] = json!(3);
+        assert!(!valid_elf_stack_copy_pre_copy_cr3_ledger(
+            &ledger,
+            snapshot.as_object().unwrap()
+        ));
+        ledger["events"][1]["cpl"] = json!(0);
+        ledger["events"][1]["old_cr3"] = json!("0x9999");
+        assert!(!valid_elf_stack_copy_pre_copy_cr3_ledger(
+            &ledger,
+            snapshot.as_object().unwrap()
+        ));
+
+        ledger["events"][1]["old_cr3"] = json!("0x2000");
+        ledger["status"] = json!("incomplete_overflow");
+        ledger["events_omitted"] = json!(1);
+        ledger["events"].as_array_mut().unwrap().pop();
+        assert!(!valid_elf_stack_copy_pre_copy_cr3_ledger(
+            &ledger,
+            snapshot.as_object().unwrap()
+        ));
+
+        let cap = od_machine::LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY;
+        let full_prefix = (0..cap)
+            .map(|index| {
+                let (old_cr3, new_cr3) = if index % 2 == 0 {
+                    ("0x1000", "0x2000")
+                } else {
+                    ("0x2000", "0x1000")
+                };
+                json!({
+                    "sequence": index as u64 + 1,
+                    "rip": "0xffffffff81001000",
+                    "old_cr3": old_cr3,
+                    "new_cr3": new_cr3,
+                    "cpl": 0,
+                    "retired_instructions_through_current": 10
+                })
+            })
+            .collect::<Vec<_>>();
+        ledger["events"] = json!(full_prefix);
+        ledger["event_count"] = json!(cap as u64 + 1);
+        snapshot["invocation"]["entry"]["cr3_changes"] = json!(cap as u64 + 1);
+        assert!(valid_elf_stack_copy_pre_copy_cr3_ledger(
+            &ledger,
+            snapshot.as_object().unwrap()
+        ));
+        ledger["events"].as_array_mut().unwrap().pop();
+        ledger["events_omitted"] = json!(2);
+        assert!(!valid_elf_stack_copy_pre_copy_cr3_ledger(
+            &ledger,
+            snapshot.as_object().unwrap()
+        ));
+    }
+
+    #[test]
+    fn elf_stack_copy_run_ended_ledger_cannot_hide_omitted_events() {
+        let snapshot = json!({"status": "run_ended_before_target"});
+        let ledger = json!({
+            "status": "run_ended_before_target",
+            "event_count": 1,
+            "events_omitted": 1,
+            "events": [],
+            "boundary_markers": []
+        });
+        assert!(!valid_elf_stack_copy_pre_copy_cr3_ledger(
+            &ledger,
+            snapshot.as_object().unwrap()
+        ));
+
+        let complete_prefix = json!({
+            "status": "run_ended_before_target",
+            "event_count": 0,
+            "events_omitted": 0,
+            "events": [],
+            "boundary_markers": []
+        });
+        assert!(!valid_elf_stack_copy_pre_copy_cr3_ledger(
+            &complete_prefix,
+            snapshot.as_object().unwrap()
+        ));
+        let zero_stop = json!({"stop": {"cr3_changes": 0}});
+        assert!(valid_elf_stack_copy_pre_copy_cr3_ledger_with_runner(
+            &complete_prefix,
+            snapshot.as_object().unwrap(),
+            Some(&zero_stop)
+        ));
+
+        let captured_prefix = json!({
+            "status": "run_ended_before_target",
+            "event_count": 1,
+            "events_omitted": 0,
+            "events": [{
+                "sequence": 1,
+                "rip": "0xffffffff81001000",
+                "old_cr3": "0x1000",
+                "new_cr3": "0x2000",
+                "cpl": 0,
+                "retired_instructions_through_current": 10
+            }],
+            "boundary_markers": []
+        });
+        let run_stop = json!({"stop": {"cr3_changes": 1}});
+        assert!(valid_elf_stack_copy_pre_copy_cr3_ledger_with_runner(
+            &captured_prefix,
+            snapshot.as_object().unwrap(),
+            Some(&run_stop)
+        ));
+        let mismatched_stop = json!({"stop": {"cr3_changes": 0}});
+        assert!(!valid_elf_stack_copy_pre_copy_cr3_ledger_with_runner(
+            &captured_prefix,
+            snapshot.as_object().unwrap(),
+            Some(&mismatched_stop)
+        ));
     }
 
     #[test]
@@ -4779,8 +5159,9 @@ mod tests {
 
     fn captured_elf_stack_copy_observations() -> od_machine::LinuxExecutionObservations {
         use od_machine::{
-            ElfStackCopyCounterSnapshot, ElfStackCopyCr3Event, ElfStackCopyInvocation,
-            ElfStackCopyInvocationStatus, ElfStackCopyPageFaultEvent, ElfStackCopyProbe,
+            ElfStackCopyBoundaryMarker, ElfStackCopyCounterSnapshot, ElfStackCopyCr3Event,
+            ElfStackCopyCr3LedgerStatus, ElfStackCopyInvocation, ElfStackCopyInvocationStatus,
+            ElfStackCopyPageFaultEvent, ElfStackCopyPreCopyCr3Ledger, ElfStackCopyProbe,
             ElfStackCopyRdtscSiteCount, ElfStackCopySnapshot, ElfStackCopyStatus,
             GuestPhysicalAddress, PageTableLevel, WalkEntry,
         };
@@ -4833,6 +5214,21 @@ mod tests {
             error: None,
             return_rip: Some(od_machine::LINUX_ELF_STACK_COPY_RIP + 5),
             platform_string_matches: Some(true),
+            pre_copy_cr3_ledger: Some(ElfStackCopyPreCopyCr3Ledger {
+                status: ElfStackCopyCr3LedgerStatus::Complete,
+                event_count: 0,
+                events_omitted: 0,
+                events: Vec::new(),
+                boundary_markers: od_machine::LINUX_ELF_STACK_COPY_BOUNDARIES
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (rip, name))| ElfStackCopyBoundaryMarker {
+                        name,
+                        rip: *rip,
+                        retired_instructions_before_current: [5, 20, 50][index],
+                    })
+                    .collect(),
+            }),
             invocation: Some(ElfStackCopyInvocation {
                 status: ElfStackCopyInvocationStatus::Complete,
                 return_rip: Some(od_machine::LINUX_ELF_STACK_COPY_RIP + 5),
@@ -4893,7 +5289,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v16_captured_elf_stack_copy_serializes_and_loads_with_strict_validation() {
+    fn schema_v17_captured_elf_stack_copy_serializes_and_loads_with_strict_validation() {
         let temp = std::env::temp_dir().join(format!(
             "od-runner-stage5-elf-stack-copy-{}-{}",
             std::process::id(),
@@ -4929,7 +5325,7 @@ mod tests {
         );
         let original_bytes = fs::read(&sidecar_path).unwrap();
         let written: Value = serde_json::from_slice(&original_bytes).unwrap();
-        assert_eq!(written["schema_version"], 16);
+        assert_eq!(written["schema_version"], 17);
         assert_eq!(written["elf_stack_copy"]["status"], "captured");
         assert_eq!(
             written["elf_stack_copy"]["registers"]["r13"],

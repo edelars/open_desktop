@@ -2158,6 +2158,28 @@ fn write_execution_observations_sidecar(
             "instruction_bytes": snapshot.instruction_bytes.as_ref().map(|bytes| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()),
             "return_rip": snapshot.return_rip.map(hex64),
             "platform_string_matches": snapshot.platform_string_matches,
+            "pre_copy_cr3_ledger": snapshot.pre_copy_cr3_ledger.as_ref().map(|ledger| json!({
+                "status": match ledger.status {
+                    od_machine::ElfStackCopyCr3LedgerStatus::Complete => "complete",
+                    od_machine::ElfStackCopyCr3LedgerStatus::IncompleteOverflow => "incomplete_overflow",
+                    od_machine::ElfStackCopyCr3LedgerStatus::RunEndedBeforeTarget => "run_ended_before_target",
+                },
+                "event_count": ledger.event_count,
+                "events_omitted": ledger.events_omitted,
+                "events": ledger.events.iter().map(|event| json!({
+                    "sequence": event.sequence,
+                    "rip": hex64(event.rip),
+                    "old_cr3": hex64(event.old_cr3),
+                    "new_cr3": hex64(event.new_cr3),
+                    "cpl": event.cpl,
+                    "retired_instructions_through_current": event.retired_instructions_through_current,
+                })).collect::<Vec<_>>(),
+                "boundary_markers": ledger.boundary_markers.iter().map(|marker| json!({
+                    "name": marker.name,
+                    "rip": hex64(marker.rip),
+                    "retired_instructions_before_current": marker.retired_instructions_before_current,
+                })).collect::<Vec<_>>(),
+            })),
             "invocation": snapshot.invocation.as_ref().map(elf_stack_copy_invocation_json),
             "mismatch_reasons": snapshot.mismatch_reasons,
             "error": snapshot.error,
@@ -2422,8 +2444,8 @@ fn write_execution_observations_sidecar(
         })
     });
     let value = json!({
-        "schema_version": 16,
-        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, an optional bounded every-hit entry-RDTSC stream with clock ledger, an optional ordered RDTSC prefix through a sentinel RIP, an optional inclusive hit-ordinal window, an optional strictly gated single-quantum instruction path trace, and an optional bounded delay_tsc per-call summary",
+        "schema_version": 17,
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, an optional bounded every-hit entry-RDTSC stream with clock ledger, an optional ordered RDTSC prefix through a sentinel RIP, an optional inclusive hit-ordinal window, an optional strictly gated single-quantum instruction path trace, an optional bounded delay_tsc per-call summary, and an optional ordered pre-copy CR3-write ledger",
         "limits": {
             "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
             "rdtsc_site_samples": od_machine::LINUX_RDTSC_SAMPLE_CAPACITY,
@@ -2443,6 +2465,7 @@ fn write_execution_observations_sidecar(
             "elf_stack_copy_rdtsc_sites": od_machine::LINUX_ELF_STACK_COPY_RDTSC_SITE_CAPACITY,
             "elf_stack_copy_page_fault_events": od_machine::LINUX_ELF_STACK_COPY_PF_EVENT_CAPACITY,
             "elf_stack_copy_retired_duration": od_machine::LINUX_ELF_STACK_COPY_RETIRED_CAPACITY,
+            "elf_stack_copy_pre_copy_cr3_events": od_machine::LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY,
         },
         "rdtsc_cpl0_sites": rdtsc_sites,
         "rdtsc_cpl0_unattributed_reads": observations.rdtsc_cpl0_unattributed_reads,

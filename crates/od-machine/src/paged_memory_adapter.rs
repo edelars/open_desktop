@@ -1772,6 +1772,7 @@ fn run_cpl0_set_paged_2m_ram_with_cache_impl<
         if let Some(observations) = execution_observations.as_deref_mut() {
             last_instruction_rip = Some(instruction_rip);
             if ELF_COPY_ENABLED {
+                observations.observe_elf_stack_copy_boundary(instruction_rip);
                 if observations.elf_copy_invocation_active()
                     && observations.elf_copy_return_rip() == Some(instruction_rip)
                 {
@@ -2117,7 +2118,12 @@ fn run_cpl0_set_paged_2m_ram_with_cache_impl<
                 TranslationContextChange::Cr3Write { old_cr3, new_cr3 },
             ) = &result.exit
             {
-                observations.record_elf_copy_cr3(instruction_rip, *old_cr3, *new_cr3);
+                observations.record_elf_copy_cr3(
+                    instruction_rip,
+                    *old_cr3,
+                    *new_cr3,
+                    if cpl3 { 3 } else { 0 },
+                );
             }
         }
         instructions_executed += result.instructions_executed;
