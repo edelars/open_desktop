@@ -4947,7 +4947,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-384 — S7-04: exact helper ADD register frontier (`48 01 CE`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-383.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201257`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware reaches `ADD RSI,RCX` after ISSUE-383; this exact qword register form is not yet admitted by the bounded base profile.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact `48 01 CE` is admitted as qword `ADD RSI,RCX`. Opcode 01 uses r/m as destination and reg as source. Only RSI, RFLAGS/definedness and RIP change; shared arithmetic semantics materialize the arithmetic flags. Neighboring register pairs, direction, widths, prefixes, CPL3 and other profiles remain unsupported.
 - **Основание:** same firmware image/SHA and runner budget; retired 9,862 instructions, `Unsupported { opcode: 1 }` at RIP `0x201257`, bytes `48 01 CE`, COM1 empty.
-- **Следующий шаг:** separately review only this exact arithmetic instruction encoding.
+- **Результат:** after admission, runner retired 9,863 instructions and stopped at `Unsupported { opcode: 193 }` at RIP `0x20125a`, bytes `49 C1 E0 04` (SHL R8,4; ISSUE-385); COM1 is empty. Image SHA-256 remains `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+- **Проверка:** focused arithmetic/fault/neighbor/CPL3 tests 4/4 pass and other-profile matrix 1/1 passes. Full od-isa suites pass (2,322/1,591/126/29/6/1,254/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline cargo check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-385 — S7-04: exact helper SHL R8,4 frontier (`49 C1 E0 04`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-384.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20125a`.
+- **Статус:** открыта.
+- **Суть и последствия:** after ISSUE-384 the firmware reaches exact `49 C1 E0 04` (SHL R8,4), not yet admitted by the bounded base profile.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,863 instructions and reported `Unsupported { opcode: 193 }` at RIP `0x20125a`; COM1 is empty.
+- **Следующий шаг:** implement only the exact qword SHL form and validate its shift flag semantics.

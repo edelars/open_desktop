@@ -28665,3 +28665,24 @@ The firmware runner advances to `48 01 CE` (ADD RSI,RCX, ISSUE-384), RIP
 ISSUE-201 remains the unrelated CLD expectation caveat.
 
 Five focused ISA tests and the other-profile matrix pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,250/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline cargo check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-384: `48 01 CE` — ADD RSI,RCX
+
+`PagedCpl0ProbeV1` admits only exact no-prefix `48 01 CE`. Opcode 01 assigns
+the ModRM r/m operand to destination RSI and reg to source RCX. The operation
+uses qword addition and shared arithmetic flags semantics; RSI, arithmetic
+RFLAGS and their definedness, and RIP are updated. Other GPRs and non-arithmetic
+RFLAGS bits are preserved. This exact register form performs no memory or PIO
+access; neighboring encodings, CPL3 and other profiles remain unsupported.
+
+The firmware runner advances to `49 C1 E0 04` (SHL R8,4, ISSUE-385), RIP
+`0x20125a`, after 9,863 retired instructions, with `Unsupported { opcode: 193 }`;
+COM1 is empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Focused tests pass (4/4), and the other-profile matrix passes (1/1). Full od-isa
+suites pass (2,322/1,591/126/29/6/1,254/7/15; zero doc tests), paged machine
+quantum passes (110/110), workspace all-targets offline check passes with
+existing warnings, and scoped rustfmt/diff-check pass. Independent review
+approved with no findings.

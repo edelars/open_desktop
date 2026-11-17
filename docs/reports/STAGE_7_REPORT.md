@@ -2920,3 +2920,24 @@ runner advances to `48 01 CE` (ADD RSI,RCX; ISSUE-384), RIP `0x201257`, after
 empty. ISSUE-201 remains the unrelated CLD expectation caveat.
 
 Full od-isa suites pass (2,322/1,591/126/29/6/1,250/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-384 — exact helper ADD RSI,RCX (`48 01 CE`)
+
+The base `PagedCpl0ProbeV1` admits only exact no-prefix `48 01 CE`. The
+instruction computes qword `RSI + RCX`, with RSI the ModRM r/m destination and
+RCX the reg source; shared arithmetic semantics update arithmetic RFLAGS and
+definedness. Other GPRs and unrelated state are preserved, with no data-memory
+or port access. Four focused tests pass for arithmetic edge cases/definedness,
+final-ModRM fetch-fault atomicity, neighboring encodings, and CPL3 rejection;
+the other-profile matrix passes.
+
+On `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), the
+runner advances to `49 C1 E0 04` (SHL R8,4, ISSUE-385), RIP `0x20125a`, after
+9,863 retired instructions; it reports `Unsupported { opcode: 193 }` and COM1
+is empty. ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Full od-isa suites pass (2,322/1,591/126/29/6/1,254/7/15; zero doc tests),
+paged machine quantum passes (110/110), workspace all-targets offline check
+passes with existing warnings, and scoped rustfmt/diff-check pass. Independent
+review approved with no findings.
