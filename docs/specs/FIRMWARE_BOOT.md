@@ -1916,3 +1916,25 @@ runner exit 5 for unsupported). Full od-isa suites pass
 (2,322/1,591/126/29/6/1,359/7/15; zero doc tests), paged machine quantum
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-409 — exact `CMP R8D,8` (`41 83 F8 08`)
+
+The exact REX.B dword compare uses sign-extended imm8 8. REX.B selects R8D;
+the compare ignores the high half, writes no GPR, and uses shared arithmetic
+flags/definedness. Focused tests pass (4/4), and the other-profile matrix passes
+(1/1). Full od-isa passes (2,322/1,591/126/29/6/1,363/7/15; zero doc tests),
+paged machine quantum passes (110/110), workspace all-targets offline check
+passes with existing warnings, and scoped rustfmt/diff-check pass. Independent
+review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+Image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`
+runner advances to `0F 44 C5` (CMOVE EAX,EBP, ISSUE-410), RIP `0x2012ec`, after
+9,898 retired instructions, `Unsupported { opcode: 68}`, `com1_bytes=0`.
+
+### ISSUE-410 — exact `CMOVE EAX,EBP` (`0F 44 C5`)
+
+The next firmware instruction is exact bytes `0F 44 C5` at RIP `0x2012ec`
+after 9,898 retired instructions. The runner reports unsupported opcode 68
+and empty COM1. This instruction is not yet admitted. ISSUE-201 remains the
+unrelated CLD caveat.

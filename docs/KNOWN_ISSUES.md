@@ -5169,10 +5169,20 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Результат:** runner now retires 9,897 instructions and stops at RIP `0x2012e8`, bytes `41 83 F8 08` (CMP R8D,8; ISSUE-409), `Unsupported { opcode: 131 }`; COM1 is empty.
 - **Проверка:** focused dword result/zero-extension/flags/fetch-fault/neighbors/CPL3 tests 4/4 and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,359/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
 
-### ISSUE-409 — S7-04: exact CMP R8D,8 frontier (`41 83 F8 08`)
+### ISSUE-409 — S7-04: exact CMP R8D,8 (`41 83 F8 08`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-408.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012e8`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this exact dword compare of R8D with sign-extended imm8 8, outside the current bounded base-profile admission.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `41 83 F8 08`. REX.B selects R8D, CMP compares its low dword with sign-extended imm8 8, and shared arithmetic computes dword flags/definedness without writing R8. The high half of R8 does not participate. Other encodings/profiles remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,897 instructions and reported `Unsupported { opcode: 131 }` at RIP `0x2012e8`; COM1 is empty. Bytes at the link-base shadow are `41 83 F8 08`.
-- **Следующий шаг:** verify exact REX.B dword CMP semantics and arithmetic flag definedness; admit only this encoding.
+- **Результат:** runner now retires 9,898 instructions and stops at RIP `0x2012ec`, bytes `0F 44 C5` (CMOVE EAX,EBP; ISSUE-410), `Unsupported { opcode: 68 }`; COM1 is empty.
+- **Проверка:** focused dword flags/high-R8-ignored/fetch-fault/neighbors/CPL3 tests 4/4 and other-profile matrix 1/1 pass. Full od-isa passes (2,322/1,591/126/29/6/1,363/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+- **Следующий шаг:** ISSUE-410, exact `0F 44 C5` (CMOVE EAX,EBP) at RIP `0x2012ec`.
+
+### ISSUE-410 — S7-04: exact CMOVE EAX,EBP frontier (`0F 44 C5`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-409.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012ec`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware reaches this exact register-register conditional move, outside the current bounded base-profile admission.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,898 instructions and reported `Unsupported { opcode: 68 }` at RIP `0x2012ec`; COM1 is empty. Bytes at the link-base shadow are `0F 44 C5`.
+- **Следующий шаг:** verify exact CMOVE condition and EAX/RBP routing; admit only this encoding.

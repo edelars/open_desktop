@@ -3356,3 +3356,26 @@ exit 5 for unsupported). Full `cargo test --offline -p od-isa --quiet` passes
 (2,322/1,591/126/29/6/1,359/7/15; zero doc tests), paged machine quantum
 passes (110/110), workspace all-targets offline cargo check passes with
 existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-409 — exact `CMP R8D,8` (`41 83 F8 08`)
+
+The exact REX.B dword compare uses sign-extended imm8 8; REX.B selects R8D,
+high R8 bits are ignored, and shared arithmetic provides flags/definedness
+without a register write. Focused tests pass (4/4); other-profile matrix passes
+(1/1). Full od-isa passes (2,322/1,591/126/29/6/1,363/7/15; zero doc tests),
+paged machine quantum passes (110/110), workspace all-targets offline check
+passes with existing warnings, and scoped rustfmt/diff-check pass. Independent
+review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+Runner image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`
+advances to `0F 44 C5` (CMOVE EAX,EBP, ISSUE-410), RIP `0x2012ec`, after 9,898
+retired instructions, `Unsupported { opcode: 68}`, `com1_bytes=0` (expected
+runner exit 5 for unsupported).
+
+### ISSUE-410 — exact `CMOVE EAX,EBP` (`0F 44 C5`)
+
+Runner frontier: image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, RIP
+`0x2012ec`, retired 9,898, bytes `0F 44 C5`, unsupported opcode 68, COM1 empty.
+Implementation and validation are pending. ISSUE-201 remains the unrelated CLD
+caveat.

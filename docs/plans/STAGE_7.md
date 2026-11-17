@@ -2028,6 +2028,28 @@ Independent review approved with no findings.
 
 ### ISSUE-409 — exact `CMP R8D,8` (`41 83 F8 08`)
 
-The next runner frontier is this exact REX.B dword CMP with sign-extended
-imm8 8. Verify register routing and arithmetic flags/definedness before
-admitting only this form; preserve the unrelated ISSUE-201 CLD caveat.
+This slice admits only the exact REX.B dword CMP with sign-extended imm8 8.
+REX.B selects R8D; the compare ignores R8's high dword, writes no GPR, and
+uses shared arithmetic flags/definedness. Focused vectors include equality,
+borrow, overflow, parity, high-half patterns, final-immediate fetch fault,
+encoding neighbors and CPL3; focused tests pass 4/4 and the other-profile
+matrix passes 1/1. Full od-isa passes (2,322/1,591/126/29/6/1,363/7/15;
+zero doc tests), paged machine quantum passes (110/110), workspace all-targets
+offline check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings. ISSUE-201 remains the unrelated
+CLD caveat.
+
+The runner advances to exact `0F 44 C5` (CMOVE EAX,EBP; ISSUE-410) at RIP
+`0x2012ec`, after 9,898 retired instructions, with `Unsupported { opcode: 68}`
+and empty COM1. Full od-isa passes (2,322/1,591/126/29/6/1,363/7/15; zero doc
+tests), paged machine quantum passes (110/110), workspace all-targets offline
+check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings. ISSUE-201 remains the unrelated
+CLD caveat.
+
+### ISSUE-410 — exact `CMOVE EAX,EBP` (`0F 44 C5`)
+
+The next runner frontier is this exact register-register conditional move in
+the base paged profile. Verify ZF condition, dword destination zero-extension,
+source routing, state preservation, and exact encoding/profile boundaries
+before admitting only this form. Preserve the unrelated ISSUE-201 CLD caveat.

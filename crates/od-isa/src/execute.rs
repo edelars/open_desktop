@@ -25972,6 +25972,40 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: exact `41 83 F8 08` compares R8D with sign-extended imm8 8.
+        // REX.B selects R8D; CMP updates dword flags without writing the register.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Cmp,
+            dst: Operand::Register(destination),
+            src: Operand::Immediate(8),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x83
+            && instruction.length == 4
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x41),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R8, OperandSize::Dword) =>
+        {
+            let lhs = state.read(destination);
+            let (_, flags) = arithmetic_result(
+                OperandSize::Dword,
+                ArithmeticKind::Cmp,
+                lhs,
+                8,
+                state.rflags,
+            );
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: the Rust helper compares R14B with exact `41 80 FE 01`.
         // Keep byte width, REX.B register selection and immediate value exact.
         Operation::Arithmetic {

@@ -29071,9 +29071,29 @@ RAX) and computes arithmetic flags/definedness. Focused tests pass (4/4),
 including full state/flag vectors and final-ModRM fetch-fault atomicity, as does
 the other-profile matrix (1/1). ISSUE-201 remains the unrelated CLD caveat.
 
-Runner advances to `41 83 F8 08` (CMP R8D,8, ISSUE-409), RIP `0x2012e8`,
-after 9,897 retired instructions, `Unsupported { opcode: 131}`; COM1 is empty.
-Full `cargo test --offline -p od-isa --quiet` passes
+Runner advances to `41 83 F8 08` (CMP R8D,8, ISSUE-409), RIP `0x2012e8`, after
+9,897 retired instructions, `Unsupported { opcode: 131}`; COM1 is empty. Full
+`cargo test --offline -p od-isa --quiet` passes
 (2,322/1,591/126/29/6/1,359/7/15; zero doc tests), paged machine quantum passes
 (110/110), workspace all-targets offline check passes with existing warnings,
 and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-409 — exact `CMP R8D,8` (`41 83 F8 08`)
+
+The exact REX.B dword compare uses sign-extended imm8 8. REX.B selects R8D;
+the compare ignores the high half, writes no GPR, and uses shared arithmetic
+flags/definedness. Focused tests pass (4/4), and the other-profile matrix passes
+(1/1). Full od-isa passes (2,322/1,591/126/29/6/1,363/7/15; zero doc tests),
+paged machine quantum passes (110/110), workspace all-targets offline check
+passes with existing warnings, and scoped rustfmt/diff-check pass. Independent
+review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+Runner advances to `0F 44 C5` (CMOVE EAX,EBP, ISSUE-410), RIP `0x2012ec`,
+after 9,898 retired instructions, `Unsupported { opcode: 68}`; COM1 is empty.
+
+### ISSUE-410 — exact `CMOVE EAX,EBP` (`0F 44 C5`)
+
+The exact next runner instruction is `0F 44 C5` at RIP `0x2012ec`, after 9,898
+retired instructions, with unsupported opcode 68 and empty COM1. It is not yet
+admitted; implementation and validation are pending. ISSUE-201 remains the
+unrelated CLD caveat.
