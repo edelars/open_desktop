@@ -5222,7 +5222,17 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-414 — S7-04: exact JZ rel32 +0x19d frontier (`0F 84 9D 01 00 00`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-413.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012ff`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this exact near conditional branch on ZF, outside the current bounded base-profile admission.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `0F 84 9D 01 00 00`. JZ is taken iff ZF=1, computes signed rel32 from next RIP, preserves flags/definedness, and checks target canonicality only on the taken path. Other displacements/conditions/prefixes and CPL3/other profiles remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,902 instructions and reported `Unsupported { opcode: 132 }` at RIP `0x2012ff`; COM1 is empty. Bytes at the link-base shadow are `0F 84 9D 01 00 00`.
-- **Следующий шаг:** verify exact JZ condition/target/fault semantics; admit only this displacement.
+- **Результат:** runner now retires 9,903 instructions and stops at RIP `0x201305`, bytes `46 8B 64 1E 04` (MOV R12D,dword ptr [RSI+R11+4]; ISSUE-415), `Unsupported { opcode: 139 }`; COM1 is empty.
+- **Проверка:** focused ZF/taken-fallthrough/definedness/canonicality/fetch-fault/neighbors/CPL3 tests 5/5 and other-profile matrix 1/1 pass. Full od-isa passes (2,322/1,591/126/29/6/1,386/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+- **Следующий шаг:** ISSUE-415, exact `46 8B 64 1E 04` (MOV R12D,dword ptr [RSI+R11+4]) at RIP `0x201305`.
+
+### ISSUE-415 — S7-04: exact MOV R12D,dword ptr [RSI+R11+4] frontier (`46 8B 64 1E 04`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-414.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201305`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware reaches this exact indexed dword load into R12D (zero-extending R12), outside the current bounded base-profile admission.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,903 instructions and reported `Unsupported { opcode: 139 }` at RIP `0x201305`; COM1 is empty. Bytes at the link-base shadow are `46 8B 64 1E 04`.
+- **Следующий шаг:** verify REX/SIB register routing, tracked dword load and fault semantics; admit only this encoding.

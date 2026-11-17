@@ -3435,3 +3435,20 @@ pass. Independent review approved with no findings. ISSUE-201 remains the unrela
 Runner advances to `0F 84 9D 01 00 00` (JZ rel32 +0x19d; ISSUE-414), RIP
 `0x2012ff`, after 9,902 retired instructions, unsupported opcode 132, COM1
 empty.
+
+### ISSUE-414 — exact `JZ rel32 +0x19d` (`0F 84 9D 01 00 00`)
+
+Runner frontier: image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, RIP
+`0x2012ff`, retired 9,902, bytes `0F 84 9D 01 00 00`, unsupported opcode 132,
+COM1 empty. Only this exact base-profile encoding is admitted. JZ tests ZF,
+preserves flags/definedness, computes rel32 from next RIP, and validates target
+canonicality only when taken. Focused tests pass (5/5), other-profile matrix
+passes (1/1), full od-isa passes (2,322/1,591/126/29/6/1,386/7/15; zero doc
+tests), paged machine quantum passes (110/110), workspace all-targets offline
+check and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.
+
+Runner advances to `46 8B 64 1E 04` (MOV R12D,dword ptr [RSI+R11+4]; ISSUE-415),
+RIP `0x201305`, after 9,903 retired instructions, unsupported opcode 139,
+COM1 empty.
