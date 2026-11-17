@@ -2399,3 +2399,21 @@ ISSUE-201's unrelated CLD caveat remains open. Full od-isa
 in `crates/od-host/src/storage_abi_v1.rs`; that file was not changed. Existing
 unused-code/import/variable warnings are in od-machine and od-host. Independent
 review approved with no remaining findings.
+
+### ISSUE-358 — ADD RAX,0x20
+
+The base profile admits only `48 83 C0 20`, qword ADD RAX,sign-extended imm8
++0x20. Shared arithmetic semantics update RAX, arithmetic flags and
+definedness. Four focused profile tests cover qword edge results, carry,
+overflow, zero, parity, definedness, immediate-fetch atomicity, neighbors and
+CPL3; the other-profile matrix rejects this exact form. The runner advances to
+ISSUE-359 (`49 FF C3`, `INC R11`) at RIP `0x20180b` after 9,077 retired
+instructions; COM1 is empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201's unrelated CLD caveat remains open. Full od-isa
+(2,322/1,591/126/29/6/1,129/7/15; zero doc tests), paged machine quantum
+(79/79), workspace all-targets check, scoped rustfmt and diff-check pass.
+`cargo fmt --all -- --check` reports the unrelated pre-existing formatting diff
+in `crates/od-host/src/storage_abi_v1.rs`; that file was not changed. Existing
+warnings remain confined to unrelated od-machine/od-host code. Independent
+review approved with no remaining findings.

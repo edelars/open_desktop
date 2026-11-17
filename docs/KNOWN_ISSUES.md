@@ -4739,7 +4739,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-358 — S7-04: exact helper `ADD RAX,0x20` frontier (`48 83 C0 20`)
 - **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-357.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201807`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `48 83 C0 20` add sign-extended imm8 +0x20 to qword RAX. Shared arithmetic flags and definedness update; other registers remain unchanged and neighboring forms remain unsupported.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; after admission runner stops at `Unsupported { opcode: 255 }` at RIP `0x20180b` after 9,077 retired instructions; bytes are `49 FF C3`; COM1 is empty.
+- **Проверка:** four focused tests cover arithmetic results/flags/definedness, immediate-fetch atomicity, neighboring encodings and CPL3; the other-profile matrix rejects this exact encoding. Full validation passed and independent review approved with no remaining findings; details are in `docs/reports/STAGE_7_REPORT.md`.
+
+### ISSUE-359 — S7-04: exact helper `INC R11` frontier (`49 FF C3`)
+- **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-358.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20180b`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this qword ADD immediate after 9,076 retired instructions. The bounded base profile does not yet admit this exact form.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 131 }` at RIP `0x201807`; COM1 is empty.
-- **Следующий шаг:** analyze and admit only this exact firmware ADD RAX,imm8 form in a separate Stage 7 slice.
+- **Суть и последствия:** firmware reaches this qword register increment after 9,077 retired instructions. The bounded base profile does not yet admit this exact form.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 255 }` at RIP `0x20180b`; COM1 is empty.
+- **Следующий шаг:** analyze and admit only this exact firmware INC R11 form in a separate Stage 7 slice.

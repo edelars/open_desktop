@@ -28201,3 +28201,20 @@ diff-check pass. `cargo fmt --all -- --check` reports an unrelated pre-existing
 formatting diff in `crates/od-host/src/storage_abi_v1.rs`; that file was not
 changed. Existing unused-code warnings remain. Independent review approved
 with no remaining findings.
+
+### S7-04 CPU-profile slice: exact ADD RAX,0x20 (ISSUE-358)
+
+`PagedCpl0ProbeV1` admits only exact bytes `48 83 C0 20` with no additional
+prefixes. Opcode 83 /0 sign-extends the imm8 +0x20 to qword width; shared ADD
+semantics update RAX, arithmetic flags and flag-definedness. Other GPRs are
+preserved. The immediate must be fetched before state is committed. Other
+unlisted neighboring immediates, destinations, group extensions, widths and
+prefix forms remain unsupported by this admission; CPL3 and other profiles do
+not admit it. Firmware advances to `49 FF C3` (`INC R11`, ISSUE-359) at RIP
+`0x20180b` after 9,077 retired instructions; COM1 is empty. ISSUE-201's
+unrelated CLD caveat remains open. Full od-isa
+(2,322/1,591/126/29/6/1,129/7/15; zero doc tests), paged machine quantum
+(79/79), workspace all-targets check, scoped rustfmt and
+diff-check pass. `cargo fmt --all -- --check` reports an unrelated pre-existing
+formatting diff in `crates/od-host/src/storage_abi_v1.rs`; that file was not
+changed. Independent review approved with no remaining findings.

@@ -1111,3 +1111,18 @@ pass. `cargo fmt --all -- --check` reports an unrelated pre-existing formatting
 diff in `crates/od-host/src/storage_abi_v1.rs`; that file was not changed.
 Existing unused-code warnings remain. Independent review approved with no
 remaining findings.
+
+### ISSUE-358 — exact ADD RAX,0x20
+
+Admit only `48 83 C0 20` in base `PagedCpl0ProbeV1`: opcode 83 /0 adds
+sign-extended imm8 +0x20 to qword RAX. Shared ADD updates arithmetic flags and
+definedness; other registers remain unchanged. Four focused tests cover qword
+results, carry/overflow/zero/parity flags, definedness, immediate-fetch
+atomicity, neighbors and CPL3; the other-profile matrix rejects the bytes.
+Firmware advances to ISSUE-359, `49 FF C3` (`INC R11`) at RIP `0x20180b` after
+9,077 retired instructions; COM1 is empty. ISSUE-201's unrelated CLD caveat
+remains open. Full od-isa (2,322/1,591/126/29/6/1,129/7/15; zero doc tests),
+paged machine quantum (79/79), workspace all-targets check, scoped rustfmt and
+diff-check pass. `cargo fmt --all -- --check` reports the unrelated pre-existing
+formatting diff in `crates/od-host/src/storage_abi_v1.rs`; that file was not
+changed. Independent review approved with no remaining findings.

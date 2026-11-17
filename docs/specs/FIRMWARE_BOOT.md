@@ -1114,3 +1114,18 @@ od-isa (2,322/1,591/126/29/6/1,125/7/15; zero doc tests), paged machine quantum
 in `crates/od-host/src/storage_abi_v1.rs`; that file was not changed. Existing
 unused-code warnings remain. Independent review approved with no remaining
 findings.
+
+### Stage 7 runner frontier after ISSUE-358
+
+After exact `48 83 C0 20` (`ADD RAX,0x20`) is admitted, firmware retires 9,077
+instructions and stops at RIP `0x20180b`, bytes `49 FF C3` (`INC R11`, ISSUE-359),
+with `Unsupported { opcode: 255 }`. Image
+`/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1 is
+empty. ISSUE-201 remains the unrelated stale CLD test expectation caveat. Full
+od-isa (2,322/1,591/126/29/6/1,129/7/15; zero doc tests), paged machine quantum
+(79/79), workspace all-targets check, scoped rustfmt and diff-check pass.
+`cargo fmt --all -- --check` reports an unrelated pre-existing formatting diff
+in `crates/od-host/src/storage_abi_v1.rs`; that file was not changed. Existing
+unused-code warnings remain. Independent review approved with no remaining
+findings.
