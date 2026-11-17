@@ -21894,27 +21894,29 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                             ConditionCode::Equal,
                             0x84,
                             0xb4 | 0x149 | 0x217 | -0x12f | -0x14a
-                        ) | (
-                            ConditionCode::Above,
-                            0x87,
-                            0x152
-                                | 0x15f
-                                | 0x168
-                                | 0x16e
-                                | 0x177
-                                | 0x123
-                                | 0x2a3
-                                | 0x2cd
-                                | 0x2d7
-                                | 0x2e4
-                                | 0x2ee
-                                | 0x2fb
-                                | 0x248
-                                | 0x24c
-                                | 0x24d
-                                | 0x24e
-                                | 0x24f
-                        ) | (ConditionCode::Below, 0x82, 0xb7 | 0x230)
+                        ) | (ConditionCode::AboveOrEqual, 0x83, 0x1b2)
+                            | (
+                                ConditionCode::Above,
+                                0x87,
+                                0x152
+                                    | 0x15f
+                                    | 0x168
+                                    | 0x16e
+                                    | 0x177
+                                    | 0x123
+                                    | 0x2a3
+                                    | 0x2cd
+                                    | 0x2d7
+                                    | 0x2e4
+                                    | 0x2ee
+                                    | 0x2fb
+                                    | 0x248
+                                    | 0x24c
+                                    | 0x24d
+                                    | 0x24e
+                                    | 0x24f
+                            )
+                            | (ConditionCode::Below, 0x82, 0xb7 | 0x230)
                     ))) =>
         {
             if condition.evaluate(state.rflags) {

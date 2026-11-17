@@ -1845,3 +1845,21 @@ Full od-isa suites pass (2,322/1,591/126/29/6/1,342/7/15; zero doc tests),
 paged machine quantum passes (110/110), workspace all-targets offline check
 passes with existing warnings, and scoped rustfmt/diff-check pass. Independent
 review approved with no findings.
+
+
+### ISSUE-405 — `0F 83 B2 01 00 00` (JAE rel32 +0x1b2)
+
+The base paged firmware profile admits only this exact JAE displacement. CF=0
+takes the branch regardless of ZF; rel32 is relative to next RIP, flags and
+definedness are preserved, and canonicality is checked only on the taken path.
+Focused tests pass (5/5) and other-profile matrix passes (1/1). ISSUE-201
+remains the unrelated CLD caveat.
+
+Image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` runner
+advances to `41 83 F8 09` (CMP R8D,9, ISSUE-406), RIP `0x2012df`, after 9,894
+retired instructions, `Unsupported { opcode: 131}`, `com1_bytes=0` (expected
+runner exit 5 for unsupported). Full od-isa suites pass
+(2,322/1,591/126/29/6/1,347/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.

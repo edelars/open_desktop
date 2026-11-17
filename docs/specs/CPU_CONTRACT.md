@@ -29010,3 +29010,20 @@ COM1 is empty. Full `cargo test --offline -p od-isa --quiet` passes
 (2,322/1,591/126/29/6/1,342/7/15; zero doc tests), paged machine quantum passes
 (110/110), workspace all-targets offline check passes with existing warnings,
 and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-405 — exact `JAE rel32 +0x1b2` (`0F 83 B2 01 00 00`)
+
+The base paged profile admits only this exact branch encoding. JAE is taken
+when CF=0 (ZF is ignored), with signed rel32 added to next RIP. RFLAGS and
+flag-definedness are unchanged; target canonicality is checked only when taken.
+Focused branch/definedness/target/fetch-fault/neighbor/CPL3 tests pass (5/5),
+and the other-profile matrix passes (1/1). ISSUE-201 remains the unrelated CLD
+caveat.
+
+Runner advances to `41 83 F8 09` (CMP R8D,9, ISSUE-406), RIP `0x2012df`,
+after 9,894 retired instructions, `Unsupported { opcode: 131}`; COM1 is empty.
+Full `cargo test --offline -p od-isa --quiet` passes
+(2,322/1,591/126/29/6/1,347/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings.
