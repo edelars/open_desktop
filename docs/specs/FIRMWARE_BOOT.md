@@ -1409,3 +1409,22 @@ zero-extends R9 and preserves RFLAGS, definedness and all other state. Four
 focused tests cover the encoding, zero-extension, fetch atomicity and profile
 boundary. Full od-isa suites, paged machine quantum (104/104), workspace
 all-targets offline check, scoped rustfmt and diff-check pass. Independent review approved with no findings.
+
+
+### Stage 7 runner frontier after ISSUE-379
+
+After exact `E8 24 02 00 00` (CALL rel32 +0x224) is admitted, firmware retires
+9,857 instructions and stops at RIP `0x20123a`, bytes `48 83 EC 18` (SUB
+RSP,0x18, ISSUE-380), with `Unsupported { opcode: 131 }`. The call targets next
+RIP +0x224 (`0x201230`) and pushes next RIP through the tracked stack-write
+path before committing RSP/RIP; flags are preserved. Image
+`/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1
+is empty. ISSUE-201 remains the unrelated stale CLD test expectation caveat.
+
+Four focused ISA tests and two machine tests cover target and return address,
+tracked four-level page-walk A/D effects, stack #PF/#SS, fetch atomicity and
+profile boundaries. Full od-isa suites pass (2,322/1,591/126/29/6/1,230/7/15;
+zero doc tests), paged machine quantum passes (106/106), workspace all-targets
+offline cargo check passes with existing warnings, and scoped rustfmt and
+diff-check pass. Independent review approved with no findings.

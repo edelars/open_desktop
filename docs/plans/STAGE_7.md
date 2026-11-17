@@ -1486,3 +1486,27 @@ suites pass (2,322/1,591/126/29/6/1,226/7/15; zero doc tests), paged machine
 quantum passes (104/104), workspace all-targets offline cargo check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review
 approved with no findings.
+
+
+### ISSUE-379 — exact CALL rel32 +0x224 (`E8 24 02 00 00`)
+
+Admit only exact `E8 24 02 00 00` in base `PagedCpl0ProbeV1`. Interpret the
+signed rel32 from next RIP, verify the resulting near target is canonical, and
+push next RIP as a qword to old RSP-8 through the tracked memory path. Commit
+RSP and target RIP only after a successful stack write; preserve flags and
+flag-definedness. Noncanonical stack addresses raise #SS before write; #PF
+and fetch faults are atomic. Four focused ISA tests and two four-level machine
+tests cover target/return address, A/D effects, stack-write #PF, #SS, fetch
+fault and encoding/profile boundaries.
+
+After admission, the runner retires 9,857 instructions and stops at
+`48 83 EC 18` (SUB RSP,0x18, ISSUE-380), RIP `0x20123a`, with
+`Unsupported { opcode: 131 }`; COM1 is empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Validation: focused ISA 4/4 and other-profile matrix 1/1 pass. Full od-isa
+suites pass (2,322/1,591/126/29/6/1,230/7/15; zero doc tests), paged machine
+quantum passes (106/106), workspace all-targets offline cargo check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review
+approved with no findings.

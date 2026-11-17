@@ -2816,3 +2816,28 @@ suites pass (2,322/1,591/126/29/6/1,226/7/15; zero doc tests), paged machine
 quantum passes (104/104), workspace all-targets offline cargo check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review
 approved with no findings.
+
+
+### ISSUE-379 — exact CALL rel32 +0x224 (`E8 24 02 00 00`)
+
+Only exact `E8 24 02 00 00` is admitted in base `PagedCpl0ProbeV1`. The
+signed rel32 target is next RIP +0x224 (`0x201230` for this firmware call).
+The instruction pushes the next RIP as a qword at old RSP-8 via tracked
+GuestMemory, then commits RSP and target RIP; flags and definedness are
+preserved. Target canonicality is checked before stack write; noncanonical
+stack ranges raise #SS. Tracked-write #PF and instruction-fetch faults leave
+CPU state unchanged. Four focused ISA tests and two machine tests cover target,
+return address, page-walk A/D behavior, write-protection fault, #SS, fetch
+fault, neighbors and profile boundaries.
+
+Runner image `/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`. After
+the admission it retires 9,857 instructions and stops at `48 83 EC 18` (SUB
+RSP,0x18, ISSUE-380), RIP `0x20123a`, `Unsupported { opcode: 131 }`; COM1 is
+empty. ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Validation: focused ISA 4/4 and other-profile matrix 1/1 pass. Full od-isa
+suites pass (2,322/1,591/126/29/6/1,230/7/15; zero doc tests), paged machine
+quantum passes (106/106), workspace all-targets offline cargo check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review
+approved with no findings.

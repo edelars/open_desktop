@@ -28559,3 +28559,26 @@ ISSUE-201 remains the unrelated CLD expectation caveat.
 Validation: focused ISA 4/4 and other-profile matrix 1/1 pass; full od-isa
 suites, paged machine quantum (104/104), workspace all-targets offline check,
 scoped rustfmt and diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-379: `E8 24 02 00 00` — CALL rel32 +0x224
+
+The base `PagedCpl0ProbeV1` admits only exact no-prefix `E8 24 02 00 00`.
+Compute the near target as signed rel32 +0x224 from next RIP, requiring a
+canonical target. Push next RIP as a qword to old RSP-8 using tracked memory;
+update RSP and RIP only after the write succeeds. Preserve RFLAGS and flag
+definedness. A noncanonical stack range raises #SS; the stack-write #PF,
+noncanonical target #GP, and instruction-fetch faults leave CPU state
+unchanged. Neighboring displacements, prefixed forms, CPL3 and other profiles
+remain unsupported.
+
+The firmware runner advances to `48 83 EC 18` (SUB RSP,0x18, ISSUE-380) at RIP
+`0x20123a` after 9,857 retired instructions; COM1 is empty. Firmware SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Validation: focused ISA 4/4 and other-profile matrix 1/1 pass; full od-isa
+suites pass (2,322/1,591/126/29/6/1,230/7/15; zero doc tests), paged machine
+quantum passes (106/106), workspace all-targets offline cargo check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review
+approved with no findings.
