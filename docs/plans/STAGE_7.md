@@ -1415,3 +1415,26 @@ Validation: six focused JNZ tests and the other-profile rejection matrix pass.
 Full od-isa suites pass (2,322/1,591/126/29/6/1,214/7/15; zero doc tests),
 paged machine quantum passes (104/104), workspace all-targets offline cargo
 check, scoped rustfmt and diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-376 — exact MOV RCX,R13 (`4C 89 E9`)
+
+Admit only the no-prefix REX.W+R form `4C 89 E9` in base
+`PagedCpl0ProbeV1`. Opcode 89 with ModRM E9 copies qword R13 to RCX. Commit
+only RCX and RIP+3; preserve flags, definedness and all other state. Fetch
+faults do not commit. Other register/REX/opcode/width/prefix forms and CPL3 or
+other profiles remain unsupported. Four focused ISA tests cover routing,
+full-width values, preserved state, fetch faults, neighbors and CPL3; the
+shared other-profile matrix must also reject this exact form.
+
+After admission, the firmware runner retires 9,848 instructions and stops at
+`4D 89 E0` (MOV R8,R12, ISSUE-377) at RIP `0x201001`, with
+`Unsupported { opcode: 137 }`; COM1 is empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Validation: focused ISA 4/4 and other-profile matrix 1/1 pass. Full od-isa
+suites pass (2,322/1,591/126/29/6/1,218/7/15; zero doc tests), paged machine
+quantum passes (104/104), workspace all-targets offline cargo check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review
+approved with no findings.

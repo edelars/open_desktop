@@ -2749,3 +2749,25 @@ Validation: six focused JNZ tests and the other-profile rejection matrix pass.
 Full od-isa suites pass (2,322/1,591/126/29/6/1,214/7/15; zero doc tests);
 paged machine quantum passes 104/104; workspace all-targets offline cargo
 check, scoped rustfmt and diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-376 — exact MOV RCX,R13 (`4C 89 E9`)
+
+Only exact no-prefix bytes `4C 89 E9` are admitted in base `PagedCpl0ProbeV1`.
+REX.W+R selects qword source R13; ModRM E9 selects RCX as destination. The
+instruction changes RCX and RIP only, preserving all flags, definedness and
+other state. A fault during instruction fetch does not partially commit.
+Focused ISA tests cover full-width routing, preserved state, fetch fault,
+neighbors and CPL3; the shared other-profile matrix passes.
+
+Runner image `/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`. After
+the admission it retires 9,848 instructions and stops at `4D 89 E0` (MOV
+R8,R12, ISSUE-377), RIP `0x201001`, `Unsupported { opcode: 137 }`; COM1 is
+empty. ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Validation: focused ISA 4/4 and other-profile matrix 1/1 pass. Full od-isa
+suites pass (2,322/1,591/126/29/6/1,218/7/15; zero doc tests), paged machine
+quantum passes (104/104), workspace all-targets offline cargo check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review
+approved with no findings.
