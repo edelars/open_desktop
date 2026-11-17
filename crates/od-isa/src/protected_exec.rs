@@ -4258,4 +4258,222 @@ mod tests {
         "l-code64-base-1000-ignored-0000-0000",
         Target(SECONDARY_STARTUP_64)
     );
+
+    // ---- connected test: SIPI entry to the first 64-bit instruction (S6-14, step 5) --------
+    //
+    // Files in docs/reports/data/stage6/s6-14-step5/ (make-images.py, run-oracle.sh): the
+    // trampoline of the S6-16e/f probe (the builder's own record of the instructions of S6-14a,
+    // not a copy of the kernel block) entered at 0800:0000 (SIPI vector 0x08, state after INIT),
+    // image at GPA 0x8000, a HLT at the first 64-bit instruction (GPA 0xB000). The model runs
+    // `RealModeCpu` up to `NotRealMode`, `ProtectedCpu::from_real_entry`, `ProtectedCpu::run` up
+    // to `Mode64TargetEntered` and `ProtectedCpu::into_long_mode`; every compared value comes
+    // from the oracle JSON.
+
+    const RAM_STEP5: usize = 0x16000;
+    const STEP5_IMAGE: &[u8] = include_bytes!(
+        "../../../docs/reports/data/stage6/s6-14-step5/a-probe-v2-normal-sipi-hlt-at-0xb000-0800-0000.bin"
+    );
+    const STEP5_JSON: &str = include_str!(
+        "../../../docs/reports/data/stage6/s6-14-step5/oracle-a-probe-v2-normal-sipi-hlt-at-0xb000-0800-0000.json"
+    );
+    const STEP5_BLOCKS: &str = include_str!(
+        "../../../docs/reports/data/stage6/s6-14-step5/oracle-a-probe-v2-normal-sipi-hlt-at-0xb000-0800-0000-blocks.jsonl"
+    );
+    /// GPA of the real-mode entry (`CS = 0x0800` is the SIPI vector 0x08) and of the image.
+    const STEP5_ENTRY_GPA: usize = 0x8000;
+
+    /// Fields of an oracle segment (`final_state.segments.<name>`) as `(selector, base, limit,
+    /// access-compatible type, dpl, present, db, l, g)`.
+    fn oracle_segment(json: &str, name: &str) -> [u64; 9] {
+        let get = |field: &str| oracle_num(json, &["final_state", "segments", name, field]);
+        [
+            get("selector"),
+            get("base"),
+            get("limit"),
+            get("type"),
+            get("dpl"),
+            get("present"),
+            get("db"),
+            get("l"),
+            get("g"),
+        ]
+    }
+
+    /// The same nine fields of the access byte and the flag nibble of a descriptor cache.
+    fn cache_fields(selector: u16, base: u64, limit: u32, access: u8, flags: u8) -> [u64; 9] {
+        [
+            u64::from(selector),
+            base,
+            u64::from(limit),
+            u64::from(access & 0x0F),
+            u64::from((access >> 5) & 3),
+            u64::from(access >> 7),
+            u64::from((flags >> 2) & 1),
+            u64::from((flags >> 1) & 1),
+            u64::from(flags >> 3),
+        ]
+    }
+
+    #[test]
+    fn connected_sipi_to_long_mode_matches_kvm_oracle() {
+        use crate::state::LongModeState;
+
+        let json = STEP5_JSON;
+        // The oracle entered the image as an AP does after SIPI 0x08 and stopped at the HLT.
+        assert_eq!(oracle_num(json, &["entry", "cs_selector"]), 0x0800);
+        assert_eq!(oracle_num(json, &["entry", "rip"]), 0);
+        assert!(json.contains("\"stop_reason\":\"guest_hlt\""));
+        assert!(json.contains("\"exits\":[{\"kind\":\"hlt\"}]"));
+        assert_eq!(STEP5_IMAGE.len(), 0xD000);
+        let mut ram = vec![0u8; RAM_STEP5];
+        ram[STEP5_ENTRY_GPA..STEP5_ENTRY_GPA + STEP5_IMAGE.len()].copy_from_slice(STEP5_IMAGE);
+
+        // Real mode from the SIPI entry up to the `MOV CR0` with PE and the protected far jump
+        // (14 instructions of the trampoline: the `JAE` over the spin loop is taken).
+        let mut real = RealModeCpu::at_cs_ip(0x0800, 0, 0x6000_0010, oracle_signature(json));
+        // The entry is the one a SIPI with vector 0x08 gives (CS = 0x0800, base 0x8000, IP = 0).
+        let after_sipi = RealModeCpu::after_sipi(0x08, 0x6000_0010, oracle_signature(json));
+        assert_eq!(real.mode.cs.selector, after_sipi.mode.cs.selector);
+        assert_eq!(real.mode.cs.base, after_sipi.mode.cs.base);
+        assert_eq!(real.mode.eip, after_sipi.mode.eip);
+        let run = real.run(&mut mem(&mut ram), 100);
+        assert_eq!(run.steps, 14, "real-mode part of the trampoline");
+        assert_eq!(
+            run.stop,
+            Some(RealModeRefusal::NotRealMode { cr0: real.mode.cr0 })
+        );
+
+        // Protected mode, paging, IA-32e, the compatibility-mode jump through the cell: 14 + 1
+        // instructions, then the model stops before the first 64-bit instruction.
+        let mut cpu = ProtectedCpu::from_real_entry(&real).expect("protected entry");
+        let run = cpu.run(&mut mem(&mut ram), 100);
+        assert_eq!(run.steps, 15, "protected part of the trampoline");
+        assert_eq!(
+            run.stop,
+            Some(ProtectedRefusal::Mode64TargetEntered { rip: 0xB000 })
+        );
+        // The oracle executed the HLT at the target: its RIP is one past it.
+        compare_state_cr2(&cpu, &ram, json, 1, 0, 0);
+
+        // The memory blocks of the other runs: the cell, GDTR and IDTR descriptors, EFER and jump
+        // cells, the five page tables.
+        let lines: Vec<&str> = STEP5_BLOCKS.lines().collect();
+        assert_eq!(lines.len(), 7);
+        for (line, (expected_gpa, size)) in lines.iter().zip([
+            (0x8100usize, 128usize),
+            (0x8400, 16),
+            (0x10000, 64),
+            (0x11000, 64),
+            (0x12000, 64),
+            (0x13000, 64),
+            (0x14000, 64),
+        ]) {
+            // Every run reached the same final state (the blocks differ only in the result block).
+            assert!(line.contains("\"stop_reason\":\"guest_hlt\""));
+            assert_eq!(
+                line[line.find("\"final_state\"").unwrap()..]
+                    .split("\"result_block_gpa\"")
+                    .next(),
+                json[json.find("\"final_state\"").unwrap()..]
+                    .split("\"result_block_gpa\"")
+                    .next()
+            );
+            let (gpa, bytes) = oracle_result_block(line);
+            assert_eq!(gpa as usize, expected_gpa);
+            assert_eq!(bytes.len(), size);
+            assert_eq!(
+                &ram[expected_gpa..expected_gpa + size],
+                &bytes[..],
+                "block {gpa:#x}"
+            );
+        }
+
+        // The state the long-mode interpreter continues from (S6-16b) against the same oracle.
+        let state = cpu
+            .into_long_mode(&LongModeState::default())
+            .expect("long mode state at the target");
+        let fs = |path: &[&str]| {
+            let mut full = vec!["final_state"];
+            full.extend_from_slice(path);
+            oracle_num(json, &full)
+        };
+        let gprs = [
+            "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11",
+            "r12", "r13", "r14", "r15",
+        ];
+        for (index, name) in gprs.iter().enumerate() {
+            assert_eq!(state.gpr[index], fs(&["gpr", name]), "{name}");
+        }
+        assert_eq!(state.rip + 1, fs(&["rip"]), "RIP");
+        assert_eq!(state.rflags, fs(&["rflags"]), "RFLAGS");
+        assert_eq!(state.cr0, Some(fs(&["control", "cr0"])), "CR0");
+        assert_eq!(state.cr2, Some(fs(&["control", "cr2"])), "CR2");
+        assert_eq!(state.cr3, Some(fs(&["control", "cr3"])), "CR3");
+        assert_eq!(state.cr4, Some(fs(&["control", "cr4"])), "CR4");
+        // `EFER` has no field in `LongModeState`: the caller keeps the processor's value.
+        assert_eq!(cpu.efer, fs(&["control", "efer"]), "EFER");
+        let cs = state.cs_cache.expect("CS cache");
+        assert_eq!(
+            cache_fields(
+                state.cs_selector.expect("CS selector"),
+                cs.base,
+                cs.limit,
+                cs.access,
+                cs.flags
+            ),
+            oracle_segment(json, "cs"),
+            "CS"
+        );
+        for (name, selector, cache) in [
+            ("ds", state.ds_selector, state.ds_cache.expect("DS cache")),
+            ("es", state.es_selector, state.es_cache.expect("ES cache")),
+            (
+                "ss",
+                state.ss_selector.expect("SS selector"),
+                state.ss_cache.expect("SS cache"),
+            ),
+        ] {
+            assert_eq!(
+                cache_fields(
+                    selector,
+                    u64::from(cache.base),
+                    cache.limit,
+                    cache.access,
+                    cache.flags
+                ),
+                oracle_segment(json, name),
+                "{name}"
+            );
+        }
+        for (name, selector, base, cache) in [
+            (
+                "fs",
+                state.fs_selector,
+                state.fs_base,
+                state.fs_cache.expect("FS cache"),
+            ),
+            (
+                "gs",
+                state.gs_selector,
+                state.gs_base,
+                state.gs_cache.expect("GS cache"),
+            ),
+        ] {
+            assert_eq!(
+                cache_fields(selector, base, cache.limit, cache.access, cache.flags),
+                oracle_segment(json, name),
+                "{name}"
+            );
+        }
+        let gdtr = state.gdtr.expect("GDTR");
+        let idtr = state.idtr.expect("IDTR");
+        for (name, value) in [
+            ("gdtr_base", gdtr.base),
+            ("gdtr_limit", u64::from(gdtr.limit)),
+            ("idtr_base", idtr.base),
+            ("idtr_limit", u64::from(idtr.limit)),
+        ] {
+            assert_eq!(value, fs(&["tables", name]), "{name}");
+        }
+    }
 }
