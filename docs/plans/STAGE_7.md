@@ -1725,3 +1725,20 @@ zero doc tests), paged machine quantum passes (110/110), workspace all-targets
 offline cargo check passes with existing warnings, and scoped rustfmt and
 `git diff --check` pass. Independent review approved with no findings. ISSUE-201 remains the
 unrelated CLD caveat.
+
+### ISSUE-391 — exact qword CMP RAX,RDX (`48 39 D0`)
+
+Admit only exact Primary `48 39 D0` in base `PagedCpl0ProbeV1`: REX.W qword
+CMP with RAX as r/m destination and RDX as reg source. Reuse subtraction flags
+and definedness, with no GPR writes. Cover equality, carry/borrow, auxiliary
+carry, parity, zero/sign/overflow, qword-vs-dword values, final-ModRM fetch
+fault, operand order/register/opcode/width/prefix neighbors, CPL3 and other
+profiles. ISSUE-201 remains the unrelated CLD caveat.
+
+Focused tests pass (4/4), other-profile matrix passes (1/1), full od-isa passes
+(2,322/1,591/126/29/6/1,283/7/15; 0 doc tests), paged machine quantum passes
+(110/110), and `cargo check --workspace --all-targets --offline` passes.
+Scoped rustfmt and `git diff --check` pass. The firmware runner advances to
+`0F 87 48 02 00 00` (JA rel32 +0x248, ISSUE-392) at RIP `0x201282` after
+9,872 retired instructions, `Unsupported { opcode: 135 }`; COM1 is empty.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

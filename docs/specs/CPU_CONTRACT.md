@@ -28799,3 +28799,19 @@ od-isa suites pass (2,322/1,591/126/29/6/1,275/7/15; zero doc tests), paged
 machine quantum passes (110/110), workspace all-targets offline cargo check
 passes with existing warnings, and scoped rustfmt and `git diff --check` pass.
 Independent review approved with no findings.
+
+### ISSUE-391: `48 39 D0` — CMP RAX,RDX
+
+Base `PagedCpl0ProbeV1` adds only Primary REX.W opcode `39`, length three,
+qword r/m destination RAX and reg source RDX. It computes qword RAX−RDX and
+updates arithmetic RFLAGS and their definedness; both GPR operands and all
+other state are preserved. A fetch fault on ModRM commits nothing. Other
+register pairs, directions, widths, opcode forms and prefixes, CPL3 and other
+profiles remain unsupported. ISSUE-201 remains the unrelated CLD caveat.
+
+Focused tests pass (4/4), and the other-profile matrix passes (1/1). The runner
+advances to `0F 87 48 02 00 00` (JA rel32 +0x248, ISSUE-392), RIP `0x201282`,
+after 9,872 retired instructions, `Unsupported { opcode: 135 }`; COM1 is empty.
+Full od-isa passes (2,322/1,591/126/29/6/1,283/7/15; 0 doc tests), paged
+machine quantum passes (110/110), workspace all-targets offline check passes,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings.
