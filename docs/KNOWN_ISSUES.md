@@ -4731,7 +4731,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-357 — S7-04: exact helper `JB rel8 +0x34` frontier (`72 34`)
 - **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-356.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201805`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `72 34` admit JB rel8 +0x34. The branch tests CF, preserves flags/definedness and checks canonicality only for a taken target; neighboring forms remain unsupported.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; after admission runner stops at `Unsupported { opcode: 131 }` at RIP `0x201807` after 9,076 retired instructions; bytes are `48 83 C0 20`; COM1 is empty.
+- **Проверка:** five focused tests cover CF outcomes/definedness, taken-only canonicality, rel8 fetch-fault atomicity, neighboring encodings and CPL3; the other-profile matrix rejects this exact encoding. Full validation passed and independent review approved with no remaining findings; details are in `docs/reports/STAGE_7_REPORT.md`.
+
+### ISSUE-358 — S7-04: exact helper `ADD RAX,0x20` frontier (`48 83 C0 20`)
+- **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-357.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201807`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this short conditional branch after 9,075 retired instructions. The bounded base profile does not yet admit this exact displacement.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 114 }` at RIP `0x201805`; COM1 is empty.
-- **Следующий шаг:** analyze and admit only this exact firmware JB rel8 form in a separate Stage 7 slice.
+- **Суть и последствия:** firmware reaches this qword ADD immediate after 9,076 retired instructions. The bounded base profile does not yet admit this exact form.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 131 }` at RIP `0x201807`; COM1 is empty.
+- **Следующий шаг:** analyze and admit only this exact firmware ADD RAX,imm8 form in a separate Stage 7 slice.

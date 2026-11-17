@@ -2380,3 +2380,22 @@ instructions; COM1 is empty. ISSUE-201's CLD expectation caveat remains open.
 Full od-isa (2,322/1,591/126/29/6/1,120/7/15; zero doc tests), paged machine
 quantum (79/79), scoped cargo check, rustfmt and diff-check pass; cargo check
 reports only the existing unused page-walk helper warning. Independent review approved with no findings.
+
+### ISSUE-357 — JB rel8 +0x34
+
+The base profile admits only `72 34`. JB branches when CF=1; the branch
+preserves all CPU state except RIP and leaves RFLAGS definedness unchanged.
+The signed rel8 target is based on next RIP, and canonicality is checked only
+for a taken target. Five focused profile tests cover CF true/false with defined
+and undefined CF metadata, targets, canonicality, rel8 fetch faults, neighbors,
+CPL3 and other-profile isolation. The runner advances to ISSUE-358
+(`48 83 C0 20`, `ADD RAX,0x20`) at RIP `0x201807` after 9,076 retired
+instructions; COM1 is empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201's unrelated CLD caveat remains open. Full od-isa
+(2,322/1,591/126/29/6/1,125/7/15; zero doc tests), paged machine quantum
+(79/79), workspace all-targets check, scoped rustfmt and diff-check pass.
+`cargo fmt --all -- --check` reports an unrelated pre-existing formatting diff
+in `crates/od-host/src/storage_abi_v1.rs`; that file was not changed. Existing
+unused-code/import/variable warnings are in od-machine and od-host. Independent
+review approved with no remaining findings.
