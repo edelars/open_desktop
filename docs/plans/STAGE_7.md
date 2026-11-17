@@ -2611,3 +2611,16 @@ retired instructions; Unsupported opcode 117, COM1 empty. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-448 — exact JNZ rel8 (`75 23`)
+
+Admit only exact `75 23` in base `PagedCpl0ProbeV1`. The branch uses ZF=0,
+computes the signed rel8 target from next RIP, preserves flags/definedness, and
+checks target canonicality only when taken. Tests cover both condition outcomes,
+definedness, canonical fall-through versus a taken noncanonical target,
+final-byte fetch fault, neighboring conditions/displacements, CPL3 and
+other-profile isolation. Runner advances to `4C 39 F0` (CMP RAX,R14, ISSUE-449),
+RIP `0x2013a4`, after 9,995 retired instructions; Unsupported opcode 57, COM1
+empty. Full od-isa passes (2,322/1,591/126/29/6/1,539/7/15; zero doc tests),
+paged machine quantum passes (110/110), workspace all-targets offline check
+passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

@@ -3966,3 +3966,21 @@ Unsupported opcode 117, COM1 empty. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-448 — exact JNZ rel8
+
+Five focused tests cover both ZF values with defined/undefined ZF, signed target
+calculation relative to next RIP, flags/definedness preservation, taken-only
+canonicality, final-byte fetch-fault atomicity, encoding neighbors and CPL3
+rejection. The other-profile matrix passes 1/1. Firmware image
+`/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Runner `cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue448.com1 --budget 10000` retires 9,995
+instructions and stops at `4C 39 F0` (CMP RAX,R14), RIP `0x2013a4`, Unsupported
+opcode 57, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,539/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.

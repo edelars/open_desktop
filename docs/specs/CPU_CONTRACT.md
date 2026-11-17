@@ -29629,3 +29629,16 @@ retired instructions. Full validation passes: od-isa
 (2,322/1,591/126/29/6/1,534/7/15; zero doc tests), paged machine quantum
 (110/110), workspace all-targets offline check, scoped rustfmt and diff-check.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-448 — bounded JNZ rel8
+
+The base paged profile admits only exact `75 23` (JNZ rel8 +0x23). It reads ZF
+without modifying flags or definedness, uses next RIP as the displacement base,
+and canonicality-checks only a taken target; a not-taken fall-through is deferred
+to the next fetch. Final-byte fetch failure commits no state. CPL3 and other
+profiles reject this exact encoding. Firmware advances to `4C 39 F0` (CMP
+RAX,R14, ISSUE-449) at RIP `0x2013a4` after 9,995 retired instructions. Full
+validation passes: od-isa (2,322/1,591/126/29/6/1,539/7/15; zero doc tests),
+paged machine quantum (110/110), workspace all-targets offline check, scoped
+rustfmt and diff-check. Independent review approved with no findings. ISSUE-201 remains the
+unrelated CLD caveat.

@@ -5551,7 +5551,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-448 — S7-04: exact JNZ rel8 frontier (`75 23`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-447.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20139b`.
-- **Статус:** открыта; следующая точная инструкция Stage 7.
-- **Суть и последствия:** exact `75 23` (`JNZ rel8 +0x23`) remains unsupported pending bounded implementation and tests.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `75 23` (`JNZ rel8 +0x23`). The branch tests ZF=0, preserves flags/definedness and computes the signed target from next RIP; only a taken target is checked for canonicality. CPL3 and other profiles do not admit this exact form.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-447 runner retired 9,992 instructions and reported `Unsupported { opcode: 117 }` at RIP `0x20139b`; COM1 is empty. Bytes at the link-base shadow are `75 23`.
-- **Следующий шаг:** implement this exact JNZ rel8 form and add condition, target, fault, and profile-boundary coverage.
+- **Результат:** runner now retires 9,995 instructions and stops at RIP `0x2013a4`, bytes `4C 39 F0` (`CMP RAX,R14`, ISSUE-449), `Unsupported { opcode: 57 }`; COM1 is empty.
+- **Проверка:** five focused tests cover both ZF outcomes and definedness, signed next-RIP target, taken-only canonicality, final-byte fetch-fault atomicity, neighbors and CPL3; the other-profile matrix includes this exact form and passes 1/1. Full od-isa, paged machine quantum, workspace all-targets offline check, scoped rustfmt and diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-449 — S7-04: exact CMP RAX,R14 frontier (`4C 39 F0`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-448.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013a4`.
+- **Статус:** открыта; следующая точная инструкция Stage 7.
+- **Суть и последствия:** exact `4C 39 F0` (`CMP RAX,R14`) remains unsupported pending bounded implementation and tests.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-448 runner retired 9,995 instructions and reported `Unsupported { opcode: 57 }` at RIP `0x2013a4`; COM1 is empty. Bytes at the link-base shadow are `4C 39 F0`.
+- **Следующий шаг:** implement this exact qword CMP form and add operand-routing, arithmetic-flags, and profile-boundary coverage.
