@@ -27511,13 +27511,11 @@ power-on or INIT: it executes nothing until a SIPI (SMP_CONTRACT.md 3). Only the
 board sets it, in `vcpu.rs`; the interpreter never produces it, and the S2-27j
 HLT profile and the V2 snapshot schema (`od-testkit`) refuse it like `Shutdown`.
 
-Only the CPL0 profile set refuses non-Running activity with
+The CPL0 profile set refuses non-Running activity with
 `Cpl0ProfileSetInputError::NotRunning` at admission and no mutation (test case
-"wait for sipi" in `crates/od-isa/tests/cpl0_profile_set.rs`). Other entry points
-do not check `WaitForSipi`, among them `od_isa::execute::run`, `step`,
-`run_with_maskable_request` and the `run_configured`-based runners (the loop
-checks only Halted; `!= Running` is checked only under paged CR0 profiles). The
-board executes only vCPU 0, so this is not reachable yet.
+"wait for sipi" in `crates/od-isa/tests/cpl0_profile_set.rs`). The other entry points
+refuse it since S6-20, see "S6-20 — единый атомарный API LOCK" below. The board
+executes only vCPU 0, so a refusal is not reachable from the board yet.
 
 INIT, SIPI and the real-mode start state of an application processor are in
 [MACHINE_CONTRACT.md](MACHINE_CONTRACT.md#init-sipi-и-ожидание-sipi-s6-13); the
@@ -27556,3 +27554,69 @@ source is from memory and is not checked against the manual (Intel SDM Vol. 3A 6
 not available in the repository); the code is not changed. The same deviation is in
 [MACHINE_CONTRACT.md](MACHINE_CONTRACT.md#nmi-s6-12b) and SMP_CONTRACT.md 7. The pending-NMI latch, the target's boundary and the board call are
 in [MACHINE_CONTRACT.md](MACHINE_CONTRACT.md#nmi-s6-12b).
+
+### S6-20 — единый атомарный API LOCK
+
+**Одно место, где определена атомарность.** Все формы `LOCK`-RMW и `XCHG` с памятью
+обращаются к гостевой памяти одним вызовом `GuestMemory::atomic_rmw_integer(address,
+context, size, update)` (`crates/od-isa/src/memory.rs`). Вызов читает целое по адресу,
+передаёт старое значение чистой функции `update`, **всегда** записывает возвращённое
+значение (в том числе равное старому: неуспешный `CMPXCHG` по SDM пишет назначение обратно,
+поэтому страница только для чтения даёт `#PF` и при несовпадении) и возвращает старое
+значение. Проверка записи — до первого видимого эффекта; при любой ошибке память не
+меняется, а регистры, флаги и RIP коммитятся инструкцией только после успеха вызова.
+`update` может вызываться повторно, если реализация — цикл «сравнить и заменить»; сохраняется
+значение удачной попытки. Один общий метод покрывает `AND`/`OR`/`BTS`/`BTR` и остальные формы,
+отдельного метода на инструкцию нет. Три прежних метода (`atomic_exchange_integer`,
+`atomic_fetch_add_integer`, `atomic_compare_exchange_integer`) стали предоставляемыми
+(provided): они выражены через `atomic_rmw_integer`; реализация, которая их переопределяет
+(тестовые двойники, `FetchCapture`), остаётся верной.
+
+**Реализация в режиме чередования.** Предоставляемая реализация `atomic_rmw_integer` — обычные
+`read_integer`, затем `write_integer` через собственные `read`/`write` бэкенда. Неделимость
+даёт планировщик: vCPU не переключается внутри инструкции (SMP_CONTRACT.md 8), один хост-поток.
+Глобальных блокировок и host-атомиков нет. Адаптер Linux-пути
+(`PagedMovMemoryAdapter`, `crates/od-machine/src/paged_memory_adapter.rs`) больше не
+возвращает `unsupported` для трёх атомарных операций: он их не переопределяет и получает
+эту реализацию вместе с ограничениями ширины и страниц своих `read`/`write`. Параллельная
+общая RAM (S6-30) заменит `atomic_rmw_integer` в своём бэкенде (S6-31, host-атомик);
+код инструкций при этом не меняется. Биты accessed/dirty здесь не затронуты (S6-25).
+
+**Какие формы идут через вызов.** Набор CPL0 (Ring0): `LOCK CMPXCHG`, `LOCK INC`, `LOCK DEC`,
+`LOCK OR`/`ADD`/`AND`, `LOCK ADD r`, `LOCK XADD`, `LOCK BTS`/`BTR` (регистр и `imm8`), а также
+формы без `LOCK`, которые набор исполняет как `LOCK` (`XADD`/`CMPXCHG` с памятью, `XADD` с
+префиксом `DS`), `XCHG` с памятью (dword и qword). Голый `run` (без CR-профиля и набора CPL0),
+новое в S6-20 и ровно формы корпуса S6-05: `LOCK INC m32`, `LOCK CMPXCHG m32` (оба с байтом
+`F0`, подстановка `DS` не входит), `LOCK XADD m32` (qword-форма была и раньше) и `XCHG m32, r32`.
+Любая другая `LOCK`-форма (в том числе qword `INC`/`CMPXCHG`)
+в голом `run` — `Unsupported` с опкодом (раннер litmus печатает адрес и байты), память не
+читается и не пишется; тихого исполнения как обычных чтения и записи нет. Формы вне набора
+с qword-операндом (`LOCK XADD`, `XCHG`, `CMPXCHG` S2-21) по-прежнему вызывают три прежних метода,
+то есть тот же вызов по построению. `CMPXCHG8B`/`CMPXCHG16B` не добавлялись (вопрос D6).
+
+**Подстановка `DS` вместо `LOCK` (решение по S6-07).** Linux при работе на одном процессоре
+заменяет байт `F0` на `3E` в местах `.smp_locks`; в 64-битном режиме `DS` не меняет адрес.
+Решение: формы `XADD`/`CMPXCHG` с `DS` и без префиксов исполняются как `LOCK`-формы, то есть через
+`atomic_rmw_integer`. Это допустимое усиление: на реальном x86 `LOCK` только добавляет
+неделимость, поэтому любой результат, который даёт наша неделимая реализация, достижим и
+у формы без `LOCK`; недостижимых исходов мы не добавляем, лишь убираем часть возможных.
+Гостю, который на SMP не переписал `.smp_locks`, это не мешает: ожидаемая им атомарность
+обеспечена. Декодер (`ds_lock_substitute`, `long_decode.rs`) не менялся.
+
+**`WaitForSipi` и `Shutdown` в точках входа вне набора CPL0.** Активность не `Running`
+(`WaitForSipi` или `Shutdown`) отказывает при входе без изменения состояния и без обращений к
+памяти и портам. Порядок проверок: в `run_configured`/`step_configured` проверка активности первая;
+в остальных точках входа она стоит после их ранних проверок (CR, rflags, для `step_pio_u8` ещё
+режим и привилегии), и состояние не меняется при любом порядке. Канал отказа зависит от типа результата точки входа: `run`/`run_configured` и
+их обёртки возвращают `RunExit::NotRunning`; `step` — `StepOutcome::NotRunning`;
+`run_with_maskable_request`, `run_with_rep_continuation`, `step_mov_cr3` (только `WaitForSipi`;
+`Shutdown` сохраняет прежний `MovCr3Exit::Shutdown`) и `step_pio_u8`/`step_paged_pio_u8` —
+вариант `NotRunning` своего типа ошибки входа (`MaskableRequestRunInputError`,
+`RepRunInputError`, `MovCr3InputError`, `PioU8AdmissionError`). Пути `Running` и `Halted` не
+менялись (`Halted` отвечает прежним `Halted`/`PioU8AdmissionError::Halted`). Тесты —
+`crates/od-isa/tests/s6_20_lock_atomic.rs`, по точке входа и по активности.
+
+**Замер темпа до и после.** Не выполнен как отдельный замер (см.
+[STAGE_6_REPORT.md](../reports/STAGE_6_REPORT.md), S6-20): путь `LOCK` в Linux-пути не
+изменился по числу вызовов памяти (те же `read` и `write`, добавлен один косвенный вызов
+через `&mut dyn FnMut`).

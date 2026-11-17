@@ -292,11 +292,10 @@ pub enum CpuActivity {
     Halted,
     Shutdown,
     /// An application processor after power-on or INIT: it executes nothing until a start-up
-    /// IPI (SMP_CONTRACT.md 3). Only the CPL0 profile set refuses non-Running activity with
-    /// `NotRunning`. Other entry points do not check WaitForSipi, among them
-    /// `od_isa::execute::run`, `step`, `run_with_maskable_request` and the `run_configured`-based
-    /// runners (the loop checks only Halted; `!= Running` is checked only under paged CR0
-    /// profiles). The board executes only vCPU 0, so this is not reachable yet.
+    /// IPI (SMP_CONTRACT.md 3). Since S6-20 every public entry point of `od_isa::execute`
+    /// refuses it (and `Shutdown`) at entry without a state change: `RunExit::NotRunning`,
+    /// `StepOutcome::NotRunning`, or the `NotRunning` variant of the entry's input-error type;
+    /// the CPL0 profile set keeps `Cpl0ProfileSetInputError::NotRunning`.
     WaitForSipi,
 }
 

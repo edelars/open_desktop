@@ -48,7 +48,7 @@ git diff --check
 13. execution regression через `od_isa::execute::run` и
     `IdentityMemoryAdapter`: fetch/load/store, unmapped fault, CPU state/RIP,
     retirement, RAM и committed callback;
-14. explicit rejection atomic/fence operations в diagnostic flat mode.
+14. explicit rejection atomic/fence operations в diagnostic flat mode (S6-20: включая единый `atomic_rmw_integer`, через который идут все LOCK-формы и XCHG m, без чтения и записи).
 15. four-level 4 KiB literal page tables: geometry, canonicality before reads,
     physical36/CR3, present/reserved/PS, cumulative permissions, WP/NXE,
     literal PFEC, trace, table-read errors and no A/D mutation;

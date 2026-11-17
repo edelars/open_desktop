@@ -3,9 +3,12 @@
 //! (derived from the cited sources), never from a run of the machine.
 //!
 //! The recorded choices:
-//! - a fixture with a `LOCK` form (or `XCHG` with memory) the interpreter does not execute gives
-//!   the verdict `unsupported` and exit 0: it is a known gap (S6-20), not an `equal` and not a
-//!   failure; the summary counts it apart;
+//! - a fixture with a form the interpreter does not execute gives the verdict `unsupported` and
+//!   exit 0: it is a known gap, not an `equal` and not a failure; the summary counts it apart.
+//!   Since S6-20 the interpreter executes every form of the S6-05 corpus (the dword `LOCK INC`,
+//!   `LOCK CMPXCHG`, `LOCK XADD` and `XCHG` with memory go through the single atomic API), so
+//!   the whole corpus is `equal`; the `unsupported` path is exercised by a fixture copy with a
+//!   `LOCK` form that is not in the corpus (`LOCK OR`, not admitted outside the CPL0 set);
 //! - `forbidden`, `incomplete` and (in an exhaustive run) `not_covered` give exit 5; `not_covered`
 //!   in a seed or single run is coverage only, exit 0.
 
@@ -163,36 +166,34 @@ fn sb_and_mp_exhaustive_equal_the_fixture_sets_and_exit_0() {
 }
 
 #[test]
-fn the_corpus_runs_eight_fixtures_equal_and_names_the_seven_the_interpreter_refuses() {
+fn the_whole_corpus_is_equal_since_s6_20_and_every_set_comes_from_the_fixture() {
+    // Before S6-20 this test expected 8 `equal` and 7 `unsupported` (the LOCK and XCHG fixtures).
+    // The interpreter now executes those forms; the expected sets are still the fixture's own
+    // (`fixture_expected` reads the file, not the run), so an `equal` here is not self-referential.
     let out = run(&["--corpus", &corpus().display().to_string()]);
     assert_eq!(out.status.code(), Some(0), "{}", json_of(&out));
     let doc = json_of(&out);
     assert_eq!(doc["status"], "ok");
     assert_eq!(doc["summary"]["cases"], 15);
-    assert_eq!(doc["summary"]["equal"], 8);
-    assert_eq!(doc["summary"]["unsupported"], 7);
+    assert_eq!(doc["summary"]["equal"], 15);
+    assert_eq!(doc["summary"]["unsupported"], 0);
     assert_eq!(doc["summary"]["forbidden"], 0);
-    let mut unsupported = BTreeSet::new();
+    let mut locked = BTreeSet::new();
     for case in doc["cases"].as_array().unwrap() {
-        match case["verdict"].as_str().unwrap() {
-            "equal" => {
-                let file = Path::new(case["source"].as_str().unwrap())
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .to_string();
-                assert_eq!(observed(case), fixture_expected(&file), "{file}");
-            }
-            "unsupported" => {
-                assert_eq!(case["runs"], 0);
-                assert_eq!(case["histogram"], json!([]));
-                unsupported.insert(case["id"].as_str().unwrap().to_string());
-            }
-            other => panic!("{}: {other}", case["id"]),
-        }
+        assert_eq!(case["verdict"], "equal", "{}", case["id"]);
+        assert_eq!(case["unsupported"], Value::Null);
+        assert_eq!(case["instructions_cut"], 0);
+        assert!(case["runs"].as_u64().unwrap() > 0);
+        let file = Path::new(case["source"].as_str().unwrap())
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(observed(case), fixture_expected(&file), "{file}");
+        locked.insert(case["id"].as_str().unwrap().to_string());
     }
-    let expected: BTreeSet<String> = [
+    for id in [
         "LOCK-CMPXCHG-MUTEX",
         "LOCK-XADD",
         "SB-LOCK",
@@ -200,52 +201,29 @@ fn the_corpus_runs_eight_fixtures_equal_and_names_the_seven_the_interpreter_refu
         "SB-LOCK-XADD",
         "SB-XCHG",
         "XCHG-MUTEX",
-    ]
-    .iter()
-    .map(ToString::to_string)
-    .collect();
-    assert_eq!(unsupported, expected);
+    ] {
+        assert!(locked.contains(id), "{id} is in the corpus run");
+    }
 }
 
 #[test]
-fn a_lock_form_is_unsupported_with_the_instruction_and_its_bytes_and_is_not_equal() {
-    // Recorded choice: verdict "unsupported", exit 0 (a known gap of the interpreter, S6-20).
+fn the_lock_xadd_fixture_and_the_lock_inc_counter_are_equal_with_the_fixture_sets() {
     let out = run(&["--fixture", &fixture_arg("lock-xadd.json")]);
     assert_eq!(out.status.code(), Some(0), "{}", json_of(&out));
     let doc = json_of(&out);
     assert_eq!(doc["status"], "ok");
-    assert_eq!(doc["summary"]["equal"], 0);
-    assert_eq!(doc["summary"]["unsupported"], 1);
+    assert_eq!(doc["summary"]["equal"], 1);
+    assert_eq!(doc["summary"]["unsupported"], 0);
     let case = &doc["cases"][0];
-    assert_eq!(case["verdict"], "unsupported");
-    assert_eq!(case["runs"], 0);
-    let unsupported = &case["unsupported"];
-    assert!(
-        unsupported["instruction"]
-            .as_str()
-            .unwrap()
-            .starts_with("lock xadd")
-    );
-    assert!(
-        unsupported["bytes"]
-            .as_str()
-            .unwrap()
-            .starts_with("f0 0f c1")
-    );
-    assert_eq!(unsupported["cpu"], 0);
-    assert!(
-        unsupported["reason"]
-            .as_str()
-            .unwrap()
-            .contains("not execute")
-    );
-    // The expected set is still the fixture's, for the day the form runs.
+    assert_eq!(case["verdict"], "equal");
+    assert_eq!(case["unsupported"], Value::Null);
+    assert_eq!(observed(case), fixture_expected("lock-xadd.json"));
     assert_eq!(
         set_of(&case["expected_interleaving_instruction_atomic"]),
         fixture_expected("lock-xadd.json")
     );
 
-    // The LOCK-INC counter of the formula file: unsupported too, never replaced by another body.
+    // The LOCK-INC counter of the formula file: N*K under every schedule.
     let formula = fixture_arg("counters-formula.json");
     let out = run(&[
         "--formula",
@@ -260,17 +238,58 @@ fn a_lock_form_is_unsupported_with_the_instruction_and_its_bytes_and_is_not_equa
     assert_eq!(out.status.code(), Some(0), "{}", json_of(&out));
     let case = only_case(&out);
     assert_eq!(case["id"], "LOCK-INC(N=2,K=1)");
-    assert_eq!(case["verdict"], "unsupported");
-    assert!(
-        case["unsupported"]["instruction"]
-            .as_str()
-            .unwrap()
-            .starts_with("lock inc")
-    );
+    assert_eq!(case["verdict"], "equal");
+    assert_eq!(observed(&case), BTreeSet::from([vec![2]]));
     assert_eq!(
         case["expected_interleaving_instruction_atomic"],
         json!([[2]])
     );
+}
+
+#[test]
+fn a_lock_form_outside_the_admitted_set_is_unsupported_with_the_instruction_and_its_bytes() {
+    // The `unsupported` path stays: `LOCK OR dword [0x1000], 1` (F0 83 0C 25 00 10 00 00 01, the
+    // same 9 bytes as the `lock xadd` it replaces, so the code-region size of the fixture still
+    // holds) decodes but is admitted only in the CPL0 set; it is never executed as a plain
+    // read/write in a bare run.
+    let scratch = Scratch::new("lock-or");
+    let text = fs::read_to_string(root().join("tests/fixtures/guest/stage6/litmus/lock-xadd.json"))
+        .unwrap();
+    let mut fixture: Value = serde_json::from_str(&text).unwrap();
+    let instruction = &mut fixture["threads"][0]["instructions"][0];
+    assert!(
+        instruction["asm"]
+            .as_str()
+            .unwrap()
+            .starts_with("lock xadd")
+    );
+    assert_eq!(instruction["length"], 9);
+    instruction["asm"] = json!("lock or dword ptr [0x00001000], 1");
+    instruction["bytes"] = json!("f0 83 0c 25 00 10 00 00 01");
+    let path = scratch.path("lock-or.json");
+    fs::write(&path, serde_json::to_string_pretty(&fixture).unwrap()).unwrap();
+    let out = run(&["--fixture", &path.display().to_string()]);
+    let doc = json_of(&out);
+    assert_eq!(out.status.code(), Some(0), "{doc}");
+    assert_eq!(doc["summary"]["equal"], 0, "{doc}");
+    assert_eq!(doc["summary"]["unsupported"], 1, "{doc}");
+    let case = &doc["cases"][0];
+    assert_eq!(case["verdict"], "unsupported");
+    assert_eq!(case["runs"], 0);
+    let unsupported = &case["unsupported"];
+    assert!(
+        unsupported["instruction"]
+            .as_str()
+            .unwrap()
+            .starts_with("lock or")
+    );
+    assert!(
+        unsupported["bytes"]
+            .as_str()
+            .unwrap()
+            .starts_with("f0 83 0c")
+    );
+    assert_eq!(unsupported["cpu"], 0);
 }
 
 #[test]
@@ -625,7 +644,10 @@ fn the_exhaustive_histograms_equal_the_s6_19_proof_data() {
         assert_eq!(ours["runs"], record["runs"], "{}", record["id"]);
         compared += 1;
     }
-    assert_eq!(compared, 8);
+    assert_eq!(
+        compared, 15,
+        "every fixture of the corpus has an exhaustive record"
+    );
 }
 
 /// `(outcome, runs)` of every histogram entry, in the order the runner writes them.
@@ -674,8 +696,8 @@ fn formula_args(id: &str, formula: &str) -> Vec<String> {
 
 #[test]
 fn the_formula_counters_equal_the_s6_19_proof_data_by_exhaustion_and_by_seeds() {
-    // UNLOCKED-INC and THREE-INSN-COUNTER (not LOCK-INC: the interpreter refuses it) at every
-    // size of the data file whose schedule count is at most 100,000 (a few seconds in all).
+    // LOCK-INC (since S6-20), UNLOCKED-INC and THREE-INSN-COUNTER at every size of the data file
+    // whose schedule count is at most 100,000 (a few seconds in all).
     let data = proof_data();
     let formula = fixture_arg("counters-formula.json");
     let mut exhaustive = 0;
@@ -683,7 +705,9 @@ fn the_formula_counters_equal_the_s6_19_proof_data_by_exhaustion_and_by_seeds() 
     for record in data["cases"].as_array().unwrap() {
         let id = record["id"].as_str().unwrap();
         let mode = record["mode"].as_str().unwrap();
-        let counter = id.starts_with("UNLOCKED-INC(") || id.starts_with("THREE-INSN-COUNTER(");
+        let counter = id.starts_with("LOCK-INC(")
+            || id.starts_with("UNLOCKED-INC(")
+            || id.starts_with("THREE-INSN-COUNTER(");
         let small = record["runs"].as_u64().is_some_and(|runs| runs > 0)
             && record["complete_schedules"]
                 .as_str()
@@ -706,9 +730,9 @@ fn the_formula_counters_equal_the_s6_19_proof_data_by_exhaustion_and_by_seeds() 
         assert_eq!(ours["runs"], record["runs"], "{id} {mode}");
         assert_eq!(histogram_of(&ours), histogram_of(record), "{id} {mode}");
     }
-    // 2 + 2 + 2 + ... counted from the data file: both counters at six and five sizes.
-    assert!(exhaustive >= 10, "{exhaustive} exhaustive records compared");
-    assert!(seeded >= 10, "{seeded} seed records compared");
+    // Counted from the data file: the three counters at five sizes (exhaustive) each.
+    assert!(exhaustive >= 15, "{exhaustive} exhaustive records compared");
+    assert!(seeded >= 15, "{seeded} seed records compared");
 }
 
 #[test]
@@ -740,7 +764,10 @@ fn the_fixture_seed_runs_equal_the_s6_19_seed_records() {
         assert_eq!(histogram_of(ours), histogram_of(record), "{}", record["id"]);
         compared += 1;
     }
-    assert_eq!(compared, 8);
+    assert_eq!(
+        compared, 15,
+        "every fixture of the corpus has a seed record"
+    );
 }
 
 #[test]

@@ -3477,36 +3477,12 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         }
     }
 
-    fn atomic_exchange_integer(
-        &mut self,
-        _address: u64,
-        _context: AccessContext,
-        _size: od_isa::OperandSize,
-        _replacement: u64,
-    ) -> Result<u64, MemoryError> {
-        Err(Self::unsupported("atomic exchange"))
-    }
-
-    fn atomic_fetch_add_integer(
-        &mut self,
-        _address: u64,
-        _context: AccessContext,
-        _size: od_isa::OperandSize,
-        _addend: u64,
-    ) -> Result<u64, MemoryError> {
-        Err(Self::unsupported("atomic fetch-add"))
-    }
-
-    fn atomic_compare_exchange_integer(
-        &mut self,
-        _address: u64,
-        _context: AccessContext,
-        _size: od_isa::OperandSize,
-        _expected: u64,
-        _replacement: u64,
-    ) -> Result<u64, MemoryError> {
-        Err(Self::unsupported("atomic compare-exchange"))
-    }
+    // S6-20: no atomic override. `atomic_rmw_integer` and the three atomic operations built on
+    // it use the trait's serial default (read, then write, through this adapter's own
+    // width-gated `read`/`write`). In the interleaving mode the vCPU never switches inside an
+    // instruction, so that sequence is indivisible; the single definition of LOCK atomicity is
+    // `GuestMemory::atomic_rmw_integer` (CPU_CONTRACT.md, S6-20), replaced by S6-31 for a
+    // concurrent backend without touching the instructions.
 
     fn mfence(&mut self, _context: AccessContext) -> Result<(), MemoryError> {
         Err(Self::unsupported("MFENCE"))

@@ -1047,6 +1047,13 @@ fn set_exit_to_probe_exit(
                     "the CPL0 set returned an exit the board never asks for",
                 ));
             }
+            // S6-20: the CPL0 set refuses a non-Running activity at its own entry; the board runs
+            // vCPU 0 only, which is Running.
+            RunExit::NotRunning => {
+                return Err(SetExitMappingError::Integration(
+                    "the CPL0 set returned NotRunning, an activity the board never runs",
+                ));
+            }
         },
         PagedCpl0SetExit::Rejected(error) => {
             PagedProbeExit::Rejected(PagedProbeRejection::Cpl0Set(error))

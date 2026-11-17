@@ -1298,28 +1298,15 @@ fn mp_exhaustive_never_reaches_the_forbidden_outcome() {
     assert_eq!(exploration.outcomes.len(), 3);
 }
 
-/// Fixtures the interpreter does not run yet, with the form it refuses. The bare interpreter
-/// runs `LOCK XADD` and `XCHG` with memory only in their qword `[rax]` forms and does not run
-/// `LOCK INC` or `LOCK CMPXCHG` at all (`lock_cmpxchg_stays_unsupported_in_bare_run_and_step`);
-/// the corpus uses the dword forms with an absolute address. S6-20 moves the `LOCK` forms to the
-/// atomic API and must admit these forms. The corpus bytes are not changed to fit the
-/// interpreter. When S6-20 lands this list becomes empty and the test says so.
-#[cfg(test)]
-const BLOCKED_BY_S6_20: [(&str, &str); 7] = [
-    ("lock-cmpxchg-mutex.json", "lock cmpxchg"),
-    ("lock-xadd.json", "lock xadd"),
-    ("sb-lock-local.json", "lock inc"),
-    ("sb-lock-xadd.json", "lock xadd"),
-    ("sb-lock.json", "lock inc"),
-    ("sb-xchg.json", "xchg"),
-    ("xchg-mutex.json", "xchg"),
-];
-
+/// S6-20 landed: the interpreter runs the dword `LOCK INC`, `LOCK CMPXCHG`, `LOCK XADD` and
+/// `XCHG` with a memory operand of the corpus through the single atomic API
+/// (`GuestMemory::atomic_rmw_integer`), so no fixture is blocked any more. The expected sets are
+/// read from the fixture files (derived by `build_stage6_litmus.py`), never from a run, so a
+/// wrong result of the interpreter fails `assert_exhaustive_equal`.
 #[test]
 fn the_whole_finite_corpus_is_exhaustive_and_equals_its_set() {
     let files = Case::fixture_files();
     assert_eq!(files.len(), 15, "{files:?}");
-    let mut blocked = Vec::new();
     let mut run = 0;
     for file in files {
         let case = Case::from_fixture(&file);
@@ -1329,29 +1316,50 @@ fn the_whole_finite_corpus_is_exhaustive_and_equals_its_set() {
             "{}: {count} schedules",
             case.id
         );
-        if let Some(unsupported) = unsupported_form(&case) {
-            blocked.push((file, unsupported));
-            continue;
-        }
+        // No refusal: every form of the corpus is executed.
+        assert_eq!(unsupported_form(&case), None, "{file}");
         assert_exhaustive_equal(&case);
         run += 1;
     }
-    let blocked: Vec<(String, String)> =
-        blocked.into_iter().map(|(file, u)| (file, u.asm)).collect();
-    eprintln!("run {run}, blocked {blocked:?}");
-    let pinned: Vec<(String, String)> = BLOCKED_BY_S6_20
-        .iter()
-        .map(|(file, asm)| ((*file).to_string(), (*asm).to_string()))
-        .collect();
-    assert_eq!(
-        blocked.iter().map(|(f, _)| f).collect::<Vec<_>>(),
-        pinned.iter().map(|(f, _)| f).collect::<Vec<_>>(),
-        "the set of fixtures the interpreter refuses changed (S6-20?): update the list"
-    );
-    for ((file, asm), (_, pinned_asm)) in blocked.iter().zip(&pinned) {
-        assert!(asm.starts_with(pinned_asm), "{file}: refused {asm}");
+    assert_eq!(run, 15);
+}
+
+/// The seven fixtures that were blocked by S6-20, each by its own name: the locked forms give the
+/// SC set of the fixture, and the forbidden SB outcome (both read 0) is in no set.
+#[test]
+fn the_seven_lock_and_xchg_fixtures_are_equal_to_their_sets() {
+    for (file, asm) in [
+        ("lock-cmpxchg-mutex.json", "lock cmpxchg"),
+        ("lock-xadd.json", "lock xadd"),
+        ("sb-lock-local.json", "lock inc"),
+        ("sb-lock-xadd.json", "lock xadd"),
+        ("sb-lock.json", "lock inc"),
+        ("sb-xchg.json", "xchg"),
+        ("xchg-mutex.json", "xchg"),
+    ] {
+        let case = Case::from_fixture(file);
+        assert!(
+            case.threads
+                .iter()
+                .flat_map(|t| &t.instructions)
+                .any(|i| i.asm.starts_with(asm)),
+            "{file} has no `{asm}`"
+        );
+        let exploration = assert_exhaustive_equal(&case);
+        assert_eq!(exploration.observed(), case.expected, "{file}");
     }
-    assert_eq!(run, 8);
+    // SB with a locked instruction between the store and the load: "both read 0" is not SC.
+    for file in ["sb-lock.json", "sb-lock-xadd.json", "sb-xchg.json"] {
+        let case = Case::from_fixture(file);
+        let exploration = assert_exhaustive_equal(&case);
+        assert!(
+            exploration
+                .outcomes
+                .keys()
+                .all(|o| !(o[0] == 0 && o[1] == 0)),
+            "{file}: both threads read 0"
+        );
+    }
 }
 
 #[test]
@@ -1488,15 +1496,16 @@ fn a_big_counter_is_explored_by_seeds_as_a_subset_of_the_formula() {
 }
 
 #[test]
-fn the_lock_inc_counter_is_blocked_by_the_interpreter_not_replaced() {
-    // "LOCK INC is exact under every schedule" cannot be shown yet: the bare interpreter does
-    // not run `lock inc` (S6-20). The corpus body is not swapped for another instruction.
-    // The expected set (N*K) is still read from the fixture, for the day S6-20 lands.
-    let case = Case::from_formula("LOCK-INC", 4, 4);
-    assert_eq!(case.expected, BTreeSet::from([vec![16]]));
-    let unsupported = unsupported_form(&case).expect("S6-20 has landed: run this counter");
-    assert!(unsupported.asm.starts_with("lock inc"), "{unsupported:?}");
-    assert_eq!(unsupported.opcode, 0xff);
+fn the_lock_inc_counter_is_exact_under_every_schedule() {
+    // `lock inc` of the corpus body runs through the atomic API: the sum is N*K under every
+    // schedule (and, the instruction being indivisible in this mode, equal to the unlocked one).
+    for (n, k) in [(2, 1), (2, 2), (3, 1), (4, 1)] {
+        let case = Case::from_formula("LOCK-INC", n, k);
+        assert_eq!(case.expected, BTreeSet::from([vec![n * k]]));
+        assert_eq!(unsupported_form(&case), None);
+        let exploration = assert_exhaustive_equal(&case);
+        assert_eq!(exploration.observed(), BTreeSet::from([vec![n * k]]));
+    }
 }
 
 #[test]
@@ -1598,17 +1607,15 @@ fn random_schedule_is_deterministic_keeps_thread_order_and_lets_a_later_thread_g
 }
 
 #[test]
-fn seeds_reach_every_expected_outcome_of_every_runnable_finite_fixture() {
+fn seeds_reach_every_expected_outcome_of_every_finite_fixture() {
     // The seed mode (0..=9999 random orders of steps) is not weaker than the exhaustive one on
-    // the corpus the interpreter runs today: SB reaches [1, 0] (cpu1 before cpu0), IRIW reaches
-    // both readers' orders. A forbidden outcome fails; an expected one not reached would be a
-    // recorded coverage gap (none exists today).
+    // the whole finite corpus (S6-20: the locked forms run too): SB reaches [1, 0] (cpu1 before
+    // cpu0), IRIW reaches both readers' orders. A forbidden outcome fails; an expected one not
+    // reached would be a recorded coverage gap (none exists today).
     let mut checked = 0;
     for file in Case::fixture_files() {
         let case = Case::from_fixture(&file);
-        if unsupported_form(&case).is_some() {
-            continue;
-        }
+        assert_eq!(unsupported_form(&case), None, "{file}");
         let exploration = explore_seeds(&case, SEEDS);
         let verdict = compare(&case, &exploration);
         assert!(verdict.forbidden.is_empty(), "{}: {:?}", case.id, verdict);
@@ -1622,7 +1629,7 @@ fn seeds_reach_every_expected_outcome_of_every_runnable_finite_fixture() {
         );
         checked += 1;
     }
-    assert_eq!(checked, 8);
+    assert_eq!(checked, 15);
     let sb = explore_seeds(&Case::from_fixture("sb.json"), SEEDS);
     assert!(
         sb.outcomes.contains_key(&vec![1, 0, 1, 1]),

@@ -1133,7 +1133,7 @@
       "x86_tso_only_outcomes": []
     },
     {
-      "cpu": 0,
+      "complete_schedules": "2",
       "expected_interleaving_instruction_atomic": [
         [
           1,
@@ -1145,15 +1145,131 @@
           2,
           0
         ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "01"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "10"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            2,
+            0
+          ],
+          "runs": 1
+        }
       ],
       "id": "LOCK-CMPXCHG-MUTEX",
-      "mode": "not run: the interpreter does not execute this form (S6-20)",
-      "opcode": 177,
-      "refused_instruction": "lock cmpxchg dword ptr [0x00001000], ebx",
-      "rip": 8192
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x",
+        "cpu0.eax",
+        "cpu1.eax"
+      ],
+      "rep_slices": 0,
+      "runs": 2,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock cmpxchg dword ptr [0x00001000], ebx"
+        ],
+        [
+          "lock cmpxchg dword ptr [0x00001000], ebx"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
     },
     {
-      "cpu": 0,
+      "complete_schedules": "2",
+      "expected_interleaving_instruction_atomic": [
+        [
+          1,
+          0,
+          1
+        ],
+        [
+          2,
+          2,
+          0
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 2
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1
+          ],
+          "runs": 4995
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            2,
+            0
+          ],
+          "runs": 5005
+        }
+      ],
+      "id": "LOCK-CMPXCHG-MUTEX",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x",
+        "cpu0.eax",
+        "cpu1.eax"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock cmpxchg dword ptr [0x00001000], ebx"
+        ],
+        [
+          "lock cmpxchg dword ptr [0x00001000], ebx"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "2",
       "expected_interleaving_instruction_atomic": [
         [
           2,
@@ -1166,11 +1282,127 @@
           0
         ]
       ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "01"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            0,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "10"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            1,
+            0
+          ],
+          "runs": 1
+        }
+      ],
       "id": "LOCK-XADD",
-      "mode": "not run: the interpreter does not execute this form (S6-20)",
-      "opcode": 193,
-      "refused_instruction": "lock xadd dword ptr [0x00001000], eax",
-      "rip": 8192
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x",
+        "cpu0.eax",
+        "cpu1.ebx"
+      ],
+      "rep_slices": 0,
+      "runs": 2,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock xadd dword ptr [0x00001000], eax"
+        ],
+        [
+          "lock xadd dword ptr [0x00001000], ebx"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "2",
+      "expected_interleaving_instruction_atomic": [
+        [
+          2,
+          0,
+          1
+        ],
+        [
+          2,
+          1,
+          0
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 2
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            0,
+            1
+          ],
+          "runs": 4995
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            1,
+            0
+          ],
+          "runs": 5005
+        }
+      ],
+      "id": "LOCK-XADD",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x",
+        "cpu0.eax",
+        "cpu1.ebx"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock xadd dword ptr [0x00001000], eax"
+        ],
+        [
+          "lock xadd dword ptr [0x00001000], ebx"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
     },
     {
       "complete_schedules": "6",
@@ -1361,7 +1593,7 @@
       "x86_tso_only_outcomes": []
     },
     {
-      "cpu": 0,
+      "complete_schedules": "10",
       "expected_interleaving_instruction_atomic": [
         [
           0,
@@ -1384,15 +1616,204 @@
           1,
           1
         ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "00011"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "11000"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "00101"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 8
+        }
       ],
       "id": "SB-LOCK-LOCAL",
-      "mode": "not run: the interpreter does not execute this form (S6-20)",
-      "opcode": 255,
-      "refused_instruction": "lock inc dword ptr [0x00001010]",
-      "rip": 8203
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y",
+        "mem.lock"
+      ],
+      "rep_slices": 0,
+      "runs": 10,
+      "steps_per_thread": [
+        3,
+        2
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "lock inc dword ptr [0x00001010]",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": [
+        [
+          0,
+          0,
+          1,
+          1,
+          1
+        ]
+      ]
     },
     {
-      "cpu": 0,
+      "complete_schedules": "10",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 9
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 1214
+        },
+        {
+          "first": {
+            "seed": 1
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 2510
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 6276
+        }
+      ],
+      "id": "SB-LOCK-LOCAL",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y",
+        "mem.lock"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        3,
+        2
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "lock inc dword ptr [0x00001010]",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": [
+        [
+          0,
+          0,
+          1,
+          1,
+          1
+        ]
+      ]
+    },
+    {
+      "complete_schedules": "20",
       "expected_interleaving_instruction_atomic": [
         [
           0,
@@ -1415,15 +1836,190 @@
           1,
           0
         ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "000111"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1,
+            0
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "111000"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1,
+            0
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "001011"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1,
+            0
+          ],
+          "runs": 18
+        }
       ],
       "id": "SB-LOCK-XADD",
-      "mode": "not run: the interpreter does not execute this form (S6-20)",
-      "opcode": 193,
-      "refused_instruction": "lock xadd dword ptr [0x00001010], ecx",
-      "rip": 8203
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y",
+        "mem.lock"
+      ],
+      "rep_slices": 0,
+      "runs": 20,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "lock xadd dword ptr [0x00001010], ecx",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "lock xadd dword ptr [0x00001010], edx",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
     },
     {
-      "cpu": 0,
+      "complete_schedules": "20",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          1,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          0,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          0
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 9
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1,
+            0
+          ],
+          "runs": 1214
+        },
+        {
+          "first": {
+            "seed": 3
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1,
+            0
+          ],
+          "runs": 1273
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1,
+            0
+          ],
+          "runs": 7513
+        }
+      ],
+      "id": "SB-LOCK-XADD",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y",
+        "mem.lock"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "lock xadd dword ptr [0x00001010], ecx",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "lock xadd dword ptr [0x00001010], edx",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "20",
       "expected_interleaving_instruction_atomic": [
         [
           0,
@@ -1447,11 +2043,186 @@
           2
         ]
       ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "000111"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1,
+            2
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "111000"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1,
+            2
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "001011"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1,
+            2
+          ],
+          "runs": 18
+        }
+      ],
       "id": "SB-LOCK",
-      "mode": "not run: the interpreter does not execute this form (S6-20)",
-      "opcode": 255,
-      "refused_instruction": "lock inc dword ptr [0x00001010]",
-      "rip": 8203
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y",
+        "mem.lock"
+      ],
+      "rep_slices": 0,
+      "runs": 20,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "lock inc dword ptr [0x00001010]",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "lock inc dword ptr [0x00001010]",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "20",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          1,
+          1,
+          1,
+          2
+        ],
+        [
+          1,
+          0,
+          1,
+          1,
+          2
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          2
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 9
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1,
+            2
+          ],
+          "runs": 1214
+        },
+        {
+          "first": {
+            "seed": 3
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1,
+            2
+          ],
+          "runs": 1273
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1,
+            2
+          ],
+          "runs": 7513
+        }
+      ],
+      "id": "SB-LOCK",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y",
+        "mem.lock"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "lock inc dword ptr [0x00001010]",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "lock inc dword ptr [0x00001010]",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
     },
     {
       "complete_schedules": "20",
@@ -1646,7 +2417,7 @@
       "x86_tso_only_outcomes": []
     },
     {
-      "cpu": 0,
+      "complete_schedules": "20",
       "expected_interleaving_instruction_atomic": [
         [
           0,
@@ -1670,11 +2441,186 @@
           0
         ]
       ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "000111"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1,
+            0
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "111000"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1,
+            0
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "001011"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1,
+            0
+          ],
+          "runs": 18
+        }
+      ],
       "id": "SB-XCHG",
-      "mode": "not run: the interpreter does not execute this form (S6-20)",
-      "opcode": 135,
-      "refused_instruction": "xchg dword ptr [0x00001010], eax",
-      "rip": 8203
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y",
+        "mem.lock"
+      ],
+      "rep_slices": 0,
+      "runs": 20,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "xchg dword ptr [0x00001010], eax",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "xchg dword ptr [0x00001010], eax",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "20",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          1,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          0,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          0
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 9
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1,
+            0
+          ],
+          "runs": 1214
+        },
+        {
+          "first": {
+            "seed": 3
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1,
+            0
+          ],
+          "runs": 1273
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1,
+            0
+          ],
+          "runs": 7513
+        }
+      ],
+      "id": "SB-XCHG",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y",
+        "mem.lock"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "xchg dword ptr [0x00001010], eax",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "xchg dword ptr [0x00001010], eax",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
     },
     {
       "complete_schedules": "6",
@@ -2115,7 +3061,7 @@
       ]
     },
     {
-      "cpu": 0,
+      "complete_schedules": "2",
       "expected_interleaving_instruction_atomic": [
         [
           1,
@@ -2128,102 +3074,782 @@
           1
         ]
       ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "10"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            2,
+            0
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "01"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            0,
+            1
+          ],
+          "runs": 1
+        }
+      ],
       "id": "XCHG-MUTEX",
-      "mode": "not run: the interpreter does not execute this form (S6-20)",
-      "opcode": 135,
-      "refused_instruction": "xchg dword ptr [0x00001000], ebx",
-      "rip": 8192
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x",
+        "cpu0.ebx",
+        "cpu1.ebx"
+      ],
+      "rep_slices": 0,
+      "runs": 2,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "xchg dword ptr [0x00001000], ebx"
+        ],
+        [
+          "xchg dword ptr [0x00001000], ebx"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
     },
     {
-      "cpu": 0,
+      "complete_schedules": "2",
+      "expected_interleaving_instruction_atomic": [
+        [
+          1,
+          2,
+          0
+        ],
+        [
+          2,
+          0,
+          1
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            2,
+            0
+          ],
+          "runs": 5005
+        },
+        {
+          "first": {
+            "seed": 2
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            0,
+            1
+          ],
+          "runs": 4995
+        }
+      ],
+      "id": "XCHG-MUTEX",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x",
+        "cpu0.ebx",
+        "cpu1.ebx"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "xchg dword ptr [0x00001000], ebx"
+        ],
+        [
+          "xchg dword ptr [0x00001000], ebx"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "2",
       "expected_interleaving_instruction_atomic": [
         [
           2
         ]
       ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "01"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 2
+        }
+      ],
       "id": "LOCK-INC(N=2,K=1)",
-      "mode": "not run: the interpreter does not execute this form (S6-20)",
-      "opcode": 255,
-      "refused_instruction": "lock inc dword ptr [0x00001000]",
-      "rip": 8192
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 2,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
     },
     {
-      "cpu": 0,
+      "complete_schedules": "2",
+      "expected_interleaving_instruction_atomic": [
+        [
+          2
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "LOCK-INC(N=2,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "6",
       "expected_interleaving_instruction_atomic": [
         [
           4
         ]
       ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "0011"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 6
+        }
+      ],
       "id": "LOCK-INC(N=2,K=2)",
-      "mode": "not run: the interpreter does not execute this form (S6-20)",
-      "opcode": 255,
-      "refused_instruction": "lock inc dword ptr [0x00001000]",
-      "rip": 8192
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 6,
+      "steps_per_thread": [
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
     },
     {
-      "cpu": 0,
+      "complete_schedules": "6",
+      "expected_interleaving_instruction_atomic": [
+        [
+          4
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "LOCK-INC(N=2,K=2)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "20",
       "expected_interleaving_instruction_atomic": [
         [
           6
         ]
       ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "000111"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            6
+          ],
+          "runs": 20
+        }
+      ],
       "id": "LOCK-INC(N=2,K=3)",
-      "mode": "not run: the interpreter does not execute this form (S6-20)",
-      "opcode": 255,
-      "refused_instruction": "lock inc dword ptr [0x00001000]",
-      "rip": 8192
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 20,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
     },
     {
-      "cpu": 0,
+      "complete_schedules": "20",
+      "expected_interleaving_instruction_atomic": [
+        [
+          6
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            6
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "LOCK-INC(N=2,K=3)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "6",
       "expected_interleaving_instruction_atomic": [
         [
           3
         ]
       ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "012"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            3
+          ],
+          "runs": 6
+        }
+      ],
       "id": "LOCK-INC(N=3,K=1)",
-      "mode": "not run: the interpreter does not execute this form (S6-20)",
-      "opcode": 255,
-      "refused_instruction": "lock inc dword ptr [0x00001000]",
-      "rip": 8192
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 6,
+      "steps_per_thread": [
+        1,
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 3,
+      "x86_tso_only_outcomes": []
     },
     {
-      "cpu": 0,
+      "complete_schedules": "6",
+      "expected_interleaving_instruction_atomic": [
+        [
+          3
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            3
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "LOCK-INC(N=3,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        1,
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 3,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "24",
       "expected_interleaving_instruction_atomic": [
         [
           4
         ]
       ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "0123"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 24
+        }
+      ],
       "id": "LOCK-INC(N=4,K=1)",
-      "mode": "not run: the interpreter does not execute this form (S6-20)",
-      "opcode": 255,
-      "refused_instruction": "lock inc dword ptr [0x00001000]",
-      "rip": 8192
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 24,
+      "steps_per_thread": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 4,
+      "x86_tso_only_outcomes": []
     },
     {
-      "cpu": 0,
+      "complete_schedules": "24",
+      "expected_interleaving_instruction_atomic": [
+        [
+          4
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "LOCK-INC(N=4,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 4,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "90",
       "expected_interleaving_instruction_atomic": [
         [
           6
         ]
       ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "001122"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            6
+          ],
+          "runs": 90
+        }
+      ],
       "id": "LOCK-INC(N=3,K=2)",
-      "mode": "not run: the interpreter does not execute this form (S6-20)",
-      "opcode": 255,
-      "refused_instruction": "lock inc dword ptr [0x00001000]",
-      "rip": 8192
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 90,
+      "steps_per_thread": [
+        2,
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 3,
+      "x86_tso_only_outcomes": []
     },
     {
-      "cpu": 0,
+      "complete_schedules": "90",
+      "expected_interleaving_instruction_atomic": [
+        [
+          6
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            6
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "LOCK-INC(N=3,K=2)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        2,
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 3,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "63063000",
       "expected_interleaving_instruction_atomic": [
         [
           16
         ]
       ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            16
+          ],
+          "runs": 10000
+        }
+      ],
       "id": "LOCK-INC(N=4,K=4)",
-      "mode": "not run: the interpreter does not execute this form (S6-20)",
-      "opcode": 255,
-      "refused_instruction": "lock inc dword ptr [0x00001000]",
-      "rip": 8192
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        4,
+        4,
+        4,
+        4
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 4,
+      "x86_tso_only_outcomes": []
     },
     {
       "complete_schedules": "2",
@@ -4110,7 +5736,7 @@
     }
   ],
   "difference_from_x86": "INC [x] without LOCK is indivisible here (x86 can lose the update); SB both-zero is not reachable (it is x86-TSO only); LOOP is not run by the interpreter, the formula counters repeat the corpus body K times",
-  "elapsed_seconds": 3.9161745,
+  "elapsed_seconds": 4.430489375,
   "exhaustive_threshold": "1000000",
   "expected_sets": "fixtures tests/fixtures/guest/stage6/litmus (S6-05, derived from the cited sources)",
   "forbidden_outcomes_total": 0,
@@ -4118,7 +5744,7 @@
   "memory_model_proved": "SC with every instruction indivisible (interleaving_instruction_atomic); not x86-TSO, not a parallel run",
   "mode": "interleaving: one host thread, SmpScheduler, a step is one whole instruction or one REP slice of 1024 iterations",
   "not_covered_by_exhaustive_total": 0,
-  "not_run_blocked_by_interpreter": 14,
+  "not_run_blocked_by_interpreter": 0,
   "rep_slice": 1024,
   "schema": "od.s6-19-litmus-interleaving.v1",
   "seed_policy": "random order of steps: per step a thread drawn by SplitMix64(seed) among the threads with steps left, run as QuantumPolicy::Schedule",

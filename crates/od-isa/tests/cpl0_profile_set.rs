@@ -14493,8 +14493,12 @@ fn lock_cmpxchg_dword_forms_outside_the_slice_are_refused_with_opcode_0xb1_witho
 }
 
 #[test]
-fn lock_cmpxchg_dword_stays_unsupported_outside_the_set() {
-    // No control policy (legacy state, bare `run`): the LOCK dword form is refused without mutation.
+fn lock_cmpxchg_dword_is_executed_outside_the_set_since_s6_20() {
+    // No control policy (legacy state, bare `run`). Until S6-20 the LOCK dword form was refused
+    // (`Unsupported { opcode: 0xb1 }`); the S6-05 litmus corpus needs it, so S6-20 admits it in the
+    // bare run through the single atomic API. The expectation is changed on purpose. The memory
+    // double implements no atomic override, so the default read -> write sequence is observed:
+    // one read and one write (a CMPXCHG writes on both branches).
     let mut state = legacy_state();
     state.gpr[Register::Rbx as usize] = 0x20_0000;
     let before = state.clone();
@@ -14505,10 +14509,11 @@ fn lock_cmpxchg_dword_stays_unsupported_outside_the_set() {
         config(PrivilegeLevel::Ring0, 1),
         || false,
     );
-    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xb1 });
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(state, before);
-    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_ne!(state, before);
+    assert_eq!(memory.reads.len(), 1);
+    assert_eq!(memory.writes.len(), 1);
 }
 
 #[test]
@@ -14853,9 +14858,27 @@ fn plain_inc_memory_without_lock_keeps_its_existing_arithmetic_path_in_the_set()
 }
 
 #[test]
-fn lock_inc_stays_unsupported_outside_the_set() {
-    // No control policy (legacy state, bare `run`): the LOCK form is refused without mutation.
-    for code in [&LOCK_INCL_RBX_58[..], &LOCK_INCQ_RBX_58[..]] {
+fn lock_inc_dword_is_executed_and_qword_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`). S6-20 admits the dword form (the S6-05 litmus
+    // corpus uses it) through the single atomic API: expectation changed on purpose, it used to
+    // be refused. The qword form is not in the corpus and stays refused without mutation.
+    let mut state = legacy_state();
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    let before = state.clone();
+    let mut memory = CasMemory::new(&LOCK_INCL_RBX_58, 5);
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_ne!(state, before);
+    assert_eq!(memory.cell, 6);
+    assert_eq!(memory.reads.len(), 1);
+    assert_eq!(memory.writes.len(), 1);
+    for code in [&LOCK_INCQ_RBX_58[..]] {
         let mut state = legacy_state();
         state.gpr[Register::Rbx as usize] = 0x20_0000;
         let before = state.clone();
@@ -32547,8 +32570,9 @@ fn bare_register_xadd_keeps_executing_in_the_set() {
     assert!(memory.reads.is_empty() && memory.writes.is_empty());
 }
 
-/// A flat memory for the outside-the-set tests: it implements the atomic fetch-add (the S2-21f
-/// path) and records the calls; ordinary reads and writes are errors.
+/// A flat memory for the outside-the-set tests: it implements the single atomic read-modify-write
+/// (`atomic_rmw_integer`, S6-20; the S2-21f fetch-add is expressed through it) and records the
+/// calls with the addend derived from the update; ordinary reads and writes are errors.
 struct XaddOutsideMemory {
     code: Vec<u8>,
     cell: u64,
@@ -32588,14 +32612,25 @@ impl GuestMemory for XaddOutsideMemory {
 
     fn atomic_fetch_add_integer(
         &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!("S6-20: the qword paths call atomic_rmw_integer directly")
+    }
+
+    fn atomic_rmw_integer(
+        &mut self,
         address: u64,
         _: AccessContext,
         size: OperandSize,
-        addend: u64,
+        update: &mut dyn FnMut(u64) -> u64,
     ) -> Result<u64, MemoryError> {
-        self.fetch_adds.push((address, size, addend));
         let old = self.cell;
-        self.cell = old.wrapping_add(addend);
+        let new = update(old);
+        self.fetch_adds.push((address, size, new.wrapping_sub(old)));
+        self.cell = new;
         Ok(old)
     }
 
@@ -32616,9 +32651,11 @@ impl GuestMemory for XaddOutsideMemory {
 }
 
 #[test]
-fn lock_and_bare_qword_memory_xadd_outside_the_set_keep_the_atomic_fetch_add_path() {
+fn lock_and_bare_qword_memory_xadd_outside_the_set_use_one_atomic_rmw_call() {
     // No control policy (legacy state, bare `run`): the S2-21f LOCK form and the S2-21d bare form
-    // still perform exactly one `atomic_fetch_add_integer` call and no ordinary read or write.
+    // perform exactly one `atomic_rmw_integer` call (S6-20: the qword path no longer calls
+    // `atomic_fetch_add_integer` directly, so one backend gives dword and qword the same
+    // atomicity) and no ordinary read or write. The recorded addend is derived from the update.
     for code in [
         &LOCK_XADD_RAX_RBX_3D[..],
         &[0x48, 0x0f, 0xc1, 0x43, 0x3d][..],
@@ -32646,7 +32683,11 @@ fn lock_and_bare_qword_memory_xadd_outside_the_set_keep_the_atomic_fetch_add_pat
 }
 
 #[test]
-fn lock_dword_xadd_stays_unsupported_outside_the_set() {
+fn lock_dword_xadd_is_executed_outside_the_set_since_s6_20() {
+    // Until S6-20 the dword LOCK XADD was refused outside the CPL0 set (only the qword form
+    // existed); the S6-05 litmus corpus needs it, so S6-20 admits it in the bare run through the
+    // single atomic API. The expectation is changed on purpose. One read and one write: the
+    // default read -> write sequence of the memory double.
     for code in [
         &LOCK_XADDL_EAX_RBX_3D[..],
         &[0xf0, 0x44, 0x0f, 0xc1, 0x43, 0x3d][..],
@@ -32663,18 +32704,21 @@ fn lock_dword_xadd_stays_unsupported_outside_the_set() {
         );
         assert_eq!(
             result.exit,
-            RunExit::Unsupported { opcode: 0xc1 },
+            RunExit::InstructionBudgetExhausted,
             "{code:02x?}"
         );
-        assert_eq!(result.instructions_executed, 0);
-        assert_eq!(state, before);
-        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        assert_eq!(result.instructions_executed, 1);
+        assert_ne!(state, before);
+        assert_eq!(memory.reads.len(), 1, "{code:02x?}");
+        assert_eq!(memory.writes.len(), 1, "{code:02x?}");
     }
 }
 
 #[test]
-fn lock_dword_xadd_is_refused_by_the_bare_step_entry_point() {
+fn lock_dword_xadd_is_executed_by_the_bare_step_entry_point_since_s6_20() {
+    // Used to be `Unsupported { opcode: 0xc1 }`; admitted by S6-20 (see the `run` twin above).
     let mut state = legacy_state();
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
     let before = state.clone();
     let mut memory = CasMemory::new(&LOCK_XADDL_EAX_RBX_3D, 5);
     let result = od_isa::execute::step(
@@ -32685,12 +32729,10 @@ fn lock_dword_xadd_is_refused_by_the_bare_step_entry_point() {
             ..AccessContext::default()
         },
     );
-    assert_eq!(
-        result,
-        Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0xc1 })
-    );
-    assert_eq!(state, before);
-    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    assert_eq!(result, Ok(od_isa::execute::StepOutcome::Advanced));
+    assert_ne!(state, before);
+    assert_eq!(memory.reads.len(), 1);
+    assert_eq!(memory.writes.len(), 1);
 }
 
 #[test]
@@ -49969,7 +50011,10 @@ fn xchg_dword_with_a_truncated_modrm_sib_or_displacement_is_refused_without_muta
 }
 
 #[test]
-fn xchg_dword_stays_unsupported_outside_the_set_by_run_and_by_step() {
+fn xchg_dword_is_executed_outside_the_set_by_run_and_by_step_since_s6_20() {
+    // Until S6-20 the dword XCHG with memory was refused outside the CPL0 set (opcode 0x87); the
+    // S6-05 litmus corpus needs it (XCHG with memory is implicitly locked), so S6-20 admits it in
+    // the bare run through the single atomic API. The expectation is changed on purpose.
     for code in [
         &XCHGL_EAX_R12_18[..],
         &[0xf0, 0x87, 0x03][..],
@@ -49988,22 +50033,24 @@ fn xchg_dword_stays_unsupported_outside_the_set_by_run_and_by_step() {
         );
         assert_eq!(
             result.exit,
-            RunExit::Unsupported { opcode: 0x87 },
+            RunExit::InstructionBudgetExhausted,
             "{code:02x?}"
         );
-        assert_eq!(result.instructions_executed, 0);
-        assert_eq!(state, before, "{code:02x?}");
-        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        assert_eq!(result.instructions_executed, 1);
+        assert_ne!(state, before, "{code:02x?}");
+        assert_eq!(memory.reads.len(), 1, "{code:02x?}");
+        assert_eq!(memory.writes.len(), 1, "{code:02x?}");
 
+        let mut state = before.clone();
+        let mut memory = BitsMemory::new(code);
         let outcome =
             od_isa::execute::step(&mut state, &mut memory, context(PrivilegeLevel::Ring0));
         assert_eq!(
             outcome,
-            Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0x87 }),
+            Ok(od_isa::execute::StepOutcome::Advanced),
             "{code:02x?}"
         );
-        assert_eq!(state, before, "{code:02x?}");
-        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        assert_ne!(state, before, "{code:02x?}");
     }
 }
 

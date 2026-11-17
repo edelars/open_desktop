@@ -12,7 +12,7 @@
 //! The result types are plain structs without `serde`; the JSON text is made by the caller. The
 //! only JSON in this crate is the reading of the fixture files (`serde_json::Value`, no derive).
 //!
-//! A form the interpreter does not execute (the `LOCK` forms until S6-20) is a verdict
+//! A form the interpreter does not execute (before S6-20 the corpus `LOCK` forms) is a verdict
 //! [`LitmusVerdict::Unsupported`] with the instruction and its bytes, never an `Equal`.
 
 use crate::litmus_interleaving::{
