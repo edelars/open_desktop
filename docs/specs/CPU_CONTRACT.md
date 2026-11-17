@@ -28697,7 +28697,8 @@ their stored values retained by the shared helper. Fetch faults do not retire.
 Other counts/registers/widths/prefixes and CPL3/other profiles remain outside
 this slice. ISSUE-201 remains the unrelated CLD expectation caveat.
 
-Focused tests pass (4/4), as does the other-profile matrix (1/1). The firmware
+Focused MOV/fault/neighbor/CPL3 tests pass (4/4), the pre-existing MOV BP
+compatibility test passes (1/1), as does the other-profile matrix (1/1). The firmware
 runner advances to `4B 8D 1C 40` (LEA RBX,[R8+R8*2], ISSUE-386), RIP
 `0x20125e`, after 9,864 retired instructions; it reports
 `Unsupported { opcode: 141 }`, and COM1 is empty. Full od-isa suites pass
@@ -28722,3 +28723,23 @@ COM1 is empty. Full od-isa suites pass (2,322/1,591/126/29/6/1,262/7/15; zero
 doc tests), paged machine quantum passes (110/110), workspace all-targets
 offline cargo check, scoped rustfmt and `git diff --check` pass. Independent
 review approved with no findings.
+
+### ISSUE-387: `BD 01 00 00 00` — MOV EBP,1
+
+This slice adds only this exact no-prefix dword immediate-register form to
+`PagedCpl0ProbeV1`; it does not broaden existing admissions. It writes value 1
+through EBP, zero-extending the value into RBP; flags and their definedness are
+preserved. A fetch fault at any immediate byte is atomic. The pre-existing word
+form `66 BD 01 00` (MOV BP,1) remains admitted and is tested for upper-RBP
+preservation; the qword neighbor `48 BD 01 00 00 00 00 00 00 00` remains
+unsupported. Other immediates/destinations/prefixes for this exact dword form,
+CPL3 and other profiles remain unsupported. ISSUE-201 remains the unrelated CLD
+caveat.
+
+Focused tests pass (4/4), as does the other-profile matrix (1/1). The firmware
+runner advances to `49 BE 00 00 00 00 10 00 00 00` (MOV R14,0x1000000000,
+ISSUE-388), RIP `0x20126a`, after 9,867 retired instructions; it reports
+`Unsupported { opcode: 190 }` and COM1 is empty. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,267/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline cargo check, scoped rustfmt and
+`git diff --check` pass. Independent review approved with no findings.

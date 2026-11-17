@@ -2976,3 +2976,22 @@ ISSUE-201 remains the unrelated CLD expectation caveat. Full od-isa suites pass
 (2,322/1,591/126/29/6/1,262/7/15; zero doc tests), paged machine quantum passes
 (110/110), workspace all-targets offline cargo check, scoped rustfmt and
 `git diff --check` pass. Independent review approved with no findings.
+
+### ISSUE-387 — exact MOV EBP,1 (`BD 01 00 00 00`)
+
+This slice adds only exact no-prefix `BD 01 00 00 00` to base
+`PagedCpl0ProbeV1`; it does not broaden pre-existing admissions. The dword
+write zero-extends RBP and leaves RFLAGS/definedness unchanged. Four focused
+tests cover exact state update, final-immediate fetch-fault atomicity, neighbors,
+CPL3 and other-profile isolation; a compatibility test confirms the prior
+`66 BD 01 00` MOV BP,1 form still preserves upper RBP bits. A qword MOV RBP,1
+neighbor is explicitly rejected.
+
+The runner advances to `49 BE 00 00 00 00 10 00 00 00` (MOV
+R14,0x1000000000, ISSUE-388), RIP `0x20126a`, after 9,867 retired
+instructions, `Unsupported { opcode: 190 }`; COM1 is empty. Image SHA-256
+remains `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201 remains the unrelated CLD expectation caveat. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,267/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline cargo check, scoped rustfmt and
+`git diff --check` pass. Independent review approved with no findings.

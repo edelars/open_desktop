@@ -1624,7 +1624,8 @@ are undefined; the shared helper retains their prior stored bit values. Test
 edge values, count/ModRM/REX/prefix neighbors, fetch fault, CPL3 and other
 profile isolation. ISSUE-201 remains the unrelated CLD caveat.
 
-Focused tests pass (4/4), and the other-profile matrix passes (1/1). The
+Focused MOV/fault/neighbor/CPL3 tests pass (4/4), the pre-existing MOV BP
+compatibility test passes (1/1), and the other-profile matrix passes (1/1). The
 firmware runner advances to `4B 8D 1C 40` (LEA RBX,[R8+R8*2], ISSUE-386) at RIP
 `0x20125e` after 9,864 retired instructions, `Unsupported { opcode: 141 }`;
 COM1 is empty. Full od-isa suites pass (2,322/1,591/126/29/6/1,258/7/15; zero
@@ -1649,3 +1650,23 @@ COM1 is empty. Full od-isa suites pass (2,322/1,591/126/29/6/1,262/7/15; zero
 doc tests), paged machine quantum passes (110/110), workspace all-targets
 offline cargo check, scoped rustfmt and `git diff --check` pass. Independent
 review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-387 — exact MOV EBP,1 (`BD 01 00 00 00`)
+
+This slice adds only exact no-prefix `BD 01 00 00 00` in base
+`PagedCpl0ProbeV1`; it does not broaden prior admissions. The 32-bit immediate
+write to EBP zero-extends into RBP; flags and definedness are preserved. Only
+RBP and RIP change. The pre-existing word form `66 BD 01 00` (`MOV BP,1`)
+remains admitted, while the tested qword form `48 BD 01 00 00 00 00 00 00 00`
+remains unsupported. Tests cover full state, final immediate fetch fault,
+immediate/destination/prefix neighbors, CPL3 and other-profile isolation.
+ISSUE-201 remains the unrelated CLD caveat.
+
+Focused tests pass (4/4), and the other-profile matrix passes (1/1). The
+firmware runner advances to `49 BE 00 00 00 00 10 00 00 00` (MOV
+R14,0x1000000000, ISSUE-388) at RIP `0x20126a` after 9,867 retired
+instructions, `Unsupported { opcode: 190 }`; COM1 is empty. Full od-isa suites
+pass (2,322/1,591/126/29/6/1,267/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline cargo check, scoped rustfmt and
+`git diff --check` pass. Independent review approved with no findings. ISSUE-201 remains the
+unrelated CLD caveat.

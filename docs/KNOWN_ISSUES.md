@@ -4974,7 +4974,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-387 — S7-04: exact helper MOV EBP,1 frontier (`BD 01 00 00 00`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-386.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201265`.
-- **Статус:** открыта.
-- **Суть и последствия:** after ISSUE-386 the firmware reaches exact `BD 01 00 00 00` (`MOV EBP,1`), not yet admitted by the bounded base profile.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** this slice adds only exact no-prefix `BD 01 00 00 00` as `MOV EBP,1`. The dword write zero-extends RBP, preserves flags/definedness, and changes only RBP/RIP. It does not broaden the existing admission set: pre-existing `66 BD 01 00` (`MOV BP,1`) remains admitted, while the tested qword `48 BD 01 00 00 00 00 00 00 00` remains unsupported. Other immediates/destinations/prefixes for this dword form, CPL3 and other profiles remain unsupported.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,866 instructions and reported `Unsupported { opcode: 189 }` at RIP `0x201265`; COM1 is empty.
-- **Следующий шаг:** graph-navigate existing bounded MOV immediate-register forms and admit only this encoding.
+- **Результат:** runner now retires 9,867 instructions and stops at RIP `0x20126a`, bytes `49 BE 00 00 00 00 10 00 00 00` (MOV R14,0x1000000000; ISSUE-388), `Unsupported { opcode: 190 }`; COM1 is empty.
+- **Проверка:** focused MOV/fault/neighbor/CPL3 tests 4/4, pre-existing MOV BP compatibility test 1/1, and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,267/7/15; zero doc tests), paged machine quantum passes 110/110, `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-388 — S7-04: exact helper MOV R14,imm64 frontier (`49 BE 00 00 00 00 10 00 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-387.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20126a`.
+- **Статус:** открыта.
+- **Суть и последствия:** after ISSUE-387 the firmware reaches exact `49 BE 00 00 00 00 10 00 00 00` (`MOV R14,0x1000000000`), not yet admitted by the bounded base profile.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,867 instructions and reported `Unsupported { opcode: 190 }` at RIP `0x20126a`; COM1 is empty.
+- **Следующий шаг:** graph-navigate exact MOV imm64 register admissions and implement only this REX.W+B form.
