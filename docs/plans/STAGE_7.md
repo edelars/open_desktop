@@ -2468,3 +2468,17 @@ Unsupported opcode 146, COM1 empty. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review pending.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-438 — exact SETB R8B (`41 0F 92 C0`)
+
+Admit only exact `41 0F 92 C0` in the base `PagedCpl0ProbeV1` profile. REX.B
+extends ModRM r/m=0 to R8B; SETB writes 0 or 1 according to CF while
+preserving upper R8, other GPRs, RFLAGS and definedness. Tests cover both CF
+outcomes with defined and undefined CF metadata, final-ModRM fetch-fault
+atomicity, byte-register/condition/prefix neighbors, CPL3 and other-profile
+isolation. Runner advances to `48 3D 01 00 01 00` (CMP RAX,0x10001, ISSUE-439)
+at RIP `0x2013d4` after 9,931 retired instructions, Unsupported opcode 61,
+COM1 empty. Full od-isa passes (2,322/1,591/126/29/6/1,495/7/15; zero doc
+tests), paged machine quantum passes (110/110), workspace all-targets offline
+check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

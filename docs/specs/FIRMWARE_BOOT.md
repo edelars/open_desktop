@@ -2304,3 +2304,16 @@ Four focused tests and the other-profile matrix (1/1) pass. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-438 runner frontier
+
+Exact base-profile `41 0F 92 C0` (SETB R8B) retires, writes only the low R8
+byte from CF and preserves RFLAGS/definedness. Runner reaches `48 3D 01 00 01
+00` (CMP RAX,0x10001, ISSUE-439) at RIP `0x2013d4` after 9,931 retired
+instructions, Unsupported opcode 61, COM1 empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Four focused tests and the other-profile matrix (1/1) pass. Full od-isa passes
+(2,322/1,591/126/29/6/1,495/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.

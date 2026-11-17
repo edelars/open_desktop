@@ -5458,10 +5458,19 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Результат:** runner now retires 9,930 instructions and stops at RIP `0x2013d0`, bytes `41 0F 92 C0` (`SETB R8B`, ISSUE-438), `Unsupported { opcode: 146 }`; COM1 is empty.
 - **Проверка:** four focused tests cover qword arithmetic results/flags/definedness, RAX-only mutation, final-ModRM fetch-fault atomicity, neighboring encodings and CPL3; the other-profile matrix passes 1/1. Full od-isa passes (2,322/1,591/126/29/6/1,491/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
 
-### ISSUE-438 — S7-04: exact SETB R8B frontier (`41 0F 92 C0`)
+### ISSUE-438 — S7-04: exact SETB R8B (`41 0F 92 C0`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-437.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013d0`.
-- **Статус:** открыта; следующая точная инструкция Stage 7.
-- **Суть и последствия:** exact `41 0F 92 C0` (`SETB R8B`) remains unsupported pending a bounded implementation and tests.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `41 0F 92 C0` (`SETB R8B`). SETB writes 0 or 1 to only R8B according to CF; upper R8 bits, other GPRs, RFLAGS and flag definedness are preserved. Fetch faults are atomic. CPL3 and other profiles do not admit this exact form.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-437 runner retired 9,930 instructions and reported `Unsupported { opcode: 146 }` at RIP `0x2013d0`; COM1 is empty. Bytes at the link-base shadow are `41 0F 92 C0`.
-- **Следующий шаг:** implement this exact SETB form, add condition/byte/fault/profile coverage, and update Stage 7 docs.
+- **Результат:** runner now retires 9,931 instructions and stops at RIP `0x2013d4`, bytes `48 3D 01 00 01 00` (`CMP RAX,0x10001`, ISSUE-439), `Unsupported { opcode: 61 }`; COM1 is empty.
+- **Проверка:** four focused tests cover CF outcome/definedness, only-low-byte write and upper-R8 preservation, flags/full-state preservation, final-ModRM fetch-fault atomicity, neighbors and CPL3; the other-profile matrix passes 1/1. Full od-isa passes (2,322/1,591/126/29/6/1,495/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-439 — S7-04: exact CMP RAX,0x10001 frontier (`48 3D 01 00 01 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-438.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013d4`.
+- **Статус:** открыта; следующая точная инструкция Stage 7.
+- **Суть и последствия:** exact `48 3D 01 00 01 00` (`CMP RAX,0x10001`) remains unsupported pending bounded implementation and tests.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-438 runner retired 9,931 instructions and reported `Unsupported { opcode: 61 }` at RIP `0x2013d4`; COM1 is empty. Bytes at the link-base shadow are `48 3D 01 00 01 00`.
+- **Следующий шаг:** implement this exact CMP accumulator-immediate form and add flag/fault/profile coverage.

@@ -29496,3 +29496,17 @@ passes: od-isa (2,322/1,591/126/29/6/1,491/7/15; zero doc tests), paged
 machine quantum (110/110), workspace all-targets offline check, scoped
 rustfmt and diff-check. Independent review approved with no findings. ISSUE-201 remains the
 unrelated CLD caveat.
+
+### ISSUE-438 — bounded SETB R8B
+
+The base paged profile admits exact `41 0F 92 C0`. REX.B selects R8B for the
+byte destination; SETB writes 0 or 1 when CF is clear/set respectively. It
+preserves the rest of R8, every other GPR, RFLAGS and flag definedness. A fault
+fetching the final ModRM byte commits no state. This exact form is rejected in
+CPL3 and other profiles; the bounded slice does not broaden adjacent byte
+register or condition-code forms. Firmware advances to `48 3D 01 00 01 00`
+(CMP RAX,0x10001, ISSUE-439) at RIP `0x2013d4` after 9,931 retired
+instructions. Full validation passes: od-isa (2,322/1,591/126/29/6/1,495/7/15;
+zero doc tests), paged machine quantum (110/110), workspace all-targets offline
+check, scoped rustfmt and diff-check. Independent review approved with no findings. ISSUE-201
+remains the unrelated CLD caveat.
