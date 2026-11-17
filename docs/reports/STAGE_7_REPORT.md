@@ -2492,3 +2492,17 @@ passes. The runner advances to ISSUE-364, `66 C7 07 FF FF` (MOV word ptr
 `Unsupported { opcode: 199 }`, COM1 empty. Image SHA-256 is
 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 ISSUE-201's unrelated CLD caveat remains open. Full od-isa suites pass (2,322/1,591/126/29/6/1,151/7/15; zero doc tests), paged machine quantum passes (79/79), workspace all-targets `cargo check --offline` passes, scoped rustfmt and diff-check pass. Workspace `cargo fmt --all -- --check` still reports pre-existing formatting differences in untouched `crates/od-host/src/storage_abi_v1.rs` and `tools/image-tool/tests/cli.rs`. Independent review approved with no findings.
+
+### ISSUE-364 — MOV word ptr [RDI],0xffff
+
+The base profile admits only exact `66 C7 07 FF FF`. The word immediate store
+uses the tracked paged-memory write path; the adapter now maps two-byte writes
+to `AccessWidth::Word`. It changes exactly two bytes at RDI, preserving adjacent
+bytes and CPU flags/registers, and commits RIP only after a successful write.
+Five focused tests cover data width, fault atomicity, neighbors and CPL3; two
+machine tests cover tracked four-level A/D effects and write-protection fault
+atomicity. Other profiles reject the encoding. Firmware advances to ISSUE-365,
+`E9 65 01 00 00` (JMP rel32 +0x165) at RIP `0x2016c2` after 9,833 retired
+instructions; `Unsupported { opcode: 233 }`, COM1 empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201's unrelated CLD caveat remains open. Full od-isa suites pass (2,322/1,591/126/29/6/1,156/7/15; zero doc tests), paged machine quantum passes (81/81), workspace all-targets `cargo check --offline` passes, scoped rustfmt and diff-check pass. Workspace `cargo fmt --all -- --check` still reports pre-existing formatting differences in untouched `crates/od-host/src/storage_abi_v1.rs` and `tools/image-tool/tests/cli.rs`. Independent review approved with no findings.

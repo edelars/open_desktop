@@ -24509,6 +24509,46 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, state.read(source));
             state.rip = next_rip;
         }
+        // S7-04: the firmware tail initializes the handoff word through exact
+        // `66 C7 07 FF FF` (MOV word ptr [RDI],0xffff). Pin the RDI-only
+        // address tuple and route the two-byte store through tracked memory.
+        Operation::MovImmediate {
+            dst: Operand::Memory(destination),
+            value,
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xc7
+            && instruction.length == 5
+            && instruction.operand_size == OperandSize::Word
+            && instruction.prefixes
+                == (Prefixes {
+                    operand_override: true,
+                    ..Prefixes::default()
+                })
+            && value == 0xffff
+            && destination.base == AddressBase::Register(Register::Rdi)
+            && destination.index.is_none()
+            && destination.scale == 1
+            && destination.displacement == 0
+            && destination.address_size == OperandSize::Qword
+            && destination.size == OperandSize::Word =>
+        {
+            if let Err(error) = write_operand(
+                state,
+                memory,
+                context,
+                next_rip,
+                Operand::Memory(destination),
+                value,
+            ) {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+            return result(PagedProbeExit::Retired, 1);
+        }
         // S7-04: the Rust helper spills with exact RSP-relative stores:
         // dword `89 1C 24` (EBX) and qword `48 89 54 24 30` (RDX),
         // `48 89 74 24 10` (RSI), `48 89 44 24 08` (RAX). The decoded tuple

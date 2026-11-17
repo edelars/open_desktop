@@ -28285,3 +28285,15 @@ Other displacements, prefixes, CPL3 and other profiles remain unsupported.
 Firmware advances to `66 C7 07 FF FF` (MOV word ptr [RDI],0xffff, ISSUE-364) at
 RIP `0x2016bd` after 9,832 retired instructions; COM1 is empty. ISSUE-201's
 unrelated CLD caveat remains open. Full od-isa suites pass (2,322/1,591/126/29/6/1,151/7/15; zero doc tests), paged machine quantum passes (79/79), workspace all-targets `cargo check --offline` passes, scoped rustfmt and diff-check pass. Workspace `cargo fmt --all -- --check` still reports pre-existing formatting differences in untouched `crates/od-host/src/storage_abi_v1.rs` and `tools/image-tool/tests/cli.rs`. Independent review approved with no findings.
+
+### S7-04 CPU-profile slice: exact MOV word ptr [RDI],0xffff (ISSUE-364)
+
+`PagedCpl0ProbeV1` admits only exact bytes `66 C7 07 FF FF`, with no other
+prefixes: C7 /0 writes the imm16 value `0xffff` to the word at 64-bit address
+RDI. The write uses tracked GuestMemory; the paged adapter maps its two-byte
+slice to `AccessWidth::Word`. Success modifies only those two guest bytes and
+RIP; flags and GPRs are preserved. Faults do not partially commit the store or
+RIP. Other values, destinations, widths, prefixes, CPL3 and other profiles
+remain unsupported. Firmware advances to `E9 65 01 00 00` (JMP rel32 +0x165,
+ISSUE-365) at RIP `0x2016c2` after 9,833 retired instructions; COM1 is empty.
+ISSUE-201's unrelated CLD caveat remains open. Full od-isa suites pass (2,322/1,591/126/29/6/1,156/7/15; zero doc tests), paged machine quantum passes (81/81), workspace all-targets `cargo check --offline` passes, scoped rustfmt and diff-check pass. Workspace `cargo fmt --all -- --check` still reports pre-existing formatting differences in untouched `crates/od-host/src/storage_abi_v1.rs` and `tools/image-tool/tests/cli.rs`. Independent review approved with no findings.

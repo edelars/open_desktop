@@ -2278,6 +2278,103 @@ fn paged_probe_mov_rsp_ebx_dword_store_uses_tracked_four_level_walk() {
 }
 
 #[test]
+fn paged_probe_mov_word_ptr_rdi_ffff_uses_tracked_four_level_store() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x66, 0xc7, 0x07, 0xff, 0xff]);
+    put_bytes_at(
+        &mut bus,
+        DATA_PHYSICAL + 4,
+        &[0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6],
+    );
+    let mut state = initial_state(0);
+    state.gpr[Register::Rdi as usize] = DATA_LINEAR + 6;
+    let before = state.clone();
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.page_fault, None);
+    assert_eq!(result.memory_error, None);
+    let mut expected = before;
+    expected.rip += 5;
+    assert_eq!(state, expected);
+    let bytes = (4..10)
+        .map(|offset| {
+            bus.read_physical(
+                GuestPhysicalAddress::new(DATA_PHYSICAL + offset),
+                AccessWidth::Byte,
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(bytes, [0xa1, 0xb2, 0xff, 0xff, 0xe5, 0xf6]);
+    let store_range =
+        GuestPhysicalRange::new(GuestPhysicalAddress::new(DATA_PHYSICAL + 6), 2).unwrap();
+    assert!(writes.contains(&store_range));
+    for address in [ROOT, ROOT + 0x1000, ROOT + 0x2020, ROOT + 0x4000] {
+        assert_ne!(
+            qword(&mut bus, address) & (1 << 5),
+            0,
+            "A bit missing at {address:#x}"
+        );
+    }
+    let data_pde = qword(&mut bus, ROOT + 0x2020);
+    assert_eq!(data_pde & (1 << 6), 0);
+    let data_pte = qword(&mut bus, ROOT + 0x4000);
+    assert_ne!(data_pte & (1 << 6), 0, "successful word store sets D");
+}
+
+#[test]
+fn paged_probe_mov_word_ptr_rdi_ffff_write_protection_fault_is_atomic() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x66, 0xc7, 0x07, 0xff, 0xff]);
+    put_bytes_at(
+        &mut bus,
+        DATA_PHYSICAL + 4,
+        &[0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6],
+    );
+    put(&mut bus, 0x5000, DATA_PHYSICAL | 5); // supervisor read-only data page
+    let mut state = initial_state(0);
+    state.gpr[Register::Rdi as usize] = DATA_LINEAR + 6;
+    let before = state.clone();
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    let expected_fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x3),
+        linear_address: Some(DATA_LINEAR + 6),
+    };
+    assert_eq!(result.exit, PagedProbeExit::Fault(expected_fault.clone()));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.memory_error, None);
+    assert_eq!(state, before);
+    let record = result.page_fault.as_ref().expect("word store WP fault");
+    assert_eq!(record.fault(), &expected_fault);
+    assert_eq!(record.saved_rip(), CODE_LINEAR);
+    assert_eq!(record.access(), AccessKind::Write);
+    let bytes = (4..10)
+        .map(|offset| {
+            bus.read_physical(
+                GuestPhysicalAddress::new(DATA_PHYSICAL + offset),
+                AccessWidth::Byte,
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(bytes, [0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6]);
+    let data_pte = qword(&mut bus, ROOT + 0x4000);
+    assert_ne!(data_pte & (1 << 5), 0, "faulting store sets A");
+    assert_eq!(data_pte & (1 << 6), 0, "faulting store does not set D");
+    let store_range =
+        GuestPhysicalRange::new(GuestPhysicalAddress::new(DATA_PHYSICAL + 6), 2).unwrap();
+    assert!(!writes.contains(&store_range));
+}
+
+#[test]
 fn paged_probe_mov_rsp_ebx_dword_write_protection_fault_is_atomic() {
     let (mut bus, _) = fixture();
     put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x89, 0x1c, 0x24]);
