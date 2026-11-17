@@ -818,6 +818,21 @@ clear CF/OF, derive SF/ZF/PF from the qword value, preserve AF's concrete bit
 while clearing AF-definedness, and preserve unrelated flags/definedness. Four
 focused tests and the other-profile matrix pass. Full od-isa (2,322/1,591/126/29/6/1,039/7/15; 0 doc tests), all 69 paged machine quantum tests, and scoped cargo check pass. Scoped rustfmt and diff-check pass; workspace `cargo fmt --all -- --check` still reports pre-existing diffs in two untouched files. The runner advances to ISSUE-340, `0F 84 B6 FE FF FF` (`JZ rel32 -0x14a`) at `0x2017a4` after 9,053 retired instructions; COM1 is empty. Independent review approved with no remaining findings. ISSUE-201 remains the unrelated open pair of stale CLD-unsupported expectations. Do not mark the Stage 7 gate complete.
 
+### Текущий статус — 2026-11-16 — ISSUE-340
+
+ISSUE-340 admits only `0F 84 B6 FE FF FF` (`JZ rel32 -0x14a`) in the base
+`PagedCpl0ProbeV1` profile. It reads ZF, computes a taken target relative to
+next RIP, preserves flags/definedness, checks canonicality only for taken
+targets, and leaves a not-taken fall-through check to the next fetch. Five
+focused tests and the other-profile matrix pass. The runner advances to
+ISSUE-341, `4D 8B 54 04 EC` (`MOV R10,qword ptr [R12+RAX-0x14]`) at
+`0x2017aa` after 9,054 retired instructions; COM1 is empty. Full od-isa
+(2,322/1,591/126/29/6/1,044/7/15; 0 doc tests), all 69 paged-machine quantum
+tests, and scoped cargo check pass. Scoped rustfmt and diff-check pass;
+workspace fmt check reports only existing diffs in untouched files.
+Independent review approved with no findings. ISSUE-201 remains the unrelated open pair of
+stale CLD-unsupported expectations. Do not mark the Stage 7 gate complete.
+
 ## 10. Проверка документа
 
 Подготовка плана не является реализацией прошивки, устройств, TPM или проведённым экспериментом. Для текущей задачи проверялись: соответствие scope roadmap/architecture/layout/`firmware/AGENTS.md`, фактическое состояние кода на 2026-11-07 (пустой `firmware/uefi/`, только Long64 в `od-isa`, отсутствие ROM backing, PCI, NVMe, RTC, TPM, NVRAM; наличие `MachineBus`, `PhysicalMemory`, flat probe этапа 4, UART, LAPIC/IOAPIC, дисплейного устройства S10-03, политики зависимостей и ADR-0001/0002), последовательность и критерии задач, ссылки и Markdown. CPU-тесты, запуск гостя и SSH не требовались.
