@@ -2466,3 +2466,16 @@ at RIP `0x201814` after 9,080 retired instructions; `Unsupported { opcode: 133 }
 COM1 empty. Image SHA-256 is
 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 ISSUE-201's unrelated CLD caveat remains open. Full od-isa suites pass (2,322/1,591/126/29/6/1,141/7/15; zero doc tests), paged machine quantum passes (79/79), workspace all-targets `cargo check --offline` passes, scoped rustfmt and diff-check pass. Workspace `cargo fmt --all -- --check` still reports pre-existing formatting differences in untouched `crates/od-host/src/storage_abi_v1.rs` and `tools/image-tool/tests/cli.rs`. Independent review approved with no findings.
+
+### ISSUE-362 — JNZ rel32 -0x13b
+
+The base profile admits only exact bytes `0F 85 C5 FE FF FF`. JNZ tests ZF,
+adds signed rel32 -0x13b to next RIP when ZF=0, otherwise falls through, and
+preserves RFLAGS/definedness. Taken targets alone receive canonicality checks;
+a final-displacement fetch fault does not retire. Five focused tests cover the
+ZF/definedness matrix, target handling, fetch-fault atomicity, neighbors and
+CPL3; the other-profile rejection matrix passes. The runner advances to
+ISSUE-363, `E9 9E FE FF FF` (JMP rel32 -0x162) at RIP `0x20181a` after 9,831
+retired instructions; `Unsupported { opcode: 233 }`, COM1 empty. Image SHA-256
+is `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201's unrelated CLD caveat remains open. Full od-isa suites pass (2,322/1,591/126/29/6/1,146/7/15; zero doc tests), paged machine quantum passes (79/79), workspace all-targets `cargo check --offline` passes, scoped rustfmt and diff-check pass. Workspace `cargo fmt --all -- --check` still reports pre-existing formatting differences in untouched `crates/od-host/src/storage_abi_v1.rs` and `tools/image-tool/tests/cli.rs`. Independent review approved with no findings.

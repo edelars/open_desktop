@@ -4771,7 +4771,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-362 — S7-04: exact helper JNZ rel32 -0x13b frontier (`0F 85 C5 FE FF FF`)
 - **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-361.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201814`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `0F 85 C5 FE FF FF` admit JNZ rel32 -0x13b. JNZ reads ZF, preserves flags/definedness, applies the signed displacement relative to next RIP, and checks canonicality only if taken.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; after admission runner stops at `Unsupported { opcode: 233 }` at RIP `0x20181a` after 9,831 retired instructions; bytes are `E9 9E FE FF FF`; COM1 is empty.
+- **Проверка:** five focused tests cover ZF outcomes/definedness, signed target, taken-only canonicality, final-displacement fetch-fault atomicity, neighboring conditions/displacements/prefixes and CPL3; other-profile isolation rejects this exact form. Full validation and independent review are recorded in `docs/reports/STAGE_7_REPORT.md`.
+
+### ISSUE-363 — S7-04: exact helper JMP rel32 -0x162 frontier (`E9 9E FE FF FF`)
+- **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-362.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20181a`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this near conditional branch after 9,080 retired instructions. JNZ tests ZF and the bounded base profile does not yet admit this exact rel32 displacement.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 133 }` at RIP `0x201814`; bytes are `0F 85 C5 FE FF FF`; COM1 is empty.
-- **Следующий шаг:** analyze and admit only this exact firmware JNZ rel32 form in a separate Stage 7 slice.
+- **Суть и последствия:** firmware reaches this near unconditional jump after 9,831 retired instructions. The bounded base profile does not yet admit this exact rel32 displacement.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 233 }` at RIP `0x20181a`; bytes are `E9 9E FE FF FF`; COM1 is empty.
+- **Следующий шаг:** analyze and admit only this exact firmware JMP rel32 form in a separate Stage 7 slice.

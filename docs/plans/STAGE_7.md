@@ -1169,3 +1169,15 @@ other-profile matrix rejects the bytes. Firmware advances to ISSUE-362,
 `0F 85 C5 FE FF FF` (JNZ rel32 -0x13b) at RIP `0x201814` after 9,080 retired
 instructions; COM1 is empty. ISSUE-201's unrelated CLD caveat remains open.
 Full od-isa suites pass (2,322/1,591/126/29/6/1,141/7/15; zero doc tests), paged machine quantum passes (79/79), workspace all-targets `cargo check --offline` passes, scoped rustfmt and diff-check pass. Workspace `cargo fmt --all -- --check` still reports pre-existing formatting differences in untouched `crates/od-host/src/storage_abi_v1.rs` and `tools/image-tool/tests/cli.rs`. Independent review approved with no findings.
+
+### ISSUE-362 — exact JNZ rel32 -0x13b
+
+Admit only `0F 85 C5 FE FF FF` in base `PagedCpl0ProbeV1`. The JNZ predicate
+reads ZF; signed rel32 -0x13b is relative to next RIP. Flags and definedness are
+preserved, canonicality is checked only for a taken target, and an instruction
+fetch fault before the final displacement byte is atomic. Five focused tests
+cover both ZF values with defined/undefined metadata, taken-only canonicality,
+final-displacement fetch-fault atomicity, neighbors and CPL3; the other-profile
+matrix rejects the exact form. Firmware advances to ISSUE-363, `E9 9E FE FF FF`
+(JMP rel32 -0x162) at RIP `0x20181a` after 9,831 retired instructions; COM1 is
+empty. ISSUE-201's unrelated CLD caveat remains open. Full od-isa suites pass (2,322/1,591/126/29/6/1,146/7/15; zero doc tests), paged machine quantum passes (79/79), workspace all-targets `cargo check --offline` passes, scoped rustfmt and diff-check pass. Workspace `cargo fmt --all -- --check` still reports pre-existing formatting differences in untouched `crates/od-host/src/storage_abi_v1.rs` and `tools/image-tool/tests/cli.rs`. Independent review approved with no findings.
