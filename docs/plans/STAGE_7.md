@@ -1940,6 +1940,22 @@ Independent review approved with no findings.
 
 ### ISSUE-404 — exact `CMP EAX,9` (`83 F8 09`)
 
-The next runner frontier is this exact dword accumulator CMP with sign-extended
-imm8. Verify subtraction flags/definedness, no GPR write and exact admission,
-then preserve the unrelated ISSUE-201 CLD caveat.
+Implemented only exact `83 F8 09` in the base paged profile. Opcode 83 sign-
+extends imm8 9 to dword width; shared CMP semantics update arithmetic flags and
+definedness without writing EAX. Focused tests pass (4/4); other-profile matrix
+passes (1/1). ISSUE-201 remains the unrelated CLD caveat.
+
+Runner image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` advances
+to `0F 83 B2 01 00 00` (JAE rel32 +0x1b2, ISSUE-405), RIP `0x2012d7`, after
+9,892 retired instructions, `Unsupported { opcode: 131}`; COM1 is empty. Full
+`cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,342/7/15;
+zero doc tests), paged machine quantum passes (110/110), workspace all-targets
+offline check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings.
+
+### ISSUE-405 — exact `JAE rel32 +0x1b2` (`0F 83 B2 01 00 00`)
+
+The next runner frontier is this exact near JAE. Verify CF-based branch
+semantics, signed displacement relative to next RIP, and taken-only target
+validation, then preserve the unrelated ISSUE-201 CLD caveat.

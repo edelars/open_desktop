@@ -5127,7 +5127,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-404 — S7-04: exact CMP EAX,9 frontier (`83 F8 09`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-403.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012d4`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this exact dword accumulator compare, which is outside the current bounded base-profile admission.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `83 F8 09` (`CMP EAX,9`). Opcode 83 sign-extends imm8 9 to dword width; arithmetic flags and definedness come from shared dword CMP semantics, with no GPR write. Neighbor immediates/opcodes, widths, prefixes, CPL3 and other profiles remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,891 instructions and reported `Unsupported { opcode: 131 }` at RIP `0x2012d4`; COM1 is empty. Bytes at the link-base shadow are `83 F8 09`.
-- **Следующий шаг:** verify exact dword CMP accumulator imm8 semantics and flag definedness, then admit only this encoding.
+- **Результат:** runner now retires 9,892 instructions and stops at RIP `0x2012d7`, bytes `0F 83 B2 01 00 00` (JAE rel32 +0x1b2; ISSUE-405), `Unsupported { opcode: 131 }`; COM1 is empty.
+- **Проверка:** focused compare/flags/fetch-fault/neighbors/CPL3 tests 4/4 and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,342/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-405 — S7-04: exact JAE rel32 +0x1b2 frontier (`0F 83 B2 01 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-404.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012d7`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware reaches this exact near JAE, which is outside the current bounded base-profile admission.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,892 instructions and reported `Unsupported { opcode: 131 }` at RIP `0x2012d7`; COM1 is empty. Bytes at the link-base shadow are `0F 83 B2 01 00 00`.
+- **Следующий шаг:** verify exact JAE condition, rel32 target, flag-definedness preservation and taken-only target validation; admit only this displacement.

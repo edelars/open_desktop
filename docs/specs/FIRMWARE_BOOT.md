@@ -1829,3 +1829,19 @@ suites pass (2,322/1,591/126/29/6/1,338/7/15; zero doc tests), paged machine
 quantum passes (110/110), workspace all-targets offline check passes with
 existing warnings, and scoped rustfmt/diff-check pass. Independent review is
 pending.
+
+### ISSUE-404 — `83 F8 09` (`CMP EAX,9`)
+
+The firmware profile admits only this exact dword accumulator compare. Opcode
+83 sign-extends imm8 9 to dword width; arithmetic flags/definedness follow the
+shared CMP operation, and EAX is not written. Focused tests pass (4/4), and the
+other-profile matrix passes (1/1). ISSUE-201 remains the unrelated CLD caveat.
+
+Image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` runner
+advances to `0F 83 B2 01 00 00` (JAE rel32 +0x1b2, ISSUE-405), RIP `0x2012d7`,
+after 9,892 retired instructions, `Unsupported { opcode: 131}`; COM1 is empty.
+Full od-isa suites pass (2,322/1,591/126/29/6/1,342/7/15; zero doc tests),
+paged machine quantum passes (110/110), workspace all-targets offline check
+passes with existing warnings, and scoped rustfmt/diff-check pass. Independent
+review approved with no findings.
