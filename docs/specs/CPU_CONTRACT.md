@@ -29482,3 +29482,17 @@ displacements, prefixes, CPL3 and other profiles remain outside this exact
 slice. Five focused tests and the other-profile matrix pass. Runner reaches
 `4C 01 F8` (ADD RAX,R15) at `0x2013cd` after 9,929 retired instructions,
 Unsupported opcode 1, COM1 empty. Full od-isa passes (2,322/1,591/126/29/6/1,487/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass; independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-437 — bounded ADD RAX,R15
+
+The base paged profile admits exact `4C 01 F8`: opcode 01 uses the qword r/m
+operand RAX as destination, and REX.R extends the ModRM reg source to R15.
+Shared ADD semantics update RAX, arithmetic flags and flag definedness. Other
+state is preserved; a fetch fault during the ModRM byte commits nothing. This
+slice does not broaden other operand/prefix/profile admissions; CPL3 and other
+profiles reject this exact form. Firmware advances to `41 0F 92 C0` (SETB R8B,
+ISSUE-438) at RIP `0x2013d0`, after 9,930 retired instructions. Full validation
+passes: od-isa (2,322/1,591/126/29/6/1,491/7/15; zero doc tests), paged
+machine quantum (110/110), workspace all-targets offline check, scoped
+rustfmt and diff-check. Independent review approved with no findings. ISSUE-201 remains the
+unrelated CLD caveat.

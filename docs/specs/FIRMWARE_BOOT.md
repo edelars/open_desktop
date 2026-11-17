@@ -2291,3 +2291,16 @@ COM1 empty. Image SHA-256 is
 (2,322/1,591/126/29/6/1,487/7/15; zero doc tests), paged machine quantum
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass; independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-437 runner frontier
+
+The exact base-profile `4C 01 F8` (ADD RAX,R15) retires and updates qword RAX
+plus arithmetic flags/definedness; all other state is preserved. Runner reaches
+`41 0F 92 C0` (SETB R8B, ISSUE-438) at RIP `0x2013d0` after 9,930 retired
+instructions, Unsupported opcode 146, COM1 empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Four focused tests and the other-profile matrix (1/1) pass. Full od-isa passes
+(2,322/1,591/126/29/6/1,491/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.

@@ -2379,7 +2379,7 @@ instructions to `0F 84 00 01 00 00` (JZ rel32 +0x100, ISSUE-432) at RIP
 `0x20137e`, Unsupported opcode 132, COM1 empty. Full od-isa passes
 (2,322/1,591/126/29/6/1,464/7/15; zero doc tests), paged machine quantum
 passes (110/110), workspace all-targets offline check passes with existing
-warnings, and scoped rustfmt/diff-check pass. Independent review pending.
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
 
 ### ISSUE-432 — exact `JZ rel32 +0x100` (`0F 84 00 01 00 00`)
@@ -2453,3 +2453,18 @@ CPL3 and other-profile isolation. Runner reaches ISSUE-437 (`4C 01 F8`, ADD
 RAX,R15) at RIP `0x2013cd` after 9,929 retired instructions, Unsupported opcode
 1, COM1 empty. Full od-isa passes (2,322/1,591/126/29/6/1,487/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
 remains the unrelated CLD caveat.
+
+### ISSUE-437 — exact ADD RAX,R15 (`4C 01 F8`)
+
+Admit only exact `4C 01 F8` in the base `PagedCpl0ProbeV1` profile. Opcode 01
+uses the ModRM r/m destination, while REX.R extends the reg source to R15;
+both operands and the destination are qword. Shared ADD semantics update RAX,
+arithmetic flags and flag definedness. Tests cover arithmetic edge cases,
+full-state preservation, final-ModRM fetch-fault atomicity, neighboring
+encodings, CPL3 and other-profile isolation. Runner advances to `41 0F 92 C0`
+(SETB R8B, ISSUE-438), RIP `0x2013d0`, after 9,930 retired instructions;
+Unsupported opcode 146, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,491/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review pending.
+ISSUE-201 remains the unrelated CLD caveat.
