@@ -22005,6 +22005,39 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.rip = target;
             return result(PagedProbeExit::Retired, 1);
         }
+        // S7-04: exact `01 C0` doubles EAX using dword ADD semantics. The
+        // dword write zero-extends RAX; shared arithmetic computes flags.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Add,
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x01
+            && instruction.length == 2
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes == Prefixes::default()
+            && destination == RegisterView::low(Register::Rax, OperandSize::Dword)
+            && source == RegisterView::low(Register::Rax, OperandSize::Dword) =>
+        {
+            let lhs = state.read(destination);
+            let rhs = state.read(source);
+            let (value, flags) = arithmetic_result(
+                OperandSize::Dword,
+                ArithmeticKind::Add,
+                lhs,
+                rhs,
+                state.rflags,
+            );
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: this helper advances R11 by exactly two with `49 83 C3 02`.
         // The decoder sign-extends imm8; use shared qword ADD flags/result.
         Operation::Arithmetic {

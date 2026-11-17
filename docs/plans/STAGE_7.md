@@ -2010,6 +2010,24 @@ Independent review approved with no findings.
 
 ### ISSUE-408 — exact `ADD EAX,EAX` (`01 C0`)
 
-The next runner frontier is this exact dword register ADD. Verify operand
-routing and arithmetic flags/definedness, then admit only this encoding while
-preserving the unrelated ISSUE-201 CLD caveat.
+The base paged profile admits only exact `01 C0`. The dword operation adds low
+EAX to itself and writes the dword result, zero-extending RAX; shared ADD
+computes arithmetic flags/definedness. Four focused tests cover dword result,
+zero-extension, edge flags, final-ModRM fetch atomicity, neighbors and CPL3;
+the other-profile matrix passes (1/1). ISSUE-201 remains the unrelated CLD
+caveat.
+
+Runner image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` advances
+to `41 83 F8 08` (CMP R8D,8, ISSUE-409), RIP `0x2012e8`, after 9,897 retired
+instructions, `Unsupported { opcode: 131}`; COM1 is empty. Full
+`cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,359/7/15;
+zero doc tests), paged machine quantum passes (110/110), workspace all-targets
+offline check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings.
+
+### ISSUE-409 — exact `CMP R8D,8` (`41 83 F8 08`)
+
+The next runner frontier is this exact REX.B dword CMP with sign-extended
+imm8 8. Verify register routing and arithmetic flags/definedness before
+admitting only this form; preserve the unrelated ISSUE-201 CLD caveat.

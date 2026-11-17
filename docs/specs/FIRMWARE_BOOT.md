@@ -1899,3 +1899,20 @@ exit 5 for unsupported). Full od-isa suites pass
 (2,322/1,591/126/29/6/1,355/7/15; zero doc tests), paged machine quantum
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-408 — `01 C0` (ADD EAX,EAX)
+
+The base paged firmware profile admits only this exact unprefixed register
+ADD. The dword sum is written to EAX, zero-extending RAX; shared arithmetic
+semantics set flags/definedness. Focused tests pass (4/4), and the other-profile
+matrix passes (1/1). ISSUE-201 remains the unrelated CLD caveat.
+
+Image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` runner
+advances to `41 83 F8 08` (CMP R8D,8, ISSUE-409), RIP `0x2012e8`, after 9,897
+retired instructions, `Unsupported { opcode: 131}`, `com1_bytes=0` (expected
+runner exit 5 for unsupported). Full od-isa suites pass
+(2,322/1,591/126/29/6/1,359/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.

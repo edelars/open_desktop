@@ -3338,3 +3338,21 @@ exit 5 for unsupported). Full `cargo test --offline -p od-isa --quiet` passes
 (2,322/1,591/126/29/6/1,355/7/15; zero doc tests), paged machine quantum
 passes (110/110), workspace all-targets offline cargo check passes with
 existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-408 — exact `ADD EAX,EAX` (`01 C0`)
+
+Admitted only the exact base-profile dword register form. The low dword is
+added to itself and written to EAX, zero-extending RAX; shared ADD supplies the
+arithmetic flags and definedness. Focused tests pass (4/4), covering result,
+zero-extension, flags, final-ModRM fetch fault, neighbors and CPL3. The
+other-profile matrix passes (1/1). ISSUE-201 remains the unrelated CLD caveat.
+
+Runner image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` advances
+to `41 83 F8 08` (CMP R8D,8, ISSUE-409), RIP `0x2012e8`, after 9,897 retired
+instructions, `Unsupported { opcode: 131}`, `com1_bytes=0` (expected runner
+exit 5 for unsupported). Full `cargo test --offline -p od-isa --quiet` passes
+(2,322/1,591/126/29/6/1,359/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline cargo check passes with
+existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
