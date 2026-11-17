@@ -4314,84 +4314,13 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn connected_sipi_to_long_mode_matches_kvm_oracle() {
-        use crate::state::LongModeState;
-
-        let json = STEP5_JSON;
-        // The oracle entered the image as an AP does after SIPI 0x08 and stopped at the HLT.
-        assert_eq!(oracle_num(json, &["entry", "cs_selector"]), 0x0800);
-        assert_eq!(oracle_num(json, &["entry", "rip"]), 0);
-        assert!(json.contains("\"stop_reason\":\"guest_hlt\""));
-        assert!(json.contains("\"exits\":[{\"kind\":\"hlt\"}]"));
-        assert_eq!(STEP5_IMAGE.len(), 0xD000);
-        let mut ram = vec![0u8; RAM_STEP5];
-        ram[STEP5_ENTRY_GPA..STEP5_ENTRY_GPA + STEP5_IMAGE.len()].copy_from_slice(STEP5_IMAGE);
-
-        // Real mode from the SIPI entry up to the `MOV CR0` with PE and the protected far jump
-        // (14 instructions of the trampoline: the `JAE` over the spin loop is taken).
-        let mut real = RealModeCpu::at_cs_ip(0x0800, 0, 0x6000_0010, oracle_signature(json));
-        // The entry is the one a SIPI with vector 0x08 gives (CS = 0x0800, base 0x8000, IP = 0).
-        let after_sipi = RealModeCpu::after_sipi(0x08, 0x6000_0010, oracle_signature(json));
-        assert_eq!(real.mode.cs.selector, after_sipi.mode.cs.selector);
-        assert_eq!(real.mode.cs.base, after_sipi.mode.cs.base);
-        assert_eq!(real.mode.eip, after_sipi.mode.eip);
-        let run = real.run(&mut mem(&mut ram), 100);
-        assert_eq!(run.steps, 14, "real-mode part of the trampoline");
-        assert_eq!(
-            run.stop,
-            Some(RealModeRefusal::NotRealMode { cr0: real.mode.cr0 })
-        );
-
-        // Protected mode, paging, IA-32e, the compatibility-mode jump through the cell: 14 + 1
-        // instructions, then the model stops before the first 64-bit instruction.
-        let mut cpu = ProtectedCpu::from_real_entry(&real).expect("protected entry");
-        let run = cpu.run(&mut mem(&mut ram), 100);
-        assert_eq!(run.steps, 15, "protected part of the trampoline");
-        assert_eq!(
-            run.stop,
-            Some(ProtectedRefusal::Mode64TargetEntered { rip: 0xB000 })
-        );
-        // The oracle executed the HLT at the target: its RIP is one past it.
-        compare_state_cr2(&cpu, &ram, json, 1, 0, 0);
-
-        // The memory blocks of the other runs: the cell, GDTR and IDTR descriptors, EFER and jump
-        // cells, the five page tables.
-        let lines: Vec<&str> = STEP5_BLOCKS.lines().collect();
-        assert_eq!(lines.len(), 7);
-        for (line, (expected_gpa, size)) in lines.iter().zip([
-            (0x8100usize, 128usize),
-            (0x8400, 16),
-            (0x10000, 64),
-            (0x11000, 64),
-            (0x12000, 64),
-            (0x13000, 64),
-            (0x14000, 64),
-        ]) {
-            // Every run reached the same final state (the blocks differ only in the result block).
-            assert!(line.contains("\"stop_reason\":\"guest_hlt\""));
-            assert_eq!(
-                line[line.find("\"final_state\"").unwrap()..]
-                    .split("\"result_block_gpa\"")
-                    .next(),
-                json[json.find("\"final_state\"").unwrap()..]
-                    .split("\"result_block_gpa\"")
-                    .next()
-            );
-            let (gpa, bytes) = oracle_result_block(line);
-            assert_eq!(gpa as usize, expected_gpa);
-            assert_eq!(bytes.len(), size);
-            assert_eq!(
-                &ram[expected_gpa..expected_gpa + size],
-                &bytes[..],
-                "block {gpa:#x}"
-            );
-        }
-
-        // The state the long-mode interpreter continues from (S6-16b) against the same oracle.
-        let state = cpu
-            .into_long_mode(&LongModeState::default())
-            .expect("long mode state at the target");
+    /// Compares the state the long-mode interpreter continues from (S6-16b) with `final_state` of
+    /// the oracle JSON (the oracle stopped on the HLT at the target: its RIP is one past it).
+    fn compare_long_mode_state(
+        cpu: &ProtectedCpu,
+        state: &crate::state::LongModeState,
+        json: &str,
+    ) {
         let fs = |path: &[&str]| {
             let mut full = vec!["final_state"];
             full.extend_from_slice(path);
@@ -4475,5 +4404,284 @@ mod tests {
         ] {
             assert_eq!(value, fs(&["tables", name]), "{name}");
         }
+    }
+
+    #[test]
+    fn connected_sipi_to_long_mode_matches_kvm_oracle() {
+        use crate::state::LongModeState;
+
+        let json = STEP5_JSON;
+        // The oracle entered the image as an AP does after SIPI 0x08 and stopped at the HLT.
+        assert_eq!(oracle_num(json, &["entry", "cs_selector"]), 0x0800);
+        assert_eq!(oracle_num(json, &["entry", "rip"]), 0);
+        assert!(json.contains("\"stop_reason\":\"guest_hlt\""));
+        assert!(json.contains("\"exits\":[{\"kind\":\"hlt\"}]"));
+        assert_eq!(STEP5_IMAGE.len(), 0xD000);
+        let mut ram = vec![0u8; RAM_STEP5];
+        ram[STEP5_ENTRY_GPA..STEP5_ENTRY_GPA + STEP5_IMAGE.len()].copy_from_slice(STEP5_IMAGE);
+
+        // Real mode from the SIPI entry up to the `MOV CR0` with PE and the protected far jump
+        // (14 instructions of the trampoline: the `JAE` over the spin loop is taken).
+        let mut real = RealModeCpu::at_cs_ip(0x0800, 0, 0x6000_0010, oracle_signature(json));
+        // The entry is the one a SIPI with vector 0x08 gives (CS = 0x0800, base 0x8000, IP = 0).
+        let after_sipi = RealModeCpu::after_sipi(0x08, 0x6000_0010, oracle_signature(json));
+        assert_eq!(real.mode.cs.selector, after_sipi.mode.cs.selector);
+        assert_eq!(real.mode.cs.base, after_sipi.mode.cs.base);
+        assert_eq!(real.mode.eip, after_sipi.mode.eip);
+        let run = real.run(&mut mem(&mut ram), 100);
+        assert_eq!(run.steps, 14, "real-mode part of the trampoline");
+        assert_eq!(
+            run.stop,
+            Some(RealModeRefusal::NotRealMode { cr0: real.mode.cr0 })
+        );
+
+        // Protected mode, paging, IA-32e, the compatibility-mode jump through the cell: 14 + 1
+        // instructions, then the model stops before the first 64-bit instruction.
+        let mut cpu = ProtectedCpu::from_real_entry(&real).expect("protected entry");
+        let run = cpu.run(&mut mem(&mut ram), 100);
+        assert_eq!(run.steps, 15, "protected part of the trampoline");
+        assert_eq!(
+            run.stop,
+            Some(ProtectedRefusal::Mode64TargetEntered { rip: 0xB000 })
+        );
+        // The oracle executed the HLT at the target: its RIP is one past it.
+        compare_state_cr2(&cpu, &ram, json, 1, 0, 0);
+
+        // The memory blocks of the other runs: the cell, GDTR and IDTR descriptors, EFER and jump
+        // cells, the five page tables.
+        let lines: Vec<&str> = STEP5_BLOCKS.lines().collect();
+        assert_eq!(lines.len(), 7);
+        for (line, (expected_gpa, size)) in lines.iter().zip([
+            (0x8100usize, 128usize),
+            (0x8400, 16),
+            (0x10000, 64),
+            (0x11000, 64),
+            (0x12000, 64),
+            (0x13000, 64),
+            (0x14000, 64),
+        ]) {
+            // Every run reached the same final state (the blocks differ only in the result block).
+            assert!(line.contains("\"stop_reason\":\"guest_hlt\""));
+            assert_eq!(
+                line[line.find("\"final_state\"").unwrap()..]
+                    .split("\"result_block_gpa\"")
+                    .next(),
+                json[json.find("\"final_state\"").unwrap()..]
+                    .split("\"result_block_gpa\"")
+                    .next()
+            );
+            let (gpa, bytes) = oracle_result_block(line);
+            assert_eq!(gpa as usize, expected_gpa);
+            assert_eq!(bytes.len(), size);
+            assert_eq!(
+                &ram[expected_gpa..expected_gpa + size],
+                &bytes[..],
+                "block {gpa:#x}"
+            );
+        }
+
+        // The state the long-mode interpreter continues from (S6-16b) against the same oracle.
+        let state = cpu
+            .into_long_mode(&LongModeState::default())
+            .expect("long mode state at the target");
+        compare_long_mode_state(&cpu, &state, json);
+    }
+
+    // ---- connected test: the complete S6-14a path with the CPUID of the target (S6-14o) -----
+    //
+    // Files in docs/reports/data/stage6/s6-14o/ (make-images.py, run-oracle.sh): an image written
+    // from the instruction forms of S6-14a rows 1..8 (WBINVD, the real-mode far jump, LOCK BTS,
+    // CALL verify_cpu with its CPUID tests, LIDT/LGDT, MOV CR0, the 16-bit and 32-bit far jumps,
+    // BT/JAE, MOV CR4/CR3, the conditional EFER write, MOV CR0 with PG, JMP [rip+disp]) entered at
+    // 0800:0000, run by kvm_runner with `--cpuid-profile od-x86-64-v1-neutral` (the guest CPUID table
+    // is exactly the five leaves of `CpuidProfile::OdX8664V1Neutral`). The model runs `RealModeCpu`
+    // with that profile up to `NotRealMode`, `ProtectedCpu::from_real_entry`, `ProtectedCpu::run`
+    // to `Mode64TargetEntered` and `into_long_mode`; every compared value comes from the oracle.
+
+    const RAM_S6_14O: usize = 0x16000;
+    const S6_14O_IMAGE: &[u8] =
+        include_bytes!("../../../docs/reports/data/stage6/s6-14o/a-full-s6-14a-path-0800-0000.bin");
+    const S6_14O_JSON: &str = include_str!(
+        "../../../docs/reports/data/stage6/s6-14o/oracle-a-full-s6-14a-path-0800-0000.json"
+    );
+    const S6_14O_BLOCKS: &str = include_str!(
+        "../../../docs/reports/data/stage6/s6-14o/oracle-a-full-s6-14a-path-0800-0000-blocks.jsonl"
+    );
+
+    #[test]
+    fn connected_full_s6_14a_path_matches_kvm_oracle_with_cpuid_target() {
+        use crate::cpuid::CpuidProfile;
+        use crate::real_mode_exec::CpuidSource;
+        use crate::state::LongModeState;
+
+        let json = S6_14O_JSON;
+        assert_eq!(oracle_num(json, &["entry", "cs_selector"]), 0x0800);
+        assert_eq!(oracle_num(json, &["entry", "rip"]), 0);
+        assert!(json.contains("\"stop_reason\":\"guest_hlt\""));
+        assert!(json.contains("\"exits\":[{\"kind\":\"hlt\"}]"));
+        // The guest CPUID of the oracle is the target table: leaf 1 EAX (the EDX signature after
+        // INIT) 0x600, and the five leaves only.
+        assert_eq!(oracle_signature(json), 0x600);
+        assert_eq!(json.matches("\"function\":").count(), 5);
+        assert_eq!(S6_14O_IMAGE.len(), 0x14000 - 0x8000);
+        let mut ram = vec![0u8; RAM_S6_14O];
+        ram[0x8000..0x8000 + S6_14O_IMAGE.len()].copy_from_slice(S6_14O_IMAGE);
+
+        // Rows 1..5 in real mode: 11 (row 1) + 44 (verify_cpu, by hand: 13 + 5 + 4 (the vendor
+        // dispatcher: CMP EBX,'Auth'/JNE, CMP EBX,'Genu'/JNE, both JNE taken) + 5 + 4 + 5 + 5 +
+        // 3) + 2 (row 3) + 5 (row 4) + 1 (the far jump of row 5, executed by the CR0.PE = 1
+        // path) instructions; the next step is refused as `NotRealMode` (the protected state is
+        // handed over to `ProtectedCpu`).
+        let mut real = RealModeCpu::at_cs_ip(0x0800, 0, 0x6000_0010, oracle_signature(json));
+        real.cpuid = CpuidSource::Profile(CpuidProfile::OdX8664V1Neutral);
+        let after_sipi = RealModeCpu::after_sipi(0x08, 0x6000_0010, oracle_signature(json));
+        assert_eq!(real.mode.cs.selector, after_sipi.mode.cs.selector);
+        assert_eq!(real.mode.cs.base, after_sipi.mode.cs.base);
+        assert_eq!(real.mode.eip, after_sipi.mode.eip);
+        let mut trace = Vec::new();
+        let stop = loop {
+            let ip = real.mode.eip;
+            match real.step(&mut mem(&mut ram)) {
+                Ok(_) => trace.push(ip),
+                Err(stop) => break stop,
+            }
+            assert!(trace.len() < 200, "runaway");
+        };
+        assert_eq!(stop, RealModeRefusal::NotRealMode { cr0: real.mode.cr0 });
+        assert_eq!(trace.len(), 63, "rows 1..5");
+        // The path: the spin loop and the verify_cpu failure tail are not taken; the call goes to
+        // verify_cpu (0x80), returns to 0x27, JNE at 0x2a is not taken.
+        assert!(!trace.contains(&0x1A) && !trace.contains(&0x4C));
+        assert_eq!(&trace[10..12], &[0x24, 0x80]);
+        assert_eq!(&trace[55..57], &[0x27, 0x2A]);
+        assert_eq!(&trace[57..], &[0x2C, 0x32, 0x38, 0x3B, 0x41, 0x44]);
+        // The vendor dispatcher of verify_cpu: CMP EBX,'Auth' at 0xb2 and JNE at 0xb9 (taken to
+        // 0xd2), CMP EBX,'Genu' at 0xd2 and JNE at 0xd9 (taken to 0x12c); the AMD and Intel
+        // branches (0xbb..0xd1, 0xdb..0x12b) are not executed.
+        let at = |ip: u32| trace.iter().position(|&x| x == ip).expect("on the path");
+        assert_eq!(&trace[at(0xB2)..at(0xB2) + 4], &[0xB2, 0xB9, 0xD2, 0xD9]);
+        assert_eq!(trace[at(0xD9) + 1], 0x12C);
+        assert!(
+            trace
+                .iter()
+                .all(|&ip| !(0xBB..=0xD1).contains(&ip) && !(0xDB..0x12C).contains(&ip))
+        );
+        // verify_cpu returned zero (the profile's success path): the JNE at 0x2a was not taken
+        // (EAX itself is overwritten by row 4).
+        assert_eq!(real.mode.cr0, 0x0005_0033);
+
+        // Protected mode, paging, IA-32e, the compatibility-mode jump through the cell.
+        let mut cpu = ProtectedCpu::from_real_entry(&real).expect("protected entry");
+        let run = cpu.run(&mut mem(&mut ram), 100);
+        assert_eq!(
+            run.stop,
+            Some(ProtectedRefusal::Mode64TargetEntered { rip: 0xB000 })
+        );
+        // 6 (SS, ADD ESP, DS, ES, FS, GS) + 2 (BT, JAE) + 2 (CR4) + 2 (CR3) + 2 (ECX,
+        // RDMSR) + 2 (CMP, JNE) + 3 (EAX, EDX, WRMSR) + 2 (CR0 with PG) + 1 (row 7) + 1 (row 8).
+        assert_eq!(run.steps, 23, "rows 6..8");
+        // The oracle executed the HLT at the target: its RIP is one past it.
+        compare_state_cr2(&cpu, &ram, json, 1, 0, 0);
+
+        // The memory blocks of the other runs: the header cells (LOCK cell with bit 0 set by the
+        // LOCK BTS), the GDTR and IDTR descriptors, the stack the verify_cpu pushes went to, the
+        // four page tables with their A bits.
+        let lines: Vec<&str> = S6_14O_BLOCKS.lines().collect();
+        assert_eq!(lines.len(), 6);
+        for (line, (expected_gpa, size)) in lines.iter().zip([
+            (0x8400usize, 128usize),
+            (0x9F80, 128),
+            (0x10000, 64),
+            (0x11000, 64),
+            (0x12000, 64),
+            (0x13000, 128),
+        ]) {
+            assert!(line.contains("\"stop_reason\":\"guest_hlt\""));
+            assert_eq!(
+                line[line.find("\"final_state\"").unwrap()..]
+                    .split("\"result_block_gpa\"")
+                    .next(),
+                json[json.find("\"final_state\"").unwrap()..]
+                    .split("\"result_block_gpa\"")
+                    .next()
+            );
+            let (gpa, bytes) = oracle_result_block(line);
+            assert_eq!(gpa as usize, expected_gpa);
+            assert_eq!(bytes.len(), size);
+            let mut model = ram[expected_gpa..expected_gpa + size].to_vec();
+            if expected_gpa == 0x13000 {
+                // The one known difference (as in S6-14n, "the model does not walk the target"):
+                // the oracle executes the HLT at 0xB000, so its fetch walk sets A in PTE(0xB)
+                // (0xB003 -> 0xB023); the model stops before the fetch and leaves 0xB003. Every
+                // other byte of the table is compared as it is.
+                assert_eq!(model[8 * 0xB..8 * 0xB + 8], 0xB003u64.to_le_bytes());
+                assert_eq!(bytes[8 * 0xB..8 * 0xB + 8], 0xB023u64.to_le_bytes());
+                model[8 * 0xB] |= 0x20;
+            }
+            assert_eq!(model, bytes, "block {gpa:#x}");
+        }
+
+        let state = cpu
+            .into_long_mode(&LongModeState::default())
+            .expect("long mode state at the target");
+        compare_long_mode_state(&cpu, &state, json);
+    }
+
+    #[test]
+    fn s6_14o_cpuid_seen_by_the_guest_through_kvm_equals_the_neutral_profile() {
+        use crate::cpuid::CpuidProfile;
+        // The probe image (make-images.py, image b) stores EAX..EDX of CPUID for twelve leaves.
+        let json = include_str!(
+            "../../../docs/reports/data/stage6/s6-14o/oracle-b-cpuid-probe-0800-0000-profile.json"
+        );
+        assert!(json.contains("\"stop_reason\":\"guest_hlt\""));
+        let (gpa, bytes) = oracle_result_block(json);
+        assert_eq!(gpa, 0x8200);
+        assert_eq!(bytes.len(), 192);
+        let leaves = [
+            0u32,
+            1,
+            2,
+            4,
+            7,
+            0xB,
+            0x4000_0000,
+            0x8000_0000,
+            0x8000_0001,
+            0x8000_0002,
+            0x8000_0008,
+            0x8000_0009,
+        ];
+        let reg = |i: usize, r: usize| {
+            u32::from_le_bytes(
+                bytes[16 * i + 4 * r..16 * i + 4 * r + 4]
+                    .try_into()
+                    .unwrap(),
+            )
+        };
+        // The five leaves of the table: exactly the profile, nothing adjusted by KVM.
+        for leaf in [0u32, 1, 0x8000_0000, 0x8000_0001, 0x8000_0008] {
+            let i = leaves.iter().position(|l| *l == leaf).unwrap();
+            let want = CpuidProfile::OdX8664V1Neutral.query(leaf, 0);
+            assert_eq!(
+                [reg(i, 0), reg(i, 1), reg(i, 2), reg(i, 3)],
+                [want.eax, want.ebx, want.ecx, want.edx],
+                "leaf {leaf:#x}"
+            );
+        }
+        // Leaves outside the table are KVM's: the data of leaf 1 for leaves above the basic
+        // maximum (2, 4, 7, 0xB, 0x40000000, 0x80000009), zeros for 0x80000002. The model refuses
+        // such leaves (S6-14g), the connected path never executes them.
+        let leaf1 = [reg(1, 0), reg(1, 1), reg(1, 2), reg(1, 3)];
+        for leaf in [2u32, 4, 7, 0xB, 0x4000_0000, 0x8000_0009] {
+            let i = leaves.iter().position(|l| *l == leaf).unwrap();
+            assert_eq!(
+                [reg(i, 0), reg(i, 1), reg(i, 2), reg(i, 3)],
+                leaf1,
+                "{leaf:#x}"
+            );
+        }
+        let i = leaves.iter().position(|l| *l == 0x8000_0002).unwrap();
+        assert_eq!([reg(i, 0), reg(i, 1), reg(i, 2), reg(i, 3)], [0; 4]);
     }
 }
