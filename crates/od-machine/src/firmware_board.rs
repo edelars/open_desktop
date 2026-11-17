@@ -1487,7 +1487,7 @@ impl LoadedFirmwareBoard {
         for spec in regions {
             let mut bytes = vec![0u8; spec.range.len() as usize];
             memory
-                .read_bytes(spec.range.start(), &mut bytes)
+                .load_bytes(spec.range.start(), &mut bytes)
                 .map_err(|error| {
                     format!(
                         "RAM region at {:#x} (len {:#x}) is unreadable: {error:?}",
@@ -2361,7 +2361,7 @@ impl LoadedFirmwareBoard {
             if offset == 0 {
                 first = Some(physical.get());
             }
-            match memory.read_u8(physical) {
+            match memory.load_u8(physical) {
                 Ok(byte) => bytes.push(byte),
                 Err(error) => return (first, bytes, Some(format!("{error:?}"))),
             }

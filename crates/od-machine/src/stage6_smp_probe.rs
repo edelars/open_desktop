@@ -295,7 +295,7 @@ impl Stage6SmpProbe {
         let mut bytes = vec![0; len];
         let (memory, _) = self.board.bus_mut().split_for_pio_step();
         memory
-            .read_bytes(GuestPhysicalAddress::new(gpa), &mut bytes)
+            .load_bytes(GuestPhysicalAddress::new(gpa), &mut bytes)
             .expect("the probe reads RAM of the board");
         bytes
     }

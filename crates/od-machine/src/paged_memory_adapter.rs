@@ -539,7 +539,7 @@ pub struct PagedMovStoreScope<R> {
 /// with its Accessed-bit effects, exactly like the interpreter.
 ///
 /// A failed RAM write does not partially commit its operand
-/// (`PhysicalMemory::write_bytes` validates the whole range first). The
+/// (`PhysicalMemory::store_bytes` validates the whole range first). The
 /// callback cannot retain the adapter beyond this call.
 pub fn with_paged_mov_store_memory<R>(
     bus: &mut MachineBus,
@@ -980,7 +980,7 @@ fn cpuid_leaf_at_rip(
     cache: Option<&FetchTranslationCache>,
 ) -> Option<u32> {
     let (memory, _) = bus.split_for_pio_step();
-    let mut byte_at = |offset: u64| -> Option<u8> {
+    let byte_at = |offset: u64| -> Option<u8> {
         let linear = state.rip.wrapping_add(offset);
         if let Some(byte) = cache
             .and_then(|cache| cache.lookup(linear, paging, context))
@@ -997,7 +997,7 @@ fn cpuid_leaf_at_rip(
             od_isa::memory::AccessKind::Fetch,
         )
         .ok()?;
-        memory.read_u8(physical).ok()
+        memory.load_u8(physical).ok()
     };
     // Most instructions neither start with a prefix nor with `0F`: one walk decides that.
     let first = byte_at(0)?;
@@ -1042,7 +1042,7 @@ fn observed_fetch_view(
         if offset == 0 {
             first = Some(physical.get());
         }
-        let Ok(byte) = memory.read_u8(physical) else {
+        let Ok(byte) = memory.load_u8(physical) else {
             break;
         };
         bytes.push(byte);
@@ -1062,7 +1062,7 @@ fn iretq_at_rip(
     cache: Option<&FetchTranslationCache>,
 ) -> bool {
     let (memory, _) = bus.split_for_pio_step();
-    let mut byte_at = |offset: u64| -> Option<u8> {
+    let byte_at = |offset: u64| -> Option<u8> {
         let linear = state.rip.wrapping_add(offset);
         if let Some(byte) = cache
             .and_then(|cache| cache.lookup(linear, paging, context))
@@ -1079,7 +1079,7 @@ fn iretq_at_rip(
             od_isa::memory::AccessKind::Fetch,
         )
         .ok()?;
-        memory.read_u8(physical).ok()
+        memory.load_u8(physical).ok()
     };
     byte_at(0) == Some(0x48) && byte_at(1) == Some(0xCF)
 }
@@ -1099,7 +1099,7 @@ pub(crate) fn invlpg_at_rip(
     cache: Option<&FetchTranslationCache>,
 ) -> bool {
     let (memory, _) = bus.split_for_pio_step();
-    let mut byte_at = |offset: u64| -> Option<u8> {
+    let byte_at = |offset: u64| -> Option<u8> {
         let linear = state.rip.wrapping_add(offset);
         if let Some(byte) = cache
             .and_then(|cache| cache.lookup(linear, paging, context))
@@ -1116,7 +1116,7 @@ pub(crate) fn invlpg_at_rip(
             od_isa::memory::AccessKind::Fetch,
         )
         .ok()?;
-        memory.read_u8(physical).ok()
+        memory.load_u8(physical).ok()
     };
     let mut offset = 0u64;
     let mut first = byte_at(offset);
@@ -1146,7 +1146,7 @@ fn sysretq_at(
     cache: Option<&FetchTranslationCache>,
 ) -> bool {
     let (memory, _) = bus.split_for_pio_step();
-    let mut byte_at = |offset: u64| -> Option<u8> {
+    let byte_at = |offset: u64| -> Option<u8> {
         let linear = rip.wrapping_add(offset);
         if let Some(byte) = cache
             .and_then(|cache| cache.lookup(linear, paging, context))
@@ -1163,7 +1163,7 @@ fn sysretq_at(
             od_isa::memory::AccessKind::Fetch,
         )
         .ok()?;
-        memory.read_u8(physical).ok()
+        memory.load_u8(physical).ok()
     };
     byte_at(0) == Some(0x48) && byte_at(1) == Some(0x0F) && byte_at(2) == Some(0x07)
 }
@@ -2088,7 +2088,7 @@ fn continuation_key(
 /// The adapter of the set loop for one instruction or one interrupt delivery: RAM only, the
 /// whole CPL0 set read and write widths, the optional fetch cache.
 fn set_loop_adapter<'a>(
-    ram: &'a mut crate::PhysicalMemory,
+    ram: &'a crate::PhysicalMemory,
     mmio: Option<(&'a dyn crate::bus::SetStepMmio, usize)>,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
@@ -2633,12 +2633,12 @@ pub fn step_paged_mov_dword_store(
 /// bus can serve `IN`/`OUT` in the same instruction (large-RAM profile only, S4-38L3).
 enum AdapterBus<'a> {
     Machine(&'a mut MachineBus, usize),
-    Ram(&'a mut crate::PhysicalMemory),
+    Ram(&'a crate::PhysicalMemory),
     /// `Ram` plus the MMIO dispatch of the set loop (S4-38L9s): an operand in an MMIO region
     /// goes to the board's device, as on the `Machine` form; the rest is the large-RAM walk.
     /// The last member is the index of the vCPU whose set loop it is (S6-16a).
     RamMmio(
-        &'a mut crate::PhysicalMemory,
+        &'a crate::PhysicalMemory,
         &'a dyn crate::bus::SetStepMmio,
         usize,
     ),
@@ -2701,14 +2701,8 @@ impl AdapterBus<'_> {
         }
     }
 
-    /// The physical memory of the `Ram` forms.
-    fn ram_mut(&mut self) -> Option<&mut crate::PhysicalMemory> {
-        match self {
-            Self::Ram(memory) | Self::RamMmio(memory, _, _) => Some(memory),
-            Self::Machine(..) => None,
-        }
-    }
-
+    /// The physical memory of the `Ram` forms: a shared reference (S6-30c), so the adapters of
+    /// several vCPUs hold the same memory at once.
     fn ram_ref(&self) -> Option<&crate::PhysicalMemory> {
         match self {
             Self::Ram(memory) | Self::RamMmio(memory, _, _) => Some(memory),
@@ -2729,7 +2723,7 @@ impl AdapterBus<'_> {
                 .read_virtual_ram_diagnostic(paging, rip, linear, context, output)
                 .map_err(|_| ());
         }
-        let memory = self.ram_mut().ok_or(())?;
+        let memory = self.ram_ref().ok_or(())?;
         let mut offset = 0usize;
         while offset < output.len() {
             let linear_address = linear
@@ -2754,7 +2748,7 @@ impl AdapterBus<'_> {
                 return Err(());
             }
             memory
-                .read_bytes(physical, &mut output[offset..offset + fragment_len])
+                .load_bytes(physical, &mut output[offset..offset + fragment_len])
                 .map_err(|_| ())?;
             offset += fragment_len;
         }
@@ -3135,7 +3129,7 @@ impl PagedMovMemoryAdapter<'_> {
             TrackedAccessOutcome::Fetched(value) => value,
             _ => return Err(Self::unsupported("non-fetch result")),
         };
-        if let Some(memory) = self.bus.ram_mut()
+        if let Some(memory) = self.bus.ram_ref()
             && let Ok((physical, tables)) = translate_long64_2m_ram_read_only_with_tables(
                 memory,
                 &self.paging,
@@ -3782,7 +3776,7 @@ mod tests {
             (0x5000, 0x9007),
         ] {
             memory
-                .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
                 .unwrap();
         }
         let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
@@ -3857,11 +3851,11 @@ mod tests {
             (0x5000, 0x7007),
         ] {
             physical
-                .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
                 .unwrap();
         }
         physical
-            .write_bytes(GuestPhysicalAddress::new(0x7ffc), &[0x11; 4], |_| {})
+            .store_bytes(GuestPhysicalAddress::new(0x7ffc), &[0x11; 4], |_| {})
             .unwrap();
         let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
         let mut committed = |_| {};
@@ -3900,7 +3894,7 @@ mod tests {
         drop(memory);
         assert_eq!(
             physical
-                .read_u64(GuestPhysicalAddress::new(0x5000))
+                .load_u64(GuestPhysicalAddress::new(0x5000))
                 .unwrap()
                 & 0x60,
             0x20,
@@ -3908,18 +3902,121 @@ mod tests {
         );
         assert_eq!(
             physical
-                .read_u64(GuestPhysicalAddress::new(0x5008))
+                .load_u64(GuestPhysicalAddress::new(0x5008))
                 .unwrap(),
             0
         );
         let mut operand = [0; 4];
         physical
-            .read_bytes(GuestPhysicalAddress::new(0x7ffc), &mut operand)
+            .load_bytes(GuestPhysicalAddress::new(0x7ffc), &mut operand)
             .unwrap();
         assert_eq!(
             operand, [0x11; 4],
             "failed preflight stores no operand bytes"
         );
+    }
+
+    /// S6-30c: the adapter of a vCPU holds a shared reference to the RAM, so the adapters of
+    /// several vCPUs exist at once on one memory. A store through one is seen through the other,
+    /// each adapter reports only its own committed writes, and adapters built on separate host
+    /// threads, one per thread, share the same memory. Tables have A and D set already, so no
+    /// table write takes part in the comparison.
+    #[test]
+    fn adapters_of_two_vcpus_share_one_ram() {
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_LEN).unwrap();
+        let map =
+            MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                .unwrap();
+        let physical = crate::PhysicalMemory::new(&map, RamLimits::new(RAM_LEN)).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2027),
+            (0x2000, 0x3027),
+            (0x3020, 0x5027),
+            (0x5000, 0x7067),
+        ] {
+            physical
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+        }
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let operand = |address: u64, len: u64| {
+            GuestPhysicalRange::new(GuestPhysicalAddress::new(address), len).unwrap()
+        };
+
+        let mut log_a = Vec::new();
+        let mut log_b = Vec::new();
+        {
+            let mut note_a = |written| log_a.push(written);
+            let mut note_b = |written| log_b.push(written);
+            let mut a = set_loop_adapter(
+                &physical,
+                None,
+                paging,
+                0x0040_0000,
+                &mut note_a,
+                None,
+                None,
+            );
+            let mut b = set_loop_adapter(
+                &physical,
+                None,
+                paging,
+                0x0040_0000,
+                &mut note_b,
+                None,
+                None,
+            );
+            a.write(DATA_LINEAR + 0x10, context(), &[1, 2, 3, 4, 5, 6, 7, 8])
+                .unwrap();
+            let mut seen = [0u8; 8];
+            b.read(DATA_LINEAR + 0x10, context(), &mut seen).unwrap();
+            assert_eq!(seen, [1, 2, 3, 4, 5, 6, 7, 8], "B sees the store of A");
+            b.write(DATA_LINEAR + 0x14, context(), &[9, 9, 9, 9])
+                .unwrap();
+            a.read(DATA_LINEAR + 0x10, context(), &mut seen).unwrap();
+            assert_eq!(seen, [1, 2, 3, 4, 9, 9, 9, 9], "A sees the store of B");
+        }
+        assert_eq!(log_a, vec![operand(0x7010, 8)]);
+        assert_eq!(log_b, vec![operand(0x7014, 4)]);
+        let mut bytes = [0u8; 8];
+        physical
+            .load_bytes(GuestPhysicalAddress::new(0x7010), &mut bytes)
+            .unwrap();
+        assert_eq!(bytes, [1, 2, 3, 4, 9, 9, 9, 9]);
+
+        // One adapter per host thread, all on the same memory (no `&mut` is possible here).
+        const THREADS: u64 = 4;
+        std::thread::scope(|scope| {
+            for thread in 0..THREADS {
+                let physical = &physical;
+                scope.spawn(move || {
+                    let mut committed = |_| {};
+                    let mut adapter = set_loop_adapter(
+                        physical,
+                        None,
+                        paging,
+                        0x0040_0000,
+                        &mut committed,
+                        None,
+                        None,
+                    );
+                    let at = DATA_LINEAR + 0x100 + thread * 8;
+                    for round in 0..200u64 {
+                        let value = (thread << 32 | round).to_le_bytes();
+                        adapter.write(at, context(), &value).unwrap();
+                        let mut back = [0u8; 8];
+                        adapter.read(at, context(), &mut back).unwrap();
+                        assert_eq!(back, value);
+                    }
+                });
+            }
+        });
+        for thread in 0..THREADS {
+            assert_eq!(
+                physical.load_u64(GuestPhysicalAddress::new(0x7100 + thread * 8)),
+                Ok(thread << 32 | 199)
+            );
+        }
     }
 
     fn invlpg_state(target: u64) -> LongModeState {

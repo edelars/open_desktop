@@ -286,9 +286,9 @@ fn build_memory() -> Result<PhysicalMemory, BoxError> {
         36,
         vec![MemoryRegionSpec::new(range, MemoryRegionKind::Ram)],
     )?;
-    let mut memory = PhysicalMemory::new(&map, RamLimits::new(RAM_BYTES))?;
-    memory.write_u64(GuestPhysicalAddress::new(ROOT), PDPT | 7, |_| {})?;
-    memory.write_u64(GuestPhysicalAddress::new(PDPT), PD_BASE | 7, |_| {})?;
+    let memory = PhysicalMemory::new(&map, RamLimits::new(RAM_BYTES))?;
+    memory.store_u64(GuestPhysicalAddress::new(ROOT), PDPT | 7, |_| {})?;
+    memory.store_u64(GuestPhysicalAddress::new(PDPT), PD_BASE | 7, |_| {})?;
     for region in [
         Region::UserRwx,
         Region::UserReadOnly,
@@ -300,7 +300,7 @@ fn build_memory() -> Result<PhysicalMemory, BoxError> {
             let table_index = (region as usize) * PT_PER_REGION + group;
             let pt = PT_BASE + (table_index as u64) * 0x1000;
             let pd_index = (region.base() - LINEAR_BASE) / 0x20_0000 + 2 + group as u64;
-            memory.write_u64(
+            memory.store_u64(
                 GuestPhysicalAddress::new(PD_BASE + pd_index * 8),
                 pt | 7,
                 |_| {},
@@ -311,7 +311,7 @@ fn build_memory() -> Result<PhysicalMemory, BoxError> {
             for slot in 0..512usize {
                 let page = group * 512 + slot;
                 let leaf = PHYSICAL_BASE + (page as u64) * 0x1000;
-                memory.write_u64(
+                memory.store_u64(
                     GuestPhysicalAddress::new(pt + (slot as u64) * 8),
                     leaf | flags,
                     |_| {},
@@ -347,7 +347,7 @@ fn oracle(
     let mut table = ROOT;
     let (mut user, mut writable, mut no_execute) = (true, true, false);
     for index in indexes {
-        let entry = memory.read_u64(GuestPhysicalAddress::new(table + index * 8))?;
+        let entry = memory.load_u64(GuestPhysicalAddress::new(table + index * 8))?;
         if entry & 1 == 0 {
             return Ok(pfec(false));
         }
@@ -985,7 +985,7 @@ fn nanos(duration: Duration) -> u64 {
 
 fn hash_memory(memory: &PhysicalMemory) -> Result<String, BoxError> {
     let mut bytes = vec![0; RAM_BYTES as usize];
-    memory.read_bytes(GuestPhysicalAddress::new(0), &mut bytes)?;
+    memory.load_bytes(GuestPhysicalAddress::new(0), &mut bytes)?;
     Ok(od_testkit::sha256_hex(&bytes))
 }
 

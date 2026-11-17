@@ -12,7 +12,7 @@
 //! descriptor or page-table access outside the board's RAM (MMIO, ROM, a hole) is a refusal of the
 //! model, which is an [`ApLegacyRefusal`] here, never a panic and never a device access. Writes the
 //! models make (the `LOCK BTS` operand, the accessed bit of a descriptor, the accessed and dirty
-//! bits of a paging entry) go through `PhysicalMemory::write_bytes`, the tracked path that advances
+//! bits of a paging entry) go through `PhysicalMemory::store_bytes`, the tracked path that advances
 //! the code generation of the written pages like every other guest store.
 //!
 //! Not here: interrupts and NMI in legacy mode (the board refuses NMI, `deliver_pending_nmi`), the
@@ -58,11 +58,11 @@ pub(crate) struct LegacyRun {
 /// RAM of the board as the memory of the legacy models: a byte is readable or writable only in a
 /// region of kind RAM, so MMIO, ROM, the framebuffer and holes are refused.
 pub(crate) struct BoardRam<'a> {
-    memory: &'a mut PhysicalMemory,
+    memory: &'a PhysicalMemory,
 }
 
 impl<'a> BoardRam<'a> {
-    pub(crate) fn new(memory: &'a mut PhysicalMemory) -> Self {
+    pub(crate) fn new(memory: &'a PhysicalMemory) -> Self {
         Self { memory }
     }
 
@@ -74,7 +74,7 @@ impl<'a> BoardRam<'a> {
 
 impl RealModeMemory for BoardRam<'_> {
     fn read_u8(&self, linear: u32) -> Option<u8> {
-        self.memory.read_u8(self.ram_address(linear)?).ok()
+        self.memory.load_u8(self.ram_address(linear)?).ok()
     }
 
     fn can_write(&self, linear: u32) -> bool {
@@ -83,7 +83,7 @@ impl RealModeMemory for BoardRam<'_> {
 
     fn write_u8(&mut self, linear: u32, value: u8) -> bool {
         match self.ram_address(linear) {
-            Some(address) => self.memory.write_bytes(address, &[value], |_| {}).is_ok(),
+            Some(address) => self.memory.store_bytes(address, &[value], |_| {}).is_ok(),
             None => false,
         }
     }
@@ -380,7 +380,7 @@ mod tests {
         let mut bytes = vec![0; len];
         let (memory, _) = board.bus_mut().split_for_pio_step();
         memory
-            .read_bytes(GuestPhysicalAddress::new(at), &mut bytes)
+            .load_bytes(GuestPhysicalAddress::new(at), &mut bytes)
             .unwrap();
         bytes
     }

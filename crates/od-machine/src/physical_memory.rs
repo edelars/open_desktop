@@ -254,6 +254,35 @@ impl RamFrame {
 }
 
 /// The sole owner of production RAM backing in this crate.
+///
+/// S6-30c: every access (`load_*`, `store_*`, `compare_replace_u64`) takes `&self`; there is no
+/// method that hands out `&mut` to RAM bytes, and the old `&mut self` path (`read_*`/`write_*`)
+/// is gone. A vCPU adapter holds a shared reference, so any number of adapters share one memory.
+/// The surface is pinned by the doctests below (a call through a shared reference compiles, the
+/// removed names do not exist):
+///
+/// ```
+/// use od_machine::{GuestPhysicalAddress, PhysicalMemory};
+/// fn through_a_shared_reference(memory: &PhysicalMemory, at: GuestPhysicalAddress) {
+///     let _ = memory.store_u64(at, 1, |_| {});
+///     let _ = memory.compare_replace_u64(at, 1, 2, |_| {});
+///     let _ = memory.load_u64(at);
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use od_machine::{GuestPhysicalAddress, PhysicalMemory};
+/// fn removed(memory: &PhysicalMemory, at: GuestPhysicalAddress) {
+///     let _ = memory.read_u8(at);
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use od_machine::{GuestPhysicalAddress, PhysicalMemory};
+/// fn removed(memory: &mut PhysicalMemory, at: GuestPhysicalAddress) {
+///     let _ = memory.write_bytes(at, &[1], |_| {});
+/// }
+/// ```
 pub struct PhysicalMemory {
     regions: Vec<Region>,
 }
@@ -378,45 +407,14 @@ impl PhysicalMemory {
             .ok_or(MemoryAccessError::AddressOverflow)
     }
 
-    pub fn read_bytes(
-        &self,
-        address: GuestPhysicalAddress,
-        output: &mut [u8],
-    ) -> Result<(), MemoryAccessError> {
-        let len = checked_access_len(output.len())?;
-        let (region, offset) = self.locate(address, len)?;
-        let backing = region
-            .backing
-            .as_ref()
-            .ok_or(MemoryAccessError::UnreadableRegion(region.spec.kind))?;
-        backing.copy_out(offset, output);
-        Ok(())
-    }
-
-    /// All scalar and loader writes go through this method. For RAM the
-    /// callback runs exactly once, after the complete write has committed.
-    /// Writes to a `Framebuffer` region commit without invoking the callback.
-    pub fn write_bytes(
-        &mut self,
-        address: GuestPhysicalAddress,
-        input: &[u8],
-        committed_write: impl FnMut(GuestPhysicalRange),
-    ) -> Result<(), MemoryAccessError> {
-        let len = checked_access_len(input.len())?;
-        self.commit_write(
-            address,
-            len,
-            |storage, offset| storage.copy_in(offset, input),
-            committed_write,
-        )
-    }
-
-    /// The one commit transaction under every RAM write, old (`write_bytes`) and new (`store_*`):
-    /// locate and validate (errors and their order are those of `write_bytes`), check that no
+    /// The one commit transaction under every RAM write (`store_*`): locate and validate
+    /// (`EmptyRange` before the region search, then the region errors), check that no
     /// page generation would overflow, run `write` on the storage, raise the generation of every
     /// touched page (S6-30b: one `fetch_add(1, Release)` per page, after the data), and only then
     /// call `committed_write` once with the written range. A rejected write changes nothing and
-    /// notifies nothing; a `Framebuffer` write has no generations and no callback.
+    /// notifies nothing; a `Framebuffer` write has no generations and no callback. The RAM
+    /// bytes are reached only through `&self` and atomic accesses (S6-30c: there is no `&mut`
+    /// path to them any more).
     ///
     /// The overflow check and the raise are separate atomic steps: concurrent writers to one page
     /// cannot make them inexact in practice (a `u64` counter would need 2^64 writes to that one
@@ -482,7 +480,8 @@ impl PhysicalMemory {
     }
 
     /// Machine-side one-time fill of a ROM region (the firmware image at power
-    /// on). This is the only ROM writer; `write_bytes` keeps rejecting ROM.
+    /// on). This is the only ROM writer; `store_bytes` keeps rejecting ROM. It is a loader step that
+    /// runs before the memory is shared, so it keeps `&mut self`.
     pub(crate) fn load_rom_bytes(
         &mut self,
         address: GuestPhysicalAddress,
@@ -514,73 +513,13 @@ impl PhysicalMemory {
         if region.spec.kind != MemoryRegionKind::Framebuffer {
             return Err(MemoryAccessError::UnreadableRegion(region.spec.kind));
         }
-        self.read_bytes(address, output)
-    }
-
-    pub fn read_u8(&self, address: GuestPhysicalAddress) -> Result<u8, MemoryAccessError> {
-        let mut bytes = [0; 1];
-        self.read_bytes(address, &mut bytes)?;
-        Ok(bytes[0])
-    }
-
-    pub fn read_u16(&self, address: GuestPhysicalAddress) -> Result<u16, MemoryAccessError> {
-        let mut bytes = [0; 2];
-        self.read_bytes(address, &mut bytes)?;
-        Ok(u16::from_le_bytes(bytes))
-    }
-
-    pub fn read_u32(&self, address: GuestPhysicalAddress) -> Result<u32, MemoryAccessError> {
-        let mut bytes = [0; 4];
-        self.read_bytes(address, &mut bytes)?;
-        Ok(u32::from_le_bytes(bytes))
-    }
-
-    pub fn read_u64(&self, address: GuestPhysicalAddress) -> Result<u64, MemoryAccessError> {
-        let mut bytes = [0; 8];
-        self.read_bytes(address, &mut bytes)?;
-        Ok(u64::from_le_bytes(bytes))
-    }
-
-    pub fn write_u8(
-        &mut self,
-        address: GuestPhysicalAddress,
-        value: u8,
-        committed_write: impl FnMut(GuestPhysicalRange),
-    ) -> Result<(), MemoryAccessError> {
-        self.write_bytes(address, &[value], committed_write)
-    }
-
-    pub fn write_u16(
-        &mut self,
-        address: GuestPhysicalAddress,
-        value: u16,
-        committed_write: impl FnMut(GuestPhysicalRange),
-    ) -> Result<(), MemoryAccessError> {
-        self.write_bytes(address, &value.to_le_bytes(), committed_write)
-    }
-
-    pub fn write_u32(
-        &mut self,
-        address: GuestPhysicalAddress,
-        value: u32,
-        committed_write: impl FnMut(GuestPhysicalRange),
-    ) -> Result<(), MemoryAccessError> {
-        self.write_bytes(address, &value.to_le_bytes(), committed_write)
-    }
-
-    pub fn write_u64(
-        &mut self,
-        address: GuestPhysicalAddress,
-        value: u64,
-        committed_write: impl FnMut(GuestPhysicalRange),
-    ) -> Result<(), MemoryAccessError> {
-        self.write_bytes(address, &value.to_le_bytes(), committed_write)
+        self.load_bytes(address, output)
     }
 
     /// S6-25: compare-and-replace of one 8-byte value, the single backend
     /// operation under every page-table accessed/dirty update (and the place S6-31 replaces
     /// with a host atomic compare-exchange). It reads the 8 bytes; when they equal `expected`
-    /// it writes `replacement` through [`Self::write_u64`] (the callback runs once, after the
+    /// it writes `replacement` through [`Self::store_u64`] (the callback runs once, after the
     /// commit) and returns `Ok(Ok(()))`; otherwise it writes nothing, runs no callback and
     /// returns `Ok(Err(observed))`. Region errors are those of the read and of the write, and
     /// memory is unchanged on every error. Interleaving mode runs one whole instruction at a
@@ -589,7 +528,7 @@ impl PhysicalMemory {
     /// to 8 for the future host compare-exchange (S6-31); callers pass aligned addresses (a 4K
     /// table base plus index * 8), checked by a debug assertion.
     pub fn compare_replace_u64(
-        &mut self,
+        &self,
         address: GuestPhysicalAddress,
         expected: u64,
         replacement: u64,
@@ -599,16 +538,17 @@ impl PhysicalMemory {
             address.0 % 8 == 0,
             "compare_replace_u64 needs an 8-aligned address"
         );
-        let observed = self.read_u64(address)?;
+        let observed = self.load_u64(address)?;
         if observed != expected {
             return Ok(Err(observed));
         }
-        self.write_u64(address, replacement, committed_write)?;
+        self.store_u64(address, replacement, committed_write)?;
         Ok(Ok(()))
     }
 
     /// S6-30a: the region storage a read of `len` bytes at `address` goes to, with the offset in
-    /// it. Same checks and errors, in the same order, as [`Self::read_bytes`].
+    /// it. Checks: `EmptyRange`/`AddressOverflow` of the length, then the region search, then
+    /// the readable kind.
     fn readable_storage(
         &self,
         address: GuestPhysicalAddress,
@@ -729,25 +669,22 @@ impl PhysicalMemory {
     }
 }
 
-/// S6-30a: shared-reference access functions next to the old `&self`/`&mut self` API.
+/// The access functions (S6-30a; the only RAM access path since S6-30c). All take `&self`, so a
+/// vCPU adapter holds a shared reference to the memory and any number of adapters share it.
 ///
 /// Loads and stores of 1, 2, 4 and 8 bytes at a naturally aligned address are one host atomic
 /// access of that width (`SeqCst`, the choice of S6-06; the order itself is revisited in S6-32);
 /// a misaligned access is split into ascending one-byte accesses (MEMORY_MODEL.md, "Атомарность
 /// и разделённые доступы"). `load_bytes`/`store_bytes` are bulk copies: not atomic as a whole,
 /// not ordered, and another thread can see any prefix of one (relaxed accesses of up to 8
-/// bytes, ascending; see `ram_storage`). The locating rules, region kinds and errors are those
-/// of `read_bytes`/`write_bytes`; the results are bit-identical to them.
+/// bytes, ascending; see `ram_storage`).
 ///
-/// S6-30b: the stores take the same `committed_write` callback as `write_*` and go through the
-/// same commit transaction (`commit_write`): same validation and errors in the same order, the
-/// data is stored first, then every touched page generation is raised atomically (`Release`),
-/// then the callback runs once; ROM and a rejected write change and notify nothing, a
-/// `Framebuffer` write has no generation and no callback. Nothing in production calls these
-/// functions until S6-30c switches the adapters.
-#[allow(dead_code)]
+/// S6-30b: the stores take a `committed_write` callback and go through one commit transaction
+/// (`commit_write`): validation and errors, the data is stored first, then every touched page
+/// generation is raised atomically (`Release`), then the callback runs once; ROM and a rejected
+/// write change and notify nothing, a `Framebuffer` write has no generation and no callback.
 impl PhysicalMemory {
-    pub(crate) fn load_bytes(
+    pub fn load_bytes(
         &self,
         address: GuestPhysicalAddress,
         output: &mut [u8],
@@ -757,7 +694,7 @@ impl PhysicalMemory {
         Ok(())
     }
 
-    pub(crate) fn store_bytes(
+    pub fn store_bytes(
         &self,
         address: GuestPhysicalAddress,
         input: &[u8],
@@ -772,27 +709,27 @@ impl PhysicalMemory {
         )
     }
 
-    pub(crate) fn load_u8(&self, address: GuestPhysicalAddress) -> Result<u8, MemoryAccessError> {
+    pub fn load_u8(&self, address: GuestPhysicalAddress) -> Result<u8, MemoryAccessError> {
         let (storage, offset) = self.readable_storage(address, 1)?;
         Ok(storage.load_u8(offset, Ordering::SeqCst))
     }
 
-    pub(crate) fn load_u16(&self, address: GuestPhysicalAddress) -> Result<u16, MemoryAccessError> {
+    pub fn load_u16(&self, address: GuestPhysicalAddress) -> Result<u16, MemoryAccessError> {
         let (storage, offset) = self.readable_storage(address, 2)?;
         Ok(storage.load_u16(offset, Ordering::SeqCst))
     }
 
-    pub(crate) fn load_u32(&self, address: GuestPhysicalAddress) -> Result<u32, MemoryAccessError> {
+    pub fn load_u32(&self, address: GuestPhysicalAddress) -> Result<u32, MemoryAccessError> {
         let (storage, offset) = self.readable_storage(address, 4)?;
         Ok(storage.load_u32(offset, Ordering::SeqCst))
     }
 
-    pub(crate) fn load_u64(&self, address: GuestPhysicalAddress) -> Result<u64, MemoryAccessError> {
+    pub fn load_u64(&self, address: GuestPhysicalAddress) -> Result<u64, MemoryAccessError> {
         let (storage, offset) = self.readable_storage(address, 8)?;
         Ok(storage.load_u64(offset, Ordering::SeqCst))
     }
 
-    pub(crate) fn store_u8(
+    pub fn store_u8(
         &self,
         address: GuestPhysicalAddress,
         value: u8,
@@ -806,7 +743,7 @@ impl PhysicalMemory {
         )
     }
 
-    pub(crate) fn store_u16(
+    pub fn store_u16(
         &self,
         address: GuestPhysicalAddress,
         value: u16,
@@ -820,7 +757,7 @@ impl PhysicalMemory {
         )
     }
 
-    pub(crate) fn store_u32(
+    pub fn store_u32(
         &self,
         address: GuestPhysicalAddress,
         value: u32,
@@ -834,7 +771,7 @@ impl PhysicalMemory {
         )
     }
 
-    pub(crate) fn store_u64(
+    pub fn store_u64(
         &self,
         address: GuestPhysicalAddress,
         value: u64,
@@ -910,12 +847,12 @@ mod tests {
             )],
         )
         .unwrap();
-        let mut top_byte = PhysicalMemory::new(&top_byte_map, RamLimits::new(1)).unwrap();
+        let top_byte = PhysicalMemory::new(&top_byte_map, RamLimits::new(1)).unwrap();
         top_byte
-            .write_u8(GuestPhysicalAddress::new(u64::MAX), 0x5a, |_| {})
+            .store_u8(GuestPhysicalAddress::new(u64::MAX), 0x5a, |_| {})
             .unwrap();
         assert_eq!(
-            top_byte.read_u8(GuestPhysicalAddress::new(u64::MAX)),
+            top_byte.load_u8(GuestPhysicalAddress::new(u64::MAX)),
             Ok(0x5a)
         );
     }
@@ -924,12 +861,12 @@ mod tests {
     /// 8 bytes equal `expected`; otherwise it returns the observed value and changes nothing.
     #[test]
     fn compare_replace_u64_replaces_only_a_matching_value() {
-        let mut ram = memory(&[
+        let ram = memory(&[
             (0, 0x2000, MemoryRegionKind::Ram),
             (0x2000, 0x1000, MemoryRegionKind::Rom),
         ]);
         let at = GuestPhysicalAddress::new(0x100);
-        ram.write_u64(at, 7, |_| {}).unwrap();
+        ram.store_u64(at, 7, |_| {}).unwrap();
         let generation = ram.code_page_generation(at).unwrap();
         let mut log = Vec::new();
         assert_eq!(
@@ -937,14 +874,14 @@ mod tests {
             Ok(Err(7))
         );
         assert!(log.is_empty());
-        assert_eq!(ram.read_u64(at), Ok(7));
+        assert_eq!(ram.load_u64(at), Ok(7));
         assert_eq!(ram.code_page_generation(at), Ok(generation));
         assert_eq!(
             ram.compare_replace_u64(at, 7, 9, |r| log.push(r)),
             Ok(Ok(()))
         );
         assert_eq!(log, [range(0x100, 8)]);
-        assert_eq!(ram.read_u64(at), Ok(9));
+        assert_eq!(ram.load_u64(at), Ok(9));
         assert_eq!(ram.code_page_generation(at), Ok(generation + 1));
         // Errors leave memory unchanged and notify nothing.
         let rom = GuestPhysicalAddress::new(0x2000);
@@ -982,39 +919,39 @@ mod tests {
 
     #[test]
     fn accesses_check_boundaries_holes_rom_and_reserved_regions() {
-        let mut memory = memory(&[
+        let memory = memory(&[
             (0x1000, 0x1000, MemoryRegionKind::Ram),
             (0x3000, 0x1000, MemoryRegionKind::Rom),
             (0x5000, 0x1000, MemoryRegionKind::Reserved),
         ]);
         memory
-            .write_u32(GuestPhysicalAddress::new(0x1ffc), 0x1234_5678, |_| {})
+            .store_u32(GuestPhysicalAddress::new(0x1ffc), 0x1234_5678, |_| {})
             .unwrap();
         assert_eq!(
-            memory.read_u32(GuestPhysicalAddress::new(0x1ffc)).unwrap(),
+            memory.load_u32(GuestPhysicalAddress::new(0x1ffc)).unwrap(),
             0x1234_5678
         );
         assert!(matches!(
-            memory.read_u8(GuestPhysicalAddress::new(0x2000)),
+            memory.load_u8(GuestPhysicalAddress::new(0x2000)),
             Err(MemoryAccessError::Unmapped(_))
         ));
         // S7-03: ROM has read backing (zeroed until the loader fills it).
         assert_eq!(
-            memory.read_u8(GuestPhysicalAddress::new(0x3000)).unwrap(),
+            memory.load_u8(GuestPhysicalAddress::new(0x3000)).unwrap(),
             0
         );
         assert!(matches!(
-            memory.write_u8(GuestPhysicalAddress::new(0x3000), 1, |_| {}),
+            memory.store_u8(GuestPhysicalAddress::new(0x3000), 1, |_| {}),
             Err(MemoryAccessError::ReadOnlyRegion(MemoryRegionKind::Rom))
         ));
         assert!(matches!(
-            memory.write_u8(GuestPhysicalAddress::new(0x5000), 1, |_| {}),
+            memory.store_u8(GuestPhysicalAddress::new(0x5000), 1, |_| {}),
             Err(MemoryAccessError::ReadOnlyRegion(
                 MemoryRegionKind::Reserved
             ))
         ));
         assert!(matches!(
-            memory.read_u16(GuestPhysicalAddress::new(u64::MAX)),
+            memory.load_u16(GuestPhysicalAddress::new(u64::MAX)),
             Err(MemoryAccessError::AddressOverflow)
         ));
     }
@@ -1029,18 +966,18 @@ mod tests {
             .load_rom_bytes(GuestPhysicalAddress::new(0x3010), &[1, 2, 3, 4])
             .unwrap();
         assert_eq!(
-            memory.read_u32(GuestPhysicalAddress::new(0x3010)).unwrap(),
+            memory.load_u32(GuestPhysicalAddress::new(0x3010)).unwrap(),
             0x0403_0201
         );
         // Guest-visible writes never reach ROM and never invoke the callback.
         let mut commits = 0;
         assert_eq!(
-            memory.write_u8(GuestPhysicalAddress::new(0x3010), 9, |_| commits += 1),
+            memory.store_u8(GuestPhysicalAddress::new(0x3010), 9, |_| commits += 1),
             Err(MemoryAccessError::ReadOnlyRegion(MemoryRegionKind::Rom))
         );
         assert_eq!(commits, 0);
         assert_eq!(
-            memory.read_u8(GuestPhysicalAddress::new(0x3010)).unwrap(),
+            memory.load_u8(GuestPhysicalAddress::new(0x3010)).unwrap(),
             1
         );
         // No page generations: ROM is never tracked code.
@@ -1061,31 +998,31 @@ mod tests {
 
     #[test]
     fn committed_write_notification_is_single_and_never_fires_on_rejection() {
-        let mut memory = memory(&[(0x1000, 0x1000, MemoryRegionKind::Ram)]);
+        let memory = memory(&[(0x1000, 0x1000, MemoryRegionKind::Ram)]);
         let mut commits = Vec::new();
         memory
-            .write_u16(GuestPhysicalAddress::new(0x1002), 0xa1b2, |range| {
+            .store_u16(GuestPhysicalAddress::new(0x1002), 0xa1b2, |range| {
                 commits.push(range)
             })
             .unwrap();
         assert_eq!(commits, vec![range(0x1002, 2)]);
         assert!(
             memory
-                .write_u8(GuestPhysicalAddress::new(0x3000), 1, |range| commits
+                .store_u8(GuestPhysicalAddress::new(0x3000), 1, |range| commits
                     .push(range))
                 .is_err()
         );
         assert_eq!(commits, vec![range(0x1002, 2)]);
         assert!(
             memory
-                .read_bytes(GuestPhysicalAddress::new(0x1002), &mut [])
+                .load_bytes(GuestPhysicalAddress::new(0x1002), &mut [])
                 .is_err()
         );
     }
 
     #[test]
     fn committed_writes_advance_only_the_physical_pages_they_touch() {
-        let mut memory = memory(&[(0x1000, 0x3000, MemoryRegionKind::Ram)]);
+        let memory = memory(&[(0x1000, 0x3000, MemoryRegionKind::Ram)]);
         let first = GuestPhysicalAddress::new(0x1000);
         let second = GuestPhysicalAddress::new(0x2000);
         let third = GuestPhysicalAddress::new(0x3000);
@@ -1094,7 +1031,7 @@ mod tests {
         assert_eq!(memory.code_page_generation(third), Ok(1));
 
         memory
-            .write_u8(GuestPhysicalAddress::new(0x1010), 0x90, |_| {})
+            .store_u8(GuestPhysicalAddress::new(0x1010), 0x90, |_| {})
             .unwrap();
         assert_eq!(memory.code_page_generation(first), Ok(2));
         assert_eq!(memory.code_page_generation(second), Ok(1));
@@ -1102,13 +1039,13 @@ mod tests {
 
         assert!(
             memory
-                .write_bytes(GuestPhysicalAddress::new(0x3fff), &[1, 2], |_| {})
+                .store_bytes(GuestPhysicalAddress::new(0x3fff), &[1, 2], |_| {})
                 .is_err()
         );
         assert_eq!(memory.code_page_generation(third), Ok(1));
 
         memory
-            .write_bytes(GuestPhysicalAddress::new(0x1fff), &[1, 2], |_| {})
+            .store_bytes(GuestPhysicalAddress::new(0x1fff), &[1, 2], |_| {})
             .unwrap();
         assert_eq!(memory.code_page_generation(first), Ok(3));
         assert_eq!(memory.code_page_generation(second), Ok(2));
@@ -1117,13 +1054,13 @@ mod tests {
 
     #[test]
     fn write_crossing_adjacent_ram_regions_is_atomic_and_unnotified() {
-        let mut memory = memory(&[
+        let memory = memory(&[
             (0x1000, 2, MemoryRegionKind::Ram),
             (0x1002, 2, MemoryRegionKind::Ram),
         ]);
         let mut commits = Vec::new();
         assert!(matches!(
-            memory.write_bytes(GuestPhysicalAddress::new(0x1000), &[1, 2, 3, 4], |range| {
+            memory.store_bytes(GuestPhysicalAddress::new(0x1000), &[1, 2, 3, 4], |range| {
                 commits.push(range)
             }),
             Err(MemoryAccessError::AccessCrossesRegion(_))
@@ -1132,10 +1069,10 @@ mod tests {
         let mut first = [0xff; 2];
         let mut second = [0xff; 2];
         memory
-            .read_bytes(GuestPhysicalAddress::new(0x1000), &mut first)
+            .load_bytes(GuestPhysicalAddress::new(0x1000), &mut first)
             .unwrap();
         memory
-            .read_bytes(GuestPhysicalAddress::new(0x1002), &mut second)
+            .load_bytes(GuestPhysicalAddress::new(0x1002), &mut second)
             .unwrap();
         assert_eq!(first, [0; 2]);
         assert_eq!(second, [0; 2]);
@@ -1153,10 +1090,10 @@ mod tests {
         )
         .unwrap();
         // The RAM budget covers the RAM region only (0x1000), not the 0x4000 bytes of pixels.
-        let mut memory = PhysicalMemory::new(&map, RamLimits::new(0x1000)).unwrap();
+        let memory = PhysicalMemory::new(&map, RamLimits::new(0x1000)).unwrap();
         let mut commits = Vec::new();
         memory
-            .write_bytes(
+            .store_bytes(
                 GuestPhysicalAddress::new(FB_START + 0x3ffc),
                 &[1, 2, 3, 4],
                 |r| commits.push(r),
@@ -1164,19 +1101,19 @@ mod tests {
             .unwrap();
         assert!(commits.is_empty());
         assert_eq!(
-            memory.read_u32(GuestPhysicalAddress::new(FB_START + 0x3ffc)),
+            memory.load_u32(GuestPhysicalAddress::new(FB_START + 0x3ffc)),
             Ok(0x0403_0201)
         );
         // Zero-filled at power-on.
-        assert_eq!(memory.read_u64(GuestPhysicalAddress::new(FB_START)), Ok(0));
+        assert_eq!(memory.load_u64(GuestPhysicalAddress::new(FB_START)), Ok(0));
         // RAM in the same memory still notifies exactly once.
         memory
-            .write_u8(GuestPhysicalAddress::new(0x1000), 7, |r| commits.push(r))
+            .store_u8(GuestPhysicalAddress::new(0x1000), 7, |r| commits.push(r))
             .unwrap();
         assert_eq!(commits, vec![range(0x1000, 1)]);
         // Crossing the end of the region is rejected without a partial write.
         assert!(matches!(
-            memory.write_bytes(
+            memory.store_bytes(
                 GuestPhysicalAddress::new(FB_START + 0x3ffe),
                 &[9; 4],
                 |_| {}
@@ -1184,7 +1121,7 @@ mod tests {
             Err(MemoryAccessError::AccessCrossesRegion(_))
         ));
         assert_eq!(
-            memory.read_u16(GuestPhysicalAddress::new(FB_START + 0x3ffe)),
+            memory.load_u16(GuestPhysicalAddress::new(FB_START + 0x3ffe)),
             Ok(0x0403)
         );
         // Frame copy-out is available only for Framebuffer regions.
@@ -1210,7 +1147,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let mut memory = PhysicalMemory::new(&map, RamLimits::new(0x2000)).unwrap();
+        let memory = PhysicalMemory::new(&map, RamLimits::new(0x2000)).unwrap();
         let ram0 = GuestPhysicalAddress::new(0x1000);
         let ram1 = GuestPhysicalAddress::new(0x2000);
         assert_eq!(memory.code_page_generation(ram0), Ok(1));
@@ -1236,14 +1173,14 @@ mod tests {
             (0x3ffc, &[6, 7, 8, 9][..]),
         ] {
             memory
-                .write_bytes(GuestPhysicalAddress::new(FB_START + offset), bytes, |r| {
+                .store_bytes(GuestPhysicalAddress::new(FB_START + offset), bytes, |r| {
                     commits.push(r)
                 })
                 .unwrap();
         }
         assert!(commits.is_empty());
         assert_eq!(
-            memory.read_u32(GuestPhysicalAddress::new(FB_START + 0x3ffc)),
+            memory.load_u32(GuestPhysicalAddress::new(FB_START + 0x3ffc)),
             Ok(0x0908_0706)
         );
         assert_eq!(memory.code_page_generation(ram0), Ok(1));
@@ -1251,7 +1188,7 @@ mod tests {
 
         // RAM writes still bump exactly the touched generations and notify once.
         memory
-            .write_bytes(GuestPhysicalAddress::new(0x1ffe), &[1, 2, 3, 4], |r| {
+            .store_bytes(GuestPhysicalAddress::new(0x1ffe), &[1, 2, 3, 4], |r| {
                 commits.push(r)
             })
             .unwrap();
@@ -1264,15 +1201,15 @@ mod tests {
     fn guest_pages_and_host_sized_chunks_are_ordinary_ram_bytes() {
         // This region straddles a deterministic 16 KiB boundary; no host page
         // size is queried or assumed by the implementation.
-        let mut memory = memory(&[(0, 0x9000, MemoryRegionKind::Ram)]);
+        let memory = memory(&[(0, 0x9000, MemoryRegionKind::Ram)]);
         let bytes: Vec<u8> = (0..0x30).map(|value| value as u8).collect();
         let start = GuestPhysicalAddress::new(0x3ff0);
         let mut commits = Vec::new();
         memory
-            .write_bytes(start, &bytes, |range| commits.push(range))
+            .store_bytes(start, &bytes, |range| commits.push(range))
             .unwrap();
         let mut read_back = vec![0; bytes.len()];
-        memory.read_bytes(start, &mut read_back).unwrap();
+        memory.load_bytes(start, &mut read_back).unwrap();
         assert_eq!(read_back, bytes);
         assert_eq!(commits, vec![range(0x3ff0, 0x30)]);
     }
@@ -1296,14 +1233,7 @@ mod tests {
 
     fn dump(memory: &PhysicalMemory) -> Vec<Result<u8, MemoryAccessError>> {
         (PROBE_START..PROBE_END)
-            .map(|at| memory.read_u8(GuestPhysicalAddress::new(at)))
-            .collect()
-    }
-
-    /// The generation (or the error) of every page of the probe window.
-    fn generations(memory: &PhysicalMemory) -> Vec<Result<u64, MemoryAccessError>> {
-        (PROBE_START >> 12..=PROBE_END >> 12)
-            .map(|page| memory.code_page_generation(GuestPhysicalAddress::new(page << 12)))
+            .map(|at| memory.load_u8(GuestPhysicalAddress::new(at)))
             .collect()
     }
 
@@ -1357,207 +1287,226 @@ mod tests {
         }
     }
 
-    /// Old API on one memory and the new functions on another give the same results, the same
-    /// errors and, in the end, the same bytes, over random operations that hit edges, holes, ROM,
-    /// Reserved, Framebuffer, adjacent regions and every width and alignment. A third copy of the
-    /// bytes is a plain `Vec<u8>` model, so equality does not rest on the two paths sharing one
-    /// storage: each success of the new API is applied to the model, each successful load is
-    /// compared with it, and the model equals the final dump.
+    /// Independent reference of the region rules (written from the map of
+    /// `storage_test_memory`, not from `PhysicalMemory`): the error, in the order of the checks, of
+    /// an access of `len` bytes at `at`, or `Ok` with the kind of the region it lands in.
+    fn reference_access(
+        at: u64,
+        len: u64,
+        write: bool,
+    ) -> Result<MemoryRegionKind, MemoryAccessError> {
+        const MAP: [(u64, u64, MemoryRegionKind); 5] = [
+            (0x1003, 0x1ffd, MemoryRegionKind::Ram),
+            (0x3000, 0x805, MemoryRegionKind::Ram),
+            (0x4000, 0x100, MemoryRegionKind::Rom),
+            (0x5000, 0x100, MemoryRegionKind::Reserved),
+            (0x6000, 0x1000, MemoryRegionKind::Framebuffer),
+        ];
+        if len == 0 {
+            return Err(MemoryAccessError::EmptyRange);
+        }
+        if u128::from(at) + u128::from(len) > 1u128 << 64 {
+            return Err(MemoryAccessError::AddressOverflow);
+        }
+        let Some(&(start, size, kind)) = MAP
+            .iter()
+            .find(|&&(start, size, _)| at >= start && at < start + size)
+        else {
+            return Err(MemoryAccessError::Unmapped(GuestPhysicalAddress::new(at)));
+        };
+        if at + len > start + size {
+            return Err(MemoryAccessError::AccessCrossesRegion(range(at, len)));
+        }
+        match (kind, write) {
+            (MemoryRegionKind::Reserved, false) => Err(MemoryAccessError::UnreadableRegion(kind)),
+            (MemoryRegionKind::Rom | MemoryRegionKind::Reserved, true) => {
+                Err(MemoryAccessError::ReadOnlyRegion(kind))
+            }
+            _ => Ok(kind),
+        }
+    }
+
+    /// Pages of the two RAM regions of `storage_test_memory`, one probe address each.
+    const GENERATION_PROBES: [u64; 3] = [0x1003, 0x2000, 0x3000];
+
+    /// The access functions against two independent references: the region rules
+    /// (`reference_access`: errors, in their order) and a plain `Vec<u8>` model of the whole probe
+    /// window (every successful store is applied to it, every successful load must equal it, the
+    /// final dump must equal it). Also checked on every step: the notifications (none on a
+    /// rejection or a Framebuffer store, otherwise exactly one range of the written bytes) and the
+    /// generation of every RAM page. Random operations hit edges, holes, ROM, Reserved,
+    /// Framebuffer, adjacent regions and every width and alignment.
     #[test]
-    fn new_access_functions_match_the_old_api_byte_for_byte() {
+    fn access_functions_match_the_region_rules_and_a_byte_model() {
         for seed in [
             0x9e37_79b9_7f4a_7c15u64,
             0x1234_5678_9abc_def1,
             0xdead_beef_cafe_f00d,
         ] {
             let mut rng = XorShift(seed);
-            let mut old = storage_test_memory();
-            let new = storage_test_memory();
+            let memory = storage_test_memory();
             let mut model = ByteModel::new();
-            let mut new_reads = 0u32;
+            let mut generations = [1u64; 3];
+            let mut loads = 0u32;
             for step in 0..20_000u32 {
                 let at = random_address(&mut rng);
                 let value = rng.next();
-                let mut old_commits = Vec::new();
-                let mut new_commits = Vec::new();
-                match rng.next() % 12 {
-                    0 => {
-                        let result = new.store_u8(at, value as u8, |r| new_commits.push(r));
-                        assert_eq!(
-                            old.write_u8(at, value as u8, |r| old_commits.push(r)),
-                            result,
-                            "step {step} store_u8 {at:?}"
-                        );
-                        if result.is_ok() {
-                            model.store(at, &(value as u8).to_le_bytes());
-                        }
-                    }
-                    1 => {
-                        let result = new.store_u16(at, value as u16, |r| new_commits.push(r));
-                        assert_eq!(
-                            old.write_u16(at, value as u16, |r| old_commits.push(r)),
-                            result,
-                            "step {step} store_u16 {at:?}"
-                        );
-                        if result.is_ok() {
-                            model.store(at, &(value as u16).to_le_bytes());
-                        }
-                    }
-                    2 => {
-                        let result = new.store_u32(at, value as u32, |r| new_commits.push(r));
-                        assert_eq!(
-                            old.write_u32(at, value as u32, |r| old_commits.push(r)),
-                            result,
-                            "step {step} store_u32 {at:?}"
-                        );
-                        if result.is_ok() {
-                            model.store(at, &(value as u32).to_le_bytes());
-                        }
-                    }
-                    3 => {
-                        let result = new.store_u64(at, value, |r| new_commits.push(r));
-                        assert_eq!(
-                            old.write_u64(at, value, |r| old_commits.push(r)),
-                            result,
-                            "step {step} store_u64 {at:?}"
-                        );
-                        if result.is_ok() {
-                            model.store(at, &value.to_le_bytes());
-                        }
-                    }
+                let mut commits = Vec::new();
+                // `Some(bytes)` for a store, `None` for a load.
+                let (len, store): (usize, Option<Vec<u8>>) = match rng.next() % 12 {
+                    0 => (1, Some((value as u8).to_le_bytes().to_vec())),
+                    1 => (2, Some((value as u16).to_le_bytes().to_vec())),
+                    2 => (4, Some((value as u32).to_le_bytes().to_vec())),
+                    3 => (8, Some(value.to_le_bytes().to_vec())),
                     4 => {
                         let len = (rng.next() % 26) as usize; // 0 is the empty-range error
-                        let data: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
-                        let result = new.store_bytes(at, &data, |r| new_commits.push(r));
+                        (len, Some((0..len).map(|_| rng.next() as u8).collect()))
+                    }
+                    5 => (1, None),
+                    6 => (2, None),
+                    7 => (4, None),
+                    8 => (8, None),
+                    _ => ((rng.next() % 26) as usize, None),
+                };
+                let expected = reference_access(at.0, len as u64, store.is_some());
+                match store {
+                    Some(bytes) => {
+                        let result = match (len, bytes.len()) {
+                            (1, 1) if step % 3 != 1 => {
+                                memory.store_u8(at, bytes[0], |r| commits.push(r))
+                            }
+                            (2, 2) => memory.store_u16(
+                                at,
+                                u16::from_le_bytes([bytes[0], bytes[1]]),
+                                |r| commits.push(r),
+                            ),
+                            (4, 4) => memory.store_u32(
+                                at,
+                                u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+                                |r| commits.push(r),
+                            ),
+                            (8, 8) => memory.store_u64(
+                                at,
+                                u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+                                |r| commits.push(r),
+                            ),
+                            _ => memory.store_bytes(at, &bytes, |r| commits.push(r)),
+                        };
                         assert_eq!(
-                            old.write_bytes(at, &data, |r| old_commits.push(r)),
                             result,
-                            "step {step} store_bytes {at:?} len {len}"
+                            expected.clone().map(|_| ()),
+                            "step {step} store {at:?} len {len}"
                         );
-                        if result.is_ok() {
-                            model.store(at, &data);
+                        if let Ok(kind) = expected {
+                            model.store(at, &bytes);
+                            if kind == MemoryRegionKind::Ram {
+                                assert_eq!(
+                                    commits,
+                                    vec![range(at.0, len as u64)],
+                                    "step {step} notification"
+                                );
+                                for page in at.0 >> 12..=(at.0 + len as u64 - 1) >> 12 {
+                                    generations[page as usize - 1] += 1;
+                                }
+                            } else {
+                                assert!(commits.is_empty(), "step {step} Framebuffer notified");
+                            }
+                        } else {
+                            assert!(commits.is_empty(), "step {step} rejected store notified");
                         }
                     }
-                    5 => {
-                        let result = new.load_u8(at);
-                        assert_eq!(old.read_u8(at), result, "step {step} load_u8 {at:?}");
-                        if let Ok(read) = result {
-                            assert_eq!(&[read], model.bytes(at, 1), "step {step} model u8");
+                    None => {
+                        let mut buffer = vec![0xeeu8; len];
+                        let result = match len {
+                            1 if step % 3 != 1 => memory.load_u8(at).map(|v| vec![v]),
+                            2 => memory.load_u16(at).map(|v| v.to_le_bytes().to_vec()),
+                            4 => memory.load_u32(at).map(|v| v.to_le_bytes().to_vec()),
+                            8 => memory.load_u64(at).map(|v| v.to_le_bytes().to_vec()),
+                            _ => memory.load_bytes(at, &mut buffer).map(|()| buffer.clone()),
+                        };
+                        match (result, expected) {
+                            (Ok(bytes), Ok(_)) => {
+                                assert_eq!(
+                                    bytes,
+                                    model.bytes(at, len),
+                                    "step {step} load {at:?} len {len}"
+                                );
+                                loads += 1;
+                            }
+                            (Err(error), Err(reference)) => {
+                                assert_eq!(error, reference, "step {step} load {at:?} len {len}")
+                            }
+                            (got, want) => panic!("step {step} load {at:?}: {got:?} vs {want:?}"),
                         }
-                    }
-                    6 => {
-                        let result = new.load_u16(at);
-                        assert_eq!(old.read_u16(at), result, "step {step} load_u16 {at:?}");
-                        if let Ok(read) = result {
-                            assert_eq!(
-                                read.to_le_bytes(),
-                                model.bytes(at, 2),
-                                "step {step} model u16"
-                            );
-                        }
-                    }
-                    7 => {
-                        let result = new.load_u32(at);
-                        assert_eq!(old.read_u32(at), result, "step {step} load_u32 {at:?}");
-                        if let Ok(read) = result {
-                            assert_eq!(
-                                read.to_le_bytes(),
-                                model.bytes(at, 4),
-                                "step {step} model u32"
-                            );
-                        }
-                    }
-                    8 => {
-                        let result = new.load_u64(at);
-                        assert_eq!(old.read_u64(at), result, "step {step} load_u64 {at:?}");
-                        if let Ok(read) = result {
-                            assert_eq!(
-                                read.to_le_bytes(),
-                                model.bytes(at, 8),
-                                "step {step} model u64"
-                            );
-                        }
-                    }
-                    _ => {
-                        let len = (rng.next() % 26) as usize;
-                        let mut from_old = vec![0xeeu8; len];
-                        let mut from_new = vec![0xeeu8; len];
-                        let result = new.load_bytes(at, &mut from_new);
-                        assert_eq!(
-                            old.read_bytes(at, &mut from_old),
-                            result,
-                            "step {step} load_bytes {at:?} len {len}"
-                        );
-                        assert_eq!(from_old, from_new, "step {step} bytes {at:?} len {len}");
-                        if result.is_ok() {
-                            assert_eq!(from_new, model.bytes(at, len), "step {step} model bytes");
-                        }
-                        new_reads += 1;
                     }
                 }
-                // S6-30b: the same notifications (none on a rejection or a Framebuffer write,
-                // otherwise exactly one range of the written bytes) ...
-                assert_eq!(old_commits, new_commits, "step {step} notifications");
-                assert!(new_commits.len() <= 1, "step {step}");
-                // ... and the same generation of every RAM page after every step.
                 if step % 64 == 0 {
-                    assert_eq!(
-                        generations(&old),
-                        generations(&new),
-                        "step {step} generations"
-                    );
+                    for (probe, expected) in GENERATION_PROBES.iter().zip(generations) {
+                        assert_eq!(
+                            memory.code_page_generation(GuestPhysicalAddress::new(*probe)),
+                            Ok(expected),
+                            "step {step} generation of {probe:#x}"
+                        );
+                    }
                 }
             }
-            assert!(new_reads > 1000);
-            assert_eq!(dump(&old), dump(&new), "seed {seed:#x}");
-            // Every readable byte of the final dump equals the model; unreadable ones are errors.
-            for (index, byte) in dump(&new).into_iter().enumerate() {
-                if let Ok(byte) = byte {
-                    assert_eq!(byte, model.0[index], "seed {seed:#x} byte {index:#x}");
+            assert!(loads > 1000);
+            // Every byte of the final dump: an error exactly where the rules give one, otherwise
+            // the model.
+            for (index, byte) in dump(&memory).into_iter().enumerate() {
+                let at = PROBE_START + index as u64;
+                match reference_access(at, 1, false) {
+                    Ok(_) => assert_eq!(byte, Ok(model.0[index]), "seed {seed:#x} byte {at:#x}"),
+                    Err(error) => assert_eq!(byte, Err(error), "seed {seed:#x} byte {at:#x}"),
                 }
             }
-            // S6-30b: the stores raise generations like the old path does.
-            assert_eq!(generations(&old), generations(&new), "seed {seed:#x}");
-            let ram = GuestPhysicalAddress::new(0x2000);
-            assert!(new.code_page_generation(ram).unwrap() > 1);
+            for (probe, expected) in GENERATION_PROBES.iter().zip(generations) {
+                assert_eq!(
+                    memory.code_page_generation(GuestPhysicalAddress::new(*probe)),
+                    Ok(expected),
+                    "seed {seed:#x} final generation of {probe:#x}"
+                );
+            }
+            assert!(generations.iter().all(|&g| g > 1));
         }
     }
 
-    /// Both orders of mixing: the same random writes through old and new paths into one
-    /// memory each, read back through the other API, see the same bytes.
+    /// Two shared references to one memory see each other's stores at once (no `&mut` is needed
+    /// anywhere), whichever width writes and whichever reads.
     #[test]
-    fn old_and_new_paths_share_one_storage() {
-        let mut mixed = storage_test_memory();
-        let mut reference = storage_test_memory();
+    fn stores_through_one_shared_reference_are_seen_through_another() {
+        let memory = storage_test_memory();
+        let (first, second) = (&memory, &memory);
         let mut rng = XorShift(0x0123_4567_89ab_cdef);
         for _ in 0..5_000 {
             let at = random_address(&mut rng);
             let value = rng.next();
             let width = [1usize, 2, 4, 8][(rng.next() % 4) as usize];
             let bytes = &value.to_le_bytes()[..width];
-            let expected = reference.write_bytes(at, bytes, |_| {});
-            let through_new = rng.next() % 2 == 0;
-            let got = if through_new {
-                mixed.store_bytes(at, bytes, |_| {})
+            let (writer, reader) = if rng.next() % 2 == 0 {
+                (first, second)
             } else {
-                mixed.write_bytes(at, bytes, |_| {})
+                (second, first)
             };
-            assert_eq!(got, expected);
-            let mut a = vec![0u8; width];
-            let mut b = vec![0u8; width];
-            let ra = if through_new {
-                mixed.read_bytes(at, &mut a)
-            } else {
-                mixed.load_bytes(at, &mut a)
-            };
-            assert_eq!(ra, reference.read_bytes(at, &mut b));
-            assert_eq!(a, b);
+            let stored = writer.store_bytes(at, bytes, |_| {});
+            assert_eq!(
+                stored,
+                reference_access(at.0, width as u64, true).map(|_| ())
+            );
+            let mut back = vec![0u8; width];
+            let loaded = reader.load_bytes(at, &mut back);
+            assert_eq!(
+                loaded,
+                reference_access(at.0, width as u64, false).map(|_| ())
+            );
+            if stored.is_ok() {
+                assert_eq!(back, bytes);
+            }
         }
-        assert_eq!(dump(&mixed), dump(&reference));
     }
 
     #[test]
-    fn new_functions_keep_the_boundary_errors_of_the_old_ones() {
+    fn boundary_errors_follow_the_region_rules() {
         let memory = storage_test_memory();
         // Region end, adjacent RAM regions, hole, region start, top of the address space.
         for at in [
@@ -1569,63 +1518,30 @@ mod tests {
             0x4fff,
             0x40ff,
             0x50ff,
-            u64::MAX,
-            u64::MAX - 3,
-        ] {
-            let at = GuestPhysicalAddress::new(at);
-            let mut one = [0u8; 1];
-            let mut eight = [0u8; 8];
-            assert_eq!(memory.read_u8(at), memory.load_u8(at));
-            assert_eq!(memory.read_u16(at), memory.load_u16(at));
-            assert_eq!(memory.read_u32(at), memory.load_u32(at));
-            assert_eq!(memory.read_u64(at), memory.load_u64(at));
-            assert_eq!(
-                memory.read_bytes(at, &mut one),
-                memory.load_bytes(at, &mut one)
-            );
-            assert_eq!(
-                memory.read_bytes(at, &mut eight),
-                memory.load_bytes(at, &mut eight)
-            );
-            assert_eq!(
-                memory.read_bytes(at, &mut []),
-                memory.load_bytes(at, &mut [])
-            );
-        }
-        let mut old = storage_test_memory();
-        for at in [
-            0x2fff_u64,
-            0x3804,
-            0x40ff,
-            0x4000,
-            0x50ff,
             0x6ff9,
             0x7000,
             u64::MAX,
+            u64::MAX - 3,
         ] {
-            let at = GuestPhysicalAddress::new(at);
-            assert_eq!(old.write_u8(at, 1, |_| {}), memory.store_u8(at, 1, |_| {}));
-            assert_eq!(
-                old.write_u16(at, 1, |_| {}),
-                memory.store_u16(at, 1, |_| {})
-            );
-            assert_eq!(
-                old.write_u32(at, 1, |_| {}),
-                memory.store_u32(at, 1, |_| {})
-            );
-            assert_eq!(
-                old.write_u64(at, 1, |_| {}),
-                memory.store_u64(at, 1, |_| {})
-            );
-            assert_eq!(
-                old.write_bytes(at, &[], |_| {}),
-                memory.store_bytes(at, &[], |_| {})
-            );
+            let address = GuestPhysicalAddress::new(at);
+            let load = |len: u64| reference_access(at, len, false).map(|_| ());
+            let store = |len: u64| reference_access(at, len, true).map(|_| ());
+            assert_eq!(memory.load_u8(address).map(|_| ()), load(1), "{at:#x}");
+            assert_eq!(memory.load_u16(address).map(|_| ()), load(2), "{at:#x}");
+            assert_eq!(memory.load_u32(address).map(|_| ()), load(4), "{at:#x}");
+            assert_eq!(memory.load_u64(address).map(|_| ()), load(8), "{at:#x}");
+            assert_eq!(memory.load_bytes(address, &mut [0u8; 8]), load(8));
+            assert_eq!(memory.load_bytes(address, &mut []), load(0));
+            assert_eq!(memory.store_u8(address, 1, |_| {}), store(1), "{at:#x}");
+            assert_eq!(memory.store_u16(address, 1, |_| {}), store(2), "{at:#x}");
+            assert_eq!(memory.store_u32(address, 1, |_| {}), store(4), "{at:#x}");
+            assert_eq!(memory.store_u64(address, 1, |_| {}), store(8), "{at:#x}");
+            assert_eq!(memory.store_bytes(address, &[], |_| {}), store(0));
         }
     }
 
     #[test]
-    fn rejected_new_stores_leave_memory_unchanged() {
+    fn rejected_stores_leave_memory_unchanged() {
         let memory = storage_test_memory();
         let before = dump(&memory);
         // ROM, Reserved, hole, crossing from RAM into the gap after it, empty range.
@@ -1644,7 +1560,7 @@ mod tests {
     }
 
     #[test]
-    fn framebuffer_is_writable_by_new_stores_without_generations() {
+    fn framebuffer_is_writable_by_stores_without_generations() {
         let memory = storage_test_memory();
         let at = GuestPhysicalAddress::new(0x6ff8);
         memory.store_u64(at, 0x0102_0304_0506_0708, |_| {}).unwrap();
@@ -1656,13 +1572,12 @@ mod tests {
         );
     }
 
-    /// An aligned 1/2/4/8-byte access is a single host access of that width, on the old API
-    /// (through `read_bytes`/`write_bytes`) and the new one, also in a region whose start is
-    /// not 8-aligned; a misaligned access is split into ascending bytes.
+    /// An aligned 1/2/4/8-byte access is a single host access of that width, also in a region
+    /// whose start is not 8-aligned; a misaligned access is split into ascending bytes.
     #[test]
-    fn aligned_accesses_are_single_host_accesses_on_both_paths() {
+    fn aligned_accesses_are_single_host_accesses() {
         use crate::ram_storage::traced;
-        let mut memory = storage_test_memory();
+        let memory = storage_test_memory();
         // Region 0x1003: offset = address - 0x1003.
         let base = 0x1003u64;
         for (width, address) in [
@@ -1676,34 +1591,20 @@ mod tests {
             let at = GuestPhysicalAddress::new(address);
             let offset = (address - base) as usize;
             let expect = vec![(offset, width as usize)];
-            let ((), old_write) = traced(|| match width {
-                1 => memory.write_u8(at, 1, |_| {}).unwrap(),
-                2 => memory.write_u16(at, 1, |_| {}).unwrap(),
-                4 => memory.write_u32(at, 1, |_| {}).unwrap(),
-                _ => memory.write_u64(at, 1, |_| {}).unwrap(),
-            });
-            let ((), old_read) = traced(|| match width {
-                1 => drop(memory.read_u8(at).unwrap()),
-                2 => drop(memory.read_u16(at).unwrap()),
-                4 => drop(memory.read_u32(at).unwrap()),
-                _ => drop(memory.read_u64(at).unwrap()),
-            });
-            let ((), new_write) = traced(|| match width {
+            let ((), write) = traced(|| match width {
                 1 => memory.store_u8(at, 2, |_| {}).unwrap(),
                 2 => memory.store_u16(at, 2, |_| {}).unwrap(),
                 4 => memory.store_u32(at, 2, |_| {}).unwrap(),
                 _ => memory.store_u64(at, 2, |_| {}).unwrap(),
             });
-            let ((), new_read) = traced(|| match width {
+            let ((), read) = traced(|| match width {
                 1 => drop(memory.load_u8(at).unwrap()),
                 2 => drop(memory.load_u16(at).unwrap()),
                 4 => drop(memory.load_u32(at).unwrap()),
                 _ => drop(memory.load_u64(at).unwrap()),
             });
-            assert_eq!(old_write, expect, "old write width {width} at {address:#x}");
-            assert_eq!(old_read, expect, "old read width {width} at {address:#x}");
-            assert_eq!(new_write, expect, "new store width {width} at {address:#x}");
-            assert_eq!(new_read, expect, "new load width {width} at {address:#x}");
+            assert_eq!(write, expect, "store width {width} at {address:#x}");
+            assert_eq!(read, expect, "load width {width} at {address:#x}");
         }
         // Misaligned dword: ascending bytes.
         let at = GuestPhysicalAddress::new(0x1011);
@@ -1720,7 +1621,7 @@ mod tests {
     #[test]
     fn compare_replace_u64_is_two_single_accesses_on_the_new_storage() {
         use crate::ram_storage::traced;
-        let mut memory = storage_test_memory();
+        let memory = storage_test_memory();
         let at = GuestPhysicalAddress::new(0x1008); // aligned guest address, region start 0x1003
         memory.store_u64(at, 5, |_| {}).unwrap();
         let (result, log) = traced(|| memory.compare_replace_u64(at, 5, 6, |_| {}));
@@ -1805,28 +1706,20 @@ mod tests {
         );
     }
 
-    /// A page generation at the top of `u64` rejects the write before any byte is stored, on both
-    /// paths, and a write that does not touch that page is unaffected.
+    /// A page generation at the top of `u64` rejects the write before any byte is stored, and a
+    /// write that does not touch that page is unaffected.
     #[test]
-    fn an_exhausted_generation_rejects_old_and_new_writes_alike() {
-        let mut old = storage_test_memory();
-        let new = storage_test_memory();
-        for memory in [&old, &new] {
-            memory.regions[0].page_generations[0].store(u64::MAX, Ordering::Relaxed);
-        }
+    fn an_exhausted_generation_rejects_the_write() {
+        let memory = storage_test_memory();
+        memory.regions[0].page_generations[0].store(u64::MAX, Ordering::Relaxed);
         let at = GuestPhysicalAddress::new(0x1010);
         assert_eq!(
-            old.write_u32(at, 1, |_| panic!("no callback")),
+            memory.store_u32(at, 1, |_| panic!("no callback")),
             Err(MemoryAccessError::CodeGenerationExhausted)
         );
+        assert_eq!(memory.load_u32(at), Ok(0));
         assert_eq!(
-            new.store_u32(at, 1, |_| panic!("no callback")),
-            Err(MemoryAccessError::CodeGenerationExhausted)
-        );
-        assert_eq!(new.load_u32(at), Ok(0));
-        assert_eq!(old.read_u32(at), Ok(0));
-        assert_eq!(
-            new.store_u32(GuestPhysicalAddress::new(0x2010), 1, |_| {}),
+            memory.store_u32(GuestPhysicalAddress::new(0x2010), 1, |_| {}),
             Ok(())
         );
     }

@@ -26,7 +26,7 @@ pub fn step_diagnostic_pio_u8(
 }
 
 struct FlatFetchMemory<'a> {
-    memory: &'a mut PhysicalMemory,
+    memory: &'a PhysicalMemory,
 }
 
 impl FlatFetchMemory<'_> {
@@ -51,7 +51,7 @@ impl GuestMemory for FlatFetchMemory<'_> {
         }
         let mut byte = [0];
         self.memory
-            .read_bytes(address, &mut byte)
+            .load_bytes(address, &mut byte)
             .map_err(|error| MemoryError::Backend(error.to_string()))?;
         Ok(byte[0])
     }

@@ -350,7 +350,7 @@ impl MachineBus {
                 return Err("translated range is not wholly backed by RAM".into());
             }
             self.memory
-                .read_bytes(physical, &mut output[offset..offset + fragment_len])
+                .load_bytes(physical, &mut output[offset..offset + fragment_len])
                 .map_err(|error| format!("RAM read failed: {error:?}"))?;
             offset += fragment_len;
         }
@@ -469,7 +469,7 @@ impl MachineBus {
         if first_generation != first.backing_generation {
             let byte_address = GuestPhysicalAddress::new(first.physical_base.get() + offset as u64);
             self.memory
-                .read_bytes(byte_address, &mut first.bytes)
+                .load_bytes(byte_address, &mut first.bytes)
                 .map_err(TrackedCodeSnapshotError::Physical)?;
             first.backing_generation = first_generation;
         }
@@ -533,7 +533,7 @@ impl MachineBus {
             .map_err(TrackedCodeSnapshotError::Physical)?;
         let mut bytes = vec![0; length];
         self.memory
-            .read_bytes(byte_address, &mut bytes)
+            .load_bytes(byte_address, &mut bytes)
             .map_err(TrackedCodeSnapshotError::Physical)?;
         Ok(TrackedCodeSnapshot {
             linear_base: linear_start,
@@ -655,7 +655,7 @@ impl MachineBus {
         bytes: &[u8],
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
-        self.memory.write_bytes(address, bytes, committed_write)
+        self.memory.store_bytes(address, bytes, committed_write)
     }
 }
 
@@ -891,7 +891,7 @@ impl MachineBus {
     /// Memory, ports and MMIO of one set-loop instruction (S4-38L9s); the cell inside the
     /// returned value lets the port view and the MMIO dispatch share the device table.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn split_for_set_step(&mut self) -> (&mut PhysicalMemory, MachineBusSetStepIo<'_>) {
+    pub(crate) fn split_for_set_step(&mut self) -> (&PhysicalMemory, MachineBusSetStepIo<'_>) {
         self.split_for_set_step_of_vcpu(crate::vcpu::BOOT_VCPU_INDEX)
     }
 
@@ -900,7 +900,7 @@ impl MachineBus {
     pub(crate) fn split_for_set_step_of_vcpu(
         &mut self,
         vcpu: usize,
-    ) -> (&mut PhysicalMemory, MachineBusSetStepIo<'_>) {
+    ) -> (&PhysicalMemory, MachineBusSetStepIo<'_>) {
         let Self {
             memory,
             devices,
@@ -932,7 +932,7 @@ impl MachineBus {
         self.apic_mmio_windows = true;
     }
 
-    pub(crate) fn split_for_pio_step(&mut self) -> (&mut PhysicalMemory, MachineBusPortIo<'_>) {
+    pub(crate) fn split_for_pio_step(&mut self) -> (&PhysicalMemory, MachineBusPortIo<'_>) {
         let Self {
             memory,
             devices,
@@ -1437,7 +1437,7 @@ impl MachineBus {
         match kind {
             MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer | MemoryRegionKind::Rom => self
                 .memory
-                .read_bytes(address, output)
+                .load_bytes(address, output)
                 .map_err(BusAccessError::Memory),
             MemoryRegionKind::Mmio => {
                 let width = access_width(output.len()).ok_or(BusAccessError::UnsupportedWidth)?;
@@ -1477,12 +1477,12 @@ impl MachineBus {
         match kind {
             MemoryRegionKind::Ram => self
                 .memory
-                .write_bytes(address, input, committed_write)
+                .store_bytes(address, input, committed_write)
                 .map_err(BusAccessError::Memory),
-            // `PhysicalMemory::write_bytes` skips the callback for Framebuffer.
+            // `PhysicalMemory::store_bytes` skips the callback for Framebuffer.
             MemoryRegionKind::Framebuffer => self
                 .memory
-                .write_bytes(address, input, committed_write)
+                .store_bytes(address, input, committed_write)
                 .map_err(BusAccessError::Memory),
             MemoryRegionKind::Mmio => {
                 let width = access_width(input.len()).ok_or(BusAccessError::UnsupportedWidth)?;
@@ -1657,24 +1657,24 @@ fn read_ram(
     width: AccessWidth,
 ) -> Result<u64, MemoryAccessError> {
     Ok(match width {
-        AccessWidth::Byte => u64::from(memory.read_u8(address)?),
-        AccessWidth::Word => u64::from(memory.read_u16(address)?),
-        AccessWidth::Dword => u64::from(memory.read_u32(address)?),
-        AccessWidth::Qword => memory.read_u64(address)?,
+        AccessWidth::Byte => u64::from(memory.load_u8(address)?),
+        AccessWidth::Word => u64::from(memory.load_u16(address)?),
+        AccessWidth::Dword => u64::from(memory.load_u32(address)?),
+        AccessWidth::Qword => memory.load_u64(address)?,
     })
 }
 fn write_ram(
-    memory: &mut PhysicalMemory,
+    memory: &PhysicalMemory,
     address: GuestPhysicalAddress,
     width: AccessWidth,
     value: u64,
     callback: impl FnMut(GuestPhysicalRange),
 ) -> Result<(), MemoryAccessError> {
     match width {
-        AccessWidth::Byte => memory.write_u8(address, value as u8, callback),
-        AccessWidth::Word => memory.write_u16(address, value as u16, callback),
-        AccessWidth::Dword => memory.write_u32(address, value as u32, callback),
-        AccessWidth::Qword => memory.write_u64(address, value, callback),
+        AccessWidth::Byte => memory.store_u8(address, value as u8, callback),
+        AccessWidth::Word => memory.store_u16(address, value as u16, callback),
+        AccessWidth::Dword => memory.store_u32(address, value as u32, callback),
+        AccessWidth::Qword => memory.store_u64(address, value, callback),
     }
 }
 

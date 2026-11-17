@@ -298,7 +298,7 @@ impl WriteLog {
     }
 }
 
-fn init_memory(memory: &mut PhysicalMemory, mirror: &mut Mirror, log: &mut WriteLog) {
+fn init_memory(memory: &PhysicalMemory, mirror: &mut Mirror, log: &mut WriteLog) {
     let mut words: Vec<(u64, u64)> = vec![(ROOT, PDPT | 7), (PDPT, PD | 7), (PD + 16, PT | 7)];
     for page in 0..TOTAL_PAGES {
         words.push((PT + (page as u64) * 8, initial_frame(page) | 7));
@@ -307,7 +307,7 @@ fn init_memory(memory: &mut PhysicalMemory, mirror: &mut Mirror, log: &mut Write
     words.push((CODE_A + MOV_CR3_OFFSET, MOV_CR3_QWORD));
     for (address, value) in words {
         memory
-            .write_u64(GuestPhysicalAddress::new(address), value, |r| log.record(r))
+            .store_u64(GuestPhysicalAddress::new(address), value, |r| log.record(r))
             .unwrap();
         mirror.set(address, value);
     }
@@ -435,7 +435,7 @@ struct SegmentArgs<'a> {
 }
 
 /// One session lifetime: new session (cache reset), then `iterations` churn steps.
-fn run_segment(memory: &mut PhysicalMemory, args: SegmentArgs<'_>) {
+fn run_segment(memory: &PhysicalMemory, args: SegmentArgs<'_>) {
     let SegmentArgs {
         cr0,
         rng,
@@ -743,7 +743,7 @@ fn run_segment(memory: &mut PhysicalMemory, args: SegmentArgs<'_>) {
 fn assert_mirror_matches_memory(memory: &PhysicalMemory, mirror: &Mirror) {
     for (&address, &value) in &mirror.0 {
         assert_eq!(
-            memory.read_u64(GuestPhysicalAddress::new(address)).unwrap(),
+            memory.load_u64(GuestPhysicalAddress::new(address)).unwrap(),
             value,
             "mirror and guest RAM disagree at {address:#x}"
         );

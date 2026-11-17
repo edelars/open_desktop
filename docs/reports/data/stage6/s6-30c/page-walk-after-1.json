@@ -1,0 +1,2570 @@
+{
+  "schema": "od-bench-page-walk-compare-v1",
+  "process_run": 1,
+  "fixture": "synthetic-long64-4k-32m-v1",
+  "fixture_sha256": "f8fb063f8bf7120907ad8884c7d313fc57f3e09f350224d977744d9704bc049a",
+  "request_profile_sha256": "c66717db7cb2eab4968777c02d2cf9506e674c9ae70a96cb1f66698d8484bc2c",
+  "memory_bytes": 33554432,
+  "request_storage_bytes": 279744,
+  "cache_object_bytes": 88,
+  "sample_pairs": 20,
+  "minimum_variant_batch_ns": 200000000,
+  "source_metadata": {
+    "os": "macos",
+    "os_version": "26.7.1",
+    "architecture": "aarch64",
+    "cpu_model": "Apple M3 Max",
+    "build": {
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "target": "aarch64-apple-darwin",
+      "profile": "release",
+      "source_revision": "f1ac849a6cc9600bcac27ffb9f2bf2266e2153a8",
+      "source_sha256": "ec208f8012a1365ac51b692302b4497c32c022596402f2930509f597b8d3cc0a",
+      "source_tree_dirty": true
+    },
+    "execution": {
+      "working_directory": "/Users/senya/projects/open_desktop",
+      "repository_revision": "f1ac849a6cc9600bcac27ffb9f2bf2266e2153a8",
+      "working_tree_dirty": null
+    }
+  },
+  "profiles": [
+    {
+      "name": "repeated-page",
+      "pages": 1,
+      "requests_per_episode": 4,
+      "empty_cache": {
+        "mode": "empty-cache episode",
+        "episodes_per_sample": 8388608,
+        "calibration_attempts": [
+          {
+            "episodes": 1,
+            "baseline_ns": 166,
+            "candidate_ns": 13709,
+            "accepted": false
+          },
+          {
+            "episodes": 2,
+            "baseline_ns": 250,
+            "candidate_ns": 83,
+            "accepted": false
+          },
+          {
+            "episodes": 4,
+            "baseline_ns": 458,
+            "candidate_ns": 208,
+            "accepted": false
+          },
+          {
+            "episodes": 8,
+            "baseline_ns": 916,
+            "candidate_ns": 375,
+            "accepted": false
+          },
+          {
+            "episodes": 16,
+            "baseline_ns": 1792,
+            "candidate_ns": 708,
+            "accepted": false
+          },
+          {
+            "episodes": 32,
+            "baseline_ns": 3541,
+            "candidate_ns": 1417,
+            "accepted": false
+          },
+          {
+            "episodes": 64,
+            "baseline_ns": 7084,
+            "candidate_ns": 2791,
+            "accepted": false
+          },
+          {
+            "episodes": 128,
+            "baseline_ns": 14042,
+            "candidate_ns": 5583,
+            "accepted": false
+          },
+          {
+            "episodes": 256,
+            "baseline_ns": 28083,
+            "candidate_ns": 11000,
+            "accepted": false
+          },
+          {
+            "episodes": 512,
+            "baseline_ns": 56000,
+            "candidate_ns": 22083,
+            "accepted": false
+          },
+          {
+            "episodes": 1024,
+            "baseline_ns": 111875,
+            "candidate_ns": 44042,
+            "accepted": false
+          },
+          {
+            "episodes": 2048,
+            "baseline_ns": 223000,
+            "candidate_ns": 88250,
+            "accepted": false
+          },
+          {
+            "episodes": 4096,
+            "baseline_ns": 448917,
+            "candidate_ns": 176583,
+            "accepted": false
+          },
+          {
+            "episodes": 8192,
+            "baseline_ns": 896833,
+            "candidate_ns": 356125,
+            "accepted": false
+          },
+          {
+            "episodes": 16384,
+            "baseline_ns": 1799083,
+            "candidate_ns": 705041,
+            "accepted": false
+          },
+          {
+            "episodes": 32768,
+            "baseline_ns": 3589042,
+            "candidate_ns": 1406916,
+            "accepted": false
+          },
+          {
+            "episodes": 65536,
+            "baseline_ns": 7171208,
+            "candidate_ns": 2824333,
+            "accepted": false
+          },
+          {
+            "episodes": 131072,
+            "baseline_ns": 14308917,
+            "candidate_ns": 5666875,
+            "accepted": false
+          },
+          {
+            "episodes": 262144,
+            "baseline_ns": 28406000,
+            "candidate_ns": 11474458,
+            "accepted": false
+          },
+          {
+            "episodes": 524288,
+            "baseline_ns": 58436000,
+            "candidate_ns": 22393708,
+            "accepted": false
+          },
+          {
+            "episodes": 1048576,
+            "baseline_ns": 114397458,
+            "candidate_ns": 45108375,
+            "accepted": false
+          },
+          {
+            "episodes": 2097152,
+            "baseline_ns": 230631208,
+            "candidate_ns": 91677458,
+            "accepted": false
+          },
+          {
+            "episodes": 4194304,
+            "baseline_ns": 462723584,
+            "candidate_ns": 180265666,
+            "accepted": false
+          },
+          {
+            "episodes": 8388608,
+            "baseline_ns": 916882250,
+            "candidate_ns": 362691666,
+            "accepted": true
+          }
+        ],
+        "discarded_series": [],
+        "hit_count_per_episode": 3,
+        "walk_count_per_episode": 1,
+        "raw_pairs": [
+          {
+            "baseline_ns": 924153833,
+            "candidate_ns": 362037583,
+            "candidate_over_baseline": 0.3917503450964965,
+            "episodes": 8388608
+          },
+          {
+            "baseline_ns": 917159667,
+            "candidate_ns": 363218625,
+            "candidate_over_baseline": 0.39602551013617565,
+            "episodes": 8388608
+          },
+          {
+            "baseline_ns": 907192542,
+            "candidate_ns": 358355208,
+            "candidate_over_baseline": 0.395015601880907,
+            "episodes": 8388608
+          },
+          {
+            "baseline_ns": 911678583,
+            "candidate_ns": 359511500,
+            "candidate_over_baseline": 0.3943401838145407,
+            "episodes": 8388608
+          },
+          {
+            "baseline_ns": 913346250,
+            "candidate_ns": 358673667,
+            "candidate_over_baseline": 0.3927028407901166,
+            "episodes": 8388608
+          },
+          {
+            "baseline_ns": 919526583,
+            "candidate_ns": 358292584,
+            "candidate_over_baseline": 0.3896489678754616,
+            "episodes": 8388608
+          },
+          {
+            "baseline_ns": 911457291,
+            "candidate_ns": 353916583,
+            "candidate_over_baseline": 0.3882974951154349,
+            "episodes": 8388608
+          },
+          {
+            "baseline_ns": 916800500,
+            "candidate_ns": 354069417,
+            "candidate_over_baseline": 0.3862011604487563,
+            "episodes": 8388608
+          },
+          {
+            "baseline_ns": 921292292,
+            "candidate_ns": 364170917,
+            "candidate_over_baseline": 0.39528271338234533,
+            "episodes": 8388608
+          },
+          {
+            "baseline_ns": 918583084,
+            "candidate_ns": 362442375,
+            "candidate_over_baseline": 0.3945667858608204,
+            "episodes": 8388608
+          },
+          {
+            "baseline_ns": 914579791,
+            "candidate_ns": 357632125,
+            "candidate_over_baseline": 0.3910343619215177,
+            "episodes": 8388608
+          },
+          {
+            "baseline_ns": 1149032125,
+            "candidate_ns": 360354583,
+            "candidate_over_baseline": 0.31361575987268414,
+            "episodes": 8388608
+          },
+          {
+            "baseline_ns": 1638844791,
+            "candidate_ns": 655119458,
+            "candidate_over_baseline": 0.3997446625804359,
+            "episodes": 8388608
+          },
+          {
+            "baseline_ns": 1625407000,
+            "candidate_ns": 702578625,
+            "candidate_over_baseline": 0.4322478154702176,
+            "episodes": 8388608
+          },
+          {
+            "baseline_ns": 1567125250,
+            "candidate_ns": 673285833,
+            "candidate_over_baseline": 0.4296311561567909,
+            "episodes": 8388608
+          },
+          {
+            "baseline_ns": 1735567459,
+            "candidate_ns": 762978708,
+            "candidate_over_baseline": 0.43961339793707205,
+            "episodes": 8388608
+          },
+          {
+            "baseline_ns": 1768478583,
+            "candidate_ns": 563647583,
+            "candidate_over_baseline": 0.3187189194249914,
+            "episodes": 8388608
+          },
+          {
+            "baseline_ns": 1411179500,
+            "candidate_ns": 554187875,
+            "candidate_over_baseline": 0.3927125323178235,
+            "episodes": 8388608
+          },
+          {
+            "baseline_ns": 1682182375,
+            "candidate_ns": 553752042,
+            "candidate_over_baseline": 0.3291866864316659,
+            "episodes": 8388608
+          },
+          {
+            "baseline_ns": 1588867084,
+            "candidate_ns": 531302750,
+            "candidate_over_baseline": 0.3343909351199071,
+            "episodes": 8388608
+          }
+        ],
+        "median_candidate_over_baseline": 0.3927125323178235,
+        "min_candidate_over_baseline": 0.31361575987268414,
+        "max_candidate_over_baseline": 0.43961339793707205,
+        "iqr_candidate_over_baseline": 0.0069852182669104534,
+        "baseline_median_ns_per_request": 27.541930466890335,
+        "candidate_median_ns_per_request": 10.824758559465408,
+        "baseline_median_requests_per_second": 36308275.52927544,
+        "candidate_median_requests_per_second": 92380813.34623191
+      },
+      "repeated": {
+        "mode": "repeated episodes",
+        "episodes_per_sample": 16777216,
+        "calibration_attempts": [
+          {
+            "episodes": 1,
+            "baseline_ns": 166,
+            "candidate_ns": 167,
+            "accepted": false
+          },
+          {
+            "episodes": 2,
+            "baseline_ns": 250,
+            "candidate_ns": 84,
+            "accepted": false
+          },
+          {
+            "episodes": 4,
+            "baseline_ns": 500,
+            "candidate_ns": 125,
+            "accepted": false
+          },
+          {
+            "episodes": 8,
+            "baseline_ns": 958,
+            "candidate_ns": 167,
+            "accepted": false
+          },
+          {
+            "episodes": 16,
+            "baseline_ns": 1792,
+            "candidate_ns": 250,
+            "accepted": false
+          },
+          {
+            "episodes": 32,
+            "baseline_ns": 3666,
+            "candidate_ns": 500,
+            "accepted": false
+          },
+          {
+            "episodes": 64,
+            "baseline_ns": 7167,
+            "candidate_ns": 1000,
+            "accepted": false
+          },
+          {
+            "episodes": 128,
+            "baseline_ns": 14333,
+            "candidate_ns": 2000,
+            "accepted": false
+          },
+          {
+            "episodes": 256,
+            "baseline_ns": 28667,
+            "candidate_ns": 4041,
+            "accepted": false
+          },
+          {
+            "episodes": 512,
+            "baseline_ns": 57250,
+            "candidate_ns": 8083,
+            "accepted": false
+          },
+          {
+            "episodes": 1024,
+            "baseline_ns": 114500,
+            "candidate_ns": 16166,
+            "accepted": false
+          },
+          {
+            "episodes": 2048,
+            "baseline_ns": 228833,
+            "candidate_ns": 32125,
+            "accepted": false
+          },
+          {
+            "episodes": 4096,
+            "baseline_ns": 1187834,
+            "candidate_ns": 181750,
+            "accepted": false
+          },
+          {
+            "episodes": 8192,
+            "baseline_ns": 2271625,
+            "candidate_ns": 356250,
+            "accepted": false
+          },
+          {
+            "episodes": 16384,
+            "baseline_ns": 4628333,
+            "candidate_ns": 736458,
+            "accepted": false
+          },
+          {
+            "episodes": 32768,
+            "baseline_ns": 46481000,
+            "candidate_ns": 514750,
+            "accepted": false
+          },
+          {
+            "episodes": 65536,
+            "baseline_ns": 8954292,
+            "candidate_ns": 2856625,
+            "accepted": false
+          },
+          {
+            "episodes": 131072,
+            "baseline_ns": 22962667,
+            "candidate_ns": 5091125,
+            "accepted": false
+          },
+          {
+            "episodes": 262144,
+            "baseline_ns": 39886875,
+            "candidate_ns": 4113791,
+            "accepted": false
+          },
+          {
+            "episodes": 524288,
+            "baseline_ns": 102567041,
+            "candidate_ns": 10982791,
+            "accepted": false
+          },
+          {
+            "episodes": 1048576,
+            "baseline_ns": 172508958,
+            "candidate_ns": 32575416,
+            "accepted": false
+          },
+          {
+            "episodes": 2097152,
+            "baseline_ns": 400049625,
+            "candidate_ns": 44361834,
+            "accepted": false
+          },
+          {
+            "episodes": 4194304,
+            "baseline_ns": 832414083,
+            "candidate_ns": 166954292,
+            "accepted": false
+          },
+          {
+            "episodes": 8388608,
+            "baseline_ns": 1745912625,
+            "candidate_ns": 174649833,
+            "accepted": false
+          },
+          {
+            "episodes": 16777216,
+            "baseline_ns": 2869275625,
+            "candidate_ns": 467896166,
+            "accepted": true
+          }
+        ],
+        "discarded_series": [],
+        "hit_count_per_episode": 4,
+        "walk_count_per_episode": 0,
+        "raw_pairs": [
+          {
+            "baseline_ns": 3243069833,
+            "candidate_ns": 424663583,
+            "candidate_over_baseline": 0.13094493947642355,
+            "episodes": 16777216
+          },
+          {
+            "baseline_ns": 2869481250,
+            "candidate_ns": 445968625,
+            "candidate_over_baseline": 0.1554178564505344,
+            "episodes": 16777216
+          },
+          {
+            "baseline_ns": 2580364417,
+            "candidate_ns": 261463375,
+            "candidate_over_baseline": 0.1013280811335882,
+            "episodes": 16777216
+          },
+          {
+            "baseline_ns": 1828135417,
+            "candidate_ns": 257080291,
+            "candidate_over_baseline": 0.1406243151406546,
+            "episodes": 16777216
+          },
+          {
+            "baseline_ns": 1837755750,
+            "candidate_ns": 260154500,
+            "candidate_over_baseline": 0.14156097729526898,
+            "episodes": 16777216
+          },
+          {
+            "baseline_ns": 1838477041,
+            "candidate_ns": 260019000,
+            "candidate_over_baseline": 0.14143173626936797,
+            "episodes": 16777216
+          },
+          {
+            "baseline_ns": 1826894541,
+            "candidate_ns": 259484750,
+            "candidate_over_baseline": 0.14203597644884527,
+            "episodes": 16777216
+          },
+          {
+            "baseline_ns": 1820052166,
+            "candidate_ns": 258980000,
+            "candidate_over_baseline": 0.14229262481479885,
+            "episodes": 16777216
+          },
+          {
+            "baseline_ns": 1798226292,
+            "candidate_ns": 255218875,
+            "candidate_over_baseline": 0.1419281189110764,
+            "episodes": 16777216
+          },
+          {
+            "baseline_ns": 1800938000,
+            "candidate_ns": 256789625,
+            "candidate_over_baseline": 0.14258659931657836,
+            "episodes": 16777216
+          },
+          {
+            "baseline_ns": 1802827000,
+            "candidate_ns": 256530917,
+            "candidate_over_baseline": 0.14229369595640626,
+            "episodes": 16777216
+          },
+          {
+            "baseline_ns": 1811048083,
+            "candidate_ns": 259713542,
+            "candidate_over_baseline": 0.14340510582677887,
+            "episodes": 16777216
+          },
+          {
+            "baseline_ns": 1796878500,
+            "candidate_ns": 256433916,
+            "candidate_over_baseline": 0.14271077092858533,
+            "episodes": 16777216
+          },
+          {
+            "baseline_ns": 1794696542,
+            "candidate_ns": 254856625,
+            "candidate_over_baseline": 0.14200541374866035,
+            "episodes": 16777216
+          },
+          {
+            "baseline_ns": 1804279417,
+            "candidate_ns": 254148708,
+            "candidate_over_baseline": 0.14085884126671275,
+            "episodes": 16777216
+          },
+          {
+            "baseline_ns": 1783549667,
+            "candidate_ns": 254052583,
+            "candidate_over_baseline": 0.1424421128834199,
+            "episodes": 16777216
+          },
+          {
+            "baseline_ns": 1795848041,
+            "candidate_ns": 255950583,
+            "candidate_over_baseline": 0.14252351933823781,
+            "episodes": 16777216
+          },
+          {
+            "baseline_ns": 1790030916,
+            "candidate_ns": 254557334,
+            "candidate_over_baseline": 0.1422083449646967,
+            "episodes": 16777216
+          },
+          {
+            "baseline_ns": 1808957000,
+            "candidate_ns": 254452209,
+            "candidate_over_baseline": 0.1406623866681187,
+            "episodes": 16777216
+          },
+          {
+            "baseline_ns": 1790154958,
+            "candidate_ns": 252203542,
+            "candidate_over_baseline": 0.14088363740408666,
+            "episodes": 16777216
+          }
+        ],
+        "median_candidate_over_baseline": 0.14203597644884527,
+        "min_candidate_over_baseline": 0.1013280811335882,
+        "max_candidate_over_baseline": 0.1554178564505344,
+        "iqr_candidate_over_baseline": 0.0015584754793332434,
+        "baseline_median_ns_per_request": 26.955559849739075,
+        "candidate_median_ns_per_request": 3.826463595032692,
+        "baseline_median_requests_per_second": 37098097.96473879,
+        "candidate_median_requests_per_second": 261337910.3614486
+      }
+    },
+    {
+      "name": "alternating-pages",
+      "pages": 2,
+      "requests_per_episode": 8,
+      "empty_cache": {
+        "mode": "empty-cache episode",
+        "episodes_per_sample": 1048576,
+        "calibration_attempts": [
+          {
+            "episodes": 1,
+            "baseline_ns": 250,
+            "candidate_ns": 458,
+            "accepted": false
+          },
+          {
+            "episodes": 2,
+            "baseline_ns": 459,
+            "candidate_ns": 541,
+            "accepted": false
+          },
+          {
+            "episodes": 4,
+            "baseline_ns": 875,
+            "candidate_ns": 1084,
+            "accepted": false
+          },
+          {
+            "episodes": 8,
+            "baseline_ns": 1666,
+            "candidate_ns": 2000,
+            "accepted": false
+          },
+          {
+            "episodes": 16,
+            "baseline_ns": 3333,
+            "candidate_ns": 4000,
+            "accepted": false
+          },
+          {
+            "episodes": 32,
+            "baseline_ns": 6625,
+            "candidate_ns": 8000,
+            "accepted": false
+          },
+          {
+            "episodes": 64,
+            "baseline_ns": 13125,
+            "candidate_ns": 15916,
+            "accepted": false
+          },
+          {
+            "episodes": 128,
+            "baseline_ns": 26250,
+            "candidate_ns": 31833,
+            "accepted": false
+          },
+          {
+            "episodes": 256,
+            "baseline_ns": 52500,
+            "candidate_ns": 63667,
+            "accepted": false
+          },
+          {
+            "episodes": 512,
+            "baseline_ns": 104792,
+            "candidate_ns": 127292,
+            "accepted": false
+          },
+          {
+            "episodes": 1024,
+            "baseline_ns": 244333,
+            "candidate_ns": 258125,
+            "accepted": false
+          },
+          {
+            "episodes": 2048,
+            "baseline_ns": 429125,
+            "candidate_ns": 536375,
+            "accepted": false
+          },
+          {
+            "episodes": 4096,
+            "baseline_ns": 847083,
+            "candidate_ns": 1035916,
+            "accepted": false
+          },
+          {
+            "episodes": 8192,
+            "baseline_ns": 1726375,
+            "candidate_ns": 2099459,
+            "accepted": false
+          },
+          {
+            "episodes": 16384,
+            "baseline_ns": 3455416,
+            "candidate_ns": 4176917,
+            "accepted": false
+          },
+          {
+            "episodes": 32768,
+            "baseline_ns": 6855125,
+            "candidate_ns": 8261708,
+            "accepted": false
+          },
+          {
+            "episodes": 65536,
+            "baseline_ns": 13802625,
+            "candidate_ns": 16549000,
+            "accepted": false
+          },
+          {
+            "episodes": 131072,
+            "baseline_ns": 27325791,
+            "candidate_ns": 32963125,
+            "accepted": false
+          },
+          {
+            "episodes": 262144,
+            "baseline_ns": 54675875,
+            "candidate_ns": 66141834,
+            "accepted": false
+          },
+          {
+            "episodes": 524288,
+            "baseline_ns": 111197333,
+            "candidate_ns": 136294708,
+            "accepted": false
+          },
+          {
+            "episodes": 1048576,
+            "baseline_ns": 222885875,
+            "candidate_ns": 270106500,
+            "accepted": true
+          }
+        ],
+        "discarded_series": [],
+        "hit_count_per_episode": 0,
+        "walk_count_per_episode": 8,
+        "raw_pairs": [
+          {
+            "baseline_ns": 221579792,
+            "candidate_ns": 265923875,
+            "candidate_over_baseline": 1.2001269276396829,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 221843542,
+            "candidate_ns": 273311916,
+            "candidate_over_baseline": 1.2320030303158431,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 220262791,
+            "candidate_ns": 267833292,
+            "candidate_over_baseline": 1.2159715709767793,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 223617917,
+            "candidate_ns": 270477708,
+            "candidate_over_baseline": 1.2095529357783974,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 223975625,
+            "candidate_ns": 271377834,
+            "candidate_over_baseline": 1.2116400344903602,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 223024375,
+            "candidate_ns": 269507334,
+            "candidate_over_baseline": 1.2084209808905417,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 222411583,
+            "candidate_ns": 270758958,
+            "candidate_over_baseline": 1.2173779546364722,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 219658209,
+            "candidate_ns": 266367000,
+            "candidate_over_baseline": 1.2126430476358843,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 220134334,
+            "candidate_ns": 270056625,
+            "candidate_over_baseline": 1.2267810299868989,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 221589500,
+            "candidate_ns": 269789958,
+            "candidate_over_baseline": 1.2175213988027411,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 219682667,
+            "candidate_ns": 265824250,
+            "candidate_over_baseline": 1.2100374309457924,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 223006250,
+            "candidate_ns": 265952875,
+            "candidate_over_baseline": 1.1925803649000868,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 222873584,
+            "candidate_ns": 273580791,
+            "candidate_over_baseline": 1.2275155542883898,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 223450833,
+            "candidate_ns": 270822583,
+            "candidate_over_baseline": 1.2120007760275389,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 221191792,
+            "candidate_ns": 269172708,
+            "candidate_over_baseline": 1.2169199659994616,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 223045417,
+            "candidate_ns": 270259292,
+            "candidate_over_baseline": 1.2116783013748271,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 222425791,
+            "candidate_ns": 269580833,
+            "candidate_over_baseline": 1.2120034811970164,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 226489083,
+            "candidate_ns": 271006750,
+            "candidate_over_baseline": 1.196555464883047,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 296729083,
+            "candidate_ns": 300961666,
+            "candidate_over_baseline": 1.0142641326465462,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 223310292,
+            "candidate_ns": 272488250,
+            "candidate_over_baseline": 1.2202225323318283,
+            "episodes": 1048576
+          }
+        ],
+        "median_candidate_over_baseline": 1.2120034811970164,
+        "min_candidate_over_baseline": 1.0142641326465462,
+        "max_candidate_over_baseline": 1.2320030303158431,
+        "iqr_candidate_over_baseline": 0.00782501885807485,
+        "baseline_median_ns_per_request": 26.568601608276367,
+        "candidate_median_ns_per_request": 32.21741819381714,
+        "baseline_median_requests_per_second": 37638412.993798316,
+        "candidate_median_requests_per_second": 31039110.39624865
+      },
+      "repeated": {
+        "mode": "repeated episodes",
+        "episodes_per_sample": 1048576,
+        "calibration_attempts": [
+          {
+            "episodes": 1,
+            "baseline_ns": 250,
+            "candidate_ns": 625,
+            "accepted": false
+          },
+          {
+            "episodes": 2,
+            "baseline_ns": 459,
+            "candidate_ns": 583,
+            "accepted": false
+          },
+          {
+            "episodes": 4,
+            "baseline_ns": 875,
+            "candidate_ns": 1084,
+            "accepted": false
+          },
+          {
+            "episodes": 8,
+            "baseline_ns": 1750,
+            "candidate_ns": 2084,
+            "accepted": false
+          },
+          {
+            "episodes": 16,
+            "baseline_ns": 3417,
+            "candidate_ns": 4125,
+            "accepted": false
+          },
+          {
+            "episodes": 32,
+            "baseline_ns": 6875,
+            "candidate_ns": 8292,
+            "accepted": false
+          },
+          {
+            "episodes": 64,
+            "baseline_ns": 13708,
+            "candidate_ns": 16583,
+            "accepted": false
+          },
+          {
+            "episodes": 128,
+            "baseline_ns": 27333,
+            "candidate_ns": 33083,
+            "accepted": false
+          },
+          {
+            "episodes": 256,
+            "baseline_ns": 54625,
+            "candidate_ns": 66375,
+            "accepted": false
+          },
+          {
+            "episodes": 512,
+            "baseline_ns": 109291,
+            "candidate_ns": 135708,
+            "accepted": false
+          },
+          {
+            "episodes": 1024,
+            "baseline_ns": 226666,
+            "candidate_ns": 264708,
+            "accepted": false
+          },
+          {
+            "episodes": 2048,
+            "baseline_ns": 440000,
+            "candidate_ns": 533041,
+            "accepted": false
+          },
+          {
+            "episodes": 4096,
+            "baseline_ns": 873083,
+            "candidate_ns": 1060375,
+            "accepted": false
+          },
+          {
+            "episodes": 8192,
+            "baseline_ns": 1743542,
+            "candidate_ns": 2119167,
+            "accepted": false
+          },
+          {
+            "episodes": 16384,
+            "baseline_ns": 3496209,
+            "candidate_ns": 4269375,
+            "accepted": false
+          },
+          {
+            "episodes": 32768,
+            "baseline_ns": 6973459,
+            "candidate_ns": 8473000,
+            "accepted": false
+          },
+          {
+            "episodes": 65536,
+            "baseline_ns": 13980583,
+            "candidate_ns": 17033958,
+            "accepted": false
+          },
+          {
+            "episodes": 131072,
+            "baseline_ns": 27896083,
+            "candidate_ns": 33926250,
+            "accepted": false
+          },
+          {
+            "episodes": 262144,
+            "baseline_ns": 55781833,
+            "candidate_ns": 67876916,
+            "accepted": false
+          },
+          {
+            "episodes": 524288,
+            "baseline_ns": 111629167,
+            "candidate_ns": 135953041,
+            "accepted": false
+          },
+          {
+            "episodes": 1048576,
+            "baseline_ns": 224084875,
+            "candidate_ns": 270676208,
+            "accepted": true
+          }
+        ],
+        "discarded_series": [],
+        "hit_count_per_episode": 0,
+        "walk_count_per_episode": 8,
+        "raw_pairs": [
+          {
+            "baseline_ns": 221216167,
+            "candidate_ns": 271771375,
+            "candidate_over_baseline": 1.2285330619619677,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 223703958,
+            "candidate_ns": 270488834,
+            "candidate_over_baseline": 1.2091374529904384,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 222886042,
+            "candidate_ns": 271082583,
+            "candidate_over_baseline": 1.2162384892634954,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 223113875,
+            "candidate_ns": 270495875,
+            "candidate_over_baseline": 1.2123668911223024,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 222139875,
+            "candidate_ns": 271339458,
+            "candidate_over_baseline": 1.2214801957550394,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 222972208,
+            "candidate_ns": 270439083,
+            "candidate_over_baseline": 1.2128824727788496,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 222323625,
+            "candidate_ns": 270523000,
+            "candidate_over_baseline": 1.2167982597441005,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 219682000,
+            "candidate_ns": 271249041,
+            "candidate_over_baseline": 1.2347349395945049,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 223509042,
+            "candidate_ns": 270040708,
+            "candidate_over_baseline": 1.2081869511122507,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 220072958,
+            "candidate_ns": 269902125,
+            "candidate_over_baseline": 1.226421126215789,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 219436167,
+            "candidate_ns": 266394958,
+            "candidate_over_baseline": 1.2139974993274467,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 219406291,
+            "candidate_ns": 267033959,
+            "candidate_over_baseline": 1.2170752159517615,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 219389625,
+            "candidate_ns": 267704583,
+            "candidate_over_baseline": 1.220224443156781,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 219403166,
+            "candidate_ns": 267379834,
+            "candidate_over_baseline": 1.2186689867547307,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 219352541,
+            "candidate_ns": 266461917,
+            "candidate_over_baseline": 1.214765581402588,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 221542625,
+            "candidate_ns": 266454375,
+            "candidate_over_baseline": 1.2027228394535814,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 222984167,
+            "candidate_ns": 270786541,
+            "candidate_over_baseline": 1.2143756421952596,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 219931000,
+            "candidate_ns": 270356292,
+            "candidate_over_baseline": 1.229277782577263,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 221262709,
+            "candidate_ns": 270750583,
+            "candidate_over_baseline": 1.2236611592783129,
+            "episodes": 1048576
+          },
+          {
+            "baseline_ns": 222326792,
+            "candidate_ns": 270661125,
+            "candidate_over_baseline": 1.2174021968526403,
+            "episodes": 1048576
+          }
+        ],
+        "median_candidate_over_baseline": 1.2170752159517615,
+        "min_candidate_over_baseline": 1.2027228394535814,
+        "max_candidate_over_baseline": 1.2347349395945049,
+        "iqr_candidate_over_baseline": 0.007482696427592694,
+        "baseline_median_ns_per_request": 26.40993893146515,
+        "candidate_median_ns_per_request": 32.244781732559204,
+        "baseline_median_requests_per_second": 37864532.841027774,
+        "candidate_median_requests_per_second": 31012770.0132716
+      }
+    },
+    {
+      "name": "small-locality-16-pages",
+      "pages": 16,
+      "requests_per_episode": 64,
+      "empty_cache": {
+        "mode": "empty-cache episode",
+        "episodes_per_sample": 524288,
+        "calibration_attempts": [
+          {
+            "episodes": 1,
+            "baseline_ns": 1708,
+            "candidate_ns": 1250,
+            "accepted": false
+          },
+          {
+            "episodes": 2,
+            "baseline_ns": 3292,
+            "candidate_ns": 1458,
+            "accepted": false
+          },
+          {
+            "episodes": 4,
+            "baseline_ns": 6584,
+            "candidate_ns": 2833,
+            "accepted": false
+          },
+          {
+            "episodes": 8,
+            "baseline_ns": 13000,
+            "candidate_ns": 5542,
+            "accepted": false
+          },
+          {
+            "episodes": 16,
+            "baseline_ns": 26125,
+            "candidate_ns": 11000,
+            "accepted": false
+          },
+          {
+            "episodes": 32,
+            "baseline_ns": 52250,
+            "candidate_ns": 22083,
+            "accepted": false
+          },
+          {
+            "episodes": 64,
+            "baseline_ns": 104250,
+            "candidate_ns": 44291,
+            "accepted": false
+          },
+          {
+            "episodes": 128,
+            "baseline_ns": 208500,
+            "candidate_ns": 88042,
+            "accepted": false
+          },
+          {
+            "episodes": 256,
+            "baseline_ns": 428666,
+            "candidate_ns": 179708,
+            "accepted": false
+          },
+          {
+            "episodes": 512,
+            "baseline_ns": 841917,
+            "candidate_ns": 354625,
+            "accepted": false
+          },
+          {
+            "episodes": 1024,
+            "baseline_ns": 1761709,
+            "candidate_ns": 703333,
+            "accepted": false
+          },
+          {
+            "episodes": 2048,
+            "baseline_ns": 3453917,
+            "candidate_ns": 1419125,
+            "accepted": false
+          },
+          {
+            "episodes": 4096,
+            "baseline_ns": 6701750,
+            "candidate_ns": 2885291,
+            "accepted": false
+          },
+          {
+            "episodes": 8192,
+            "baseline_ns": 13755000,
+            "candidate_ns": 5738250,
+            "accepted": false
+          },
+          {
+            "episodes": 16384,
+            "baseline_ns": 26957375,
+            "candidate_ns": 11733583,
+            "accepted": false
+          },
+          {
+            "episodes": 32768,
+            "baseline_ns": 55408959,
+            "candidate_ns": 23294666,
+            "accepted": false
+          },
+          {
+            "episodes": 65536,
+            "baseline_ns": 112070459,
+            "candidate_ns": 47617042,
+            "accepted": false
+          },
+          {
+            "episodes": 131072,
+            "baseline_ns": 220703875,
+            "candidate_ns": 93677208,
+            "accepted": false
+          },
+          {
+            "episodes": 262144,
+            "baseline_ns": 438257667,
+            "candidate_ns": 183577250,
+            "accepted": false
+          },
+          {
+            "episodes": 524288,
+            "baseline_ns": 861416417,
+            "candidate_ns": 361818292,
+            "accepted": true
+          }
+        ],
+        "discarded_series": [],
+        "hit_count_per_episode": 48,
+        "walk_count_per_episode": 16,
+        "raw_pairs": [
+          {
+            "baseline_ns": 858838417,
+            "candidate_ns": 361959500,
+            "candidate_over_baseline": 0.42145238596144446,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 873300000,
+            "candidate_ns": 364353792,
+            "candidate_over_baseline": 0.4172149227069735,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 871643084,
+            "candidate_ns": 367957625,
+            "candidate_over_baseline": 0.42214253948007,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 874299375,
+            "candidate_ns": 365077792,
+            "candidate_over_baseline": 0.4175661134379743,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 868574042,
+            "candidate_ns": 367798958,
+            "candidate_over_baseline": 0.42345147358203,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 871909125,
+            "candidate_ns": 363393042,
+            "candidate_over_baseline": 0.4167785742579538,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 878213334,
+            "candidate_ns": 368990625,
+            "candidate_over_baseline": 0.4201605813924023,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 882678833,
+            "candidate_ns": 368066458,
+            "candidate_over_baseline": 0.4169879736993761,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 887490083,
+            "candidate_ns": 376037541,
+            "candidate_over_baseline": 0.42370900610953643,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 890748500,
+            "candidate_ns": 373461667,
+            "candidate_over_baseline": 0.4192672421003235,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 878787375,
+            "candidate_ns": 368266000,
+            "candidate_over_baseline": 0.4190615505826993,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 878768041,
+            "candidate_ns": 368099042,
+            "candidate_over_baseline": 0.41888077948433267,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 875006166,
+            "candidate_ns": 368657667,
+            "candidate_over_baseline": 0.4213200790175917,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 886519541,
+            "candidate_ns": 371589833,
+            "candidate_over_baseline": 0.41915582885047764,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 877748291,
+            "candidate_ns": 369389208,
+            "candidate_over_baseline": 0.42083728534425596,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 883780000,
+            "candidate_ns": 377421375,
+            "candidate_over_baseline": 0.42705353707936367,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 875113791,
+            "candidate_ns": 366428042,
+            "candidate_over_baseline": 0.4187204518640708,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 867633250,
+            "candidate_ns": 367753834,
+            "candidate_over_baseline": 0.4238586222923107,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 865064667,
+            "candidate_ns": 366194292,
+            "candidate_over_baseline": 0.42331435552667185,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 859736916,
+            "candidate_ns": 368351916,
+            "candidate_over_baseline": 0.42844724839057624,
+            "episodes": 524288
+          }
+        ],
+        "median_candidate_over_baseline": 0.42083728534425596,
+        "min_candidate_over_baseline": 0.4167785742579538,
+        "max_candidate_over_baseline": 0.42844724839057624,
+        "iqr_candidate_over_baseline": 0.004433576042339182,
+        "baseline_median_ns_per_request": 26.080423325300217,
+        "candidate_median_ns_per_request": 10.970206320285797,
+        "baseline_median_requests_per_second": 38342935.9074059,
+        "candidate_median_requests_per_second": 91155988.39292823
+      },
+      "repeated": {
+        "mode": "repeated episodes",
+        "episodes_per_sample": 524288,
+        "calibration_attempts": [
+          {
+            "episodes": 1,
+            "baseline_ns": 1667,
+            "candidate_ns": 791,
+            "accepted": false
+          },
+          {
+            "episodes": 2,
+            "baseline_ns": 3292,
+            "candidate_ns": 1458,
+            "accepted": false
+          },
+          {
+            "episodes": 4,
+            "baseline_ns": 6500,
+            "candidate_ns": 2791,
+            "accepted": false
+          },
+          {
+            "episodes": 8,
+            "baseline_ns": 13083,
+            "candidate_ns": 5542,
+            "accepted": false
+          },
+          {
+            "episodes": 16,
+            "baseline_ns": 26125,
+            "candidate_ns": 11000,
+            "accepted": false
+          },
+          {
+            "episodes": 32,
+            "baseline_ns": 52125,
+            "candidate_ns": 22000,
+            "accepted": false
+          },
+          {
+            "episodes": 64,
+            "baseline_ns": 104291,
+            "candidate_ns": 44250,
+            "accepted": false
+          },
+          {
+            "episodes": 128,
+            "baseline_ns": 223000,
+            "candidate_ns": 88542,
+            "accepted": false
+          },
+          {
+            "episodes": 256,
+            "baseline_ns": 416833,
+            "candidate_ns": 177000,
+            "accepted": false
+          },
+          {
+            "episodes": 512,
+            "baseline_ns": 833708,
+            "candidate_ns": 353542,
+            "accepted": false
+          },
+          {
+            "episodes": 1024,
+            "baseline_ns": 1682000,
+            "candidate_ns": 707417,
+            "accepted": false
+          },
+          {
+            "episodes": 2048,
+            "baseline_ns": 3349708,
+            "candidate_ns": 1427500,
+            "accepted": false
+          },
+          {
+            "episodes": 4096,
+            "baseline_ns": 6697708,
+            "candidate_ns": 2854042,
+            "accepted": false
+          },
+          {
+            "episodes": 8192,
+            "baseline_ns": 13517667,
+            "candidate_ns": 5696250,
+            "accepted": false
+          },
+          {
+            "episodes": 16384,
+            "baseline_ns": 26851125,
+            "candidate_ns": 11384958,
+            "accepted": false
+          },
+          {
+            "episodes": 32768,
+            "baseline_ns": 53618000,
+            "candidate_ns": 22916667,
+            "accepted": false
+          },
+          {
+            "episodes": 65536,
+            "baseline_ns": 107773334,
+            "candidate_ns": 45473208,
+            "accepted": false
+          },
+          {
+            "episodes": 131072,
+            "baseline_ns": 214684791,
+            "candidate_ns": 91071542,
+            "accepted": false
+          },
+          {
+            "episodes": 262144,
+            "baseline_ns": 429379708,
+            "candidate_ns": 182019375,
+            "accepted": false
+          },
+          {
+            "episodes": 524288,
+            "baseline_ns": 866807125,
+            "candidate_ns": 369324875,
+            "accepted": true
+          }
+        ],
+        "discarded_series": [],
+        "hit_count_per_episode": 48,
+        "walk_count_per_episode": 16,
+        "raw_pairs": [
+          {
+            "baseline_ns": 870459083,
+            "candidate_ns": 368332583,
+            "candidate_over_baseline": 0.42314749790484985,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 859047292,
+            "candidate_ns": 368110667,
+            "candidate_over_baseline": 0.4285103630825484,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 859151458,
+            "candidate_ns": 364227250,
+            "candidate_over_baseline": 0.42393834824872056,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 870642834,
+            "candidate_ns": 366264000,
+            "candidate_over_baseline": 0.4206822656740548,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 863556875,
+            "candidate_ns": 363967625,
+            "candidate_over_baseline": 0.42147498970464453,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 861240125,
+            "candidate_ns": 364037833,
+            "candidate_over_baseline": 0.42269028396697145,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 869616292,
+            "candidate_ns": 369783500,
+            "candidate_over_baseline": 0.4252260490078307,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 877320708,
+            "candidate_ns": 367669541,
+            "candidate_over_baseline": 0.419082255379751,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 878811625,
+            "candidate_ns": 374298459,
+            "candidate_over_baseline": 0.4259143237892421,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 877870084,
+            "candidate_ns": 370708084,
+            "candidate_over_baseline": 0.42228125864692295,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 872869500,
+            "candidate_ns": 369036375,
+            "candidate_over_baseline": 0.4227852788990794,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 871985000,
+            "candidate_ns": 370175666,
+            "candidate_over_baseline": 0.4245206809750168,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 875005834,
+            "candidate_ns": 370687584,
+            "candidate_over_baseline": 0.42364012855256,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 871298625,
+            "candidate_ns": 373484458,
+            "candidate_over_baseline": 0.4286526424852329,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 872560458,
+            "candidate_ns": 369586708,
+            "candidate_over_baseline": 0.42356573073129106,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 873713625,
+            "candidate_ns": 368768958,
+            "candidate_over_baseline": 0.42207074200084727,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 872044542,
+            "candidate_ns": 369130958,
+            "candidate_over_baseline": 0.4232936968488016,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 872593833,
+            "candidate_ns": 368345500,
+            "candidate_over_baseline": 0.42212709518427227,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 877843708,
+            "candidate_ns": 381411375,
+            "candidate_over_baseline": 0.43448665351714294,
+            "episodes": 524288
+          },
+          {
+            "baseline_ns": 867900875,
+            "candidate_ns": 368912959,
+            "candidate_over_baseline": 0.4250634716781453,
+            "episodes": 524288
+          }
+        ],
+        "median_candidate_over_baseline": 0.42356573073129106,
+        "min_candidate_over_baseline": 0.419082255379751,
+        "max_candidate_over_baseline": 0.43448665351714294,
+        "iqr_candidate_over_baseline": 0.002782213031222336,
+        "baseline_median_ns_per_request": 25.988952577114105,
+        "candidate_median_ns_per_request": 10.998141020536423,
+        "baseline_median_requests_per_second": 38477887.749912664,
+        "candidate_median_requests_per_second": 90924456.97256808
+      }
+    },
+    {
+      "name": "medium-locality-256-pages",
+      "pages": 256,
+      "requests_per_episode": 1024,
+      "empty_cache": {
+        "mode": "empty-cache episode",
+        "episodes_per_sample": 32768,
+        "calibration_attempts": [
+          {
+            "episodes": 1,
+            "baseline_ns": 30208,
+            "candidate_ns": 11041,
+            "accepted": false
+          },
+          {
+            "episodes": 2,
+            "baseline_ns": 52042,
+            "candidate_ns": 22000,
+            "accepted": false
+          },
+          {
+            "episodes": 4,
+            "baseline_ns": 109334,
+            "candidate_ns": 44500,
+            "accepted": false
+          },
+          {
+            "episodes": 8,
+            "baseline_ns": 217833,
+            "candidate_ns": 91166,
+            "accepted": false
+          },
+          {
+            "episodes": 16,
+            "baseline_ns": 425083,
+            "candidate_ns": 178875,
+            "accepted": false
+          },
+          {
+            "episodes": 32,
+            "baseline_ns": 855584,
+            "candidate_ns": 363792,
+            "accepted": false
+          },
+          {
+            "episodes": 64,
+            "baseline_ns": 1668958,
+            "candidate_ns": 710417,
+            "accepted": false
+          },
+          {
+            "episodes": 128,
+            "baseline_ns": 3359958,
+            "candidate_ns": 1400792,
+            "accepted": false
+          },
+          {
+            "episodes": 256,
+            "baseline_ns": 6752542,
+            "candidate_ns": 2808750,
+            "accepted": false
+          },
+          {
+            "episodes": 512,
+            "baseline_ns": 13566792,
+            "candidate_ns": 5706750,
+            "accepted": false
+          },
+          {
+            "episodes": 1024,
+            "baseline_ns": 27396167,
+            "candidate_ns": 11685083,
+            "accepted": false
+          },
+          {
+            "episodes": 2048,
+            "baseline_ns": 54697291,
+            "candidate_ns": 23034583,
+            "accepted": false
+          },
+          {
+            "episodes": 4096,
+            "baseline_ns": 107278333,
+            "candidate_ns": 45481375,
+            "accepted": false
+          },
+          {
+            "episodes": 8192,
+            "baseline_ns": 213712167,
+            "candidate_ns": 89585541,
+            "accepted": false
+          },
+          {
+            "episodes": 16384,
+            "baseline_ns": 432186583,
+            "candidate_ns": 178914250,
+            "accepted": false
+          },
+          {
+            "episodes": 32768,
+            "baseline_ns": 850793459,
+            "candidate_ns": 359766667,
+            "accepted": true
+          }
+        ],
+        "discarded_series": [],
+        "hit_count_per_episode": 768,
+        "walk_count_per_episode": 256,
+        "raw_pairs": [
+          {
+            "baseline_ns": 854476833,
+            "candidate_ns": 356558833,
+            "candidate_over_baseline": 0.4172832067876555,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 852026709,
+            "candidate_ns": 361435042,
+            "candidate_over_baseline": 0.42420623459586876,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 875186834,
+            "candidate_ns": 358517084,
+            "candidate_over_baseline": 0.4096463407263734,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 860082583,
+            "candidate_ns": 359389542,
+            "candidate_over_baseline": 0.417854691053545,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 853905583,
+            "candidate_ns": 359096792,
+            "candidate_over_baseline": 0.4205345405265959,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 869560208,
+            "candidate_ns": 358926750,
+            "candidate_over_baseline": 0.41276814037470305,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 853056417,
+            "candidate_ns": 356406667,
+            "candidate_over_baseline": 0.4177996436078623,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 857679041,
+            "candidate_ns": 354561584,
+            "candidate_over_baseline": 0.4133965819971576,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 851655333,
+            "candidate_ns": 357640167,
+            "candidate_over_baseline": 0.41993533433319086,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 852654375,
+            "candidate_ns": 358294416,
+            "candidate_over_baseline": 0.42021061112833674,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 851502875,
+            "candidate_ns": 363364792,
+            "candidate_over_baseline": 0.42673348812826967,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 854241792,
+            "candidate_ns": 367275041,
+            "candidate_over_baseline": 0.429942721650406,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 853937250,
+            "candidate_ns": 358062792,
+            "candidate_over_baseline": 0.41930808381997625,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 857002417,
+            "candidate_ns": 358820500,
+            "candidate_over_baseline": 0.4186925181098993,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 853415958,
+            "candidate_ns": 360664708,
+            "candidate_over_baseline": 0.4226130348502342,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 857041750,
+            "candidate_ns": 364084208,
+            "candidate_over_baseline": 0.4248150198050445,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 849533667,
+            "candidate_ns": 360073500,
+            "candidate_over_baseline": 0.42384841706338167,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 853768792,
+            "candidate_ns": 359048917,
+            "candidate_over_baseline": 0.42054584375110304,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 851408958,
+            "candidate_ns": 357215459,
+            "candidate_over_baseline": 0.41955802278509735,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 852450500,
+            "candidate_ns": 357435709,
+            "candidate_over_baseline": 0.4193037707174786,
+            "episodes": 32768
+          }
+        ],
+        "median_candidate_over_baseline": 0.41993533433319086,
+        "min_candidate_over_baseline": 0.4096463407263734,
+        "max_candidate_over_baseline": 0.429942721650406,
+        "iqr_candidate_over_baseline": 0.004758343796689213,
+        "baseline_median_ns_per_request": 25.448369473218918,
+        "candidate_median_ns_per_request": 10.696850717067719,
+        "baseline_median_requests_per_second": 39295248.40687217,
+        "candidate_median_requests_per_second": 93485459.08043912
+      },
+      "repeated": {
+        "mode": "repeated episodes",
+        "episodes_per_sample": 32768,
+        "calibration_attempts": [
+          {
+            "episodes": 1,
+            "baseline_ns": 47500,
+            "candidate_ns": 11167,
+            "accepted": false
+          },
+          {
+            "episodes": 2,
+            "baseline_ns": 51083,
+            "candidate_ns": 21458,
+            "accepted": false
+          },
+          {
+            "episodes": 4,
+            "baseline_ns": 102000,
+            "candidate_ns": 47583,
+            "accepted": false
+          },
+          {
+            "episodes": 8,
+            "baseline_ns": 207125,
+            "candidate_ns": 85625,
+            "accepted": false
+          },
+          {
+            "episodes": 16,
+            "baseline_ns": 420167,
+            "candidate_ns": 171458,
+            "accepted": false
+          },
+          {
+            "episodes": 32,
+            "baseline_ns": 839834,
+            "candidate_ns": 343500,
+            "accepted": false
+          },
+          {
+            "episodes": 64,
+            "baseline_ns": 1640959,
+            "candidate_ns": 685500,
+            "accepted": false
+          },
+          {
+            "episodes": 128,
+            "baseline_ns": 3330666,
+            "candidate_ns": 1393333,
+            "accepted": false
+          },
+          {
+            "episodes": 256,
+            "baseline_ns": 6685208,
+            "candidate_ns": 2822125,
+            "accepted": false
+          },
+          {
+            "episodes": 512,
+            "baseline_ns": 13394708,
+            "candidate_ns": 5514208,
+            "accepted": false
+          },
+          {
+            "episodes": 1024,
+            "baseline_ns": 26518208,
+            "candidate_ns": 11109667,
+            "accepted": false
+          },
+          {
+            "episodes": 2048,
+            "baseline_ns": 53321291,
+            "candidate_ns": 22274000,
+            "accepted": false
+          },
+          {
+            "episodes": 4096,
+            "baseline_ns": 106875042,
+            "candidate_ns": 44728375,
+            "accepted": false
+          },
+          {
+            "episodes": 8192,
+            "baseline_ns": 212902625,
+            "candidate_ns": 89343542,
+            "accepted": false
+          },
+          {
+            "episodes": 16384,
+            "baseline_ns": 426090125,
+            "candidate_ns": 179578208,
+            "accepted": false
+          },
+          {
+            "episodes": 32768,
+            "baseline_ns": 852735959,
+            "candidate_ns": 358241416,
+            "accepted": true
+          }
+        ],
+        "discarded_series": [],
+        "hit_count_per_episode": 768,
+        "walk_count_per_episode": 256,
+        "raw_pairs": [
+          {
+            "baseline_ns": 860919500,
+            "candidate_ns": 376584000,
+            "candidate_over_baseline": 0.4374206879969614,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 871963416,
+            "candidate_ns": 367350625,
+            "candidate_over_baseline": 0.42129132743339776,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 981408959,
+            "candidate_ns": 452212792,
+            "candidate_over_baseline": 0.46077915618457277,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 877997042,
+            "candidate_ns": 369740041,
+            "candidate_over_baseline": 0.4211176385717254,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 876354792,
+            "candidate_ns": 370264750,
+            "candidate_over_baseline": 0.42250553472183217,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 870523750,
+            "candidate_ns": 370738917,
+            "candidate_over_baseline": 0.42588030137029576,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 856404333,
+            "candidate_ns": 362970916,
+            "candidate_over_baseline": 0.42383124654274723,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 855894791,
+            "candidate_ns": 357774875,
+            "candidate_over_baseline": 0.4180126795514053,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 855308291,
+            "candidate_ns": 359059833,
+            "candidate_over_baseline": 0.4198016513790581,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 852477584,
+            "candidate_ns": 356722750,
+            "candidate_over_baseline": 0.4184541115159692,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 868633792,
+            "candidate_ns": 359548000,
+            "candidate_over_baseline": 0.41392356976137534,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 853558459,
+            "candidate_ns": 367452958,
+            "candidate_over_baseline": 0.4304953622397409,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 854457042,
+            "candidate_ns": 356609542,
+            "candidate_over_baseline": 0.4173522183927416,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 861278958,
+            "candidate_ns": 356161459,
+            "candidate_over_baseline": 0.4135262515028261,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 867392500,
+            "candidate_ns": 366913459,
+            "candidate_over_baseline": 0.4230074147516839,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 866793125,
+            "candidate_ns": 366942792,
+            "candidate_over_baseline": 0.4233337591365875,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 871763083,
+            "candidate_ns": 358558667,
+            "candidate_over_baseline": 0.41130288032625945,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 843393792,
+            "candidate_ns": 357750750,
+            "candidate_over_baseline": 0.42417996598201185,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 851818584,
+            "candidate_ns": 358313542,
+            "candidate_over_baseline": 0.42064536831002036,
+            "episodes": 32768
+          },
+          {
+            "baseline_ns": 871400417,
+            "candidate_ns": 361522791,
+            "candidate_over_baseline": 0.41487562313158727,
+            "episodes": 32768
+          }
+        ],
+        "median_candidate_over_baseline": 0.42129132743339776,
+        "min_candidate_over_baseline": 0.41130288032625945,
+        "max_candidate_over_baseline": 0.46077915618457277,
+        "iqr_candidate_over_baseline": 0.0058185669913419225,
+        "baseline_median_ns_per_request": 25.83244815468788,
+        "candidate_median_ns_per_request": 10.817376255989075,
+        "baseline_median_requests_per_second": 38711003.85112076,
+        "candidate_median_requests_per_second": 92443858.50463016
+      }
+    },
+    {
+      "name": "large-locality-4096-pages",
+      "pages": 4096,
+      "requests_per_episode": 16384,
+      "empty_cache": {
+        "mode": "empty-cache episode",
+        "episodes_per_sample": 2048,
+        "calibration_attempts": [
+          {
+            "episodes": 1,
+            "baseline_ns": 427333,
+            "candidate_ns": 179291,
+            "accepted": false
+          },
+          {
+            "episodes": 2,
+            "baseline_ns": 852083,
+            "candidate_ns": 360042,
+            "accepted": false
+          },
+          {
+            "episodes": 4,
+            "baseline_ns": 1704125,
+            "candidate_ns": 717000,
+            "accepted": false
+          },
+          {
+            "episodes": 8,
+            "baseline_ns": 3421667,
+            "candidate_ns": 1434292,
+            "accepted": false
+          },
+          {
+            "episodes": 16,
+            "baseline_ns": 6819791,
+            "candidate_ns": 2872167,
+            "accepted": false
+          },
+          {
+            "episodes": 32,
+            "baseline_ns": 13663083,
+            "candidate_ns": 5735083,
+            "accepted": false
+          },
+          {
+            "episodes": 64,
+            "baseline_ns": 27317167,
+            "candidate_ns": 11475917,
+            "accepted": false
+          },
+          {
+            "episodes": 128,
+            "baseline_ns": 54601375,
+            "candidate_ns": 22962125,
+            "accepted": false
+          },
+          {
+            "episodes": 256,
+            "baseline_ns": 109167666,
+            "candidate_ns": 46175208,
+            "accepted": false
+          },
+          {
+            "episodes": 512,
+            "baseline_ns": 222527584,
+            "candidate_ns": 93894875,
+            "accepted": false
+          },
+          {
+            "episodes": 1024,
+            "baseline_ns": 437582958,
+            "candidate_ns": 179647958,
+            "accepted": false
+          },
+          {
+            "episodes": 2048,
+            "baseline_ns": 855175875,
+            "candidate_ns": 358598750,
+            "accepted": true
+          }
+        ],
+        "discarded_series": [],
+        "hit_count_per_episode": 12288,
+        "walk_count_per_episode": 4096,
+        "raw_pairs": [
+          {
+            "baseline_ns": 856243708,
+            "candidate_ns": 358414958,
+            "candidate_over_baseline": 0.4185898881957098,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 855859000,
+            "candidate_ns": 358931375,
+            "candidate_over_baseline": 0.41938143432504654,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 856939542,
+            "candidate_ns": 360215791,
+            "candidate_over_baseline": 0.4203514639542681,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 871733250,
+            "candidate_ns": 370905541,
+            "candidate_over_baseline": 0.42548054809197655,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 869335041,
+            "candidate_ns": 364991625,
+            "candidate_over_baseline": 0.41985150463985493,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 861088958,
+            "candidate_ns": 365669125,
+            "candidate_over_baseline": 0.42465894098714013,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 868328708,
+            "candidate_ns": 353969875,
+            "candidate_over_baseline": 0.4076450216822729,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 853407625,
+            "candidate_ns": 357934375,
+            "candidate_over_baseline": 0.4194178309573927,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 853392833,
+            "candidate_ns": 359617917,
+            "candidate_over_baseline": 0.42139786402448026,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 855501208,
+            "candidate_ns": 358803166,
+            "candidate_over_baseline": 0.4194069659338225,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 862678833,
+            "candidate_ns": 359420958,
+            "candidate_over_baseline": 0.4166335654140247,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 855246042,
+            "candidate_ns": 359556917,
+            "candidate_over_baseline": 0.42041342414069893,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 854002500,
+            "candidate_ns": 359360708,
+            "candidate_over_baseline": 0.42079585012924436,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 862271459,
+            "candidate_ns": 358785791,
+            "candidate_over_baseline": 0.416093780276682,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 855466917,
+            "candidate_ns": 356356250,
+            "candidate_over_baseline": 0.41656344964185216,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 862410666,
+            "candidate_ns": 358663417,
+            "candidate_over_baseline": 0.4158847184294912,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 855037166,
+            "candidate_ns": 359325541,
+            "candidate_over_baseline": 0.4202455229881785,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 855221791,
+            "candidate_ns": 358382542,
+            "candidate_over_baseline": 0.41905216374450405,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 847909792,
+            "candidate_ns": 359807584,
+            "candidate_over_baseline": 0.4243465370901154,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 853775333,
+            "candidate_ns": 356918500,
+            "candidate_over_baseline": 0.4180473318968563,
+            "episodes": 2048
+          }
+        ],
+        "median_candidate_over_baseline": 0.4194178309573927,
+        "min_candidate_over_baseline": 0.4076450216822729,
+        "max_candidate_over_baseline": 0.42548054809197655,
+        "iqr_candidate_over_baseline": 0.0023660922438426546,
+        "baseline_median_ns_per_request": 25.506585836410522,
+        "candidate_median_ns_per_request": 10.70873561501503,
+        "baseline_median_requests_per_second": 39205560.729045324,
+        "candidate_median_requests_per_second": 93381705.92220718
+      },
+      "repeated": {
+        "mode": "repeated episodes",
+        "episodes_per_sample": 2048,
+        "calibration_attempts": [
+          {
+            "episodes": 1,
+            "baseline_ns": 430583,
+            "candidate_ns": 171125,
+            "accepted": false
+          },
+          {
+            "episodes": 2,
+            "baseline_ns": 836375,
+            "candidate_ns": 372250,
+            "accepted": false
+          },
+          {
+            "episodes": 4,
+            "baseline_ns": 1700083,
+            "candidate_ns": 687958,
+            "accepted": false
+          },
+          {
+            "episodes": 8,
+            "baseline_ns": 3322375,
+            "candidate_ns": 1375292,
+            "accepted": false
+          },
+          {
+            "episodes": 16,
+            "baseline_ns": 6636041,
+            "candidate_ns": 2796875,
+            "accepted": false
+          },
+          {
+            "episodes": 32,
+            "baseline_ns": 13414875,
+            "candidate_ns": 5554292,
+            "accepted": false
+          },
+          {
+            "episodes": 64,
+            "baseline_ns": 26346042,
+            "candidate_ns": 11123875,
+            "accepted": false
+          },
+          {
+            "episodes": 128,
+            "baseline_ns": 53289583,
+            "candidate_ns": 22345500,
+            "accepted": false
+          },
+          {
+            "episodes": 256,
+            "baseline_ns": 106746750,
+            "candidate_ns": 44989584,
+            "accepted": false
+          },
+          {
+            "episodes": 512,
+            "baseline_ns": 217438041,
+            "candidate_ns": 91587875,
+            "accepted": false
+          },
+          {
+            "episodes": 1024,
+            "baseline_ns": 433362875,
+            "candidate_ns": 179578125,
+            "accepted": false
+          },
+          {
+            "episodes": 2048,
+            "baseline_ns": 861322250,
+            "candidate_ns": 364548333,
+            "accepted": true
+          }
+        ],
+        "discarded_series": [],
+        "hit_count_per_episode": 12288,
+        "walk_count_per_episode": 4096,
+        "raw_pairs": [
+          {
+            "baseline_ns": 855364583,
+            "candidate_ns": 359594833,
+            "candidate_over_baseline": 0.4203994882963257,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 854978250,
+            "candidate_ns": 358926583,
+            "candidate_over_baseline": 0.4198078524219768,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 856039375,
+            "candidate_ns": 359292792,
+            "candidate_over_baseline": 0.41971526368165013,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 874636209,
+            "candidate_ns": 359364833,
+            "candidate_over_baseline": 0.4108734915181176,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 875819917,
+            "candidate_ns": 366652459,
+            "candidate_over_baseline": 0.41863909678592065,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 873753875,
+            "candidate_ns": 366141250,
+            "candidate_over_baseline": 0.41904392126444073,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 873905584,
+            "candidate_ns": 367252250,
+            "candidate_over_baseline": 0.4202424801075536,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 880121417,
+            "candidate_ns": 368907250,
+            "candidate_over_baseline": 0.41915495166276584,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 879656083,
+            "candidate_ns": 367540834,
+            "candidate_over_baseline": 0.41782333016618267,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 877189917,
+            "candidate_ns": 367043792,
+            "candidate_over_baseline": 0.4184313851386871,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 874187666,
+            "candidate_ns": 370184875,
+            "candidate_over_baseline": 0.42346156254279615,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 872531042,
+            "candidate_ns": 369868375,
+            "candidate_over_baseline": 0.4239028265999504,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 867560458,
+            "candidate_ns": 360912500,
+            "candidate_over_baseline": 0.41600847142344055,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 867703958,
+            "candidate_ns": 360379625,
+            "candidate_over_baseline": 0.41532555162091356,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 877985083,
+            "candidate_ns": 367677167,
+            "candidate_over_baseline": 0.41877381987365725,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 874082458,
+            "candidate_ns": 377787500,
+            "candidate_over_baseline": 0.4322103670452565,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 853320250,
+            "candidate_ns": 362346500,
+            "candidate_over_baseline": 0.4246313151480936,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 873605083,
+            "candidate_ns": 361240875,
+            "candidate_over_baseline": 0.41350592164537575,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 873588875,
+            "candidate_ns": 366169958,
+            "candidate_over_baseline": 0.4191559307574744,
+            "episodes": 2048
+          },
+          {
+            "baseline_ns": 845912458,
+            "candidate_ns": 356458542,
+            "candidate_over_baseline": 0.4213893986651749,
+            "episodes": 2048
+          }
+        ],
+        "median_candidate_over_baseline": 0.4191559307574744,
+        "min_candidate_over_baseline": 0.4108734915181176,
+        "max_candidate_over_baseline": 0.4322103670452565,
+        "iqr_candidate_over_baseline": 0.0019681031576385677,
+        "baseline_median_ns_per_request": 26.03989467024803,
+        "candidate_median_ns_per_request": 10.912715137004852,
+        "baseline_median_requests_per_second": 38402613.09284608,
+        "candidate_median_requests_per_second": 91636223.19884582
+      }
+    }
+  ]
+}

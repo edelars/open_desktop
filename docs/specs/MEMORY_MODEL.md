@@ -88,8 +88,8 @@ guest SB `0,0` outcome. Кроме того, atomic accesses разных раз
 результаты задают host primitive для однородных aligned width cases и сами по
 себе не выбирают завершённый RAM mapping. RAM mapping выбран в S6-30a (абзац
 «Решение S6-30a» выше: вариант A, смешение ширин при конкурентном доступе —
-принятое отклонение с инвариантами); общий writer/reader ownership protocol
-остаётся за S6-30c и S6-34. Page walk, DMA, descriptor,
+принятое отклонение с инвариантами); доступ к RAM через `&self` без `&mut` сделан в S6-30c; общий
+writer/reader ownership protocol для нескольких потоков остаётся за S6-34. Page walk, DMA, descriptor,
 split-lock и MMIO transactions сохраняют свои отдельные требования.
 
 ## Атомарность и разделённые доступы
@@ -103,9 +103,9 @@ split-lock и MMIO transactions сохраняют свои отдельные �
 
 ## Текущее владение RAM и commit
 
-Текущая `PhysicalMemory` хранит RAM в `RamStorage` (S6-30a) по регионам: `read_bytes(&self)` и `write_bytes(&mut self)` задают эксклюзивный API, а не параллельный доступ. `PagedMovMemoryAdapter` также имеет mutable memory ownership и сообщает committed write callback.
+Текущая `PhysicalMemory` хранит RAM в `RamStorage` (S6-30a) по регионам; все обращения (`load_*`, `store_*`, `compare_replace_u64`) идут через `&self`, выдачи `&mut` на байты RAM и старого пути `read_*`/`write_*` нет (S6-30c). Адаптер vCPU держит разделяемую ссылку `&PhysicalMemory` и сообщает committed write callback; трейт `GuestMemory` остаётся на `&mut self`, потому что получатель — адаптер одного vCPU, а не RAM (решение и основания — [`MACHINE_CONTRACT.md`](MACHINE_CONTRACT.md#s6-30c--адаптеры-на-общей-ссылке-и-удаление-mut)).
 
-Одна успешная `PhysicalMemory::write_bytes` physical RAM commit transaction увеличивает generation каждого затронутого физического RAM page, затем вызывает committed callback ровно один раз после этого commit. Ошибка валидации до commit сохраняет bytes/generations и не вызывает callback. Это свойство одной backing-memory transaction, а не всей гостевой инструкции: инструкция может породить несколько отдельных A/D и operand commits, каждый со своим generation/callback; более поздний fault не отменяет уже committed A/D side effects. Framebuffer backing вне RAM generation/callback: его записи не bump-ят generation и не уведомляют committed-write consumer. Эти правила нужно сохранить при общей transaction boundary. S6-30b: generation каждой RAM page — `AtomicU64`, повышается `Release` после записи данных и читается `Acquire`; кеш, берущий bytes из RAM, обязан прочитать generation до bytes (см. [MACHINE_CONTRACT.md](MACHINE_CONTRACT.md#s6-30b--счётчики-и-уведомления)).
+Одна успешная `PhysicalMemory::store_*`/`store_bytes` (транзакция `commit_write`) physical RAM commit transaction увеличивает generation каждого затронутого физического RAM page, затем вызывает committed callback ровно один раз после этого commit. Ошибка валидации до commit сохраняет bytes/generations и не вызывает callback. Это свойство одной backing-memory transaction, а не всей гостевой инструкции: инструкция может породить несколько отдельных A/D и operand commits, каждый со своим generation/callback; более поздний fault не отменяет уже committed A/D side effects. Framebuffer backing вне RAM generation/callback: его записи не bump-ят generation и не уведомляют committed-write consumer. Эти правила нужно сохранить при общей transaction boundary. S6-30b: generation каждой RAM page — `AtomicU64`, повышается `Release` после записи данных и читается `Acquire`; кеш, берущий bytes из RAM, обязан прочитать generation до bytes (см. [MACHINE_CONTRACT.md](MACHINE_CONTRACT.md#s6-30b--счётчики-и-уведомления)).
 
 В interleaving mode все RAM writers (vCPU и устройства) должны идти через одного host-поточного владельца и переключаться на instruction/event boundaries. Параллельный режим потребует общего проверяемого ownership/synchronization protocol для всех RAM writers и readers; долгоживущие `&mut` aliases к concurrently mutable RAM недопустимы. Обычный RAM access не берёт глобальную блокировку как окончательное архитектурное требование, но S6-04 не выбирает primitive и не задаёт fast path. MMIO остаётся в модели устройства.
 
@@ -146,7 +146,7 @@ commits остаются отдельными эффектами своего п
 
 **Память, наблюдатели и будущий shared backend.** В таблице указана ширина
 логического `GuestMemory` write; она не гарантирует один физический commit.
-Один успешный `PhysicalMemory::write_bytes` — backing-memory transaction:
+Одна успешная `PhysicalMemory::store_*`/`store_bytes` (транзакция `commit_write`) — backing-memory transaction:
 generation каждой затронутой RAM page увеличивается, затем один
 committed-write callback сообщает физический диапазон. Но текущий
 `PagedMovMemoryAdapter` для разрешённого cross-page store сначала проверяет

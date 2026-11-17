@@ -15,7 +15,7 @@
 //! - Page-table writes: an entry watches the physical frames of the tables on its path. Every
 //!   committed RAM write reaches [`FetchTranslationCache::note_write`] (it is wired into the
 //!   `committed_write` callback of the adapter, which is the single notification of
-//!   `PhysicalMemory::write_bytes`); a write that touches a watched frame (a guest store, or an
+//!   `PhysicalMemory::store_bytes`); a write that touches a watched frame (a guest store, or an
 //!   accessed/dirty commit of another walk) drops every entry. Entries are created only when the
 //!   frame and its tables are plain RAM, whose writes always notify.
 //! - Context: the key holds the paging snapshot (CR0/CR3/CR4/EFER) and the access context
@@ -852,7 +852,7 @@ mod tests {
     /// drives `note_write` (the in-loop route); a write by another vCPU that never calls this
     /// cache's `note_write` is seen through the atomic page generation at the next check (the
     /// cross-thread route: `code_page_generation` is an `Acquire` load of what the store raised
-    /// with `Release`). The old path (`write_u64`) raises the same generation; that equality is tested in `physical_memory`.
+    /// with `Release`). Generations are raised by `store_*` (the single commit path).
     #[test]
     fn a_write_to_a_table_frame_drops_the_entry_by_callback_and_by_generation() {
         let memory = memory();
@@ -1112,16 +1112,16 @@ mod tests {
 
     #[test]
     fn only_plain_ram_gets_a_frame_handle_and_it_reads_the_same_bytes() {
-        let mut memory = memory();
+        let memory = memory();
         memory
-            .write_u8(GuestPhysicalAddress::new(0x8abc), 0x5a, |_| {})
+            .store_u8(GuestPhysicalAddress::new(0x8abc), 0x5a, |_| {})
             .unwrap();
         let ram = frame(&memory, 0x8000);
         assert_eq!(memory.read_ram_frame_u8(ram, 0xabc), Some(0x5a));
         assert_eq!(memory.read_ram_frame_u8(ram, 0xabd), Some(0));
         assert_eq!(
             memory.read_ram_frame_u8(ram, 0xabc),
-            memory.read_u8(GuestPhysicalAddress::new(0x8abc)).ok()
+            memory.load_u8(GuestPhysicalAddress::new(0x8abc)).ok()
         );
         // ROM, a hole and a base that is not frame aligned: no handle.
         for base in [0x1_0000, 0x2_0000, 0x8001] {
@@ -1187,10 +1187,10 @@ mod tests {
     /// CR3 and another privilege do not hit.
     #[test]
     fn a_2m_entry_serves_every_page_of_its_leaf_with_the_offset_of_the_request() {
-        let mut memory = big_memory();
+        let memory = big_memory();
         for offset in [0u64, 0x1, 0x1000, 0x1234, 0x1f_f000, 0x1f_ffff] {
             memory
-                .write_u8(
+                .store_u8(
                     GuestPhysicalAddress::new(0x20_0000 + offset),
                     (offset % 251) as u8 + 1,
                     |_| {},
@@ -1214,7 +1214,7 @@ mod tests {
             assert_eq!(
                 memory.read_ram_frame_u8(frame, LEAF_VA + offset),
                 memory
-                    .read_u8(GuestPhysicalAddress::new(0x20_0000 + offset))
+                    .load_u8(GuestPhysicalAddress::new(0x20_0000 + offset))
                     .ok(),
                 "offset {offset:#x}"
             );
