@@ -29380,3 +29380,16 @@ opcode 131, COM1 empty. Full od-isa passes
 (110/110), workspace all-targets offline check passes with existing warnings,
 and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
 remains the unrelated CLD caveat.
+
+### ISSUE-430 — bounded `OR R8D,8`
+
+The base paged profile admits exact `41 83 C8 08` only. REX.B selects R8D and
+the dword result zero-extends R8. Shared OR semantics clear CF/OF, set SF/ZF/PF
+from the dword result, and preserve AF's concrete value while marking it
+undefined. No other GPR changes. Four focused tests and the other-profile
+matrix pass. Runner reaches `75 14` (JNZ rel8 +0x14, ISSUE-431) at RIP
+`0x201378` after 9,922 retired instructions, Unsupported opcode 117, COM1
+empty. Full od-isa passes (2,322/1,591/126/29/6/1,463/7/15; zero doc tests),
+paged machine quantum passes (110/110), workspace all-targets offline check
+passes with existing warnings, and scoped rustfmt/diff-check pass. Independent
+review pending. ISSUE-201 remains the unrelated CLD caveat.

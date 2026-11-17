@@ -5382,7 +5382,17 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-430 — S7-04: exact OR R8D,8 frontier (`41 83 C8 08`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-429.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201370`.
-- **Статус:** открыта; следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base profile does not yet admit this exact `OR R8D,8`. Add only this REX.B dword immediate form, with dword zero-extension and logical flags/definedness; reject neighboring operations/values/widths and other profiles.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `41 83 C8 08` (`OR R8D,8`). REX.B selects R8D, and the dword result zero-extends R8. Shared OR semantics clear CF/OF, set SF/ZF/PF, and mark AF undefined while retaining its concrete value. Fetch faults commit no state; neighboring forms and CPL3/other profiles remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,920 instructions and reported `Unsupported { opcode: 131 }` at RIP `0x201370`; COM1 is empty. Bytes at the link-base shadow are `41 83 C8 08`.
-- **Следующий шаг:** implement this exact OR slice, add focused flags/fault/neighbor/profile tests, verify the runner successor, and update Stage 7 documentation.
+- **Результат:** runner now retires 9,922 instructions and stops at RIP `0x201378`, bytes `75 14` (JNZ rel8 +0x14; ISSUE-431), `Unsupported { opcode: 117 }`; COM1 is empty.
+- **Проверка:** four focused OR/zero-extension/flags/definedness/fetch-fault/neighbor/CPL3 tests and other-profile matrix 1/1 pass. Full od-isa passes (2,322/1,591/126/29/6/1,463/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review pending. ISSUE-201 remains the unrelated CLD caveat.
+- **Следующий шаг:** ISSUE-431, exact `75 14` (JNZ rel8 +0x14) at RIP `0x201378`.
+
+### ISSUE-431 — S7-04: exact JNZ rel8 +0x14 frontier (`75 14`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-430.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201378`.
+- **Статус:** открыта; следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base profile does not yet admit this exact `JNZ rel8 +0x14`. Add only the exact short branch, preserving flags/definedness and checking target canonicality only when taken; reject adjacent displacements, conditions and other profiles.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,922 instructions and reported `Unsupported { opcode: 117 }` at RIP `0x201378`; COM1 is empty. Bytes at the link-base shadow are `75 14`.
+- **Следующий шаг:** implement this exact JNZ rel8 slice, add focused branch/fault/neighbor/profile tests, verify the runner successor, and update Stage 7 documentation.

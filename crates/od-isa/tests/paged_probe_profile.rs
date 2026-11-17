@@ -18264,6 +18264,148 @@ fn rust_helper_or_r13d_imm8_08_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn rust_helper_or_r8d_imm8_08_updates_dword_and_logic_flags() {
+    const CF: u64 = 1 << 0;
+    const PF: u64 = 1 << 2;
+    const AF: u64 = 1 << 4;
+    const ZF: u64 = 1 << 6;
+    const SF: u64 = 1 << 7;
+    const OF: u64 = 1 << 11;
+    const LOGIC_FLAGS: u64 = CF | PF | ZF | SF | OF;
+    let code = [0x41, 0x83, 0xc8, 0x08]; // OR R8D,8
+    let defined = (DEFINED & !(ZF | SF)) | AF;
+    for r8 in [
+        0xaabb_ccdd_0000_0000u64,
+        0x1122_3344_ffff_fff7,
+        0xdead_beef_8000_0000,
+        0x7654_3210_7fff_fff7,
+        0x9876_5432_00ff_00ff,
+        0xfeed_face_1234_5671,
+    ] {
+        let result_value = r8 as u32 | 8;
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::R8 as usize] = r8;
+        cpu.rflags = 0x8d7;
+        let before = cpu.clone();
+        let mut result_flags = 0;
+        if result_value == 0 {
+            result_flags |= ZF;
+        }
+        if result_value >> 31 != 0 {
+            result_flags |= SF;
+        }
+        if (result_value as u8).count_ones() % 2 == 0 {
+            result_flags |= PF;
+        }
+
+        let result =
+            step_with_defined(&mut cpu, &mut memory, &mut Pio::default(), ring0(), defined);
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, (defined & !AF) | LOGIC_FLAGS);
+        let mut expected = before;
+        expected.gpr[Register::R8 as usize] = u64::from(result_value);
+        expected.rflags = (expected.rflags & !LOGIC_FLAGS) | result_flags;
+        expected.rip = RIP + code.len() as u64;
+        assert_eq!(cpu, expected, "R8={r8:#018x}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(memory.write_addresses.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_or_r8d_imm8_08_fetch_fault_is_atomic() {
+    let rip = RIP + 0xffd;
+    let mut memory = memory_with_code_at(&[0x41, 0x83, 0xc8], rip);
+    memory.fail_fetch_at = Some((rip + 3, page_fault(0x10, rip + 3)));
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::R8 as usize] = 0xaabb_ccdd_7654_3210;
+    let before = cpu.clone();
+    let defined = (DEFINED & !(1 << 6)) | (1 << 4);
+
+    let result = step_with_defined(&mut cpu, &mut memory, &mut Pio::default(), ring0(), defined);
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 3),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, defined);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn rust_helper_or_r8d_imm8_08_neighbours_stay_unsupported_without_mutation() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x41, 0x83, 0xc8, 0x09], 0x83), // different immediate
+        (&[0x41, 0x83, 0xc8, 0x07], 0x83),
+        (&[0x41, 0x83, 0xc9, 0x08], 0x83),          // OR R9D,8
+        (&[0x41, 0x83, 0xc0, 0x08], 0x83),          // ADD R8D,8
+        (&[0x83, 0xc8, 0x08], 0x83),                // OR EAX,8 without REX.B
+        (&[0x41, 0x83, 0xc5, 0x08], 0x83),          // ADD instead of OR
+        (&[0x41, 0x83, 0xd0, 0x08], 0x83),          // ADC instead of OR
+        (&[0x41, 0x83, 0xe8, 0x08], 0x83),          // SUB instead of OR
+        (&[0x45, 0x83, 0xc8, 0x08], 0x83),          // unused REX.R is not admitted
+        (&[0x49, 0x83, 0xc8, 0x08], 0x83),          // qword width
+        (&[0x66, 0x41, 0x83, 0xc8, 0x08], 0x83),    // word width
+        (&[0x41, 0x80, 0xc8, 0x08], 0x80),          // byte width
+        (&[0x41, 0x81, 0xc8, 0x08, 0, 0, 0], 0x81), // imm32 form
+        (&[0xf3, 0x41, 0x83, 0xc8, 0x08], 0x83),    // REP prefix
+        (&[0x67, 0x41, 0x83, 0xc8, 0x08], 0x83),    // address-size prefix
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: *opcode });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "{bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(memory.write_addresses.is_empty());
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_or_r8d_imm8_08_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x41, 0x83, 0xc8, 0x08];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x41 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn rust_helper_and_ebp_imm32_0xfff_updates_dword_and_logic_flags() {
     const CF: u64 = 1 << 0;
     const PF: u64 = 1 << 2;
@@ -45297,6 +45439,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x41, 0xf6, 0xc4, 0x01][..], 0xf6),
         (&[0x45, 0x89, 0xc5][..], 0x89),
         (&[0x41, 0x83, 0xcd, 0x08][..], 0x83),
+        (&[0x41, 0x83, 0xc8, 0x08][..], 0x83),
         (&[0x41, 0x83, 0xfd, 0x09][..], 0x83),
         (&[0x41, 0x84, 0xf8][..], 0x84),
         (&[0x45, 0x84, 0xda][..], 0x84),
