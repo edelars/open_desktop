@@ -65,6 +65,13 @@ pub(crate) struct RdtscClockReadLedger {
     pub irqs_delivered: u64,
 }
 
+/// Post-report instruction counts for the quantum containing the captured RDTSC callback.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RdtscClockReadCompletion {
+    pub quantum_instructions_executed: u64,
+    pub retired_instructions_through_rdtsc: u64,
+}
+
 /// Bounded, exact-callback ledger for the first two selected entry-site reads.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RdtscClockTraceSample {
@@ -76,6 +83,10 @@ pub struct RdtscClockTraceSample {
     pub tsc_hz: u64,
     pub retired_instructions_charged: u64,
     pub retired_ns_charged: Option<u64>,
+    /// Instructions in the quantum containing this callback, reported after execution returns.
+    pub quantum_instructions_executed: u64,
+    /// Cumulative retired instructions through the RDTSC that invoked the callback.
+    pub retired_instructions_through_rdtsc: u64,
     pub pm_timer_ns_charged: u64,
     pub pit_ns_charged: u64,
     pub rdtsc_ns_charged: u64,
@@ -290,6 +301,8 @@ impl LinuxExecutionObservationCollector {
                             tsc_hz: ledger.tsc_hz,
                             retired_instructions_charged: ledger.retired_instructions_charged,
                             retired_ns_charged,
+                            quantum_instructions_executed: 0,
+                            retired_instructions_through_rdtsc: 0,
                             pm_timer_ns_charged: ledger.pm_timer_ns_charged,
                             pit_ns_charged: ledger.pit_ns_charged,
                             rdtsc_ns_charged: ledger.rdtsc_ns_charged,
@@ -358,6 +371,40 @@ impl LinuxExecutionObservationCollector {
             rsp: state.gpr[Register::Rsp as usize],
             cr3: state.cr3,
         });
+    }
+
+    /// Completes the selected callback snapshot after the containing execution quantum returns.
+    pub(crate) fn complete_rdtsc_clock_trace(
+        &mut self,
+        rip: Option<u64>,
+        completion: RdtscClockReadCompletion,
+    ) {
+        let Some(entry_rip) = rip.filter(|rip| Some(*rip) == self.rdtsc_entry_sample_rip) else {
+            return;
+        };
+        let hit_ordinal = self.rdtsc_entry_sample_hits;
+        if hit_ordinal > LINUX_RDTSC_CLOCK_TRACE_CAPACITY as u64 {
+            return;
+        }
+        let Some(sample) = self
+            .rdtsc_entry_clock_trace_samples
+            .last_mut()
+            .filter(|sample| sample.rip == entry_rip && sample.hit_ordinal == hit_ordinal)
+        else {
+            return;
+        };
+        if sample
+            .retired_instructions_charged
+            .checked_add(completion.quantum_instructions_executed)
+            != Some(completion.retired_instructions_through_rdtsc)
+        {
+            self.rdtsc_entry_clock_trace_samples.pop();
+            self.rdtsc_entry_clock_trace_missing =
+                self.rdtsc_entry_clock_trace_missing.saturating_add(1);
+            return;
+        }
+        sample.quantum_instructions_executed = completion.quantum_instructions_executed;
+        sample.retired_instructions_through_rdtsc = completion.retired_instructions_through_rdtsc;
     }
 
     pub(crate) fn record_cpl0_rdtsc(&mut self, rip: Option<u64>) {
@@ -804,6 +851,15 @@ mod tests {
                     irqs_delivered: hit - 1,
                 }),
             );
+            if hit <= LINUX_RDTSC_CLOCK_TRACE_CAPACITY as u64 {
+                collector.complete_rdtsc_clock_trace(
+                    Some(RIP),
+                    RdtscClockReadCompletion {
+                        quantum_instructions_executed: 3,
+                        retired_instructions_through_rdtsc: 8,
+                    },
+                );
+            }
         }
         assert!(!collector.wants_rdtsc_clock_trace());
         let observations = collector.finish();
@@ -820,6 +876,14 @@ mod tests {
         assert_eq!(
             observations.rdtsc_entry_clock_trace_samples[0].retired_ns_charged,
             Some(5)
+        );
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[0].quantum_instructions_executed,
+            3
+        );
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[0].retired_instructions_through_rdtsc,
+            8
         );
         assert_eq!(
             observations.rdtsc_entry_clock_trace_samples[0].quantum_ordinal,
@@ -873,6 +937,14 @@ mod tests {
             }),
             None
         );
+        let mut inactive = inactive;
+        inactive.complete_rdtsc_clock_trace(
+            Some(RIP),
+            RdtscClockReadCompletion {
+                quantum_instructions_executed: 2,
+                retired_instructions_through_rdtsc: 2,
+            },
+        );
 
         let mut complete =
             LinuxExecutionObservationCollector::default().with_rdtsc_entry_sample_rip(Some(RIP));
@@ -887,6 +959,13 @@ mod tests {
             );
             complete.record_rdtsc_site_sample(Some(RIP), &LongModeState::default(), None);
         }
+        complete.complete_rdtsc_clock_trace(
+            Some(RIP),
+            RdtscClockReadCompletion {
+                quantum_instructions_executed: 2,
+                retired_instructions_through_rdtsc: 2,
+            },
+        );
         assert!(!complete.wants_rdtsc_clock_trace());
         assert_eq!(
             complete.build_rdtsc_clock_trace_if_active(|| {
@@ -896,6 +975,42 @@ mod tests {
             None
         );
         assert_eq!(builds, LINUX_RDTSC_CLOCK_TRACE_CAPACITY);
+    }
+
+    #[test]
+    fn invalid_clock_trace_completion_is_counted_missing() {
+        use od_isa::LongModeState;
+
+        const RIP: u64 = 0xffff_ffff_8271_b31b;
+        let mut collector =
+            LinuxExecutionObservationCollector::default().with_rdtsc_entry_sample_rip(Some(RIP));
+        collector.record_rdtsc_site_sample(
+            Some(RIP),
+            &LongModeState::default(),
+            Some(RdtscClockReadLedger {
+                initial_now_ns: 0,
+                now_ns: 0,
+                tsc: 0x1000,
+                tsc_hz: 2_400_000_000,
+                retired_instructions_charged: u64::MAX,
+                pm_timer_ns_charged: 0,
+                pit_ns_charged: 0,
+                rdtsc_ns_charged: 0,
+                idle_ns_advanced: 0,
+                quantum_ordinal: 1,
+                irqs_delivered: 0,
+            }),
+        );
+        collector.complete_rdtsc_clock_trace(
+            Some(RIP),
+            RdtscClockReadCompletion {
+                quantum_instructions_executed: 1,
+                retired_instructions_through_rdtsc: u64::MAX,
+            },
+        );
+        let observations = collector.finish();
+        assert!(observations.rdtsc_entry_clock_trace_samples.is_empty());
+        assert_eq!(observations.rdtsc_entry_clock_trace_missing, 1);
     }
 
     #[test]

@@ -10965,7 +10965,7 @@ mod tests {
     #[test]
     fn opt_in_execution_observations_attribute_rdtsc_to_exact_instruction_rip() {
         let cli = CliProfile::NonPviLong64V1;
-        let code = [0x0F, 0x31, 0xF4]; // RDTSC; HLT
+        let code = [0x90, 0x90, 0x0F, 0x31, 0xF4]; // NOP; NOP; RDTSC; HLT
         let (mut boot, _) = boot_with_entry(&code);
         let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
             .with_cli(&cli)
@@ -10974,7 +10974,7 @@ mod tests {
         let report = boot
             .board
             .run_linux_boot_cpl0_set_with_post_iret_index(
-                2,
+                4,
                 &set,
                 false,
                 false,
@@ -10983,19 +10983,19 @@ mod tests {
                 None,
                 None,
                 1,
-                Some(ENTRY),
+                Some(ENTRY + 2),
                 None,
             )
             .expect("board run");
 
-        assert_eq!(report.run.retired, 1, "{report:?}");
+        assert_eq!(report.run.retired, 3, "{report:?}");
         let observations = report
             .execution_observations
             .expect("opt-in report is present");
         assert_eq!(
             observations.rdtsc_cpl0_sites,
             [crate::RdtscSiteCount {
-                rip: ENTRY,
+                rip: ENTRY + 2,
                 reads: 1,
             }]
         );
@@ -11011,6 +11011,8 @@ mod tests {
             "callback precedes current-quantum charge"
         );
         assert_eq!(clock_read.retired_instructions_charged, 0);
+        assert_eq!(clock_read.quantum_instructions_executed, 3);
+        assert_eq!(clock_read.retired_instructions_through_rdtsc, 3);
         assert_eq!(
             clock_read.rdtsc_ns_charged, 0,
             "current RDTSC tick is post-callback"

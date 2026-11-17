@@ -13,7 +13,8 @@ use crate::console_output_context::{
     capture_frame_chain,
 };
 use crate::execution_observations::{
-    LinuxExecutionObservationCollector, LinuxExecutionObservations, RdtscClockReadLedger,
+    LinuxExecutionObservationCollector, LinuxExecutionObservations, RdtscClockReadCompletion,
+    RdtscClockReadLedger,
 };
 use crate::fetch_cache_report::{CallObservation, FetchCacheAccumulator, LinuxFetchCacheReport};
 use crate::fetch_cache_sweep::{FetchCacheSweep, FetchSweepReport, SweepConfig};
@@ -2521,6 +2522,13 @@ impl LoadedFirmwareBoard {
                         clock_read.get().filter(|_| {
                             report.last_instruction_rip == selected_rdtsc_entry_sample_rip
                         }),
+                    );
+                    observations.complete_rdtsc_clock_trace(
+                        report.last_instruction_rip,
+                        RdtscClockReadCompletion {
+                            quantum_instructions_executed: report.instructions_executed,
+                            retired_instructions_through_rdtsc: retired,
+                        },
                     );
                 }
                 let tick_ns = RDTSC_TICK_NS;

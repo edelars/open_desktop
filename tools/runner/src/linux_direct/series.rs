@@ -1092,7 +1092,7 @@ fn validate_execution_observations_sidecar(
         .map_err(|error| format!("invalid execution-observations sidecar JSON: {error}"))?;
     let schema_version = sidecar_json["schema_version"]
         .as_u64()
-        .filter(|version| matches!(version, 7 | 8 | 9 | 10))
+        .filter(|version| matches!(version, 7 | 8 | 9 | 10 | 11))
         .ok_or_else(|| {
             "execution-observations sidecar schema_version is missing, invalid, or unsupported"
                 .to_string()
@@ -1267,6 +1267,32 @@ fn validate_execution_observations_sidecar(
                 return Err("execution-observations clock trace sample is invalid".into());
             }
             prior_hit = hit_ordinal.unwrap_or(0);
+        }
+    }
+    if schema_version >= 11 {
+        let samples = sidecar_json["rdtsc_entry_clock_trace_samples"]
+            .as_array()
+            .ok_or_else(|| {
+                "execution-observations clock trace is missing or invalid".to_string()
+            })?;
+        for sample in samples {
+            let charged = sample
+                .get("retired_instructions_charged")
+                .and_then(Value::as_u64);
+            let quantum = sample
+                .get("quantum_instructions_executed")
+                .and_then(Value::as_u64);
+            let through_rdtsc = sample
+                .get("retired_instructions_through_rdtsc")
+                .and_then(Value::as_u64);
+            let sum = charged
+                .zip(quantum)
+                .and_then(|(charged, quantum)| charged.checked_add(quantum));
+            if sum.is_none() || sum != through_rdtsc {
+                return Err(
+                    "execution-observations clock trace instruction counts are invalid".into(),
+                );
+            }
         }
     }
     Ok(())
@@ -2611,7 +2637,7 @@ mod tests {
             );
         }
 
-        for version in [None, Some(Value::Null), Some(json!("8")), Some(json!(11))] {
+        for version in [None, Some(Value::Null), Some(json!("8")), Some(json!(12))] {
             let mut malformed_sidecar = sidecar_value.clone();
             if let Some(value) = version {
                 malformed_sidecar["schema_version"] = value;
@@ -2679,6 +2705,56 @@ mod tests {
         update_metadata(v10_metadata.clone());
         let loaded = fresh_manifest(&series_path).unwrap();
         assert!(load_run_manifest(&series_path, &loaded.runs[0]).is_ok());
+
+        let mut v11_sidecar = v10_sidecar.clone();
+        v11_sidecar["schema_version"] = json!(11);
+        for sample in v11_sidecar["rdtsc_entry_clock_trace_samples"]
+            .as_array_mut()
+            .unwrap()
+        {
+            sample["quantum_instructions_executed"] = json!(3);
+            sample["retired_instructions_through_rdtsc"] = json!(13);
+        }
+        let mut v11_metadata = v10_metadata.clone();
+        let mut v11_bytes = serde_json::to_vec_pretty(&v11_sidecar).unwrap();
+        v11_bytes.push(b'\n');
+        fs::write(&sidecar_path, &v11_bytes).unwrap();
+        v11_metadata["byte_count"] = json!(v11_bytes.len());
+        v11_metadata["sha256"] = json!(od_testkit::sha256_hex(&v11_bytes));
+        update_metadata(v11_metadata.clone());
+        let loaded = fresh_manifest(&series_path).unwrap();
+        assert!(load_run_manifest(&series_path, &loaded.runs[0]).is_ok());
+
+        let mut invalid_instruction_sum = v11_sidecar.clone();
+        invalid_instruction_sum["rdtsc_entry_clock_trace_samples"][0]["retired_instructions_through_rdtsc"] =
+            json!(12);
+        assert_rejected(
+            invalid_instruction_sum,
+            v11_metadata.clone(),
+            "clock trace instruction counts are invalid",
+        );
+        let mut missing_quantum_count = v11_sidecar.clone();
+        missing_quantum_count["rdtsc_entry_clock_trace_samples"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("quantum_instructions_executed");
+        assert_rejected(
+            missing_quantum_count,
+            v11_metadata.clone(),
+            "clock trace instruction counts are invalid",
+        );
+        let mut overflowing_instruction_sum = v11_sidecar.clone();
+        overflowing_instruction_sum["rdtsc_entry_clock_trace_samples"][0]["retired_instructions_charged"] =
+            json!(u64::MAX);
+        overflowing_instruction_sum["rdtsc_entry_clock_trace_samples"][0]["quantum_instructions_executed"] =
+            json!(1);
+        overflowing_instruction_sum["rdtsc_entry_clock_trace_samples"][0]["retired_instructions_through_rdtsc"] =
+            json!(u64::MAX);
+        assert_rejected(
+            overflowing_instruction_sum,
+            v11_metadata.clone(),
+            "clock trace instruction counts are invalid",
+        );
 
         for malformed in [None, Some(Value::Null), Some(json!("2")), Some(json!(3))] {
             let mut bad_metadata = v10_metadata.clone();

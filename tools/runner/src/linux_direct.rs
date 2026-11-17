@@ -2095,6 +2095,8 @@ fn write_execution_observations_sidecar(
                 "tsc_hz": sample.tsc_hz,
                 "retired_instructions_charged": sample.retired_instructions_charged,
                 "retired_ns_charged": sample.retired_ns_charged,
+                "quantum_instructions_executed": sample.quantum_instructions_executed,
+                "retired_instructions_through_rdtsc": sample.retired_instructions_through_rdtsc,
                 "pm_timer_ns_charged": sample.pm_timer_ns_charged,
                 "pit_ns_charged": sample.pit_ns_charged,
                 "rdtsc_ns_charged": sample.rdtsc_ns_charged,
@@ -2169,7 +2171,7 @@ fn write_execution_observations_sidecar(
         })
     });
     let value = json!({
-        "schema_version": 10,
+        "schema_version": 11,
         "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, an optional bounded every-hit entry-RDTSC stream with a two-hit pre-charge virtual-clock ledger, and an optional inclusive hit-ordinal window for selected-site samples",
         "limits": {
             "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
@@ -4892,6 +4894,8 @@ mod tests {
                     tsc_hz: 2_400_000_000,
                     retired_instructions_charged: 5,
                     retired_ns_charged: Some(5),
+                    quantum_instructions_executed: 3,
+                    retired_instructions_through_rdtsc: 8,
                     pm_timer_ns_charged: 2,
                     pit_ns_charged: 3,
                     rdtsc_ns_charged: 4,
@@ -4909,6 +4913,8 @@ mod tests {
                     tsc_hz: 2_400_000_000,
                     retired_instructions_charged: 8,
                     retired_ns_charged: Some(8),
+                    quantum_instructions_executed: 4,
+                    retired_instructions_through_rdtsc: 12,
                     pm_timer_ns_charged: 3,
                     pit_ns_charged: 3,
                     rdtsc_ns_charged: 4,
@@ -5001,7 +5007,7 @@ mod tests {
         assert_eq!(metadata["entry_clock_trace_sample_count"], 2);
         assert_eq!(metadata["entry_clock_trace_missing"], 0);
         let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema_version"], 10);
+        assert_eq!(value["schema_version"], 11);
         assert_eq!(value["post_iret_selected_ordinal"], 3);
         assert_eq!(value["post_iret_page_walk_status"], "captured");
         assert_eq!(
@@ -5074,6 +5080,14 @@ mod tests {
         assert_eq!(
             value["rdtsc_entry_clock_trace_samples"][1]["callback_tsc"],
             "0x1001"
+        );
+        assert_eq!(
+            value["rdtsc_entry_clock_trace_samples"][0]["quantum_instructions_executed"],
+            3
+        );
+        assert_eq!(
+            value["rdtsc_entry_clock_trace_samples"][0]["retired_instructions_through_rdtsc"],
+            8
         );
         assert_eq!(value["page_faults_delivered"], 5);
         assert_eq!(value["page_fault_events"][0]["rip"], "0xffffffff81005678");
