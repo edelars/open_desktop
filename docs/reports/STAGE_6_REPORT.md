@@ -970,6 +970,24 @@ KVM с подменённой CPUID: принял `EFER.LME|NXE|SCE`, `CR4 = 0x6
 - Бит HTT (EDX[28]) не объявлен, хотя EBX[23:16] определён по SDM только при HTT = 1 и Linux читает поле всегда, использует только при HTT; решение по topology domains — S6-18/S6-21.
 - Разные профили на BSP (`X8664V1Stage4AApic`; допустим и `DiagnosticV1`), AP до long mode (`OdX8664V1Neutral`) и AP после (профиль набора): согласование признаков — S6-21 (условие: CPUID AP в long mode побайтно равен CPUID BSP, кроме `CPUID.1` EBX[31:24] и [23:16]; иначе блокер S6-21).
 
+### S6-21 шаг 1 — доставка источника платы и снятие срока (реализовано, ожидает ревью)
+
+Дата: 2026-11-17. Чекбокс S6-21 в `STAGE_6.md` не отмечен (шаг 1 из шести). Контракт — [MACHINE_CONTRACT.md](../specs/MACHINE_CONTRACT.md#s6-21-шаг-1--источник-платы-и-срок-платы-в-планировщике). Закрывает пункт, перенесённый из S6-17 шага 6 и S6-16d п. 6(а).
+
+**Сделано.**
+1. Доставка источника платы (PIC/IOAPIC/PIT) BSP: `run_vcpu_set_quantum` для vCPU 0 передаёт в `IrqBoundaryHook` составной `BootProcessorSource` (вектор источника платы, а если его нет — вектор своего LAPIC; допущение модели: порядок задаёт источник, LINT0 не моделируется; `acknowledge` — тому, кто дал вектор; срок, запись в порты PIT и `wake_ns` — источника платы). Остальные vCPU — только `LapicIrqSource` своего LAPIC. Цикл `run_linux_boot_cpl0_set` не менялся.
+2. Пробуждение: `SmpHost::board_wakes` (BSP, `LoadedFirmwareBoard::irq_wake_ns` не позже часов) в `SmpScheduler::wake_ready`; остановленный BSP с IF = 1 просыпается от PIT, а не только от вектора в LAPIC.
+3. Снятие срока: `BoardSmpHost::board_deadline` не отдаёт срок, до которого часы дошли (его берёт BSP на своей границе); `SmpHost::idle_deadline` — время пробуждения BSP для прыжка простоя (нет такого — `AllIdle`, не `IdleNoProgress` и не бесконечные прыжки). Для хостов по умолчанию (`Rig` тестов планировщика) поведение прежнее.
+
+**Тесты.** `firmware_board::vcpu_quantum::tests` (`PitPicStats::acknowledged` равен числу IRQ0 только для PIC; при IOAPIC счётчик считает все векторы LAPIC BSP): 5 новых (IRQ0 PIT доставляется BSP, AP не получает; прыжок простоя до фронта и пробуждение BSP источником платы; источник платы предлагается только BSP; маршрут `acknowledge` вектора платы (одновременность с вектором LAPIC не проверяется: LAPIC на границе 0 программно выключен); не снятый срок не даёт `IdleNoProgress`/бесконечного срока — `AllIdle`) и 1 изменённый (`the_deadline_of_the_board_source_cuts_the_call_of_any_vcpu`: после достижения срока вызов `(1, 60)`, было `(1, 1)` — тест моделировал отсутствие снятия). Контроль от противного (временное отключение каждой части): без составного источника падают 4 теста доставки, без `idle_deadline` — тест `AllIdle`, без фильтра срока — изменённый тест. Одно-vCPU: `one_vcpu_gives_the_result_of_a_direct_call_of_the_set_loop_under_every_policy` и остальные тесты `vcpu_quantum` без изменений ожиданий (при `NoIrqSource` составной источник даёт то же, что `LapicIrqSource`). Ожидания PIC/PIT — по даташитам 8259A/8254 и SDM (по памяти); ICW2 мастера в модели `0x30`.
+
+**Проверки.** `cargo fmt -p od-machine -- --check` — чисто; `cargo check --workspace --all-targets --offline` — без ошибок (предупреждения прежние: `page_walk`, `od-host`); `cargo test -p od-machine --offline --lib -- smp_scheduler vcpu_quantum firmware_board --test-threads=1` — 135 passed; полный `cargo test -p od-machine --offline -- --test-threads=1` (один раз, на итоговом коде) — lib 1512 passed, 8 ignored, 0 failed (646 с); интеграционные тесты крейта все ok (в том числе 26 passed за 224 с), exit 0; лог — scratchpad `s621_full_machine.log`.
+
+**Не сделано / blocked.**
+- Перевод цикла Linux (`run_linux_boot_cpl0_set`) на планировщик, сверка с контрольным прогоном S6-10 при одном vCPU, параметры `od-runner linux-direct` (число vCPU и seed), собственный `/init`, серии seed (шаги 2–5 S6-21): blocked до `S5-07` (раннер расширяет открытая задача, не принята).
+- Однородность CPUID AP и BSP в long mode (шаг 6 S6-21, `CpuidProfile::query_for_vcpu` в `Cpl0ProfileSet`): отдельный срез; блокер S6-21, если не достигается.
+- Осознанное отличие от цикла Linux: при источнике PIC вектор LAPIC, будящий BSP, доставляется запасной ветвью составного источника (цикл Linux в `idle_to` отвечает `Config`-ошибкой). Счётчики `IrqCounters` вызова локальны.
+
 ### S6-19 — litmus в режиме чередования (реализовано, ожидает ревью)
 
 Дата: 2026-11-17. Чекбокс не отмечен. Срез: драйвер перебора расписаний в `crates/od-machine/src/litmus_interleaving.rs` (`cfg(test)`; 18 тестов, один `#[ignore]` — прогон-доказательство), `serde_json` как dev-зависимость `od-machine`, данные [`s6-19-litmus-interleaving.json`](data/stage6/s6-19-litmus-interleaving.json) (77 КБ), разделы в [SMP.md](../testing/SMP.md) и [MACHINE_CONTRACT.md](../specs/MACHINE_CONTRACT.md#s6-19--litmus-в-режиме-чередования).

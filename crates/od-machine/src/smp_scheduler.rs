@@ -37,7 +37,7 @@
 
 use crate::clock_owner::{ClockOwner, ClockOwnerError, IdleOutcome};
 use crate::idle_arbiter::{SchedActivity, WakeView};
-use crate::vcpu::NmiBoundary;
+use crate::vcpu::{BOOT_VCPU_INDEX, NmiBoundary};
 use crate::{FirmwareBoardError, LoadedFirmwareBoard, LocalApicHandle};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -170,6 +170,22 @@ pub(crate) trait SmpHost {
     /// (the host did not consume it) is [`SmpError::IdleNoProgress`].
     fn board_deadline(&self) -> Option<u64> {
         None
+    }
+    /// The deadline the idle arbiter jumps to when nobody runs: the nearest virtual time at which
+    /// the board can wake a halted vCPU (the next edge of its source that would be deliverable), as
+    /// opposed to [`Self::board_deadline`], every edge a running vCPU must not run past. `None`
+    /// when the board cannot wake anybody (the line is masked or in service, no edge is scheduled):
+    /// the jump then goes to a Local APIC timer or the run ends as [`Finished::AllIdle`]. The
+    /// default is [`Self::board_deadline`] (S6-21 step 1).
+    fn idle_deadline(&self) -> Option<u64> {
+        self.board_deadline()
+    }
+    /// Whether the interrupt source of the board has a vector for the halted `cpu` now, so that the
+    /// scheduler wakes it (IF = 1 is the scheduler's own test) although no vector waits in its
+    /// Local APIC. Only the boot processor is offered the source of the board; `false` for every
+    /// other vCPU and by default (S6-21 step 1).
+    fn board_wakes(&self, _cpu: usize) -> bool {
+        false
     }
     /// The boundary of `cpu`: the INIT and SIPI waiting in its Local APIC, then its NMI, in that
     /// order. Nothing waiting is not an error.
@@ -394,12 +410,13 @@ impl SmpScheduler {
     }
 
     /// Wake every halted vCPU with IF = 1 and an acceptable vector (the same test as the arbiter's
-    /// `WakeNow`). One that is not acceptable yet stays halted and is skipped.
+    /// `WakeNow`; for the boot processor also a vector of the board's source,
+    /// [`SmpHost::board_wakes`]). One that is not acceptable yet stays halted and is skipped.
     fn wake_ready<H: SmpHost>(&mut self, host: &mut H) -> Result<(), SmpError<H::Error>> {
         for cpu in 0..self.counters.len() {
             if host.activity(cpu) == SchedActivity::Halted
                 && host.if_set(cpu)
-                && host.apic(cpu).eligible().is_some()
+                && (host.apic(cpu).eligible().is_some() || host.board_wakes(cpu))
             {
                 host.wake(cpu).map_err(SmpError::Host)?;
                 self.counters[cpu].wakes += 1;
@@ -420,7 +437,7 @@ impl SmpScheduler {
                 apic: host.apic(cpu),
             })
             .collect();
-        let deadlines: Vec<u64> = host.board_deadline().into_iter().collect();
+        let deadlines: Vec<u64> = host.idle_deadline().into_iter().collect();
         let step = host
             .clock_owner()
             .idle_step(self.stop.requested(), &views, &deadlines)
@@ -553,6 +570,13 @@ impl SmpScheduler {
 /// call that retired nothing would be `NoProgress` to the scheduler). Whatever the legacy models
 /// refuse is an error, never a silent skip.
 ///
+/// The interrupt source of the board (PIC, IOAPIC, PIT: `irq_source`) belongs to the boot processor
+/// (S6-21 step 1): its quantum asks the source at every instruction boundary and delivers through
+/// its IDT (`run_vcpu_set_quantum`), the host wakes a halted boot processor when the source has a
+/// vector ([`SmpHost::board_wakes`]), lifts a deadline the clock has reached
+/// ([`SmpHost::board_deadline`]) and gives the idle jump the wake time of the source
+/// ([`SmpHost::idle_deadline`]). No other vCPU is offered the source.
+///
 /// The `run` closure must not call `charge_retired`, `charge_ns`, `idle_to` or any other
 /// [`ClockOwner`] method: only the scheduler moves the clock. This is a condition of wiring the
 /// closure in (S6-16/S6-17).
@@ -630,8 +654,39 @@ where
             .expect("checked in BoardSmpHost::new")
     }
 
+    /// The edge of the board's source the clock has not reached. An edge the clock has reached is
+    /// the boot processor's to take at its own boundary: its quantum asks the source at every
+    /// instruction boundary ([`LoadedFirmwareBoard::run_vcpu_set_quantum`]) and the real sources
+    /// apply every due edge when they are asked (`catch_up`), after which their
+    /// `next_deadline_ns` is not in the past (`BoardIrqSource::next_deadline_ns`). The filter is
+    /// needed for test sources and for the invariant of the trait: a deadline at or before now
+    /// would otherwise cut the turns of the other vCPUs to one step each (S6-21 step 1).
     fn board_deadline(&self) -> Option<u64> {
-        self.board.irq_deadline_ns()
+        let now = self.board.clock().now_ns();
+        self.board
+            .irq_deadline_ns()
+            .filter(|deadline| *deadline > now)
+    }
+
+    /// Where the idle jump goes: the next time the board's source can wake the halted boot
+    /// processor, and only if the processor can take it (IF = 1). A source that cannot wake it (a
+    /// masked or in-service line, no edge) gives no deadline, so the run ends as `AllIdle` and does
+    /// not jump from edge to edge for ever (the Linux loop ends as `halted` in the same case).
+    fn idle_deadline(&self) -> Option<u64> {
+        let boot = self.board.vcpu(BOOT_VCPU_INDEX)?;
+        if boot.activity() != od_isa::CpuActivity::Halted || !boot.interrupts_enabled() {
+            return None;
+        }
+        let now = self.board.clock().now_ns();
+        self.board.irq_wake_ns().filter(|wake| *wake > now)
+    }
+
+    fn board_wakes(&self, cpu: usize) -> bool {
+        cpu == BOOT_VCPU_INDEX
+            && self
+                .board
+                .irq_wake_ns()
+                .is_some_and(|wake| wake <= self.board.clock().now_ns())
     }
 
     fn boundary(&mut self, cpu: usize) -> Result<BoundaryReport, FirmwareBoardError> {
@@ -731,7 +786,8 @@ mod tests {
         /// vCPUs that took an NMI (vector 2), in order.
         nmi_taken: Vec<usize>,
         /// The deadline of the board's interrupt source; the imitated boundary consumes it once
-        /// the clock has reached it (as the real source does when its edge is taken).
+        /// the clock has reached it. The real source does not keep a past deadline after its
+        /// catch-up; this field models a test source that does, to exercise the host's filter.
         board_deadline: Option<u64>,
         /// Keep a reached deadline instead of consuming it (a host that never consumes it).
         keep_board_deadline: bool,
@@ -1524,7 +1580,7 @@ mod tests {
         // can end its sleep. The clock jumps to the source's edge in one move; the arbiter then
         // answers `NoProgress` (the edge is due and nobody consumed it), which with a skip above 0
         // is not an error. The host takes the edge at the next boundary; nothing can wake the
-        // vCPU after that. Rig models the lift; BoardSmpHost does not (S6-17).
+        // vCPU after that. Rig models the lift; BoardSmpHost lifts a due deadline itself (S6-21 step 1).
         let mut rig = Rig::spinning(1);
         rig.cpus[0].state.activity = Some(CpuActivity::Halted);
         rig.cpus[0].state.rflags |= IF_BIT;

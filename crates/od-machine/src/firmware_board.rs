@@ -1987,6 +1987,16 @@ impl LoadedFirmwareBoard {
         self.irq_source.next_deadline_ns()
     }
 
+    /// The time at which the board's interrupt source can next wake a halted boot processor
+    /// ([`BoardIrqSource::wake_ns`]): not after the clock when a vector is deliverable now, `None`
+    /// when nothing can wake it (the line is masked or in service, no edge). The scheduler of
+    /// S6-15 asks it for the boot processor only ([`crate::smp_scheduler::SmpHost::board_wakes`],
+    /// S6-21 step 1).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn irq_wake_ns(&self) -> Option<u64> {
+        self.irq_source.wake_ns()
+    }
+
     /// Charge `retired` instructions to the clock of the CPL0-set loop (one ns each, D7).
     fn charge_retired(&mut self, retired: u64) -> Result<(), FirmwareBoardError> {
         match &mut self.clock_driver {

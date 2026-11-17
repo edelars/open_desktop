@@ -10,7 +10,10 @@
 //!   constant [`FIRMWARE_EFER`];
 //! * the MMIO accesses of the loop reach the Local APIC of this vCPU (`vcpu` index), and the
 //!   boundary hook is a [`LapicIrqSource`] of the same Local APIC, so a Fixed vector waiting in its
-//!   IRR is delivered through this vCPU's IDT and acknowledged in this LAPIC only;
+//!   IRR is delivered through this vCPU's IDT and acknowledged in this LAPIC only. The boot
+//!   processor (`BOOT_VCPU_INDEX`) has in front of it the interrupt source of the board (PIC, IOAPIC,
+//!   PIT: [`BoardIrqSource`] of `irq_source`), asked as the Linux loop asks it (S6-21 step 1); no
+//!   other vCPU is offered the board's source;
 //! * a call that ends inside a `REP` ([`Vcpu::skip_first_boundary`]) makes the next call of this
 //!   vCPU skip the delivery at its first boundary;
 //! * the call ends, after the instruction, on a write of the guest to THR of COM1 (the bytes that
@@ -31,14 +34,60 @@
 //! fields before the call and stored back after it, as `linux_direct` does for the boot processor).
 
 use super::{
-    AccessContext, AccessOrigin, FirmwareBoardError, INTEGER_FLAGS, InstructionMode, IrqCounters,
-    LoadedFirmwareBoard, PagedCpl0SetExit, PrivilegeLevel, RunExit, set_exit_to_probe_exit,
+    AccessContext, AccessOrigin, BOOT_VCPU_INDEX, FirmwareBoardError, INTEGER_FLAGS,
+    InstructionMode, IrqCounters, LoadedFirmwareBoard, PagedCpl0SetExit, PrivilegeLevel, RunExit,
+    set_exit_to_probe_exit,
 };
-use crate::irq_source::IrqBoundaryHook;
+use crate::irq_source::{BoardIrqSource, IrqBoundaryHook};
 use crate::lapic_irq_source::LapicIrqSource;
 use crate::paged_memory_adapter::run_cpl0_set_paged_2m_ram_with_cache;
 use crate::smp_scheduler::Executed;
 use od_isa::execute::Cpl0ProfileSet;
+
+/// The source of the boot processor in the quantum of the scheduler (S6-21 step 1): the interrupt
+/// source of the board first (the line of the PIC or of the IOAPIC, as the Linux loop asks it), then
+/// the vectors waiting in the processor's own Local APIC. A source that already reports the Local
+/// APIC's vectors (the IOAPIC source) answers first, so the Local APIC is asked only for what the
+/// board's source does not have. Only the boot processor gets it; an application processor keeps the
+/// [`LapicIrqSource`] alone.
+struct BootProcessorSource<'a> {
+    board: &'a mut dyn BoardIrqSource,
+    lapic: LapicIrqSource,
+}
+
+impl BoardIrqSource for BootProcessorSource<'_> {
+    fn pending_vector(&self) -> Option<u8> {
+        self.board
+            .pending_vector()
+            .or_else(|| self.lapic.pending_vector())
+    }
+
+    fn acknowledge(&mut self, vector: u8) {
+        // The loop acknowledges only the vector `pending_vector` gave, and nothing moved since: the
+        // board's source gave it exactly when it still reports it.
+        if self.board.pending_vector() == Some(vector) {
+            self.board.acknowledge(vector);
+        } else {
+            self.lapic.acknowledge(vector);
+        }
+    }
+
+    fn next_deadline_ns(&self) -> Option<u64> {
+        self.board.next_deadline_ns()
+    }
+
+    fn pit_write_ends_quantum(&self) -> bool {
+        self.board.pit_write_ends_quantum()
+    }
+
+    fn irq0_edges(&self) -> u64 {
+        self.board.irq0_edges()
+    }
+
+    fn wake_ns(&self) -> Option<u64> {
+        self.board.wake_ns()
+    }
+}
 
 impl LoadedFirmwareBoard {
     /// Run vCPU `cpu` (in long mode, `Running`) for at most `budget` steps (at least 1) with the
@@ -100,7 +149,17 @@ impl LoadedFirmwareBoard {
         self.vcpus[cpu].state.cr2 = Some(self.vcpus[cpu].guest_cr2.or(prior_cr2).unwrap_or(0));
 
         let timer_writes = lapic.timer_register_writes();
-        let mut source = LapicIrqSource::new(lapic.clone());
+        let mut own = LapicIrqSource::new(lapic.clone());
+        let mut boot_source;
+        let source: &mut dyn BoardIrqSource = if cpu == BOOT_VCPU_INDEX {
+            boot_source = BootProcessorSource {
+                board: &mut *self.irq_source,
+                lapic: own.clone(),
+            };
+            &mut boot_source
+        } else {
+            &mut own
+        };
         let mut counters = IrqCounters::default();
         let report = run_cpl0_set_paged_2m_ram_with_cache(
             &mut self.vcpus[cpu].state,
@@ -128,7 +187,7 @@ impl LoadedFirmwareBoard {
             false,
             None,
             Some(IrqBoundaryHook {
-                source: &mut source,
+                source,
                 counters: &mut counters,
                 skip_first_boundary,
             }),
@@ -752,11 +811,11 @@ mod tests {
         };
         assert_eq!(calls(None)[0], (1, 100));
         // The edge is 40 ns away and one retired instruction is one ns: 40 steps, then the clock
-        // is at the edge (the next calls go one step at a time). BoardSmpHost does not take the
-        // deadline yet (S6-17); the test models a host that does.
+        // is at the edge. A deadline the clock has reached is lifted by the host (S6-21 step 1: the
+        // boot processor takes the edge at its own boundary), so the rest of the budget is one call.
         let cut = calls(Some(40));
         assert_eq!(cut[0], (1, 40));
-        assert_eq!(cut[1], (1, 1));
+        assert_eq!(cut[1], (1, 60));
     }
 
     #[test]
@@ -982,5 +1041,303 @@ mod tests {
         assert_eq!((third.retired, third.partial_rep), (1, false));
         assert!(!board.vcpu(1).unwrap().skip_first_boundary);
         assert_eq!(read(&mut board, DATA, 3000), vec![0xFFu8; 3000]);
+    }
+
+    // ---- S6-21 step 1: the source of the board reaches the boot processor -----------------------
+    //
+    // Expectations are from the SDM and the 8259/8254 data sheets (by memory), not from the model:
+    // after ICW1..ICW4 and an unmasked IR0 the PIC raises INTR for the PIT's OUT0 edge and the CPU,
+    // with IF = 1, takes vector ICW2 + 0 through its IDT; the guest's EOI (OCW2 0x20 to port 0x20)
+    // frees the line for the next edge; mode 2 gives one edge per `count` PIT ticks (1_193_182 Hz).
+
+    /// ICW2 of the master 8259 the board models (`Pic8259Role::icw2`, the base Linux uses).
+    const BOARD_VECTOR: u8 = 0x30;
+    const IDT_1: u64 = 0x3_8000;
+    const HANDLER_BOARD: u64 = 0x2_4000;
+    const HANDLER_LAPIC: u64 = 0x2_5000;
+    const HANDLER_AP_BOARD: u64 = 0x2_6000;
+    const COUNTER_LAPIC: u64 = 0x4_0008;
+    const LAPIC_VECTOR: u8 = 0x31;
+
+    fn gate(board: &mut LoadedFirmwareBoard, idt_at: u64, vector: u8, handler: u64) {
+        let mut gate = [0u8; 16];
+        gate[0..2].copy_from_slice(&(handler as u16).to_le_bytes());
+        gate[2..4].copy_from_slice(&0x08u16.to_le_bytes());
+        gate[5] = 0x8E;
+        gate[6..8].copy_from_slice(&((handler >> 16) as u16).to_le_bytes());
+        patch(board, idt_at + u64::from(vector) * 16, &gate);
+    }
+
+    /// `counter += 1` (R8, R9 only), then with `eoi_to_pic` the EOI to the master 8259, then IRETQ.
+    fn counting_handler(counter: u64, eoi_to_pic: bool) -> Vec<u8> {
+        let mut code = [
+            imm(&[0x41, 0xB8], counter as u32), // mov r8d, counter
+            vec![0x45, 0x8B, 0x08],             // mov r9d, [r8]
+            vec![0x41, 0xFF, 0xC1],             // inc r9d
+            vec![0x45, 0x89, 0x08],             // mov [r8], r9d
+        ]
+        .concat();
+        if eoi_to_pic {
+            code.extend([0xB0, 0x20, 0xE6, 0x20]); // mov al, 0x20; out 0x20, al
+        }
+        code.extend([0x48, 0xCF]);
+        code
+    }
+
+    /// The boot processor as the kernel's setup does it: the master 8259 (ICW1 0x11, ICW2 0x30,
+    /// ICW3 0x04, ICW4 0x01, IMR 0xFE), PIT channel 0 in mode 2 with count 10 (control 0x34), STI,
+    /// then HLT.
+    fn pit_irq0_program() -> Vec<u8> {
+        let mut code = Vec::new();
+        for (port, value) in [
+            (0x20u8, 0x11u8),
+            (0x21, BOARD_VECTOR),
+            (0x21, 0x04),
+            (0x21, 0x01),
+            (0x21, 0xFE),
+            (0x43, 0x34),
+            (0x40, 10),
+            (0x40, 0),
+        ] {
+            code.extend([0xB0, value, 0xE6, port]); // mov al, value; out port, al
+        }
+        code.push(0xFB); // sti
+        code.extend(HLT_LOOP);
+        code
+    }
+
+    /// A two-processor board with the PIT -> 8259 source installed. The boot processor runs
+    /// `pit_irq0_program` with IF = 0 at the start; the application processor spins (`spin`) with
+    /// IF = 1 and an IDT of its own, or sleeps halted with IF = 0.
+    fn pit_board(spin: bool) -> LoadedFirmwareBoard {
+        let mut board = board(2);
+        assert!(board.enable_pit_pic_irq());
+        system(&mut board, false);
+        patch(&mut board, CODE_0, &pit_irq0_program());
+        patch(&mut board, CODE_1, &[0xEB, 0xFE]);
+        patch(
+            &mut board,
+            HANDLER_BOARD,
+            &counting_handler(COUNTER_0, true),
+        );
+        patch(
+            &mut board,
+            HANDLER_AP_BOARD,
+            &counting_handler(COUNTER_1, false),
+        );
+        gate(&mut board, IDT_AT, BOARD_VECTOR, HANDLER_BOARD);
+        // The application processor has its own IDT: the same vector would count in COUNTER_1.
+        gate(&mut board, IDT_1, BOARD_VECTOR, HANDLER_AP_BOARD);
+        let (cr3_0, cr3_1) = (
+            tables(&mut board, TABLES_0, 0x60_0000, 0),
+            tables(&mut board, TABLES_1, 0x80_0000, 0),
+        );
+        let mut bsp = long_state(CODE_0, STACK_0, cr3_0, true);
+        bsp.rflags = 2;
+        install(&mut board, 0, bsp, 0xD01);
+        let mut ap = long_state(CODE_1, STACK_1, cr3_1, false);
+        ap.idtr = Some(od_isa::state::Idtr {
+            base: IDT_1,
+            limit: 0xFFF,
+        });
+        if !spin {
+            ap.rflags = 2;
+            ap.activity = Some(CpuActivity::Halted);
+        }
+        install(&mut board, 1, ap, 0xD01);
+        board
+    }
+
+    #[test]
+    fn irq0_of_the_pit_reaches_the_boot_processor_at_the_boundary_and_not_the_application_processor()
+     {
+        let mut board = pit_board(true);
+        let source = board.pit_pic_source.clone().unwrap();
+        // The boot processor sets up and halts; while it sleeps the other vCPU spins, so the
+        // clock moves by retired instructions only. One period is about 8.4 us = 8381 ns.
+        let (finished, counters, _) = run_scheduler(&mut board, QuantumPolicy::Fixed(20), 40_000);
+        assert_eq!(finished, Finished::BudgetExhausted);
+        let (bsp, ap) = (dword(&mut board, COUNTER_0), dword(&mut board, COUNTER_1));
+        // 40 000 ns of a 8381 ns period: at least three edges, at most five.
+        assert!(
+            (3..=5).contains(&bsp),
+            "handler of the boot processor: {bsp}"
+        );
+        assert_eq!(
+            ap, 0,
+            "the application processor is never offered the board source"
+        );
+        // The INTA cycle of the chip is the board source's acknowledge: once per delivery (a
+        // delivery cut by the end of the budget may have run its handler only partly).
+        let acknowledged = source.stats().acknowledged;
+        assert!(
+            acknowledged == u64::from(bsp) || acknowledged == u64::from(bsp) + 1,
+            "{acknowledged} acknowledged, {bsp} handled"
+        );
+        assert_eq!(source.stats().ack_refused, 0);
+        assert!(
+            counters[0].wakes >= u64::from(bsp),
+            "the halted boot processor was woken"
+        );
+        assert_eq!(counters[1].wakes, 0);
+    }
+
+    #[test]
+    fn the_idle_jump_goes_to_the_edge_of_the_source_and_the_halted_boot_processor_takes_it() {
+        // Both vCPUs are halted after the setup: every edge is reached by an idle jump (nobody
+        // runs), the boot processor is woken by the board source (no vector in any Local APIC), and
+        // the deadline is consumed by that, so the scheduler never meets a due deadline.
+        let mut board = pit_board(false);
+        let (finished, counters, _) = run_scheduler(&mut board, QuantumPolicy::Fixed(20), 200);
+        assert_eq!(finished, Finished::BudgetExhausted);
+        let handled = dword(&mut board, COUNTER_0);
+        assert!(
+            handled >= 5,
+            "{handled} interrupts in 200 instructions of budget"
+        );
+        assert_eq!(dword(&mut board, COUNTER_1), 0);
+        assert!(counters[0].wakes >= u64::from(handled));
+        // Each handled edge is a period of the PIT further on the board clock.
+        assert!(board.clock().now_ns() >= u64::from(handled - 1) * 8381);
+    }
+
+    /// A source with one vector, pending until it was acknowledged once.
+    struct OneShot {
+        vector: u8,
+        acks: std::rc::Rc<std::cell::Cell<u32>>,
+    }
+
+    impl BoardIrqSource for OneShot {
+        fn pending_vector(&self) -> Option<u8> {
+            (self.acks.get() == 0).then_some(self.vector)
+        }
+        fn acknowledge(&mut self, vector: u8) {
+            assert_eq!(vector, self.vector);
+            self.acks.set(self.acks.get() + 1);
+        }
+        fn next_deadline_ns(&self) -> Option<u64> {
+            None
+        }
+    }
+
+    /// Two vCPUs (spinning, IF = 1) with a counting handler for the board vector in each IDT.
+    fn one_shot_board(vector: u8) -> (LoadedFirmwareBoard, std::rc::Rc<std::cell::Cell<u32>>) {
+        let mut board = board(2);
+        system(&mut board, false);
+        patch(&mut board, CODE_0, &[0xEB, 0xFE]);
+        patch(&mut board, CODE_1, &[0xEB, 0xFE]);
+        patch(
+            &mut board,
+            HANDLER_BOARD,
+            &counting_handler(COUNTER_0, false),
+        );
+        patch(
+            &mut board,
+            HANDLER_AP_BOARD,
+            &counting_handler(COUNTER_1, false),
+        );
+        gate(&mut board, IDT_AT, vector, HANDLER_BOARD);
+        gate(&mut board, IDT_1, vector, HANDLER_AP_BOARD);
+        let (cr3_0, cr3_1) = (
+            tables(&mut board, TABLES_0, 0x60_0000, 0),
+            tables(&mut board, TABLES_1, 0x80_0000, 0),
+        );
+        install(
+            &mut board,
+            0,
+            long_state(CODE_0, STACK_0, cr3_0, true),
+            0xD01,
+        );
+        let mut ap = long_state(CODE_1, STACK_1, cr3_1, false);
+        ap.idtr = Some(od_isa::state::Idtr {
+            base: IDT_1,
+            limit: 0xFFF,
+        });
+        install(&mut board, 1, ap, 0xD01);
+        let acks = std::rc::Rc::new(std::cell::Cell::new(0));
+        board.irq_source = Box::new(OneShot {
+            vector,
+            acks: acks.clone(),
+        });
+        (board, acks)
+    }
+
+    #[test]
+    fn the_board_source_is_offered_to_the_boot_processor_only() {
+        let (mut board, acks) = one_shot_board(BOARD_VECTOR);
+        quantum(&mut board, 1, 50).unwrap();
+        assert_eq!(
+            acks.get(),
+            0,
+            "an application processor is not offered the source"
+        );
+        assert_eq!(dword(&mut board, COUNTER_1), 0);
+        quantum(&mut board, 0, 50).unwrap();
+        assert_eq!(
+            acks.get(),
+            1,
+            "the boot processor takes it at its first boundary"
+        );
+        assert_eq!(dword(&mut board, COUNTER_0), 1);
+        // The source is spent: nothing more is delivered.
+        quantum(&mut board, 0, 50).unwrap();
+        assert_eq!(dword(&mut board, COUNTER_0), 1);
+    }
+
+    #[test]
+    fn the_board_vector_is_acknowledged_by_its_own_source() {
+        let (mut board, acks) = one_shot_board(BOARD_VECTOR);
+        // The boot processor also has a Fixed vector in its own Local APIC (software-enabled by the
+        // guest's first instructions, a self-IPI would do the same).
+        patch(
+            &mut board,
+            HANDLER_LAPIC,
+            &counting_handler(COUNTER_LAPIC, false),
+        );
+        gate(&mut board, IDT_AT, LAPIC_VECTOR, HANDLER_LAPIC);
+        let mut program = enable_lapic();
+        program.extend([0x90, 0x90, 0x90]); // nops: boundaries after the LAPIC is enabled
+        program.extend([0xEB, 0xFE]);
+        patch(&mut board, CODE_0, &program);
+        board
+            .local_apic_of(1)
+            .unwrap()
+            .write_icr(1, 0, FIXED | u32::from(LAPIC_VECTOR))
+            .unwrap();
+        quantum(&mut board, 0, 60).unwrap();
+        // The board's vector was delivered and acknowledged in the board's source ...
+        assert_eq!((acks.get(), dword(&mut board, COUNTER_0)), (1, 1));
+        // ... the Local APIC's vector through its own IDT gate and acknowledged in the LAPIC of the
+        // boot processor (IRR -> ISR; the handler does not EOI), not in the board's source.
+        assert_eq!(dword(&mut board, COUNTER_LAPIC), 1);
+        assert_eq!(vector_state(&board, 0, LAPIC_VECTOR), (false, true));
+    }
+
+    #[test]
+    fn an_unwakeable_board_ends_all_idle_without_a_jump() {
+        // Both vCPUs halted (the boot processor with IF = 1), the source has an edge at 40 ns but no
+        // vector and no wake time (a masked line): nothing can wake anybody. The jump to the edge is
+        // not offered (no wake time), the run ends AllIdle, not IdleNoProgress and not a loop of
+        // jumps.
+        let mut board = board(2);
+        let cr3 = tables(&mut board, TABLES_1, 0x80_0000, 0);
+        for cpu in 0..2 {
+            let mut state = long_state(CODE_1, STACK_1, cr3, false);
+            state.activity = Some(CpuActivity::Halted);
+            state.rflags = if cpu == 0 { 2 | (1 << 9) } else { 2 };
+            install(&mut board, cpu, state, 0xD01);
+        }
+        board.irq_source = Box::new(EdgeAt(40));
+        let mut host = BoardSmpHost::new(
+            &mut board,
+            |board: &mut LoadedFirmwareBoard, cpu, budget, stop: &mut dyn FnMut() -> bool| {
+                with_set(|set| board.run_vcpu_set_quantum(cpu, budget, stop, set))
+            },
+        )
+        .unwrap();
+        let mut scheduler =
+            SmpScheduler::new(2, QuantumPolicy::Fixed(10), StopRequest::new()).unwrap();
+        assert_eq!(scheduler.run(&mut host, 100).unwrap(), Finished::AllIdle);
+        assert_eq!(scheduler.idle(), (0, 0));
     }
 }
