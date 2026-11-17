@@ -4683,7 +4683,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-351 — S7-04: exact helper `SETBE BPL` frontier (`40 0F 96 C5`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-350.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017e8`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `40 0F 96 C5` write SETBE's `CF || ZF` result to BPL. REX presence selects BPL rather than CH; upper RBP, flags, and definedness remain unchanged.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner advances to `Unsupported { opcode: 132 }` at RIP `0x2017ec` after 9,070 retired instructions; COM1 is empty.
+- **Проверка:** four focused tests cover all CF/ZF truth-table combinations with defined/undefined metadata, BPL-only write and upper-RBP preservation, final-ModRM fetch-fault atomicity, neighbors, CPL3 and other-profile isolation. Full od-isa suites, paged machine quantum, scoped cargo check, rustfmt and diff-check pass; independent review approved with no findings.
+
+### ISSUE-352 — S7-04: exact helper `TEST byte ptr [RSP+7],BPL` frontier (`40 84 6C 24 07`)
+- **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-351.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017ec`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this exact SETBE register form after 9,069 retired instructions. The base profile does not yet admit it.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 150 }` at RIP `0x2017e8`; COM1 is empty.
+- **Суть и последствия:** firmware reaches this exact memory TEST form after 9,070 retired instructions. The base profile does not yet admit it.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 132 }` at RIP `0x2017ec`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.

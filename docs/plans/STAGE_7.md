@@ -1003,3 +1003,19 @@ od-isa suites pass (2,322/1,591/126/29/6/1,091/7/15; zero doc tests), paged
 machine quantum passes (75/75), scoped cargo check passes with
 one existing unused page-walk helper warning, and scoped rustfmt/diff-check pass.
 Independent review approved with no findings.
+
+### Текущий статус — 2026-11-17 — ISSUE-351
+
+ISSUE-351 admits only exact bytes `40 0F 96 C5` (`SETBE BPL`) in base
+`PagedCpl0ProbeV1`. REX presence selects BPL instead of CH. The condition is
+`CF || ZF`; only RBP[7:0] is written, preserving the upper RBP bits and all
+RFLAGS/definedness. Runner advances to ISSUE-352, `40 84 6C 24 07`
+(`TEST byte ptr [RSP+7],BPL`) at `0x2017ec` after 9,070 retired instructions;
+COM1 is empty. ISSUE-201 remains the unrelated pair of stale CLD-unsupported
+full-machine expectations. Do not mark the Stage 7 gate complete.
+
+Four focused tests cover the CF/ZF truth table with defined/undefined metadata,
+the partial-register write, final-ModRM fetch-fault atomicity, neighbors and
+CPL3/other-profile isolation; the other-profile matrix passes. Full od-isa,
+paged machine quantum, scoped cargo check, rustfmt and diff-check pass.
+Independent review approved with no findings.

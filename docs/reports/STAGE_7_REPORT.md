@@ -2291,3 +2291,21 @@ Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`)
 advances after 9,069 retired instructions to `40 0F 96 C5` (`SETBE BPL`,
 ISSUE-351) at RIP `0x2017e8`, `Unsupported { opcode: 150 }`; COM1 is empty.
+
+### S7-04 exact helper `SETBE BPL` — ISSUE-351
+
+`PagedCpl0ProbeV1` admits only exact bytes `40 0F 96 C5`. REX presence makes
+ModRM r/m=5 select BPL instead of CH. SETBE writes 1 when CF or ZF is set and
+0 otherwise; it modifies only RBP[7:0], preserving upper RBP, all flags, and
+flag-definedness. Other conditions/destinations/REX forms, prefixes, CPL3 and
+other profiles remain unsupported.
+
+Four focused profile tests cover every CF/ZF pair with each flag defined and
+undefined, BPL-only mutation, final-ModRM fetch-fault atomicity, neighbors, and
+CPL3/other-profile isolation. Full od-isa suites, paged machine quantum, scoped
+cargo check, rustfmt, and diff-check pass. Independent review approved with no
+findings. ISSUE-201's stale CLD expectations remain unrelated and open.
+
+The firmware runner retires 9,070 instructions and stops at `40 84 6C 24 07`
+(`TEST byte ptr [RSP+7],BPL`, ISSUE-352) at RIP `0x2017ec`, with
+`Unsupported { opcode: 132 }`; COM1 remains empty.

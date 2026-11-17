@@ -28085,3 +28085,21 @@ existing unused page-walk helper warning, and scoped rustfmt/diff-check pass.
 Independent review approved with no findings. Firmware advances to ISSUE-351 (`40 0F 96 C5`, `SETBE BPL`)
 at RIP `0x2017e8` after 9,069 retired instructions; COM1 is empty. ISSUE-201's
 CLD test caveat remains open and unrelated.
+
+### S7-04 CPU-profile slice: exact `SETBE BPL` (ISSUE-351)
+
+`PagedCpl0ProbeV1` admits only exact bytes `40 0F 96 C5`. REX presence selects
+BPL rather than CH. SETBE evaluates `CF || ZF`, writes only RBP[7:0] as 0 or 1,
+and preserves upper RBP, RFLAGS, and definedness. A fetch fault before the final
+ModRM byte leaves CPU state unchanged. Other conditions, byte destinations,
+REX forms, prefixes, CPL3, and other profiles remain unsupported.
+
+Four focused tests cover all CF/ZF values with defined/undefined metadata,
+partial-register preservation, final-ModRM fetch-fault atomicity, neighbors,
+and CPL3/profile isolation. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,095/7/15; zero doc tests), paged machine quantum passes
+(75/75), scoped cargo check passes with one existing unused page-walk helper
+warning, and scoped rustfmt/diff-check pass. Independent review approved with no
+findings. Firmware advances to ISSUE-352 (`40 84 6C 24 07`, `TEST byte ptr
+[RSP+7],BPL`) at RIP `0x2017ec` after 9,070 retired instructions; COM1 is empty.
+ISSUE-201's unrelated CLD expectation caveat remains open.

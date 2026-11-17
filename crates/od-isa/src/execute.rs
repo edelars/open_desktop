@@ -20840,6 +20840,30 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, u64::from(condition.evaluate(state.rflags)));
             state.rip = next_rip;
         }
+        // S7-04: exact `40 0F 96 C5` writes SETBE's CF||ZF result only to
+        // BPL. REX presence selects BPL rather than CH; preserve upper RBP
+        // and all flags/definedness.
+        Operation::SetCondition {
+            condition,
+            dst: Operand::Register(destination),
+            raw_modrm,
+        } if base_profile
+            && condition == ConditionCode::BelowOrEqual
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x96
+            && instruction.length == 4
+            && instruction.operand_size == OperandSize::Byte
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x40),
+                    ..Prefixes::default()
+                })
+            && raw_modrm == 0xc5
+            && destination == RegisterView::low(Register::Rbp, OperandSize::Byte) =>
+        {
+            state.write(destination, u64::from(condition.evaluate(state.rflags)));
+            state.rip = next_rip;
+        }
         // S7-04: exact `41 0F 96 C3` writes SETBE's unsigned-below-or-equal
         // result only to R11B. REX.B selects r/m=3; preserve upper R11/flags.
         Operation::SetCondition {

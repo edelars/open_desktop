@@ -11786,17 +11786,16 @@ fn rust_helper_setae_bpl_fetch_fault_is_atomic() {
 #[test]
 fn rust_helper_setae_bpl_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
-        (&[0x40, 0x0f, 0x96, 0xc5], 0x96), // SETBE BPL, wrong condition
-        (&[0x40, 0x0f, 0x93, 0xc6], 0x93), // SETAE SIL
-        (&[0x40, 0x0f, 0x93, 0xc4], 0x93), // SETAE SPL
-        (&[0x40, 0x0f, 0x93, 0xc0], 0x93), // SETAE AL
-        (&[0x40, 0x0f, 0x93, 0xcd], 0x93), // different raw ModRM.reg bits
-        (&[0x41, 0x0f, 0x93, 0xc5], 0x93), // REX.B selects R13B
-        (&[0x44, 0x0f, 0x93, 0xc5], 0x93), // REX.R variant
-        (&[0x48, 0x0f, 0x93, 0xc5], 0x93), // REX.W variant
-        (&[0x0f, 0x93, 0xc5], 0x93),       // no REX selects CH, not BPL
+        (&[0x40, 0x0f, 0x93, 0xc6], 0x93),             // SETAE SIL
+        (&[0x40, 0x0f, 0x93, 0xc4], 0x93),             // SETAE SPL
+        (&[0x40, 0x0f, 0x93, 0xc0], 0x93),             // SETAE AL
+        (&[0x40, 0x0f, 0x93, 0xcd], 0x93),             // different raw ModRM.reg bits
+        (&[0x41, 0x0f, 0x93, 0xc5], 0x93),             // REX.B selects R13B
+        (&[0x44, 0x0f, 0x93, 0xc5], 0x93),             // REX.R variant
+        (&[0x48, 0x0f, 0x93, 0xc5], 0x93),             // REX.W variant
+        (&[0x0f, 0x93, 0xc5], 0x93),                   // no REX selects CH, not BPL
         (&[0x40, 0x0f, 0x93, 0x05, 0, 0, 0, 0], 0x93), // memory destination
-        (&[0x66, 0x40, 0x0f, 0x93, 0xc5], 0x93), // operand-size prefix
+        (&[0x66, 0x40, 0x0f, 0x93, 0xc5], 0x93),       // operand-size prefix
     ];
     for (bytes, opcode) in cases {
         let mut memory = Memory::new(bytes);
@@ -12398,7 +12397,6 @@ fn rust_helper_setb_bpl_fetch_fault_is_atomic() {
 #[test]
 fn rust_helper_setb_bpl_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
-        (&[0x40, 0x0f, 0x96, 0xc5], 0x96),       // SETBE BPL
         (&[0x40, 0x0f, 0x92, 0xc4], 0x92),       // SETB SPL
         (&[0x40, 0x0f, 0x92, 0xcd], 0x92),       // ignored ModRM.reg bits; still BPL
         (&[0x41, 0x0f, 0x92, 0xc5], 0x92),       // REX.B selects R13B
@@ -12432,6 +12430,139 @@ fn rust_helper_setb_bpl_neighbours_stay_unsupported_without_mutation() {
 #[test]
 fn rust_helper_setb_bpl_is_unsupported_in_cpl3_profile() {
     let bytes = [0x40, 0x0f, 0x92, 0xc5];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x40 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn rust_helper_setbe_bpl_obeys_cf_zf_and_preserves_state() {
+    let code = [0x40, 0x0f, 0x96, 0xc5]; // SETBE BPL (REX selects BPL rather than CH)
+    for cf_defined in [false, true] {
+        for zf_defined in [false, true] {
+            let defined = DEFINED
+                & if cf_defined { u64::MAX } else { !(1 << 0) }
+                & if zf_defined { u64::MAX } else { !(1 << 6) };
+            for carry in [false, true] {
+                for zero in [false, true] {
+                    let mut memory = Memory::new(&code);
+                    let mut cpu = state();
+                    cpu.gpr = gpr_patterns();
+                    cpu.gpr[Register::Rbp as usize] = 0xaabb_ccdd_eeff_00aa;
+                    cpu.rflags = (state().rflags & !((1 << 0) | (1 << 6)))
+                        | u64::from(carry)
+                        | (u64::from(zero) << 6);
+                    let before = cpu.clone();
+
+                    let result = step_with_defined(
+                        &mut cpu,
+                        &mut memory,
+                        &mut Pio::default(),
+                        ring0(),
+                        defined,
+                    );
+
+                    assert_eq!(result.exit, PagedProbeExit::Retired);
+                    assert_eq!(result.instructions_executed, 1);
+                    assert_eq!(result.rflags_defined, defined);
+                    let mut expected = before;
+                    expected.rip = RIP + code.len() as u64;
+                    expected.gpr[Register::Rbp as usize] =
+                        (expected.gpr[Register::Rbp as usize] & !0xff) | u64::from(carry || zero);
+                    assert_eq!(
+                        cpu, expected,
+                        "CF={carry}, ZF={zero}, CF-defined={cf_defined}, ZF-defined={zf_defined}"
+                    );
+                    assert_eq!((memory.reads, memory.writes), (0, 0));
+                    assert!(memory.write_addresses.is_empty());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn rust_helper_setbe_bpl_fetch_fault_is_atomic() {
+    let rip = RIP + 0xffd;
+    let code = [0x40, 0x0f, 0x96];
+    let mut memory = memory_with_code_at(&code, rip);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    memory.fail_fetch_at = Some((rip + 3, page_fault(0x10, rip + 3)));
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 3),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(memory.write_addresses.is_empty());
+}
+
+#[test]
+fn rust_helper_setbe_bpl_neighbours_stay_unsupported_without_mutation() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x40, 0x0f, 0x97, 0xc5], 0x97),             // SETA BPL
+        (&[0x40, 0x0f, 0x94, 0xc5], 0x94),             // SETE BPL
+        (&[0x40, 0x0f, 0x96, 0xc4], 0x96),             // SETBE SPL
+        (&[0x40, 0x0f, 0x96, 0xc6], 0x96),             // SETBE SIL
+        (&[0x40, 0x0f, 0x96, 0xc0], 0x96),             // SETBE AL
+        (&[0x40, 0x0f, 0x96, 0xcd], 0x96),             // different raw ModRM.reg bits
+        (&[0x41, 0x0f, 0x96, 0xc5], 0x96),             // REX.B selects R13B
+        (&[0x42, 0x0f, 0x96, 0xc5], 0x96),             // REX.X variant
+        (&[0x44, 0x0f, 0x96, 0xc5], 0x96),             // REX.R variant
+        (&[0x48, 0x0f, 0x96, 0xc5], 0x96),             // REX.W
+        (&[0x0f, 0x96, 0xc5], 0x96),                   // no REX selects CH, not BPL
+        (&[0x40, 0x0f, 0x96, 0x05, 0, 0, 0, 0], 0x96), // memory destination
+        (&[0x66, 0x40, 0x0f, 0x96, 0xc5], 0x96),       // operand-size prefix
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "bytes {bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "bytes {bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(memory.write_addresses.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_setbe_bpl_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x40, 0x0f, 0x96, 0xc5];
     let mut memory = Memory::new(&bytes);
     let mut cpu = state();
     cpu.cr3 = Some(0x1000);
@@ -33816,6 +33947,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x41, 0x0f, 0x92, 0xc3][..], 0x92),
         (&[0x41, 0x0f, 0x92, 0xc2][..], 0x92),
         (&[0x41, 0x0f, 0x95, 0xc2][..], 0x95),
+        (&[0x40, 0x0f, 0x96, 0xc5][..], 0x96),
         (&[0x41, 0x0f, 0x97, 0xc3][..], 0x97),
         (&[0x41, 0x0f, 0x97, 0xc5][..], 0x97),
         (&[0x41, 0x0f, 0x96, 0xc3][..], 0x96),
