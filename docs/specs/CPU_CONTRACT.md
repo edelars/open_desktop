@@ -28582,3 +28582,26 @@ suites pass (2,322/1,591/126/29/6/1,230/7/15; zero doc tests), paged machine
 quantum passes (106/106), workspace all-targets offline cargo check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review
 approved with no findings.
+
+
+### ISSUE-380: `48 83 EC 18` — SUB RSP,0x18
+
+The base `PagedCpl0ProbeV1` admits only exact no-prefix `48 83 EC 18`. Subtract
+sign-extended imm8 `0x18` at qword width using shared arithmetic result,
+RFLAGS, and definedness semantics. Only RSP, arithmetic flags/definedness and
+RIP change. This is register arithmetic: it performs no stack memory access
+and does not validate RSP canonicality, including after wraparound. Other
+immediates/widths, prefixes, CPL3 and other profiles remain unsupported.
+
+The runner advances to `66 C7 44 24 10 00 00` (word store, ISSUE-381) at RIP
+`0x20123e` after 9,858 retired instructions; COM1 is empty. Firmware SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Three focused tests pass for arithmetic flags/definedness and boundary results,
+noncanonical-result/no-memory behavior, and fetch-fault atomicity; neighbor and
+profile-isolation tests pass. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,233/7/15; zero doc tests), paged machine quantum
+passes (106/106), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with
+no findings.

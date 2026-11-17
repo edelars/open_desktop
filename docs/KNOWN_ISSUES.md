@@ -4915,7 +4915,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-380 — S7-04: exact helper SUB RSP frontier (`48 83 EC 18`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-379.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20123a`.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact `48 83 EC 18` subtracts sign-extended imm8 `0x18` from qword RSP. Shared arithmetic semantics update result flags and definedness; only RSP/RFLAGS/RIP change. No memory access or canonicality check occurs, even if the resulting RSP is noncanonical. Other immediates/widths/prefixes and CPL3/other profiles remain unsupported.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; after admission runner retired 9,858 instructions and reported `Unsupported { opcode: 199 }` at RIP `0x20123e`; bytes are `66 C7 44 24 10 00 00` (word memory MOV immediate; ISSUE-381); COM1 is empty.
+- **Проверка:** three focused ISA tests cover qword arithmetic flags/definedness and wrap, noncanonical result with no memory access, and immediate-fetch atomicity; neighbor, CPL3 and other-profile rejection tests pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,233/7/15; zero doc tests), paged machine quantum passes (106/106), workspace all-targets offline cargo check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-381 — S7-04: exact helper word store frontier (`66 C7 44 24 10 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-380.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20123e`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches `SUB RSP,0x18` after ISSUE-379; this exact qword stack adjustment is not yet admitted by the bounded base profile.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,857 instructions and reported `Unsupported { opcode: 131 }` at RIP `0x20123a`; bytes are `48 83 EC 18`; COM1 is empty.
-- **Следующий шаг:** отдельно рассмотреть только точное firmware SUB RSP,0x18 encoding.
+- **Суть и последствия:** firmware reaches `MOV word ptr [RSP+0x10],0` after ISSUE-380; this exact word store is not admitted by the bounded base profile.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,858 instructions and reported `Unsupported { opcode: 199 }` at RIP `0x20123e`; bytes are `66 C7 44 24 10 00 00`; COM1 is empty.
+- **Следующий шаг:** отдельно рассмотреть только точную firmware word store encoding.

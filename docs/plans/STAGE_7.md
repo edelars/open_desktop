@@ -1510,3 +1510,26 @@ suites pass (2,322/1,591/126/29/6/1,230/7/15; zero doc tests), paged machine
 quantum passes (106/106), workspace all-targets offline cargo check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review
 approved with no findings.
+
+
+### ISSUE-380 — exact SUB RSP,0x18 (`48 83 EC 18`)
+
+Admit only exact `48 83 EC 18` in base `PagedCpl0ProbeV1`. The qword SUB
+uses sign-extended imm8 `0x18` and shared arithmetic result/flags semantics;
+update only RSP, RFLAGS/definedness and RIP. It performs no memory access and
+does not validate resulting RSP canonicality. Three focused ISA tests cover
+boundary arithmetic, flag definedness, noncanonical result, no memory access
+and immediate-fetch fault. Neighbor immediates/encodings, CPL3 and other
+profiles remain unsupported.
+
+After admission, the runner retires 9,858 instructions and stops at
+`66 C7 44 24 10 00 00` (word store, ISSUE-381), RIP `0x20123e`, with
+`Unsupported { opcode: 199 }`; COM1 is empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Validation: focused SUB tests 3/3 pass, plus neighbor/CPL3/other-profile
+rejection tests. Full od-isa suites pass (2,322/1,591/126/29/6/1,233/7/15;
+zero doc tests), paged machine quantum passes (106/106), workspace all-targets
+offline cargo check passes with existing warnings, and scoped rustfmt and
+diff-check pass. Independent review approved with no findings.

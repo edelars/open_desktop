@@ -21991,24 +21991,118 @@ fn rust_helper_sub_rsp_imm8_38_fetch_fault_is_atomic() {
 }
 
 #[test]
+fn rust_helper_sub_rsp_imm8_18_reserves_exact_frame_and_updates_flags() {
+    let code = [0x48, 0x83, 0xec, 0x18]; // SUB RSP,sign-extended imm8 0x18
+    let arithmetic_flags = 0x8d5;
+    let initial_defined = DEFINED & !arithmetic_flags;
+    for (rsp, result_rsp, result_flags) in [
+        (0x18u64, 0, 0x044),
+        (0x17, u64::MAX, 0x095),
+        (0x8000_0000_0000_0000, 0x7fff_ffff_ffff_ffe8, 0x814),
+        (u64::MAX, 0xffff_ffff_ffff_ffe7, 0x084),
+        (0, 0xffff_ffff_ffff_ffe8, 0x095),
+    ] {
+        assert_eq!(rsp.wrapping_sub(0x18), result_rsp);
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::Rsp as usize] = rsp;
+        cpu.rflags = 0x2 | (1 << 9) | (1 << 10) | (1 << 18) | arithmetic_flags;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+
+        let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), initial_defined);
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, initial_defined | arithmetic_flags);
+        let mut expected = before;
+        expected.gpr[Register::Rsp as usize] = result_rsp;
+        expected.rflags = (expected.rflags & !arithmetic_flags) | result_flags;
+        expected.rip = RIP + code.len() as u64;
+        assert_eq!(cpu, expected, "initial RSP={rsp:#018x}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(memory.write_addresses.is_empty());
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_sub_rsp_imm8_18_does_not_validate_noncanonical_result() {
+    let code = [0x48, 0x83, 0xec, 0x18];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsp as usize] = 0x0000_8000_0000_0018;
+    cpu.rflags = 0x8d7;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED | 0x8d5);
+    let mut expected = before;
+    expected.gpr[Register::Rsp as usize] = 0x0000_8000_0000_0000;
+    expected.rflags = (expected.rflags & !0x8d5) | 0x004;
+    expected.rip = RIP + code.len() as u64;
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(memory.write_addresses.is_empty());
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_helper_sub_rsp_imm8_18_fetch_fault_is_atomic() {
+    let rip = RIP + 0xffd;
+    let code = [0x48, 0x83, 0xec];
+    let mut memory = memory_with_code_at(&code, rip);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsp as usize] = 0x14_fff8;
+    cpu.rflags = 0x8d7;
+    let before = cpu.clone();
+    memory.fail_fetch_at = Some((rip + 3, page_fault(0x10, rip + 3)));
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 3),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn rust_entry_sub_rsp_imm8_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
-        (&[0x48, 0x83, 0xec, 0x37], 0x83),          // neighboring immediate
-        (&[0x48, 0x83, 0xec, 0x39], 0x83),          // neighboring immediate
-        (&[0x48, 0x83, 0xec, 0x57], 0x83),          // different immediate
-        (&[0x48, 0x83, 0xec, 0x59], 0x83),          // different immediate
-        (&[0x48, 0x83, 0xc4, 0x58], 0x83),          // ADD RSP,0x58
-        (&[0x48, 0x83, 0xfc, 0x58], 0x83),          // CMP RSP,0x58
-        (&[0x48, 0x83, 0xed, 0x58], 0x83),          // SUB RBP,0x58
-        (&[0x83, 0xec, 0x58], 0x83),                // dword SUB ESP,0x58
-        (&[0x48, 0x81, 0xec, 0x58, 0, 0, 0], 0x81), // immediate dword form
-        (&[0x48, 0x29, 0xec], 0x29),                // SUB RSP,RBP
+        (&[0x48, 0x83, 0xec, 0x17], 0x83),             // adjacent immediate
+        (&[0x48, 0x83, 0xec, 0x19], 0x83),             // adjacent immediate
+        (&[0x48, 0x83, 0xec, 0x37], 0x83),             // neighboring immediate
+        (&[0x48, 0x83, 0xec, 0x39], 0x83),             // neighboring immediate
+        (&[0x48, 0x83, 0xec, 0x57], 0x83),             // different immediate
+        (&[0x48, 0x83, 0xec, 0x59], 0x83),             // different immediate
+        (&[0x48, 0x83, 0xc4, 0x58], 0x83),             // ADD RSP,0x58
+        (&[0x48, 0x83, 0xfc, 0x58], 0x83),             // CMP RSP,0x58
+        (&[0x48, 0x83, 0xed, 0x58], 0x83),             // SUB RBP,0x58
+        (&[0x83, 0xec, 0x58], 0x83),                   // dword SUB ESP,0x58
+        (&[0x48, 0x81, 0xec, 0x58, 0, 0, 0], 0x81),    // immediate dword form
+        (&[0x48, 0x29, 0xec], 0x29),                   // SUB RSP,RBP
         (&[0x48, 0x83, 0x6c, 0x24, 0x58, 0x58], 0x83), // memory destination
-        (&[0x66, 0x48, 0x83, 0xec, 0x58], 0x83),    // operand-size prefix
-        (&[0x67, 0x48, 0x83, 0xec, 0x58], 0x83),    // address-size prefix
-        (&[0xf3, 0x48, 0x83, 0xec, 0x58], 0x83),    // REP prefix
-        (&[0x2e, 0x48, 0x83, 0xec, 0x58], 0x83),    // segment prefix
-        (&[0x4c, 0x83, 0xec, 0x58], 0x83),          // different REX
+        (&[0x66, 0x48, 0x83, 0xec, 0x58], 0x83),       // operand-size prefix
+        (&[0x67, 0x48, 0x83, 0xec, 0x58], 0x83),       // address-size prefix
+        (&[0xf3, 0x48, 0x83, 0xec, 0x58], 0x83),       // REP prefix
+        (&[0x2e, 0x48, 0x83, 0xec, 0x58], 0x83),       // segment prefix
+        (&[0x4c, 0x83, 0xec, 0x58], 0x83),             // different REX
     ];
     for (bytes, opcode) in cases {
         let mut memory = Memory::new(bytes);
@@ -22033,7 +22127,11 @@ fn rust_entry_sub_rsp_imm8_neighbours_stay_unsupported_without_mutation() {
 
 #[test]
 fn rust_entry_sub_rsp_imm8_is_unsupported_in_cpl3_profile() {
-    for bytes in [&[0x48, 0x83, 0xec, 0x58][..], &[0x48, 0x83, 0xec, 0x38][..]] {
+    for bytes in [
+        &[0x48, 0x83, 0xec, 0x58][..],
+        &[0x48, 0x83, 0xec, 0x38][..],
+        &[0x48, 0x83, 0xec, 0x18][..],
+    ] {
         let mut memory = Memory::new(bytes);
         let mut cpu = state();
         cpu.cr3 = Some(0x1000);
@@ -37946,6 +38044,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x55][..], 0x55),
         (&[0x48, 0x83, 0xec, 0x58][..], 0x83),
         (&[0x48, 0x83, 0xec, 0x38][..], 0x83),
+        (&[0x48, 0x83, 0xec, 0x18][..], 0x83),
         (&[0x48, 0x81, 0xec, 0xb8, 0, 0, 0][..], 0x81),
         (&[0x0f, 0xb7, 0x7e, 0x08][..], 0xb7),
         (&[0x48, 0x89, 0xfb][..], 0x89),
