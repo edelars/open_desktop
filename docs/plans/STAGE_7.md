@@ -2496,3 +2496,17 @@ empty. Full od-isa passes (2,322/1,591/126/29/6/1,499/7/15; zero doc tests),
 paged machine quantum passes (110/110), workspace all-targets offline check
 passes with existing warnings, and scoped rustfmt/diff-check pass. Independent
 review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-440 — exact SETAE AL (`0F 93 C0`)
+
+Admit only exact no-prefix `0F 93 C0` in the base `PagedCpl0ProbeV1` profile.
+SETAE writes 1 to AL iff CF=0 and 0 otherwise; the upper 56 bits of RAX,
+other GPRs, RFLAGS and flag definedness are unchanged. Tests cover both CF
+values with defined and undefined CF metadata, atomic final-ModRM fetch fault,
+neighboring encodings, CPL3 and other-profile isolation. Runner advances to
+`44 08 C0` (OR AL,R8B, ISSUE-441), RIP `0x2013dd`, after 9,933 retired
+instructions; Unsupported opcode 8, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,503/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.

@@ -29523,3 +29523,17 @@ passes: od-isa (2,322/1,591/126/29/6/1,499/7/15; zero doc tests), paged machine
 quantum (110/110), workspace all-targets offline check, scoped rustfmt and
 diff-check. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD
 caveat.
+
+### ISSUE-440 — bounded SETAE AL
+
+The base paged profile admits only exact no-prefix bytes `0F 93 C0`. SETAE
+tests CF and writes 1 to AL when CF=0, otherwise 0. The partial-byte write
+preserves upper RAX; all other GPRs, RFLAGS and flag definedness are preserved.
+A fault fetching the final ModRM byte commits no state. This exact form is
+rejected in CPL3 and other profiles, without broadening neighboring
+conditions/registers/prefixes. Firmware advances to `44 08 C0` (OR AL,R8B,
+ISSUE-441) at RIP `0x2013dd` after 9,933 retired instructions. Full validation
+passes: od-isa (2,322/1,591/126/29/6/1,503/7/15; zero doc tests), paged machine
+quantum (110/110), workspace all-targets offline check, scoped rustfmt and
+diff-check. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD
+caveat.

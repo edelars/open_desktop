@@ -20764,6 +20764,25 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, u64::from(condition.evaluate(state.rflags)));
             state.rip = next_rip;
         }
+        // S7-04: exact no-prefix `0F 93 C0` materializes SETAE only in AL.
+        // The partial-byte write preserves upper RAX, RFLAGS and definedness.
+        Operation::SetCondition {
+            condition,
+            dst: Operand::Register(destination),
+            raw_modrm,
+        } if base_profile
+            && condition == ConditionCode::AboveOrEqual
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x93
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Byte
+            && instruction.prefixes == Prefixes::default()
+            && raw_modrm == 0xc0
+            && destination == RegisterView::low(Register::Rax, OperandSize::Byte) =>
+        {
+            state.write(destination, u64::from(condition.evaluate(state.rflags)));
+            state.rip = next_rip;
+        }
         // S7-04: the helper materializes unsigned-greater-or-equal only in DIL
         // with exact `40 0F 93 C7`; require the otherwise semantically ignored
         // ModRM.reg bits and bare REX prefix to match the firmware encoding.

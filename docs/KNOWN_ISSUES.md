@@ -5479,7 +5479,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-440 — S7-04: exact SETAE AL frontier (`0F 93 C0`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-439.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013da`.
-- **Статус:** открыта; следующая точная инструкция Stage 7.
-- **Суть и последствия:** exact `0F 93 C0` (`SETAE AL`) remains unsupported pending bounded implementation and tests.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact no-prefix `0F 93 C0` (`SETAE AL`). SETAE writes 1 to AL iff CF=0, otherwise 0; the upper 56 bits of RAX, other GPRs, RFLAGS and flag definedness are preserved. Final-ModRM fetch faults are atomic. CPL3 and other profiles do not admit this exact form.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-439 runner retired 9,932 instructions and reported `Unsupported { opcode: 147 }` at RIP `0x2013da`; COM1 is empty. Bytes at the link-base shadow are `0F 93 C0`.
-- **Следующий шаг:** implement this exact SETAE accumulator-byte form and add condition/flags-preservation/profile coverage.
+- **Результат:** runner now retires 9,933 instructions and stops at RIP `0x2013dd`, bytes `44 08 C0` (`OR AL,R8B`, ISSUE-441), `Unsupported { opcode: 8 }`; COM1 is empty.
+- **Проверка:** four focused tests cover CF=0/1 with defined and undefined CF metadata, low-AL-only mutation and upper-RAX preservation, flags/definedness/full-state preservation, final-ModRM fetch-fault atomicity, neighbors and CPL3; the other-profile matrix passes 1/1. Full od-isa passes (2,322/1,591/126/29/6/1,503/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-441 — S7-04: exact OR AL,R8B frontier (`44 08 C0`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-440.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013dd`.
+- **Статус:** открыта; следующая точная инструкция Stage 7.
+- **Суть и последствия:** exact `44 08 C0` (`OR AL,R8B`) remains unsupported pending bounded implementation and tests.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-440 runner retired 9,933 instructions and reported `Unsupported { opcode: 8 }` at RIP `0x2013dd`; COM1 is empty. Bytes at the link-base shadow are `44 08 C0`.
+- **Следующий шаг:** implement this exact byte-register OR form and add arithmetic-flags, register-preservation and profile coverage.
