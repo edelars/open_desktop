@@ -23314,6 +23314,43 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: exact `49 39 C0` compares qword R8 with RAX. REX.B extends
+        // opcode 39's r/m destination to R8; reg=0 remains RAX. CMP writes
+        // arithmetic flags only and preserves both operands.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Cmp,
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x39
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x49),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R8, OperandSize::Qword)
+            && source == RegisterView::low(Register::Rax, OperandSize::Qword) =>
+        {
+            let lhs = state.read(destination);
+            let rhs = state.read(source);
+            let (_, flags) = arithmetic_result(
+                OperandSize::Qword,
+                ArithmeticKind::Cmp,
+                lhs,
+                rhs,
+                state.rflags,
+            );
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: the helper compares RDI with R13 using exact `4C 39 EF`.
         // REX.R selects the qword source; opcode 39 preserves Intel
         // r/m-destination, reg-source order. CMP writes only arithmetic flags.

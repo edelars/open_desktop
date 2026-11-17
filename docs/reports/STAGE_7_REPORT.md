@@ -2453,3 +2453,16 @@ ISSUE-201's unrelated CLD caveat remains open. Full od-isa
 `cargo fmt --all -- --check` reports the unrelated pre-existing formatting diff
 in `crates/od-host/src/storage_abi_v1.rs`; that file was not changed.
 Independent review approved with no remaining findings.
+
+### ISSUE-361 — CMP R8,RAX
+
+The base profile admits only exact `49 39 C0`: opcode 39 with REX.B compares
+qword R8 (r/m destination) against RAX (reg source). CMP writes no GPR and
+updates arithmetic flags and their definedness. Four focused tests cover
+qword compare vectors, GPR preservation, final-ModRM fetch-fault atomicity,
+neighboring encodings and CPL3; the other-profile rejection matrix passes. The
+firmware runner advances to ISSUE-362, `0F 85 C5 FE FF FF` (JNZ rel32 -0x13b)
+at RIP `0x201814` after 9,080 retired instructions; `Unsupported { opcode: 133 }`,
+COM1 empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201's unrelated CLD caveat remains open. Full od-isa suites pass (2,322/1,591/126/29/6/1,141/7/15; zero doc tests), paged machine quantum passes (79/79), workspace all-targets `cargo check --offline` passes, scoped rustfmt and diff-check pass. Workspace `cargo fmt --all -- --check` still reports pre-existing formatting differences in untouched `crates/od-host/src/storage_abi_v1.rs` and `tools/image-tool/tests/cli.rs`. Independent review approved with no findings.
