@@ -22427,6 +22427,41 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | (crate::ARITHMETIC_FLAGS & !crate::CF),
             };
         }
+        // S7-04: the helper increments only qword R10 with exact `49 FF C2`.
+        // Shared INC semantics preserve CF and update the other arithmetic flags.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Inc,
+            dst: Operand::Register(destination),
+            ..
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xff
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x49),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R10, OperandSize::Qword) =>
+        {
+            let lhs = state.read(destination);
+            let (value, flags) = arithmetic_result(
+                OperandSize::Qword,
+                ArithmeticKind::Inc,
+                lhs,
+                1,
+                state.rflags,
+            );
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | (crate::ARITHMETIC_FLAGS & !crate::CF),
+            };
+        }
         // S7-04: the helper adds signed imm8 +0x3c to R12 with exact
         // `49 83 C4 3C`. REX.W/B select qword R12; reuse shared ADD flags.
         Operation::Arithmetic {

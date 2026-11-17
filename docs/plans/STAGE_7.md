@@ -2553,3 +2553,16 @@ COM1 empty. Full od-isa passes (2,322/1,591/126/29/6/1,516/7/15; zero doc
 tests), paged machine quantum passes (110/110), workspace all-targets offline
 check passes with existing warnings, and scoped rustfmt/diff-check pass.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-444 — exact INC R10 (`49 FF C2`)
+
+Admit only exact `49 FF C2` in the base `PagedCpl0ProbeV1` profile. REX.W+B
+selects qword R10 for INC. Shared INC wraps the qword result, updates OF/SF/ZF/
+AF/PF and their definedness, and preserves CF including CF definedness; other
+GPRs and non-INC state are unchanged. Tests cover edge values, both CF states
+and definedness, final-ModRM fetch atomicity, encoding neighbors, CPL3 and
+other-profile isolation. Runner advances to `4C 39 DB` (CMP RBX,R11, ISSUE-445),
+RIP `0x2013ed`, after 9,937 retired instructions; Unsupported opcode 57, COM1
+empty. Full od-isa passes (2,322/1,591/126/29/6/1,520/7/15; zero doc tests),
+paged machine quantum passes (110/110), workspace all-targets offline check
+passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

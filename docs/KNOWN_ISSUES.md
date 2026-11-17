@@ -5515,7 +5515,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-444 — S7-04: exact INC R10 frontier (`49 FF C2`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-443.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013ea`.
-- **Статус:** открыта; следующая точная инструкция Stage 7.
-- **Суть и последствия:** exact `49 FF C2` (`INC R10`) remains unsupported pending bounded implementation and tests.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `49 FF C2` (`INC R10`). Shared qword INC updates R10 and OF/SF/ZF/AF/PF while preserving CF and its definedness; other GPRs and RFLAGS bits remain unchanged. CPL3 and other profiles do not admit this exact form.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-443 runner retired 9,936 instructions and reported `Unsupported { opcode: 255 }` at RIP `0x2013ea`; COM1 is empty. Bytes at the link-base shadow are `49 FF C2`.
-- **Следующий шаг:** implement this exact qword INC form and add arithmetic-flags/profile coverage.
+- **Результат:** runner now retires 9,937 instructions and stops at RIP `0x2013ed`, bytes `4C 39 DB` (`CMP RBX,R11`, ISSUE-445), `Unsupported { opcode: 57 }`; COM1 is empty.
+- **Проверка:** four focused tests cover qword result, INC flags, CF value/definedness preservation, full state, final-ModRM fetch-fault atomicity, neighboring forms and CPL3; the other-profile matrix includes this exact form and passes 1/1. Full od-isa passes (2,322/1,591/126/29/6/1,520/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-445 — S7-04: exact CMP RBX,R11 frontier (`4C 39 DB`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-444.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013ed`.
+- **Статус:** открыта; следующая точная инструкция Stage 7.
+- **Суть и последствия:** exact `4C 39 DB` (`CMP RBX,R11`) remains unsupported pending bounded implementation and tests.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-444 runner retired 9,937 instructions and reported `Unsupported { opcode: 57 }` at RIP `0x2013ed`; COM1 is empty. Bytes at the link-base shadow are `4C 39 DB`.
+- **Следующий шаг:** implement this exact qword CMP form and add operand-routing/arithmetic-flags/profile coverage.

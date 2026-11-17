@@ -29577,3 +29577,16 @@ exact encoding. Firmware advances to `49 FF C2` (INC R10, ISSUE-444) at RIP
 (2,322/1,591/126/29/6/1,516/7/15; zero doc tests), paged machine quantum
 (110/110), workspace all-targets offline check, scoped rustfmt and diff-check.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-444 — bounded INC R10
+
+The base paged profile admits only exact `49 FF C2`: REX.W+B and opcode FF
+extension /0 select qword R10. INC writes the wrapping result and updates
+OF/SF/ZF/AF/PF plus their definedness while preserving CF's value and
+undefined/defined state. Other GPRs and unrelated RFLAGS bits remain unchanged;
+a final-ModRM fetch fault commits no state. CPL3 and other profiles reject the
+exact encoding. Firmware advances to `4C 39 DB` (CMP RBX,R11, ISSUE-445) at RIP
+`0x2013ed` after 9,937 retired instructions. Full validation passes: od-isa
+(2,322/1,591/126/29/6/1,520/7/15; zero doc tests), paged machine quantum
+(110/110), workspace all-targets offline check, scoped rustfmt and diff-check.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
