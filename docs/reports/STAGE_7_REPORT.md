@@ -3594,3 +3594,16 @@ passes (2,322/1,591/126/29/6/1,434/7/15; zero doc tests), paged machine quantum
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-424 — exact `TEST R12B,2` (`41 F6 C4 02`)
+
+Admitted only this exact immediate byte TEST in the base paged profile. It reads
+R12B and immediate 2, writes no GPR, clears CF/OF, updates SF/ZF/PF, and marks
+AF undefined while retaining its concrete value. Four focused tests and the
+other-profile matrix (1/1) pass. Runner advances after 9,914 retired
+instructions to `45 89 C5` (MOV R13D,R8D, ISSUE-425) at RIP `0x201339`,
+Unsupported opcode 137, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,438/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
+remains the unrelated CLD caveat.

@@ -5322,7 +5322,17 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-424 — S7-04: exact TEST R12B,2 frontier (`41 F6 C4 02`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-423.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201333`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware reaches an immediate byte TEST on R12B; this exact form and its logical flag behavior are not yet admitted.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `41 F6 C4 02` (`TEST R12B,2`). The byte TEST reads R12B and immediate 2, writes no GPR, clears CF/OF, updates SF/ZF/PF, and marks AF undefined while preserving its concrete value. Other immediate/register/width/prefix forms remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,912 instructions and reported `Unsupported { opcode: 246 }` at RIP `0x201333`; COM1 is empty. Bytes at the link-base shadow are `41 F6 C4 02`.
-- **Следующий шаг:** verify TEST R12B immediate semantics and admit only this encoding.
+- **Результат:** runner now retires 9,914 instructions and stops at RIP `0x201339`, bytes `45 89 C5` (`MOV R13D,R8D`, ISSUE-425), `Unsupported { opcode: 137 }`; COM1 is empty.
+- **Проверка:** four focused TEST/state/flags/definedness/fetch-fault/neighbor/CPL3 tests and other-profile matrix 1/1 pass. Full od-isa passes (2,322/1,591/126/29/6/1,438/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+- **Следующий шаг:** ISSUE-425, exact `45 89 C5` (`MOV R13D,R8D`) at RIP `0x201339`.
+
+### ISSUE-425 — S7-04: exact MOV R13D,R8D frontier (`45 89 C5`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-424.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201339`.
+- **Статус:** открыта.
+- **Суть и последствия:** the runner reaches exact `45 89 C5`, which decodes as `MOV R13D,R8D`: REX.R extends the ModRM reg source to R8D and REX.B extends the r/m destination to R13D; the dword write zero-extends R13. This exact form is not yet admitted.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,914 instructions and reported `Unsupported { opcode: 137 }` at RIP `0x201339`; COM1 is empty. Bytes at the link-base shadow are `45 89 C5`.
+- **Следующий шаг:** verify exact MOV operand routing and dword zero-extension semantics, then admit only this encoding.
