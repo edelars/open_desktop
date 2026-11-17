@@ -29027,3 +29027,20 @@ Full `cargo test --offline -p od-isa --quiet` passes
 (2,322/1,591/126/29/6/1,347/7/15; zero doc tests), paged machine quantum passes
 (110/110), workspace all-targets offline check passes with existing warnings,
 and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-406 — exact `CMP R8D,9` (`41 83 F8 09`)
+
+Only this exact REX.B dword CMP encoding is admitted in the base paged profile.
+REX.B selects R8D and REX.W is clear; imm8 9 is sign-extended to dword width.
+Shared CMP computes flags and their definedness from low R8D without changing a
+GPR. Focused tests pass (4/4), previous CMP EAX regression tests pass (4/4),
+and other-profile matrix passes (1/1). ISSUE-201 remains the unrelated CLD
+caveat.
+
+Runner advances to `0F 94 C0` (SETE AL, ISSUE-407), RIP `0x2012e3`, after
+9,895 retired instructions, `Unsupported { opcode: 148}`; COM1 is empty. Full
+`cargo test --offline -p od-isa --quiet` passes
+(2,322/1,591/126/29/6/1,351/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings.
