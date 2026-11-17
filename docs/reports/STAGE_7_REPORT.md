@@ -4188,3 +4188,26 @@ all-targets offline check passes with existing warnings. Scoped rustfmt and
 diff checks pass.
 
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-458 — exact CMP byte ptr [RSP+9],0
+
+Six focused tests cover a 64-bit effective address above 4 GiB, a single
+byte read, subtraction flags and definedness, noncanonical stack-address
+#SS, data and final-immediate fetch #PF, neighboring encodings and the
+paged CPL3 MOV probe. The earlier indexed byte compare tests pass 5/5
+and the other CPL0 probe matrix passes 1/1.
+
+The runner command
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue458.com1 --budget 20000` uses image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+It exits 5 with 10,301 retired instructions, RIP `0x201400`, Unsupported
+opcode 116 and empty COM1. Bytes `74 71` select JZ rel8 +0x71 (ISSUE-459).
+
+The full offline `od-isa` suite passes (2,322/1,591/126/29/6/1,554/7/15 and
+zero doctests). The paged machine quantum suite passes 110/110. The workspace
+all-targets offline check passes with existing warnings. Scoped rustfmt and
+diff checks pass.
+
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

@@ -26308,30 +26308,35 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
-        // S7-04: firmware compares one byte at exact `[RSP+R8+8]` with imm8 1
-        // (`42 80 7C 04 08 01`). REX.X extends the SIB index to R8; keep the
-        // base, index, displacement, byte width, group /7 and immediate exact.
-        // The tracked memory read must succeed before CMP flags or RIP commit.
+        // S7-04: exact `42 80 7C 04 08 01` compares byte [RSP+R8+8] with 1.
+        // Exact `80 7C 24 09 00` compares byte [RSP+9] with 0.
+        // Read through the memory adapter before committing flags and RIP.
         Operation::Arithmetic {
             kind: ArithmeticKind::Cmp,
             dst: Operand::Memory(destination),
-            src: Operand::Immediate(1),
+            src: Operand::Immediate(immediate @ (0 | 1)),
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x80
-            && instruction.length == 6
             && instruction.operand_size == OperandSize::Byte
-            && instruction.prefixes
-                == (Prefixes {
-                    rex: Some(0x42),
-                    ..Prefixes::default()
-                })
             && destination.base == AddressBase::Register(Register::Rsp)
-            && destination.index == Some(Register::R8)
             && destination.scale == 1
-            && destination.displacement == 8
             && destination.address_size == OperandSize::Qword
-            && destination.size == OperandSize::Byte =>
+            && destination.size == OperandSize::Byte
+            && ((instruction.length == 6
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x42),
+                        ..Prefixes::default()
+                    })
+                && destination.index == Some(Register::R8)
+                && destination.displacement == 8
+                && immediate == 1)
+                || (instruction.length == 5
+                    && instruction.prefixes == Prefixes::default()
+                    && destination.index.is_none()
+                    && destination.displacement == 9
+                    && immediate == 0)) =>
         {
             let lhs = match read_operand(
                 state,
@@ -26346,8 +26351,13 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 }
                 Err(error) => return result(PagedProbeExit::Backend(error), 0),
             };
-            let (_, flags) =
-                arithmetic_result(OperandSize::Byte, ArithmeticKind::Cmp, lhs, 1, state.rflags);
+            let (_, flags) = arithmetic_result(
+                OperandSize::Byte,
+                ArithmeticKind::Cmp,
+                lhs,
+                immediate,
+                state.rflags,
+            );
             state.rflags = flags;
             state.rip = next_rip;
             return PagedProbeResult {

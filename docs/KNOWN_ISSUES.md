@@ -5641,7 +5641,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-458 — S7-04: exact CMP byte ptr [RSP+0x9],0 frontier (`80 7C 24 09 00`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-457.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013fb`.
-- **Статус:** открыта. Следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base firmware CPU profile stops on exact `80 7C 24 09 00` (CMP byte ptr [RSP+0x9],0).
+- **Статус:** решена для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** exact `80 7C 24 09 00` reads one byte from the canonical address RSP+9, compares it with zero, defines the arithmetic flags and advances RIP. It does not write memory or GPRs.
 - **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 128 }` at RIP `0x2013fb` after 10,300 retired instructions. COM1 is empty. Bytes at the link-base shadow are `80 7C 24 09 00`.
-- **Следующий шаг:** admit the exact byte CMP and cover address calculation, flags, read and fetch faults, and profile isolation.
+- **Результат:** runner retires 10,301 instructions and stops at RIP `0x201400` on `74 71` (JZ rel8 +0x71, ISSUE-459). It reports `Unsupported { opcode: 116 }` with empty COM1.
+- **Проверка:** six focused tests cover 64-bit address calculation, byte flags and definedness, data and instruction-fetch faults, noncanonical stack address, neighboring encodings and profile isolation. The previous indexed compare tests and other CPL0 probe matrix also pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-459 — S7-04: exact JZ rel8 +0x71 frontier (`74 71`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-458.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201400`.
+- **Статус:** открыта. Следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base firmware CPU profile stops on unprefixed `74 71` (JZ rel8 +0x71).
+- **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 116 }` at RIP `0x201400` after 10,301 retired instructions. COM1 is empty. Bytes at the link-base shadow are `74 71`.
+- **Следующий шаг:** admit this exact JZ and cover ZF, signed target, target canonicality, fetch faults and profile isolation.

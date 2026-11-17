@@ -29740,3 +29740,16 @@ the final immediate fetch commits no architectural state. The other CPL0
 probes and the paged CPL3 MOV probe refuse this form. The existing base
 AX and BP word writes preserve their upper bits.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-458 — bounded CMP byte ptr [RSP+9],0
+
+The base paged CPL0 profile admits exact unprefixed `80 7C 24 09 00`.
+The SIB selects RSP as base and omits an index. The decoder sign-extends
+disp8 +9 and forms the 64-bit address RSP+9. The executor checks
+canonicality with the stack address rule and reads one byte through
+the tracked adapter. Byte subtraction of zero defines CF, PF, AF, ZF,
+SF and OF. Only those flags, their definedness and RIP are committed.
+A noncanonical address raises #SS(0) before the read. Data and final
+immediate fetch faults preserve architectural state. The other CPL0
+probes and the paged CPL3 MOV probe refuse this form.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

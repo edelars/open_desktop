@@ -2726,3 +2726,15 @@ With budget 20000 the runner retires 10,300 instructions and stops at RIP
 `0x2013fb` on `80 7C 24 09 00` (CMP byte ptr [RSP+0x9],0, ISSUE-458).
 It reports Unsupported opcode 128 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-458 — exact CMP byte ptr [RSP+9],0 (`80 7C 24 09 00`)
+
+Base `PagedCpl0ProbeV1` admits the unprefixed byte compare. It checks the
+canonical 64-bit address RSP+9, performs one tracked byte read and defines
+the six arithmetic flags from byte minus zero. It advances RIP without
+writing memory or a GPR. Tests cover address width, flags and definedness,
+#SS before a noncanonical read, data and fetch #PF, neighboring encodings,
+the CPL3 MOV probe and other CPL0 probes. With budget 20000 the runner
+retires 10,301 instructions and stops at RIP `0x201400` on `74 71`
+(JZ rel8 +0x71, ISSUE-459). It reports Unsupported opcode 116 with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
