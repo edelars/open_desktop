@@ -1209,6 +1209,7 @@ pub fn run_linux_direct_board_set_user_mode_with_execution_observations_options(
         1,
         None,
         None,
+        None,
     )
 }
 
@@ -1223,6 +1224,7 @@ pub fn run_linux_direct_board_set_user_mode_with_execution_observations_sampling
     selected_rdtsc_sample_stride: u64,
     selected_rdtsc_entry_sample_rip: Option<u64>,
     selected_rdtsc_sample_window: Option<crate::RdtscSampleWindow>,
+    selected_rdtsc_prefix_sentinel_rip: Option<u64>,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
     run_linux_direct_board_set_with_post_iret_index(
         boot,
@@ -1237,6 +1239,7 @@ pub fn run_linux_direct_board_set_user_mode_with_execution_observations_sampling
         selected_rdtsc_sample_stride,
         selected_rdtsc_entry_sample_rip,
         selected_rdtsc_sample_window,
+        selected_rdtsc_prefix_sentinel_rip,
     )
 }
 
@@ -1259,6 +1262,7 @@ pub fn run_linux_direct_board_set_user_mode_with_post_iret_index(
         Some(delivered_page_fault_ordinal),
         None,
         1,
+        None,
         None,
         None,
     )
@@ -1286,6 +1290,7 @@ fn run_linux_direct_board_set_with(
         1,
         None,
         None,
+        None,
     )
 }
 
@@ -1303,6 +1308,7 @@ fn run_linux_direct_board_set_with_post_iret_index(
     selected_rdtsc_sample_stride: u64,
     selected_rdtsc_entry_sample_rip: Option<u64>,
     selected_rdtsc_sample_window: Option<crate::RdtscSampleWindow>,
+    selected_rdtsc_prefix_sentinel_rip: Option<u64>,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
     let pm_timer_reads_before = boot.board.acpi_pm().map(|pm| pm.timer_reads());
     // S4-39g: only the user-mode run of a board with the Linux-profile PIT and 8259 gets the
@@ -1533,6 +1539,7 @@ fn run_linux_direct_board_set_with_post_iret_index(
             selected_rdtsc_sample_stride,
             selected_rdtsc_entry_sample_rip,
             selected_rdtsc_sample_window,
+            selected_rdtsc_prefix_sentinel_rip,
         )
     } else {
         boot.board.run_linux_boot_cpl0_set(
@@ -10984,6 +10991,7 @@ mod tests {
                 None,
                 1,
                 Some(ENTRY + 2),
+                None,
                 None,
             )
             .expect("board run");

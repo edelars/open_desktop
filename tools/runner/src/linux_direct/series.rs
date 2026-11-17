@@ -1092,7 +1092,7 @@ fn validate_execution_observations_sidecar(
         .map_err(|error| format!("invalid execution-observations sidecar JSON: {error}"))?;
     let schema_version = sidecar_json["schema_version"]
         .as_u64()
-        .filter(|version| matches!(version, 7 | 8 | 9 | 10 | 11))
+        .filter(|version| matches!(version, 7 | 8 | 9 | 10 | 11 | 12))
         .ok_or_else(|| {
             "execution-observations sidecar schema_version is missing, invalid, or unsupported"
                 .to_string()
@@ -1267,6 +1267,249 @@ fn validate_execution_observations_sidecar(
                 return Err("execution-observations clock trace sample is invalid".into());
             }
             prior_hit = hit_ordinal.unwrap_or(0);
+        }
+    }
+    if schema_version >= 12 {
+        let metadata_status = sidecar.get("rdtsc_prefix_status").and_then(Value::as_str);
+        let raw_status = sidecar_json
+            .get("rdtsc_prefix_status")
+            .and_then(Value::as_str);
+        let metadata_sentinel = sidecar.get("rdtsc_prefix_sentinel_rip");
+        let raw_sentinel = sidecar_json.get("rdtsc_prefix_sentinel_rip");
+        let sentinel_is_valid = |value: Option<&Value>| match value {
+            Some(Value::Null) => true,
+            Some(Value::String(rip)) => canonical_hex64(rip),
+            _ => false,
+        };
+        let metadata_count = sidecar
+            .get("rdtsc_prefix_sample_count")
+            .and_then(Value::as_u64);
+        let raw_samples = sidecar_json
+            .get("rdtsc_prefix_samples")
+            .and_then(Value::as_array);
+        let metadata_events = sidecar
+            .get("rdtsc_prefix_event_count")
+            .and_then(Value::as_u64);
+        let raw_events = sidecar_json
+            .get("rdtsc_prefix_event_count")
+            .and_then(Value::as_u64);
+        let metadata_missing = sidecar.get("rdtsc_prefix_missing").and_then(Value::as_u64);
+        let raw_missing = sidecar_json
+            .get("rdtsc_prefix_missing")
+            .and_then(Value::as_u64);
+        let Some(raw_samples) = raw_samples else {
+            return Err("execution-observations RDTSC prefix is missing or invalid".into());
+        };
+        if !sentinel_is_valid(metadata_sentinel)
+            || !sentinel_is_valid(raw_sentinel)
+            || metadata_sentinel != raw_sentinel
+            || metadata_status.is_none()
+            || raw_status != metadata_status
+            || metadata_count != Some(raw_samples.len() as u64)
+            || metadata_events.is_none()
+            || raw_events != metadata_events
+            || metadata_missing.is_none()
+            || raw_missing != metadata_missing
+            || raw_samples.len() > od_machine::LINUX_RDTSC_PREFIX_CAPACITY
+            || raw_events.is_none_or(|count| count > od_machine::LINUX_RDTSC_PREFIX_CAPACITY as u64)
+        {
+            return Err("execution-observations RDTSC prefix summary is invalid".into());
+        }
+        let status = raw_status.unwrap_or_default();
+        let sentinel_requested = raw_sentinel.and_then(Value::as_str) == Some("0xffffffff8271b31b");
+        let event_count = raw_events.unwrap_or(0);
+        let missing = raw_missing.unwrap_or(0);
+        let retained_and_missing = (raw_samples.len() as u64)
+            .checked_add(missing)
+            .ok_or_else(|| "execution-observations RDTSC prefix count overflow".to_string())?;
+        let mut previous = 0u64;
+        let mut previous_page_faults = 0u64;
+        let mut previous_general_protection_faults = 0u64;
+        let mut clock_origin: Option<(u64, u64)> = None;
+        for sample in raw_samples {
+            let ordinal = sample.get("ordinal").and_then(Value::as_u64).unwrap_or(0);
+            let rip = sample.get("rip").and_then(Value::as_str);
+            let cpl_valid = matches!(sample.get("cpl"), Some(Value::Null))
+                || sample.get("cpl").and_then(Value::as_u64) == Some(0);
+            let context_valid = sample.get("cr3").is_some_and(|value| {
+                value.is_null() || value.as_str().is_some_and(canonical_hex64)
+            }) && ["rsp", "rbp"].into_iter().all(|key| {
+                sample
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .is_some_and(canonical_hex64)
+            });
+            let page_faults = sample
+                .get("page_faults_delivered_through")
+                .and_then(Value::as_u64);
+            let general_protection_faults = sample
+                .get("general_protection_faults_delivered_through")
+                .and_then(Value::as_u64);
+            let faults_valid = page_faults.zip(general_protection_faults).is_some_and(
+                |(page_faults, general_protection_faults)| {
+                    page_faults >= previous_page_faults
+                        && general_protection_faults >= previous_general_protection_faults
+                },
+            );
+            let clock_valid = sample
+                .get("clock")
+                .and_then(Value::as_object)
+                .is_some_and(|clock| {
+                    let charged = clock
+                        .get("retired_instructions_charged")
+                        .and_then(Value::as_u64);
+                    let quantum = clock
+                        .get("quantum_instructions_executed")
+                        .and_then(Value::as_u64);
+                    let through = clock
+                        .get("retired_instructions_through_rdtsc")
+                        .and_then(Value::as_u64);
+                    let initial_ns = clock.get("initial_now_ns").and_then(Value::as_u64);
+                    let now_ns = clock.get("now_ns").and_then(Value::as_u64);
+                    let tsc_hz = clock.get("tsc_hz").and_then(Value::as_u64);
+                    let callback_tsc = clock
+                        .get("callback_tsc")
+                        .and_then(Value::as_str)
+                        .is_some_and(canonical_hex64);
+                    let numeric_fields_valid = [
+                        "pm_timer_ns_charged",
+                        "pit_ns_charged",
+                        "rdtsc_ns_charged",
+                        "idle_ns_advanced",
+                        "quantum_ordinal",
+                        "irqs_delivered",
+                    ]
+                    .into_iter()
+                    .all(|key| clock.get(key).and_then(Value::as_u64).is_some());
+                    let retired_ns_valid = clock
+                        .get("retired_ns_charged")
+                        .is_some_and(|value| value.is_null() || value.as_u64() == charged);
+                    let unaccounted_valid = clock
+                        .get("unaccounted_elapsed_ns")
+                        .is_some_and(|value| value.is_null() || value.as_u64().is_some());
+                    let now_origin = initial_ns.zip(tsc_hz);
+                    let origin_valid = now_origin.is_some_and(|origin| {
+                        clock_origin.is_none_or(|prior_origin| prior_origin == origin)
+                    });
+                    let retired_ns = clock.get("retired_ns_charged").and_then(Value::as_u64);
+                    let elapsed_ns = initial_ns
+                        .zip(now_ns)
+                        .and_then(|(initial, now)| now.checked_sub(initial));
+                    let charged_ns = retired_ns
+                        .zip(clock.get("pm_timer_ns_charged").and_then(Value::as_u64))
+                        .and_then(|(retired, pm)| retired.checked_add(pm))
+                        .zip(clock.get("pit_ns_charged").and_then(Value::as_u64))
+                        .and_then(|(charged, pit)| charged.checked_add(pit))
+                        .zip(clock.get("rdtsc_ns_charged").and_then(Value::as_u64))
+                        .and_then(|(charged, rdtsc)| charged.checked_add(rdtsc))
+                        .zip(clock.get("idle_ns_advanced").and_then(Value::as_u64))
+                        .and_then(|(charged, idle)| charged.checked_add(idle));
+                    let expected_unaccounted = elapsed_ns
+                        .zip(charged_ns)
+                        .and_then(|(elapsed, charged)| elapsed.checked_sub(charged));
+                    let unaccounted_matches = clock
+                        .get("unaccounted_elapsed_ns")
+                        .and_then(|value| {
+                            if value.is_null() {
+                                Some(None)
+                            } else {
+                                value.as_u64().map(Some)
+                            }
+                        })
+                        .is_some_and(|actual| actual == expected_unaccounted);
+                    let sum_valid = charged
+                        .zip(quantum)
+                        .and_then(|(charged, quantum)| charged.checked_add(quantum))
+                        .zip(through)
+                        .is_some_and(|(sum, through)| sum == through);
+                    clock.get("rip").and_then(Value::as_str) == rip
+                        && clock.get("hit_ordinal").and_then(Value::as_u64) == Some(ordinal)
+                        && callback_tsc
+                        && initial_ns
+                            .zip(now_ns)
+                            .is_some_and(|(initial, now)| now >= initial)
+                        && origin_valid
+                        && tsc_hz.is_some_and(|frequency| frequency > 0)
+                        && numeric_fields_valid
+                        && retired_ns_valid
+                        && unaccounted_valid
+                        && unaccounted_matches
+                        && sum_valid
+                });
+            if ordinal <= previous
+                || ordinal > event_count
+                || rip.is_none_or(|rip| !canonical_hex64(rip))
+                || !cpl_valid
+                || !context_valid
+                || !faults_valid
+                || !clock_valid
+            {
+                return Err("execution-observations RDTSC prefix sample is invalid".into());
+            }
+            previous = ordinal;
+            previous_page_faults = page_faults.unwrap_or(previous_page_faults);
+            previous_general_protection_faults =
+                general_protection_faults.unwrap_or(previous_general_protection_faults);
+            if let (Some(initial), Some(frequency)) = (
+                sample["clock"]
+                    .get("initial_now_ns")
+                    .and_then(Value::as_u64),
+                sample["clock"].get("tsc_hz").and_then(Value::as_u64),
+            ) {
+                clock_origin = Some((initial, frequency));
+            }
+        }
+        let status_valid = match status {
+            "not_requested" => {
+                matches!(metadata_sentinel, Some(Value::Null))
+                    && event_count == 0
+                    && missing == 0
+                    && raw_samples.is_empty()
+            }
+            "sentinel_seen" => {
+                let sentinel_samples = raw_samples
+                    .iter()
+                    .filter(|sample| {
+                        sample.get("rip").and_then(Value::as_str) == Some("0xffffffff8271b31b")
+                    })
+                    .count();
+                sentinel_requested
+                    && event_count > 0
+                    && retained_and_missing == event_count
+                    && (sentinel_samples == 1
+                        && raw_samples.last().is_some_and(|sample| {
+                            sample.get("rip").and_then(Value::as_str) == Some("0xffffffff8271b31b")
+                                && sample.get("ordinal").and_then(Value::as_u64)
+                                    == Some(event_count)
+                        })
+                        || (sentinel_samples == 0
+                            && missing > 0
+                            && raw_samples.last().is_none_or(|sample| {
+                                sample.get("ordinal").and_then(Value::as_u64) < Some(event_count)
+                            })))
+            }
+            "capacity_exhausted" => {
+                sentinel_requested
+                    && event_count == od_machine::LINUX_RDTSC_PREFIX_CAPACITY as u64
+                    && retained_and_missing >= event_count
+                    && raw_samples.iter().all(|sample| {
+                        sample.get("rip").and_then(Value::as_str) != Some("0xffffffff8271b31b")
+                    })
+            }
+            "run_ended_before_sentinel" => {
+                sentinel_requested
+                    && event_count < od_machine::LINUX_RDTSC_PREFIX_CAPACITY as u64
+                    && retained_and_missing == event_count
+                    && raw_samples.iter().all(|sample| {
+                        sample.get("rip").and_then(Value::as_str) != Some("0xffffffff8271b31b")
+                    })
+            }
+            _ => false,
+        };
+        if !status_valid {
+            return Err(
+                "execution-observations RDTSC prefix termination status is inconsistent".into(),
+            );
         }
     }
     if schema_version >= 11 {
@@ -2637,7 +2880,7 @@ mod tests {
             );
         }
 
-        for version in [None, Some(Value::Null), Some(json!("8")), Some(json!(12))] {
+        for version in [None, Some(Value::Null), Some(json!("8")), Some(json!(13))] {
             let mut malformed_sidecar = sidecar_value.clone();
             if let Some(value) = version {
                 malformed_sidecar["schema_version"] = value;
@@ -2725,6 +2968,101 @@ mod tests {
         let loaded = fresh_manifest(&series_path).unwrap();
         assert!(load_run_manifest(&series_path, &loaded.runs[0]).is_ok());
 
+        let mut v12_sidecar = v11_sidecar.clone();
+        v12_sidecar["schema_version"] = json!(12);
+        v12_sidecar["rdtsc_prefix_sentinel_rip"] = json!("0xffffffff8271b31b");
+        v12_sidecar["rdtsc_prefix_status"] = json!("sentinel_seen");
+        v12_sidecar["rdtsc_prefix_event_count"] = json!(1);
+        v12_sidecar["rdtsc_prefix_missing"] = json!(0);
+        v12_sidecar["rdtsc_prefix_samples"] = json!([{
+            "ordinal": 1,
+            "rip": "0xffffffff8271b31b",
+            "cpl": 0,
+            "cr3": "0x4000",
+            "rsp": "0x5000",
+            "rbp": "0x6000",
+            "page_faults_delivered_through": 4,
+            "general_protection_faults_delivered_through": 2,
+            "clock": {
+                "rip": "0xffffffff8271b31b",
+                "hit_ordinal": 1,
+                "initial_now_ns": 0,
+                "now_ns": 20,
+                "callback_tsc": "0x30",
+                "tsc_hz": 2_400_000_000u64,
+                "retired_instructions_charged": 10,
+                "retired_ns_charged": 10,
+                "quantum_instructions_executed": 3,
+                "retired_instructions_through_rdtsc": 13,
+                "pm_timer_ns_charged": 2,
+                "pit_ns_charged": 3,
+                "rdtsc_ns_charged": 1,
+                "idle_ns_advanced": 4,
+                "quantum_ordinal": 12,
+                "irqs_delivered": 1,
+                "unaccounted_elapsed_ns": 0,
+            }
+        }]);
+        let mut v12_metadata = v11_metadata.clone();
+        v12_metadata["rdtsc_prefix_sentinel_rip"] = json!("0xffffffff8271b31b");
+        v12_metadata["rdtsc_prefix_status"] = json!("sentinel_seen");
+        v12_metadata["rdtsc_prefix_sample_count"] = json!(1);
+        v12_metadata["rdtsc_prefix_event_count"] = json!(1);
+        v12_metadata["rdtsc_prefix_missing"] = json!(0);
+        let mut v12_bytes = serde_json::to_vec_pretty(&v12_sidecar).unwrap();
+        v12_bytes.push(b'\n');
+        fs::write(&sidecar_path, &v12_bytes).unwrap();
+        v12_metadata["byte_count"] = json!(v12_bytes.len());
+        v12_metadata["sha256"] = json!(od_testkit::sha256_hex(&v12_bytes));
+        update_metadata(v12_metadata.clone());
+        let loaded = fresh_manifest(&series_path).unwrap();
+        let loaded_run = load_run_manifest(&series_path, &loaded.runs[0]);
+        assert!(loaded_run.is_ok(), "{loaded_run:?}");
+        let mut empty_prefix_clock = v12_sidecar.clone();
+        empty_prefix_clock["rdtsc_prefix_samples"][0]["clock"] = json!({});
+        assert_rejected(
+            empty_prefix_clock,
+            v12_metadata.clone(),
+            "RDTSC prefix sample is invalid",
+        );
+        let mut mismatched_prefix_sentinel = v12_sidecar.clone();
+        mismatched_prefix_sentinel["rdtsc_prefix_sentinel_rip"] = Value::Null;
+        assert_rejected(
+            mismatched_prefix_sentinel,
+            v12_metadata.clone(),
+            "RDTSC prefix summary is invalid",
+        );
+        let mut zero_event_sentinel = v12_sidecar.clone();
+        zero_event_sentinel["rdtsc_prefix_event_count"] = json!(0);
+        let mut zero_event_metadata = v12_metadata.clone();
+        zero_event_metadata["rdtsc_prefix_event_count"] = json!(0);
+        assert_rejected(
+            zero_event_sentinel,
+            zero_event_metadata,
+            "RDTSC prefix sample is invalid",
+        );
+        let mut missing_count_prefix = v12_sidecar.clone();
+        missing_count_prefix["rdtsc_prefix_missing"] = json!(1);
+        let mut missing_count_metadata = v12_metadata.clone();
+        missing_count_metadata["rdtsc_prefix_missing"] = json!(1);
+        assert_rejected(
+            missing_count_prefix,
+            missing_count_metadata,
+            "RDTSC prefix termination status is inconsistent",
+        );
+        let mut over_capacity_prefix = v12_sidecar.clone();
+        let impossible_count = od_machine::LINUX_RDTSC_PREFIX_CAPACITY as u64 + 1;
+        over_capacity_prefix["rdtsc_prefix_event_count"] = json!(impossible_count);
+        over_capacity_prefix["rdtsc_prefix_samples"][0]["ordinal"] = json!(impossible_count);
+        over_capacity_prefix["rdtsc_prefix_samples"][0]["clock"]["hit_ordinal"] =
+            json!(impossible_count);
+        let mut over_capacity_metadata = v12_metadata.clone();
+        over_capacity_metadata["rdtsc_prefix_event_count"] = json!(impossible_count);
+        assert_rejected(
+            over_capacity_prefix,
+            over_capacity_metadata,
+            "RDTSC prefix summary is invalid",
+        );
         let mut invalid_instruction_sum = v11_sidecar.clone();
         invalid_instruction_sum["rdtsc_entry_clock_trace_samples"][0]["retired_instructions_through_rdtsc"] =
             json!(12);

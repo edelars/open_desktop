@@ -2191,6 +2191,7 @@ impl LoadedFirmwareBoard {
             1,
             None,
             None,
+            None,
         )
     }
 
@@ -2207,6 +2208,7 @@ impl LoadedFirmwareBoard {
         selected_rdtsc_sample_stride: u64,
         selected_rdtsc_entry_sample_rip: Option<u64>,
         selected_rdtsc_sample_window: Option<crate::RdtscSampleWindow>,
+        selected_rdtsc_prefix_sentinel_rip: Option<u64>,
     ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
         let context = AccessContext {
             mode: InstructionMode::Long64,
@@ -2226,6 +2228,7 @@ impl LoadedFirmwareBoard {
                 .with_rdtsc_sample_stride(selected_rdtsc_sample_stride)
                 .with_rdtsc_entry_sample_rip(selected_rdtsc_entry_sample_rip)
                 .with_rdtsc_sample_window(selected_rdtsc_sample_window)
+                .with_rdtsc_prefix_sentinel(selected_rdtsc_prefix_sentinel_rip)
         });
         let mut cpl3_retired = 0u64;
         let mut syscall_journal = crate::linux_direct::SyscallJournal::default();
@@ -2523,8 +2526,22 @@ impl LoadedFirmwareBoard {
                             report.last_instruction_rip == selected_rdtsc_entry_sample_rip
                         }),
                     );
+                    let prefix_ordinal = observations.record_rdtsc_prefix(
+                        report.last_instruction_rip,
+                        self.state(),
+                        clock_read.get(),
+                        page_faults_delivered,
+                        general_protection_faults_delivered,
+                    );
                     observations.complete_rdtsc_clock_trace(
                         report.last_instruction_rip,
+                        RdtscClockReadCompletion {
+                            quantum_instructions_executed: report.instructions_executed,
+                            retired_instructions_through_rdtsc: retired,
+                        },
+                    );
+                    observations.complete_rdtsc_prefix(
+                        prefix_ordinal,
                         RdtscClockReadCompletion {
                             quantum_instructions_executed: report.instructions_executed,
                             retired_instructions_through_rdtsc: retired,
@@ -2539,7 +2556,7 @@ impl LoadedFirmwareBoard {
                 }
                 if execution_observations
                     .as_ref()
-                    .is_some_and(LinuxExecutionObservationCollector::wants_rdtsc_clock_trace)
+                    .is_some_and(LinuxExecutionObservationCollector::wants_any_rdtsc_clock_trace)
                 {
                     rdtsc_ns_charged = rdtsc_ns_charged.saturating_add(tick_ns);
                 }
@@ -2567,7 +2584,7 @@ impl LoadedFirmwareBoard {
                 irq_counters.halt_idle_ns += idle;
                 if execution_observations
                     .as_ref()
-                    .is_some_and(LinuxExecutionObservationCollector::wants_rdtsc_clock_trace)
+                    .is_some_and(LinuxExecutionObservationCollector::wants_any_rdtsc_clock_trace)
                 {
                     idle_ns_advanced = idle_ns_advanced.saturating_add(idle);
                 }
