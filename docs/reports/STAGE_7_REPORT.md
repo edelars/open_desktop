@@ -4121,3 +4121,25 @@ all-targets offline check passes with existing warnings. Scoped rustfmt and
 diff checks pass.
 
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-455 — exact OR RAX,R15
+
+Four focused tests exercise the qword result, logical flags and definedness,
+state preservation, final-ModRM fetch fault, neighboring encodings and
+CPL3 MOV isolation. All four prior OR EBP,R10D tests pass. The other CPL0 probe
+matrix passes 1/1.
+
+The runner command
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue455.com1 --budget 20000` uses image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+It exits 5 with 10,184 retired instructions, RIP `0x20135d`, Unsupported opcode
+132 and empty COM1. Bytes `0F 84 83 00 00 00` select JZ rel32 +0x83 (ISSUE-456).
+
+The full offline `od-isa` suite passes (2,322/1,591/126/29/6/1,548/7/15 and
+zero doctests). The paged machine quantum suite passes 110/110. The workspace
+all-targets offline check passes with existing warnings. Scoped rustfmt and
+diff checks pass.
+
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

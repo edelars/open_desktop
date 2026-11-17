@@ -2693,3 +2693,14 @@ the CPL3 MOV probe and other CPL0 probes. With budget 20000 the runner
 retires 10,183 instructions and stops at RIP `0x20135a` on `4C 09 F8`
 (OR RAX,R15, ISSUE-455). It reports Unsupported opcode 9 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-455 — exact OR RAX,R15 (`4C 09 F8`)
+
+Base `PagedCpl0ProbeV1` admits the exact register form. REX.W selects qword
+width and REX.R selects R15 as the ModRM reg source. The OR result writes RAX,
+clears CF and OF, defines SF/ZF/PF and marks AF undefined. Tests cover full-width
+values, flags and definedness, final ModRM fetch fault, neighboring encodings,
+CPL3 MOV and other CPL0 probes. With budget 20000 the runner executes 10,184
+instructions and stops at RIP `0x20135d` on `0F 84 83 00 00 00` (JZ rel32 +0x83,
+ISSUE-456). It reports Unsupported opcode 132 with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

@@ -2510,3 +2510,12 @@ reaches `4C 09 F8` (OR RAX,R15, ISSUE-455) at RIP `0x20135a` after 10,183
 retired instructions. It reports Unsupported opcode 9 with empty COM1.
 Image SHA-256 is `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-455 runner frontier
+
+Exact base-profile `4C 09 F8` (OR RAX,R15) writes a qword result to RAX,
+advances RIP and updates logical flags. With budget 20000 the runner reaches
+`0F 84 83 00 00 00` (JZ rel32 +0x83, ISSUE-456) at RIP `0x20135d` after
+10,184 retired instructions. It reports Unsupported opcode 132 with empty COM1.
+Image SHA-256 is `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

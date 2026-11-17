@@ -29707,3 +29707,15 @@ A noncanonical taken target raises #GP(0). This fault and the final
 displacement fetch fault commit no architectural state. The other CPL0
 probes and the paged CPL3 MOV probe refuse this encoding.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-455 — bounded OR RAX,R15
+
+The base paged CPL0 profile admits exact `4C 09 F8`. REX.W sets qword width,
+REX.R extends the ModRM reg source to R15, and the r/m field selects RAX.
+The result writes all of RAX and advances RIP. OR clears CF and OF and sets
+SF, ZF and PF from the 64-bit result, with parity computed on its low byte.
+AF keeps its concrete bit and loses architectural definedness. Other flags
+and their definedness and all other GPRs are preserved. The final ModRM fetch
+fault commits no architectural state. The other CPL0 probes and the paged
+CPL3 MOV probe refuse this encoding.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
