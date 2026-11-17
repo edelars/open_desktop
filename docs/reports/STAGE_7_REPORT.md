@@ -1361,6 +1361,7 @@ Five focused tests passed for the CF/ZF truth table with defined and undefined f
 
 Independent review approved with no remaining findings.
 
+
 Base `PagedCpl0ProbeV1` admits only exact `4C 39 EF`, qword CMP RDI−R13 using opcode 39 Intel destination/source order and REX.R source selection. Shared arithmetic flags and definedness are updated; CMP writes no GPR.
 
 Four focused tests passed for equality, borrow, signed overflow, high-bit qword operands (including nonzero upper dword), complete register preservation, flags/definedness, final-ModRM fetch-fault atomicity, adjacent register/opcode/width/prefix forms, CPL3 and profile isolation. All od-isa suites passed (2,322 library, 1,591 CPL0 profile-set, 126 execution, 29 boundary, 6 flags, 591 paged-profile, 7 profile-isolation, 15 descriptor, 0 doc tests). Scoped `cargo check --offline -p od-isa -p od-machine -p od-runner --all-targets`, `cargo fmt -p od-isa -- --check` and `git diff --check` passed; the check emits only the existing `od-machine` dead-code warning. Workspace-wide `cargo fmt --all -- --check` reports pre-existing formatting differences in untouched `crates/od-host/src/storage_abi_v1.rs:139` and `tools/image-tool/tests/cli.rs:109`. Firmware image `/private/tmp/od-fw-s7-04-issue230.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retired 8,913 instructions, then stopped at `76 22` (`JBE rel8 +0x22`, ISSUE-231), RIP `0x200fa3`, `Unsupported { opcode: 118 }`, with `com1_bytes=0`. Full handoff validation remains incomplete. ISSUE-201 remains open for the two unrelated stale CLD-unsupported expectations in the full `od-machine` suite.
@@ -2435,3 +2436,20 @@ ISSUE-201's unrelated CLD caveat remains open. Full od-isa
 in `crates/od-host/src/storage_abi_v1.rs`; that file was not changed. Existing
 warnings remain confined to unrelated od-machine/od-host code. Independent
 review approved with no remaining findings.
+
+### ISSUE-360 — MOV R14,RSI
+
+The base profile admits only exact bytes `49 89 F6`: opcode 89 with REX.B
+selects R14 as the qword r/m destination and RSI as the reg source. Only R14
+and RIP change; all flags, flag-definedness, and other registers are preserved.
+Focused state/routing, final-ModRM fetch-fault, neighbor/CPL3 tests and the
+other-profile rejection matrix pass. The firmware runner advances to ISSUE-361,
+`49 39 C0` (`CMP R8,RAX`) at RIP `0x201811` after 9,079 retired instructions;
+`Unsupported { opcode: 57 }`, COM1 empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201's unrelated CLD caveat remains open. Full od-isa
+(2,322/1,591/126/29/6/1,137/7/15; zero doc tests), paged machine quantum
+(79/79), workspace all-targets check, scoped rustfmt and diff-check pass.
+`cargo fmt --all -- --check` reports the unrelated pre-existing formatting diff
+in `crates/od-host/src/storage_abi_v1.rs`; that file was not changed.
+Independent review approved with no remaining findings.

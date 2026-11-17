@@ -22195,6 +22195,28 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: exact `49 89 F6` copies qword RSI into R14. Opcode 89 uses
+        // r/m as destination; REX.B extends r/m=6 to R14 while reg=6 is RSI.
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x89
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x49),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R14, OperandSize::Qword)
+            && source == RegisterView::low(Register::Rsi, OperandSize::Qword) =>
+        {
+            let value = state.read(source);
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: after clearing BSS, the entry restores the handoff pointer
         // from R8 with exactly `4C 89 C7` (MOV RDI,R8).
         Operation::Mov {

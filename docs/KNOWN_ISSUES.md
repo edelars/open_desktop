@@ -4755,7 +4755,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-360 — S7-04: exact helper `MOV R14,RSI` frontier (`49 89 F6`)
 - **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-359.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20180e`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `49 89 F6` copy qword RSI to R14. REX.B extends the opcode-89 r/m destination to R14; all other state and flag-definedness remain unchanged.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; after admission runner stops at `Unsupported { opcode: 57 }` at RIP `0x201811` after 9,079 retired instructions; bytes are `49 39 C0`; COM1 is empty.
+- **Проверка:** four focused tests cover qword source/destination routing, all-state and flags/definedness preservation, final-ModRM fetch-fault atomicity, neighboring encodings and CPL3; other-profile isolation rejects this exact form. Full validation and independent review are recorded in `docs/reports/STAGE_7_REPORT.md`.
+
+### ISSUE-361 — S7-04: exact helper `CMP R8,RAX` frontier (`49 39 C0`)
+- **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-360.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201811`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this qword register move after 9,078 retired instructions. Opcode 89's r/m destination is R14 (REX.B), and the reg source is RSI; the bounded base profile does not yet admit this exact encoding.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 137 }` at RIP `0x20180e`; bytes are `49 89 F6`; COM1 is empty.
-- **Следующий шаг:** analyze and admit only this exact firmware MOV R14,RSI form in a separate Stage 7 slice.
+- **Суть и последствия:** firmware reaches this qword register comparison after 9,079 retired instructions. Opcode 39 uses R8 as r/m destination (REX.B) and RAX as reg source; the bounded base profile does not yet admit this exact compare form.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 57 }` at RIP `0x201811`; bytes are `49 39 C0`; COM1 is empty.
+- **Следующий шаг:** analyze and admit only this exact firmware CMP R8,RAX form in a separate Stage 7 slice.

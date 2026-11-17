@@ -1142,3 +1142,18 @@ unrelated CLD caveat remains open. Full od-isa
 `cargo fmt --all -- --check` still reports the unrelated pre-existing formatting
 diff in `crates/od-host/src/storage_abi_v1.rs`; that file was not changed.
 Independent review approved with no remaining findings.
+
+### ISSUE-360 — exact MOV R14,RSI
+
+Admit only `49 89 F6` in base `PagedCpl0ProbeV1`: opcode 89 with REX.B selects
+R14 as the qword r/m destination and RSI as the reg source. Only R14 and RIP
+change; flags, their definedness, and every other register are preserved. Four
+focused tests cover routing/full-state preservation, final-ModRM fetch-fault
+atomicity, neighbors and CPL3; the other-profile matrix rejects this form.
+Firmware advances to ISSUE-361, `49 39 C0` (`CMP R8,RAX`) at RIP `0x201811`
+after 9,079 retired instructions; COM1 is empty. ISSUE-201's unrelated CLD
+caveat remains open. Full od-isa (2,322/1,591/126/29/6/1,137/7/15; zero doc
+tests), paged machine quantum (79/79), workspace all-targets check, scoped
+rustfmt and diff-check pass. `cargo fmt --all -- --check` still reports the
+unrelated pre-existing formatting diff in `crates/od-host/src/storage_abi_v1.rs`;
+that file was not changed. Independent review approved with no remaining findings.
