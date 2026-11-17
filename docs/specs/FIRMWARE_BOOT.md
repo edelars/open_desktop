@@ -1962,7 +1962,15 @@ Runner advances to `0F 82 9D 01 00 00` (JB rel32 +0x19d, ISSUE-412), RIP
 
 ### ISSUE-412 — exact `JB rel32 +0x19d` (`0F 82 9D 01 00 00`)
 
-The next firmware bytes are `0F 82 9D 01 00 00` at RIP `0x2012f3` after 9,900
-retired instructions. The runner reports unsupported opcode 130 and empty
-COM1. This instruction is not yet admitted. ISSUE-201 remains the unrelated
-CLD caveat.
+The firmware bytes `0F 82 9D 01 00 00` at RIP `0x2012f3` are admitted only in
+the exact base-profile form. JB is taken iff CF=1; the signed rel32 target is
+relative to next RIP, flags/definedness remain unchanged, and canonicality is
+checked only when taken. Focused tests pass (5/5), other-profile matrix passes
+(1/1), full od-isa passes (2,322/1,591/126/29/6/1,376/7/15; zero doc tests),
+paged machine quantum passes (110/110), workspace all-targets offline check
+and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
+remains the unrelated CLD caveat.
+
+Runner advances to `42 80 7C 04 08 01` (CMP byte ptr [RSP+R8+8],1; ISSUE-413),
+RIP `0x2012f9`, after 9,901 retired instructions, unsupported opcode 128,
+COM1 empty.

@@ -2080,7 +2080,16 @@ COM1.
 
 ### ISSUE-412 — exact `JB rel32 +0x19d` (`0F 82 9D 01 00 00`)
 
-The next frontier is this exact near conditional branch on CF. Verify condition,
-relative target calculation, taken-only target validation, flag preservation and
-exact profile boundaries before admitting only this displacement. Preserve the
-ISSUE-201 CLD caveat.
+Admit only exact `0F 82 9D 01 00 00` in the base paged profile. The branch is
+taken iff CF=1; its signed rel32 target is relative to next RIP, and target
+canonicality is checked only when taken. Flags and definedness are preserved.
+Focused CF/taken-fallthrough/definedness/canonicality/fetch-fault/neighbors/CPL3
+tests pass (5/5), and other-profile matrix passes (1/1). Full od-isa passes
+(2,322/1,591/126/29/6/1,376/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
+remains the unrelated CLD caveat.
+
+Runner advances to `42 80 7C 04 08 01` (CMP byte ptr [RSP+R8+8],1; ISSUE-413)
+at RIP `0x2012f9`, after 9,901 retired instructions, unsupported opcode 128,
+COM1 empty.

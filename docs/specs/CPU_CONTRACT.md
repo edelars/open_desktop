@@ -29124,5 +29124,15 @@ Runner advances to `0F 82 9D 01 00 00` (JB rel32 +0x19d, ISSUE-412), RIP
 ### ISSUE-412 — exact `JB rel32 +0x19d` (`0F 82 9D 01 00 00`)
 
 The next runner instruction is `0F 82 9D 01 00 00` at RIP `0x2012f3`, after
-9,900 retired instructions, unsupported opcode 130, empty COM1. It is not yet
-admitted. ISSUE-201 remains the unrelated CLD caveat.
+9,900 retired instructions, unsupported opcode 130, empty COM1. Only this exact
+base-profile encoding is admitted. It branches when CF=1, computes the signed
+rel32 target from next RIP, and checks target canonicality only on the taken
+path. It preserves RFLAGS and flag definedness. Focused tests pass (5/5),
+other-profile matrix passes (1/1), full od-isa passes
+(2,322/1,591/126/29/6/1,376/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check and scoped rustfmt/diff-check
+pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+Runner advances to `42 80 7C 04 08 01` (CMP byte ptr [RSP+R8+8],1; ISSUE-413) at
+RIP `0x2012f9`, after 9,901 retired instructions, unsupported opcode 128, empty
+COM1.

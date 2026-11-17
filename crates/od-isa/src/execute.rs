@@ -21964,7 +21964,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                                     | 0x24e
                                     | 0x24f
                             )
-                            | (ConditionCode::Below, 0x82, 0xb7 | 0x230)
+                            | (ConditionCode::Below, 0x82, 0xb7 | 0x19d | 0x230)
                     ))) =>
         {
             if condition.evaluate(state.rflags) {
