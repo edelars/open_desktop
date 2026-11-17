@@ -12,7 +12,7 @@ use od_isa::cpuid::CpuidProfile;
 use od_isa::execute::GuestFpState;
 use od_isa::legacy_mode::RealModeState;
 use od_isa::protected_exec::ProtectedCpu;
-use od_isa::real_mode_exec::{EFLAGS_IF, RealModeCpu};
+use od_isa::real_mode_exec::{CpuidSource, EFLAGS_IF, RealModeCpu};
 use od_isa::{CpuActivity, LongModeState};
 
 /// Index of the boot processor (BSP); with one vCPU, the only one.
@@ -24,20 +24,80 @@ pub(crate) const MAX_VCPUS: usize = 4;
 /// CR0 of a processor after power-on (SDM Vol. 3A Table 12-1): `CD`, `NW` and `ET`.
 pub(crate) const POWER_ON_CR0: u32 = 0x6000_0010;
 
-/// EDX of an application processor after INIT (SDM Vol. 3A Table 12-1: the processor signature,
-/// that is `CPUID.01H:EAX`). It is the leaf-1 EAX of `CpuidProfile::DiagnosticV1`, which is the CPUID
-/// source of the legacy models (`RealModeCpu::after_sipi`); it does NOT follow the profile of the
-/// board (open point, MACHINE_CONTRACT.md S6-16c, to be decided in S6-17/S6-18). The oracle runs of
-/// S6-14d use the host value `0x306A9` as an input instead; no profile of the board has that value.
+/// EDX of an application processor after INIT with the default profile
+/// (`CpuidProfile::DiagnosticV1`), SDM Vol. 3A Table 12-1: the processor signature, that is
+/// `CPUID.01H:EAX`. Since S6-18a EDX follows the CPUID profile of the vCPU ([`VcpuCpuid`]): the leaf-1
+/// EAX of that profile (`0x600` for every profile of `cpuid.rs`), so this constant is the value for
+/// the default profile only. The oracle runs of S6-14d use the host value `0x306A9` as an input
+/// instead; no profile of the board has that value.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const AP_INIT_EDX: u32 = CpuidProfile::DiagnosticV1.query(1, 0).eax;
+
+/// The CPUID profile chosen for the legacy models of the application processors of the Linux
+/// boards (S6-18a): [`CpuidProfile::OdX8664V1Neutral`], the only profile of `cpuid.rs` on which the
+/// kernel's `verify_cpu` returns 0 (S6-14h; the other three give 1). It differs from the profile of the
+/// boot processor's long-mode CPL0 run (`X8664V1Stage4AApic`, which declares only the features the
+/// engine implements): the trampoline's `verify_cpu` demands the whole target mask, the long-mode
+/// run of the AP is S6-21.
+pub(crate) const LINUX_AP_CPUID_PROFILE: CpuidProfile = CpuidProfile::OdX8664V1Neutral;
+
+/// What the CPUID of one vCPU reads (S6-18a): the profile of the board, the vCPU's APIC ID (its
+/// index) and the number of vCPUs of the board, which `CPUID.01H:EBX` reports when it is above one
+/// (`SMP_CONTRACT.md` section 2). The profile also gives EDX after INIT.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct VcpuCpuid {
+    pub(crate) profile: CpuidProfile,
+    pub(crate) apic_id: u8,
+    pub(crate) cpu_count: u8,
+}
+
+impl VcpuCpuid {
+    /// The CPUID configuration of vCPU `index` of a board with `count` vCPUs (`1..=MAX_VCPUS`).
+    pub(crate) const fn new(profile: CpuidProfile, index: usize, count: usize) -> Self {
+        // `as u8` below would truncate silently; with `MAX_VCPUS = 4` it is unreachable.
+        debug_assert!(count <= MAX_VCPUS && index < MAX_VCPUS);
+        Self {
+            profile,
+            apic_id: index as u8,
+            cpu_count: count as u8,
+        }
+    }
+
+    /// The source of the legacy model's `CPUID`. For one vCPU it is the plain profile (the bytes
+    /// of the model are as before S6-18a).
+    pub(crate) const fn source(self) -> CpuidSource {
+        if self.cpu_count <= 1 {
+            CpuidSource::Profile(self.profile)
+        } else {
+            CpuidSource::ProfileOnVcpu {
+                profile: self.profile,
+                apic_id: self.apic_id,
+                cpu_count: self.cpu_count,
+            }
+        }
+    }
+
+    /// EDX after INIT: `CPUID.01H:EAX` of the profile (SDM Vol. 3A Table 12-1).
+    pub(crate) const fn init_edx(self) -> u32 {
+        self.profile.query(1, 0).eax
+    }
+}
 
 /// The board's vCPU set: the boot processor on `boot_state`, then `count - 1` application
 /// processors on `LongModeState::default()` in `WaitForSipi` (S6-13). Only INIT and SIPI, applied
 /// by the processor itself ([`Vcpu::apply_startup`]), take an application processor out of it;
-/// the scheduler then executes it in legacy mode ([`crate::ap_legacy_exec`], S6-16c).
+/// the scheduler then executes it in legacy mode ([`crate::ap_legacy_exec`], S6-16c). The CPUID of
+/// every vCPU is `DiagnosticV1` with the count and its APIC ID (S6-18a).
 pub(crate) fn vcpu_set(boot_state: LongModeState, count: usize) -> Vec<Vcpu> {
     let mut vcpus = vec![Vcpu::new(BOOT_VCPU_INDEX, boot_state)];
     vcpus.extend((1..count).map(Vcpu::new_ap));
+    for vcpu in &mut vcpus {
+        vcpu.set_cpuid(VcpuCpuid::new(
+            CpuidProfile::DiagnosticV1,
+            vcpu.index,
+            count,
+        ));
+    }
     vcpus
 }
 
@@ -70,13 +130,21 @@ impl LegacyCpu {
 }
 
 /// The real-mode processor INIT leaves behind (SDM Vol. 3A Table 12-1): the INIT state of
-/// [`RealModeState::after_init`] with every general register `0` but `EDX` ([`AP_INIT_EDX`]) and the
-/// reset descriptor tables. `old_cr0` keeps only `CD` and `NW`.
-pub(crate) fn init_cpu(old_cr0: u32) -> RealModeCpu {
+/// [`RealModeState::after_init`] with every general register `0` but `EDX` ([`VcpuCpuid::init_edx`],
+/// the leaf-1 EAX of the vCPU's profile) and the reset descriptor tables; its `CPUID` reads
+/// [`VcpuCpuid::source`]. `old_cr0` keeps only `CD` and `NW`.
+pub(crate) fn init_cpu_for(old_cr0: u32, cpuid: VcpuCpuid) -> RealModeCpu {
     RealModeCpu {
         mode: RealModeState::after_init(old_cr0),
-        ..RealModeCpu::after_sipi(0, old_cr0, AP_INIT_EDX)
+        cpuid: cpuid.source(),
+        ..RealModeCpu::after_sipi(0, old_cr0, cpuid.init_edx())
     }
+}
+
+/// [`init_cpu_for`] for a lone processor with the default profile, APIC ID 0 and one vCPU.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn init_cpu(old_cr0: u32) -> RealModeCpu {
+    init_cpu_for(old_cr0, VcpuCpuid::new(CpuidProfile::DiagnosticV1, 0, 1))
 }
 
 /// What a vCPU did with the INIT and SIPI it took from its Local APIC.
@@ -156,6 +224,10 @@ pub(crate) struct Vcpu {
     /// interrupt is delivered there (S6-16d, plan S6-16 6(г)). The set quantum writes it at the end
     /// of every call; an INIT clears it.
     pub(crate) skip_first_boundary: bool,
+    /// What the CPUID of this processor reads and the EDX it has after INIT (S6-18a): the board's
+    /// profile, this vCPU's APIC ID and the vCPU count. `DiagnosticV1`, index, one vCPU until the
+    /// board's set says otherwise ([`vcpu_set`], [`Vcpu::set_cpuid`]).
+    pub(crate) cpuid: VcpuCpuid,
 }
 
 impl Vcpu {
@@ -177,7 +249,20 @@ impl Vcpu {
             guest_fp: GuestFpState::initial(),
             legacy: None,
             skip_first_boundary: false,
+            cpuid: VcpuCpuid::new(CpuidProfile::DiagnosticV1, index, 1),
         }
+    }
+
+    /// Replace the CPUID configuration. A legacy model that is still exactly the one INIT or
+    /// power-on leaves (its `CPUID` source and EDX from the old configuration, nothing run) takes
+    /// the new configuration; a model that has run or started keeps what it has.
+    pub(crate) fn set_cpuid(&mut self, cpuid: VcpuCpuid) {
+        if let Some(LegacyCpu::Real(cpu)) = self.legacy
+            && cpu == init_cpu_for(cpu.mode.cr0, self.cpuid)
+        {
+            self.legacy = Some(LegacyCpu::Real(init_cpu_for(cpu.mode.cr0, cpuid)));
+        }
+        self.cpuid = cpuid;
     }
 
     /// An application processor after power-on: `WaitForSipi` with the real-mode reset state
@@ -193,7 +278,7 @@ impl Vcpu {
             },
         );
         vcpu.guest_efer = 0;
-        vcpu.legacy = Some(LegacyCpu::Real(init_cpu(POWER_ON_CR0)));
+        vcpu.legacy = Some(LegacyCpu::Real(init_cpu_for(POWER_ON_CR0, vcpu.cpuid)));
         vcpu
     }
 
@@ -252,7 +337,7 @@ impl Vcpu {
                 Some(legacy) => legacy.cr0(),
                 None => self.state.cr0.map_or(FIRMWARE_CR0 as u32, |cr0| cr0 as u32),
             };
-            self.legacy = Some(LegacyCpu::Real(init_cpu(old_cr0)));
+            self.legacy = Some(LegacyCpu::Real(init_cpu_for(old_cr0, self.cpuid)));
             self.guest_efer = 0;
             self.guest_cr2 = Some(0);
             self.skip_first_boundary = false;
@@ -272,7 +357,7 @@ impl Vcpu {
         {
             let reset = match self.legacy {
                 Some(LegacyCpu::Real(cpu)) => cpu,
-                _ => init_cpu(POWER_ON_CR0),
+                _ => init_cpu_for(POWER_ON_CR0, self.cpuid),
             };
             self.legacy = Some(LegacyCpu::Real(RealModeCpu {
                 mode: reset.mode.after_sipi(vector),
@@ -927,5 +1012,105 @@ mod tests {
             );
         }
         assert_eq!(apic.pending_startup(), PendingStartup::default());
+    }
+
+    /// S6-18a: one vCPU keeps the CPUID bytes it had (the plain profile source, EDX `0x600`); N > 1
+    /// numbers the processors and gives each the count.
+    #[test]
+    fn s6_18a_the_vcpu_set_gives_each_vcpu_its_apic_id_and_the_count() {
+        let one = vcpu_set(LongModeState::default(), 1);
+        assert_eq!(
+            one[0].cpuid,
+            VcpuCpuid::new(CpuidProfile::DiagnosticV1, 0, 1)
+        );
+        assert_eq!(
+            one[0].cpuid.source(),
+            CpuidSource::Profile(CpuidProfile::DiagnosticV1)
+        );
+        let four = vcpu_set(LongModeState::default(), 4);
+        for (i, vcpu) in four.iter().enumerate() {
+            assert_eq!(vcpu.cpuid.apic_id as usize, i);
+            assert_eq!(vcpu.cpuid.cpu_count, 4);
+            assert_eq!(vcpu.cpuid.init_edx(), 0x600);
+            if i > 0 {
+                let Some(LegacyCpu::Real(cpu)) = vcpu.legacy else {
+                    panic!("AP {i}")
+                };
+                assert_eq!(cpu.gpr[2], 0x600, "EDX after power-on");
+                assert_eq!(
+                    cpu.cpuid,
+                    CpuidSource::ProfileOnVcpu {
+                        profile: CpuidProfile::DiagnosticV1,
+                        apic_id: i as u8,
+                        cpu_count: 4
+                    }
+                );
+            }
+        }
+    }
+
+    /// S6-18a: `set_cpuid_profile` re-seeds the pristine legacy models (source and EDX from the
+    /// profile), INIT keeps the vCPU's configuration, and a model that was started keeps what it
+    /// has. A Linux board (`into_linux_board`) has the AP profile from the start; with one vCPU the
+    /// profile is set too and no processor has a legacy model.
+    #[test]
+    fn s6_18a_the_board_profile_reaches_the_legacy_models_and_survives_init() {
+        let mut board = assembled(2).unwrap();
+        assert_eq!(board.cpuid_profile(), LINUX_AP_CPUID_PROFILE);
+        assert_eq!(LINUX_AP_CPUID_PROFILE, CpuidProfile::OdX8664V1Neutral);
+        let ap_cpuid = |board: &crate::LoadedFirmwareBoard| {
+            let Some(LegacyCpu::Real(cpu)) = board.vcpu(1).unwrap().legacy else {
+                panic!("AP legacy")
+            };
+            (cpu.cpuid, cpu.gpr[2])
+        };
+        assert_eq!(
+            ap_cpuid(&board),
+            (
+                CpuidSource::ProfileOnVcpu {
+                    profile: CpuidProfile::OdX8664V1Neutral,
+                    apic_id: 1,
+                    cpu_count: 2
+                },
+                // EDX = CPUID.01H:EAX of the profile (0x600 for every profile of `cpuid.rs`).
+                0x600
+            )
+        );
+        board.set_cpuid_profile(CpuidProfile::X8664V1Stage4AApic);
+        assert_eq!(
+            ap_cpuid(&board).0,
+            CpuidSource::ProfileOnVcpu {
+                profile: CpuidProfile::X8664V1Stage4AApic,
+                apic_id: 1,
+                cpu_count: 2
+            }
+        );
+        // INIT and SIPI on the AP keep the configuration.
+        board
+            .local_apic_of(0)
+            .unwrap()
+            .write_icr(0, 1, INIT_ASSERT)
+            .unwrap();
+        board.apply_pending_startup(1).unwrap();
+        board
+            .local_apic_of(0)
+            .unwrap()
+            .write_icr(0, 1, sipi(0x08))
+            .unwrap();
+        board.apply_pending_startup(1).unwrap();
+        let started = ap_cpuid(&board);
+        assert_eq!(started.1, 0x600);
+        assert_eq!(
+            board.vcpu(1).unwrap().cpuid,
+            VcpuCpuid::new(CpuidProfile::X8664V1Stage4AApic, 1, 2)
+        );
+        // A started model keeps its source when the profile changes later.
+        board.set_cpuid_profile(CpuidProfile::DiagnosticV1);
+        assert_eq!(ap_cpuid(&board), started);
+        assert_eq!(board.cpuid_profile(), CpuidProfile::DiagnosticV1);
+
+        let one = assembled(1).unwrap();
+        assert_eq!(one.cpuid_profile(), LINUX_AP_CPUID_PROFILE);
+        assert!(one.vcpu(0).unwrap().legacy.is_none());
     }
 }

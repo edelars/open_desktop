@@ -211,6 +211,14 @@ pub enum Alu32Op {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CpuidSource {
     Profile(CpuidProfile),
+    /// S6-18a: a profile of `cpuid.rs` read by one vCPU of a board with `cpu_count` vCPUs
+    /// ([`CpuidProfile::query_for_vcpu`]: the initial APIC ID and the logical processor count of
+    /// CPUID.1 EBX). With `cpu_count <= 1` it equals `Profile(profile)`.
+    ProfileOnVcpu {
+        profile: CpuidProfile,
+        apic_id: u8,
+        cpu_count: u8,
+    },
     Leaves(&'static [(u32, CpuidResult)]),
 }
 
@@ -218,6 +226,11 @@ impl CpuidSource {
     fn query(self, leaf: u32) -> CpuidResult {
         match self {
             Self::Profile(profile) => profile.query(leaf, 0),
+            Self::ProfileOnVcpu {
+                profile,
+                apic_id,
+                cpu_count,
+            } => profile.query_for_vcpu(leaf, 0, u32::from(apic_id), u32::from(cpu_count)),
             Self::Leaves(table) => table
                 .iter()
                 .find(|(l, _)| *l == leaf)
@@ -4466,6 +4479,39 @@ mod tests {
         assert_eq!(cpu.gpr[ESP], 0x6020);
         assert_eq!(cpu.mode.eflags, 0x0020_0046);
         assert_eq!(cpu.mode.eip, 0x1044);
+    }
+
+    /// S6-18a: `verify_cpu` on the neutral profile read by vCPU 1 of 2 takes the same success path
+    /// (it reads EDX and the extended leaves, not the topology fields); the guest sees the APIC ID
+    /// and the logical processor count in the EBX of its last leaf-1 `CPUID`. With one vCPU the
+    /// source equals `Profile`.
+    #[test]
+    fn s6_18a_verify_cpu_succeeds_on_the_neutral_profile_per_vcpu() {
+        let base = run_blob(CpuidSource::Profile(CpuidProfile::OdX8664V1Neutral));
+        let one = run_blob(CpuidSource::ProfileOnVcpu {
+            profile: CpuidProfile::OdX8664V1Neutral,
+            apic_id: 0,
+            cpu_count: 1,
+        });
+        assert_eq!(
+            (&base.0, base.1.gpr, base.1.mode, &base.3),
+            (&one.0, one.1.gpr, one.1.mode, &one.3)
+        );
+        let two = run_blob(CpuidSource::ProfileOnVcpu {
+            profile: CpuidProfile::OdX8664V1Neutral,
+            apic_id: 1,
+            cpu_count: 2,
+        });
+        assert_eq!(
+            two.0, base.0,
+            "same instruction trace: verify_cpu returns 0"
+        );
+        assert!(!two.0.contains(&0x119B), "the failure tail is not taken");
+        assert_eq!(two.3, base.3);
+        // By hand: EBX = 0x100 | 2 << 16 | 1 << 24.
+        assert_eq!(two.1.gpr[EBX], 0x0102_0100);
+        assert_eq!(two.1.gpr[EAX], base.1.gpr[EAX]);
+        assert_eq!(two.1.gpr[EDX], base.1.gpr[EDX]);
     }
 
     #[test]

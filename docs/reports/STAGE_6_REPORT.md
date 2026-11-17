@@ -30,7 +30,7 @@
 | S6-15 | `accepted` | Принята ревью (код и архитектурное §8, правки 2026-11-16): планировщик `smp_scheduler.rs`; подключение к циклу Linux — S6-21 шаг 1. |
 | S6-16 | `accepted` | Принята по сводному ревью S6-16a…f (2026-11-17, Opus/high); больше не `blocked` по S4-21. Старт AP и обмен IPI доказаны гостевым кодом (probe v1/v2, seed 0..=9999). Передано: (а) → S6-21 шаг 1 (перенесён из S6-17 шага 6); цикл Linux на планировщик и сверка с S6-10 → S6-21 шаг 1; CPUID legacy-моделей и EDX после INIT → S6-18a; NMI к AP в legacy-режиме — явная ошибка платы (профильное исключение). |
 | S6-17 | реализовано (шаги 1–5), ожидает ревью | Сценарий `shootdown` probe v3, раздел `MEMORY_MODEL.md`; чувствительность не проверялась (кеша перевода, переживающего квант, нет); шаг 6 (срок платы и источник платы BSP) не выполнен — перенесён в S6-21 (шаг 1). |
-| S6-18a | `not_started` | Выполнима: CPUID на каждом vCPU, CPUID legacy-моделей от профиля платы, MADT с N LAPIC, подбор профиля, при котором `verify_cpu` на AP даёт 0. S4-31 принят; правка `madt.rs` — по согласованию с владельцем S7-13. |
+| S6-18a | реализовано (CPUID, профиль AP), ожидает ревью | CPUID на vCPU (APIC ID, число логических), legacy-модели и EDX после INIT от профиля платы, профиль AP `OdX8664V1Neutral` (`verify_cpu` = 0). MADT с N LAPIC — blocked (`S6-18a-MADT`: до `S7-13` и источника N из `S7-02`); long mode CPUID на vCPU > 0 — S6-21. |
 | S6-18b | `blocked` | S7-02 (`cpu_count` в handoff). |
 | S6-19 | реализовано, ожидает ревью; готов к закрытию после ревью S6-20 | Драйвер, перебор, эталон; флаг/CLI — S6-19b; после S6-20 все 15 fixture и счётчик LOCK-INC — `equal`. |
 | S6-20 | реализовано, ожидает ревью | Единый вызов `atomic_rmw_integer`; формы корпуса в голом `run`; проверки `WaitForSipi`/`Shutdown` в точках входа; литмусы `equal`. Замер темпа до и после не выполнен. |
@@ -949,6 +949,26 @@ KVM с подменённой CPUID: принял `EFER.LME|NXE|SCE`, `CR4 = 0x6
 - S4-42 и реальный TLB не вводились (запрещено планом: «не вводить общий TLB; не выбирать структуру TLB»).
 - Шаг 3 плана (уведомление о записи в таблицу между потоками) — только требование в `MEMORY_MODEL.md`; проверять нечего, пока нет кеша (S6-30).
 - Сценарий: один AP, CPL0, одна 4 KiB страница, общий CR3; `MOV CR3` как инвалидация, PCID, 2 MiB страницы, другие кольца не проверяются; независимого оракула порядка нет.
+
+### S6-18a — CPUID per vCPU и профиль AP (реализовано, ожидает ревью)
+
+Дата: 2026-11-17. Чекбокс S6-18 в `STAGE_6.md` не отмечен (S6-18b blocked). Контракт — [MACHINE_CONTRACT.md](../specs/MACHINE_CONTRACT.md#s6-18a--cpuid-на-каждом-vcpu-и-профиль-ap), [CPU_CONTRACT.md](../specs/CPU_CONTRACT.md).
+
+**Сделано.**
+1. CPUID на vCPU: `CpuidProfile::query_for_vcpu` (EBX листа 1: счётчик `N` в 23:16 и APIC ID в 31:24 при `N > 1`; при `N = 1` побайтно прежнее; листья `0xB`/`0x1F`/`0x80000026` нулевые по `SMP_CONTRACT.md`); `CpuidSource::ProfileOnVcpu`; `Vcpu::cpuid`. Применено к legacy-моделям; long mode не менялся (профиль там без APIC ID — S6-21).
+2. Источник CPUID legacy-моделей и EDX после INIT следуют профилю платы: `init_cpu_for`, `LoadedFirmwareBoard::set_cpuid_profile`/`cpuid_profile`; плата `linux-direct` (`into_linux_board`) ставит `LINUX_AP_CPUID_PROFILE`. EDX после INIT = leaf 1 EAX профиля = `0x600` у всех четырёх профилей, поэтому ожидания S6-13/S6-16c по значению прежние.
+3. Профиль AP: `OdX8664V1Neutral`. `verify_cpu` возвращает 0 только на нём (на трёх остальных 1: `s6_14g_verify_cpu_on_the_cpuid_rs_profiles_takes_the_failure_path`); для vCPU 1 из 2 — тот же след и EBX `0x01020100` (`s6_18a_verify_cpu_succeeds_on_the_neutral_profile_per_vcpu`). Отличается от профиля BSP намеренно (BSP: `X8664V1Stage4AApic` (linux-direct; допустим и `DiagnosticV1`)): trampoline AP требует полную маску цели. `ProtectedCpu` не исполняет `CPUID` вне тестов (CPUID исполняется только в real-mode trampoline — `verify_cpu`). `VcpuCpuid::new` защищён `debug_assert!(count <= MAX_VCPUS)` (`MAX_VCPUS = 4`, усечение `as u8` недостижимо).
+4. MADT с `N` записями — **не сделано, blocked**: `S6-18a-MADT` (до `S7-13`, владелец `madt.rs`, и источника `N` из `S7-02`/S6-18b; `cpu_count = 1` нормативно в handoff). `firmware/` и `build_stage4_acpi_blob.py` не менялись, байты MADT для одного vCPU прежние. Согласование с владельцем `S7-13` не получено — открыто.
+
+**Проверки.** `cargo fmt -p od-isa -p od-machine -p od-runner -- --check` — чисто; `cargo check --workspace --all-targets --offline` — чисто (предупреждения прежние: `page_walk`, `od-host`); `cargo test -p od-isa --locked --offline --lib -- cpuid protected real_mode` — 256 passed (было 253; 3 новых); `cargo test -p od-machine --offline --lib -- vcpu firmware_board cpuid ap_legacy smp_scheduler` — 269 passed (3 новых: 2 в `vcpu`, 1 в `ap_legacy_exec`); `cargo test -p od-machine --offline --test stage6_smp_probe` — 26 passed (в составе полного прогона); полный `cargo test -p od-machine --offline -- --test-threads=1` (один раз, общий путь `vcpu`/`firmware_board`) — 32 набора, 1820 passed, 0 failed, 8 ignored (библиотека: 1507 passed, 611,5 с).
+
+**Изменённые ожидания.** Три теста `ap_legacy_exec` сравнивают состояние модели с `init_cpu_for(.., ap.cpuid)` вместо `init_cpu(..)`: у AP платы `linux-direct` с `N = 2` поле `cpuid` модели — `ProfileOnVcpu { OdX8664V1Neutral, 1, 2 }`; регистры и `mode` те же. Остальные ожидания (S6-13, S6-16c, S6-16e probe) не менялись.
+
+**Не сделано / открыто.**
+- MADT: `S6-18a-MADT` (см. выше). `ACPI_SMBIOS_TABLES.md` не менялся.
+- CPUID в long mode на vCPU > 0 (EBX = `0x100` на всех): подключение `query_for_vcpu` к `Cpl0ProfileSet` — в S6-21.
+- Бит HTT (EDX[28]) не объявлен, хотя EBX[23:16] определён по SDM только при HTT = 1 и Linux читает поле всегда, использует только при HTT; решение по topology domains — S6-18/S6-21.
+- Разные профили на BSP (`X8664V1Stage4AApic`; допустим и `DiagnosticV1`), AP до long mode (`OdX8664V1Neutral`) и AP после (профиль набора): согласование признаков — S6-21 (условие: CPUID AP в long mode побайтно равен CPUID BSP, кроме `CPUID.1` EBX[31:24] и [23:16]; иначе блокер S6-21).
 
 ### S6-19 — litmus в режиме чередования (реализовано, ожидает ревью)
 

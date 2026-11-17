@@ -33,7 +33,10 @@ use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
 use crate::pit_pic_irq_source::PitPicIrqSource;
 use crate::uart_ioapic_irq_source::UartIoapicIrqSource;
 use crate::uart_pic_irq_source::UartPicIrqSource;
-use crate::vcpu::{BOOT_VCPU_INDEX, MAX_VCPUS, NmiBoundary, StartupApplied, Vcpu, vcpu_set};
+use crate::vcpu::{
+    BOOT_VCPU_INDEX, LINUX_AP_CPUID_PROFILE, MAX_VCPUS, NmiBoundary, StartupApplied, Vcpu,
+    VcpuCpuid, vcpu_set,
+};
 use crate::{
     ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AbsentPortRegion, AbsentPorts,
     AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError, DISPLAY_FRAMEBUFFER_BASE,
@@ -52,6 +55,7 @@ use crate::{
     TrackedAccessError, Uart16550Handle, Uart16550PollingTx, VirtualClock, VirtualClockError,
     VirtualClockHandle, run_paged_probe, run_paged_probe_with_rdtsc,
 };
+use od_isa::cpuid::CpuidProfile;
 use od_isa::execute::{Cpl0ProfileSet, GuestFpState, RunExit, TranslationContextChange};
 use od_isa::memory::{
     AccessContext, AccessKind, AccessOrigin, InstructionMode, PageFaultRecord, PrivilegeLevel,
@@ -1266,6 +1270,29 @@ impl LoadedFirmwareBoard {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn vcpu_mut(&mut self, index: usize) -> Option<&mut Vcpu> {
         self.vcpus.get_mut(index)
+    }
+
+    /// The CPUID profile of the legacy models of the board's vCPUs and of the EDX after INIT
+    /// (S6-18a), read from `vcpus[0].cpuid.profile`: it is set on every vCPU (`LINUX_AP_CPUID_PROFILE`
+    /// on the `linux-direct` board). It is NOT the CPUID of the BSP in long mode: that one is the
+    /// `members.cpuid_profile` of `linux_direct.rs`. `DiagnosticV1` until
+    /// [`Self::set_cpuid_profile`] changes it.
+    pub fn cpuid_profile(&self) -> CpuidProfile {
+        self.vcpus[BOOT_VCPU_INDEX].cpuid.profile
+    }
+
+    /// Choose the CPUID profile of every vCPU (S6-18a). Each keeps its APIC ID (its index) and
+    /// the board's vCPU count. A legacy model that is still in its INIT or power-on state takes
+    /// the profile now (its `CPUID` source and EDX); one that has been started keeps what it has,
+    /// so the call is made before the guest runs. The Linux boards pick
+    /// `OdX8664V1Neutral` (`vcpu::LINUX_AP_CPUID_PROFILE`) for their application processors: the `verify_cpu`
+    /// of the kernel's trampoline returns 0 only on it.
+    pub fn set_cpuid_profile(&mut self, profile: CpuidProfile) {
+        let count = self.vcpus.len();
+        for vcpu in &mut self.vcpus {
+            let cpuid = VcpuCpuid::new(profile, vcpu.index, count);
+            vcpu.set_cpuid(cpuid);
+        }
     }
 
     /// The single clock owner, once [`Self::enable_clock_owner`] installed it. The scheduler of
@@ -3299,7 +3326,7 @@ impl AssembledBoard {
             ..
         } = self;
         configure_com1(&mut bus)?;
-        Ok(LoadedFirmwareBoard {
+        let mut board = LoadedFirmwareBoard {
             bus,
             vcpus: vcpu_set(LongModeState::default(), lapic.cpu_count()),
             uart,
@@ -3336,7 +3363,11 @@ impl AssembledBoard {
             suppress_pm_tick: false,
             #[cfg(test)]
             suppress_rdtsc_tick: false,
-        })
+        };
+        // S6-18a: the application processors of a Linux board read the CPUID of the target
+        // profile in their legacy models (the kernel's `verify_cpu` needs it); one vCPU has none.
+        board.set_cpuid_profile(LINUX_AP_CPUID_PROFILE);
+        Ok(board)
     }
 }
 

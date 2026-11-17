@@ -72,6 +72,28 @@ impl CpuidProfile {
         matches!(self, Self::X8664V1Stage4A | Self::X8664V1Stage4AApic)
     }
 
+    /// CPUID of one vCPU of a board with `cpu_count` vCPUs (S6-18a, `SMP_CONTRACT.md` section 2).
+    /// Equal to [`Self::query`] except CPUID.01H:EBX when `cpu_count > 1`: bits 23:16 (logical
+    /// processor count) become `cpu_count` and bits 31:24 (initial APIC ID) become `apic_id`
+    /// (APIC ID = vCPU index). With `cpu_count <= 1` the result is `query`'s, byte for byte. The
+    /// topology leaves `0xB`, `0x1F` and `0x80000026` stay absent (four zeros) at every count, as
+    /// the contract says; CPUID.01H:EDX (HTT, bit 28) is not changed. Only the low 8 bits of
+    /// `apic_id` and `cpu_count` are used (the fields are 8 bits wide).
+    pub const fn query_for_vcpu(
+        self,
+        leaf: u32,
+        subleaf: u32,
+        apic_id: u32,
+        cpu_count: u32,
+    ) -> CpuidResult {
+        let mut result = self.query(leaf, subleaf);
+        if leaf == 1 && cpu_count > 1 {
+            result.ebx =
+                (result.ebx & 0x0000_FFFF) | ((cpu_count & 0xFF) << 16) | ((apic_id & 0xFF) << 24);
+        }
+        result
+    }
+
     /// Return a CPUID tuple. This initial slice ignores ECX for every leaf.
     pub const fn query(self, leaf: u32, _subleaf: u32) -> CpuidResult {
         let leaf1_edx = match self {
@@ -458,5 +480,83 @@ mod tests {
             assert_ne!(p, CpuidProfile::OdX8664V1Neutral);
         }
         assert!(!CpuidProfile::OdX8664V1Neutral.is_stage4a_family());
+    }
+
+    const ALL_PROFILES: [CpuidProfile; 4] = [
+        CpuidProfile::DiagnosticV1,
+        CpuidProfile::X8664V1Stage4A,
+        CpuidProfile::X8664V1Stage4AApic,
+        CpuidProfile::OdX8664V1Neutral,
+    ];
+
+    /// S6-18a: for one vCPU the per-vCPU query is `query`, byte for byte, on every leaf (the
+    /// contract's leaf 1 EBX `0x100`: one logical CPU, APIC ID 0), for every profile.
+    #[test]
+    fn s6_18a_one_vcpu_is_the_plain_query_byte_for_byte() {
+        for p in ALL_PROFILES {
+            for leaf in [
+                0,
+                1,
+                2,
+                4,
+                0xB,
+                0x1F,
+                0x8000_0000,
+                0x8000_0001,
+                0x8000_0008,
+                u32::MAX,
+            ] {
+                for subleaf in [0, 1] {
+                    assert_eq!(
+                        p.query_for_vcpu(leaf, subleaf, 0, 1),
+                        p.query(leaf, subleaf)
+                    );
+                    // Count 0 is not a processor count; it is treated as one.
+                    assert_eq!(
+                        p.query_for_vcpu(leaf, subleaf, 0, 0),
+                        p.query(leaf, subleaf)
+                    );
+                }
+            }
+            assert_eq!(p.query_for_vcpu(1, 0, 0, 1).ebx, 0x0000_0100);
+        }
+    }
+
+    /// S6-18a: with N > 1, CPUID.1 EBX[23:16] is N and EBX[31:24] is the vCPU's APIC ID (oracle
+    /// written by hand from the SDM field positions); everything else, including EAX, ECX, EDX
+    /// and the topology leaves 0xB/0x1F/0x80000026 (absent), is as for one vCPU.
+    #[test]
+    fn s6_18a_two_and_four_vcpus_differ_in_leaf_1_ebx_only() {
+        for p in ALL_PROFILES {
+            for (count, apic_id) in [(2u32, 0u32), (2, 1), (4, 0), (4, 1), (4, 2), (4, 3)] {
+                let one = p.query(1, 0);
+                let got = p.query_for_vcpu(1, 0, apic_id, count);
+                assert_eq!(got.ebx, 0x0000_0100 | (count << 16) | (apic_id << 24));
+                assert_eq!(got.ebx >> 24, apic_id, "initial APIC ID");
+                assert_eq!((got.ebx >> 16) & 0xFF, count, "logical processor count");
+                assert_eq!(got.ebx & 0xFFFF, one.ebx, "brand index and CLFLUSH size");
+                assert_eq!((got.eax, got.ecx, got.edx), (one.eax, one.ecx, one.edx));
+                assert_eq!(got.edx & (1 << 28), 0, "HTT is not declared");
+                for leaf in [
+                    0,
+                    2,
+                    4,
+                    0xB,
+                    0x1F,
+                    0x8000_0000,
+                    0x8000_0001,
+                    0x8000_0008,
+                    0x8000_0026,
+                ] {
+                    assert_eq!(p.query_for_vcpu(leaf, 0, apic_id, count), p.query(leaf, 0));
+                }
+                for leaf in [0xB, 0x1F, 0x8000_0026] {
+                    assert_eq!(
+                        p.query_for_vcpu(leaf, 0, apic_id, count),
+                        CpuidResult::default()
+                    );
+                }
+            }
+        }
     }
 }

@@ -200,7 +200,9 @@ mod tests {
     use crate::smp_scheduler::{
         BoardSmpHost, Finished, QuantumPolicy, SmpError, SmpHost, SmpScheduler, StopRequest,
     };
-    use crate::vcpu::{AP_INIT_EDX, POWER_ON_CR0, init_cpu};
+    use crate::vcpu::{
+        AP_INIT_EDX, LINUX_AP_CPUID_PROFILE, POWER_ON_CR0, VcpuCpuid, init_cpu, init_cpu_for,
+    };
     use crate::{
         FirmwareBoardConfig, LOCAL_APIC_MMIO_BASE, PciEcam, firmware_board::assemble_board,
     };
@@ -755,7 +757,17 @@ mod tests {
         assert_eq!(scheduler.counters()[1].turns, 0);
         let ap = host.board().vcpu(1).unwrap();
         assert_eq!(ap.activity(), CpuActivity::WaitForSipi);
-        assert_eq!(ap.legacy, Some(LegacyCpu::Real(init_cpu(POWER_ON_CR0))));
+        // S6-18a: the AP's CPUID is the Linux AP profile with its APIC ID and the vCPU count; only
+        // the `cpuid` source of the model differs from the lone-processor `init_cpu`.
+        assert_eq!(
+            ap.cpuid,
+            VcpuCpuid::new(LINUX_AP_CPUID_PROFILE, 1, 2),
+            "the Linux board's AP"
+        );
+        assert_eq!(
+            ap.legacy,
+            Some(LegacyCpu::Real(init_cpu_for(POWER_ON_CR0, ap.cpuid)))
+        );
         assert_eq!(ram(&mut board, LOCK, 4), le32(0));
     }
 
@@ -821,6 +833,7 @@ mod tests {
             );
             let ap = host.board().vcpu(1).unwrap();
             assert_eq!(ap.activity(), CpuActivity::WaitForSipi);
+            assert_eq!(ap.cpuid, VcpuCpuid::new(LINUX_AP_CPUID_PROFILE, 1, 2));
             // The INIT state: CD and NW of the old CR0 kept (the trampoline's `mov cr0` of the
             // 20-step case had cleared them: the old CR0 is the one it wrote), the registers zero
             // but EDX.
@@ -829,7 +842,10 @@ mod tests {
             } else {
                 POWER_ON_CR0
             };
-            assert_eq!(ap.legacy, Some(LegacyCpu::Real(init_cpu(old_cr0))));
+            assert_eq!(
+                ap.legacy,
+                Some(LegacyCpu::Real(init_cpu_for(old_cr0, ap.cpuid)))
+            );
             assert_eq!(
                 ap.real_mode().unwrap().cr0,
                 if ap_steps == 20 { 0x10 } else { 0x6000_0010 }
@@ -967,13 +983,48 @@ mod tests {
             refusal,
             ApLegacyRefusal::Real(RealModeRefusal::Unsupported { linear: 0x8000, .. })
         ));
+        let cpuid = host.board().vcpu(1).unwrap().cpuid;
+        assert_eq!(cpuid, VcpuCpuid::new(LINUX_AP_CPUID_PROFILE, 1, 2));
         assert_eq!(
             host.board().vcpu(1).unwrap().legacy,
             Some(LegacyCpu::Real(RealModeCpu {
                 mode: RealModeState::after_init(POWER_ON_CR0).after_sipi(SIPI_VECTOR),
-                ..init_cpu(POWER_ON_CR0)
+                ..init_cpu_for(POWER_ON_CR0, cpuid)
             }))
         );
+    }
+
+    /// S6-18a: an AP that executes `CPUID` leaf 1 in its real-mode model reads its own APIC ID and
+    /// the vCPU count in EBX (oracle by hand from the SDM fields: `0x100 | N << 16 | id << 24`),
+    /// the feature mask of the Linux AP profile in EDX (`OdX8664V1Neutral`, the contract's
+    /// `0x0781A379`) and `0x600` in EAX; the other leaves of the target are read the same.
+    #[test]
+    fn s6_18a_an_ap_reads_its_apic_id_and_the_vcpu_count_through_cpuid() {
+        // 66 b8 01 00 00 00: mov eax,1; 0f a2: cpuid.
+        let code = vec![0x66, 0xb8, 0x01, 0, 0, 0, 0x0f, 0xa2];
+        for count in [2usize, 4] {
+            let mut board = board_with(count, &[(REAL_AT, code.clone())]);
+            for ap in 1..count {
+                board
+                    .local_apic_of(0)
+                    .unwrap()
+                    .write_icr(0, ap as u8, sipi(SIPI_VECTOR))
+                    .unwrap();
+                board.apply_pending_startup(ap).unwrap();
+                run_legacy(&mut board, ap, 2, &mut || false).unwrap();
+                let Some(LegacyCpu::Real(cpu)) = board.vcpu(ap).unwrap().legacy else {
+                    panic!("AP {ap} left real mode")
+                };
+                assert_eq!(cpu.gpr[0], 0x600, "EAX, count {count} AP {ap}");
+                assert_eq!(
+                    cpu.gpr[3],
+                    0x100 | (count as u32) << 16 | (ap as u32) << 24,
+                    "EBX, count {count} AP {ap}"
+                );
+                assert_eq!(cpu.gpr[1], 0, "ECX");
+                assert_eq!(cpu.gpr[2], 0x0781_A379, "EDX, count {count} AP {ap}");
+            }
+        }
     }
 
     #[test]
