@@ -4651,7 +4651,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-347 — S7-04: exact helper `OR R13B,BPL` (`41 08 ED`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-346.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017ce`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this exact byte-register OR after 9,063 retired instructions. The base profile does not yet admit this exact form.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `41 08 ED` OR BPL into R13B. REX.B selects R13B and the partial-byte write preserves upper R13; shared OR updates logical flags and leaves AF undefined.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 8 }` at RIP `0x2017ce`; COM1 is empty.
+- **Проверка:** focused tests cover OR results/flags/definedness, R13 upper-byte preservation, fetch-fault atomicity, neighbors and CPL3/other-profile rejection. Full od-isa and paged machine suites, scoped cargo check, rustfmt and diff-check pass; independent review approved with no findings.
+
+### ISSUE-348 — S7-04: exact helper `JNZ rel32 -0x177` (`0F 85 89 FE FF FF`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-347.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017d1`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware reaches this exact JNZ after 9,064 retired instructions. The base profile does not yet admit this exact displacement.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 133 }` at RIP `0x2017d1`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.

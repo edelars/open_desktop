@@ -937,3 +937,19 @@ Four focused tests and the other-profile matrix pass. Full od-isa suites pass
 (2,322/1,591/126/29/6/1,071/7/15; zero doc tests); all 71 paged machine
 quantum tests pass. Scoped cargo check, rustfmt and diff-check pass. Independent
 review approved with no findings.
+
+### Текущий статус — 2026-11-16 — ISSUE-347
+
+ISSUE-347 admits only exact bytes `41 08 ED` (`OR R13B,BPL`) in base
+`PagedCpl0ProbeV1`. REX.B selects R13B as the opcode-08 r/m destination; the
+source remains BPL. The byte result updates R13[7:0] only, preserving upper
+R13. Shared OR flags are applied, with AF undefined and its definedness
+cleared. Runner advances to ISSUE-348, `0F 85 89 FE FF FF`
+(`JNZ rel32 -0x177`) at `0x2017d1` after 9,064 retired instructions; COM1 is
+empty. ISSUE-201 remains the unrelated pair of stale CLD-unsupported
+full-machine expectations. Do not mark the Stage 7 gate complete.
+
+Four focused tests and the other-profile matrix pass. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,075/7/15; zero doc tests); all 71 paged machine
+quantum tests pass. Scoped cargo check, rustfmt and diff-check pass. Independent
+review approved with no findings.

@@ -2193,3 +2193,27 @@ Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`)
 advances after 9,063 retired instructions to `41 08 ED` (`OR R13B,BPL`,
 ISSUE-347) at RIP `0x2017ce`, `Unsupported { opcode: 8 }`; COM1 is empty.
+
+
+### S7-04 exact helper `OR R13B,BPL` — ISSUE-347
+
+`PagedCpl0ProbeV1` admits only exact bytes `41 08 ED`. For opcode 08, REX.B
+extends ModRM r/m=5 to R13B, while ModRM.reg=5 remains BPL. OR writes only
+R13[7:0], preserving the upper 56 bits; CF/OF clear, SF/ZF/PF reflect the
+byte result, AF becomes undefined, and definedness follows shared logic
+semantics. Other byte-register pairs, widths, opcode directions, prefixes,
+CPL3 and other profiles remain unsupported.
+
+Four focused tests cover byte values/flags and AF definedness, upper-register
+and full-state preservation, final-ModRM fetch-fault atomicity, neighbors,
+CPL3 and other-profile rejection. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,075/7/15; zero doc tests), all 71 paged machine
+quantum tests pass, and scoped cargo check, rustfmt and diff-check pass.
+Independent review approved with no findings. ISSUE-201's stale CLD expectations remain
+unrelated and open.
+
+Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`)
+advances after 9,064 retired instructions to `0F 85 89 FE FF FF`
+(`JNZ rel32 -0x177`, ISSUE-348) at RIP `0x2017d1`,
+`Unsupported { opcode: 133 }`; COM1 is empty.

@@ -28003,3 +28003,23 @@ Independent review approved with no findings. Firmware runner advances to
 ISSUE-347 (`41 08 ED`, `OR R13B,BPL`) at RIP `0x2017ce` after 9,063 retired
 instructions; COM1 is empty. ISSUE-201's CLD expectation caveat remains open
 and unrelated.
+
+
+### S7-04 CPU-profile slice: exact helper `OR R13B,BPL` (ISSUE-347)
+
+`PagedCpl0ProbeV1` admits only exact bytes `41 08 ED`. Opcode 08 uses the
+ModRM r/m byte as destination and the reg byte as source; REX.B extends r/m=5
+to R13B, while reg=5 selects BPL. Only the low destination byte changes.
+Shared OR semantics clear CF/OF, update SF/ZF/PF, preserve other defined flag
+bits, and mark AF undefined. Other register pairs, forms, widths, prefixes,
+CPL3 and other profiles remain unsupported.
+
+Four focused tests cover logical results and flags/definedness, preserved upper
+R13 and unrelated state, final-ModRM fetch-fault atomicity, neighbors, CPL3 and
+other-profile isolation. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,075/7/15; zero doc tests), all 71 paged machine
+quantum tests pass, and scoped cargo check, rustfmt and diff-check pass.
+Independent review approved with no findings. Firmware runner advances to ISSUE-348
+(`0F 85 89 FE FF FF`, `JNZ rel32 -0x177`) at RIP `0x2017d1` after 9,064
+retired instructions; COM1 is empty. ISSUE-201's CLD test caveat remains open
+and unrelated.
