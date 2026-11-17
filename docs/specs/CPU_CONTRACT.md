@@ -27956,3 +27956,7 @@ Five focused tests cover both outcomes with defined/undefined ZF, taken target c
 ### S7-04 CPU-profile slice: exact helper `MOV EBP,ESI` (ISSUE-342)
 
 `PagedCpl0ProbeV1` admits only exact no-prefix bytes `89 F5`. The dword source reads ESI's low 32 bits; writing EBP zero-extends into RBP. Only RBP/RIP change. RFLAGS and definedness remain unchanged. Other registers, operand widths, opcode direction, prefixes, CPL3 and other profiles remain unsupported. Focused/profile tests, full od-isa and paged-machine suites, scoped cargo check, rustfmt and diff-check pass; independent review approved with no findings. ISSUE-201's unrelated stale CLD expectations remain open.
+
+### S7-04 CPU-profile slice: exact helper `JNZ rel32 -0x160` (ISSUE-343)
+
+`PagedCpl0ProbeV1` admits only exact no-prefix bytes `0F 85 A0 FE FF FF`. JNZ reads ZF; if clear, signed rel32 -0x160 is applied to next RIP, otherwise execution falls through. Flags and definedness remain unchanged. Canonicality is checked only for taken targets; a not-taken noncanonical fall-through faults at the next fetch. Other displacements/conditions/prefixes, CPL3 and other profiles remain unsupported. Focused/profile tests, full od-isa and paged-machine suites, scoped cargo check, rustfmt and diff-check pass; independent review approved with no findings. ISSUE-201's unrelated stale CLD expectations remain open.

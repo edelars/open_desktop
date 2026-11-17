@@ -2132,3 +2132,11 @@ The firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb
 Four focused profile tests pass, covering zero-extension/full-state and definedness preservation, final-ModRM fetch-fault atomicity, neighboring encodings, and CPL3 rejection. The other-profile matrix and the ISSUE-282 `MOV EBP,R14D` neighbor regression pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,054/7/15; 0 doc tests), all 71 paged machine quantum tests pass, and scoped cargo check, rustfmt and diff-check pass. Independent review approved with no findings.
 
 The firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) advances after 9,058 retired instructions to `0F 85 A0 FE FF FF` (`JNZ rel32 -0x160`, ISSUE-343) at RIP `0x2017ba`, `Unsupported { opcode: 133 }`; COM1 remains empty. ISSUE-201 remains the unrelated pair of stale CLD-unsupported expectations in full `od-machine` tests.
+
+### S7-04 CPU-profile slice: exact helper `JNZ rel32 -0x160` (ISSUE-343)
+
+`PagedCpl0ProbeV1` admits only exact no-prefix bytes `0F 85 A0 FE FF FF`. JNZ tests ZF and applies signed rel32 -0x160 from next RIP when ZF=0; when ZF=1, it falls through. Flags and definedness are preserved. A taken target is canonicality-checked, while a noncanonical fall-through is checked only on the next fetch.
+
+Five focused tests cover both ZF outcomes with defined/undefined metadata, branch/fall-through RIP, taken-only canonicality including #GP at a noncanonical target, final-displacement-byte fetch-fault atomicity, neighboring displacements/conditions/prefixes, and CPL3 rejection. The other-profile matrix rejects the exact encoding. Full od-isa suites pass (2,322/1,591/126/29/6/1,059/7/15; 0 doc tests), all 71 paged machine quantum tests pass, and scoped cargo check, rustfmt and diff-check pass. Independent review approved with no findings.
+
+The firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) advances after 9,059 retired instructions to `4C 01 D6` (`ADD RSI,R10`, ISSUE-344) at RIP `0x2017c0`, `Unsupported { opcode: 1 }`; COM1 remains empty. ISSUE-201 remains the unrelated pair of stale CLD-unsupported expectations in full `od-machine` tests.

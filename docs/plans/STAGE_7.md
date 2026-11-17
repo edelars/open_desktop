@@ -869,6 +869,21 @@ neighbor regression pass. Full od-isa suites pass
 quantum tests pass, and scoped cargo check/rustfmt/diff-check pass.
 Independent review approved with no findings.
 
+### Текущий статус — 2026-11-16 — ISSUE-343
+
+ISSUE-343 admits only exact no-prefix bytes `0F 85 A0 FE FF FF` (`JNZ rel32
+-0x160`) in base `PagedCpl0ProbeV1`. It reads ZF and computes its taken target
+relative to next RIP; flags/definedness remain unchanged, and target
+canonicality is checked only when taken. The runner advances to ISSUE-344,
+`4C 01 D6` (`ADD RSI,R10`) at `0x2017c0` after 9,059 retired instructions;
+COM1 is empty. ISSUE-201 remains the unrelated pair of stale CLD-unsupported
+full-machine expectations. Do not mark the Stage 7 gate complete.
+
+Five focused tests, other-profile matrix, full od-isa suites
+(2,322/1,591/126/29/6/1,059/7/15; zero doc tests), all 71 paged machine tests,
+scoped cargo check/rustfmt/diff-check pass. Independent review approved with
+no findings.
+
 ## 10. Проверка документа
 
 Подготовка плана не является реализацией прошивки, устройств, TPM или проведённым экспериментом. Для текущей задачи проверялись: соответствие scope roadmap/architecture/layout/`firmware/AGENTS.md`, фактическое состояние кода на 2026-11-07 (пустой `firmware/uefi/`, только Long64 в `od-isa`, отсутствие ROM backing, PCI, NVMe, RTC, TPM, NVRAM; наличие `MachineBus`, `PhysicalMemory`, flat probe этапа 4, UART, LAPIC/IOAPIC, дисплейного устройства S10-03, политики зависимостей и ADR-0001/0002), последовательность и критерии задач, ссылки и Markdown. CPU-тесты, запуск гостя и SSH не требовались.
