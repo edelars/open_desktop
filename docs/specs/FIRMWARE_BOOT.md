@@ -968,6 +968,18 @@ COM1 output is empty. Independent review approved with no findings. ISSUE-201
 remains the unrelated stale CLD test expectation caveat.
 
 
+### Stage 7 runner frontier after ISSUE-348
+
+With exact `0F 85 89 FE FF FF` (`JNZ rel32 -0x177`) admitted, firmware retires
+9,065 instructions and stops at RIP `0x2017d7`, bytes `45 8B 6C 04 FC`
+(`MOV R13D,dword ptr [R12+RAX-4]`, ISSUE-349),
+`Unsupported { opcode: 139 }`. Image
+`/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1
+output is empty. ISSUE-201 remains the unrelated stale CLD test expectation
+caveat. Independent review approved with no findings.
+
+
 ### Stage 7 runner frontier after ISSUE-346
 
 With exact `41 0F 97 C5` admitted, firmware retires 9,063 instructions and

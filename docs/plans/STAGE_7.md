@@ -953,3 +953,18 @@ Four focused tests and the other-profile matrix pass. Full od-isa suites pass
 (2,322/1,591/126/29/6/1,075/7/15; zero doc tests); all 71 paged machine
 quantum tests pass. Scoped cargo check, rustfmt and diff-check pass. Independent
 review approved with no findings.
+
+### Текущий статус — 2026-11-16 — ISSUE-348
+
+ISSUE-348 admits only exact `0F 85 89 FE FF FF` (`JNZ rel32 -0x177`) in base
+`PagedCpl0ProbeV1`. JNZ evaluates ZF, leaves flags and definedness unchanged,
+and validates canonicality only for a taken target. Runner advances to ISSUE-349,
+`45 8B 6C 04 FC` (`MOV R13D,dword ptr [R12+RAX-4]`) at `0x2017d7` after 9,065
+retired instructions; COM1 is empty. ISSUE-201 remains the unrelated pair of
+stale CLD-unsupported full-machine expectations. Do not mark the Stage 7 gate
+complete.
+
+Five focused tests and the other-profile matrix pass. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,080/7/15; zero doc tests); all 71 paged machine
+quantum tests pass. Scoped cargo check, rustfmt and diff-check pass. Independent
+review approved with no findings.

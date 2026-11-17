@@ -4659,7 +4659,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-348 — S7-04: exact helper `JNZ rel32 -0x177` (`0F 85 89 FE FF FF`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-347.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017d1`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `0F 85 89 FE FF FF` admit JNZ rel32 -0x177. The branch reads ZF, preserves flags and definedness, and checks canonicality only for a taken target.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, runner advances to `Unsupported { opcode: 139 }` at RIP `0x2017d7` after 9,065 retired instructions; COM1 is empty.
+- **Проверка:** five focused tests cover both ZF values and definedness, signed target/fallthrough, taken-only canonicality, final displacement-byte fetch-fault atomicity, adjacent displacements/conditions/prefixes, CPL3 and other-profile isolation. Full od-isa, paged machine quantum, scoped cargo check, rustfmt and diff-check pass; independent review approved with no remaining findings.
+
+### ISSUE-349 — S7-04: exact helper `MOV R13D,dword ptr [R12+RAX-4]` (`45 8B 6C 04 FC`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-348.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017d7`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this exact JNZ after 9,064 retired instructions. The base profile does not yet admit this exact displacement.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 133 }` at RIP `0x2017d1`; COM1 is empty.
+- **Суть и последствия:** firmware reaches this exact indexed dword load after 9,065 retired instructions. The base profile does not yet admit this exact form.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 139 }` at RIP `0x2017d7`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.

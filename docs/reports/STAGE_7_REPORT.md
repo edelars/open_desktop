@@ -2217,3 +2217,27 @@ Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
 advances after 9,064 retired instructions to `0F 85 89 FE FF FF`
 (`JNZ rel32 -0x177`, ISSUE-348) at RIP `0x2017d1`,
 `Unsupported { opcode: 133 }`; COM1 is empty.
+
+
+### S7-04 exact helper `JNZ rel32 -0x177` — ISSUE-348
+
+`PagedCpl0ProbeV1` admits only exact no-prefix bytes `0F 85 89 FE FF FF`.
+JNZ tests ZF; when clear, signed rel32 -0x177 is added to next RIP, otherwise
+execution falls through. Flags and definedness are unchanged. Canonicality is
+checked for a taken target; fetch faults during the displacement leave state
+unchanged. Other displacements/conditions/prefixes, CPL3 and other profiles
+remain unsupported.
+
+Five focused tests cover both ZF values and metadata, exact branch targets,
+taken-only canonicality, final-displacement-byte fetch-fault atomicity,
+neighboring encodings, CPL3 and other-profile isolation. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,080/7/15; zero doc tests), all 71 paged machine quantum
+tests pass, and scoped cargo check, Rust formatting and diff-check pass.
+Independent review approved with no findings. ISSUE-201's stale CLD
+expectations remain unrelated and open.
+
+Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`)
+advances after 9,065 retired instructions to `45 8B 6C 04 FC`
+(`MOV R13D,dword ptr [R12+RAX-4]`, ISSUE-349) at RIP `0x2017d7`,
+`Unsupported { opcode: 139 }`; COM1 is empty.

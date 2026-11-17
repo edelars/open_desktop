@@ -28023,3 +28023,23 @@ Independent review approved with no findings. Firmware runner advances to ISSUE-
 (`0F 85 89 FE FF FF`, `JNZ rel32 -0x177`) at RIP `0x2017d1` after 9,064
 retired instructions; COM1 is empty. ISSUE-201's CLD test caveat remains open
 and unrelated.
+
+
+### S7-04 CPU-profile slice: exact helper `JNZ rel32 -0x177` (ISSUE-348)
+
+`PagedCpl0ProbeV1` admits only exact no-prefix bytes `0F 85 89 FE FF FF`.
+JNZ reads ZF and applies the sign-extended 32-bit displacement -0x177 relative
+to the next RIP when ZF is clear; otherwise it falls through. All GPRs, flags
+and flag-definedness are preserved. Canonicality is checked only for the taken
+target; fetch faults leave CPU state unchanged. Other displacements, conditions,
+prefixes, CPL3 and other profiles remain unsupported.
+
+Five focused tests cover both ZF values with defined and undefined metadata,
+target/fallthrough state, taken-only canonicality, final displacement-byte
+fetch-fault atomicity, neighboring forms and profile/CPL boundaries. Full od-isa
+suites pass (2,322/1,591/126/29/6/1,080/7/15; zero doc tests), all 71 paged
+machine quantum tests pass, and scoped cargo check, rustfmt and diff-check pass.
+Independent review approved with no findings. Firmware advances to ISSUE-349
+(`45 8B 6C 04 FC`, `MOV R13D,dword ptr [R12+RAX-4]`) at RIP `0x2017d7` after
+9,065 retired instructions; COM1 is empty. ISSUE-201's CLD test caveat remains
+open and unrelated.
