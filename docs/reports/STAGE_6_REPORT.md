@@ -627,6 +627,51 @@ flags `0xD`; граница GDT (`0x18` проходит, `0x20` нет), отк
 
 Что остаётся: **S6-14k** — блок 6 (`0x2000`–`0x2062`, 32-битный protected mode), блоки 7–8, ветки Intel/AMD `verify_cpu`, решение по профилям `cpuid.rs`, S6-13 и S6-16.
 
+### S6-14k — блок 6 trampoline, до paging (реализовано, ожидает ревью)
+
+Дата: 2026-11-16. Чекбокс S6-14 в `STAGE_6.md` не отмечен. Контракт: [`CPU_CONTRACT.md`](../specs/CPU_CONTRACT.md#s6-14k--блок-6-trampoline-32-битный-protected-код-до-paging).
+
+Что сделано: новый модуль `crates/od-isa/src/protected_exec.rs` (`ProtectedCpu`, вход `from_real_entry(&RealModeCpu)` после блока 5) —
+32-битный protected mode по пути `0x2000`–`0x203e`. Отдельный модуль выбран потому, что `real_mode_exec.rs` уже ~5800 строк и построен на
+16-битных умолчаниях и сегментах без атрибутов; `legacy_mode.rs` и long mode не менялись, в `real_mode_exec.rs` изменена только видимость
+`logic_flags` (`pub(crate)`), тесты S6-14d–j не менялись.
+
+**Сверка с blob (путь отличается от строки 6 профиля).** Сегменты грузятся из `EDX` (`8e d2` = `MOV SS, EDX`, затем `ADD ESP, 0`, `MOV DS/ES/FS/GS, EDX`),
+а не из `AX`; следом `BT ds:0x5014, 0` + `JAE 0x2029` (ветка SME пропускается), `MOV EAX, ds:0x5010`, `MOV CR4, EAX`, `MOV EAX, 0x4000`, `MOV CR3, EAX`,
+`MOV ECX, 0xC0000080`, а затем **безусловный `RDMSR` по `0x203e`** (EFER) и `WRMSR` в ветви несовпадения (`0x205b`).
+
+**Решения (записаны в контракте).** (1) Paging в S6-14k не моделируется: `MOV CR0, EAX` с `PG = 1` — явный отказ `PagingNotModelled`
+без изменения состояния (значение без `PG` — `Cr0WriteUnmodelled`); срез заканчивается до `0x2062`. (2) `RDMSR` EFER входит в профиль (строка 6 S6-14a; решение S6-14g касалось только MSR-веток Intel/AMD внутри `verify_cpu`); модели MSR нет — срез заканчивается явным `Unsupported` на `0x203e`, реализует S6-14l; поэтому блок 6 **разрезан**: S6-14k — `0x2000`–`0x203e` (останов перед `RDMSR`, 13 шагов основного пути; по `0x201f` в ветке SME — 9 шагов), S6-14l —
+`0x203e`–`0x2062` (EFER, `CMP`/`JNE`/`JE`, `MOV CR0` с paging и IA-32e; нужно решение по MSR и по таблицам страниц). (3) `MOV CR4` — сохранение
+значений с битами 0..10, выше — отказ `Cr4WriteUnmodelled` (отказ модели, не эффект железа); `MOV CR3` — сохранение любого значения без трансляции.
+
+Допущенные формы (без префиксов): `MOV Sreg, EDX` (ES/SS/DS/FS/GS), `ADD ESP, imm32`, `BT m32, imm8` (`ds:disp32`), `JAE rel8`, `MOV EAX, ds:disp32`,
+`MOV CR4/CR3, EAX`, `MOV EAX/ECX, imm32`; `MOV CR0, EAX` декодируется и всегда отказ. Загрузка сегмента: проверки TI/null/предел GDT/`S`/тип/привилегии (CPL = 0)/`P`,
+запись бита A в память и кэш, кэш (selector, base, limit, access, flags) для каждого из шести сегментов; все проверки до изменения состояния.
+
+Оракул (обязательный): `kvm_runner.c` (sha256 `969ce3a2…`) и `kvm_runner` (`5f6a2aac…`) совпадают с S6-14j; сборка на Intel Mini в `/tmp/od-s6-14k`
+(gcc 15.2.0, Linux 7.0.0-42, i5-3210M). 6 образов (`make-images.py`): `a` — плоские данные `0x18` (A = 1), CR4 `0x6b0`; `b` — `0x10` (A = 0, в GDT записан A), CR4 `0x20`, флаги `0xfffffffe`;
+`c` — база данных `0x1000`, G/D/AVL, заголовок по `DS.base` (приманка по `0x5010`); `d` — предел `0x5fff`, CR4 `0x7ff`; `e` — `D/B = 0`, `G = 1`; `f` — бит SME,
+остановка по `0x201f`. `stop_reason = guest_hlt` во всех образах. Данные: `docs/reports/data/stage6/s6-14k/`.
+
+Сравнение: тесты `oracle_k_*`, **совпало полностью на 6 образах**: 8 GPR, selector/base/limit/type/DPL/P/D-B/L/G шести сегментов, EIP (RIP − 1), EFLAGS (`0x46`; `0x47` в `f`),
+CR0 `0x50033`, CR3 `0x4000`, CR4, EFER = 0, CR2 = 0, GDTR/IDTR, 64 байта памяти (бит A). Мутационная проверка: убрать запись бита A в память — падают 5 тестов (образ `b`, `c`, `e` и unit-тесты).
+Расхождений нет.
+
+Тесты: 180 в прогоне `real_mode_exec legacy_mode cpuid protected` (прежние 149 + 31 новых в `protected_exec`: 25 unit + 6 сравнений с оракулом). Unit-ожидания (по SDM, по памяти):
+флаги `ADD` (`0xFFFFFFFF + 1` → CF, AF, ZF, PF = `0x55`; `0x7FFFFFFF + 1` → OF, SF, AF, PF = `0x894`), `BT` с `imm8 mod 32`, отказы загрузки сегмента (14 случаев),
+CR4 (`0x7ff` проходит, `0x800` и выше нет), CR0 с `PG`, границы предела DS, закрытый набор форм (20 отвергнутых), атомарность отказов, вход из `RealModeCpu`.
+
+Проверки: `cargo fmt -p od-isa -- --check` — чисто; `cargo test -p od-isa --locked --offline --lib -- real_mode_exec legacy_mode cpuid protected` — 180 прошли;
+`cargo clippy -p od-isa --all-targets` — замечаний по `protected_exec.rs` нет (прежние предупреждения других файлов не трогались);
+`cargo check --workspace --all-targets --offline --locked` — успешно. Полный набор od-isa не запускался.
+
+Не проверено оракулом: все отказы (без IDT нет чистой остановки), значения CR4 выше бит 10, значения CR3 кроме `0x4000`, `PagingNotModelled`/`Cr0WriteUnmodelled`, `MOV CR0`,
+`RDMSR`/`WRMSR`, всё после `0x203e`, `BT` с `imm8 != 0`, `ADD ESP` с ненулевыми операндами, `JAE` назад, `AVL`, RPL > 0 при успешной загрузке DS, стек (`SS.B`). Флаги `BT`/`ADD`
+— наблюдение кремния i5-3210M под KVM. Проблем с хостом не было.
+
+Что остаётся: **S6-14l** — `0x203e`–`0x2062` (EFER через `RDMSR`/`WRMSR`, `MOV CR0` с paging/IA-32e по решению о MSR и таблицах страниц), блоки 7–8, ветки Intel/AMD `verify_cpu`, решение по профилям `cpuid.rs`, S6-13 и S6-16.
+
 ### S6-13 — INIT, SIPI и ожидание SIPI (реализовано, исправлено по ревью, ожидает повторного ревью)
 
 Дата: 2026-11-16. Чекбокс S6-13 в `STAGE_6.md` не отмечен. Контракт: [`MACHINE_CONTRACT.md`](../specs/MACHINE_CONTRACT.md#init-sipi-и-ожидание-sipi-s6-13).

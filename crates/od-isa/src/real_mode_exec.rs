@@ -57,7 +57,8 @@
 //! unprefixed `EA` is not executed): the selector is checked against the GDT loaded by `LGDT`,
 //! the code descriptor is parsed with [`ProtectedSegment::from_descriptor`] and becomes the CS
 //! cache (`mode.cs` and [`RealModeCpu::cs_protected`]), `EIP = o32`. Nothing is fetched or
-//! executed at the target (block 6 is a later slice): afterwards every `step` returns
+//! executed at the target (block 6 is `protected_exec::ProtectedCpu`, S6-14k, entered with
+//! `ProtectedCpu::from_real_entry`): afterwards every `step` returns
 //! [`RealModeRefusal::NotRealMode`]. Every other instruction with `PE = 1` is `NotRealMode`
 //! as before. A refused jump changes neither state nor memory. CPL is not modelled (taken as 0).
 //!
@@ -484,7 +485,7 @@ pub struct RealRun {
 /// Flags of a logical result (`AND`, `XOR`, `TEST`): `CF = OF = 0`; `SF`, `ZF`, `PF` follow the
 /// result; `AF` is undefined by the SDM and the model clears it. Only the six arithmetic bits
 /// are returned.
-fn logic_flags(result: u32) -> u32 {
+pub(crate) fn logic_flags(result: u32) -> u32 {
     let mut flags = 0;
     if result == 0 {
         flags |= EFLAGS_ZF;

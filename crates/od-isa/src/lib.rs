@@ -21,6 +21,7 @@ pub mod lretq;
 pub mod memory;
 pub mod msr;
 pub mod port_io;
+pub mod protected_exec;
 mod rational_rounding;
 pub mod real_mode_exec;
 pub mod sep;

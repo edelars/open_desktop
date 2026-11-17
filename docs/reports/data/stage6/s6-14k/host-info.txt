@@ -1,0 +1,18 @@
+S6-14k KVM real-mode oracle evidence
+Date: 2026-11-16
+Host: mini (senya@192.168.1.39), Linux mini 7.0.0-42-generic #42-Ubuntu SMP PREEMPT_DYNAMIC Thu Oct 15 08:06:44 UTC 2026 x86_64 GNU/Linux
+model name	: Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz
+gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+Host work dir: /tmp/od-s6-14k (kvm_runner rebuilt there from tools/kvm-runner/kvm_runner.c)
+Build: gcc -O2 -Wall -Wextra -Werror -std=c11 kvm_runner.c -o kvm_runner
+Run: see run-oracle.sh (from the repo root); each run adds --result-block 0x30:64 (GDT pointer and GDT)
+SHA-256 (host, /tmp/od-s6-14k):
+969ce3a20af037bb8849d05482b31f881320e9420ee9630701728fd0da4ce7f0  kvm_runner.c
+5f6a2aac6f4a49fc92c1ab611daeecc0e7474fe1ae6c2551647464ea10bf11b7  kvm_runner
+730a92757c5dc852204bef5499875faecedc89c83b882633c030aea85ce40368  a-flat-data-accessed-set-cr4-06b0-0000-0000.bin
+0fca02b4603706084c7f54f8ab9b7e4d49bfcfe64209024b264201caeca8bee3  b-flat-data-accessed-clear-flags-fffffffe-0000-0000.bin
+07f1bfe4b77887c76c9c3f8d7d176e8b49fe501d35fbf1a37cf91c91e9d4cc2a  c-base-1000-avl-g-d-header-at-ds-base-0000-0000.bin
+12b74a9e7603f11b2dd932d68b581a03c73127a0d29bf3403fa76a1f3ad31fa0  d-byte-limit-5fff-0000-0000.bin
+cdf27bfff65120f19173ebb31510444a5a0ffa3a9ceebe2dcda300537a4f391c  e-data-db0-g1-cr4-07ff-0000-0000.bin
+6513d6c6bcc9dcae64512d57de5b15e12ad4fc2502b2796ec67e9a4153fa36ac  f-sme-flag-stop-at-rdmsr-201f-0000-0000.bin
+SHA-256 of kvm_runner.c in the repo (local): 969ce3a20af037bb8849d05482b31f881320e9420ee9630701728fd0da4ce7f0
