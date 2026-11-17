@@ -4758,7 +4758,7 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
 - **Суть и последствия:** only exact bytes `49 89 F6` copy qword RSI to R14. REX.B extends the opcode-89 r/m destination to R14; all other state and flag-definedness remain unchanged.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; after admission runner stops at `Unsupported { opcode: 57 }` at RIP `0x201811` after 9,079 retired instructions; bytes are `49 39 C0`; COM1 is empty.
-- **Проверка:** four focused tests cover qword source/destination routing, all-state and flags/definedness preservation, final-ModRM fetch-fault atomicity, neighboring encodings and CPL3; other-profile isolation rejects this exact form. Full validation and independent review are recorded in `docs/reports/STAGE_7_REPORT.md`.
+- **Проверка:** four focused tests cover qword source/destination routing, all-state and flags/definedness preservation, final-ModRM fetch-fault atomicity, neighboring encodings and CPL3; other-profile isolation rejects this exact form. Focused and full tests, workspace check, scoped formatting and diff-check pass; independent review approved with no findings. Results are recorded in `docs/reports/STAGE_7_REPORT.md`.
 
 ### ISSUE-361 — S7-04: exact helper `CMP R8,RAX` frontier (`49 39 C0`)
 - **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-360.
@@ -4766,7 +4766,7 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
 - **Суть и последствия:** only exact bytes `49 39 C0` compare qword R8 with RAX. Opcode 39 uses r/m as destination and reg as source; CMP writes no GPR and updates arithmetic flags/definedness.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; after admission runner stops at `Unsupported { opcode: 133 }` at RIP `0x201814` after 9,080 retired instructions; bytes are `0F 85 C5 FE FF FF`; COM1 is empty.
-- **Проверка:** four focused tests cover qword operand routing, arithmetic flags and definedness, no GPR mutation, final-ModRM fetch-fault atomicity, neighboring encodings and CPL3; other-profile isolation rejects this exact form. Full validation and independent review are recorded in `docs/reports/STAGE_7_REPORT.md`.
+- **Проверка:** four focused tests cover qword operand routing, arithmetic flags and definedness, no GPR mutation, final-ModRM fetch-fault atomicity, neighboring encodings and CPL3; other-profile isolation rejects this exact form. Focused and full tests, workspace check, scoped formatting and diff-check pass; independent review approved with no findings. Results are recorded in `docs/reports/STAGE_7_REPORT.md`.
 
 ### ISSUE-362 — S7-04: exact helper JNZ rel32 -0x13b frontier (`0F 85 C5 FE FF FF`)
 - **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-361.
@@ -4774,7 +4774,7 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
 - **Суть и последствия:** only exact bytes `0F 85 C5 FE FF FF` admit JNZ rel32 -0x13b. JNZ reads ZF, preserves flags/definedness, applies the signed displacement relative to next RIP, and checks canonicality only if taken.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; after admission runner stops at `Unsupported { opcode: 233 }` at RIP `0x20181a` after 9,831 retired instructions; bytes are `E9 9E FE FF FF`; COM1 is empty.
-- **Проверка:** five focused tests cover ZF outcomes/definedness, signed target, taken-only canonicality, final-displacement fetch-fault atomicity, neighboring conditions/displacements/prefixes and CPL3; other-profile isolation rejects this exact form. Full validation and independent review are recorded in `docs/reports/STAGE_7_REPORT.md`.
+- **Проверка:** five focused tests cover ZF outcomes/definedness, signed target, taken-only canonicality, final-displacement fetch-fault atomicity, neighboring conditions/displacements/prefixes and CPL3; other-profile isolation rejects this exact form. Focused and full tests, workspace check, scoped formatting and diff-check pass; independent review approved with no findings. Results are recorded in `docs/reports/STAGE_7_REPORT.md`.
 
 ### ISSUE-363 — S7-04: exact helper JMP rel32 -0x162 frontier (`E9 9E FE FF FF`)
 - **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-362.
@@ -4782,7 +4782,7 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
 - **Суть и последствия:** only exact bytes `E9 9E FE FF FF` jump by signed rel32 -0x162 from next RIP. The target is checked for canonicality; registers and flags/definedness remain unchanged.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; after admission runner stops at `Unsupported { opcode: 199 }` at RIP `0x2016bd` after 9,832 retired instructions; bytes are `66 C7 07 FF FF`; COM1 is empty.
-- **Проверка:** five focused tests cover signed next-RIP target arithmetic, state/flags preservation, target canonicality, final-immediate fetch-fault atomicity, neighboring displacements/opcodes/prefixes and CPL3; other-profile isolation rejects this exact form. Full validation and independent review are recorded in `docs/reports/STAGE_7_REPORT.md`.
+- **Проверка:** five focused tests cover signed next-RIP target arithmetic, state/flags preservation, target canonicality, final-immediate fetch-fault atomicity, neighboring displacements/opcodes/prefixes and CPL3; other-profile isolation rejects this exact form. Focused and full tests, workspace check, scoped formatting and diff-check pass; independent review approved with no findings. Results are recorded in `docs/reports/STAGE_7_REPORT.md`.
 
 ### ISSUE-364 — S7-04: exact helper MOV word ptr [RDI],0xffff frontier (`66 C7 07 FF FF`)
 - **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-363.
@@ -4790,12 +4790,20 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
 - **Суть и последствия:** only exact bytes `66 C7 07 FF FF` store the 16-bit immediate `0xffff` to `[RDI]`. The tracked adapter now maps a two-byte write to `AccessWidth::Word`; unrelated state and flags remain unchanged.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; after admission runner stops at `Unsupported { opcode: 233 }` at RIP `0x2016c2` after 9,833 retired instructions; bytes are `E9 65 01 00 00`; COM1 is empty.
-- **Проверка:** five focused tests cover exact two-byte data write/neighbor preservation, memory-write and final-immediate fetch-fault atomicity, nearby encodings and CPL3; other-profile isolation rejects the exact form. Two machine tests verify a tracked four-level word write/A-D effects and supervisor write-protection fault atomicity. Full validation and independent review are recorded in `docs/reports/STAGE_7_REPORT.md`.
+- **Проверка:** five focused tests cover exact two-byte data write/neighbor preservation, memory-write and final-immediate fetch-fault atomicity, nearby encodings and CPL3; other-profile isolation rejects the exact form. Two machine tests verify a tracked four-level word write/A-D effects and supervisor write-protection fault atomicity. Focused and full tests, workspace check, scoped formatting and diff-check pass; independent review approved with no findings. Results are recorded in `docs/reports/STAGE_7_REPORT.md`.
 
-### ISSUE-365 — S7-04: exact helper JMP rel32 +0x165 frontier (`E9 65 01 00 00`)
+### ISSUE-365 — S7-04: exact helper JMP rel32 +0x165 (`E9 65 01 00 00`)
 - **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-364.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2016c2`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** exact no-prefix `E9 65 01 00 00` jumps by signed rel32 `+0x165` from next RIP. It changes only RIP; GPRs, flags, and definedness are preserved, and the taken target is checked for canonicality.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner advanced to `Unsupported { opcode: 131 }` at RIP `0x20182c` after 9,834 retired instructions; bytes are `48 83 C4 08` (`ADD RSP,8`); COM1 is empty.
+- **Проверка:** five focused tests cover signed next-RIP target/state preservation, target canonicality, final-displacement fetch-fault atomicity, neighboring encodings and CPL3; other-profile isolation rejects this exact form. Focused and full tests, workspace check, scoped formatting and diff-check pass; independent review is pending. Results are recorded in `docs/reports/STAGE_7_REPORT.md`.
+
+### ISSUE-366 — S7-04: exact helper ADD RSP,8 frontier (`48 83 C4 08`)
+- **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-365.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20182c`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this near unconditional jump after 9,833 retired instructions. The bounded base profile does not yet admit this exact rel32 displacement.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 233 }` at RIP `0x2016c2`; bytes are `E9 65 01 00 00`; COM1 is empty.
-- **Следующий шаг:** analyze and admit only this exact firmware JMP rel32 form in a separate Stage 7 slice.
+- **Суть и последствия:** firmware reaches an exact qword ADD RSP,8 after 9,834 retired instructions; the bounded base profile does not admit it.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 131 }` at RIP `0x20182c`; bytes are `48 83 C4 08`; COM1 is empty.
+- **Следующий шаг:** analyze and admit only this exact firmware ADD form in a separate Stage 7 slice.

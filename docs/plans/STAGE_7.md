@@ -1206,3 +1206,21 @@ the form. Two tracked machine tests verify the four-level A/D effects and WP
 fault atomicity. Firmware advances to ISSUE-365, `E9 65 01 00 00` (JMP rel32
 +0x165) at RIP `0x2016c2` after 9,833 retired instructions; COM1 is empty.
 ISSUE-201's unrelated CLD caveat remains open. Full od-isa suites pass (2,322/1,591/126/29/6/1,156/7/15; zero doc tests), paged machine quantum passes (81/81), workspace all-targets `cargo check --offline` passes, scoped rustfmt and diff-check pass. Workspace `cargo fmt --all -- --check` still reports pre-existing formatting differences in untouched `crates/od-host/src/storage_abi_v1.rs` and `tools/image-tool/tests/cli.rs`. Independent review approved with no findings.
+
+
+### ISSUE-365 — exact rel32 JMP +0x165
+
+Admit only no-prefix `E9 65 01 00 00` in the base `PagedCpl0ProbeV1` profile.
+The signed rel32 is added to next RIP; the instruction changes only RIP,
+preserving GPRs, RFLAGS and flag definedness. Canonicality is checked on the
+target, and instruction-fetch faults do not retire. Focused coverage checks the
+target, state, canonicality, final-byte fetch fault, encoding neighbors, CPL3,
+and other-profile rejection. Firmware advances to ISSUE-366, `48 83 C4 08`
+(`ADD RSP,8`) at RIP `0x20182c` after 9,834 retired instructions; COM1 is
+empty. ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Validation: focused ISSUE-365 tests and the other-profile rejection matrix pass.
+Full od-isa suites pass (2,322/1,591/126/29/6/1,161/7/15; zero doc tests);
+paged machine quantum passes (81/81); workspace all-targets cargo check passes
+with existing warnings; scoped rustfmt and diff-check pass. Independent review
+is pending. ISSUE-201 remains the unrelated CLD expectation caveat.

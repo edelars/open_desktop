@@ -2506,3 +2506,24 @@ atomicity. Other profiles reject the encoding. Firmware advances to ISSUE-365,
 instructions; `Unsupported { opcode: 233 }`, COM1 empty. Image SHA-256 is
 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 ISSUE-201's unrelated CLD caveat remains open. Full od-isa suites pass (2,322/1,591/126/29/6/1,156/7/15; zero doc tests), paged machine quantum passes (81/81), workspace all-targets `cargo check --offline` passes, scoped rustfmt and diff-check pass. Workspace `cargo fmt --all -- --check` still reports pre-existing formatting differences in untouched `crates/od-host/src/storage_abi_v1.rs` and `tools/image-tool/tests/cli.rs`. Independent review approved with no findings.
+
+
+### ISSUE-365 — exact rel32 JMP +0x165
+
+Admitted only `E9 65 01 00 00` in the base paged CPL0 profile. Five focused
+tests cover signed target computation from next RIP, complete CPU and flag
+metadata preservation, noncanonical target fault, final displacement-byte fetch
+fault atomicity, neighboring encodings, CPL3 and other-profile isolation. The
+firmware runner on `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`)
+advances to `48 83 C4 08` (`ADD RSP,8`, ISSUE-366) at RIP `0x20182c` after
+9,834 retired instructions; exit is unsupported opcode `0x83`, COM1 is empty.
+ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Validation: the five focused ISSUE-365 tests and cross-profile matrix pass. Full
+od-isa suites pass (2,322/1,591/126/29/6/1,161/7/15; zero doc tests), paged
+machine quantum passes (81/81), workspace all-targets cargo check passes, and
+scoped `rustfmt --edition 2024 --check` plus `git diff --check` pass. Workspace
+check reports existing unused/dead-code warnings in `od-machine` and `od-host`.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD expectation
+caveat.

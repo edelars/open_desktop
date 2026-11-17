@@ -1199,3 +1199,18 @@ retires 9,833 instructions and stops at RIP `0x2016c2`, bytes `E9 65 01 00 00`
 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1 is
 empty. ISSUE-201 remains the unrelated stale CLD test expectation caveat.
 Full od-isa suites pass (2,322/1,591/126/29/6/1,156/7/15; zero doc tests), paged machine quantum passes (81/81), workspace all-targets `cargo check --offline` passes, scoped rustfmt and diff-check pass. Workspace `cargo fmt --all -- --check` still reports pre-existing formatting differences in untouched `crates/od-host/src/storage_abi_v1.rs` and `tools/image-tool/tests/cli.rs`. Independent review approved with no findings.
+
+
+### Stage 7 runner frontier after ISSUE-365
+
+After exact `E9 65 01 00 00` (JMP rel32 +0x165) is admitted, firmware retires
+9,834 instructions and stops at RIP `0x20182c`, bytes `48 83 C4 08`
+(`ADD RSP,8`, ISSUE-366), with `Unsupported { opcode: 131 }`. Image
+`/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1
+is empty. ISSUE-201 remains the unrelated stale CLD test expectation caveat.
+
+Full od-isa suites pass (2,322/1,591/126/29/6/1,161/7/15; zero doc tests), paged
+machine quantum passes (81/81), workspace all-targets cargo check passes with
+existing warnings, and scoped rustfmt/diff-check pass. Independent review is
+pending. ISSUE-201 remains the unrelated CLD test expectation caveat.
