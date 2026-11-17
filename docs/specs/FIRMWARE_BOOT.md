@@ -2317,3 +2317,16 @@ Four focused tests and the other-profile matrix (1/1) pass. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-439 runner frontier
+
+Exact base-profile `48 3D 01 00 01 00` compares qword RAX against imm32
+`0x10001`, updates arithmetic flags/definedness and writes no GPR. Runner
+reaches `0F 93 C0` (SETAE AL, ISSUE-440) at RIP `0x2013da` after 9,932 retired
+instructions, Unsupported opcode 147, COM1 empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Four focused tests and the other-profile matrix (1/1) pass. Full od-isa passes
+(2,322/1,591/126/29/6/1,499/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.

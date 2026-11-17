@@ -29510,3 +29510,16 @@ instructions. Full validation passes: od-isa (2,322/1,591/126/29/6/1,495/7/15;
 zero doc tests), paged machine quantum (110/110), workspace all-targets offline
 check, scoped rustfmt and diff-check. Independent review approved with no findings. ISSUE-201
 remains the unrelated CLD caveat.
+
+### ISSUE-439 — bounded CMP RAX,0x10001
+
+The base paged profile admits exact `48 3D 01 00 01 00`. Opcode 3D compares
+qword accumulator RAX against imm32 `0x00010001`, sign-extended to qword. Shared
+CMP semantics update arithmetic flags and definedness without writing RAX or
+any other GPR. A final-immediate fetch fault commits no state. CPL3 and other
+profiles reject this exact form. Firmware advances to `0F 93 C0` (SETAE AL,
+ISSUE-440) at RIP `0x2013da` after 9,932 retired instructions. Full validation
+passes: od-isa (2,322/1,591/126/29/6/1,499/7/15; zero doc tests), paged machine
+quantum (110/110), workspace all-targets offline check, scoped rustfmt and
+diff-check. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD
+caveat.

@@ -2482,3 +2482,17 @@ COM1 empty. Full od-isa passes (2,322/1,591/126/29/6/1,495/7/15; zero doc
 tests), paged machine quantum passes (110/110), workspace all-targets offline
 check passes with existing warnings, and scoped rustfmt/diff-check pass.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-439 — exact CMP RAX,0x10001 (`48 3D 01 00 01 00`)
+
+Admit only exact `48 3D 01 00 01 00` in the base `PagedCpl0ProbeV1` profile.
+Opcode 3D compares qword RAX with imm32 `0x00010001` (sign-extended to qword)
+and updates arithmetic flags/definedness without a GPR write. Tests cover
+compare edge flags, preserved register state, final-immediate fetch-fault
+atomicity, adjacent immediate/opcode/width/prefix forms, CPL3 and other-profile
+isolation. Runner advances to `0F 93 C0` (SETAE AL, ISSUE-440) at RIP
+`0x2013da` after 9,932 retired instructions, Unsupported opcode 147, COM1
+empty. Full od-isa passes (2,322/1,591/126/29/6/1,499/7/15; zero doc tests),
+paged machine quantum passes (110/110), workspace all-targets offline check
+passes with existing warnings, and scoped rustfmt/diff-check pass. Independent
+review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
