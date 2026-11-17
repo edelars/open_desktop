@@ -5262,7 +5262,17 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-418 — S7-04: exact MOV R13D,dword ptr [RSI+R11+0x1c] frontier (`46 8B 6C 1E 1C`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-417.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201314`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware reaches an indexed dword load into R13D, outside the current bounded base-profile admission.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `46 8B 6C 1E 1C`. REX.R selects R13D and REX.X selects R11 as the SIB index; RSI is the base and disp8 is +0x1c. The tracked dword read zero-extends R13 and preserves flags. Fetch, canonicality or data-read faults commit neither R13 nor RIP. Other destinations, addresses, widths, prefixes and CPL3/other profiles remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,906 instructions and reported `Unsupported { opcode: 139 }` at RIP `0x201314`; COM1 is empty. Bytes at the link-base shadow are `46 8B 6C 1E 1C`.
-- **Следующий шаг:** verify REX/SIB destination/index routing, tracked dword load and zero-extension/fault semantics; admit only this encoding.
+- **Результат:** runner now retires 9,907 instructions and stops at RIP `0x201319`, bytes `42 C6 44 04 08 01` (MOV byte ptr [RSP+R8+8],1; ISSUE-419), `Unsupported { opcode: 198 }`; COM1 is empty.
+- **Проверка:** focused dword-load/zero-extension/state/flags/tracked-read/read-fault/noncanonical-address/fetch-fault/neighbors/CPL3 tests 6/6 and other-profile matrix 1/1 pass. Full od-isa passes (2,322/1,591/126/29/6/1,410/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+- **Следующий шаг:** ISSUE-419, exact `42 C6 44 04 08 01` (MOV byte ptr [RSP+R8+8],1) at RIP `0x201319`.
+
+### ISSUE-419 — S7-04: exact MOV byte ptr [RSP+R8+8],1 frontier (`42 C6 44 04 08 01`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-418.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201319`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware reaches an immediate byte store through an RSP-based SIB address, outside the current bounded base-profile admission.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,907 instructions and reported `Unsupported { opcode: 198 }` at RIP `0x201319`; COM1 is empty. Bytes at the link-base shadow are `42 C6 44 04 08 01`.
+- **Следующий шаг:** verify REX.X/SIB address routing, immediate store width and tracked write/fault behavior; admit only this encoding.

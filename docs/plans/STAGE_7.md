@@ -2177,3 +2177,20 @@ review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
 Runner advances to `46 8B 6C 1E 1C` (MOV R13D,dword ptr [RSI+R11+0x1c]; ISSUE-418)
 at RIP `0x201314`, after 9,906 retired instructions, unsupported opcode 139,
 COM1 empty.
+
+### ISSUE-418 — exact `MOV R13D,dword ptr [RSI+R11+0x1c]` (`46 8B 6C 1E 1C`)
+
+Admit only this exact indexed dword load in the base paged profile. REX.R/X
+select R13D and the R11 SIB index; RSI is the base and disp8 is +0x1c. The
+tracked dword read zero-extends R13 and leaves flags unchanged. Fetch,
+noncanonical-address and data-read faults commit neither destination nor RIP.
+Focused load/zero-extension/state/flags/tracked-read/fault/neighbors/CPL3 tests
+pass (6/6), other-profile matrix passes (1/1). Full od-isa passes
+(2,322/1,591/126/29/6/1,410/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains
+the unrelated CLD caveat.
+
+Runner advances to `42 C6 44 04 08 01` (MOV byte ptr [RSP+R8+8],1; ISSUE-419)
+at RIP `0x201319`, after 9,907 retired instructions, unsupported opcode 198,
+COM1 empty.

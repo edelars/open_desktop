@@ -2047,3 +2047,19 @@ review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
 Runner advances to `46 8B 6C 1E 1C` (MOV R13D,dword ptr [RSI+R11+0x1c]; ISSUE-418),
 RIP `0x201314`, after 9,906 retired instructions, unsupported opcode 139,
 COM1 empty.
+
+### ISSUE-418 — exact `MOV R13D,dword ptr [RSI+R11+0x1c]`
+
+The base paged firmware profile admits only `46 8B 6C 1E 1C`. REX.R selects
+R13D, REX.X selects R11 as the SIB index, RSI is the base and disp8 is +0x1c.
+The tracked dword read zero-extends R13 and preserves flags; fetch,
+noncanonical-address and data-read faults do not commit R13 or RIP. Focused
+tests pass (6/6), other-profile matrix passes (1/1), full od-isa passes
+(2,322/1,591/126/29/6/1,410/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
+remains the unrelated CLD caveat.
+
+Runner advances to `42 C6 44 04 08 01` (MOV byte ptr [RSP+R8+8],1; ISSUE-419),
+RIP `0x201319`, after 9,907 retired instructions, unsupported opcode 198,
+COM1 empty.
