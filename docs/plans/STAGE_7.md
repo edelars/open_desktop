@@ -2634,3 +2634,15 @@ operands, arithmetic flags and definedness, final-byte fetch fault, neighboring
 encodings, CPL3 and other-profile isolation. The runner retires 9,996
 instructions and stops at RIP `0x2013a7` on `0F 97 C0` (SETA AL, ISSUE-450).
 It reports Unsupported opcode 151 with empty COM1. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-450 — exact SETA AL (`0F 97 C0`)
+
+Base `PagedCpl0ProbeV1` admits the exact unprefixed AL form. SETA writes 1 when
+CF and ZF are both clear and 0 otherwise. It advances RIP by three while
+preserving upper RAX, other GPRs, RFLAGS and flag definedness. Focused tests
+cover all CF/ZF inputs and their definedness masks, a fault on ModRM fetch,
+neighboring encodings and CPL3. The other-profile matrix covers isolation.
+The runner retires 9,998 instructions and stops at RIP `0x2013ad` on
+`0F 85 CA 00 00 00` (JNZ rel32 +0xca, ISSUE-451), with Unsupported opcode
+133 and empty COM1. Independent review approved with no findings. ISSUE-201 remains the
+unrelated CLD caveat.

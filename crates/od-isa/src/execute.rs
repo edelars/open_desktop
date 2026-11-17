@@ -20745,9 +20745,8 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             }
             state.rip = next_rip;
         }
-        // S7-04: the Rust helper stores the unsigned-greater result only in CL
-        // with exact `0F 97 C1` (SETA CL). Condition evaluation reads CF/ZF but
-        // neither the flags nor their definedness are modified.
+        // S7-04: exact `0F 97 C0` (SETA AL) and `0F 97 C1` (SETA CL) write
+        // one byte from CF and ZF, preserving flags and definedness.
         Operation::SetCondition {
             condition,
             dst: Operand::Register(destination),
@@ -20757,9 +20756,12 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             && instruction.opcode.map == OpcodeMap::Escape0f
             && instruction.opcode.byte == 0x97
             && instruction.length == 3
+            && instruction.operand_size == OperandSize::Byte
             && instruction.prefixes == Prefixes::default()
-            && raw_modrm == 0xc1
-            && destination == RegisterView::low(Register::Rcx, OperandSize::Byte) =>
+            && ((raw_modrm == 0xc0
+                && destination == RegisterView::low(Register::Rax, OperandSize::Byte))
+                || (raw_modrm == 0xc1
+                    && destination == RegisterView::low(Register::Rcx, OperandSize::Byte))) =>
         {
             state.write(destination, u64::from(condition.evaluate(state.rflags)));
             state.rip = next_rip;

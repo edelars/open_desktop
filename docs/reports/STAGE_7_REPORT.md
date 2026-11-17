@@ -4006,3 +4006,25 @@ all-targets offline check passes with existing warnings. Scoped rustfmt and
 diff checks pass.
 
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-450 — exact SETA AL
+
+Four focused tests cover the two unprefixed SETA register forms. The checks
+exercise all CF/ZF combinations and definedness masks, a write confined to the
+destination byte, final-ModRM fetch-fault atomicity, neighbors and CPL3.
+The other-profile isolation matrix passes 1/1.
+
+The runner command
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue450.com1 --budget 10000` uses image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+It reports 9,998 retired instructions, RIP `0x2013ad`, Unsupported opcode 133
+and empty COM1. Bytes `0F 85 CA 00 00 00` select JNZ rel32 +0xca (ISSUE-451).
+
+The full offline `od-isa` suite passes (2,322/1,591/126/29/6/1,539/7/15 and
+zero doctests). The paged machine quantum suite passes 110/110. The workspace
+all-targets offline check passes with existing warnings. Scoped rustfmt and
+diff checks pass.
+
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

@@ -2462,3 +2462,13 @@ flags and advancing RIP with both GPRs preserved. The runner reaches
 instructions. It reports Unsupported opcode 151 with empty COM1. Image
 SHA-256 is `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-450 runner frontier
+
+Exact base-profile `0F 97 C0` (SETA AL) writes the predicate CF=0 and ZF=0
+to AL. It advances RIP and preserves upper RAX, RFLAGS and flag definedness.
+The runner reaches `0F 85 CA 00 00 00` (JNZ rel32 +0xca, ISSUE-451) at RIP
+`0x2013ad` after 9,998 retired instructions. It reports Unsupported opcode 133
+with empty COM1. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

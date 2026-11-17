@@ -5569,7 +5569,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-450 — S7-04: exact SETA AL frontier (`0F 97 C0`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-449.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013a7`.
-- **Статус:** открыта. Следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base firmware CPU profile stops on unprefixed `0F 97 C0` (SETA AL).
+- **Статус:** решена для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** unprefixed `0F 97 C0` (SETA AL) writes 1 to AL when CF and ZF are both clear and 0 otherwise. It advances RIP while preserving upper RAX, RFLAGS and flag definedness.
 - **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 10000, the runner reports `Unsupported { opcode: 151 }` at RIP `0x2013a7` after 9,996 retired instructions. COM1 is empty. Bytes at the link-base shadow are `0F 97 C0`.
-- **Следующий шаг:** admit this exact SETA AL form and cover CF/ZF outcomes, byte-register writes and profile isolation.
+- **Результат:** runner retires 9,998 instructions and stops at RIP `0x2013ad` on `0F 85 CA 00 00 00` (JNZ rel32 +0xca, ISSUE-451). It reports `Unsupported { opcode: 133 }` with empty COM1.
+- **Проверка:** four focused tests cover CF/ZF outcomes and definedness, byte routing, final-byte fetch-fault atomicity, neighbors and CPL3. The other-profile matrix covers the new form. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-451 — S7-04: exact JNZ rel32 +0xca frontier (`0F 85 CA 00 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-450.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013ad`.
+- **Статус:** открыта. Следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base firmware CPU profile stops on unprefixed `0F 85 CA 00 00 00` (JNZ rel32 +0xca).
+- **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 10000, the runner reports `Unsupported { opcode: 133 }` at RIP `0x2013ad` after 9,998 retired instructions. COM1 is empty. Bytes at the link-base shadow are `0F 85 CA 00 00 00`.
+- **Следующий шаг:** admit this exact JNZ form and cover the ZF predicate, displacement, target canonicality, faults and profile isolation.

@@ -29652,3 +29652,13 @@ GPRs and unrelated flags, and advances RIP by three bytes. A fault on the final
 ModRM fetch commits no architectural state. CPL3 and the other paged profiles
 reject this encoding. Independent review approved with no findings. ISSUE-201 remains the
 unrelated CLD caveat.
+
+### ISSUE-450 — bounded SETA AL
+
+The base paged profile admits exact unprefixed `0F 97 C0`. SETA writes 1 to AL
+when CF=0 and ZF=0 and writes 0 otherwise. It uses the concrete CF and ZF values,
+preserves RFLAGS and flag definedness, and advances RIP by three bytes. The
+byte write preserves RAX[63:8] and the other registers. A fault on the final
+ModRM fetch commits no architectural state. CPL3 and the other paged profiles
+reject this encoding. Independent review approved with no findings. ISSUE-201 remains the
+unrelated CLD caveat.
