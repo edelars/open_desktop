@@ -1,0 +1,62 @@
+# S5-07 bounded copy-invocation counter exact replays — 2026-11-17
+
+## Purpose and scope
+
+Exercise the schema-v16 opt-in `--execution-observations-elf-stack-copy` capture on both runs of the existing counted canonical N=2 pair. This is diagnostic evidence only. It does not change the strict comparator, allowlist, source pair, or S5-07 acceptance status.
+
+The release runner was built from the committed implementation slice `186b85d` and run on local macOS/aarch64. Both runs used the exact canonical kernel, initramfs, ACPI blob, Stage4A CPL0 set, user mode, 128 MiB RAM, and 3,000,000,000 instruction budget. Each run took about 21 minutes. The pair replays the existing source nonces:
+
+| Run | Nonce | Canonical source ID |
+|---|---|---|
+| 0001 | `OD518e8be9ac44221a00000fb3400000000` | `s5-07-counted-canonical-n2-20261117-a-run-0001` |
+| 0002 | `OD518e8bfb13a39d1980000fb3400000001` | `s5-07-counted-canonical-n2-20261117-a-run-0002` |
+
+## Replay integrity
+
+Both diagnostic runs reproduce the corresponding canonical source `stop` object byte-for-byte at the JSON value level, and the decoded `stop.com1_hex` is byte-identical to the canonical `uart.bin`.
+
+| Run | Stop equality | UART bytes | UART SHA-256 | Capture status | Omitted PF events |
+|---|---:|---:|---|---|---:|
+| 0001 | yes | 24,220 | `1bc1d93bc3166bec2f29a1715d1e8a5b3933ce93bc53136e0fa701ad725a9284` | complete | 0 |
+| 0002 | yes | 23,880 | `53fe7af2da27845e71c3707c9916c258b480ffb39bbc273c88127731fa656ae4` | complete | 0 |
+
+The two capture sidecars use schema 16. Both report `elf_stack_copy.status=captured`, no gate mismatch, no overflow, and no omitted event. No RDTSC site or CR3-write event occurred during either measured interval.
+
+## Invocation boundaries
+
+Counters below are cumulative at invocation entry, the derived return boundary, and run stop. The copy is seven bytes to the initial `/init` user stack.
+
+| Run | Boundary | `cr3_changes` | Delivered PF | Exceptions | CPL0 RDTSC reads | Retired through current |
+|---|---|---:|---:|---:|---:|---:|
+| 0001 | entry | 26,595 | 30 | 31 | 1,147,718 | 2,319,791,973 |
+| 0001 | return | 26,595 | 30 | 31 | 1,147,718 | 2,319,792,047 |
+| 0001 | stop | 26,617 | 33 | 34 | 34,429,691 | 2,999,999,998 |
+| 0002 | entry | 26,596 | 30 | 31 | 1,147,552 | 2,319,776,495 |
+| 0002 | return | 26,596 | 31 | 32 | 1,147,552 | 2,319,780,381 |
+| 0002 | stop | 26,618 | 34 | 35 | 34,440,164 | 2,999,999,998 |
+
+Run 0001 has no delivered PF in the invocation interval. Run 0002 has exactly one interval PF:
+
+- RIP `0xffffffff8271a9c1` (`rep_movs_alternative+0x11` in the matching kernel ELF)
+- access `Write`, error code `2` (not-present write)
+- CR2 `0x7fff9d9d7429`, exactly equal to `copy_destination`
+- `copy_length=7`; the PF was delivered 23 retired instructions after the entry snapshot
+
+The run-2 boundary count changes from 30 to 31 delivered PFs and from 31 to 32 delivered exceptions before the verified return. The run-1 values stay at 30 and 31. This directly localizes the extra run-2 PF to the measured seven-byte stack-copy invocation. Combined with the earlier same-pair pre-copy walk showing the run-2 destination's adjacent PT leaf absent, it supports the local copy-destination fault mechanism.
+
+The inter-run `+1 cr3_changes` is already present at invocation entry (26,595 versus 26,596) and remains unchanged through return in both runs. No CR3 write was captured inside either invocation. From return to stop, both runs add +22 CR3 changes, +3 PFs, and +3 exceptions; equal aggregates do not establish equal event sequences. The measurements therefore do not establish where the earlier CR3-count difference arose or whether it caused the differing stack mapping.
+
+## Conclusion
+
+The bounded schema-v16 capture is complete and preserves the canonical source run outputs. It localizes the extra run-2 #PF inside the seven-byte copy to the exact destination address. It also excludes the measured invocation interval as the location of the inter-run `+1 cr3_changes` difference. The cause of the earlier CR3-count difference and its relationship to stack alignment or page state remain unresolved.
+
+The source pair's existing strict comparison remains `matches=false` because the Stage4 nonce comparator eligibility gate rejects terminal optional panic frames; the first strict UART difference remains byte 6,569 / line 96. No comparator or allowlist change is warranted. **S5-07 remains blocked/unaccepted.** No capture overhead benchmark was performed.
+
+## Artifact hashes
+
+| Run | Runner JSON SHA-256 | Schema-v16 sidecar SHA-256 |
+|---|---|---|
+| 0001 | `4eb800459e76cc96335ba22d169be1b7ce672036addf762d57e43052ac1ffcd0` | `cd89ebb2c5e7be43ec09c5112697e06fe73891dcae45fc1e634fe618ab02a1ea` |
+| 0002 | `121d8cd844682f6c700553d046717683636bd537508f310bfe65ee908af50da3` | `aaa524b320e2f0c243f932b922b1db85f8bd88866968fc1787fb17f9c35d4253` |
+
+Local diagnostic artifacts are under `work/stage5/s5-07-copy-invocation-counter-exact-replay-20261117-a/` and are not committed. The committed report records the hashes and findings.
