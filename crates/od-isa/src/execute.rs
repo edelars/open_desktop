@@ -27152,20 +27152,21 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
-        // S7-04: the helper initializes EBP with exact `BD 01 00 00 00`.
-        // The dword register write zero-extends into RBP and preserves flags;
-        // keep this immediate-register destination and value exact.
+        // S7-04: exact `B8 01 00 00 00` and `BD 01 00 00 00` initialize EAX or EBP.
+        // The dword write zero-extends into the full register and preserves flags.
         Operation::MovImmediate {
             dst: Operand::Register(destination),
             value,
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
-            && instruction.opcode.byte == 0xbd
             && instruction.length == 5
             && instruction.operand_size == OperandSize::Dword
-            && destination == RegisterView::low(Register::Rbp, OperandSize::Dword)
             && value == 1
-            && instruction.prefixes == Prefixes::default() =>
+            && instruction.prefixes == Prefixes::default()
+            && ((instruction.opcode.byte == 0xb8
+                && destination == RegisterView::low(Register::Rax, OperandSize::Dword))
+                || (instruction.opcode.byte == 0xbd
+                    && destination == RegisterView::low(Register::Rbp, OperandSize::Dword))) =>
         {
             state.write(destination, value);
             state.rip = next_rip;

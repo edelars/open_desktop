@@ -2715,3 +2715,14 @@ and the other CPL0 probes. With budget 20000 the runner retires 10,299
 instructions and stops at RIP `0x2013f6` on `B8 01 00 00 00` (MOV EAX,1,
 ISSUE-457). It reports Unsupported opcode 184 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-457 — exact MOV EAX,1 (`B8 01 00 00 00`)
+
+Base `PagedCpl0ProbeV1` admits the exact unprefixed dword write. It writes
+1 to EAX and zeroes the upper half of RAX. Only RAX and RIP change.
+Tests cover preserved flags and definedness, final-immediate fetch fault,
+neighboring encodings, the CPL3 MOV probe and other CPL0 probes.
+With budget 20000 the runner retires 10,300 instructions and stops at RIP
+`0x2013fb` on `80 7C 24 09 00` (CMP byte ptr [RSP+0x9],0, ISSUE-458).
+It reports Unsupported opcode 128 with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
