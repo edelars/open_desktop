@@ -28605,3 +28605,27 @@ profile-isolation tests pass. Full od-isa suites pass
 passes (106/106), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with
 no findings.
+
+
+### ISSUE-381: `66 C7 44 24 10 00 00` — MOV word ptr [RSP+0x10],0
+
+Admit only this exact no-REX word immediate store in base `PagedCpl0ProbeV1`.
+Calculate the qword SIB address from RSP+0x10 and use the tracked write path
+for the two-byte zero store. Preserve GPRs, RFLAGS and definedness; advance RIP
+only after the write succeeds. Noncanonical stack-based addresses raise #SS;
+tracked #PF and instruction-fetch faults leave CPU state and memory unchanged.
+Neighboring addresses/immediates, widths/prefixes, CPL3 and other profiles
+remain unsupported.
+
+The runner advances to `48 C7 44 24 08 00 00 00 00` (qword store, ISSUE-382)
+at RIP `0x201245` after 9,859 retired instructions; COM1 is empty. Firmware
+SHA-256 is `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Six focused ISA tests and two machine tests cover exact width/value, register
+and flag preservation, tracked A/D effects, noncanonical #SS, write-protection
+#PF, final-immediate fetch fault and profile/encoding boundaries. Full od-isa
+suites pass (2,322/1,591/126/29/6/1,239/7/15; zero doc tests), paged machine
+quantum passes (108/108), workspace all-targets offline check passes with
+existing warnings, and scoped rustfmt/diff-check pass. Independent review
+approved with no findings.

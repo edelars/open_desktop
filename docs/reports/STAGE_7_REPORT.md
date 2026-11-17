@@ -2864,3 +2864,26 @@ isolation. Full od-isa suites pass (2,322/1,591/126/29/6/1,233/7/15; zero doc
 tests), paged machine quantum passes (106/106), workspace all-targets offline
 check passes with existing warnings, and scoped rustfmt/diff-check pass.
 Independent review approved with no findings.
+
+
+### ISSUE-381 — exact word store `[RSP+0x10],0` (`66 C7 44 24 10 00 00`)
+
+Only exact `66 C7 44 24 10 00 00` is admitted in base `PagedCpl0ProbeV1`.
+The decoded RSP SIB address adds 0x10 at qword address width and writes the
+imm16 zero through tracked GuestMemory; no GPR or flag changes, RIP commits
+only after write success. Noncanonical address, tracked #PF and fetch faults
+are atomic. Six focused ISA tests cover width, value, flag/state preservation,
+faults and boundaries; two machine tests verify the four-level A/D effects and
+WP failure atomicity.
+
+Runner image `/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`. After
+admission it retires 9,859 instructions and stops at `48 C7 44 24 08 00 00 00
+00` (qword store, ISSUE-382), RIP `0x201245`, `Unsupported { opcode: 199 }`;
+COM1 is empty. ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Validation: focused ISA tests 6/6, other-profile matrix 1/1, and machine
+tests 2/2 pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,239/7/15;
+zero doc tests), paged quantum passes (108/108), workspace all-targets check
+passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings.
