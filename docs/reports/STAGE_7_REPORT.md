@@ -2726,3 +2726,26 @@ Validation: focused ISA 5/5 and machine 2/2 pass. Full od-isa suites pass
 (2,322/1,591/126/29/6/1,213/7/15; zero doc tests); paged machine quantum
 passes 104/104; workspace all-targets cargo check, scoped rustfmt and
 diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-375 — exact JNZ rel8 +0x3c
+
+The base `PagedCpl0ProbeV1` admits only `75 3C` for this helper branch. JNZ
+tests ZF: clear ZF branches by signed rel8 +0x3c from next RIP; set ZF falls
+through by two. RFLAGS and definedness are preserved. The taken target is
+checked for canonicality; fall-through canonicality is deferred until the next
+fetch. A fault fetching either opcode or displacement does not commit state.
+Six focused JNZ tests cover ZF outcomes with defined/undefined metadata, full
+state preservation, canonicality, fetch fault, neighbors and CPL3 rejection;
+the shared other-profile matrix rejects the bytes too.
+
+Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) advances
+to `4C 89 E9` (MOV RCX,R13, ISSUE-376) at RIP `0x200ffe` after 9,847 retired
+instructions. Runner reports `Unsupported { opcode: 137 }`; COM1 is empty.
+ISSUE-201 remains the unrelated stale CLD expectation caveat.
+
+Validation: six focused JNZ tests and the other-profile rejection matrix pass.
+Full od-isa suites pass (2,322/1,591/126/29/6/1,214/7/15; zero doc tests);
+paged machine quantum passes 104/104; workspace all-targets offline cargo
+check, scoped rustfmt and diff-check pass. Independent review approved with no findings.

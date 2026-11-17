@@ -28480,3 +28480,22 @@ retired instructions; COM1 is empty. ISSUE-201 remains the unrelated CLD caveat.
 Validation: full od-isa (2,322/1,591/126/29/6/1,213/7/15; zero doc tests),
 paged machine quantum (104/104), workspace all-targets offline check, scoped
 rustfmt and diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-375: `75 3C` — JNZ rel8 +0x3c
+
+The base `PagedCpl0ProbeV1` admits only no-prefix `75 3C`. The condition reads
+ZF: if ZF=0, signed rel8 +0x3c is added to next RIP; if ZF=1, RIP advances by
+two. RFLAGS and definedness are preserved. Canonicality is checked only for a
+taken target, while a noncanonical fall-through is handled by the next fetch.
+Faulting opcode/displacement fetches leave the CPU state unchanged. Neighboring
+displacements, JZ, prefixed forms, CPL3 and other profiles remain unsupported.
+
+The firmware advances to `4C 89 E9` (MOV RCX,R13, ISSUE-376) at RIP `0x200ffe`
+after 9,847 retired instructions; COM1 is empty. Firmware SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Validation: full od-isa (2,322/1,591/126/29/6/1,214/7/15; zero doc tests),
+paged machine quantum (104/104), workspace all-targets offline check, scoped
+rustfmt and diff-check pass. Independent review approved with no findings.

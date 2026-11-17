@@ -4875,7 +4875,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-375 — S7-04: exact helper JNZ frontier (`75 3C`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-374.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x200fed`.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** только `75 3C` допускается как JNZ rel8 +0x3c. Условие ZF=0 выбирает signed disp8 от next RIP; флаги и definedness сохраняются. Canonicality проверяется только для taken target; fetch fault не фиксирует CPU state.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,847 instructions and reported `Unsupported { opcode: 137 }` at RIP `0x200ffe`, bytes `4C 89 E9` (MOV RCX,R13; ISSUE-376); COM1 is empty.
+- **Проверка:** six focused JNZ tests cover ZF outcomes/definedness, target arithmetic, taken-only canonicality, fetch faults, neighboring encodings and CPL3 isolation; the other-profile rejection matrix passes. Full od-isa, paged-machine, workspace all-targets offline check, scoped rustfmt and diff-check pass. Independent review approved with no findings.
+
+### ISSUE-376 — S7-04: exact helper MOV register frontier (`4C 89 E9`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-375.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x200ffe`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches exact `JNZ rel8 +0x3c` after ISSUE-374. This branch encoding is not yet admitted by the bounded base profile.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,843 instructions and reported `Unsupported { opcode: 117 }` at RIP `0x200fed`; image bytes are `75 3C`; COM1 is empty.
-- **Следующий шаг:** отдельно рассмотреть точное условное short-branch кодирование JNZ из frontier.
+- **Суть и последствия:** firmware reaches `MOV RCX,R13` after ISSUE-375. This exact register copy is not yet admitted by the bounded base profile.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,847 instructions and reported `Unsupported { opcode: 137 }` at RIP `0x200ffe`; image bytes are `4C 89 E9`; COM1 is empty.
+- **Следующий шаг:** отдельно рассмотреть точное firmware MOV RCX,R13 encoding.

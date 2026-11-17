@@ -869,6 +869,7 @@ neighbor regression pass. Full od-isa suites pass
 quantum tests pass, and scoped cargo check/rustfmt/diff-check pass.
 Independent review approved with no findings.
 
+
 ### Текущий статус — 2026-11-16 — ISSUE-343
 
 ISSUE-343 admits only exact no-prefix bytes `0F 85 A0 FE FF FF` (`JNZ rel32
@@ -1393,3 +1394,24 @@ Validation: focused ISA 5/5 and machine 2/2 pass. Full od-isa suites pass
 (2,322/1,591/126/29/6/1,213/7/15; zero doc tests), paged machine quantum
 passes (104/104), workspace all-targets offline cargo check, scoped rustfmt
 and diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-375 — exact JNZ rel8 +0x3c
+
+Admit only `75 3C` in base `PagedCpl0ProbeV1`. JNZ tests ZF; with ZF=0,
+apply signed rel8 +0x3c from next RIP, otherwise fall through by two bytes.
+Preserve RFLAGS and definedness. Check target canonicality only when taken;
+faulting fetch of either byte leaves CPU state unchanged. Focused coverage tests
+both ZF values with defined and undefined ZF, full state retention, canonical
+target behavior, fetch faults, adjacent displacements, wrong conditions and
+prefixes, CPL3 and other-profile rejection.
+
+The firmware runner retires 9,847 instructions, advances past this branch and
+stops at `4C 89 E9` (MOV RCX,R13, ISSUE-376) at `0x200ffe`; COM1 is empty.
+Image SHA-256 is `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Validation: six focused JNZ tests and the other-profile rejection matrix pass.
+Full od-isa suites pass (2,322/1,591/126/29/6/1,214/7/15; zero doc tests),
+paged machine quantum passes (104/104), workspace all-targets offline cargo
+check, scoped rustfmt and diff-check pass. Independent review approved with no findings.

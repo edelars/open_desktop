@@ -1340,3 +1340,21 @@ definedness, A/no-D page-walk effects, neighbors, and CPL3/other-profile
 isolation. Full od-isa suites (2,322/1,591/126/29/6/1,213/7/15; zero doc
 tests), paged machine quantum (104/104), workspace all-targets offline check,
 scoped rustfmt and diff-check pass. Independent review approved with no findings.
+
+
+### Stage 7 runner frontier after ISSUE-375
+
+After exact `75 3C` (JNZ rel8 +0x3c) is admitted, firmware retires 9,847
+instructions and stops at RIP `0x200ffe`, bytes `4C 89 E9` (MOV RCX,R13,
+ISSUE-376), with `Unsupported { opcode: 137 }`. Image
+`/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1
+is empty. ISSUE-201 remains the unrelated stale CLD test expectation caveat.
+
+This exact base-profile JNZ reads ZF, preserves RFLAGS and definedness, and
+uses the signed rel8 from next RIP only when taken. Target canonicality is
+checked only for the taken branch. Six focused branch tests plus the other-
+profile rejection test cover state, definedness, boundary, fetch-fault and
+neighbor behavior. Full od-isa suites (2,322/1,591/126/29/6/1,214/7/15; zero
+doc tests), paged machine quantum (104/104), workspace all-targets offline
+check, scoped rustfmt and diff-check pass. Independent review approved with no findings.
