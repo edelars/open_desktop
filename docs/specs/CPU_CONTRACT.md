@@ -29662,3 +29662,14 @@ byte write preserves RAX[63:8] and the other registers. A fault on the final
 ModRM fetch commits no architectural state. CPL3 and the other paged profiles
 reject this encoding. Independent review approved with no findings. ISSUE-201 remains the
 unrelated CLD caveat.
+
+### ISSUE-451 — bounded JNZ rel32 +0xca
+
+The base paged profile admits exact unprefixed `0F 85 CA 00 00 00`. JNZ uses
+the concrete ZF value and preserves RFLAGS and flag definedness. With ZF=0
+it adds signed rel32 +0xca to next RIP using 64-bit wrapping arithmetic
+and checks the result for canonicality. With ZF=1 it advances to next RIP
+and defers its validation to the next fetch. A noncanonical taken target
+raises #GP(0). A fault on the final displacement fetch commits no
+architectural state. CPL3 and other paged profiles reject this encoding.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

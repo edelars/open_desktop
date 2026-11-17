@@ -2472,3 +2472,12 @@ The runner reaches `0F 85 CA 00 00 00` (JNZ rel32 +0xca, ISSUE-451) at RIP
 with empty COM1. Image SHA-256 is
 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-451 runner frontier
+
+Exact base-profile `0F 85 CA 00 00 00` (JNZ rel32 +0xca) reads ZF and checks
+only a taken target for canonicality. This runner reaches `EB 31` (JMP rel8
++0x31, ISSUE-452) at RIP `0x2013b3` after 9,999 retired instructions. It
+reports Unsupported opcode 235 with empty COM1. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

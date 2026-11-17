@@ -4028,3 +4028,25 @@ all-targets offline check passes with existing warnings. Scoped rustfmt and
 diff checks pass.
 
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-451 — exact JNZ rel32 +0xca
+
+Five focused tests exercise the +0x97 and +0xca JNZ rel32 forms. They cover
+both ZF outcomes and definedness, signed target computation from next RIP,
+taken-only canonicality, final-byte fetch-fault atomicity, neighboring
+encodings and CPL3. The other-profile isolation matrix passes 1/1.
+
+The runner command
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue451.com1 --budget 10000` uses image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+It reports 9,999 retired instructions, RIP `0x2013b3`, Unsupported opcode 235
+and empty COM1. Bytes `EB 31` select JMP rel8 +0x31 (ISSUE-452).
+
+The full offline `od-isa` suite passes (2,322/1,591/126/29/6/1,539/7/15 and
+zero doctests). The paged machine quantum suite passes 110/110. The workspace
+all-targets offline check passes with existing warnings. Scoped rustfmt and
+diff checks pass.
+
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

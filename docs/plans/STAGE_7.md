@@ -2646,3 +2646,14 @@ The runner retires 9,998 instructions and stops at RIP `0x2013ad` on
 `0F 85 CA 00 00 00` (JNZ rel32 +0xca, ISSUE-451), with Unsupported opcode
 133 and empty COM1. Independent review approved with no findings. ISSUE-201 remains the
 unrelated CLD caveat.
+
+### ISSUE-451 — exact JNZ rel32 +0xca (`0F 85 CA 00 00 00`)
+
+Base `PagedCpl0ProbeV1` admits the exact unprefixed branch. With ZF=0 the
+signed rel32 is added to next RIP and the taken target must be canonical.
+With ZF=1 the branch advances to next RIP. Both outcomes preserve flags
+and definedness. Tests cover both paths, taken-only canonicality,
+final-byte fetch fault, neighboring encodings, CPL3 and other profiles.
+The runner retires 9,999 instructions and stops at RIP `0x2013b3` on
+`EB 31` (JMP rel8 +0x31, ISSUE-452) with Unsupported opcode 235 and empty
+COM1. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
