@@ -1392,3 +1392,20 @@ RFLAGS, definedness and all other state. Four focused tests cover the encoding,
 routing, fetch atomicity and profile boundary. Full od-isa suites, paged machine
 quantum (104/104), workspace all-targets offline check, scoped rustfmt and
 diff-check pass. Independent review approved with no findings.
+
+
+### Stage 7 runner frontier after ISSUE-378
+
+After exact `41 89 D9` (MOV R9D,EBX) is admitted, firmware retires 9,850
+instructions and stops at RIP `0x201007`, bytes `E8 24 02 00 00` (CALL rel32
++0x224, ISSUE-379), with `Unsupported { opcode: 232 }`. REX.W is clear, so the
+dword write zero-extends R9. Image `/private/tmp/od-fw-s7-04-issue256.bin` has
+SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`;
+COM1 is empty. ISSUE-201 remains the unrelated stale CLD test expectation
+caveat.
+
+The admitted exact base-profile instruction copies EBX's low dword to R9D,
+zero-extends R9 and preserves RFLAGS, definedness and all other state. Four
+focused tests cover the encoding, zero-extension, fetch atomicity and profile
+boundary. Full od-isa suites, paged machine quantum (104/104), workspace
+all-targets offline check, scoped rustfmt and diff-check pass. Independent review approved with no findings.

@@ -1463,3 +1463,26 @@ suites pass (2,322/1,591/126/29/6/1,222/7/15; zero doc tests), paged machine
 quantum passes (104/104), workspace all-targets offline cargo check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review
 approved with no findings.
+
+
+### ISSUE-378 — exact MOV R9D,EBX (`41 89 D9`)
+
+Admit only exact `41 89 D9` in base `PagedCpl0ProbeV1`. Opcode 89 with
+REX.B=1 and REX.W=0 copies the dword EBX value to R9D and zero-extends R9.
+Commit only R9 and RIP+3; flags, definedness and all other state are preserved.
+Faulting instruction fetch is atomic. Neighboring source/destination registers,
+widths, opcode direction, prefixes and CPL3/other profiles remain unsupported.
+Four focused ISA tests cover source selection, zero-extension, state/flags,
+fetch fault and neighbors; the other-profile matrix rejects the form.
+
+After admission, the runner retires 9,850 instructions and stops at
+`E8 24 02 00 00` (CALL rel32 +0x224, ISSUE-379), RIP `0x201007`, with
+`Unsupported { opcode: 232 }`; COM1 is empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Validation: focused ISA 4/4 and other-profile matrix 1/1 pass. Full od-isa
+suites pass (2,322/1,591/126/29/6/1,226/7/15; zero doc tests), paged machine
+quantum passes (104/104), workspace all-targets offline cargo check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review
+approved with no findings.

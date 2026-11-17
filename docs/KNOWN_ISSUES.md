@@ -4899,7 +4899,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-378 — S7-04: exact helper MOV dword register frontier (`41 89 D9`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-377.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201004`.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact `41 89 D9` moves EBX to R9D and zero-extends R9 because REX.W is clear. Flags and definedness are preserved; neighboring encodings and CPL3/other profiles remain unsupported.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; after admission runner retired 9,850 instructions and reported `Unsupported { opcode: 232 }` at RIP `0x201007`; bytes are `E8 24 02 00 00` (CALL rel32 +0x224; ISSUE-379); COM1 is empty.
+- **Проверка:** four focused ISA tests cover dword source selection, R9 zero-extension, state/flag preservation, fetch-fault atomicity, neighbors and CPL3; the other-profile rejection matrix passes. Full od-isa suites pass (2,322/1,591/126/29/6/1,226/7/15; zero doc tests), paged machine quantum passes (104/104), workspace all-targets offline cargo check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-379 — S7-04: exact helper near CALL frontier (`E8 24 02 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-378.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201007`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches `MOV R9D,EBX` after ISSUE-377; REX.W is clear, so the 32-bit EBX value is written to R9D and zero-extends R9. This exact dword register move is not yet admitted by the bounded base profile.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,849 instructions and reported `Unsupported { opcode: 137 }` at RIP `0x201004`; bytes are `41 89 D9`; COM1 is empty.
-- **Следующий шаг:** отдельно рассмотреть только точное firmware MOV R9D,EBX encoding.
+- **Суть и последствия:** firmware reaches near relative CALL +0x224 after ISSUE-378; this exact call and stack push are not yet admitted by the bounded base profile.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,850 instructions and reported `Unsupported { opcode: 232 }` at RIP `0x201007`; bytes are `E8 24 02 00 00`; COM1 is empty.
+- **Следующий шаг:** отдельно рассмотреть только точный firmware CALL rel32 +0x224.

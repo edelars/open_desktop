@@ -28539,3 +28539,23 @@ ISSUE-201 remains the unrelated CLD expectation caveat.
 Validation: focused ISA 4/4 and other-profile matrix 1/1 pass; full od-isa
 suites, paged machine quantum (104/104), workspace all-targets offline check,
 scoped rustfmt and diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-378: `41 89 D9` — MOV R9D,EBX
+
+The base `PagedCpl0ProbeV1` admits only exact `41 89 D9`. REX.B extends
+ModRM.r/m to R9D; REX.W is clear, so the operation is 32-bit, and ModRM.reg
+selects EBX. Copy EBX's low 32 bits to R9D, zero-extending R9, then advance RIP
+by three. RFLAGS, flag definedness and all other CPU state are preserved; no
+memory access occurs. A faulting instruction fetch leaves CPU state unchanged.
+Other registers, widths, opcode direction, prefixes, CPL3 and other profiles
+remain unsupported.
+
+The firmware runner advances to `E8 24 02 00 00` (CALL rel32 +0x224, ISSUE-379)
+at RIP `0x201007` after 9,850 retired instructions; COM1 is empty. Firmware
+SHA-256 is `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Validation: focused ISA 4/4 and other-profile matrix 1/1 pass; full od-isa
+suites, paged machine quantum (104/104), workspace all-targets offline check,
+scoped rustfmt and diff-check pass. Independent review approved with no findings.
