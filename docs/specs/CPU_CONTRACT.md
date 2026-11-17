@@ -27964,3 +27964,22 @@ Five focused tests cover both outcomes with defined/undefined ZF, taken target c
 ### S7-04 CPU-profile slice: exact helper `ADD RSI,R10` (ISSUE-344)
 
 `PagedCpl0ProbeV1` admits only exact bytes `4C 01 D6`. Opcode 01 uses RSI as r/m destination, while REX.R selects R10 as qword source. Shared ADD semantics produce the full qword sum, update arithmetic flags and mark them defined; only RSI and RIP change among GPRs/control flow, with the required RFLAGS update. Other operand directions/registers/widths/prefixes, CPL3 and other profiles remain unsupported. Focused/profile tests, full od-isa and paged-machine suites, scoped cargo check, rustfmt and diff-check pass; independent review approved with no findings. ISSUE-201's unrelated stale CLD expectations remain open.
+
+
+### S7-04 CPU-profile slice: exact helper `CMP RSI,R15` (ISSUE-345)
+
+`PagedCpl0ProbeV1` admits only exact bytes `4C 39 FE`. The qword r/m operand
+is RSI; REX.R extends the reg source to R15. CMP computes RSI-R15 with shared
+qword arithmetic semantics, updates all arithmetic flags and definedness, and
+changes no GPR. Other operand directions, registers, widths, prefixes, CPL3
+and other profiles remain unsupported.
+
+Four focused tests cover arithmetic flag vectors and GPR preservation, both
+fully defined and initially undefined arithmetic-flag metadata, final-ModRM
+fetch-fault atomicity, neighbors, CPL3 and other-profile isolation. Full od-isa
+suites pass (2,322/1,591/126/29/6/1,067/7/15; zero doc tests), all 71 paged
+machine quantum tests pass, and scoped cargo check, rustfmt and diff-check pass.
+Independent review approved with no findings. Firmware runner advances to
+ISSUE-346 (`41 0F 97 C5`, `SETA R13B`) at RIP `0x2017ca` after 9,062 retired
+instructions; COM1 is empty. ISSUE-201's stale CLD expectations remain
+unrelated and open.

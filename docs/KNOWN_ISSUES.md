@@ -4633,9 +4633,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-345 — S7-04: exact helper `CMP RSI,R15` (`4C 39 FE`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-344.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017c7`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this exact qword register compare after 9,061 retired instructions. The base profile does not yet admit this exact compare form.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `4C 39 FE` compare qword RSI against R15. Shared CMP subtraction updates arithmetic flags/definedness and writes no GPR.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 57 }` at RIP `0x2017c7`; COM1 is empty.
-- **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.
+- **Проверка:** focused tests cover equality, borrow, sign, overflow, AF, GPR preservation, defined and undefined input flag metadata, final-ModRM fetch-fault atomicity, neighboring encodings, CPL3 and other-profile rejection. Full od-isa and paged machine suites, scoped cargo check, rustfmt and diff-check pass; independent review approved with no findings.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.
+
+### ISSUE-346 — S7-04: exact helper `SETA R13B` (`41 0F 97 C5`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-345.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017ca`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware reaches this exact SETA byte-register operation after 9,062 retired instructions. The base profile does not yet admit this exact form.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 151 }` at RIP `0x2017ca`; COM1 is empty.
+- **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.

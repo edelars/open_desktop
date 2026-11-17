@@ -906,3 +906,19 @@ pass; independent review approved with no findings.
 Проверки документа: 38 задач (S7-00…S7-35, S7-40…S7-41), таблица зависимостей без циклов и в согласии с телами задач, у каждой задачи — Где/Сделать/Проверить/Готово (у ревью-задач S7-29/S7-40 — Кто/Где/Сделать/Проверить/Готово), у задач с внешними зависимостями — явный `blocked`; локальные ссылки указывают на существующие файлы; `python3 tools/check_layout.py` не добавил новых ошибок относительно состояния до добавления файла (45 → 45); `git diff --check` чист.
 
 Независимое ревью плана 2026-11-07 (Claude Opus, только чтение, первая редакция): 1 blocker, 24 major, 14 minor; вердикт «нужна переработка». Blocker — цикл «S7-32 blocked до этапа 8, этап 8 зависит от этапа 7» — снят: S7-32 теперь blocked до конкретных предпосылок (PCI S4-30, 2 MiB страниц, этап 6, транспорт носителя S7-35), граница с этапом 8 записывается в S7-00. Major учтены в этой редакции: исправлены факты раздела 2 (сборка probe через `clang`, резерв дисплея `[0xF400_0000, 0xFC00_1000)`, ограничения страниц/IRQ/таймеров/ROM); четыре архитектурных решения (исполнение из ROM, состояние вызова §2.3.4 и ABI `efiapi`, модель таймеров, перемещение RT) вынесены в S7-02; криптография `no_std` прошивки — в ADR S7-20; Authenticode-дайджест перенесён в S7-06 и временные хеши запрещены; зависимости и gates пересчитаны (S7-28 без TPM/SB, S7-14 в G2, S7-26 blocked до S4-21, покрытие S7-40); добавлены S7-34 (USB-клавиатура) и S7-35 (транспорт носителя); уточнены TPM (password session, `PCR_Reset`, правила PCR, `INTF_ID`, полный набор событий PFP, Spec ID Event03, final events table), Secure Boot (KEK, политика срока действия X.509, enroll в SetupMode, порядок `dbx`→`db`, коды `LoadImage`, исключение `APPEND_WRITE`) и NVMe (обязательные admin-команды, видимость только через PCI); роль ревью приведена к `AGENTS.md` ветки (Opus/`high`); minor учтены (revision-константа, event groups, устаревший атрибут, Subsystem, атомарность NVRAM, FADT minor version, SMBIOS тип 9, EK Credential Profile, `openssl cms` с запасным вариантом, одно правило fixtures). Повторное независимое ревью изменённых мест 2026-11-07 (Claude Opus, только чтение): 0 blocker, 6 major, 9 minor, вердикт «можно принять с правками»; все 15 замечаний учтены в этой редакции (хвосты «blocked до этапа 8» в §5/§8/S7-41 заменены предпосылками S7-32; S7-01 п. 2 зависит от S7-02; S7-22 зависит от S7-19; `firmware_reset_smoke.py` убран из S7-29; startup locality 0/3 и `PCR_Reset` по PTP; `ResetSystem` как `VOID`; S4-10 назван владельцем 2 MiB страниц; таблица TPM2 — у S7-22; `Cargo.toml` прошивки — в «Где» S7-22; механизм сброса S7-10 записан; нумерация §3). Третьего прогона ревью не было. Эти результаты не являются приёмкой реализации этапа 7.
+
+### Текущий статус — 2026-11-16 — ISSUE-345
+
+ISSUE-345 admits only exact bytes `4C 39 FE` (`CMP RSI,R15`) in base
+`PagedCpl0ProbeV1`. Opcode 39 compares qword RSI (r/m destination field)
+against R15 (REX.R-extended reg source). Shared subtraction semantics update
+arithmetic flags and definedness without changing any GPR. Runner advances to
+ISSUE-346, `41 0F 97 C5` (`SETA R13B`) at `0x2017ca` after 9,062 retired
+instructions; COM1 is empty. ISSUE-201 remains the unrelated pair of stale
+CLD-unsupported full-machine expectations. Do not mark the Stage 7 gate
+complete.
+
+Four focused tests and the other-profile matrix pass. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,067/7/15; zero doc tests); all 71 paged machine
+quantum tests pass. Scoped cargo check, rustfmt and diff-check pass. Independent
+review approved with no findings.

@@ -2148,3 +2148,25 @@ The firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb
 Four focused tests cover qword arithmetic results (including carry, signed overflow, auxiliary carry, zero and parity), GPR preservation, flag-definedness updates, final-ModRM fetch-fault atomicity, nearby encodings and CPL3 rejection. The other-profile matrix rejects the exact encoding. Full od-isa suites pass (2,322/1,591/126/29/6/1,063/7/15; 0 doc tests), all 71 paged machine quantum tests pass, and scoped cargo check, rustfmt and diff-check pass. Independent review approved with no findings.
 
 The firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) advances after 9,061 retired instructions to `4C 39 FE` (`CMP RSI,R15`, ISSUE-345) at RIP `0x2017c7`, `Unsupported { opcode: 57 }`; COM1 remains empty. ISSUE-201 remains the unrelated pair of stale CLD-unsupported expectations in full `od-machine` tests.
+
+
+### S7-04 exact helper `CMP RSI,R15` — ISSUE-345
+
+`PagedCpl0ProbeV1` admits only exact `4C 39 FE`. Opcode 39 uses RSI as the
+qword r/m operand and REX.R extends the register source to R15. Shared CMP
+semantics subtract RSI-R15, update CF/PF/AF/ZF/SF/OF and their definedness, and
+write no GPR. Other registers remain unchanged.
+
+Four focused profile tests cover equality, borrow, sign, overflow, AF,
+full-register preservation, defined and undefined initial arithmetic
+metadata, final-ModRM fetch-fault atomicity, neighbor rejection, CPL3 and
+other-profile isolation. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,067/7/15; zero doc tests), all 71 paged machine
+quantum tests pass, and scoped cargo check, rustfmt and diff-check pass.
+Independent review approved with no findings. The unrelated ISSUE-201 stale
+CLD expectations remain open.
+
+Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`)
+advances after 9,062 retired instructions to `41 0F 97 C5` (`SETA R13B`,
+ISSUE-346) at RIP `0x2017ca`, `Unsupported { opcode: 151 }`; COM1 is empty.
