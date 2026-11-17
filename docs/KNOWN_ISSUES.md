@@ -5046,7 +5046,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-395 — S7-04: exact helper CMP R8,RDX frontier (`49 39 D0`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-394.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201290`.
-- **Статус:** открыта.
-- **Суть и последствия:** after ISSUE-394, firmware reaches exact `49 39 D0` (`CMP R8,RDX`): REX.W/B select qword R8 as r/m destination and RDX as reg source; this form is not yet admitted by the bounded base profile.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact Primary `49 39 D0` (`CMP R8,RDX`): REX.W/B select qword R8 as r/m destination and RDX as reg source. Shared subtraction updates arithmetic flags/definedness without writing a GPR; other state is preserved. Existing separately admitted CMP forms remain unchanged.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,875 instructions and reported `Unsupported { opcode: 57 }` at RIP `0x201290`; COM1 is empty. The bytes are present at image offset `0x1290`, corresponding to the firmware link-base shadow.
-- **Следующий шаг:** implement only this exact qword register CMP after checking operand direction, arithmetic flags and profile boundaries.
+- **Результат:** runner now retires 9,876 instructions and stops at RIP `0x201293`, bytes `0F 87 4C 02 00 00` (JA rel32 +0x24c; ISSUE-396), `Unsupported { opcode: 135 }`; COM1 is empty.
+- **Проверка:** focused qword arithmetic flags/definedness/register-preservation/fetch-fault/neighbor/CPL3 tests 4/4 and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,300/7/15; zero doc tests), paged machine quantum passes 110/110, workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review is pending. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-396 — S7-04: exact helper JA rel32 +0x24c frontier (`0F 87 4C 02 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-395.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201293`.
+- **Статус:** открыта.
+- **Суть и последствия:** after ISSUE-395, firmware reaches exact `0F 87 4C 02 00 00` (`JA rel32 +0x24c`); this displacement is not yet admitted by the bounded base profile.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,876 instructions and reported `Unsupported { opcode: 135 }` at RIP `0x201293`; COM1 is empty. The bytes are present at image offset `0x1293`, corresponding to the firmware link-base shadow.
+- **Следующий шаг:** admit only this exact JA displacement with correct CF/ZF condition and taken-target semantics.

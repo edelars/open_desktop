@@ -1791,3 +1791,26 @@ passes (110/110). The runner advances to `49 39 D0` (CMP R8,RDX, ISSUE-395)
 at RIP `0x201290` after 9,875 retired instructions, `Unsupported { opcode: 57 }`;
 COM1 is empty. Workspace all-targets offline check, scoped rustfmt and
 `git diff --check` pass. Independent review is pending.
+
+### ISSUE-395 — exact CMP R8,RDX (`49 39 D0`)
+
+Admit only this exact qword opcode-39 register form in base `PagedCpl0ProbeV1`.
+REX.W/B select R8 as the r/m operand and RDX as the reg operand. Shared CMP
+updates arithmetic flags/definedness and writes no GPR. Preserve existing
+separate CMP admissions. Cover flag vectors, complete register preservation,
+final-ModRM fetch fault, neighboring encodings, CPL3 and other profiles.
+ISSUE-201 remains the unrelated CLD caveat.
+
+Focused tests pass (4/4), other-profile matrix passes (1/1), full od-isa passes
+(2,322/1,591/126/29/6/1,300/7/15; 0 doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. The runner advances to `0F 87 4C 02 00 00`
+(JA rel32 +0x24c, ISSUE-396) at RIP `0x201293` after 9,876 retired
+instructions, `Unsupported { opcode: 135 }`; COM1 is empty. Independent review
+is pending.
+
+### ISSUE-396 — exact JA rel32 +0x24c (`0F 87 4C 02 00 00`)
+
+The runner's next frontier is this exact JA displacement. Only this displacement
+is in scope; verify CF=0 && ZF=0, signed rel32 from next RIP, preserved flags
+and definedness, taken-only target canonicality, and profile boundaries.

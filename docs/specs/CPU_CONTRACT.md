@@ -28869,3 +28869,24 @@ retired instructions, `Unsupported { opcode: 57 }`; COM1 is empty. Full od-isa
 passes (2,322/1,591/126/29/6/1,296/7/15; 0 doc tests), paged machine quantum
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review is pending.
+
+### ISSUE-395 — `49 39 D0` CMP R8,RDX
+
+Base `PagedCpl0ProbeV1` admits only this exact opcode-39 qword register CMP.
+REX.W/B select R8 as r/m and RDX as reg. Shared subtraction updates arithmetic
+flags and their definedness while preserving every GPR and all unrelated
+state. Focused arithmetic/state/fetch-fault/neighbor/CPL3 tests pass (4/4), and
+the other-profile matrix passes (1/1). ISSUE-201 remains the unrelated CLD
+caveat.
+
+The runner advances to `0F 87 4C 02 00 00` (JA rel32 +0x24c, ISSUE-396), RIP
+`0x201293`, after 9,876 retired instructions, `Unsupported { opcode: 135 }`;
+COM1 is empty. Full od-isa passes (2,322/1,591/126/29/6/1,300/7/15; zero doc
+tests), paged machine quantum passes (110/110), workspace all-targets offline
+check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review is pending.
+
+### ISSUE-396 — `0F 87 4C 02 00 00` frontier
+
+The next exact base-profile candidate is JA rel32 +0x24c. Its contract must
+preserve flags/definedness and check canonicality only on the taken path.

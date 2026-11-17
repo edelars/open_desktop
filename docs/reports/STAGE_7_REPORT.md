@@ -3123,3 +3123,27 @@ instructions, `Unsupported { opcode: 57 }`; COM1 is empty. Full od-isa passes
 (110/110), workspace all-targets offline check passes with existing warnings,
 and scoped rustfmt and diff-check pass. Independent review is pending.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-395 — `49 39 D0` (`CMP R8,RDX`)
+
+The base paged profile admits only this exact qword CMP form. REX.W/B select R8
+as the r/m operand and RDX as the reg operand. Shared subtraction updates
+arithmetic flags/definedness and does not write a GPR; all other state remains
+unchanged. Focused qword flags/register-preservation/fetch-fault/neighbor/CPL3
+tests pass (4/4), and the other-profile matrix passes (1/1).
+
+With image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, the
+runner advances to `0F 87 4C 02 00 00` (JA rel32 +0x24c, ISSUE-396), RIP
+`0x201293`, after 9,876 retired instructions, `Unsupported { opcode: 135 }`;
+COM1 is empty. Full od-isa passes (2,322/1,591/126/29/6/1,300/7/15; zero doc
+tests), paged machine quantum passes (110/110), workspace all-targets offline
+check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review is pending. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-396 — runner frontier `0F 87 4C 02 00 00`
+
+Firmware reaches exact JA rel32 +0x24c at RIP `0x201293` after ISSUE-395.
+Record and implement only this displacement, preserving branch flags and
+definedness, with canonicality checked only for a taken target. ISSUE-201 stays
+the unrelated CLD caveat.
