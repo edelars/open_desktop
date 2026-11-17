@@ -5352,7 +5352,17 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-427 — S7-04: exact CMP R13D,9 frontier (`41 83 FD 09`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-426.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201340`.
-- **Статус:** открыта.
-- **Суть и последствия:** the runner reaches exact `41 83 FD 09`, which decodes as `CMP R13D,9`. REX.B selects R13D and opcode 83 sign-extends imm8 9 to dword width. This exact compare is not yet admitted.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `41 83 FD 09` (`CMP R13D,9`). REX.B selects R13D and opcode 83 sign-extends imm8 9 to dword width. CMP updates subtraction flags/definedness from low R13D without changing any GPR. Other immediates, registers, widths, opcodes and prefixes remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,916 instructions and reported `Unsupported { opcode: 131 }` at RIP `0x201340`; COM1 is empty. Bytes at the link-base shadow are `41 83 FD 09`.
-- **Следующий шаг:** verify exact R13D comparison, sign-extended immediate and flags semantics, then admit only this encoding.
+- **Результат:** runner now retires 9,917 instructions and stops at RIP `0x201344`, bytes `0F 85 3A 01 00 00` (JNZ rel32 +0x13a; ISSUE-428), `Unsupported { opcode: 133 }`; COM1 is empty.
+- **Проверка:** four focused CMP/flags/definedness/register-preservation/fetch-fault/neighbor/CPL3 tests and other-profile matrix 1/1 pass. Full od-isa passes (2,322/1,591/126/29/6/1,450/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+- **Следующий шаг:** ISSUE-428, exact `0F 85 3A 01 00 00` (JNZ rel32 +0x13a) at RIP `0x201344`.
+
+### ISSUE-428 — S7-04: exact JNZ rel32 +0x13a frontier (`0F 85 3A 01 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-427.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201344`.
+- **Статус:** открыта; следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base profile does not yet admit this exact `JNZ rel32 +0x13a`. Add only this form, with ZF condition, signed displacement from next RIP, taken-only target canonicality, preserved flags/definedness, and atomic instruction-fetch faults. Neighboring displacements/conditions and other profiles remain excluded.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,917 instructions and reported `Unsupported { opcode: 133 }` at RIP `0x201344`; COM1 is empty. Bytes at the link-base shadow are `0F 85 3A 01 00 00`.
+- **Следующий шаг:** implement this exact JNZ slice, add focused branch/fault/neighbor/profile tests, verify the runner successor, and update Stage 7 documentation.

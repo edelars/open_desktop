@@ -3633,3 +3633,15 @@ passes (2,322/1,591/126/29/6/1,446/7/15; zero doc tests), paged machine quantum
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-427 — exact `CMP R13D,9` (`41 83 FD 09`)
+
+Admitted only this exact base-profile REX.B dword CMP. Opcode 83 sign-extends
+imm8 9; comparison uses low R13D and updates subtraction flags/definedness
+without writing a GPR. Four focused tests and other-profile matrix (1/1) pass.
+Runner advances after 9,917 retired instructions to `0F 85 3A 01 00 00` (JNZ
+rel32 +0x13a, ISSUE-428) at RIP `0x201344`, Unsupported opcode 133, COM1 empty.
+Full od-isa passes (2,322/1,591/126/29/6/1,450/7/15; zero doc tests), paged
+machine quantum passes (110/110), workspace all-targets offline check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review
+approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
