@@ -28170,3 +28170,17 @@ unrelated CLD expectation caveat remains open. Full od-isa
 (79/79), scoped cargo check, rustfmt and diff-check pass; cargo check reports
 only the existing unused page-walk helper warning. Independent review is
 approved with no findings.
+
+### S7-04 CPU-profile slice: exact qword CMP (ISSUE-356)
+
+`PagedCpl0ProbeV1` admits only exact bytes `4D 39 F2`. Opcode 39 compares the
+qword r/m destination R10 against the reg source R14 selected by REX.R. Shared
+CMP semantics update arithmetic flags and definedness for R10-R14; no GPR or
+memory is written. Final-ModRM fetch faults do not retire or alter state. Other
+registers, opcode direction, widths, REX combinations, prefixes, CPL3 and other
+profiles remain unsupported. Firmware advances to `72 34` (JB rel8 +0x34,
+ISSUE-357) at RIP `0x201805` after 9,075 retired instructions; COM1 is empty.
+ISSUE-201's unrelated CLD expectation caveat remains open. Full od-isa
+(2,322/1,591/126/29/6/1,120/7/15; zero doc tests), paged machine quantum
+(79/79), scoped cargo check, rustfmt and diff-check pass; the existing unused
+page-walk helper warning remains. Independent review approved with no findings.

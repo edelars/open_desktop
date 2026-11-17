@@ -1082,3 +1082,16 @@ unrelated CLD expectation caveat remains open. Full od-isa (2,322/1,591/126/29/6
 quantum (79/79), scoped cargo check, rustfmt and diff-check pass; cargo check
 reports only the existing unused page-walk helper warning. Independent review
 approved with no findings.
+
+### ISSUE-356 — exact CMP R10,R14
+
+The base profile admits only exact `4D 39 F2` (`CMP R10,R14`), with qword
+opcode-39 r/m destination and REX.R-selected R14 source. Shared subtraction
+flags/definedness update and GPRs remain unchanged. Four focused tests cover
+flag vectors/definedness, final-ModRM fetch-fault atomicity, neighboring
+encodings and CPL3; the other-profile matrix rejects the bytes. Firmware now
+stops at ISSUE-357, `72 34` (`JB rel8 +0x34`) at RIP `0x201805`, retired=9,075;
+COM1 is empty. ISSUE-201's unrelated CLD caveat remains open. Full od-isa
+(2,322/1,591/126/29/6/1,120/7/15; zero doc tests), paged machine quantum
+(79/79), scoped cargo check, rustfmt and diff-check pass; only the existing
+unused page-walk helper warning remains. Independent review approved with no findings.
