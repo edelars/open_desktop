@@ -28704,3 +28704,21 @@ runner advances to `4B 8D 1C 40` (LEA RBX,[R8+R8*2], ISSUE-386), RIP
 (2,322/1,591/126/29/6/1,258/7/15; zero doc tests), paged machine quantum passes
 (110/110), workspace all-targets offline cargo check, scoped rustfmt and
 `git diff --check` pass. Independent review approved with no findings.
+
+### ISSUE-386: `4B 8D 1C 40` — LEA RBX,[R8+R8*2]
+
+`PagedCpl0ProbeV1` admits only this exact qword SIB LEA form. REX.W selects
+qword width; REX.X extends the SIB index to R8; REX.B extends the SIB base to
+R8; scale is 2 and there is no displacement. The effective offset is computed
+with wrapping 64-bit address arithmetic, without memory access or canonicality
+checking. Only RBX and RIP change; RFLAGS and definedness are preserved. A
+fetch fault commits no state. Other SIB/REX/prefix/opcode forms and CPL3/other
+profiles remain unsupported. ISSUE-201 remains the unrelated CLD caveat.
+
+Focused tests pass (4/4), as does the other-profile matrix (1/1). The firmware
+runner advances to `BD 01 00 00 00` (MOV EBP,1, ISSUE-387), RIP `0x201265`,
+after 9,866 retired instructions; it reports `Unsupported { opcode: 189 }` and
+COM1 is empty. Full od-isa suites pass (2,322/1,591/126/29/6/1,262/7/15; zero
+doc tests), paged machine quantum passes (110/110), workspace all-targets
+offline cargo check, scoped rustfmt and `git diff --check` pass. Independent
+review approved with no findings.

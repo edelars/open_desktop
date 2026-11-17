@@ -1527,3 +1527,21 @@ COM1 is empty. Full od-isa suites pass (2,322/1,591/126/29/6/1,258/7/15; zero
 doc tests), paged machine quantum passes (110/110), workspace all-targets
 offline cargo check, scoped rustfmt and `git diff --check` pass. Independent
 review approved with no findings.
+
+### ISSUE-386 — bounded helper SIB LEA
+
+The base paged firmware profile admits only exact `4B 8D 1C 40`
+(`LEA RBX,[R8+R8*2]`). The SIB computes a qword 3*R8 using REX.X/B extended
+index/base and scale 2. No memory read or canonicality check occurs; only RBX
+and RIP change, while flags/definedness remain unchanged. Focused success,
+fetch-fault, neighbor and CPL3 tests pass (4/4); the other-profile matrix passes
+(1/1). ISSUE-201 remains the unrelated CLD caveat.
+
+On image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), the
+runner advances to `BD 01 00 00 00` (MOV EBP,1, ISSUE-387), RIP `0x201265`,
+after 9,866 retired instructions, `Unsupported { opcode: 189 }`; COM1 is empty.
+Full od-isa suites pass (2,322/1,591/126/29/6/1,262/7/15; zero doc tests),
+paged machine quantum passes (110/110), workspace all-targets offline cargo
+check, scoped rustfmt and `git diff --check` pass. Independent review approved
+with no findings.

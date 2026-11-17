@@ -4965,7 +4965,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-386 — S7-04: exact helper LEA RBX,[R8+R8*2] frontier (`4B 8D 1C 40`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-385.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20125e`.
-- **Статус:** открыта.
-- **Суть и последствия:** after ISSUE-385 the firmware reaches exact `4B 8D 1C 40` (LEA RBX,[R8+R8*2]), not yet admitted by the bounded base profile.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `4B 8D 1C 40` as qword `LEA RBX,[R8+R8*2]`. REX.W selects qword width and REX.X/B extend SIB index/base to R8; scale is 2. The effective offset is computed without memory access or canonicality checking. Only RBX/RIP change; flags/definedness are preserved. Neighbors, CPL3 and other profiles remain unsupported.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,864 instructions and reported `Unsupported { opcode: 141 }` at RIP `0x20125e`; COM1 is empty.
-- **Следующий шаг:** graph-navigate existing exact LEA SIB admissions and add only this qword effective-address form.
+- **Результат:** runner now retires 9,866 instructions and stops at RIP `0x201265`, bytes `BD 01 00 00 00` (MOV EBP,1; ISSUE-387), `Unsupported { opcode: 189 }`; COM1 is empty.
+- **Проверка:** focused LEA/fault/neighbor/CPL3 tests 4/4 and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,262/7/15; zero doc tests), paged machine quantum passes 110/110, `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-387 — S7-04: exact helper MOV EBP,1 frontier (`BD 01 00 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-386.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201265`.
+- **Статус:** открыта.
+- **Суть и последствия:** after ISSUE-386 the firmware reaches exact `BD 01 00 00 00` (`MOV EBP,1`), not yet admitted by the bounded base profile.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,866 instructions and reported `Unsupported { opcode: 189 }` at RIP `0x201265`; COM1 is empty.
+- **Следующий шаг:** graph-navigate existing bounded MOV immediate-register forms and admit only this encoding.

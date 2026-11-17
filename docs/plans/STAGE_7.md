@@ -1631,3 +1631,21 @@ COM1 is empty. Full od-isa suites pass (2,322/1,591/126/29/6/1,258/7/15; zero
 doc tests), paged machine quantum passes (110/110), workspace all-targets
 offline cargo check, scoped rustfmt and `git diff --check` pass. Independent
 review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-386 — exact LEA RBX,[R8+R8*2] (`4B 8D 1C 40`)
+
+Admit only exact `4B 8D 1C 40` in base `PagedCpl0ProbeV1`. REX.W selects a
+qword destination, REX.X/B extend the SIB index and base to R8, scale is 2,
+and displacement is zero. Compute the 64-bit effective offset with LEA; do not
+read memory or check address canonicality. Only RBX and RIP change; flags and
+their definedness are preserved. Cover wrapped/noncanonical offsets, full
+state, fetch fault, SIB/REX/prefix/opcode neighbors, CPL3 and other-profile
+isolation. ISSUE-201 remains the unrelated CLD caveat.
+
+Focused tests pass (4/4), and the other-profile matrix passes (1/1). The
+firmware runner advances to `BD 01 00 00 00` (MOV EBP,1, ISSUE-387) at RIP
+`0x201265` after 9,866 retired instructions, `Unsupported { opcode: 189 }`;
+COM1 is empty. Full od-isa suites pass (2,322/1,591/126/29/6/1,262/7/15; zero
+doc tests), paged machine quantum passes (110/110), workspace all-targets
+offline cargo check, scoped rustfmt and `git diff --check` pass. Independent
+review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

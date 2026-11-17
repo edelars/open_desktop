@@ -2958,3 +2958,21 @@ ISSUE-201 remains the unrelated CLD expectation caveat. Full od-isa suites pass
 (2,322/1,591/126/29/6/1,258/7/15; zero doc tests), paged machine quantum passes
 (110/110), workspace all-targets offline cargo check, scoped rustfmt and
 `git diff --check` pass. Independent review approved with no findings.
+
+### ISSUE-386 — exact LEA RBX,[R8+R8*2] (`4B 8D 1C 40`)
+
+The base `PagedCpl0ProbeV1` admits only exact `4B 8D 1C 40`. REX.W selects
+qword RBX, REX.X/B extend both SIB index and base to R8, and the SIB scale is
+2. LEA calculates R8 + R8*2 without memory access or canonicality checks. Four
+focused tests cover the qword result, wrapping and noncanonical offsets, full
+state/flags retention, final SIB-byte fetch-fault atomicity, neighbors and CPL3;
+the other-profile matrix passes.
+
+The runner advances to `BD 01 00 00 00` (MOV EBP,1, ISSUE-387), RIP `0x201265`,
+after 9,866 retired instructions, `Unsupported { opcode: 189 }`; COM1 is empty.
+Image SHA-256 remains
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201 remains the unrelated CLD expectation caveat. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,262/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline cargo check, scoped rustfmt and
+`git diff --check` pass. Independent review approved with no findings.

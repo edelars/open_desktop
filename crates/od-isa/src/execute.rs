@@ -23367,6 +23367,31 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(dst, src.effective_address(state, next_rip));
             state.rip = next_rip;
         }
+        // S7-04: the helper forms qword 3*R8 in RBX with exact
+        // `4B 8D 1C 40`. REX.W selects qword width, REX.X/B extend both SIB
+        // index and base to R8, and scale=2. LEA only calculates the offset.
+        Operation::Lea { dst, src }
+            if base_profile
+                && instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0x8d
+                && instruction.length == 4
+                && instruction.operand_size == OperandSize::Qword
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x4b),
+                        ..Prefixes::default()
+                    })
+                && dst == RegisterView::low(Register::Rbx, OperandSize::Qword)
+                && src.base == AddressBase::Register(Register::R8)
+                && src.index == Some(Register::R8)
+                && src.scale == 2
+                && src.displacement == 0
+                && src.address_size == OperandSize::Qword
+                && src.size == OperandSize::Qword =>
+        {
+            state.write(dst, src.effective_address(state, next_rip));
+            state.rip = next_rip;
+        }
         // S7-04: the Rust helper subtracts one from R14 and writes the low
         // dword with exactly `41 8D 7E FF` (LEA EDI,[R14-1]). The REX.B bit
         // selects R14 as the address base; LEA performs no memory access and
