@@ -1919,6 +1919,8 @@ fn validate_execution_observations_sidecar(
                                     ledger,
                                     runner,
                                     snapshot.get("invocation"),
+                                    schema_version,
+                                    snapshot.get("copy_destination"),
                                 ))
                     });
                 let status_data_valid = match status {
@@ -1987,13 +1989,15 @@ fn validate_execution_observations_sidecar(
 }
 
 fn supported_execution_observations_schema_version(version: u64) -> bool {
-    (1..=19).contains(&version)
+    (1..=20).contains(&version)
 }
 
 fn valid_elf_mmu_gather_capture(
     ledger: &Value,
     runner: &Value,
     copy_invocation: Option<&Value>,
+    schema_version: u64,
+    outer_copy_destination: Option<&Value>,
 ) -> bool {
     let Some(capture) = ledger.get("mmu_gather") else {
         return false;
@@ -2001,9 +2005,12 @@ fn valid_elf_mmu_gather_capture(
     let Some(status) = capture.get("status").and_then(Value::as_str) else {
         return false;
     };
+    let v20 = schema_version >= 20;
     if !matches!(status, "not_seen" | "captured" | "incomplete" | "truncated")
         || capture.get("association").and_then(Value::as_str) != Some("prefix_candidates")
-        || !capture.as_object().is_some_and(|object| object.len() == 7)
+        || !capture
+            .as_object()
+            .is_some_and(|object| object.len() == if v20 { 9 } else { 7 })
     {
         return false;
     }
@@ -2041,6 +2048,25 @@ fn valid_elf_mmu_gather_capture(
             || !unpaired.is_empty())
     {
         return false;
+    }
+    if v20 {
+        let Some(outer_copy_destination) = outer_copy_destination else {
+            return false;
+        };
+        let (Some(destination), Some(destination_match)) = (
+            capture.get("copy_destination"),
+            capture.get("destination_in_candidate_pages"),
+        ) else {
+            return false;
+        };
+        if !valid_nullable_hex64(outer_copy_destination)
+            || destination != outer_copy_destination
+            || !valid_nullable_hex64(destination)
+            || (!destination.is_null() && !destination_match.is_boolean())
+            || (destination.is_null() && !destination_match.is_null())
+        {
+            return false;
+        }
     }
     if matches!(status, "captured" | "incomplete") && setup_count == 0 && unpaired.is_empty() {
         return false;
@@ -2096,7 +2122,7 @@ fn valid_elf_mmu_gather_capture(
     for (index, invocation) in setups.iter().enumerate() {
         if !invocation
             .as_object()
-            .is_some_and(|object| object.len() == 8)
+            .is_some_and(|object| object.len() == if v20 { 11 } else { 8 })
         {
             return false;
         }
@@ -2121,7 +2147,13 @@ fn valid_elf_mmu_gather_capture(
             0xffff_ffff_818f_24d5,
             "value",
             "partial",
-            valid_mmu_setup_data,
+            |value| {
+                if v20 {
+                    valid_mmu_setup_data_v20(value)
+                } else {
+                    valid_mmu_setup_data(value)
+                }
+            },
         ) || !valid_mmu_phase(
             initial_phase,
             0xffff_ffff_8182_bfdb,
@@ -2171,6 +2203,21 @@ fn valid_elf_mmu_gather_capture(
                 return false;
             }
         }
+        let setup_candidates = if v20 {
+            let Some(addresses) = serialized_mmu_candidate_pages(setup_phase) else {
+                return false;
+            };
+            if !valid_mmu_gather_page_walks(
+                &invocation["setup_page_walks"],
+                addresses,
+                mmu_phase_cr3(setup_phase),
+            ) {
+                return false;
+            }
+            Some(addresses)
+        } else {
+            None
+        };
         let initial_status = initial_phase
             .and_then(|v| v.get("status"))
             .and_then(Value::as_str)
@@ -2195,6 +2242,26 @@ fn valid_elf_mmu_gather_capture(
                 }
             }
         }
+        let initial_walks_complete = if v20 {
+            let Some(addresses) = setup_candidates else {
+                return false;
+            };
+            let Some(walks) = invocation.get("initial_page_walks") else {
+                return false;
+            };
+            if initial_status == "not_observed" {
+                if !walks.is_null() {
+                    return false;
+                }
+                false
+            } else if !valid_mmu_gather_page_walks(walks, addresses, mmu_phase_cr3(initial_phase)) {
+                return false;
+            } else {
+                mmu_walks_are_complete(walks, addresses, mmu_phase_cr3(initial_phase))
+            }
+        } else {
+            false
+        };
         let actual_status = actual_phase
             .and_then(|v| v.get("status"))
             .and_then(Value::as_str)
@@ -2257,6 +2324,27 @@ fn valid_elf_mmu_gather_capture(
         } else if closure == "returned" {
             return false;
         }
+        let return_walks_complete = if v20 {
+            let Some(addresses) = setup_candidates else {
+                return false;
+            };
+            let Some(walks) = invocation.get("return_page_walks") else {
+                return false;
+            };
+            if returned_status == "not_observed" {
+                if !walks.is_null() {
+                    return false;
+                }
+                false
+            } else if !valid_mmu_gather_page_walks(walks, addresses, mmu_phase_cr3(returned_phase))
+            {
+                return false;
+            } else {
+                mmu_walks_are_complete(walks, addresses, mmu_phase_cr3(returned_phase))
+            }
+        } else {
+            false
+        };
 
         let contexts = [
             mmu_phase_context(setup_phase),
@@ -2302,10 +2390,26 @@ fn valid_elf_mmu_gather_capture(
         } {
             return false;
         }
+        if v20 {
+            let Some(addresses) = setup_candidates else {
+                return false;
+            };
+            if let Some(walks) = invocation.get("initial_page_walks")
+                && !walks.is_null()
+                && !valid_mmu_gather_page_walks(walks, addresses, mmu_phase_cr3(initial_phase))
+            {
+                return false;
+            }
+            let _ = initial_walks_complete;
+            let _ = return_walks_complete;
+        }
     }
 
     let unpaired_valid = unpaired.iter().all(|event| {
-        if !event.as_object().is_some_and(|object| object.len() == 5) {
+        if !event
+            .as_object()
+            .is_some_and(|object| object.len() == if v20 { 6 } else { 5 })
+        {
             return false;
         }
         let phase = event.get("phase").and_then(Value::as_str);
@@ -2325,12 +2429,34 @@ fn valid_elf_mmu_gather_capture(
             && event
                 .get("raw")
                 .is_some_and(|v| v.is_null() || valid_mmu_gather_raw(v))
+            && (!v20 || event.get("page_walks") == Some(&Value::Null))
             && event
                 .get("error")
                 .is_some_and(|v| v.is_null() || v.is_string())
     });
     if !unpaired_valid {
         return false;
+    }
+    if v20 {
+        let destination = capture
+            .get("copy_destination")
+            .and_then(Value::as_str)
+            .and_then(parse_hex64);
+        let expected = destination.map(|dest| {
+            setups.iter().any(|invocation| {
+                serialized_mmu_candidate_pages(invocation.get("setup")).is_some_and(|pages| {
+                    pages
+                        .into_iter()
+                        .flatten()
+                        .any(|page| page == (dest & !0xfff))
+                })
+            })
+        });
+        if capture.get("destination_in_candidate_pages")
+            != Some(&expected.map_or(Value::Null, Value::Bool))
+        {
+            return false;
+        }
     }
     let complete = unpaired.is_empty()
         && !setups.is_empty()
@@ -2349,6 +2475,31 @@ fn valid_elf_mmu_gather_capture(
                             .and_then(Value::as_str)
                             == Some("captured")
                     })
+                && (!v20
+                    || serialized_mmu_candidate_pages(invocation.get("setup")).is_some_and(
+                        |addresses| {
+                            invocation["setup"]["value"]["candidate_error"].is_null()
+                                && mmu_walks_are_complete(
+                                    &invocation["setup_page_walks"],
+                                    addresses,
+                                    mmu_phase_cr3(invocation.get("setup")),
+                                )
+                                && invocation.get("initial_page_walks").is_some_and(|walks| {
+                                    mmu_walks_are_complete(
+                                        walks,
+                                        addresses,
+                                        mmu_phase_cr3(invocation.get("initial")),
+                                    )
+                                })
+                                && invocation.get("return_page_walks").is_some_and(|walks| {
+                                    mmu_walks_are_complete(
+                                        walks,
+                                        addresses,
+                                        mmu_phase_cr3(invocation.get("returned")),
+                                    )
+                                })
+                        },
+                    ))
         });
     let expected_status = if setups_omitted != 0 || unpaired_omitted != 0 {
         "truncated"
@@ -2463,6 +2614,242 @@ fn valid_mmu_setup_data(value: &Value) -> bool {
         && value.get("vm_end").is_some_and(valid_nullable_hex64)
 }
 
+fn valid_mmu_setup_data_v20(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    if object.len() != 8
+        || !value
+            .get("stack_shift")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_hex64)
+        || !value
+            .get("vma")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_hex64)
+        || !value.get("vm_start").is_some_and(valid_nullable_hex64)
+        || !value.get("vm_end").is_some_and(valid_nullable_hex64)
+    {
+        return false;
+    }
+    let stack_shift = value["stack_shift"].as_str().and_then(parse_hex64).unwrap();
+    let vm_start = value["vm_start"].as_str().and_then(parse_hex64);
+    let expected_relocated = vm_start.and_then(|start| start.checked_sub(stack_shift));
+    let expected_aligned = expected_relocated.map(|start| start & !0xfff);
+    let expected_previous = expected_aligned.and_then(|start| start.checked_sub(4096));
+    let candidates_valid = expected_relocated.is_some_and(canonical_guest_address)
+        && expected_aligned.is_some_and(canonical_guest_address)
+        && expected_previous.is_some_and(canonical_guest_address);
+    let expected_pages = if candidates_valid {
+        [expected_previous, expected_aligned]
+    } else {
+        [None, None]
+    };
+    let Some(pages) = value.get("candidate_pages").and_then(Value::as_array) else {
+        return false;
+    };
+    pages.len() == 2
+        && value
+            .get("relocated_start")
+            .is_some_and(valid_nullable_hex64)
+        && value["relocated_start"].as_str().and_then(parse_hex64) == expected_relocated
+        && value.get("aligned_start").is_some_and(valid_nullable_hex64)
+        && value["aligned_start"].as_str().and_then(parse_hex64) == expected_aligned
+        && pages.iter().zip(expected_pages).all(|(actual, expected)| {
+            valid_nullable_hex64(actual) && actual.as_str().and_then(parse_hex64) == expected
+        })
+        && if candidates_valid {
+            value.get("candidate_error") == Some(&Value::Null)
+        } else {
+            value
+                .get("candidate_error")
+                .and_then(Value::as_str)
+                .is_some_and(|error| !error.is_empty())
+        }
+}
+
+fn serialized_mmu_candidate_pages(phase: Option<&Value>) -> Option<[Option<u64>; 2]> {
+    let phase = phase?;
+    let data = match phase.get("status")?.as_str()? {
+        "captured" => phase.get("value")?,
+        "read_error" => phase.get("partial").filter(|value| !value.is_null())?,
+        _ => return None,
+    };
+    let pages = data.get("candidate_pages")?.as_array()?;
+    Some([
+        pages.first()?.as_str().and_then(parse_hex64),
+        pages.get(1)?.as_str().and_then(parse_hex64),
+    ])
+}
+
+fn mmu_phase_cr3(phase: Option<&Value>) -> Option<u64> {
+    phase?
+        .get("context")?
+        .get("cr3")?
+        .as_str()
+        .and_then(parse_hex64)
+}
+fn valid_mmu_gather_page_walk(
+    value: &Value,
+    expected_address: Option<u64>,
+    cr3: Option<u64>,
+) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    if object.len() != 13
+        || !value.get("address").is_some_and(valid_nullable_hex64)
+        || value["address"].as_str().and_then(parse_hex64) != expected_address
+        || value.get("access").and_then(Value::as_str) != Some("Write")
+        || value.get("cpl").and_then(Value::as_u64) != Some(0)
+        || value.get("origin").and_then(Value::as_str) != Some("Explicit")
+        || value.get("profile").and_then(Value::as_str) != Some("long64_4k_2m")
+        || !value.get("cr0_wp").is_some_and(Value::is_boolean)
+        || !value.get("efer_nxe").is_some_and(Value::is_boolean)
+    {
+        return false;
+    }
+    let Some(status) = value.get("status").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(entries_json) = value.get("entries").and_then(Value::as_array) else {
+        return false;
+    };
+    if entries_json.len() > 4 {
+        return false;
+    }
+    let mut entries = Vec::with_capacity(entries_json.len());
+    for entry in entries_json {
+        if !entry.as_object().is_some_and(|fields| fields.len() == 4) {
+            return false;
+        }
+        let level = match entry.get("level").and_then(Value::as_str) {
+            Some("Pml4") => od_machine::PageTableLevel::Pml4,
+            Some("Pdpt") => od_machine::PageTableLevel::Pdpt,
+            Some("Pd") => od_machine::PageTableLevel::Pd,
+            Some("Pt") => od_machine::PageTableLevel::Pt,
+            _ => return false,
+        };
+        let (Some(index), Some(entry_address), Some(entry_value)) = (
+            entry.get("index").and_then(Value::as_u64),
+            entry
+                .get("entry_address")
+                .and_then(Value::as_str)
+                .and_then(parse_hex64),
+            entry
+                .get("entry_value")
+                .and_then(Value::as_str)
+                .and_then(parse_hex64),
+        ) else {
+            return false;
+        };
+        if index >= 512
+            || !entry
+                .get("entry_address")
+                .is_some_and(|v| v.as_str().is_some_and(canonical_hex64))
+            || !entry
+                .get("entry_value")
+                .is_some_and(|v| v.as_str().is_some_and(canonical_hex64))
+        {
+            return false;
+        }
+        entries.push(od_machine::WalkEntry {
+            level,
+            index: index as u16,
+            entry_address: od_machine::GuestPhysicalAddress::new(entry_address),
+            entry_value,
+        });
+    }
+    let terminal = match value.get("terminal_level") {
+        Some(Value::Null) => None,
+        Some(Value::String(level)) => match level.as_str() {
+            "Pml4" => Some(od_machine::PageTableLevel::Pml4),
+            "Pdpt" => Some(od_machine::PageTableLevel::Pdpt),
+            "Pd" => Some(od_machine::PageTableLevel::Pd),
+            "Pt" => Some(od_machine::PageTableLevel::Pt),
+            _ => return false,
+        },
+        _ => return false,
+    };
+    let leaf_size = match value.get("leaf_size") {
+        Some(Value::Null) => None,
+        Some(v) => match v.as_u64() {
+            Some(size) => Some(size),
+            None => return false,
+        },
+        None => return false,
+    };
+    let physical = match value.get("translated_physical") {
+        Some(Value::Null) => None,
+        Some(Value::String(v)) => match parse_hex64(v) {
+            Some(address) if canonical_hex64(v) => Some(address),
+            _ => return false,
+        },
+        _ => return false,
+    };
+    let error = match value.get("error") {
+        Some(Value::Null) => None,
+        Some(Value::String(v)) if !v.is_empty() => Some(v.as_str()),
+        _ => return false,
+    };
+    match status {
+        "translated" | "non_present" | "protection" if error.is_none() => {}
+        "read_error" | "invalid_address" if error.is_some() => {}
+        _ => return false,
+    }
+    match expected_address {
+        Some(address) => cr3.is_some_and(|cr3| {
+            value["address"].as_str().is_some_and(canonical_hex64)
+                && od_machine::validate_long64_read_only_walk_observation(
+                    address,
+                    cr3,
+                    &entries,
+                    status,
+                    terminal,
+                    leaf_size,
+                    physical,
+                    value["cr0_wp"].as_bool().unwrap_or(false),
+                    value["efer_nxe"].as_bool().unwrap_or(false),
+                )
+        }),
+        None => {
+            status == "invalid_address"
+                && value["address"].is_null()
+                && entries.is_empty()
+                && terminal.is_none()
+                && leaf_size.is_none()
+                && physical.is_none()
+                && cr3.is_some()
+        }
+    }
+}
+fn valid_mmu_gather_page_walks(
+    value: &Value,
+    addresses: [Option<u64>; 2],
+    cr3: Option<u64>,
+) -> bool {
+    value.as_array().is_some_and(|walks| {
+        walks.len() == 2
+            && walks[0].get("cr0_wp") == walks[1].get("cr0_wp")
+            && walks[0].get("efer_nxe") == walks[1].get("efer_nxe")
+            && walks
+                .iter()
+                .zip(addresses)
+                .all(|(walk, address)| valid_mmu_gather_page_walk(walk, address, cr3))
+    })
+}
+fn mmu_walks_are_complete(value: &Value, addresses: [Option<u64>; 2], cr3: Option<u64>) -> bool {
+    value.as_array().is_some_and(|walks| {
+        walks.len() == 2
+            && walks.iter().zip(addresses).all(|(walk, address)| {
+                valid_mmu_gather_page_walk(walk, address, cr3)
+                    && matches!(
+                        walk.get("status").and_then(Value::as_str),
+                        Some("translated" | "non_present" | "protection")
+                    )
+            })
+    })
+}
 fn valid_mmu_gather_raw(raw: &Value) -> bool {
     raw.as_object().is_some_and(|o| o.len() == 6)
         && ["tlb", "mm", "start", "end"].iter().all(|key| {
@@ -4804,7 +5191,7 @@ mod tests {
             byte_count,
             sha256,
         );
-        assert_eq!(raw["schema_version"], 19);
+        assert_eq!(raw["schema_version"], 20);
         assert_eq!(
             raw["delay_tsc_call_summary"]["entries"][0]["frame_chain_end"],
             "read_failed"
@@ -5036,6 +5423,7 @@ mod tests {
         assert!(supported_execution_observations_schema_version(17));
         assert!(supported_execution_observations_schema_version(18));
         assert!(supported_execution_observations_schema_version(19));
+        assert!(supported_execution_observations_schema_version(20));
         assert!(!supported_execution_observations_schema_version(u64::MAX));
     }
 
@@ -6062,7 +6450,8 @@ mod tests {
     fn sample_mmu_gather_capture() -> od_machine::ElfMmuGatherCapture {
         use od_machine::{
             ElfMmuGatherCapture, ElfMmuGatherClosure, ElfMmuGatherContext, ElfMmuGatherInvocation,
-            ElfMmuGatherPhase, ElfMmuGatherRaw, ElfMmuGatherSetupData,
+            ElfMmuGatherPageWalk, ElfMmuGatherPhase, ElfMmuGatherRaw, ElfMmuGatherSetupData,
+            GuestPhysicalAddress, PageTableLevel, WalkEntry,
         };
         let setup_rbp = 0xffff_ffff_8000_1000;
         let relocate_rbp = 0xffff_ffff_8000_2000;
@@ -6127,6 +6516,59 @@ mod tests {
             flags: 0x800,
             ..initial
         };
+        let page_walk = |address: u64, physical: u64| ElfMmuGatherPageWalk {
+            address: Some(address),
+            access: "Write",
+            cpl: 0,
+            origin: "Explicit",
+            profile: "long64_4k_2m",
+            cr0_wp: true,
+            efer_nxe: true,
+            status: "translated",
+            entries: [
+                (
+                    PageTableLevel::Pml4,
+                    39,
+                    0x1000 + ((address >> 39) & 0x1ff) * 8,
+                    0x2007,
+                ),
+                (
+                    PageTableLevel::Pdpt,
+                    30,
+                    0x2000 + ((address >> 30) & 0x1ff) * 8,
+                    0x3007,
+                ),
+                (
+                    PageTableLevel::Pd,
+                    21,
+                    0x3000 + ((address >> 21) & 0x1ff) * 8,
+                    0x4007,
+                ),
+                (
+                    PageTableLevel::Pt,
+                    12,
+                    0x4000 + ((address >> 12) & 0x1ff) * 8,
+                    physical | 7,
+                ),
+            ]
+            .into_iter()
+            .map(|(level, shift, entry_address, entry_value)| WalkEntry {
+                level,
+                index: ((address >> shift) & 0x1ff) as u16,
+                entry_address: GuestPhysicalAddress::new(entry_address),
+                entry_value,
+            })
+            .collect(),
+            terminal_level: Some(PageTableLevel::Pt),
+            leaf_size: Some(4096),
+            translated_physical: Some(physical),
+            error: None,
+        };
+        let candidate_pages = [0xffff_ffff_83fe_f000, 0xffff_ffff_83ff_0000];
+        let walks = [
+            page_walk(candidate_pages[0], 0x10_000),
+            page_walk(candidate_pages[1], 0x11_000),
+        ];
         ElfMmuGatherCapture {
             setup_count: 1,
             setups_omitted: 0,
@@ -6139,14 +6581,20 @@ mod tests {
                     value: ElfMmuGatherSetupData {
                         stack_shift: 0x1000,
                         vma: 0xffff_ffff_8000_6000,
-                        vm_start: Some(0x10000),
-                        vm_end: Some(0x20000),
+                        vm_start: Some(0xffff_ffff_83ff_1000),
+                        vm_end: Some(0xffff_ffff_83ff_2000),
+                        relocated_start: Some(0xffff_ffff_83ff_0000),
+                        aligned_start: Some(0xffff_ffff_83ff_0000),
+                        candidate_pages: candidate_pages.map(Some),
+                        candidate_error: None,
                     },
                 },
+                setup_page_walks: walks.clone(),
                 initial: ElfMmuGatherPhase::Captured {
                     context: relocate_context,
                     value: initial,
                 },
+                initial_page_walks: Some(walks.clone()),
                 actual_post: ElfMmuGatherPhase::Captured {
                     context: gather_context,
                     value: actual_post,
@@ -6155,9 +6603,12 @@ mod tests {
                     context: return_context,
                     value: (),
                 },
+                return_page_walks: Some(walks),
             }],
             unpaired: Vec::new(),
             unpaired_omitted: 0,
+            copy_destination: Some(0xffff_ffff_83fe_fff9),
+            destination_in_candidate_pages: Some(true),
         }
     }
 
@@ -6295,7 +6746,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v19_captured_elf_stack_copy_serializes_and_loads_with_strict_validation() {
+    fn schema_v20_captured_elf_stack_copy_serializes_and_loads_with_strict_validation() {
         let temp = std::env::temp_dir().join(format!(
             "od-runner-stage5-elf-stack-copy-{}-{}",
             std::process::id(),
@@ -6331,7 +6782,7 @@ mod tests {
         );
         let original_bytes = fs::read(&sidecar_path).unwrap();
         let written: Value = serde_json::from_slice(&original_bytes).unwrap();
-        assert_eq!(written["schema_version"], 19);
+        assert_eq!(written["schema_version"], 20);
         assert_eq!(written["elf_stack_copy"]["status"], "captured");
         assert_eq!(
             written["elf_stack_copy"]["registers"]["r13"],
@@ -6349,6 +6800,11 @@ mod tests {
         assert_eq!(
             written["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["needs_flush"],
             true
+        );
+        assert!(
+            written["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]
+                .get("actual_post_page_walks")
+                .is_none()
         );
 
         let update_metadata = |mut metadata: Value, bytes: &[u8]| {
@@ -6387,6 +6843,257 @@ mod tests {
         };
 
         update_metadata(base_metadata.clone(), &original_bytes);
+        let loaded = fresh_manifest(&series_path).unwrap();
+        load_run_manifest(&series_path, &loaded.runs[0]).unwrap();
+
+        let mut terminal_outcomes = written.clone();
+        let gather = &mut terminal_outcomes["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"];
+        let setup = &mut gather["setups"][0];
+        for checkpoint in [
+            "setup_page_walks",
+            "initial_page_walks",
+            "return_page_walks",
+        ] {
+            let walks = &mut setup[checkpoint];
+            let absent = &mut walks[0];
+            absent["status"] = json!("non_present");
+            absent["entries"][3]["entry_value"] = json!("0x0");
+            absent["leaf_size"] = Value::Null;
+            absent["translated_physical"] = Value::Null;
+            let protection = &mut walks[1];
+            protection["status"] = json!("protection");
+            protection["entries"][3]["entry_value"] = json!("0x10005");
+            protection["translated_physical"] = Value::Null;
+        }
+        let terminal_outcomes_bytes = serde_json::to_vec_pretty(&terminal_outcomes).unwrap();
+        fs::write(&sidecar_path, &terminal_outcomes_bytes).unwrap();
+        update_metadata(base_metadata.clone(), &terminal_outcomes_bytes);
+        let loaded = fresh_manifest(&series_path).unwrap();
+        load_run_manifest(&series_path, &loaded.runs[0]).unwrap();
+        let mut two_megabyte_leaf = written.clone();
+        let gather = &mut two_megabyte_leaf["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"];
+        for setup in gather["setups"].as_array_mut().unwrap() {
+            for checkpoint in [
+                "setup_page_walks",
+                "initial_page_walks",
+                "return_page_walks",
+            ] {
+                for walk in setup[checkpoint].as_array_mut().unwrap() {
+                    let address = u64::from_str_radix(
+                        walk["address"].as_str().unwrap().trim_start_matches("0x"),
+                        16,
+                    )
+                    .unwrap();
+                    let physical = 0x20_0000 | (address & 0x1f_ffff);
+                    walk["entries"][2]["entry_value"] = json!("0x200087");
+                    walk["entries"].as_array_mut().unwrap().truncate(3);
+                    walk["terminal_level"] = json!("Pd");
+                    walk["leaf_size"] = json!(2_097_152);
+                    walk["translated_physical"] = json!(format!("0x{physical:x}"));
+                }
+            }
+        }
+        let two_megabyte_bytes = serde_json::to_vec_pretty(&two_megabyte_leaf).unwrap();
+        fs::write(&sidecar_path, &two_megabyte_bytes).unwrap();
+        update_metadata(base_metadata.clone(), &two_megabyte_bytes);
+        let loaded = fresh_manifest(&series_path).unwrap();
+        load_run_manifest(&series_path, &loaded.runs[0]).unwrap();
+        let mut malformed_walk = written.clone();
+        malformed_walk["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["copy_destination"] =
+            json!("0xffffffff83ff0001");
+        malformed_walk["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["destination_in_candidate_pages"] =
+            json!(true);
+        assert_rejected(malformed_walk, "ELF stack copy snapshot is invalid");
+        for (field, invalid) in [
+            ("terminal_level", Value::Null),
+            ("terminal_level", json!(3)),
+            ("leaf_size", json!("4096")),
+            ("translated_physical", json!(0x10000)),
+            ("translated_physical", Value::Null),
+        ] {
+            let mut malformed_walk = written.clone();
+            malformed_walk["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["setup_page_walks"]
+                [0][field] = invalid;
+            assert_rejected(malformed_walk, "ELF stack copy snapshot is invalid");
+        }
+        let mut mismatched_profile = written.clone();
+        mismatched_profile["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["setup_page_walks"]
+            [1]["efer_nxe"] = json!(false);
+        assert_rejected(mismatched_profile, "ELF stack copy snapshot is invalid");
+        for (path, invalid) in [
+            (vec!["setup", "context", "cr3"], json!("0x0000000000002000")),
+            (
+                vec!["setup_page_walks", "0", "entries", "0", "entry_value"],
+                json!("0x0"),
+            ),
+            (
+                vec!["setup_page_walks", "0", "entries", "0", "index"],
+                json!(510),
+            ),
+            (
+                vec!["setup_page_walks", "0", "entries", "0", "entry_address"],
+                json!("0x0000000000001000"),
+            ),
+            (
+                vec!["setup_page_walks", "0", "entries", "0", "entry_value"],
+                json!("0x4007"),
+            ),
+            (
+                vec!["setup_page_walks", "0", "entries", "2", "level"],
+                json!("Pt"),
+            ),
+            (vec!["setup_page_walks", "0", "terminal_level"], json!("Pd")),
+            (vec!["setup_page_walks", "0", "leaf_size"], json!(2048)),
+            (
+                vec!["setup_page_walks", "0", "translated_physical"],
+                json!("0x0000000000010001"),
+            ),
+        ] {
+            let mut malformed_walk = written.clone();
+            let mut current = &mut malformed_walk["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]
+                ["setups"][0];
+            for component in &path[..path.len() - 1] {
+                current = if let Ok(index) = component.parse::<usize>() {
+                    &mut current[index]
+                } else {
+                    &mut current[*component]
+                };
+            }
+            current[path.last().unwrap()] = invalid;
+            assert_rejected(malformed_walk, "ELF stack copy snapshot is invalid");
+        }
+        let invalid_address_walk = json!({
+            "address": null,
+            "access": "Write",
+            "cpl": 0,
+            "origin": "Explicit",
+            "profile": "long64_4k_2m",
+            "cr0_wp": true,
+            "efer_nxe": true,
+            "status": "invalid_address",
+            "entries": [],
+            "terminal_level": null,
+            "leaf_size": null,
+            "translated_physical": null,
+            "error": "candidate derivation failed",
+        });
+        assert!(valid_mmu_gather_page_walk(
+            &invalid_address_walk,
+            None,
+            Some(0x1000)
+        ));
+        for (field, invalid) in [
+            ("terminal_level", json!(3)),
+            ("leaf_size", json!("null")),
+            ("translated_physical", json!(0)),
+        ] {
+            let mut malformed = invalid_address_walk.clone();
+            malformed[field] = invalid;
+            assert!(!valid_mmu_gather_page_walk(&malformed, None, Some(0x1000)));
+        }
+        let mut bad_protection = terminal_outcomes.clone();
+        bad_protection["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["setup_page_walks"]
+            [1]["entries"][3]["entry_value"] = json!("0x10007");
+        assert_rejected(bad_protection, "ELF stack copy snapshot is invalid");
+        let mut bad_absence = terminal_outcomes.clone();
+        bad_absence["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["setup_page_walks"]
+            [0]["entries"][3]["entry_value"] = json!("0x10007");
+        assert_rejected(bad_absence, "ELF stack copy snapshot is invalid");
+        let mut bad_read_error = written.clone();
+        let walk = &mut bad_read_error["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"]
+            [0]["setup_page_walks"][0];
+        walk["status"] = json!("read_error");
+        walk["entries"][3]["entry_value"] = json!("0x0");
+        walk["leaf_size"] = Value::Null;
+        walk["translated_physical"] = Value::Null;
+        walk["error"] = json!("table read failed");
+        assert_rejected(bad_read_error, "ELF stack copy snapshot is invalid");
+        let mut read_error_prefix = written.clone();
+        let gather = &mut read_error_prefix["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"];
+        gather["status"] = json!("incomplete");
+        for setup in gather["setups"].as_array_mut().unwrap() {
+            for checkpoint in [
+                "setup_page_walks",
+                "initial_page_walks",
+                "return_page_walks",
+            ] {
+                for walk in setup[checkpoint].as_array_mut().unwrap() {
+                    walk["status"] = json!("read_error");
+                    walk["entries"].as_array_mut().unwrap().truncate(3);
+                    walk["terminal_level"] = json!("Pt");
+                    walk["leaf_size"] = Value::Null;
+                    walk["translated_physical"] = Value::Null;
+                    walk["error"] = json!("page table read failed");
+                }
+            }
+        }
+        let read_error_bytes = serde_json::to_vec_pretty(&read_error_prefix).unwrap();
+        fs::write(&sidecar_path, &read_error_bytes).unwrap();
+        update_metadata(base_metadata.clone(), &read_error_bytes);
+        let loaded = fresh_manifest(&series_path).unwrap();
+        load_run_manifest(&series_path, &loaded.runs[0]).unwrap();
+
+        let mut malformed_walk = written.clone();
+        malformed_walk["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["setup"]
+            ["value"]["candidate_pages"][0] = json!("0xffffffff83fed000");
+        assert_rejected(malformed_walk, "ELF stack copy snapshot is invalid");
+        let mut malformed_walk = written.clone();
+        malformed_walk["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["setup_page_walks"]
+            [0]["entries"][0]["entry_value"] = json!("not-hex");
+        assert_rejected(malformed_walk, "ELF stack copy snapshot is invalid");
+        let mut malformed_walk = written.clone();
+        malformed_walk["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["initial_page_walks"]
+            [0]["translated_physical"] = Value::Null;
+        assert_rejected(malformed_walk, "ELF stack copy snapshot is invalid");
+        let mut malformed_walk = written.clone();
+        malformed_walk["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["destination_in_candidate_pages"] =
+            json!(false);
+        assert_rejected(malformed_walk, "ELF stack copy snapshot is invalid");
+
+        let mut legacy_v19 = written.clone();
+        legacy_v19["schema_version"] = json!(19);
+        let legacy_gather = &mut legacy_v19["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"];
+        legacy_gather
+            .as_object_mut()
+            .unwrap()
+            .remove("copy_destination");
+        legacy_gather
+            .as_object_mut()
+            .unwrap()
+            .remove("destination_in_candidate_pages");
+        for setup in legacy_gather["setups"].as_array_mut().unwrap() {
+            for field in [
+                "setup_page_walks",
+                "initial_page_walks",
+                "return_page_walks",
+            ] {
+                setup.as_object_mut().unwrap().remove(field);
+            }
+            for phase_name in ["setup"] {
+                let phase = &mut setup[phase_name];
+                let data = if phase["status"] == "captured" {
+                    &mut phase["value"]
+                } else {
+                    &mut phase["partial"]
+                };
+                if let Some(data) = data.as_object_mut() {
+                    for field in [
+                        "relocated_start",
+                        "aligned_start",
+                        "candidate_pages",
+                        "candidate_error",
+                    ] {
+                        data.remove(field);
+                    }
+                }
+            }
+        }
+        for event in legacy_gather["unpaired"].as_array_mut().unwrap() {
+            event.as_object_mut().unwrap().remove("page_walks");
+        }
+        let legacy_v19_bytes = serde_json::to_vec_pretty(&legacy_v19).unwrap();
+        fs::write(&sidecar_path, &legacy_v19_bytes).unwrap();
+        update_metadata(base_metadata.clone(), &legacy_v19_bytes);
         let loaded = fresh_manifest(&series_path).unwrap();
         load_run_manifest(&series_path, &loaded.runs[0]).unwrap();
 
@@ -6433,7 +7140,13 @@ mod tests {
                 bounded["event_count"] = json!(1);
             }
             assert!(
-                !valid_elf_mmu_gather_capture(&bounded, &runner_bounds, Some(&copy_invocation),),
+                !valid_elf_mmu_gather_capture(
+                    &bounded,
+                    &runner_bounds,
+                    Some(&copy_invocation),
+                    20,
+                    Some(&written["elf_stack_copy"]["copy_destination"]),
+                ),
                 "copy-entry {counter} bound must reject while runner stop permits it"
             );
         }
@@ -6451,6 +7164,8 @@ mod tests {
             &read_error_bound,
             &runner_bounds,
             Some(&copy_invocation),
+            20,
+            Some(&written["elf_stack_copy"]["copy_destination"]),
         ));
         let mut unpaired_bound = ledger.clone();
         unpaired_bound["mmu_gather"]["unpaired"] = json!([{
@@ -6458,6 +7173,7 @@ mod tests {
             "status": "read_error",
             "context": ledger["mmu_gather"]["setups"][0]["actual_post"]["context"].clone(),
             "raw": null,
+            "page_walks": null,
             "error": "read failed",
         }]);
         unpaired_bound["mmu_gather"]["unpaired"][0]["context"]["page_faults"] = json!(3);
@@ -6466,6 +7182,8 @@ mod tests {
             &unpaired_bound,
             &runner_bounds,
             Some(&copy_invocation),
+            20,
+            Some(&written["elf_stack_copy"]["copy_destination"]),
         ));
         let mut ledger_bound = ledger.clone();
         for phase in ["setup", "initial", "actual_post", "returned"] {
@@ -6478,6 +7196,8 @@ mod tests {
                 &ledger_bound,
                 &runner_bounds,
                 Some(&entry_allows_ledger_bound),
+                20,
+                Some(&written["elf_stack_copy"]["copy_destination"]),
             ),
             "context CR3 changes must be bounded by the full ledger event count"
         );

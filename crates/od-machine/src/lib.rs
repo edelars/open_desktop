@@ -226,10 +226,10 @@ pub use execution_observations::{
 };
 pub use execution_observations::{
     ElfMmuGatherCapture, ElfMmuGatherClosure, ElfMmuGatherContext, ElfMmuGatherInvocation,
-    ElfMmuGatherPhase, ElfMmuGatherRaw, ElfMmuGatherSetupData, ElfMmuGatherUnpaired,
-    LINUX_ELF_MMU_GATHER_SETUP_CAPACITY, LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP,
-    LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP, LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
-    LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP,
+    ElfMmuGatherPageWalk, ElfMmuGatherPhase, ElfMmuGatherRaw, ElfMmuGatherSetupData,
+    ElfMmuGatherUnpaired, LINUX_ELF_MMU_GATHER_SETUP_CAPACITY,
+    LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP, LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP,
+    LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP, LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP,
 };
 pub use firmware_board::{
     FIRMWARE_ACPI_FACS_BASE, FIRMWARE_ACPI_FACS_BYTES, FIRMWARE_ACPI_TABLES_BASE,
@@ -254,6 +254,7 @@ pub use page_walk::{
     ProbeReport, RamAccessOperation, TrackedAccessError, TrackedAccessOutcome, TrackedAccessReport,
     TrackedAccessRequest, Translation4K, WalkEntry, WalkTrace, access_long64_2m_ram,
     access_long64_4k_ram, probe_instruction_access, probe_long64_4k,
+    validate_long64_read_only_walk_observation,
 };
 
 pub use paged_apic_entry::{PagedApicEntryReport, PagedApicEntryResult, poll_paged_apic_entry};

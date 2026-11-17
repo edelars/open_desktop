@@ -2205,6 +2205,8 @@ fn write_execution_observations_sidecar(
                 "mmu_gather": {
                     "status": elf_mmu_gather_capture_status(&ledger.mmu_gather),
                     "association": "prefix_candidates",
+                    "copy_destination": ledger.mmu_gather.copy_destination.map(hex64),
+                    "destination_in_candidate_pages": ledger.mmu_gather.destination_in_candidate_pages,
                     "setup_count": ledger.mmu_gather.setup_count,
                     "setups_omitted": ledger.mmu_gather.setups_omitted,
                     "setups": ledger.mmu_gather.setups.iter().map(elf_mmu_gather_setup_json).collect::<Vec<_>>(),
@@ -2476,8 +2478,8 @@ fn write_execution_observations_sidecar(
         })
     });
     let value = json!({
-        "schema_version": 19,
-        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, an optional bounded every-hit entry-RDTSC stream with clock ledger, an optional ordered RDTSC prefix through a sentinel RIP, an optional inclusive hit-ordinal window, an optional strictly gated single-quantum instruction path trace, an optional bounded delay_tsc per-call summary, and an optional ordered pre-copy CR3-write ledger",
+        "schema_version": 20,
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, an optional bounded every-hit entry-RDTSC stream with clock ledger, an optional ordered RDTSC prefix through a sentinel RIP, an optional inclusive hit-ordinal window, an optional strictly gated single-quantum instruction path trace, an optional bounded delay_tsc per-call summary, an optional ordered pre-copy CR3-write ledger, and bounded read-only MMU-gather candidate-page walks",
         "limits": {
             "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
             "rdtsc_site_samples": od_machine::LINUX_RDTSC_SAMPLE_CAPACITY,
@@ -2598,6 +2600,33 @@ fn elf_mmu_setup_data_json(data: &od_machine::ElfMmuGatherSetupData) -> Value {
         "vma": hex64(data.vma),
         "vm_start": data.vm_start.map(hex64),
         "vm_end": data.vm_end.map(hex64),
+        "relocated_start": data.relocated_start.map(hex64),
+        "aligned_start": data.aligned_start.map(hex64),
+        "candidate_pages": data.candidate_pages.map(|address| address.map(hex64)),
+        "candidate_error": data.candidate_error,
+    })
+}
+
+fn elf_mmu_gather_page_walk_json(walk: &od_machine::ElfMmuGatherPageWalk) -> Value {
+    json!({
+        "address": walk.address.map(hex64),
+        "access": walk.access,
+        "cpl": walk.cpl,
+        "origin": walk.origin,
+        "profile": walk.profile,
+        "cr0_wp": walk.cr0_wp,
+        "efer_nxe": walk.efer_nxe,
+        "status": walk.status,
+        "entries": walk.entries.iter().map(|entry| json!({
+            "level": format!("{:?}", entry.level),
+            "index": entry.index,
+            "entry_address": hex64(entry.entry_address.get()),
+            "entry_value": hex64(entry.entry_value),
+        })).collect::<Vec<_>>(),
+        "terminal_level": walk.terminal_level.map(|level| format!("{level:?}")),
+        "leaf_size": walk.leaf_size,
+        "translated_physical": walk.translated_physical.map(hex64),
+        "error": walk.error,
     })
 }
 
@@ -2644,9 +2673,12 @@ fn elf_mmu_gather_setup_json(setup: &od_machine::ElfMmuGatherInvocation) -> Valu
             od_machine::ElfMmuGatherClosure::RunEnded => "run_ended",
         },
         "setup": elf_mmu_phase_json(&setup.setup, elf_mmu_setup_data_json),
+        "setup_page_walks": setup.setup_page_walks.iter().map(elf_mmu_gather_page_walk_json).collect::<Vec<_>>(),
         "initial": elf_mmu_phase_json(&setup.initial, |raw| elf_mmu_gather_raw_json(*raw)),
+        "initial_page_walks": setup.initial_page_walks.as_ref().map(|walks| walks.iter().map(elf_mmu_gather_page_walk_json).collect::<Vec<_>>()),
         "actual_post": elf_mmu_phase_json(&setup.actual_post, |raw| elf_mmu_gather_raw_json(*raw)),
         "returned": elf_mmu_phase_json(&setup.returned, |_| json!(true)),
+        "return_page_walks": setup.return_page_walks.as_ref().map(|walks| walks.iter().map(elf_mmu_gather_page_walk_json).collect::<Vec<_>>()),
         "needs_flush": needs_flush,
     })
 }
@@ -2666,10 +2698,18 @@ fn elf_mmu_gather_capture_status(capture: &od_machine::ElfMmuGatherCapture) -> &
                     invocation.setup,
                     od_machine::ElfMmuGatherPhase::Captured { .. }
                 )
+                && invocation
+                    .setup_page_walks
+                    .iter()
+                    .all(elf_mmu_gather_page_walk_is_complete)
                 && matches!(
                     invocation.initial,
                     od_machine::ElfMmuGatherPhase::Captured { .. }
                 )
+                && invocation
+                    .initial_page_walks
+                    .as_ref()
+                    .is_some_and(|walks| walks.iter().all(elf_mmu_gather_page_walk_is_complete))
                 && matches!(
                     invocation.actual_post,
                     od_machine::ElfMmuGatherPhase::Captured { .. }
@@ -2678,8 +2718,16 @@ fn elf_mmu_gather_capture_status(capture: &od_machine::ElfMmuGatherCapture) -> &
                     invocation.returned,
                     od_machine::ElfMmuGatherPhase::Captured { .. }
                 )
+                && invocation
+                    .return_page_walks
+                    .as_ref()
+                    .is_some_and(|walks| walks.iter().all(elf_mmu_gather_page_walk_is_complete))
         });
     if complete { "captured" } else { "incomplete" }
+}
+
+fn elf_mmu_gather_page_walk_is_complete(walk: &od_machine::ElfMmuGatherPageWalk) -> bool {
+    matches!(walk.status, "translated" | "non_present" | "protection")
 }
 
 fn elf_mmu_gather_unpaired_json(event: &od_machine::ElfMmuGatherUnpaired) -> Value {
@@ -2688,6 +2736,7 @@ fn elf_mmu_gather_unpaired_json(event: &od_machine::ElfMmuGatherUnpaired) -> Val
         "status": event.status,
         "context": elf_mmu_gather_context_json(event.context),
         "raw": event.raw.map(elf_mmu_gather_raw_json),
+        "page_walks": event.page_walks.as_ref().map(|walks| walks.iter().map(elf_mmu_gather_page_walk_json).collect::<Vec<_>>()),
         "error": event.error,
     })
 }

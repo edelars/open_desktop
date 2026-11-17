@@ -75,12 +75,110 @@ pub struct ElfMmuGatherRaw {
     pub mm_tlb_flush_nested: i32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ElfMmuGatherSetupData {
     pub stack_shift: u64,
     pub vma: u64,
     pub vm_start: Option<u64>,
     pub vm_end: Option<u64>,
+    pub relocated_start: Option<u64>,
+    pub aligned_start: Option<u64>,
+    pub candidate_pages: [Option<u64>; 2],
+    pub candidate_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfMmuGatherPageWalk {
+    pub address: Option<u64>,
+    pub access: &'static str,
+    pub cpl: u8,
+    pub origin: &'static str,
+    pub profile: &'static str,
+    pub cr0_wp: bool,
+    pub efer_nxe: bool,
+    pub status: &'static str,
+    pub entries: Vec<crate::WalkEntry>,
+    pub terminal_level: Option<crate::PageTableLevel>,
+    pub leaf_size: Option<u64>,
+    pub translated_physical: Option<u64>,
+    pub error: Option<String>,
+}
+
+fn elf_mmu_gather_page_walk_not_observed() -> ElfMmuGatherPageWalk {
+    ElfMmuGatherPageWalk {
+        address: None,
+        access: "Write",
+        cpl: 0,
+        origin: "Explicit",
+        profile: "long64_4k_2m",
+        cr0_wp: false,
+        efer_nxe: false,
+        status: "not_observed",
+        entries: Vec::new(),
+        terminal_level: None,
+        leaf_size: None,
+        translated_physical: None,
+        error: None,
+    }
+}
+
+fn elf_mmu_gather_candidate_pages(
+    vm_start: Option<u64>,
+    stack_shift: u64,
+) -> (Option<u64>, Option<u64>, [Option<u64>; 2], Option<String>) {
+    let Some(relocated_start) = vm_start.and_then(|start| start.checked_sub(stack_shift)) else {
+        return (
+            None,
+            None,
+            [None, None],
+            Some("vm_start - stack_shift underflow or vm_start unavailable".into()),
+        );
+    };
+    let aligned_start = relocated_start & !0xfff;
+    let Some(previous_page) = aligned_start.checked_sub(4096) else {
+        return (
+            Some(relocated_start),
+            Some(aligned_start),
+            [None, None],
+            Some("aligned relocated start minus one page underflow".into()),
+        );
+    };
+    if !canonical_guest_address(relocated_start)
+        || !canonical_guest_address(aligned_start)
+        || !canonical_guest_address(previous_page)
+    {
+        return (
+            Some(relocated_start),
+            Some(aligned_start),
+            [None, None],
+            Some("relocated candidate address is noncanonical".into()),
+        );
+    }
+    (
+        Some(relocated_start),
+        Some(aligned_start),
+        [Some(previous_page), Some(aligned_start)],
+        None,
+    )
+}
+
+fn canonical_guest_address(address: u64) -> bool {
+    let sign = (address >> 47) & 1;
+    (sign == 0 && address >> 48 == 0) || (sign == 1 && address >> 48 == 0xffff)
+}
+
+fn mmu_gather_setup_candidates(
+    phase: &ElfMmuGatherPhase<ElfMmuGatherSetupData>,
+) -> Option<[Option<u64>; 2]> {
+    let data = match phase {
+        ElfMmuGatherPhase::Captured { value, .. } => value,
+        ElfMmuGatherPhase::ReadError {
+            partial: Some(value),
+            ..
+        } => value,
+        _ => return None,
+    };
+    Some(data.candidate_pages)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -130,9 +228,12 @@ pub struct ElfMmuGatherInvocation {
     pub closure: ElfMmuGatherClosure,
     pub association_mismatch: bool,
     pub setup: ElfMmuGatherPhase<ElfMmuGatherSetupData>,
+    pub setup_page_walks: [ElfMmuGatherPageWalk; 2],
     pub initial: ElfMmuGatherPhase<ElfMmuGatherRaw>,
+    pub initial_page_walks: Option<[ElfMmuGatherPageWalk; 2]>,
     pub actual_post: ElfMmuGatherPhase<ElfMmuGatherRaw>,
     pub returned: ElfMmuGatherPhase<()>,
+    pub return_page_walks: Option<[ElfMmuGatherPageWalk; 2]>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -142,6 +243,8 @@ pub struct ElfMmuGatherCapture {
     pub setups: Vec<ElfMmuGatherInvocation>,
     pub unpaired: Vec<ElfMmuGatherUnpaired>,
     pub unpaired_omitted: u64,
+    pub copy_destination: Option<u64>,
+    pub destination_in_candidate_pages: Option<bool>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -150,6 +253,7 @@ pub struct ElfMmuGatherUnpaired {
     pub status: &'static str,
     pub context: ElfMmuGatherContext,
     pub raw: Option<ElfMmuGatherRaw>,
+    pub page_walks: Option<[ElfMmuGatherPageWalk; 2]>,
     pub error: Option<String>,
 }
 
@@ -161,6 +265,8 @@ impl Default for ElfMmuGatherCapture {
             setups: Vec::new(),
             unpaired: Vec::new(),
             unpaired_omitted: 0,
+            copy_destination: None,
+            destination_in_candidate_pages: None,
         }
     }
 }
@@ -790,6 +896,11 @@ pub(crate) struct LinuxExecutionObservationCollector {
 }
 
 impl LinuxExecutionObservationCollector {
+    #[cfg(test)]
+    pub(crate) fn mmu_gather_capture_for_test(&self) -> &ElfMmuGatherCapture {
+        &self.mmu_gather
+    }
+
     pub(crate) fn with_elf_stack_copy(mut self, requested: bool) -> Self {
         self.elf_stack_copy =
             requested.then(|| ElfStackCopySnapshot::empty(ElfStackCopyStatus::AwaitingTarget));
@@ -842,9 +953,9 @@ impl LinuxExecutionObservationCollector {
         vm_end: Option<u64>,
         read_status: &'static str,
         error: Option<String>,
-    ) {
+    ) -> Option<(usize, [Option<u64>; 2])> {
         if !self.wants_mmu_gather_capture() {
-            return;
+            return None;
         }
         self.mmu_gather.setup_count = self.mmu_gather.setup_count.saturating_add(1);
         for previous in &mut self.mmu_gather.setups {
@@ -858,13 +969,19 @@ impl LinuxExecutionObservationCollector {
         }
         if self.mmu_gather.setups.len() >= LINUX_ELF_MMU_GATHER_SETUP_CAPACITY {
             self.mmu_gather.setups_omitted = self.mmu_gather.setups_omitted.saturating_add(1);
-            return;
+            return None;
         }
+        let (relocated_start, aligned_start, candidate_pages, candidate_error) =
+            elf_mmu_gather_candidate_pages(vm_start, stack_shift);
         let data = ElfMmuGatherSetupData {
             stack_shift,
             vma,
             vm_start,
             vm_end,
+            relocated_start,
+            aligned_start,
+            candidate_pages,
+            candidate_error,
         };
         let setup = if read_status == "captured" {
             ElfMmuGatherPhase::Captured {
@@ -883,18 +1000,87 @@ impl LinuxExecutionObservationCollector {
             closure: ElfMmuGatherClosure::Active,
             association_mismatch: false,
             setup,
+            setup_page_walks: std::array::from_fn(|_| elf_mmu_gather_page_walk_not_observed()),
             initial: ElfMmuGatherPhase::NotObserved,
+            initial_page_walks: None,
             actual_post: ElfMmuGatherPhase::NotObserved,
             returned: ElfMmuGatherPhase::NotObserved,
+            return_page_walks: None,
         });
+        Some((self.mmu_gather.setups.len() - 1, candidate_pages))
     }
 
+    pub(crate) fn record_mmu_gather_setup_page_walks(
+        &mut self,
+        setup_index: usize,
+        page_walks: [ElfMmuGatherPageWalk; 2],
+    ) {
+        if let Some(setup) = self.mmu_gather.setups.get_mut(setup_index) {
+            setup.setup_page_walks = page_walks;
+        }
+    }
+
+    pub(crate) fn mmu_gather_candidate_pages_for_relocate(
+        &self,
+        context: ElfMmuGatherContext,
+    ) -> Option<[Option<u64>; 2]> {
+        let candidates = self
+            .mmu_gather
+            .setups
+            .iter()
+            .filter(|setup| {
+                setup.closure == ElfMmuGatherClosure::Active
+                    && setup.initial.is_not_observed()
+                    && setup.setup.context().is_some_and(|setup_context| {
+                        setup_context.rbp == context.saved_rbp.unwrap_or(0)
+                    })
+                    && context.saved_return_rip
+                        == Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP)
+            })
+            .collect::<Vec<_>>();
+        (candidates.len() == 1).then(|| mmu_gather_setup_candidates(&candidates[0].setup))?
+    }
+
+    pub(crate) fn mmu_gather_candidate_pages_for_return(
+        &self,
+        context: ElfMmuGatherContext,
+    ) -> Option<[Option<u64>; 2]> {
+        let candidates = self
+            .mmu_gather
+            .setups
+            .iter()
+            .filter(|setup| {
+                setup.closure == ElfMmuGatherClosure::Active
+                    && setup.returned.is_not_observed()
+                    && setup.initial.context().is_some_and(|relocate| {
+                        relocate.rbp == context.rbp
+                            && relocate.rsp == context.rsp
+                            && relocate.saved_rbp == context.saved_rbp
+                            && relocate.saved_return_rip == context.saved_return_rip
+                    })
+            })
+            .collect::<Vec<_>>();
+        (candidates.len() == 1).then(|| mmu_gather_setup_candidates(&candidates[0].setup))?
+    }
+
+    #[cfg(test)]
     pub(crate) fn record_mmu_gather_relocate(
         &mut self,
         context: ElfMmuGatherContext,
         raw: Option<ElfMmuGatherRaw>,
         status: &'static str,
         error: Option<String>,
+    ) {
+        self.record_mmu_gather_relocate_with_walks(context, raw, status, error, None);
+    }
+
+    pub(crate) fn record_mmu_gather_relocate_with_walks(
+        &mut self,
+        context: ElfMmuGatherContext,
+        raw: Option<ElfMmuGatherRaw>,
+        status: &'static str,
+        error: Option<String>,
+        page_walks: Option<[ElfMmuGatherPageWalk; 2]>,
     ) {
         if !self.wants_mmu_gather_capture() {
             return;
@@ -934,12 +1120,20 @@ impl LinuxExecutionObservationCollector {
                 },
                 context,
                 raw,
+                page_walks,
                 error,
             );
             return;
         }
         if context.saved_return_rip != Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP) {
-            self.push_mmu_gather_unpaired("relocate_vma_down", "mismatch", context, raw, error);
+            self.push_mmu_gather_unpaired(
+                "relocate_vma_down",
+                "mismatch",
+                context,
+                raw,
+                page_walks,
+                error,
+            );
             return;
         }
         let phase = if status == "captured" {
@@ -956,7 +1150,9 @@ impl LinuxExecutionObservationCollector {
                 error: error.unwrap_or_else(|| "initial gather read failed".into()),
             }
         };
-        self.mmu_gather.setups[candidates[0]].initial = phase;
+        let setup = &mut self.mmu_gather.setups[candidates[0]];
+        setup.initial = phase;
+        setup.initial_page_walks = page_walks;
     }
 
     pub(crate) fn record_mmu_gather_actual_post(
@@ -1006,12 +1202,13 @@ impl LinuxExecutionObservationCollector {
                 },
                 context,
                 raw,
+                None,
                 error,
             );
             return;
         }
         if context.saved_return_rip != Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP) {
-            self.push_mmu_gather_unpaired("actual_post", "mismatch", context, raw, error);
+            self.push_mmu_gather_unpaired("actual_post", "mismatch", context, raw, None, error);
             return;
         }
         let phase = if status == "captured" {
@@ -1042,11 +1239,22 @@ impl LinuxExecutionObservationCollector {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn record_mmu_gather_return(
         &mut self,
         context: ElfMmuGatherContext,
         status: &'static str,
         error: Option<String>,
+    ) {
+        self.record_mmu_gather_return_with_walks(context, status, error, None);
+    }
+
+    pub(crate) fn record_mmu_gather_return_with_walks(
+        &mut self,
+        context: ElfMmuGatherContext,
+        status: &'static str,
+        error: Option<String>,
+        page_walks: Option<[ElfMmuGatherPageWalk; 2]>,
     ) {
         if !self.wants_mmu_gather_capture() {
             return;
@@ -1080,6 +1288,7 @@ impl LinuxExecutionObservationCollector {
                 },
                 context,
                 None,
+                page_walks,
                 error,
             );
             return;
@@ -1097,6 +1306,7 @@ impl LinuxExecutionObservationCollector {
         if status == "captured" {
             setup.closure = ElfMmuGatherClosure::Returned;
         }
+        setup.return_page_walks = page_walks;
     }
 
     fn push_mmu_gather_unpaired(
@@ -1105,6 +1315,7 @@ impl LinuxExecutionObservationCollector {
         status: &'static str,
         context: ElfMmuGatherContext,
         raw: Option<ElfMmuGatherRaw>,
+        page_walks: Option<[ElfMmuGatherPageWalk; 2]>,
         error: Option<String>,
     ) {
         if self.mmu_gather.unpaired.len() < LINUX_ELF_MMU_GATHER_SETUP_CAPACITY {
@@ -1113,6 +1324,7 @@ impl LinuxExecutionObservationCollector {
                 status,
                 context,
                 raw,
+                page_walks,
                 error,
             });
         } else {
@@ -1131,6 +1343,18 @@ impl LinuxExecutionObservationCollector {
     pub(crate) fn record_elf_stack_copy(&mut self, snapshot: ElfStackCopySnapshot) {
         if self.wants_elf_stack_copy() {
             let mut snapshot = snapshot;
+            self.mmu_gather.copy_destination = snapshot.copy_destination;
+            self.mmu_gather.destination_in_candidate_pages =
+                snapshot.copy_destination.map(|dest| {
+                    self.mmu_gather.setups.iter().any(|invocation| {
+                        mmu_gather_setup_candidates(&invocation.setup).is_some_and(|candidates| {
+                            candidates
+                                .into_iter()
+                                .flatten()
+                                .any(|page| page == (dest & !0xfff))
+                        })
+                    })
+                });
             for invocation in &mut self.mmu_gather.setups {
                 if invocation.closure == ElfMmuGatherClosure::Active {
                     invocation.closure = ElfMmuGatherClosure::RunEnded;
@@ -2506,6 +2730,59 @@ mod tests {
                 .iter()
                 .all(|item| { matches!(item.setup, ElfMmuGatherPhase::ReadError { .. }) })
         );
+    }
+
+    #[test]
+    fn mmu_gather_setup_derives_and_retains_exact_candidate_pages() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        let slot = collector.record_mmu_gather_setup(
+            gather_context(
+                LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+                0x8000,
+                0x7000,
+                Some(0x8100),
+                Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP),
+            ),
+            0x1800,
+            0x9000,
+            Some(0x10_123),
+            Some(0x20_000),
+            "captured",
+            None,
+        );
+        let (index, pages) = slot.unwrap();
+        assert_eq!(pages, [Some(0xd000), Some(0xe000)]);
+        assert!(matches!(
+            &collector.mmu_gather.setups[index].setup,
+            ElfMmuGatherPhase::Captured { value, .. }
+                if value.relocated_start == Some(0xe923)
+                    && value.aligned_start == Some(0xe000)
+                    && value.candidate_pages == pages
+                    && value.candidate_error.is_none()
+        ));
+
+        let mut invalid = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        invalid.record_mmu_gather_setup(
+            gather_context(
+                LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+                0x8000,
+                0x7000,
+                Some(0x8100),
+                Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP),
+            ),
+            0x20_000,
+            0x9000,
+            Some(0x1000),
+            Some(0x2000),
+            "captured",
+            None,
+        );
+        assert!(matches!(
+            &invalid.mmu_gather.setups[0].setup,
+            ElfMmuGatherPhase::Captured { value, .. }
+                if value.candidate_pages == [None, None]
+                    && value.candidate_error.is_some()
+        ));
     }
 
     #[test]

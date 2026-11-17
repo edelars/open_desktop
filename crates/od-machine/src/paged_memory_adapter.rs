@@ -2,11 +2,11 @@
 
 use crate::console_output_context::capture_frame_chain;
 use crate::execution_observations::{
-    DeliveredPageFaultObservation, ElfMmuGatherRaw, ElfStackCopyProbe, ElfStackCopySnapshot,
-    ElfStackCopyStatus, ElfStackCopyTargetCr3Capture, ElfStackCopyTargetCr3ChainStatus,
-    ElfStackCopyTargetCr3Frame, FaultingPageFaultContext, FaultingPageWalkContext,
-    InstructionPathControlFlow, InstructionPathRegisterValue, InstructionPathTraceRecord,
-    LINUX_ELF_STACK_COPY_PROBE_CAPACITY, LINUX_ELF_STACK_COPY_RIP,
+    DeliveredPageFaultObservation, ElfMmuGatherPageWalk, ElfMmuGatherRaw, ElfStackCopyProbe,
+    ElfStackCopySnapshot, ElfStackCopyStatus, ElfStackCopyTargetCr3Capture,
+    ElfStackCopyTargetCr3ChainStatus, ElfStackCopyTargetCr3Frame, FaultingPageFaultContext,
+    FaultingPageWalkContext, InstructionPathControlFlow, InstructionPathRegisterValue,
+    InstructionPathTraceRecord, LINUX_ELF_STACK_COPY_PROBE_CAPACITY, LINUX_ELF_STACK_COPY_RIP,
     LINUX_ELF_STACK_COPY_WALK_ENTRY_CAPACITY, LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP,
     LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP, LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
     LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP, LinuxExecutionObservationCollector,
@@ -24,8 +24,8 @@ use crate::page_walk::{
 };
 use crate::{
     GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, Long64ProbeConfig, MachineBus,
-    MemoryRegionKind, RamAccessOperation, TrackedAccessError, TrackedAccessOutcome,
-    TrackedAccessRequest,
+    MemoryRegionKind, PageFaultReason, PageTableLevel, RamAccessOperation, TrackedAccessError,
+    TrackedAccessOutcome, TrackedAccessRequest,
 };
 use od_isa::execute::{
     Cpl0ProfileSet, Cpl0ProfileSetExit, Cpl0ProfileSetInputError, Cpl0ProfileSetResult, InvlpgExit,
@@ -1344,6 +1344,7 @@ fn is_canonical_48_bit(address: u64) -> bool {
 #[cfg(test)]
 thread_local! {
     static MMU_GATHER_DIAGNOSTIC_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static MMU_GATHER_PAGE_WALKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn capture_elf_mmu_gather_boundary(
@@ -1397,7 +1398,7 @@ fn capture_elf_mmu_gather_boundary(
                 Err(error) => (None, None, Some(error)),
             };
             let error = frame_error.or(vma_error);
-            observations.record_mmu_gather_setup(
+            let setup_index_and_candidates = observations.record_mmu_gather_setup(
                 event_context,
                 state.gpr[R14 as usize],
                 vma,
@@ -1410,8 +1411,29 @@ fn capture_elf_mmu_gather_boundary(
                 },
                 error,
             );
+            if let Some((setup_index, candidates)) = setup_index_and_candidates {
+                let page_walks = capture_mmu_gather_candidate_page_walks(
+                    candidates,
+                    bus,
+                    paging,
+                    instruction_rip,
+                    context,
+                );
+                observations.record_mmu_gather_setup_page_walks(setup_index, page_walks);
+            }
         }
         LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP => {
+            let candidate_pages =
+                observations.mmu_gather_candidate_pages_for_relocate(event_context);
+            let page_walks = candidate_pages.map(|candidates| {
+                capture_mmu_gather_candidate_page_walks(
+                    candidates,
+                    bus,
+                    paging,
+                    instruction_rip,
+                    context,
+                )
+            });
             let (raw, raw_error) = read_mmu_gather_raw(
                 bus,
                 paging,
@@ -1420,7 +1442,7 @@ fn capture_elf_mmu_gather_boundary(
                 state.gpr[Rdi as usize],
             );
             let error = frame_error.or(raw_error);
-            observations.record_mmu_gather_relocate(
+            observations.record_mmu_gather_relocate_with_walks(
                 event_context,
                 raw,
                 if error.is_none() {
@@ -1429,6 +1451,7 @@ fn capture_elf_mmu_gather_boundary(
                     "read_error"
                 },
                 error,
+                page_walks,
             );
         }
         LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP => {
@@ -1452,7 +1475,17 @@ fn capture_elf_mmu_gather_boundary(
             );
         }
         LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP => {
-            observations.record_mmu_gather_return(
+            let candidate_pages = observations.mmu_gather_candidate_pages_for_return(event_context);
+            let page_walks = candidate_pages.map(|candidates| {
+                capture_mmu_gather_candidate_page_walks(
+                    candidates,
+                    bus,
+                    paging,
+                    instruction_rip,
+                    context,
+                )
+            });
+            observations.record_mmu_gather_return_with_walks(
                 event_context,
                 if frame_error.is_none() {
                     "captured"
@@ -1460,10 +1493,132 @@ fn capture_elf_mmu_gather_boundary(
                     "read_error"
                 },
                 frame_error,
+                page_walks,
             );
         }
         _ => {}
     }
+}
+
+fn capture_mmu_gather_candidate_page_walks(
+    candidates: [Option<u64>; 2],
+    bus: &mut MachineBus,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    context: AccessContext,
+) -> [ElfMmuGatherPageWalk; 2] {
+    let cr0_wp = paging.cr0() & (1 << 16) != 0;
+    let efer_nxe = paging.efer() & (1 << 11) != 0;
+    candidates.map(|address| {
+        let Some(address) = address else {
+            return ElfMmuGatherPageWalk {
+                address: None,
+                access: "Write",
+                cpl: 0,
+                origin: "Explicit",
+                profile: "long64_4k_2m",
+                cr0_wp,
+                efer_nxe,
+                status: "invalid_address",
+                entries: Vec::new(),
+                terminal_level: None,
+                leaf_size: None,
+                translated_physical: None,
+                error: Some("candidate address derivation failed".into()),
+            };
+        };
+        if !is_canonical_48_bit(address) {
+            return ElfMmuGatherPageWalk {
+                address: Some(address),
+                access: "Write",
+                cpl: 0,
+                origin: "Explicit",
+                profile: "long64_4k_2m",
+                cr0_wp,
+                efer_nxe,
+                status: "invalid_address",
+                entries: Vec::new(),
+                terminal_level: None,
+                leaf_size: None,
+                translated_physical: None,
+                error: Some("candidate address is noncanonical".into()),
+            };
+        }
+        #[cfg(test)]
+        {
+            MMU_GATHER_DIAGNOSTIC_READS.with(|count| count.set(count.get() + 1));
+            MMU_GATHER_PAGE_WALKS.with(|count| count.set(count.get() + 1));
+        }
+        let write_context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            origin: AccessOrigin::Explicit,
+            ..context
+        };
+        let (translation, trace) = {
+            let (ram, _) = bus.split_for_pio_step();
+            translate_long64_2m_ram_read_only_with_trace(
+                ram,
+                paging,
+                instruction_rip,
+                GuestLinearAddress::new(address),
+                write_context,
+                AccessKind::Write,
+            )
+        };
+        let entries = trace
+            .entries()
+            .iter()
+            .flatten()
+            .take(4)
+            .copied()
+            .collect::<Vec<_>>();
+        let terminal_level = match &translation {
+            Ok(_) => entries.last().map(|entry| entry.level),
+            Err(TrackedAccessError::PageFault {
+                reason: PageFaultReason::NotPresent { level },
+                ..
+            }) => Some(*level),
+            Err(TrackedAccessError::TableRead { level, .. })
+            | Err(TrackedAccessError::UnsupportedPageSize { level, .. }) => Some(*level),
+            _ => entries.last().map(|entry| entry.level),
+        };
+        let leaf_size = entries.last().and_then(|entry| match entry.level {
+            PageTableLevel::Pd if entry.entry_value & (1 << 7) != 0 => Some(2 * 1024 * 1024),
+            PageTableLevel::Pt => Some(4096),
+            _ => None,
+        });
+        let (status, translated_physical, error) = match translation {
+            Ok((physical, _)) => ("translated", Some(physical.get()), None),
+            Err(TrackedAccessError::PageFault {
+                reason: PageFaultReason::NotPresent { .. },
+                ..
+            }) => ("non_present", None, None),
+            Err(TrackedAccessError::PageFault {
+                reason: PageFaultReason::Protection { .. },
+                ..
+            }) => ("protection", None, None),
+            Err(error) => ("read_error", None, Some(format!("{error:?}"))),
+        };
+        ElfMmuGatherPageWalk {
+            address: Some(address),
+            access: "Write",
+            cpl: 0,
+            origin: "Explicit",
+            profile: "long64_4k_2m",
+            cr0_wp,
+            efer_nxe,
+            status,
+            entries,
+            terminal_level,
+            leaf_size: if matches!(status, "translated" | "protection") {
+                leaf_size
+            } else {
+                None
+            },
+            translated_physical,
+            error,
+        }
+    })
 }
 
 fn read_mmu_gather_frame(
@@ -6428,6 +6583,284 @@ mod tests {
                 .unwrap()
         });
         assert_eq!(after, before);
+    }
+
+    #[test]
+    fn mmu_gather_walks_two_fixed_candidate_pages_at_setup_initial_and_return_only() {
+        use od_isa::Register::{R14, R15, Rbp, Rdi, Rsp};
+
+        let (mut machine_bus, paging) = elf_copy_bus(true, true);
+        let setup_rbp = ELF_COPY_R13 + 0x100;
+        let relocate_rbp = ELF_COPY_R13 + 0x180;
+        let actual_post_rbp = ELF_COPY_R13 + 0x240;
+        let tlb = ELF_COPY_R13 + 0x200;
+        let mm = ELF_COPY_R13 + 0x400;
+        let mut setup_bytes = [0u8; 16];
+        setup_bytes[..8].copy_from_slice(&(ELF_COPY_R13 + 0x300).to_le_bytes());
+        setup_bytes[8..].copy_from_slice(&0xffff_ffff_818f_24e5u64.to_le_bytes());
+        machine_bus
+            .patch_physical_ram(GuestPhysicalAddress::new(0x12100), &setup_bytes)
+            .unwrap();
+        machine_bus
+            .patch_physical_ram(GuestPhysicalAddress::new(0x12000), &[0u8; 0x1000])
+            .unwrap();
+        machine_bus
+            .patch_physical_ram(
+                GuestPhysicalAddress::new(0x12000),
+                &(ELF_COPY_R13 + 0x1000).to_le_bytes(),
+            )
+            .unwrap();
+        machine_bus
+            .patch_physical_ram(
+                GuestPhysicalAddress::new(0x12008),
+                &(ELF_COPY_R13 + 0x2000).to_le_bytes(),
+            )
+            .unwrap();
+        let mut relocate_frame = [0u8; 16];
+        relocate_frame[..8].copy_from_slice(&setup_rbp.to_le_bytes());
+        relocate_frame[8..].copy_from_slice(&0xffff_ffff_818f_24e5u64.to_le_bytes());
+        machine_bus
+            .patch_physical_ram(GuestPhysicalAddress::new(0x12180), &relocate_frame)
+            .unwrap();
+        let mut actual_post_frame = [0u8; 16];
+        actual_post_frame[..8].copy_from_slice(&relocate_rbp.to_le_bytes());
+        actual_post_frame[8..].copy_from_slice(&0xffff_ffff_8182_bfe0u64.to_le_bytes());
+        machine_bus
+            .patch_physical_ram(GuestPhysicalAddress::new(0x12240), &actual_post_frame)
+            .unwrap();
+        let mut tlb_bytes = [0u8; 0x24];
+        tlb_bytes[..8].copy_from_slice(&mm.to_le_bytes());
+        tlb_bytes[0x10..0x18].copy_from_slice(&0xffff_ffff_83fe_f000u64.to_le_bytes());
+        tlb_bytes[0x18..0x20].copy_from_slice(&0xffff_ffff_83ff_1000u64.to_le_bytes());
+        tlb_bytes[0x20..0x24].copy_from_slice(&0x800u32.to_le_bytes());
+        machine_bus
+            .patch_physical_ram(GuestPhysicalAddress::new(0x12200), &tlb_bytes)
+            .unwrap();
+        machine_bus
+            .patch_physical_ram(GuestPhysicalAddress::new(0x12a1c), &(-1i32).to_le_bytes())
+            .unwrap();
+
+        let ram_before = (0..RAM_LEN)
+            .step_by(8)
+            .map(|address| {
+                machine_bus
+                    .read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let mut observations =
+            LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        let mut state = LongModeState::default();
+        state.gpr[R14 as usize] = 0x1000;
+        state.gpr[R15 as usize] = ELF_COPY_R13;
+        state.gpr[Rbp as usize] = setup_rbp;
+        state.gpr[Rsp as usize] = ELF_COPY_R13 + 0x800;
+        state.rip = LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP;
+        let before_setup = state.clone();
+        capture_elf_mmu_gather_boundary(
+            state.rip,
+            &state,
+            &mut machine_bus,
+            &paging,
+            context(),
+            ROOT,
+            &mut observations,
+        );
+        assert_eq!(state, before_setup);
+        let setup = &observations.mmu_gather_capture_for_test().setups[0];
+        assert!(matches!(
+            &setup.setup,
+            crate::ElfMmuGatherPhase::Captured { value, .. }
+                if value.relocated_start == Some(ELF_COPY_R13)
+                    && value.aligned_start == Some(ELF_COPY_R13)
+                    && value.candidate_pages == [Some(ELF_COPY_R13 - 0x1000), Some(ELF_COPY_R13)]
+        ));
+        assert_eq!(
+            setup
+                .setup_page_walks
+                .iter()
+                .map(|walk| walk.status)
+                .collect::<Vec<_>>(),
+            vec!["translated", "translated"]
+        );
+
+        state.gpr[Rbp as usize] = relocate_rbp;
+        state.gpr[Rdi as usize] = tlb;
+        state.gpr[Rsp as usize] = ELF_COPY_R13 + 0x7f0;
+        state.rip = LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP;
+        let before_initial = state.clone();
+        capture_elf_mmu_gather_boundary(
+            state.rip,
+            &state,
+            &mut machine_bus,
+            &paging,
+            context(),
+            ROOT,
+            &mut observations,
+        );
+        assert_eq!(state, before_initial);
+        let setup = &observations.mmu_gather_capture_for_test().setups[0];
+        assert_eq!(
+            setup
+                .initial_page_walks
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|walk| walk.address)
+                .collect::<Vec<_>>(),
+            vec![Some(ELF_COPY_R13 - 0x1000), Some(ELF_COPY_R13)]
+        );
+
+        let page_walks_before_actual = MMU_GATHER_PAGE_WALKS.with(std::cell::Cell::get);
+        state.gpr[Rbp as usize] = actual_post_rbp;
+        state.gpr[Rdi as usize] = tlb;
+        state.rip = LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP;
+        let before_actual_post = state.clone();
+        capture_elf_mmu_gather_boundary(
+            state.rip,
+            &state,
+            &mut machine_bus,
+            &paging,
+            context(),
+            ROOT,
+            &mut observations,
+        );
+        assert_eq!(state, before_actual_post);
+        assert_eq!(
+            MMU_GATHER_PAGE_WALKS.with(std::cell::Cell::get),
+            page_walks_before_actual,
+            "actual_post captures gather fields without candidate page walks"
+        );
+        let setup = &observations.mmu_gather_capture_for_test().setups[0];
+        assert!(matches!(
+            setup.actual_post,
+            crate::ElfMmuGatherPhase::Captured { .. }
+        ));
+        assert!(setup.initial_page_walks.is_some());
+        assert!(setup.return_page_walks.is_none());
+        state.rip = LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP;
+        state.gpr[Rbp as usize] = relocate_rbp;
+        let before_return = state.clone();
+        capture_elf_mmu_gather_boundary(
+            state.rip,
+            &state,
+            &mut machine_bus,
+            &paging,
+            context(),
+            ROOT,
+            &mut observations,
+        );
+        assert_eq!(state, before_return);
+        let setup = &observations.mmu_gather_capture_for_test().setups[0];
+        assert_eq!(
+            setup
+                .return_page_walks
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|walk| walk.status)
+                .collect::<Vec<_>>(),
+            vec!["translated", "translated"]
+        );
+        assert!(matches!(
+            setup.actual_post,
+            crate::ElfMmuGatherPhase::Captured { .. }
+        ));
+
+        let mut copy_snapshot = ElfStackCopySnapshot::empty(ElfStackCopyStatus::Captured);
+        copy_snapshot.copy_destination = Some(ELF_COPY_R13 - 7);
+        observations.record_elf_stack_copy(copy_snapshot);
+        let capture = observations
+            .finish()
+            .elf_stack_copy
+            .unwrap()
+            .pre_copy_cr3_ledger
+            .unwrap()
+            .mmu_gather;
+        assert_eq!(capture.copy_destination, Some(ELF_COPY_R13 - 7));
+        assert_eq!(capture.destination_in_candidate_pages, Some(true));
+        let ram_after = (0..RAM_LEN)
+            .step_by(8)
+            .map(|address| {
+                machine_bus
+                    .read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ram_after, ram_before,
+            "diagnostic walk changed guest RAM/A-D bits"
+        );
+    }
+
+    #[test]
+    fn mmu_gather_candidate_walks_distinguish_nonpresent_protection_and_read_errors() {
+        let candidate = ELF_COPY_R13 - 0x1000;
+        let candidates = [Some(candidate), Some(ELF_COPY_R13)];
+        let mut absent_bus = elf_copy_bus(false, true).0;
+        let absent = capture_mmu_gather_candidate_page_walks(
+            candidates,
+            &mut absent_bus,
+            &Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+            LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+            context(),
+        );
+        assert_eq!(absent[0].status, "non_present");
+        assert_eq!(absent[0].translated_physical, None);
+
+        let mut protected_bus = elf_copy_bus(true, true).0;
+        let indices = [
+            ((candidate >> 39) & 0x1ff) as u64,
+            ((candidate >> 30) & 0x1ff) as u64,
+            ((candidate >> 21) & 0x1ff) as u64,
+            ((candidate >> 12) & 0x1ff) as u64,
+        ];
+        let pml4e = protected_bus
+            .read_physical(
+                GuestPhysicalAddress::new(ROOT + indices[0] * 8),
+                AccessWidth::Qword,
+            )
+            .unwrap();
+        let pdpte = protected_bus
+            .read_physical(
+                GuestPhysicalAddress::new((pml4e & !0xfff) + indices[1] * 8),
+                AccessWidth::Qword,
+            )
+            .unwrap();
+        let pde = protected_bus
+            .read_physical(
+                GuestPhysicalAddress::new((pdpte & !0xfff) + indices[2] * 8),
+                AccessWidth::Qword,
+            )
+            .unwrap();
+        let pte_address = (pde & !0xfff) + indices[3] * 8;
+        let pte = protected_bus
+            .read_physical(GuestPhysicalAddress::new(pte_address), AccessWidth::Qword)
+            .unwrap();
+        put(&mut protected_bus, pte_address, pte & !2);
+        let protected = capture_mmu_gather_candidate_page_walks(
+            candidates,
+            &mut protected_bus,
+            &Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+            LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+            context(),
+        );
+        assert_eq!(protected[0].status, "protection");
+        assert_eq!(protected[0].translated_physical, None);
+
+        let mut error_bus = bus(0);
+        let root_index = ((candidate >> 39) & 0x1ff) as u64;
+        put(&mut error_bus, ROOT + root_index * 8, 0x1_0000_0007);
+        let read_error = capture_mmu_gather_candidate_page_walks(
+            [Some(candidate), None],
+            &mut error_bus,
+            &Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+            LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+            context(),
+        );
+        assert_eq!(read_error[0].status, "read_error");
+        assert!(read_error[0].error.is_some());
+        assert_eq!(read_error[1].status, "invalid_address");
     }
 
     #[test]
