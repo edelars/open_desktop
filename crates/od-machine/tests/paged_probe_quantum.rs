@@ -1927,6 +1927,101 @@ fn paged_probe_pop_r12_noncanonical_rsp_raises_ss_without_retiring() {
 }
 
 #[test]
+fn paged_probe_pop_r13_uses_tracked_four_level_stack_read() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x41, 0x5d]);
+    let value = 0xfedc_ba98_7654_3210u64;
+    put_bytes_at(&mut bus, DATA_PHYSICAL + 0x100, &value.to_le_bytes());
+    let mut state = initial_state(0);
+    state.gpr[Register::Rsp as usize] = DATA_LINEAR + 0x100;
+    state.gpr[Register::R13 as usize] = 0xaabb_ccdd_eeff_0011;
+    let before = state.clone();
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.page_fault, None);
+    assert_eq!(result.memory_error, None);
+    let mut expected = before;
+    expected.rip += 2;
+    expected.gpr[Register::Rsp as usize] = DATA_LINEAR + 0x108;
+    expected.gpr[Register::R13 as usize] = value;
+    assert_eq!(state, expected);
+    let data_range = range(DATA_PHYSICAL + 0x100);
+    assert!(
+        !writes.contains(&data_range),
+        "POP must not write stack data"
+    );
+    assert_eq!(qword(&mut bus, DATA_PHYSICAL + 0x100), value);
+    for address in [ROOT, ROOT + 0x1000, ROOT + 0x2020, ROOT + 0x4000] {
+        let entry = qword(&mut bus, address);
+        assert_ne!(entry & (1 << 5), 0, "A bit missing at {address:#x}");
+        assert_eq!(entry & (1 << 6), 0, "unexpected D bit at {address:#x}");
+    }
+}
+
+#[test]
+fn paged_probe_pop_r13_stack_page_fault_is_atomic() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x41, 0x5d]);
+    put(&mut bus, ROOT + 0x4000, 0); // Data leaf is not present.
+    let mut state = initial_state(0);
+    state.gpr[Register::Rsp as usize] = DATA_LINEAR + 0x100;
+    state.gpr[Register::R13 as usize] = 0xaabb_ccdd_eeff_0011;
+    let before = state.clone();
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    let expected_fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(DATA_LINEAR + 0x100),
+    };
+    assert_eq!(result.exit, PagedProbeExit::Fault(expected_fault.clone()));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.memory_error, None);
+    assert_eq!(state, before);
+    let record = result
+        .page_fault
+        .as_ref()
+        .expect("POP stack-read page fault");
+    assert_eq!(record.fault(), &expected_fault);
+    assert_eq!(record.saved_rip(), CODE_LINEAR);
+    assert_eq!(record.access(), AccessKind::Read);
+    assert!(!writes.contains(&range(DATA_PHYSICAL + 0x100)));
+    assert_eq!(qword(&mut bus, ROOT + 0x4000), 0);
+}
+
+#[test]
+fn paged_probe_pop_r13_noncanonical_rsp_raises_ss_without_retiring() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x41, 0x5d]);
+    let mut state = initial_state(0);
+    state.gpr[Register::Rsp as usize] = 0x0000_8000_0000_0000;
+    state.gpr[Register::R13 as usize] = 0xaabb_ccdd_eeff_0011;
+    let before = state.clone();
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(ArchitecturalFault {
+            vector: 12,
+            error_code: Some(0),
+            linear_address: None,
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.page_fault, None);
+    assert_eq!(result.memory_error, None);
+    assert_eq!(state, before);
+}
+
+#[test]
 fn paged_probe_mov_rsp_disp8_rdx_write_protection_fault_is_atomic() {
     let (mut bus, _) = fixture();
     put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x48, 0x89, 0x54, 0x24, 0x30]);

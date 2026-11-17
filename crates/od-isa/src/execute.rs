@@ -20226,6 +20226,42 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.gpr[Register::R12 as usize] = value;
             state.rip = next_rip;
         }
+        // S7-04: restore R13 with the exact REX.B `41 5D` helper form.
+        // Read through GuestMemory and commit the destination/stack pointer
+        // only after validation and the tracked qword read succeed.
+        Operation::StackRegister {
+            push: false,
+            register: Register::R13,
+        } if base_profile
+            && instruction.length == 2
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x5d
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x41),
+                    ..Prefixes::default()
+                })
+            && instruction.operand_size == OperandSize::Qword =>
+        {
+            let old_rsp = state.gpr[Register::Rsp as usize];
+            let stack_address = match stack_access_address(old_rsp, false, OperandSize::Qword) {
+                Ok(address) => address,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            let value = match memory.read_integer(stack_address, context, OperandSize::Qword) {
+                Ok(value) => value,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            state.gpr[Register::Rsp as usize] = old_rsp.wrapping_add(8);
+            state.gpr[Register::R13 as usize] = value;
+            state.rip = next_rip;
+        }
         Operation::Mov {
             dst: Operand::Register(destination),
             src: Operand::Memory(source),

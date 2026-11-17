@@ -28371,3 +28371,21 @@ Validation: full od-isa suites pass (2,322/1,591/126/29/6/1,177/7/15; zero
 doc tests), paged machine quantum passes (87/87), workspace all-targets cargo
 check passes with existing warnings, and scoped rustfmt/diff-check pass.
 Independent review is pending.
+
+
+### S7-04 CPU-profile slice: exact POP R13 (ISSUE-369)
+
+`PagedCpl0ProbeV1` admits only exact bytes `41 5D`. REX.B selects R13 for the
+opcode register field. The qword stack address is old RSP and is validated
+before the tracked GuestMemory read. Success writes R13, increments RSP by eight,
+and advances RIP by two; flags and definedness are preserved. Noncanonical stack
+range raises #SS; a data #PF/backend read error or instruction-fetch fault does
+not partially commit CPU state. This slice adds no other POP encodings; CPL3 and
+other profiles do not admit `41 5D`. Firmware advances to ISSUE-370 `41 5E`
+(POP R14) at `0x201835` after 9,838 retired instructions; COM1 is empty.
+ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Validation: full od-isa suites pass (2,322/1,591/126/29/6/1,183/7/15; zero
+doc tests), paged machine quantum passes (90/90), workspace all-targets cargo
+check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review is pending.
