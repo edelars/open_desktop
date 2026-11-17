@@ -2064,7 +2064,23 @@ and empty COM1.
 
 ### ISSUE-411 — exact `CMP R9W,AX` (`66 41 39 C1`)
 
-The next frontier is a 16-bit register compare: operand-size prefix selects
-word width and REX.B selects R9W as the r/m destination, compared with AX.
-Verify routing, flag/definedness semantics, and exact profile boundaries before
-admitting only this encoding. Preserve the ISSUE-201 CLD caveat.
+This slice admits only exact `66 41 39 C1`. Operand-size override selects word
+width and REX.B selects R9W as the r/m destination, compared with AX. Shared
+arithmetic computes word subtraction flags/definedness; neither register is
+written. Focused flags/routing/definedness/fetch-fault/neighbors/CPL3 tests pass
+(4/4), and other-profile matrix passes (1/1). Full od-isa passes
+(2,322/1,591/126/29/6/1,371/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.
+
+Runner advances to `0F 82 9D 01 00 00` (JB rel32 +0x19d; ISSUE-412) at RIP
+`0x2012f3`, after 9,900 retired instructions, unsupported opcode 130, empty
+COM1.
+
+### ISSUE-412 — exact `JB rel32 +0x19d` (`0F 82 9D 01 00 00`)
+
+The next frontier is this exact near conditional branch on CF. Verify condition,
+relative target calculation, taken-only target validation, flag preservation and
+exact profile boundaries before admitting only this displacement. Preserve the
+ISSUE-201 CLD caveat.

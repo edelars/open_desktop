@@ -1948,7 +1948,21 @@ Runner advances to `66 41 39 C1` (CMP R9W,AX, ISSUE-411), RIP `0x2012ef`, after
 
 ### ISSUE-411 — exact `CMP R9W,AX` (`66 41 39 C1`)
 
-The next firmware bytes are `66 41 39 C1` at RIP `0x2012ef` after 9,899
-retired instructions. The runner reports unsupported opcode 57 and empty
-COM1. The instruction is not yet admitted. ISSUE-201 remains the unrelated
+Only exact `66 41 39 C1` is admitted. Operand-size override selects word width;
+REX.B selects R9W as the r/m destination, compared with AX. CMP updates word
+subtraction flags/definedness and writes neither register. Focused tests pass
+(4/4), and the other-profile matrix passes (1/1). Full od-isa passes
+(2,322/1,591/126/29/6/1,371/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.
+
+Runner advances to `0F 82 9D 01 00 00` (JB rel32 +0x19d, ISSUE-412), RIP
+`0x2012f3`, after 9,900 retired instructions, unsupported opcode 130, COM1 empty.
+
+### ISSUE-412 — exact `JB rel32 +0x19d` (`0F 82 9D 01 00 00`)
+
+The next firmware bytes are `0F 82 9D 01 00 00` at RIP `0x2012f3` after 9,900
+retired instructions. The runner reports unsupported opcode 130 and empty
+COM1. This instruction is not yet admitted. ISSUE-201 remains the unrelated
 CLD caveat.

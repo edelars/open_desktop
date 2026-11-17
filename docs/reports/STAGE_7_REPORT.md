@@ -3389,8 +3389,23 @@ after 9,899 retired instructions, unsupported opcode 57, COM1 empty.
 
 ### ISSUE-411 — exact `CMP R9W,AX` (`66 41 39 C1`)
 
+Admit only exact `66 41 39 C1`. Operand-size override selects word width;
+REX.B selects R9W as r/m destination and AX as the reg source. Shared CMP
+computes 16-bit subtraction flags/definedness without register writes. Focused
+tests pass (4/4), covering operand routing, edge flags, definedness, final-byte
+fetch fault, neighbors and CPL3; other-profile matrix passes (1/1). Full od-isa
+passes (2,322/1,591/126/29/6/1,371/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with
+no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+Runner advances to `0F 82 9D 01 00 00` (JB rel32 +0x19d, ISSUE-412) at RIP
+`0x2012f3`, after 9,900 retired instructions, unsupported opcode 130, COM1 empty.
+
+### ISSUE-412 — exact `JB rel32 +0x19d` (`0F 82 9D 01 00 00`)
+
 Runner frontier: image SHA-256
 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, RIP
-`0x2012ef`, retired 9,899, bytes `66 41 39 C1`, unsupported opcode 57, COM1
-empty. Implementation and validation are pending. ISSUE-201 remains the
+`0x2012f3`, retired 9,900, bytes `0F 82 9D 01 00 00`, unsupported opcode 130,
+COM1 empty. Implementation and validation are pending. ISSUE-201 remains the
 unrelated CLD caveat.

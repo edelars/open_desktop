@@ -5192,7 +5192,17 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-411 — S7-04: exact CMP R9W,AX frontier (`66 41 39 C1`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-410.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012ef`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this exact 16-bit register compare, outside current bounded base-profile admission.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `66 41 39 C1` (CMP R9W,AX). Operand-size override selects word width; REX.B selects R9W as the r/m operand. Shared arithmetic computes 16-bit subtraction flags/definedness without writing either register. Other directions, operands, widths, prefixes and CPL3/other profiles remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,899 instructions and reported `Unsupported { opcode: 57 }` at RIP `0x2012ef`; COM1 is empty. Bytes at the link-base shadow are `66 41 39 C1`.
-- **Следующий шаг:** verify exact operand routing and 16-bit CMP semantics; admit only this encoding.
+- **Результат:** runner now retires 9,900 instructions and stops at RIP `0x2012f3`, bytes `0F 82 9D 01 00 00` (JB rel32 +0x19d; ISSUE-412), `Unsupported { opcode: 130 }`; COM1 is empty.
+- **Проверка:** focused word-operand/flags/definedness/no-register-write/fetch-fault/neighbors/CPL3 tests 4/4 and other-profile matrix 1/1 pass. Full od-isa passes (2,322/1,591/126/29/6/1,371/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+- **Следующий шаг:** ISSUE-412, exact `0F 82 9D 01 00 00` (JB rel32 +0x19d) at RIP `0x2012f3`.
+
+### ISSUE-412 — S7-04: exact JB rel32 +0x19d frontier (`0F 82 9D 01 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-411.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012f3`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware reaches this exact near conditional branch on CF, outside the current bounded base-profile admission.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,900 instructions and reported `Unsupported { opcode: 130 }` at RIP `0x2012f3`; COM1 is empty. Bytes at the link-base shadow are `0F 82 9D 01 00 00`.
+- **Следующий шаг:** verify exact JB condition/target/fault semantics; admit only this displacement.

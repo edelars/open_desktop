@@ -29108,6 +29108,21 @@ Runner advances to `66 41 39 C1` (CMP R9W,AX, ISSUE-411), RIP `0x2012ef`, after
 
 ### ISSUE-411 — exact `CMP R9W,AX` (`66 41 39 C1`)
 
-The next runner instruction is `66 41 39 C1` at RIP `0x2012ef`, after 9,899
-retired instructions, unsupported opcode 57, empty COM1. It is not yet
+Only exact `66 41 39 C1` is admitted. Operand-size override selects word width;
+REX.B selects R9W as r/m destination and AX as the reg source. Shared CMP
+computes 16-bit subtraction flags/definedness without writing registers.
+Focused tests pass (4/4), including operand routing, flag vectors, definedness,
+fetch fault and neighbors; other-profile matrix passes (1/1). Full od-isa passes
+(2,322/1,591/126/29/6/1,371/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.
+
+Runner advances to `0F 82 9D 01 00 00` (JB rel32 +0x19d, ISSUE-412), RIP
+`0x2012f3`, after 9,900 retired instructions, unsupported opcode 130, empty COM1.
+
+### ISSUE-412 — exact `JB rel32 +0x19d` (`0F 82 9D 01 00 00`)
+
+The next runner instruction is `0F 82 9D 01 00 00` at RIP `0x2012f3`, after
+9,900 retired instructions, unsupported opcode 130, empty COM1. It is not yet
 admitted. ISSUE-201 remains the unrelated CLD caveat.
