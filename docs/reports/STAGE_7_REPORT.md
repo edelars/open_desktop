@@ -3088,3 +3088,20 @@ admission, runner retires 9,873 instructions and stops at `4E 8D 04 19`
 (110/110), workspace all-targets offline check passes, and scoped rustfmt and
 diff-check pass. Independent review approved with no findings. ISSUE-201 remains
 the unrelated CLD caveat.
+
+### ISSUE-393 — exact `LEA R8,[RCX+R11]` (`4E 8D 04 19`)
+
+Base `PagedCpl0ProbeV1` admits only this exact REX.W SIB form. REX.R selects
+R8, REX.X extends the SIB index to R11, and RCX is the scale-one base. LEA
+updates R8 and RIP only, preserves flags/definedness, and does not access
+memory or check canonicality. Focused state/wrap/noncanonical/fetch-fault/
+neighbor/CPL3 tests pass (4/4); other-profile matrix passes (1/1).
+
+The firmware runner on image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` advances
+to `49 83 C0 08` (ADD R8,8, ISSUE-394), RIP `0x20128c`, after 9,874 retired
+instructions, `Unsupported { opcode: 131 }`; COM1 is empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,292/7/15; 0 doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes, and scoped rustfmt and
+diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated
+CLD caveat.

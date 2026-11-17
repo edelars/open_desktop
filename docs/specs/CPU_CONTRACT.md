@@ -28833,3 +28833,22 @@ Five focused tests and the other-profile matrix pass. Full od-isa passes
 diff-check pass. Independent review approved with no findings. Runner advances to `4E 8D 04 19`
 at RIP `0x201288` after 9,873 retired instructions, `Unsupported { opcode: 141 }`;
 COM1 is empty.
+
+### ISSUE-393: `4E 8D 04 19` — LEA R8,[RCX+R11]
+
+Base `PagedCpl0ProbeV1` adds only this exact unprefixed qword SIB form. REX.R
+selects R8, REX.X extends the SIB index to R11, and the base is RCX with scale
+one and no displacement. The decoded effective address is written to R8 with
+64-bit wrapping; LEA performs no memory access or canonicality check. Flags,
+definedness, and all other GPRs are preserved. Other REX/SIB routes, widths,
+prefixes, CPL3 and other profiles remain outside this admission. ISSUE-201 is
+the unrelated CLD caveat.
+
+Focused tests pass (4/4), and the other-profile matrix passes (1/1). On firmware
+image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, runner
+advances to `49 83 C0 08` (ADD R8,8, ISSUE-394), RIP `0x20128c`, after 9,874
+retired instructions, `Unsupported { opcode: 131 }`; COM1 is empty. Full od-isa
+passes (2,322/1,591/126/29/6/1,292/7/15; 0 doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes, and scoped
+rustfmt/diff-check pass. Independent review approved with no findings.

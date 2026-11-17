@@ -5028,7 +5028,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-393 — S7-04: exact helper LEA R8,[RCX+R11] frontier (`4E 8D 04 19`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-392.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201288`.
-- **Статус:** открыта.
-- **Суть и последствия:** after ISSUE-392, firmware reaches exact `4E 8D 04 19` (`LEA R8,[RCX+R11]`), not yet admitted by the bounded base profile.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only Primary `4E 8D 04 19` (`LEA R8,[RCX+R11]`): REX.W selects qword width, REX.R selects R8, and REX.X extends the SIB index to R11. The effective offset is computed with qword wrapping; no memory access, canonicality check, or flag update occurs. Neighboring encodings, CPL3 and other profiles remain unsupported.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,873 instructions and reported `Unsupported { opcode: 141 }` at RIP `0x201288`; COM1 is empty. The bytes are present at image offset `0x1288`, corresponding to the firmware link-base shadow.
-- **Следующий шаг:** add only this exact register-only LEA form after checking REX/SIB routing and profile boundaries.
+- **Результат:** runner now retires 9,874 instructions and stops at RIP `0x20128c`, bytes `49 83 C0 08` (ADD R8,8; ISSUE-394), `Unsupported { opcode: 131 }`; COM1 is empty.
+- **Проверка:** focused R8 state/wrap/noncanonical/fetch-fault/neighbors/CPL3 tests 4/4 and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,292/7/15; zero doc tests), paged machine quantum passes 110/110, `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-394 — S7-04: exact helper ADD R8,8 frontier (`49 83 C0 08`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-393.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20128c`.
+- **Статус:** открыта.
+- **Суть и последствия:** after ISSUE-393, firmware reaches exact `49 83 C0 08` (`ADD R8,8`), not yet admitted by the bounded base profile.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,874 instructions and reported `Unsupported { opcode: 131 }` at RIP `0x20128c`; COM1 is empty. The bytes are present at image offset `0x128c`, corresponding to the firmware link-base shadow.
+- **Следующий шаг:** query Graphify and implement only this exact qword ADD form after checking REX/register/immediate routing and profile boundaries.

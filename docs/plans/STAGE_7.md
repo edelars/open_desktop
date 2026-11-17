@@ -1759,3 +1759,19 @@ ISSUE-393) at RIP `0x201288` after 9,873 retired instructions,
 `Unsupported { opcode: 141 }`; COM1 is empty. Workspace all-targets offline
 check, scoped rustfmt and `git diff --check` pass. Independent review approved
 with no findings.
+
+### ISSUE-393 — exact LEA R8,[RCX+R11] (`4E 8D 04 19`)
+
+Base `PagedCpl0ProbeV1` admits this exact unprefixed qword SIB LEA: REX.R
+selects R8 and REX.X selects R11 as index, with RCX as base and scale one.
+Only R8 and RIP change; flags/definedness remain unchanged. Effective-address
+arithmetic wraps at 64 bits and does not access memory or check canonicality.
+Neighboring encodings, CPL3 and other profiles remain unsupported. ISSUE-201's
+unrelated CLD caveat remains open.
+
+Focused tests pass (4/4), other-profile matrix passes (1/1), full od-isa passes
+(2,322/1,591/126/29/6/1,292/7/15; 0 doc tests), and paged machine quantum
+passes (110/110). The runner advances to `49 83 C0 08` (ADD R8,8, ISSUE-394)
+at RIP `0x20128c` after 9,874 retired instructions, `Unsupported { opcode: 131 }`;
+COM1 is empty. Workspace all-targets offline check, scoped rustfmt and
+`git diff --check` pass. Independent review approved with no findings.
