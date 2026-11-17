@@ -24857,9 +24857,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, state.read(source));
             state.rip = next_rip;
         }
-        // S7-04: the firmware uses two exact word immediate stores: `66 C7 07
-        // FF FF` initializes [RDI], and `66 C7 44 24 10 00 00` clears
-        // [RSP+0x10]. Pin each address/value tuple and route the two-byte store
+        // S7-04/S7-05: exact immediate stores initialize [RDI], clear
+        // [RSP+0x10], and write the sign-extended imm32 zero to qword
+        // [RSP+8]. Pin each address/width/value tuple and route the store
         // through tracked memory.
         Operation::MovImmediate {
             dst: Operand::Memory(destination),
@@ -24867,24 +24867,42 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0xc7
-            && instruction.operand_size == OperandSize::Word
-            && instruction.prefixes
-                == (Prefixes {
-                    operand_override: true,
-                    ..Prefixes::default()
-                })
             && destination.index.is_none()
             && destination.scale == 1
             && destination.address_size == OperandSize::Qword
-            && destination.size == OperandSize::Word
             && ((instruction.length == 5
+                && instruction.operand_size == OperandSize::Word
+                && instruction.prefixes
+                    == (Prefixes {
+                        operand_override: true,
+                        ..Prefixes::default()
+                    })
+                && destination.size == OperandSize::Word
                 && value == 0xffff
                 && destination.base == AddressBase::Register(Register::Rdi)
                 && destination.displacement == 0)
                 || (instruction.length == 7
+                    && instruction.operand_size == OperandSize::Word
+                    && instruction.prefixes
+                        == (Prefixes {
+                            operand_override: true,
+                            ..Prefixes::default()
+                        })
+                    && destination.size == OperandSize::Word
                     && value == 0
                     && destination.base == AddressBase::Register(Register::Rsp)
-                    && destination.displacement == 0x10)) =>
+                    && destination.displacement == 0x10)
+                || (instruction.length == 9
+                    && instruction.operand_size == OperandSize::Qword
+                    && instruction.prefixes
+                        == (Prefixes {
+                            rex: Some(0x48),
+                            ..Prefixes::default()
+                        })
+                    && destination.size == OperandSize::Qword
+                    && value == 0
+                    && destination.base == AddressBase::Register(Register::Rsp)
+                    && destination.displacement == 0x08)) =>
         {
             if let Err(error) = write_operand(
                 state,

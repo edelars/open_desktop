@@ -1557,3 +1557,20 @@ pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,239/7/15; zero doc
 tests), paged machine quantum passes (108/108), workspace all-targets offline
 check passes with existing warnings, and scoped rustfmt/diff-check pass.
 Independent review approved with no findings.
+
+### ISSUE-382 — exact qword immediate store `[RSP+8],0`
+
+Admit only `48 C7 44 24 08 00 00 00 00` in base `PagedCpl0ProbeV1`. The
+REX.W C7 /0 form stores the sign-extended imm32 zero as a qword to the decoded
+RSP-relative SIB address through tracked GuestMemory. Preserve GPRs and
+RFLAGS/definedness; advance RIP only after a successful write. Cover #SS,
+tracked write #PF/fault atomicity, final-immediate fetch fault, exact neighbors,
+CPL3 and other-profile isolation. ISA focused tests pass (6/6), other-profile
+matrix passes (1/1), and four-level machine success/WP-fault tests pass (2/2).
+
+Runner image SHA-256 remains `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+After admission it retires 9,861 instructions and stops at `0F 84 17 02 00 00`
+(JZ rel32 +0x217, ISSUE-383), RIP `0x201251`, `Unsupported { opcode: 132 }`;
+COM1 is empty. ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Full od-isa suites pass (2,322/1,591/126/29/6/1,245/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline cargo check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.

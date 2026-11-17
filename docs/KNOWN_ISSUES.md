@@ -4931,7 +4931,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-382 — S7-04: exact helper qword store frontier (`48 C7 44 24 08 00 00 00 00`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-381.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201245`.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** только `48 C7 44 24 08 00 00 00 00` допускается как `MOV qword ptr [RSP+8], sign-extended imm32(0)`. Запись проходит через tracked GuestMemory; регистры и RFLAGS/definedness сохраняются, RIP фиксируется после успешной записи. Невалидный RSP-адрес даёт #SS; tracked #PF и ошибка выборки не фиксируют частичное состояние.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; после admission runner retired 9,861 instructions and stopped at `Unsupported { opcode: 132 }` at RIP `0x201251`, bytes `0F 84 17 02 00 00` (JZ rel32 +0x217, ISSUE-383); COM1 is empty.
+- **Проверка:** focused ISA tests 6/6 and other-profile rejection matrix 1/1 pass. Two machine tests verify qword write tracking, four-level A/D updates and WP-fault atomicity. Full od-isa suites pass (2,322/1,591/126/29/6/1,245/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline cargo check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-383 — S7-04: exact helper JZ rel32 frontier (`0F 84 17 02 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-382.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201251`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches `MOV qword ptr [RSP+8],0` after ISSUE-381; this exact qword immediate store is not admitted by the bounded base profile.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,859 instructions and reported `Unsupported { opcode: 199 }` at RIP `0x201245`; bytes are `48 C7 44 24 08 00 00 00 00`; COM1 is empty.
-- **Следующий шаг:** отдельно рассмотреть только точную firmware qword store encoding.
+- **Суть и последствия:** firmware reaches exact JZ rel32 +0x217 after ISSUE-382; this branch displacement is not yet admitted by the bounded base profile.
+- **Основание:** same firmware image/SHA and runner budget; retired 9,861 instructions, `Unsupported { opcode: 132 }` at RIP `0x201251`, bytes `0F 84 17 02 00 00`, COM1 empty.
+- **Следующий шаг:** separately review only this exact branch encoding.

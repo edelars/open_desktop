@@ -3297,6 +3297,121 @@ fn paged_probe_mov_word_ptr_rsp_10_zero_write_protection_fault_is_atomic() {
 }
 
 #[test]
+fn paged_probe_mov_qword_ptr_rsp_08_zero_uses_tracked_four_level_store() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(
+        &mut bus,
+        CODE_PHYSICAL,
+        &[0x48, 0xc7, 0x44, 0x24, 0x08, 0x00, 0x00, 0x00, 0x00],
+    );
+    put_bytes_at(
+        &mut bus,
+        DATA_PHYSICAL + 0x100,
+        &[
+            0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x17, 0x28, 0x39, 0x4a, 0x5b, 0x6c, 0x7d, 0x8e,
+            0x9f, 0xa0, 0xb1, 0xc2,
+        ],
+    );
+    let mut state = initial_state(0);
+    state.gpr[Register::Rsp as usize] = DATA_LINEAR + 0x100;
+    state.rflags = 0x8d7;
+    let before = state.clone();
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.page_fault, None);
+    assert_eq!(result.memory_error, None);
+    let mut expected = before;
+    expected.rip += 9;
+    assert_eq!(state, expected);
+    let bytes = (0x100..0x112)
+        .map(|offset| {
+            bus.read_physical(
+                GuestPhysicalAddress::new(DATA_PHYSICAL + offset),
+                AccessWidth::Byte,
+            )
+            .unwrap() as u8
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bytes,
+        [
+            0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x17, 0x28, 0, 0, 0, 0, 0, 0, 0, 0, 0xb1, 0xc2
+        ]
+    );
+    let store_range =
+        GuestPhysicalRange::new(GuestPhysicalAddress::new(DATA_PHYSICAL + 0x108), 8).unwrap();
+    assert!(writes.contains(&store_range));
+    for address in [ROOT, ROOT + 0x1000, ROOT + 0x2020, ROOT + 0x4000] {
+        assert_ne!(
+            qword(&mut bus, address) & (1 << 5),
+            0,
+            "A bit missing at {address:#x}"
+        );
+    }
+    let data_pde = qword(&mut bus, ROOT + 0x2020);
+    assert_eq!(data_pde & (1 << 6), 0);
+    let data_pte = qword(&mut bus, ROOT + 0x4000);
+    assert_ne!(data_pte & (1 << 6), 0, "successful qword store sets D");
+}
+
+#[test]
+fn paged_probe_mov_qword_ptr_rsp_08_zero_write_protection_fault_is_atomic() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(
+        &mut bus,
+        CODE_PHYSICAL,
+        &[0x48, 0xc7, 0x44, 0x24, 0x08, 0x00, 0x00, 0x00, 0x00],
+    );
+    let original = [
+        0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x17, 0x28, 0x39, 0x4a, 0x5b, 0x6c, 0x7d, 0x8e, 0x9f,
+        0xa0, 0xb1, 0xc2,
+    ];
+    put_bytes_at(&mut bus, DATA_PHYSICAL + 0x100, &original);
+    put(&mut bus, 0x5000, DATA_PHYSICAL | 5);
+    let mut state = initial_state(0);
+    state.gpr[Register::Rsp as usize] = DATA_LINEAR + 0x100;
+    let before = state.clone();
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    let target = DATA_LINEAR + 0x108;
+    let expected_fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x3),
+        linear_address: Some(target),
+    };
+    assert_eq!(result.exit, PagedProbeExit::Fault(expected_fault.clone()));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.memory_error, None);
+    assert_eq!(state, before);
+    let record = result.page_fault.as_ref().expect("qword store WP fault");
+    assert_eq!(record.fault(), &expected_fault);
+    assert_eq!(record.saved_rip(), CODE_LINEAR);
+    assert_eq!(record.access(), AccessKind::Write);
+    let bytes = (0x100..0x112)
+        .map(|offset| {
+            bus.read_physical(
+                GuestPhysicalAddress::new(DATA_PHYSICAL + offset),
+                AccessWidth::Byte,
+            )
+            .unwrap() as u8
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(bytes, original);
+    let data_pte = qword(&mut bus, ROOT + 0x4000);
+    assert_ne!(data_pte & (1 << 5), 0, "faulting store sets A");
+    assert_eq!(data_pte & (1 << 6), 0, "faulting store does not set D");
+    let store_range =
+        GuestPhysicalRange::new(GuestPhysicalAddress::new(DATA_PHYSICAL + 0x108), 8).unwrap();
+    assert!(!writes.contains(&store_range));
+}
+
+#[test]
 fn paged_probe_mov_rsp_ebx_dword_write_protection_fault_is_atomic() {
     let (mut bus, _) = fixture();
     put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x89, 0x1c, 0x24]);
