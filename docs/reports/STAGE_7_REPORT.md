@@ -3984,3 +3984,25 @@ opcode 57, COM1 empty. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-449 — exact CMP RAX,R14
+
+Four focused tests cover both admitted REX.R qword CMP forms. The checks
+exercise operand routing, arithmetic flags and definedness, preserved GPRs,
+final-ModRM fetch-fault atomicity, neighboring encodings and CPL3 refusal.
+The other-profile isolation matrix passes 1/1.
+
+The runner command
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue449.com1 --budget 10000` uses image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+It reports 9,996 retired instructions, RIP `0x2013a7`, Unsupported opcode 151
+and empty COM1. Bytes `0F 97 C0` at the stop decode to SETA AL (ISSUE-450).
+
+The full offline `od-isa` suite passes (2,322/1,591/126/29/6/1,539/7/15 and
+zero doctests). The paged machine quantum suite passes 110/110. The workspace
+all-targets offline check passes with existing warnings. Scoped rustfmt and
+diff checks pass.
+
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

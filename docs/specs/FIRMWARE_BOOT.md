@@ -2453,3 +2453,12 @@ focused tests and the other-profile matrix (1/1) pass. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-449 runner frontier
+
+Exact base-profile `4C 39 F0` compares qword RAX and R14, updating arithmetic
+flags and advancing RIP with both GPRs preserved. The runner reaches
+`0F 97 C0` (SETA AL, ISSUE-450) at RIP `0x2013a7` after 9,996 retired
+instructions. It reports Unsupported opcode 151 with empty COM1. Image
+SHA-256 is `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

@@ -24519,8 +24519,8 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
-        // S7-04: exact `4C 39 DB` compares qword RBX (r/m destination) with
-        // R11 (reg source); REX.R extends only the source register field.
+        // S7-04: exact `4C 39 DB` compares RBX with R11, and `4C 39 F0`
+        // compares RAX with R14. REX.R extends only the reg source field.
         Operation::Arithmetic {
             kind: ArithmeticKind::Cmp,
             dst: Operand::Register(destination),
@@ -24535,8 +24535,10 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     rex: Some(0x4c),
                     ..Prefixes::default()
                 })
-            && destination == RegisterView::low(Register::Rbx, OperandSize::Qword)
-            && source == RegisterView::low(Register::R11, OperandSize::Qword) =>
+            && ((destination == RegisterView::low(Register::Rbx, OperandSize::Qword)
+                && source == RegisterView::low(Register::R11, OperandSize::Qword))
+                || (destination == RegisterView::low(Register::Rax, OperandSize::Qword)
+                    && source == RegisterView::low(Register::R14, OperandSize::Qword))) =>
         {
             let lhs = state.read(destination);
             let rhs = state.read(source);

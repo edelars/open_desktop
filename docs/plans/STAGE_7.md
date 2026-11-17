@@ -2624,3 +2624,13 @@ RIP `0x2013a4`, after 9,995 retired instructions; Unsupported opcode 57, COM1
 empty. Full od-isa passes (2,322/1,591/126/29/6/1,539/7/15; zero doc tests),
 paged machine quantum passes (110/110), workspace all-targets offline check
 passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-449 — exact CMP RAX,R14 (`4C 39 F0`)
+
+Base `PagedCpl0ProbeV1` admits the exact qword register form. REX.R selects
+R14 as the source. The shared compare logic computes the flags for
+`RAX - R14` and advances RIP without writing a GPR. Tests cover full-width
+operands, arithmetic flags and definedness, final-byte fetch fault, neighboring
+encodings, CPL3 and other-profile isolation. The runner retires 9,996
+instructions and stops at RIP `0x2013a7` on `0F 97 C0` (SETA AL, ISSUE-450).
+It reports Unsupported opcode 151 with empty COM1. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

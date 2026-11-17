@@ -5560,7 +5560,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-449 — S7-04: exact CMP RAX,R14 frontier (`4C 39 F0`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-448.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013a4`.
-- **Статус:** открыта; следующая точная инструкция Stage 7.
-- **Суть и последствия:** exact `4C 39 F0` (`CMP RAX,R14`) remains unsupported pending bounded implementation and tests.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** exact `4C 39 F0` compares full RAX and R14. REX.R selects R14 as the source. The existing qword subtraction logic defines all six arithmetic flags and preserves both registers and unrelated flags.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-448 runner retired 9,995 instructions and reported `Unsupported { opcode: 57 }` at RIP `0x2013a4`; COM1 is empty. Bytes at the link-base shadow are `4C 39 F0`.
-- **Следующий шаг:** implement this exact qword CMP form and add operand-routing, arithmetic-flags, and profile-boundary coverage.
+- **Результат:** runner retires 9,996 instructions and stops at RIP `0x2013a7` on `0F 97 C0` (SETA AL, ISSUE-450). It reports `Unsupported { opcode: 151 }` with empty COM1.
+- **Проверка:** four focused tests and the other-profile matrix cover operand routing, arithmetic flags and definedness, preserved state, final-byte fetch-fault atomicity, neighboring encodings and profile isolation. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-450 — S7-04: exact SETA AL frontier (`0F 97 C0`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-449.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013a7`.
+- **Статус:** открыта. Следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base firmware CPU profile stops on unprefixed `0F 97 C0` (SETA AL).
+- **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 10000, the runner reports `Unsupported { opcode: 151 }` at RIP `0x2013a7` after 9,996 retired instructions. COM1 is empty. Bytes at the link-base shadow are `0F 97 C0`.
+- **Следующий шаг:** admit this exact SETA AL form and cover CF/ZF outcomes, byte-register writes and profile isolation.

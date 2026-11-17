@@ -29642,3 +29642,13 @@ validation passes: od-isa (2,322/1,591/126/29/6/1,539/7/15; zero doc tests),
 paged machine quantum (110/110), workspace all-targets offline check, scoped
 rustfmt and diff-check. Independent review approved with no findings. ISSUE-201 remains the
 unrelated CLD caveat.
+
+### ISSUE-449 — bounded CMP RAX,R14
+
+The base paged profile admits exact `4C 39 F0`. REX.W selects qword
+operands and REX.R extends the ModRM reg field to R14. The r/m field selects
+RAX. CMP defines CF, PF, AF, ZF, SF and OF from `RAX - R14`, preserves all
+GPRs and unrelated flags, and advances RIP by three bytes. A fault on the final
+ModRM fetch commits no architectural state. CPL3 and the other paged profiles
+reject this encoding. Independent review approved with no findings. ISSUE-201 remains the
+unrelated CLD caveat.
