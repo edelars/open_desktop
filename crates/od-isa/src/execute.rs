@@ -23110,6 +23110,29 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: exact firmware transfer `45 89 C5` copies R8D to R13D.
+        // REX.R extends ModRM.reg to R8D and REX.B extends r/m to R13D;
+        // REX.W is clear, so the dword destination zero-extends R13.
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x89
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x45),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R13, OperandSize::Dword)
+            && source == RegisterView::low(Register::R8, OperandSize::Dword) =>
+        {
+            let value = state.read(source);
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: the Rust helper copies R9D into R12D with exact `45 89 CC`;
         // the dword register write zero-extends R12.
         Operation::Mov {

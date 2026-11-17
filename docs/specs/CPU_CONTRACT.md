@@ -29312,3 +29312,16 @@ Unsupported opcode 137, COM1 empty. Full od-isa passes
 (110/110), workspace all-targets offline check passes with existing warnings,
 and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
 remains the unrelated CLD caveat.
+
+### ISSUE-425 — bounded `MOV R13D,R8D`
+
+The base paged profile admits exact `45 89 C5` only. REX.R routes source R8D;
+REX.B routes destination R13D. With REX.W clear, the dword write zero-extends
+R13. No flags or unrelated state changes. Four focused tests and the
+other-profile matrix pass. Runner advances to `41 83 CD 08` (OR R13D,8,
+ISSUE-426) at RIP `0x20133c` after 9,915 retired instructions, Unsupported
+opcode 131, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,442/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
+remains the unrelated CLD caveat.
