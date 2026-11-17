@@ -5605,7 +5605,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-454 — S7-04: exact JA rel32 +0x15a frontier (`0F 87 5A 01 00 00`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-453.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201354`.
-- **Статус:** открыта. Следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base firmware CPU profile stops on unprefixed `0F 87 5A 01 00 00` (JA rel32 +0x15a).
+- **Статус:** решена для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** exact unprefixed `0F 87 5A 01 00 00` branches on CF=0 and ZF=0 to next RIP plus signed rel32. Only a taken target is checked for canonicality. Flags and definedness are preserved.
 - **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 135 }` at RIP `0x201354` after 10,182 retired instructions. COM1 is empty. Bytes at the link-base shadow are `0F 87 5A 01 00 00`.
-- **Следующий шаг:** admit this exact JA and cover CF/ZF, signed displacement, taken-target canonicality, fetch faults and profile isolation.
+- **Результат:** runner retires 10,183 instructions and stops at RIP `0x20135a` on `4C 09 F8` (OR RAX,R15, ISSUE-455). It reports `Unsupported { opcode: 9 }` with empty COM1.
+- **Проверка:** five focused tests and the other CPL0 probe matrix cover CF/ZF values and definedness, target and fall-through, taken-only canonicality, final-byte fetch fault, neighboring encodings and profile isolation. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-455 — S7-04: exact OR RAX,R15 frontier (`4C 09 F8`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-454.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20135a`.
+- **Статус:** открыта. Следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base firmware CPU profile stops on `4C 09 F8` (OR RAX,R15).
+- **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 9 }` at RIP `0x20135a` after 10,183 retired instructions. COM1 is empty. Bytes at the link-base shadow are `4C 09 F8`.
+- **Следующий шаг:** admit the exact qword OR and cover register routing, logical flags and definedness, fetch faults and profile isolation.

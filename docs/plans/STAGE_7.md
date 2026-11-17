@@ -2682,3 +2682,14 @@ With budget 20000 the runner retires 10,182 instructions and stops at RIP
 `0x201354` on `0F 87 5A 01 00 00` (JA rel32 +0x15a, ISSUE-454). It reports
 Unsupported opcode 135 with empty COM1. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-454 — exact JA rel32 +0x15a (`0F 87 5A 01 00 00`)
+
+Base `PagedCpl0ProbeV1` admits the exact unprefixed JA. CF=0 and ZF=0
+branches to next RIP plus signed rel32. The taken target must be canonical.
+The branch preserves flags and definedness. Tests cover predicate outcomes
+and definedness, target and fall-through, final-byte fetch fault, neighbors,
+the CPL3 MOV probe and other CPL0 probes. With budget 20000 the runner
+retires 10,183 instructions and stops at RIP `0x20135a` on `4C 09 F8`
+(OR RAX,R15, ISSUE-455). It reports Unsupported opcode 9 with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

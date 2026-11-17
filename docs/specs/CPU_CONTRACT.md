@@ -29695,3 +29695,15 @@ definedness. The instruction advances RIP without writing a GPR. A fault
 on the final immediate fetch commits no architectural state. The other
 CPL0 probes and paged CPL3 MOV probe refuse the exact encoding.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-454 — bounded JA rel32 +0x15a
+
+The base paged CPL0 profile admits exact unprefixed `0F 87 5A 01 00 00`.
+JA uses the concrete CF and ZF values and preserves flags and definedness.
+If both are clear, the executor adds signed rel32 +0x15a to next RIP with
+64-bit wrapping arithmetic and checks the target for canonicality.
+Otherwise actual instruction fetch checks fall-through after retirement.
+A noncanonical taken target raises #GP(0). This fault and the final
+displacement fetch fault commit no architectural state. The other CPL0
+probes and the paged CPL3 MOV probe refuse this encoding.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
