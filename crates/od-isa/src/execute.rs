@@ -20436,6 +20436,44 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined,
             };
         }
+        // S7-04: the helper stores SETNE's result to exactly byte
+        // `[RSP+7]` with `0F 95 44 24 07`. Pin the raw ModRM and decoded SIB
+        // tuple; perform the byte write through GuestMemory and commit RIP only
+        // after the write succeeds. SETNE leaves flags and definedness intact.
+        Operation::SetCondition {
+            condition,
+            dst: Operand::Memory(destination),
+            raw_modrm,
+        } if base_profile
+            && condition == ConditionCode::NotEqual
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x95
+            && instruction.length == 5
+            && instruction.operand_size == OperandSize::Byte
+            && instruction.prefixes == Prefixes::default()
+            && raw_modrm == 0x44
+            && destination.displacement == 7
+            && destination.base == AddressBase::Register(Register::Rsp)
+            && destination.index.is_none()
+            && destination.scale == 1
+            && destination.address_size == OperandSize::Qword
+            && destination.size == OperandSize::Byte =>
+        {
+            if let Err(error) = write_operand(
+                state,
+                memory,
+                context,
+                next_rip,
+                Operand::Memory(destination),
+                u64::from(condition.evaluate(state.rflags)),
+            ) {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+        }
         // S7-04: the Rust helper stores the unsigned-greater result only in CL
         // with exact `0F 97 C1` (SETA CL). Condition evaluation reads CF/ZF but
         // neither the flags nor their definedness are modified.

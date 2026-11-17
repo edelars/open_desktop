@@ -873,11 +873,12 @@ impl GuestMemory for PagedProbeMemory<'_> {
         source: &[u8],
     ) -> Result<(), MemoryError> {
         let width = match source.len() {
+            1 => crate::AccessWidth::Byte,
             4 => crate::AccessWidth::Dword,
             8 => crate::AccessWidth::Qword,
             _ => {
                 return Err(MemoryError::Backend(
-                    "paged probe only supports dword and qword writes".into(),
+                    "paged probe only supports byte, dword, and qword writes".into(),
                 ));
             }
         };

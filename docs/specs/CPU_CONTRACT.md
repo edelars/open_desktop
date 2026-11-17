@@ -28065,3 +28065,23 @@ pass. Independent review approved with no findings. Firmware advances to ISSUE-3
 (`0F 95 44 24 07`, `SETNE byte ptr [RSP+7]`) at RIP `0x2017e0` after 9,067
 retired instructions; COM1 is empty. ISSUE-201's CLD test caveat remains open
 and unrelated.
+
+
+### S7-04 CPU-profile slice: exact memory SETNE (ISSUE-350)
+
+`PagedCpl0ProbeV1` admits only exact bytes `0F 95 44 24 07`. The byte
+destination is `[RSP+7]` using the exact no-index SIB form. SETNE writes 1
+when ZF is clear and 0 when set; it preserves RFLAGS and flag-definedness.
+The write uses tracked memory; RIP advances only on success, and a write fault
+does not partially update CPU state. Other destinations/conditions/address
+forms, prefixes, CPL3 and other profiles remain unsupported.
+
+Five focused tests cover both ZF outcomes with defined/undefined metadata,
+single-byte side effects, neighboring-byte preservation, write/fetch fault
+atomicity and encoding/profile isolation. Two machine tests cover tracked A/D effects and write-protection fault behavior.
+Full od-isa suites pass (2,322/1,591/126/29/6/1,091/7/15; zero doc tests),
+paged machine quantum passes (75/75), scoped cargo check passes with one
+existing unused page-walk helper warning, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings. Firmware advances to ISSUE-351 (`40 0F 96 C5`, `SETBE BPL`)
+at RIP `0x2017e8` after 9,069 retired instructions; COM1 is empty. ISSUE-201's
+CLD test caveat remains open and unrelated.

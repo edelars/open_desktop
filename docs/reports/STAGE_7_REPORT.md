@@ -2268,3 +2268,26 @@ Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
 advances after 9,067 retired instructions to `0F 95 44 24 07`
 (`SETNE byte ptr [RSP+7]`, ISSUE-350) at RIP `0x2017e0`,
 `Unsupported { opcode: 149 }`; COM1 is empty.
+
+
+### S7-04 exact helper `SETNE byte ptr [RSP+7]` — ISSUE-350
+
+`PagedCpl0ProbeV1` admits only exact no-prefix bytes `0F 95 44 24 07`.
+SETNE stores one byte to the RSP-relative SIB address: 1 when ZF is clear, 0
+when set. The instruction preserves flags and definedness. The tracked byte
+write commits RIP only on success; a failed store leaves CPU state unchanged.
+Other conditions, displacements, address tuples, prefixes, CPL3 and other
+profiles remain unsupported.
+
+Five focused profile tests cover ZF outcomes and metadata, the exact byte-only
+write, neighboring-byte retention, memory-write/fetch-fault atomicity, neighbors
+and CPL3/profile isolation. Two four-level machine tests confirm one-byte tracked store A/D effects and a
+write-protection fault that preserves memory and CPU state. Full od-isa suites
+pass (2,322/1,591/126/29/6/1,091/7/15; zero doc tests), paged machine quantum
+passes (75/75), scoped cargo check passes with one existing unused page-walk
+helper warning, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201's stale CLD expectations remain unrelated and open.
+
+Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`)
+advances after 9,069 retired instructions to `40 0F 96 C5` (`SETBE BPL`,
+ISSUE-351) at RIP `0x2017e8`, `Unsupported { opcode: 150 }`; COM1 is empty.

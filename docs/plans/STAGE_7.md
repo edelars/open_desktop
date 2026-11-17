@@ -986,3 +986,20 @@ tests verify the tracked read's A-bit updates/no D-bit update and fault
 atomicity. Full od-isa suites pass (2,322/1,591/126/29/6/1,086/7/15; zero doc
 tests), paged machine quantum passes (73/73), and scoped cargo check, rustfmt and
 diff-check pass. Independent review approved with no findings.
+
+### Текущий статус — 2026-11-16 — ISSUE-350
+
+ISSUE-350 admits only exact `0F 95 44 24 07` (`SETNE byte ptr [RSP+7]`) in
+base `PagedCpl0ProbeV1`. It writes one byte selected by ZF; flags and their
+definedness remain unchanged. The store uses the tracked write path and commits
+RIP only on success. Runner advances to ISSUE-351, `40 0F 96 C5`
+(`SETBE BPL`) at `0x2017e8` after 9,069 retired instructions; COM1 is empty.
+ISSUE-201 remains the unrelated pair of stale CLD-unsupported full-machine
+expectations. Do not mark the Stage 7 gate complete.
+
+Five focused profile tests and the other-profile matrix pass; two four-level
+machine tests verify one-byte store A/D effects and WP-fault atomicity. Full
+od-isa suites pass (2,322/1,591/126/29/6/1,091/7/15; zero doc tests), paged
+machine quantum passes (75/75), scoped cargo check passes with
+one existing unused page-walk helper warning, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings.
