@@ -1296,3 +1296,22 @@ Validation: full od-isa suites pass (2,322/1,591/126/29/6/1,183/7/15; zero
 doc tests), paged machine quantum passes (90/90), workspace all-targets cargo
 check passes with existing warnings, and scoped rustfmt/diff-check pass.
 Independent review is pending.
+
+
+### ISSUE-370 — exact POP R14
+
+Admit only exact `41 5E` in base `PagedCpl0ProbeV1`. REX.B selects R14 for the
+one-byte POP opcode; read a qword from old RSP through GuestMemory, then commit
+R14, RSP+8 and RIP+2. Flags and definedness remain unchanged. Noncanonical stack
+address raises #SS before the read; tracked data faults and second-byte fetch
+faults leave CPU state unchanged. Six focused ISA tests cover state, flags,
+faults, neighbors, CPL3 and other-profile rejection. Three machine tests verify
+four-level accessed/no-dirty behavior, data-page #PF atomicity, and #SS. Firmware
+advances to ISSUE-371, `41 5F` (POP R15), at RIP `0x201837` after 9,839 retired
+instructions; COM1 is empty. ISSUE-201 remains the unrelated CLD expectation
+caveat.
+
+Validation: full od-isa suites pass (2,322/1,591/126/29/6/1,189/7/15; zero
+doc tests), paged machine quantum passes (93/93), workspace all-targets cargo
+check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings.

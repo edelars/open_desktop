@@ -2610,3 +2610,27 @@ Validation: focused ISA 6/6 and machine 3/3 pass. Full `cargo test --offline
 paged machine quantum passes (90/90); `cargo check --workspace --all-targets
 --offline` passes with existing warnings; scoped `rustfmt --edition 2024 --check`
 and `git diff --check` pass. Independent review is pending.
+
+
+### ISSUE-370 — exact POP R14
+
+Admitted only `41 5E` in base `PagedCpl0ProbeV1`. REX.B selects R14 for the
+POP opcode; it reads a qword from old RSP via GuestMemory, then commits R14,
+RSP+8 and RIP+2 after stack-address validation and successful read. Flags and
+definedness remain unchanged. Noncanonical RSP raises #SS; data #PF and
+second-byte instruction-fetch faults leave CPU state unchanged. Six focused ISA
+tests cover qword state, flags metadata, #SS/#PF/fetch atomicity, neighbors,
+CPL3 and other-profile isolation. Three machine tests verify four-level A/no-D
+effects, data-page #PF atomicity, and #SS.
+
+Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) advanced
+to `41 5F` (POP R15, ISSUE-371) at RIP `0x201837` after 9,839 retired
+instructions; exit is `Unsupported { opcode: 95 }`, COM1 empty. ISSUE-201's
+unrelated stale CLD expectations remain open.
+
+Validation: focused ISA 6/6 and machine 3/3 pass. Full `cargo test --offline
+-p od-isa --quiet` passes (2,322/1,591/126/29/6/1,189/7/15; zero doc tests);
+paged machine quantum passes (93/93); `cargo check --workspace --all-targets
+--offline` passes with existing warnings; scoped `rustfmt --edition 2024 --check`
+and `git diff --check` pass. Independent review approved with no findings.
