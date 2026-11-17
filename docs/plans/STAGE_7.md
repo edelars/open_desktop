@@ -968,3 +968,21 @@ Five focused tests and the other-profile matrix pass. Full od-isa suites pass
 (2,322/1,591/126/29/6/1,080/7/15; zero doc tests); all 71 paged machine
 quantum tests pass. Scoped cargo check, rustfmt and diff-check pass. Independent
 review approved with no findings.
+
+### Текущий статус — 2026-11-16 — ISSUE-349
+
+ISSUE-349 admits only exact `45 8B 6C 04 FC` (`MOV R13D,dword ptr
+[R12+RAX-4]`) in base `PagedCpl0ProbeV1`. REX.R/B select R13D and R12 as
+destination and SIB base; disp8 `0xfc` sign-extends to -4, and the 64-bit
+effective address is read through the tracked memory path. The dword write
+zero-extends R13; faults preserve CPU state and flags. Runner advances to
+ISSUE-350, `0F 95 44 24 07` (`SETNE byte ptr [RSP+7]`) at `0x2017e0` after
+9,067 retired instructions; COM1 is empty. ISSUE-201 remains the unrelated pair
+of stale CLD-unsupported full-machine expectations. Do not mark the Stage 7
+gate complete.
+
+Six focused tests and the other-profile matrix pass; two four-level machine
+tests verify the tracked read's A-bit updates/no D-bit update and fault
+atomicity. Full od-isa suites pass (2,322/1,591/126/29/6/1,086/7/15; zero doc
+tests), paged machine quantum passes (73/73), and scoped cargo check, rustfmt and
+diff-check pass. Independent review approved with no findings.

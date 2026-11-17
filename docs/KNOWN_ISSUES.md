@@ -4667,7 +4667,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-349 — S7-04: exact helper `MOV R13D,dword ptr [R12+RAX-4]` (`45 8B 6C 04 FC`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-348.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017d7`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `45 8B 6C 04 FC` load a dword from `[R12+RAX-4]` to R13D, zero-extending R13. The read uses tracked memory and preserves flags; faults leave CPU state unchanged.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, runner advances to `Unsupported { opcode: 149 }` at RIP `0x2017e0` after 9,067 retired instructions; COM1 is empty.
+- **Проверка:** six focused tests cover dword value/zero-extension, signed SIB address and 64-bit wrap, read/#GP/fetch fault atomicity, neighbors and CPL3/other-profile isolation. Two four-level machine tests verify successful tracked walk A bits with no D bits and data-page fault atomicity. Full od-isa suites pass (2,322/1,591/126/29/6/1,086/7/15; zero doc tests), paged machine quantum passes (73/73), scoped cargo check, rustfmt and diff-check pass; independent review approved with no findings.
+
+### ISSUE-350 — S7-04: exact helper `SETNE byte ptr [RSP+7]` (`0F 95 44 24 07`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-349.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017e0`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this exact indexed dword load after 9,065 retired instructions. The base profile does not yet admit this exact form.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 139 }` at RIP `0x2017d7`; COM1 is empty.
+- **Суть и последствия:** firmware reaches this exact memory SETNE after 9,067 retired instructions. The base profile does not yet admit this memory-destination form.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 149 }` at RIP `0x2017e0`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.

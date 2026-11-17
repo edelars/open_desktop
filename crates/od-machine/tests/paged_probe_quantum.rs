@@ -1220,6 +1220,68 @@ fn paged_probe_mov_r13d_rax_plus_rcx_disp8_18_data_page_fault_preserves_state() 
 }
 
 #[test]
+fn paged_probe_mov_r13d_r12_plus_rax_disp8_fc_uses_tracked_four_level_walk() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x45, 0x8b, 0x6c, 0x04, 0xfc]);
+    let value = 0x89ab_cdefu32;
+    put_bytes_at(&mut bus, DATA_PHYSICAL + 0x40, &value.to_le_bytes());
+    let mut state = initial_state(0);
+    state.gpr[Register::R12 as usize] = DATA_LINEAR + 0x30;
+    state.gpr[Register::Rax as usize] = 0x14;
+    state.gpr[Register::R13 as usize] = 0xaabb_ccdd_eeff_0011;
+    let before_flags = state.rflags;
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.page_fault, None);
+    assert_eq!(result.memory_error, None);
+    assert_eq!(state.rip, CODE_LINEAR + 5);
+    assert_eq!(state.gpr[Register::R13 as usize], u64::from(value));
+    assert_eq!(state.gpr[Register::R12 as usize], DATA_LINEAR + 0x30);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x14);
+    assert_eq!(state.rflags, before_flags);
+    assert_eq!(qword(&mut bus, DATA_PHYSICAL + 0x40), u64::from(value));
+    for address in [ROOT, ROOT + 0x1000, ROOT + 0x2020, ROOT + 0x4000] {
+        let entry = qword(&mut bus, address);
+        assert_ne!(entry & (1 << 5), 0, "A bit missing at {address:#x}");
+        assert_eq!(entry & (1 << 6), 0, "unexpected D bit at {address:#x}");
+    }
+}
+
+#[test]
+fn paged_probe_mov_r13d_r12_plus_rax_disp8_fc_data_page_fault_preserves_state() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x45, 0x8b, 0x6c, 0x04, 0xfc]);
+    put(&mut bus, ROOT + 0x4000, 0); // Remove the data-page mapping.
+    let mut state = initial_state(0);
+    state.gpr[Register::R12 as usize] = DATA_LINEAR + 0x30;
+    state.gpr[Register::Rax as usize] = 0x14;
+    state.gpr[Register::R13 as usize] = 0xaabb_ccdd_eeff_0011;
+    let before = state.clone();
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    let expected_fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(DATA_LINEAR + 0x40),
+    };
+    assert_eq!(result.exit, PagedProbeExit::Fault(expected_fault.clone()));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, FLAGS_DEFINED);
+    assert_eq!(state, before);
+    let record = result.page_fault.as_ref().expect("precise data read fault");
+    assert_eq!(record.fault(), &expected_fault);
+    assert_eq!(record.saved_rip(), CODE_LINEAR);
+    assert_eq!(record.access(), AccessKind::Read);
+    assert_eq!(qword(&mut bus, ROOT + 0x4000), 0);
+}
+
+#[test]
 fn paged_probe_mov_rsp_disp8_rdx_store_uses_tracked_four_level_walk() {
     let (mut bus, _) = fixture();
     put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x48, 0x89, 0x54, 0x24, 0x30]);

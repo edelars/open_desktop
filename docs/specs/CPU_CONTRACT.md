@@ -28043,3 +28043,25 @@ Independent review approved with no findings. Firmware advances to ISSUE-349
 (`45 8B 6C 04 FC`, `MOV R13D,dword ptr [R12+RAX-4]`) at RIP `0x2017d7` after
 9,065 retired instructions; COM1 is empty. ISSUE-201's CLD test caveat remains
 open and unrelated.
+
+
+### S7-04 CPU-profile slice: exact helper dword load into R13D (ISSUE-349)
+
+`PagedCpl0ProbeV1` admits only exact bytes `45 8B 6C 04 FC`. REX.R/B select
+R13D and the R12 SIB base; RAX is the scale-1 index and disp8 `0xfc` is signed
+as -4. The 64-bit effective address is read through tracked memory. Success
+updates R13D and RIP, with the architectural dword write zero-extending R13;
+flags and definedness are preserved. Read, address, and instruction-fetch
+faults do not partially update CPU state. Other addressing/register/width
+forms, prefixes, CPL3 and other profiles remain unsupported.
+
+Six focused tests cover result/state, zero-extension, signed address and wrap,
+read and fetch-fault atomicity, noncanonical-address #GP, neighbors and
+profile/CPL isolation. Two four-level machine tests confirm accessed-bit
+updates without a dirty bit and state preservation on data-page fault. Full
+od-isa suites pass (2,322/1,591/126/29/6/1,086/7/15; zero doc tests), paged
+machine quantum passes (73/73), and scoped cargo check, rustfmt and diff-check
+pass. Independent review approved with no findings. Firmware advances to ISSUE-350
+(`0F 95 44 24 07`, `SETNE byte ptr [RSP+7]`) at RIP `0x2017e0` after 9,067
+retired instructions; COM1 is empty. ISSUE-201's CLD test caveat remains open
+and unrelated.

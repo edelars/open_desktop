@@ -2241,3 +2241,30 @@ Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
 advances after 9,065 retired instructions to `45 8B 6C 04 FC`
 (`MOV R13D,dword ptr [R12+RAX-4]`, ISSUE-349) at RIP `0x2017d7`,
 `Unsupported { opcode: 139 }`; COM1 is empty.
+
+
+### S7-04 exact helper `MOV R13D,dword ptr [R12+RAX-4]` — ISSUE-349
+
+`PagedCpl0ProbeV1` admits only exact bytes `45 8B 6C 04 FC`. REX.R selects
+R13D, REX.B selects R12 as SIB base, RAX is the scale-1 index, and disp8
+`0xfc` sign-extends to -4 in the 64-bit effective address. A tracked dword
+read commits R13D and RIP only after success; writing R13D zero-extends R13.
+Flags are unchanged. Read and fetch faults leave CPU state untouched. Other
+destinations, bases, indexes, scales, displacements, widths, prefixes, CPL3 and
+other profiles remain unsupported.
+
+Six focused tests cover the loaded value and R13 zero-extension, signed address
+arithmetic including wrap, canonical/read/fetch fault atomicity, neighbors,
+CPL3 and other-profile isolation. Two four-level machine tests verify a
+successful tracked walk sets A bits without D bits and a data-page fault does
+not commit CPU state. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,086/7/15; zero doc tests), paged machine quantum passes
+(73/73), and scoped cargo check, rustfmt and diff-check pass. Independent
+review approved with no findings. ISSUE-201's stale CLD expectations remain
+unrelated and open.
+
+Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`)
+advances after 9,067 retired instructions to `0F 95 44 24 07`
+(`SETNE byte ptr [RSP+7]`, ISSUE-350) at RIP `0x2017e0`,
+`Unsupported { opcode: 149 }`; COM1 is empty.
