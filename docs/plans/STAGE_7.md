@@ -792,6 +792,24 @@ Current bounded CPU-profile progress: exact `0F 84 D1 FE FF FF` (`JZ rel32 -0x12
 Не отмечай этап или gate завершённым по одной задаче.
 ```
 
+### Текущий статус — 2026-11-16 — ISSUE-338
+
+ISSUE-338 admits only `49 8B 74 04 F4` (`MOV RSI,qword ptr [R12+RAX-0x0c]`)
+in the base `PagedCpl0ProbeV1` profile. The signed disp8 is applied to the
+64-bit SIB sum; the resulting canonical address is read through the tracked
+memory path, and RSI/RIP commit only after success. Six focused profile tests
+and the other-profile matrix pass; two machine tests pass, including a
+four-level read with Accessed but not Dirty bits and fault atomicity. Full
+od-isa (2,322/1,591/126/29/6/1,035/7/15; 0 doc tests), all 69 paged machine
+quantum tests and scoped cargo check pass. Scoped rustfmt and diff-check pass;
+workspace `cargo fmt --all -- --check` still reports pre-existing diffs in
+untouched `storage_abi_v1.rs` and `tools/image-tool/tests/cli.rs`. The firmware
+runner advances to ISSUE-339, `48 85 F6` (`TEST RSI,RSI`) at `0x2017a1` after
+9,052 retired instructions; COM1 is empty. Independent review approved after
+correcting the Markdown fence placement; no findings remain.
+ISSUE-201's two stale CLD-unsupported full-machine expectations remain
+unrelated and open. Do not mark the Stage 7 gate complete.
+
 ## 10. Проверка документа
 
 Подготовка плана не является реализацией прошивки, устройств, TPM или проведённым экспериментом. Для текущей задачи проверялись: соответствие scope roadmap/architecture/layout/`firmware/AGENTS.md`, фактическое состояние кода на 2026-11-07 (пустой `firmware/uefi/`, только Long64 в `od-isa`, отсутствие ROM backing, PCI, NVMe, RTC, TPM, NVRAM; наличие `MachineBus`, `PhysicalMemory`, flat probe этапа 4, UART, LAPIC/IOAPIC, дисплейного устройства S10-03, политики зависимостей и ADR-0001/0002), последовательность и критерии задач, ссылки и Markdown. CPU-тесты, запуск гостя и SSH не требовались.

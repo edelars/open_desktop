@@ -1670,6 +1670,68 @@ fn paged_probe_mov_r10_rax_rcx_plus_eight_fault_does_not_commit_destination() {
 }
 
 #[test]
+fn paged_probe_mov_rsi_r12_rax_minus_twelve_uses_tracked_four_level_walk() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x49, 0x8b, 0x74, 0x04, 0xf4]);
+    let value = 0xfedc_ba98_7654_3210u64;
+    put_bytes_at(&mut bus, DATA_PHYSICAL + 0x44, &value.to_le_bytes());
+    let mut state = initial_state(0);
+    state.gpr[Register::R12 as usize] = DATA_LINEAR + 0x40;
+    state.gpr[Register::Rax as usize] = 0x10;
+    state.gpr[Register::Rsi as usize] = 0x0123_4567_89ab_cdef;
+    let before = state.clone();
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.page_fault, None);
+    assert_eq!(result.memory_error, None);
+    let mut expected = before;
+    expected.gpr[Register::Rsi as usize] = value;
+    expected.rip += 5;
+    assert_eq!(state, expected);
+    assert!(!writes.contains(&range(DATA_PHYSICAL + 0x44)));
+    assert!(writes.contains(&range(0x1000)));
+    assert!(writes.contains(&range(0x2000)));
+    assert!(writes.contains(&range(0x3010)));
+    assert!(writes.contains(&range(0x4000)));
+    assert!(writes.contains(&range(0x3020)));
+    assert!(writes.contains(&range(0x5000)));
+    assert_eq!(qword(&mut bus, ROOT), ROOT + 0x1007 | (1 << 5));
+    assert_eq!(qword(&mut bus, ROOT + 0x1000), ROOT + 0x2007 | (1 << 5));
+    let data_pde = qword(&mut bus, ROOT + 0x2020);
+    assert_ne!(data_pde & (1 << 5), 0);
+    assert_eq!(data_pde & (1 << 6), 0, "read does not set dirty");
+    let data_pte = qword(&mut bus, ROOT + 0x4000);
+    assert_ne!(data_pte & (1 << 5), 0);
+    assert_eq!(data_pte & (1 << 6), 0, "read does not set dirty");
+}
+
+#[test]
+fn paged_probe_mov_rsi_r12_rax_minus_twelve_fault_does_not_commit_destination() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x49, 0x8b, 0x74, 0x04, 0xf4]);
+    let mut state = initial_state(0);
+    state.gpr[Register::R12 as usize] = DATA_LINEAR + 0x1000;
+    state.gpr[Register::Rax as usize] = 0x0c;
+    state.gpr[Register::Rsi as usize] = 0x0123_4567_89ab_cdef;
+    let before = state.clone();
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    assert!(matches!(result.exit, PagedProbeExit::Fault(_)));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    let record = result.page_fault.as_ref().expect("unmapped data read #PF");
+    assert_eq!(record.access(), AccessKind::Read);
+    assert_eq!(record.saved_rip(), CODE_LINEAR);
+    assert_eq!(record.fault().linear_address, Some(DATA_LINEAR + 0x1000));
+}
+
+#[test]
 fn paged_probe_mov_rsp_disp8_rsi_write_protection_fault_is_atomic() {
     let (mut bus, _) = fixture();
     put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x48, 0x89, 0x74, 0x24, 0x10]);

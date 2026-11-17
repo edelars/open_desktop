@@ -914,3 +914,9 @@ The admitted byte self-TEST updates logical flags without writing a register; AF
 With exact `0F 84 D1 FE FF FF` admitted, the firmware runner retires 9,051 instructions and stops at RIP `0x20179c`, bytes `49 8B 74 04 F4` (`MOV RSI,qword ptr [R12+RAX-0x0c]`, ISSUE-338), `Unsupported { opcode: 139 }`. Image `/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1 output is empty.
 
 The admitted branch is ZF-only; the signed displacement is relative to next RIP, flags/definedness are preserved, and only a taken target is canonicality-checked. Admission is limited to this exact base paged profile encoding. Full od-isa suites and all 67 paged machine quantum tests passed; scoped cargo check, formatting and diff-check passed, with only the existing unused page-walk helper warning. Independent review approved with no remaining findings. Independent review pending. ISSUE-201 remains the unrelated stale CLD test expectation caveat.
+
+### Stage 7 runner frontier after ISSUE-338
+
+With exact `49 8B 74 04 F4` admitted, the firmware runner retires 9,052 instructions and stops at RIP `0x2017a1`, bytes `48 85 F6` (`TEST RSI,RSI`, ISSUE-339), `Unsupported { opcode: 133 }`. Image `/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1 output is empty.
+
+The admitted qword load uses a 64-bit R12+RAX-0x0c SIB effective address and tracked read. Success updates RSI only; flags are unchanged. Address wrap, canonicality, data faults and instruction-fetch faults are covered. Admission remains exact to the base paged profile. ISSUE-201 remains the unrelated stale CLD test expectation caveat.

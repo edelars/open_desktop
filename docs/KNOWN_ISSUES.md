@@ -4571,9 +4571,18 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-338 — S7-04: exact helper `MOV RSI,qword ptr [R12+RAX-0x0c]` (`49 8B 74 04 F4`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-337.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20179c`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this qword SIB load after 9,051 retired instructions. REX.B selects R12 as SIB base, RAX is the scale-1 index, and disp8 `0xf4` sign-extends to -0x0c. The base profile does not yet admit this exact load.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `49 8B 74 04 F4` are admitted. REX.B selects R12 as SIB base, RAX is the scale-1 index, and disp8 `0xf4` sign-extends to -0x0c. The qword effective address wraps at 64 bits and is checked for canonicality before a tracked qword read; successful reads update RSI and RIP while preserving flags. Read/fetch faults commit no CPU state.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 139 }` at RIP `0x20179c`; COM1 is empty.
+- **Проверка:** six focused profile tests cover signed displacement address calculation, 64-bit wraparound, loaded qword/state and flags, data-read and canonical-address faults, final-byte fetch-fault atomicity, adjacent encoding/prefix/register/addressing forms and CPL3 isolation; the other-profile matrix rejects this exact encoding. Two paged-machine tests prove the tracked four-level read sets Accessed bits but not Dirty, and that an unmapped read faults without committing RSI/RIP. All od-isa suites pass (2,322/1,591/126/29/6/1,035/7/15; 0 doc tests), all 69 paged machine quantum tests and scoped `cargo check --offline -p od-isa -p od-machine -p od-runner --all-targets` pass. `rustfmt --edition 2024 --check` on the three touched Rust files and `git diff --check` pass. Workspace-wide `cargo fmt --all -- --check` reports existing formatting diffs in untouched `crates/od-host/src/storage_abi_v1.rs` and `tools/image-tool/tests/cli.rs`; those files were not changed. Independent review approved after one plan Markdown-fence correction; no remaining findings.
+- **Следующий шаг:** implement only ISSUE-339's exact `TEST RSI,RSI` form in a separate Stage 7 slice.
+
+### ISSUE-339 — S7-04: exact helper `TEST RSI,RSI` (`48 85 F6`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-338.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017a1`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware reaches the exact qword self-TEST after 9,052 retired instructions. Shared TEST flag semantics and RFLAGS definedness apply; the base profile does not yet admit this exact form.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 133 }` at RIP `0x2017a1`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.
