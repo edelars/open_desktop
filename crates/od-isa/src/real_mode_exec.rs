@@ -1,5 +1,6 @@
 //! Execution of the first five instruction groups of the AP trampoline in real mode
-//! (S6-14d, S6-14e, S6-14f, S6-14g, S6-14i).
+//! (S6-14d, S6-14e, S6-14f, S6-14g, S6-14i) and the single protected-mode far jump of block 5
+//! (S6-14j).
 //!
 //! Scope is the closed set of forms from the S6-14a profile (CPU_CONTRACT.md, sections
 //! "S6-14d", "S6-14e", "S6-14f", "S6-14g" and "S6-14i"), block 1 of the trampoline at blob offsets
@@ -42,14 +43,23 @@
 //! | `66 0f 01 1e d d`        | `LIDT m16&32` (DS:d16, 32-bit base) | S6-14i |
 //! | `ba lo hi`               | `MOV DX, imm16`              | S6-14i |
 //! | `0f 22 c0`               | `MOV CR0, EAX`               | S6-14i |
+//! | `66 ea o o o o s s`      | `JMP ptr16:32` (far, `CR0.PE = 1` only) | S6-14j |
 //!
 //! Everything else (`HLT`, the padding `NOP`, `RDMSR`/`WRMSR`, `BTR`, `TEST DI, DI`, any
 //! other prefix byte or prefix order, any other ModRM form, `BT`/`BTR`/`BTC`, unlocked or
 //! 16-bit `BTS`) is an explicit [`RealModeRefusal::Unsupported`] with the address and the
 //! bytes, and the state is not changed. The Intel/AMD branches of `verify_cpu`
 //! (`0x10bb..0x1126`, `0x1184..0x1199`) belong to later slices. S6-14i adds block 4 of the
-//! trampoline (`0x102c..0x1044`: `LIDT`, `LGDT`, `MOV DX`, `MOV CR0, EAX`); the far jump of
-//! block 5 and everything in protected mode are not part of this module.
+//! trampoline (`0x102c..0x1044`: `LIDT`, `LGDT`, `MOV DX`, `MOV CR0, EAX`).
+//!
+//! S6-14j (block 5, `0x1044`): with `CR0.PE = 1` and the real-mode CS still in place, [`RealModeCpu::step`]
+//! executes exactly one form, `66 EA o32 s16` (`JMP ptr16:32`, the bytes of the linked blob; the
+//! unprefixed `EA` is not executed): the selector is checked against the GDT loaded by `LGDT`,
+//! the code descriptor is parsed with [`ProtectedSegment::from_descriptor`] and becomes the CS
+//! cache (`mode.cs` and [`RealModeCpu::cs_protected`]), `EIP = o32`. Nothing is fetched or
+//! executed at the target (block 6 is a later slice): afterwards every `step` returns
+//! [`RealModeRefusal::NotRealMode`]. Every other instruction with `PE = 1` is `NotRealMode`
+//! as before. A refused jump changes neither state nor memory. CPL is not modelled (taken as 0).
 //!
 //! S6-14i `MOV CR0, EAX` stores EAX with `ET` forced to 1 (the oracle observed it, but its
 //! input already had `ET = 1`; per the SDM `ET` is fixed on P6 and later, and KVM sets it in
@@ -98,7 +108,7 @@
 //! from memory; its section number is not checked.
 
 use crate::cpuid::{CpuidProfile, CpuidResult};
-use crate::legacy_mode::{CR0_ET, RealModeState, RealSegment};
+use crate::legacy_mode::{CR0_ET, ProtectedSegment, RealModeState, RealSegment};
 
 /// Index of a 32-bit general-purpose register in [`RealModeCpu::gpr`] (x86 encoding order).
 pub const EAX: usize = 0;
@@ -306,6 +316,38 @@ pub enum RealInstruction {
     MovDxImm16 { imm: u16 },
     /// `0F 22 C0` (S6-14i): `MOV CR0, EAX`.
     MovCr0Eax,
+    /// `66 EA o32 s16` (S6-14j): `JMP ptr16:32` with `CR0.PE = 1`. Returned only by
+    /// [`RealModeCpu::step`], never by [`RealModeCpu::decode`] (a real-mode `66 EA` is
+    /// `Unsupported`).
+    JmpFarProtected { selector: u16, offset: u32 },
+}
+
+/// Why a protected-mode far jump was refused (S6-14j). `#GP`/`#NP` are not modelled: each
+/// reason names the check that would raise one, or a model limit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProtectedJumpReason {
+    /// Null selector (index 0, TI = 0).
+    NullSelector,
+    /// TI = 1: the LDT is not modelled.
+    LdtSelector,
+    /// `(selector & !7) + 7` is greater than the GDT limit.
+    BeyondGdtLimit { limit: u16 },
+    /// A descriptor byte at `linear` is not readable (or `GDTR.base + index + 7` overflows).
+    DescriptorUnreadable { linear: u32 },
+    /// The descriptor is not a code segment: the executable bit of the type is clear (data), or
+    /// `S = 0`: system descriptors (call gate, TSS, task gate) as far `JMP` targets are not
+    /// modelled (jump through a gate and task switch are outside the profile); the model refuses.
+    NotCodeSegment { access: u8 },
+    /// `P = 0`.
+    NotPresent,
+    /// CPL is taken as 0: a non-conforming segment needs `RPL = DPL = 0`, a conforming one
+    /// `DPL = 0`.
+    Privilege { rpl: u8, dpl: u8 },
+    /// `L = 1` (64-bit code): not modelled outside IA-32e mode.
+    LongModeCode,
+    /// The accessed bit is clear and the descriptor byte at `linear` is not writable (hardware
+    /// sets the bit in memory).
+    DescriptorUnwritable { linear: u32 },
 }
 
 /// Memory for instruction fetch and the data operands (the `LOCK BTS` operand and the stack
@@ -420,6 +462,14 @@ pub enum RealModeRefusal {
     /// `#GP(0)` is only for `PG = 1` with `PE = 0` and for `NW = 1` with `CD = 0`, `PG = 1`
     /// with `PE = 1` is legal (paging is not modelled) and reserved bits are ignored on write.
     Cr0WriteUnmodelled { cs: u16, ip: u32, value: u32 },
+    /// The protected-mode far jump (S6-14j) at `cs:ip` was refused for `reason` (the
+    /// target offset beyond the new CS limit is [`Self::TargetBeyondLimit`]).
+    ProtectedJumpRefused {
+        cs: u16,
+        ip: u32,
+        selector: u16,
+        reason: ProtectedJumpReason,
+    },
 }
 
 /// Result of [`RealModeCpu::run`].
@@ -486,6 +536,11 @@ pub struct RealModeCpu {
     pub gdtr: TableRegister,
     /// IDTR (S6-14i): base 0 and limit `0xFFFF` after INIT; loaded by `LIDT`.
     pub idtr: TableRegister,
+    /// CS descriptor cache loaded by the protected-mode far jump (S6-14j); `None` until then.
+    /// When `Some`, `mode.cs` holds the same selector, base and limit (kept equal by the only
+    /// writer, [`RealModeCpu::step`]); `access` and `flags` exist only here. Real-mode segments
+    /// carry no attributes in this model.
+    pub cs_protected: Option<ProtectedSegment>,
 }
 
 impl RealModeCpu {
@@ -501,6 +556,7 @@ impl RealModeCpu {
             cpuid: CpuidSource::Profile(CpuidProfile::DiagnosticV1),
             gdtr: TableRegister::after_init(),
             idtr: TableRegister::after_init(),
+            cs_protected: None,
         }
     }
 
@@ -830,7 +886,7 @@ impl RealModeCpu {
         mem: &mut M,
     ) -> Result<RealInstruction, RealModeRefusal> {
         if self.mode.cr0 & CR0_PE != 0 {
-            return Err(RealModeRefusal::NotRealMode { cr0: self.mode.cr0 });
+            return self.step_protected_entry(mem);
         }
         let (insn, len) = self.decode(mem)?;
         let shadow_before = self.mov_ss_shadow;
@@ -1109,6 +1165,9 @@ impl RealModeCpu {
                 self.mode.cr0 = self.gpr[EAX] | CR0_ET;
                 self.mode.eip = next_eip;
             }
+            RealInstruction::JmpFarProtected { .. } => {
+                unreachable!("decode never returns the PE = 1 far jump; step_protected_entry does")
+            }
             RealInstruction::MovAxFromCs => {
                 // 16-bit operand: only AX is written, the upper half of EAX is kept. This is
                 // from memory, not confirmed by the oracle (its input EAX is 0); the SDM note
@@ -1143,6 +1202,118 @@ impl RealModeCpu {
             self.mov_ss_shadow = matches!(insn, RealInstruction::MovSegFromAx(SegReg::Ss));
         }
         Ok(insn)
+    }
+
+    /// `CR0.PE = 1` (S6-14j): executes the single far jump `66 EA o32 s16` while the real-mode CS
+    /// is still in place; everything else is [`RealModeRefusal::NotRealMode`], as is every step
+    /// after the jump (`cs_protected` is set). Checks first, state and memory last.
+    ///
+    /// The descriptor rules are the SDM Vol. 3A far `JMP` rules by memory, with CPL = 0: TI = 0,
+    /// non-null, within the GDT limit, code segment (`S = 1`, executable), present, privilege
+    /// (`RPL = DPL = 0` for a non-conforming segment, `DPL = 0` for a conforming one), offset
+    /// within the new limit. A clear accessed bit is set in the descriptor in memory and in the
+    /// cache; the loaded `CS.selector` has RPL 0 (CPL). The `L = 1` descriptor is a model refusal.
+    fn step_protected_entry<M: RealModeMemory>(
+        &mut self,
+        mem: &mut M,
+    ) -> Result<RealInstruction, RealModeRefusal> {
+        let not_real_mode = RealModeRefusal::NotRealMode { cr0: self.mode.cr0 };
+        if self.cs_protected.is_some() {
+            return Err(not_real_mode);
+        }
+        let mut b = [0u8; 8];
+        for (i, byte) in b.iter_mut().enumerate() {
+            match self.fetch(mem, i as u32) {
+                Ok(v) => *byte = v,
+                Err(_) => return Err(not_real_mode),
+            }
+        }
+        if b[0] != 0x66 || b[1] != 0xEA {
+            return Err(not_real_mode);
+        }
+        let offset = u32::from_le_bytes([b[2], b[3], b[4], b[5]]);
+        let selector = u16::from_le_bytes([b[6], b[7]]);
+        let (cs, ip) = (self.mode.cs.selector, self.mode.eip);
+        let refuse = |reason| RealModeRefusal::ProtectedJumpRefused {
+            cs,
+            ip,
+            selector,
+            reason,
+        };
+        if selector & 0x4 != 0 {
+            return Err(refuse(ProtectedJumpReason::LdtSelector));
+        }
+        if selector & 0xFFF8 == 0 {
+            return Err(refuse(ProtectedJumpReason::NullSelector));
+        }
+        let index = u32::from(selector & 0xFFF8);
+        if index + 7 > u32::from(self.gdtr.limit) {
+            return Err(refuse(ProtectedJumpReason::BeyondGdtLimit {
+                limit: self.gdtr.limit,
+            }));
+        }
+        let linear = self.gdtr.base.wrapping_add(index);
+        let mut descriptor = [0u8; 8];
+        for (i, byte) in descriptor.iter_mut().enumerate() {
+            // A descriptor that would wrap past 4 GiB is not modelled: it is unreadable.
+            let at = u64::from(self.gdtr.base) + u64::from(index) + i as u64;
+            match u32::try_from(at).ok().and_then(|a| mem.read_u8(a)) {
+                Some(v) => *byte = v,
+                None => {
+                    return Err(refuse(ProtectedJumpReason::DescriptorUnreadable {
+                        linear: at as u32,
+                    }));
+                }
+            }
+        }
+        let access = descriptor[5];
+        if access & 0x18 != 0x18 {
+            return Err(refuse(ProtectedJumpReason::NotCodeSegment { access }));
+        }
+        if access & 0x80 == 0 {
+            return Err(refuse(ProtectedJumpReason::NotPresent));
+        }
+        // The model checks P, then privilege. By the SDM, for a simultaneous violation the cause is
+        // #GP (DPL/RPL) before #NP; the model picks its own order, the refusal state is the same.
+        let (rpl, dpl) = ((selector & 3) as u8, (access >> 5) & 3);
+        let conforming = access & 0x04 != 0;
+        if dpl != 0 || (!conforming && rpl != 0) {
+            return Err(refuse(ProtectedJumpReason::Privilege { rpl, dpl }));
+        }
+        // CS.RPL becomes the CPL (0).
+        let segment = ProtectedSegment::from_descriptor(selector & !3, descriptor);
+        if segment.flags & 0x2 != 0 {
+            return Err(refuse(ProtectedJumpReason::LongModeCode));
+        }
+        if offset > segment.limit {
+            return Err(RealModeRefusal::TargetBeyondLimit {
+                offset,
+                limit: segment.limit,
+            });
+        }
+        let accessed_at = linear.wrapping_add(5);
+        if access & 1 == 0 && !mem.can_write(accessed_at) {
+            return Err(refuse(ProtectedJumpReason::DescriptorUnwritable {
+                linear: accessed_at,
+            }));
+        }
+        if access & 1 == 0 {
+            assert!(mem.write_u8(accessed_at, access | 1), "can_write was true");
+        }
+        let segment = ProtectedSegment {
+            access: access | 1,
+            ..segment
+        };
+        self.mode.cs = RealSegment {
+            selector: segment.selector,
+            base: segment.base,
+            limit: segment.limit,
+        };
+        self.cs_protected = Some(segment);
+        self.mode.eip = offset;
+        // The instruction after a `MOV SS` retired: the shadow ends.
+        self.mov_ss_shadow = false;
+        Ok(RealInstruction::JmpFarProtected { selector, offset })
     }
 
     /// Checks the 4-byte DS operand at `disp` (limit, readable, writable) and returns its
@@ -4224,9 +4395,21 @@ mod tests {
             0x102C, 0x1032, 0x1038, 0x103B, 0x1041, // S6-14i: block 4 (lidt .. mov cr0,eax)
         ]);
         assert_eq!(trace, expected);
-        // S6-14i: MOV CR0,EAX at 0x1041 sets PE, so the far jump of block 5 at 0x1044 is not
-        // fetched: the next step is refused as `NotRealMode`, EIP = 0x1044, state unchanged.
-        assert_eq!(stop, RealModeRefusal::NotRealMode { cr0: 0x0005_0033 });
+        // S6-14i/S6-14j: MOV CR0,EAX at 0x1041 sets PE; the far jump of block 5 at 0x1044
+        // (`66 ea 00 20 00 00 08 00`, selector 8) is then executed by the PE = 1 path, but the
+        // GDT pointer at DS:0x30 is zero in this image (GDTR = base 0, limit 0), so selector 8
+        // is beyond the GDT limit (8 + 7 > 0): refused, EIP = 0x1044, state unchanged (S6-14i
+        // stopped here with `NotRealMode`).
+        assert_eq!(
+            stop,
+            RealModeRefusal::ProtectedJumpRefused {
+                cs: 0,
+                ip: 0x1044,
+                selector: 8,
+                reason: ProtectedJumpReason::BeyondGdtLimit { limit: 0 }
+            }
+        );
+        assert_eq!(cpu.cs_protected, None);
         // On return from verify_cpu (before block 4), by hand: EAX = 0 (xor), EBX = leaf 1 EBX
         // 0x100 (last CPUID), ECX = 0, EDX = 0x781a379 & 0x6000000 = 0x6000000 (AND, then CMP
         // only), DI = 0, ESP = 0x6020 (balanced call/ret and push/pop), flags from `test eax,eax`
@@ -4265,7 +4448,16 @@ mod tests {
         ]);
         assert_eq!(trace, expected);
         assert!(!trace.contains(&0x119B), "the failure tail is not taken");
-        assert_eq!(stop, RealModeRefusal::NotRealMode { cr0: 0x0005_0033 });
+        // S6-14j: the far jump at 0x1044 is refused (GDTR limit 0), see the test above.
+        assert_eq!(
+            stop,
+            RealModeRefusal::ProtectedJumpRefused {
+                cs: 0,
+                ip: 0x1044,
+                selector: 8,
+                reason: ProtectedJumpReason::BeyondGdtLimit { limit: 0 }
+            }
+        );
         assert_eq!(cpu.gpr[EAX], 0x0005_0033);
         assert_eq!(cpu.gpr[EBX], 0x100);
         assert_eq!(cpu.gpr[ECX], 0);
@@ -4886,7 +5078,9 @@ mod tests {
     fn s6_14i_block_3_and_4_by_hand_from_the_linked_bytes() {
         // Bytes 0x1027..0x1044 of 16bit-objdump.txt: test eax,eax; jne 0x104c; lidtd ds:0x60;
         // lgdtd ds:0x30; mov dx,0x18; mov eax,0x50033; mov cr0,eax. Then the far jump of block 5
-        // (66 ea ...), which must not be fetched: PE = 1 stops the module first.
+        // (66 ea ...), which the PE = 1 path executes (S6-14j): the descriptor at GDT base
+        // 0x9F40 + 8 is zero in this image, so it is not a code segment (access byte 0): refused
+        // with the state of S6-14i (before S6-14j the run stopped with `NotRealMode`).
         let code: [u8; 0x1C] = [
             0x66, 0x85, 0xC0, 0x75, 0x20, 0x66, 0x0F, 0x01, 0x1E, 0x60, 0x00, 0x66, 0x0F, 0x01,
             0x16, 0x30, 0x00, 0xBA, 0x18, 0x00, 0x66, 0xB8, 0x33, 0x00, 0x05, 0x00, 0x0F, 0x22,
@@ -4909,7 +5103,12 @@ mod tests {
         );
         assert_eq!(
             run.stop,
-            Some(RealModeRefusal::NotRealMode { cr0: 0x0005_0033 })
+            Some(RealModeRefusal::ProtectedJumpRefused {
+                cs: 0,
+                ip: 0x1044,
+                selector: 8,
+                reason: ProtectedJumpReason::NotCodeSegment { access: 0 }
+            })
         );
         assert_eq!(cpu.mode.eip, 0x1044);
         assert_eq!(cpu.gpr[EDX], 0x0003_0018, "DX = 0x18, EDX[31:16] kept");
@@ -4925,6 +5124,10 @@ mod tests {
         assert_eq!(cpu.idtr, TableRegister { base: 0, limit: 0 });
         assert_eq!(cpu.mode.eflags, 0x46, "TEST EAX,EAX with EAX = 0: ZF, PF");
         assert_eq!(cpu.mode.cs.selector, 0);
+        assert_eq!(
+            cpu.cs_protected, None,
+            "refused: the real CS is not replaced"
+        );
     }
 
     // ---- Comparison with the KVM oracle (S6-14i) ---------------------------------------
@@ -5042,5 +5245,601 @@ mod tests {
         2,
         9,
         false
+    );
+
+    // ---- S6-14j: block 5, the protected-mode far jump `66 ea o32 s16` ---------------------
+    //
+    // Layout of the by-hand tests: the instruction at 0x1044 as in the linked blob, GDTR base
+    // 0x38 limit 0x1f (selector 8 is the descriptor at linear 0x40, its access byte at 0x45),
+    // CR0 = 0x50033 (PE set), CS still the real-mode segment 0000 (limit 0xFFFF), as after
+    // `MOV CR0,EAX` of block 4. Non-zero registers and flags are set so unchanged state cannot
+    // match by accident.
+
+    const FLAT_CODE_A_CLEAR: [u8; 8] = [0xFF, 0xFF, 0, 0, 0, 0x9A, 0xCF, 0];
+
+    fn pm_entry(selector: u16, descriptor: [u8; 8]) -> (RealModeCpu, Vec<u8>) {
+        let mut cpu = RealModeCpu::at_cs_ip(0, 0x1044, 0x6000_0010, 0x306A9);
+        cpu.mode.cr0 = 0x0005_0033;
+        cpu.mode.eflags = 0x0000_0046;
+        cpu.gpr = [0x11, 0x22, 0x33, 0x44, 0x6020, 0x66, 0x77, 0x88];
+        cpu.gdtr = TableRegister {
+            base: 0x38,
+            limit: 0x1F,
+        };
+        cpu.mov_ss_shadow = true;
+        let mut ram = vec![0u8; 0x1_0000];
+        ram[0x40..0x48].copy_from_slice(&descriptor);
+        ram[0x48..0x50].copy_from_slice(&[0xFF, 0xFF, 0, 0, 0, 0x92, 0xCF, 0]); // data
+        let [lo, hi] = selector.to_le_bytes();
+        ram[0x1044..0x104C].copy_from_slice(&[0x66, 0xEA, 0x00, 0x20, 0x00, 0x00, lo, hi]);
+        (cpu, ram)
+    }
+
+    /// A refused jump leaves the processor and the memory unchanged.
+    fn assert_pm_refused(selector: u16, descriptor: [u8; 8], expected: RealModeRefusal) {
+        let (mut cpu, mut ram) = pm_entry(selector, descriptor);
+        let (before, ram_before) = (cpu, ram.clone());
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        assert_eq!(cpu.step(&mut m), Err(expected), "selector {selector:#x}");
+        assert_eq!(cpu, before);
+        assert_eq!(ram, ram_before);
+    }
+
+    fn refused(selector: u16, reason: ProtectedJumpReason) -> RealModeRefusal {
+        RealModeRefusal::ProtectedJumpRefused {
+            cs: 0,
+            ip: 0x1044,
+            selector,
+            reason,
+        }
+    }
+
+    #[test]
+    fn s6_14j_flat_code_jump_loads_cs_cache_and_sets_accessed() {
+        let (mut cpu, mut ram) = pm_entry(0x08, FLAT_CODE_A_CLEAR);
+        let before = cpu;
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        assert_eq!(
+            cpu.step(&mut m),
+            Ok(RealInstruction::JmpFarProtected {
+                selector: 8,
+                offset: 0x2000
+            })
+        );
+        // By hand: 0x00CF9A000000FFFF: base 0, raw limit 0xFFFFF with G = 1 -> 0xFFFFFFFF,
+        // access 0x9A -> 0x9B (the accessed bit is set), flags 0xC (G, D/B).
+        let expected = ProtectedSegment {
+            selector: 0x08,
+            base: 0,
+            limit: 0xFFFF_FFFF,
+            access: 0x9B,
+            flags: 0xC,
+        };
+        assert_eq!(cpu.cs_protected, Some(expected));
+        assert_eq!(
+            cpu.mode.cs,
+            RealSegment {
+                selector: 0x08,
+                base: 0,
+                limit: 0xFFFF_FFFF
+            }
+        );
+        assert_eq!(cpu.mode.eip, 0x2000);
+        assert_eq!(expected.default_operand_size(), crate::OperandSize::Dword);
+        // Nothing else changes: flags (IF = 0), GPRs, CR0, tables, the other segments; the
+        // MOV SS shadow ends; the descriptor in memory has A set and nothing else is written.
+        assert_eq!(cpu.mode.eflags, 0x46);
+        assert_eq!(cpu.mode.eflags & EFLAGS_IF, 0);
+        assert_eq!(cpu.gpr, before.gpr);
+        assert_eq!(cpu.mode.cr0, 0x0005_0033);
+        assert_eq!((cpu.gdtr, cpu.idtr), (before.gdtr, before.idtr));
+        assert_eq!(
+            (
+                cpu.mode.ds,
+                cpu.mode.es,
+                cpu.mode.ss,
+                cpu.mode.fs,
+                cpu.mode.gs
+            ),
+            (
+                before.mode.ds,
+                before.mode.es,
+                before.mode.ss,
+                before.mode.fs,
+                before.mode.gs
+            )
+        );
+        assert!(!cpu.mov_ss_shadow);
+        let mut ram_expected = vec![0u8; 0x1_0000];
+        ram_expected[0x40..0x48].copy_from_slice(&[0xFF, 0xFF, 0, 0, 0, 0x9B, 0xCF, 0]);
+        ram_expected[0x48..0x50].copy_from_slice(&[0xFF, 0xFF, 0, 0, 0, 0x92, 0xCF, 0]);
+        ram_expected[0x1044..0x104C]
+            .copy_from_slice(&[0x66, 0xEA, 0x00, 0x20, 0x00, 0x00, 0x08, 0x00]);
+        assert_eq!(ram, ram_expected);
+        // The module does not execute at the target: every later step is NotRealMode, and the
+        // state does not change however often it is asked.
+        let after = cpu;
+        for _ in 0..3 {
+            let mut m = ImageMemoryMut {
+                base: 0,
+                bytes: &mut ram,
+            };
+            assert_eq!(
+                cpu.step(&mut m),
+                Err(RealModeRefusal::NotRealMode { cr0: 0x0005_0033 })
+            );
+            assert_eq!(cpu, after);
+        }
+    }
+
+    #[test]
+    fn s6_14j_far_jump_offset_keeps_all_32_bits_and_is_checked_against_the_new_limit() {
+        // The jump bytes of `pm_entry` with the offset replaced: `66 ea o32 s16`.
+        fn with_offset(offset: u32, descriptor: [u8; 8]) -> (RealModeCpu, Vec<u8>) {
+            let (cpu, mut ram) = pm_entry(0x08, descriptor);
+            ram[0x1046..0x104A].copy_from_slice(&offset.to_le_bytes());
+            (cpu, ram)
+        }
+        // Flat code 0x00CF9A000000FFFF (limit 0xFFFFFFFF, A clear): 0x0009_C000 > 0xFFFF, so the
+        // upper 16 bits (0x0009) of the offset must survive in EIP.
+        let (mut cpu, mut ram) = with_offset(0x0009_C000, FLAT_CODE_A_CLEAR);
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        assert_eq!(
+            cpu.step(&mut m),
+            Ok(RealInstruction::JmpFarProtected {
+                selector: 8,
+                offset: 0x0009_C000
+            })
+        );
+        assert_eq!(cpu.mode.eip, 0x0009_C000);
+        // Byte granular, D = 1, raw limit 0x0FFFF: bytes FF FF 00 00 00 9B 40 00
+        // (0x00409B000000FFFF; byte 6 = 0x40: G = 0, D/B = 1, limit[19:16] = 0; A already set).
+        let narrow = [0xFF, 0xFF, 0, 0, 0, 0x9B, 0x40, 0];
+        let segment = ProtectedSegment::from_descriptor(0x08, narrow);
+        assert_eq!(segment.limit, 0xFFFF);
+        assert_eq!(segment.base, 0);
+        assert_eq!((segment.access, segment.flags), (0x9B, 0x4));
+        // The same jump to offset 0x0001_0000 = one past that limit: refused, nothing changes.
+        let (mut cpu, mut ram) = with_offset(0x0001_0000, narrow);
+        let (before, ram_before) = (cpu, ram.clone());
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        assert_eq!(
+            cpu.step(&mut m),
+            Err(RealModeRefusal::TargetBeyondLimit {
+                offset: 0x0001_0000,
+                limit: 0xFFFF
+            })
+        );
+        assert_eq!(cpu, before);
+        assert_eq!(ram, ram_before);
+        // The last offset inside the limit passes (EIP 0xFFFF).
+        let (mut cpu, mut ram) = with_offset(0x0000_FFFF, narrow);
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        assert!(cpu.step(&mut m).is_ok());
+        assert_eq!(cpu.mode.eip, 0xFFFF);
+    }
+
+    #[test]
+    fn s6_14j_accessed_bit_already_set_needs_no_write() {
+        // Read-only memory: the jump succeeds because A is already set (no write-back).
+        let (mut cpu, ram) = pm_entry(0x08, [0xFF, 0xFF, 0, 0, 0, 0x9B, 0xCF, 0]);
+        let mut m = mem(0, &ram);
+        assert!(cpu.step(&mut m).is_ok());
+        assert_eq!(cpu.cs_protected.map(|c| c.access), Some(0x9B));
+        // A clear on read-only memory: refused, nothing changes.
+        let (mut cpu, ram) = pm_entry(0x08, FLAT_CODE_A_CLEAR);
+        let before = cpu;
+        let mut m = mem(0, &ram);
+        assert_eq!(
+            cpu.step(&mut m),
+            Err(refused(
+                0x08,
+                ProtectedJumpReason::DescriptorUnwritable { linear: 0x45 }
+            ))
+        );
+        assert_eq!(cpu, before);
+    }
+
+    #[test]
+    fn s6_14j_non_flat_16_bit_and_page_granular_descriptors() {
+        // ff 2f 00 10 00 9a 00 00: limit 0x2fff (bytes), base 0x1000, flags 0 (D = 0, G = 0).
+        let (mut cpu, mut ram) = pm_entry(0x08, [0xFF, 0x2F, 0x00, 0x10, 0x00, 0x9A, 0x00, 0x00]);
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        cpu.step(&mut m).unwrap();
+        let seg = cpu.cs_protected.unwrap();
+        assert_eq!(
+            (seg.base, seg.limit, seg.access, seg.flags),
+            (0x1000, 0x2FFF, 0x9B, 0)
+        );
+        assert_eq!(seg.default_operand_size(), crate::OperandSize::Word);
+        assert_eq!(cpu.mode.fetch_linear_address(), 0x3000);
+        // 02 00 00 10 00 9a c0 00: raw limit 2 pages with G = 1 -> (2 << 12) | 0xfff = 0x2fff,
+        // flags 0xC (G, D = 1).
+        let (mut cpu, mut ram) = pm_entry(0x08, [0x02, 0x00, 0x00, 0x10, 0x00, 0x9A, 0xC0, 0x00]);
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        cpu.step(&mut m).unwrap();
+        let seg = cpu.cs_protected.unwrap();
+        assert_eq!((seg.base, seg.limit, seg.flags), (0x1000, 0x2FFF, 0xC));
+        // Base bytes 2..4 and 7 and the AVL flag: 34 12 78 56 34 9a d0 12 -> base 0x12345678
+        // (bytes 2, 3, 4, 7), raw limit 0x1234, flags 0xD (G, D, AVL) -> (0x1234 << 12) | 0xfff.
+        let (mut cpu, mut ram) = pm_entry(0x08, [0x34, 0x12, 0x78, 0x56, 0x34, 0x9A, 0xD0, 0x12]);
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        // Offset 0x2000 is below the limit 0x01234fff.
+        cpu.step(&mut m).unwrap();
+        let seg = cpu.cs_protected.unwrap();
+        assert_eq!(
+            (seg.base, seg.limit, seg.flags),
+            (0x1234_5678, 0x0123_4FFF, 0xD)
+        );
+    }
+
+    #[test]
+    fn s6_14j_conforming_code_takes_rpl_zero_in_cs() {
+        // 0x9e: conforming, DPL 0; selector 0x0a has RPL 2: allowed (DPL <= CPL), CS.RPL = CPL.
+        let (mut cpu, mut ram) = pm_entry(0x0A, [0xFF, 0xFF, 0, 0, 0, 0x9E, 0xCF, 0]);
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        cpu.step(&mut m).unwrap();
+        assert_eq!(cpu.mode.cs.selector, 0x08);
+        assert_eq!(
+            cpu.cs_protected.map(|c| (c.selector, c.access)),
+            Some((8, 0x9F))
+        );
+        assert_eq!(ram[0x45], 0x9F);
+    }
+
+    #[test]
+    fn s6_14j_target_beyond_the_new_limit_is_refused_unchanged() {
+        // Limit 0x1fff (byte granular), offset 0x2000: one past the limit.
+        assert_pm_refused(
+            0x08,
+            [0xFF, 0x1F, 0, 0, 0, 0x9A, 0x00, 0],
+            RealModeRefusal::TargetBeyondLimit {
+                offset: 0x2000,
+                limit: 0x1FFF,
+            },
+        );
+    }
+
+    #[test]
+    fn s6_14j_selector_and_descriptor_refusals_leave_state_and_memory_unchanged() {
+        let flat = FLAT_CODE_A_CLEAR;
+        // TI = 1 (LDT not modelled), also for index 0; the null selector with any RPL.
+        assert_pm_refused(0x0C, flat, refused(0x0C, ProtectedJumpReason::LdtSelector));
+        assert_pm_refused(0x04, flat, refused(0x04, ProtectedJumpReason::LdtSelector));
+        assert_pm_refused(0x00, flat, refused(0x00, ProtectedJumpReason::NullSelector));
+        assert_pm_refused(0x03, flat, refused(0x03, ProtectedJumpReason::NullSelector));
+        // GDT limit 0x1f: selector 0x18 ends at 0x18 + 7 = 0x1f (inside), 0x20 at 0x27 (outside).
+        // The descriptor at 0x18 is the zero one (not present, not code): reaching the type
+        // check proves the limit check passed.
+        assert_pm_refused(
+            0x18,
+            flat,
+            refused(0x18, ProtectedJumpReason::NotCodeSegment { access: 0 }),
+        );
+        assert_pm_refused(
+            0x20,
+            flat,
+            refused(0x20, ProtectedJumpReason::BeyondGdtLimit { limit: 0x1F }),
+        );
+        // Selector 0xfff8 with RPL bits: far beyond the limit.
+        assert_pm_refused(
+            0xFFFB,
+            flat,
+            refused(0xFFFB, ProtectedJumpReason::BeyondGdtLimit { limit: 0x1F }),
+        );
+        // System descriptor (S = 0, available 32-bit TSS 0x89, busy 0x8b), data segment 0x92
+        // (S = 1, not executable): not code.
+        for access in [0x89u8, 0x8B, 0x92, 0x96, 0x10, 0x00] {
+            assert_pm_refused(
+                0x08,
+                [0xFF, 0xFF, 0, 0, 0, access, 0xCF, 0],
+                refused(0x08, ProtectedJumpReason::NotCodeSegment { access }),
+            );
+        }
+        // Executable code with S = 0 (0x88 | 0x0a = 0x8a is a system type): not code either.
+        assert_pm_refused(
+            0x08,
+            [0xFF, 0xFF, 0, 0, 0, 0x8A, 0xCF, 0],
+            refused(0x08, ProtectedJumpReason::NotCodeSegment { access: 0x8A }),
+        );
+        // P = 0 (code, non-conforming and conforming).
+        for access in [0x1Au8, 0x1E] {
+            assert_pm_refused(
+                0x08,
+                [0xFF, 0xFF, 0, 0, 0, access, 0xCF, 0],
+                refused(0x08, ProtectedJumpReason::NotPresent),
+            );
+        }
+        // Privilege with CPL = 0: DPL 3 (non-conforming 0xFA and conforming 0xFE), DPL 1 and 2;
+        // RPL 3 on a non-conforming DPL 0 segment.
+        for (selector, access, rpl, dpl) in [
+            (0x08u16, 0xFAu8, 0u8, 3u8),
+            (0x08, 0xFE, 0, 3),
+            (0x08, 0xBA, 0, 1),
+            (0x08, 0xDA, 0, 2),
+            (0x0B, 0x9A, 3, 0),
+            (0x09, 0x9A, 1, 0),
+        ] {
+            assert_pm_refused(
+                selector,
+                [0xFF, 0xFF, 0, 0, 0, access, 0xCF, 0],
+                refused(selector, ProtectedJumpReason::Privilege { rpl, dpl }),
+            );
+        }
+        // L = 1 (64-bit code, 0x00AF9A...): a model refusal.
+        assert_pm_refused(
+            0x08,
+            [0xFF, 0xFF, 0, 0, 0, 0x9A, 0xAF, 0],
+            refused(0x08, ProtectedJumpReason::LongModeCode),
+        );
+    }
+
+    #[test]
+    fn s6_14j_unreadable_descriptor_is_refused_unchanged() {
+        // Memory with only the instruction: the descriptor at 0x40 is unreadable (first byte).
+        let (mut cpu, ram) = pm_entry(0x08, FLAT_CODE_A_CLEAR);
+        let before = cpu;
+        let mut m = mem(0x1044, &ram[0x1044..0x104C]);
+        assert_eq!(
+            cpu.step(&mut m),
+            Err(refused(
+                0x08,
+                ProtectedJumpReason::DescriptorUnreadable { linear: 0x40 }
+            ))
+        );
+        assert_eq!(cpu, before);
+        // The last descriptor byte is unreadable: the instruction at 0x10, memory ends at 0x47.
+        let (mut cpu, ram) = pm_entry(0x08, FLAT_CODE_A_CLEAR);
+        cpu.mode.eip = 0x10;
+        let before = cpu;
+        let mut image = [0u8; 0x47];
+        image.copy_from_slice(&ram[..0x47]);
+        image[0x10..0x18].copy_from_slice(&[0x66, 0xEA, 0x00, 0x20, 0x00, 0x00, 0x08, 0x00]);
+        let mut m = mem(0, &image);
+        assert_eq!(
+            cpu.step(&mut m),
+            Err(RealModeRefusal::ProtectedJumpRefused {
+                cs: 0,
+                ip: 0x10,
+                selector: 8,
+                reason: ProtectedJumpReason::DescriptorUnreadable { linear: 0x47 }
+            })
+        );
+        assert_eq!(cpu, before);
+        // A GDT whose descriptor would wrap past 4 GiB (base 0xFFFFFFF8 + index 8 + 0).
+        let (mut cpu, mut ram) = pm_entry(0x08, FLAT_CODE_A_CLEAR);
+        cpu.gdtr = TableRegister {
+            base: 0xFFFF_FFF8,
+            limit: 0xFFFF,
+        };
+        let before = cpu;
+        let ram_before = ram.clone();
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        assert_eq!(
+            cpu.step(&mut m),
+            Err(refused(
+                0x08,
+                ProtectedJumpReason::DescriptorUnreadable { linear: 0 }
+            ))
+        );
+        assert_eq!(cpu, before);
+        assert_eq!(ram, ram_before);
+    }
+
+    #[test]
+    fn s6_14j_only_the_inventoried_form_is_executed_with_pe() {
+        // Anything but `66 ea o32 s16` at CS:IP with PE = 1 is NotRealMode, as in S6-14i.
+        let sel = [0x08u8, 0x00];
+        for code in [
+            &[0xEA, 0x00, 0x20, 0x08, 0x00][..], // ptr16:16 without 66
+            &[0x66, 0xEA, 0x00, 0x20, 0x00, 0x00, 0x08][..], // truncated
+            &[0x66, 0xE9, 0x00, 0x20, 0x00, 0x00, sel[0], sel[1]][..], // other opcode
+            &[0x67, 0x66, 0xEA, 0x00, 0x20, 0x00, 0x00, 0x08][..], // extra prefix first
+            &[0xF4][..],
+            &[0xFA][..],
+        ] {
+            let (mut cpu, mut ram) = pm_entry(0x08, FLAT_CODE_A_CLEAR);
+            ram[0x1044..0x1044 + code.len()].copy_from_slice(code);
+            ram.truncate(0x1044 + code.len());
+            let (before, ram_before) = (cpu, ram.clone());
+            let mut m = ImageMemoryMut {
+                base: 0,
+                bytes: &mut ram,
+            };
+            assert_eq!(
+                cpu.step(&mut m),
+                Err(RealModeRefusal::NotRealMode { cr0: 0x0005_0033 }),
+                "{code:02x?}"
+            );
+            assert_eq!(cpu, before);
+            assert_eq!(ram, ram_before);
+        }
+        // With PE = 0 the same bytes are still `Unsupported` (real mode did not change).
+        let (mut cpu, mut ram) = pm_entry(0x08, FLAT_CODE_A_CLEAR);
+        cpu.mode.cr0 = 0x10;
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        assert!(matches!(
+            cpu.step(&mut m),
+            Err(RealModeRefusal::Unsupported { ip: 0x1044, .. })
+        ));
+    }
+
+    #[test]
+    fn s6_14j_block5_from_the_linked_bytes_after_block_4() {
+        // The real blob bytes 0x1027..0x104c (parsed from the objdump) with a GDT placed where
+        // the bytes at DS:0x30 point: 0x9F40 holds [null, flat code (A clear), flat data].
+        let mut ram = blob_from_objdump();
+        ram[0x30..0x36].copy_from_slice(&[0x17, 0x00, 0x40, 0x9F, 0x00, 0x00]);
+        ram[0x9F48..0x9F50].copy_from_slice(&FLAT_CODE_A_CLEAR);
+        ram[0x9F50..0x9F58].copy_from_slice(&[0xFF, 0xFF, 0, 0, 0, 0x92, 0xCF, 0]);
+        let mut cpu = RealModeCpu::at_cs_ip(0, 0x1027, 0, 0x0003_06A9);
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        let run = cpu.run(&mut m, 100);
+        // test, jne (not taken), lidt, lgdt, mov dx, mov eax, mov cr0, far jmp.
+        assert_eq!(run.steps, 8);
+        assert_eq!(
+            run.stop,
+            Some(RealModeRefusal::NotRealMode { cr0: 0x0005_0033 })
+        );
+        assert_eq!(cpu.mode.eip, 0x2000);
+        assert_eq!(cpu.mode.cs.selector, 0x08);
+        assert_eq!(cpu.cs_protected.map(|c| c.access), Some(0x9B));
+        assert_eq!(ram[0x9F4D], 0x9B, "A set in the descriptor in memory");
+        assert_eq!(cpu.mode.eflags, 0x46);
+        assert_eq!(cpu.gpr[EDX], 0x0003_0018);
+    }
+
+    // ---- Comparison with the KVM oracle (S6-14j) ---------------------------------------
+    //
+    // Files in docs/reports/data/stage6/s6-14j/ (make-images.py, run-oracle.sh). Every image
+    // is entered at 0000:0000, runs the linked bytes 0x1027..0x1044 and the far jump of block 5
+    // (`66 ea 00 20 00 00 SS SS`), and has a HLT at CS.base + 0x2000 that the oracle executes
+    // in protected mode. The model stops after the jump (`NotRealMode`) with EIP = 0x2000, the
+    // oracle's RIP is that + 1. Compared: GPRs, the six selectors/bases/limits, the attributes
+    // of CS (type, DPL, P, D/B, L, G) against the model's cached access and flags, EFLAGS, CR0,
+    // GDTR, IDTR and the captured GDT block (A bit written back).
+    fn compare_with_oracle_j(image: &[u8], json: &str, cs_base: u32) {
+        assert!(json.contains("\"stop_reason\":\"guest_hlt\""));
+        assert!(json.contains("\"exits\":[{\"kind\":\"hlt\"}]"));
+        let mut cpu = RealModeCpu::at_cs_ip(0, 0, 0x6000_0010, oracle_signature(json));
+        let mut ram = vec![0u8; 0x1_0000];
+        ram[..image.len()].copy_from_slice(image);
+        let mut m = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        let run = cpu.run(&mut m, 100);
+        assert_eq!(
+            run.steps, 9,
+            "jmp, test, jne, lidt, lgdt, mov dx, mov eax, mov cr0, jmp"
+        );
+        assert_eq!(
+            run.stop,
+            Some(RealModeRefusal::NotRealMode { cr0: cpu.mode.cr0 })
+        );
+        assert_eq!(cpu.mode.eip, 0x2000);
+        assert_eq!(cpu.mode.cs.base, cs_base);
+        assert_eq!(
+            ram[(cs_base + cpu.mode.eip) as usize],
+            0xF4,
+            "the model's next fetch is the HLT"
+        );
+        assert_final_state_matches(json, &cpu);
+        let cs = cpu.cs_protected.expect("CS cache loaded");
+        let get = |tail: &[&str]| {
+            let mut path = vec!["final_state", "segments", "cs"];
+            path.extend_from_slice(tail);
+            oracle_num(json, &path)
+        };
+        assert_eq!(u64::from(cs.access & 0x0F), get(&["type"]), "CS type");
+        assert_eq!(u64::from((cs.access >> 5) & 3), get(&["dpl"]), "CS DPL");
+        assert_eq!(u64::from(cs.access >> 7), get(&["present"]), "CS P");
+        assert_eq!(u64::from((cs.flags >> 2) & 1), get(&["db"]), "CS D/B");
+        assert_eq!(u64::from((cs.flags >> 1) & 1), get(&["l"]), "CS L");
+        assert_eq!(u64::from(cs.flags >> 3), get(&["g"]), "CS G");
+        let tables = |name: &str| oracle_num(json, &["final_state", "tables", name]);
+        assert_eq!(u64::from(cpu.gdtr.base), tables("gdtr_base"));
+        assert_eq!(u64::from(cpu.gdtr.limit), tables("gdtr_limit"));
+        assert_eq!(u64::from(cpu.idtr.base), tables("idtr_base"));
+        assert_eq!(u64::from(cpu.idtr.limit), tables("idtr_limit"));
+        let (gpa, oracle_bytes) = oracle_result_block(json);
+        assert_eq!(oracle_bytes.len(), 64);
+        let start = gpa as usize;
+        assert_eq!(
+            &ram[start..start + 64],
+            &oracle_bytes[..],
+            "memory at {gpa:#x}"
+        );
+    }
+    macro_rules! oracle_case_j {
+        ($name:ident, $stem:literal, $cs_base:expr) => {
+            #[test]
+            fn $name() {
+                let image: &[u8] = include_bytes!(concat!(
+                    "../../../docs/reports/data/stage6/s6-14j/",
+                    $stem,
+                    ".bin"
+                ));
+                let json: &str = include_str!(concat!(
+                    "../../../docs/reports/data/stage6/s6-14j/oracle-",
+                    $stem,
+                    ".json"
+                ));
+                compare_with_oracle_j(image, json, $cs_base);
+            }
+        };
+    }
+    // a: flat code 0x00CF9A000000FFFF (A clear) at selector 8: CS 8/0/0xFFFFFFFF, type 0xb after
+    // the load, D/B = 1, G = 1; the GDT in memory has the A bit set (0x9b).
+    oracle_case_j!(
+        oracle_j_a_flat_code_accessed_clear,
+        "a-flat-code-accessed-clear-0000-0000",
+        0
+    );
+    // b: the same with A already set: memory unchanged.
+    oracle_case_j!(
+        oracle_j_b_flat_code_accessed_set,
+        "b-flat-code-accessed-set-0000-0000",
+        0
+    );
+    // c: 16-bit byte-granular code, base 0x1000, limit 0x2fff, D = 0, G = 0; HLT at linear 0x3000.
+    oracle_case_j!(
+        oracle_j_c_small_16_bit_code,
+        "c-small-16bit-code-base-1000-0000-0000",
+        0x1000
+    );
+    // d: G = 1, D = 1, raw limit 2 -> 0x2fff, base 0x1000.
+    oracle_case_j!(
+        oracle_j_d_page_granular_d1,
+        "d-page-granular-d1-base-1000-0000-0000",
+        0x1000
+    );
+    // e: conforming code (0x9e), selector 0x0a (RPL 2): CS.selector 8 (CPL), type 0xf.
+    oracle_case_j!(
+        oracle_j_e_conforming_with_rpl_2,
+        "e-conforming-rpl2-0000-0000",
+        0
+    );
+    // f: G, D, AVL, raw limit 0x0ffff (byte 6 = 0xd0) -> 0x0fffffff, base 0x8000; HLT at linear 0xa000.
+    oracle_case_j!(
+        oracle_j_f_avl_g_d_limit_0fffffff,
+        "f-avl-g-d-base-8000-limit-0fffffff-0000-0000",
+        0x8000
     );
 }

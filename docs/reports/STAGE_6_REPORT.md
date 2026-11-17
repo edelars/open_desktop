@@ -584,6 +584,49 @@ Intel Mini в `/tmp/od-s6-14i` (`gcc 15.2.0`, Linux 7.0.0-42, i5-3210M). 5 об�
 Что остаётся до полного S6-14: **S6-14j** — блок 5 (дальний `JMP ptr16:32` в protected mode, загрузка дескриптора `0x08` из GDT), блоки 6–8; ветки Intel/AMD
 `verify_cpu`; решение по расхождению профилей `cpuid.rs` и таблицы цели; подключение модуля к циклу исполнения, S6-13 и S6-16.
 
+### S6-14j — блок 5 trampoline (реализовано, ожидает ревью)
+
+Дата: 2026-11-16. Чекбокс S6-14 в `STAGE_6.md` не отмечен. Контракт: [`CPU_CONTRACT.md`](../specs/CPU_CONTRACT.md#s6-14j--блок-5-trampoline-16-bit-protected-far-jump).
+
+Что сделано: `crates/od-isa/src/real_mode_exec.rs` — дальний переход блока 5 (`0x1044`) при `CR0.PE = 1`. **Сверка с blob:** в
+`16bit-objdump.txt` это `66 ea 00 20 00 00 08 00` (`JMP ptr16:32`, префикс `66`, смещение 32 бита), а не `EA o16 s16`; допущена ровно эта форма.
+`RealModeCpu::step` при `PE = 1` теперь вызывает приватный `step_protected_entry`: если форма `66 ea o32 s16` и CS ещё real-mode —
+проверки дескриптора (TI, null, предел GDT, чтение, код/`S`/`P`, привилегии при CPL = 0, `L`, смещение в пределе, запись бита A) и
+загрузка CS; иначе прежний `NotRealMode`. Скрытый кэш CS: **одно новое поле `RealModeCpu::cs_protected: Option<ProtectedSegment>`**
+(selector, base, limit, access, flags; `mode.cs` дублирует selector/base/limit, единственный писатель — этот путь); `RealSegment`
+и остальные сегменты не менялись. После перехода `EIP = 0x2000`, следующий `step` — `NotRealMode`, ничего по `0x2000` не исполняется.
+Новые типы: `ProtectedJumpReason`, `RealModeRefusal::ProtectedJumpRefused`, `RealInstruction::JmpFarProtected`. Решение про `PE` в `step`:
+ветка только для этой формы и только пока `cs_protected == None`; поведение real mode, других форм и повторных шагов не менялось.
+Бит A: как на железе (оракул, образ `a`), модель записывает его в дескриптор в памяти и в кэш; память без записи при A = 0 — отказ.
+
+Оракул (обязательный): `kvm_runner.c` (sha256 `969ce3a2…`) и `kvm_runner` (`5f6a2aac…`) совпадают с S6-14i; сборка на Intel Mini в
+`/tmp/od-s6-14j` (gcc 15.2.0, Linux 7.0.0-42, i5-3210M). 6 образов (`make-images.py`): `a` — плоский код с A = 0; `b` — с A = 1;
+`c` — 16-битный код (`D = 0`, `G = 0`, база `0x1000`, предел `0x2fff`); `d` — `G = 1`, `D = 1`, предел в страницах; `e` — conforming
+с RPL 2; `f` — `G`/`D`/`AVL`, предел `0x0fffffff`, база `0x8000`. `HLT` по `CS.base + 0x2000` оракул исполняет в protected mode;
+`stop_reason = guest_hlt` во всех образах. Данные: `docs/reports/data/stage6/s6-14j/`.
+
+Сравнение: тесты `oracle_j_*`, **совпало полностью на 6 образах**: 8 GPR, селектор/база/предел шести сегментов, type/DPL/P/D-B/L/G CS
+против `access`/`flags` кэша, EIP (RIP − 1 = `0x2000`), EFLAGS `0x46`, CR0 `0x50033`, GDTR/IDTR, 64 байта памяти (указатель и GDT; в `a`, `c`,
+`d`, `e`, `f` бит A записан: `0x9a`→`0x9b`, `0x9e`→`0x9f`). Оракул подтвердил: CS type после загрузки с A, `limit` при `G = 1`, RPL
+в `CS.selector` при conforming и RPL 2 (`0x0a` → `0x08`), остальные сегменты не меняются (real-mode кэш). Расхождений нет. Исключено из
+сравнения: атрибуты DS/ES/FS/GS/SS (модель не хранит) и `AVL` (оракул не выдаёт).
+
+Тесты: 175 в прогоне `real_mode_exec legacy_mode cpuid legacy` (было 160 в этом дереве до среза; 15 новых = 9 unit + 6 сравнений с оракулом). Три прежних
+теста изменены: `s6_14g_verify_cpu_success_path_on_the_contract_target_table`, `s6_14h_verify_cpu_success_path_on_the_neutral_profile`
+(blob без GDT: `BeyondGdtLimit { limit: 0 }` вместо `NotRealMode` по `0x1044`), `s6_14i_block_3_and_4_by_hand_from_the_linked_bytes` (`NotCodeSegment { access: 0 }`).
+Unit-значения пересчитаны вручную: `0x00CF9A000000FFFF` → база 0, предел `0xFFFFFFFF`, access `0x9b`, flags `0xC`; `ff 2f 00 10 00 9a 00 00` → база `0x1000`,
+предел `0x2fff`, flags 0; `02 00 00 10 00 9a c0 00` → предел `0x2fff`, flags `0xC`; `34 12 78 56 34 9a d0 12` → база `0x12345678`, предел `0x01234fff`,
+flags `0xD`; граница GDT (`0x18` проходит, `0x20` нет), отказы TI/null/system/data/P/DPL/RPL/L/смещение/нечитаемый/выход за 4 ГиБ/память без записи,
+состояние и память без изменений при отказе, другие формы при `PE = 1` — `NotRealMode`, `PE = 0` — `Unsupported`, реальный blob по байтам после блока 4.
+
+Проверки: `cargo fmt -p od-isa -- --check` — чисто; `cargo test -p od-isa --locked --offline --lib -- real_mode_exec legacy_mode cpuid legacy` — 175 прошли;
+`cargo check --workspace --all-targets --offline --locked` — успешно (предупреждения `od-host` прежние). Полный набор od-isa не запускался.
+
+Не проверено оракулом: все отказы (`#GP`/`#NP` оракулом не вызывались: без IDT они не дают чистой остановки), `AVL`, старший байт базы и база от 2 МиБ, `L = 1`, CPL/RPL у non-conforming,
+запись в дескриптор в памяти только для чтения, форма `EA` без `66`. Проблем с хостом не было.
+
+Что остаётся: **S6-14k** — блок 6 (`0x2000`–`0x2062`, 32-битный protected mode), блоки 7–8, ветки Intel/AMD `verify_cpu`, решение по профилям `cpuid.rs`, S6-13 и S6-16.
+
 ### S6-13 — INIT, SIPI и ожидание SIPI (реализовано, исправлено по ревью, ожидает повторного ревью)
 
 Дата: 2026-11-16. Чекбокс S6-13 в `STAGE_6.md` не отмечен. Контракт: [`MACHINE_CONTRACT.md`](../specs/MACHINE_CONTRACT.md#init-sipi-и-ожидание-sipi-s6-13).
