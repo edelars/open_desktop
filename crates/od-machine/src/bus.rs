@@ -524,6 +524,13 @@ impl MachineBus {
             return Err(TrackedCodeSnapshotError::NotRam(physical_base));
         }
         let byte_address = GuestPhysicalAddress::new(physical + offset as u64);
+        // S6-30b: the generation is read BEFORE the bytes (it is an `Acquire` load). A write that
+        // lands between the two leaves the snapshot older than the page, so the next generation
+        // check refreshes it; the reverse order could pair old bytes with a new generation.
+        let backing_generation = self
+            .memory
+            .code_page_generation(physical_base)
+            .map_err(TrackedCodeSnapshotError::Physical)?;
         let mut bytes = vec![0; length];
         self.memory
             .read_bytes(byte_address, &mut bytes)
@@ -532,10 +539,7 @@ impl MachineBus {
             linear_base: linear_start,
             physical_base,
             bytes,
-            backing_generation: self
-                .memory
-                .code_page_generation(physical_base)
-                .map_err(TrackedCodeSnapshotError::Physical)?,
+            backing_generation,
         })
     }
 

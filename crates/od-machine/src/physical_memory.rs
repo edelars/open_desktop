@@ -1,5 +1,5 @@
 use std::fmt;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::ram_storage::RamStorage;
 
@@ -231,7 +231,10 @@ impl std::error::Error for MemoryAccessError {}
 struct Region {
     spec: MemoryRegionSpec,
     backing: Option<RamStorage>,
-    page_generations: Vec<u64>,
+    /// S6-30b: one atomic counter per 4 KiB page the region touches (RAM only). Raised with
+    /// `Release` after the data of a write has been stored, read with `Acquire` (see
+    /// [`PhysicalMemory::code_page_generation`]); every access is through `&self`.
+    page_generations: Vec<AtomicU64>,
 }
 
 /// Handle to one plain-RAM 4 KiB frame of a [`PhysicalMemory`] (see `PhysicalMemory::ram_frame`),
@@ -333,7 +336,7 @@ impl PhysicalMemory {
                             bytes: generation_bytes,
                         }
                     })?;
-                    generations.resize(page_count, 1);
+                    generations.resize_with(page_count, || AtomicU64::new(1));
                     (Some(bytes), generations)
                 }
             } else {
@@ -348,6 +351,15 @@ impl PhysicalMemory {
         Ok(Self { regions })
     }
 
+    /// The generation of the RAM page holding `address` (starts at 1; raised once per committed
+    /// write that touches the page). S6-30b: an `Acquire` load. A writer stores the data first
+    /// and raises the counter afterwards with `Release`, so a reader that sees a generation also
+    /// sees every byte stored before the raise. A reader that caches something derived from
+    /// RAM bytes must therefore read the generation **before** it reads the bytes and store that
+    /// value with the cached data: a write that lands in between then leaves the cached
+    /// generation older than the page, and the next check discards the entry (a spurious
+    /// refresh, never a stale hit). Reading the generation after the bytes would allow the
+    /// opposite, unsafe pairing (old bytes with a new generation).
     pub fn code_page_generation(
         &self,
         address: GuestPhysicalAddress,
@@ -362,7 +374,7 @@ impl PhysicalMemory {
         region
             .page_generations
             .get(page_index)
-            .copied()
+            .map(|generation| generation.load(Ordering::Acquire))
             .ok_or(MemoryAccessError::AddressOverflow)
     }
 
@@ -388,11 +400,36 @@ impl PhysicalMemory {
         &mut self,
         address: GuestPhysicalAddress,
         input: &[u8],
-        mut committed_write: impl FnMut(GuestPhysicalRange),
+        committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
         let len = checked_access_len(input.len())?;
+        self.commit_write(
+            address,
+            len,
+            |storage, offset| storage.copy_in(offset, input),
+            committed_write,
+        )
+    }
+
+    /// The one commit transaction under every RAM write, old (`write_bytes`) and new (`store_*`):
+    /// locate and validate (errors and their order are those of `write_bytes`), check that no
+    /// page generation would overflow, run `write` on the storage, raise the generation of every
+    /// touched page (S6-30b: one `fetch_add(1, Release)` per page, after the data), and only then
+    /// call `committed_write` once with the written range. A rejected write changes nothing and
+    /// notifies nothing; a `Framebuffer` write has no generations and no callback.
+    ///
+    /// The overflow check and the raise are separate atomic steps: concurrent writers to one page
+    /// cannot make them inexact in practice (a `u64` counter would need 2^64 writes to that one
+    /// page), and the serial paths cannot interleave.
+    fn commit_write(
+        &self,
+        address: GuestPhysicalAddress,
+        len: u64,
+        write: impl FnOnce(&RamStorage, usize),
+        mut committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<(), MemoryAccessError> {
         let (region_index, offset) = self.locate_index(address, len)?;
-        let region = &mut self.regions[region_index];
+        let region = &self.regions[region_index];
         // ROM has read backing but the guest and ordinary loaders never write it.
         if region.backing.is_none() || region.spec.kind == MemoryRegionKind::Rom {
             return Err(MemoryAccessError::ReadOnlyRegion(region.spec.kind));
@@ -403,7 +440,7 @@ impl PhysicalMemory {
                 .backing
                 .as_ref()
                 .ok_or(MemoryAccessError::ReadOnlyRegion(region.spec.kind))?;
-            backing.copy_in(offset, input);
+            write(backing, offset);
             return Ok(());
         }
         let first_page = address.get() >> 12;
@@ -418,11 +455,11 @@ impl PhysicalMemory {
             .ok_or(MemoryAccessError::AddressOverflow)?;
         let generations = region
             .page_generations
-            .get_mut(first_generation..end_generation)
+            .get(first_generation..end_generation)
             .ok_or(MemoryAccessError::AddressOverflow)?;
         if generations
             .iter()
-            .any(|generation| generation.checked_add(1).is_none())
+            .any(|generation| generation.load(Ordering::Relaxed) == u64::MAX)
         {
             return Err(MemoryAccessError::CodeGenerationExhausted);
         }
@@ -430,9 +467,11 @@ impl PhysicalMemory {
             .backing
             .as_ref()
             .ok_or(MemoryAccessError::ReadOnlyRegion(region.spec.kind))?;
-        backing.copy_in(offset, input);
+        write(backing, offset);
+        // Publish: a reader that `Acquire`-loads the raised value sees the data written above.
         for generation in generations {
-            *generation += 1;
+            let previous = generation.fetch_add(1, Ordering::Release);
+            debug_assert_ne!(previous, u64::MAX, "page generation wrapped to 0");
         }
         let committed = GuestPhysicalRange {
             start: address,
@@ -584,26 +623,6 @@ impl PhysicalMemory {
         Ok((backing, offset))
     }
 
-    /// S6-30a: the region storage a write of `len` bytes at `address` goes to. Same checks and
-    /// errors, in the same order, as [`Self::write_bytes`] up to the page-generation check
-    /// (`CodeGenerationExhausted`), which belongs to S6-30b.
-    fn writable_storage(
-        &self,
-        address: GuestPhysicalAddress,
-        len: usize,
-    ) -> Result<(&RamStorage, usize), MemoryAccessError> {
-        let len = checked_access_len(len)?;
-        let (region, offset) = self.locate(address, len)?;
-        if region.backing.is_none() || region.spec.kind == MemoryRegionKind::Rom {
-            return Err(MemoryAccessError::ReadOnlyRegion(region.spec.kind));
-        }
-        let backing = region
-            .backing
-            .as_ref()
-            .ok_or(MemoryAccessError::ReadOnlyRegion(region.spec.kind))?;
-        Ok((backing, offset))
-    }
-
     fn locate(
         &self,
         address: GuestPhysicalAddress,
@@ -720,10 +739,12 @@ impl PhysicalMemory {
 /// bytes, ascending; see `ram_storage`). The locating rules, region kinds and errors are those
 /// of `read_bytes`/`write_bytes`; the results are bit-identical to them.
 ///
-/// The stores do **not** raise page generations and do **not** notify committed writes: the
-/// generation counters are still plain integers behind `&mut self` (S6-30b makes them atomic
-/// and adds the notification). Nothing in production calls these functions until S6-30c
-/// switches the adapters; they must not be used to write guest RAM that a code cache watches.
+/// S6-30b: the stores take the same `committed_write` callback as `write_*` and go through the
+/// same commit transaction (`commit_write`): same validation and errors in the same order, the
+/// data is stored first, then every touched page generation is raised atomically (`Release`),
+/// then the callback runs once; ROM and a rejected write change and notify nothing, a
+/// `Framebuffer` write has no generation and no callback. Nothing in production calls these
+/// functions until S6-30c switches the adapters.
 #[allow(dead_code)]
 impl PhysicalMemory {
     pub(crate) fn load_bytes(
@@ -740,10 +761,15 @@ impl PhysicalMemory {
         &self,
         address: GuestPhysicalAddress,
         input: &[u8],
+        committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
-        let (storage, offset) = self.writable_storage(address, input.len())?;
-        storage.copy_in(offset, input);
-        Ok(())
+        let len = checked_access_len(input.len())?;
+        self.commit_write(
+            address,
+            len,
+            |storage, offset| storage.copy_in(offset, input),
+            committed_write,
+        )
     }
 
     pub(crate) fn load_u8(&self, address: GuestPhysicalAddress) -> Result<u8, MemoryAccessError> {
@@ -770,40 +796,56 @@ impl PhysicalMemory {
         &self,
         address: GuestPhysicalAddress,
         value: u8,
+        committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
-        let (storage, offset) = self.writable_storage(address, 1)?;
-        storage.store_u8(offset, value, Ordering::SeqCst);
-        Ok(())
+        self.commit_write(
+            address,
+            1,
+            |storage, offset| storage.store_u8(offset, value, Ordering::SeqCst),
+            committed_write,
+        )
     }
 
     pub(crate) fn store_u16(
         &self,
         address: GuestPhysicalAddress,
         value: u16,
+        committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
-        let (storage, offset) = self.writable_storage(address, 2)?;
-        storage.store_u16(offset, value, Ordering::SeqCst);
-        Ok(())
+        self.commit_write(
+            address,
+            2,
+            |storage, offset| storage.store_u16(offset, value, Ordering::SeqCst),
+            committed_write,
+        )
     }
 
     pub(crate) fn store_u32(
         &self,
         address: GuestPhysicalAddress,
         value: u32,
+        committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
-        let (storage, offset) = self.writable_storage(address, 4)?;
-        storage.store_u32(offset, value, Ordering::SeqCst);
-        Ok(())
+        self.commit_write(
+            address,
+            4,
+            |storage, offset| storage.store_u32(offset, value, Ordering::SeqCst),
+            committed_write,
+        )
     }
 
     pub(crate) fn store_u64(
         &self,
         address: GuestPhysicalAddress,
         value: u64,
+        committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
-        let (storage, offset) = self.writable_storage(address, 8)?;
-        storage.store_u64(offset, value, Ordering::SeqCst);
-        Ok(())
+        self.commit_write(
+            address,
+            8,
+            |storage, offset| storage.store_u64(offset, value, Ordering::SeqCst),
+            committed_write,
+        )
     }
 }
 
@@ -1258,6 +1300,13 @@ mod tests {
             .collect()
     }
 
+    /// The generation (or the error) of every page of the probe window.
+    fn generations(memory: &PhysicalMemory) -> Vec<Result<u64, MemoryAccessError>> {
+        (PROBE_START >> 12..=PROBE_END >> 12)
+            .map(|page| memory.code_page_generation(GuestPhysicalAddress::new(page << 12)))
+            .collect()
+    }
+
     struct XorShift(u64);
 
     impl XorShift {
@@ -1329,11 +1378,13 @@ mod tests {
             for step in 0..20_000u32 {
                 let at = random_address(&mut rng);
                 let value = rng.next();
+                let mut old_commits = Vec::new();
+                let mut new_commits = Vec::new();
                 match rng.next() % 12 {
                     0 => {
-                        let result = new.store_u8(at, value as u8);
+                        let result = new.store_u8(at, value as u8, |r| new_commits.push(r));
                         assert_eq!(
-                            old.write_u8(at, value as u8, |_| {}),
+                            old.write_u8(at, value as u8, |r| old_commits.push(r)),
                             result,
                             "step {step} store_u8 {at:?}"
                         );
@@ -1342,9 +1393,9 @@ mod tests {
                         }
                     }
                     1 => {
-                        let result = new.store_u16(at, value as u16);
+                        let result = new.store_u16(at, value as u16, |r| new_commits.push(r));
                         assert_eq!(
-                            old.write_u16(at, value as u16, |_| {}),
+                            old.write_u16(at, value as u16, |r| old_commits.push(r)),
                             result,
                             "step {step} store_u16 {at:?}"
                         );
@@ -1353,9 +1404,9 @@ mod tests {
                         }
                     }
                     2 => {
-                        let result = new.store_u32(at, value as u32);
+                        let result = new.store_u32(at, value as u32, |r| new_commits.push(r));
                         assert_eq!(
-                            old.write_u32(at, value as u32, |_| {}),
+                            old.write_u32(at, value as u32, |r| old_commits.push(r)),
                             result,
                             "step {step} store_u32 {at:?}"
                         );
@@ -1364,9 +1415,9 @@ mod tests {
                         }
                     }
                     3 => {
-                        let result = new.store_u64(at, value);
+                        let result = new.store_u64(at, value, |r| new_commits.push(r));
                         assert_eq!(
-                            old.write_u64(at, value, |_| {}),
+                            old.write_u64(at, value, |r| old_commits.push(r)),
                             result,
                             "step {step} store_u64 {at:?}"
                         );
@@ -1377,9 +1428,9 @@ mod tests {
                     4 => {
                         let len = (rng.next() % 26) as usize; // 0 is the empty-range error
                         let data: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
-                        let result = new.store_bytes(at, &data);
+                        let result = new.store_bytes(at, &data, |r| new_commits.push(r));
                         assert_eq!(
-                            old.write_bytes(at, &data, |_| {}),
+                            old.write_bytes(at, &data, |r| old_commits.push(r)),
                             result,
                             "step {step} store_bytes {at:?} len {len}"
                         );
@@ -1444,6 +1495,18 @@ mod tests {
                         new_reads += 1;
                     }
                 }
+                // S6-30b: the same notifications (none on a rejection or a Framebuffer write,
+                // otherwise exactly one range of the written bytes) ...
+                assert_eq!(old_commits, new_commits, "step {step} notifications");
+                assert!(new_commits.len() <= 1, "step {step}");
+                // ... and the same generation of every RAM page after every step.
+                if step % 64 == 0 {
+                    assert_eq!(
+                        generations(&old),
+                        generations(&new),
+                        "step {step} generations"
+                    );
+                }
             }
             assert!(new_reads > 1000);
             assert_eq!(dump(&old), dump(&new), "seed {seed:#x}");
@@ -1453,10 +1516,10 @@ mod tests {
                     assert_eq!(byte, model.0[index], "seed {seed:#x} byte {index:#x}");
                 }
             }
-            // The stores of S6-30a do not raise generations (S6-30b); the old ones do.
+            // S6-30b: the stores raise generations like the old path does.
+            assert_eq!(generations(&old), generations(&new), "seed {seed:#x}");
             let ram = GuestPhysicalAddress::new(0x2000);
-            assert_eq!(new.code_page_generation(ram), Ok(1));
-            assert!(old.code_page_generation(ram).unwrap() > 1);
+            assert!(new.code_page_generation(ram).unwrap() > 1);
         }
     }
 
@@ -1475,7 +1538,7 @@ mod tests {
             let expected = reference.write_bytes(at, bytes, |_| {});
             let through_new = rng.next() % 2 == 0;
             let got = if through_new {
-                mixed.store_bytes(at, bytes)
+                mixed.store_bytes(at, bytes, |_| {})
             } else {
                 mixed.write_bytes(at, bytes, |_| {})
             };
@@ -1541,13 +1604,22 @@ mod tests {
             u64::MAX,
         ] {
             let at = GuestPhysicalAddress::new(at);
-            assert_eq!(old.write_u8(at, 1, |_| {}), memory.store_u8(at, 1));
-            assert_eq!(old.write_u16(at, 1, |_| {}), memory.store_u16(at, 1));
-            assert_eq!(old.write_u32(at, 1, |_| {}), memory.store_u32(at, 1));
-            assert_eq!(old.write_u64(at, 1, |_| {}), memory.store_u64(at, 1));
+            assert_eq!(old.write_u8(at, 1, |_| {}), memory.store_u8(at, 1, |_| {}));
+            assert_eq!(
+                old.write_u16(at, 1, |_| {}),
+                memory.store_u16(at, 1, |_| {})
+            );
+            assert_eq!(
+                old.write_u32(at, 1, |_| {}),
+                memory.store_u32(at, 1, |_| {})
+            );
+            assert_eq!(
+                old.write_u64(at, 1, |_| {}),
+                memory.store_u64(at, 1, |_| {})
+            );
             assert_eq!(
                 old.write_bytes(at, &[], |_| {}),
-                memory.store_bytes(at, &[])
+                memory.store_bytes(at, &[], |_| {})
             );
         }
     }
@@ -1560,12 +1632,12 @@ mod tests {
         for at in [0x4000_u64, 0x50f8, 0x0f00, 0x3804] {
             assert!(
                 memory
-                    .store_u64(GuestPhysicalAddress::new(at), u64::MAX)
+                    .store_u64(GuestPhysicalAddress::new(at), u64::MAX, |_| {})
                     .is_err()
             );
         }
         assert_eq!(
-            memory.store_bytes(GuestPhysicalAddress::new(0x2000), &[]),
+            memory.store_bytes(GuestPhysicalAddress::new(0x2000), &[], |_| {}),
             Err(MemoryAccessError::EmptyRange)
         );
         assert_eq!(dump(&memory), before);
@@ -1575,11 +1647,11 @@ mod tests {
     fn framebuffer_is_writable_by_new_stores_without_generations() {
         let memory = storage_test_memory();
         let at = GuestPhysicalAddress::new(0x6ff8);
-        memory.store_u64(at, 0x0102_0304_0506_0708).unwrap();
+        memory.store_u64(at, 0x0102_0304_0506_0708, |_| {}).unwrap();
         assert_eq!(memory.load_u64(at), Ok(0x0102_0304_0506_0708));
         assert_eq!(memory.read_framebuffer_bytes(at, &mut [0u8; 8]), Ok(()));
         assert_eq!(
-            memory.store_u16(GuestPhysicalAddress::new(0x6fff), 1),
+            memory.store_u16(GuestPhysicalAddress::new(0x6fff), 1, |_| {}),
             Err(MemoryAccessError::AccessCrossesRegion(range(0x6fff, 2)))
         );
     }
@@ -1617,10 +1689,10 @@ mod tests {
                 _ => drop(memory.read_u64(at).unwrap()),
             });
             let ((), new_write) = traced(|| match width {
-                1 => memory.store_u8(at, 2).unwrap(),
-                2 => memory.store_u16(at, 2).unwrap(),
-                4 => memory.store_u32(at, 2).unwrap(),
-                _ => memory.store_u64(at, 2).unwrap(),
+                1 => memory.store_u8(at, 2, |_| {}).unwrap(),
+                2 => memory.store_u16(at, 2, |_| {}).unwrap(),
+                4 => memory.store_u32(at, 2, |_| {}).unwrap(),
+                _ => memory.store_u64(at, 2, |_| {}).unwrap(),
             });
             let ((), new_read) = traced(|| match width {
                 1 => drop(memory.load_u8(at).unwrap()),
@@ -1635,7 +1707,7 @@ mod tests {
         }
         // Misaligned dword: ascending bytes.
         let at = GuestPhysicalAddress::new(0x1011);
-        let (_, log) = traced(|| memory.store_u32(at, 9).unwrap());
+        let (_, log) = traced(|| memory.store_u32(at, 9, |_| {}).unwrap());
         assert_eq!(
             log,
             (0..4).map(|i| (0x1011 - 0x1003 + i, 1)).collect::<Vec<_>>()
@@ -1650,7 +1722,7 @@ mod tests {
         use crate::ram_storage::traced;
         let mut memory = storage_test_memory();
         let at = GuestPhysicalAddress::new(0x1008); // aligned guest address, region start 0x1003
-        memory.store_u64(at, 5).unwrap();
+        memory.store_u64(at, 5, |_| {}).unwrap();
         let (result, log) = traced(|| memory.compare_replace_u64(at, 5, 6, |_| {}));
         assert_eq!(result, Ok(Ok(())));
         assert_eq!(log, vec![(5, 8), (5, 8)]);
@@ -1674,7 +1746,9 @@ mod tests {
                         let fill = (round as u8).wrapping_mul(3).wrapping_add(thread) | 1;
                         let at = GuestPhysicalAddress::new(words[round as usize % words.len()]);
                         if thread % 2 == 0 {
-                            memory.store_u64(at, u64::from_ne_bytes([fill; 8])).unwrap();
+                            memory
+                                .store_u64(at, u64::from_ne_bytes([fill; 8]), |_| {})
+                                .unwrap();
                         } else {
                             let bytes = memory.load_u64(at).unwrap().to_ne_bytes();
                             assert!(bytes.iter().all(|&byte| byte == bytes[0]), "torn {bytes:?}");
@@ -1683,5 +1757,144 @@ mod tests {
                 });
             }
         });
+    }
+
+    // ---- S6-30b: atomic page generations and the commit notification ----
+
+    /// The callback of a store runs once, after the data is stored and after the generation of
+    /// every touched page has been raised (a store crossing a page boundary raises both).
+    #[test]
+    fn the_store_notifies_once_after_the_generations_are_raised() {
+        let memory = storage_test_memory();
+        let in_page = GuestPhysicalAddress::new(0x1010);
+        let across = GuestPhysicalAddress::new(0x1ffc); // 4 bytes, then the next page (0x2000)
+        let generation = |at: u64| memory.code_page_generation(GuestPhysicalAddress::new(at));
+        let (g1, g2) = (generation(0x1010).unwrap(), generation(0x2000).unwrap());
+        let mut seen = Vec::new();
+        memory
+            .store_u32(in_page, 0xdead_beef, |r| {
+                seen.push((r, generation(0x1010), memory.load_u32(in_page)))
+            })
+            .unwrap();
+        assert_eq!(seen, vec![(range(0x1010, 4), Ok(g1 + 1), Ok(0xdead_beef))]);
+        let mut seen = Vec::new();
+        memory
+            .store_u64(across, 7, |r| {
+                seen.push((r, generation(0x1010), generation(0x2000)))
+            })
+            .unwrap();
+        assert_eq!(
+            seen,
+            vec![(range(0x1ffc, 8), Ok(g1 + 2), Ok(g2 + 1))],
+            "both touched pages are raised before the callback, once each"
+        );
+        // A rejected store (hole, ROM, empty) raises nothing and does not call back.
+        let mut calls = 0;
+        for at in [0x0f00u64, 0x4000, 0x3804] {
+            assert!(
+                memory
+                    .store_u16(GuestPhysicalAddress::new(at), 1, |_| calls += 1)
+                    .is_err()
+            );
+        }
+        assert!(memory.store_bytes(in_page, &[], |_| calls += 1).is_err());
+        assert_eq!(calls, 0);
+        assert_eq!(
+            (generation(0x1010), generation(0x2000)),
+            (Ok(g1 + 2), Ok(g2 + 1))
+        );
+    }
+
+    /// A page generation at the top of `u64` rejects the write before any byte is stored, on both
+    /// paths, and a write that does not touch that page is unaffected.
+    #[test]
+    fn an_exhausted_generation_rejects_old_and_new_writes_alike() {
+        let mut old = storage_test_memory();
+        let new = storage_test_memory();
+        for memory in [&old, &new] {
+            memory.regions[0].page_generations[0].store(u64::MAX, Ordering::Relaxed);
+        }
+        let at = GuestPhysicalAddress::new(0x1010);
+        assert_eq!(
+            old.write_u32(at, 1, |_| panic!("no callback")),
+            Err(MemoryAccessError::CodeGenerationExhausted)
+        );
+        assert_eq!(
+            new.store_u32(at, 1, |_| panic!("no callback")),
+            Err(MemoryAccessError::CodeGenerationExhausted)
+        );
+        assert_eq!(new.load_u32(at), Ok(0));
+        assert_eq!(old.read_u32(at), Ok(0));
+        assert_eq!(
+            new.store_u32(GuestPhysicalAddress::new(0x2010), 1, |_| {}),
+            Ok(())
+        );
+    }
+
+    /// Four writer threads each own one page and all raise one shared page, through `&self`.
+    /// The final generation of every page is exact (no lost increment), each owner sees its page
+    /// advance by exactly one per store, and an observer thread sees every page monotone. Data and
+    /// generation are tied by `Release`/`Acquire`: the writer stores the word `n`, then raises the
+    /// generation to `1 + n`, so a reader that loads generation `g` and then the word never sees
+    /// a word below `g - 1`.
+    #[test]
+    fn page_generations_are_exact_and_monotone_under_concurrent_writes() {
+        use std::sync::atomic::AtomicBool;
+        const WRITERS: u64 = 4;
+        const ROUNDS: u64 = 5_000;
+        // Pages 0x1000..=0x4000 are private, 0x5000 is shared.
+        let memory = memory(&[(0x1000, 0x5000, MemoryRegionKind::Ram)]);
+        let private = |index: u64| GuestPhysicalAddress::new(0x1000 + index * 0x1000 + 8);
+        let shared = |index: u64| GuestPhysicalAddress::new(0x5000 + index);
+        let done = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let observer = scope.spawn(|| {
+                let mut last = [1u64; (WRITERS + 1) as usize];
+                let mut sweeps = 0u64;
+                while !done.load(Ordering::Acquire) || sweeps == 0 {
+                    for index in 0..WRITERS {
+                        let at = private(index);
+                        let seen = memory.code_page_generation(at).unwrap();
+                        let word = memory.load_u64(at).unwrap();
+                        assert!(seen >= last[index as usize], "page {index} went backwards");
+                        assert!(
+                            word + 1 >= seen,
+                            "page {index}: generation {seen}, word {word}"
+                        );
+                        last[index as usize] = seen;
+                    }
+                    let seen = memory.code_page_generation(shared(0)).unwrap();
+                    assert!(seen >= last[WRITERS as usize], "shared page went backwards");
+                    last[WRITERS as usize] = seen;
+                    sweeps += 1;
+                }
+            });
+            let writers: Vec<_> = (0..WRITERS)
+                .map(|index| {
+                    let memory = &memory;
+                    scope.spawn(move || {
+                        for round in 1..=ROUNDS {
+                            memory.store_u64(private(index), round, |_| {}).unwrap();
+                            // Only the owner writes this page: one raise per store, exactly.
+                            assert_eq!(memory.code_page_generation(private(index)), Ok(1 + round));
+                            memory.store_u8(shared(index), round as u8, |_| {}).unwrap();
+                        }
+                    })
+                })
+                .collect();
+            for writer in writers {
+                writer.join().unwrap();
+            }
+            done.store(true, Ordering::Release);
+            observer.join().unwrap();
+        });
+        for index in 0..WRITERS {
+            assert_eq!(memory.code_page_generation(private(index)), Ok(1 + ROUNDS));
+        }
+        assert_eq!(
+            memory.code_page_generation(shared(0)),
+            Ok(1 + WRITERS * ROUNDS),
+            "shared page: no lost increment"
+        );
     }
 }

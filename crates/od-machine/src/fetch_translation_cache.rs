@@ -847,6 +847,68 @@ mod tests {
         }
     }
 
+    /// S6-30b: a write to a watched table frame reaches the cache by both routes the contract
+    /// names, with the real memory behind them. The writer's own `committed_write` callback
+    /// drives `note_write` (the in-loop route); a write by another vCPU that never calls this
+    /// cache's `note_write` is seen through the atomic page generation at the next check (the
+    /// cross-thread route: `code_page_generation` is an `Acquire` load of what the store raised
+    /// with `Release`). The old path (`write_u64`) raises the same generation; that equality is tested in `physical_memory`.
+    #[test]
+    fn a_write_to_a_table_frame_drops_the_entry_by_callback_and_by_generation() {
+        let memory = memory();
+        let ring0 = context(PrivilegeLevel::Ring0);
+        let table = GuestPhysicalAddress::new(0x3008);
+        let ctx = key(0x1000, PrivilegeLevel::Ring0);
+        let generation_of = |page: u64| {
+            memory
+                .code_page_generation(GuestPhysicalAddress::new(page << 12))
+                .ok()
+        };
+        let insert = |cache: &FetchTranslationCache| {
+            cache.insert(
+                CODE_VA,
+                &paging(0x1000),
+                ring0,
+                frame(&memory, 0x8000),
+                TABLES,
+            )
+        };
+        // In-loop route: the callback of the new store feeds `note_write`.
+        let cache = FetchTranslationCache::persistent(FetchCacheInvalidation::WriteWatch);
+        insert(&cache);
+        memory.store_u64(table, 7, |r| cache.note_write(r)).unwrap();
+        assert_eq!(cache.lookup(CODE_VA, &paging(0x1000), ring0), None);
+        assert_eq!(cache.stats().write_flushes, 1);
+        // Cross-thread route: nobody tells this cache; the generation of the frame moved.
+        for policy in [
+            FetchCacheInvalidation::WriteWatch,
+            FetchCacheInvalidation::GuestOnly,
+        ] {
+            let cache = FetchTranslationCache::persistent(policy);
+            insert(&cache);
+            cache.seal(ctx, &generation_of);
+            cache.revalidate(ctx, &generation_of);
+            assert!(cache.lookup(CODE_VA, &paging(0x1000), ring0).is_some());
+            // A write to a frame no entry watches (the code frame) keeps it.
+            memory
+                .store_u64(GuestPhysicalAddress::new(0x8000), 1, |_| {})
+                .unwrap();
+            cache.revalidate(ctx, &generation_of);
+            assert!(cache.lookup(CODE_VA, &paging(0x1000), ring0).is_some());
+            // The other vCPU writes a table frame, once through the new store.
+            std::thread::scope(|scope| {
+                scope.spawn(|| memory.store_u64(table, 9, |_| {}).unwrap());
+            });
+            cache.revalidate(ctx, &generation_of);
+            assert_eq!(
+                cache.lookup(CODE_VA, &paging(0x1000), ring0),
+                None,
+                "{policy:?}"
+            );
+            assert_eq!(cache.stats().host_flushes, 1, "{policy:?}");
+        }
+    }
+
     /// A frame whose generation cannot be read is sealed as unknown and the next check flushes.
     #[test]
     fn a_table_frame_of_unknown_generation_is_not_trusted() {
