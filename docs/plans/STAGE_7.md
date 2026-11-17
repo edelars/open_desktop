@@ -884,6 +884,21 @@ Five focused tests, other-profile matrix, full od-isa suites
 scoped cargo check/rustfmt/diff-check pass. Independent review approved with
 no findings.
 
+### Текущий статус — 2026-11-16 — ISSUE-344
+
+ISSUE-344 admits only exact bytes `4C 01 D6` (`ADD RSI,R10`) in base
+`PagedCpl0ProbeV1`. Opcode 01 keeps RSI as the r/m destination and REX.R
+selects R10 as the qword source. Shared ADD semantics update RSI, arithmetic
+flags and definedness while preserving other registers. The runner advances to
+ISSUE-345, `4C 39 FE` (`CMP RSI,R15`) at `0x2017c7` after 9,061 retired
+instructions; COM1 is empty. ISSUE-201 remains the unrelated pair of stale
+CLD-unsupported full-machine expectations. Do not mark the Stage 7 gate
+complete.
+
+Four focused tests, the other-profile matrix, full od-isa suites and all 71
+paged machine quantum tests pass. Scoped cargo check, rustfmt and diff-check
+pass; independent review approved with no findings.
+
 ## 10. Проверка документа
 
 Подготовка плана не является реализацией прошивки, устройств, TPM или проведённым экспериментом. Для текущей задачи проверялись: соответствие scope roadmap/architecture/layout/`firmware/AGENTS.md`, фактическое состояние кода на 2026-11-07 (пустой `firmware/uefi/`, только Long64 в `od-isa`, отсутствие ROM backing, PCI, NVMe, RTC, TPM, NVRAM; наличие `MachineBus`, `PhysicalMemory`, flat probe этапа 4, UART, LAPIC/IOAPIC, дисплейного устройства S10-03, политики зависимостей и ADR-0001/0002), последовательность и критерии задач, ссылки и Markdown. CPU-тесты, запуск гостя и SSH не требовались.

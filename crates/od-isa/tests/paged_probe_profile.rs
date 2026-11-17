@@ -30786,7 +30786,6 @@ fn rust_helper_add_r14_r10_neighbours_stay_unsupported_without_mutation() {
         (&[0x4d, 0x03, 0xd6], 0x03), // opposite destination/source direction
         (&[0x4d, 0x01, 0xd7], 0x01), // destination R15
         (&[0x4d, 0x01, 0xde], 0x01), // source R11
-        (&[0x4c, 0x01, 0xd6], 0x01), // destination RSI
         (&[0x49, 0x01, 0xd6], 0x01), // source RDX
         (&[0x45, 0x01, 0xd6], 0x01), // dword operation
         (&[0x66, 0x4d, 0x01, 0xd6], 0x01), // operand-size prefix, REX.W still selects qword
@@ -30827,6 +30826,131 @@ fn rust_helper_add_r14_r10_is_unsupported_in_cpl3_profile() {
         DEFINED,
     );
     assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x4d });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn rust_helper_add_rsi_r10_uses_qword_arithmetic_and_preserves_other_registers() {
+    let code = [0x4c, 0x01, 0xd6]; // ADD RSI,R10
+    let arithmetic_flags = 0x8d5;
+    for (rsi, r10, sum, result_flags) in [
+        (1u64, 2u64, 3u64, 0x004),
+        (u64::MAX, 1, 0, 0x055),
+        (i64::MAX as u64, 1, i64::MIN as u64, 0x894),
+        (i64::MIN as u64, 0, i64::MIN as u64, 0x084),
+        (0x0f, 1, 0x10, 0x010), // auxiliary carry
+        (0, 0, 0, 0x044),       // zero and even parity
+    ] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::Rsi as usize] = rsi;
+        cpu.gpr[Register::R10 as usize] = r10;
+        cpu.rflags = 0x8d7;
+        let before = cpu.clone();
+        let defined = DEFINED & !(1 << 0 | 1 << 11);
+        let mut pio = Pio::default();
+
+        let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined | arithmetic_flags);
+        let mut expected = before;
+        expected.gpr[Register::Rsi as usize] = sum;
+        expected.rflags = (expected.rflags & !arithmetic_flags) | result_flags;
+        expected.rip = RIP + code.len() as u64;
+        assert_eq!(cpu, expected, "RSI={rsi:#018x}, R10={r10:#018x}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(memory.write_addresses.is_empty());
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_add_rsi_r10_fetch_fault_is_atomic() {
+    let rip = RIP + 0xffe;
+    let code = [0x4c, 0x01];
+    let mut memory = memory_with_code_at(&code, rip);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    memory.fail_fetch_at = Some((rip + 2, page_fault(0x10, rip + 2)));
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 2),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(memory.write_addresses.is_empty());
+}
+
+#[test]
+fn rust_helper_add_rsi_r10_neighbours_stay_unsupported() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x4c, 0x03, 0xd6], 0x03), // opposite destination/source direction
+        (&[0x4c, 0x01, 0xde], 0x01), // ADD RSI,R11
+        (&[0x4c, 0x01, 0xd7], 0x01), // ADD RDI,R10
+        (&[0x4c, 0x01, 0xfe], 0x01), // ADD RSI,R15
+        (&[0x48, 0x01, 0xd6], 0x01), // REX.R clear selects RDX as source
+        (&[0x44, 0x01, 0xd6], 0x01), // dword destination
+        (&[0x66, 0x4c, 0x01, 0xd6], 0x01), // operand-size prefix
+        (&[0xf3, 0x4c, 0x01, 0xd6], 0x01), // REP prefix
+        (&[0x40, 0x4c, 0x01, 0xd6], 0x01), // redundant REX prefix
+        (&[0x67, 0x4c, 0x01, 0xd6], 0x01), // address-size prefix
+        (&[0x4c, 0x01, 0x16], 0x01), // memory destination
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "{bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0), "{bytes:02x?}");
+        assert!(memory.write_addresses.is_empty());
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_add_rsi_r10_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x4c, 0x01, 0xd6];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x4c });
     assert_eq!(result.instructions_executed, 0);
     assert_eq!(result.rflags_defined, DEFINED);
     assert_eq!(cpu, before);
@@ -32665,6 +32789,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x49, 0xc1, 0xe0, 0x05][..], 0xc1),
         (&[0x4c, 0x01, 0xff][..], 0x01),
         (&[0x4c, 0x01, 0xe8][..], 0x01),
+        (&[0x4c, 0x01, 0xd6][..], 0x01),
         (&[0x4d, 0x01, 0xd6][..], 0x01),
         (&[0x49, 0x83, 0xff, 0x14][..], 0x83),
         (&[0x49, 0x83, 0xc3, 0x02][..], 0x83),

@@ -27960,3 +27960,7 @@ Five focused tests cover both outcomes with defined/undefined ZF, taken target c
 ### S7-04 CPU-profile slice: exact helper `JNZ rel32 -0x160` (ISSUE-343)
 
 `PagedCpl0ProbeV1` admits only exact no-prefix bytes `0F 85 A0 FE FF FF`. JNZ reads ZF; if clear, signed rel32 -0x160 is applied to next RIP, otherwise execution falls through. Flags and definedness remain unchanged. Canonicality is checked only for taken targets; a not-taken noncanonical fall-through faults at the next fetch. Other displacements/conditions/prefixes, CPL3 and other profiles remain unsupported. Focused/profile tests, full od-isa and paged-machine suites, scoped cargo check, rustfmt and diff-check pass; independent review approved with no findings. ISSUE-201's unrelated stale CLD expectations remain open.
+
+### S7-04 CPU-profile slice: exact helper `ADD RSI,R10` (ISSUE-344)
+
+`PagedCpl0ProbeV1` admits only exact bytes `4C 01 D6`. Opcode 01 uses RSI as r/m destination, while REX.R selects R10 as qword source. Shared ADD semantics produce the full qword sum, update arithmetic flags and mark them defined; only RSI and RIP change among GPRs/control flow, with the required RFLAGS update. Other operand directions/registers/widths/prefixes, CPL3 and other profiles remain unsupported. Focused/profile tests, full od-isa and paged-machine suites, scoped cargo check, rustfmt and diff-check pass; independent review approved with no findings. ISSUE-201's unrelated stale CLD expectations remain open.

@@ -4625,9 +4625,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-344 — S7-04: exact helper `ADD RSI,R10` (`4C 01 D6`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-343.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017c0`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this exact qword register arithmetic instruction after 9,059 retired instructions. The base profile does not yet admit this exact add form.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `4C 01 D6` add qword R10 to RSI. The shared ADD semantics update the 64-bit RSI result and arithmetic flags/definedness; other registers are preserved.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 1 }` at RIP `0x2017c0`; COM1 is empty.
+- **Проверка:** four focused tests cover qword results and flags/definedness across carry/overflow/AF/parity vectors, fetch-fault atomicity, neighbors and CPL3 rejection; the other-profile matrix rejects this exact encoding. Full od-isa and paged machine suites, scoped cargo check, rustfmt and diff-check pass; independent review approved with no findings.
+
+### ISSUE-345 — S7-04: exact helper `CMP RSI,R15` (`4C 39 FE`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-344.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017c7`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware reaches this exact qword register compare after 9,061 retired instructions. The base profile does not yet admit this exact compare form.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 57 }` at RIP `0x2017c7`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.
