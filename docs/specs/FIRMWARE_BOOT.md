@@ -1582,3 +1582,22 @@ od-isa suites pass (2,322/1,591/126/29/6/1,271/7/15; zero doc tests), paged
 machine quantum passes (110/110), workspace all-targets offline cargo check
 passes with existing warnings, and scoped rustfmt and `git diff --check` pass.
 Independent review approved with no findings.
+
+### ISSUE-389 — exact helper LEA RAX,[RCX+R11]
+
+The base paged firmware profile admits only `4A 8D 04 19` (`LEA RAX,[RCX+R11]`).
+REX.W+X select qword width and R11 index; RCX is the SIB base, scale is 1,
+and displacement is zero. This register-only address calculation does not
+access memory or fault on a noncanonical result. It changes RAX/RIP and
+preserves flags/definedness. Tests cover full state, wrap/noncanonical values,
+fetch-fault atomicity, neighbors, CPL3 and other-profile isolation. ISSUE-201
+remains the unrelated CLD caveat.
+
+The firmware runner advances to `48 83 C0 04` (ADD RAX,4, ISSUE-390), RIP
+`0x20127b`, after 9,870 retired instructions, `Unsupported { opcode: 131 }`;
+COM1 is empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`. Full
+od-isa suites pass (2,322/1,591/126/29/6/1,275/7/15; zero doc tests), paged
+machine quantum passes (110/110), workspace all-targets offline cargo check
+passes with existing warnings, and scoped rustfmt and `git diff --check` pass.
+Independent review approved with no findings.

@@ -1688,3 +1688,22 @@ zero doc tests), paged machine quantum passes (110/110), workspace all-targets
 offline cargo check passes with existing warnings, and scoped rustfmt and
 `git diff --check` pass. Independent review approved with no findings. ISSUE-201 remains the
 unrelated CLD caveat.
+
+### ISSUE-389 — exact LEA RAX,[RCX+R11] (`4A 8D 04 19`)
+
+Admit only exact `4A 8D 04 19` in base `PagedCpl0ProbeV1`. REX.W selects
+qword width and REX.X extends the SIB index to R11; base is RCX, scale 1,
+with no displacement. Compute the wrapping 64-bit effective offset with LEA;
+do not read memory or check canonicality. Only RAX and RIP change; flags and
+definedness remain unchanged. Cover wrapped/noncanonical offsets, final SIB-byte
+fetch fault, neighbors, CPL3 and other-profile isolation. ISSUE-201 remains the
+unrelated CLD caveat.
+
+Focused tests pass (4/4), and the other-profile matrix passes (1/1). The
+firmware runner advances to `48 83 C0 04` (ADD RAX,4, ISSUE-390) at RIP
+`0x20127b` after 9,870 retired instructions, `Unsupported { opcode: 131 }`;
+COM1 is empty. Full od-isa suites pass (2,322/1,591/126/29/6/1,275/7/15;
+zero doc tests), paged machine quantum passes (110/110), workspace all-targets
+offline cargo check passes with existing warnings, and scoped rustfmt and
+`git diff --check` pass. Independent review approved with no findings. ISSUE-201 remains the
+unrelated CLD caveat.

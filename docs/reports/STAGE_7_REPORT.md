@@ -3013,3 +3013,22 @@ od-isa suites pass (2,322/1,591/126/29/6/1,271/7/15; zero doc tests), paged
 machine quantum passes (110/110), workspace all-targets offline cargo check
 passes with existing warnings, and scoped rustfmt and `git diff --check` pass.
 Independent review approved with no findings.
+
+### ISSUE-389 — exact LEA RAX,[RCX+R11] (`4A 8D 04 19`)
+
+Admit only exact `4A 8D 04 19` in base `PagedCpl0ProbeV1`. REX.W+X encode a
+qword LEA with RCX as SIB base, R11 as index, scale 1, and displacement zero.
+The effective offset wraps at 64 bits, requires no memory access, and is not
+canonicality-checked. Only RAX/RIP change; flags and definedness are preserved.
+Focused tests cover varied arithmetic, wrap/noncanonical values, final-byte
+fetch-fault atomicity, neighbors and CPL3; the other-profile matrix covers the
+exact bytes.
+
+On image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), the
+runner advances to `48 83 C0 04` (ADD RAX,4, ISSUE-390), RIP `0x20127b`, after
+9,870 retired instructions, `Unsupported { opcode: 131 }`; COM1 is empty.
+ISSUE-201 remains the unrelated CLD expectation caveat. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,275/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline cargo check passes with existing
+warnings, and scoped rustfmt and `git diff --check` pass. Independent review approved with no findings.

@@ -28762,3 +28762,21 @@ COM1 is empty. Full od-isa suites pass (2,322/1,591/126/29/6/1,271/7/15;
 zero doc tests), paged machine quantum passes (110/110), workspace all-targets
 offline cargo check passes with existing warnings, and scoped rustfmt and
 `git diff --check` pass. Independent review approved with no findings.
+
+### ISSUE-389: `4A 8D 04 19` — LEA RAX,[RCX+R11]
+
+Admit only this exact REX.W+X SIB form in base `PagedCpl0ProbeV1`: destination
+RAX, base RCX, index R11, scale 1 and zero displacement. LEA computes a
+wrapping qword effective offset without reading memory or checking address
+canonicality. Only RAX and RIP change; RFLAGS and definedness are preserved.
+A fetch fault on the SIB byte commits no state. Other SIB/register/scale/prefix
+forms and CPL3/other profiles remain unsupported. ISSUE-201 remains the
+unrelated CLD caveat.
+
+Focused tests pass (4/4) and the other-profile matrix passes (1/1). The runner
+advances to `48 83 C0 04` (ADD RAX,4, ISSUE-390) at RIP `0x20127b` after
+9,870 retired instructions, `Unsupported { opcode: 131 }`; COM1 is empty. Full
+od-isa suites pass (2,322/1,591/126/29/6/1,275/7/15; zero doc tests), paged
+machine quantum passes (110/110), workspace all-targets offline cargo check
+passes with existing warnings, and scoped rustfmt and `git diff --check` pass.
+Independent review approved with no findings.
