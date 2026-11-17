@@ -1,0 +1,58 @@
+S5-07 ELF stack-copy invocation counters — implementation slice — 2026-11-17
+
+Purpose
+-------
+Add one opt-in bounded observation for the exact initial-stack platform-string
+copy identified by the schema-v13 PF event history and schema-v14 pre-copy
+snapshot. The observation measures where the source pair's +1 `cr3_changes`
+appears relative to that invocation. It does not alter guest semantics,
+strict comparison, or the optional panic-frame allowlist.
+
+Capture contract
+----------------
+The existing `--execution-observations-elf-stack-copy` option now starts one
+invocation capture only after the existing register/RIP gate, verified direct
+CALL bytes `e8 47 d9 34 00` at `0xffffffff81999bd4`, and exact `x86_64\0`
+source bytes. The return boundary is the checked next RIP
+`0xffffffff81999bd9`; it is not read from the pre-CALL stack. The specialized
+instruction path remains active through that return boundary, including
+quantum boundaries, then stops collecting the invocation.
+
+Schema v16 records cumulative entry, return, and run-stop snapshots for CR3,
+delivered PF/exceptions, `cr3_changes`, CPL0 RDTSC reads, and retired
+instructions through the current boundary. Inside the invocation it records
+actual `Cr3Write` events (the same event kind counted by `stop.cr3_changes`),
+delivered #PF events, and an RDTSC-by-RIP histogram. Capacity is one
+invocation, 64 CR3 events, 64 PF events, 64 RDTSC sites, and 1,000,000 retired
+instructions. Overflow and run-end-before-return are explicit statuses with
+omitted counts; the first observed return boundary is retained.
+
+Strict loading checks the exact return RIP, fixed cap, counter monotonicity,
+boundary/event retired ordering, retained CR3 chain, checked RDTSC sums, and
+reconciliation of the final nested snapshot with the real `runner.stop`
+object. Schema v7–v15 paths remain supported. A gate mismatch is preserved as
+a loadable diagnostic status without inventing invocation boundaries.
+
+Validation
+----------
+* `cargo check -p od-machine -p od-runner --all-targets --offline` — passed;
+  one pre-existing `page_walk.rs` dead-code warning remains.
+* Focused machine ELF-copy collector/gate tests and the cross-quantum selector
+  test — passed, including disabled-option and return-boundary cases.
+* `cargo test -p od-runner linux_direct::series::tests --offline` — 36 passed.
+* Focused schema-v16 roundtrip, invocation-validator tampering, ELF-copy gate,
+  and legacy schema acceptance tests — passed.
+* `rustfmt --edition 2024 --check` on the six changed Rust files and
+  `git diff --check` — passed.
+* Independent code review — PASS; no remaining findings.
+
+Limits and next step
+--------------------
+No exact-nonce Linux N=2 replay of schema v16 has been run yet, and opt-in
+capture overhead has not been benchmarked. The disabled-option path uses the
+existing const-specialized code path and is covered by focused tests; no
+performance claim is made. S5-07 remains blocked/unaccepted. Next, replay both
+canonical source runs with the same nonces and inputs, verify full source
+stop/UART/PF sequence equality, then compare entry/return/stop deltas. The
+invocation interval may include interrupt/fault handlers; interval membership
+does not prove those events were caused by the copy.

@@ -29,6 +29,72 @@ pub const LINUX_ELF_STACK_COPY_PROFILE: &str = "s5-07-elf-stack-platform-copy-v1
 pub const LINUX_ELF_STACK_COPY_RIP: u64 = 0xffff_ffff_8199_9bd4;
 pub const LINUX_ELF_STACK_COPY_PROBE_CAPACITY: usize = 4;
 pub const LINUX_ELF_STACK_COPY_WALK_ENTRY_CAPACITY: usize = 4;
+pub const LINUX_ELF_STACK_COPY_CR3_EVENT_CAPACITY: usize = 64;
+pub const LINUX_ELF_STACK_COPY_RDTSC_SITE_CAPACITY: usize = 64;
+pub const LINUX_ELF_STACK_COPY_PF_EVENT_CAPACITY: usize = 64;
+pub const LINUX_ELF_STACK_COPY_RETIRED_CAPACITY: u64 = 1_000_000;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ElfStackCopyInvocationStatus {
+    #[default]
+    NotStarted,
+    InProgress,
+    Complete,
+    IncompleteGate,
+    IncompleteOverflow,
+    IncompleteRunEnded,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyCounterSnapshot {
+    pub cr3: u64,
+    pub delivered_page_faults: u64,
+    pub delivered_exceptions: u64,
+    pub cr3_changes: u64,
+    pub rdtsc_reads: u64,
+    pub retired_instructions_through_current: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyCr3Event {
+    pub rip: u64,
+    pub old_cr3: u64,
+    pub new_cr3: u64,
+    pub retired_instructions_through_current: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyPageFaultEvent {
+    pub rip: u64,
+    pub cr2: u64,
+    pub error_code: u32,
+    pub access: &'static str,
+    pub cpl: u8,
+    pub retired_instructions_through_current: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyRdtscSiteCount {
+    pub rip: u64,
+    pub reads: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyInvocation {
+    pub status: ElfStackCopyInvocationStatus,
+    pub return_rip: Option<u64>,
+    pub entry: Option<ElfStackCopyCounterSnapshot>,
+    pub return_boundary: Option<ElfStackCopyCounterSnapshot>,
+    pub stop: Option<ElfStackCopyCounterSnapshot>,
+    pub cr3_events: Vec<ElfStackCopyCr3Event>,
+    pub cr3_events_omitted: u64,
+    pub page_fault_events: Vec<ElfStackCopyPageFaultEvent>,
+    pub page_fault_events_omitted: u64,
+    pub rdtsc_sites: Vec<ElfStackCopyRdtscSiteCount>,
+    pub rdtsc_site_overflow_reads: u64,
+    pub retired_duration: u64,
+    pub retired_duration_cap: u64,
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ElfStackCopyStatus {
@@ -77,6 +143,29 @@ pub struct ElfStackCopySnapshot {
     pub mismatch_reasons: Vec<String>,
     pub probes: Vec<ElfStackCopyProbe>,
     pub error: Option<String>,
+    pub return_rip: Option<u64>,
+    pub platform_string_matches: Option<bool>,
+    pub invocation: Option<ElfStackCopyInvocation>,
+}
+
+impl ElfStackCopyCounterSnapshot {
+    fn from_counts(
+        cr3: u64,
+        page_faults: u64,
+        exceptions: u64,
+        cr3_changes: u64,
+        rdtsc: u64,
+        retired: u64,
+    ) -> Self {
+        Self {
+            cr3,
+            delivered_page_faults: page_faults,
+            delivered_exceptions: exceptions,
+            cr3_changes,
+            rdtsc_reads: rdtsc,
+            retired_instructions_through_current: retired,
+        }
+    }
 }
 
 impl ElfStackCopySnapshot {
@@ -102,6 +191,9 @@ impl ElfStackCopySnapshot {
             mismatch_reasons: Vec::new(),
             probes: Vec::new(),
             error: None,
+            return_rip: None,
+            platform_string_matches: None,
+            invocation: None,
         }
     }
 }
@@ -463,6 +555,9 @@ pub(crate) struct LinuxExecutionObservationCollector {
     post_iret_context_mismatch: bool,
     nested_iret_depth: u64,
     elf_stack_copy: Option<ElfStackCopySnapshot>,
+    retired_total: u64,
+    delivered_exception_total: u64,
+    cr3_change_total: u64,
 }
 
 impl LinuxExecutionObservationCollector {
@@ -480,8 +575,239 @@ impl LinuxExecutionObservationCollector {
 
     pub(crate) fn record_elf_stack_copy(&mut self, snapshot: ElfStackCopySnapshot) {
         if self.wants_elf_stack_copy() {
+            let mut snapshot = snapshot;
+            if snapshot.status == ElfStackCopyStatus::Captured
+                && snapshot.platform_string_matches == Some(true)
+                && snapshot.return_rip.is_some()
+            {
+                let return_rip = snapshot.return_rip;
+                let mut invocation = ElfStackCopyInvocation {
+                    status: ElfStackCopyInvocationStatus::InProgress,
+                    return_rip,
+                    entry: None,
+                    return_boundary: None,
+                    stop: None,
+                    cr3_events: Vec::new(),
+                    cr3_events_omitted: 0,
+                    page_fault_events: Vec::new(),
+                    page_fault_events_omitted: 0,
+                    rdtsc_sites: Vec::new(),
+                    rdtsc_site_overflow_reads: 0,
+                    retired_duration: 0,
+                    retired_duration_cap: LINUX_ELF_STACK_COPY_RETIRED_CAPACITY,
+                };
+                invocation.entry = Some(self.elf_copy_counters(snapshot.cr3.unwrap_or(0)));
+                snapshot.invocation = Some(invocation);
+            } else if snapshot.status == ElfStackCopyStatus::Captured {
+                snapshot.status = ElfStackCopyStatus::GateMismatch;
+                snapshot.probes.clear();
+                if snapshot.mismatch_reasons.is_empty() {
+                    snapshot
+                        .mismatch_reasons
+                        .push("platform_call_gate_incomplete".into());
+                }
+                snapshot.invocation = None;
+            }
             self.elf_stack_copy = Some(snapshot);
         }
+    }
+
+    fn elf_copy_counters(&self, cr3: u64) -> ElfStackCopyCounterSnapshot {
+        ElfStackCopyCounterSnapshot::from_counts(
+            cr3,
+            self.page_faults_delivered,
+            self.delivered_exception_total,
+            self.cr3_change_total,
+            self.rdtsc_cpl0_hits,
+            self.retired_total,
+        )
+    }
+
+    pub(crate) fn elf_copy_return_rip(&self) -> Option<u64> {
+        self.elf_stack_copy
+            .as_ref()?
+            .invocation
+            .as_ref()
+            .filter(|capture| {
+                matches!(
+                    capture.status,
+                    ElfStackCopyInvocationStatus::InProgress
+                        | ElfStackCopyInvocationStatus::IncompleteOverflow
+                ) && capture.return_boundary.is_none()
+            })?
+            .return_rip
+    }
+
+    pub(crate) fn tracks_elf_copy_counters(&self) -> bool {
+        self.wants_elf_stack_copy() || self.elf_copy_invocation_active()
+    }
+
+    pub(crate) fn needs_elf_stack_copy_path(&self) -> bool {
+        self.tracks_elf_copy_counters()
+    }
+
+    pub(crate) fn elf_copy_invocation_active(&self) -> bool {
+        self.elf_stack_copy
+            .as_ref()
+            .and_then(|snapshot| snapshot.invocation.as_ref())
+            .is_some_and(|capture| {
+                matches!(
+                    capture.status,
+                    ElfStackCopyInvocationStatus::InProgress
+                        | ElfStackCopyInvocationStatus::IncompleteOverflow
+                ) && capture.return_boundary.is_none()
+            })
+    }
+
+    pub(crate) fn finish_elf_copy_invocation(&mut self, observed_rip: u64, cr3: u64) {
+        let snapshot = self
+            .elf_stack_copy
+            .as_mut()
+            .and_then(|snapshot| snapshot.invocation.as_mut());
+        if let Some(capture) = snapshot.filter(|capture| {
+            matches!(
+                capture.status,
+                ElfStackCopyInvocationStatus::InProgress
+                    | ElfStackCopyInvocationStatus::IncompleteOverflow
+            ) && capture.return_boundary.is_none()
+        }) {
+            if capture.return_rip != Some(observed_rip) {
+                capture.status = ElfStackCopyInvocationStatus::IncompleteGate;
+                return;
+            }
+            capture.return_boundary = Some(ElfStackCopyCounterSnapshot::from_counts(
+                cr3,
+                self.page_faults_delivered,
+                self.delivered_exception_total,
+                self.cr3_change_total,
+                self.rdtsc_cpl0_hits,
+                self.retired_total,
+            ));
+            if capture.status == ElfStackCopyInvocationStatus::InProgress {
+                capture.status = ElfStackCopyInvocationStatus::Complete;
+            }
+        }
+    }
+
+    pub(crate) fn finish_elf_copy_run(
+        &mut self,
+        cr3: u64,
+        page_faults: u64,
+        exceptions: u64,
+        cr3_changes: u64,
+        rdtsc_reads: u64,
+        retired: u64,
+    ) {
+        let Some(capture) = self
+            .elf_stack_copy
+            .as_mut()
+            .and_then(|snapshot| snapshot.invocation.as_mut())
+        else {
+            return;
+        };
+        capture.stop = Some(ElfStackCopyCounterSnapshot::from_counts(
+            cr3,
+            page_faults,
+            exceptions,
+            cr3_changes,
+            rdtsc_reads,
+            retired,
+        ));
+        if capture.status == ElfStackCopyInvocationStatus::InProgress {
+            capture.status = ElfStackCopyInvocationStatus::IncompleteRunEnded;
+        }
+    }
+
+    pub(crate) fn record_elf_copy_retired(&mut self, count: u64) {
+        if !self.tracks_elf_copy_counters() {
+            return;
+        }
+        self.retired_total = self.retired_total.saturating_add(count);
+        let Some(capture) = self
+            .elf_stack_copy
+            .as_mut()
+            .and_then(|snapshot| snapshot.invocation.as_mut())
+        else {
+            return;
+        };
+        if capture.status != ElfStackCopyInvocationStatus::InProgress {
+            return;
+        }
+        capture.retired_duration = capture.retired_duration.saturating_add(count);
+        if capture.retired_duration > capture.retired_duration_cap {
+            capture.status = ElfStackCopyInvocationStatus::IncompleteOverflow;
+        }
+    }
+
+    pub(crate) fn record_elf_copy_cr3(&mut self, rip: u64, old_cr3: u64, new_cr3: u64) {
+        if !self.tracks_elf_copy_counters() {
+            return;
+        }
+        self.cr3_change_total = self.cr3_change_total.saturating_add(1);
+        let retired = self.retired_total;
+        let Some(capture) = self
+            .elf_stack_copy
+            .as_mut()
+            .and_then(|snapshot| snapshot.invocation.as_mut())
+        else {
+            return;
+        };
+        if capture.status != ElfStackCopyInvocationStatus::InProgress {
+            return;
+        }
+        if capture.cr3_events.len() < LINUX_ELF_STACK_COPY_CR3_EVENT_CAPACITY {
+            capture.cr3_events.push(ElfStackCopyCr3Event {
+                rip,
+                old_cr3,
+                new_cr3,
+                retired_instructions_through_current: retired,
+            });
+        } else {
+            capture.cr3_events_omitted = capture.cr3_events_omitted.saturating_add(1);
+            capture.status = ElfStackCopyInvocationStatus::IncompleteOverflow;
+        }
+    }
+
+    pub(crate) fn record_elf_copy_page_fault(&mut self, event: &DeliveredPageFaultObservation) {
+        if !self.tracks_elf_copy_counters() {
+            return;
+        }
+        self.delivered_exception_total = self.delivered_exception_total.saturating_add(1);
+        let Some(capture) = self
+            .elf_stack_copy
+            .as_mut()
+            .and_then(|snapshot| snapshot.invocation.as_mut())
+        else {
+            return;
+        };
+        if capture.status != ElfStackCopyInvocationStatus::InProgress {
+            return;
+        }
+        if capture.page_fault_events.len() < LINUX_ELF_STACK_COPY_PF_EVENT_CAPACITY {
+            capture.page_fault_events.push(ElfStackCopyPageFaultEvent {
+                rip: event.rip,
+                cr2: event.cr2,
+                error_code: event.error_code,
+                access: match event.access.as_str() {
+                    "Read" => "Read",
+                    "Write" => "Write",
+                    "Fetch" => "Fetch",
+                    _ => "unknown",
+                },
+                cpl: event.cpl,
+                retired_instructions_through_current: self.retired_total,
+            });
+        } else {
+            capture.page_fault_events_omitted = capture.page_fault_events_omitted.saturating_add(1);
+            capture.status = ElfStackCopyInvocationStatus::IncompleteOverflow;
+        }
+    }
+
+    pub(crate) fn record_elf_copy_general_protection(&mut self) {
+        if !self.tracks_elf_copy_counters() {
+            return;
+        }
+        self.delivered_exception_total = self.delivered_exception_total.saturating_add(1);
     }
 
     pub(crate) fn with_post_iret_ordinal(selected_post_iret_ordinal: Option<u64>) -> Self {
@@ -1041,6 +1367,26 @@ impl LinuxExecutionObservationCollector {
 
     pub(crate) fn record_cpl0_rdtsc(&mut self, rip: Option<u64>) {
         self.rdtsc_cpl0_hits = self.rdtsc_cpl0_hits.saturating_add(1);
+        if self.elf_copy_invocation_active()
+            && let Some(capture) = self
+                .elf_stack_copy
+                .as_mut()
+                .and_then(|snapshot| snapshot.invocation.as_mut())
+            && capture.status == ElfStackCopyInvocationStatus::InProgress
+            && let Some(rip) = rip
+        {
+            if let Some(site) = capture.rdtsc_sites.iter_mut().find(|site| site.rip == rip) {
+                site.reads = site.reads.saturating_add(1);
+            } else if capture.rdtsc_sites.len() < LINUX_ELF_STACK_COPY_RDTSC_SITE_CAPACITY {
+                capture
+                    .rdtsc_sites
+                    .push(ElfStackCopyRdtscSiteCount { rip, reads: 1 });
+            } else {
+                capture.rdtsc_site_overflow_reads =
+                    capture.rdtsc_site_overflow_reads.saturating_add(1);
+                capture.status = ElfStackCopyInvocationStatus::IncompleteOverflow;
+            }
+        }
         let Some(rip) = rip else {
             self.rdtsc_unattributed_reads = self.rdtsc_unattributed_reads.saturating_add(1);
             return;
@@ -1055,6 +1401,7 @@ impl LinuxExecutionObservationCollector {
     }
 
     pub(crate) fn record_page_fault(&mut self, event: DeliveredPageFaultObservation) {
+        self.record_elf_copy_page_fault(&event);
         let ordinal = self.page_faults_delivered;
         self.page_faults_delivered = self.page_faults_delivered.saturating_add(1);
         if self.selected_post_iret_ordinal == Some(ordinal)
@@ -1191,6 +1538,11 @@ impl LinuxExecutionObservationCollector {
                 if snapshot.status == ElfStackCopyStatus::AwaitingTarget {
                     snapshot.status = ElfStackCopyStatus::RunEndedBeforeTarget;
                 }
+                if let Some(invocation) = snapshot.invocation.as_mut()
+                    && invocation.status == ElfStackCopyInvocationStatus::InProgress
+                {
+                    invocation.status = ElfStackCopyInvocationStatus::IncompleteRunEnded;
+                }
                 snapshot
             }),
         }
@@ -1218,6 +1570,254 @@ mod tests {
         captured.rip = Some(LINUX_ELF_STACK_COPY_RIP);
         collector.record_elf_stack_copy(captured);
         assert!(!collector.wants_elf_stack_copy());
+    }
+
+    fn start_elf_copy_invocation() -> LinuxExecutionObservationCollector {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        let mut snapshot = ElfStackCopySnapshot::empty(ElfStackCopyStatus::Captured);
+        snapshot.rip = Some(LINUX_ELF_STACK_COPY_RIP);
+        snapshot.cr3 = Some(0x1000);
+        snapshot.return_rip = Some(LINUX_ELF_STACK_COPY_RIP + 5);
+        snapshot.platform_string_matches = Some(true);
+        collector.record_elf_stack_copy(snapshot);
+        collector
+    }
+
+    #[test]
+    fn elf_stack_copy_invocation_snapshots_cumulative_counters_at_return_and_stop() {
+        let mut collector = start_elf_copy_invocation();
+        collector.record_elf_copy_retired(2);
+        collector.record_elf_copy_cr3(0xffff_ffff_8199_9c00, 0x1000, 0x2000);
+        collector.record_cpl0_rdtsc(Some(0xffff_ffff_8199_9c10));
+        collector.record_elf_copy_retired(3);
+        collector.finish_elf_copy_invocation(LINUX_ELF_STACK_COPY_RIP + 5, 0x2000);
+        collector.finish_elf_copy_run(0x2000, 1, 1, 1, 1, 100);
+        let capture = collector
+            .finish()
+            .elf_stack_copy
+            .unwrap()
+            .invocation
+            .unwrap();
+        assert_eq!(capture.status, ElfStackCopyInvocationStatus::Complete);
+        assert_eq!(
+            capture.entry.unwrap().retired_instructions_through_current,
+            0
+        );
+        assert_eq!(
+            capture
+                .return_boundary
+                .unwrap()
+                .retired_instructions_through_current,
+            5
+        );
+        assert_eq!(capture.return_boundary.unwrap().cr3_changes, 1);
+        assert_eq!(capture.stop.unwrap().cr3_changes, 1);
+        assert_eq!(capture.cr3_events.len(), 1);
+        assert_eq!(
+            capture.rdtsc_sites,
+            [ElfStackCopyRdtscSiteCount {
+                rip: 0xffff_ffff_8199_9c10,
+                reads: 1
+            }]
+        );
+        assert_eq!(capture.retired_duration, 5);
+    }
+
+    #[test]
+    fn elf_stack_copy_rejects_platform_string_mismatch_before_invocation() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        let mut snapshot = ElfStackCopySnapshot::empty(ElfStackCopyStatus::Captured);
+        snapshot.return_rip = Some(LINUX_ELF_STACK_COPY_RIP + 5);
+        snapshot.platform_string_matches = Some(false);
+        snapshot.probes.push(ElfStackCopyProbe {
+            name: "copy_source".into(),
+            address: 0x1000,
+            page_base: 0x1000,
+            access: "Read".into(),
+            cpl: 0,
+            entries: Vec::new(),
+            outcome: "translated".into(),
+            translated_physical: Some(0x2000),
+            error: None,
+        });
+        collector.record_elf_stack_copy(snapshot);
+        let snapshot = collector.finish().elf_stack_copy.unwrap();
+        assert_eq!(snapshot.status, ElfStackCopyStatus::GateMismatch);
+        assert!(snapshot.invocation.is_none());
+        assert!(snapshot.probes.is_empty());
+    }
+
+    #[test]
+    fn elf_stack_copy_early_wrong_return_rip_is_marked_incomplete() {
+        let mut collector = start_elf_copy_invocation();
+        collector.finish_elf_copy_invocation(LINUX_ELF_STACK_COPY_RIP + 4, 0x1000);
+        let capture = collector
+            .finish()
+            .elf_stack_copy
+            .unwrap()
+            .invocation
+            .unwrap();
+        assert_eq!(capture.status, ElfStackCopyInvocationStatus::IncompleteGate);
+        assert!(capture.return_boundary.is_none());
+    }
+
+    #[test]
+    fn elf_stack_copy_cr3_and_rdtsc_caps_mark_capture_incomplete() {
+        let mut cr3 = start_elf_copy_invocation();
+        for index in 0..=LINUX_ELF_STACK_COPY_CR3_EVENT_CAPACITY {
+            cr3.record_elf_copy_cr3(0x1000 + index as u64, index as u64, index as u64 + 1);
+        }
+        let cr3_capture = cr3.finish().elf_stack_copy.unwrap().invocation.unwrap();
+        assert_eq!(
+            cr3_capture.status,
+            ElfStackCopyInvocationStatus::IncompleteOverflow
+        );
+        assert_eq!(
+            cr3_capture.cr3_events.len(),
+            LINUX_ELF_STACK_COPY_CR3_EVENT_CAPACITY
+        );
+        assert_eq!(cr3_capture.cr3_events_omitted, 1);
+
+        let mut rdtsc = start_elf_copy_invocation();
+        for index in 0..=LINUX_ELF_STACK_COPY_RDTSC_SITE_CAPACITY {
+            rdtsc.record_cpl0_rdtsc(Some(0x1000 + index as u64));
+        }
+        let rdtsc_capture = rdtsc.finish().elf_stack_copy.unwrap().invocation.unwrap();
+        assert_eq!(
+            rdtsc_capture.status,
+            ElfStackCopyInvocationStatus::IncompleteOverflow
+        );
+        assert_eq!(
+            rdtsc_capture.rdtsc_sites.len(),
+            LINUX_ELF_STACK_COPY_RDTSC_SITE_CAPACITY
+        );
+        assert_eq!(rdtsc_capture.rdtsc_site_overflow_reads, 1);
+    }
+
+    #[test]
+    fn elf_stack_copy_page_fault_event_cap_marks_capture_incomplete() {
+        let mut collector = start_elf_copy_invocation();
+        for index in 0..=LINUX_ELF_STACK_COPY_PF_EVENT_CAPACITY {
+            collector.record_page_fault(DeliveredPageFaultObservation {
+                rip: 0xffff_ffff_8199_9c00 + index as u64,
+                cr2: 0x7fff_0000_1000 + index as u64,
+                error_code: 3,
+                access: "Write".into(),
+                cpl: 0,
+                faulting_context: FaultingPageFaultContext {
+                    cr3: 0x1000,
+                    rsp: 0x2000,
+                    rbp: 0x3000,
+                    rcx: 0,
+                    rsi: 0,
+                    rdi: 0,
+                    cs_selector: Some(8),
+                    frame_chain: Vec::new(),
+                    frame_chain_end: crate::FrameChainEnd::NullFramePointer,
+                    page_walk: None,
+                },
+            });
+        }
+        let capture = collector
+            .finish()
+            .elf_stack_copy
+            .unwrap()
+            .invocation
+            .unwrap();
+        assert_eq!(
+            capture.status,
+            ElfStackCopyInvocationStatus::IncompleteOverflow
+        );
+        assert_eq!(
+            capture.page_fault_events.len(),
+            LINUX_ELF_STACK_COPY_PF_EVENT_CAPACITY
+        );
+        assert_eq!(capture.page_fault_events_omitted, 1);
+    }
+
+    #[test]
+    fn elf_stack_copy_retired_duration_cap_marks_capture_incomplete() {
+        let mut collector = start_elf_copy_invocation();
+        collector
+            .elf_stack_copy
+            .as_mut()
+            .unwrap()
+            .invocation
+            .as_mut()
+            .unwrap()
+            .retired_duration_cap = 2;
+        collector.record_elf_copy_retired(3);
+        let capture = collector
+            .finish()
+            .elf_stack_copy
+            .unwrap()
+            .invocation
+            .unwrap();
+        assert_eq!(
+            capture.status,
+            ElfStackCopyInvocationStatus::IncompleteOverflow
+        );
+        assert_eq!(capture.retired_duration, 3);
+        assert_eq!(capture.retired_duration_cap, 2);
+    }
+
+    #[test]
+    fn elf_stack_copy_overflow_keeps_first_return_boundary_only() {
+        let mut collector = start_elf_copy_invocation();
+        for index in 0..=LINUX_ELF_STACK_COPY_CR3_EVENT_CAPACITY {
+            collector.record_elf_copy_cr3(0x1000 + index as u64, index as u64, index as u64 + 1);
+        }
+        collector.record_elf_copy_retired(10);
+        collector.finish_elf_copy_invocation(LINUX_ELF_STACK_COPY_RIP + 5, 0x2000);
+        let first_boundary = collector
+            .elf_stack_copy
+            .as_ref()
+            .unwrap()
+            .invocation
+            .as_ref()
+            .unwrap()
+            .return_boundary;
+        collector.finish_elf_copy_invocation(LINUX_ELF_STACK_COPY_RIP + 5, 0x3000);
+        let capture = collector
+            .finish()
+            .elf_stack_copy
+            .unwrap()
+            .invocation
+            .unwrap();
+        assert_eq!(
+            capture.status,
+            ElfStackCopyInvocationStatus::IncompleteOverflow
+        );
+        assert_eq!(capture.return_boundary, first_boundary);
+        assert_eq!(capture.return_boundary.unwrap().cr3, 0x2000);
+    }
+
+    #[test]
+    fn elf_copy_path_remains_enabled_across_quantum_until_return_boundary() {
+        let mut collector = start_elf_copy_invocation();
+        assert!(collector.needs_elf_stack_copy_path());
+        assert!(!collector.wants_elf_stack_copy());
+        assert!(collector.elf_copy_invocation_active());
+
+        // A set call may end at a quantum boundary while the guest is still inside the call.
+        // The next set call must select the same specialized path.
+        assert!(collector.needs_elf_stack_copy_path());
+        collector.finish_elf_copy_invocation(LINUX_ELF_STACK_COPY_RIP + 5, 0x2000);
+        assert!(!collector.needs_elf_stack_copy_path());
+    }
+
+    #[test]
+    fn elf_copy_counters_are_inactive_without_the_opt_in() {
+        let mut collector = LinuxExecutionObservationCollector::default();
+        assert!(!collector.tracks_elf_copy_counters());
+        assert_eq!(collector.elf_copy_return_rip(), None);
+        collector.record_elf_copy_retired(5);
+        collector.record_elf_copy_cr3(0x1000, 0x2000, 0x3000);
+        collector.record_elf_copy_general_protection();
+        assert_eq!(collector.retired_total, 0);
+        assert_eq!(collector.cr3_change_total, 0);
+        assert_eq!(collector.delivered_exception_total, 0);
+        assert!(collector.finish().elf_stack_copy.is_none());
     }
 
     fn trace_header() -> InstructionPathTraceHeader {

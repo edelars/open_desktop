@@ -2729,6 +2729,16 @@ impl LoadedFirmwareBoard {
             })
             .map(|run| (run, set_exit_detail, cpuid_divergence_leaf, user_entry));
         };
+        if let Some(observations) = execution_observations.as_mut() {
+            observations.finish_elf_copy_run(
+                self.vcpus[BOOT_VCPU_INDEX].state.cr3.unwrap_or(0),
+                page_faults_delivered,
+                exceptions_delivered,
+                changes.len() as u64,
+                rdtsc_reads_by_cpl[0],
+                retired,
+            );
+        }
         // The CPU state carries no CR3 outside this call, whatever way the loop ended.
         self.vcpus[BOOT_VCPU_INDEX].state.cr3 = None;
         // CR2 moves to the vCPU's `guest_cr2` cell (see the entry comment); the CPU state gets

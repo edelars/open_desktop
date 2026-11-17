@@ -1888,9 +1888,29 @@ fn validate_execution_observations_sidecar(
                                         .is_some_and(canonical_hex64)
                                 })
                             });
+                let invocation_valid =
+                    schema_version < 16
+                        || (snapshot.get("platform_string_matches") == Some(&json!(true))
+                            && snapshot
+                                .get("return_rip")
+                                .and_then(Value::as_str)
+                                .is_some_and(canonical_hex64)
+                            && snapshot.get("return_rip").and_then(Value::as_str).and_then(
+                                |hex| u64::from_str_radix(hex.trim_start_matches("0x"), 16).ok(),
+                            ) == snapshot
+                                .get("rip")
+                                .and_then(Value::as_str)
+                                .and_then(|hex| {
+                                    u64::from_str_radix(hex.trim_start_matches("0x"), 16).ok()
+                                })
+                                .and_then(|rip| rip.checked_add(5))
+                            && snapshot.get("invocation").is_some_and(|invocation| {
+                                valid_elf_stack_copy_invocation(invocation, snapshot, runner)
+                            }));
                 let status_data_valid = match status {
                     Some("captured") => {
                         snapshot_has_complete_capture
+                            && invocation_valid
                             && elf_stack_copy_gate_matches(snapshot)
                             && mismatch_reasons.is_some_and(Vec::is_empty)
                             && error.is_some_and(Value::is_null)
@@ -1898,8 +1918,20 @@ fn validate_execution_observations_sidecar(
                             && probes_valid
                     }
                     Some("gate_mismatch") => {
+                        let invocation_gate_mismatch = schema_version >= 16
+                            && mismatch_reasons.is_some_and(|reasons| {
+                                reasons.iter().any(|reason| {
+                                    matches!(
+                                        reason.as_str(),
+                                        Some(
+                                            "platform_string_mismatch"
+                                                | "platform_call_gate_incomplete"
+                                        )
+                                    )
+                                })
+                            });
                         mismatch_reasons.is_some_and(|reasons| !reasons.is_empty())
-                            && !elf_stack_copy_gate_matches(snapshot)
+                            && (!elf_stack_copy_gate_matches(snapshot) || invocation_gate_mismatch)
                             && probes.is_some_and(Vec::is_empty)
                             && error.is_some_and(Value::is_null)
                     }
@@ -1936,7 +1968,295 @@ fn validate_execution_observations_sidecar(
 }
 
 fn supported_execution_observations_schema_version(version: u64) -> bool {
-    (1..=15).contains(&version)
+    (1..=16).contains(&version)
+}
+
+fn valid_elf_stack_copy_invocation(
+    value: &Value,
+    snapshot: &serde_json::Map<String, Value>,
+    runner: &Value,
+) -> bool {
+    let Some(invocation) = value.as_object() else {
+        return false;
+    };
+    let status = invocation.get("status").and_then(Value::as_str);
+    if !matches!(
+        status,
+        Some("complete" | "incomplete_gate" | "incomplete_overflow" | "incomplete_run_ended")
+    ) {
+        return false;
+    }
+    let valid_snapshot = |snapshot: Option<&Value>| {
+        snapshot.is_some_and(|snapshot| {
+            snapshot
+                .get("cr3")
+                .and_then(Value::as_str)
+                .is_some_and(canonical_hex64)
+                && [
+                    "delivered_page_faults",
+                    "delivered_exceptions",
+                    "cr3_changes",
+                    "rdtsc_reads",
+                    "retired_instructions_through_current",
+                ]
+                .iter()
+                .all(|key| snapshot.get(*key).and_then(Value::as_u64).is_some())
+        })
+    };
+    let entry = invocation.get("entry");
+    let exit = match invocation.get("return_boundary") {
+        None | Some(Value::Null) => None,
+        Some(boundary) if valid_snapshot(Some(boundary)) => Some(boundary),
+        Some(_) => return false,
+    };
+    let stop = invocation.get("stop");
+    if !valid_snapshot(entry) || !valid_snapshot(stop) {
+        return false;
+    }
+    let Some(entry) = entry else { return false };
+    let (Some(cr3_events), Some(pf_events), Some(rdtsc_sites)) = (
+        invocation.get("cr3_events").and_then(Value::as_array),
+        invocation
+            .get("page_fault_events")
+            .and_then(Value::as_array),
+        invocation.get("rdtsc_sites").and_then(Value::as_array),
+    ) else {
+        return false;
+    };
+    let cr3_omitted = invocation.get("cr3_events_omitted").and_then(Value::as_u64);
+    let pf_omitted = invocation
+        .get("page_fault_events_omitted")
+        .and_then(Value::as_u64);
+    let rdtsc_overflow = invocation
+        .get("rdtsc_site_overflow_reads")
+        .and_then(Value::as_u64);
+    let (Some(duration), Some(cap)) = (
+        invocation.get("retired_duration").and_then(Value::as_u64),
+        invocation
+            .get("retired_duration_cap")
+            .and_then(Value::as_u64),
+    ) else {
+        return false;
+    };
+    if cap != od_machine::LINUX_ELF_STACK_COPY_RETIRED_CAPACITY {
+        return false;
+    }
+    if cr3_events.len() > od_machine::LINUX_ELF_STACK_COPY_CR3_EVENT_CAPACITY
+        || pf_events.len() > od_machine::LINUX_ELF_STACK_COPY_PF_EVENT_CAPACITY
+        || rdtsc_sites.len() > od_machine::LINUX_ELF_STACK_COPY_RDTSC_SITE_CAPACITY
+        || cr3_omitted.is_none()
+        || pf_omitted.is_none()
+        || rdtsc_overflow.is_none()
+        || (duration > cap && status != Some("incomplete_overflow"))
+    {
+        return false;
+    }
+    let valid_retired = |event: &Value| {
+        event
+            .get("retired_instructions_through_current")
+            .and_then(Value::as_u64)
+            .is_some()
+    };
+    if !cr3_events.iter().all(|event| {
+        ["rip", "old_cr3", "new_cr3"].iter().all(|key| {
+            event
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(canonical_hex64)
+        }) && valid_retired(event)
+    }) || !pf_events.iter().all(|event| {
+        ["rip", "cr2"].iter().all(|key| {
+            event
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(canonical_hex64)
+        }) && event.get("error_code").and_then(Value::as_u64).is_some()
+            && matches!(
+                event.get("access").and_then(Value::as_str),
+                Some("Read" | "Write" | "Fetch" | "unknown")
+            )
+            && event
+                .get("cpl")
+                .and_then(Value::as_u64)
+                .is_some_and(|cpl| cpl <= 3)
+            && valid_retired(event)
+    }) || !rdtsc_sites.iter().all(|site| {
+        site.get("rip")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_hex64)
+            && site
+                .get("reads")
+                .and_then(Value::as_u64)
+                .is_some_and(|reads| reads > 0)
+    }) {
+        return false;
+    }
+    let count =
+        |snapshot: &Value, key: &str| snapshot.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let stop = stop.unwrap();
+    let nested_return_rip = invocation.get("return_rip");
+    if nested_return_rip != snapshot.get("return_rip") {
+        return false;
+    }
+    let monotonic = |first: &Value, second: &Value| {
+        [
+            "delivered_page_faults",
+            "delivered_exceptions",
+            "cr3_changes",
+            "rdtsc_reads",
+            "retired_instructions_through_current",
+        ]
+        .iter()
+        .all(|key| count(second, key) >= count(first, key))
+    };
+    let interval_end = exit.unwrap_or(stop);
+    let entry_retired = count(entry, "retired_instructions_through_current");
+    let interval_end_retired = count(interval_end, "retired_instructions_through_current");
+    let ordered_in_interval = |events: &[Value]| {
+        let mut previous = entry_retired;
+        events.iter().all(|event| {
+            let Some(retired) = event
+                .get("retired_instructions_through_current")
+                .and_then(Value::as_u64)
+            else {
+                return false;
+            };
+            let ordered = retired >= previous && retired <= interval_end_retired;
+            previous = retired;
+            ordered
+        })
+    };
+    if !ordered_in_interval(cr3_events) || !ordered_in_interval(pf_events) {
+        return false;
+    }
+    let run_stop = runner.get("stop");
+    let stop_matches_run = run_stop.is_some_and(|run_stop| {
+        let stop_rdtsc = run_stop
+            .get("rdtsc_reads_by_cpl")
+            .and_then(Value::as_array)
+            .and_then(|values| values.first())
+            .and_then(Value::as_u64);
+        count(stop, "delivered_page_faults")
+            == run_stop
+                .get("page_faults_delivered")
+                .and_then(Value::as_u64)
+                .unwrap_or(u64::MAX)
+            && count(stop, "delivered_exceptions")
+                == run_stop
+                    .get("exceptions_delivered")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(u64::MAX)
+            && count(stop, "cr3_changes")
+                == run_stop
+                    .get("cr3_changes")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(u64::MAX)
+            && Some(count(stop, "rdtsc_reads")) == stop_rdtsc
+            && count(stop, "retired_instructions_through_current")
+                == run_stop
+                    .get("retired")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(u64::MAX)
+            && run_stop
+                .get("cr3")
+                .and_then(Value::as_str)
+                .is_some_and(|cr3| stop.get("cr3").and_then(Value::as_str) == Some(cr3))
+    });
+    let parse_cr3 = |snapshot: &Value| {
+        snapshot
+            .get("cr3")
+            .and_then(Value::as_str)
+            .and_then(|hex| u64::from_str_radix(hex.trim_start_matches("0x"), 16).ok())
+    };
+    let mut expected_cr3 = parse_cr3(entry);
+    for event in cr3_events {
+        let old_cr3 = event
+            .get("old_cr3")
+            .and_then(Value::as_str)
+            .and_then(|hex| u64::from_str_radix(hex.trim_start_matches("0x"), 16).ok());
+        let new_cr3 = event
+            .get("new_cr3")
+            .and_then(Value::as_str)
+            .and_then(|hex| u64::from_str_radix(hex.trim_start_matches("0x"), 16).ok());
+        if old_cr3 != expected_cr3 {
+            return false;
+        }
+        expected_cr3 = new_cr3;
+    }
+    if status == Some("complete") {
+        let Some(exit) = exit else {
+            return false;
+        };
+        let Some(site_reads) = rdtsc_sites.iter().try_fold(0u64, |sum, site| {
+            sum.checked_add(site.get("reads")?.as_u64()?)
+        }) else {
+            return false;
+        };
+        let Some(site_reads_with_overflow) =
+            site_reads.checked_add(rdtsc_overflow.unwrap_or(u64::MAX))
+        else {
+            return false;
+        };
+        let Some(cr3_events_total) =
+            (cr3_events.len() as u64).checked_add(cr3_omitted.unwrap_or(u64::MAX))
+        else {
+            return false;
+        };
+        let Some(pf_events_total) =
+            (pf_events.len() as u64).checked_add(pf_omitted.unwrap_or(u64::MAX))
+        else {
+            return false;
+        };
+        if expected_cr3 != parse_cr3(exit) {
+            return false;
+        }
+        stop_matches_run
+            && monotonic(entry, exit)
+            && monotonic(exit, stop)
+            && count(exit, "cr3_changes").checked_sub(count(entry, "cr3_changes"))
+                == Some(cr3_events_total)
+            && count(exit, "delivered_page_faults")
+                .checked_sub(count(entry, "delivered_page_faults"))
+                == Some(pf_events_total)
+            && count(exit, "delivered_exceptions")
+                .checked_sub(count(entry, "delivered_exceptions"))
+                .is_some_and(|delta| delta >= pf_events_total)
+            && count(exit, "retired_instructions_through_current")
+                .checked_sub(count(entry, "retired_instructions_through_current"))
+                == Some(duration)
+            && count(exit, "rdtsc_reads").checked_sub(count(entry, "rdtsc_reads"))
+                == Some(site_reads_with_overflow)
+            && cr3_omitted == Some(0)
+            && pf_omitted == Some(0)
+            && rdtsc_overflow == Some(0)
+    } else {
+        let has_return_boundary = exit.is_some();
+        let boundary_status_valid = match status {
+            Some("incomplete_gate" | "incomplete_run_ended") => !has_return_boundary,
+            Some("incomplete_overflow") => true,
+            _ => false,
+        };
+        let latest = exit.unwrap_or(entry);
+        let monotonic_to_stop = [
+            "delivered_page_faults",
+            "delivered_exceptions",
+            "cr3_changes",
+            "rdtsc_reads",
+            "retired_instructions_through_current",
+        ]
+        .iter()
+        .all(|key| count(stop, key) >= count(latest, key));
+        let overflow_evidence = duration > cap
+            || cr3_omitted.unwrap_or(0) > 0
+            || pf_omitted.unwrap_or(0) > 0
+            || rdtsc_overflow.unwrap_or(0) > 0;
+        boundary_status_valid
+            && (!has_return_boundary || status == Some("incomplete_overflow"))
+            && monotonic(entry, latest)
+            && monotonic_to_stop
+            && stop_matches_run
+            && ((status == Some("incomplete_overflow")) == overflow_evidence)
+    }
 }
 
 fn valid_delay_tsc_call_summary(raw: &Value, metadata: &Value) -> bool {
@@ -2169,6 +2489,9 @@ fn elf_stack_copy_gate_matches(snapshot: &serde_json::Map<String, Value>) -> boo
     };
     read_hex(snapshot.get("rip")) == Some(od_machine::LINUX_ELF_STACK_COPY_RIP)
         && snapshot.get("cpl").and_then(Value::as_u64) == Some(0)
+        && snapshot
+            .get("platform_string_matches")
+            .is_none_or(|value| value == &json!(true))
         && snapshot.get("instruction_bytes").and_then(Value::as_str) == Some("e847d93400")
         && snapshot
             .get("cs_selector")
@@ -3571,7 +3894,7 @@ mod tests {
             byte_count,
             sha256,
         );
-        assert_eq!(raw["schema_version"], 15);
+        assert_eq!(raw["schema_version"], 16);
         assert_eq!(
             raw["delay_tsc_call_summary"]["entries"][0]["frame_chain_end"],
             "read_failed"
@@ -3799,7 +4122,8 @@ mod tests {
         }
         assert!(supported_execution_observations_schema_version(14));
         assert!(supported_execution_observations_schema_version(15));
-        assert!(!supported_execution_observations_schema_version(16));
+        assert!(supported_execution_observations_schema_version(16));
+        assert!(!supported_execution_observations_schema_version(17));
         assert!(!supported_execution_observations_schema_version(u64::MAX));
     }
 
@@ -4005,7 +4329,7 @@ mod tests {
             );
         }
 
-        for version in [None, Some(Value::Null), Some(json!("8")), Some(json!(15))] {
+        for version in [None, Some(Value::Null), Some(json!("8")), Some(json!(17))] {
             let mut malformed_sidecar = sidecar_value.clone();
             if let Some(value) = version {
                 malformed_sidecar["schema_version"] = value;
@@ -4455,8 +4779,10 @@ mod tests {
 
     fn captured_elf_stack_copy_observations() -> od_machine::LinuxExecutionObservations {
         use od_machine::{
-            ElfStackCopyProbe, ElfStackCopySnapshot, ElfStackCopyStatus, GuestPhysicalAddress,
-            PageTableLevel, WalkEntry,
+            ElfStackCopyCounterSnapshot, ElfStackCopyCr3Event, ElfStackCopyInvocation,
+            ElfStackCopyInvocationStatus, ElfStackCopyPageFaultEvent, ElfStackCopyProbe,
+            ElfStackCopyRdtscSiteCount, ElfStackCopySnapshot, ElfStackCopyStatus,
+            GuestPhysicalAddress, PageTableLevel, WalkEntry,
         };
         let r13 = 0xffff_ffff_83ff_0000;
         let r15 = r13 + 0x40;
@@ -4505,6 +4831,59 @@ mod tests {
                 probe("copy_destination", rdi, "Write", "page_fault"),
             ],
             error: None,
+            return_rip: Some(od_machine::LINUX_ELF_STACK_COPY_RIP + 5),
+            platform_string_matches: Some(true),
+            invocation: Some(ElfStackCopyInvocation {
+                status: ElfStackCopyInvocationStatus::Complete,
+                return_rip: Some(od_machine::LINUX_ELF_STACK_COPY_RIP + 5),
+                entry: Some(ElfStackCopyCounterSnapshot {
+                    cr3: 0x1000,
+                    delivered_page_faults: 2,
+                    delivered_exceptions: 2,
+                    cr3_changes: 0,
+                    rdtsc_reads: 10,
+                    retired_instructions_through_current: 100,
+                }),
+                return_boundary: Some(ElfStackCopyCounterSnapshot {
+                    cr3: 0x2000,
+                    delivered_page_faults: 3,
+                    delivered_exceptions: 3,
+                    cr3_changes: 1,
+                    rdtsc_reads: 11,
+                    retired_instructions_through_current: 105,
+                }),
+                stop: Some(ElfStackCopyCounterSnapshot {
+                    cr3: 0x2000,
+                    delivered_page_faults: 4,
+                    delivered_exceptions: 4,
+                    cr3_changes: 1,
+                    rdtsc_reads: 12,
+                    retired_instructions_through_current: 200,
+                }),
+                cr3_events: vec![ElfStackCopyCr3Event {
+                    rip: 0xffff_ffff_8199_9c00,
+                    old_cr3: 0x1000,
+                    new_cr3: 0x2000,
+                    retired_instructions_through_current: 103,
+                }],
+                cr3_events_omitted: 0,
+                page_fault_events: vec![ElfStackCopyPageFaultEvent {
+                    rip: 0xffff_ffff_8199_9c10,
+                    cr2: 0x7fff_0000_1000,
+                    error_code: 3,
+                    access: "Write",
+                    cpl: 0,
+                    retired_instructions_through_current: 101,
+                }],
+                page_fault_events_omitted: 0,
+                rdtsc_sites: vec![ElfStackCopyRdtscSiteCount {
+                    rip: 0xffff_ffff_8199_9c20,
+                    reads: 1,
+                }],
+                rdtsc_site_overflow_reads: 0,
+                retired_duration: 5,
+                retired_duration_cap: od_machine::LINUX_ELF_STACK_COPY_RETIRED_CAPACITY,
+            }),
         };
         od_machine::LinuxExecutionObservations {
             rdtsc_sample_stride: 1,
@@ -4514,7 +4893,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v14_captured_elf_stack_copy_serializes_and_loads_with_strict_validation() {
+    fn schema_v16_captured_elf_stack_copy_serializes_and_loads_with_strict_validation() {
         let temp = std::env::temp_dir().join(format!(
             "od-runner-stage5-elf-stack-copy-{}-{}",
             std::process::id(),
@@ -4550,7 +4929,7 @@ mod tests {
         );
         let original_bytes = fs::read(&sidecar_path).unwrap();
         let written: Value = serde_json::from_slice(&original_bytes).unwrap();
-        assert_eq!(written["schema_version"], 15);
+        assert_eq!(written["schema_version"], 16);
         assert_eq!(written["elf_stack_copy"]["status"], "captured");
         assert_eq!(
             written["elf_stack_copy"]["registers"]["r13"],
@@ -4571,9 +4950,16 @@ mod tests {
                 serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
             let raw_path = series_dir.join(manifest["runner"]["raw_json"].as_str().unwrap());
             let mut raw: Value = serde_json::from_slice(&fs::read(&raw_path).unwrap()).unwrap();
+            raw["stop"]["retired"] = json!(200);
+            raw["stop"]["cr3"] = json!("0x2000");
+            raw["stop"]["cr3_changes"] = json!(1);
+            raw["stop"]["exceptions_delivered"] = json!(4);
+            raw["stop"]["page_faults_delivered"] = json!(4);
+            raw["stop"]["rdtsc_reads_by_cpl"] = json!([12, 0, 0, 0]);
             raw["execution_observations_sidecar"] = metadata;
             let raw_bytes = serde_json::to_vec_pretty(&raw).unwrap();
             fs::write(&raw_path, &raw_bytes).unwrap();
+            manifest["runner"]["stop"] = raw["stop"].clone();
             manifest["runner"]["raw_json_sha256"] = json!(od_testkit::sha256_hex(&raw_bytes));
             let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
             fs::write(&manifest_path, &manifest_bytes).unwrap();
@@ -4590,6 +4976,23 @@ mod tests {
         };
 
         update_metadata(base_metadata.clone(), &original_bytes);
+        let loaded = fresh_manifest(&series_path).unwrap();
+        load_run_manifest(&series_path, &loaded.runs[0]).unwrap();
+
+        let mut gate_mismatch = written.clone();
+        gate_mismatch["elf_stack_copy"]["status"] = json!("gate_mismatch");
+        gate_mismatch["elf_stack_copy"]["mismatch_reasons"] =
+            json!(["platform_call_gate_incomplete"]);
+        gate_mismatch["elf_stack_copy"]["probes"] = json!([]);
+        gate_mismatch["elf_stack_copy"]
+            .as_object_mut()
+            .unwrap()
+            .remove("invocation");
+        let gate_mismatch_bytes = serde_json::to_vec_pretty(&gate_mismatch).unwrap();
+        fs::write(&sidecar_path, &gate_mismatch_bytes).unwrap();
+        let mut gate_mismatch_metadata = base_metadata.clone();
+        gate_mismatch_metadata["elf_stack_copy_status"] = json!("gate_mismatch");
+        update_metadata(gate_mismatch_metadata, &gate_mismatch_bytes);
         let loaded = fresh_manifest(&series_path).unwrap();
         load_run_manifest(&series_path, &loaded.runs[0]).unwrap();
 
@@ -4630,6 +5033,158 @@ mod tests {
             "schema_version is missing, invalid, or unsupported",
         );
         fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn elf_stack_copy_invocation_validator_rejects_invalid_boundaries_counters_and_overflow() {
+        let snapshot = json!({"return_rip": "0xffffffff81999bd9"});
+        let snapshot = snapshot.as_object().unwrap().clone();
+        let mut invocation = super::super::elf_stack_copy_invocation_json(
+            &captured_elf_stack_copy_observations()
+                .elf_stack_copy
+                .unwrap()
+                .invocation
+                .unwrap(),
+        );
+        let runner = json!({"stop": {
+            "retired": 200,
+            "cr3": "0x2000",
+            "cr3_changes": 1,
+            "exceptions_delivered": 4,
+            "page_faults_delivered": 4,
+            "rdtsc_reads_by_cpl": [12, 0, 0, 0]
+        }});
+        let original = invocation.clone();
+        assert!(
+            valid_elf_stack_copy_invocation(&original, &snapshot, &runner),
+            "invocation={original:#}; runner={runner:#}; snapshot={snapshot:?}"
+        );
+
+        invocation["return_rip"] = json!("0xffffffff81999bd8");
+        assert!(!valid_elf_stack_copy_invocation(
+            &invocation,
+            &snapshot,
+            &runner
+        ));
+
+        invocation = original.clone();
+        invocation["status"] = json!("incomplete_run_ended");
+        invocation["return_boundary"] = Value::Null;
+        assert!(valid_elf_stack_copy_invocation(
+            &invocation,
+            &snapshot,
+            &runner
+        ));
+        invocation["return_boundary"] = original["return_boundary"].clone();
+        assert!(!valid_elf_stack_copy_invocation(
+            &invocation,
+            &snapshot,
+            &runner
+        ));
+        invocation = original.clone();
+        invocation["status"] = json!("incomplete_run_ended");
+        invocation["return_boundary"] = Value::Null;
+        invocation["cr3_events_omitted"] = json!(1);
+        assert!(!valid_elf_stack_copy_invocation(
+            &invocation,
+            &snapshot,
+            &runner
+        ));
+
+        invocation = original.clone();
+        invocation["status"] = json!("incomplete_overflow");
+        invocation["return_boundary"] = Value::Null;
+        invocation["cr3_events_omitted"] = json!(1);
+        assert!(valid_elf_stack_copy_invocation(
+            &invocation,
+            &snapshot,
+            &runner
+        ));
+        invocation["cr3_events"][0]["old_cr3"] = json!("0x3000");
+        assert!(!valid_elf_stack_copy_invocation(
+            &invocation,
+            &snapshot,
+            &runner
+        ));
+        invocation = original.clone();
+        invocation["status"] = json!("incomplete_overflow");
+        invocation["return_boundary"] = Value::Null;
+        assert!(!valid_elf_stack_copy_invocation(
+            &invocation,
+            &snapshot,
+            &runner
+        ));
+
+        invocation = original.clone();
+        invocation["retired_duration_cap"] = json!(1);
+        assert!(!valid_elf_stack_copy_invocation(
+            &invocation,
+            &snapshot,
+            &runner
+        ));
+
+        invocation = original.clone();
+        invocation["cr3_events"][0]["retired_instructions_through_current"] = json!(99);
+        assert!(!valid_elf_stack_copy_invocation(
+            &invocation,
+            &snapshot,
+            &runner
+        ));
+
+        invocation = original.clone();
+        invocation["cr3_events"][0]["old_cr3"] = json!("0x3000");
+        assert!(!valid_elf_stack_copy_invocation(
+            &invocation,
+            &snapshot,
+            &runner
+        ));
+
+        let mut ordered_runner = runner.clone();
+        invocation = original.clone();
+        let mut second_fault = invocation["page_fault_events"][0].clone();
+        invocation["page_fault_events"][0]["retired_instructions_through_current"] = json!(102);
+        second_fault["retired_instructions_through_current"] = json!(101);
+        invocation["page_fault_events"]
+            .as_array_mut()
+            .unwrap()
+            .push(second_fault);
+        invocation["return_boundary"]["delivered_page_faults"] = json!(4);
+        invocation["return_boundary"]["delivered_exceptions"] = json!(4);
+        invocation["stop"]["delivered_page_faults"] = json!(5);
+        invocation["stop"]["delivered_exceptions"] = json!(5);
+        ordered_runner["stop"]["page_faults_delivered"] = json!(5);
+        ordered_runner["stop"]["exceptions_delivered"] = json!(5);
+        assert!(!valid_elf_stack_copy_invocation(
+            &invocation,
+            &snapshot,
+            &ordered_runner
+        ));
+
+        for field in [
+            "delivered_page_faults",
+            "delivered_exceptions",
+            "cr3_changes",
+            "rdtsc_reads",
+            "retired_instructions_through_current",
+        ] {
+            invocation = original.clone();
+            invocation["stop"][field] = json!(0);
+            assert!(
+                !valid_elf_stack_copy_invocation(&invocation, &snapshot, &runner),
+                "{field}"
+            );
+        }
+
+        invocation = original;
+        invocation["rdtsc_sites"] = json!([
+            {"rip": "0x1000", "reads": u64::MAX},
+            {"rip": "0x2000", "reads": 2}
+        ]);
+        assert!(!valid_elf_stack_copy_invocation(
+            &invocation,
+            &snapshot,
+            &runner
+        ));
     }
 
     #[test]

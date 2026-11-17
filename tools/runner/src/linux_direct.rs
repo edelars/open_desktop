@@ -2156,6 +2156,9 @@ fn write_execution_observations_sidecar(
             "copy_destination": snapshot.copy_destination.map(hex64),
             "copy_length": snapshot.copy_length.map(hex64),
             "instruction_bytes": snapshot.instruction_bytes.as_ref().map(|bytes| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()),
+            "return_rip": snapshot.return_rip.map(hex64),
+            "platform_string_matches": snapshot.platform_string_matches,
+            "invocation": snapshot.invocation.as_ref().map(elf_stack_copy_invocation_json),
             "mismatch_reasons": snapshot.mismatch_reasons,
             "error": snapshot.error,
             "probes": snapshot.probes.iter().map(|probe| json!({
@@ -2419,7 +2422,7 @@ fn write_execution_observations_sidecar(
         })
     });
     let value = json!({
-        "schema_version": 15,
+        "schema_version": 16,
         "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, an optional bounded every-hit entry-RDTSC stream with clock ledger, an optional ordered RDTSC prefix through a sentinel RIP, an optional inclusive hit-ordinal window, an optional strictly gated single-quantum instruction path trace, and an optional bounded delay_tsc per-call summary",
         "limits": {
             "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
@@ -2436,6 +2439,10 @@ fn write_execution_observations_sidecar(
             "post_iret_page_walk_entries": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
             "elf_stack_copy_probes": od_machine::LINUX_ELF_STACK_COPY_PROBE_CAPACITY,
             "elf_stack_copy_walk_entries_per_probe": od_machine::LINUX_ELF_STACK_COPY_WALK_ENTRY_CAPACITY,
+            "elf_stack_copy_cr3_events": od_machine::LINUX_ELF_STACK_COPY_CR3_EVENT_CAPACITY,
+            "elf_stack_copy_rdtsc_sites": od_machine::LINUX_ELF_STACK_COPY_RDTSC_SITE_CAPACITY,
+            "elf_stack_copy_page_fault_events": od_machine::LINUX_ELF_STACK_COPY_PF_EVENT_CAPACITY,
+            "elf_stack_copy_retired_duration": od_machine::LINUX_ELF_STACK_COPY_RETIRED_CAPACITY,
         },
         "rdtsc_cpl0_sites": rdtsc_sites,
         "rdtsc_cpl0_unattributed_reads": observations.rdtsc_cpl0_unattributed_reads,
@@ -2501,6 +2508,61 @@ fn elf_stack_copy_status_name(status: od_machine::ElfStackCopyStatus) -> &'stati
         od_machine::ElfStackCopyStatus::GateMismatch => "gate_mismatch",
         od_machine::ElfStackCopyStatus::ReadError => "read_error",
         od_machine::ElfStackCopyStatus::RunEndedBeforeTarget => "run_ended_before_target",
+    }
+}
+
+fn elf_stack_copy_invocation_json(
+    capture: &od_machine::ElfStackCopyInvocation,
+) -> serde_json::Value {
+    let counters = |snapshot: &od_machine::ElfStackCopyCounterSnapshot| {
+        json!({
+            "cr3": hex64(snapshot.cr3),
+            "delivered_page_faults": snapshot.delivered_page_faults,
+            "delivered_exceptions": snapshot.delivered_exceptions,
+            "cr3_changes": snapshot.cr3_changes,
+            "rdtsc_reads": snapshot.rdtsc_reads,
+            "retired_instructions_through_current": snapshot.retired_instructions_through_current,
+        })
+    };
+    json!({
+        "status": elf_stack_copy_invocation_status_name(capture.status),
+        "return_rip": capture.return_rip.map(hex64),
+        "entry": capture.entry.as_ref().map(counters),
+        "return_boundary": capture.return_boundary.as_ref().map(counters),
+        "stop": capture.stop.as_ref().map(counters),
+        "cr3_events": capture.cr3_events.iter().map(|event| json!({
+            "rip": hex64(event.rip),
+            "old_cr3": hex64(event.old_cr3),
+            "new_cr3": hex64(event.new_cr3),
+            "retired_instructions_through_current": event.retired_instructions_through_current,
+        })).collect::<Vec<_>>(),
+        "cr3_events_omitted": capture.cr3_events_omitted,
+        "page_fault_events": capture.page_fault_events.iter().map(|event| json!({
+            "rip": hex64(event.rip),
+            "cr2": hex64(event.cr2),
+            "error_code": event.error_code,
+            "access": event.access,
+            "cpl": event.cpl,
+            "retired_instructions_through_current": event.retired_instructions_through_current,
+        })).collect::<Vec<_>>(),
+        "page_fault_events_omitted": capture.page_fault_events_omitted,
+        "rdtsc_sites": capture.rdtsc_sites.iter().map(|site| json!({ "rip": hex64(site.rip), "reads": site.reads })).collect::<Vec<_>>(),
+        "rdtsc_site_overflow_reads": capture.rdtsc_site_overflow_reads,
+        "retired_duration": capture.retired_duration,
+        "retired_duration_cap": capture.retired_duration_cap,
+    })
+}
+
+fn elf_stack_copy_invocation_status_name(
+    status: od_machine::ElfStackCopyInvocationStatus,
+) -> &'static str {
+    match status {
+        od_machine::ElfStackCopyInvocationStatus::NotStarted => "not_started",
+        od_machine::ElfStackCopyInvocationStatus::InProgress => "in_progress",
+        od_machine::ElfStackCopyInvocationStatus::Complete => "complete",
+        od_machine::ElfStackCopyInvocationStatus::IncompleteGate => "incomplete_gate",
+        od_machine::ElfStackCopyInvocationStatus::IncompleteOverflow => "incomplete_overflow",
+        od_machine::ElfStackCopyInvocationStatus::IncompleteRunEnded => "incomplete_run_ended",
     }
 }
 

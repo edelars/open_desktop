@@ -893,6 +893,14 @@ fn capture_elf_stack_copy_snapshot(
     }
     snapshot.instruction_bytes = Some(instruction_bytes.to_vec());
 
+    if instruction_bytes != [0xe8, 0x47, 0xd9, 0x34, 0x00] {
+        snapshot
+            .mismatch_reasons
+            .push("instruction_bytes_mismatch".into());
+        return snapshot;
+    }
+    snapshot.return_rip = state.rip.checked_add(instruction_bytes.len() as u64);
+
     let bprm_p_address = match r15.checked_add(0x20) {
         Some(address) => address,
         None => {
@@ -921,11 +929,6 @@ fn capture_elf_stack_copy_snapshot(
     if cpl != Some(0) {
         snapshot.mismatch_reasons.push("cpl_not_zero".into());
     }
-    if instruction_bytes != [0xe8, 0x47, 0xd9, 0x34, 0x00] {
-        snapshot
-            .mismatch_reasons
-            .push("instruction_bytes_mismatch".into());
-    }
     if rdx != 7 {
         snapshot.mismatch_reasons.push("rdx_not_7".into());
     }
@@ -946,6 +949,27 @@ fn capture_elf_stack_copy_snapshot(
             .push("bprm_p_outside_stack_window".into());
     }
     if !snapshot.mismatch_reasons.is_empty() {
+        return snapshot;
+    }
+
+    let mut platform_string = [0u8; 7];
+    if let Err(error) = bus.read_virtual_ram_diagnostic(
+        paging,
+        state.rip,
+        GuestLinearAddress::new(rsi),
+        context,
+        &mut platform_string,
+    ) {
+        snapshot.status = ElfStackCopyStatus::ReadError;
+        snapshot.error = Some(format!("platform string read: {error:?}"));
+        return snapshot;
+    }
+    snapshot.platform_string_matches = Some(platform_string == *b"x86_64\0");
+    if snapshot.platform_string_matches != Some(true) {
+        snapshot
+            .mismatch_reasons
+            .push("platform_string_mismatch".into());
+        snapshot.status = ElfStackCopyStatus::GateMismatch;
         return snapshot;
     }
 
@@ -1475,7 +1499,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
         .is_some_and(LinuxExecutionObservationCollector::wants_instruction_path_trace);
     let capture_elf_stack_copy = execution_observations
         .as_deref()
-        .is_some_and(LinuxExecutionObservationCollector::wants_elf_stack_copy);
+        .is_some_and(LinuxExecutionObservationCollector::needs_elf_stack_copy_path);
     if capture_instruction_path && capture_elf_stack_copy {
         run_cpl0_set_paged_2m_ram_with_cache_impl::<true, true>(
             state,
@@ -1744,35 +1768,28 @@ fn run_cpl0_set_paged_2m_ram_with_cache_impl<
             break (PagedCpl0SetExit::CpuidDivergence { leaf }, None, None);
         }
         let instruction_rip = state.rip;
-        if ELF_COPY_ENABLED
-            && instruction_rip == LINUX_ELF_STACK_COPY_RIP
-            && execution_observations
-                .as_deref()
-                .is_some_and(LinuxExecutionObservationCollector::wants_elf_stack_copy)
-        {
-            let snapshot =
-                capture_elf_stack_copy_snapshot(state, bus, &paging, context, reported_cr3);
-            if let Some(observations) = execution_observations.as_deref_mut() {
-                observations.record_elf_stack_copy(snapshot);
-            }
-        }
         let mut trace_before = None;
-        if execution_observations.is_some() {
+        if let Some(observations) = execution_observations.as_deref_mut() {
             last_instruction_rip = Some(instruction_rip);
-            if TRACE_ENABLED {
-                if execution_observations
-                    .as_deref()
-                    .is_some_and(LinuxExecutionObservationCollector::needs_instruction_path_header)
+            if ELF_COPY_ENABLED {
+                if observations.elf_copy_invocation_active()
+                    && observations.elf_copy_return_rip() == Some(instruction_rip)
                 {
+                    observations.finish_elf_copy_invocation(instruction_rip, reported_cr3);
+                }
+                if instruction_rip == LINUX_ELF_STACK_COPY_RIP
+                    && observations.wants_elf_stack_copy()
+                {
+                    let snapshot =
+                        capture_elf_stack_copy_snapshot(state, bus, &paging, context, reported_cr3);
+                    observations.record_elf_stack_copy(snapshot);
+                }
+            }
+            if TRACE_ENABLED {
+                if observations.needs_instruction_path_header() {
                     let (frame_chain, frame_chain_end) =
                         capture_instruction_path_frame_chain(state, bus, &paging, context);
-                    if let Some(observations) = execution_observations.as_deref_mut() {
-                        observations.begin_instruction_path_header(
-                            state,
-                            frame_chain,
-                            frame_chain_end,
-                        );
-                    }
+                    observations.begin_instruction_path_header(state, frame_chain, frame_chain_end);
                 }
                 trace_before = Some(instruction_path_before(
                     instruction_rip,
@@ -2033,6 +2050,12 @@ fn run_cpl0_set_paged_2m_ram_with_cache_impl<
                     None => {
                         delivered_exceptions += 1;
                         delivered_general_protection_faults += 1;
+                        if ELF_COPY_ENABLED
+                            && let Some(observations) = execution_observations.as_deref_mut()
+                            && observations.tracks_elf_copy_counters()
+                        {
+                            observations.record_elf_copy_general_protection();
+                        }
                         if pending_post_iret.is_some()
                             && let Some(observations) = execution_observations.as_deref_mut()
                         {
@@ -2083,6 +2106,18 @@ fn run_cpl0_set_paged_2m_ram_with_cache_impl<
                     syscall_events.pop_front();
                 }
                 syscall_events.push_back(event);
+            }
+        }
+        if ELF_COPY_ENABLED
+            && let Some(observations) = execution_observations.as_deref_mut()
+            && observations.tracks_elf_copy_counters()
+        {
+            observations.record_elf_copy_retired(result.instructions_executed);
+            if let Cpl0ProfileSetExit::TranslationContextChange(
+                TranslationContextChange::Cr3Write { old_cr3, new_cr3 },
+            ) = &result.exit
+            {
+                observations.record_elf_copy_cr3(instruction_rip, *old_cr3, *new_cr3);
             }
         }
         instructions_executed += result.instructions_executed;
@@ -3693,6 +3728,15 @@ mod tests {
         };
         map_page(&mut bus, LINUX_ELF_STACK_COPY_RIP, 0x10_000, true);
         map_page(&mut bus, ELF_COPY_RSI, 0x11_000, true);
+        for (offset, byte) in b"x86_64\0".iter().copied().enumerate() {
+            bus.write_physical(
+                GuestPhysicalAddress::new(0x11_000 + (ELF_COPY_RSI & 0xfff) + offset as u64),
+                AccessWidth::Byte,
+                u64::from(byte),
+                |_| {},
+            )
+            .unwrap();
+        }
         map_page(&mut bus, ELF_COPY_R13, 0x12_000, true);
         if map_destination {
             map_page(&mut bus, ELF_COPY_R13 - 7, 0x13_000, true);
