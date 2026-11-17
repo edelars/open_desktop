@@ -1370,3 +1370,26 @@ empty. ISSUE-201 remains the unrelated CLD expectation caveat.
 Validation: focused ISA 7/7 and machine 3/3 pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,208/7/15; zero doc tests),
 paged machine quantum passes (102/102), workspace all-targets cargo check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-374 — exact word CMP memory read
+
+Admit only `66 83 7C 24 18 FF` in base `PagedCpl0ProbeV1`: `CMP word ptr
+[RSP+0x18],-1`. The operand override selects a word destination and opcode 83
+sign-extends imm8 `FF` to -1. Use the tracked memory-read path; apply shared
+16-bit CMP flag and definedness semantics; commit only RFLAGS metadata and
+RIP+6. No register or data-memory writes occur. Read faults and fetch faults,
+including the final immediate byte, leave CPU state unchanged. Focused ISA tests
+cover arithmetic flag values/definedness, exact 2-byte read, data/final-byte
+faults, neighboring encodings, and CPL3/other-profile isolation. Machine tests
+cover a four-level read with A/no-D effects and data-page #PF atomicity.
+
+The firmware runner advances from 9,842 to 9,843 retired instructions and
+stops at `75 3C` (JNZ rel8 +0x3c, ISSUE-375) at `0x200fed`; COM1 remains empty.
+Image SHA-256 is `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Validation: focused ISA 5/5 and machine 2/2 pass. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,213/7/15; zero doc tests), paged machine quantum
+passes (104/104), workspace all-targets offline cargo check, scoped rustfmt
+and diff-check pass. Independent review approved with no findings.

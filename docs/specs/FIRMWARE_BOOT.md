@@ -1321,3 +1321,22 @@ is empty. ISSUE-201 remains the unrelated stale CLD test expectation caveat.
 Full od-isa suites pass (2,322/1,591/126/29/6/1,208/7/15; zero doc tests),
 paged machine quantum passes (102/102), workspace all-targets cargo check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+
+### Stage 7 runner frontier after ISSUE-374
+
+After exact `66 83 7C 24 18 FF` (`CMP word ptr [RSP+0x18],-1`) is admitted,
+the runner retires 9,843 instructions and stops at RIP `0x200fed`, bytes
+`75 3C` (JNZ rel8 +0x3c, ISSUE-375), with `Unsupported { opcode: 117 }`.
+Image `/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1
+is empty. ISSUE-201 remains the unrelated stale CLD test expectation caveat.
+
+This exact base-profile compare reads two bytes at RSP+0x18 through the tracked
+GuestMemory path, applies shared 16-bit CMP flags, and changes no register or
+memory state. Read and final-immediate fetch faults are atomic. Five focused
+ISA tests and two four-level machine tests cover arithmetic flags and
+definedness, A/no-D page-walk effects, neighbors, and CPL3/other-profile
+isolation. Full od-isa suites (2,322/1,591/126/29/6/1,213/7/15; zero doc
+tests), paged machine quantum (104/104), workspace all-targets offline check,
+scoped rustfmt and diff-check pass. Independent review approved with no findings.

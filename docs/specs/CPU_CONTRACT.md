@@ -28459,3 +28459,24 @@ the unrelated CLD expectation caveat.
 Validation: focused ISA 7/7 and machine 3/3 pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,208/7/15; zero doc tests),
 paged machine quantum passes (102/102), workspace all-targets cargo check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-374: `66 83 7C 24 18 FF` — CMP word ptr [RSP+0x18],-1
+
+The base `PagedCpl0ProbeV1` admits only this exact no-REX encoding. `66` selects
+16-bit operands; opcode `83 /7` compares the word read at 64-bit effective
+address RSP+0x18 against imm8 `FF` sign-extended to -1. The read goes through
+GuestMemory and faults before any architectural commit. Shared word-width CMP
+semantics update arithmetic flags, and those flags become defined; GPRs and
+memory remain unchanged, and RIP advances by six. A fetch fault on the final
+immediate byte is atomic. No other RSP displacement, SIB tuple, operand width,
+immediate, group selector or prefix is admitted; CPL3 and other profiles reject
+these bytes. Five focused ISA tests and two machine tests cover the contract.
+
+Firmware image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`
+advances to `75 3C` (JNZ rel8 +0x3c, ISSUE-375) at RIP `0x200fed` after 9,843
+retired instructions; COM1 is empty. ISSUE-201 remains the unrelated CLD caveat.
+
+Validation: full od-isa (2,322/1,591/126/29/6/1,213/7/15; zero doc tests),
+paged machine quantum (104/104), workspace all-targets offline check, scoped
+rustfmt and diff-check pass. Independent review approved with no findings.

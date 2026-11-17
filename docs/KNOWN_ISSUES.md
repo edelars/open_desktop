@@ -4867,7 +4867,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-374 — S7-04: exact helper word CMP memory frontier (`66 83 7C 24 18 FF`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-373.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x200fe7`.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** точный `66 83 7C 24 18 FF` читает слово по старому RSP+0x18 через tracked GuestMemory и сравнивает со знаково расширенным imm8 -1. Меняются только арифметические флаги, RIP продвигается на шесть байт; регистры и память не изменяются. Ошибка чтения или выборки imm8 не фиксирует состояние CPU.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,843 instructions and stopped at `Unsupported { opcode: 117 }` at RIP `0x200fed`, bytes `75 3C` (JNZ rel8 +0x3c, ISSUE-375); COM1 is empty.
+- **Проверка:** five focused ISA tests cover 16-bit compare flags/definedness, tracked read, read/final-immediate fetch atomicity, encoding neighbors and CPL3/other-profile isolation. Two machine tests cover a four-level 2-byte read with accessed/no-dirty effects and data-page #PF atomicity. Full od-isa and paged-machine suites, workspace all-targets offline check, scoped rustfmt and diff-check pass. Independent review approved with no findings.
+
+### ISSUE-375 — S7-04: exact helper JNZ frontier (`75 3C`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-374.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x200fed`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches `CMP word ptr [RSP+0x18],-1` after 9,842 retired instructions; this exact memory compare has not yet been admitted by the bounded base profile.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 131 }` at RIP `0x200fe7`; bytes are `66 83 7C 24 18 FF`; COM1 is empty.
-- **Следующий шаг:** analyze and admit only this exact firmware word CMP form in a separate Stage 7 slice.
+- **Суть и последствия:** firmware reaches exact `JNZ rel8 +0x3c` after ISSUE-374. This branch encoding is not yet admitted by the bounded base profile.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,843 instructions and reported `Unsupported { opcode: 117 }` at RIP `0x200fed`; image bytes are `75 3C`; COM1 is empty.
+- **Следующий шаг:** отдельно рассмотреть точное условное short-branch кодирование JNZ из frontier.

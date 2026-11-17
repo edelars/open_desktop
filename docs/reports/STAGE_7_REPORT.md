@@ -2701,3 +2701,28 @@ expectations remain open.
 Validation: focused ISA 7/7 and machine 3/3 pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,208/7/15; zero doc tests),
 paged machine quantum passes (102/102), workspace all-targets cargo check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-374 — exact word CMP memory read
+
+The base `PagedCpl0ProbeV1` admits only `66 83 7C 24 18 FF` for this helper
+compare: `CMP word ptr [RSP+0x18],-1`. The decoder supplies a word memory
+operand and sign-extended imm8 -1. Execution reads exactly two bytes through
+GuestMemory, computes shared 16-bit CMP flags, and commits flags/definedness
+and RIP+6 only. Registers and memory are not written. Data-read faults and the
+fetch fault on the final immediate byte preserve CPU state. Five focused ISA
+tests cover result/flags/definedness, 2-byte addressing, read and immediate
+fetch faults, neighbors and CPL3/other-profile rejection. Two machine tests
+verify the four-level read sets accessed but not dirty bits and a missing data
+PTE faults without CPU commit.
+
+The firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) advances
+to `75 3C` (JNZ rel8 +0x3c, ISSUE-375) at RIP `0x200fed` after 9,843 retired
+instructions. Runner reports `Unsupported { opcode: 117 }`; COM1 is empty.
+ISSUE-201 remains the unrelated stale CLD expectation caveat.
+
+Validation: focused ISA 5/5 and machine 2/2 pass. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,213/7/15; zero doc tests); paged machine quantum
+passes 104/104; workspace all-targets cargo check, scoped rustfmt and
+diff-check pass. Independent review approved with no findings.

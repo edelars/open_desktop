@@ -25210,6 +25210,58 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: the helper compares a word at `[RSP+0x18]` with -1 using
+        // exactly `66 83 7C 24 18 FF`. Opcode 83 sign-extends imm8 to the
+        // selected word width; use the tracked read and shared CMP semantics.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Cmp,
+            dst: Operand::Memory(destination),
+            src: Operand::Immediate(u64::MAX),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x83
+            && instruction.length == 6
+            && instruction.operand_size == OperandSize::Word
+            && instruction.prefixes
+                == (Prefixes {
+                    operand_override: true,
+                    ..Prefixes::default()
+                })
+            && destination.base == AddressBase::Register(Register::Rsp)
+            && destination.index.is_none()
+            && destination.scale == 1
+            && destination.displacement == 0x18
+            && destination.address_size == OperandSize::Qword
+            && destination.size == OperandSize::Word =>
+        {
+            let lhs = match read_operand(
+                state,
+                memory,
+                context,
+                next_rip,
+                Operand::Memory(destination),
+            ) {
+                Ok(value) => value,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            let (_, flags) = arithmetic_result(
+                OperandSize::Word,
+                ArithmeticKind::Cmp,
+                lhs,
+                u64::MAX,
+                state.rflags,
+            );
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: admit only the firmware's exact dword immediate compares:
         // `81 F9 A0 00 00 00` (CMP ECX,0xa0) and `81 FF 61 FF 00 00`
         // (CMP EDI,0xff61), plus helper `81 FF 80 00 00 00` (CMP EDI,0x80)
