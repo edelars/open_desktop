@@ -1922,6 +1922,24 @@ Independent review approved with no findings.
 
 ### ISSUE-403 — exact `LEA EAX,[R8-1]` (`41 8D 40 FF`)
 
-The next runner frontier is this exact dword LEA. Verify the 64-bit effective
-address, dword destination zero-extension and no-memory/no-flags behavior, then
-admit only this encoding. Preserve the unrelated ISSUE-201 CLD caveat.
+Implemented only exact `41 8D 40 FF` in the base paged profile. REX.B selects
+R8 as the address base; the qword effective address is decremented by one,
+then the low dword is written to EAX and zero-extends RAX. LEA has no memory
+access or canonicality check and preserves flags/definedness. Focused tests
+pass (4/4); other-profile matrix passes (1/1). ISSUE-201 remains the unrelated
+CLD caveat.
+
+Runner image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` advances
+to `83 F8 09` (CMP EAX,9, ISSUE-404), RIP `0x2012d4`, after 9,891 retired
+instructions, `Unsupported { opcode: 131}`; COM1 is empty. Full
+`cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,338/7/15;
+zero doc tests), paged machine quantum passes (110/110), workspace all-targets
+offline check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings.
+
+### ISSUE-404 — exact `CMP EAX,9` (`83 F8 09`)
+
+The next runner frontier is this exact dword accumulator CMP with sign-extended
+imm8. Verify subtraction flags/definedness, no GPR write and exact admission,
+then preserve the unrelated ISSUE-201 CLD caveat.

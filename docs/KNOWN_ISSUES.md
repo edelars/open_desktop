@@ -5115,10 +5115,19 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Результат:** runner now retires 9,890 instructions and stops at RIP `0x2012d0`, bytes `41 8D 40 FF` (LEA EAX,[R8-1]; ISSUE-403), `Unsupported { opcode: 141 }`; COM1 is empty.
 - **Проверка:** focused success/state/read-fault/noncanonical/fetch-fault/neighbors/CPL3 tests 6/6 and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,334/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
 
-### ISSUE-403 — S7-04: exact LEA EAX,[R8-1] frontier (`41 8D 40 FF`)
+### ISSUE-403 — S7-04: exact LEA EAX,[R8-1] (`41 8D 40 FF`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-402.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012d0`.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `41 8D 40 FF` (`LEA EAX,[R8-1]`). REX.B selects R8 as the 64-bit address base; the qword effective address is decremented by one, then its low dword is written to EAX and zero-extends RAX. LEA performs no memory access or canonicality check and preserves flags/definedness. This slice admits no additional destinations/displacements/prefixes; CPL3 and other paged profiles do not admit `41 8D 40 FF`.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,890 instructions and reported `Unsupported { opcode: 141 }` at RIP `0x2012d0`; COM1 is empty. Bytes are present at image offset `0x12d0`.
+- **Результат:** runner now retires 9,891 instructions and stops at RIP `0x2012d4`, bytes `83 F8 09` (CMP EAX,9; ISSUE-404), `Unsupported { opcode: 131 }`; COM1 is empty.
+- **Проверка:** focused success/state/no-memory/wrap/noncanonical/fetch-fault/neighbor/CPL3 tests 4/4 and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,338/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-404 — S7-04: exact CMP EAX,9 frontier (`83 F8 09`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-403.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012d4`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this exact dword LEA, which is outside the current bounded base-profile admission.
-- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,890 instructions and reported `Unsupported { opcode: 141 }` at RIP `0x2012d0`; COM1 is empty. Bytes at the link-base shadow are `41 8D 40 FF`.
-- **Следующий шаг:** validate 64-bit effective-address calculation, dword truncation/zero-extension and no-memory-access semantics; admit only this exact form.
+- **Суть и последствия:** firmware reaches this exact dword accumulator compare, which is outside the current bounded base-profile admission.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,891 instructions and reported `Unsupported { opcode: 131 }` at RIP `0x2012d4`; COM1 is empty. Bytes at the link-base shadow are `83 F8 09`.
+- **Следующий шаг:** verify exact dword CMP accumulator imm8 semantics and flag definedness, then admit only this encoding.

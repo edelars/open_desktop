@@ -28980,3 +28980,19 @@ remains the unrelated CLD caveat.
 Runner advances to `41 8D 40 FF` (LEA EAX,[R8-1], ISSUE-403), RIP `0x2012d0`
 after 9,890 retired instructions, `Unsupported { opcode: 141}`; COM1 is empty.
 Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,334/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-403 — exact `LEA EAX,[R8-1]` (`41 8D 40 FF`)
+
+The base paged profile admits only this dword LEA form. REX.B selects R8 as
+the 64-bit address base; the signed disp8 -1 participates in qword effective-
+address calculation. EAX receives the low dword, zero-extending RAX. There is
+no memory access or canonicality check, and RFLAGS/definedness are preserved.
+Focused tests pass (4/4), as does the other-profile matrix (1/1). ISSUE-201
+remains the unrelated CLD caveat.
+
+Runner advances to `83 F8 09` (CMP EAX,9, ISSUE-404), RIP `0x2012d4`, after
+9,891 retired instructions, `Unsupported { opcode: 131}`; COM1 is empty. Full
+`cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,338/7/15;
+zero doc tests), paged machine quantum passes (110/110), workspace all-targets
+offline check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings.

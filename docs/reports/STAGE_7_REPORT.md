@@ -3243,3 +3243,22 @@ caveat.
 Runner advances to `41 8D 40 FF` (LEA EAX,[R8-1], ISSUE-403) at RIP `0x2012d0`
 after 9,890 retired instructions, `Unsupported { opcode: 141}`; COM1 is empty.
 Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,334/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-403 — exact `LEA EAX,[R8-1]` (`41 8D 40 FF`)
+
+Implemented only this exact dword LEA in the base profile. REX.B selects R8 as
+the 64-bit address base; qword EA arithmetic applies disp8 -1, then EAX receives
+the low dword and zero-extends RAX. No memory access/canonicality check occurs;
+flags and definedness are preserved. Focused tests pass (4/4) and the other-
+profile matrix passes (1/1). ISSUE-201 remains the unrelated CLD caveat.
+
+Runner command `cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue403.com1 --budget 10000` (image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) retires
+9,891 instructions and stops at `83 F8 09` (CMP EAX,9, ISSUE-404), RIP
+`0x2012d4`, `Unsupported { opcode: 131 }`, `com1_bytes=0` (expected runner exit
+5 for unsupported). Full `cargo test --offline -p od-isa --quiet` passes
+(2,322/1,591/126/29/6/1,338/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings.

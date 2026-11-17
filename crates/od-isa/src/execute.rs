@@ -23537,6 +23537,31 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(dst, src.effective_address(state, next_rip));
             state.rip = next_rip;
         }
+        // S7-04: exact `41 8D 40 FF` computes R8-1 as a qword effective
+        // address, then writes EAX (zero-extending RAX). LEA does not access
+        // memory or check canonicality; REX.B selects R8 as the base.
+        Operation::Lea { dst, src }
+            if base_profile
+                && instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0x8d
+                && instruction.length == 4
+                && instruction.operand_size == OperandSize::Dword
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x41),
+                        ..Prefixes::default()
+                    })
+                && dst == RegisterView::low(Register::Rax, OperandSize::Dword)
+                && src.base == AddressBase::Register(Register::R8)
+                && src.index.is_none()
+                && src.scale == 1
+                && src.displacement == -1
+                && src.address_size == OperandSize::Qword
+                && src.size == OperandSize::Dword =>
+        {
+            state.write(dst, src.effective_address(state, next_rip));
+            state.rip = next_rip;
+        }
         // S7-04: the helper computes the qword sum RCX+R11 into RAX with
         // exact `4A 8D 04 19`. REX.W selects qword width and REX.X extends
         // the SIB index to R11; LEA calculates the offset without a memory

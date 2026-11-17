@@ -1682,7 +1682,7 @@ runner advances to `49 39 D0` (CMP R8,RDX, ISSUE-395), RIP `0x201290`, after
 od-isa passes (2,322/1,591/126/29/6/1,296/7/15; zero doc tests), paged machine
 quantum passes (110/110), workspace all-targets offline check passes with
 existing warnings, and scoped rustfmt/diff-check pass. Independent review is
-pending.
+approved with no findings.
 
 ### ISSUE-395 — `49 39 D0` (`CMP R8,RDX`)
 
@@ -1811,3 +1811,21 @@ od-isa suites pass (2,322/1,591/126/29/6/1,334/7/15; zero doc tests), paged
 machine quantum passes (110/110), workspace all-targets offline check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review
 approved with no findings.
+
+### ISSUE-403 — `41 8D 40 FF` (`LEA EAX,[R8-1]`)
+
+The firmware profile admits only this exact dword LEA. REX.B selects R8 as the
+64-bit address base; qword effective-address arithmetic applies signed disp8
+-1, then EAX receives the low dword and zero-extends RAX. LEA makes no memory
+access or canonicality check and preserves flags/definedness. Focused tests
+pass (4/4), and other-profile matrix passes (1/1). ISSUE-201 remains the
+unrelated CLD caveat.
+
+Image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` runner
+advances to `83 F8 09` (CMP EAX,9, ISSUE-404), RIP `0x2012d4`, after 9,891
+retired instructions, `Unsupported { opcode: 131}`; COM1 is empty. Full od-isa
+suites pass (2,322/1,591/126/29/6/1,338/7/15; zero doc tests), paged machine
+quantum passes (110/110), workspace all-targets offline check passes with
+existing warnings, and scoped rustfmt/diff-check pass. Independent review is
+pending.
