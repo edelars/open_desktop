@@ -5309,10 +5309,20 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Проверка:** four focused dword-CMP/flags/definedness/register-preservation/fetch-fault/neighbor/CPL3 tests and other-profile matrix 1/1 pass. Full od-isa passes (2,322/1,591/126/29/6/1,429/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
 - **Следующий шаг:** ISSUE-423, exact `0F 83 76 01 00 00` (JAE rel32 +0x176) at RIP `0x20132d`.
 
-### ISSUE-423 — S7-04: exact JAE rel32 +0x176 frontier (`0F 83 76 01 00 00`)
+### ISSUE-423 — S7-04: exact JAE rel32 +0x176 (`0F 83 76 01 00 00`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-422.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20132d`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware reaches a near unsigned-above-or-equal branch with rel32 displacement +0x176; this exact branch is not yet admitted.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact no-prefix `0F 83 76 01 00 00` (`JAE rel32 +0x176`). The branch is taken iff CF=0, adds signed rel32 to next RIP, preserves flags/definedness, and checks target canonicality only when taken. Fetch faults leave state unchanged; other displacements, conditions, prefixes and CPL3/other profiles remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,911 instructions and reported `Unsupported { opcode: 131 }` at RIP `0x20132d`; COM1 is empty. Bytes at the link-base shadow are `0F 83 76 01 00 00`.
-- **Следующий шаг:** verify JAE condition, rel32 target arithmetic and taken-only canonicality; admit only this displacement.
+- **Результат:** runner now retires 9,912 instructions and stops at RIP `0x201333`, bytes `41 F6 C4 02` (TEST R12B,2; ISSUE-424), `Unsupported { opcode: 246 }`; COM1 is empty.
+- **Проверка:** five focused JAE/flags/definedness/target-canonicality/fetch-fault/neighbor/CPL3 tests and other-profile matrix 1/1 pass. Full od-isa passes (2,322/1,591/126/29/6/1,434/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+- **Следующий шаг:** ISSUE-424, exact `41 F6 C4 02` (TEST R12B,2) at RIP `0x201333`.
+
+### ISSUE-424 — S7-04: exact TEST R12B,2 frontier (`41 F6 C4 02`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-423.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201333`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware reaches an immediate byte TEST on R12B; this exact form and its logical flag behavior are not yet admitted.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,912 instructions and reported `Unsupported { opcode: 246 }` at RIP `0x201333`; COM1 is empty. Bytes at the link-base shadow are `41 F6 C4 02`.
+- **Следующий шаг:** verify TEST R12B immediate semantics and admit only this encoding.

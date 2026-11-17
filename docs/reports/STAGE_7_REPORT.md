@@ -3582,3 +3582,15 @@ opcode 131 with empty COM1. Full od-isa passes
 (110/110), workspace all-targets offline check passes with existing warnings,
 and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
 remains the unrelated CLD caveat.
+
+### ISSUE-423 — exact `JAE rel32 +0x176` (`0F 83 76 01 00 00`)
+
+Admitted only this exact base-profile branch. JAE tests CF=0 and uses signed
+rel32 from next RIP; flags/definedness are preserved and target canonicality is
+checked only when taken. Five focused tests and the other-profile matrix pass.
+Runner reaches ISSUE-424 `41 F6 C4 02` at RIP `0x201333` after 9,912 retired
+instructions, then reports Unsupported opcode 246 with empty COM1. Full od-isa
+passes (2,322/1,591/126/29/6/1,434/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.

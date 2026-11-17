@@ -2256,3 +2256,17 @@ Runner advances after 9,911 retired instructions to ISSUE-423 `0F 83 76 01 00 00
 (110/110), workspace all-targets offline check passes with existing warnings,
 and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains
 the unrelated CLD caveat.
+
+### ISSUE-423 — exact `JAE rel32 +0x176` (`0F 83 76 01 00 00`)
+
+At RIP `0x20132d`, admit only the exact unprefixed JAE displacement +0x176 in
+the base paged profile. JAE tests CF=0, computes its target from next RIP,
+preserves flags/definedness, and checks canonicality only when taken. Five
+focused tests cover CF/definedness, target/fallthrough, canonicality, final-byte
+fetch faults, encoding neighbors and CPL3; the other-profile matrix passes.
+Runner advances after 9,912 retired instructions to ISSUE-424 `41 F6 C4 02`
+(TEST R12B,2) at RIP `0x201333`; COM1 is empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,434/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
+remains the unrelated CLD caveat.

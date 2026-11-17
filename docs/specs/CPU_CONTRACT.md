@@ -29288,3 +29288,14 @@ implied. Four focused tests and other-profile matrix pass; full od-isa passes
 (110/110), workspace all-targets offline check passes with existing warnings,
 and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
 remains the unrelated CLD caveat.
+
+### ISSUE-423 — bounded JAE rel32
+
+The base paged profile admits exact `0F 83 76 01 00 00` only. JAE branches iff
+CF=0, using signed rel32 from next RIP; it preserves flags and flag definedness
+and validates target canonicality only when taken. Fetch faults commit no state.
+Other displacements, conditions, prefixes and profiles are not implied. Focused
+tests pass; full od-isa passes (2,322/1,591/126/29/6/1,434/7/15; zero doc
+tests), paged machine quantum passes (110/110), workspace all-targets offline
+check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

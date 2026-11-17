@@ -2124,3 +2124,14 @@ passes (2,322/1,591/126/29/6/1,429/7/15; zero doc tests), paged machine quantum
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-423 runner frontier
+
+At RIP `0x20132d`, the runner encountered `0F 83 76 01 00 00` (JAE rel32
++0x176). After admission it advances to `41 F6 C4 02` (TEST R12B,2; ISSUE-424)
+at RIP `0x201333` after 9,912 retired instructions; Unsupported opcode 246,
+COM1 empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`. Full od-isa
+passes (2,322/1,591/126/29/6/1,434/7/15; zero doc tests), paged
+machine quantum passes (110/110), workspace all-targets offline check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
