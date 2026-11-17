@@ -2099,3 +2099,16 @@ remains the unrelated CLD caveat.
 Runner advances to `0F 87 5B 01 00 00` (JA rel32 +0x15b; ISSUE-421) at RIP
 `0x201323`, after 9,909 retired instructions, unsupported opcode 135, COM1
 empty.
+
+### ISSUE-421 runner frontier
+
+The runner confirms exact bytes `0F 87 5B 01 00 00` at RIP `0x201323` after
+9,909 retired instructions (image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`). After
+admission, it advances to `41 83 FD 04` (ISSUE-422) at RIP `0x201329` after
+9,910 retired instructions; Unsupported opcode 131, COM1 empty. The admitted
+JA uses CF=0 && ZF=0 and checks only a taken target's canonicality. Full od-isa
+passes (2,322/1,591/126/29/6/1,425/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.

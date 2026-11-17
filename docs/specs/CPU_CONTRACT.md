@@ -29166,6 +29166,7 @@ Runner advances to `46 8B 64 1E 04` (MOV R12D,dword ptr [RSI+R11+4]; ISSUE-415),
 RIP `0x201305`, after 9,903 retired instructions, unsupported opcode 139, COM1
 empty.
 
+
 ### ISSUE-415 — exact `MOV R12D,dword ptr [RSI+R11+4]` (`46 8B 64 1E 04`)
 
 The base profile admits only this exact load. REX.R selects R12D and REX.X
@@ -29263,3 +29264,15 @@ remains the unrelated CLD caveat.
 Runner advances to `0F 87 5B 01 00 00` (JA rel32 +0x15b; ISSUE-421) at RIP
 `0x201323`, after 9,909 retired instructions, unsupported opcode 135, COM1
 empty.
+
+### ISSUE-421 — bounded JA rel32
+
+The base paged profile admits exact `0F 87 5B 01 00 00` only. JA branches when
+CF=0 and ZF=0, using signed rel32 from next RIP. It leaves flags and flag
+definedness unchanged and checks target canonicality only on the taken path;
+instruction-fetch faults do not commit state. No other displacement, condition,
+prefix or profile is implied. Five focused branch tests and other-profile matrix
+pass; full od-isa passes (2,322/1,591/126/29/6/1,425/7/15; zero doc tests),
+paged machine quantum passes (110/110), workspace all-targets offline check
+passes with existing warnings, and scoped rustfmt/diff-check pass. Independent
+review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

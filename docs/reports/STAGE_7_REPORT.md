@@ -3436,6 +3436,7 @@ Runner advances to `0F 84 9D 01 00 00` (JZ rel32 +0x19d; ISSUE-414), RIP
 `0x2012ff`, after 9,902 retired instructions, unsupported opcode 132, COM1
 empty.
 
+
 ### ISSUE-414 — exact `JZ rel32 +0x19d` (`0F 84 9D 01 00 00`)
 
 Runner frontier: image SHA-256
@@ -3556,3 +3557,16 @@ remains the unrelated CLD caveat.
 Runner advances to `0F 87 5B 01 00 00` (JA rel32 +0x15b; ISSUE-421) at RIP
 `0x201323`, after 9,909 retired instructions, unsupported opcode 135, COM1
 empty.
+
+### ISSUE-421 — exact `JA rel32 +0x15b` (`0F 87 5B 01 00 00`)
+
+Admitted only the exact base-profile branch. The predicate is CF=0 && ZF=0;
+the signed displacement is added to next RIP, flags/definedness are preserved,
+and target canonicality is checked only when taken. Five focused tests and the
+other-profile matrix pass. Runner reaches ISSUE-422 `41 83 FD 04` at RIP
+`0x201329` after 9,910 retired instructions, then reports Unsupported opcode
+131 with empty COM1. Full od-isa passes
+(2,322/1,591/126/29/6/1,425/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
+remains the unrelated CLD caveat.

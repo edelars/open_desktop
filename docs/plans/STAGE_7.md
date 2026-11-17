@@ -2230,3 +2230,16 @@ remains the unrelated CLD caveat.
 Runner advances to `0F 87 5B 01 00 00` (JA rel32 +0x15b; ISSUE-421) at RIP
 `0x201323`, after 9,909 retired instructions, unsupported opcode 135, COM1
 empty.
+
+### ISSUE-421 — exact `JA rel32 +0x15b` (`0F 87 5B 01 00 00`)
+
+At RIP `0x201323`, admit only this exact unprefixed rel32 displacement in the
+base paged profile. JA tests CF=0 && ZF=0, computes the target from next RIP,
+preserves flags and their definedness, and validates canonicality only when
+taken. Five focused branch/flags/definedness/canonicality/fetch-fault/neighbor/
+CPL3 tests and the other-profile matrix pass. Runner advances after 9,910
+retired instructions to ISSUE-422 `41 83 FD 04` (CMP R13D,4) at RIP
+`0x201329`; COM1 is empty. Full od-isa passes (2,322/1,591/126/29/6/1,425/7/15;
+zero doc tests), paged machine quantum passes (110/110), workspace all-targets
+offline check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
