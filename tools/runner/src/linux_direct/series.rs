@@ -142,6 +142,7 @@ struct SeriesCli {
     expected_stop_kind: String,
     expected_s5_marker_keys: Vec<String>,
     capture_execution_observations: bool,
+    execution_observations_elf_stack_copy: bool,
     execution_observations_quantum_trace: bool,
     execution_observations_rdtsc_rip: Option<u64>,
     execution_observations_rdtsc_stride: Option<u64>,
@@ -199,6 +200,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
             cli.execution_observations_rdtsc_entry_rip,
             cli.execution_observations_rdtsc_window,
             cli.execution_observations_quantum_trace,
+            cli.execution_observations_elf_stack_copy,
         );
     }
     if let Err(error) = parse(&preflight_args) {
@@ -251,6 +253,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
                 cli.execution_observations_rdtsc_entry_rip,
                 cli.execution_observations_rdtsc_window,
                 cli.execution_observations_quantum_trace,
+                cli.execution_observations_elf_stack_copy,
             );
         }
         let options = match parse(&run_args) {
@@ -474,6 +477,7 @@ fn append_execution_observations_args(
     entry_rip: Option<u64>,
     window: Option<od_machine::RdtscSampleWindow>,
     quantum_trace: bool,
+    elf_stack_copy: bool,
 ) {
     args.extend([
         "--execution-observations-out".into(),
@@ -506,6 +510,9 @@ fn append_execution_observations_args(
     if quantum_trace {
         args.push("--execution-observations-quantum-trace".into());
     }
+    if elf_stack_copy {
+        args.push("--execution-observations-elf-stack-copy".into());
+    }
 }
 
 fn supported_schema_version(version: u32) -> bool {
@@ -521,6 +528,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     let mut expected_s5_marker_keys = Vec::new();
     let mut capture_execution_observations = false;
     let mut execution_observations_quantum_trace = false;
+    let mut execution_observations_elf_stack_copy = false;
     let mut execution_observations_rdtsc_rip = None;
     let mut execution_observations_rdtsc_stride = None;
     let mut execution_observations_rdtsc_entry_rip = None;
@@ -562,6 +570,13 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
         if name == "--execution-observations-quantum-trace" {
             if std::mem::replace(&mut execution_observations_quantum_trace, true) {
                 return Err("duplicate --execution-observations-quantum-trace".into());
+            }
+            index += 1;
+            continue;
+        }
+        if name == "--execution-observations-elf-stack-copy" {
+            if std::mem::replace(&mut execution_observations_elf_stack_copy, true) {
+                return Err("duplicate --execution-observations-elf-stack-copy".into());
             }
             index += 1;
             continue;
@@ -695,6 +710,11 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     if execution_observations_quantum_trace && !capture_execution_observations {
         return Err("--execution-observations-quantum-trace needs --execution-observations".into());
     }
+    if execution_observations_elf_stack_copy && !capture_execution_observations {
+        return Err(
+            "--execution-observations-elf-stack-copy needs --execution-observations".into(),
+        );
+    }
     if let Some(window) = execution_observations_rdtsc_window {
         super::validate_rdtsc_sample_window_capacity(
             window,
@@ -735,6 +755,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
         expected_s5_marker_keys,
         capture_execution_observations,
         execution_observations_quantum_trace,
+        execution_observations_elf_stack_copy,
         execution_observations_rdtsc_rip,
         execution_observations_rdtsc_stride,
         execution_observations_rdtsc_entry_rip,
@@ -1111,7 +1132,7 @@ fn validate_execution_observations_sidecar(
         .map_err(|error| format!("invalid execution-observations sidecar JSON: {error}"))?;
     let schema_version = sidecar_json["schema_version"]
         .as_u64()
-        .filter(|version| matches!(version, 7 | 8 | 9 | 10 | 11 | 12 | 13))
+        .filter(|version| supported_execution_observations_schema_version(*version))
         .ok_or_else(|| {
             "execution-observations sidecar schema_version is missing, invalid, or unsupported"
                 .to_string()
@@ -1697,7 +1718,253 @@ fn validate_execution_observations_sidecar(
             }
         }
     }
+    if schema_version >= 14 {
+        let raw = sidecar_json.get("elf_stack_copy");
+        let metadata_status = sidecar.get("elf_stack_copy_status");
+        match raw {
+            Some(Value::Null) => {
+                if metadata_status != Some(&Value::Null) {
+                    return Err(
+                        "execution-observations ELF stack copy metadata is inconsistent".into(),
+                    );
+                }
+            }
+            Some(Value::Object(snapshot)) => {
+                let status = snapshot.get("status").and_then(Value::as_str);
+                let probes = snapshot.get("probes").and_then(Value::as_array);
+                let mismatch_reasons = snapshot.get("mismatch_reasons").and_then(Value::as_array);
+                let error = snapshot.get("error");
+                let valid_status = matches!(
+                    status,
+                    Some("captured" | "gate_mismatch" | "read_error" | "run_ended_before_target")
+                );
+                let valid_hex = |value: Option<&Value>| match value {
+                    Some(Value::Null) => true,
+                    Some(Value::String(hex)) => canonical_hex64(hex),
+                    _ => false,
+                };
+                let probes_valid = probes.is_some_and(|probes| {
+                    elf_stack_copy_probe_count_valid(probes)
+                        && probes.iter().all(|probe| {
+                            let address = probe.get("address").and_then(Value::as_str);
+                            let page_base = probe.get("page_base").and_then(Value::as_str);
+                            let access = probe.get("access").and_then(Value::as_str);
+                            let outcome = probe.get("outcome").and_then(Value::as_str);
+                            let entries = probe.get("entries").and_then(Value::as_array);
+                            let translated = probe.get("translated_physical");
+                            let error = probe.get("error");
+                            let access_ok = matches!(access, Some("Read" | "Write"));
+                            let outcome_ok = match outcome {
+                                Some("translated") => {
+                                    valid_hex(translated)
+                                        && translated.is_some_and(|v| v.is_string())
+                                        && error.is_some_and(Value::is_null)
+                                }
+                                Some("page_fault" | "error") => {
+                                    translated.is_some_and(Value::is_null)
+                                        && error.is_some_and(Value::is_string)
+                                }
+                                _ => false,
+                            };
+                            address.is_some_and(canonical_hex64)
+                                && page_base.is_some_and(canonical_hex64)
+                                && address.zip(page_base).is_some_and(|(a, p)| {
+                                    u64::from_str_radix(a.trim_start_matches("0x"), 16)
+                                        .ok()
+                                        .zip(
+                                            u64::from_str_radix(p.trim_start_matches("0x"), 16)
+                                                .ok(),
+                                        )
+                                        .is_some_and(|(a, p)| p == (a & !0xfff))
+                                })
+                                && access_ok
+                                && probe
+                                    .get("cpl")
+                                    .and_then(Value::as_u64)
+                                    .is_some_and(|cpl| cpl <= 3)
+                                && entries.is_some_and(|entries| {
+                                    entries.len()
+                                        <= od_machine::LINUX_ELF_STACK_COPY_WALK_ENTRY_CAPACITY
+                                        && entries.iter().all(valid_elf_stack_copy_walk_entry)
+                                })
+                                && outcome_ok
+                        })
+                });
+                let named_probes_valid = probes.is_some_and(|probes| {
+                    let parse_hex = |value: Option<&Value>| {
+                        value
+                            .and_then(Value::as_str)
+                            .and_then(|hex| hex.strip_prefix("0x"))
+                            .and_then(|digits| u64::from_str_radix(digits, 16).ok())
+                    };
+                    let registers = snapshot.get("registers").and_then(Value::as_object);
+                    let cpl = snapshot.get("cpl").and_then(Value::as_u64);
+                    let expected_addresses = [
+                        parse_hex(snapshot.get("bprm_p")),
+                        registers.and_then(|registers| parse_hex(registers.get("rsi"))),
+                        registers.and_then(|registers| parse_hex(registers.get("rdi"))),
+                    ];
+                    probes.len() == 3
+                        && [
+                            ("stack_input", "Read"),
+                            ("copy_source", "Read"),
+                            ("copy_destination", "Write"),
+                        ]
+                        .iter()
+                        .zip(probes.iter().zip(expected_addresses))
+                        .all(
+                            |((name, access), (probe, expected_address))| {
+                                probe.get("name").and_then(Value::as_str) == Some(*name)
+                                    && probe.get("access").and_then(Value::as_str) == Some(*access)
+                                    && probe.get("cpl").and_then(Value::as_u64) == cpl
+                                    && parse_hex(probe.get("address")) == expected_address
+                            },
+                        )
+                });
+                let snapshot_has_complete_capture =
+                    [
+                        "rip",
+                        "cr3",
+                        "bprm_p_address",
+                        "bprm_p",
+                        "aligned_stack_pointer",
+                        "copy_destination",
+                        "copy_length",
+                    ]
+                    .iter()
+                    .all(|key| {
+                        snapshot
+                            .get(*key)
+                            .and_then(Value::as_str)
+                            .is_some_and(canonical_hex64)
+                    }) && snapshot.get("cpl").and_then(Value::as_u64) == Some(0)
+                        && snapshot
+                            .get("cs_selector")
+                            .and_then(Value::as_str)
+                            .and_then(|selector| selector.strip_prefix("0x"))
+                            .and_then(|digits| u16::from_str_radix(digits, 16).ok())
+                            .is_some_and(|selector| selector & 3 == 0)
+                        && snapshot.get("instruction_bytes").and_then(Value::as_str)
+                            == Some("e847d93400")
+                        && snapshot
+                            .get("registers")
+                            .and_then(Value::as_object)
+                            .is_some_and(|registers| {
+                                ["r15", "r13", "rdi", "rsi", "rdx"].iter().all(|key| {
+                                    registers
+                                        .get(*key)
+                                        .and_then(Value::as_str)
+                                        .is_some_and(canonical_hex64)
+                                })
+                            });
+                let status_data_valid = match status {
+                    Some("captured") => {
+                        snapshot_has_complete_capture
+                            && elf_stack_copy_gate_matches(snapshot)
+                            && mismatch_reasons.is_some_and(Vec::is_empty)
+                            && error.is_some_and(Value::is_null)
+                            && named_probes_valid
+                            && probes_valid
+                    }
+                    Some("gate_mismatch") => {
+                        mismatch_reasons.is_some_and(|reasons| !reasons.is_empty())
+                            && !elf_stack_copy_gate_matches(snapshot)
+                            && probes.is_some_and(Vec::is_empty)
+                            && error.is_some_and(Value::is_null)
+                    }
+                    Some("read_error") => {
+                        error.is_some_and(Value::is_string) && probes.is_some_and(Vec::is_empty)
+                    }
+                    Some("run_ended_before_target") => {
+                        probes.is_some_and(Vec::is_empty)
+                            && mismatch_reasons.is_some_and(Vec::is_empty)
+                            && error.is_some_and(Value::is_null)
+                    }
+                    _ => false,
+                };
+                if snapshot.get("profile").and_then(Value::as_str)
+                    != Some(od_machine::LINUX_ELF_STACK_COPY_PROFILE)
+                    || !valid_status
+                    || !status_data_valid
+                    || metadata_status.and_then(Value::as_str) != status
+                {
+                    return Err("execution-observations ELF stack copy snapshot is invalid".into());
+                }
+            }
+            _ => {
+                return Err(
+                    "execution-observations ELF stack copy snapshot is missing or invalid".into(),
+                );
+            }
+        }
+    }
     Ok(())
+}
+
+fn supported_execution_observations_schema_version(version: u64) -> bool {
+    (1..=14).contains(&version)
+}
+
+fn valid_elf_stack_copy_walk_entry(entry: &Value) -> bool {
+    matches!(
+        entry.get("level").and_then(Value::as_str),
+        Some("Pml4" | "Pdpt" | "Pd" | "Pt")
+    ) && entry
+        .get("index")
+        .and_then(Value::as_u64)
+        .is_some_and(|index| index <= 0x1ff)
+        && entry
+            .get("entry_address")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_hex64)
+        && entry
+            .get("entry_value")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_hex64)
+}
+
+fn elf_stack_copy_gate_matches(snapshot: &serde_json::Map<String, Value>) -> bool {
+    let read_hex = |value: Option<&Value>| {
+        value
+            .and_then(Value::as_str)
+            .and_then(|hex| hex.strip_prefix("0x"))
+            .and_then(|digits| u64::from_str_radix(digits, 16).ok())
+    };
+    let registers = snapshot.get("registers").and_then(Value::as_object);
+    let (Some(r15), Some(r13), Some(rdi), Some(rsi), Some(rdx), Some(bprm_address), Some(bprm_p)) = (
+        registers.and_then(|registers| read_hex(registers.get("r15"))),
+        registers.and_then(|registers| read_hex(registers.get("r13"))),
+        registers.and_then(|registers| read_hex(registers.get("rdi"))),
+        registers.and_then(|registers| read_hex(registers.get("rsi"))),
+        registers.and_then(|registers| read_hex(registers.get("rdx"))),
+        read_hex(snapshot.get("bprm_p_address")),
+        read_hex(snapshot.get("bprm_p")),
+    ) else {
+        return false;
+    };
+    read_hex(snapshot.get("rip")) == Some(od_machine::LINUX_ELF_STACK_COPY_RIP)
+        && snapshot.get("cpl").and_then(Value::as_u64) == Some(0)
+        && snapshot.get("instruction_bytes").and_then(Value::as_str) == Some("e847d93400")
+        && snapshot
+            .get("cs_selector")
+            .and_then(Value::as_str)
+            .and_then(|selector| selector.strip_prefix("0x"))
+            .and_then(|digits| u16::from_str_radix(digits, 16).ok())
+            .is_some_and(|selector| selector & 3 == 0)
+        && r15.checked_add(0x20) == Some(bprm_address)
+        && r13 & 0xf == 0
+        && r13.checked_sub(7) == Some(rdi)
+        && rdx == 7
+        && rsi == 0xffff_ffff_82fd_eb8f
+        && bprm_p >= r13
+        && bprm_p - r13 <= 8206
+        && read_hex(snapshot.get("aligned_stack_pointer")) == Some(r13)
+        && read_hex(snapshot.get("copy_destination")) == Some(rdi)
+        && read_hex(snapshot.get("copy_length")) == Some(rdx)
+}
+
+fn elf_stack_copy_probe_count_valid(probes: &[Value]) -> bool {
+    probes.len() <= od_machine::LINUX_ELF_STACK_COPY_PROBE_CAPACITY
 }
 
 fn valid_instruction_path_trace_header(value: &Value) -> bool {
@@ -2987,6 +3254,20 @@ mod tests {
         assert!(supported_schema_version(1));
         assert!(supported_schema_version(SERIES_SCHEMA_VERSION));
         assert!(!supported_schema_version(0));
+        for version in 1..=13 {
+            assert!(supported_execution_observations_schema_version(version));
+        }
+        assert!(supported_execution_observations_schema_version(14));
+        assert!(!supported_execution_observations_schema_version(15));
+        assert!(!supported_execution_observations_schema_version(u64::MAX));
+    }
+
+    #[test]
+    fn elf_stack_copy_probe_cap_is_rejected_when_exceeded() {
+        let within_cap = vec![Value::Null; od_machine::LINUX_ELF_STACK_COPY_PROBE_CAPACITY];
+        let over_cap = vec![Value::Null; od_machine::LINUX_ELF_STACK_COPY_PROBE_CAPACITY + 1];
+        assert!(elf_stack_copy_probe_count_valid(&within_cap));
+        assert!(!elf_stack_copy_probe_count_valid(&over_cap));
     }
 
     #[test]
@@ -3183,7 +3464,7 @@ mod tests {
             );
         }
 
-        for version in [None, Some(Value::Null), Some(json!("8")), Some(json!(14))] {
+        for version in [None, Some(Value::Null), Some(json!("8")), Some(json!(15))] {
             let mut malformed_sidecar = sidecar_value.clone();
             if let Some(value) = version {
                 malformed_sidecar["schema_version"] = value;
@@ -3631,6 +3912,185 @@ mod tests {
         fs::remove_dir_all(temp).unwrap();
     }
 
+    fn captured_elf_stack_copy_observations() -> od_machine::LinuxExecutionObservations {
+        use od_machine::{
+            ElfStackCopyProbe, ElfStackCopySnapshot, ElfStackCopyStatus, GuestPhysicalAddress,
+            PageTableLevel, WalkEntry,
+        };
+        let r13 = 0xffff_ffff_83ff_0000;
+        let r15 = r13 + 0x40;
+        let rdi = r13 - 7;
+        let rsi = 0xffff_ffff_82fd_eb8f;
+        let bprm_p = r13 + 0x100;
+        let entry = WalkEntry {
+            level: PageTableLevel::Pml4,
+            index: 511,
+            entry_address: GuestPhysicalAddress::new(0x1000),
+            entry_value: 0x2007,
+        };
+        let probe = |name: &str, address: u64, access: &str, outcome: &str| ElfStackCopyProbe {
+            name: name.into(),
+            address,
+            page_base: address & !0xfff,
+            access: access.into(),
+            cpl: 0,
+            entries: vec![entry],
+            outcome: outcome.into(),
+            translated_physical: (outcome == "translated").then_some(0x4000),
+            error: (outcome == "page_fault").then(|| "record=PageFault".into()),
+        };
+        let snapshot = ElfStackCopySnapshot {
+            profile: od_machine::LINUX_ELF_STACK_COPY_PROFILE,
+            status: ElfStackCopyStatus::Captured,
+            rip: Some(od_machine::LINUX_ELF_STACK_COPY_RIP),
+            cr3: Some(0x1000),
+            cs_selector: Some(0x8),
+            cpl: Some(0),
+            r15: Some(r15),
+            r13: Some(r13),
+            rdi: Some(rdi),
+            rsi: Some(rsi),
+            rdx: Some(7),
+            bprm_p_address: Some(r15 + 0x20),
+            bprm_p: Some(bprm_p),
+            aligned_stack_pointer: Some(r13),
+            copy_destination: Some(rdi),
+            copy_length: Some(7),
+            instruction_bytes: Some(vec![0xe8, 0x47, 0xd9, 0x34, 0x00]),
+            mismatch_reasons: Vec::new(),
+            probes: vec![
+                probe("stack_input", bprm_p, "Read", "translated"),
+                probe("copy_source", rsi, "Read", "translated"),
+                probe("copy_destination", rdi, "Write", "page_fault"),
+            ],
+            error: None,
+        };
+        od_machine::LinuxExecutionObservations {
+            rdtsc_sample_stride: 1,
+            elf_stack_copy: Some(snapshot),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn schema_v14_captured_elf_stack_copy_serializes_and_loads_with_strict_validation() {
+        let temp = std::env::temp_dir().join(format!(
+            "od-runner-stage5-elf-stack-copy-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let series_path = write_test_series(&temp, "elf-stack-copy", "nonceElfStackCopy01", "PASS");
+        let series_dir = series_path.parent().unwrap();
+        let run_id = "elf-stack-copy-run-0001";
+        let sidecar_path = series_dir
+            .join("runs")
+            .join(run_id)
+            .join("execution-observations.json");
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&sidecar_path)
+            .unwrap();
+        let observations = captured_elf_stack_copy_observations();
+        let (byte_count, sha256) = super::super::write_execution_observations_sidecar(
+            &mut file,
+            sidecar_path.to_str().unwrap(),
+            &observations,
+        )
+        .unwrap();
+        let base_metadata = super::super::execution_observations_sidecar_metadata(
+            &format!("runs/{run_id}/execution-observations.json"),
+            &observations,
+            byte_count,
+            sha256,
+        );
+        let original_bytes = fs::read(&sidecar_path).unwrap();
+        let written: Value = serde_json::from_slice(&original_bytes).unwrap();
+        assert_eq!(written["schema_version"], 14);
+        assert_eq!(written["elf_stack_copy"]["status"], "captured");
+        assert_eq!(
+            written["elf_stack_copy"]["registers"]["r13"],
+            "0xffffffff83ff0000"
+        );
+        assert_eq!(
+            written["elf_stack_copy"]["probes"][2]["outcome"],
+            "page_fault"
+        );
+
+        let update_metadata = |mut metadata: Value, bytes: &[u8]| {
+            metadata["byte_count"] = json!(bytes.len());
+            metadata["sha256"] = json!(od_testkit::sha256_hex(bytes));
+            let mut series: Value =
+                serde_json::from_slice(&fs::read(&series_path).unwrap()).unwrap();
+            let manifest_path = series_dir.join(series["runs"][0]["manifest"].as_str().unwrap());
+            let mut manifest: Value =
+                serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+            let raw_path = series_dir.join(manifest["runner"]["raw_json"].as_str().unwrap());
+            let mut raw: Value = serde_json::from_slice(&fs::read(&raw_path).unwrap()).unwrap();
+            raw["execution_observations_sidecar"] = metadata;
+            let raw_bytes = serde_json::to_vec_pretty(&raw).unwrap();
+            fs::write(&raw_path, &raw_bytes).unwrap();
+            manifest["runner"]["raw_json_sha256"] = json!(od_testkit::sha256_hex(&raw_bytes));
+            let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+            fs::write(&manifest_path, &manifest_bytes).unwrap();
+            series["runs"][0]["manifest_sha256"] = json!(od_testkit::sha256_hex(&manifest_bytes));
+            fs::write(&series_path, serde_json::to_vec_pretty(&series).unwrap()).unwrap();
+        };
+        let assert_rejected = |value: Value, expected: &str| {
+            let bytes = serde_json::to_vec_pretty(&value).unwrap();
+            fs::write(&sidecar_path, &bytes).unwrap();
+            update_metadata(base_metadata.clone(), &bytes);
+            let loaded = fresh_manifest(&series_path).unwrap();
+            let error = load_run_manifest(&series_path, &loaded.runs[0]).unwrap_err();
+            assert!(error.contains(expected), "{error}; sidecar={value}");
+        };
+
+        update_metadata(base_metadata.clone(), &original_bytes);
+        let loaded = fresh_manifest(&series_path).unwrap();
+        load_run_manifest(&series_path, &loaded.runs[0]).unwrap();
+
+        let mut malformed = written.clone();
+        malformed["elf_stack_copy"]["probes"][0]["entries"][0] = json!({});
+        assert_rejected(malformed, "ELF stack copy snapshot is invalid");
+
+        let mut malformed = written.clone();
+        malformed["elf_stack_copy"]["probes"][0]["address"] = json!("0xffffffff83ff0200");
+        assert_rejected(malformed, "ELF stack copy snapshot is invalid");
+
+        let mut malformed = written.clone();
+        malformed["elf_stack_copy"]["probes"][0]["cpl"] = json!(3);
+        assert_rejected(malformed, "ELF stack copy snapshot is invalid");
+
+        let mut malformed = written.clone();
+        malformed["elf_stack_copy"]["cs_selector"] = Value::Null;
+        assert_rejected(malformed, "ELF stack copy snapshot is invalid");
+
+        let mut malformed = written.clone();
+        malformed["elf_stack_copy"]["registers"]["r15"] = json!("0x0");
+        malformed["elf_stack_copy"]["registers"]["r13"] = json!("0x0");
+        malformed["elf_stack_copy"]["registers"]["rdi"] = json!("0x0");
+        malformed["elf_stack_copy"]["bprm_p_address"] = json!("0x20");
+        malformed["elf_stack_copy"]["bprm_p"] = json!("0x100");
+        malformed["elf_stack_copy"]["aligned_stack_pointer"] = json!("0x0");
+        malformed["elf_stack_copy"]["copy_destination"] = json!("0x0");
+        malformed["elf_stack_copy"]["probes"][0]["address"] = json!("0x100");
+        malformed["elf_stack_copy"]["probes"][0]["page_base"] = json!("0x0");
+        malformed["elf_stack_copy"]["probes"][2]["address"] = json!("0x0");
+        malformed["elf_stack_copy"]["probes"][2]["page_base"] = json!("0x0");
+        assert_rejected(malformed, "ELF stack copy snapshot is invalid");
+
+        let mut malformed = written;
+        malformed["schema_version"] = json!(u64::MAX);
+        assert_rejected(
+            malformed,
+            "schema_version is missing, invalid, or unsupported",
+        );
+        fs::remove_dir_all(temp).unwrap();
+    }
+
     #[test]
     fn legacy_v2_configuration_without_linux_diagnostic_keys_still_verifies_raw_json() {
         let temp = std::env::temp_dir().join(format!(
@@ -3991,6 +4451,11 @@ mod tests {
         instruction_trace.push("--execution-observations-quantum-trace".into());
         let parsed = parse_series_args(&instruction_trace).unwrap();
         assert!(parsed.execution_observations_quantum_trace);
+        let mut elf_copy_args = base.clone();
+        elf_copy_args.push("--execution-observations".into());
+        elf_copy_args.push("--execution-observations-elf-stack-copy".into());
+        let elf_copy = parse_series_args(&elf_copy_args).unwrap();
+        assert!(elf_copy.execution_observations_elf_stack_copy);
         assert!(
             parsed
                 .forwarded
@@ -4006,11 +4471,37 @@ mod tests {
             parsed.execution_observations_rdtsc_entry_rip,
             parsed.execution_observations_rdtsc_window,
             parsed.execution_observations_quantum_trace,
+            parsed.execution_observations_elf_stack_copy,
         );
         assert_eq!(
             composed
                 .iter()
                 .filter(|argument| *argument == "--execution-observations-quantum-trace")
+                .count(),
+            1
+        );
+        composed.clear();
+        append_execution_observations_args(
+            &mut composed,
+            std::path::Path::new("series/preflight-execution-observations.json"),
+            None,
+            None,
+            None,
+            None,
+            true,
+            true,
+        );
+        assert_eq!(
+            composed
+                .iter()
+                .filter(|argument| *argument == "--execution-observations-quantum-trace")
+                .count(),
+            1
+        );
+        assert_eq!(
+            composed
+                .iter()
+                .filter(|argument| *argument == "--execution-observations-elf-stack-copy")
                 .count(),
             1
         );
@@ -4105,6 +4596,7 @@ mod tests {
                 last_hit: 1_200_000,
             }),
             true,
+            false,
         );
         let mut second = vec!["--run".into()];
         append_execution_observations_args(
@@ -4118,6 +4610,7 @@ mod tests {
                 last_hit: 1_200_000,
             }),
             true,
+            false,
         );
         assert_ne!(first[2], second[2]);
         assert!(

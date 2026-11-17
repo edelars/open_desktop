@@ -20,6 +20,86 @@ pub const LINUX_RDTSC_PREFIX_SENTINEL_RIP: u64 = 0xffff_ffff_8271_b31b;
 /// Maximum successful delivered page-fault events retained in one diagnostic run.
 pub const LINUX_PAGE_FAULT_EVENT_CAPACITY: usize = 256;
 pub const LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY: usize = 4;
+pub const LINUX_ELF_STACK_COPY_PROFILE: &str = "s5-07-elf-stack-platform-copy-v1";
+pub const LINUX_ELF_STACK_COPY_RIP: u64 = 0xffff_ffff_8199_9bd4;
+pub const LINUX_ELF_STACK_COPY_PROBE_CAPACITY: usize = 4;
+pub const LINUX_ELF_STACK_COPY_WALK_ENTRY_CAPACITY: usize = 4;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ElfStackCopyStatus {
+    #[default]
+    NotRequested,
+    AwaitingTarget,
+    Captured,
+    GateMismatch,
+    ReadError,
+    RunEndedBeforeTarget,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyProbe {
+    pub name: String,
+    pub address: u64,
+    pub page_base: u64,
+    pub access: String,
+    pub cpl: u8,
+    pub entries: Vec<crate::WalkEntry>,
+    /// `translated`, `page_fault`, or `error`.
+    pub outcome: String,
+    pub translated_physical: Option<u64>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfStackCopySnapshot {
+    pub profile: &'static str,
+    pub status: ElfStackCopyStatus,
+    pub rip: Option<u64>,
+    pub cr3: Option<u64>,
+    pub cs_selector: Option<u16>,
+    pub cpl: Option<u8>,
+    pub r15: Option<u64>,
+    pub r13: Option<u64>,
+    pub rdi: Option<u64>,
+    pub rsi: Option<u64>,
+    pub rdx: Option<u64>,
+    pub bprm_p_address: Option<u64>,
+    pub bprm_p: Option<u64>,
+    pub aligned_stack_pointer: Option<u64>,
+    pub copy_destination: Option<u64>,
+    pub copy_length: Option<u64>,
+    pub instruction_bytes: Option<Vec<u8>>,
+    pub mismatch_reasons: Vec<String>,
+    pub probes: Vec<ElfStackCopyProbe>,
+    pub error: Option<String>,
+}
+
+impl ElfStackCopySnapshot {
+    pub(crate) fn empty(status: ElfStackCopyStatus) -> Self {
+        Self {
+            profile: LINUX_ELF_STACK_COPY_PROFILE,
+            status,
+            rip: None,
+            cr3: None,
+            cs_selector: None,
+            cpl: None,
+            r15: None,
+            r13: None,
+            rdi: None,
+            rsi: None,
+            rdx: None,
+            bprm_p_address: None,
+            bprm_p: None,
+            aligned_stack_pointer: None,
+            copy_destination: None,
+            copy_length: None,
+            instruction_bytes: None,
+            mismatch_reasons: Vec::new(),
+            probes: Vec::new(),
+            error: None,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RdtscSiteCount {
@@ -264,7 +344,7 @@ pub struct DeliveredPageFaultObservation {
 }
 
 /// Opt-in, bounded telemetry for one Linux CPL0-set run.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct LinuxExecutionObservations {
     pub rdtsc_cpl0_sites: Vec<RdtscSiteCount>,
     pub rdtsc_sample_rip: Option<u64>,
@@ -296,6 +376,7 @@ pub struct LinuxExecutionObservations {
     pub post_iret_selected_ordinal: Option<u64>,
     pub post_iret_page_walk: Option<PostIretPageWalkSnapshot>,
     pub post_iret_page_walk_status: Option<&'static str>,
+    pub elf_stack_copy: Option<ElfStackCopySnapshot>,
 }
 
 #[derive(Default)]
@@ -330,9 +411,28 @@ pub(crate) struct LinuxExecutionObservationCollector {
     post_iret_page_walk: Option<PostIretPageWalkSnapshot>,
     post_iret_context_mismatch: bool,
     nested_iret_depth: u64,
+    elf_stack_copy: Option<ElfStackCopySnapshot>,
 }
 
 impl LinuxExecutionObservationCollector {
+    pub(crate) fn with_elf_stack_copy(mut self, requested: bool) -> Self {
+        self.elf_stack_copy =
+            requested.then(|| ElfStackCopySnapshot::empty(ElfStackCopyStatus::AwaitingTarget));
+        self
+    }
+
+    pub(crate) fn wants_elf_stack_copy(&self) -> bool {
+        self.elf_stack_copy
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.status == ElfStackCopyStatus::AwaitingTarget)
+    }
+
+    pub(crate) fn record_elf_stack_copy(&mut self, snapshot: ElfStackCopySnapshot) {
+        if self.wants_elf_stack_copy() {
+            self.elf_stack_copy = Some(snapshot);
+        }
+    }
+
     pub(crate) fn with_post_iret_ordinal(selected_post_iret_ordinal: Option<u64>) -> Self {
         Self {
             selected_post_iret_ordinal,
@@ -911,6 +1011,12 @@ impl LinuxExecutionObservationCollector {
             post_iret_selected_ordinal: self.selected_post_iret_ordinal,
             post_iret_page_walk: self.post_iret_page_walk,
             post_iret_page_walk_status,
+            elf_stack_copy: self.elf_stack_copy.map(|mut snapshot| {
+                if snapshot.status == ElfStackCopyStatus::AwaitingTarget {
+                    snapshot.status = ElfStackCopyStatus::RunEndedBeforeTarget;
+                }
+                snapshot
+            }),
         }
     }
 }
@@ -926,6 +1032,16 @@ mod tests {
             collector.record_cpl0_rdtsc(Some(LINUX_RDTSC_PREFIX_SENTINEL_RIP));
         }
         collector
+    }
+
+    #[test]
+    fn elf_stack_copy_collector_requests_only_its_first_snapshot() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        assert!(collector.wants_elf_stack_copy());
+        let mut captured = ElfStackCopySnapshot::empty(ElfStackCopyStatus::Captured);
+        captured.rip = Some(LINUX_ELF_STACK_COPY_RIP);
+        collector.record_elf_stack_copy(captured);
+        assert!(!collector.wants_elf_stack_copy());
     }
 
     fn trace_header() -> InstructionPathTraceHeader {

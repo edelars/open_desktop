@@ -72,7 +72,7 @@ use od_machine::{
     LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput,
     LinuxExecutionObservations, LinuxStopRecord, MachineStopReason, load_linux_direct_board,
     run_linux_direct_board, run_linux_direct_board_set_observed,
-    run_linux_direct_board_set_user_mode_with_execution_observations_sampling_options,
+    run_linux_direct_board_set_user_mode_with_elf_stack_copy,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -88,7 +88,7 @@ pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-rdtsc-prefix] [--execution-observations-quantum-trace] [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>] [--execution-observations-rdtsc-window <start:end>]]]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-elf-stack-copy] [--execution-observations-rdtsc-prefix] [--execution-observations-quantum-trace] [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>] [--execution-observations-rdtsc-window <start:end>]]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -152,6 +152,7 @@ struct Options {
     execution_observations_rdtsc_prefix: bool,
     /// Capture one strictly gated, bounded instruction-path quantum for the S5-07 follow-up.
     execution_observations_quantum_trace: bool,
+    execution_observations_elf_stack_copy: bool,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -606,7 +607,7 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                 };
                 let run_started = std::time::Instant::now();
                 let result = if options.execution_observations_out.is_some() {
-                    run_linux_direct_board_set_user_mode_with_execution_observations_sampling_options(
+                    run_linux_direct_board_set_user_mode_with_elf_stack_copy(
                         &mut boot,
                         &machine_input,
                         budget,
@@ -616,10 +617,11 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                         options.execution_observations_rdtsc_stride.unwrap_or(1),
                         options.execution_observations_rdtsc_entry_rip,
                         options.execution_observations_rdtsc_window,
-                        options.execution_observations_rdtsc_prefix.then_some(
-                            od_machine::LINUX_RDTSC_PREFIX_SENTINEL_RIP,
-                        ),
+                        options
+                            .execution_observations_rdtsc_prefix
+                            .then_some(od_machine::LINUX_RDTSC_PREFIX_SENTINEL_RIP),
                         options.execution_observations_quantum_trace,
+                        options.execution_observations_elf_stack_copy,
                     )
                 } else if options.set_cpl0 {
                     run_linux_direct_board_set_observed(
@@ -1236,6 +1238,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut execution_observations_rdtsc_window = None;
     let mut execution_observations_rdtsc_prefix = false;
     let mut execution_observations_quantum_trace = false;
+    let mut execution_observations_elf_stack_copy = false;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1260,6 +1263,15 @@ fn parse(args: &[String]) -> Result<Options, String> {
             if std::mem::replace(&mut execution_observations_quantum_trace, true) {
                 return Err(format!(
                     "duplicate option --execution-observations-quantum-trace; usage: {USAGE}"
+                ));
+            }
+            index += 1;
+            continue;
+        }
+        if name == "--execution-observations-elf-stack-copy" {
+            if std::mem::replace(&mut execution_observations_elf_stack_copy, true) {
+                return Err(format!(
+                    "duplicate option --execution-observations-elf-stack-copy; usage: {USAGE}"
                 ));
             }
             index += 1;
@@ -1502,6 +1514,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--execution-observations-quantum-trace needs --execution-observations-out; usage: {USAGE}"
         ));
     }
+    if execution_observations_elf_stack_copy && execution_observations_out.is_none() {
+        return Err(format!(
+            "--execution-observations-elf-stack-copy needs --execution-observations-out; usage: {USAGE}"
+        ));
+    }
     if execution_observations_post_iret_index.is_some() && execution_observations_out.is_none() {
         return Err(format!(
             "--execution-observations-post-iret-index needs --execution-observations-out; usage: {USAGE}"
@@ -1617,6 +1634,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         execution_observations_rdtsc_window,
         execution_observations_rdtsc_prefix,
         execution_observations_quantum_trace,
+        execution_observations_elf_stack_copy,
     })
 }
 
@@ -2085,6 +2103,47 @@ fn write_execution_observations_sidecar(
     path: &str,
     observations: &LinuxExecutionObservations,
 ) -> Result<(usize, String), String> {
+    let elf_stack_copy = observations.elf_stack_copy.as_ref().map(|snapshot| {
+        json!({
+            "profile": snapshot.profile,
+            "status": elf_stack_copy_status_name(snapshot.status),
+            "rip": snapshot.rip.map(hex64),
+            "cr3": snapshot.cr3.map(hex64),
+            "cs_selector": snapshot.cs_selector.map(|value| format!("0x{value:04x}")),
+            "cpl": snapshot.cpl,
+            "registers": {
+                "r15": snapshot.r15.map(hex64),
+                "r13": snapshot.r13.map(hex64),
+                "rdi": snapshot.rdi.map(hex64),
+                "rsi": snapshot.rsi.map(hex64),
+                "rdx": snapshot.rdx.map(hex64),
+            },
+            "bprm_p_address": snapshot.bprm_p_address.map(hex64),
+            "bprm_p": snapshot.bprm_p.map(hex64),
+            "aligned_stack_pointer": snapshot.aligned_stack_pointer.map(hex64),
+            "copy_destination": snapshot.copy_destination.map(hex64),
+            "copy_length": snapshot.copy_length.map(hex64),
+            "instruction_bytes": snapshot.instruction_bytes.as_ref().map(|bytes| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()),
+            "mismatch_reasons": snapshot.mismatch_reasons,
+            "error": snapshot.error,
+            "probes": snapshot.probes.iter().map(|probe| json!({
+                "name": probe.name,
+                "address": hex64(probe.address),
+                "page_base": hex64(probe.page_base),
+                "access": probe.access,
+                "cpl": probe.cpl,
+                "entries": probe.entries.iter().map(|entry| json!({
+                    "level": format!("{:?}", entry.level),
+                    "index": entry.index,
+                    "entry_address": hex64(entry.entry_address.get()),
+                    "entry_value": hex64(entry.entry_value),
+                })).collect::<Vec<_>>(),
+                "outcome": probe.outcome,
+                "translated_physical": probe.translated_physical.map(hex64),
+                "error": probe.error,
+            })).collect::<Vec<_>>(),
+        })
+    });
     let rdtsc_sites = observations
         .rdtsc_cpl0_sites
         .iter()
@@ -2296,7 +2355,7 @@ fn write_execution_observations_sidecar(
         })
     });
     let value = json!({
-        "schema_version": 13,
+        "schema_version": 14,
         "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, an optional bounded every-hit entry-RDTSC stream with clock ledger, an optional ordered RDTSC prefix through a sentinel RIP, an optional inclusive hit-ordinal window, and an optional strictly gated single-quantum instruction path trace",
         "limits": {
             "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
@@ -2309,6 +2368,8 @@ fn write_execution_observations_sidecar(
             "frame_links_per_page_fault": od_machine::LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY,
             "page_walk_entries_per_fault": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
             "post_iret_page_walk_entries": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
+            "elf_stack_copy_probes": od_machine::LINUX_ELF_STACK_COPY_PROBE_CAPACITY,
+            "elf_stack_copy_walk_entries_per_probe": od_machine::LINUX_ELF_STACK_COPY_WALK_ENTRY_CAPACITY,
         },
         "rdtsc_cpl0_sites": rdtsc_sites,
         "rdtsc_cpl0_unattributed_reads": observations.rdtsc_cpl0_unattributed_reads,
@@ -2340,6 +2401,7 @@ fn write_execution_observations_sidecar(
         "post_iret_selected_ordinal": observations.post_iret_selected_ordinal,
         "post_iret_page_walk_status": observations.post_iret_page_walk_status,
         "post_iret_page_walk": post_iret_page_walk,
+        "elf_stack_copy": elf_stack_copy,
     });
     file_matches_existing_path(file, path, path)?;
     let mut bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
@@ -2362,6 +2424,17 @@ fn write_execution_observations_sidecar(
     }
     file_matches_existing_path(file, path, path)?;
     Ok((bytes.len(), od_testkit::sha256_hex(&bytes)))
+}
+
+fn elf_stack_copy_status_name(status: od_machine::ElfStackCopyStatus) -> &'static str {
+    match status {
+        od_machine::ElfStackCopyStatus::NotRequested => "not_requested",
+        od_machine::ElfStackCopyStatus::AwaitingTarget => "awaiting_target",
+        od_machine::ElfStackCopyStatus::Captured => "captured",
+        od_machine::ElfStackCopyStatus::GateMismatch => "gate_mismatch",
+        od_machine::ElfStackCopyStatus::ReadError => "read_error",
+        od_machine::ElfStackCopyStatus::RunEndedBeforeTarget => "run_ended_before_target",
+    }
 }
 
 fn execution_observations_sidecar_metadata(
@@ -2405,6 +2478,7 @@ fn execution_observations_sidecar_metadata(
         }),
         "instruction_path_trace_record_count": observations.instruction_path_trace.as_ref().map(|trace| trace.records.len()),
         "instruction_path_trace_omitted_records": observations.instruction_path_trace.as_ref().map(|trace| trace.omitted_records),
+        "elf_stack_copy_status": observations.elf_stack_copy.as_ref().map(|snapshot| elf_stack_copy_status_name(snapshot.status)),
         "byte_count": byte_count,
         "sha256": sha256,
     })
@@ -2574,6 +2648,7 @@ mod tests {
                 execution_observations_rdtsc_window: None,
                 execution_observations_rdtsc_prefix: false,
                 execution_observations_quantum_trace: false,
+                execution_observations_elf_stack_copy: false,
             };
             Self { dir, options }
         }
@@ -4216,6 +4291,37 @@ mod tests {
         )
         .unwrap();
         assert!(prefix.execution_observations_rdtsc_prefix);
+        let elf_stack_copy = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-elf-stack-copy",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert!(elf_stack_copy.execution_observations_elf_stack_copy);
+        assert!(
+            parse_base(&[&run[..], &["--execution-observations-elf-stack-copy"]].concat()).is_err()
+        );
+        let combined = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-quantum-trace",
+                    "--execution-observations-elf-stack-copy",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert!(combined.execution_observations_quantum_trace);
+        assert!(combined.execution_observations_elf_stack_copy);
         let quantum_trace = parse_base(
             &[
                 &run[..],
@@ -5228,6 +5334,7 @@ mod tests {
                 translated_physical: Some(0x4_2000),
                 translation_error: None,
             }),
+            elf_stack_copy: None,
         };
         let (byte_count, sha256) =
             write_execution_observations_sidecar(&mut file, path.to_str().unwrap(), &observations)
@@ -5253,7 +5360,8 @@ mod tests {
         assert_eq!(metadata["rdtsc_prefix_status"], "sentinel_seen");
         assert_eq!(metadata["rdtsc_prefix_sample_count"], 1);
         let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema_version"], 13);
+        assert_eq!(value["schema_version"], 14);
+        assert!(value["elf_stack_copy"].is_null());
         assert_eq!(value["rdtsc_prefix_status"], "sentinel_seen");
         assert_eq!(value["rdtsc_prefix_event_count"], 1);
         assert!(value["instruction_path_trace"].is_null());
@@ -5956,6 +6064,7 @@ mod tests {
             execution_observations_rdtsc_window: None,
             execution_observations_rdtsc_prefix: false,
             execution_observations_quantum_trace: false,
+            execution_observations_elf_stack_copy: false,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -6011,6 +6120,7 @@ mod tests {
             execution_observations_rdtsc_window: None,
             execution_observations_rdtsc_prefix: false,
             execution_observations_quantum_trace: false,
+            execution_observations_elf_stack_copy: false,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -6070,6 +6180,7 @@ mod tests {
             execution_observations_rdtsc_window: None,
             execution_observations_rdtsc_prefix: false,
             execution_observations_quantum_trace: false,
+            execution_observations_elf_stack_copy: false,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -6150,6 +6261,7 @@ mod tests {
             execution_observations_rdtsc_window: None,
             execution_observations_rdtsc_prefix: false,
             execution_observations_quantum_trace: false,
+            execution_observations_elf_stack_copy: false,
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");

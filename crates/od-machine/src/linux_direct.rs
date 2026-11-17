@@ -1228,6 +1228,38 @@ pub fn run_linux_direct_board_set_user_mode_with_execution_observations_sampling
     selected_rdtsc_prefix_sentinel_rip: Option<u64>,
     selected_instruction_path_trace: bool,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
+    run_linux_direct_board_set_user_mode_with_elf_stack_copy(
+        boot,
+        input,
+        instruction_budget,
+        members,
+        selected_post_iret_ordinal,
+        selected_rdtsc_sample_rip,
+        selected_rdtsc_sample_stride,
+        selected_rdtsc_entry_sample_rip,
+        selected_rdtsc_sample_window,
+        selected_rdtsc_prefix_sentinel_rip,
+        selected_instruction_path_trace,
+        false,
+    )
+}
+
+/// One-shot user-mode run with the exact S5-07 ELF stack copy observation enabled.
+#[allow(clippy::too_many_arguments)]
+pub fn run_linux_direct_board_set_user_mode_with_elf_stack_copy(
+    boot: &mut LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    instruction_budget: u64,
+    members: LinuxCpl0SetMembers,
+    selected_post_iret_ordinal: Option<u64>,
+    selected_rdtsc_sample_rip: Option<u64>,
+    selected_rdtsc_sample_stride: u64,
+    selected_rdtsc_entry_sample_rip: Option<u64>,
+    selected_rdtsc_sample_window: Option<crate::RdtscSampleWindow>,
+    selected_rdtsc_prefix_sentinel_rip: Option<u64>,
+    selected_instruction_path_trace: bool,
+    selected_elf_stack_copy: bool,
+) -> Result<LinuxStopRecord, LinuxDirectError> {
     run_linux_direct_board_set_with_post_iret_index(
         boot,
         input,
@@ -1243,6 +1275,7 @@ pub fn run_linux_direct_board_set_user_mode_with_execution_observations_sampling
         selected_rdtsc_sample_window,
         selected_rdtsc_prefix_sentinel_rip,
         selected_instruction_path_trace,
+        selected_elf_stack_copy,
     )
 }
 
@@ -1268,6 +1301,7 @@ pub fn run_linux_direct_board_set_user_mode_with_post_iret_index(
         None,
         None,
         None,
+        false,
         false,
     )
 }
@@ -1296,6 +1330,7 @@ fn run_linux_direct_board_set_with(
         None,
         None,
         false,
+        false,
     )
 }
 
@@ -1315,6 +1350,7 @@ fn run_linux_direct_board_set_with_post_iret_index(
     selected_rdtsc_sample_window: Option<crate::RdtscSampleWindow>,
     selected_rdtsc_prefix_sentinel_rip: Option<u64>,
     selected_instruction_path_trace: bool,
+    selected_elf_stack_copy: bool,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
     let pm_timer_reads_before = boot.board.acpi_pm().map(|pm| pm.timer_reads());
     // S4-39g: only the user-mode run of a board with the Linux-profile PIT and 8259 gets the
@@ -1547,6 +1583,7 @@ fn run_linux_direct_board_set_with_post_iret_index(
             selected_rdtsc_sample_window,
             selected_rdtsc_prefix_sentinel_rip,
             selected_instruction_path_trace,
+            selected_elf_stack_copy,
         )
     } else {
         boot.board.run_linux_boot_cpl0_set(
@@ -11045,6 +11082,7 @@ mod tests {
                 Some(ENTRY + 2),
                 None,
                 None,
+                false,
                 false,
             )
             .expect("board run");

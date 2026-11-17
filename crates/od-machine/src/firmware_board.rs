@@ -2193,6 +2193,7 @@ impl LoadedFirmwareBoard {
             None,
             None,
             false,
+            false,
         )
     }
 
@@ -2211,6 +2212,7 @@ impl LoadedFirmwareBoard {
         selected_rdtsc_sample_window: Option<crate::RdtscSampleWindow>,
         selected_rdtsc_prefix_sentinel_rip: Option<u64>,
         selected_instruction_path_trace: bool,
+        selected_elf_stack_copy: bool,
     ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
         let context = AccessContext {
             mode: InstructionMode::Long64,
@@ -2226,6 +2228,7 @@ impl LoadedFirmwareBoard {
         let mut general_protection_faults_delivered = 0u64;
         let mut execution_observations = capture_execution_observations.then(|| {
             LinuxExecutionObservationCollector::with_post_iret_ordinal(selected_post_iret_ordinal)
+                .with_elf_stack_copy(selected_elf_stack_copy)
                 .with_rdtsc_sample_rip(selected_rdtsc_sample_rip)
                 .with_rdtsc_sample_stride(selected_rdtsc_sample_stride)
                 .with_rdtsc_entry_sample_rip(selected_rdtsc_entry_sample_rip)
