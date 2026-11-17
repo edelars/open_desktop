@@ -1,4 +1,5 @@
-//! S6-19: the S6-05 litmus corpus under the interleaving scheduler (S6-15), test-only.
+//! S6-19: the S6-05 litmus corpus under the interleaving scheduler (S6-15). Public face: `litmus`
+//! (S6-19b); the tests of this file are the S6-19 proofs.
 //!
 //! One host thread runs one vCPU per litmus thread through [`SmpScheduler`] on the real
 //! `od_isa::execute::run` and a flat identity RAM. The vCPUs are created directly in long mode with
@@ -29,7 +30,6 @@
 
 use crate::clock_owner::ClockOwner;
 use crate::idle_arbiter::SchedActivity;
-use crate::interleaved_harness::HZ;
 use crate::smp_scheduler::{
     BoundaryReport, Executed, Finished, QuantumPolicy, SmpError, SmpHost, SmpScheduler, SplitMix64,
     StopRequest,
@@ -38,20 +38,27 @@ use crate::{LocalApic, LocalApicHandle, VirtualClockHandle};
 use od_isa::execute::{RunConfig, RunExit, run};
 use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError, PrivilegeLevel};
 use od_isa::{CpuActivity, LongModeState, OperandSize, Register};
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
 use std::path::{Path, PathBuf};
 
+/// Rate of the virtual clock of the harness (one LAPIC tick per nanosecond).
+const HZ: u64 = 1_000_000_000;
 /// Bytes of the flat identity RAM (code at `0x2000 + 0x1000 * cpu`, cells below `0x2000`, and the
 /// buffer of the REP tests at `0x8000`).
 const RAM_SIZE: usize = 0x1_0000;
 /// The threshold of complete schedules up to which the exploration is exhaustive (`SMP.md` §5).
 pub(crate) const EXHAUSTIVE_THRESHOLD: u128 = 1_000_000;
 /// The seeds of the seed mode, both ends included (`SMP.md` §5).
+#[cfg(test)]
 pub(crate) const SEEDS: std::ops::RangeInclusive<u64> = 0..=9_999;
 /// Shared budget of one run (retired instructions of all vCPUs): far above any litmus.
 const RUN_BUDGET: u64 = 100_000;
 /// The REP slice, `REP_ITERATION_WORK_LIMIT`, SMP_CONTRACT 8.
+#[cfg(test)]
 pub(crate) const REP_SLICE: u64 = od_isa::execute::REP_ITERATION_WORK_LIMIT;
 
 pub(crate) type Outcome = Vec<u64>;
@@ -103,148 +110,199 @@ pub(crate) struct Case {
     pub(crate) interesting: BTreeSet<Outcome>,
 }
 
+#[cfg(test)]
 pub(crate) fn corpus_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/guest/stage6/litmus")
 }
 
-fn parse_hex(text: &str) -> u64 {
-    u64::from_str_radix(text.trim_start_matches("0x"), 16).expect("hex number")
+/// Most vCPUs of a litmus case (the code of thread `i` sits at `0x2000 + 0x1000 * i` in a formula
+/// case and the RAM is [`RAM_SIZE`]).
+pub(crate) const MAX_THREADS: usize = 14;
+
+type Loaded<T> = Result<T, String>;
+
+fn member<'a>(value: &'a Value, key: &str) -> Loaded<&'a Value> {
+    value.get(key).ok_or_else(|| format!("missing `{key}`"))
 }
 
-fn parse_bytes(text: &str) -> Vec<u8> {
-    text.split_whitespace()
-        .map(|b| u8::from_str_radix(b, 16).expect("hex byte"))
+fn text<'a>(value: &'a Value, what: &str) -> Loaded<&'a str> {
+    value
+        .as_str()
+        .ok_or_else(|| format!("`{what}` is not a string"))
+}
+
+fn number(value: &Value, what: &str) -> Loaded<u64> {
+    value
+        .as_u64()
+        .ok_or_else(|| format!("`{what}` is not an unsigned number"))
+}
+
+fn list<'a>(value: &'a Value, what: &str) -> Loaded<&'a Vec<Value>> {
+    value
+        .as_array()
+        .ok_or_else(|| format!("`{what}` is not an array"))
+}
+
+fn parse_hex(value: &str) -> Loaded<u64> {
+    u64::from_str_radix(value.trim_start_matches("0x"), 16)
+        .map_err(|_| format!("`{value}` is not a hex number"))
+}
+
+fn parse_bytes(value: &str) -> Loaded<Vec<u8>> {
+    value
+        .split_whitespace()
+        .map(|b| u8::from_str_radix(b, 16).map_err(|_| format!("`{b}` is not a hex byte")))
         .collect()
 }
 
-fn register(name: &str) -> Register {
+fn register(name: &str) -> Loaded<Register> {
     match name {
-        "eax" | "rax" => Register::Rax,
-        "ecx" | "rcx" => Register::Rcx,
-        "edx" | "rdx" => Register::Rdx,
-        "ebx" | "rbx" => Register::Rbx,
-        other => panic!("register {other} is not in the corpus"),
+        "eax" | "rax" => Ok(Register::Rax),
+        "ecx" | "rcx" => Ok(Register::Rcx),
+        "edx" | "rdx" => Ok(Register::Rdx),
+        "ebx" | "rbx" => Ok(Register::Rbx),
+        other => Err(format!("register {other} is not in the corpus")),
     }
 }
 
-fn outcome_set(values: &Value) -> BTreeSet<Outcome> {
-    values
-        .as_array()
-        .expect("outcome array")
+fn outcome_set(values: &Value) -> Loaded<BTreeSet<Outcome>> {
+    list(values, "outcome set")?
         .iter()
         .map(|row| {
-            row.as_array()
-                .expect("outcome row")
+            list(row, "outcome row")?
                 .iter()
-                .map(|v| v.as_u64().expect("outcome value"))
+                .map(|v| number(v, "outcome value"))
                 .collect()
         })
         .collect()
 }
 
-fn observe_fields(names: &[String], cells: &[(String, u64, u64)]) -> Vec<Field> {
+fn observe_fields(names: &[String], cells: &[(String, u64, u64)]) -> Loaded<Vec<Field>> {
     names
         .iter()
         .map(|name| {
-            let (owner, what) = name.split_once('.').expect("owner.name");
+            let (owner, what) = name
+                .split_once('.')
+                .ok_or_else(|| format!("observed field `{name}` is not owner.name"))?;
             if owner == "mem" {
                 let (_, address, _) = cells
                     .iter()
                     .find(|(cell, _, _)| cell == what)
-                    .expect("observed cell exists");
-                Field::Cell { address: *address }
+                    .ok_or_else(|| format!("observed cell `{what}` does not exist"))?;
+                Ok(Field::Cell { address: *address })
             } else {
-                Field::Register {
-                    cpu: owner.strip_prefix("cpu").unwrap().parse().unwrap(),
-                    register: register(what),
-                }
+                let cpu = owner
+                    .strip_prefix("cpu")
+                    .and_then(|n| n.parse().ok())
+                    .ok_or_else(|| format!("observed owner `{owner}` is not cpuN or mem"))?;
+                Ok(Field::Register {
+                    cpu,
+                    register: register(what)?,
+                })
             }
         })
         .collect()
 }
 
-fn instruction(value: &Value) -> Instruction {
-    Instruction {
-        asm: value["asm"].as_str().expect("asm").to_string(),
-        bytes: parse_bytes(value["bytes"].as_str().expect("bytes")),
+fn instruction(value: &Value) -> Loaded<Instruction> {
+    Ok(Instruction {
+        asm: text(member(value, "asm")?, "asm")?.to_string(),
+        bytes: parse_bytes(text(member(value, "bytes")?, "bytes")?)?,
         steps: 1,
+    })
+}
+
+fn cell(value: &Value) -> Loaded<(String, u64, u64)> {
+    if number(member(value, "size_bits")?, "size_bits")? != 32 {
+        return Err("the driver loads and stores dword cells".to_string());
     }
+    Ok((
+        text(member(value, "name")?, "name")?.to_string(),
+        parse_hex(text(member(value, "address")?, "address")?)?,
+        number(member(value, "initial")?, "initial")?,
+    ))
 }
 
 impl Case {
-    /// A finite fixture (`2+2w.json`, `sb.json`, ...).
-    pub(crate) fn from_fixture(file: &str) -> Self {
-        let text = std::fs::read_to_string(corpus_dir().join(file)).expect("fixture file");
-        let doc: Value = serde_json::from_str(&text).expect("fixture json");
-        assert_eq!(doc["schema"], "od.smp-litmus.v1");
-        let cells: Vec<(String, u64, u64)> = doc["memory"]["cells"]
-            .as_array()
-            .expect("cells")
+    /// A finite fixture (`2+2w.json`, `sb.json`, ...) from its JSON text.
+    pub(crate) fn parse_fixture(source: &str) -> Loaded<Self> {
+        let doc: Value = serde_json::from_str(source).map_err(|e| format!("not JSON: {e}"))?;
+        if member(&doc, "schema")? != "od.smp-litmus.v1" {
+            return Err("schema is not od.smp-litmus.v1".to_string());
+        }
+        let memory = member(&doc, "memory")?;
+        let cells: Vec<(String, u64, u64)> = list(member(memory, "cells")?, "cells")?
             .iter()
-            .map(|c| {
-                assert_eq!(
-                    c["size_bits"], 32,
-                    "the driver loads and stores dword cells"
-                );
-                (
-                    c["name"].as_str().unwrap().to_string(),
-                    parse_hex(c["address"].as_str().unwrap()),
-                    c["initial"].as_u64().unwrap(),
-                )
-            })
-            .collect();
-        let regions = doc["memory"]["code_regions"].as_array().expect("regions");
-        let threads: Vec<Thread> = doc["threads"]
-            .as_array()
-            .expect("threads")
-            .iter()
-            .enumerate()
-            .map(|(index, thread)| {
-                assert_eq!(thread["cpu"].as_u64().unwrap() as usize, index);
-                let region = &regions[index];
-                assert_eq!(region["cpu"].as_u64().unwrap() as usize, index);
-                let instructions: Vec<Instruction> = thread["instructions"]
-                    .as_array()
-                    .unwrap()
+            .map(cell)
+            .collect::<Loaded<_>>()?;
+        let regions = list(member(memory, "code_regions")?, "code_regions")?;
+        let thread_values = list(member(&doc, "threads")?, "threads")?;
+        let mut threads = Vec::new();
+        for (index, thread) in thread_values.iter().enumerate() {
+            if number(member(thread, "cpu")?, "cpu")? != index as u64 {
+                return Err(format!("thread {index}: cpu is not its position"));
+            }
+            let region = regions
+                .get(index)
+                .ok_or_else(|| format!("thread {index}: no code region"))?;
+            if number(member(region, "cpu")?, "cpu")? != index as u64 {
+                return Err(format!("code region {index}: cpu is not its position"));
+            }
+            let instructions: Vec<Instruction> =
+                list(member(thread, "instructions")?, "instructions")?
                     .iter()
                     .map(instruction)
-                    .collect();
-                let total: usize = instructions.iter().map(|i| i.bytes.len()).sum();
-                assert_eq!(total as u64, region["size_bytes"].as_u64().unwrap());
-                Thread {
-                    code_start: parse_hex(region["start"].as_str().unwrap()),
-                    registers: thread["initial_registers"]
-                        .as_object()
-                        .unwrap()
-                        .iter()
-                        .map(|(name, v)| (register(name), v.as_u64().unwrap()))
-                        .collect(),
-                    instructions,
-                }
-            })
-            .collect();
-        let observe_names: Vec<String> = doc["observe"]["fields"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap().to_string())
-            .collect();
-        let observe = observe_fields(&observe_names, &cells);
-        let outcomes = &doc["outcomes"];
-        Self {
-            id: doc["id"].as_str().unwrap().to_string(),
+                    .collect::<Loaded<_>>()?;
+            let total: usize = instructions.iter().map(|i| i.bytes.len()).sum();
+            if total as u64 != number(member(region, "size_bytes")?, "size_bytes")? {
+                return Err(format!("thread {index}: code size differs from its region"));
+            }
+            let registers = member(thread, "initial_registers")?
+                .as_object()
+                .ok_or_else(|| "`initial_registers` is not an object".to_string())?
+                .iter()
+                .map(|(name, v)| Ok((register(name)?, number(v, name)?)))
+                .collect::<Loaded<Vec<_>>>()?;
+            threads.push(Thread {
+                code_start: parse_hex(text(member(region, "start")?, "start")?)?,
+                registers,
+                instructions,
+            });
+        }
+        let observe_names: Vec<String> =
+            list(member(member(&doc, "observe")?, "fields")?, "fields")?
+                .iter()
+                .map(|v| text(v, "field").map(str::to_string))
+                .collect::<Loaded<_>>()?;
+        let observe = observe_fields(&observe_names, &cells)?;
+        let outcomes = member(&doc, "outcomes")?;
+        let set = |model: &str| -> Loaded<BTreeSet<Outcome>> {
+            outcome_set(member(member(outcomes, model)?, "values")?)
+        };
+        let case = Self {
+            id: text(member(&doc, "id")?, "id")?.to_string(),
             cells,
             threads,
             observe,
             observe_names,
-            expected: outcome_set(&outcomes["interleaving_instruction_atomic"]["values"]),
-            sc: outcome_set(&outcomes["sc"]["values"]),
-            x86_tso: outcome_set(&outcomes["x86_tso"]["values"]),
-            interesting: outcome_set(&doc["interesting"]),
-        }
+            expected: set("interleaving_instruction_atomic")?,
+            sc: set("sc")?,
+            x86_tso: set("x86_tso")?,
+            interesting: outcome_set(member(&doc, "interesting")?)?,
+        };
+        case.validate()?;
+        Ok(case)
+    }
+
+    /// A finite fixture of the corpus directory by file name (tests).
+    #[cfg(test)]
+    pub(crate) fn from_fixture(file: &str) -> Self {
+        let source = std::fs::read_to_string(corpus_dir().join(file)).expect("fixture file");
+        Self::parse_fixture(&source).unwrap_or_else(|e| panic!("{file}: {e}"))
     }
 
     /// The names of the finite fixtures of the corpus: every `*.json` except the formula group.
+    #[cfg(test)]
     pub(crate) fn fixture_files() -> Vec<String> {
         let mut files: Vec<String> = std::fs::read_dir(corpus_dir())
             .expect("corpus dir")
@@ -255,38 +313,83 @@ impl Case {
         files
     }
 
+    /// The shape every case must have so that the harness cannot index out of its RAM.
+    fn validate(&self) -> Loaded<()> {
+        if self.threads.is_empty() || self.threads.len() > MAX_THREADS {
+            return Err(format!(
+                "{} threads: 1..={MAX_THREADS} are run",
+                self.threads.len()
+            ));
+        }
+        let mut spans = Vec::new();
+        for (index, thread) in self.threads.iter().enumerate() {
+            let size: u64 = thread
+                .instructions
+                .iter()
+                .map(|i| i.bytes.len() as u64)
+                .sum();
+            let end = thread.code_start.checked_add(size).ok_or_else(|| {
+                format!("thread {index}: code region overflows the address space")
+            })?;
+            if end > RAM_SIZE as u64 {
+                return Err(format!(
+                    "thread {index}: code ends at {end:#x}, past the RAM"
+                ));
+            }
+            spans.push((thread.code_start, end));
+        }
+        for (_, address, _) in &self.cells {
+            let end = address
+                .checked_add(4)
+                .filter(|end| *end <= RAM_SIZE as u64)
+                .ok_or_else(|| format!("cell at {address:#x} is outside the RAM"))?;
+            spans.push((*address, end));
+        }
+        spans.sort_unstable();
+        if spans.windows(2).any(|pair| pair[1].0 < pair[0].1) {
+            return Err("code regions and cells overlap".to_string());
+        }
+        for field in &self.observe {
+            if let Field::Register { cpu, .. } = field
+                && *cpu >= self.threads.len()
+            {
+                return Err(format!("observed cpu{cpu} does not exist"));
+            }
+        }
+        Ok(())
+    }
+
     /// One counter of `counters-formula.json` (`LOCK-INC`, `UNLOCKED-INC`, `THREE-INSN-COUNTER`)
-    /// for `n` threads and `k` rounds. The interpreter does not run `LOOP`, so a thread is the
-    /// corpus body (every instruction but the `loop`) written `k` times; the memory-touching
-    /// instruction sequence of a thread is the same as the loop's. The expected set is the formula
-    /// of the fixture for `interleaving_instruction_atomic`.
-    pub(crate) fn from_formula(id: &str, n: u64, k: u64) -> Self {
-        let text = std::fs::read_to_string(corpus_dir().join("counters-formula.json")).unwrap();
-        let doc: Value = serde_json::from_str(&text).unwrap();
-        let case = doc["cases"]
-            .as_array()
-            .unwrap()
+    /// for `n` threads and `k` rounds, from the JSON text of that file. The interpreter does not
+    /// run `LOOP`, so a thread is the corpus body (every instruction but the `loop`) written `k`
+    /// times; the memory-touching instruction sequence of a thread is the same as the loop's. The
+    /// expected set is the formula of the fixture for `interleaving_instruction_atomic`.
+    pub(crate) fn parse_formula(source: &str, id: &str, n: u64, k: u64) -> Loaded<Self> {
+        if n == 0 || n > MAX_THREADS as u64 || k == 0 {
+            return Err(format!("N must be 1..={MAX_THREADS} and K at least 1"));
+        }
+        let doc: Value = serde_json::from_str(source).map_err(|e| format!("not JSON: {e}"))?;
+        let case = list(member(&doc, "cases")?, "cases")?
             .iter()
             .find(|c| c["id"] == id)
-            .expect("formula case");
-        let template = &case["thread_template"];
-        let body: Vec<Instruction> = template["instructions"]
-            .as_array()
-            .unwrap()
+            .ok_or_else(|| format!("formula case `{id}` is not in the file"))?;
+        let template = member(case, "thread_template")?;
+        let body: Vec<Instruction> = list(member(template, "instructions")?, "instructions")?
             .iter()
             .filter(|i| i["op"] != "loop")
             .map(instruction)
-            .collect();
-        let cell = &case["initial_memory"]["cells"][0];
-        assert_eq!(
-            cell["size_bits"], 32,
-            "the driver loads and stores dword cells"
-        );
-        let cells = vec![(
-            cell["name"].as_str().unwrap().to_string(),
-            parse_hex(cell["address"].as_str().unwrap()),
-            cell["initial"].as_u64().unwrap(),
-        )];
+            .collect::<Loaded<_>>()?;
+        let body_bytes: u64 = body.iter().map(|i| i.bytes.len() as u64).sum();
+        if body_bytes.saturating_mul(k) > 0xF00 {
+            return Err(format!(
+                "K = {k}: the code of a thread ({}) does not fit its 4 KiB region",
+                body_bytes.saturating_mul(k)
+            ));
+        }
+        let first_cell = list(member(member(case, "initial_memory")?, "cells")?, "cells")?
+            .first()
+            .ok_or_else(|| "no initial cell".to_string())?;
+        let cells = vec![cell(first_cell)?];
         let threads = (0..n)
             .map(|i| Thread {
                 code_start: 0x2000 + 0x1000 * i,
@@ -295,36 +398,32 @@ impl Case {
             })
             .collect();
         let observe_names = vec!["mem.x".to_string()];
-        let observe = observe_fields(&observe_names, &cells);
-        let oracle = &case["formula_oracle"]["interleaving_instruction_atomic"];
-        let evaluate = |expression: &str| -> u64 {
+        let observe = observe_fields(&observe_names, &cells)?;
+        let oracle = member(
+            member(case, "formula_oracle")?,
+            "interleaving_instruction_atomic",
+        )?;
+        let evaluate = |expression: &str| -> Loaded<u64> {
             match expression {
-                "N*K" => n * k,
-                "1 if K == 1 else 2" => {
-                    if k == 1 {
-                        1
-                    } else {
-                        2
-                    }
-                }
-                other => panic!("formula {other} is not known to the driver"),
+                "N*K" => n.checked_mul(k).ok_or_else(|| "N*K overflows".to_string()),
+                "1 if K == 1 else 2" => Ok(if k == 1 { 1 } else { 2 }),
+                other => Err(format!("formula {other} is not known to the driver")),
             }
         };
-        let expected: BTreeSet<Outcome> = match oracle["kind"].as_str().unwrap() {
-            "exact_singleton" => {
-                BTreeSet::from([vec![evaluate(oracle["value"].as_str().unwrap())]])
-            }
+        let expression = |key: &str| -> Loaded<u64> { evaluate(text(member(oracle, key)?, key)?) };
+        let expected: BTreeSet<Outcome> = match text(member(oracle, "kind")?, "kind")? {
+            "exact_singleton" => BTreeSet::from([vec![expression("value")?]]),
             "exact_integer_range" => {
-                assert_eq!(oracle["step"], 1);
-                let (min, max) = (
-                    evaluate(oracle["minimum"].as_str().unwrap()),
-                    evaluate(oracle["maximum"].as_str().unwrap()),
-                );
-                (min..=max).map(|v| vec![v]).collect()
+                if member(oracle, "step")? != 1 {
+                    return Err("only step 1 ranges are known".to_string());
+                }
+                (expression("minimum")?..=expression("maximum")?)
+                    .map(|v| vec![v])
+                    .collect()
             }
-            other => panic!("formula kind {other}"),
+            other => return Err(format!("formula kind {other}")),
         };
-        Self {
+        let case = Self {
             id: format!("{id}(N={n},K={k})"),
             cells,
             threads,
@@ -334,7 +433,16 @@ impl Case {
             sc: BTreeSet::new(),
             x86_tso: BTreeSet::new(),
             interesting: BTreeSet::new(),
-        }
+        };
+        case.validate()?;
+        Ok(case)
+    }
+
+    /// [`Self::parse_formula`] on the corpus file (tests).
+    #[cfg(test)]
+    pub(crate) fn from_formula(id: &str, n: u64, k: u64) -> Self {
+        let source = std::fs::read_to_string(corpus_dir().join("counters-formula.json")).unwrap();
+        Self::parse_formula(&source, id, n, k).unwrap_or_else(|e| panic!("{id}: {e}"))
     }
 
     pub(crate) fn steps_per_thread(&self) -> Vec<usize> {
@@ -586,8 +694,16 @@ pub(crate) struct Unsupported {
     pub(crate) opcode: u8,
 }
 
+/// Why a run stopped with an error of the host: a gap of the interpreter, or an exit of the guest
+/// that a litmus does not have (a fault, a halt in the middle, a stop address never reached).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Refusal {
+    Unsupported(Unsupported),
+    Fault { cpu: usize, rip: u64, exit: String },
+}
+
 impl SmpHost for LitmusMachine {
-    type Error = Unsupported;
+    type Error = Refusal;
 
     fn vcpu_count(&self) -> usize {
         self.cpus.len()
@@ -609,11 +725,11 @@ impl SmpHost for LitmusMachine {
         &mut self.owner
     }
 
-    fn boundary(&mut self, _cpu: usize) -> Result<BoundaryReport, Unsupported> {
+    fn boundary(&mut self, _cpu: usize) -> Result<BoundaryReport, Refusal> {
         Ok(BoundaryReport::default())
     }
 
-    fn wake(&mut self, _cpu: usize) -> Result<(), Unsupported> {
+    fn wake(&mut self, _cpu: usize) -> Result<(), Refusal> {
         unreachable!("IF is clear: no litmus vCPU is woken")
     }
 
@@ -622,7 +738,7 @@ impl SmpHost for LitmusMachine {
         cpu: usize,
         budget: u64,
         stop: &mut dyn FnMut() -> bool,
-    ) -> Result<Executed, Unsupported> {
+    ) -> Result<Executed, Refusal> {
         assert!(budget >= 1);
         let slot = &mut self.cpus[cpu];
         if slot.state.rip == slot.end_rip {
@@ -649,24 +765,26 @@ impl SmpHost for LitmusMachine {
                 .iter()
                 .find(|(start, _)| *start == before)
                 .map_or_else(String::new, |(_, asm)| asm.clone());
-            return Err(Unsupported {
+            return Err(Refusal::Unsupported(Unsupported {
                 cpu,
                 rip: before,
                 asm,
                 opcode,
-            });
+            }));
         }
         let partial = result.exit == RunExit::RepIterationBudgetExhausted;
-        assert!(
-            matches!(
-                result.exit,
-                RunExit::StopAddress
-                    | RunExit::InstructionBudgetExhausted
-                    | RunExit::RepIterationBudgetExhausted
-            ),
-            "litmus on cpu {cpu} at {before:#x}: {:?}",
-            result.exit
-        );
+        if !matches!(
+            result.exit,
+            RunExit::StopAddress
+                | RunExit::InstructionBudgetExhausted
+                | RunExit::RepIterationBudgetExhausted
+        ) {
+            return Err(Refusal::Fault {
+                cpu,
+                rip: before,
+                exit: format!("{:?}", result.exit),
+            });
+        }
         let after = slot.state.rip;
         // A step ends on an instruction boundary, or on the restart point of the same `REP`.
         let on_boundary = if partial {
@@ -694,16 +812,18 @@ pub(crate) struct RunReport {
     pub(crate) stats: RunStats,
     /// Every thread reached the end of its code.
     pub(crate) all_ended: bool,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) steps: Vec<u64>,
 }
 
-/// One run of `case` under `policy`; `Err` when the interpreter refuses a form of the corpus.
-pub(crate) fn try_run_case(case: &Case, policy: QuantumPolicy) -> Result<RunReport, Unsupported> {
+/// One run of `case` under `policy`; `Err` when the interpreter refuses a form of the corpus or the
+/// guest leaves the way a litmus cannot.
+pub(crate) fn try_run_case(case: &Case, policy: QuantumPolicy) -> Result<RunReport, Refusal> {
     let mut machine = LitmusMachine::new(case);
     let mut scheduler = SmpScheduler::new(case.threads.len(), policy, StopRequest::new()).unwrap();
     let finished = match scheduler.run(&mut machine, RUN_BUDGET) {
         Ok(finished) => finished,
-        Err(SmpError::Host(unsupported)) => return Err(unsupported),
+        Err(SmpError::Host(refusal)) => return Err(refusal),
         Err(other) => panic!("{}: scheduler error {other:?}", case.id),
     };
     let all_ended = machine.cpus.iter().all(|cpu| cpu.state.rip == cpu.end_rip);
@@ -717,14 +837,20 @@ pub(crate) fn try_run_case(case: &Case, policy: QuantumPolicy) -> Result<RunRepo
 }
 
 /// [`try_run_case`] for a case the interpreter runs.
+#[cfg(test)]
 pub(crate) fn run_case(case: &Case, policy: QuantumPolicy) -> RunReport {
-    try_run_case(case, policy).unwrap_or_else(|u| panic!("{}: unsupported {u:?}", case.id))
+    try_run_case(case, policy).unwrap_or_else(|u| panic!("{}: refused {u:?}", case.id))
 }
 
 /// `Some` when the interpreter refuses a form of `case` (probed by one round-robin run of one
 /// step per turn, which reaches every instruction of every thread).
+#[cfg(test)]
 pub(crate) fn unsupported_form(case: &Case) -> Option<Unsupported> {
-    try_run_case(case, QuantumPolicy::Fixed(1)).err()
+    match try_run_case(case, QuantumPolicy::Fixed(1)) {
+        Ok(_) => None,
+        Err(Refusal::Unsupported(unsupported)) => Some(unsupported),
+        Err(fault) => panic!("{}: {fault:?}", case.id),
+    }
 }
 
 /// The first witness of an outcome: a schedule or a seed.
@@ -735,6 +861,7 @@ pub(crate) enum Witness {
 }
 
 impl Witness {
+    #[cfg(test)]
     fn json(&self) -> Value {
         match self {
             Self::Schedule(list) => {
@@ -763,7 +890,7 @@ pub(crate) struct Exploration {
 }
 
 impl Exploration {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             runs: 0,
             outcomes: BTreeMap::new(),
@@ -773,7 +900,12 @@ impl Exploration {
         }
     }
 
-    fn add(&mut self, report: RunReport, witness: impl FnOnce() -> Witness, wanted: Finished) {
+    pub(crate) fn add(
+        &mut self,
+        report: RunReport,
+        witness: impl FnOnce() -> Witness,
+        wanted: Finished,
+    ) {
         self.runs += 1;
         self.cut_instructions += report.stats.cut_instructions;
         self.rep_slices += report.stats.rep_slices;
@@ -792,19 +924,32 @@ impl Exploration {
     }
 }
 
-/// Every order-preserving schedule of all steps of `case`, as explicit schedules.
-pub(crate) fn explore_exhaustive(case: &Case) -> Exploration {
+/// Every order-preserving schedule of all steps of `case`, as explicit schedules; the first
+/// refusal of the host ends the exploration.
+pub(crate) fn try_explore_exhaustive(case: &Case) -> Result<Exploration, Refusal> {
     let mut exploration = Exploration::new();
+    let mut refusal = None;
     let lengths = case.steps_per_thread();
     for_each_schedule(&lengths, &mut |schedule| {
-        let report = run_case(case, QuantumPolicy::Schedule(schedule.to_vec()));
-        exploration.add(
-            report,
-            || Witness::Schedule(schedule.to_vec()),
-            Finished::ScheduleEnd,
-        );
+        if refusal.is_some() {
+            return;
+        }
+        match try_run_case(case, QuantumPolicy::Schedule(schedule.to_vec())) {
+            Ok(report) => exploration.add(
+                report,
+                || Witness::Schedule(schedule.to_vec()),
+                Finished::ScheduleEnd,
+            ),
+            Err(error) => refusal = Some(error),
+        }
     });
-    exploration
+    refusal.map_or(Ok(exploration), Err)
+}
+
+/// [`try_explore_exhaustive`] for a case the interpreter runs.
+#[cfg(test)]
+pub(crate) fn explore_exhaustive(case: &Case) -> Exploration {
+    try_explore_exhaustive(case).unwrap_or_else(|u| panic!("{}: refused {u:?}", case.id))
 }
 
 /// The random order of steps of `seed`: at every step one thread is drawn (`SplitMix64(seed)`,
@@ -827,18 +972,28 @@ pub(crate) fn random_schedule(lengths: &[usize], seed: u64) -> Vec<usize> {
     }
 }
 
-/// One run per seed of `seeds`, each under its [`random_schedule`].
-pub(crate) fn explore_seeds(case: &Case, seeds: std::ops::RangeInclusive<u64>) -> Exploration {
+/// One run per seed of `seeds`, each under its [`random_schedule`]; the first refusal of the host
+/// ends the exploration.
+pub(crate) fn try_explore_seeds(
+    case: &Case,
+    seeds: std::ops::RangeInclusive<u64>,
+) -> Result<Exploration, Refusal> {
     let mut exploration = Exploration::new();
     let lengths = case.steps_per_thread();
     for seed in seeds {
-        let report = run_case(
+        let report = try_run_case(
             case,
             QuantumPolicy::Schedule(random_schedule(&lengths, seed)),
-        );
+        )?;
         exploration.add(report, || Witness::Seed(seed), Finished::ScheduleEnd);
     }
-    exploration
+    Ok(exploration)
+}
+
+/// [`try_explore_seeds`] for a case the interpreter runs.
+#[cfg(test)]
+pub(crate) fn explore_seeds(case: &Case, seeds: std::ops::RangeInclusive<u64>) -> Exploration {
+    try_explore_seeds(case, seeds).unwrap_or_else(|u| panic!("{}: refused {u:?}", case.id))
 }
 
 /// The comparison with the fixture set.
@@ -858,10 +1013,12 @@ pub(crate) fn compare(case: &Case, exploration: &Exploration) -> Verdict {
     }
 }
 
+#[cfg(test)]
 fn set_json(set: &BTreeSet<Outcome>) -> Value {
     Value::Array(set.iter().map(|o| json!(o)).collect())
 }
 
+#[cfg(test)]
 /// The JSON record of one exploration (histogram with the first witness of every outcome).
 pub(crate) fn exploration_json(
     case: &Case,
@@ -904,6 +1061,7 @@ pub(crate) fn exploration_json(
     })
 }
 
+#[cfg(test)]
 /// Abstract model of the REP tests: an independent enumeration of "SC with a `REP` cut after L, 2L,
 /// ... iterations" (SMP_CONTRACT 8, item 3) over a map of cells, used as the oracle of the REP
 /// cases. It shares no code with the machine.
@@ -915,6 +1073,7 @@ pub(crate) enum Abstract {
     Load { cell: u64 },
 }
 
+#[cfg(test)]
 pub(crate) fn abstract_outcomes(threads: &[Vec<Abstract>], cut: u64) -> BTreeSet<Outcome> {
     // Expand every REP into the slices a step covers: cells [from, to).
     #[derive(Clone)]
@@ -969,8 +1128,10 @@ pub(crate) fn abstract_outcomes(threads: &[Vec<Abstract>], cut: u64) -> BTreeSet
     outcomes
 }
 
+#[cfg(test)]
 const BUFFER: u64 = 0x8000;
 
+#[cfg(test)]
 fn load_dword(register_modrm: u8, address: u64) -> Instruction {
     let mut bytes = vec![0x8b, register_modrm, 0x25];
     bytes.extend_from_slice(&(address as u32).to_le_bytes());
@@ -984,6 +1145,7 @@ fn load_dword(register_modrm: u8, address: u64) -> Instruction {
 /// `rep stosd` of `count` dwords of 1 from the buffer on cpu 0 and, on cpu 1, two loads (into
 /// `eax` and `ebx`) of the dwords `first` and `second` of the buffer. The observed values
 /// are the two registers.
+#[cfg(test)]
 fn rep_case(count: u64, first: u64, second: u64) -> Case {
     let rep = Instruction {
         asm: "rep stosd".into(),
@@ -1031,6 +1193,7 @@ fn rep_case(count: u64, first: u64, second: u64) -> Case {
     }
 }
 
+#[cfg(test)]
 fn rep_expected(count: u64, first: u64, second: u64, cut: u64) -> BTreeSet<Outcome> {
     abstract_outcomes(
         &[
@@ -1048,6 +1211,7 @@ fn rep_expected(count: u64, first: u64, second: u64, cut: u64) -> BTreeSet<Outco
     )
 }
 
+#[cfg(test)]
 fn assert_exhaustive_equal(case: &Case) -> Exploration {
     let count = case.schedule_count().expect("count fits");
     assert!(count <= EXHAUSTIVE_THRESHOLD, "{}: {count}", case.id);
@@ -1140,6 +1304,7 @@ fn mp_exhaustive_never_reaches_the_forbidden_outcome() {
 /// the corpus uses the dword forms with an absolute address. S6-20 moves the `LOCK` forms to the
 /// atomic API and must admit these forms. The corpus bytes are not changed to fit the
 /// interpreter. When S6-20 lands this list becomes empty and the test says so.
+#[cfg(test)]
 const BLOCKED_BY_S6_20: [(&str, &str); 7] = [
     ("lock-cmpxchg-mutex.json", "lock cmpxchg"),
     ("lock-xadd.json", "lock xadd"),

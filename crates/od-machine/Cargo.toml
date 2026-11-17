@@ -8,8 +8,6 @@ publish.workspace = true
 [dependencies]
 od-isa = { path = "../od-isa" }
 od-jit = { path = "../od-jit" }
-
-[dev-dependencies]
 serde_json = "=1.0.151"
 
 [features]

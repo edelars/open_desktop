@@ -31,7 +31,7 @@ mod linux_checkpoints;
 mod linux_direct;
 mod linux_load;
 mod linux_placement;
-#[cfg(test)]
+mod litmus;
 mod litmus_interleaving;
 mod local_apic;
 mod nvme;
@@ -388,6 +388,12 @@ pub use stage4_uart_irq_probe::{
     STAGE4_UART_IRQ_PROBE_TRACE_LIMIT, STAGE4_UART_IRQ_PROBE_VECTOR, Stage4UartIrqProbe,
     Stage4UartIrqProbeError, Stage4UartIrqProbeExit, Stage4UartIrqProbeLoadError,
     Stage4UartIrqProbeReport, UartIrqTraceEvent, UartIrqTraceKind, load_stage4_uart_irq_probe,
+};
+
+pub use litmus::{
+    LITMUS_EXHAUSTIVE_THRESHOLD, LITMUS_MAX_SEEDS, LitmusCase, LitmusError, LitmusOutcome,
+    LitmusPolicy, LitmusReport, LitmusUnsupported, LitmusVerdict, LitmusWitness,
+    litmus_seed_schedule, run_litmus,
 };
 
 pub use stage6_smp_probe::{
