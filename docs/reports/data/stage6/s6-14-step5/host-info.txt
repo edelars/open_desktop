@@ -1,0 +1,19 @@
+S6-14 step 5 KVM oracle evidence (SIPI entry -> first 64-bit instruction of the S6-16e/f probe trampoline)
+Date: 2026-11-17
+Host: mini (senya@192.168.1.39), Linux mini 7.0.0-42-generic #42-Ubuntu SMP PREEMPT_DYNAMIC Thu Oct 15 08:06:44 UTC 2026 x86_64 GNU/Linux
+model name	: Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz
+gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+KVM mode: /sys/module/kvm_intel/parameters/ept = Y (read after the runs)
+Host work dir: /tmp/od-s6-14-step5 (kvm_runner rebuilt there from tools/kvm-runner/kvm_runner.c)
+Build: gcc -O2 -Wall -Wextra -Werror -std=c11 kvm_runner.c -o kvm_runner
+Run: see run-oracle.sh (from the repo root); eight runs of the one image: --real-mode 0x0800:0x0000 --result-block 0x9000:64; 0x8100:128, 0x8400:16, 0x10000:64, 0x11000:64, 0x12000:64, 0x13000:64, 0x14000:64
+Image: make-images.py (builder tools/build/build_stage6_smp_probe.py, variant normal, scenario normal; differences from the builder's image are listed in make-images.py)
+Runner sha256 equals the S6-14m/S6-14n host-info (kvm_runner.c 969ce3a2..., kvm_runner 5f6a2aac...).
+SHA-256 (host, /tmp/od-s6-14-step5):
+969ce3a20af037bb8849d05482b31f881320e9420ee9630701728fd0da4ce7f0  kvm_runner.c
+5f6a2aac6f4a49fc92c1ab611daeecc0e7474fe1ae6c2551647464ea10bf11b7  kvm_runner
+551bcade9392c4d0b5d506e0aba352736abfd6372967714822eff130489f300d  a-probe-v2-normal-sipi-hlt-at-0xb000-0800-0000.bin
+Builder image without the HLT patch and with the relocated tables (make-images.py): 11708ff0e6d1b1f74de938e5f4050d1ba96f9f371574aad9ebdb03e9ae76ec40
+SHA-256 of the oracle output (repository copies, computed 2026-11-17; the JSON is the state output, the JSONL the result blocks):
+c32965e949e1b1adc31aa184d5268a87d2196d3421631fa4ce132c63fc558db4  oracle-a-probe-v2-normal-sipi-hlt-at-0xb000-0800-0000.json
+81207680df7e9deba6be6f53a4aadce31d0e62c6544ad491cc495ba972f6e97c  oracle-a-probe-v2-normal-sipi-hlt-at-0xb000-0800-0000-blocks.jsonl

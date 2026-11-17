@@ -1291,6 +1291,30 @@ fn integer_snapshot_export_rejects_shutdown_activity_without_panicking() {
 }
 
 #[test]
+fn integer_snapshot_export_rejects_nmi_blocking_instead_of_dropping_it() {
+    let state = od_isa::LongModeState {
+        nmi_blocked: true,
+        ..od_isa::LongModeState::default()
+    };
+    for result in [
+        IntegerState::try_from(&state),
+        IntegerState::from_cpu_for(&state, Profile::LongIntegerV1),
+    ] {
+        assert!(matches!(
+            result,
+            Err(FormatError::InvalidField {
+                field: "state.nmi_blocked",
+                ..
+            })
+        ));
+    }
+    // The default state (no blocking) still exports.
+    let clear = od_isa::LongModeState::default();
+    assert!(IntegerState::try_from(&clear).is_ok());
+    assert!(IntegerState::from_cpu_for(&clear, Profile::LongIntegerV1).is_ok());
+}
+
+#[test]
 fn integer_snapshot_export_rejects_cr3_not_represented_by_schema() {
     let state = od_isa::LongModeState {
         cr3: Some(0x1000),

@@ -6608,6 +6608,13 @@ fn execute_fixture_v2(
         RunExit::MemoryError(error) => v2::Outcome::HarnessError {
             reason: format!("fixture memory backend: {error:?}"),
         },
+        // S6-20: a fixture state with a WaitForSipi/Shutdown activity executes nothing.
+        RunExit::NotRunning => v2::Outcome::Unsupported {
+            reason: format!(
+                "vCPU activity is WaitForSipi or Shutdown at RIP 0x{:016x}: nothing executes",
+                state.rip
+            ),
+        },
     };
     let snapshot = match v2::IntegerState::from_cpu_for(&state, loaded.fixture.profile) {
         Ok(state) => Observation::Available {

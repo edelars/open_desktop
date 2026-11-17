@@ -300,6 +300,12 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-09. Accessed/dirty bits и наблюдаемые side effects
 
+- [x] S4-09 принят с ограничениями (закрытие: S4-09d/e и S4-09f; gate-ревью
+  S4-09f — принято с ограничениями, см. отчёт). Ограничения: U/S из CPL3 и 2 MiB
+  nonpresent/protection не проверены системно; MMIO кроме ECAM и отказ backend — не
+  системно; RMW/LOCK с fault (ячейка 4.2) — не покрыто тестом на биты таблицы;
+  атомарность A/D (CAS) — S6-25; 1 GiB — S4-10; проверка A/D на реальном Linux
+  (S4-09g) не делалась (опциональна).
 - [x] Ограниченный локальный срез принят после независимого ревью.
 - Bounded RAM-only access API implemented in `od-machine`: `access_long64_4k_ram`
   commits A updates during the walk, then validates the final RAM operand, commits
@@ -335,6 +341,22 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - Разрешённые writes проверяют A-prefix → leaf D → один operand commit. Предустановленные A/D не создают лишних table callbacks. Pure probe проверяется отдельно и не меняет A/D.
 - Это тестовый срез: production walker/API и CPU-поведение не меняются. Нет CPU exception delivery/CR2 update, CPU execution integration, cross-page semantics, иных paging modes или system acceptance.
 - Подробная матрица и результаты проверок: [отчёт S4-09c](../reports/STAGE_4_S4-09C_2026-11-06.md) и [контракт машины](../specs/MACHINE_CONTRACT.md#tracked-permission-level-matrix-s4-09c).
+
+<a id="s4-09de-ad-summary"></a>
+
+#### S4-09d/e. Сводный контракт A/D и одно место коммита D
+
+- Статус: реализовано; ревью Claude Opus, high — принято с ограничениями (см. отчёт). P3 закрыты: поправлен счёт (3.5 — частично; 30/5/3 до S4-09f), оговорки grep-теста.
+- S4-09e (код, поведение прежнее): D листа коммитится одним helper-ом `commit_leaf_dirty` в `crates/od-machine/src/page_walk.rs` через seam `table_writer`; им пользуются tracked access и транзакция LTR (`commit_paged_ltr_descriptor_with_writer`; раньше LTR писал D прямым `write_u64`). Новые тесты: `ltr_dirty_write_failure_commits_no_d_and_no_descriptor_image`, `ltr_table_entry_writes_go_through_the_writer_seam`, `leaf_dirty_is_committed_only_by_the_helper`.
+- S4-09d (документ): таблица «путь × исход → A по уровням, D, операнд, callbacks» с ссылкой на существующий тест в каждой ячейке (38 ячеек: 30 покрыто полностью, 5 частично, 3 не покрыты тестом) в [контракте машины](../specs/MACHINE_CONTRACT.md#ad-summary-contract-s4-09d); решение «A на denied entry» записано как принятая семантика S4-09c; ссылка добавлена в `CPU_CONTRACT.md`.
+- Не входит: атомарность A/D и повтор обхода (S6-25, `MEMORY_MODEL.md:28`), 1 GiB (S4-10), тесты на биты таблицы для RMW и `LOCK` (ячейки 4.1-4.3 помечены «не покрыто тестом (покрыто чтением)»). Отчёт: раздел «S4-09d/e» в [STAGE_4_REPORT.md](../reports/STAGE_4_REPORT.md).
+
+#### S4-09f. Системная приёмка A/D через production-цикл набора
+
+- Статус: реализовано; ревью Claude Opus, high — принято с ограничениями (см. отчёт). Принято с ограничениями: литералы A/D — SDM для битов, порядок и число записей — контракт S4-09d/зеркало; журнал без значений; настройка GDT с A=1 у дескрипторов — вне охвата, записано.
+- Что сделано: три сквозных теста `run_cpl0_set_paged_2m_ram` над смешанным деревом 4 KiB/2 MiB, все A/D стартуют с 0 (`crates/od-machine/src/linux_direct/tests/stage4_ad_acceptance.rs`; цикл `cfg(test)` и `pub(crate)`, поэтому тест живёт в `od-machine`, а не в `tests/system`). Шаги: выборка, чтение, запись, RMW (`ADD m, r`), `LOCK ADD`, `PUSH`/`CALL`, межстраничная запись, ECAM-store, 2 MiB read/write/RMW/fetch, `#PF` nonpresent -> доставка через IDT -> обработчик чинит PTE -> `IRETQ` -> повтор; protection fault (R/W=0 на PTE и на PDE) и fault на второй странице межстраничной записи. После каждой инструкции сверяются литералы изменившихся entries и порядок committed writes; дифференциальный прогон на дереве с предустановленными A/D сверяет регистры и RAM.
+- Мутации (4 из 4 роняют сценарий): нет D на write; A на nonpresent entry; D на read; D до проверки прав. Подробности: [отчёт S4-09f](../reports/STAGE_4_REPORT.md).
+- Не покрыто: protection fault из CPL3 (U/S) с проверкой битов, RMW/`LOCK` с fault, 2 MiB nonpresent/protection на системном уровне, независимый интерпретатор-оракул (`step_paged_mov` умеет только qword `MOV`). Таблица A/D в [контракте машины](../specs/MACHINE_CONTRACT.md#ad-summary-contract-s4-09d) помечена «покрыто системно» в ячейках, где биты проверены.
 
 ### S4-10. Добавить необходимые page sizes и режимы
 
@@ -600,7 +622,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-15. Соединить JIT с production memory owner
 
-- [ ] Принято после ревью.
+- [x] S4-15 принят с ограничениями (gate-ревью Claude Opus, high; ограничения — «S4-15 — итог» в STAGE_4_REPORT и JIT_CONTRACT).
 - **Где:** `od-jit`, `od-machine`, `od-host` в существующих границах; обновление `JIT_CONTRACT.md`.
 - **Сделать:** адаптировать проверенное memory-подмножество этапа 3 к RAM/MMU machine owner, handles/leases и precise exits. Проверки fault/MMIO не обходятся direct host pointer. Memory ownership не переносить в runner.
 - **Проверка:** одни guest bytes через interpreter и JIT, fault до/после допустимых effects, MMIO side effects, live handle при reset/retirement, реальное освобождение после допустимого срока.
@@ -625,9 +647,111 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   Ограниченный срез принят после независимого ревью; родительский S4-15
   остаётся открытым.
 
+#### S4-15b. Memory-блок JIT из байтов guest RAM
+
+- Реализовано; ревью Claude Opus, high — принято с ограничениями (см. отчёт):
+  `PagedFetchedLoadSession` в `od-host` делает tracked instruction fetch
+  exact `48 8B 03` по RIP (execute/NX/U/S, A-биты кода как effect),
+  хранит физическую страницу и generation, компилирует блок из этих байтов и
+  исполняет операнд через `with_paged_mov_memory`. Изменение байта/страницы
+  кода даёт повторный допуск или отказ, старый блок не исполняется. Тесты
+  `s4_15b_*` в `tests/system/stage4_memory_fault.rs`. Store, новые формы,
+  reset/retirement и fallback — S4-15c–f. См. раздел S4-15b в
+  [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
+
+#### S4-15c. Fallback-диспетчер на один шаг
+
+- Реализовано; ревью Claude Opus, high — принято с ограничениями (см. отчёт):
+  `PagedFetchedLoadSession::execute_or_interpret` в `od-host` исполняет шаг
+  через JIT S4-15b; если JIT отказал, не исполнив инструкцию (контекст,
+  operand range, fetch включая #PF, неподдерживаемая форма, compile/publish,
+  RAM-only отказ операнда — MMIO), ровно один раз вызывается
+  `od_machine::step_paged_mov` на тех же state/bus. Исполненный JIT-шаг
+  (успех или data #PF) не повторяется. Результат называет путь
+  (`Jit`/`Interpreter`). Тесты `s4_15c_*` в
+  `tests/system/stage4_memory_fault.rs`. На момент среза не сделаны (выполнены в
+  срезах ниже): store (15d), расширение форм (15e), reset/handle (15f),
+  закрытие (15g). См. раздел S4-15c в
+  [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
+
+#### S4-15d. JIT-store `48 89 03` через tracked write-адаптер
+
+- Реализовано; ревью Claude Opus, high — принято с ограничениями (см. отчёт):
+  `PagedFetchedLoadSession::execute_with_store` / `execute_or_interpret`
+  допускают `MOV [RBX],RAX` из того же fetch-снимка, что и load. Запись идёт
+  через `od_machine::with_paged_mov_store_memory` (tracked walk: права
+  Present/Write/User, A-биты, D-бит, затем байты). До commit отказывают: guest
+  #PF (финальный результат JIT, данные не тронуты), не-RAM операнд или операнд, который probe не может транслировать,
+  например 2 MiB лист (`StoreTargetRefused`, без каких-либо effects; шаг
+  уходит в интерпретатор по правилу S4-15c, где `48 89 03` даёт `Unsupported`).
+  Store в другую code page допустим: повторный вход сверяет байты и generation.
+  Тесты `s4_15d_*`. Отказ для собственной code page (S4-15d) заменён в S4-16i
+  (разрешение и выход `CodeInvalidated`); на момент
+  среза не сделаны (выполнены в срезах ниже): расширение форм (15e), reset/handle
+  (15f), закрытие (15g). См. раздел S4-15d в
+  [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
+
+#### S4-15e. Расширение допустимых форм: dword, disp8/disp32, RIP-relative
+
+- Реализовано; ревью Claude Opus, high — принято с ограничениями (см. отчёт):
+  новый вход `PagedFetchedLoadSession::execute_forms` (старые входы не менялись)
+  допускает из того же fetch-снимка `8B 03` (dword, zero-extend в RAX),
+  `48 8B 43 ib`, `48 8B 83 id` (qword `[RBX+disp]`) и `48 8B 05 id` (qword
+  `[RIP+disp32]`, от RIP следующей инструкции) вместе с `48 8B 03` / `48 89 03`.
+  Эффективный адрес считается заново на каждом вызове из RIP и регистров;
+  operand range проверяется после fetch от эффективного адреса. Dword читается
+  через `od_machine::with_paged_mov_dword_memory`. Остальные формы
+  (`67`-формы, store со смещением, dword со смещением) — `UnsupportedForm`: в
+  allowlist `step_paged_mov` их не содержит. Тесты `s4_15e_*` (13); oracle для
+  dword — `step_paged_mov_dword_read`, для disp/RIP-relative — эквивалентный
+  `48 8B 03` с RBX = эффективный адрес. Не сделаны: интеграция в
+  `execute_or_interpret`, многоинструкционные блоки, 2 MiB код-страницы
+  (reset/handle и закрытие выполнены в 15f, 15g). Ограничение по `48 89 03`:
+  нет в одношаговом paged-профиле `step_paged_mov` (allowlist
+  `is_paged_mov_instruction`: `48 8B 03` и `48 89 0B`); формы `48 89 03` и
+  `8B 03` исполняются в od-isa (плоский s2-интерпретатор, dword-профиль
+  `step_paged_mov_dword_read`, paged CPL0-набор на плате), но fallback к ним из
+  диспетчера не подключён. Slice с гарантией fallback — `48 8B 03` (и
+  `48 89 0B` исполняет интерпретатор); `48 89 03` — расширение JIT БЕЗ
+  гарантии fallback при отказе (отказ явный, `Unsupported`, без молчаливого
+  effect). Адресат остатка: S4-42 (fallback на paged CPL0-набор на Linux-трассе)
+  либо отдельный подсрез od-isa/CPU_CONTRACT, если нужен одношаговый
+  paged-профиль с `48 89 03` (вне «Где» S4-15). См. раздел S4-15e в
+  [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
+
+#### S4-15f. Reset и освобождение MAP_JIT-региона на production owner
+
+- Реализовано; ревью Claude Opus, high — принято (ограничения в отчёте):
+  `PagedFetchedLoadSession::reset(&mut self) -> bool` на safe point между
+  вызовами роняет допущенный блок (`PublishedCode`: `munmap` и lease единственного
+  MAP_JIT-региона); следующий вход — `Admitted`, а не `Reused`; повторный reset —
+  no-op. Блок вызова живёт до возврата вызова (`&mut self`), освобождается
+  только reset, инвалидацией (смена generation) или Drop сессии. Добавлены
+  `map_jit_region_live()` и `resets()`. Путь Drop арены при занятом borrow
+  (`PublishedArenaBlock`, например handle роняется из callback владельца во
+  время нативного вызова) больше не теряет слот: release откладывается через
+  `ArenaSlot::pending_release` и применяется при следующем изменяемом доступе;
+  `available_slots()` его учитывает. Тесты: 5 `s4_15f_*` в
+  `stage4_memory_fault.rs` (свободных слотов 16 → 0 → 16 после reset и после
+  Drop, `Admitted` после reset с равенством интерпретатору, чужой/двойной
+  release невозможен, инвалидация не течёт) и 3 lib-теста `s4_15f_*` (арена).
+  Не сделаны: SMP и отложенное освобождение между vCPU (S3-25, G7), grace
+  period, интеграция reset в диспетчер/runner, закрытие (15g). См. раздел
+  S4-15f в [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
+
+#### S4-15g. Закрытие S4-15 (документы)
+
+- S4-15 предложен к приёмке с ограничениями (gate-ревью Claude Opus, high:
+  принять с записанными ограничениями); чекбокс проставляется координатором. Итог, таблица «пункт плана → чем покрыт» и список
+  ограничений — раздел «S4-15 — итог» в
+  [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md); единый контракт —
+  раздел «S4-15: JIT on the production memory owner» в
+  [JIT_CONTRACT.md](../specs/JIT_CONTRACT.md). Код не менялся.
+
 ### S4-16. Physical aliases и инвалидация исполняемого кода
 
-- [ ] Принято после ревью.
+- [x] S4-16 принят с ограничениями (gate-ревью Claude Opus, high, 2026-11-16: вердикт (б)).
+- S4-16 принят с ограничениями (закрытие S4-16j): итог, таблица «пункт плана → чем покрыт» и список ограничений — раздел «S4-16 — итог» в [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md); контракт — раздел «S4-16: code aliases and invalidation (closure, S4-16j)» в [JIT_CONTRACT.md](../specs/JIT_CONTRACT.md).
 - **Где:** writers `od-machine`, code dependencies/cache/dispatch `od-jit`, system tests.
 - **Сделать:** связать блоки с физическими code bytes и нужным translation context. Уведомлять о committed write через любой разрешённый writer; обработать page-table remap и изменение текущего active block.
 - **Проверка:** write alias→execute alias, одна guest page внутри host page, loader patch, cross-page code, fail-before-commit, byte write в active block, повторный lookup после invalidation.
@@ -805,6 +929,94 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   открытыми; S4-16 и Stage 4 остаются открытыми.
 - См. [S4-16e report](../reports/STAGE_4_S4-16E_2026-11-06.md) и
   [manifest](../reports/data/stage4/s4-16e-invlpg-remap-2026-11-06.json).
+
+#### S4-16f. Контекст трансляции в ключе алиасов кода
+
+- Реализовано (ревью Claude Opus, high — принято с ограничениями, см. отчёт). Фиксированные
+  `AddressSpaceId(1)` / `ExecutionContextId(1)` и сверка controls «равно снимку сессии»
+  в `PagedCodeSession` заменены ключом `PagedCodeTranslationContext`: CR3 root
+  (биты 35:12), CR0.WP, CR4.PSE, CR4.PGE, EFER.NXE, CPL. PCID/PCIDE в
+  `Long64ProbeConfig` не допускаются; PG/PE/PAE/LME/LMA — обязательные константы
+  снимка. Прочие биты (CR0.TS/EM/MP/NE/AM, CR4.OSFXSR/OSXMMEXCPT, EFER.SCE) в ключ
+  не входят и сброса не вызывают.
+- Правило сброса (консервативное, полный сброс сессии: обе кэш-записи, backing,
+  диапазон и alias): смена любого компонента ключа (наблюдаемая в CPU state
+  или через `set_privilege`/`set_efer`/retired `MOV CR0`), любой retired `MOV CR3`
+  (включая то же значение), retired canonical `INVLPG` (S4-16e), доставленный `#PF`
+  (`note_delivered_page_fault`). Возврат на прежний ключ допускает блок заново.
+  `PagingControlsMismatch` остаётся только для отсутствующих/невалидных controls
+  и не-Long64 режима. Интерпретатор для `MOV CR3` и `MOV CR0` — новые
+  `od_machine::step_paged_mov_cr3_wp` / `step_paged_mov_cr0_wp` над существующими
+  профилями od-isa; store при WP=0 — `step_guest_mov_wp`.
+- Правки по ревью: CS-селектор в state с RPL, не равным CPL ключа, даёт
+  `ContextRejected(CplMismatch)` без эффекта (state без селектора — CPL сессии, хост
+  обязан вызвать `set_privilege`); доставку `#PF` и смену CPL сообщает хост
+  (`note_delivered_page_fault`, `set_privilege`); SMEP/SMAP/PKE/PKS/LA57/PCIDE/CD/NW
+  не в ключе и не допускаются валидацией CR0/CR4; `execute_mov_cr3`/`execute_mov_cr0`
+  меняют state на месте, недостижимые ветви ошибок оставляют state повреждённым.
+- **Граница:** активный блок (S4-16i), writers (S4-16h), cross-page code (S4-16g),
+  PCID/INVPCID/global pages, связь с `FetchTranslationCache` и итоговый текст
+  инвалидации в `JIT_CONTRACT` не сделаны. См. раздел S4-16f в
+  [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
+
+#### S4-16g. Код через границу 4 KiB-страницы
+
+- Реализовано (ревью Claude Opus, high — принято с ограничениями, см. отчёт). Блок
+  `PagedCodeSession::execute_alias`, чьи байты лежат на двух физических страницах,
+  допускается с двумя dependency spans и двумя backing: первая страница — от RIP до
+  границы, вторая — с начала следующей guest-страницы, каждая с отдельным tracked
+  fetch walk и собственным generation (`MachineBus::tracked_code_snapshot_two_pages_with_callback`).
+  Запись в любую из двух физических страниц инвалидирует блок (для записи через
+  пустой callback — равенством ключа при следующем lookup, а не немедленным
+  удалением записи); запись в любую
+  другую страницу (в том числе внутри того же 16 KiB host-блока) — нет. Fetch-`#PF`
+  на второй странице даёт тот же `PageFaultRecord`, что побайтовый fetch
+  интерпретатора (CR2 = граница страницы, saved RIP = RIP инструкции); блок не
+  исполняется, state не меняется, шаг уходит в интерпретатор по правилу S4-15c.
+  Диапазон длиннее двух страниц отвергается `InvalidLength` до walk (длина вне `0 < length <= 0x2000 - offset`); исключение — переполнение адреса в последней странице адресного пространства (RIP в `0xffff_ffff_ffff_fxxx`, диапазон пересекает границу, `checked_add` переполняется): там отказ наступает после walk первой страницы, её A-биты закоммичены и переданы в callback, блок не привязан и не исполняется; зафиксировано как ограничение, интерпретатор делает тот же walk первой страницы.
+  Ограничение: для раскладки, где таблицы страниц лежат в первой code page, JIT может декодировать байты после установки A второго walk, а интерпретатор — до (он читает байты первой страницы до walk второй, и PTE второй страницы с битом A, попавший в байты блока, видит без A); такая раскладка не покрыта тестами (тест 7 держит PT[2] по 0x7010, блок 0x7ffd..0x7fff, вне байтов блока); вариант точного соответствия oracle — не перечитывать первую страницу и полагаться на последующую проверку версий (открытый вопрос).
+- **Граница:** активный блок (S4-16i), writers (S4-16h), 2 MiB код-страницы,
+  многоинструкционные блоки, три и более страниц, патч второй страницы через
+  `patch_alias_byte`, обёртка «JIT или интерпретатор» для `PagedCodeSession` не
+  сделаны. См. раздел S4-16g в [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
+
+#### S4-16h. Покрытие записывающих путей (writers)
+
+- Реализовано (ревью Claude Opus, high — принято с ограничениями, см. отчёт). Классы writers,
+  которые не уведомляют `PagedCodeSession` (NVMe DMA `BusDma`, Linux loader,
+  host display, стек/IDT при доставке прерывания `deliver_paged_external_interrupt`,
+  JIT store `PagedFetchedLoadSession::execute_with_store`), покрыты тестами
+  `tests::s4_16h_*` (10): при молчаливой записи в зависимую code page (первую,
+  вторую или обе) следующий вход через оба alias исполняет новые байты и совпадает
+  с oracle на свежей шине, при пересылке диапазонов в `reconcile_code_writes`
+  блок освобождается сразу. Корректность держится на повторном snapshot и ключе
+  (байты + generation), а не на уведомлении. P1 не найдено; код продукта не менялся.
+  `PagedFetchedLoadSession` и `PagedCodeSession` не могут держать блоки одновременно
+  (единственный MAP_JIT-регион).
+- **Граница:** активный блок (S4-16i), реальная проводка callback в NVMe/loader/доставку
+  и исчерпывающий обход всех писателей не сделаны. См. раздел S4-16h в
+  [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md).
+
+#### S4-16i. Запись в байты активного блока
+
+- Реализовано (ревью Claude Opus, high — принято с ограничениями, см. отчёт). Отказ S4-15d
+  `ActiveCodePage` заменён разрешением: JIT-store `48 89 03` в физическую
+  страницу выполняющегося блока проходит walk, права, A/D и запись как обычный store,
+  команда завершается (RAX/RIP как у interpreter `MOV [RBX],RCX`), выход блока —
+  `CodeInvalidated`. Блок помечается `retired` и не используется повторно (повторный допуск обеспечивает generation, `retired` — защита в глубину);
+  следующий вход делает новый fetch/снимок/ключ и публикует блок заново из новых
+  байтов. Executable allocation остаётся во владении сессии до возврата и
+  освобождается при следующем входе, дошедшем до проверки ключа (даже если дальше `UnsupportedForm`, `Compile` или `Publish`; вход, отказавший раньше — контекст, CR3, operand range, fetch `#PF` — блок не освобождает), `reset()` или drop (S4-15f). `#PF` и
+  отказы `NonRamTarget`/`ProbeUnsupported` — до записи, как раньше; store в другую code
+  page — без выхода. Тесты `s4_16i_*` (5), 5 ручных мутаций, `od-jit` не менялся.
+- **Граница:** SMP и deferred retirement (S3-25), блоки из нескольких инструкций
+  (store в середине блока), 2 MiB код-страницы, активные блоки `PagedCodeSession`
+  не сделаны. Единица инвалидации — страница. См. раздел S4-16i в
+  [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md) и S4-16i в `JIT_CONTRACT`.
+
+#### S4-16j. Закрытие S4-16 (документы)
+
+- Срезы S4-16a–i приняты по отдельности (ревью Claude Opus, «принято с ограничениями»); сведены в итог: таблица «пункт плана → тест», список ограничений — раздел «S4-16 — итог» в [STAGE_4_REPORT](../reports/STAGE_4_REPORT.md); сводный контракт — раздел «S4-16: code aliases and invalidation (closure, S4-16j)» в [JIT_CONTRACT.md](../specs/JIT_CONTRACT.md). Код не менялся. S4-16 принят с ограничениями (gate-ревью Claude Opus, high, 2026-11-16: вердикт (б)); чекбокс S4-16 проставлен.
 
 ### S4-17. Собрать локальный memory/fault differential набор
 
@@ -1292,6 +1504,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 ### S4-21. Жизненный цикл одного vCPU
 
 - [ ] Принято после ревью.
+- Остатки S4-21 переданы этапу 6 решением владельца 2026-11-15 (см. docs/plans/STAGE_6.md, S6-10, и docs/reports/STAGE_6_REPORT.md, решение 2026-11-15). S4-21 как задача этапа 4 не принят полностью; чекбокс оставлен `[ ]`.
 - **Где:** `od-machine`, CPU interruptibility contract `od-isa`, runner orchestration.
 - **Сделать:** определить reset/entry, running, halted, paused, stopping/stopped, guest shutdown и faulted host session. Ввести bounded execution/poll points, сохранение точного состояния и единый STOP path.
 - **Проверка:** STOP во время исполнения и HLT, pause/resume без потерянного состояния, отсутствие busy loop у остановленной машины, корректный reset без старых pending events.
@@ -2205,7 +2418,9 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   - [ ] **S4-38L8h — UART → IOAPIC INTIN4 под профилем `stage4a-apic`. Реализовано, ожидает независимого ревью и принятия** (не коммичено на момент записи; stage4a, его 8259 IR4 (S4-39i), evidence и `PASS` S4-39j не затронуты; `od-isa` и `od-machine/src/uart_pic_irq_source.rs` не тронуты). Новый `UartIoapicIrqSource` (`crates/od-machine/src/uart_ioapic_irq_source.rs`) оборачивает `PitIoapicIrqSource` (как `UartPicIrqSource` оборачивает PIT → 8259): уровень `Uart16550Handle::interrupt_line` (OUT2 и разрешённое условие RDA/THRE) на каждом вопросе цикла и до и после накачки THR передаётся как уровень INTIN4 (`IoApicHandle::set_intin4`); семантика INTIN4 — существующая (`apic_pair`: уровневая форма — IRR+TMR, Remote IRR до EOI, повтор по EOI при поднятой линии; фронтовая — один фронт на подъём; маска — нет запроса). Отказанный подъём (LAPIC выключен, вектор занят) не потребляется и повторяется на следующей выборке (счётчик `uart_refused`). `wake_ns`/`pending_vector`/`acknowledge`/`next_deadline_ns` — через обёрнутый источник PIT; выборка до `wake_ns` кладёт запрос UART в IRR, поэтому `HLT` с IF = 1 просыпается по уже ожидающему байту RX. Плата: `enable_uart_ioapic_irq4` (нужен `enable_pit_ioapic_irq`; с 8259-источником несовместим в обе стороны), поле `uart_ioapic_source`, выборки в цикле набора; ставится фасадом `run_linux_direct_board_set_with` только для `X8664V1Stage4AApic`, после источника таймера. Тесты `linux_direct::apic_profile` (синтетический гость: SVR, RTE 4 через IOREGSEL `0x18`, MCR OUT2, IER RDA, обработчик со счётчиком, EOI): `a_uart_rx_event_reaches_the_guest_through_intin4_and_the_local_apic` (IRR → IDT → EOI, одна доставка, RSP/IF сбалансированы), `a_masked_intin4_gives_no_delivery`, `a_level_intin4_with_the_line_still_active_is_redelivered_after_the_eoi`, `a_level_intin4_with_the_line_cleared_is_delivered_once`, `an_edge_intin4_with_the_line_still_active_is_delivered_once`, `the_uart_intin4_run_leaves_the_8259_alone`, `a_halted_cpu_is_woken_by_a_waiting_uart_rx_byte`, `a_halted_cpu_with_a_quiet_uart_is_not_woken`, проверки взаимоисключения источников и фасада (stage4a: `uart_ioapic_source()` = `None`); прежние `uart_irq4` (stage4a, 8259 IR4) без изменений и проходят. Дополнительно: `a_refused_intin4_rise_is_retried_after_the_local_apic_is_enabled` (уровневая RTE 4 при SVR=0x0FF, затем SVR=0x1FF: ровно одна доставка, `uart_refused` = 1, `uart_edges` = 1) и `the_thre_interrupt_through_intin4_sends_one_byte_per_delivery` (THRE через INTIN4: N байт — N+1 доставок, N байт в COM1). Мутации: `sample()` без действия роняет 6 из 9 базовых тестов `intin4` и 3 теста `uart`; `level.set(line)` при `Err` роняет тест повтора; снятие выборки перед накачкой THR роняет тест THRE; откат копиями файлов. Живой прогон UART под `stage4a-apic` не выполнялся; открыто: Прогон, который начинается при остановленном (`Halted`) ЦП, а источник уже имеет доставляемый вектор (например, байт RX подан между двумя вызовами цикла), завершается `run_failed` («an external interrupt of the board source was refused by the CPU delivery», retired 0); байт остаётся в RBR. Это свойство цикла платы для любого источника (PIT, 8259, UART), а не только UART; исправление — вход в цикл платы при `Halted` (общий блок с веткой после кванта) — открыто, до будущего среза с живым вводом RX или прогоном кусками. Не блокер для живого прогона: фасад вызывает плату один раз, RX во время прогона не подаётся. Ограничение: выборка UART идёт только в цикле с `members.irq` (источник платы опрашивается только с хуком); без `irq` линия UART никуда не идёт.
   - [ ] **S4-38L8i — пробуждение HLT по таймеру LAPIC под профилем `stage4a-apic`. Реализовано, ожидает независимого ревью и принятия** (не коммичено на момент записи; stage4a, его 8259 путь, evidence и `PASS` S4-39j не затронуты; `od-isa` не тронут). Проверка кода: срок таймера LAPIC учитывался владельцем часов (`ClockOwner::nearest_deadline`, обрезка кванта) и арбитром (`idle_arbiter::decide`), но ветка простоя цикла платы запускалась только при `irq_source.wake_ns() = Some`; источник IOAPIC в `wake_ns` таймер LAPIC не учитывает, поэтому при замаскированном/непрограммированном PIT `HLT` с IF = 1 и армированным таймером LAPIC завершал прогон как `halted`; кроме того, `idle_to` отвергал (`Config`) вектор LAPIC, будящий ЦП (`IdleOutcome::Woken`). Исправление (`crates/od-machine/src/firmware_board.rs`): `lapic_timer_wake_ns` (срок таймера LAPIC BSP: сейчас, если вектор LAPIC доставляем сейчас; иначе срок армированного таймера, если LVT не замаскирован и вектор принимается (LAPIC включён, класс выше приоритета процессора); только при владельце часов и источнике IOAPIC, иначе `None`) и `idle_wake_ns` (минимум срока источника платы и таймера LAPIC) вместо `irq_source.wake_ns()` в ветке простоя; `idle_to` под источником IOAPIC возвращает управление на `Woken` (ЦП снова `Running`, следующая граница доставляет вектор из LAPIC IRR через IDT: `pending_vector` источника IOAPIC даёт старший доставляемый вектор LAPIC), под прочими источниками отказ прежний (тест `opt_in_refuses_a_lapic_vector_that_would_wake_the_cpu` без изменений). Тесты `linux_direct::apic_profile` (синтетический гость: SVR, DCR, LVT Timer, initial count, `STI; HLT`, обработчик с EOI; PIT замаскирован, владелец часов включён): `an_idle_sti_hlt_is_woken_by_a_one_shot_lapic_timer` (one-shot, срок 1000 нс; `halt_wakes` = 1, `halt_idle_ns` = 1000 − 18, часы стоят ровно на сроке: `virtual_ns` = retired + `halt_idle_ns`; вектор через IRR/IDT, EOI, RSP/IF сбалансированы, код после `HLT` выполнен), `an_idle_hlt_loop_is_woken_on_every_period_of_a_periodic_lapic_timer` (periodic: по пробуждению на период), `hlt_with_a_masked_lapic_timer_is_not_woken` (LVT замаскирован: прогон `halted`, 0 пробуждений и доставок), `stage4a_lapic_timer_programming_is_a_typed_write_error_and_arms_nothing` (stage4a: запись LAPIC MMIO — типизированная ошибка `DeviceUnavailable`, таймер не армирован, владелец часов выключен), `hlt_with_a_timer_vector_blocked_by_the_tpr_is_not_woken` (TPR того же класса, что вектор таймера: `halted`, `halt_wakes` = 0, `halt_idle_ns` = 0), `an_earlier_lapic_timer_wakes_the_cpu_before_the_pit_edge` (PIT открыт, срок LAPIC раньше: пробуждение по LAPIC; `min` в `idle_wake_ns` сам по себе не наблюдаем, раньше срока арбитр берёт срок таймера сам). Periodic: точные `retired` = 18 + 5·пробуждений и `virtual_ns` = 1000·пробуждений + 5. Мутации: `lapic_timer_wake_ns` всегда `None` роняет оба теста пробуждения; снятие `would_accept` роняет тест TPR; откат копиями файла. Узкие наборы: `--lib apic_profile` (32, 1 игнорируемый), `--lib clock_owner` (22), `--lib pic_wake` (15), `--lib idle_arbiter` (15) без ошибок; полный `od-machine`/`od-runner` и живой прогон не запускались. Открыто: живой прогон `stage4a-apic` с пробуждением по таймеру LAPIC; независимое ревью.
   - [ ] **S4-38L9-um — user mode под профилем `stage4a-apic` (ISSUE-090 для APIC-платы). Реализовано, ожидает независимого ревью и принятия** (не коммичено на момент записи; stage4a, его 8259 путь, evidence и `PASS` S4-39j не затронуты; `od-isa` не тронут). Отказ «user mode не поддержан с X8664V1Stage4AApic» снят в `crates/od-machine/src/linux_direct.rs` (`run_linux_direct_board_set_with_post_iret_index`: первая проверка отвергала user mode до изменения платы) и в разборе `--user-mode` раннера (`tools/runner/src/linux_direct.rs`: допускается `stage4a` и `stage4a-apic`, диагностический профиль по-прежнему отвергается; результат под APIC остаётся `diagnostic_not_counted`). Проверка пути: вход IRQ на границе набора не смотрит на источник вектора и на привилегию (`deliver_pending_irq` -> `deliver_external_interrupt_cpl0_set` с CPL3-входом по `TSS.RSP0`, ISSUE-090), поэтому вектор из LAPIC IRR (источник IOAPIC PIT -> INTIN2 и таймер LAPIC) доставляется в CPL3 тем же путём, что и на 8259; код доставки не менялся. Тесты `linux_direct::apic_profile` (синтетический CPL3-код `MOV EAX, 0; JMP -7`, IDT-шлюз на обработчик CPL0 с EOI в LAPIC и `IRETQ`, TSS.RSP0): `a_lapic_timer_irq_in_cpl3_goes_through_the_idt_and_iretq_returns_to_cpl3` (таймер LAPIC, armed хостом на 200 нс: `irqs_delivered` = 1, `cpl` = 3 при выходе, `cpl3_retired` > 900, RSP пользователя восстановлен, кадр на RSP0 с CS 0x13/SS 0x1b, ISR очищен EOI), `a_pit_ioapic_irq_in_cpl3_is_delivered_each_period_and_the_user_code_goes_on` (PIT -> INTIN2, гость настраивает APIC в CPL0 до `IRETQ`: >= 2 доставок за 20000 нс, `acknowledged` = `irqs_delivered`), `a_cpl3_irq_with_if_clear_is_refused_as_masked_and_stays_pending` (IF = 0 в CPL3: `irqs_delivered` = 0, `irq_refused_masked` > 100, `run_failed` нет, вектор в IRR). Старый тест отказа заменён. Раннер: `stage4a_apic_is_accepted_and_has_the_user_mode`, `user_mode_under_the_apic_profile_runs_into_cpl3_and_is_not_counted`. Мутация: пропуск входа IRQ на CPL3 (`irq.as_mut().filter(|_| !cpl3)`) роняет первые два теста; откат копией файла. **Не закрыто:** живой прогон `stage4a-apic --user-mode`; независимое ревью; таймер LAPIC, армированный гостем внутри кванта, виден на следующей границе кванта (запись в LAPIC не заканчивает квант; в тестах таймер армирует хост); L9, L10.
-  - [ ] **S4-38L9J — формальное evidence discovery на профиле `stage4a-apic` (диагностика, не засчитывается как PASS S4-39j). Реализовано, ожидает независимого ревью и принятия** (не коммичено на момент записи; код `od-machine` и `od-isa`, CPUID, поведение PIT/strobe не менялись). Новая команда раннера `linux-direct-discovery --report <json> [--out <json>]` (`tools/runner/src/linux_discovery.rs`, подключена в `main.rs`): проверка отчёта по образцу `linux-direct-gate`, гость не запускается; вердикт `PASS_DIAGNOSTIC_NOT_COUNTED` (код 6, `counted: false`; `PASS` не существует) или `FAIL` (код 5), 3 — ошибка входа. 40 проверок: форма прогона (guest_started, `--user-mode`, профиль `X8664V1Stage4AApic`); `e820_journal` (строки `BIOS-e820` журнала COM1 равны массиву `e820` отчёта: порядок, границы, тип); 15 обязательных маркеров `marker:*` (`Command line:` с cmdline отчёта, ECAM `0xfc100000`, `acpi PNP0C02`, RSDP `0xE0000`, `Allowing 1 present CPUs plus 0 hotplug CPUs`, `Brought up 1 node, 1 CPU`, `IOAPIC[0]` с `0xfec00000` и GSI 0-23, `INT_SRC_OVR` 0→2 и 9→9 low level, `Using IOAPIC for interrupt routing`, `ttyS0 ... irq = 4`, `..TIMER ... pin1=2`, `Fast TSC calibration using PIT`, `Detected`, `Run /init`); 20 запрещённых `forbidden:*` (19 подстрок: `RDMSR from 0x1b`, `APICBASE`, `Firmware Bug`, `Limiting to one CPU`, `MP-BIOS bug`, `IO-APIC + timer doesn't work`, `through the 8259A`, `APIC timer disabled`, `Disabling APIC timer`, `APIC frequency too slow, disabling apic timer`, `Fast TSC calibration failed`, `Marking TSC unstable`, `Spurious LAPIC timer interrupt`, `spurious APIC interrupt`, `unexpected IRQ trap`, `No irq handler for vector`, `WARNING:`, `BUG:`, `Oops`; и `Kernel panic` кроме `Attempted to kill init! exitcode=0x00000000`); `checkpoint_order` (C13 → C14 → C16 → C17, все `reached`, `retired` строго растёт). `Refined TSC` записывается в `observations`, не требуется. Тесты (`linux_discovery`, 12, включая коды выхода `run()`): по одному FAIL на каждый обязательный и каждый запрещённый маркер, варианты-двойники маркеров, e820, порядок checkpoints, форма прогона, разбор аргументов. Негатив на сохранённых файлах: `s4-38l8e-sci-pin9.json` — `FAIL` (RDMSR 0x1b, APICBASE, Firmware Bug, Limiting to one CPU, нет `user_mode`, C17 не достигнут), `s4-39j-gate-counted-cold1-stage4a-run.json` — `FAIL` (профиль stage4a, нет IOAPIC, INT_SRC_OVR, `Using IOAPIC`, TIMER pin 2, нет checkpoints). **Живой прогон** (release, два холодных процесса, `--set-cpl0 --cpuid-profile stage4a-apic --user-mode --checkpoint-table s4-38l2-oracle.json --budget 3000000000 --ram-mib 128`, nonce `s4-38l9j`): отчёты побайтно равны (sha256 `78a62bdbb2859053986425c615905781e71277c77fdefea7922da7e996ebdc24`), `docs/reports/data/stage4/s4-38l9j-apic-discovery-run.json`, вердикт `s4-38l9j-apic-discovery-verdict.json`: `PASS_DIAGNOSTIC_NOT_COUNTED`, 40 из 40; C13 → C14 → C16 → C17 (retired 1 547 026 238 / 2 072 822 955 / 2 320 644 462 / 2 320 901 822), паника `Attempted to kill init! exitcode=0x00000000` в COM1 (ожидаемая, проверяется); наблюдения, вердиктом не проверяемые: журнал syscall 83, 165, 257, 0, 3, 1, 39, 35, 60 и строка `OD_NONCE=s4-38l9j`; `Refined TSC` не было. Прогон кончился не `budget_exhausted`, а `exit_kind: backend` (retired 2 322 382 342) уже ПОСЛЕ паники: запись `0x10000` (LVT Timer: маска, вектор 0) по `0xfee00320` отвергнута LAPIC как `UnsupportedConfiguration` (ISSUE-106, пункт 5). Регрессия stage4a: counted-прогон не повторялся; принятый отчёт `s4-39j-gate-counted-cold1-stage4a-run.json` сверен по sha256 `d99b1898…53bd2a` (совпадает с cold2 и с MACHINE.md). **Не закрыто:** результат — диагностика, не счётный: профиль `stage4a-apic` не засчитан (ISSUE-091), ISSUE-068 открыта; независимое ревью; запись LVT Timer (маска, вектор 0) в пути паники; стабильность на APIC не проверялась (остановка, а не `budget_exhausted`).
+  - [ ] **S4-38L9J — формальное evidence discovery на профиле `stage4a-apic` (диагностика, не засчитывается как PASS S4-39j). Реализовано, ожидает независимого ревью и принятия** (не коммичено на момент записи; код `od-machine` и `od-isa`, CPUID, поведение PIT/strobe не менялись). Новая команда раннера `linux-direct-discovery --report <json> [--out <json>]` (`tools/runner/src/linux_discovery.rs`, подключена в `main.rs`): проверка отчёта по образцу `linux-direct-gate`, гость не запускается; вердикт `PASS_DIAGNOSTIC_NOT_COUNTED` (код 6, `counted: false`; `PASS` не существует) или `FAIL` (код 5), 3 — ошибка входа. 40 проверок: форма прогона (guest_started, `--user-mode`, профиль `X8664V1Stage4AApic`); `e820_journal` (строки `BIOS-e820` журнала COM1 равны массиву `e820` отчёта: порядок, границы, тип); 15 обязательных маркеров `marker:*` (`Command line:` с cmdline отчёта, ECAM `0xfc100000`, `acpi PNP0C02`, RSDP `0xE0000`, `Allowing 1 present CPUs plus 0 hotplug CPUs`, `Brought up 1 node, 1 CPU`, `IOAPIC[0]` с `0xfec00000` и GSI 0-23, `INT_SRC_OVR` 0→2 и 9→9 low level, `Using IOAPIC for interrupt routing`, `ttyS0 ... irq = 4`, `..TIMER ... pin1=2`, `Fast TSC calibration using PIT`, `Detected`, `Run /init`); 20 запрещённых `forbidden:*` (19 подстрок: `RDMSR from 0x1b`, `APICBASE`, `Firmware Bug`, `Limiting to one CPU`, `MP-BIOS bug`, `IO-APIC + timer doesn't work`, `through the 8259A`, `APIC timer disabled`, `Disabling APIC timer`, `APIC frequency too slow, disabling apic timer`, `Fast TSC calibration failed`, `Marking TSC unstable`, `Spurious LAPIC timer interrupt`, `spurious APIC interrupt`, `unexpected IRQ trap`, `No irq handler for vector`, `WARNING:`, `BUG:`, `Oops`; и `Kernel panic` кроме `Attempted to kill init! exitcode=0x00000000`); `checkpoint_order` (C13 → C14 → C16 → C17, все `reached`, `retired` строго растёт). `Refined TSC` записывается в `observations`, не требуется. Тесты (`linux_discovery`, 12, включая коды выхода `run()`): по одному FAIL на каждый обязательный и каждый запрещённый маркер, варианты-двойники маркеров, e820, порядок checkpoints, форма прогона, разбор аргументов. Негатив на сохранённых файлах: `s4-38l8e-sci-pin9.json` — `FAIL` (RDMSR 0x1b, APICBASE, Firmware Bug, Limiting to one CPU, нет `user_mode`, C17 не достигнут), `s4-39j-gate-counted-cold1-stage4a-run.json` — `FAIL` (профиль stage4a, нет IOAPIC, INT_SRC_OVR, `Using IOAPIC`, TIMER pin 2, нет checkpoints). **Живой прогон** (release, два холодных процесса, `--set-cpl0 --cpuid-profile stage4a-apic --user-mode --checkpoint-table s4-38l2-oracle.json --budget 3000000000 --ram-mib 128`, nonce `s4-38l9j`): отчёты побайтно равны (sha256 `78a62bdbb2859053986425c615905781e71277c77fdefea7922da7e996ebdc24`), `docs/reports/data/stage4/s4-38l9j-apic-discovery-run.json`, вердикт `s4-38l9j-apic-discovery-verdict.json`: `PASS_DIAGNOSTIC_NOT_COUNTED`, 40 из 40; C13 → C14 → C16 → C17 (retired 1 547 026 238 / 2 072 822 955 / 2 320 644 462 / 2 320 901 822), паника `Attempted to kill init! exitcode=0x00000000` в COM1 (ожидаемая, проверяется); наблюдения, вердиктом не проверяемые: журнал syscall 83, 165, 257, 0, 3, 1, 39, 35, 60 и строка `OD_NONCE=s4-38l9j`; `Refined TSC` не было. Прогон кончился не `budget_exhausted`, а `exit_kind: backend` (retired 2 322 382 342) уже ПОСЛЕ паники: запись `0x10000` (LVT Timer: маска, вектор 0) по `0xfee00320` отвергнута LAPIC как `UnsupportedConfiguration` (ISSUE-106, пункт 5). Регрессия stage4a: counted-прогон не повторялся; принятый отчёт `s4-39j-gate-counted-cold1-stage4a-run.json` сверен по sha256 `d99b1898…53bd2a` (совпадает с cold2 и с MACHINE.md). **Не закрыто:** результат — диагностика, не счётный: профиль `stage4a-apic` не засчитан (ISSUE-091), ISSUE-068 открыта; независимое ревью; проверка записи LVT Timer в повторном живом прогоне после исправления; стабильность на APIC не проверялась (остановка, а не `budget_exhausted`).
+  - **Дополнение S4-38L9J (2026-11-16, ISSUE-106 п. 5):** узкий срез `od-machine` принимает masked Timer LVT с вектором 0–15, включая наблюдённое `0x10000`, поглощает masked expiry без доставки IRQ и по-прежнему атомарно отклоняет unmask низкого вектора. Набор `local_apic::tests`: 58 passed; `cargo check -p od-machine --all-targets --offline` прошёл. Повторный release run на тех же образах vmlinuz/initramfs и ACPI (совпадающие SHA-256 из L9J), с `nonce=s4-38l9j-fix`, достиг C17; discovery verdict `PASS_DIAGNOSTIC_NOT_COUNTED` (40/40), не counted. Затем запись `0x10000` на RIP `0xffffffff813fb122` снова завершилась `UnsupportedConfiguration` (`retired=2,322,216,724`): после принятия masked vector остаётся guard смены PERIODIC при непустой очереди; модель не описывает активный countdown-переход с точным deadline и fractional phase. Intel SDM rev. 090 §13.5.4 говорит, что смена режима сама таймер не запускает, но текущая модель перехода не завершена, поэтому guard не снят и ISSUE-106 п. 5 остаётся открытым. Отчёты: [run](../reports/data/stage4/s4-38l9j-apic-post-fix-run.json), [verdict](../reports/data/stage4/s4-38l9j-apic-post-fix-verdict.json), [ISSUE-106](../KNOWN_ISSUES.md#issue-106). Run JSON сохранён без нормализации: использованы `/Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic` и `/Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio` из основного checkout; абсолютные пути и SHA-256 фактически использованных байтов записаны в `inputs` отчёта. S4-38 открыт; отдельные гейты S4-33 и профиля L9 не изменены.
+
   - **S4-38L8c — мост PIT OUT0 → IOAPIC INTIN2 → LAPIC как `BoardIrqSource` (устройство, без подключения к Linux-плате): принято после ревью** (ветка `feat/s4-38l8c-pit-ioapic-source`, коммиты `c72e7da`, `01456d6`, `ac93f35`; слияние `f0c53a5`; ревью Opus: принять с замечаниями, замечания исправлены в `ac93f35`). `PitIoapicIrqSource` (`crates/od-machine/src/pit_ioapic_irq_source.rs`): фронт OUT0 — импульс `set_intin2`; IOAPIC не маскирован → IRR на LAPIC, маска → фронт теряется; `pending_vector` = `LocalApicHandle::eligible()`; `acknowledge` IRR→ISR; EOI — запись в LAPIC `0xB0`. Поколения PIT: любое изменение состояния (режим, счёт, `0x30`, reset) сбрасывает очередь; режимы 2 и 0 по формулам S4-29f. Срок — следующий ещё не применённый фронт; после ошибки очереди срок `None`, старый фронт не применяется. Отказы фронта: LAPIC выключен глобально (основной), вектор < 16 и вектор level-INTIN4 — охранные проверки, через окно IOAPIC недостижимы. Линия к Linux-плате **не включена** (только тест и синтетический гость). Гость не делает MMIO: redirection и SVR пишет хост, EOI — хост между порциями по 500 инструкций. Тесты: `od-machine --lib` 1018 passed, 6 ignored (24 новых): 1000 периодов, без EOI второй не доставлен, маска — ноль доставок, `0x30` — ноль доставок и отмена, перепрограммирование 1003 → 10, IF=0. Замер издержек догона `pending_vector` на каждой границе **не сделан** — обязательное условие перед включением линии в L9. **Диагностика (НЕ засчитывается):** граница та же (`jiffies` `0xffffffff8133eac0`), JSON побайтово совпадает с L8b, счётчики IRQ 0. **Следующая граница:** L9 — целевой CPUID с APIC/TSC и исполнение объявленного.
   - **S4-38L8b — хук источника прерываний на границах набора Linux-платы (`BoardIrqSource`, квант по сроку, член `irq`, счётчики): принято после ревью** (ветка `feat/s4-38l8b-board-irq-hook`, коммиты `796cd08`, `d2ab6b1`, `75f0723`; слияние `ed360e0`; ревью Opus: принять с замечаниями, замечания исправлены в `75f0723`). Граница цикла: частичный REP — первая граница пропускается; один вызов `pending_vector()`; при IF=0 или shadow не `Clear` — счётчик отказа, вектор ждёт, IDT не читается; иначе `deliver_external_interrupt_cpl0_set`: `Delivered` → `acknowledge`; `Refused(InterruptsMasked/StiShadowActive)` → счётчик; любой другой отказ или `Aborted` → `IrqDeliveryFailed` → `run_failed` (состояние ЦП не меняется, `acknowledge` не вызывается). Квант не длиннее срока `next_deadline_ns()` (`max(1, срок − now)`); запись в PIT заканчивает квант, только если источник это требует. Пустой источник не меняет прогона (тест сравнивает полный результат). Требование к источнику (для L8c): пока IF=0 и вектор не принят, он сам сдвигает срок. Замер retired/s (один прогон на вариант): время −0,7 %, пропускная способность +0,7 % — в пределах шума. Тесты: `od-machine --lib` 994 passed, 6 ignored. Диагностика: граница та же (ожидание `jiffies` `0xffffffff8133eac0`), источника нет. **Следующая граница:** L8c — PIT OUT0 → INTIN2 → IOAPIC/LAPIC как `BoardIrqSource`.
   - **S4-38L8a — доставка внешнего аппаратного прерывания через IDT в наборе CPL0 (od-isa, без подключения к плате): принято после ревью** (ветка `feat/s4-38l8a-external-irq-cpl0`, коммиты `4b90e34`, `01d06f5`, `22039b8`; слияние `45851d2`; ревью Opus: принять с замечаниями, замечания исправлены в `22039b8`). `deliver_external_interrupt_cpl0_set(state, memory, vector, context)`: только interrupt gate (0xE), IST 0, CPL0→CPL0, Long64; кадр из пяти слов без кода ошибки (SS, RSP, RFLAGS, CS, RIP), `new_rsp = (old_rsp & !15) − 40`; RIP в кадре — следующая инструкция; в образе IF = 1 (условие доставки), RF = 0 (по памяти, открытый вопрос: RF в образе — текущий или очищенный, сценарий «после IRETQ с RF=1»); после входа IF/TF/NT/RF/VM очищены, AC сохранён. Общие помощники `resolve_cpl0_gate` / `commit_cpl0_gate` вынесены из #PF (поведение #PF не изменилось, 12 тестов `pf_delivery_*` без правок). Trap gate (0xF) — `TrapGateNotSupported`. Порядок отказов: NotRing0Long64, ActivityOutsideProfile, InterruptsMasked, StiShadowActive, затем шлюз и дескриптор; ошибки памяти — `Aborted`, состояние не меняется. Тесты: `od-isa --lib` 2293, `cpl0_profile_set` 1199, `paged_probe_profile` 67. **Не подключено к плате** (IRR/ISR, APIC, вызов из цикла — отдельные срезы L8b–L8d). **Диагностика (НЕ засчитывается; evidence `s4-38l8a-diagnostic-run.json`).** Прогон сделан на базе `d8d4e74` (до ELCR): граница ELCR `0x4d0`, JSON побайтно совпадает с `s4-38l7br`. На актуальном main после `S4-38L7bs` граница — ожидание `jiffies` на `0xffffffff8133eac0`; повтор на main не делался. **Следующая граница:** доставка IRQ0 на плате (L8b/L8c) и целевой CPUID (L9).

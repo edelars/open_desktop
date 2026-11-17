@@ -23,9 +23,9 @@
 //! arbiter does not check this.
 //!
 //! Deviations and limits:
-//! - `od_isa::CpuActivity` has no wait-for-SIPI state, so [`SchedActivity::WaitForSipi`] has no
-//!   source in the mapping yet; the arbiter treats it as a separate branch that is never picked
-//!   (as is `Shutdown`). NMI, INIT and SIPI wake-ups are deferred.
+//! - `od_isa::CpuActivity::WaitForSipi` (S6-13) maps to [`SchedActivity::WaitForSipi`]; the arbiter
+//!   treats it as a separate branch that is never picked (as is `Shutdown`). NMI, INIT and SIPI
+//!   wake-ups are deferred: the board applies a pending INIT/SIPI itself, not the arbiter.
 //! - The caller dispatches due timers before deciding, as the pump does at the start of a step.
 //!   A deadline that is not after `now` therefore means no progress is possible: `NoProgress`.
 //! - Board deadlines are considered only while at least one vCPU is halted; with nobody to wake
@@ -43,7 +43,7 @@ use crate::{DeviceError, LocalApicHandle};
 pub(crate) enum SchedActivity {
     Running,
     Halted,
-    /// Waiting for a startup IPI. Never produced by the mapping from `CpuActivity`; never picked.
+    /// Waiting for a startup IPI (`CpuActivity::WaitForSipi`); never picked.
     WaitForSipi,
     Shutdown,
 }
@@ -54,6 +54,7 @@ impl From<od_isa::CpuActivity> for SchedActivity {
             od_isa::CpuActivity::Running => Self::Running,
             od_isa::CpuActivity::Halted => Self::Halted,
             od_isa::CpuActivity::Shutdown => Self::Shutdown,
+            od_isa::CpuActivity::WaitForSipi => Self::WaitForSipi,
         }
     }
 }
@@ -401,7 +402,6 @@ mod tests {
         assert_eq!(decide(0, false, &mixed, &[]), IdleDecision::AllIdle);
         rig.arm(2, 0x42, 900);
         assert_eq!(decide(0, false, &mixed, &[]), IdleDecision::AdvanceTo(900));
-        // The mapping from the CPU model has no WaitForSipi.
         assert_eq!(
             SchedActivity::from(od_isa::CpuActivity::Running),
             SchedActivity::Running
@@ -413,6 +413,11 @@ mod tests {
         assert_eq!(
             SchedActivity::from(od_isa::CpuActivity::Shutdown),
             SchedActivity::Shutdown
+        );
+        // S6-13: the CPU model's wait-for-SIPI activity maps to the same never-picked branch.
+        assert_eq!(
+            SchedActivity::from(od_isa::CpuActivity::WaitForSipi),
+            SchedActivity::WaitForSipi
         );
     }
 

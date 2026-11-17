@@ -1,0 +1,25 @@
+S6-14n KVM oracle evidence (64-bit indirect jump of block 8)
+Date: 2026-11-16
+Host: mini (senya@192.168.1.39), Linux mini 7.0.0-42-generic #42-Ubuntu SMP PREEMPT_DYNAMIC Thu Oct 15 08:06:44 UTC 2026 x86_64 GNU/Linux
+model name	: Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz
+gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+KVM mode: /sys/module/kvm_intel/parameters/ept = Y (read after the runs)
+Host work dir: /tmp/od-s6-14n (kvm_runner rebuilt there from tools/kvm-runner/kvm_runner.c)
+Build: gcc -O2 -Wall -Wextra -Werror -std=c11 kvm_runner.c -o kvm_runner
+Run: see run-oracle.sh (from the repo root); per image ten runs: --result-block 0x30:64; 0x4000, 0x7000, 0x8000, 0x9000, 0x5000 with 64 bytes; 0x4ff8:8, 0xaff0:16, 0xb048:8, 0xcce0:8 (informational)
+Runner sha256 equals the S6-14m host-info (kvm_runner.c 969ce3a2..., kvm_runner 5f6a2aac...).
+SHA-256 (host, /tmp/od-s6-14n):
+969ce3a20af037bb8849d05482b31f881320e9420ee9630701728fd0da4ce7f0  kvm_runner.c
+5f6a2aac6f4a49fc92c1ab611daeecc0e7474fe1ae6c2551647464ea10bf11b7  kvm_runner
+740dc51e3dbc763babc76eee830688ee7b58490b3c568163cfd6811d3f3e79d6  a-2mib-secondary-startup-64-0000-0000.bin
+1d5ae703d7454ae6e2fd8674dcc0de40643057bf765efd36746620101b83fdc4  b-4k-secondary-startup-64-0000-0000.bin
+4ffff4615125eeca3d1473d9009b2cc9e4ce43578660f1dc2ccf739ac3b4cec0  c-low-target-0x2100-0000-0000.bin
+cd623e6843784bd4510435be9786a37d4da85cc7e909be11f3b84b463fb48a09  d-noncanonical-low-gp-0000-0000.bin
+4cfbf26ce5272fd3d12dd771d4b8f0cad7cf407724c2df5c87a140e7f42fa8e6  e-noncanonical-high-gp-0000-0000.bin
+f369035bc44d79543d85a6feff223eb63382a5b8577cefa0442e9204452c7d47  f-canonical-low-max-unmapped-pf-0000-0000.bin
+1ff04ac64555fba1a571aab1b80d2c72f2c55422b068038a0d1323cf311e654b  g-canonical-high-min-unmapped-pf-0000-0000.bin
+29240f9fd0859eed869afde71efd67c530b62f54ba28e5f090eac0633b02870a  h-pte-cell-page-not-present-pf-0000-0000.bin
+10e471e1ed137994af7c8ecd41e3ee1dee2d242a1d49a69cc17996d070e089e0  i-pde-readonly-cell-read-0000-0000.bin
+4a19ab07a813bf7537579283a497ed0bb1a6c000031d8d8e868a77fea10aadc6  j-negative-disp-cell-at-0x20e0-0000-0000.bin
+de83e685cf63472390b223a106614e20b063c4cdac25fe7e278200e7f221ae2e  k-4k-cell-crosses-page-0000-0000.bin
+0cc881fcd65b49bf20996af8b8888eee63efb4d44b3bfe8c97fb63e6964326ef  l-code64-base-1000-ignored-0000-0000.bin

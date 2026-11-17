@@ -367,6 +367,7 @@ version = "0.1.0"
 dependencies = [
  "od-isa",
  "od-jit",
+ "serde_json",
 ]
 
 [[package]]

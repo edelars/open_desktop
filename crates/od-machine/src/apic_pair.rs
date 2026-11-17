@@ -68,6 +68,19 @@ impl Default for Route {
 pub(crate) struct CpuApic {
     pub local: State,
     pub timer: Option<Timer>,
+    /// Accepted guest writes to the timer registers (LVT Timer `0x320`, Initial Count `0x380`,
+    /// Divide Configuration `0x3E0`) since power-on. A counter, not state of the device: nothing
+    /// reads it back into the registers. The host of a vCPU quantum ends its call when it moves
+    /// (S6-16d, SMP_CONTRACT.md 8), because a new deadline may be nearer than the quantum.
+    pub timer_writes: u64,
+}
+
+/// INIT and SIPI waiting in the LAPIC of one processor (S6-13). The processor applies them on
+/// its own boundary; INIT comes first.
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub(crate) struct PendingStartup {
+    pub init: bool,
+    pub sipi: Option<u8>,
 }
 
 /// All APIC state of the board: one [`CpuApic`] per vCPU (index = APIC ID) and the IOAPIC route.
@@ -283,11 +296,99 @@ impl PairState {
         Ok(())
     }
 
+    /// Queue an INIT assert in the LAPIC `cpu` (S6-13). A globally disabled LAPIC refuses, like a
+    /// Fixed IPI (SMP_CONTRACT.md 5). The INIT drops a SIPI accepted before it.
+    pub fn queue_init(&mut self, cpu: usize) -> Result<(), DeviceError> {
+        let local = &mut self.cpus[cpu].local;
+        if !local.global_enabled {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
+        local.pending_init = true;
+        local.pending_sipi = None;
+        Ok(())
+    }
+
+    /// Queue a start-up vector in the LAPIC `cpu` (S6-13). A globally disabled LAPIC refuses. A
+    /// vector already waiting is kept: the first SIPI starts the processor, later ones are ignored.
+    pub fn queue_sipi(&mut self, cpu: usize, vector: u8) -> Result<(), DeviceError> {
+        let local = &mut self.cpus[cpu].local;
+        if !local.global_enabled {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
+        local.pending_sipi.get_or_insert(vector);
+        Ok(())
+    }
+
+    /// Remember one NMI in the LAPIC of every target (S6-12b): all or none. A target whose LAPIC
+    /// is globally disabled refuses the whole NMI before any LAPIC changes, as for Fixed, INIT and
+    /// SIPI. The latch is one bit: an NMI that finds one already waiting is the same event, and
+    /// is lost (SMP_CONTRACT.md 7).
+    pub fn queue_nmi(&mut self, targets: &[usize]) -> Result<(), DeviceError> {
+        if targets
+            .iter()
+            .any(|&cpu| !self.cpus[cpu].local.global_enabled)
+        {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
+        for &cpu in targets {
+            self.cpus[cpu].local.pending_nmi = true;
+        }
+        Ok(())
+    }
+
+    /// Take the pending INIT and SIPI of the LAPIC `cpu`. A pending INIT puts the LAPIC into its
+    /// INIT-reset state (SMP_CONTRACT.md 4, SDM 13.4.7.3): every register, request and timer
+    /// returns to its reset value except that the LAPIC stays globally enabled and keeps its APIC
+    /// ID, which is its index. A Remote IRR of a level route to this LAPIC is not touched: as on
+    /// hardware, only the EOI clears it (SMP_CONTRACT.md 3, 6). On an error nothing is taken.
+    pub fn take_startup(&mut self, cpu: usize) -> Result<PendingStartup, DeviceError> {
+        let local = &self.cpus[cpu].local;
+        let pending = PendingStartup {
+            init: local.pending_init,
+            sipi: local.pending_sipi,
+        };
+        if pending.init {
+            if let Some(timer) = &mut self.cpus[cpu].timer {
+                timer.reset()?;
+            }
+            self.cpus[cpu].local = State {
+                global_enabled: self.cpus[cpu].local.global_enabled,
+                ..State::default()
+            };
+        } else {
+            self.cpus[cpu].local.pending_sipi = None;
+        }
+        Ok(pending)
+    }
+
     pub fn reset_io(&mut self) -> Result<(), DeviceError> {
         if self.route.remote_irr || self.route.sci_remote_irr {
             return Err(DeviceError::UnsupportedConfiguration);
         }
         self.route = Route::default();
+        Ok(())
+    }
+
+    /// The power-on state of the whole APIC complex (S6-24, the board reset): every Local APIC
+    /// (not only one) returns to its reset state with its pending INIT, SIPI, NMI and requests
+    /// dropped and its timer queue emptied, the guest timer-write counters go back to 0, and the
+    /// IOAPIC route returns to its reset state, Remote IRR of every level entry included. Unlike
+    /// [`Self::reset_io`] and [`Self::reset_local`] it is not vetoed by a Remote IRR: hardware reset
+    /// clears it, and a vCPU that an INIT reset keeps the owner's decision that INIT does not
+    /// (SMP_CONTRACT.md 3), so nobody could ever send the EOI that clears it. The Local APICs
+    /// stay globally enabled and keep their APIC IDs and timer configuration (clock, frequency).
+    /// All or nothing: the change is built on a copy.
+    pub fn reset_all(&mut self) -> Result<(), DeviceError> {
+        let mut next = self.clone();
+        for apic in &mut next.cpus {
+            if let Some(timer) = &mut apic.timer {
+                timer.reset()?;
+            }
+            apic.local = State::default();
+            apic.timer_writes = 0;
+        }
+        next.route = Route::default();
+        *self = next;
         Ok(())
     }
 

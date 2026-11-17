@@ -270,6 +270,28 @@ pub struct TrackedCodeSnapshot {
     pub backing_generation: u64,
 }
 
+/// Executable bytes of one range spanning at most two guest 4 KiB pages
+/// (S4-16g). `first` starts at `linear_base`; `second` starts at the next
+/// 4 KiB boundary and exists only when the range reaches it. Each part has its
+/// own physical page and generation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrackedCrossPageCodeSnapshot {
+    pub linear_base: u64,
+    pub first: TrackedCodeSnapshot,
+    pub second: Option<TrackedCodeSnapshot>,
+}
+
+impl TrackedCrossPageCodeSnapshot {
+    /// All captured bytes in linear order.
+    pub fn bytes(&self) -> Vec<u8> {
+        let mut bytes = self.first.bytes.clone();
+        if let Some(second) = &self.second {
+            bytes.extend_from_slice(&second.bytes);
+        }
+        bytes
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TrackedCodeSnapshotError {
     InvalidLength,
@@ -372,10 +394,109 @@ impl MachineBus {
         if length == 0 || length > 0x1000 - offset {
             return Err(TrackedCodeSnapshotError::InvalidLength);
         }
+        self.capture_code_page(
+            paging,
+            linear_start,
+            linear_start,
+            length,
+            context,
+            committed_write,
+        )
+    }
+
+    /// Capture one executable byte range that starts in the 4 KiB page of
+    /// `linear_start` and may continue into the next page, at most two pages
+    /// in total (S4-16g). The first page is walked as an instruction fetch at
+    /// `linear_start`; the second page, when the range reaches it, gets its own
+    /// fetch walk at the page boundary with the original `linear_start` as the
+    /// instruction RIP, so a second-page fault carries the same
+    /// `PageFaultRecord` (saved RIP, CR2 = boundary address) as a byte-wise
+    /// interpreter fetch. Each page keeps its own physical base and
+    /// generation; the physical pages need not be adjacent. A range that does
+    /// not fit two pages is `InvalidLength` before any walk. A second-page
+    /// failure keeps the first-page walk effects (reported through the
+    /// callback) and returns no snapshot.
+    pub fn tracked_code_snapshot_two_pages_with_callback(
+        &mut self,
+        paging: &Long64ProbeConfig,
+        linear_start: u64,
+        length: usize,
+        context: AccessContext,
+        mut committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<TrackedCrossPageCodeSnapshot, TrackedCodeSnapshotError> {
+        if context.origin != AccessOrigin::Explicit {
+            return Err(TrackedCodeSnapshotError::InvalidAccessContext);
+        }
+        let offset = (linear_start & 0xfff) as usize;
+        let first_length_max = 0x1000 - offset;
+        if length == 0 || length > first_length_max + 0x1000 {
+            return Err(TrackedCodeSnapshotError::InvalidLength);
+        }
+        let first_length = length.min(first_length_max);
+        let mut first = self.capture_code_page(
+            paging,
+            linear_start,
+            linear_start,
+            first_length,
+            context,
+            &mut committed_write,
+        )?;
+        if length == first_length {
+            return Ok(TrackedCrossPageCodeSnapshot {
+                linear_base: linear_start,
+                first,
+                second: None,
+            });
+        }
+        let second_linear = (linear_start & !0xfff)
+            .checked_add(0x1000)
+            .ok_or(TrackedCodeSnapshotError::InvalidLength)?;
+        let second = self.capture_code_page(
+            paging,
+            linear_start,
+            second_linear,
+            length - first_length,
+            context,
+            &mut committed_write,
+        )?;
+        // The second walk can commit A/D bits into a page-table page that is
+        // also the first code page. Re-read the first page so both snapshots
+        // describe memory as it is when the call returns.
+        let first_generation = self
+            .memory
+            .code_page_generation(first.physical_base)
+            .map_err(TrackedCodeSnapshotError::Physical)?;
+        if first_generation != first.backing_generation {
+            let byte_address = GuestPhysicalAddress::new(first.physical_base.get() + offset as u64);
+            self.memory
+                .read_bytes(byte_address, &mut first.bytes)
+                .map_err(TrackedCodeSnapshotError::Physical)?;
+            first.backing_generation = first_generation;
+        }
+        Ok(TrackedCrossPageCodeSnapshot {
+            linear_base: linear_start,
+            first,
+            second: Some(second),
+        })
+    }
+
+    /// Walk `fetch_linear` as an instruction fetch of the instruction at
+    /// `instruction_rip` and read `length` bytes from its page. The caller
+    /// guarantees that the range lies within the page of `fetch_linear`.
+    fn capture_code_page(
+        &mut self,
+        paging: &Long64ProbeConfig,
+        instruction_rip: u64,
+        linear_start: u64,
+        length: usize,
+        context: AccessContext,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<TrackedCodeSnapshot, TrackedCodeSnapshotError> {
+        let offset = (linear_start & 0xfff) as usize;
         let report = self.access_tracked_ram(
             paging,
             TrackedAccessRequest {
-                instruction_rip: linear_start,
+                instruction_rip,
                 address: crate::GuestLinearAddress::new(linear_start),
                 context,
                 operation: RamAccessOperation::Fetch,
@@ -551,6 +672,9 @@ pub(crate) struct MachineBusSetStepIo<'a> {
     mmio: &'a [MmioBinding],
     mmio_lens: &'a [u64],
     windows: &'static [crate::page_walk::MmioWindow],
+    /// Index of the vCPU whose set loop this is (S6-16a): its MMIO accesses reach the
+    /// per-processor devices (the Local APIC window) as that vCPU's. Every other device ignores it.
+    vcpu: usize,
 }
 
 /// The port view of [`MachineBusSetStepIo`].
@@ -646,9 +770,10 @@ impl SetStepMmio for MachineBusSetStepIo<'_> {
             .try_borrow_mut()
             .map_err(|_| Backend("the device table is already borrowed".to_owned()))?;
         let device = &mut devices[binding.device_index];
+        let vcpu = self.vcpu;
         match operation {
             RamAccessOperation::Read { .. } => device
-                .read(access)
+                .read_from_cpu(vcpu, access)
                 .map(|value| value & width.mask())
                 .map_err(|error| {
                     Backend(format!(
@@ -657,7 +782,7 @@ impl SetStepMmio for MachineBusSetStepIo<'_> {
                     ))
                 }),
             RamAccessOperation::Write { value, .. } => device
-                .write(access, value & width.mask())
+                .write_from_cpu(vcpu, access, value & width.mask())
                 .map(|()| 0)
                 .map_err(|error| {
                     Backend(format!(
@@ -761,7 +886,17 @@ impl PortIo for SetStepPortIo<'_, '_> {
 impl MachineBus {
     /// Memory, ports and MMIO of one set-loop instruction (S4-38L9s); the cell inside the
     /// returned value lets the port view and the MMIO dispatch share the device table.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn split_for_set_step(&mut self) -> (&mut PhysicalMemory, MachineBusSetStepIo<'_>) {
+        self.split_for_set_step_of_vcpu(crate::vcpu::BOOT_VCPU_INDEX)
+    }
+
+    /// [`MachineBus::split_for_set_step`] for the set loop of vCPU `vcpu` (S6-16a): the MMIO
+    /// dispatch of the returned value serves a Local APIC access as that processor's.
+    pub(crate) fn split_for_set_step_of_vcpu(
+        &mut self,
+        vcpu: usize,
+    ) -> (&mut PhysicalMemory, MachineBusSetStepIo<'_>) {
         let Self {
             memory,
             devices,
@@ -782,6 +917,7 @@ impl MachineBus {
                 } else {
                     &SET_STEP_WINDOWS
                 },
+                vcpu,
             },
         )
     }
@@ -1707,6 +1843,166 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("read-only translation failed"));
         assert_eq!(&output[8..], &[0xaa; 8]);
+    }
+
+    #[test]
+    fn tracked_code_snapshot_two_pages_captures_each_page_with_its_own_generation() {
+        let ram = range(0, 0x9000);
+        let map = MachineMemoryMap::new(
+            36,
+            vec![crate::MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)],
+        )
+        .unwrap();
+        let mut bus = MachineBus::new(map, RamLimits::new(0x9000), vec![], vec![], vec![]).unwrap();
+        // Linear page 0x4000 -> physical 0x7000, linear 0x5000 -> physical
+        // 0x5000 (not adjacent), linear 0x6000 -> not present.
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3000, 0x4007),
+            (0x4020, 0x7007),
+            (0x4028, 0x5007),
+            (0x4030, 0x6006),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let code = [0x48, 0xb8, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x7ffd), &code[..3])
+            .unwrap();
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x5000), &code[3..])
+            .unwrap();
+        let paging = Long64ProbeConfig::new(
+            0x8001_0033,
+            0x1000,
+            1 << 5,
+            (1 << 8) | (1 << 10) | (1 << 11),
+        )
+        .unwrap();
+        let context = AccessContext::default();
+        let mut writes = Vec::new();
+        let snapshot = bus
+            .tracked_code_snapshot_two_pages_with_callback(&paging, 0x4ffd, 10, context, |range| {
+                writes.push(range)
+            })
+            .unwrap();
+        assert_eq!(snapshot.linear_base, 0x4ffd);
+        assert_eq!(snapshot.bytes(), code);
+        assert_eq!(snapshot.first.linear_base, 0x4ffd);
+        assert_eq!(
+            snapshot.first.physical_base,
+            GuestPhysicalAddress::new(0x7000)
+        );
+        assert_eq!(snapshot.first.bytes, code[..3]);
+        let second = snapshot.second.as_ref().unwrap();
+        assert_eq!(second.linear_base, 0x5000);
+        assert_eq!(second.physical_base, GuestPhysicalAddress::new(0x5000));
+        assert_eq!(second.bytes, code[3..]);
+        // A bits of PML4/PDPT/PD/PT[4] for the first walk, PT[5] for the second.
+        assert_eq!(writes.len(), 5);
+        assert_eq!(writes[4].start().get(), 0x4028);
+        let first_generation = snapshot.first.backing_generation;
+        let second_generation = second.backing_generation;
+
+        // Generations are per 4 KiB page: a write to the second page leaves the
+        // first generation unchanged and vice versa.
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x5001), &[0xff])
+            .unwrap();
+        let after_second = bus
+            .tracked_code_snapshot_two_pages_with_callback(&paging, 0x4ffd, 10, context, |_| {})
+            .unwrap();
+        assert_eq!(after_second.first.backing_generation, first_generation);
+        assert!(after_second.second.as_ref().unwrap().backing_generation > second_generation);
+        assert_eq!(after_second.bytes()[4], 0xff);
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x7ffe), &[0xee])
+            .unwrap();
+        let after_first = bus
+            .tracked_code_snapshot_two_pages_with_callback(&paging, 0x4ffd, 10, context, |_| {})
+            .unwrap();
+        assert!(after_first.first.backing_generation > first_generation);
+        assert_eq!(
+            after_first.second.as_ref().unwrap().backing_generation,
+            after_second.second.as_ref().unwrap().backing_generation
+        );
+
+        // A range inside the first page has no second part and matches the
+        // single-page capture.
+        let single = bus
+            .tracked_code_snapshot_two_pages_with_callback(&paging, 0x4ffd, 3, context, |_| {})
+            .unwrap();
+        assert!(single.second.is_none());
+        assert_eq!(
+            single.first,
+            bus.tracked_code_snapshot(&paging, 0x4ffd, 3, context)
+                .unwrap()
+        );
+
+        // At most two pages: 3 + 4096 bytes fit, one more does not; neither
+        // does an empty range. The single-page API keeps its one-page limit.
+        assert!(
+            bus.tracked_code_snapshot_two_pages_with_callback(
+                &paging,
+                0x4ffd,
+                0x1003,
+                context,
+                |_| {}
+            )
+            .is_ok()
+        );
+        for length in [0x1004, 0] {
+            assert_eq!(
+                bus.tracked_code_snapshot_two_pages_with_callback(
+                    &paging,
+                    0x4ffd,
+                    length,
+                    context,
+                    |_| panic!("no walk")
+                ),
+                Err(TrackedCodeSnapshotError::InvalidLength)
+            );
+        }
+        assert_eq!(
+            bus.tracked_code_snapshot(&paging, 0x4ffd, 10, context),
+            Err(TrackedCodeSnapshotError::InvalidLength)
+        );
+        let descriptor_origin = AccessContext {
+            origin: AccessOrigin::DescriptorTable,
+            ..context
+        };
+        assert_eq!(
+            bus.tracked_code_snapshot_two_pages_with_callback(
+                &paging,
+                0x4ffd,
+                10,
+                descriptor_origin,
+                |_| {}
+            ),
+            Err(TrackedCodeSnapshotError::InvalidAccessContext)
+        );
+
+        // Second page not present: the fault is the second page's walk (CR2 =
+        // the boundary address, saved RIP = the instruction start) and the
+        // first walk's effects are not rolled back (here the A bits were already set).
+        let mut fault_writes = Vec::new();
+        let error = bus
+            .tracked_code_snapshot_two_pages_with_callback(&paging, 0x5ffd, 10, context, |range| {
+                fault_writes.push(range)
+            })
+            .unwrap_err();
+        // The Accessed bits were already set by the earlier walks.
+        assert!(fault_writes.is_empty());
+        match error {
+            TrackedCodeSnapshotError::Access(TrackedAccessError::PageFault { record, .. }) => {
+                assert_eq!(record.saved_rip(), 0x5ffd);
+                assert_eq!(record.cr2_value(), 0x6000);
+            }
+            other => panic!("expected a second-page fault, got {other:?}"),
+        }
     }
 
     #[test]

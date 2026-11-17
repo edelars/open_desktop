@@ -25,6 +25,7 @@ use crate::linux_checkpoints::{
     CheckpointRecorder, LinuxCheckpointRecord, LinuxCheckpointTable, LinuxCheckpointTableError,
 };
 use crate::page_walk::translate_long64_2m_ram_read_only;
+use crate::paged_memory_adapter::deliver_nmi_at_boundary;
 use crate::paged_memory_adapter::{
     IrqDeliveryFailure, PagedCpl0SetExit, run_cpl0_set_paged_2m_ram_observed_with_sweep,
 };
@@ -33,7 +34,10 @@ use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
 use crate::pit_pic_irq_source::PitPicIrqSource;
 use crate::uart_ioapic_irq_source::UartIoapicIrqSource;
 use crate::uart_pic_irq_source::UartPicIrqSource;
-use crate::vcpu::{BOOT_VCPU_INDEX, MAX_VCPUS, Vcpu, vcpu_set};
+use crate::vcpu::{
+    BOOT_VCPU_INDEX, LINUX_AP_CPUID_PROFILE, MAX_VCPUS, NmiBoundary, StartupApplied, Vcpu,
+    VcpuCpuid, vcpu_set,
+};
 use crate::{
     ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AbsentPortRegion, AbsentPorts,
     AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError, DISPLAY_FRAMEBUFFER_BASE,
@@ -52,6 +56,7 @@ use crate::{
     TrackedAccessError, Uart16550Handle, Uart16550PollingTx, VirtualClock, VirtualClockError,
     VirtualClockHandle, run_paged_probe, run_paged_probe_with_rdtsc,
 };
+use od_isa::cpuid::CpuidProfile;
 use od_isa::execute::{Cpl0ProfileSet, GuestFpState, RunExit, TranslationContextChange};
 use od_isa::memory::{
     AccessContext, AccessKind, AccessOrigin, InstructionMode, PageFaultRecord, PrivilegeLevel,
@@ -62,6 +67,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+pub(crate) mod vcpu_quantum;
 
 /// Image size, fixed by the contract (FIRMWARE_BOOT.md 3.2).
 pub const FIRMWARE_IMAGE_BYTES: usize = 0x0040_0000;
@@ -297,6 +304,21 @@ pub enum FirmwareBoardError {
         failure: String,
         rip: u64,
         cs_selector: Option<u16>,
+    },
+    /// An application processor in legacy mode (the trampoline between SIPI and its 64-bit jump,
+    /// S6-16c) stopped on an instruction or a state the real-mode, protected-mode or long-mode
+    /// entry models do not admit. The vCPU keeps its state (the refusal changes nothing).
+    ApLegacyRefused {
+        cpu: usize,
+        refusal: crate::ap_legacy_exec::ApLegacyRefusal,
+    },
+    /// The long-mode quantum of a vCPU ([`LoadedFirmwareBoard::run_vcpu_set_quantum`], S6-16d)
+    /// ended on something other than a budget, a stop request, a `HLT` or a partial `REP`: a
+    /// fault, a page fault, an unsupported instruction, a refused configuration. `detail` is the
+    /// `Debug` text of the set exit; the vCPU keeps the state the failing call left.
+    VcpuQuantum {
+        cpu: usize,
+        detail: String,
     },
 }
 
@@ -1031,6 +1053,13 @@ fn set_exit_to_probe_exit(
                     "the CPL0 set returned an exit the board never asks for",
                 ));
             }
+            // S6-20: the CPL0 set refuses a non-Running activity at its own entry; the board runs
+            // vCPU 0 only, which is Running.
+            RunExit::NotRunning => {
+                return Err(SetExitMappingError::Integration(
+                    "the CPL0 set returned NotRunning, an activity the board never runs",
+                ));
+            }
         },
         PagedCpl0SetExit::Rejected(error) => {
             PagedProbeExit::Rejected(PagedProbeRejection::Cpl0Set(error))
@@ -1230,6 +1259,215 @@ impl LoadedFirmwareBoard {
     /// Handle of the LAPIC of vCPU `index` (its APIC ID), `None` when the board has no such vCPU.
     pub fn local_apic_of(&self, index: usize) -> Option<LocalApicHandle> {
         self.lapic.for_cpu(index)
+    }
+
+    /// The state of vCPU `index`, `None` when the board has no such vCPU.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn vcpu(&self, index: usize) -> Option<&Vcpu> {
+        self.vcpus.get(index)
+    }
+
+    /// The state of vCPU `index` for the scheduler of S6-15 (it sets a woken vCPU `Running`),
+    /// `None` when the board has no such vCPU.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn vcpu_mut(&mut self, index: usize) -> Option<&mut Vcpu> {
+        self.vcpus.get_mut(index)
+    }
+
+    /// The CPUID profile of the legacy models of the board's vCPUs and of the EDX after INIT
+    /// (S6-18a), read from `vcpus[0].cpuid.profile`: it is set on every vCPU (`LINUX_AP_CPUID_PROFILE`
+    /// on the `linux-direct` board). It is NOT the CPUID of the BSP in long mode: that one is the
+    /// `members.cpuid_profile` of `linux_direct.rs`. `DiagnosticV1` until
+    /// [`Self::set_cpuid_profile`] changes it.
+    pub fn cpuid_profile(&self) -> CpuidProfile {
+        self.vcpus[BOOT_VCPU_INDEX].cpuid.profile
+    }
+
+    /// Choose the CPUID profile of every vCPU (S6-18a). Each keeps its APIC ID (its index) and
+    /// the board's vCPU count. A legacy model that is still in its INIT or power-on state takes
+    /// the profile now (its `CPUID` source and EDX); one that has been started keeps what it has,
+    /// so the call is made before the guest runs. The Linux boards pick
+    /// `OdX8664V1Neutral` (`vcpu::LINUX_AP_CPUID_PROFILE`) for their application processors: the `verify_cpu`
+    /// of the kernel's trampoline returns 0 only on it.
+    pub fn set_cpuid_profile(&mut self, profile: CpuidProfile) {
+        let count = self.vcpus.len();
+        for vcpu in &mut self.vcpus {
+            let cpuid = VcpuCpuid::new(profile, vcpu.index, count);
+            vcpu.set_cpuid(cpuid);
+        }
+    }
+
+    /// The single clock owner, once [`Self::enable_clock_owner`] installed it. The scheduler of
+    /// S6-15 moves time through it; the board does not create a second one.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn clock_owner_mut(&mut self) -> Option<&mut ClockOwner> {
+        match &mut self.clock_driver {
+            BoardClock::Owned(owner) => Some(owner),
+            BoardClock::Standalone => None,
+        }
+    }
+
+    /// The reset of the CPU complex of the board (S6-24; what S6-13 left open): every vCPU goes
+    /// back to its power-on state and every Local APIC and the IOAPIC route to theirs.
+    ///
+    /// - The boot processor gets `bsp_state` and `bsp_guest_efer` (the handoff state the loader
+    ///   gave it: the board does not keep it), `Running`, no legacy model, the guest cells at their
+    ///   initial values (SMP_CONTRACT.md 3, row "Power-on, index 0").
+    /// - Every application processor is `WaitForSipi` with the real-mode reset state, whatever it
+    ///   did before (Running, Halted, in long mode, shut down): [`Vcpu::new_ap`]. The CPUID
+    ///   configuration of every vCPU is kept.
+    /// - Every Local APIC, not only the boot processor's, drops its pending INIT, SIPI, NMI, its
+    ///   IRR/ISR/TMR and its armed timer, and the route drops its Remote IRR
+    ///   ([`LocalApicHandle::reset_all`]); an earlier INIT that the owner's decision left the
+    ///   Remote IRR of cannot veto it.
+    ///
+    /// Not touched: guest RAM, the devices of the board (UART, PIT, PIC, PM timer, NVMe, display),
+    /// the interrupt source and the clock: virtual time does not move. Resetting the devices is the
+    /// machine reset of `S9`. On an error nothing has changed.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn reset_cpu_complex(
+        &mut self,
+        bsp_state: LongModeState,
+        bsp_guest_efer: u64,
+    ) -> Result<(), FirmwareBoardError> {
+        self.lapic.reset_all().map_err(|_| {
+            FirmwareBoardError::Config("reset_cpu_complex: the Local APIC reset failed")
+        })?;
+        for (index, vcpu) in self.vcpus.iter_mut().enumerate() {
+            let cpuid = vcpu.cpuid;
+            *vcpu = if index == BOOT_VCPU_INDEX {
+                let mut boot = Vcpu::new(BOOT_VCPU_INDEX, bsp_state.clone());
+                boot.guest_efer = bsp_guest_efer;
+                boot
+            } else {
+                Vcpu::new_ap(index)
+            };
+            vcpu.set_cpuid(cpuid);
+        }
+        Ok(())
+    }
+
+    /// The vCPU `index` applies the INIT and SIPI waiting in its own Local APIC (S6-13), on its
+    /// own boundary: the LAPIC hands them over and the vCPU changes its state
+    /// ([`Vcpu::apply_startup`]). The scheduler of S6-15 calls it on the boundary of every vCPU
+    /// before it picks one (`BoardSmpHost::boundary`); the run loop of the board does not. No such vCPU, or a LAPIC that
+    /// cannot reset its timer for an INIT, is an error and nothing is applied.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn apply_pending_startup(
+        &mut self,
+        index: usize,
+    ) -> Result<StartupApplied, FirmwareBoardError> {
+        const NO_VCPU: FirmwareBoardError =
+            FirmwareBoardError::Config("apply_pending_startup: no such vCPU");
+        let apic = self.lapic.for_cpu(index).ok_or(NO_VCPU)?;
+        let vcpu = self.vcpus.get_mut(index).ok_or(NO_VCPU)?;
+        let pending = apic
+            .take_startup()
+            .map_err(|_| FirmwareBoardError::Config("apply_pending_startup: INIT reset failed"))?;
+        Ok(vcpu.apply_startup(pending))
+    }
+
+    /// The vCPU `index` delivers the NMI waiting in its own Local APIC through vector 2 on its own
+    /// boundary (S6-12b), if it can: nothing waits (`NoPending`); the vCPU holds the NMI back, so
+    /// the latch stays set (`Held`, only for architectural holds: NMI blocked until the running
+    /// handler executes `IRETQ`, an STI shadow in force (`Some(Blocking)`), or an activity that
+    /// takes no NMI: `Shutdown`, `WaitForSipi`); or the frame is on the guest stack and the vCPU
+    /// is in the handler (`Delivered`: the latch is taken, `nmi_blocked` is set, a `Halted` vCPU
+    /// is `Running`). The scheduler of S6-15 calls it on the boundary of every vCPU, after
+    /// [`Self::apply_pending_startup`] and before it picks one (`BoardSmpHost::boundary`); the run
+    /// loop of the board does not. A gate that cannot deliver (not present, a failed frame store
+    /// or a failed read of the TSS `IST[n]` slot; IST ≠ 0 is supported only for NMI delivery,
+    /// S6-12c) and a state the board cannot deliver through are errors, not holds: a state that is not
+    /// modelled (activity or STI shadow `None`), a vCPU on a legacy-mode model (`legacy` is
+    /// `Some`, the trampoline of S6-16c is still running: NMI in real or protected mode is not
+    /// modelled; the error text says "real mode"), paging the walker rejects (the EFER is
+    /// the vCPU's own `guest_efer`, the root is the vCPU's own CR3, S6-16f). On an error the vCPU is unchanged and the NMI stays pending,
+    /// never silently dropped.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn deliver_pending_nmi(
+        &mut self,
+        index: usize,
+    ) -> Result<NmiBoundary, FirmwareBoardError> {
+        use od_isa::Cpl0ExternalInterruptDelivery as Delivery;
+        use od_isa::Cpl0ExternalInterruptRefusal as Refusal;
+        const NO_VCPU: FirmwareBoardError =
+            FirmwareBoardError::Config("deliver_pending_nmi: no such vCPU");
+        let apic = self.lapic.for_cpu(index).ok_or(NO_VCPU)?;
+        let vcpu = self.vcpus.get_mut(index).ok_or(NO_VCPU)?;
+        if !apic.pending_nmi() {
+            return Ok(NmiBoundary::NoPending);
+        }
+        // Holds first, only for what the architecture itself holds back: NMI blocking, and an
+        // activity that takes no NMI (`Shutdown`, `WaitForSipi`; an application processor that
+        // waits for SIPI has no paging to deliver through and must not be an error). A state the
+        // board does not model (activity `None`) is not a hold but an error, before any change.
+        if vcpu.state.nmi_blocked {
+            return Ok(NmiBoundary::Held);
+        }
+        match vcpu.state.activity {
+            Some(CpuActivity::Running | CpuActivity::Halted) => {}
+            Some(CpuActivity::Shutdown | CpuActivity::WaitForSipi) => {
+                return Ok(NmiBoundary::Held);
+            }
+            None => {
+                return Err(FirmwareBoardError::Config(
+                    "deliver_pending_nmi: vCPU activity not modelled",
+                ));
+            }
+        }
+        // A started application processor (or one reset by INIT) holds its state in `legacy`
+        // until it enters long mode; the long-mode `state` is not rewritten from it, so delivering
+        // through the long-mode IDT would be wrong. NMI delivery in real and protected mode is not
+        // modelled (item 6(d) of S6-16: an error).
+        if vcpu.legacy.is_some() {
+            return Err(FirmwareBoardError::Config(
+                "deliver_pending_nmi: NMI in real mode not modelled",
+            ));
+        }
+        match vcpu.state.sti_shadow {
+            Some(od_isa::StiShadow::Clear) => {}
+            Some(od_isa::StiShadow::Blocking) => return Ok(NmiBoundary::Held),
+            None => {
+                return Err(FirmwareBoardError::Config(
+                    "deliver_pending_nmi: STI shadow not modelled",
+                ));
+            }
+        }
+        // The walker's EFER is the vCPU's own guest EFER (the guest may change only `SCE`).
+        // The walk is built on the vCPU's own CR3 (as the S6-16d quantum does); a vCPU without a
+        // modelled CR3 uses the board's `page_table_root`.
+        let paging_root = vcpu.state.cr3.unwrap_or(self.page_table_root);
+        let paging = Long64ProbeConfig::from_cpu_state(&vcpu.state, paging_root, vcpu.guest_efer)
+            .map_err(|_| {
+            FirmwareBoardError::Config("deliver_pending_nmi: no paging for the vCPU")
+        })?;
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: if vcpu.state.cs_selector.is_some_and(|cs| cs & 3 == 3) {
+                PrivilegeLevel::Ring3
+            } else {
+                PrivilegeLevel::Ring0
+            },
+            origin: AccessOrigin::Explicit,
+        };
+        let failure =
+            |vcpu: &Vcpu, failure: String| FirmwareBoardError::ExternalInterruptDelivery {
+                vector: od_isa::NMI_VECTOR,
+                failure,
+                rip: vcpu.state.rip,
+                cs_selector: vcpu.state.cs_selector,
+            };
+        match deliver_nmi_at_boundary(&mut vcpu.state, &mut self.bus, &paging, context) {
+            Delivery::Delivered { .. } => {
+                apic.take_nmi();
+                Ok(NmiBoundary::Delivered)
+            }
+            // The holds above already decided these; kept as holds, never as drops.
+            Delivery::Refused(Refusal::NmiBlocked | Refusal::StiShadowActive) => {
+                Ok(NmiBoundary::Held)
+            }
+            other => Err(failure(vcpu, format!("{other:?}"))),
+        }
     }
 
     pub fn bus_mut(&mut self) -> &mut MachineBus {
@@ -1697,8 +1935,8 @@ impl LoadedFirmwareBoard {
     /// earlier Local APIC timer under the IOAPIC source, `idle_wake_ns`): returns
     /// the nanoseconds skipped. Standalone: the board advances by `wake - now` (0 when the time
     /// has come), exactly as before. Owned (S4-23j): a wake time that is not after `now` skips
-    /// nothing; otherwise the arbiter decides through [`ClockOwner::idle_step`] (the boot CPU
-    /// `Halted` with IF = 1, every other vCPU waiting for a SIPI) and the clock jumps to `wake`;
+    /// nothing; otherwise the arbiter decides through [`ClockOwner::idle_step`] (every vCPU with its own
+    /// [`Vcpu::activity`] and IF; S6-15) and the clock jumps to `wake`;
     /// it ends in `NoProgress` with the skip above 0, because the deadline of the board is then
     /// due and the loop consumes it itself. A Local APIC timer due earlier is dispatched on the
     /// way. A Local APIC vector that would wake the CPU is refused (`Config`), except under the
@@ -1719,15 +1957,17 @@ impl LoadedFirmwareBoard {
                 // Nothing to skip: the wake time has come (first iteration: no jump at all).
                 return Ok(idle);
             }
-            let views = (0..self.vcpus.len())
-                .map(|index| {
+            // S6-15: every vCPU shows its own activity ([`Vcpu::activity`]) and IF; before, the
+            // boot CPU was assumed halted and every other vCPU assumed waiting for SIPI. The
+            // caller halts the boot CPU with IF = 1 before it asks to skip idle time.
+            let views = self
+                .vcpus
+                .iter()
+                .enumerate()
+                .map(|(index, vcpu)| {
                     Ok(WakeView {
-                        activity: if index == BOOT_VCPU_INDEX {
-                            SchedActivity::Halted
-                        } else {
-                            SchedActivity::WaitForSipi
-                        },
-                        if_set: true,
+                        activity: SchedActivity::from(vcpu.activity()),
+                        if_set: vcpu.interrupts_enabled(),
                         apic: self.lapic.for_cpu(index).ok_or(FirmwareBoardError::Config(
                             "clock owner: a vCPU has no Local APIC",
                         ))?,
@@ -1786,6 +2026,57 @@ impl LoadedFirmwareBoard {
             (Some(source), Some(timer)) => Some(source.min(timer)),
             (source, timer) => source.or(timer),
         }
+    }
+
+    /// The COM1 transmit path between two calls of a set loop (S4-39i): a THR write clears the THRE
+    /// condition and the pump below raises it again before the next instruction boundary; the
+    /// interrupt sources sample the level on both sides so that the fall and the rise are both seen
+    /// (one edge on IR4 per byte). Every byte that completes goes to `com1_log` (and to the opt-in
+    /// console contexts; `retired` is the count the UART output context records). Shared by the
+    /// Linux loop and the vCPU quantum of S6-16d.
+    fn pump_uart_transmit(&mut self, retired: u64) {
+        let uart = self.uart.clone();
+        if let Some(source) = &self.uart_irq_source {
+            source.sample();
+        }
+        if let Some(source) = &self.uart_ioapic_source {
+            source.sample();
+        }
+        while uart.transfer_holding_to_shift() {
+            if let Some(byte) = uart.complete_transmission() {
+                self.com1_log.push(byte);
+                if self.console_context_parser.is_some() {
+                    self.sample_console_output_context(byte);
+                }
+                if self.uart_output_context.is_some() {
+                    self.sample_uart_output_context(byte, self.com1_log.len() as u64 - 1, retired);
+                }
+            }
+        }
+        if let Some(source) = &self.uart_irq_source {
+            source.sample();
+        }
+        if let Some(source) = &self.uart_ioapic_source {
+            source.sample();
+        }
+    }
+
+    /// The nearest edge of the board's interrupt source ([`BoardIrqSource::next_deadline_ns`]):
+    /// `None` for [`NoIrqSource`]. The deadline the scheduler of S6-15 gives to every quantum
+    /// ([`crate::smp_scheduler::SmpHost::board_deadline`], S6-16d).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn irq_deadline_ns(&self) -> Option<u64> {
+        self.irq_source.next_deadline_ns()
+    }
+
+    /// The time at which the board's interrupt source can next wake a halted boot processor
+    /// ([`BoardIrqSource::wake_ns`]): not after the clock when a vector is deliverable now, `None`
+    /// when nothing can wake it (the line is masked or in service, no edge). The scheduler of
+    /// S6-15 asks it for the boot processor only ([`crate::smp_scheduler::SmpHost::board_wakes`],
+    /// S6-21 step 1).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn irq_wake_ns(&self) -> Option<u64> {
+        self.irq_source.wake_ns()
     }
 
     /// Charge `retired` instructions to the clock of the CPL0-set loop (one ns each, D7).
@@ -2504,36 +2795,7 @@ impl LoadedFirmwareBoard {
                     c5_split: report.c5_split,
                 });
             }
-            // S4-39i: a THR write clears the THRE condition and the pump below raises it again
-            // before the next instruction boundary; the source samples the level on both sides
-            // so that the fall and the rise are both seen (one edge on IR4 per byte).
-            if let Some(source) = &self.uart_irq_source {
-                source.sample();
-            }
-            if let Some(source) = &self.uart_ioapic_source {
-                source.sample();
-            }
-            while uart.transfer_holding_to_shift() {
-                if let Some(byte) = uart.complete_transmission() {
-                    self.com1_log.push(byte);
-                    if self.console_context_parser.is_some() {
-                        self.sample_console_output_context(byte);
-                    }
-                    if self.uart_output_context.is_some() {
-                        self.sample_uart_output_context(
-                            byte,
-                            self.com1_log.len() as u64 - 1,
-                            retired,
-                        );
-                    }
-                }
-            }
-            if let Some(source) = &self.uart_irq_source {
-                source.sample();
-            }
-            if let Some(source) = &self.uart_ioapic_source {
-                source.sample();
-            }
+            self.pump_uart_transmit(retired);
             let failure = |error| LinuxRunFailure { error, retired };
             if let Err(error) = self.charge_retired(report.instructions_executed) {
                 break Err(failure(error));
@@ -3310,7 +3572,7 @@ impl AssembledBoard {
             ..
         } = self;
         configure_com1(&mut bus)?;
-        Ok(LoadedFirmwareBoard {
+        let mut board = LoadedFirmwareBoard {
             bus,
             vcpus: vcpu_set(LongModeState::default(), lapic.cpu_count()),
             uart,
@@ -3347,7 +3609,11 @@ impl AssembledBoard {
             suppress_pm_tick: false,
             #[cfg(test)]
             suppress_rdtsc_tick: false,
-        })
+        };
+        // S6-18a: the application processors of a Linux board read the CPUID of the target
+        // profile in their legacy models (the kernel's `verify_cpu` needs it); one vCPU has none.
+        board.set_cpuid_profile(LINUX_AP_CPUID_PROFILE);
+        Ok(board)
     }
 }
 
@@ -6128,6 +6394,36 @@ mod tests {
     }
 
     #[test]
+    fn idle_to_shows_every_vcpu_with_its_own_activity() {
+        // S6-15: it used to show every application processor as waiting for SIPI.
+        let config = FirmwareBoardConfig {
+            vcpu_count: 2,
+            ..linux_config()
+        };
+        let mut board = load_firmware_image(&minor2_image(&[0xf4]), &config).unwrap();
+        board.enable_clock_owner().unwrap();
+        // The boot CPU halted with IF = 1, the application processor waits for SIPI: the clock
+        // skips to the wake time.
+        board.vcpus[BOOT_VCPU_INDEX].state.activity = Some(CpuActivity::Halted);
+        board.vcpus[BOOT_VCPU_INDEX].state.rflags |= 1 << 9;
+        assert_eq!(board.idle_to(1000), Ok(1000));
+        assert_eq!(board.clock().now_ns(), 1000);
+        // An application processor that runs is not idle time: nothing may be skipped.
+        board.vcpus[1].state.activity = Some(CpuActivity::Running);
+        assert_eq!(
+            board.idle_to(2000),
+            Err(FirmwareBoardError::Config(
+                "clock owner: the idle step did not reach the wake time"
+            ))
+        );
+        assert_eq!(board.clock().now_ns(), 1000);
+        // The same processor halted with IF = 0 and no timer does not hold the skip back.
+        board.vcpus[1].state.activity = Some(CpuActivity::Halted);
+        assert_eq!(board.idle_to(2000), Ok(1000));
+        assert_eq!(board.clock().now_ns(), 2000);
+    }
+
+    #[test]
     fn a_guest_cannot_read_lapic_mmio_through_the_paged_probe_yet() {
         // Observation: the memory path of the paged probe is RAM only (and only
         // the qword MOV RAX,[RBX]); a guest read of TMCCT stops at the MMIO
@@ -6433,5 +6729,271 @@ mod tests {
                     .to_string()
             ))
         );
+    }
+
+    // ---- S6-16a: the set loop of a vCPU reaches its own Local APIC ----
+
+    mod vcpu_mmio {
+        use super::*;
+        use crate::lapic_irq_source::LapicIrqSource;
+        use crate::paged_memory_adapter::{
+            PagedCpl0SetReport, run_cpl0_set_paged_2m_ram_with_cache,
+        };
+        use od_isa::execute::{ControlRegisterPolicy, MovCr3Long64V1};
+        use od_isa::{CliProfile, HaltProfile, StiProfile};
+
+        const IDT_AT: u64 = 0x0030_1000;
+        const GDT_AT: u64 = 0x0030_2000;
+        const HANDLER_AT: u64 = 0x0030_0000;
+        const VECTOR: u8 = 0x30;
+        /// SDM, ICR: Self shorthand (bits 19:18 = 01), Level = assert (bit 14), edge trigger,
+        /// Fixed delivery mode, vector 0x30.
+        const SELF_IPI: u32 = 0x0004_4000 | VECTOR as u32;
+
+        fn mov_ebx_lapic_base() -> Vec<u8> {
+            let mut code = vec![0xBB];
+            code.extend_from_slice(&(LOCAL_APIC_MMIO_BASE as u32).to_le_bytes());
+            code
+        }
+
+        fn mov_eax(value: u32) -> Vec<u8> {
+            let mut code = vec![0xB8];
+            code.extend_from_slice(&value.to_le_bytes());
+            code
+        }
+
+        /// `MOV [RBX+offset], EAX` (`89 83 disp32`).
+        fn store_eax(offset: u32) -> Vec<u8> {
+            let mut code = vec![0x89, 0x83];
+            code.extend_from_slice(&offset.to_le_bytes());
+            code
+        }
+
+        /// The guest of 6 instructions: `MOV EBX, LAPIC base; MOV ECX, [RBX+0x20]` (APIC ID);
+        /// `MOV EAX, 0x1FF; MOV [RBX+0xF0], EAX` (SVR: software enable);
+        /// `MOV EAX, SELF_IPI; MOV [RBX+0x300], EAX` (ICR_LOW).
+        fn guest() -> Vec<u8> {
+            let mut code = mov_ebx_lapic_base();
+            code.extend([0x8B, 0x4B, 0x20]);
+            code.extend(mov_eax(0x1FF));
+            code.extend(store_eax(0xF0));
+            code.extend(mov_eax(SELF_IPI));
+            code.extend(store_eax(0x300));
+            code
+        }
+
+        /// A two-vCPU Linux-profile board whose set loop serves the Local APIC window, running
+        /// `code` at the entry, with the handler (`MOV EAX, 0; MOV [RBX+0xB0], EAX; IRETQ`) and the
+        /// IDT gate of `VECTOR` in guest RAM. Returns the board and a state of IF = 1 that can run
+        /// on any vCPU (a copy of the boot state).
+        fn board_and_state(code: &[u8]) -> (LoadedFirmwareBoard, LongModeState) {
+            let config = FirmwareBoardConfig {
+                vcpu_count: 2,
+                ..linux_config()
+            };
+            let mut board = load_firmware_image(&minor2_image(code), &config).unwrap();
+            board.bus_mut().enable_apic_mmio_windows();
+            let mut handler = mov_eax(0);
+            handler.extend(store_eax(0xB0));
+            handler.extend([0x48, 0xCF]); // IRETQ
+            let mut gate = [0u8; 16];
+            gate[0..2].copy_from_slice(&(HANDLER_AT as u16).to_le_bytes());
+            gate[2..4].copy_from_slice(&0x08u16.to_le_bytes());
+            gate[5] = 0x8E; // present, DPL 0, 64-bit interrupt gate
+            gate[6..8].copy_from_slice(&((HANDLER_AT >> 16) as u16).to_le_bytes());
+            let bus = board.bus_mut();
+            bus.patch_physical_ram(GuestPhysicalAddress::new(HANDLER_AT), &handler)
+                .unwrap();
+            bus.patch_physical_ram(
+                GuestPhysicalAddress::new(IDT_AT + u64::from(VECTOR) * 16),
+                &gate,
+            )
+            .unwrap();
+            // GDT: null, 64-bit ring-0 code (0x08), ring-0 data (0x10).
+            let mut gdt = [0u8; 24];
+            gdt[8..16].copy_from_slice(&0x00AF_9B00_0000_FFFFu64.to_le_bytes());
+            gdt[16..24].copy_from_slice(&0x00CF_9300_0000_FFFFu64.to_le_bytes());
+            board
+                .bus_mut()
+                .patch_physical_ram(GuestPhysicalAddress::new(GDT_AT), &gdt)
+                .unwrap();
+            let mut state = board.state().clone();
+            state.cr3 = Some(board.cr3());
+            state.cs_selector = Some(0x08);
+            state.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+                base: 0,
+                limit: u32::MAX,
+                access: 0x9B,
+                flags: 2,
+            });
+            state.ss_selector = Some(0x10);
+            state.ss_cache = Some(od_isa::StackSegmentDescriptorCache {
+                base: 0,
+                limit: u32::MAX,
+                access: 0x93,
+                flags: 0,
+            });
+            state.gdtr = Some(od_isa::state::Gdtr {
+                base: GDT_AT,
+                limit: 0x17,
+            });
+            state.idtr = Some(od_isa::state::Idtr {
+                base: IDT_AT,
+                limit: 0xFFF,
+            });
+            state.rflags = 2 | (1 << 9);
+            state.sti_shadow = Some(StiShadow::Clear);
+            state.activity = Some(CpuActivity::Running);
+            (board, state)
+        }
+
+        /// One call of the set loop of vCPU `vcpu`, with `source` as its interrupt source.
+        fn run(
+            board: &mut LoadedFirmwareBoard,
+            vcpu: usize,
+            state: &mut LongModeState,
+            budget: u64,
+            source: &mut dyn BoardIrqSource,
+            counters: &mut IrqCounters,
+        ) -> PagedCpl0SetReport {
+            let (cli, sti, halt) = (
+                CliProfile::NonPviLong64V1,
+                StiProfile::NonPviLong64V1,
+                HaltProfile::Long64V1,
+            );
+            let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+                .with_cli(&cli)
+                .with_cpu_owned_cr3(MovCr3Long64V1)
+                .with_pio_u8()
+                .with_halt(&halt)
+                .with_sti(&sti);
+            let cr3 = board.cr3();
+            run_cpl0_set_paged_2m_ram_with_cache(
+                state,
+                board.bus_mut(),
+                vcpu,
+                cr3,
+                FIRMWARE_EFER,
+                AccessContext {
+                    mode: InstructionMode::Long64,
+                    privilege: PrivilegeLevel::Ring0,
+                    origin: AccessOrigin::Explicit,
+                },
+                budget,
+                INTEGER_FLAGS,
+                &set,
+                None,
+                || false,
+                |_| {},
+                false,
+                None,
+                Some(IrqBoundaryHook {
+                    source,
+                    counters,
+                    skip_first_boundary: false,
+                }),
+                None,
+                None,
+            )
+        }
+
+        fn irr_isr(board: &LoadedFirmwareBoard, vcpu: usize) -> (bool, bool) {
+            board.local_apic_of(vcpu).unwrap().vector_state(VECTOR)
+        }
+
+        #[test]
+        fn a_set_loop_of_vcpu_1_reads_its_own_apic_id_and_its_self_ipi_lands_in_its_own_irr() {
+            let (mut board, mut state) = board_and_state(&guest());
+            let (mut source, mut counters) = (NoIrqSource, IrqCounters::default());
+            // 6 instructions retire; the pending vector (IRR of vCPU 1) is not offered to this
+            // call's source, which is the empty one.
+            let report = run(&mut board, 1, &mut state, 6, &mut source, &mut counters);
+            assert_eq!(report.instructions_executed, 6, "{report:?}");
+            assert_eq!(report.memory_error, None, "{report:?}");
+            // The APIC ID register reads the index of the vCPU in bits 31:24 (SDM).
+            assert_eq!(state.gpr[Register::Rcx as usize], 1 << 24);
+            // The self-IPI is in the IRR of vCPU 1 and of no other LAPIC.
+            assert_eq!(irr_isr(&board, 1), (true, false));
+            assert_eq!(irr_isr(&board, 0), (false, false));
+            // The SVR write enabled vCPU 1's LAPIC only.
+            assert_eq!(
+                board.local_apic_of(1).unwrap().spurious_vector(),
+                Some(0xFF)
+            );
+            assert_eq!(
+                board.local_apic_of(0).unwrap().eligible(),
+                None,
+                "vCPU 0's LAPIC is untouched"
+            );
+        }
+
+        #[test]
+        fn the_same_guest_on_vcpu_0_is_the_old_path() {
+            let (mut board, mut state) = board_and_state(&guest());
+            let (mut source, mut counters) = (NoIrqSource, IrqCounters::default());
+            let report = run(&mut board, 0, &mut state, 6, &mut source, &mut counters);
+            assert_eq!(report.instructions_executed, 6, "{report:?}");
+            assert_eq!(state.gpr[Register::Rcx as usize], 0);
+            assert_eq!(irr_isr(&board, 0), (true, false));
+            assert_eq!(irr_isr(&board, 1), (false, false));
+        }
+
+        #[test]
+        fn lapic_irq_source_of_vcpu_1_delivers_through_the_idt_and_the_eoi_clears_isr_of_vcpu_1() {
+            let (mut board, mut state) = board_and_state(&guest());
+            let lapic1 = board.local_apic_of(1).unwrap();
+            let mut source = LapicIrqSource::new(lapic1);
+            let mut counters = IrqCounters::default();
+            let rsp = state.gpr[Register::Rsp as usize];
+            // 6 guest instructions, the delivery at the boundary after the ICR write (retires
+            // nothing), then the handler's first instruction.
+            let report = run(&mut board, 1, &mut state, 7, &mut source, &mut counters);
+            assert_eq!(report.instructions_executed, 7, "{report:?}");
+            assert_eq!(counters.irqs_delivered, 1);
+            assert_eq!(
+                state.rip,
+                HANDLER_AT + 5,
+                "inside the handler of the IDT gate"
+            );
+            assert_eq!(state.rflags & (1 << 9), 0, "an interrupt gate clears IF");
+            assert_eq!(state.gpr[Register::Rsp as usize], (rsp & !15) - 40);
+            // Acknowledged in vCPU 1's LAPIC (IRR -> ISR) and in no other.
+            assert_eq!(irr_isr(&board, 1), (false, true));
+            assert_eq!(irr_isr(&board, 0), (false, false));
+            // The handler's EOI (written as vCPU 1) clears the ISR of vCPU 1; the IRETQ returns.
+            let report = run(&mut board, 1, &mut state, 2, &mut source, &mut counters);
+            assert_eq!(report.instructions_executed, 2, "{report:?}");
+            assert_eq!(counters.irqs_delivered, 1);
+            assert_eq!(irr_isr(&board, 1), (false, false));
+            assert_eq!(irr_isr(&board, 0), (false, false));
+            assert_eq!(state.rflags & (1 << 9), 1 << 9, "IRETQ restores IF");
+        }
+
+        #[test]
+        fn an_eoi_of_vcpu_1_does_not_touch_the_isr_of_vcpu_0() {
+            // The same vector is in service on both processors; vCPU 1's handler writes EOI.
+            let (mut board, mut state) = board_and_state(&guest());
+            let lapic0 = board.local_apic_of(0).unwrap();
+            let lapic1 = board.local_apic_of(1).unwrap();
+            let (mut source0, mut source1) = (
+                LapicIrqSource::new(lapic0.clone()),
+                LapicIrqSource::new(lapic1),
+            );
+            let mut counters = IrqCounters::default();
+            // vCPU 0 runs the guest to the delivery of its own self-IPI: ISR of vCPU 0 holds it.
+            let mut state0 = state.clone();
+            run(&mut board, 0, &mut state0, 7, &mut source0, &mut counters);
+            assert_eq!(irr_isr(&board, 0), (false, true));
+            // vCPU 1 does the same and then runs its handler to the EOI and the IRETQ.
+            run(&mut board, 1, &mut state, 7, &mut source1, &mut counters);
+            assert_eq!(irr_isr(&board, 1), (false, true));
+            run(&mut board, 1, &mut state, 2, &mut source1, &mut counters);
+            assert_eq!(irr_isr(&board, 1), (false, false));
+            assert_eq!(
+                irr_isr(&board, 0),
+                (false, true),
+                "vCPU 0 is still in service"
+            );
+        }
     }
 }

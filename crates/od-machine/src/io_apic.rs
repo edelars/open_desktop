@@ -1588,4 +1588,33 @@ mod tests {
         );
         assert_eq!(destination(&mut bus, 4), 1);
     }
+
+    // S6-24 (the decision recorded for the broadcast destination `0xFF`).
+
+    #[test]
+    fn the_broadcast_destination_0xff_is_refused_on_every_entry_and_changes_nothing() {
+        // Version 1 routes only physical APIC IDs `0..N-1` (SMP_CONTRACT.md 6); the broadcast ID
+        // `0xFF` is not among them whatever the number of vCPUs, so the write is a device error
+        // (the same rule as the ICR: not listed, an error), not a delivery to all.
+        let (mut bus, io, _cpu0, _cpu1) = smp_setup();
+        set_destination(&mut bus, 4, 1).unwrap();
+        route_pin(&mut bus, 4, 0x41);
+        let before = snapshot(&io);
+        for pin in [2u64, 4, 9, 23] {
+            for apic_id in [0xffu64, 2, 3] {
+                assert_eq!(
+                    set_destination(&mut bus, pin, apic_id),
+                    refused(),
+                    "pin {pin} id {apic_id:#x}"
+                );
+            }
+        }
+        assert_unchanged(&io, before);
+        assert_eq!(destination(&mut bus, 4), 1);
+        // The same on a board with one vCPU: only ID 0 exists, `0xFF` is no exception.
+        let (mut one, io_one, _apic) = setup();
+        let before = snapshot(&io_one);
+        assert_eq!(set_destination(&mut one, 4, 0xff), refused());
+        assert_unchanged(&io_one, before);
+    }
 }

@@ -11018,6 +11018,7 @@ fn movsb_rejects_prefixes_and_other_string_widths_without_commit() {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         let before = state.clone();
         let outcome = step(

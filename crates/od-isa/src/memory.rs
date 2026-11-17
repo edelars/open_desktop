@@ -249,50 +249,55 @@ pub trait GuestMemory {
         ))
     }
 
-    /// Atomically exchanges one integer operand with guest memory.
+    /// Atomically exchanges one integer operand with guest memory and returns the old value.
     ///
-    /// Implementations must perform this as one backend operation, return the
-    /// previous value, and leave memory unchanged on every error. They must not
-    /// synthesize the operation from separately observable `read` and `write`
-    /// calls. This contract is limited to serialization provided by the
-    /// implementing backend; it does not by itself define SMP memory ordering.
+    /// S6-20: a specialization of [`GuestMemory::atomic_rmw_integer`] (the provided method calls
+    /// it), so a backend gets the exchange from the single RMW definition. A backend may still
+    /// override it with a native operation; it must then return the previous value, perform one
+    /// backend operation and leave memory unchanged on every error. The returned value is
+    /// zero-extended for widths below qword. This contract is limited to serialization provided
+    /// by the implementing backend; it does not by itself define SMP memory ordering.
     fn atomic_exchange_integer(
         &mut self,
         address: u64,
         context: AccessContext,
         size: crate::OperandSize,
         replacement: u64,
-    ) -> Result<u64, MemoryError>;
+    ) -> Result<u64, MemoryError> {
+        self.atomic_rmw_integer(address, context, size, &mut |_| replacement)
+    }
 
     /// Atomically adds one integer operand to guest memory and returns the old value.
     ///
-    /// Implementations must perform this as one backend operation, wrap the
-    /// stored result to `size`, and leave memory unchanged on every error. They
-    /// must not synthesize the operation from separately observable `read` and
-    /// `write` calls. The returned value is zero-extended for widths below
-    /// qword. This contract is limited to serialization provided by the
-    /// implementing backend; it does not imply an x86 LOCK prefix or define
-    /// SMP memory ordering. The S2-21f LOCK XADD form may use this operation
-    /// only with private synchronous RAM and serial interpreter access, with
-    /// no external observer/writer, DMA, shared alias, delayed write, or MMIO.
-    /// This is an integration precondition, not a capability checked by this
-    /// trait method.
+    /// S6-20: a specialization of [`GuestMemory::atomic_rmw_integer`] (the provided method calls
+    /// it). An overriding implementation must perform one backend operation, wrap the stored
+    /// result to `size`, and leave memory unchanged on every error. The returned value is
+    /// zero-extended for widths below qword. This contract is limited to serialization provided
+    /// by the implementing backend; it does not imply an x86 LOCK prefix or define SMP memory
+    /// ordering. The S2-21f LOCK XADD form may use this operation only with private synchronous
+    /// RAM and serial interpreter access, with no external observer/writer, DMA, shared alias,
+    /// delayed write, or MMIO. This is an integration precondition, not a capability checked by
+    /// this trait method.
     fn atomic_fetch_add_integer(
         &mut self,
         address: u64,
         context: AccessContext,
         size: crate::OperandSize,
         addend: u64,
-    ) -> Result<u64, MemoryError>;
+    ) -> Result<u64, MemoryError> {
+        self.atomic_rmw_integer(address, context, size, &mut |old| {
+            old.wrapping_add(addend) & size.mask()
+        })
+    }
 
     /// Atomically compares a guest integer with `expected` and conditionally replaces it.
     ///
-    /// Implementations return the observed old value, compare against
-    /// `expected & size.mask()`, and store `replacement & size.mask()` whenever
-    /// they match (no spurious mismatch). A mismatch still requires
-    /// write-access validation because this instruction form has a memory
-    /// read-modify-write destination. The whole operation is one backend call;
-    /// every error leaves guest RAM unchanged. This method does not define x86
+    /// S6-20: a specialization of [`GuestMemory::atomic_rmw_integer`] (the provided method calls
+    /// it). Implementations return the observed old value, compare against
+    /// `expected & size.mask()`, and store `replacement & size.mask()` whenever they match (no
+    /// spurious mismatch). A mismatch still requires write-access validation because this
+    /// instruction form has a memory read-modify-write destination. The whole operation is one
+    /// backend call; every error leaves guest RAM unchanged. This method does not define x86
     /// LOCK or SMP memory ordering.
     fn atomic_compare_exchange_integer(
         &mut self,
@@ -301,7 +306,46 @@ pub trait GuestMemory {
         size: crate::OperandSize,
         expected: u64,
         replacement: u64,
-    ) -> Result<u64, MemoryError>;
+    ) -> Result<u64, MemoryError> {
+        let expected = expected & size.mask();
+        self.atomic_rmw_integer(address, context, size, &mut |old| {
+            if old == expected {
+                replacement & size.mask()
+            } else {
+                old
+            }
+        })
+    }
+
+    /// S6-20: the single place that defines the atomicity of every `LOCK` read-modify-write
+    /// instruction form and of `XCHG` with a memory operand (CPU_CONTRACT.md, "S6-20 -
+    /// единый атомарный API LOCK"). It reads the integer at `address`, passes the old value to
+    /// `update`, writes the returned value back (always, even when it equals the old value:
+    /// SDM, a failed `CMPXCHG` still writes the destination, so a read-only page faults) and
+    /// returns the old value. The write is validated before any visible effect: on every error
+    /// memory is unchanged and `update` is not observable from outside.
+    ///
+    /// `update` is a pure function of the old value; an implementation that retries (a
+    /// compare-and-replace loop) may call it more than once and only the value of the successful
+    /// attempt is stored.
+    ///
+    /// The default implementation is the serial one for the interleaving mode (one host thread,
+    /// the vCPU never switches inside an instruction): an ordinary read followed by an ordinary
+    /// write. It is correct only because the scheduler runs whole instructions; a backend that
+    /// shares RAM between host threads (S6-30/S6-31) must override it with a host atomic
+    /// operation, and no instruction code changes.
+    fn atomic_rmw_integer(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        size: crate::OperandSize,
+        update: &mut dyn FnMut(u64) -> u64,
+    ) -> Result<u64, MemoryError> {
+        let old = self.read_integer(address, context, size)?;
+        let new = update(old);
+        self.write_integer(address, context, size, new)?;
+        Ok(old)
+    }
 
     /// Completes preceding guest loads/stores before subsequent guest loads/stores begin.
     ///

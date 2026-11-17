@@ -1,0 +1,5755 @@
+{
+  "cases": [
+    {
+      "complete_schedules": "6",
+      "expected_interleaving_instruction_atomic": [
+        [
+          1,
+          1
+        ],
+        [
+          2,
+          1
+        ],
+        [
+          2,
+          2
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "1100"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "0101"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            1
+          ],
+          "runs": 4
+        },
+        {
+          "first": {
+            "schedule": "0011"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            2
+          ],
+          "runs": 1
+        }
+      ],
+      "id": "2+2W",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x",
+        "mem.y"
+      ],
+      "rep_slices": 0,
+      "runs": 6,
+      "steps_per_thread": [
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "mov dword ptr [0x00001004], 1"
+        ],
+        [
+          "mov dword ptr [0x00001004], 2",
+          "mov dword ptr [0x00001000], 2"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "6",
+      "expected_interleaving_instruction_atomic": [
+        [
+          1,
+          1
+        ],
+        [
+          2,
+          1
+        ],
+        [
+          2,
+          2
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 1
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1
+          ],
+          "runs": 2510
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            1
+          ],
+          "runs": 5020
+        },
+        {
+          "first": {
+            "seed": 2
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            2
+          ],
+          "runs": 2470
+        }
+      ],
+      "id": "2+2W",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x",
+        "mem.y"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "mov dword ptr [0x00001004], 1"
+        ],
+        [
+          "mov dword ptr [0x00001004], 2",
+          "mov dword ptr [0x00001000], 2"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "180",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          0,
+          0,
+          0,
+          1,
+          1
+        ],
+        [
+          0,
+          0,
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          0,
+          0,
+          1,
+          0,
+          1,
+          1
+        ],
+        [
+          0,
+          0,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          0,
+          1,
+          0,
+          0,
+          1,
+          1
+        ],
+        [
+          0,
+          1,
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          0,
+          1,
+          1,
+          0,
+          1,
+          1
+        ],
+        [
+          0,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          0,
+          0,
+          0,
+          1,
+          1
+        ],
+        [
+          1,
+          0,
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          0,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          0,
+          0,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          0,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "223130"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            0,
+            0,
+            0,
+            1,
+            1
+          ],
+          "runs": 18
+        },
+        {
+          "first": {
+            "schedule": "202313"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            0,
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 22
+        },
+        {
+          "first": {
+            "schedule": "221330"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            0,
+            1,
+            0,
+            1,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "202133"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 4
+        },
+        {
+          "first": {
+            "schedule": "231230"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            0,
+            0,
+            1,
+            1
+          ],
+          "runs": 22
+        },
+        {
+          "first": {
+            "schedule": "203123"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 18
+        },
+        {
+          "first": {
+            "schedule": "122330"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            0,
+            1,
+            1
+          ],
+          "runs": 13
+        },
+        {
+          "first": {
+            "schedule": "120233"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 22
+        },
+        {
+          "first": {
+            "schedule": "330221"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            0,
+            0,
+            1,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "022313"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 13
+        },
+        {
+          "first": {
+            "schedule": "022133"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "313022"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            0,
+            0,
+            1,
+            1
+          ],
+          "runs": 4
+        },
+        {
+          "first": {
+            "schedule": "023123"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 22
+        },
+        {
+          "first": {
+            "schedule": "133022"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            0,
+            1,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "012233"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 18
+        }
+      ],
+      "id": "IRIW",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu2.eax",
+        "cpu2.ebx",
+        "cpu3.ecx",
+        "cpu3.edx",
+        "mem.x",
+        "mem.y"
+      ],
+      "rep_slices": 0,
+      "runs": 180,
+      "steps_per_thread": [
+        1,
+        1,
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "mov ebx, dword ptr [0x00001004]"
+        ],
+        [
+          "mov ecx, dword ptr [0x00001004]",
+          "mov edx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 4,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "180",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          0,
+          0,
+          0,
+          1,
+          1
+        ],
+        [
+          0,
+          0,
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          0,
+          0,
+          1,
+          0,
+          1,
+          1
+        ],
+        [
+          0,
+          0,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          0,
+          1,
+          0,
+          0,
+          1,
+          1
+        ],
+        [
+          0,
+          1,
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          0,
+          1,
+          1,
+          0,
+          1,
+          1
+        ],
+        [
+          0,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          0,
+          0,
+          0,
+          1,
+          1
+        ],
+        [
+          1,
+          0,
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          0,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          0,
+          0,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          0,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 35
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            0,
+            0,
+            0,
+            1,
+            1
+          ],
+          "runs": 522
+        },
+        {
+          "first": {
+            "seed": 5
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            0,
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 760
+        },
+        {
+          "first": {
+            "seed": 646
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            0,
+            1,
+            0,
+            1,
+            1
+          ],
+          "runs": 60
+        },
+        {
+          "first": {
+            "seed": 2
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 361
+        },
+        {
+          "first": {
+            "seed": 12
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            0,
+            0,
+            1,
+            1
+          ],
+          "runs": 724
+        },
+        {
+          "first": {
+            "seed": 26
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 482
+        },
+        {
+          "first": {
+            "seed": 15
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            0,
+            1,
+            1
+          ],
+          "runs": 667
+        },
+        {
+          "first": {
+            "seed": 1
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 1456
+        },
+        {
+          "first": {
+            "seed": 425
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            0,
+            0,
+            1,
+            1
+          ],
+          "runs": 61
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 627
+        },
+        {
+          "first": {
+            "seed": 29
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 144
+        },
+        {
+          "first": {
+            "seed": 16
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            0,
+            0,
+            1,
+            1
+          ],
+          "runs": 356
+        },
+        {
+          "first": {
+            "seed": 6
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 1426
+        },
+        {
+          "first": {
+            "seed": 116
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            0,
+            1,
+            1
+          ],
+          "runs": 137
+        },
+        {
+          "first": {
+            "seed": 3
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 2217
+        }
+      ],
+      "id": "IRIW",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu2.eax",
+        "cpu2.ebx",
+        "cpu3.ecx",
+        "cpu3.edx",
+        "mem.x",
+        "mem.y"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        1,
+        1,
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "mov ebx, dword ptr [0x00001004]"
+        ],
+        [
+          "mov ecx, dword ptr [0x00001004]",
+          "mov edx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 4,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "6",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          0,
+          1,
+          1
+        ],
+        [
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          0,
+          1,
+          1
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "0101"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            0,
+            1,
+            1
+          ],
+          "runs": 4
+        },
+        {
+          "first": {
+            "schedule": "0011"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "1100"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1
+          ],
+          "runs": 1
+        }
+      ],
+      "id": "LB",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y"
+      ],
+      "rep_slices": 0,
+      "runs": 6,
+      "steps_per_thread": [
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "mov eax, dword ptr [0x00001004]",
+          "mov dword ptr [0x00001000], 1"
+        ],
+        [
+          "mov ebx, dword ptr [0x00001000]",
+          "mov dword ptr [0x00001004], 1"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "6",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          0,
+          1,
+          1
+        ],
+        [
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          0,
+          1,
+          1
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            0,
+            1,
+            1
+          ],
+          "runs": 5020
+        },
+        {
+          "first": {
+            "seed": 2
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 2470
+        },
+        {
+          "first": {
+            "seed": 1
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1
+          ],
+          "runs": 2510
+        }
+      ],
+      "id": "LB",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "mov eax, dword ptr [0x00001004]",
+          "mov dword ptr [0x00001000], 1"
+        ],
+        [
+          "mov ebx, dword ptr [0x00001000]",
+          "mov dword ptr [0x00001004], 1"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "2",
+      "expected_interleaving_instruction_atomic": [
+        [
+          1,
+          0,
+          1
+        ],
+        [
+          2,
+          2,
+          0
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "01"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "10"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            2,
+            0
+          ],
+          "runs": 1
+        }
+      ],
+      "id": "LOCK-CMPXCHG-MUTEX",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x",
+        "cpu0.eax",
+        "cpu1.eax"
+      ],
+      "rep_slices": 0,
+      "runs": 2,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock cmpxchg dword ptr [0x00001000], ebx"
+        ],
+        [
+          "lock cmpxchg dword ptr [0x00001000], ebx"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "2",
+      "expected_interleaving_instruction_atomic": [
+        [
+          1,
+          0,
+          1
+        ],
+        [
+          2,
+          2,
+          0
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 2
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1
+          ],
+          "runs": 4995
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            2,
+            0
+          ],
+          "runs": 5005
+        }
+      ],
+      "id": "LOCK-CMPXCHG-MUTEX",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x",
+        "cpu0.eax",
+        "cpu1.eax"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock cmpxchg dword ptr [0x00001000], ebx"
+        ],
+        [
+          "lock cmpxchg dword ptr [0x00001000], ebx"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "2",
+      "expected_interleaving_instruction_atomic": [
+        [
+          2,
+          0,
+          1
+        ],
+        [
+          2,
+          1,
+          0
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "01"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            0,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "10"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            1,
+            0
+          ],
+          "runs": 1
+        }
+      ],
+      "id": "LOCK-XADD",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x",
+        "cpu0.eax",
+        "cpu1.ebx"
+      ],
+      "rep_slices": 0,
+      "runs": 2,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock xadd dword ptr [0x00001000], eax"
+        ],
+        [
+          "lock xadd dword ptr [0x00001000], ebx"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "2",
+      "expected_interleaving_instruction_atomic": [
+        [
+          2,
+          0,
+          1
+        ],
+        [
+          2,
+          1,
+          0
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 2
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            0,
+            1
+          ],
+          "runs": 4995
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            1,
+            0
+          ],
+          "runs": 5005
+        }
+      ],
+      "id": "LOCK-XADD",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x",
+        "cpu0.eax",
+        "cpu1.ebx"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock xadd dword ptr [0x00001000], eax"
+        ],
+        [
+          "lock xadd dword ptr [0x00001000], ebx"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "6",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          0,
+          1,
+          1
+        ],
+        [
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          1
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "1100"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            0,
+            1,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "0101"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 4
+        },
+        {
+          "first": {
+            "schedule": "0011"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 1
+        }
+      ],
+      "id": "MP",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu1.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y"
+      ],
+      "rep_slices": 0,
+      "runs": 6,
+      "steps_per_thread": [
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "mov dword ptr [0x00001004], 1"
+        ],
+        [
+          "mov eax, dword ptr [0x00001004]",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "6",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          0,
+          1,
+          1
+        ],
+        [
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          1
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 1
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            0,
+            1,
+            1
+          ],
+          "runs": 2510
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 5020
+        },
+        {
+          "first": {
+            "seed": 2
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 2470
+        }
+      ],
+      "id": "MP",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu1.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "mov dword ptr [0x00001004], 1"
+        ],
+        [
+          "mov eax, dword ptr [0x00001004]",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "10",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "00011"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "11000"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "00101"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 8
+        }
+      ],
+      "id": "SB-LOCK-LOCAL",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y",
+        "mem.lock"
+      ],
+      "rep_slices": 0,
+      "runs": 10,
+      "steps_per_thread": [
+        3,
+        2
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "lock inc dword ptr [0x00001010]",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": [
+        [
+          0,
+          0,
+          1,
+          1,
+          1
+        ]
+      ]
+    },
+    {
+      "complete_schedules": "10",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 9
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 1214
+        },
+        {
+          "first": {
+            "seed": 1
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 2510
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 6276
+        }
+      ],
+      "id": "SB-LOCK-LOCAL",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y",
+        "mem.lock"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        3,
+        2
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "lock inc dword ptr [0x00001010]",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": [
+        [
+          0,
+          0,
+          1,
+          1,
+          1
+        ]
+      ]
+    },
+    {
+      "complete_schedules": "20",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          1,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          0,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          0
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "000111"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1,
+            0
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "111000"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1,
+            0
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "001011"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1,
+            0
+          ],
+          "runs": 18
+        }
+      ],
+      "id": "SB-LOCK-XADD",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y",
+        "mem.lock"
+      ],
+      "rep_slices": 0,
+      "runs": 20,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "lock xadd dword ptr [0x00001010], ecx",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "lock xadd dword ptr [0x00001010], edx",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "20",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          1,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          0,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          0
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 9
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1,
+            0
+          ],
+          "runs": 1214
+        },
+        {
+          "first": {
+            "seed": 3
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1,
+            0
+          ],
+          "runs": 1273
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1,
+            0
+          ],
+          "runs": 7513
+        }
+      ],
+      "id": "SB-LOCK-XADD",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y",
+        "mem.lock"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "lock xadd dword ptr [0x00001010], ecx",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "lock xadd dword ptr [0x00001010], edx",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "20",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          1,
+          1,
+          1,
+          2
+        ],
+        [
+          1,
+          0,
+          1,
+          1,
+          2
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          2
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "000111"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1,
+            2
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "111000"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1,
+            2
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "001011"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1,
+            2
+          ],
+          "runs": 18
+        }
+      ],
+      "id": "SB-LOCK",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y",
+        "mem.lock"
+      ],
+      "rep_slices": 0,
+      "runs": 20,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "lock inc dword ptr [0x00001010]",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "lock inc dword ptr [0x00001010]",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "20",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          1,
+          1,
+          1,
+          2
+        ],
+        [
+          1,
+          0,
+          1,
+          1,
+          2
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          2
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 9
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1,
+            2
+          ],
+          "runs": 1214
+        },
+        {
+          "first": {
+            "seed": 3
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1,
+            2
+          ],
+          "runs": 1273
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1,
+            2
+          ],
+          "runs": 7513
+        }
+      ],
+      "id": "SB-LOCK",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y",
+        "mem.lock"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "lock inc dword ptr [0x00001010]",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "lock inc dword ptr [0x00001010]",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "20",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          0,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          1
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "000111"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "111000"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "001011"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 18
+        }
+      ],
+      "id": "SB-MFENCE",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y"
+      ],
+      "rep_slices": 0,
+      "runs": 20,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "MFENCE",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "MFENCE",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "20",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          0,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          1
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 9
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 1214
+        },
+        {
+          "first": {
+            "seed": 3
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1
+          ],
+          "runs": 1273
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 7513
+        }
+      ],
+      "id": "SB-MFENCE",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "MFENCE",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "MFENCE",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "20",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          1,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          0,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          0
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "000111"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1,
+            0
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "111000"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1,
+            0
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "001011"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1,
+            0
+          ],
+          "runs": 18
+        }
+      ],
+      "id": "SB-XCHG",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y",
+        "mem.lock"
+      ],
+      "rep_slices": 0,
+      "runs": 20,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "xchg dword ptr [0x00001010], eax",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "xchg dword ptr [0x00001010], eax",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "20",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          1,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          0,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          0
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 9
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1,
+            0
+          ],
+          "runs": 1214
+        },
+        {
+          "first": {
+            "seed": 3
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1,
+            0
+          ],
+          "runs": 1273
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1,
+            0
+          ],
+          "runs": 7513
+        }
+      ],
+      "id": "SB-XCHG",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y",
+        "mem.lock"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "xchg dword ptr [0x00001010], eax",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "xchg dword ptr [0x00001010], eax",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "6",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          0,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          1
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "0011"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "1100"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "0101"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 4
+        }
+      ],
+      "id": "SB",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y"
+      ],
+      "rep_slices": 0,
+      "runs": 6,
+      "steps_per_thread": [
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": [
+        [
+          0,
+          0,
+          1,
+          1
+        ]
+      ]
+    },
+    {
+      "complete_schedules": "6",
+      "expected_interleaving_instruction_atomic": [
+        [
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          0,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          1
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 2
+          },
+          "in_expected_set": true,
+          "outcome": [
+            0,
+            1,
+            1,
+            1
+          ],
+          "runs": 2470
+        },
+        {
+          "first": {
+            "seed": 1
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1,
+            1
+          ],
+          "runs": 2510
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "runs": 5020
+        }
+      ],
+      "id": "SB",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "mov eax, dword ptr [0x00001004]"
+        ],
+        [
+          "mov dword ptr [0x00001004], 1",
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": [
+        [
+          0,
+          0,
+          1,
+          1
+        ]
+      ]
+    },
+    {
+      "complete_schedules": "3",
+      "expected_interleaving_instruction_atomic": [
+        [
+          1,
+          0,
+          1
+        ],
+        [
+          1,
+          1,
+          1
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "100"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "001"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1
+          ],
+          "runs": 2
+        }
+      ],
+      "id": "STORE-FORWARDING",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 3,
+      "steps_per_thread": [
+        2,
+        1
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "mov eax, dword ptr [0x00001000]"
+        ],
+        [
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "3",
+      "expected_interleaving_instruction_atomic": [
+        [
+          1,
+          0,
+          1
+        ],
+        [
+          1,
+          1,
+          1
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            0,
+            1
+          ],
+          "runs": 5005
+        },
+        {
+          "first": {
+            "seed": 2
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            1,
+            1
+          ],
+          "runs": 4995
+        }
+      ],
+      "id": "STORE-FORWARDING",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        2,
+        1
+      ],
+      "threads": [
+        [
+          "mov dword ptr [0x00001000], 1",
+          "mov eax, dword ptr [0x00001000]"
+        ],
+        [
+          "mov ebx, dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "2",
+      "expected_interleaving_instruction_atomic": [
+        [
+          2
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "01"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 2
+        }
+      ],
+      "id": "UNLOCKED-INC",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 2,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": [
+        [
+          1
+        ]
+      ]
+    },
+    {
+      "complete_schedules": "2",
+      "expected_interleaving_instruction_atomic": [
+        [
+          2
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "UNLOCKED-INC",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": [
+        [
+          1
+        ]
+      ]
+    },
+    {
+      "complete_schedules": "2",
+      "expected_interleaving_instruction_atomic": [
+        [
+          1,
+          2,
+          0
+        ],
+        [
+          2,
+          0,
+          1
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "10"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            2,
+            0
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "schedule": "01"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            0,
+            1
+          ],
+          "runs": 1
+        }
+      ],
+      "id": "XCHG-MUTEX",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x",
+        "cpu0.ebx",
+        "cpu1.ebx"
+      ],
+      "rep_slices": 0,
+      "runs": 2,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "xchg dword ptr [0x00001000], ebx"
+        ],
+        [
+          "xchg dword ptr [0x00001000], ebx"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "2",
+      "expected_interleaving_instruction_atomic": [
+        [
+          1,
+          2,
+          0
+        ],
+        [
+          2,
+          0,
+          1
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1,
+            2,
+            0
+          ],
+          "runs": 5005
+        },
+        {
+          "first": {
+            "seed": 2
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2,
+            0,
+            1
+          ],
+          "runs": 4995
+        }
+      ],
+      "id": "XCHG-MUTEX",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x",
+        "cpu0.ebx",
+        "cpu1.ebx"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "xchg dword ptr [0x00001000], ebx"
+        ],
+        [
+          "xchg dword ptr [0x00001000], ebx"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "2",
+      "expected_interleaving_instruction_atomic": [
+        [
+          2
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "01"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 2
+        }
+      ],
+      "id": "LOCK-INC(N=2,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 2,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "2",
+      "expected_interleaving_instruction_atomic": [
+        [
+          2
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "LOCK-INC(N=2,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "6",
+      "expected_interleaving_instruction_atomic": [
+        [
+          4
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "0011"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 6
+        }
+      ],
+      "id": "LOCK-INC(N=2,K=2)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 6,
+      "steps_per_thread": [
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "6",
+      "expected_interleaving_instruction_atomic": [
+        [
+          4
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "LOCK-INC(N=2,K=2)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "20",
+      "expected_interleaving_instruction_atomic": [
+        [
+          6
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "000111"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            6
+          ],
+          "runs": 20
+        }
+      ],
+      "id": "LOCK-INC(N=2,K=3)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 20,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "20",
+      "expected_interleaving_instruction_atomic": [
+        [
+          6
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            6
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "LOCK-INC(N=2,K=3)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "6",
+      "expected_interleaving_instruction_atomic": [
+        [
+          3
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "012"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            3
+          ],
+          "runs": 6
+        }
+      ],
+      "id": "LOCK-INC(N=3,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 6,
+      "steps_per_thread": [
+        1,
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 3,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "6",
+      "expected_interleaving_instruction_atomic": [
+        [
+          3
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            3
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "LOCK-INC(N=3,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        1,
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 3,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "24",
+      "expected_interleaving_instruction_atomic": [
+        [
+          4
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "0123"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 24
+        }
+      ],
+      "id": "LOCK-INC(N=4,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 24,
+      "steps_per_thread": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 4,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "24",
+      "expected_interleaving_instruction_atomic": [
+        [
+          4
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "LOCK-INC(N=4,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 4,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "90",
+      "expected_interleaving_instruction_atomic": [
+        [
+          6
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "001122"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            6
+          ],
+          "runs": 90
+        }
+      ],
+      "id": "LOCK-INC(N=3,K=2)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 90,
+      "steps_per_thread": [
+        2,
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 3,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "90",
+      "expected_interleaving_instruction_atomic": [
+        [
+          6
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            6
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "LOCK-INC(N=3,K=2)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        2,
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 3,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "63063000",
+      "expected_interleaving_instruction_atomic": [
+        [
+          16
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            16
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "LOCK-INC(N=4,K=4)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        4,
+        4,
+        4,
+        4
+      ],
+      "threads": [
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ],
+        [
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]",
+          "lock inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 4,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "2",
+      "expected_interleaving_instruction_atomic": [
+        [
+          2
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "01"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 2
+        }
+      ],
+      "id": "UNLOCKED-INC(N=2,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 2,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "2",
+      "expected_interleaving_instruction_atomic": [
+        [
+          2
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "UNLOCKED-INC(N=2,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "6",
+      "expected_interleaving_instruction_atomic": [
+        [
+          4
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "0011"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 6
+        }
+      ],
+      "id": "UNLOCKED-INC(N=2,K=2)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 6,
+      "steps_per_thread": [
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "6",
+      "expected_interleaving_instruction_atomic": [
+        [
+          4
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "UNLOCKED-INC(N=2,K=2)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "20",
+      "expected_interleaving_instruction_atomic": [
+        [
+          6
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "000111"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            6
+          ],
+          "runs": 20
+        }
+      ],
+      "id": "UNLOCKED-INC(N=2,K=3)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 20,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "20",
+      "expected_interleaving_instruction_atomic": [
+        [
+          6
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            6
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "UNLOCKED-INC(N=2,K=3)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "6",
+      "expected_interleaving_instruction_atomic": [
+        [
+          3
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "012"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            3
+          ],
+          "runs": 6
+        }
+      ],
+      "id": "UNLOCKED-INC(N=3,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 6,
+      "steps_per_thread": [
+        1,
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 3,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "6",
+      "expected_interleaving_instruction_atomic": [
+        [
+          3
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            3
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "UNLOCKED-INC(N=3,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        1,
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 3,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "24",
+      "expected_interleaving_instruction_atomic": [
+        [
+          4
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "0123"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 24
+        }
+      ],
+      "id": "UNLOCKED-INC(N=4,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 24,
+      "steps_per_thread": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 4,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "24",
+      "expected_interleaving_instruction_atomic": [
+        [
+          4
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "UNLOCKED-INC(N=4,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "threads": [
+        [
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 4,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "90",
+      "expected_interleaving_instruction_atomic": [
+        [
+          6
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "001122"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            6
+          ],
+          "runs": 90
+        }
+      ],
+      "id": "UNLOCKED-INC(N=3,K=2)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 90,
+      "steps_per_thread": [
+        2,
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 3,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "90",
+      "expected_interleaving_instruction_atomic": [
+        [
+          6
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            6
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "UNLOCKED-INC(N=3,K=2)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        2,
+        2,
+        2
+      ],
+      "threads": [
+        [
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 3,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "63063000",
+      "expected_interleaving_instruction_atomic": [
+        [
+          16
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            16
+          ],
+          "runs": 10000
+        }
+      ],
+      "id": "UNLOCKED-INC(N=4,K=4)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        4,
+        4,
+        4,
+        4
+      ],
+      "threads": [
+        [
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]"
+        ],
+        [
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]",
+          "inc dword ptr [0x00001000]"
+        ]
+      ],
+      "vcpus": 4,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "20",
+      "expected_interleaving_instruction_atomic": [
+        [
+          1
+        ],
+        [
+          2
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "001011"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1
+          ],
+          "runs": 18
+        },
+        {
+          "first": {
+            "schedule": "000111"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 2
+        }
+      ],
+      "id": "THREE-INSN-COUNTER(N=2,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 20,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "20",
+      "expected_interleaving_instruction_atomic": [
+        [
+          1
+        ],
+        [
+          2
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1
+          ],
+          "runs": 7513
+        },
+        {
+          "first": {
+            "seed": 3
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 2487
+        }
+      ],
+      "id": "THREE-INSN-COUNTER(N=2,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "924",
+      "expected_interleaving_instruction_atomic": [
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "000001111110"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 702
+        },
+        {
+          "first": {
+            "schedule": "000001011111"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            3
+          ],
+          "runs": 216
+        },
+        {
+          "first": {
+            "schedule": "000000111111"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 6
+        }
+      ],
+      "id": "THREE-INSN-COUNTER(N=2,K=2)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 924,
+      "steps_per_thread": [
+        6,
+        6
+      ],
+      "threads": [
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "924",
+      "expected_interleaving_instruction_atomic": [
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 6038
+        },
+        {
+          "first": {
+            "seed": 9
+          },
+          "in_expected_set": true,
+          "outcome": [
+            3
+          ],
+          "runs": 3554
+        },
+        {
+          "first": {
+            "seed": 11
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 408
+        }
+      ],
+      "id": "THREE-INSN-COUNTER(N=2,K=2)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        6,
+        6
+      ],
+      "threads": [
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "48620",
+      "expected_interleaving_instruction_atomic": [
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "001000011001111110"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 648
+        },
+        {
+          "first": {
+            "schedule": "000000001111111110"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            3
+          ],
+          "runs": 30780
+        },
+        {
+          "first": {
+            "schedule": "000000001111110111"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 15714
+        },
+        {
+          "first": {
+            "schedule": "000000001011111111"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            5
+          ],
+          "runs": 1458
+        },
+        {
+          "first": {
+            "schedule": "000000000111111111"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            6
+          ],
+          "runs": 20
+        }
+      ],
+      "id": "THREE-INSN-COUNTER(N=2,K=3)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 48620,
+      "steps_per_thread": [
+        9,
+        9
+      ],
+      "threads": [
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "48620",
+      "expected_interleaving_instruction_atomic": [
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 67
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 63
+        },
+        {
+          "first": {
+            "seed": 1
+          },
+          "in_expected_set": true,
+          "outcome": [
+            3
+          ],
+          "runs": 4733
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 4008
+        },
+        {
+          "first": {
+            "seed": 11
+          },
+          "in_expected_set": true,
+          "outcome": [
+            5
+          ],
+          "runs": 1145
+        },
+        {
+          "first": {
+            "seed": 365
+          },
+          "in_expected_set": true,
+          "outcome": [
+            6
+          ],
+          "runs": 51
+        }
+      ],
+      "id": "THREE-INSN-COUNTER(N=2,K=3)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        9,
+        9
+      ],
+      "threads": [
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ]
+      ],
+      "vcpus": 2,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "1680",
+      "expected_interleaving_instruction_atomic": [
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "001012221"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1
+          ],
+          "runs": 1404
+        },
+        {
+          "first": {
+            "schedule": "000112122"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 270
+        },
+        {
+          "first": {
+            "schedule": "000111222"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            3
+          ],
+          "runs": 6
+        }
+      ],
+      "id": "THREE-INSN-COUNTER(N=3,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 1680,
+      "steps_per_thread": [
+        3,
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ]
+      ],
+      "vcpus": 3,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "1680",
+      "expected_interleaving_instruction_atomic": [
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 1
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1
+          ],
+          "runs": 6068
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 3677
+        },
+        {
+          "first": {
+            "seed": 78
+          },
+          "in_expected_set": true,
+          "outcome": [
+            3
+          ],
+          "runs": 255
+        }
+      ],
+      "id": "THREE-INSN-COUNTER(N=3,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        3,
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ]
+      ],
+      "vcpus": 3,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "369600",
+      "expected_interleaving_instruction_atomic": [
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "schedule": "001012223331"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1
+          ],
+          "runs": 291600
+        },
+        {
+          "first": {
+            "schedule": "000112123332"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 74952
+        },
+        {
+          "first": {
+            "schedule": "000111223233"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            3
+          ],
+          "runs": 3024
+        },
+        {
+          "first": {
+            "schedule": "000111222333"
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 24
+        }
+      ],
+      "id": "THREE-INSN-COUNTER(N=4,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "exhaustive",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 369600,
+      "steps_per_thread": [
+        3,
+        3,
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ]
+      ],
+      "vcpus": 4,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "369600",
+      "expected_interleaving_instruction_atomic": [
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 1
+          },
+          "in_expected_set": true,
+          "outcome": [
+            1
+          ],
+          "runs": 5062
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 4333
+        },
+        {
+          "first": {
+            "seed": 14
+          },
+          "in_expected_set": true,
+          "outcome": [
+            3
+          ],
+          "runs": 587
+        },
+        {
+          "first": {
+            "seed": 329
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 18
+        }
+      ],
+      "id": "THREE-INSN-COUNTER(N=4,K=1)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds (cross-check)",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        3,
+        3,
+        3,
+        3
+      ],
+      "threads": [
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ]
+      ],
+      "vcpus": 4,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "17153136",
+      "expected_interleaving_instruction_atomic": [
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 4276
+        },
+        {
+          "first": {
+            "seed": 1
+          },
+          "in_expected_set": true,
+          "outcome": [
+            3
+          ],
+          "runs": 4350
+        },
+        {
+          "first": {
+            "seed": 7
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 1274
+        },
+        {
+          "first": {
+            "seed": 202
+          },
+          "in_expected_set": true,
+          "outcome": [
+            5
+          ],
+          "runs": 98
+        },
+        {
+          "first": {
+            "seed": 2614
+          },
+          "in_expected_set": true,
+          "outcome": [
+            6
+          ],
+          "runs": 2
+        }
+      ],
+      "id": "THREE-INSN-COUNTER(N=3,K=2)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds",
+      "not_covered_by_enumeration": [],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        6,
+        6,
+        6
+      ],
+      "threads": [
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ]
+      ],
+      "vcpus": 3,
+      "x86_tso_only_outcomes": []
+    },
+    {
+      "complete_schedules": "235809301462142612780721600",
+      "expected_interleaving_instruction_atomic": [
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ]
+      ],
+      "forbidden_outcomes": [],
+      "histogram": [
+        {
+          "first": {
+            "seed": 2090
+          },
+          "in_expected_set": true,
+          "outcome": [
+            2
+          ],
+          "runs": 1
+        },
+        {
+          "first": {
+            "seed": 12
+          },
+          "in_expected_set": true,
+          "outcome": [
+            3
+          ],
+          "runs": 87
+        },
+        {
+          "first": {
+            "seed": 5
+          },
+          "in_expected_set": true,
+          "outcome": [
+            4
+          ],
+          "runs": 1330
+        },
+        {
+          "first": {
+            "seed": 0
+          },
+          "in_expected_set": true,
+          "outcome": [
+            5
+          ],
+          "runs": 2884
+        },
+        {
+          "first": {
+            "seed": 1
+          },
+          "in_expected_set": true,
+          "outcome": [
+            6
+          ],
+          "runs": 3097
+        },
+        {
+          "first": {
+            "seed": 3
+          },
+          "in_expected_set": true,
+          "outcome": [
+            7
+          ],
+          "runs": 1814
+        },
+        {
+          "first": {
+            "seed": 18
+          },
+          "in_expected_set": true,
+          "outcome": [
+            8
+          ],
+          "runs": 641
+        },
+        {
+          "first": {
+            "seed": 96
+          },
+          "in_expected_set": true,
+          "outcome": [
+            9
+          ],
+          "runs": 128
+        },
+        {
+          "first": {
+            "seed": 99
+          },
+          "in_expected_set": true,
+          "outcome": [
+            10
+          ],
+          "runs": 18
+        }
+      ],
+      "id": "THREE-INSN-COUNTER(N=4,K=4)",
+      "incomplete_runs": 0,
+      "instructions_cut": 0,
+      "mode": "seeds",
+      "not_covered_by_enumeration": [
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ]
+      ],
+      "observe": [
+        "mem.x"
+      ],
+      "rep_slices": 0,
+      "runs": 10000,
+      "steps_per_thread": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "threads": [
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ],
+        [
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax",
+          "mov eax, dword ptr [0x00001000]",
+          "add eax, 1",
+          "mov dword ptr [0x00001000], eax"
+        ]
+      ],
+      "vcpus": 4,
+      "x86_tso_only_outcomes": []
+    }
+  ],
+  "difference_from_x86": "INC [x] without LOCK is indivisible here (x86 can lose the update); SB both-zero is not reachable (it is x86-TSO only); LOOP is not run by the interpreter, the formula counters repeat the corpus body K times",
+  "elapsed_seconds": 4.430489375,
+  "exhaustive_threshold": "1000000",
+  "expected_sets": "fixtures tests/fixtures/guest/stage6/litmus (S6-05, derived from the cited sources)",
+  "forbidden_outcomes_total": 0,
+  "harness": "one vCPU per litmus thread, created directly in long mode on a flat identity RAM (SMP_CONTRACT 4.4, litmus only): not an AP start",
+  "memory_model_proved": "SC with every instruction indivisible (interleaving_instruction_atomic); not x86-TSO, not a parallel run",
+  "mode": "interleaving: one host thread, SmpScheduler, a step is one whole instruction or one REP slice of 1024 iterations",
+  "not_covered_by_exhaustive_total": 0,
+  "not_run_blocked_by_interpreter": 0,
+  "rep_slice": 1024,
+  "schema": "od.s6-19-litmus-interleaving.v1",
+  "seed_policy": "random order of steps: per step a thread drawn by SplitMix64(seed) among the threads with steps left, run as QuantumPolicy::Schedule",
+  "seeds": [
+    0,
+    9999
+  ]
+}

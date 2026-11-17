@@ -3,6 +3,7 @@
 mod absent_ports;
 mod acpi_blob;
 mod acpi_pm;
+mod ap_legacy_exec;
 mod apic_pair;
 mod bus;
 mod clock_owner;
@@ -23,12 +24,15 @@ mod interleaved_harness;
 mod interrupt_pump;
 mod io_apic;
 mod irq_source;
+mod lapic_irq_source;
 mod linux_boot;
 mod linux_boot_params;
 mod linux_checkpoints;
 mod linux_direct;
 mod linux_load;
 mod linux_placement;
+mod litmus;
+mod litmus_interleaving;
 mod local_apic;
 mod nvme;
 mod page_walk;
@@ -47,6 +51,8 @@ mod pio_step;
 mod pit_8254;
 mod pit_ioapic_irq_source;
 mod pit_pic_irq_source;
+mod ram_storage;
+mod smp_scheduler;
 mod stage4_alias_probe;
 mod stage4_cpl3_syscall_probe;
 mod stage4_cr3_mixed_probe;
@@ -66,6 +72,7 @@ mod stage4_pit_irq0_probe;
 mod stage4_stack_probe;
 mod stage4_store_load_probe;
 mod stage4_uart_irq_probe;
+mod stage6_smp_probe;
 #[cfg(feature = "experimental-translation-probe-cache")]
 mod translation_probe_cache;
 mod uart16550;
@@ -74,6 +81,7 @@ mod uart_pic_irq_source;
 mod uart_rx_events;
 mod vcpu;
 mod virtual_clock;
+mod vm_snapshot;
 
 pub use acpi_blob::{
     ACPI_BLOB_ALIGN, ACPI_BLOB_DIR_ENTRY_BYTES, ACPI_BLOB_HEADER_BYTES, ACPI_BLOB_MAGIC,
@@ -99,7 +107,7 @@ pub use bus::{
     AccessWidth, BusAccessError, BusBuildError, BusDevice, DeviceAccess, DeviceError,
     DisplayBindingError, FramebufferBinding, IoSpace, MachineBus, MmioBinding, PortAddress,
     PortRange, PortRegionBinding, TrackedCodePatchError, TrackedCodeSnapshot,
-    TrackedCodeSnapshotError,
+    TrackedCodeSnapshotError, TrackedCrossPageCodeSnapshot,
 };
 
 pub use console_output_context::{
@@ -188,6 +196,7 @@ pub use linux_direct::{
 
 pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEvent};
 
+pub use ap_legacy_exec::ApLegacyRefusal;
 pub use execution_observations::{
     DelayTscCallSummary, DelayTscCallSummaryCollection, DelayTscPollSequenceStatus,
     DeliveredPageFaultObservation, ElfStackCopyBoundaryMarker, ElfStackCopyCounterSnapshot,
@@ -258,11 +267,14 @@ pub use paged_exception_delivery::{
     step_paged_iretq_and_user_load, step_paged_iretq_to_cpl3, step_paged_syscall_profile,
 };
 pub use paged_memory_adapter::{
-    PagedDwordStoreStepReport, PagedInvlpgStepError, PagedInvlpgStepReport, PagedMovMemoryScope,
-    PagedMovStepError, PagedMovStepReport, PagedStateOpStepReport, step_paged_hlt,
-    step_paged_invlpg, step_paged_mov, step_paged_mov_2m_ram, step_paged_mov_dword_read,
+    PagedDwordStoreStepReport, PagedInvlpgStepError, PagedInvlpgStepReport, PagedMovCr0StepReport,
+    PagedMovCr3StepError, PagedMovCr3StepReport, PagedMovMemoryScope, PagedMovStepError,
+    PagedMovStepReport, PagedMovStoreScope, PagedStateOpStepReport, PagedStoreRefusal,
+    step_paged_hlt, step_paged_invlpg, step_paged_mov, step_paged_mov_2m_ram,
+    step_paged_mov_cr0_wp, step_paged_mov_cr3_wp, step_paged_mov_dword_read,
     step_paged_mov_dword_store, step_paged_mov_word_read,
-    step_paged_mov_word_read_cross_page_fetch, step_paged_sti, with_paged_mov_memory,
+    step_paged_mov_word_read_cross_page_fetch, step_paged_sti, with_paged_mov_dword_memory,
+    with_paged_mov_memory, with_paged_mov_store_memory,
 };
 pub use paged_pio_step::{PagedPioU8StepReport, step_paged_pio_u8};
 pub use paged_probe::{
@@ -403,6 +415,29 @@ pub use stage4_uart_irq_probe::{
     STAGE4_UART_IRQ_PROBE_TRACE_LIMIT, STAGE4_UART_IRQ_PROBE_VECTOR, Stage4UartIrqProbe,
     Stage4UartIrqProbeError, Stage4UartIrqProbeExit, Stage4UartIrqProbeLoadError,
     Stage4UartIrqProbeReport, UartIrqTraceEvent, UartIrqTraceKind, load_stage4_uart_irq_probe,
+};
+
+pub use litmus::{
+    LITMUS_EXHAUSTIVE_THRESHOLD, LITMUS_MAX_SEEDS, LitmusCase, LitmusError, LitmusOutcome,
+    LitmusPolicy, LitmusReport, LitmusUnsupported, LitmusVerdict, LitmusWitness,
+    litmus_seed_schedule, run_litmus,
+};
+
+pub use stage6_smp_probe::{
+    STAGE6_SMP_PROBE_AP_RX_GPA, STAGE6_SMP_PROBE_BSP_RX_GPA, STAGE6_SMP_PROBE_COUNT_GPA,
+    STAGE6_SMP_PROBE_FLAG_GPA, STAGE6_SMP_PROBE_IDT_GPA, STAGE6_SMP_PROBE_IDT_LIMIT,
+    STAGE6_SMP_PROBE_IDTR_BSP_GPA, STAGE6_SMP_PROBE_IMAGE_BYTES, STAGE6_SMP_PROBE_IMAGE_GPA,
+    STAGE6_SMP_PROBE_INFO_BYTES, STAGE6_SMP_PROBE_INFO_GPA, STAGE6_SMP_PROBE_INFO_MAGIC,
+    STAGE6_SMP_PROBE_INFO_VERSION, STAGE6_SMP_PROBE_LOCK_GPA, STAGE6_SMP_PROBE_MARKER_AP_GPA,
+    STAGE6_SMP_PROBE_MARKER_BSP_GPA, STAGE6_SMP_PROBE_MARKER_BYTES, STAGE6_SMP_PROBE_MARKER_MAGIC,
+    STAGE6_SMP_PROBE_MAX_FIXED_QUANTUM, STAGE6_SMP_PROBE_NMI_GPA, STAGE6_SMP_PROBE_NONCE_MAX,
+    STAGE6_SMP_PROBE_PML4_GPA, STAGE6_SMP_PROBE_SD_ACK_GPA, STAGE6_SMP_PROBE_SD_POST_GPA,
+    STAGE6_SMP_PROBE_SD_PTE_GPA, STAGE6_SMP_PROBE_SD_SEEN_HANDLER_GPA,
+    STAGE6_SMP_PROBE_SD_SEEN_MAIN_GPA, STAGE6_SMP_PROBE_SD_X_LINEAR, STAGE6_SMP_PROBE_SIPI_VECTOR,
+    STAGE6_SMP_PROBE_TRAMPOLINE_GPA, STAGE6_SMP_PROBE_VECTOR_AP, STAGE6_SMP_PROBE_VECTOR_BSP,
+    STAGE6_SMP_PROBE_VECTOR_SHOOTDOWN, Stage6SmpProbe, Stage6SmpProbeCpu, Stage6SmpProbeFinish,
+    Stage6SmpProbeLoadError, Stage6SmpProbeQuantum, Stage6SmpProbeReport, Stage6SmpProbeRunError,
+    Stage6SmpProbeSession, Stage6SmpProbeSnapshot, Stage6SmpProbeStopError, load_stage6_smp_probe,
 };
 
 pub use nvme::{

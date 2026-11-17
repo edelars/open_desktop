@@ -141,6 +141,21 @@ impl GuestMemory for IdentityMemoryAdapter<'_> {
         ))
     }
 
+    fn atomic_rmw_integer(
+        &mut self,
+        _address: u64,
+        context: AccessContext,
+        _size: od_isa::OperandSize,
+        _update: &mut dyn FnMut(u64) -> u64,
+    ) -> Result<u64, MemoryError> {
+        // S6-20: the single LOCK/XCHG read-modify-write entry point is refused here too,
+        // otherwise the trait default would run it over MachineBus (including MMIO).
+        self.record(AccessKind::Write, context);
+        Err(Self::error(
+            "atomic memory operations are unsupported in diagnostic flat mode",
+        ))
+    }
+
     fn mfence(&mut self, context: AccessContext) -> Result<(), MemoryError> {
         self.record(AccessKind::Read, context);
         Err(Self::error(
@@ -344,8 +359,71 @@ mod tests {
             memory.atomic_compare_exchange_integer(0x1000, ctx, OperandSize::Dword, 0, 1),
             Err(MemoryError::Backend(_))
         ));
+        let mut update_calls = 0;
+        assert!(matches!(
+            memory.atomic_rmw_integer(0x1000, ctx, OperandSize::Dword, &mut |old| {
+                update_calls += 1;
+                old.wrapping_add(1)
+            }),
+            Err(MemoryError::Backend(_))
+        ));
+        assert_eq!(update_calls, 0);
         assert!(matches!(memory.mfence(ctx), Err(MemoryError::Backend(_))));
         assert_eq!(commits.get(), 0);
+    }
+
+    #[test]
+    fn lock_dword_forms_in_diagnostic_run_are_refused_without_effects() {
+        const CODE: u64 = 0x1000;
+        const DATA: u64 = 0x1080;
+        let (mut bus, _) = setup();
+        // LOCK INC dword [RBX]
+        for (offset, byte) in [0xf0u8, 0xff, 0x03].into_iter().enumerate() {
+            bus.write_physical(
+                GuestPhysicalAddress::new(CODE + offset as u64),
+                crate::AccessWidth::Byte,
+                u64::from(byte),
+                |_| {},
+            )
+            .unwrap();
+        }
+        bus.write_physical(
+            GuestPhysicalAddress::new(DATA),
+            crate::AccessWidth::Dword,
+            0x1122_3344,
+            |_| {},
+        )
+        .unwrap();
+        let mut state = LongModeState::default();
+        state.rip = CODE;
+        state.gpr[Register::Rbx as usize] = DATA;
+        let before = state.clone();
+        let commits = Cell::new(0);
+        let mut callback = |_| commits.set(commits.get() + 1);
+        let mut memory = IdentityMemoryAdapter::new(&mut bus, &mut callback);
+        let outcome = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert!(matches!(
+            outcome.exit,
+            RunExit::MemoryError(MemoryError::Backend(_))
+        ));
+        assert_eq!(outcome.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(commits.get(), 0);
+        let mut bytes = [0u8; 4];
+        let mut readback = IdentityMemoryAdapter::new(&mut bus, &mut callback);
+        readback
+            .read(DATA, context(AccessOrigin::Explicit), &mut bytes)
+            .unwrap();
+        assert_eq!(u32::from_le_bytes(bytes), 0x1122_3344);
     }
 
     #[test]

@@ -24,8 +24,9 @@
 //! the owner on request only (`enable_clock_owner`, the `clock_owner` member of the Linux direct
 //! run); by default the board keeps advancing its clock itself and the owner is never created.
 //!
-//! Limits (not part of this slice): not wired to the pump or a scheduler; no quanta, seed or
-//! schedule (S6-15); no NMI/INIT/SIPI or host wait. The tick sources keep their S4-37/38 cost
+//! Limits (not part of this slice): not wired to the pump; quanta, seed and schedule are the
+//! scheduler's (`smp_scheduler.rs`, S6-15), which moves time only through this owner; no
+//! NMI/INIT/SIPI or host wait here. The tick sources keep their S4-37/38 cost
 //! model (the Linux-visible frequency is S4-38). The caller tracks
 //! vCPU activity itself and passes it in the views; `state.activity` is not consulted. A timer
 //! dispatch raises at most one request per call, as `LocalApicHandle::dispatch_timer` does: a

@@ -1,0 +1,24 @@
+S6-14l KVM real-mode oracle evidence
+Date: 2026-11-16
+Host: mini (senya@192.168.1.39), Linux mini 7.0.0-42-generic #42-Ubuntu SMP PREEMPT_DYNAMIC Thu Oct 15 08:06:44 UTC 2026 x86_64 GNU/Linux
+model name	: Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz
+gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+Host work dir: /tmp/od-s6-14l (kvm_runner rebuilt there from tools/kvm-runner/kvm_runner.c)
+Build: gcc -O2 -Wall -Wextra -Werror -std=c11 kvm_runner.c -o kvm_runner
+Run: see run-oracle.sh (from the repo root); each run adds --result-block 0x30:64 (GDT pointer and GDT)
+SHA-256 (host, /tmp/od-s6-14l; the .bin hashes below were verified identical to the repo files):
+969ce3a20af037bb8849d05482b31f881320e9420ee9630701728fd0da4ce7f0  kvm_runner.c
+5f6a2aac6f4a49fc92c1ab611daeecc0e7474fe1ae6c2551647464ea10bf11b7  kvm_runner
+8f938ede5b7a32c9c0bdaef208e1e121aa1cf2b6237e097be20269d299b343ed  a-efer-901-written-and-read-back-0000-0000.bin
+22166ab79ccddf36711e84973d6cf10c4819d1b065806f24f3e22b07efa4f188  b-efer-0-equal-skips-wrmsr-0000-0000.bin
+ed47d2569ef5bd8c15e90942963e87bafa310f1b29abd0d8db556468c207b31a  c-efer-lme-only-0000-0000.bin
+566d25cfb0b03ea6b152fc5fa53f5c5e9bcab9f4ac440da80c3044374022efdc  d-efer-high-dword-bit32-reserved-0000-0000.bin
+77f4a8d8df8dfc5c69f485e868518a11074ed11388ae69f09a9290af2755257a  e-efer-sce-lma-written-0000-0000.bin
+e31017842c0cafcb38db0915188b8556a439293474c848446eef2c51156216da  f-efer-bit1-reserved-0000-0000.bin
+a88dd351042fb547cfbc7a674a23fe51fd476ecd70de78a71ce7cf705fe01b7c  g-efer-bit12-svme-0000-0000.bin
+63f3d09442ce6faebe285c753b57a394ecb0521887b8b0b2464498b87277fe93  h-efer-nxe-only-0000-0000.bin
+2dbc08567732d38f07ceef04ec73f24f9243a6923f2b945432d2f11dabb6ac16  i-efer-bit9-reserved-0000-0000.bin
+f5a407464d8a98d669e7807b2cac13f3b53c4137e90af31ba80337d104c81dd7  j-efer-lma-only-0000-0000.bin
+ae75d6823d365afcc073d205058fe5f0d0c7387ed3661988223615e10d6a4924  k-efer-d01-lma-dropped-0000-0000.bin
+SHA-256 of kvm_runner.c in the repo (local): 969ce3a20af037bb8849d05482b31f881320e9420ee9630701728fd0da4ce7f0
+kvm_runner.c and kvm_runner match host-info.txt of S6-14k.

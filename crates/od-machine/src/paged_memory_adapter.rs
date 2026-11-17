@@ -45,7 +45,7 @@ use od_isa::{
     Cpl0ExternalInterruptDelivery, Cpl0ExternalInterruptPhase, Cpl0ExternalInterruptRefusal,
     Cpl0GeneralProtectionDelivery, Cpl0GeneralProtectionPhase, Cpl0GeneralProtectionRefusal,
     Cpl0PageFaultDelivery, Cpl0PageFaultDeliveryPhase, Cpl0PageFaultRefusal,
-    deliver_external_interrupt_cpl0_set, deliver_general_protection_cpl0_set,
+    deliver_external_interrupt_cpl0_set, deliver_general_protection_cpl0_set, deliver_nmi_cpl0_set,
     deliver_page_fault_cpl0_set,
 };
 use od_isa::{IretqUserEntry, LongModeState};
@@ -142,6 +142,134 @@ pub fn step_paged_invlpg(
     };
     debug_assert!(matches!(report.cpu.exit, InvlpgExit::Fault(_)) || report.page_fault.is_none());
     Ok(report)
+}
+
+/// Fetch-only adapter used by the exact control-register steps below (S4-16f):
+/// tracked RAM instruction fetch, committed A/D callbacks, no operand access.
+fn fetch_only_adapter<'a>(
+    bus: &'a mut MachineBus,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
+) -> PagedMovMemoryAdapter<'a> {
+    PagedMovMemoryAdapter {
+        bus: bus.into(),
+        paging,
+        instruction_rip,
+        committed_write,
+        page_fault: None,
+        memory_error: None,
+        access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
+        committed_ad_updates: None,
+        committed_writes: None,
+        capture_effects: false,
+        dword_read_profile: false,
+        word_read_profile: false,
+        ram_only: true,
+        reject_crossing_qword: false,
+        read_only_qword: false,
+        large_ram_profile: false,
+        dword_write_profile: false,
+        cpl0_set_dword_read: false,
+        cpl0_set_byte_read: false,
+        cpl0_set_word_read: false,
+        cpl0_set_narrow_write: false,
+        cpl0_set_cross_page_fetch: false,
+        cpl0_set_cross_page_store: false,
+        cpl0_set_cross_page_read: false,
+        fetch_cache: None,
+        walks: None,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedMovCr3StepReport {
+    pub cpu: od_isa::MovCr3Result,
+    /// Retains the walker's precise saved RIP, linear address, and PFEC.
+    pub page_fault: Option<PageFaultRecord>,
+    /// Retains the original tracked-walker classification, including faults.
+    pub access_error: Option<TrackedAccessError>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedMovCr3StepError {
+    Configuration(crate::ProbeConfigError),
+    CpuInput(od_isa::MovCr3InputError),
+}
+
+/// Execute exactly one bare `MOV CR3,RAX` (CR0.WP = 0 or 1) through tracked
+/// physical RAM fetches (S4-16f). The CPU profile owns decode, validation and
+/// the retired `Cr3Write` effect; the adapter supplies the pre-write paging
+/// snapshot and forwards committed walker A/D writes. A new snapshot for the
+/// written CR3 is the caller's decision.
+pub fn step_paged_mov_cr3_wp(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedMovCr3StepReport, PagedMovCr3StepError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+        .map_err(PagedMovCr3StepError::Configuration)?;
+    let instruction_rip = state.rip;
+    let mut memory = fetch_only_adapter(bus, paging, instruction_rip, &mut committed_write);
+    let cpu = od_isa::step_mov_cr3_wp(
+        od_isa::MovCr3WpLong64V1,
+        state,
+        &mut memory,
+        context,
+        efer,
+        rflags_defined,
+    )
+    .map_err(PagedMovCr3StepError::CpuInput)?;
+    Ok(PagedMovCr3StepReport {
+        cpu,
+        page_fault: memory.page_fault,
+        access_error: memory.access_error,
+    })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedMovCr0StepReport {
+    pub cpu: od_isa::PagedProbeResult<std::convert::Infallible>,
+    /// Retains the walker's precise saved RIP, linear address, and PFEC.
+    pub page_fault: Option<PageFaultRecord>,
+    /// Retains the original tracked-walker classification, including faults.
+    pub access_error: Option<TrackedAccessError>,
+}
+
+/// Execute exactly one bare `MOV CR0,RAX` WP toggle through tracked physical
+/// RAM fetches (S4-16f). The CPU profile commits CR0 and reports a retired
+/// `Cr0Write` effect; adopting the new snapshot is the caller's decision.
+pub fn step_paged_mov_cr0_wp(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedMovCr0StepReport, crate::ProbeConfigError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)?;
+    let instruction_rip = state.rip;
+    let mut memory = fetch_only_adapter(bus, paging, instruction_rip, &mut committed_write);
+    let cpu = od_isa::step_mov_cr0_wp(
+        od_isa::MovCr0WpLong64V1,
+        state,
+        &mut memory,
+        context,
+        efer,
+        rflags_defined,
+    );
+    Ok(PagedMovCr0StepReport {
+        cpu,
+        page_fault: memory.page_fault,
+        access_error: memory.access_error,
+    })
 }
 
 /// Report of one exact paged one-byte state step (`STI` or `HLT`, S4-27i4a).
@@ -295,6 +423,32 @@ pub fn with_paged_mov_memory<R>(
     instruction_rip: u64,
     callback: impl FnOnce(&mut dyn GuestMemory) -> R,
 ) -> PagedMovMemoryScope<R> {
+    with_paged_mov_read_memory(bus, paging, instruction_rip, false, callback)
+}
+
+/// S4-15e: the same RAM-only, read-only, same-page adapter as
+/// [`with_paged_mov_memory`] for a four-byte operand read (`MOV EAX,[RBX]`).
+/// Four-byte reads go through the ordinary tracked walker exactly like the
+/// qword reads (Accessed bits recorded in `committed_writes`); a qword read is
+/// (the operand width is enforced by the host: `execute_paged_checked_load_v2` admits only
+/// dword operands); this adapter itself does not refuse an eight-byte read.
+/// An operand that would cross a 4 KiB page is refused before any walk.
+pub fn with_paged_mov_dword_memory<R>(
+    bus: &mut MachineBus,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    callback: impl FnOnce(&mut dyn GuestMemory) -> R,
+) -> PagedMovMemoryScope<R> {
+    with_paged_mov_read_memory(bus, paging, instruction_rip, true, callback)
+}
+
+fn with_paged_mov_read_memory<R>(
+    bus: &mut MachineBus,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    dword: bool,
+    callback: impl FnOnce(&mut dyn GuestMemory) -> R,
+) -> PagedMovMemoryScope<R> {
     let mut ignore_write = |_| {};
     let mut memory = PagedMovMemoryAdapter {
         bus: bus.into(),
@@ -316,7 +470,9 @@ pub fn with_paged_mov_memory<R>(
         read_only_qword: true,
         large_ram_profile: false,
         dword_write_profile: false,
-        cpl0_set_dword_read: false,
+        // The dword read width is the only thing this flag changes without
+        // `large_ram_profile`: the read stays an ordinary tracked access.
+        cpl0_set_dword_read: dword,
         cpl0_set_byte_read: false,
         cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
@@ -333,6 +489,241 @@ pub fn with_paged_mov_memory<R>(
         access_error: memory.access_error,
         committed_ad_updates: memory.committed_ad_updates.unwrap_or_default(),
         committed_writes: memory.committed_writes.unwrap_or_default(),
+    }
+}
+
+/// Why the S4-15d store adapter refused a store before it walked or wrote
+/// anything. A refusal is not an architectural result: no RAM byte, Accessed or
+/// Dirty bit changed, and no device was reached.
+///
+/// S4-16i: a store onto the physical page the executing block was fetched from
+/// is no longer a refusal. It is walked, checked and committed like any other
+/// store; the host reports the resulting code invalidation (see
+/// `MemoryOperationExecutionExitV2::CodeInvalidated`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PagedStoreRefusal {
+    /// The translated operand is not wholly ordinary RAM (MMIO, ROM,
+    /// framebuffer or unmapped). The interpreter owns every such store.
+    NonRamTarget { physical: GuestPhysicalAddress },
+    /// The read-only probe could not translate the operand at all (a
+    /// non-canonical address, a 2 MiB or 1 GiB leaf that the 4 KiB walker does
+    /// not serve, or an unreadable table entry). The JIT does not own such a
+    /// store: nothing is walked or committed, so the interpreter sees the
+    /// untouched page tables.
+    ProbeUnsupported,
+}
+
+/// Result of [`with_paged_mov_store_memory`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedMovStoreScope<R> {
+    pub memory: PagedMovMemoryScope<R>,
+    /// Set when the adapter refused the store before any walk or write.
+    pub refusal: Option<PagedStoreRefusal>,
+}
+
+/// Run a synchronous callback with a temporary store-only adapter for one
+/// same-page qword store (S4-15d).
+///
+/// The adapter serves exactly one operation, `write` of 8 bytes inside one
+/// 4 KiB page, through the tracked RAM walker (`access_tracked_ram`: the page
+/// walk checks Present, Write (WP at CPL0), User (CPL3) and reserved bits,
+/// never dispatches a device, and sets the Accessed bits and then the leaf
+/// Dirty bit before the operand bytes are written). Everything else (fetch,
+/// read, atomics, other widths, a page-crossing operand) is a typed backend
+/// error. Before the walk that commits anything, a read-only probe translates
+/// the operand; if it translates to anything other than whole ordinary RAM, the
+/// store is refused with no effect at all. A store onto the page the executing
+/// block was fetched from (S4-16i) is committed like any other: the adapter has
+/// no notion of an active page, and the caller derives the code invalidation
+/// from the committed write ranges. A probe
+/// that cannot translate the operand (any probe error: unsupported page size,
+/// non-canonical address, unreadable table) is refused the same way
+/// ([`PagedStoreRefusal::ProbeUnsupported`]), so the tracked walk never commits
+/// an Accessed bit for a store that nobody would execute. A probe that finds a
+/// fault is not a refusal: the tracked access then reports the precise `#PF`
+/// with its Accessed-bit effects, exactly like the interpreter.
+///
+/// A failed RAM write does not partially commit its operand
+/// (`PhysicalMemory::write_bytes` validates the whole range first). The
+/// callback cannot retain the adapter beyond this call.
+pub fn with_paged_mov_store_memory<R>(
+    bus: &mut MachineBus,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    callback: impl FnOnce(&mut dyn GuestMemory) -> R,
+) -> PagedMovStoreScope<R> {
+    let mut memory = PagedMovStoreMemory {
+        bus,
+        paging,
+        instruction_rip,
+        page_fault: None,
+        access_error: None,
+        refusal: None,
+        committed_ad_updates: Vec::new(),
+        committed_writes: Vec::new(),
+    };
+    let callback_result = callback(&mut memory);
+    PagedMovStoreScope {
+        memory: PagedMovMemoryScope {
+            callback_result,
+            page_fault: memory.page_fault,
+            access_error: memory.access_error,
+            committed_ad_updates: memory.committed_ad_updates,
+            committed_writes: memory.committed_writes,
+        },
+        refusal: memory.refusal,
+    }
+}
+
+struct PagedMovStoreMemory<'a> {
+    bus: &'a mut MachineBus,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    page_fault: Option<PageFaultRecord>,
+    access_error: Option<TrackedAccessError>,
+    refusal: Option<PagedStoreRefusal>,
+    committed_ad_updates: Vec<crate::AdUpdate>,
+    committed_writes: Vec<GuestPhysicalRange>,
+}
+
+impl PagedMovStoreMemory<'_> {
+    fn unsupported(operation: &'static str) -> MemoryError {
+        MemoryError::Backend(format!(
+            "paged MOV store profile does not support {operation}"
+        ))
+    }
+
+    fn refuse(&mut self, refusal: PagedStoreRefusal) -> MemoryError {
+        self.refusal = Some(refusal);
+        MemoryError::Backend(format!("paged MOV store refused: {refusal:?}"))
+    }
+}
+
+impl GuestMemory for PagedMovStoreMemory<'_> {
+    fn fetch(&mut self, _address: u64, _context: AccessContext) -> Result<u8, MemoryError> {
+        Err(Self::unsupported("instruction fetch"))
+    }
+
+    fn read(
+        &mut self,
+        _address: u64,
+        _context: AccessContext,
+        _destination: &mut [u8],
+    ) -> Result<(), MemoryError> {
+        Err(Self::unsupported("read"))
+    }
+
+    fn write(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        source: &[u8],
+    ) -> Result<(), MemoryError> {
+        let Ok(bytes) = <[u8; 8]>::try_from(source) else {
+            return Err(Self::unsupported("non-qword writes"));
+        };
+        if (address & 0xfff) + 8 > 4096 {
+            return Err(Self::unsupported("cross-page qword store"));
+        }
+        // Same normalization as the shared adapter: explicit origin, the
+        // CPL of the access as the page privilege.
+        let context = AccessContext {
+            origin: AccessOrigin::Explicit,
+            privilege: context.page_privilege(),
+            ..context
+        };
+        let probe = self.bus.probe_tracked_ram_access(
+            &self.paging,
+            GuestLinearAddress::new(address),
+            AccessKind::Write,
+            context,
+        );
+        match probe.outcome {
+            Ok(crate::ProbeOutcome::Translated(translation)) => {
+                let physical = translation.physical;
+                let is_ram = GuestPhysicalRange::new(physical, 8)
+                    .is_ok_and(|range| self.bus.tracked_physical_range_is_ram(range));
+                if !is_ram {
+                    return Err(self.refuse(PagedStoreRefusal::NonRamTarget { physical }));
+                }
+            }
+            // A probe fault is not decided here: the tracked access below
+            // reports the precise #PF with its Accessed-bit effects.
+            Ok(crate::ProbeOutcome::PageFault(_)) => {}
+            // Any probe error means the operand is not served by this adapter:
+            // refuse before the commit walk (no Accessed or Dirty bit, no data).
+            Err(_) => return Err(self.refuse(PagedStoreRefusal::ProbeUnsupported)),
+        }
+        let request = TrackedAccessRequest {
+            instruction_rip: self.instruction_rip,
+            address: GuestLinearAddress::new(address),
+            context,
+            operation: RamAccessOperation::Write {
+                width: crate::AccessWidth::Qword,
+                value: u64::from_le_bytes(bytes),
+            },
+        };
+        let mut writes = Vec::new();
+        let report = self
+            .bus
+            .access_tracked_ram(&self.paging, request, |range| writes.push(range));
+        self.committed_writes.extend(writes);
+        self.committed_ad_updates.extend(
+            report.ad_updates[..report.ad_update_count]
+                .iter()
+                .flatten()
+                .copied(),
+        );
+        match report.outcome {
+            Ok(TrackedAccessOutcome::Written) => Ok(()),
+            Ok(_) => Err(Self::unsupported("non-write result")),
+            Err(TrackedAccessError::PageFault { record, reason }) => {
+                let fault = record.fault().clone();
+                self.page_fault = Some(record.clone());
+                self.access_error = Some(TrackedAccessError::PageFault { record, reason });
+                Err(MemoryError::Architectural(fault))
+            }
+            Err(error) => {
+                let message = format!("tracked Long64 RAM store failed: {error:?}");
+                self.access_error = Some(error);
+                Err(MemoryError::Backend(message))
+            }
+        }
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        _address: u64,
+        _context: AccessContext,
+        _size: od_isa::OperandSize,
+        _replacement: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(Self::unsupported("atomic exchange"))
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        _address: u64,
+        _context: AccessContext,
+        _size: od_isa::OperandSize,
+        _addend: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(Self::unsupported("atomic fetch-add"))
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        _address: u64,
+        _context: AccessContext,
+        _size: od_isa::OperandSize,
+        _expected: u64,
+        _replacement: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(Self::unsupported("atomic compare-exchange"))
+    }
+
+    fn mfence(&mut self, _context: AccessContext) -> Result<(), MemoryError> {
+        Err(Self::unsupported("MFENCE"))
     }
 }
 
@@ -1541,6 +1932,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
     run_cpl0_set_paged_2m_ram_with_cache(
         state,
         bus,
+        crate::vcpu::BOOT_VCPU_INDEX,
         cr3,
         efer,
         context,
@@ -1576,6 +1968,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
 pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
     state: &mut LongModeState,
     bus: &mut MachineBus,
+    vcpu: usize,
     cr3: u64,
     efer: u64,
     context: AccessContext,
@@ -1925,14 +2318,14 @@ fn run_cpl0_set_paged_2m_ram_with_cache_impl<
             && cache.is_some_and(FetchTranslationCache::sweep_active)
             && invlpg_at_rip(state, bus, &paging, context, None);
         let control_before = (state.cr0, state.cr4);
-        let (ram, io) = bus.split_for_set_step();
+        let (ram, io) = bus.split_for_set_step_of_vcpu(vcpu);
         let mut port = PitWriteWatch {
             inner: io.port_io(),
             pit_written: false,
         };
         let mut memory = set_loop_adapter(
             ram,
-            Some(&io),
+            Some((&io, vcpu)),
             paging,
             instruction_rip,
             &mut watch,
@@ -2377,7 +2770,7 @@ fn continuation_key(
 /// whole CPL0 set read and write widths, the optional fetch cache.
 fn set_loop_adapter<'a>(
     ram: &'a mut crate::PhysicalMemory,
-    mmio: Option<&'a dyn crate::bus::SetStepMmio>,
+    mmio: Option<(&'a dyn crate::bus::SetStepMmio, usize)>,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
@@ -2386,7 +2779,7 @@ fn set_loop_adapter<'a>(
 ) -> PagedMovMemoryAdapter<'a> {
     PagedMovMemoryAdapter {
         bus: match mmio {
-            Some(mmio) => AdapterBus::RamMmio(ram, mmio),
+            Some((mmio, vcpu)) => AdapterBus::RamMmio(ram, mmio, vcpu),
             None => AdapterBus::Ram(ram),
         },
         paging,
@@ -2550,6 +2943,32 @@ fn deliver_pending_irq(
         memory.page_fault,
         memory.memory_error,
     ))
+}
+
+/// Deliver a non-maskable interrupt through vector 2 at an instruction boundary outside a run of
+/// the set loop (S6-12b), through the same RAM-only paged adapter as [`deliver_pending_irq`]: the
+/// frame goes onto the guest stack, `state` enters the handler of the IDT gate of vector 2 and
+/// `state.nmi_blocked` is set until the handler's `IRETQ`. Nothing is retired. The result is the
+/// one of [`deliver_nmi_cpl0_set`]: a refusal (blocked, STI shadow, activity) is the caller's to
+/// hold the NMI pending for, and every refusal and abort leaves `state` unchanged.
+pub(crate) fn deliver_nmi_at_boundary(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+) -> Cpl0ExternalInterruptDelivery {
+    let (ram, _port) = bus.split_for_pio_step();
+    let mut committed_write = |_: GuestPhysicalRange| {};
+    let mut memory = set_loop_adapter(
+        ram,
+        None,
+        *paging,
+        state.rip,
+        &mut committed_write,
+        None,
+        None,
+    );
+    deliver_nmi_cpl0_set(state, &mut memory, context)
 }
 
 /// What the set loop does with the exit of one set call: `None` continues with the next
@@ -2901,9 +3320,11 @@ enum AdapterBus<'a> {
     Ram(&'a mut crate::PhysicalMemory),
     /// `Ram` plus the MMIO dispatch of the set loop (S4-38L9s): an operand in an MMIO region
     /// goes to the board's device, as on the `Machine` form; the rest is the large-RAM walk.
+    /// The last member is the index of the vCPU whose set loop it is (S6-16a).
     RamMmio(
         &'a mut crate::PhysicalMemory,
         &'a dyn crate::bus::SetStepMmio,
+        usize,
     ),
 }
 
@@ -2916,11 +3337,12 @@ impl<'a> From<&'a mut MachineBus> for AdapterBus<'a> {
 impl AdapterBus<'_> {
     /// Index of the vCPU that owns this adapter: its MMIO accesses reach the per-processor
     /// devices (the Local APIC window, S6-11) as that vCPU's. Only the `Machine` form carries
-    /// one; the RAM-only forms serve the boot processor's set loop.
+    /// one, and so does the `RamMmio` form of the set loop (S6-16a); the `Ram` form serves the
+    /// boot processor's set loop.
     fn vcpu(&self) -> usize {
         match self {
-            Self::Machine(_, vcpu) => *vcpu,
-            Self::Ram(_) | Self::RamMmio(..) => crate::vcpu::BOOT_VCPU_INDEX,
+            Self::Machine(_, vcpu) | Self::RamMmio(_, _, vcpu) => *vcpu,
+            Self::Ram(_) => crate::vcpu::BOOT_VCPU_INDEX,
         }
     }
 
@@ -2949,10 +3371,10 @@ impl AdapterBus<'_> {
             }
             // A split access never reaches a device (S4-38L9s): it is the RAM walk, whose MMIO
             // operand is the typed error it always was.
-            Self::RamMmio(memory, _) if !mmio_allowed => {
+            Self::RamMmio(memory, _, _) if !mmio_allowed => {
                 crate::page_walk::access_long64_2m_ram(memory, paging, request, committed_write)
             }
-            Self::RamMmio(memory, mmio) => crate::page_walk::access_long64_2m_with_mmio(
+            Self::RamMmio(memory, mmio, _) => crate::page_walk::access_long64_2m_with_mmio(
                 memory,
                 paging,
                 request,
@@ -2966,14 +3388,14 @@ impl AdapterBus<'_> {
     /// The physical memory of the `Ram` forms.
     fn ram_mut(&mut self) -> Option<&mut crate::PhysicalMemory> {
         match self {
-            Self::Ram(memory) | Self::RamMmio(memory, _) => Some(memory),
+            Self::Ram(memory) | Self::RamMmio(memory, _, _) => Some(memory),
             Self::Machine(..) => None,
         }
     }
 
     fn ram_ref(&self) -> Option<&crate::PhysicalMemory> {
         match self {
-            Self::Ram(memory) | Self::RamMmio(memory, _) => Some(memory),
+            Self::Ram(memory) | Self::RamMmio(memory, _, _) => Some(memory),
             Self::Machine(..) => None,
         }
     }
@@ -3172,7 +3594,7 @@ impl PagedMovMemoryAdapter<'_> {
             _ => AccessKind::Read,
         };
         let (translation, trace) = match &mut self.bus {
-            AdapterBus::Ram(memory) | AdapterBus::RamMmio(memory, _) => {
+            AdapterBus::Ram(memory) | AdapterBus::RamMmio(memory, _, _) => {
                 translate_long64_2m_ram_read_only_with_trace(
                     memory,
                     &self.paging,
@@ -3501,7 +3923,7 @@ impl PagedMovMemoryAdapter<'_> {
         for check_address in [address, second_page] {
             let mut trace = None;
             let result = match &mut self.bus {
-                AdapterBus::Ram(memory) | AdapterBus::RamMmio(memory, _) => {
+                AdapterBus::Ram(memory) | AdapterBus::RamMmio(memory, _, _) => {
                     if self.capture_page_fault_trace {
                         crate::page_walk::translate_long64_2m_ram_write_check_with_fault_trace(
                             memory,
@@ -3624,8 +4046,8 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
             _ => return Err(Self::unsupported("read width")),
         };
         if self.reject_crossing_qword
-            && width == crate::AccessWidth::Qword
-            && (address & 0xfff) + 8 > 4096
+            && matches!(width, crate::AccessWidth::Qword | crate::AccessWidth::Dword)
+            && (address & 0xfff) + u64::from(width.bytes()) > 4096
         {
             return Err(Self::unsupported("cross-page qword read"));
         }
@@ -3739,36 +4161,12 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         }
     }
 
-    fn atomic_exchange_integer(
-        &mut self,
-        _address: u64,
-        _context: AccessContext,
-        _size: od_isa::OperandSize,
-        _replacement: u64,
-    ) -> Result<u64, MemoryError> {
-        Err(Self::unsupported("atomic exchange"))
-    }
-
-    fn atomic_fetch_add_integer(
-        &mut self,
-        _address: u64,
-        _context: AccessContext,
-        _size: od_isa::OperandSize,
-        _addend: u64,
-    ) -> Result<u64, MemoryError> {
-        Err(Self::unsupported("atomic fetch-add"))
-    }
-
-    fn atomic_compare_exchange_integer(
-        &mut self,
-        _address: u64,
-        _context: AccessContext,
-        _size: od_isa::OperandSize,
-        _expected: u64,
-        _replacement: u64,
-    ) -> Result<u64, MemoryError> {
-        Err(Self::unsupported("atomic compare-exchange"))
-    }
+    // S6-20: no atomic override. `atomic_rmw_integer` and the three atomic operations built on
+    // it use the trait's serial default (read, then write, through this adapter's own
+    // width-gated `read`/`write`). In the interleaving mode the vCPU never switches inside an
+    // instruction, so that sequence is indivisible; the single definition of LOCK atomicity is
+    // `GuestMemory::atomic_rmw_integer` (CPU_CONTRACT.md, S6-20), replaced by S6-31 for a
+    // concurrent backend without touching the instructions.
 
     fn mfence(&mut self, _context: AccessContext) -> Result<(), MemoryError> {
         Err(Self::unsupported("MFENCE"))

@@ -80,6 +80,7 @@ fn accepts_all_terminal_causes(value: DiagnosticTerminalExit) {
         DiagnosticTerminalExit::InterruptSelectionChanged => {}
         DiagnosticTerminalExit::IretqUnsupported => {}
         DiagnosticTerminalExit::IretqReadAborted { .. } => {}
+        DiagnosticTerminalExit::Integration(_) => {}
     }
 }
 

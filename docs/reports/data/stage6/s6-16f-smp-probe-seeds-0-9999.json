@@ -1,0 +1,21 @@
+{
+  "distinct_retired_pairs": 816,
+  "distinct_transcripts": 1,
+  "distinct_turn_counts": 21,
+  "elapsed_seconds": 140.721348583,
+  "image_sha256": "8b45797e95515e9a32e2c3e260fd63421a984da341d9ce9976ea0b48bf9a43f0",
+  "nonce": "cli-nonce-16f",
+  "per_run_seconds": 0.0140721348583,
+  "profile": "release",
+  "scenario": "exchange",
+  "schema": "stage6-smp-probe-seed-proof-v1",
+  "seeds": {
+    "count": 10000,
+    "first": 0,
+    "last": 9999
+  },
+  "transcript": "BSP0 UP cli-nonce-16f\nAP1 UP cli-nonce-16f\nSMP PROBE OK K=16 cli-nonce-16f\n",
+  "turns_max": 59,
+  "turns_min": 39,
+  "vcpus": 2
+}

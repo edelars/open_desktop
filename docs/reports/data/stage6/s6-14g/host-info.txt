@@ -1,0 +1,19 @@
+S6-14g KVM real-mode oracle evidence
+Date: 2026-11-16
+Host: mini (senya@192.168.1.39), Linux mini 7.0.0-42-generic #42-Ubuntu SMP PREEMPT_DYNAMIC Thu Oct 15 08:06:44 UTC 2026 x86_64 GNU/Linux
+model name	: Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz
+gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+Host work dir: /tmp/od-s6-14g (kvm_runner rebuilt there from tools/kvm-runner/kvm_runner.c)
+Build: gcc -O2 -Wall -Wextra -Werror -std=c11 kvm_runner.c -o kvm_runner
+Run: see run-oracle.sh (from the repo root); each run adds --result-block GPA:SIZE for the stack words
+SHA-256 (host, /tmp/od-s6-14g):
+969ce3a20af037bb8849d05482b31f881320e9420ee9630701728fd0da4ce7f0  kvm_runner.c
+5f6a2aac6f4a49fc92c1ab611daeecc0e7474fe1ae6c2551647464ea10bf11b7  kvm_runner
+73f17641b492104ff02387426600d8b663759be30497e6359e489048f53c6e6a  a-verify-cpu-id-probe-0000-1000.bin
+78b0ac67380e2c109b74800b83bc94c710e32d6ee793bc1f3effea64ce2b1ac4  b-alu-flags-matrix-0000-1000.bin
+01217838a6c1670945b454286cec438e6326ca113038cfa18fc9bca3cfefc1ee  c-jcc-forms-0000-1000.bin
+b26140878009e8100eff227b263379cbbf18cbd3f7b562549283a41ada1a3673  d-dword-stack-sp-wrap-0000-1000.bin
+642ff1050e43bb40415927eca476692bfe28a09cb87e4eb02fb4a8899d46091d  e-cpuid-flags-and-ip-only-0000-1000.bin
+26b108bc05e8940fa82d38dc3b505132756b76e49563783121c9b331690c5551  f-test-jne-eax1-0000-1021.bin
+ed4ec7949c3c280c4bc941abe00d7709682c3cb518e68d37f0a34dbb8c154385  g-test-jne-eax0-0000-1021.bin
+SHA-256 of kvm_runner.c in the repo (local): 969ce3a20af037bb8849d05482b31f881320e9420ee9630701728fd0da4ce7f0

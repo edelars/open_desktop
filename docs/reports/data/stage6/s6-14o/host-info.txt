@@ -1,0 +1,35 @@
+S6-14o KVM oracle evidence (full connected path of S6-14a with the CPUID table of the model target)
+Date: 2026-11-17
+kvm_runner S6-14o: the usage text (printed to stderr on the error path) changed; stdout of the earlier modes is unchanged (see below).
+Host: mini (senya@192.168.1.39), Linux mini 7.0.0-42-generic #42-Ubuntu SMP PREEMPT_DYNAMIC Thu Oct 15 08:06:44 UTC 2026 x86_64 GNU/Linux
+model name	: Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz
+gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+KVM mode: /sys/module/kvm_intel/parameters/ept = Y (read after the runs); no in-kernel irqchip (kvm_runner creates none)
+Host work dir: /tmp/od-s6-14o-r2 (kvm_runner rebuilt there from tools/kvm-runner/kvm_runner.c; the first run, before the review fix of image a, was in /tmp/od-s6-14o)
+Build: gcc -O2 -Wall -Wextra -Werror -std=c11 kvm_runner.c -o kvm_runner   (clean; not buildable on the macOS dev machine: no linux/kvm.h)
+Run: see run-oracle.sh (from the repo root). Image a: --cpuid-profile od-x86-64-v1-neutral --real-mode 0x0800:0x0000 --result-block 0x9000:64 (JSON) and six more result blocks (JSONL)
+Image b (CPUID probe): the same with --result-block 0x8200:192, once with the profile, once without (host default table)
+SHA-256 (host, /tmp/od-s6-14o-r2; rebuilt binary equals the first build):
+3926223ed0ea07caf43d88a0c1f71e4551b08b0ea198a30a99a6d65e70b322a5  kvm_runner.c (S6-14o; equals the repository file)
+872e1200eed15dafafe17b95b7946145edbc4f8bc13f10e8699cfc74c199cca1  kvm_runner (S6-14o)
+5f6a2aac6f4a49fc92c1ab611daeecc0e7474fe1ae6c2551647464ea10bf11b7  kvm_runner_old (the S6-14m/n/step-5 binary, copied from /tmp/od-s6-14-step5 via /tmp/od-s6-14o)
+a35c1a827c00a7d0a7c89817153b7d5fb588d2955ad84722f5ab99947db8417a  a-full-s6-14a-path-0800-0000.bin (review fix: vendor dispatcher CMP EBX,'Auth'/'Genu' + JNE added; the previous image was ca14399cc366578a093904391564a769d855cbfd67ccb1c41afc9da99e5ca79c)
+bbf86bf5455ae3ad0a955c307fa1a2a1dbe9f625bc8ec87a5072752bce71434d  b-cpuid-probe-0800-0000.bin
+SHA-256 of the oracle output (repository copies, rerun with image a35c1a82... on 2026-11-17; the JSON, the blocks and the profile
+JSON are byte-identical to the run with the image without the dispatcher: the final state of the guest does not depend on the vendor dispatcher):
+0ab86c0256e09fb5ef98a35da64bca2518686d5b46ce523983cb5913ae3049e6  oracle-a-full-s6-14a-path-0800-0000.json
+8a8f3ece581c314e4b60d0d9e9640155fe153e30dfc2cdb7dc12214bd8f49080  oracle-a-full-s6-14a-path-0800-0000-blocks.jsonl
+2d9edc0221070b58c260bdcd756974013974ff92eadfb72baee4f4bef6bbc83f  oracle-b-cpuid-probe-0800-0000-profile.json
+983a5ac0158bdf1a03be1f1fd0f054cc23bf4a782f5ff5ea0b31e0691b735007  oracle-b-cpuid-probe-0800-0000-host-default.json (diagnostic; rerun pinned with taskset -c 0, APIC ID 0 in leaf 1 EBX[31:24];
+  the first copy (sha256 0d1af5bc...) was taken on the CPU with APIC ID 1 and is not byte-reproducible without the pin)
+
+Earlier modes of kvm_runner (compatibility check, 2026-11-17, host, both binaries pinned with taskset -c 0
+because KVM_GET_SUPPORTED_CPUID returns the APIC ID of the CPU the runner runs on in leaf 1 EBX[31:24]:
+two runs of the OLD binary on different CPUs already differ in those bytes):
+the same image run by kvm_runner_old and kvm_runner, stdout compared with cmp: identical byte for byte (repeated on 2026-11-17 by run-oracle.sh, same sizes and sha256).
+  step5   a-probe-v2-normal-sipi-hlt-at-0xb000-0800-0000.bin  --real-mode 0x0800:0x0000 --result-block 0x9000:64   4413 bytes  579b3c36ef8232f28fcfffb53eb6f86c58c481ce837c84e73a67bffe44e15c84
+  n       a-2mib-secondary-startup-64-0000-0000.bin (s6-14n)   --real-mode 0x0000:0x0000 --result-block 0x2000:64   4424 bytes  22f543bd7c7e5bf9ea88ad3be58d714e1847d33e1809d19ff4742e0afa2e63e8
+  long64  one HLT byte (default Long64 mode)                  --capture-final-state                              4213 bytes  0981b1e60cb04c982ce3b66f4e5fda57fd5a393e09d306c5d8c6b91f55313be3
+  plain   one HLT byte (default Long64 mode)                  (no options)                                       2981 bytes  30e9181bd9819a189b9d278f6dd50f70962f5163acab9267e56539d33cdd7030
+  probe   b-cpuid-probe-0800-0000.bin without the option      --real-mode 0x0800:0x0000 --result-block 0x8200:192  4627 bytes  983a5ac0158bdf1a03be1f1fd0f054cc23bf4a782f5ff5ea0b31e0691b735007
+(the sha256 column is of the new binary's output, equal to the old binary's)

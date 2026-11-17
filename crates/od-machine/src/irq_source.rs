@@ -22,7 +22,9 @@ pub(crate) trait BoardIrqSource {
 
     /// Absolute virtual time (ns, the board clock) of the next edge of the source, or `None` when
     /// nothing limits the quantum. A quantum never executes more instructions than are left until
-    /// this time (at least one), because the clock advances only after a quantum.
+    /// this time (at least one), because the clock advances only after a quantum. Invariant: after
+    /// the source has caught up with the clock (it applies every due edge when asked), it never
+    /// returns a moment at or before now.
     fn next_deadline_ns(&self) -> Option<u64>;
 
     /// Whether a guest write to the PIT ports `0x40..=0x43` ends the quantum, so that the next

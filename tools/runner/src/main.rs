@@ -29,6 +29,8 @@ mod stage4_probe;
 mod stage4_stack_probe;
 mod stage4_store_load_probe;
 mod stage4_uart_irq_probe;
+mod stage6_litmus;
+mod stage6_smp_probe;
 mod test_cli;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -104,6 +106,8 @@ fn main() -> ExitCode {
         Some("--stage4-pit-irq0-probe") => return stage4_pit_irq0_probe::run(&args),
         Some("--stage4-store-load-probe") => return stage4_store_load_probe::run(&args),
         Some("--stage4-uart-irq-probe") => return stage4_uart_irq_probe::run(&args),
+        Some("--stage6-litmus") => return stage6_litmus::run(&args),
+        Some("--stage6-smp-probe") => return stage6_smp_probe::run(&args),
         Some("--compare-results") => return test_cli::compare_results(&args[1..]),
         Some("boot-firmware") => return firmware_boot::run(&args[1..]),
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
