@@ -5106,10 +5106,19 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Результат:** runner now retires 9,889 instructions and stops at RIP `0x2012cc`, bytes `46 8B 04 1E` (MOV R8D,dword ptr [RSI+R11]; ISSUE-402), `Unsupported { opcode: 139 }`; COM1 is empty.
 - **Проверка:** focused JA condition/target/canonicality/fetch-fault/neighbor/CPL3 tests 5/5, the prior JA +0x24e and +0x24d neighbor regressions 1/1 each, and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,328/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
 
-### ISSUE-402 — S7-04: exact indexed dword load frontier (`46 8B 04 1E`)
+### ISSUE-402 — S7-04: exact indexed dword load (`46 8B 04 1E`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-401.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012cc`.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `46 8B 04 1E` (`MOV R8D,dword ptr [RSI+R11]`). REX.R/X select R8D/R11; the SIB computes 64-bit RSI+R11 with scale 1 and no displacement. The tracked dword read writes R8D and zero-extends R8; flags are preserved. Other address tuples, widths, prefixes, destinations, CPL3 and other profiles remain unsupported.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,889 instructions and reported `Unsupported { opcode: 139 }` at RIP `0x2012cc`; COM1 is empty. Bytes are present at image offset `0x12cc`.
+- **Результат:** runner now retires 9,890 instructions and stops at RIP `0x2012d0`, bytes `41 8D 40 FF` (LEA EAX,[R8-1]; ISSUE-403), `Unsupported { opcode: 141 }`; COM1 is empty.
+- **Проверка:** focused success/state/read-fault/noncanonical/fetch-fault/neighbors/CPL3 tests 6/6 and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,334/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-403 — S7-04: exact LEA EAX,[R8-1] frontier (`41 8D 40 FF`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-402.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012d0`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches exact `MOV R8D,dword ptr [RSI+R11]`; this indexed dword load is not yet admitted by the bounded base profile.
-- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,889 instructions and reported `Unsupported { opcode: 139 }` at RIP `0x2012cc`; COM1 is empty. Bytes at the link-base shadow are `46 8B 04 1E`.
-- **Следующий шаг:** verify exact REX/SIB/load semantics and tracked-fault behavior, then admit only this form.
+- **Суть и последствия:** firmware reaches this exact dword LEA, which is outside the current bounded base-profile admission.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,890 instructions and reported `Unsupported { opcode: 141 }` at RIP `0x2012d0`; COM1 is empty. Bytes at the link-base shadow are `41 8D 40 FF`.
+- **Следующий шаг:** validate 64-bit effective-address calculation, dword truncation/zero-extension and no-memory-access semantics; admit only this exact form.

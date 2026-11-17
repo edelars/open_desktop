@@ -1904,7 +1904,24 @@ Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,328
 
 ### ISSUE-402 — exact indexed dword load (`46 8B 04 1E`)
 
-The runner frontier is `MOV R8D,dword ptr [RSI+R11]` at RIP `0x2012cc`. Confirm
-dword zero-extension, indexed address calculation, tracked reads/faults, and
-exact encoding/profile boundaries before admitting this instruction. Preserve
-the unrelated ISSUE-201 CLD caveat.
+Implemented only `MOV R8D,dword ptr [RSI+R11]` in the base paged profile.
+REX.R/X select R8D/R11, and the SIB computes RSI+R11 with scale 1 and no
+displacement. The tracked read zero-extends the dword to R8 and preserves
+flags. Focused success/state/read-fault/noncanonical/fetch-fault/neighbor/CPL3
+tests pass (6/6); other-profile matrix passes (1/1). ISSUE-201 remains the
+unrelated CLD caveat.
+
+Runner image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` advances
+to `41 8D 40 FF` (LEA EAX,[R8-1], ISSUE-403), RIP `0x2012d0`, after 9,890
+retired instructions, `Unsupported { opcode: 141}`; COM1 is empty. Full
+`cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,334/7/15;
+zero doc tests), paged machine quantum passes (110/110), workspace all-targets
+offline check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings.
+
+### ISSUE-403 — exact `LEA EAX,[R8-1]` (`41 8D 40 FF`)
+
+The next runner frontier is this exact dword LEA. Verify the 64-bit effective
+address, dword destination zero-extension and no-memory/no-flags behavior, then
+admit only this encoding. Preserve the unrelated ISSUE-201 CLD caveat.

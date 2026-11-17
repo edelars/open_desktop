@@ -1794,3 +1794,20 @@ advances to `46 8B 04 1E` (MOV R8D,dword ptr [RSI+R11], ISSUE-402), RIP
 COM1 is empty. Full od-isa passes (2,322/1,591/126/29/6/1,328/7/15; zero doc
 tests), paged machine quantum passes (110/110), workspace check passes with
 existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-402 — `46 8B 04 1E` (`MOV R8D,dword ptr [RSI+R11]`)
+
+The firmware profile admits only this exact indexed dword load. REX.R/X select
+the destination/index; the SIB computes 64-bit RSI+R11 and the tracked read
+zero-extends its dword into R8 while preserving flags. Focused tests pass (6/6)
+and other-profile matrix passes (1/1). ISSUE-201 remains the unrelated CLD
+caveat.
+
+Image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` runner
+advances to `41 8D 40 FF` (LEA EAX,[R8-1], ISSUE-403), RIP `0x2012d0`, after
+9,890 retired instructions, `Unsupported { opcode: 141}`; COM1 is empty. Full
+od-isa suites pass (2,322/1,591/126/29/6/1,334/7/15; zero doc tests), paged
+machine quantum passes (110/110), workspace all-targets offline check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review
+approved with no findings.

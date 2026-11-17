@@ -3230,3 +3230,16 @@ COM1 is empty. Full od-isa passes (2,322/1,591/126/29/6/1,328/7/15; zero doc
 tests), paged machine quantum passes (110/110), workspace all-targets offline
 check passes with existing warnings, and scoped rustfmt/diff-check pass.
 Independent review approved with no findings.
+
+### ISSUE-402 — exact indexed dword load (`46 8B 04 1E`)
+
+Implemented only `MOV R8D,dword ptr [RSI+R11]` in the base profile. REX.R/X
+select R8D/R11; SIB uses scale 1, no displacement, and the tracked read writes
+R8D with architectural zero-extension. Flags remain unchanged. Focused
+success/read-fault/noncanonical/fetch-fault/neighbor/CPL3 tests pass (6/6), as
+does the other-profile matrix (1/1). ISSUE-201 remains the unrelated CLD
+caveat.
+
+Runner advances to `41 8D 40 FF` (LEA EAX,[R8-1], ISSUE-403) at RIP `0x2012d0`
+after 9,890 retired instructions, `Unsupported { opcode: 141}`; COM1 is empty.
+Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,334/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.

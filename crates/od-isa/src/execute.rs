@@ -25001,6 +25001,41 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: the helper reads exact `46 8B 04 1E` (MOV R8D,dword ptr
+        // [RSI+R11]). REX.R/X select R8D/R11 in the SIB; the dword write
+        // zero-extends R8. Reuse the tracked read and commit only on success.
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Memory(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x8b
+            && instruction.length == 4
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x46),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R8, OperandSize::Dword)
+            && source.displacement == 0
+            && source.base == AddressBase::Register(Register::Rsi)
+            && source.index == Some(Register::R11)
+            && source.scale == 1
+            && source.address_size == OperandSize::Qword
+            && source.size == OperandSize::Dword =>
+        {
+            let value =
+                match read_operand(state, memory, context, next_rip, Operand::Memory(source)) {
+                    Ok(value) => value,
+                    Err(MemoryError::Architectural(fault)) => {
+                        return result(PagedProbeExit::Fault(fault), 0);
+                    }
+                    Err(error) => return result(PagedProbeExit::Backend(error), 0),
+                };
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: exact Rust-helper spill reloads `48 8B 74 24 10`
         // (MOV RSI,[RSP+0x10]) and `48 8B 54 24 30` (MOV RDX,[RSP+0x30]).
         // Keep destination and RSP-based SIB disp8 tuples exact; commit the
