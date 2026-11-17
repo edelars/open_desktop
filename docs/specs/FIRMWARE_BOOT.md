@@ -1752,7 +1752,15 @@ quantum passes (110/110), workspace all-targets offline check passes with
 existing warnings, and scoped rustfmt/diff-check pass. Independent review is
 pending.
 
-### ISSUE-399 — `49 83 C0 18` frontier
+### ISSUE-399 — `49 83 C0 18` (`ADD R8,0x18`)
 
-Firmware next reaches exact qword `ADD R8,0x18`. Keep admission exact and
-verify arithmetic flags/definedness. ISSUE-201 remains the unrelated CLD caveat.
+Firmware slice admits only this exact qword ADD immediate form in the base
+paged profile. The immediate is sign-extended imm8; R8 and arithmetic flags /
+definedness update through shared semantics. Focused tests pass (4/4), and the
+other-profile matrix passes (1/1). ISSUE-201 remains the unrelated CLD caveat.
+
+With image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, runner
+advances to `0F 87 4E 02 00 00` (JA rel32 +0x24e, ISSUE-400), RIP `0x2012b5`,
+after 9,884 retired instructions, `Unsupported { opcode: 135 }`; COM1 is empty.
+Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,318/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review is pending.

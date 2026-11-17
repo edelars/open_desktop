@@ -28931,7 +28931,14 @@ machine quantum passes (110/110), workspace all-targets offline check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review
 is pending.
 
-### ISSUE-399 — `49 83 C0 18` frontier
+### ISSUE-399 — exact `ADD R8,0x18` (`49 83 C0 18`)
 
-The next exact instruction is qword `ADD R8,0x18`. Validate signed imm8,
-arithmetic flags/definedness and state preservation.
+The base paged profile admits this exact qword immediate ADD form. Opcode 83
+sign-extends imm8 +0x18; shared arithmetic semantics update R8, RFLAGS, and
+RFLAGS definedness while preserving unrelated state. Focused tests pass (4/4),
+and the other-profile matrix passes (1/1). ISSUE-201 remains the unrelated CLD
+caveat.
+
+Runner frontier is now `0F 87 4E 02 00 00` (JA rel32 +0x24e, ISSUE-400), RIP
+`0x2012b5` after 9,884 retired instructions, `Unsupported { opcode: 135 }`;
+COM1 is empty. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,318/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review is pending.

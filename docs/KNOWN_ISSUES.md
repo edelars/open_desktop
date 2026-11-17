@@ -5079,10 +5079,19 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Результат:** runner now retires 9,882 instructions and stops at RIP `0x2012ae`, bytes `49 83 C0 18` (ADD R8,0x18; ISSUE-399), `Unsupported { opcode: 131 }`; COM1 is empty.
 - **Проверка:** focused condition/definedness/target/canonicality/fetch-fault/neighbor/CPL3 tests 5/5 and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,314/7/15; zero doc tests), paged machine quantum passes 110/110, workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review is pending. ISSUE-201 remains the unrelated CLD caveat.
 
-### ISSUE-399 — S7-04: exact helper ADD R8,0x18 frontier (`49 83 C0 18`)
+### ISSUE-399 — S7-04: exact helper ADD R8,0x18 (`49 83 C0 18`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-398.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012ae`.
-- **Статус:** открыта.
-- **Суть и последствия:** after ISSUE-398, firmware reaches exact `49 83 C0 18` (`ADD R8,0x18`); this immediate form is not yet admitted by the bounded base profile.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact Primary `49 83 C0 18` (`ADD R8,0x18`). REX.W/B select qword R8; opcode 83 sign-extends imm8. Shared ADD updates R8 and arithmetic flags/definedness while preserving all unrelated state. Other immediates, registers, widths, opcodes, prefixes, CPL3 and other profiles remain unsupported.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,882 instructions and reported `Unsupported { opcode: 131 }` at RIP `0x2012ae`; COM1 is empty. The bytes are present at image offset `0x12ae`, corresponding to the firmware link-base shadow.
-- **Следующий шаг:** implement only this exact qword R8 immediate ADD after validating result, flags and profile boundaries.
+- **Результат:** runner now retires 9,884 instructions and stops at RIP `0x2012b5`, bytes `0F 87 4E 02 00 00` (JA rel32 +0x24e; ISSUE-400), `Unsupported { opcode: 135 }`; COM1 is empty.
+- **Проверка:** focused arithmetic/state/fetch-fault/neighbors/CPL3 tests 4/4 and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,318/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review is pending. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-400 — S7-04: exact helper JA rel32 +0x24e frontier (`0F 87 4E 02 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-399.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012b5`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware next reaches this exact JA rel32 displacement; bounded base-profile admission does not yet cover it.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,884 instructions and reported `Unsupported { opcode: 135 }` at RIP `0x2012b5`; COM1 is empty. Bytes at the link-base shadow are `0F 87 4E 02 00 00`.
+- **Следующий шаг:** validate the exact branch condition/target/fault behavior and add only this displacement.

@@ -1857,5 +1857,24 @@ and scoped rustfmt/diff-check pass. Runner advances to `49 83 C0 18`
 
 ### ISSUE-399 — exact ADD R8,0x18 (`49 83 C0 18`)
 
-The next firmware frontier is this exact qword R8 ADD immediate. Pin admission
-to these bytes and verify signed imm8, arithmetic flags and profile boundaries.
+Implemented only exact qword `ADD R8,0x18` in base `PagedCpl0ProbeV1`. REX.W/B
+select R8; opcode 83 sign-extends imm8. Shared ADD updates R8 and arithmetic
+flags/definedness. Focused semantic, fetch-fault, neighbor and CPL3 tests pass
+(4/4); other-profile matrix passes (1/1). ISSUE-201 remains the unrelated CLD
+caveat.
+
+Runner image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` now stops
+at `0F 87 4E 02 00 00` (JA rel32 +0x24e, ISSUE-400), RIP `0x2012b5`, after
+9,884 retired instructions, `Unsupported { opcode: 135 }`; COM1 is empty. Full
+`cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,318/7/15;
+zero doc tests), paged machine quantum passes (110/110), workspace all-targets
+offline check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings.
+
+### ISSUE-400 — exact JA rel32 +0x24e (`0F 87 4E 02 00 00`)
+
+Next runner frontier is this exact JA form at RIP `0x2012b5`. Admit only this
+displacement in the base paged profile after covering CF/ZF semantics, taken
+and fallthrough targets, taken-only canonicality, fetch faults, and profile and
+encoding neighbors. Preserve ISSUE-201 as an unrelated CLD caveat.
