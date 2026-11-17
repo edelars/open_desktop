@@ -31,6 +31,8 @@ mod linux_checkpoints;
 mod linux_direct;
 mod linux_load;
 mod linux_placement;
+#[cfg(test)]
+mod litmus_interleaving;
 mod local_apic;
 mod nvme;
 mod page_walk;
