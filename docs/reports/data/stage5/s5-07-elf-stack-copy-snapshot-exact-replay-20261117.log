@@ -1,0 +1,108 @@
+S5-07 ELF stack-copy snapshot exact-nonce replays — 2026-11-17
+
+Purpose and source
+------------------
+Two local macOS/aarch64 release-runner replays used the exact nonce, canonical
+kernel, initramfs, ACPI blob, Stage4A/CPL0/user-mode profile, RAM size, and
+3,000,000,000 instruction budget of the two runs in
+`s5-07-counted-canonical-n2-20261117-a`. The only added execution option was
+`--execution-observations-out <run-sidecar>` with
+`--execution-observations-elf-stack-copy`. The source series remains
+`smoke_not_acceptance`; these replays are diagnostic and do not change its
+strict comparison result.
+
+Canonical input hashes were verified by the runner:
+
+* kernel: `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`
+* initramfs: `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`
+* ACPI blob: `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`
+* ACPI manifest: `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`
+
+The first attempted run used the Stage 4 fixture ACPI blob
+(`6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d`), which
+was not the canonical source input. That attempt is retained under the ignored
+`run-0001-wrong-acpi/` artifact directory and excluded from all results below.
+The valid run 0001 retry used the canonical blob above; run 0002 used it from
+the start.
+
+Command template (run once for each row's nonce and output directory):
+
+```sh
+target/release/od-runner linux-direct \
+  --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/s5-07-canonical-initramfs-rebuild/initramfs.cpio \
+  --acpi-blob work/stage5/staging/s5-07-canonical-acpi-20261117.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --nonce <source-nonce> \
+  --out work/stage5/s5-07-elf-copy-exact-replay-20261117-a/<run-dir>/runner.json \
+  --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --execution-observations-out work/stage5/s5-07-elf-copy-exact-replay-20261117-a/<run-dir>/execution-observations.json \
+  --execution-observations-elf-stack-copy
+```
+
+Replay integrity
+----------------
+| Run | Nonce | Stop equals source | UART equals source | Retired | PF events | Omitted | Snapshot |
+|---|---|---:|---:|---:|---:|---:|---|
+| 0001 | `OD518e8be9ac44221a00000fb3400000000` | yes | yes | 2,999,999,998 | 33 | 0 | `captured` |
+| 0002 | `OD518e8bfb13a39d1980000fb3400000001` | yes | yes | 2,999,999,998 | 34 | 0 | `captured` |
+
+Each observations sidecar is schema 14, has `write_error=null`, and its byte
+count and SHA-256 match the runner metadata. Runner JSON and sidecar artifacts:
+
+| Run | Artifact | Bytes | SHA-256 |
+|---|---|---:|---|
+| 0001 | `run-0001-canonical-retry/runner.json` | 84,832 | `956081036b0d5d2e1c81bc0f91981b5401dc664952a3a32655174d34b1e659dc` |
+| 0001 | `run-0001-canonical-retry/execution-observations.json` | 51,718 | `1444324e770114f9e290d5a7b33c4dadc80573055a68490ee6e64937e19d4f17` |
+| 0002 | `run-0002/runner.json` | 83,783 | `5c5fdda9608cbb5610c7ab1ec9fa064b9abaea85422a6d16887614fd4b0dcf9b` |
+| 0002 | `run-0002/execution-observations.json` | 54,676 | `64388e66f08ad4541c39b3fa2f37593fd5a121ebf8789dc088e4672182b25309` |
+
+The source UART hashes are `1bc1d93bc3166bec2f29a1715d1e8a5b3933ce93bc53136e0fa701ad725a9284`
+and `53fe7af2da27845e71c3707c9916c258b480ffb39bbc273c88127731fa656ae4` for
+runs 0001 and 0002 respectively. The matching replay UART hashes are identical.
+
+Pre-copy destination state
+--------------------------
+The first-hit snapshot is at CPL0 RIP `0xffffffff81999bd4`, immediately before
+the CALL into `_copy_to_user`. Both runs pass the artifact-specific gate with
+`RDX=7`, `RSI=0xffffffff82fdeb8f`, and `RDI=R13-7`. The `stack_input` and
+`copy_source` probes translate in both runs. The `bprm_p` value translates to
+the same physical address `0x39fffd2` in each run, with the same present raw PT
+leaf `0x39ff867`.
+
+| Run | `bprm_p` | aligned stack pointer (`R13`) | `bprm_p - R13` | copy destination (`RDI`) | destination page | destination walk |
+|---|---|---|---:|---|---|---|
+| 0001 | `0x7fffe29fdfd2` | `0x7fffe29fda80` | `0x552` (1,362 bytes) | `0x7fffe29fda79` | `0x7fffe29fd000` | translated; PT leaf `0x39ff867` |
+| 0002 | `0x7fff9d9d8fd2` | `0x7fff9d9d7430` | `0x1ba2` (7,074 bytes) | `0x7fff9d9d7429` | `0x7fff9d9d7000` | `page_fault`; PT index 471 leaf `0x0` |
+
+In run 0001 the copy destination and `bprm_p` are on the same mapped 4 KiB
+page. In run 0002 `bprm_p` is on the mapped page beginning at
+`0x7fff9d9d8000` (PT index 472), while the destination lies on its adjacent
+lower page, whose PT leaf is absent (index 471). The effective pointer
+decrements are observed differences after stack alignment; they are not direct
+measurements of the RNG output.
+
+Delivered fault correspondence and conclusion
+---------------------------------------------
+Run 0002's complete event list has one additional event at zero-based index
+30: CPL0 write `#PF` at RIP `0xffffffff8271a9c1`, CR2 `0x7fff9d9d7429`, error
+code `0x2`. Its recorded original-access walk has present PML4/PDPT/PD entries
+and raw-zero PT leaf at index 471. This is the same destination address and
+missing leaf already observed by the pre-CALL snapshot. Run 0001 has no event
+at its destination address; its pre-CALL destination translation succeeds.
+
+The paired evidence supports the local explanation for this pair's +1
+delivered `#PF`: stack alignment placed the seven-byte platform-string copy on
+an already mapped argument page in run 0001 and on an absent adjacent lower
+page in run 0002; the latter store produced the extra fault. Astra reviewed the
+schema-v14 measurements and agrees that no further replay is needed for this
+bounded localization.
+
+This does not identify why the stack-alignment result differed, establish the
+RNG or prior page-provisioning history, or classify arbitrary page-fault
+variation as benign. It does not resolve the source series' strict
+`matches=false` result, explain its other machine/UART differences, or satisfy
+S5-07 acceptance. No comparator or normalization rule changed. The schema-v14
+capture implementation was independently reviewed and committed as `003baf1`.
