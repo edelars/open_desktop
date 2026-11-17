@@ -97,8 +97,10 @@ impl RealModeMemory for BoardRam<'_> {
 /// retires nothing and hands over at once); `stop()` is polled (true: the call ends); the budget is
 /// checked (used up: the call ends). Then one step of the model. A refusal ends the call with
 /// [`FirmwareBoardError::ApLegacyRefused`]; the model and the memory are unchanged by the refused
-/// step, and what earlier steps of the call retired stays in the vCPU (the scheduler loses the
-/// count with the error: a refusal ends the run).
+/// step, and what earlier steps of the call retired stays in the vCPU. Those steps are in neither
+/// the counters of the scheduler nor the clock: the error replaces the `Executed` of the call, so
+/// the scheduler charges nothing for it (a refusal ends the run; the clock and the counters of an
+/// errored run are short by the steps of the last call).
 ///
 /// At the hand-over `IA32_EFER` of the model goes to `guest_efer`; the state is
 /// [`ProtectedCpu::into_long_mode`] of the model with the vCPU's own `state` as the preserved one,
@@ -194,20 +196,18 @@ pub(crate) fn run_legacy(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::firmware_board::vcpu_quantum::fixture;
     use crate::smp_scheduler::{
         BoardSmpHost, Finished, QuantumPolicy, SmpError, SmpHost, SmpScheduler, StopRequest,
     };
     use crate::vcpu::{AP_INIT_EDX, POWER_ON_CR0, init_cpu};
     use crate::{
-        FIRMWARE_EFER, FirmwareBoardConfig, LOCAL_APIC_MMIO_BASE, PciEcam,
-        firmware_board::assemble_board,
+        FirmwareBoardConfig, LOCAL_APIC_MMIO_BASE, PciEcam, firmware_board::assemble_board,
     };
-    use od_isa::execute::{ControlRegisterPolicy, MovCr3Long64V1};
     use od_isa::legacy_mode::RealModeState;
-    use od_isa::memory::{AccessContext, AccessOrigin, InstructionMode, PrivilegeLevel};
     use od_isa::protected_exec::ProtectedRefusal;
     use od_isa::real_mode_exec::{ImageMemoryMut, RealModeCpu};
-    use od_isa::{CliProfile, CpuActivity, HaltProfile, INTEGER_FLAGS, LongModeState, StiProfile};
+    use od_isa::{CpuActivity, LongModeState};
 
     // ---- the test trampoline -------------------------------------------------------------------
     //
@@ -396,57 +396,16 @@ mod tests {
         (6 << 8) | u32::from(vector)
     }
 
-    /// The long-mode quantum of a vCPU of this board: the set loop of S6-16a with the vCPU's own
-    /// page-table root (the trampoline's CR3), what a wired-in board will do for any vCPU (S6-16d).
+    /// The long-mode quantum of a vCPU of this board: the board's own (S6-16d,
+    /// `run_vcpu_set_quantum`): the vCPU's own CR3 (the trampoline's) and its own `guest_efer`
+    /// (0xD01, not `FIRMWARE_EFER` 0xD00), the Local APIC of the vCPU, its own boundary hook.
     fn long_quantum(
         board: &mut LoadedFirmwareBoard,
         cpu: usize,
         budget: u64,
         stop: &mut dyn FnMut() -> bool,
     ) -> Result<Executed, FirmwareBoardError> {
-        use crate::paged_memory_adapter::run_cpl0_set_paged_2m_ram_with_cache;
-        let (cli, sti, halt) = (
-            CliProfile::NonPviLong64V1,
-            StiProfile::NonPviLong64V1,
-            HaltProfile::Long64V1,
-        );
-        let set = od_isa::Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
-            .with_cli(&cli)
-            .with_cpu_owned_cr3(MovCr3Long64V1)
-            .with_pio_u8()
-            .with_halt(&halt)
-            .with_sti(&sti);
-        let mut state = board.vcpu(cpu).unwrap().state.clone();
-        let cr3 = state.cr3.expect("the AP's own CR3");
-        let report = run_cpl0_set_paged_2m_ram_with_cache(
-            &mut state,
-            board.bus_mut(),
-            cpu,
-            cr3,
-            FIRMWARE_EFER,
-            AccessContext {
-                mode: InstructionMode::Long64,
-                privilege: PrivilegeLevel::Ring0,
-                origin: AccessOrigin::Explicit,
-            },
-            budget,
-            INTEGER_FLAGS,
-            &set,
-            None,
-            || stop(),
-            |_| {},
-            false,
-            None,
-            None,
-            None,
-            None,
-        );
-        assert_eq!(report.memory_error, None, "{report:?}");
-        board.vcpu_mut(cpu).unwrap().state = state;
-        Ok(Executed {
-            retired: report.instructions_executed,
-            ..Executed::default()
-        })
+        fixture::with_set(|set| board.run_vcpu_set_quantum(cpu, budget, stop, set))
     }
 
     /// What the boot processor does: its first call sends INIT and SIPI to the AP (when `send`),
@@ -577,6 +536,10 @@ mod tests {
         // The budget is the boot processor's two instructions and the AP's legacy path exactly:
         // the AP stops on the hand-over, before the first long-mode instruction.
         let mut board = board();
+        // What INIT keeps (`kernel_gs_base`, the FP and SSE state, `syscall`) is taken from the
+        // state the vCPU has BEFORE the run, not read back from the vCPU after the hand-over.
+        board.vcpu_mut(1).unwrap().state.kernel_gs_base = Some(0x5A5A_0000_1234);
+        let preserved = board.vcpu(1).unwrap().state.clone();
         let mut call = 0;
         {
             let mut host = BoardSmpHost::new(
@@ -595,11 +558,16 @@ mod tests {
             assert_eq!(scheduler.counters()[1].retired, LEGACY_STEPS);
         }
         let (protected, image) = isolated_run();
-        let preserved = board.vcpu(1).unwrap().state.clone();
         let expected = protected.into_long_mode(&preserved).unwrap();
         let ap = board.vcpu(1).unwrap();
         assert!(ap.legacy.is_none());
         assert_eq!(ap.state, expected);
+        // The kept register survived the whole path; the registers the trampoline wrote did not
+        // come from `preserved`.
+        assert_eq!(ap.state.kernel_gs_base, preserved.kernel_gs_base);
+        assert_eq!(ap.state.x87, preserved.x87);
+        assert_eq!(ap.state.sse, preserved.sse);
+        assert_ne!(ap.state.cr0, preserved.cr0);
         assert_eq!(ap.guest_efer, protected.efer);
         assert_eq!(ap.state.rip, LONG_AT);
         assert_eq!(ap.state.activity, Some(CpuActivity::Running));
@@ -663,6 +631,107 @@ mod tests {
             assert_eq!(run_whole(seeded(seed), 1_000), first, "seed {seed:#x}");
             // The AP does not depend on how its turns are cut: the same final state as above.
             assert_eq!(first, whole, "seed {seed:#x}");
+        }
+    }
+
+    // ---- S6-16d: after the hand-over the AP is a vCPU like any other --------------------------------
+
+    /// The boot processor of the test (a long-mode processor of the harness, SMP plan 4.4: it is
+    /// not what is proved here) sends INIT and SIPI to the AP with the ICR, waits for the flag the
+    /// AP raises in long mode, and sends the first Fixed IPI; its handler sends the next ones.
+    fn bsp_program() -> Vec<u8> {
+        let mut code = fixture::enable_lapic();
+        code.extend(fixture::mov_eax(1 << 24)); // ICR_HIGH: destination APIC ID 1
+        code.extend(fixture::imm(&[0x89, 0x83], 0x310));
+        code.extend(fixture::mov_eax(INIT_ASSERT));
+        code.extend(fixture::store_eax(0x300));
+        code.extend(fixture::mov_eax(sipi(SIPI_VECTOR)));
+        code.extend(fixture::store_eax(0x300));
+        code.extend(fixture::imm(&[0xB9], fixture::FLAG as u32)); // mov ecx, FLAG
+        code.extend([0x8B, 0x01, 0x85, 0xC0, 0x74, 0xFA]); // wait: mov eax,[rcx]; test; jz wait
+        code.extend(fixture::send_ipi_from_ebx(fixture::TO_AP, 1));
+        code.extend(fixture::HLT_LOOP);
+        code
+    }
+
+    #[test]
+    fn two_vcpus_exchange_fixed_ipis_after_the_ap_was_started_by_sipi_from_guest_code() {
+        const IDT_AP: u64 = 0xE000;
+        const PD_L: u64 = 0xC000;
+        const PT_L: u64 = 0xD000;
+        let mut board = board();
+        board.bus_mut().enable_apic_mmio_windows();
+        // The boot processor: tables, GDT, IDT, handlers and program of its own.
+        fixture::system(&mut board, true);
+        let cr3_0 = fixture::tables(&mut board, fixture::TABLES_0, 0x60_0000, 0);
+        fixture::patch(&mut board, fixture::CODE_0, &bsp_program());
+        fixture::install(
+            &mut board,
+            0,
+            fixture::long_state(fixture::CODE_0, fixture::STACK_0, cr3_0, true),
+            0xD01,
+        );
+        // The AP: the trampoline of the tests above with three changes. Its IDTR points at an IDT
+        // whose gates select the 64-bit code segment of the trampoline's GDT (0x10); its tables get
+        // the page of the Local APIC window; the long-mode code is the AP program, which ends in
+        // `sti; hlt` (the trampoline leaves IF clear).
+        let mut idtr = vec![0xFF, 0x0F];
+        idtr.extend(le32(IDT_AP as u32));
+        fixture::patch(&mut board, IDTR_AT, &idtr);
+        fixture::idt(&mut board, IDT_AP, 0x10);
+        fixture::patch(&mut board, LONG_AT, &fixture::ap_program(true));
+        fixture::patch(&mut board, PDPT + 3 * 8, &(PD_L | 3).to_le_bytes());
+        fixture::patch(&mut board, PD_L + 0x1F7 * 8, &(PT_L | 3).to_le_bytes());
+        fixture::patch(
+            &mut board,
+            PT_L,
+            &(LOCAL_APIC_MMIO_BASE | 0x13).to_le_bytes(),
+        );
+
+        let mut host = BoardSmpHost::new(
+            &mut board,
+            |board: &mut LoadedFirmwareBoard, cpu, budget, stop: &mut dyn FnMut() -> bool| {
+                long_quantum(board, cpu, budget, stop)
+            },
+        )
+        .unwrap();
+        let mut scheduler =
+            SmpScheduler::new(2, QuantumPolicy::Fixed(32), StopRequest::new()).unwrap();
+        assert_eq!(
+            scheduler.run(&mut host, 100_000).unwrap(),
+            Finished::AllIdle
+        );
+        let counters = scheduler.counters().to_vec();
+        // The AP was started by the guest's own ICR writes, once, and ran the trampoline.
+        assert_eq!((counters[1].init_applied, counters[1].started), (1, 1));
+        assert!(counters[1].retired > LEGACY_STEPS);
+        let ap = board.vcpu(1).unwrap();
+        assert!(ap.legacy.is_none());
+        assert_eq!(ap.guest_efer, 0xD01);
+        assert_eq!(
+            ap.state.cr3,
+            Some(PML4),
+            "its own tables, not the board's root"
+        );
+        assert_eq!(ap.activity(), CpuActivity::Halted);
+        assert_eq!(board.vcpu(0).unwrap().activity(), CpuActivity::Halted);
+        // ROUNDS Fixed IPIs each way, each handler ended with its EOI.
+        assert_eq!(
+            fixture::dword(&mut board, fixture::COUNTER_1),
+            fixture::ROUNDS
+        );
+        assert_eq!(
+            fixture::dword(&mut board, fixture::COUNTER_0),
+            fixture::ROUNDS
+        );
+        for cpu in 0..2 {
+            for vector in [fixture::TO_AP, fixture::TO_BSP] {
+                assert_eq!(
+                    board.local_apic_of(cpu).unwrap().vector_state(vector),
+                    (false, false),
+                    "cpu {cpu} vector {vector:#x}"
+                );
+            }
         }
     }
 

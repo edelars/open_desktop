@@ -62,6 +62,8 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+pub(crate) mod vcpu_quantum;
+
 /// Image size, fixed by the contract (FIRMWARE_BOOT.md 3.2).
 pub const FIRMWARE_IMAGE_BYTES: usize = 0x0040_0000;
 /// ROM window `[0xFFC0_0000, 2^32)` (FIRMWARE_BOOT.md section 2).
@@ -303,6 +305,14 @@ pub enum FirmwareBoardError {
     ApLegacyRefused {
         cpu: usize,
         refusal: crate::ap_legacy_exec::ApLegacyRefusal,
+    },
+    /// The long-mode quantum of a vCPU ([`LoadedFirmwareBoard::run_vcpu_set_quantum`], S6-16d)
+    /// ended on something other than a budget, a stop request, a `HLT` or a partial `REP`: a
+    /// fault, a page fault, an unsupported instruction, a refused configuration. `detail` is the
+    /// `Debug` text of the set exit; the vCPU keeps the state the failing call left.
+    VcpuQuantum {
+        cpu: usize,
+        detail: String,
     },
 }
 
@@ -1838,7 +1848,7 @@ impl LoadedFirmwareBoard {
                 .map(|(index, vcpu)| {
                     Ok(WakeView {
                         activity: SchedActivity::from(vcpu.activity()),
-                        if_set: vcpu.state.rflags & (1 << 9) != 0,
+                        if_set: vcpu.interrupts_enabled(),
                         apic: self.lapic.for_cpu(index).ok_or(FirmwareBoardError::Config(
                             "clock owner: a vCPU has no Local APIC",
                         ))?,
@@ -1897,6 +1907,47 @@ impl LoadedFirmwareBoard {
             (Some(source), Some(timer)) => Some(source.min(timer)),
             (source, timer) => source.or(timer),
         }
+    }
+
+    /// The COM1 transmit path between two calls of a set loop (S4-39i): a THR write clears the THRE
+    /// condition and the pump below raises it again before the next instruction boundary; the
+    /// interrupt sources sample the level on both sides so that the fall and the rise are both seen
+    /// (one edge on IR4 per byte). Every byte that completes goes to `com1_log` (and to the opt-in
+    /// console contexts; `retired` is the count the UART output context records). Shared by the
+    /// Linux loop and the vCPU quantum of S6-16d.
+    fn pump_uart_transmit(&mut self, retired: u64) {
+        let uart = self.uart.clone();
+        if let Some(source) = &self.uart_irq_source {
+            source.sample();
+        }
+        if let Some(source) = &self.uart_ioapic_source {
+            source.sample();
+        }
+        while uart.transfer_holding_to_shift() {
+            if let Some(byte) = uart.complete_transmission() {
+                self.com1_log.push(byte);
+                if self.console_context_parser.is_some() {
+                    self.sample_console_output_context(byte);
+                }
+                if self.uart_output_context.is_some() {
+                    self.sample_uart_output_context(byte, self.com1_log.len() as u64 - 1, retired);
+                }
+            }
+        }
+        if let Some(source) = &self.uart_irq_source {
+            source.sample();
+        }
+        if let Some(source) = &self.uart_ioapic_source {
+            source.sample();
+        }
+    }
+
+    /// The nearest edge of the board's interrupt source ([`BoardIrqSource::next_deadline_ns`]):
+    /// `None` for [`NoIrqSource`]. The deadline the scheduler of S6-15 gives to every quantum
+    /// ([`crate::smp_scheduler::SmpHost::board_deadline`], S6-16d).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn irq_deadline_ns(&self) -> Option<u64> {
+        self.irq_source.next_deadline_ns()
     }
 
     /// Charge `retired` instructions to the clock of the CPL0-set loop (one ns each, D7).
@@ -2543,36 +2594,7 @@ impl LoadedFirmwareBoard {
                     c5_split: report.c5_split,
                 });
             }
-            // S4-39i: a THR write clears the THRE condition and the pump below raises it again
-            // before the next instruction boundary; the source samples the level on both sides
-            // so that the fall and the rise are both seen (one edge on IR4 per byte).
-            if let Some(source) = &self.uart_irq_source {
-                source.sample();
-            }
-            if let Some(source) = &self.uart_ioapic_source {
-                source.sample();
-            }
-            while uart.transfer_holding_to_shift() {
-                if let Some(byte) = uart.complete_transmission() {
-                    self.com1_log.push(byte);
-                    if self.console_context_parser.is_some() {
-                        self.sample_console_output_context(byte);
-                    }
-                    if self.uart_output_context.is_some() {
-                        self.sample_uart_output_context(
-                            byte,
-                            self.com1_log.len() as u64 - 1,
-                            retired,
-                        );
-                    }
-                }
-            }
-            if let Some(source) = &self.uart_irq_source {
-                source.sample();
-            }
-            if let Some(source) = &self.uart_ioapic_source {
-                source.sample();
-            }
+            self.pump_uart_transmit(retired);
             let failure = |error| LinuxRunFailure { error, retired };
             if let Err(error) = self.charge_retired(report.instructions_executed) {
                 break Err(failure(error));

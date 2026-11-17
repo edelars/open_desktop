@@ -25,9 +25,10 @@ pub(crate) const MAX_VCPUS: usize = 4;
 pub(crate) const POWER_ON_CR0: u32 = 0x6000_0010;
 
 /// EDX of an application processor after INIT (SDM Vol. 3A Table 12-1: the processor signature,
-/// that is `CPUID.01H:EAX`). It is the leaf-1 EAX of the board's own CPUID profile, so a guest that
-/// reads `CPUID` after the reset sees the value EDX held (S6-16c). The oracle runs of S6-14d use the
-/// host value `0x306A9` as an input instead; no profile of the board has that value.
+/// that is `CPUID.01H:EAX`). It is the leaf-1 EAX of `CpuidProfile::DiagnosticV1`, which is the CPUID
+/// source of the legacy models (`RealModeCpu::after_sipi`); it does NOT follow the profile of the
+/// board (open point, MACHINE_CONTRACT.md S6-16c, to be decided in S6-17/S6-18). The oracle runs of
+/// S6-14d use the host value `0x306A9` as an input instead; no profile of the board has that value.
 pub(crate) const AP_INIT_EDX: u32 = CpuidProfile::DiagnosticV1.query(1, 0).eax;
 
 /// The board's vCPU set: the boot processor on `boot_state`, then `count - 1` application
@@ -150,6 +151,11 @@ pub(crate) struct Vcpu {
     /// the start. While `Some`, `state` is not the processor's state (only its `activity` is):
     /// the board runs the legacy model in [`crate::ap_legacy_exec`].
     pub(crate) legacy: Option<LegacyCpu>,
+    /// The next call of the vCPU's set quantum resumes a partial `REP` (the previous call ended on
+    /// `RepIterationBudgetExhausted`): its first boundary is inside the `REP` and no external
+    /// interrupt is delivered there (S6-16d, plan S6-16 6(г)). The set quantum writes it at the end
+    /// of every call; an INIT clears it.
+    pub(crate) skip_first_boundary: bool,
 }
 
 impl Vcpu {
@@ -170,6 +176,7 @@ impl Vcpu {
             guest_kernel_gs_base: 0,
             guest_fp: GuestFpState::initial(),
             legacy: None,
+            skip_first_boundary: false,
         }
     }
 
@@ -248,6 +255,7 @@ impl Vcpu {
             self.legacy = Some(LegacyCpu::Real(init_cpu(old_cr0)));
             self.guest_efer = 0;
             self.guest_cr2 = Some(0);
+            self.skip_first_boundary = false;
             // INIT-reset also ends the NMI-blocked state (the LAPIC latch goes with it, owner's
             // decision S6-12b (a)): the processor restarts in real mode with no handler running.
             self.state.nmi_blocked = false;
@@ -362,6 +370,7 @@ mod tests {
         assert_eq!(vcpu.guest_syscall_mask, 0);
         assert_eq!(vcpu.guest_kernel_gs_base, 0);
         assert_eq!(vcpu.guest_fp, GuestFpState::initial());
+        assert!(!vcpu.skip_first_boundary);
         assert_eq!(vcpu.real_mode(), None);
     }
 
@@ -841,6 +850,22 @@ mod tests {
         assert!(applied.init && !applied.started);
         assert_eq!(bsp.real_mode().unwrap().eip, INIT_EIP);
         assert_eq!(bsp.activity(), CpuActivity::Running);
+    }
+
+    #[test]
+    fn init_clears_the_skip_first_boundary_flag() {
+        // A partial REP left the flag set; INIT restarts the processor (SDM Vol. 3A 9.1), so the
+        // interrupted instruction is gone and the next call must not skip its first boundary.
+        let mut ap = Vcpu::new_ap(1);
+        ap.skip_first_boundary = true;
+        let applied = ap.apply_startup(INIT_ONLY);
+        assert!(applied.init);
+        assert!(!ap.skip_first_boundary);
+        // Without INIT (SIPI only, no effect on a running state) the flag is not touched.
+        let mut other = Vcpu::new_ap(2);
+        other.skip_first_boundary = true;
+        other.apply_startup(sipi_only(0x10));
+        assert!(other.skip_first_boundary);
     }
 
     #[test]

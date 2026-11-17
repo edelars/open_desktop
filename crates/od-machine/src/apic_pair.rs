@@ -68,6 +68,11 @@ impl Default for Route {
 pub(crate) struct CpuApic {
     pub local: State,
     pub timer: Option<Timer>,
+    /// Accepted guest writes to the timer registers (LVT Timer `0x320`, Initial Count `0x380`,
+    /// Divide Configuration `0x3E0`) since power-on. A counter, not state of the device: nothing
+    /// reads it back into the registers. The host of a vCPU quantum ends its call when it moves
+    /// (S6-16d, SMP_CONTRACT.md 8), because a new deadline may be nearer than the quantum.
+    pub timer_writes: u64,
 }
 
 /// INIT and SIPI waiting in the LAPIC of one processor (S6-13). The processor applies them on

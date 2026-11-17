@@ -29,7 +29,8 @@
 //! inside an instruction. A LAPIC event raised during a turn (an ICR write for another vCPU or for
 //! the running one) is applied at the next boundary, after the turn; a host may end its call
 //! earlier when it sees one. The loop is not wired into `run_linux_boot_cpl0_set`: that loop runs
-//! the boot processor only, and no other vCPU can execute before S6-16 (see [`BoardSmpHost`]).
+//! the boot processor only (see [`BoardSmpHost`]; since S6-16c/S6-16d the other vCPUs execute under
+//! this scheduler, in the tests of those slices).
 
 // No production caller yet: the scheduler is wired in by S6-16/S6-17; tests exercise it now.
 #![cfg_attr(not(test), allow(dead_code))]
@@ -159,6 +160,17 @@ pub(crate) trait SmpHost {
     fn apic(&self, cpu: usize) -> LocalApicHandle;
     /// The single owner of the clock of the machine.
     fn clock_owner(&mut self) -> &mut ClockOwner;
+    /// The nearest virtual time (ns) at which the machine, apart from the Local APIC timers the
+    /// owner knows, has an edge a vCPU must not run past: the deadline of the board's interrupt
+    /// source (the PIT line of the boot processor). `None` (the default) when nothing limits a
+    /// turn. The scheduler passes it to [`ClockOwner::step_budget`] for every call of a turn and
+    /// to [`ClockOwner::idle_step`] for an idle jump (S6-16d, condition (a)). A deadline the clock
+    /// has reached is the host's to consume on its next call: an idle jump that reaches it ends in
+    /// `NoProgress` with a skip above 0, which is not an error; the same answer without a skip
+    /// (the host did not consume it) is [`SmpError::IdleNoProgress`].
+    fn board_deadline(&self) -> Option<u64> {
+        None
+    }
     /// The boundary of `cpu`: the INIT and SIPI waiting in its Local APIC, then its NMI, in that
     /// order. Nothing waiting is not an error.
     fn boundary(&mut self, cpu: usize) -> Result<BoundaryReport, Self::Error>;
@@ -408,9 +420,10 @@ impl SmpScheduler {
                 apic: host.apic(cpu),
             })
             .collect();
+        let deadlines: Vec<u64> = host.board_deadline().into_iter().collect();
         let step = host
             .clock_owner()
-            .idle_step(self.stop.requested(), &views, &[])
+            .idle_step(self.stop.requested(), &views, &deadlines)
             .map_err(SmpError::Clock)?;
         self.idle_ns += step.idle_ns;
         self.idle_jumps += u64::from(step.idle_ns > 0);
@@ -419,6 +432,9 @@ impl SmpScheduler {
             IdleOutcome::AllIdle => Ok(Some(Finished::AllIdle)),
             // The clock moved (or a vCPU can be woken now): the next round wakes and picks.
             IdleOutcome::Advanced(_) | IdleOutcome::Woken(_) | IdleOutcome::Runnable(_) => Ok(None),
+            // The jump reached the deadline of the board and nobody has a vector yet: the host
+            // consumes the deadline on its next call (condition (a)). Without a skip nothing moved.
+            IdleOutcome::NoProgress if step.idle_ns > 0 && !deadlines.is_empty() => Ok(None),
             IdleOutcome::NoProgress => Err(SmpError::IdleNoProgress),
         }
     }
@@ -471,11 +487,20 @@ impl SmpScheduler {
         let (mut steps, mut retired) = (0u64, 0u64);
         self.counters[cpu].turns += 1;
         loop {
-            let budget = host.clock_owner().step_budget(left, None);
+            let deadline = host.board_deadline();
+            let budget = host.clock_owner().step_budget(left, deadline);
+            let now_before = host.clock_owner().now_ns();
             let executed = host
                 .run(cpu, budget, &mut || stop.requested())
                 .map_err(SmpError::Host)?;
             let owner = host.clock_owner();
+            // Condition (c): only the scheduler moves the clock; a host that touched it would make
+            // the charge below a double count.
+            debug_assert_eq!(
+                owner.now_ns(),
+                now_before,
+                "SmpHost::run must not move the clock"
+            );
             if executed.retired != 0 {
                 owner
                     .account_retired(executed.retired)
@@ -518,9 +543,10 @@ impl SmpScheduler {
 /// owner ([`LoadedFirmwareBoard::enable_clock_owner`] must have been called), and at every boundary
 /// `apply_pending_startup` (INIT, SIPI) then `deliver_pending_nmi`.
 ///
-/// The quantum itself is the caller's: `run` is the existing interpreter loop of the board (the
-/// CPL0-set quantum with its device ticks), which a later slice extracts from
-/// `run_linux_boot_cpl0_set`; this slice does not copy it. A vCPU in a legacy mode (an application
+/// The quantum itself is the caller's: `run` is the existing interpreter loop of the board. For a
+/// vCPU in long mode it is [`LoadedFirmwareBoard::run_vcpu_set_quantum`] (S6-16d: the vCPU's own CR3
+/// and EFER, its own Local APIC, no clock calls) with the `Cpl0ProfileSet` the caller builds; the
+/// boot processor's Linux loop is not replaced by it. A vCPU in a legacy mode (an application
 /// processor after SIPI, `Vcpu::legacy` is `Some`, S6-16c) is not run by `run`: the host executes its
 /// trampoline on the RAM of the board ([`crate::ap_legacy_exec::run_legacy`]) and, when the
 /// trampoline's 64-bit jump has retired, calls `run` for the rest of the budget in the same call (a
@@ -602,6 +628,10 @@ where
         self.board
             .clock_owner_mut()
             .expect("checked in BoardSmpHost::new")
+    }
+
+    fn board_deadline(&self) -> Option<u64> {
+        self.board.irq_deadline_ns()
     }
 
     fn boundary(&mut self, cpu: usize) -> Result<BoundaryReport, FirmwareBoardError> {
@@ -700,6 +730,11 @@ mod tests {
         nmi_waiting: Vec<usize>,
         /// vCPUs that took an NMI (vector 2), in order.
         nmi_taken: Vec<usize>,
+        /// The deadline of the board's interrupt source; the imitated boundary consumes it once
+        /// the clock has reached it (as the real source does when its edge is taken).
+        board_deadline: Option<u64>,
+        /// Keep a reached deadline instead of consuming it (a host that never consumes it).
+        keep_board_deadline: bool,
     }
 
     impl Rig {
@@ -724,6 +759,8 @@ mod tests {
                 wakes: Vec::new(),
                 nmi_waiting: Vec::new(),
                 nmi_taken: Vec::new(),
+                board_deadline: None,
+                keep_board_deadline: false,
             };
             for cpu in 0..rig.cpus.len() {
                 rig.write(cpu, 0xf0, 0x1ff);
@@ -812,8 +849,19 @@ mod tests {
             &mut self.owner
         }
 
+        fn board_deadline(&self) -> Option<u64> {
+            self.board_deadline
+        }
+
         fn boundary(&mut self, cpu: usize) -> Result<BoundaryReport, Infallible> {
             self.boundaries.push(cpu);
+            if !self.keep_board_deadline
+                && self
+                    .board_deadline
+                    .is_some_and(|deadline| deadline <= self.now())
+            {
+                self.board_deadline = None;
+            }
             // A minimal imitation of `deliver_pending_nmi` for the order of the boundary: an NMI
             // is taken by a running or halted vCPU whatever IF is and makes it `Running` (entering
             // the IDT is not modelled); a vCPU waiting for SIPI or shut down holds it. The real
@@ -1448,6 +1496,57 @@ mod tests {
         let calls = rig.calls.len() as u64;
         assert!(calls > 1);
         assert_eq!(rig.now(), scheduler.retired_total() + 10 * calls);
+    }
+
+    #[test]
+    fn a_board_deadline_cuts_the_first_call_of_a_turn_and_the_clock_stays_the_schedulers() {
+        // Without a deadline the whole shared budget is one call.
+        let mut rig = Rig::spinning(1);
+        finished(&mut rig, QuantumPolicy::Fixed(1000), 120);
+        assert_eq!(rig.calls[0], (0, 120));
+        // The board source has an edge at 50 ns: the call stops there (D7: one instruction, one
+        // ns, so 50 steps), and the owner charges them. Once the clock has reached the deadline
+        // and the host has not taken it yet, the turn goes one step at a time.
+        let mut rig = Rig::spinning(1);
+        rig.board_deadline = Some(50);
+        rig.keep_board_deadline = true;
+        let (scheduler, result) = finished(&mut rig, QuantumPolicy::Fixed(1000), 120);
+        assert_eq!(result, Finished::BudgetExhausted);
+        assert_eq!(rig.calls[0], (0, 50));
+        assert_eq!(rig.calls[1], (0, 1));
+        assert_eq!(rig.now(), 120);
+        assert_eq!(scheduler.retired_total(), 120);
+    }
+
+    #[test]
+    fn an_idle_jump_to_the_board_deadline_is_not_an_error_once_the_host_takes_the_deadline() {
+        // Condition (a): the only vCPU is halted with IF = 1 and nothing but the board's source
+        // can end its sleep. The clock jumps to the source's edge in one move; the arbiter then
+        // answers `NoProgress` (the edge is due and nobody consumed it), which with a skip above 0
+        // is not an error. The host takes the edge at the next boundary; nothing can wake the
+        // vCPU after that. Rig models the lift; BoardSmpHost does not (S6-17).
+        let mut rig = Rig::spinning(1);
+        rig.cpus[0].state.activity = Some(CpuActivity::Halted);
+        rig.cpus[0].state.rflags |= IF_BIT;
+        rig.board_deadline = Some(100);
+        let (scheduler, result) = finished(&mut rig, QuantumPolicy::default(), 1000);
+        assert_eq!(result, Finished::AllIdle);
+        assert_eq!(scheduler.idle(), (100, 1));
+        assert_eq!(rig.now(), 100);
+        assert!(rig.calls.is_empty(), "nothing ran");
+    }
+
+    #[test]
+    fn a_board_deadline_the_host_never_takes_is_an_idle_no_progress_error() {
+        let mut rig = Rig::spinning(1);
+        rig.cpus[0].state.activity = Some(CpuActivity::Halted);
+        rig.cpus[0].state.rflags |= IF_BIT;
+        rig.board_deadline = Some(100);
+        rig.keep_board_deadline = true;
+        let mut scheduler = rig.scheduler(QuantumPolicy::default());
+        // The first jump reaches the deadline; the second round finds it due and still there.
+        assert_eq!(scheduler.run(&mut rig, 1000), Err(SmpError::IdleNoProgress));
+        assert_eq!(scheduler.idle(), (100, 1));
     }
 
     #[test]

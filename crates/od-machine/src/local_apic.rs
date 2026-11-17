@@ -226,6 +226,9 @@ impl LocalApicHandle {
     pub fn cpu_index(&self) -> usize {
         self.1
     }
+    fn with_state_pair<R>(&self, f: impl FnOnce(&crate::apic_pair::CpuApic) -> R) -> R {
+        f(&self.0.lock().unwrap_or_else(|e| e.into_inner()).cpus[self.1])
+    }
     fn with_state<R>(&self, f: impl FnOnce(&mut State) -> R) -> R {
         f(&mut self.0.lock().unwrap_or_else(|e| e.into_inner()).cpus[self.1].local)
     }
@@ -360,6 +363,12 @@ impl LocalApicHandle {
             pair.cpus[self.1].timer.as_mut().unwrap().queue = queue;
             Ok(true)
         })
+    }
+    /// How many guest writes to the timer registers (`0x320`, `0x380`, `0x3E0`) this LAPIC has
+    /// accepted (S6-16d). Read-only; a refused write does not count.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn timer_register_writes(&self) -> u64 {
+        self.with_state_pair(|cpu| cpu.timer_writes)
     }
     /// Whether this LAPIC has an opt-in timer (S4-27i2). Read-only.
     pub fn has_timer(&self) -> bool {
@@ -769,17 +778,23 @@ impl BusDevice for LocalApic {
                             return Err(DeviceError::UnsupportedConfiguration);
                         }
                         pair.cpus[cpu].timer.as_mut().unwrap().lvt = value as u32;
+                        pair.cpus[cpu].timer_writes += 1;
                         return Ok(());
                     }
                     0x380 if value <= u64::from(u32::MAX) => {
-                        return pair.cpus[cpu]
+                        let armed = pair.cpus[cpu]
                             .timer
                             .as_mut()
                             .unwrap()
                             .arm_at(now_ns, value as u32);
+                        if armed.is_ok() {
+                            pair.cpus[cpu].timer_writes += 1;
+                        }
+                        return armed;
                     }
                     0x3e0 if value & !0xb == 0 && timer.queue.is_empty() => {
                         pair.cpus[cpu].timer.as_mut().unwrap().divide = value as u32;
+                        pair.cpus[cpu].timer_writes += 1;
                         return Ok(());
                     }
                     _ => return Err(DeviceError::UnsupportedConfiguration),
