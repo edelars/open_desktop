@@ -25216,6 +25216,41 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: firmware loads exact `4E 8B 7C 1E 08` (MOV R15,qword ptr
+        // [RSI+R11+8]). REX.R selects R15 and REX.X selects the R11 SIB index;
+        // retain the exact base/displacement/scale tuple and commit after read.
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Memory(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x8b
+            && instruction.length == 5
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x4e),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R15, OperandSize::Qword)
+            && source.displacement == 8
+            && source.base == AddressBase::Register(Register::Rsi)
+            && source.index == Some(Register::R11)
+            && source.scale == 1
+            && source.address_size == OperandSize::Qword
+            && source.size == OperandSize::Qword =>
+        {
+            let value =
+                match read_operand(state, memory, context, next_rip, Operand::Memory(source)) {
+                    Ok(value) => value,
+                    Err(MemoryError::Architectural(fault)) => {
+                        return result(PagedProbeExit::Fault(fault), 0);
+                    }
+                    Err(error) => return result(PagedProbeExit::Backend(error), 0),
+                };
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: exact Rust-helper spill reloads `48 8B 74 24 10`
         // (MOV RSI,[RSP+0x10]) and `48 8B 54 24 30` (MOV RDX,[RSP+0x30]).
         // Keep destination and RSP-based SIB disp8 tuples exact; commit the

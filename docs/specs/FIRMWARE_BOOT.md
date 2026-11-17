@@ -2017,3 +2017,18 @@ pass. Independent review approved with no findings. ISSUE-201 remains the unrela
 Runner advances to `4E 8B 7C 1E 08` (MOV R15,qword ptr [RSI+R11+8]; ISSUE-416),
 RIP `0x20130a`, after 9,904 retired instructions, unsupported opcode 139,
 COM1 empty.
+
+### ISSUE-416 — exact `MOV R15,qword ptr [RSI+R11+8]`
+
+The base paged firmware profile admits only `4E 8B 7C 1E 08`. REX.R selects
+R15, REX.X selects R11 as the SIB index, RSI is the base and disp8 is +8. The
+tracked qword read preserves flags; fetch, noncanonical-address and data-read
+faults do not commit R15 or RIP. Focused tests pass (6/6), other-profile matrix
+passes (1/1), full od-isa passes (2,322/1,591/126/29/6/1,398/7/15; zero doc
+tests), paged machine quantum passes (110/110), workspace all-targets offline
+check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+Runner advances to `4A 8B 44 1E 10` (MOV RAX,qword ptr [RSI+R11+0x10]; ISSUE-417),
+RIP `0x20130f`, after 9,905 retired instructions, unsupported opcode 139,
+COM1 empty.
