@@ -20,6 +20,7 @@ pub mod long_decode;
 pub mod lretq;
 pub mod memory;
 pub mod msr;
+pub mod paging;
 pub mod port_io;
 pub mod protected_exec;
 mod rational_rounding;

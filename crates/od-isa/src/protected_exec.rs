@@ -1,8 +1,8 @@
-//! Execution of block 6 of the AP trampoline in 32-bit protected mode up to, but excluding, the
-//! `MOV CR0, EAX` that enables paging (S6-14k, S6-14l).
+//! Execution of block 6 of the AP trampoline in 32-bit protected mode, the `MOV CR0, EAX` that
+//! enables paging and the compatibility-mode far jump of block 7 (S6-14k, S6-14l, S6-14m).
 //!
 //! Scope is the closed set of forms of the S6-14a profile row 6 (CPU_CONTRACT.md, sections
-//! "S6-14a", "S6-14k" and "S6-14l"), blob offsets `0x2000..0x2062`, entered from the block 5 far
+//! "S6-14a", "S6-14k" and "S6-14l"), blob offsets `0x2000..0x2062` and the tail up to `0x206c` (`JMP 0x2065`), entered from the block 5 far
 //! jump (S6-14j, [`RealModeCpu`]) with a flat 32-bit CS (`D = 1`) and no prefix byte:
 //!
 //! | bytes                         | instruction                              |
@@ -16,7 +16,8 @@
 //! | `0f 22 e0` / `d8`             | `MOV CR4, EAX` / `MOV CR3, EAX`          |
 //! | `b8 imm32` / `b9 imm32`       | `MOV EAX, imm32` / `MOV ECX, imm32`      |
 //! | `0f 32` / `0f 30`             | `RDMSR` / `WRMSR`, only with `ECX = 0xC0000080` (EFER) |
-//! | `0f 22 c0`                    | `MOV CR0, EAX`: always refused (below)   |
+//! | `0f 22 c0`                    | `MOV CR0, EAX` (S6-14m: enables paging, below) |
+//! | `ea off32 sel16`              | `JMP FAR ptr16:32` (S6-14m, block 7 at `0x2065`) |
 //!
 //! Everything else is [`ProtectedRefusal::Unsupported`] with the address and bytes and no state
 //! change: in particular `RDMSR`/`WRMSR` with any other `ECX` (the model has one MSR, EFER; the
@@ -27,12 +28,29 @@
 //! `EDX:EAX`. `WRMSR` takes `EDX:EAX`: a bit outside `SCE` (0), `LME` (8), `LMA` (10) and `NXE`
 //! (11) is [`ProtectedRefusal::EferWriteReservedBits`] (the hardware `#GP(0)`; observed in the KVM
 //! oracle as a shutdown without an IDT); `SCE`, `LME` and `NXE` are stored; the `LMA` bit of the
-//! written value is ignored and `LMA` keeps its value, which is 0 here because long mode is never
-//! entered (observed in the oracle: KVM drops it without a fault). No other MSR exists.
+//! written value is ignored and `LMA` keeps its value (observed in the oracle: KVM drops it without
+//! a fault). `WRMSR` never changes `LMA`; it becomes 1 only through `MOV CR0` with `PG = 1` while
+//! `LME` and `PAE` are set (S6-14m, below). No other MSR exists.
 //!
-//! Paging is not modelled. `MOV CR0, EAX` with `PG = 1` is [`ProtectedRefusal::PagingNotModelled`]
-//! (the state is not changed); any other CR0 write is [`ProtectedRefusal::Cr0WriteUnmodelled`].
-//! `MOV CR3, EAX` stores the value (no translation, no PDPTR load, no TLB); `MOV CR4, EAX`
+//! Paging and IA-32e (S6-14m, CPU_CONTRACT.md "S6-14m"). `MOV CR0, EAX` with `PG = 1` and `PE = 1`
+//! in `EAX`, `CR0.PG = 0`, `EFER.LME = 1`, `CR4.PAE = 1` and a CS that is not a 64-bit segment
+//! enters IA-32e mode: `CR0 := EAX | ET`, `EFER.LMA := 1` (the first time `LMA` changes, by the
+//! processor and not by `WRMSR`), and from then on every access of the model (instruction bytes,
+//! `DS` operands, GDT descriptors and their accessed-bit write) is translated by the 4-level
+//! walk of [`crate::paging`] with `CR3`, `CR0.WP` and `EFER.NXE`; a walk that would fault is the
+//! refusal [`ProtectedRefusal::PageFault`] (the `#PF`, never delivered). `PG = 1` without `PAE`,
+//! without `PE`, with `CS.L = 1`, or with reserved `CR0` bits, `NW` without `CD` and a second `PG`
+//! write are refusals (`#GP` in hardware). `PG = 1` with `LME = 0` (32-bit and PAE paging) is
+//! [`ProtectedRefusal::PagingNotModelled`]; any `CR0` write with `PG = 0` is
+//! [`ProtectedRefusal::Cr0WriteUnmodelled`]. While paging is on, `WRMSR` may not change `LME`
+//! and `MOV CR4` may not clear `PAE` (`#GP`). The far jump `JMP ptr16:32` (CPL 0) follows the SDM
+//! Vol. 3A direct far jump rules, by memory: the descriptor must be a present code segment with
+//! `DPL = 0` (conforming: `DPL <= 0`) and `RPL = 0` for a non-conforming one; in IA-32e mode a
+//! descriptor with `L = 1` and `D = 1` is refused, `L = 1`, `D = 0` selects 64-bit mode (no limit
+//! check, `RIP` is the zero-extended offset) and `L = 0` the compatibility mode (offset under the
+//! limit); outside IA-32e mode `L = 1` is a model refusal. The model does not execute in 64-bit
+//! mode: [`ProtectedRefusal::Mode64NotModelled`] is returned for any step with `CS.L = 1`
+//! (S6-14n). `MOV CR3, EAX` stores the value (no PDPTR load, no TLB); `MOV CR4, EAX`
 //! stores a value whose bits above bit 10 are clear and refuses any other as
 //! [`ProtectedRefusal::Cr4WriteUnmodelled`] (a model refusal, not a hardware effect: per the SDM,
 //! from memory, a reserved or unsupported CR4 bit is `#GP(0)`, bits 11.. name features
@@ -54,7 +72,8 @@
 //! are copied; CR3 and CR4 are 0 (after INIT); DS/ES/SS/FS/GS keep their real-mode selector,
 //! base and limit with the attributes the oracle reports for them (access byte `0x93`, flags
 //! 0); EFER is 0. CR2, CR8 and DR7 are not part of the state; LDTR and TR are not modelled. Memory is
-//! physical = linear (no paging) through [`RealModeMemory`].
+//! physical = linear until `CR0.PG` is set, translated by [`crate::paging`] after that (a 32-bit
+//! physical address, [`RealModeMemory`]).
 //!
 //! Sources: Intel SDM Vol. 2 (`MOV` to/from control and segment registers, `BT`, `ADD`, `CMP`, `Jcc`,
 //! `RDMSR`, `WRMSR`), Vol. 3A (IA32_EFER),
@@ -63,7 +82,8 @@
 //! silicon under VMX, except where the S6-14i note on `CR0.ET` applies; `RDMSR`/`WRMSR` of EFER are
 //! emulated by KVM, so the oracle shows KVM's guest-visible behaviour).
 
-use crate::legacy_mode::ProtectedSegment;
+use crate::legacy_mode::{CR0_ET, ProtectedSegment};
+use crate::paging::{self, AccessKind, PageRefusal, PagingParams};
 use crate::real_mode_exec::{
     CR0_PE, EAX, ECX, EDX, ESP, RealModeCpu, RealModeMemory, TableRegister, UNSUPPORTED_BYTES_MAX,
     logic_flags, sub_flags,
@@ -71,6 +91,15 @@ use crate::real_mode_exec::{
 
 /// CR0.PG.
 pub const CR0_PG: u32 = 1 << 31;
+/// CR0.WP.
+pub const CR0_WP: u32 = 1 << 16;
+/// CR0 bits a `MOV CR0, EAX` may set (PE, MP, EM, TS, ET, NE, WP, AM, NW, CD, PG); the others are
+/// reserved (`#GP(0)` in hardware, a refusal here).
+pub const CR0_VALID_MASK: u32 = 0xE005_003F;
+const CR0_NW: u32 = 0x2000_0000;
+const CR0_CD: u32 = 0x4000_0000;
+/// CR4.PAE.
+pub const CR4_PAE: u32 = 1 << 5;
 /// CR4 bits 0..10 (`VME` .. `OSXMMEXCPT`): the only bits `MOV CR4, EAX` may set in this slice.
 pub const CR4_MODELLED_MASK: u32 = 0x7FF;
 /// MSR index of `IA32_EFER`, the only MSR of the model.
@@ -106,7 +135,8 @@ pub enum ProtectedSegReg {
     Gs,
 }
 
-/// Decoded instruction of block 6 (before the `MOV CR0` that enables paging).
+/// Decoded instruction of blocks 6 and 7: the block 6 forms (including the `MOV CR0` that enables
+/// paging, S6-14m) and the compatibility-mode far jump `JMP ptr16:32`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProtectedInstruction {
     /// `8e /r` with `mod = 3`, `rm = EDX`: `MOV Sreg, EDX`.
@@ -137,12 +167,40 @@ pub enum ProtectedInstruction {
     MovCr4Eax,
     /// `0f 22 d8`.
     MovCr3Eax,
-    /// `0f 22 c0`: decoded, but always refused when executed (see the module documentation).
+    /// `0f 22 c0`: enables paging and IA-32e mode (see the module documentation).
     MovCr0Eax,
+    /// `ea off32 sel16`: `JMP FAR ptr16:32` (32-bit operand size, no prefix).
+    JmpFarPtr { selector: u16, offset: u32 },
     /// `b8 imm32`.
     MovEaxImm32(u32),
     /// `b9 imm32`.
     MovEcxImm32(u32),
+}
+
+/// Why the far jump `JMP ptr16:32` was refused (`#GP`/`#NP` or a model limit).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FarJumpReason {
+    /// TI = 1: the LDT is not modelled.
+    LdtSelector,
+    /// Null selector: `#GP(0)`.
+    NullSelector,
+    /// `(selector & !7) + 7` is greater than the GDT limit.
+    BeyondGdtLimit { limit: u16 },
+    /// A descriptor byte at `linear` is not readable in memory (or the descriptor wraps past 4 GiB).
+    DescriptorUnreadable { linear: u32 },
+    /// Not a code segment (`S = 0` or not executable).
+    NotCodeSegment { access: u8 },
+    /// `P = 0`: `#NP`.
+    NotPresent,
+    /// Privilege: a non-conforming code segment needs `DPL = 0` and `RPL = 0`, a conforming one
+    /// `DPL = 0` (CPL = 0).
+    Privilege { rpl: u8, dpl: u8 },
+    /// IA-32e mode and `L = 1` with `D = 1`: `#GP(selector)`.
+    LongCodeWith32BitDefault,
+    /// `L = 1` while `EFER.LMA = 0`: not modelled (the SDM treats the bit as reserved there).
+    LongCodeOutsideIa32e,
+    /// The accessed bit is clear and the descriptor's access byte at `linear` is not writable.
+    DescriptorUnwritable { linear: u32 },
 }
 
 /// Why a segment-register load was refused. `#GP`/`#NP`/`#SS` are not modelled: each reason names
@@ -174,7 +232,8 @@ pub enum SegmentLoadReason {
     DescriptorUnwritable { linear: u32 },
 }
 
-/// Why [`ProtectedCpu::step`] did not execute. The state and memory are unchanged in every case.
+/// Why [`ProtectedCpu::step`] did not execute. Except for the accessed/dirty bits of the walks that
+/// completed (see [`ProtectedCpu::step`]), the state and memory are unchanged on a refusal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProtectedRefusal {
     /// The instruction is outside the admitted forms; `bytes` are up to
@@ -208,10 +267,36 @@ pub enum ProtectedRefusal {
     EferWriteReservedBits { eip: u32, value: u64 },
     /// `MOV CR4, EAX` with a bit above bit 10 set (`value` is EAX).
     Cr4WriteUnmodelled { eip: u32, value: u32 },
-    /// `MOV CR0, EAX` with `PG = 1`: paging is not modelled (`value` is EAX).
+    /// `MOV CR0, EAX` with `PG = 1` and `EFER.LME = 0`: 32-bit and PAE paging are not modelled
+    /// (`value` is EAX).
     PagingNotModelled { eip: u32, value: u32 },
-    /// `MOV CR0, EAX` with `PG = 0`: CR0 writes in protected mode are not modelled in this slice.
+    /// `MOV CR0, EAX` with `PG = 0`, a second `PG` write, reserved bits or `NW` without `CD`:
+    /// not modelled (the reserved-bit and `NW` cases are `#GP(0)` in hardware).
     Cr0WriteUnmodelled { eip: u32, value: u32 },
+    /// `MOV CR0, EAX` with `PG = 1` and `PE = 0`: `#GP(0)`.
+    PagingWithoutProtection { eip: u32, value: u32 },
+    /// `MOV CR0, EAX` with `PG = 1`, `EFER.LME = 1` and `CR4.PAE = 0`: `#GP(0)`.
+    LongModePagingWithoutPae { eip: u32, value: u32 },
+    /// `MOV CR0, EAX` with `PG = 1`, `EFER.LME = 1` while `CS.L = 1`: `#GP(0)`.
+    LongModeActivationFromLongCs { eip: u32, value: u32 },
+    /// `WRMSR` of EFER that changes `LME` while paging is on: `#GP(0)`.
+    EferLmeChangeWithPaging { eip: u32, value: u64 },
+    /// A memory access of the instruction would raise `#PF`, or is outside the page model (the
+    /// reason says which). `linear` is the address `CR2` would get; `access` the kind.
+    PageFault {
+        eip: u32,
+        linear: u32,
+        access: AccessKind,
+        reason: PageRefusal,
+    },
+    /// The far jump `JMP ptr16:32` was refused for `reason`.
+    FarJumpRefused {
+        eip: u32,
+        selector: u16,
+        reason: FarJumpReason,
+    },
+    /// `CS.L = 1`: the model does not execute 64-bit code (S6-14n). `eip` is the 64-bit `RIP`.
+    Mode64NotModelled { eip: u32 },
 }
 
 /// Why [`ProtectedCpu::from_real_entry`] did not build a state.
@@ -230,7 +315,8 @@ pub struct ProtectedRun {
     pub stop: Option<ProtectedRefusal>,
 }
 
-/// Processor state for block 6: 32-bit protected mode, paging off.
+/// Processor state for blocks 6 and 7: 32-bit protected mode, then (after `MOV CR0` with `PG`) IA-32e
+/// compatibility mode with paging.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProtectedCpu {
     /// EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI (index constants of `real_mode_exec`).
@@ -238,12 +324,12 @@ pub struct ProtectedCpu {
     pub eip: u32,
     pub eflags: u32,
     pub cr0: u32,
-    /// Stored by `MOV CR3, EAX`; never used for a translation.
+    /// Stored by `MOV CR3, EAX`; the PML4 base of the walk once `CR0.PG` is set.
     pub cr3: u32,
     /// Stored by `MOV CR4, EAX` (bits 0..10 only).
     pub cr4: u32,
     /// `IA32_EFER`, the only MSR: 0 at entry; `WRMSR` stores `SCE`, `LME`, `NXE`. `LMA` is never
-    /// changed by `WRMSR` (0 in this slice).
+    /// changed by `WRMSR`; it becomes 1 at `MOV CR0` with `PG = 1` while `LME` and `PAE` are set.
     pub efer: u64,
     pub cs: ProtectedSegment,
     pub ds: ProtectedSegment,
@@ -330,11 +416,48 @@ impl ProtectedCpu {
             });
         }
         let linear = self.cs.base.wrapping_add(offset as u32);
-        mem.read_u8(linear)
-            .ok_or(ProtectedRefusal::FetchUnreadable {
+        let phys = self.physical(mem, linear, AccessKind::Fetch, &mut Vec::new())?;
+        mem.read_u8(phys).ok_or(ProtectedRefusal::FetchUnreadable {
+            eip: self.eip,
+            linear,
+        })
+    }
+
+    /// Paging control state, `None` while `CR0.PG` is clear.
+    fn paging_params(&self) -> Option<PagingParams> {
+        (self.cr0 & CR0_PG != 0).then_some(PagingParams {
+            cr3: self.cr3,
+            wp: self.cr0 & CR0_WP != 0,
+            nxe: self.efer & EFER_NXE != 0,
+        })
+    }
+
+    /// Physical address of the byte at `linear`: the address itself while paging is off, otherwise
+    /// the result of the walk, whose accessed/dirty updates are appended to `touches` (written by
+    /// [`Self::step`] after the instruction succeeded). A refused walk is
+    /// [`ProtectedRefusal::PageFault`]. Nothing is changed.
+    fn physical<M: RealModeMemory>(
+        &self,
+        mem: &M,
+        linear: u32,
+        access: AccessKind,
+        touches: &mut Vec<(u32, u8)>,
+    ) -> Result<u32, ProtectedRefusal> {
+        let Some(params) = self.paging_params() else {
+            return Ok(linear);
+        };
+        match paging::translate(mem, params, linear, access) {
+            Ok(t) => {
+                touches.extend(t.touches);
+                Ok(t.phys)
+            }
+            Err(reason) => Err(ProtectedRefusal::PageFault {
                 eip: self.eip,
                 linear,
-            })
+                access,
+                reason,
+            }),
+        }
     }
 
     fn fetch_u32<M: RealModeMemory>(&self, mem: &M, i: u32) -> Result<u32, ProtectedRefusal> {
@@ -366,6 +489,9 @@ impl ProtectedCpu {
         &self,
         mem: &M,
     ) -> Result<(ProtectedInstruction, u32), ProtectedRefusal> {
+        if self.cs.flags & 0x2 != 0 && self.efer & EFER_LMA != 0 {
+            return Err(ProtectedRefusal::Mode64NotModelled { eip: self.eip });
+        }
         if self.cs.flags & 0x4 == 0 {
             return Err(ProtectedRefusal::CsNot32Bit {
                 flags: self.cs.flags,
@@ -415,6 +541,11 @@ impl ProtectedCpu {
                 },
                 _ => Err(self.unsupported(mem)),
             },
+            0xEA => {
+                let offset = self.fetch_u32(mem, 1)?;
+                let selector = u16::from_le_bytes([self.fetch(mem, 5)?, self.fetch(mem, 6)?]);
+                Ok((ProtectedInstruction::JmpFarPtr { selector, offset }, 7))
+            }
             0x73 => Ok((ProtectedInstruction::JaeRel8(self.fetch(mem, 1)? as i8), 2)),
             0x75 => Ok((ProtectedInstruction::JneRel8(self.fetch(mem, 1)? as i8), 2)),
             0x74 => Ok((ProtectedInstruction::JeRel8(self.fetch(mem, 1)? as i8), 2)),
@@ -453,7 +584,12 @@ impl ProtectedCpu {
 
     /// Reads the DWORD at `DS:disp` (the whole operand must lie under the DS limit and be
     /// readable). Nothing is changed.
-    fn read_ds_u32<M: RealModeMemory>(&self, mem: &M, disp: u32) -> Result<u32, ProtectedRefusal> {
+    fn read_ds_u32<M: RealModeMemory>(
+        &self,
+        mem: &M,
+        disp: u32,
+        touches: &mut Vec<(u32, u8)>,
+    ) -> Result<u32, ProtectedRefusal> {
         if u64::from(disp) + 3 > u64::from(self.ds.limit) {
             return Err(ProtectedRefusal::DataBeyondLimit {
                 eip: self.eip,
@@ -464,12 +600,11 @@ impl ProtectedCpu {
         let mut bytes = [0u8; 4];
         for (i, slot) in bytes.iter_mut().enumerate() {
             let linear = self.ds.base.wrapping_add(disp).wrapping_add(i as u32);
-            *slot = mem
-                .read_u8(linear)
-                .ok_or(ProtectedRefusal::DataUnreadable {
-                    eip: self.eip,
-                    linear,
-                })?;
+            let phys = self.physical(mem, linear, AccessKind::Read, touches)?;
+            *slot = mem.read_u8(phys).ok_or(ProtectedRefusal::DataUnreadable {
+                eip: self.eip,
+                linear,
+            })?;
         }
         Ok(u32::from_le_bytes(bytes))
     }
@@ -488,13 +623,43 @@ impl ProtectedCpu {
         Ok(target)
     }
 
+    /// Physical address of the access byte at `access_at` (byte 5 of the descriptor that starts at
+    /// `descriptor_at`) for the accessed-bit write. A refused walk reports `descriptor_at` as the
+    /// faulting address: the KVM oracle (image `r`, S6-14m) loads `CR2` with the start of the
+    /// descriptor, not with the byte that is written.
+    fn descriptor_write_target<M: RealModeMemory>(
+        &self,
+        mem: &M,
+        descriptor_at: u32,
+        access_at: u32,
+        touches: &mut Vec<(u32, u8)>,
+    ) -> Result<u32, ProtectedRefusal> {
+        self.physical(mem, access_at, AccessKind::Write, touches)
+            .map_err(|refusal| match refusal {
+                ProtectedRefusal::PageFault {
+                    eip,
+                    access,
+                    reason,
+                    ..
+                } => ProtectedRefusal::PageFault {
+                    eip,
+                    linear: descriptor_at,
+                    access,
+                    reason,
+                },
+                other => other,
+            })
+    }
+
     /// Checks a `MOV Sreg` load of `selector` and returns the new cache and, if the descriptor's
-    /// accessed bit is clear, the address of the access byte to write. Nothing is changed.
+    /// accessed bit is clear, the *physical* address of the access byte to write. The descriptor
+    /// is read (and written) through the paging walk when paging is on. Nothing is changed.
     fn check_segment_load<M: RealModeMemory>(
         &self,
         mem: &M,
         reg: ProtectedSegReg,
         selector: u16,
+        touches: &mut Vec<(u32, u8)>,
     ) -> Result<(ProtectedSegment, Option<u32>), ProtectedRefusal> {
         let refuse = |reason| ProtectedRefusal::SegmentLoadRefused {
             eip: self.eip,
@@ -517,12 +682,16 @@ impl ProtectedCpu {
         let mut descriptor = [0u8; 8];
         for (i, byte) in descriptor.iter_mut().enumerate() {
             let at = u64::from(self.gdtr.base) + u64::from(index) + i as u64;
-            match u32::try_from(at).ok().and_then(|a| mem.read_u8(a)) {
+            let Ok(linear) = u32::try_from(at) else {
+                return Err(refuse(SegmentLoadReason::DescriptorUnreadable {
+                    linear: at as u32,
+                }));
+            };
+            let phys = self.physical(mem, linear, AccessKind::Read, touches)?;
+            match mem.read_u8(phys) {
                 Some(v) => *byte = v,
                 None => {
-                    return Err(refuse(SegmentLoadReason::DescriptorUnreadable {
-                        linear: at as u32,
-                    }));
+                    return Err(refuse(SegmentLoadReason::DescriptorUnreadable { linear }));
                 }
             }
         }
@@ -556,12 +725,14 @@ impl ProtectedCpu {
         // The descriptor's own address: it was readable above, so it does not wrap.
         let access_at = self.gdtr.base.wrapping_add(index).wrapping_add(5);
         let write_at = if access & 1 == 0 {
-            if !mem.can_write(access_at) {
+            let descriptor_at = access_at.wrapping_sub(5);
+            let phys = self.descriptor_write_target(mem, descriptor_at, access_at, touches)?;
+            if !mem.can_write(phys) {
                 return Err(refuse(SegmentLoadReason::DescriptorUnwritable {
                     linear: access_at,
                 }));
             }
-            Some(access_at)
+            Some(phys)
         } else {
             None
         };
@@ -575,19 +746,140 @@ impl ProtectedCpu {
         ))
     }
 
-    /// Executes one instruction. On a refusal the state and memory are unchanged.
+    /// Checks the far jump `JMP ptr16:32` to `selector:offset` (CPL = 0, see the module
+    /// documentation) and returns the new `CS` cache with, if the accessed bit of the descriptor
+    /// is clear, the physical address of its access byte to write. Nothing is changed.
+    fn check_far_jump<M: RealModeMemory>(
+        &self,
+        mem: &M,
+        selector: u16,
+        offset: u32,
+        touches: &mut Vec<(u32, u8)>,
+    ) -> Result<(ProtectedSegment, Option<u32>), ProtectedRefusal> {
+        let refuse = |reason| ProtectedRefusal::FarJumpRefused {
+            eip: self.eip,
+            selector,
+            reason,
+        };
+        if selector & 0x4 != 0 {
+            return Err(refuse(FarJumpReason::LdtSelector));
+        }
+        if selector & 0xFFF8 == 0 {
+            return Err(refuse(FarJumpReason::NullSelector));
+        }
+        let index = u32::from(selector & 0xFFF8);
+        if index + 7 > u32::from(self.gdtr.limit) {
+            return Err(refuse(FarJumpReason::BeyondGdtLimit {
+                limit: self.gdtr.limit,
+            }));
+        }
+        let mut descriptor = [0u8; 8];
+        for (i, byte) in descriptor.iter_mut().enumerate() {
+            let at = u64::from(self.gdtr.base) + u64::from(index) + i as u64;
+            let Ok(linear) = u32::try_from(at) else {
+                return Err(refuse(FarJumpReason::DescriptorUnreadable {
+                    linear: at as u32,
+                }));
+            };
+            let phys = self.physical(mem, linear, AccessKind::Read, touches)?;
+            match mem.read_u8(phys) {
+                Some(v) => *byte = v,
+                None => return Err(refuse(FarJumpReason::DescriptorUnreadable { linear })),
+            }
+        }
+        let access = descriptor[5];
+        if access & 0x18 != 0x18 {
+            return Err(refuse(FarJumpReason::NotCodeSegment { access }));
+        }
+        if access & 0x80 == 0 {
+            return Err(refuse(FarJumpReason::NotPresent));
+        }
+        let (rpl, dpl) = ((selector & 3) as u8, (access >> 5) & 3);
+        let conforming = access & 0x04 != 0;
+        if dpl != 0 || (!conforming && rpl != 0) {
+            return Err(refuse(FarJumpReason::Privilege { rpl, dpl }));
+        }
+        // CS.RPL becomes the CPL (0).
+        let segment = ProtectedSegment::from_descriptor(selector & !3, descriptor);
+        let long = segment.flags & 0x2 != 0;
+        if long {
+            if self.efer & EFER_LMA == 0 {
+                return Err(refuse(FarJumpReason::LongCodeOutsideIa32e));
+            }
+            if segment.flags & 0x4 != 0 {
+                return Err(refuse(FarJumpReason::LongCodeWith32BitDefault));
+            }
+        } else if offset > segment.limit {
+            return Err(ProtectedRefusal::TargetBeyondLimit {
+                eip: self.eip,
+                offset,
+                limit: segment.limit,
+            });
+        }
+        let access_at = self.gdtr.base.wrapping_add(index).wrapping_add(5);
+        let write_at = if access & 1 == 0 {
+            let descriptor_at = access_at.wrapping_sub(5);
+            let phys = self.descriptor_write_target(mem, descriptor_at, access_at, touches)?;
+            if !mem.can_write(phys) {
+                return Err(refuse(FarJumpReason::DescriptorUnwritable {
+                    linear: access_at,
+                }));
+            }
+            Some(phys)
+        } else {
+            None
+        };
+        Ok((
+            ProtectedSegment {
+                access: access | 1,
+                ..segment
+            },
+            write_at,
+        ))
+    }
+
+    /// Executes one instruction. On a refusal the processor state is unchanged and so is memory,
+    /// except for the accessed/dirty bits of the paging structures that walks which had completed
+    /// before the refusal set (as hardware does for the instruction fetch and for the descriptor
+    /// read of a far jump that then faults: the oracle images `e`..`i`, `l` and `r` show them).
+    /// A walk that ends in a `#PF` sets `A` in none of its entries, in the model as in the oracle
+    /// (images `k`, `m`..`q`, `s`; decision 4 of S6-14m). A refusal in [`decode`] (an unsupported
+    /// form, a page fault of a byte of the instruction) sets none: the fetch walks of the stopping
+    /// instruction are not modelled. A refusal after decode (for example `RDMSR`/`WRMSR` with
+    /// `ECX` other than `EFER`, or `DescriptorUnwritable`) keeps the `A`/`D` bits of the walks
+    /// completed before it, the fetch included: `DescriptorUnwritable` still commits `D` on the GDT
+    /// page although the descriptor byte is not written.
     pub fn step<M: RealModeMemory>(
         &mut self,
         mem: &mut M,
     ) -> Result<ProtectedInstruction, ProtectedRefusal> {
+        let mut touches: Vec<(u32, u8)> = Vec::new();
+        let result = self.step_collecting(mem, &mut touches);
+        paging::commit_touches(mem, &touches);
+        result
+    }
+
+    fn step_collecting<M: RealModeMemory>(
+        &mut self,
+        mem: &mut M,
+        touches: &mut Vec<(u32, u8)>,
+    ) -> Result<ProtectedInstruction, ProtectedRefusal> {
         let (insn, len) = self.decode(mem)?;
+        // Accessed/dirty updates of the paging structures walked by this instruction (the fetch
+        // walks come first, as in hardware), written by `step` at the end.
+        if self.cr0 & CR0_PG != 0 {
+            for i in 0..len {
+                let linear = self.cs.base.wrapping_add(self.eip).wrapping_add(i);
+                self.physical(mem, linear, AccessKind::Fetch, touches)?;
+            }
+        }
         let next_eip = self.eip.wrapping_add(len);
         let shadow_before = self.mov_ss_shadow;
         let mut eip = next_eip;
         match insn {
             ProtectedInstruction::MovSegFromEdx(reg) => {
                 let selector = self.gpr[EDX] as u16;
-                let (segment, write_at) = self.check_segment_load(mem, reg, selector)?;
+                let (segment, write_at) = self.check_segment_load(mem, reg, selector, touches)?;
                 if let Some(at) = write_at {
                     let access = segment.access;
                     assert!(mem.write_u8(at, access), "can_write was true");
@@ -609,7 +901,7 @@ impl ProtectedCpu {
                 self.eflags = (self.eflags & !EFLAGS_ARITH) | add_flags(lhs, imm);
             }
             ProtectedInstruction::BtDsImm8 { disp, bit } => {
-                let value = self.read_ds_u32(mem, disp)?;
+                let value = self.read_ds_u32(mem, disp, touches)?;
                 // Bit offset of an immediate operand is taken modulo the operand size (SDM).
                 if (value >> (bit & 31)) & 1 != 0 {
                     self.eflags |= EFLAGS_CF;
@@ -633,17 +925,17 @@ impl ProtectedCpu {
                 }
             }
             ProtectedInstruction::MovEaxFromDs(disp) => {
-                self.gpr[EAX] = self.read_ds_u32(mem, disp)?;
+                self.gpr[EAX] = self.read_ds_u32(mem, disp, touches)?;
             }
             ProtectedInstruction::MovEdxFromDs(disp) => {
-                self.gpr[EDX] = self.read_ds_u32(mem, disp)?;
+                self.gpr[EDX] = self.read_ds_u32(mem, disp, touches)?;
             }
             ProtectedInstruction::CmpEaxWithDs(disp) => {
-                let rhs = self.read_ds_u32(mem, disp)?;
+                let rhs = self.read_ds_u32(mem, disp, touches)?;
                 self.eflags = (self.eflags & !EFLAGS_ARITH) | sub_flags(self.gpr[EAX], rhs);
             }
             ProtectedInstruction::CmpEdxWithDs(disp) => {
-                let rhs = self.read_ds_u32(mem, disp)?;
+                let rhs = self.read_ds_u32(mem, disp, touches)?;
                 self.eflags = (self.eflags & !EFLAGS_ARITH) | sub_flags(self.gpr[EDX], rhs);
             }
             ProtectedInstruction::Rdmsr => {
@@ -664,12 +956,21 @@ impl ProtectedCpu {
                         value,
                     });
                 }
+                if self.cr0 & CR0_PG != 0 && (value ^ self.efer) & EFER_LME != 0 {
+                    return Err(ProtectedRefusal::EferLmeChangeWithPaging {
+                        eip: self.eip,
+                        value,
+                    });
+                }
                 // LMA is set by the processor only: the written bit is ignored.
                 self.efer = (value & !EFER_LMA) | (self.efer & EFER_LMA);
             }
             ProtectedInstruction::MovCr4Eax => {
                 let value = self.gpr[EAX];
-                if value & !CR4_MODELLED_MASK != 0 {
+                // Clearing PAE while paging is on is `#GP(0)`: refused with the same variant.
+                if value & !CR4_MODELLED_MASK != 0
+                    || (self.cr0 & CR0_PG != 0 && value & CR4_PAE == 0)
+                {
                     return Err(ProtectedRefusal::Cr4WriteUnmodelled {
                         eip: self.eip,
                         value,
@@ -680,17 +981,37 @@ impl ProtectedCpu {
             ProtectedInstruction::MovCr3Eax => self.cr3 = self.gpr[EAX],
             ProtectedInstruction::MovCr0Eax => {
                 let value = self.gpr[EAX];
-                return Err(if value & CR0_PG != 0 {
-                    ProtectedRefusal::PagingNotModelled {
-                        eip: self.eip,
-                        value,
-                    }
-                } else {
-                    ProtectedRefusal::Cr0WriteUnmodelled {
-                        eip: self.eip,
-                        value,
-                    }
-                });
+                let eip = self.eip;
+                if self.cr0 & CR0_PG != 0
+                    || value & CR0_PG == 0
+                    || value & !CR0_VALID_MASK != 0
+                    || (value & CR0_NW != 0 && value & CR0_CD == 0)
+                {
+                    return Err(ProtectedRefusal::Cr0WriteUnmodelled { eip, value });
+                }
+                if value & CR0_PE == 0 {
+                    return Err(ProtectedRefusal::PagingWithoutProtection { eip, value });
+                }
+                if self.efer & EFER_LME == 0 {
+                    return Err(ProtectedRefusal::PagingNotModelled { eip, value });
+                }
+                if self.cr4 & CR4_PAE == 0 {
+                    return Err(ProtectedRefusal::LongModePagingWithoutPae { eip, value });
+                }
+                if self.cs.flags & 0x2 != 0 {
+                    return Err(ProtectedRefusal::LongModeActivationFromLongCs { eip, value });
+                }
+                // PG with LME and PAE: the processor activates IA-32e mode (LMA := 1).
+                self.cr0 = value | CR0_ET;
+                self.efer |= EFER_LMA;
+            }
+            ProtectedInstruction::JmpFarPtr { selector, offset } => {
+                let (segment, write_at) = self.check_far_jump(mem, selector, offset, touches)?;
+                if let Some(at) = write_at {
+                    assert!(mem.write_u8(at, segment.access), "can_write was true");
+                }
+                self.cs = segment;
+                eip = offset;
             }
             ProtectedInstruction::MovEaxImm32(imm) => self.gpr[EAX] = imm,
             ProtectedInstruction::MovEcxImm32(imm) => self.gpr[ECX] = imm,
@@ -900,7 +1221,9 @@ mod tests {
     }
 
     #[test]
-    fn mov_cr0_with_paging_is_refused_without_a_state_change() {
+    fn mov_cr0_with_paging_without_lme_is_not_modelled_and_changes_nothing() {
+        // S6-14l refused here for every EFER; S6-14m models PG with LME and PAE (below), so the
+        // entry state (EFER = 0, LME clear: 32-bit/PAE paging) is the refusal that remains.
         // The linked tail `mov eax, 0x80050033; mov cr0, eax` (0x205d, 0x2062).
         let mut ram = new_ram();
         put_linked_block6(&mut ram);
@@ -1704,13 +2027,15 @@ mod tests {
         for efer in [0u64, 0x901] {
             let (cpu, run) = run_linked_with_header(efer, efer as u32, 0);
             assert_eq!(run.steps, 13 + 6);
-            assert_eq!(
-                run.stop,
-                Some(ProtectedRefusal::PagingNotModelled {
-                    eip: 0x2062,
-                    value: 0x8005_0033
-                })
-            );
+            // S6-14l: PagingNotModelled for both. S6-14m: EFER 0 has no LME (32-bit paging, still
+            // not modelled); 0x901 has LME, and CR4 = 0 in this test has no PAE (`#GP`).
+            let value = 0x8005_0033;
+            let expected = if efer == 0 {
+                ProtectedRefusal::PagingNotModelled { eip: 0x2062, value }
+            } else {
+                ProtectedRefusal::LongModePagingWithoutPae { eip: 0x2062, value }
+            };
+            assert_eq!(run.stop, Some(expected));
             assert_eq!((cpu.efer, cpu.eip), (efer, 0x2062));
             assert_eq!((cpu.gpr[EAX], cpu.gpr[EDX]), (0x8005_0033, 0));
             assert_eq!(cpu.cr0, 0x0005_0033, "CR0 untouched");
@@ -1723,10 +2048,14 @@ mod tests {
         for (header, efer_after) in [(0x901u32, 0x901u64), (0x100, 0x100), (0xD01, 0x901)] {
             let (cpu, run) = run_linked_with_header(0, header, 0);
             assert_eq!(run.steps, 13 + 7, "header {header:#x}");
-            assert!(matches!(
-                run.stop,
-                Some(ProtectedRefusal::PagingNotModelled { eip: 0x2062, .. })
-            ));
+            // Every header has LME and CR4 = 0 (no PAE): `#GP` at the `MOV CR0` (S6-14l: PagingNotModelled).
+            assert!(
+                matches!(
+                    run.stop,
+                    Some(ProtectedRefusal::LongModePagingWithoutPae { eip: 0x2062, .. })
+                ),
+                "header {header:#x}"
+            );
             assert_eq!(cpu.efer, efer_after, "header {header:#x}");
             assert_eq!((cpu.gpr[EAX], cpu.gpr[EDX]), (0x8005_0033, 0));
         }
@@ -1781,7 +2110,7 @@ mod tests {
             &[0x39, 0x05, 0, 0, 0, 0],                // CMP m32, EAX
             &[0x0F, 0x85, 8, 0, 0, 0],                // JNE rel32
             &[0x8B, 0x0D, 0, 0, 0, 0],                // MOV ECX, m32
-            &[0xEA, 0, 0, 0, 0, 0x10, 0],             // far JMP
+            &[0x9A, 0, 0, 0, 0, 0x10, 0],             // far CALL
         ];
         for code in rejected {
             let (mut cpu, mut ram) = (entry_cpu(), new_ram());
@@ -1954,8 +2283,16 @@ mod tests {
     /// Runs the S6-14j prefix of an oracle image through `RealModeCpu` and returns the protected
     /// state at 0x2000 with the memory.
     fn enter_from_oracle_image(image: &[u8], json: &str) -> (ProtectedCpu, Vec<u8>) {
+        enter_from_oracle_image_sized(image, json, RAM)
+    }
+
+    fn enter_from_oracle_image_sized(
+        image: &[u8],
+        json: &str,
+        size: usize,
+    ) -> (ProtectedCpu, Vec<u8>) {
         let mut real = RealModeCpu::at_cs_ip(0, 0, 0x6000_0010, oracle_signature(json));
-        let mut ram = vec![0u8; RAM];
+        let mut ram = vec![0u8; size];
         ram[..image.len()].copy_from_slice(image);
         let run = real.run(&mut mem(&mut ram), 100);
         assert_eq!(run.steps, 9, "block 4 and the block 5 jump, as in S6-14j");
@@ -1994,6 +2331,19 @@ mod tests {
         rip_delta: u64,
         rflags_ignore: u64,
     ) {
+        compare_state_cr2(cpu, ram, json, rip_delta, rflags_ignore, 0);
+    }
+
+    /// As [`compare_state`], with the expected `CR2` (the model keeps none: the linear address of
+    /// its [`ProtectedRefusal::PageFault`], or 0).
+    fn compare_state_cr2(
+        cpu: &ProtectedCpu,
+        ram: &[u8],
+        json: &str,
+        rip_delta: u64,
+        rflags_ignore: u64,
+        cr2: u64,
+    ) {
         let fs = |path: &[&str]| {
             let mut full = vec!["final_state"];
             full.extend_from_slice(path);
@@ -2022,7 +2372,7 @@ mod tests {
             assert_eq!(u64::from(value), fs(&["control", name]), "{name}");
         }
         assert_eq!(cpu.efer, fs(&["control", "efer"]), "EFER");
-        assert_eq!(fs(&["control", "cr2"]), 0);
+        assert_eq!(fs(&["control", "cr2"]), cr2, "CR2");
         for (name, seg) in [
             ("cs", cpu.cs),
             ("ds", cpu.ds),
@@ -2265,5 +2615,924 @@ mod tests {
         "k-efer-d01-lma-dropped-0000-0000",
         23,
         Halt(0x2074)
+    );
+
+    // ---- paging and the compatibility-mode jump (S6-14m) ----------------------------------
+
+    const RAM_PAGED: usize = 0xA100;
+    const PML4: usize = 0x4000;
+    const PDPT: usize = 0x7000;
+    const PD: usize = 0x8000;
+    const PT: usize = 0x9000;
+    const CODE64_A_SET: [u8; 8] = [0xFF, 0xFF, 0, 0, 0, 0x9B, 0xAF, 0];
+    const CODE64_A_CLEAR: [u8; 8] = [0xFF, 0xFF, 0, 0, 0, 0x9A, 0xAF, 0];
+    const CODE32_COMPAT: [u8; 8] = [0xFF, 0xFF, 0, 0, 0, 0x9B, 0xCF, 0];
+    const JMP_FAR_10_20F0: [u8; 7] = [0xEA, 0xF0, 0x20, 0, 0, 0x10, 0];
+
+    fn put_q(ram: &mut [u8], at: usize, value: u64) {
+        put(ram, at, &value.to_le_bytes());
+    }
+
+    fn get_q(ram: &[u8], at: usize) -> u64 {
+        u64::from_le_bytes(ram[at..at + 8].try_into().unwrap())
+    }
+
+    /// PML4[0] -> PDPT, PDPT[0] -> PD, PD[0] = 2 MiB page at 0; A and D clear.
+    fn tables_2m(ram: &mut [u8]) {
+        put_q(ram, PML4, PDPT as u64 | 3);
+        put_q(ram, PDPT, PD as u64 | 3);
+        put_q(ram, PD, 0x83);
+    }
+
+    /// As `tables_2m`, but PD[0] -> PT and PT[i] = page i (i < 10), A and D clear.
+    fn tables_4k(ram: &mut [u8]) {
+        tables_2m(ram);
+        put_q(ram, PD, PT as u64 | 3);
+        for page in 0..10u64 {
+            put_q(ram, PT + 8 * page as usize, (page << 12) | 3);
+        }
+    }
+
+    /// Sets A and D in every entry of the tables made by `tables_2m`/`tables_4k` (no walk then
+    /// writes memory).
+    fn preset_accessed_dirty(ram: &mut [u8], pt: bool) {
+        for at in [PML4, PDPT, PD] {
+            let e = get_q(ram, at);
+            put_q(ram, at, e | 0x60);
+        }
+        if pt {
+            for page in 0..10usize {
+                let e = get_q(ram, PT + 8 * page);
+                put_q(ram, PT + 8 * page, e | 0x60);
+            }
+        }
+    }
+
+    /// The RAM of the S6-14m images: GDT at 0x38 (selector 0x10 = `desc`, A-set data at 0x18), the
+    /// `mov cr0, eax; jmp 0x10:0x20f0` at 0x2062, a HLT at 0x20f0, 2 MiB identity tables.
+    fn paged_ram(desc: [u8; 8]) -> Vec<u8> {
+        let mut ram = vec![0u8; RAM_PAGED];
+        put(&mut ram, 0x40, &FLAT_CODE);
+        put(&mut ram, 0x48, &desc);
+        put(&mut ram, 0x50, &FLAT_DATA_A_SET);
+        put(&mut ram, 0x2062, &[0x0F, 0x22, 0xC0]);
+        put(&mut ram, 0x2065, &JMP_FAR_10_20F0);
+        ram[0x20F0] = 0xF4;
+        tables_2m(&mut ram);
+        ram
+    }
+
+    /// Ready to execute the `MOV CR0, EAX` at 0x2062 with the values of the linked path: EAX =
+    /// 0x80050033, CR3 = 0x4000, CR4 = 0x6b0, EFER = SCE|LME|NXE.
+    fn ia32e_cpu() -> ProtectedCpu {
+        let mut cpu = entry_cpu();
+        cpu.eip = 0x2062;
+        cpu.gpr[EAX] = 0x8005_0033;
+        cpu.cr3 = PML4 as u32;
+        cpu.cr4 = 0x6B0;
+        cpu.efer = 0x901;
+        cpu
+    }
+
+    /// IA-32e mode already active (compatibility CS, paging on, LMA = 1) at 0x2000.
+    fn active_cpu() -> ProtectedCpu {
+        let mut cpu = ia32e_cpu();
+        cpu.eip = 0x2000;
+        cpu.cr0 = 0x8005_0033;
+        cpu.efer = 0xD01;
+        cpu
+    }
+
+    #[test]
+    fn mov_cr0_with_pg_pae_and_lme_enters_ia32e_and_sets_lma() {
+        let mut ram = paged_ram(CODE64_A_SET);
+        let before = ram.clone();
+        let mut cpu = ia32e_cpu();
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Ok(ProtectedInstruction::MovCr0Eax)
+        );
+        assert_eq!(cpu.cr0, 0x8005_0033);
+        // LMA (bit 10) set by the processor; SCE, LME, NXE as written by WRMSR.
+        assert_eq!(cpu.efer, 0xD01);
+        assert_eq!(cpu.eip, 0x2065);
+        assert_eq!(
+            cpu.cs,
+            flat(0x08, 0x9B),
+            "CS is still the compatibility segment"
+        );
+        assert_eq!(
+            ram, before,
+            "the fetch before the write was physical: no walk, no touch"
+        );
+        // ET reads as 1 whatever the written value says.
+        let mut cpu = ia32e_cpu();
+        cpu.gpr[EAX] = 0x8005_0003;
+        cpu.step(&mut mem(&mut ram)).unwrap();
+        assert_eq!(cpu.cr0, 0x8005_0013);
+    }
+
+    #[test]
+    fn mov_cr0_paging_refusals_change_nothing() {
+        let value = 0x8005_0033u32;
+        let refused = |setup: &dyn Fn(&mut ProtectedCpu), eax: u32| {
+            let (mut cpu, mut ram) = (ia32e_cpu(), paged_ram(CODE64_A_SET));
+            // A and D preset: the walks of the second-PG-write case write nothing.
+            preset_accessed_dirty(&mut ram, false);
+            cpu.eip = 0x2000;
+            cpu.gpr[EAX] = eax;
+            setup(&mut cpu);
+            step_one(&mut cpu, &mut ram, &[0x0F, 0x22, 0xC0]).unwrap_err()
+        };
+        let eip = 0x2000;
+        // PG with LME and no PAE: #GP(0).
+        assert_eq!(
+            refused(&|c| c.cr4 = 0x690, value),
+            ProtectedRefusal::LongModePagingWithoutPae { eip, value }
+        );
+        // PG without LME (EFER 0, or NXE only): 32-bit paging, not modelled.
+        for efer in [0, 0x800, 0x001] {
+            assert_eq!(
+                refused(&|c| c.efer = efer, value),
+                ProtectedRefusal::PagingNotModelled { eip, value }
+            );
+        }
+        // PG without PE: #GP(0).
+        assert_eq!(
+            refused(&|_| {}, 0x8005_0032),
+            ProtectedRefusal::PagingWithoutProtection {
+                eip,
+                value: 0x8005_0032
+            }
+        );
+        // IA-32e activation with a 64-bit CS (L = 1): #GP(0).
+        assert_eq!(
+            refused(&|c| c.cs.flags |= 2, value),
+            ProtectedRefusal::LongModeActivationFromLongCs { eip, value }
+        );
+        // Reserved bits, NW without CD, a second PG write, a write without PG.
+        for (setup, eax) in [
+            (
+                &(|_: &mut ProtectedCpu| {}) as &dyn Fn(&mut ProtectedCpu),
+                0x8005_0073u32,
+            ),
+            (&|_| {}, 0x9005_0033),
+            (&|_| {}, 0xA005_0033),
+            (&|c| c.cr0 = 0x8005_0033, 0x8005_0033),
+            (&|_| {}, 0x0005_0033),
+        ] {
+            assert_eq!(
+                refused(setup, eax),
+                ProtectedRefusal::Cr0WriteUnmodelled { eip, value: eax },
+                "{eax:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn paging_translates_fetches_data_reads_and_descriptor_reads() {
+        // 4 KiB pages: linear page 2 (code) -> physical 0x3000, linear page 5 -> physical 0x6000.
+        let mut ram = paged_ram(CODE32_COMPAT);
+        tables_4k(&mut ram);
+        put_q(&mut ram, PT + 16, 0x3000 | 3);
+        put_q(&mut ram, PT + 40, 0x6000 | 3);
+        ram[0x2065..0x206C].fill(0xF4); // the identity bytes are not what runs
+        put(&mut ram, 0x3065, &JMP_FAR_10_20F0);
+        put(&mut ram, 0x30F0, &[0xA1, 0x08, 0x50, 0, 0]); // mov eax, ds:0x5008
+        put(&mut ram, 0x6008, &0x1234_5678u32.to_le_bytes());
+        put(&mut ram, 0x5008, &0xFFFF_FFFFu32.to_le_bytes());
+        let mut cpu = ia32e_cpu();
+        let m = &mut mem(&mut ram);
+        cpu.step(m).unwrap();
+        assert_eq!(
+            cpu.step(m),
+            Ok(ProtectedInstruction::JmpFarPtr {
+                selector: 0x10,
+                offset: 0x20F0
+            })
+        );
+        assert_eq!(
+            cpu.cs,
+            ProtectedSegment {
+                selector: 0x10,
+                base: 0,
+                limit: 0xFFFF_FFFF,
+                access: 0x9B,
+                flags: 0xC
+            }
+        );
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovEaxFromDs(0x5008)));
+        assert_eq!((cpu.gpr[EAX], cpu.eip), (0x1234_5678, 0x20F5));
+        // The walks set A: PML4E, PDPTE, PDE, the PTEs of page 2 (fetch), page 0 (GDT), page 5 (data).
+        assert_eq!(get_q(&ram, PML4), PDPT as u64 | 0x23);
+        assert_eq!(get_q(&ram, PDPT), PD as u64 | 0x23);
+        assert_eq!(get_q(&ram, PD), PT as u64 | 0x23);
+        assert_eq!(get_q(&ram, PT), 0x23);
+        assert_eq!(get_q(&ram, PT + 16), 0x3000 | 0x23);
+        assert_eq!(get_q(&ram, PT + 40), 0x6000 | 0x23);
+        assert_eq!(get_q(&ram, PT + 8), 0x1003, "page 1 was not used");
+    }
+
+    #[test]
+    fn far_jump_to_a_64_bit_segment_loads_cs_and_the_model_stops_there() {
+        // (descriptor, access byte after, PDE after): an A-clear descriptor is written through the
+        // walk, so the 2 MiB PDE (the GDT is in it) gets D as well.
+        for (desc, access_after, pde_after) in
+            [(CODE64_A_SET, 0x9B, 0xA3u64), (CODE64_A_CLEAR, 0x9B, 0xE3)]
+        {
+            let mut ram = paged_ram(desc);
+            let mut cpu = ia32e_cpu();
+            cpu.step(&mut mem(&mut ram)).unwrap();
+            assert_eq!(
+                cpu.step(&mut mem(&mut ram)),
+                Ok(ProtectedInstruction::JmpFarPtr {
+                    selector: 0x10,
+                    offset: 0x20F0
+                })
+            );
+            // Base from the descriptor (0), limit after granularity, flags G=1 D=0 L=1.
+            assert_eq!(
+                cpu.cs,
+                ProtectedSegment {
+                    selector: 0x10,
+                    base: 0,
+                    limit: 0xFFFF_FFFF,
+                    access: access_after,
+                    flags: 0xA
+                }
+            );
+            assert_eq!((cpu.eip, cpu.efer), (0x20F0, 0xD01));
+            assert_eq!(ram[0x4D], access_after);
+            assert_eq!(get_q(&ram, PML4), PDPT as u64 | 0x23);
+            assert_eq!(get_q(&ram, PDPT), PD as u64 | 0x23);
+            assert_eq!(get_q(&ram, PD), pde_after);
+            let (before_cpu, before_ram) = (cpu, ram.clone());
+            assert_eq!(
+                cpu.step(&mut mem(&mut ram)),
+                Err(ProtectedRefusal::Mode64NotModelled { eip: 0x20F0 })
+            );
+            assert_eq!((cpu, ram), (before_cpu, before_ram));
+        }
+    }
+
+    #[test]
+    fn far_jump_to_a_compatibility_segment_keeps_decoding_through_paging() {
+        let mut ram = paged_ram(CODE32_COMPAT);
+        put(&mut ram, 0x20F0, &[0xB8, 1, 2, 3, 4]);
+        let mut cpu = ia32e_cpu();
+        let m = &mut mem(&mut ram);
+        cpu.step(m).unwrap();
+        cpu.step(m).unwrap();
+        assert_eq!(cpu.cs.flags, 0xC);
+        assert_eq!(
+            cpu.step(m),
+            Ok(ProtectedInstruction::MovEaxImm32(0x0403_0201))
+        );
+        assert_eq!(cpu.eip, 0x20F5);
+    }
+
+    #[test]
+    fn far_jump_refusals_change_nothing() {
+        let desc_data = FLAT_DATA_A_SET;
+        let not_present = [0xFF, 0xFF, 0, 0, 0, 0x1B, 0xAF, 0];
+        let dpl3 = [0xFF, 0xFF, 0, 0, 0, 0xFB, 0xAF, 0];
+        let long_and_d = [0xFF, 0xFF, 0, 0, 0, 0x9B, 0xEF, 0];
+        let short_limit = [0x20, 0, 0, 0, 0, 0x9B, 0x40, 0];
+        let ldt = FarJumpReason::LdtSelector;
+        // (descriptor at 0x10, selector, LMA, expected). Paging is off in this test: the checks
+        // are the descriptor's, and a refusal then leaves memory alone.
+        let cases: [([u8; 8], u16, bool, ProtectedRefusal); 10] = [
+            (CODE64_A_SET, 0x14, true, far(0x14, ldt)),
+            (
+                CODE64_A_SET,
+                0x03,
+                true,
+                far(0x03, FarJumpReason::NullSelector),
+            ),
+            (
+                CODE64_A_SET,
+                0x28,
+                true,
+                far(0x28, FarJumpReason::BeyondGdtLimit { limit: 0x1F }),
+            ),
+            (
+                desc_data,
+                0x10,
+                true,
+                far(0x10, FarJumpReason::NotCodeSegment { access: 0x93 }),
+            ),
+            (
+                not_present,
+                0x10,
+                true,
+                far(0x10, FarJumpReason::NotPresent),
+            ),
+            (
+                dpl3,
+                0x10,
+                true,
+                far(0x10, FarJumpReason::Privilege { rpl: 0, dpl: 3 }),
+            ),
+            (
+                CODE64_A_SET,
+                0x11,
+                true,
+                far(0x11, FarJumpReason::Privilege { rpl: 1, dpl: 0 }),
+            ),
+            (
+                long_and_d,
+                0x10,
+                true,
+                far(0x10, FarJumpReason::LongCodeWith32BitDefault),
+            ),
+            (
+                CODE64_A_SET,
+                0x10,
+                false,
+                far(0x10, FarJumpReason::LongCodeOutsideIa32e),
+            ),
+            (
+                short_limit,
+                0x10,
+                true,
+                ProtectedRefusal::TargetBeyondLimit {
+                    eip: 0x2000,
+                    offset: 0x20F0,
+                    limit: 0x20,
+                },
+            ),
+        ];
+        for (desc, selector, lma, expected) in cases {
+            let (mut cpu, mut ram) = (entry_cpu(), paged_ram(desc));
+            cpu.efer = if lma { 0xD01 } else { 0x901 };
+            let [lo, hi] = selector.to_le_bytes();
+            let code = [0xEA, 0xF0, 0x20, 0, 0, lo, hi];
+            assert_eq!(
+                step_one(&mut cpu, &mut ram, &code),
+                Err(expected),
+                "selector {selector:#x}"
+            );
+        }
+        // The descriptor table is not readable.
+        let (mut cpu, mut ram) = (entry_cpu(), paged_ram(CODE64_A_SET));
+        cpu.efer = 0xD01;
+        cpu.gdtr.base = 0xF000_0000;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &JMP_FAR_10_20F0),
+            Err(far(
+                0x10,
+                FarJumpReason::DescriptorUnreadable {
+                    linear: 0xF000_0010
+                }
+            ))
+        );
+    }
+
+    fn far(selector: u16, reason: FarJumpReason) -> ProtectedRefusal {
+        ProtectedRefusal::FarJumpRefused {
+            eip: 0x2000,
+            selector,
+            reason,
+        }
+    }
+
+    #[test]
+    fn far_jump_accepts_a_conforming_segment_and_clears_the_rpl() {
+        // Conforming code (type bit 2) with DPL 0: RPL is not checked; CS.RPL becomes the CPL (0).
+        let conforming = [0xFF, 0xFF, 0, 0, 0, 0x9E, 0xCF, 0];
+        let (mut cpu, mut ram) = (entry_cpu(), paged_ram(conforming));
+        cpu.efer = 0xD01;
+        let [lo, hi] = 0x11u16.to_le_bytes();
+        let code = [0xEA, 0xF0, 0x20, 0, 0, lo, hi];
+        assert!(step_one(&mut cpu, &mut ram, &code).is_ok());
+        assert_eq!(
+            (cpu.cs.selector, cpu.cs.access, cpu.eip),
+            (0x10, 0x9F, 0x20F0)
+        );
+        assert_eq!(ram[0x4D], 0x9F, "the accessed bit is written to the GDT");
+    }
+
+    #[test]
+    fn page_faults_carry_the_linear_address_and_keep_the_bits_of_completed_walks() {
+        // (a) the code page is not present: the fetch walk is refused, nothing is set.
+        let mut ram = paged_ram(CODE64_A_SET);
+        tables_4k(&mut ram);
+        put_q(&mut ram, PT + 16, 0);
+        let mut cpu = ia32e_cpu();
+        cpu.step(&mut mem(&mut ram)).unwrap();
+        let (before_cpu, before_ram) = (cpu, ram.clone());
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Err(ProtectedRefusal::PageFault {
+                eip: 0x2065,
+                linear: 0x2065,
+                access: AccessKind::Fetch,
+                reason: PageRefusal::NotPresent { level: 1, entry: 0 }
+            })
+        );
+        assert_eq!((cpu, &ram), (before_cpu, &before_ram));
+        // (b) the GDT page is not present: the fetch walk completed and keeps its A bits; the
+        // descriptor read at 0x48 is refused.
+        let mut ram = paged_ram(CODE64_A_SET);
+        tables_4k(&mut ram);
+        put_q(&mut ram, PT, 0);
+        let mut cpu = ia32e_cpu();
+        cpu.step(&mut mem(&mut ram)).unwrap();
+        let before_cpu = cpu;
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Err(ProtectedRefusal::PageFault {
+                eip: 0x2065,
+                linear: 0x48,
+                access: AccessKind::Read,
+                reason: PageRefusal::NotPresent { level: 1, entry: 0 }
+            })
+        );
+        assert_eq!(cpu, before_cpu, "state unchanged");
+        assert_eq!(get_q(&ram, PML4), PDPT as u64 | 0x23);
+        assert_eq!(get_q(&ram, PT + 16), 0x2000 | 0x23);
+        assert_eq!(get_q(&ram, PT + 8), 0x1003);
+        // (c) a read-only 2 MiB page and an A-clear descriptor: the write of A is refused (WP = 1)
+        // and reported at the start of the descriptor; PDE.D and the access byte are untouched.
+        let mut ram = paged_ram(CODE64_A_CLEAR);
+        put_q(&mut ram, PD, 0x81);
+        let mut cpu = ia32e_cpu();
+        cpu.step(&mut mem(&mut ram)).unwrap();
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Err(ProtectedRefusal::PageFault {
+                eip: 0x2065,
+                linear: 0x48,
+                access: AccessKind::Write,
+                reason: PageRefusal::WriteProtected { entry: 0x81 }
+            })
+        );
+        assert_eq!((get_q(&ram, PD), ram[0x4D]), (0xA1, 0x9A));
+        // (d) XD in the PDE: with NXE = 1 a fetch is refused, with NXE = 0 the bit is reserved.
+        for (efer, reason) in [
+            (
+                0x901u64,
+                PageRefusal::NoExecute {
+                    entry: 0x83 | 1 << 63,
+                },
+            ),
+            (
+                0x101,
+                PageRefusal::ReservedBits {
+                    level: 2,
+                    entry: 0x83 | 1 << 63,
+                },
+            ),
+        ] {
+            let mut ram = paged_ram(CODE64_A_SET);
+            put_q(&mut ram, PD, 0x83 | 1 << 63);
+            let mut cpu = ia32e_cpu();
+            cpu.efer = efer;
+            cpu.step(&mut mem(&mut ram)).unwrap();
+            let before_ram = ram.clone();
+            assert_eq!(
+                cpu.step(&mut mem(&mut ram)),
+                Err(ProtectedRefusal::PageFault {
+                    eip: 0x2065,
+                    linear: 0x2065,
+                    access: AccessKind::Fetch,
+                    reason
+                })
+            );
+            assert_eq!(ram, before_ram);
+        }
+    }
+
+    #[test]
+    fn segment_loads_go_through_the_walk_when_paging_is_on() {
+        let mut ram = paged_ram(FLAT_DATA_A_CLEAR);
+        let mut cpu = active_cpu();
+        cpu.gpr[EDX] = 0x10;
+        put(&mut ram, 0x2000, &[0x8E, 0xDA]); // mov ds, edx
+        cpu.step(&mut mem(&mut ram)).unwrap();
+        assert_eq!(cpu.ds, flat(0x10, 0x93));
+        assert_eq!(ram[0x4D], 0x93);
+        // A from the fetch and the descriptor read, D from the write of the access byte.
+        assert_eq!(get_q(&ram, PD), 0xE3);
+    }
+
+    #[test]
+    fn cr3_takes_effect_at_once_and_cr4_pae_and_efer_lme_are_locked_while_paging() {
+        let tables = |ram: &mut Vec<u8>| preset_accessed_dirty(ram, false);
+        // MOV CR3: the next fetch walks the new (empty) PML4 at 0x6000.
+        let mut ram = paged_ram(CODE32_COMPAT);
+        tables(&mut ram);
+        put(
+            &mut ram,
+            0x2000,
+            &[0xB8, 0x00, 0x60, 0, 0, 0x0F, 0x22, 0xD8, 0x90],
+        );
+        let mut cpu = active_cpu();
+        let m = &mut mem(&mut ram);
+        cpu.step(m).unwrap();
+        cpu.step(m).unwrap();
+        assert_eq!(cpu.cr3, 0x6000);
+        assert_eq!(
+            cpu.step(m),
+            Err(ProtectedRefusal::PageFault {
+                eip: 0x2008,
+                linear: 0x2008,
+                access: AccessKind::Fetch,
+                reason: PageRefusal::NotPresent { level: 4, entry: 0 }
+            })
+        );
+        // MOV CR4 clearing PAE is refused, others are stored.
+        let (mut cpu, mut ram) = (active_cpu(), paged_ram(CODE32_COMPAT));
+        tables(&mut ram);
+        cpu.gpr[EAX] = 0x690;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &[0x0F, 0x22, 0xE0]),
+            Err(ProtectedRefusal::Cr4WriteUnmodelled {
+                eip: 0x2000,
+                value: 0x690
+            })
+        );
+        cpu.gpr[EAX] = 0x6A0;
+        cpu.eip = 0x2000;
+        assert!(step_one(&mut cpu, &mut ram, &[0x0F, 0x22, 0xE0]).is_ok());
+        assert_eq!(cpu.cr4, 0x6A0);
+        // WRMSR that changes LME is refused; one that keeps it is stored (LMA kept).
+        cpu.eip = 0x2000;
+        cpu.gpr[ECX] = MSR_EFER;
+        cpu.gpr[EDX] = 0;
+        cpu.gpr[EAX] = 0x801;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &[0x0F, 0x30]),
+            Err(ProtectedRefusal::EferLmeChangeWithPaging {
+                eip: 0x2000,
+                value: 0x801
+            })
+        );
+        cpu.gpr[EAX] = 0x101;
+        cpu.eip = 0x2000;
+        assert!(step_one(&mut cpu, &mut ram, &[0x0F, 0x30]).is_ok());
+        assert_eq!(cpu.efer, 0x501);
+    }
+
+    #[test]
+    fn a_64_bit_cs_is_not_executed() {
+        let (mut cpu, mut ram) = (active_cpu(), paged_ram(CODE64_A_SET));
+        preset_accessed_dirty(&mut ram, false);
+        cpu.cs = ProtectedSegment {
+            selector: 0x10,
+            base: 0,
+            limit: 0xFFFF_FFFF,
+            access: 0x9B,
+            flags: 0xA,
+        };
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &[0xB8, 0, 0, 0, 0]),
+            Err(ProtectedRefusal::Mode64NotModelled { eip: 0x2000 })
+        );
+    }
+
+    #[test]
+    fn linked_bytes_run_22_steps_through_paging_to_the_64_bit_cs() {
+        let mut ram = paged_ram(CODE64_A_SET);
+        put_linked_block6(&mut ram);
+        put(&mut ram, 0x5008, &0x901u32.to_le_bytes());
+        put(&mut ram, 0x500C, &0u32.to_le_bytes());
+        put(&mut ram, 0x5010, &0x6B0u32.to_le_bytes());
+        put(&mut ram, 0x5014, &0u32.to_le_bytes());
+        let mut cpu = entry_cpu();
+        let run = cpu.run(&mut mem(&mut ram), 100);
+        // 13 steps to the RDMSR, 7 with the WRMSR path, `mov cr0` and the far jump.
+        assert_eq!(run.steps, 22);
+        assert_eq!(
+            run.stop,
+            Some(ProtectedRefusal::Mode64NotModelled { eip: 0x20F0 })
+        );
+        assert_eq!(
+            (cpu.cr0, cpu.cr3, cpu.cr4, cpu.efer),
+            (0x8005_0033, 0x4000, 0x6B0, 0xD01)
+        );
+        assert_eq!(cpu.cs.selector, 0x10);
+        assert_eq!(cpu.cs.flags & 0x6, 0x2, "L = 1, D = 0");
+        assert_eq!(
+            cpu.gdtr,
+            TableRegister {
+                base: 0x38,
+                limit: 0x1F
+            }
+        );
+        // The three entries the walks used have A; D only where something was written.
+        assert_eq!(get_q(&ram, PML4), PDPT as u64 | 0x23);
+        assert_eq!(get_q(&ram, PDPT), PD as u64 | 0x23);
+        assert_eq!(get_q(&ram, PD), 0xA3);
+    }
+
+    // ---- comparison with the KVM oracle (S6-14m) ------------------------------------------
+    //
+    // Files in docs/reports/data/stage6/s6-14m/ (make-images.py, run-oracle.sh): the S6-14j prefix
+    // through `RealModeCpu`, the linked block 6 bytes 0x2000..0x2062, the linked `mov cr0, eax`
+    // (PG, LME and PAE) and the far jump `jmp 0x10:0x20f0`, with the descriptor of selector 0x10,
+    // the page tables (PML4 0x4000, PDPT 0x7000, PD 0x8000, PT 0x9000) and EFER/CR4 of the header
+    // varied per image; a HLT stands at 0x20f0. Compared: GPRs, EIP, EFLAGS, CR0, CR3, CR4, EFER
+    // (LMA included), the six segments, GDTR, IDTR, `CR2` for a `#PF`, the GDT block and the first
+    // 64 bytes of each of the four paging structures (A and D bits).
+
+    #[derive(Clone, Copy)]
+    enum OracleOutcomeM {
+        /// 64-bit CS: the model stops before the HLT at 0x20f0 (`Mode64NotModelled`).
+        Long64,
+        /// Compatibility CS: the HLT at 0x20f0 is `Unsupported` for the model.
+        Compat,
+        /// `#GP`/`#NP` at the far jump 0x2065.
+        FarJump(u16, FarJumpReason),
+        /// `#GP` at the `MOV CR0, EAX` at 0x2062 (PAE clear).
+        Cr0Gp,
+        /// `#PF` at 0x2065 with this `CR2`, access and reason.
+        Page(u32, AccessKind, PageRefusal),
+    }
+
+    fn compare_tables(ram: &[u8], tables: &str) {
+        let lines: Vec<&str> = tables.lines().collect();
+        assert_eq!(lines.len(), 4);
+        for (line, expected_gpa) in lines.iter().zip([PML4, PDPT, PD, PT]) {
+            let (gpa, bytes) = oracle_result_block(line);
+            assert_eq!(gpa as usize, expected_gpa);
+            assert_eq!(
+                &ram[expected_gpa..expected_gpa + 64],
+                &bytes[..],
+                "table {gpa:#x}"
+            );
+        }
+    }
+
+    fn compare_with_oracle_m(
+        image: &[u8],
+        json: &str,
+        tables: &str,
+        expected_steps: u64,
+        outcome: OracleOutcomeM,
+    ) {
+        use OracleOutcomeM::*;
+        let (mut cpu, mut ram) = enter_from_oracle_image_sized(image, json, RAM_PAGED);
+        let run = cpu.run(&mut mem(&mut ram), 100);
+        assert_eq!(run.steps, expected_steps);
+        let (halt, rip_delta, rflags_ignore, cr2) = match outcome {
+            Long64 => {
+                assert_eq!(
+                    run.stop,
+                    Some(ProtectedRefusal::Mode64NotModelled { eip: 0x20F0 })
+                );
+                (true, 1, 0, 0)
+            }
+            Compat => {
+                let Some(ProtectedRefusal::Unsupported { eip, bytes, .. }) = run.stop else {
+                    panic!("expected a stop at the HLT, got {:?}", run.stop);
+                };
+                assert_eq!((eip, bytes[0]), (0x20F0, 0xF4));
+                (true, 1, 0, 0)
+            }
+            FarJump(selector, reason) => {
+                assert_eq!(run.stop, Some(far_at(0x2065, selector, reason)));
+                (false, 0, 0x1_0000, 0)
+            }
+            Cr0Gp => {
+                assert_eq!(
+                    run.stop,
+                    Some(ProtectedRefusal::LongModePagingWithoutPae {
+                        eip: 0x2062,
+                        value: 0x8005_0033
+                    })
+                );
+                (false, 0, 0x1_0000, 0)
+            }
+            Page(linear, access, reason) => {
+                assert_eq!(
+                    run.stop,
+                    Some(ProtectedRefusal::PageFault {
+                        eip: 0x2065,
+                        linear,
+                        access,
+                        reason
+                    })
+                );
+                (false, 0, 0x1_0000, u64::from(linear))
+            }
+        };
+        if halt {
+            assert!(json.contains("\"stop_reason\":\"guest_hlt\""));
+            assert!(json.contains("\"exits\":[{\"kind\":\"hlt\"}]"));
+        } else {
+            assert!(json.contains("\"stop_reason\":\"triple_fault_or_shutdown\""));
+            assert!(json.contains("\"exits\":[{\"kind\":\"shutdown\"}]"));
+        }
+        compare_state_cr2(&cpu, &ram, json, rip_delta, rflags_ignore, cr2);
+        compare_tables(&ram, tables);
+    }
+
+    fn far_at(eip: u32, selector: u16, reason: FarJumpReason) -> ProtectedRefusal {
+        ProtectedRefusal::FarJumpRefused {
+            eip,
+            selector,
+            reason,
+        }
+    }
+
+    macro_rules! oracle_case_m {
+        ($name:ident, $stem:literal, $steps:expr, $outcome:expr) => {
+            #[test]
+            fn $name() {
+                let image: &[u8] = include_bytes!(concat!(
+                    "../../../docs/reports/data/stage6/s6-14m/",
+                    $stem,
+                    ".bin"
+                ));
+                let json: &str = include_str!(concat!(
+                    "../../../docs/reports/data/stage6/s6-14m/oracle-",
+                    $stem,
+                    ".json"
+                ));
+                let tables: &str = include_str!(concat!(
+                    "../../../docs/reports/data/stage6/s6-14m/oracle-",
+                    $stem,
+                    "-tables.jsonl"
+                ));
+                compare_with_oracle_m(image, json, tables, $steps, $outcome);
+            }
+        };
+    }
+    use OracleOutcomeM::{Compat, Cr0Gp, FarJump, Long64, Page};
+    const XD_PDE: u64 = 0x83 | 1 << 63;
+    // a: Linux-like: 2 MiB page, code64 with A set; A set in PML4E, PDPTE, PDE (0xa3), no D.
+    oracle_case_m!(
+        oracle_m_a_ia32e_2mib_code64_accessed_set,
+        "a-ia32e-2mib-code64-accessed-set-0000-0000",
+        22,
+        Long64
+    );
+    // b: A-clear descriptor: the access byte and PDE.D are written through the walk (PDE 0xe3).
+    oracle_case_m!(
+        oracle_m_b_ia32e_2mib_code64_accessed_clear,
+        "b-ia32e-2mib-code64-accessed-clear-0000-0000",
+        22,
+        Long64
+    );
+    // c: 4 KiB pages: PTE[2] A (fetch), PTE[0] A+D (the GDT write), the others untouched.
+    oracle_case_m!(
+        oracle_m_c_ia32e_4k_code64_accessed_clear,
+        "c-ia32e-4k-code64-accessed-clear-0000-0000",
+        22,
+        Long64
+    );
+    // d: compatibility target (L = 0, D = 1): EFER.LMA = 1, CS.L = 0, the HLT runs in compat mode.
+    oracle_case_m!(
+        oracle_m_d_compat_target_code32,
+        "d-compat-target-code32-0000-0000",
+        22,
+        Compat
+    );
+    oracle_case_m!(
+        oracle_m_e_long_and_d_set_gp,
+        "e-long-and-d-set-gp-0000-0000",
+        21,
+        FarJump(0x10, FarJumpReason::LongCodeWith32BitDefault)
+    );
+    oracle_case_m!(
+        oracle_m_f_code64_not_present,
+        "f-code64-not-present-0000-0000",
+        21,
+        FarJump(0x10, FarJumpReason::NotPresent)
+    );
+    oracle_case_m!(
+        oracle_m_g_selector_beyond_gdt_limit,
+        "g-selector-beyond-gdt-limit-0000-0000",
+        21,
+        FarJump(0x28, FarJumpReason::BeyondGdtLimit { limit: 0x1F })
+    );
+    oracle_case_m!(
+        oracle_m_h_selector_is_data,
+        "h-selector-is-data-0000-0000",
+        21,
+        FarJump(0x10, FarJumpReason::NotCodeSegment { access: 0x93 })
+    );
+    oracle_case_m!(
+        oracle_m_i_code64_dpl3,
+        "i-code64-dpl3-0000-0000",
+        21,
+        FarJump(0x10, FarJumpReason::Privilege { rpl: 0, dpl: 3 })
+    );
+    // j: PAE clear: `#GP` at the MOV CR0; CR0 and EFER.LMA unchanged, no table touched.
+    oracle_case_m!(
+        oracle_m_j_cr4_pae_clear_gp_at_mov_cr0,
+        "j-cr4-pae-clear-gp-at-mov-cr0-0000-0000",
+        20,
+        Cr0Gp
+    );
+    oracle_case_m!(
+        oracle_m_k_pte_code_page_not_present,
+        "k-pte-code-page-not-present-0000-0000",
+        21,
+        Page(
+            0x2065,
+            AccessKind::Fetch,
+            PageRefusal::NotPresent { level: 1, entry: 0 }
+        )
+    );
+    // l: the GDT page is not present: the fetch walk keeps its A bits, CR2 = 0x48.
+    oracle_case_m!(
+        oracle_m_l_pte_gdt_page_not_present,
+        "l-pte-gdt-page-not-present-0000-0000",
+        21,
+        Page(
+            0x48,
+            AccessKind::Read,
+            PageRefusal::NotPresent { level: 1, entry: 0 }
+        )
+    );
+    oracle_case_m!(
+        oracle_m_m_pde_xd_nxe_on,
+        "m-pde-xd-nxe-on-0000-0000",
+        21,
+        Page(
+            0x2065,
+            AccessKind::Fetch,
+            PageRefusal::NoExecute { entry: XD_PDE }
+        )
+    );
+    oracle_case_m!(
+        oracle_m_n_pde_xd_nxe_off,
+        "n-pde-xd-nxe-off-0000-0000",
+        21,
+        Page(
+            0x2065,
+            AccessKind::Fetch,
+            PageRefusal::ReservedBits {
+                level: 2,
+                entry: XD_PDE
+            }
+        )
+    );
+    oracle_case_m!(
+        oracle_m_o_pde_2mib_misaligned_bit13,
+        "o-pde-2mib-misaligned-bit13-0000-0000",
+        21,
+        Page(
+            0x2065,
+            AccessKind::Fetch,
+            PageRefusal::ReservedBits {
+                level: 2,
+                entry: 0x83 | 1 << 13
+            }
+        )
+    );
+    oracle_case_m!(
+        oracle_m_p_pml4e_ps_reserved,
+        "p-pml4e-ps-reserved-0000-0000",
+        21,
+        Page(
+            0x2065,
+            AccessKind::Fetch,
+            PageRefusal::ReservedBits {
+                level: 4,
+                entry: PDPT as u64 | 0x83
+            }
+        )
+    );
+    oracle_case_m!(
+        oracle_m_q_pdpte_1gib_page,
+        "q-pdpte-1gib-page-0000-0000",
+        21,
+        Page(
+            0x2065,
+            AccessKind::Fetch,
+            PageRefusal::GigabytePage { entry: 0x83 }
+        )
+    );
+    // r: read-only 2 MiB page, A-clear descriptor: the write of A is `#PF` with CR2 = 0x48 (the
+    // start of the descriptor, not the byte at 0x4d that is written).
+    oracle_case_m!(
+        oracle_m_r_pde_readonly_accessed_clear,
+        "r-pde-readonly-accessed-clear-0000-0000",
+        21,
+        Page(
+            0x48,
+            AccessKind::Write,
+            PageRefusal::WriteProtected { entry: 0x81 }
+        )
+    );
+    oracle_case_m!(
+        oracle_m_s_pml4e_not_present,
+        "s-pml4e-not-present-0000-0000",
+        21,
+        Page(
+            0x2065,
+            AccessKind::Fetch,
+            PageRefusal::NotPresent { level: 4, entry: 0 }
+        )
+    );
+    // t: A and D preset everywhere: no memory is written.
+    oracle_case_m!(
+        oracle_m_t_tables_accessed_dirty_preset,
+        "t-tables-accessed-dirty-preset-0000-0000",
+        22,
+        Long64
     );
 }

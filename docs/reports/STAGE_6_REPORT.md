@@ -707,6 +707,40 @@ CR4 (`0x7ff` проходит, `0x800` и выше нет), CR0 с `PG`, гра�
 
 Что остаётся: **S6-14m** — таблицы страниц, `MOV CR0, EAX` с `PG = 1` и `EFER.LMA`, хвост блока 6 (`0x2062`–`0x2065`), блоки 7–8 (`0x2065`, `0x20f0`), ветки Intel/AMD `verify_cpu`, решение по профилям `cpuid.rs`, S6-13 и S6-16.
 
+### S6-14m — paging и compat-переход (реализовано, ожидает ревью)
+
+Дата: 2026-11-16. Чекбокс S6-14 в `STAGE_6.md` не отмечен. Контракт: [`CPU_CONTRACT.md`](../specs/CPU_CONTRACT.md#s6-14m--paging-и-переход-в-compat-0x20620x206c).
+
+Что сделано: новый модуль `paging.rs` (4-уровневый обход `CR3` → PML4 → PDPT → PD → PT, страницы 4 КиБ и 2 МиБ, A/D, `#PF` как явный отказ с линейным адресом) и расширение `ProtectedCpu` (`protected_exec.rs`):
+`MOV CR0, EAX` с `PG = 1` при `LME` и `PAE` включает IA-32e (**`EFER.LMA := 1` процессором** — первый случай аппаратного изменения LMA), дальний `JMP ptr16:32` (`ea`, `0x2065`) с проверками дескриптора и `L`/`D`.
+Остановка — **`Mode64NotModelled { eip: 0x20f0 }`** (64-битный CS загружен; 22 шага от `0x2000` с записью EFER). При `CR0.PG = 1` через обход идут выборка, операнды `DS`, чтение/запись дескрипторов GDT.
+Поправка к постановке: селектор `0x10` в GDT trampoline — 64-битный код (`L = 1`, `D = 0`); переход `0x2065` идёт из compat (CS `0x08`) в 64-bit; compat-цель (`L = 0`, `D = 1`) тоже поддержана и проверена оракулом (образ `d`).
+
+**Решения (в контракте).** (1) Объём paging: IA-32e 4-level, 4 КиБ и 2 МиБ; 1 ГиБ-страница — отказ (профиль не объявляет); адреса < 4 ГиБ; без TLB. (2) A/D: успешный обход ставит A во всех использованных записях, D в конечной при записи;
+обход-отказ ничего не ставит, завершённые обходы отказанной позже инструкции ставят (по оракулу). (3) `#PF` → `PageFault{linear, access, reason}` (CR2 совпал с оракулом; для записи A в дескриптор — начало дескриптора). (4) LMA: `PG = 1` при `LME` и `PAE`;
+`PAE = 0` — `#GP`-отказ; `LME = 0` (32-битный paging) — `PagingNotModelled`. (5) Дальний переход: CPL 0, код/`P`/DPL/RPL, `L = 1` и `D = 1` — `#GP`, `L = 1` → 64-bit (без предела), `L = 0` → compat (предел).
+(6) Пока paging включён: изменение `LME` через `WRMSR` и сброс `PAE` через `MOV CR4` — отказы.
+
+Изменённые ожидания: `mov_cr0_with_paging_is_refused_without_a_state_change` (→ `..._without_lme_is_not_modelled_and_changes_nothing`), `equal_efer_skips_the_wrmsr_and_stops_at_the_paging_write` и
+`different_efer_is_written_from_the_header` (EFER с `LME` и CR4 = 0 в тесте — теперь `LongModePagingWithoutPae`, раньше `PagingNotModelled`: путь идёт дальше), `everything_outside_the_closed_set_is_unsupported` (дальний `JMP` заменён на `CALL`).
+
+Оракул (обязательный): `kvm_runner.c` (`969ce3a2…`) и `kvm_runner` (`5f6a2aac…`) совпадают с S6-14l; `/tmp/od-s6-14m` на Intel Mini (gcc 15.2.0, Linux 7.0.0-42, i5-3210M); хэши `.bin` на хосте = в репозитории.
+20 образов (`make-images.py`): успех 2 МиБ/4 КиБ с A-set/A-clear дескриптором и предустановленными A/D, compat-цель; отказы перехода (`L&D`, `P = 0`, предел GDT, данные, `DPL = 3`); `#GP` без PAE; `#PF` (нет страницы кода/GDT, `XD` при NXE 1/0,
+бит 13 в 2 МиБ PDE, `PS` в PML4E, 1 ГиБ, `R/W = 0` при записи A, PML4E не присутствует). Данные: `docs/reports/data/stage6/s6-14m/` (в т.ч. `oracle-*-tables.jsonl` с PML4/PDPT/PD/PT после остановки).
+Сравнение (`oracle_m_*`): **совпало полностью на 20 образах** — GPR, EIP, EFLAGS, CR0/CR2/CR3/CR4, EFER (LMA = 1 после PG), шесть сегментов (CS compat и 64-bit), GDTR/IDTR, GDT и таблицы страниц (A/D). Расхождений нет;
+оракул уточнил CR2 при отказе записи A (начало дескриптора) и то, что A-биты не ставятся на обходе-отказе.
+
+Тесты: 247 в прогоне `protected real_mode_exec legacy_mode cpuid paging` (прежние 202 + 45: 13 в `paging.rs`, 12 unit и 20 сравнений в `protected_exec.rs`). Unit (по SDM, по памяти): трансляция (4 КиБ, 2 МиБ, индексы, A/D, коммит), отказы (нет страницы на каждом
+уровне, неверное выравнивание 2 МиБ бит 13–20, зарезервированные биты, XD/NXE, WP, 1 ГиБ, нечитаемая запись, `EntryUnwritable`, > 4 ГиБ), `MOV CR0` (LMA, ET, все отказы), перенос выборки/данных/дескрипторов через обход, дальний переход (64-bit, compat, 10 отказов, conforming),
+`MOV CR3`/`CR4`/`WRMSR` при включённом paging, сквозной прогон по blob.
+
+Проверки: `cargo fmt -p od-isa -- --check` — чисто; `cargo test -p od-isa --locked --offline --lib -- protected real_mode_exec legacy_mode cpuid paging` — 247 прошли; `cargo clippy -p od-isa --all-targets` — замечаний по `paging.rs` и `protected_exec.rs` нет.
+
+Не проверено оракулом: отказы при включённом paging (`LME`/`PAE`), `MOV CR3` при paging, `PG = 1` без `LME` (не моделируется), `PG` с `CS.L = 1`/без `PE`, зарезервированные биты CR0, `WP = 0`, `PhysicalBeyond4GiB`, выборка через границу страницы,
+A/D выборки останавливающей инструкции, `MOV Sreg` через обход, поведение кремния вместо KVM. Проблем с хостом не было.
+
+Что остаётся: **S6-14n** — 64-битный блок 8 (`0x20f0`): 64-битный декодер и режим `CS.L = 1`; затем ветки Intel/AMD `verify_cpu`, SME, решение по профилям `cpuid.rs`, подключение к циклу исполнения, S6-13 и S6-16.
+
 ### S6-13 — INIT, SIPI и ожидание SIPI (реализовано, исправлено по ревью, ожидает повторного ревью)
 
 Дата: 2026-11-16. Чекбокс S6-13 в `STAGE_6.md` не отмечен. Контракт: [`MACHINE_CONTRACT.md`](../specs/MACHINE_CONTRACT.md#init-sipi-и-ожидание-sipi-s6-13).

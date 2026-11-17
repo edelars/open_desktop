@@ -1,0 +1,32 @@
+S6-14m KVM real-mode oracle evidence
+Date: 2026-11-16
+Host: mini (senya@192.168.1.39), Linux mini 7.0.0-42-generic #42-Ubuntu SMP PREEMPT_DYNAMIC Thu Oct 15 08:06:44 UTC 2026 x86_64 GNU/Linux
+model name	: Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz
+gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+KVM mode: EPT-режим не зафиксирован в host-info; зависимость CR2 для записи A - наблюдение KVM (на хост не ходили, /sys/module/kvm_intel/parameters/ept не читали).
+Host work dir: /tmp/od-s6-14m (kvm_runner rebuilt there from tools/kvm-runner/kvm_runner.c)
+Build: gcc -O2 -Wall -Wextra -Werror -std=c11 kvm_runner.c -o kvm_runner
+Run: see run-oracle.sh (from the repo root); per image five runs: --result-block 0x30:64 and 0x4000, 0x7000, 0x8000, 0x9000 with 64 bytes
+SHA-256 (host, /tmp/od-s6-14m):
+969ce3a20af037bb8849d05482b31f881320e9420ee9630701728fd0da4ce7f0  kvm_runner.c
+5f6a2aac6f4a49fc92c1ab611daeecc0e7474fe1ae6c2551647464ea10bf11b7  kvm_runner
+25e340fc1ddb8c175cbba4896a3cc13fed655cec04c849f6bf0ec5b9926d6bf3  a-ia32e-2mib-code64-accessed-set-0000-0000.bin
+0a411b6292b8f16456053ffcb2422d0e771aaae3f84d9f33d47afa3aea07204c  b-ia32e-2mib-code64-accessed-clear-0000-0000.bin
+6efd51ec1728a42c6b977da7d075f083a9433f1d3bf340053f7d2f6a10f45c87  c-ia32e-4k-code64-accessed-clear-0000-0000.bin
+7eb2d30120da75c416d33d7ec8bcc79cde2ee745176f412b165b9eb29c762d35  d-compat-target-code32-0000-0000.bin
+9bc03152f3d1a3846e5c295f5a4b9258404fab8b00cb3586114c6d55c6da467e  e-long-and-d-set-gp-0000-0000.bin
+9f0257c6bded2768f6253adb7b879b144d4d2e1488927924e86494999103a5c5  f-code64-not-present-0000-0000.bin
+1ca33f602055bd61608316645c353b3d887e6fd83551385072d3e40a3d24babf  g-selector-beyond-gdt-limit-0000-0000.bin
+e8777fe01381ad23b66a53ee7afb9f726c85bd673792d56c406b547cc48f5378  h-selector-is-data-0000-0000.bin
+bd34a5e07037113d45476b4f273c4d007c44ca076f991ea9d79ecb4a21942211  i-code64-dpl3-0000-0000.bin
+3be5707b7ef9719d0ecc94edb0c8fdfe12468ec9d78254be42001e43af5c5067  j-cr4-pae-clear-gp-at-mov-cr0-0000-0000.bin
+eb31ce405be2c2693ff40674b8aa8cc647f2e602d90ad0c3f8af839bcc40e262  k-pte-code-page-not-present-0000-0000.bin
+a4039ef95e89f18ad4b5e0dd2b806e1906f5f0003b47b56ca21832c6e02088cc  l-pte-gdt-page-not-present-0000-0000.bin
+ce5ab2db0b7d7ea5b928ebf1f3fa72b87d38929b63aa67c472db01834ea3aa82  m-pde-xd-nxe-on-0000-0000.bin
+1562a4012d0d4b12a0f6c57dec4852927298e5e3954eb80ff661c73a4e34473b  n-pde-xd-nxe-off-0000-0000.bin
+efdaf1cb208d531d661c79d1e9bf121c71add0e0b2cf7b8f5880a2764954b366  o-pde-2mib-misaligned-bit13-0000-0000.bin
+d7a477a07ce5aa6321a178897c5454dbece238d1bb070b2b31e7bbaa0ce5ded6  p-pml4e-ps-reserved-0000-0000.bin
+89445c0e09eab29c1be6f50ee55a4dc812523333e680b6d5c169b441d7d46564  q-pdpte-1gib-page-0000-0000.bin
+69bb63b0c629e5896d35878a1d6e9267b5768bdc185200a46ca03cb189c7456c  r-pde-readonly-accessed-clear-0000-0000.bin
+82e9cd7fe147041c8bb24618317e6d969cbb2a0df98629fbf6fcff577a995c69  s-pml4e-not-present-0000-0000.bin
+5975aeb2bacc22188d1c6f5b2aa63c520d07ca5c343afadab766983209014ea3  t-tables-accessed-dirty-preset-0000-0000.bin
