@@ -25181,6 +25181,41 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: firmware loads exact `46 8B 64 1E 04` (MOV R12D,dword ptr
+        // [RSI+R11+4]). REX.R selects R12D and REX.X selects the R11 SIB index;
+        // the dword write zero-extends R12. Commit only after the tracked read.
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Memory(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x8b
+            && instruction.length == 5
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x46),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R12, OperandSize::Dword)
+            && source.displacement == 4
+            && source.base == AddressBase::Register(Register::Rsi)
+            && source.index == Some(Register::R11)
+            && source.scale == 1
+            && source.address_size == OperandSize::Qword
+            && source.size == OperandSize::Dword =>
+        {
+            let value =
+                match read_operand(state, memory, context, next_rip, Operand::Memory(source)) {
+                    Ok(value) => value,
+                    Err(MemoryError::Architectural(fault)) => {
+                        return result(PagedProbeExit::Fault(fault), 0);
+                    }
+                    Err(error) => return result(PagedProbeExit::Backend(error), 0),
+                };
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: exact Rust-helper spill reloads `48 8B 74 24 10`
         // (MOV RSI,[RSP+0x10]) and `48 8B 54 24 30` (MOV RDX,[RSP+0x30]).
         // Keep destination and RSP-based SIB disp8 tuples exact; commit the

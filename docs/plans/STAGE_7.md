@@ -1853,7 +1853,7 @@ Focused tests pass (5/5), other-profile matrix passes (1/1), full od-isa passes
 (110/110), workspace all-targets offline check passes with existing warnings,
 and scoped rustfmt/diff-check pass. Runner advances to `49 83 C0 18`
 (ADD R8,0x18, ISSUE-399) at RIP `0x2012ae` after 9,882 retired instructions,
-`Unsupported { opcode: 131 }`; COM1 is empty. Independent review is pending.
+`Unsupported { opcode: 131 }`; COM1 is empty. Independent review approved with no findings.
 
 ### ISSUE-399 — exact ADD R8,0x18 (`49 83 C0 18`)
 
@@ -2125,4 +2125,21 @@ remains the unrelated CLD caveat.
 
 Runner advances to `46 8B 64 1E 04` (MOV R12D,dword ptr [RSI+R11+4]; ISSUE-415)
 at RIP `0x201305`, after 9,903 retired instructions, unsupported opcode 139,
+COM1 empty.
+
+### ISSUE-415 — exact `MOV R12D,dword ptr [RSI+R11+4]` (`46 8B 64 1E 04`)
+
+Admit only this exact indexed dword load in the base paged profile. REX.R selects
+R12D, REX.X selects R11 as the SIB index, RSI is the base, and disp8 is +4.
+The tracked dword read zero-extends R12 and leaves flags unchanged; fetch,
+noncanonical-address and data-read faults must not commit the destination or
+RIP. Focused zero-extension/state/tracked-read/read-fault/canonicality/fetch-
+fault/neighbor/CPL3 tests pass (6/6); other-profile matrix passes (1/1). Full
+od-isa passes (2,322/1,591/126/29/6/1,392/7/15; zero doc tests), paged machine
+quantum passes (110/110), workspace all-targets offline check passes with
+existing warnings, and scoped rustfmt/diff-check pass. Independent review is
+pending. ISSUE-201 remains the unrelated CLD caveat.
+
+Runner advances to `4E 8B 7C 1E 08` (MOV R15,qword ptr [RSI+R11+8]; ISSUE-416)
+at RIP `0x20130a`, after 9,904 retired instructions, unsupported opcode 139,
 COM1 empty.

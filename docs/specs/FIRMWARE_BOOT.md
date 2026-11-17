@@ -2002,3 +2002,18 @@ ISSUE-201 remains the unrelated CLD caveat.
 Runner advances to `46 8B 64 1E 04` (MOV R12D,dword ptr [RSI+R11+4]; ISSUE-415),
 RIP `0x201305`, after 9,903 retired instructions, unsupported opcode 139,
 COM1 empty.
+
+### ISSUE-415 — exact `MOV R12D,dword ptr [RSI+R11+4]` (`46 8B 64 1E 04`)
+
+Only this exact base-profile load is admitted. REX.R selects R12D; REX.X
+selects the R11 SIB index; RSI is the base with disp8 +4. The tracked dword
+read zero-extends R12 and leaves flags unchanged. Fetch, noncanonical-address
+and data-read faults do not commit CPU state. Focused tests pass (6/6),
+other-profile matrix passes (1/1), full od-isa passes
+(2,322/1,591/126/29/6/1,392/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check and scoped rustfmt/diff-check
+pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+Runner advances to `4E 8B 7C 1E 08` (MOV R15,qword ptr [RSI+R11+8]; ISSUE-416),
+RIP `0x20130a`, after 9,904 retired instructions, unsupported opcode 139,
+COM1 empty.
