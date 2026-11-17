@@ -551,6 +551,8 @@
 ### S6-16. Сделать собственный SMP-probe
 
 - [ ] Принято после ревью.
+- **Статус среза S6-16a (2026-11-16):** реализован индекс vCPU в MMIO цикла CPL0-набора и `LapicIrqSource` (`crates/od-machine/src/lapic_irq_source.rs`), ожидает ревью; контракт — `MACHINE_CONTRACT.md`, раздел «S6-16a», отчёт — `STAGE_6_REPORT.md`.
+- **Статус среза S6-16b (2026-11-16):** реализован `ProtectedCpu::into_long_mode` (`crates/od-isa/src/long_mode_entry.rs`), ожидает ревью; контракт — `CPU_CONTRACT.md`, раздел «S6-16b», отчёт — `STAGE_6_REPORT.md`. Остальные срезы S6-16 не начаты.
 - **Где:** `tools/build/build_stage6_smp_probe.py` и `test_build_stage6_smp_probe.py` (новые), `tests/fixtures/guest/stage6/smp_probe/` с `README.md`, загрузчик probe в `od-machine` и флаг `od-runner --stage6-smp-probe` по образцу `--stage4-interrupt-pump-probe` (`crates/od-machine/src/stage4_interrupt_pump_probe.rs`, `tools/build/build_stage4_interrupt_pump_probe.py`, его CLI-тест в `tools/runner/tests/`).
 - **Сделать:**
   1. Гостевой образ без ОС. BSP стартует как probe этапа 4, кладёт trampoline по низкому адресу, записью в ICR посылает INIT и SIPI процессору с APIC ID 1 в последовательности из S6-02.

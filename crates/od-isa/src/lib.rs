@@ -17,6 +17,7 @@ pub mod interrupt;
 pub mod iretq;
 pub mod legacy_mode;
 pub mod long_decode;
+pub mod long_mode_entry;
 pub mod lretq;
 pub mod memory;
 pub mod msr;

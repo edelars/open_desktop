@@ -1567,6 +1567,53 @@ PDPT-индексы ≠ 0 и 2 МиБ-страницы не на нулевом 
 
 **Что дальше.** Блок 8 закрывает trampoline по контракту S6-14a: срезов S6-14o нет. Остаются ветки Intel/AMD `verify_cpu` и SME (`RDMSR 0xC0010010`), решение по профилям `cpuid.rs`, подключение `RealModeCpu`/`ProtectedCpu` к циклу исполнения, S6-13 и S6-16 (probe).
 
+### S6-16b — переход ProtectedCpu → LongModeState
+
+Реализация: новый модуль `crates/od-isa/src/long_mode_entry.rs` (зарегистрирован в `lib.rs`), метод `ProtectedCpu::into_long_mode(&self, preserved: &LongModeState) -> Result<LongModeState, LongEntryRefusal>`. Модуль отдельный: `protected_exec.rs` (4 200+ строк) остаётся исполнителем trampoline, преобразование — чистая функция без памяти и шагов. `state.rs`, `protected_exec.rs` (кроме чтения полей) и интерпретатор не менялись. Назначение: после `Mode64TargetEntered { rip }` плата берёт `LongModeState` и дальше исполняет его обычным интерпретатором long mode (набор CPL0). Источники: Intel SDM Vol. 3A (long mode, сегментные регистры в 64-битном режиме, Table 12-1 — состояние после INIT) и Vol. 1 §3.4.1.1, **по памяти**: текста в репозитории нет.
+
+**Отказы** (`LongEntryRefusal`, проверяются в этом порядке, `ProtectedCpu` только заимствуется — состояние не меняется):
+
+| Порядок | Условие | Вариант |
+|---|---|---|
+| 1 | `target_entered = false` (переход блока 8 не выполнен, `RIP` — не 64-битная цель) | `TargetNotEntered` |
+| 2 | `EFER.LMA = 0` | `LongModeNotActive { efer }` |
+| 3 | `CS.L = 0` (бит 1 `ProtectedSegment::flags`) | `CodeSegmentNotLong { cs_flags }` |
+| 4 | `CS.D = 1` при `L = 1` (бит 2; зарезервированное сочетание) | `CodeSegmentDefaultSizeSet { cs_flags }` |
+
+**Поля результата.** Всё, что не названо в таблице, равно `LongModeState::default()` (ничего из `preserved` не просачивается, кроме строк «из `preserved`»).
+
+| Поле `LongModeState` | Значение | Решение |
+|---|---|---|
+| `gpr[0..8]` | `ProtectedCpu::gpr`, нулевое расширение до 64 бит | порядок EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI совпадает с `Register` |
+| `gpr[8..16]` (R8–R15) | 0 | в защищённом режиме их нет; значение после INIT |
+| `rip` | `ProtectedCpu::rip()` (64 бит) | |
+| `rflags` | `eflags` как `u64` | старшие 32 бита RFLAGS зарезервированы (0) |
+| `cr0`, `cr3`, `cr4` | `Some(значение как u64)` | |
+| `cr2` | `Some(0)` | модель не знает CR2; после INIT он 0, `#PF` trampoline не доставляет |
+| `cs_selector` | `Some(cs.selector)` | как есть, с RPL |
+| `cs_cache` | `base = 0`, `limit = 0xFFFF_FFFF`, `access` и `flags` из `cs` | в 64-битном режиме база CS считается нулём, предел не проверяется; тип поля фиксирует эти значения (образ `l` S6-14n: CS с базой `0x1000` исполняется как с базой 0) |
+| `ss_selector`, `ss_cache` | `Some(ss.selector)`, `DataSegmentDescriptorCache` из `ss` (база `u32`, предел, access, flags как есть) | база SS и DS/ES в 64-битном режиме не используется, но сохраняется как скрытое состояние (возврат в compat) |
+| `ds_selector`, `ds_cache`, `es_selector`, `es_cache` | как SS | |
+| `fs_selector`, `gs_selector` | `fs.selector`, `gs.selector` | |
+| `fs_cache`, `gs_cache` | `FsDescriptorCache { limit, access, flags }` | у типа нет базы |
+| `fs_base`, `gs_base` | `u64::from(fs.base)`, `u64::from(gs.base)` | по SDM в 64-битном режиме базы FS/GS — скрытая база кэша (она же `IA32_FS_BASE`/`IA32_GS_BASE`), загруженная из дескриптора при `MOV FS/GS` в защищённом режиме, переход в 64-битный режим её не меняет; поэтому значения берутся из `ProtectedCpu`, а не из `preserved` (INIT их обнуляет) |
+| `ds_unusable`, `es_unusable`, `ss_unusable`, `fs_unusable`, `gs_unusable` | `false` | `ProtectedCpu` не умеет null-загрузки (отказ); сегмент с селектором 0 в исходном real-mode виде — пригодный кэш (access `0x93`) |
+| `gdtr`, `idtr` | `Some(Gdtr/Idtr { base: u64::from(base), limit })` | |
+| `tr` | `None` | значение INIT по Table 12-1 (селектор 0, база 0, предел `0xFFFF`, тип 32-битного занятого TSS) — не 64-битный TSS; `TaskRegisterCache` описывает 64-битный TSS, а потребитель (`TSS.RSP0`/IST при доставке события) с фиктивным TR читал бы память по базе 0 вместо отказа «нет TR». Trampoline TR не загружает (`LTR` — в `cpu_init` ядра) |
+| `ldtr_null_selector` | `None` | поле означает «LDTR сделан недоступным `LLDT` с null-селектором»; значение INIT (селектор 0, предел `0xFFFF`) им не выражается |
+| `debug_registers` | `[None; 8]` | поле — «записано `MOV DRn`», значения питания не моделируются, DR только записываются и не влияют на исполнение; INIT-значения (DR6 `0xFFFF0FF0`, DR7 `0x400`) не представлены |
+| `sti_shadow` | `Some(Clear)`; `Some(Blocking)`, если `mov_ss_shadow = true` | после `JMP` блока 8 тень `MOV SS` всегда сброшена (достижимо только `Clear`); тень `MOV SS` и `STI` подавляют прерывания одинаково, поэтому `true` отражается верно, а не теряется |
+| `activity` | `Some(Running)` | |
+| `nmi_blocked` | `false` | INIT снимает блокировку NMI |
+| `syscall` | из `preserved.syscall` (STAR, LSTAR, FMASK, `r11_flags_defined`), поле `efer` заменяется `ProtectedCpu::efer` | MSR INIT сохраняет; `SyscallState::efer` — не второй источник EFER |
+| `kernel_gs_base`, `x87`, `sse` | клон из `preserved` | INIT сохраняет (по памяти SDM Table 12-1; решение — за вызывающим: что положить в `preserved`) |
+
+**EFER.** В `LongModeState` его нет: вызывающий хранит `ProtectedCpu::efer` сам (плата — в ячейке `guest_efer` `Vcpu`). Не возвращается.
+
+**Что не переносится и не проверяется.** `mov_ss_shadow` как поле (только в `sti_shadow`); целостность `ProtectedCpu` (например, `CR0.PG = 0` при `LMA = 1`, `CR4.PAE = 0`) — модель trampoline такое состояние не создаёт, поля публичные, функция проверяет лишь четыре условия выше; `CR8`, `DR7`, LDTR, TR, MSR, кроме перечисленных. Допуск состояния набором CPL0 (CR0/CR4 в политике, CR3 ≤ 36 бит, x87/SSE не заданы) — забота вызывающего: x87/SSE плата держит в отдельной ячейке `guest_fp`, поэтому в `preserved` их кладут только если исполняется профиль, который их принимает.
+
+**Тесты** (`long_mode_entry::tests`, ожидаемые значения написаны вручную, не из вывода модели): `field_table` (каждое поле, заимствование); `what_init_keeps_comes_from_preserved_and_the_efer_of_syscall_from_the_cpu` (что берётся из `preserved`, подмена `syscall.efer`, ничего лишнего); `a_code_segment_base_and_limit_are_normalised_a_data_base_is_kept`; `a_mov_ss_shadow_is_an_interrupt_shadow`; `every_refusal_leaves_the_cpu_unchanged_and_is_checked_in_order` (все четыре отказа и порядок); `the_converted_state_runs_through_the_ordinary_interpreter` (состояние допущено `run_with_cpl0_profile_set` с `with_cpu_owned_cr3`, `mov eax, imm32` и `mov r9, rax` исполнены с высокого адреса цели). Не проверено: сквозной прогон trampoline → преобразование → исполнение цели `secondary_startup_64` (цель не исполняется до последующих срезов S6-16), сверка с KVM-оракулом (оракул S6-14n сравнивал `ProtectedCpu`, преобразование — чистое копирование).
+
 ### S2-39a — Legacy FXSAVE/FXRSTOR contract (evidence-only)
 
 This section records the selected target's normative legacy FP/SIMD memory

@@ -770,6 +770,50 @@ A-биты обхода высокой цели: `0x4ff8` (PML4[511]), `0xaff0`,
 
 Что остаётся: ветки Intel/AMD `verify_cpu`, SME, решение по профилям `cpuid.rs`, подключение к циклу исполнения, S6-13 и S6-16 (probe).
 
+### S6-16b — переход в long mode для исполнителя платы (реализовано, ожидает ревью)
+
+Дата: 2026-11-16. Чекбокс S6-16 в `STAGE_6.md` не отмечен. Контракт: [`CPU_CONTRACT.md`](../specs/CPU_CONTRACT.md#s6-16b--переход-protectedcpu--longmodestate).
+
+Что сделано: новый модуль `crates/od-isa/src/long_mode_entry.rs` (в `lib.rs` зарегистрирован `pub mod long_mode_entry`), метод `ProtectedCpu::into_long_mode(&self, preserved: &LongModeState) -> Result<LongModeState, LongEntryRefusal>`. Чистая функция: после `Mode64TargetEntered { rip }` строит `LongModeState` для обычного интерпретатора long mode; `state.rs`, `protected_exec.rs` и интерпретатор не менялись. Отдельный модуль выбран, чтобы не разрастать `protected_exec.rs` (4 200+ строк, исполнитель trampoline) преобразованием, которому память и шаги не нужны.
+Отказы (по порядку, состояние не меняется): `TargetNotEntered`, `LongModeNotActive` (`EFER.LMA = 0`), `CodeSegmentNotLong` (`CS.L = 0`), `CodeSegmentDefaultSizeSet` (`CS.D = 1`).
+
+**Решения (подробно — таблица в контракте).**
+- GPR 0–7 — нулевое расширение, R8–R15 = 0; `RIP` 64 бит, `RFLAGS` = `eflags`; `CR0/CR3/CR4 = Some`, `CR2 = Some(0)`.
+- CS: база 0 и предел `0xFFFF_FFFF` (так фиксирует тип `CodeSegmentDescriptorCache` для Long64), `access`/`flags` как есть. SS/DS/ES: кэш `DataSegmentDescriptorCache` с базой `u32` как есть (в 64-битном режиме не используется, хранится как скрытое состояние). FS/GS: `FsDescriptorCache` без базы, а `fs_base`/`gs_base` = база из `ProtectedSegment` (по SDM скрытая база кэша; из `preserved` не берётся: INIT её обнуляет).
+- GDTR/IDTR — `u32` base в `u64`. TR — `None` (INIT-значение не 64-битный TSS, фиктивный TR вместо отказа «нет TR» заставил бы доставку события читать TSS по базе 0). LDTR — `None` (поле выражает только null-`LLDT`). Отладочные регистры — `[None; 8]` (поле «записано `MOV DRn`», они не влияют на исполнение).
+- `sti_shadow = Clear` (`Blocking`, если `mov_ss_shadow`; после `JMP` блока 8 достижим только `Clear`), `activity = Running`, `nmi_blocked = false`.
+- Из `preserved`: `syscall` (с подменой `efer` на EFER процессора), `kernel_gs_base`, `x87`, `sse`. EFER в `LongModeState` нет, его хранит вызывающий.
+
+Тесты (`long_mode_entry::tests`, 6 штук, ожидания вручную по SDM из памяти, не из вывода модели): таблица полей; что берётся из `preserved` и что нет; нормализация базы/предела CS; тень `MOV SS`; четыре отказа и их порядок без изменения процессора; состояние допущено `run_with_cpl0_profile_set` (`with_cpu_owned_cr3`) и исполняет `mov eax, imm32` и `mov r9, rax` с высокого адреса цели.
+Проверки: `cargo fmt -p od-isa -- --check` — чисто; `cargo test -p od-isa --locked --offline --lib -- protected long_mode legacy` — 157 прошли (151 прежний + 6 новых); `cargo check --workspace --all-targets --offline` — чисто (предупреждения `od-host` прежние, не от среза).
+
+Не покрыто: сквозной прогон trampoline → преобразование → исполнение цели (цель `secondary_startup_64` не исполняется до следующих срезов S6-16); сверка с KVM-оракулом (преобразование — копирование полей, оракул S6-14n сравнивал `ProtectedCpu`); целостность `ProtectedCpu` (`PG`/`PAE`) не проверяется; допуск состояния набором CPL0 (x87/SSE, CR3 ≤ 36 бит) — на вызывающем; подключение к плате, перенос `page_table_root` в `Vcpu` и сам probe — следующие срезы S6-16.
+
+### S6-16a — индекс vCPU в MMIO и LapicIrqSource (реализовано, ожидает ревью)
+
+Дата: 2026-11-16. Чекбокс S6-16 в `STAGE_6.md` не отмечен. Контракт: [`MACHINE_CONTRACT.md`](../specs/MACHINE_CONTRACT.md#s6-16a--индекс-vcpu-в-mmio-и-lapicirqsource). Закрывает пункт (е) условий подключения планировщика (доставка Fixed-векторов в AP) в части MMIO и источника; остальные пункты 6 не затронуты.
+
+Проблема: `MachineBusSetStepIo::dispatch` вызывал `device.read/write` (процессор 0), а `AdapterBus::vcpu()` для `Ram`/`RamMmio` возвращал `BOOT_VCPU_INDEX`; цикл CPL0-набора не мог обратиться к окну LAPIC другого vCPU.
+
+Что сделано.
+1. `bus.rs`: поле `MachineBusSetStepIo::vcpu`; `dispatch` вызывает `read_from_cpu`/`write_from_cpu(vcpu, …)` (для устройств, не различающих процессоры, это прежние `read`/`write`); `split_for_set_step()` = `split_for_set_step_of_vcpu(BOOT_VCPU_INDEX)`.
+2. `paged_memory_adapter.rs`: `AdapterBus::RamMmio(ram, mmio, vcpu)`, `vcpu()` возвращает его; `set_loop_adapter` принимает `Option<(&dyn SetStepMmio, vcpu)>`; `run_cpl0_set_paged_2m_ram_with_cache` получил параметр `vcpu` (после `bus`), цикл берёт `split_for_set_step_of_vcpu(vcpu)`. Вызовы `_observed_with_sweep` и два тестовых вызова в `linux_direct.rs` передают `BOOT_VCPU_INDEX`.
+3. Новый `lapic_irq_source.rs` (в `lib.rs` зарегистрирован `mod lapic_irq_source`): `LapicIrqSource(LocalApicHandle)`; `pending_vector` = `eligible()`, `acknowledge` = `acknowledge_vector`, `next_deadline_ns` = `None`.
+4. Раздел в `MACHINE_CONTRACT.md`; строка статуса под S6-16 в `STAGE_6.md`.
+
+Тесты (ожидания вручную по SDM из памяти и по S6-11/S6-12, не из вывода модели). `lapic_irq_source::tests` (5): вектор виден только своему источнику; `acknowledge` двигает IRR → ISR только в своём LAPIC при одном и том же векторе в обоих; не-eligible вектор ничего не меняет; нет срока, остальное по умолчанию; программно выключенный LAPIC вектора не предлагает. `firmware_board::tests::vcpu_mmio` (4; на двухвекторной плате — доступ к `CpuApic` нужен приватному `LoadedFirmwareBoard`, поэтому тесты цикла лежат в модуле платы, а не рядом с `LapicIrqSource`), гость из 6 инструкций (чтение `0x20`, SVR = `0x1FF`, ICR Self `0x4_4030`):
+- цикл с `vcpu = 1`: чтение `0xFEE00020` даёт `1 << 24`, самоIPI — в IRR LAPIC 1, LAPIC 0 нетронут;
+- тот же гость с `vcpu = 0`: `0` и IRR LAPIC 0 (прежний путь);
+- `LapicIrqSource` vCPU 1: вектор `0x30` доставлен через IDT (кадр, IF = 0, RIP в обработчике), подтверждён в ISR LAPIC 1; EOI обработчика (запись `0xB0` от vCPU 1) снимает ISR LAPIC 1 и `IRETQ` возвращает IF;
+- EOI vCPU 1 не снимает ISR LAPIC 0, где тот же вектор в обслуживании.
+Проверка чувствительности: при подмене индекса на `0` в `dispatch` три из четырёх тестов цикла падают.
+
+Проверки: `cargo fmt -p od-machine -- --check` чисто; `cargo check --workspace --all-targets --offline` чисто (предупреждения `od-host` и прежнее `access_long64_4k_internal_with_writer` не от среза); `cargo test -p od-machine --offline --lib -- lapic_irq_source local_apic paged bus --test-threads=1` — 195 прошли, до добавления тестов цикла; полный `cargo test -p od-machine --offline -- --test-threads=1` — результат ниже.
+
+Полный прогон: FULL_RESULT_PLACEHOLDER
+
+Не покрыто: плата и `run_linux_boot_cpl0_set` по-прежнему исполняют только процессор 0 (планировщик S6-15 не подключён к циклу); состояние AP (CS/SS-кэши, GDT/IDT) в тестах готовит тест; `wake_ns` источника не реализован; доставка IOAPIC-линий в AP и логика HLT-пробуждения — следующие срезы S6-16.
+
 ### S6-13 — INIT, SIPI и ожидание SIPI (реализовано, исправлено по ревью, ожидает повторного ревью)
 
 Дата: 2026-11-16. Чекбокс S6-13 в `STAGE_6.md` не отмечен. Контракт: [`MACHINE_CONTRACT.md`](../specs/MACHINE_CONTRACT.md#init-sipi-и-ожидание-sipi-s6-13).
