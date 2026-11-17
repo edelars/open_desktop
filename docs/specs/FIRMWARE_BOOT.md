@@ -2491,3 +2491,13 @@ ISSUE-453) at RIP `0x201350` with 10,181 retired and Unsupported opcode 131.
 COM1 is empty in both runs. Image SHA-256 is
 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-453 runner frontier
+
+Exact base-profile `41 83 F8 07` (CMP R8D,7) updates dword comparison flags
+and advances RIP with full R8 preserved. With budget 20000 the runner
+reaches `0F 87 5A 01 00 00` (JA rel32 +0x15a, ISSUE-454) at RIP `0x201354`
+after 10,182 retired instructions. It reports Unsupported opcode 135 with
+empty COM1. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

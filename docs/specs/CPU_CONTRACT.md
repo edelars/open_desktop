@@ -29685,3 +29685,13 @@ CR0.WP, CR3 and stack probes and the paged CPL3 MOV probe refuse this form.
 The separate Linux CPL3 short-JMP policy continues to admit its existing
 unprefixed rel8 forms. Independent review approved with no findings. ISSUE-201 remains the
 unrelated CLD caveat.
+
+### ISSUE-453 — bounded CMP R8D,7
+
+The base paged CPL0 profile admits `41 83 F8 07`. REX.B selects R8D and
+opcode 83 sign-extends imm8 7. The dword subtraction uses R8[31:0] and
+defines CF, PF, AF, ZF, SF and OF while preserving the other flags and their
+definedness. The instruction advances RIP without writing a GPR. A fault
+on the final immediate fetch commits no architectural state. The other
+CPL0 probes and paged CPL3 MOV probe refuse the exact encoding.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

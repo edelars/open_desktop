@@ -2670,3 +2670,15 @@ retired. Budget 20000 reaches ISSUE-453, `41 83 F8 07` (CMP R8D,0x7), at
 RIP `0x201350` with 10,181 retired and Unsupported opcode 131. COM1 is
 empty in both runs. Independent review approved with no findings. ISSUE-201 remains the
 unrelated CLD caveat.
+
+### ISSUE-453 — exact CMP R8D,7 (`41 83 F8 07`)
+
+Base `PagedCpl0ProbeV1` admits the exact REX.B dword compare with the
+sign-extended imm8 7. The subtraction updates and defines CF, PF, AF, ZF,
+SF and OF, advances RIP, and preserves full R8 and all other registers.
+Tests exercise dword flags and definedness, final-immediate fetch faults,
+neighboring encodings, the CPL3 MOV probe and the other CPL0 probes.
+With budget 20000 the runner retires 10,182 instructions and stops at RIP
+`0x201354` on `0F 87 5A 01 00 00` (JA rel32 +0x15a, ISSUE-454). It reports
+Unsupported opcode 135 with empty COM1. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.

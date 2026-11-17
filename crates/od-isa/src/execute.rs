@@ -26765,12 +26765,12 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
-        // S7-04: exact `41 83 F8 08` compares R8D with sign-extended imm8 8.
+        // S7-04: exact `41 83 F8 07` and `41 83 F8 08` compare R8D with a sign-extended imm8.
         // REX.B selects R8D; CMP updates dword flags without writing the register.
         Operation::Arithmetic {
             kind: ArithmeticKind::Cmp,
             dst: Operand::Register(destination),
-            src: Operand::Immediate(8),
+            src: Operand::Immediate(immediate @ (7 | 8)),
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x83
@@ -26788,7 +26788,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 OperandSize::Dword,
                 ArithmeticKind::Cmp,
                 lhs,
-                8,
+                immediate,
                 state.rflags,
             );
             state.rflags = flags;

@@ -5596,7 +5596,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-453 — S7-04: exact CMP R8D,0x7 frontier (`41 83 F8 07`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-452.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201350`.
-- **Статус:** открыта. Следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base firmware CPU profile stops on `41 83 F8 07` (CMP R8D,0x7).
+- **Статус:** решена для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** exact `41 83 F8 07` defines the six arithmetic flags from dword `R8D - 7` with a sign-extended imm8. It preserves full R8, all other GPRs and unrelated flags.
 - **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 131 }` at RIP `0x201350` after 10,181 retired instructions. COM1 is empty. Bytes at the link-base shadow are `41 83 F8 07`.
-- **Следующий шаг:** admit this exact CMP form and cover dword operands, arithmetic flags, fetch faults and profile isolation.
+- **Результат:** runner retires 10,182 instructions and stops at RIP `0x201354` on `0F 87 5A 01 00 00` (JA rel32 +0x15a, ISSUE-454). It reports `Unsupported { opcode: 135 }` with empty COM1.
+- **Проверка:** four focused tests and the other-profile matrix cover dword width, arithmetic flags and definedness, register preservation, immediate fetch fault and encoding isolation. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-454 — S7-04: exact JA rel32 +0x15a frontier (`0F 87 5A 01 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-453.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201354`.
+- **Статус:** открыта. Следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base firmware CPU profile stops on unprefixed `0F 87 5A 01 00 00` (JA rel32 +0x15a).
+- **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 135 }` at RIP `0x201354` after 10,182 retired instructions. COM1 is empty. Bytes at the link-base shadow are `0F 87 5A 01 00 00`.
+- **Следующий шаг:** admit this exact JA and cover CF/ZF, signed displacement, taken-target canonicality, fetch faults and profile isolation.
