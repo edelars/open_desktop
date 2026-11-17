@@ -4580,9 +4580,18 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-339 — S7-04: exact helper `TEST RSI,RSI` (`48 85 F6`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-338.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017a1`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware reaches the exact qword self-TEST after 9,052 retired instructions. Shared TEST flag semantics and RFLAGS definedness apply; the base profile does not yet admit this exact form.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `48 85 F6` are admitted as qword RSI self-TEST. No GPR is written. Shared TEST semantics clear CF/OF, compute SF/ZF/PF from RSI AND RSI (PF from the low byte), retain AF's concrete value while marking AF undefined, and preserve unrelated flags/definedness.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 133 }` at RIP `0x2017a1`; COM1 is empty.
+- **Проверка:** four focused profile tests cover zero/nonzero/sign/parity vectors, AF and other flag definedness, complete GPR preservation, final-ModRM fetch-fault atomicity, neighboring opcode/register/width/prefix/memory forms and CPL3 rejection; the other-profile matrix rejects the exact encoding. All od-isa suites pass (2,322/1,591/126/29/6/1,039/7/15; 0 doc tests), all 69 paged machine quantum tests and scoped `cargo check --offline -p od-isa -p od-machine -p od-runner --all-targets` pass. Scoped `rustfmt --edition 2024 --check` on the two touched Rust files and `git diff --check` pass. Workspace `cargo fmt --all -- --check` reports formatting diffs in untouched `crates/od-host/src/storage_abi_v1.rs` and `tools/image-tool/tests/cli.rs`; those files were not changed. Independent review approved with no remaining findings.
+- **Следующий шаг:** implement only ISSUE-340's exact `JZ rel32 -0x14a` form in a separate Stage 7 slice.
+
+### ISSUE-340 — S7-04: exact helper `JZ rel32 -0x14a` (`0F 84 B6 FE FF FF`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-339.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017a4`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware reaches this exact near JZ after 9,053 retired instructions. The base profile does not yet admit this exact signed rel32 displacement.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 132 }` at RIP `0x2017a4`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.
