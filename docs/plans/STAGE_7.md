@@ -1826,6 +1826,22 @@ and scoped rustfmt/diff-check pass. The runner advances to `48 83 C0 10`
 
 ### ISSUE-397 — exact ADD RAX,0x10 (`48 83 C0 10`)
 
-The next firmware frontier is the qword RAX immediate ADD. Pin admission to this
-exact encoding; validate signed imm8, qword result and arithmetic flags before
-extending the helper's supported sequence.
+Admit only exact qword `48 83 C0 10` in base `PagedCpl0ProbeV1`. Opcode 83
+sign-extends the imm8; shared ADD updates RAX and arithmetic flags/definedness.
+Cover carry/overflow/parity/sign/zero vectors, full state, final-immediate fetch
+fault, encoding neighbors, CPL3 and other profiles. ISSUE-201 remains the
+unrelated CLD caveat.
+
+Focused tests pass (4/4), other-profile matrix passes (1/1), full od-isa passes
+(2,322/1,591/126/29/6/1,309/7/15; 0 doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Runner advances to `0F 87 4D 02 00 00`
+(JA rel32 +0x24d, ISSUE-398) at RIP `0x2012a4` after 9,880 retired
+instructions, `Unsupported { opcode: 135 }`; COM1 is empty. Independent review
+is pending.
+
+### ISSUE-398 — exact JA rel32 +0x24d (`0F 87 4D 02 00 00`)
+
+The next runner frontier is this exact JA displacement. Admit only this target
+offset, preserving CF/ZF flags and definedness and checking canonicality only
+when the branch is taken.

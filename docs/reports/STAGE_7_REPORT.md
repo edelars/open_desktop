@@ -3158,8 +3158,25 @@ machine quantum passes (110/110), workspace all-targets offline check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review
 is pending.
 
-### ISSUE-397 — runner frontier `48 83 C0 10`
+### ISSUE-397 — exact `48 83 C0 10` (`ADD RAX,0x10`)
 
-Firmware reaches exact `ADD RAX,0x10` after ISSUE-396. Implement only this
-qword immediate form, preserving signed imm8 and arithmetic flag semantics.
+The base paged profile admits only this qword accumulator immediate form.
+Opcode 83 sign-extends imm8 +0x10; shared ADD updates RAX and arithmetic
+flags/definedness. Focused result/flags/definedness/fetch-fault/neighbor/CPL3
+tests pass (4/4), and the other-profile matrix passes (1/1). ISSUE-201 remains
+the unrelated CLD caveat.
+
+With image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, runner
+advances to `0F 87 4D 02 00 00` (JA rel32 +0x24d, ISSUE-398), RIP `0x2012a4`,
+after 9,880 retired instructions, `Unsupported { opcode: 135 }`; COM1 is empty.
+Full od-isa passes (2,322/1,591/126/29/6/1,309/7/15; zero doc tests), paged
+machine quantum passes (110/110), workspace all-targets offline check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review
+is pending.
+
+### ISSUE-398 — runner frontier `0F 87 4D 02 00 00`
+
+Firmware next reaches exact JA rel32 +0x24d. Keep admission exact, preserve
+flags/definedness, and validate canonicality only for the taken target.
 ISSUE-201 remains the unrelated CLD caveat.

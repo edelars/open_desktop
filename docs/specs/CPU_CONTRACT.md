@@ -28901,7 +28901,22 @@ machine quantum passes (110/110), workspace all-targets offline check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review
 is pending.
 
-### ISSUE-397 — `48 83 C0 10` frontier
+### ISSUE-397 — `48 83 C0 10` (`ADD RAX,0x10`)
 
-The next exact helper instruction is qword `ADD RAX,0x10`; validate its signed
-imm8, qword result and arithmetic flags before admitting it.
+The base paged profile admits only this exact qword accumulator ADD. Opcode 83
+sign-extends imm8 +0x10; shared arithmetic updates RAX and arithmetic
+flags/definedness. Focused result/flags/fetch-fault/neighbor/CPL3 tests pass
+(4/4), and the other-profile matrix passes (1/1). ISSUE-201 remains the
+unrelated CLD caveat.
+
+The runner advances to `0F 87 4D 02 00 00` (JA rel32 +0x24d, ISSUE-398), RIP
+`0x2012a4`, after 9,880 retired instructions, `Unsupported { opcode: 135 }`;
+COM1 is empty. Full od-isa passes (2,322/1,591/126/29/6/1,309/7/15; zero doc
+tests), paged machine quantum passes (110/110), workspace all-targets offline
+check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review is pending.
+
+### ISSUE-398 — `0F 87 4D 02 00 00` frontier
+
+The next exact helper branch is JA rel32 +0x24d. Keep condition/flags and
+definedness exact, with target canonicality checked only when taken.
