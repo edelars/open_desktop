@@ -28156,6 +28156,25 @@ tests), paged machine quantum (79/79), scoped cargo check, rustfmt and
 diff-check pass; the existing unused page-walk helper warning remains.
 Independent review approved with no findings.
 
+### ISSUE-390: `48 83 C0 04` — ADD RAX,4
+
+Only exact Primary REX.W `83 /0` with qword RAX destination and immediate byte
+`04` is added to base `PagedCpl0ProbeV1`. The immediate is sign-extended (value
++4); shared qword ADD semantics update RAX and arithmetic RFLAGS, with the
+corresponding definedness bits set after retirement. Other GPRs and CPU state
+are unchanged. A fetch fault on the immediate commits no state. Neighbor
+immediates, opcode extensions, destinations, widths and prefixes remain outside
+this admission; CPL3 and other profiles reject the bytes. ISSUE-201 remains the
+unrelated CLD caveat.
+
+Focused tests pass (4/4); the shared other-profile matrix passes (1/1). The
+firmware runner advances to `48 39 D0` (CMP RAX,RDX, ISSUE-391) at RIP
+`0x20127f` after 9,871 retired instructions, `Unsupported { opcode: 57 }`;
+COM1 is empty. Full od-isa suites pass (2,322/1,591/126/29/6/1,279/7/15;
+zero doc tests), paged machine quantum passes (110/110), workspace all-targets
+offline cargo check passes with existing warnings, and scoped rustfmt and
+`git diff --check` pass. Independent review approved with no findings.
+
 ### S7-04 CPU-profile slice: exact JNZ rel32 (ISSUE-355)
 
 `PagedCpl0ProbeV1` admits only exact no-prefix bytes `0F 85 AB FE FF FF`.

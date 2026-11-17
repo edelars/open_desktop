@@ -1671,6 +1671,24 @@ passes (110/110), workspace all-targets offline cargo check, scoped rustfmt and
 `git diff --check` pass. Independent review approved with no findings. ISSUE-201 remains the
 unrelated CLD caveat.
 
+### ISSUE-390 — exact `ADD RAX,4` (`48 83 C0 04`)
+
+Admit only this qword register form in base `PagedCpl0ProbeV1`: exact REX.W,
+Primary `83 /0`, RAX destination, signed immediate byte `+4`, length four.
+Reuse the shared qword ADD operation and flags/definedness; only RAX, RFLAGS,
+RIP and their arithmetic definedness change. Cover carry, auxiliary carry,
+parity, zero, sign, overflow and upper-qword behavior, final immediate-byte
+fetch fault, neighboring immediate/opcode/register/width/prefix forms, CPL3 and
+other profiles. ISSUE-201 remains the unrelated CLD caveat.
+
+Focused tests pass (4/4), other-profile matrix passes (1/1), and the firmware
+runner advances to `48 39 D0` (CMP RAX,RDX, ISSUE-391) at RIP `0x20127f` after
+9,871 retired instructions, `Unsupported { opcode: 57 }`; COM1 is empty. Full
+od-isa suites pass (2,322/1,591/126/29/6/1,279/7/15; zero doc tests), paged
+machine quantum passes (110/110), workspace all-targets offline cargo check
+passes with existing warnings, and scoped rustfmt and `git diff --check` pass.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
 ### ISSUE-388 — exact MOV R14,imm64 (`49 BE 00 00 00 00 10 00 00 00`)
 
 Admit only this exact `MOV R14,0x1000000000` encoding in base

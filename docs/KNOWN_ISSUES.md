@@ -5001,7 +5001,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-390 — S7-04: exact helper ADD RAX,4 frontier (`48 83 C0 04`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-389.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20127b`.
-- **Статус:** открыта.
-- **Суть и последствия:** after ISSUE-389 the firmware reaches exact `48 83 C0 04` (`ADD RAX,4`), not yet admitted by the bounded base profile.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only Primary `48 83 C0 04` (`ADD RAX,4`): REX.W, opcode `83 /0`, qword RAX destination and signed imm8 +4. Shared qword arithmetic updates RAX and arithmetic flags/definedness; other state is preserved. Other immediates, registers, widths, prefixes, CPL3 and other profiles remain unsupported.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,870 instructions and reported `Unsupported { opcode: 131 }` at RIP `0x20127b`; COM1 is empty. The bytes are present at image offset `0x127b`, corresponding to the firmware link-base shadow.
-- **Следующий шаг:** graph-navigate bounded qword ADD imm8 forms and admit only this exact immediate/register encoding.
+- **Результат:** runner now retires 9,871 instructions and stops at RIP `0x20127f`, bytes `48 39 D0` (CMP RAX,RDX; ISSUE-391), `Unsupported { opcode: 57 }`; COM1 is empty.
+- **Проверка:** focused state/flags/definedness/fetch-fault/neighbors/CPL3 tests 4/4 and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,279/7/15; zero doc tests), paged machine quantum passes 110/110, workspace all-targets offline cargo check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-391 — S7-04: exact helper CMP RAX,RDX frontier (`48 39 D0`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-390.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20127f`.
+- **Статус:** открыта.
+- **Суть и последствия:** after ISSUE-390 the firmware reaches exact `48 39 D0` (`CMP RAX,RDX`), not yet admitted by the bounded base profile.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,871 instructions and reported `Unsupported { opcode: 57 }` at RIP `0x20127f`; COM1 is empty. The bytes are present at image offset `0x127f`, corresponding to the firmware link-base shadow.
+- **Следующий шаг:** graph-navigate exact qword register CMP forms and admit only this operand order and encoding.

@@ -1583,6 +1583,22 @@ machine quantum passes (110/110), workspace all-targets offline cargo check
 passes with existing warnings, and scoped rustfmt and `git diff --check` pass.
 Independent review approved with no findings.
 
+### ISSUE-390 — exact helper ADD RAX,4
+
+The base paged firmware profile admits only `48 83 C0 04` (`ADD RAX,4`),
+using qword ADD result, arithmetic flags and definedness. It changes RAX/RIP
+and arithmetic RFLAGS state; unrelated CPU state is preserved. The exact
+immediate fetch fault is atomic, and neighboring forms, CPL3 and other profiles
+remain unsupported. ISSUE-201 remains the unrelated CLD caveat.
+
+The runner on image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` advances
+to `48 39 D0` (CMP RAX,RDX, ISSUE-391), RIP `0x20127f`, after 9,871 retired
+instructions, `Unsupported { opcode: 57 }`; COM1 is empty. Full od-isa suites
+pass (2,322/1,591/126/29/6/1,279/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline cargo check passes with
+existing warnings, and scoped rustfmt and `git diff --check` pass. Independent review approved with no findings.
+
 ### ISSUE-389 — exact helper LEA RAX,[RCX+R11]
 
 The base paged firmware profile admits only `4A 8D 04 19` (`LEA RAX,[RCX+R11]`).

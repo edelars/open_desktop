@@ -2865,6 +2865,25 @@ tests), paged machine quantum passes (106/106), workspace all-targets offline
 check passes with existing warnings, and scoped rustfmt/diff-check pass.
 Independent review approved with no findings.
 
+### ISSUE-390 — exact qword ADD RAX,4 (`48 83 C0 04`)
+
+The base `PagedCpl0ProbeV1` admits only this exact four-byte form: REX.W,
+Primary opcode `83 /0`, qword RAX destination and sign-extended imm8 `+4`.
+The executor reuses shared qword arithmetic for result, RFLAGS and flag
+definedness. Focused cases check carry/AF/PF/ZF/SF/OF behavior, upper-qword
+arithmetic, unchanged unrelated state, final-immediate fetch-fault atomicity,
+neighbor encodings, CPL3 and other-profile isolation. Focused tests pass (4/4)
+and the other-profile matrix passes (1/1).
+
+On `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), the
+runner advances to `48 39 D0` (CMP RAX,RDX, ISSUE-391) at RIP `0x20127f` after
+9,871 retired instructions, `Unsupported { opcode: 57 }`; COM1 is empty. Full
+od-isa suites pass (2,322/1,591/126/29/6/1,279/7/15; zero doc tests), paged
+machine quantum passes (110/110), workspace all-targets offline cargo check
+passes with existing warnings, and scoped rustfmt and `git diff --check` pass.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
 
 ### ISSUE-381 — exact word store `[RSP+0x10],0` (`66 C7 44 24 10 00 00`)
 
