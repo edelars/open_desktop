@@ -1,0 +1,67 @@
+S5-07 schema-v13 exact-nonce quantum-trace replay and comparison
+Date: 2026-11-17
+Host: local macOS runner; each trace replay took about 20 minutes wall time. This is not an isolated instrumentation-overhead measurement.
+
+Runner
+  target/release/od-runner SHA-256: d8379bb589640f06c4132f40bde0875f02aadffa016ee999d7b897631b1f85ea
+
+Inputs
+  vmlinuz SHA-256: 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e
+  initramfs SHA-256: 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7
+  ACPI blob SHA-256: 6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d
+  debug ELF SHA-256: 7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f
+  runtime/debug ELF BuildID: 338e542e384c46228f7a378babc0f9bb2b6a5997
+
+Common run options
+  linux-direct --ram-mib 128 --run --budget 3000000000 --set-cpl0
+  --cpuid-profile stage4a --user-mode --linux-norandmaps
+  --linux-no-randomize-kstack-offset
+  --execution-observations-rdtsc-rip 0xffffffff8271b34d
+  --execution-observations-rdtsc-stride 512
+  --execution-observations-rdtsc-entry-rip 0xffffffff8271b31b
+  --execution-observations-rdtsc-prefix --execution-observations-quantum-trace
+
+Both runs loaded the guest and stopped at budget_exhausted, with retired=2,999,999,998 and budget=3,000,000,000. Each trace target gate matched: board quantum 45,215, charged retirements 1,203,244,482, global CPL0 RDTSC callback ordinal 8,382 before dispatch and 8,383 after; status=captured and omitted_records=0.
+
+Run 1 nonce OD518e8a0fda5d3f4600000175200000000
+  Source v12: work/stage5/stage5-s5-07-rdtsc-prefix-exact-replay-20261116-a/run-0001.json; SHA-256 4a8eea27721393a01e98613ce9ecb7952cf8e07e29f27804bd359514c8af3378
+  Source sidecar: SHA-256 62606e4d05512c9d2fba2578121ba3042109a510a9fb7178cc63511df2d299f0; 120,878,364 bytes
+  Trace run: work/stage5/stage5-s5-07-rdtsc-quantum-trace-exact-replay-n2-20261117-a/run-0001.json
+  Trace sidecar: work/stage5/stage5-s5-07-rdtsc-quantum-trace-exact-replay-n2-20261117-a/run-0001-observations.json
+  Trace runner JSON SHA-256: 702d1c00676cf6740cb3a85896bd50ffb5a0b25267c94e1fd1c4e9f18180715f
+  Trace sidecar: 489,309,419 bytes; SHA-256 1f0e9ebe78511426c05b640a4d4119eec9dd02edbc943f965a19d39fde20e639
+  Trace records: 1,867,950. UART: 23,356 bytes; SHA-256 6ca448b531593443e67762c949d9ae30421c6825a8dcfa5496d1af216fa0c606
+
+Run 2 nonce OD518e8a2228ca02d300000175200000001
+  Source v12: work/stage5/stage5-s5-07-rdtsc-prefix-exact-replay-20261116-a/run-0002.json; SHA-256 35390769e758e94c4504dd2e5ec1a3ac20cf9df26367af6767cd53bf971290df
+  Source sidecar: SHA-256 1506fa1104855eaeb4a8fa7aa4c71320d67b91da6d1a6b5427cbacd009ccbf16; 120,877,648 bytes
+  Trace run: work/stage5/stage5-s5-07-rdtsc-quantum-trace-exact-replay-n2-20261117-b/run-0001.json
+  Trace sidecar: work/stage5/stage5-s5-07-rdtsc-quantum-trace-exact-replay-n2-20261117-b/run-0001-observations.json
+  Trace runner JSON SHA-256: f141a1f69d5f7e324e18221dd8e46e0ca069960fb6536ebc363480293e832e74
+  Trace sidecar: 489,311,435 bytes; SHA-256 a0a11a7a06540d829ddc4f1bce46aae3c65b25c783ba51aed46756b9d5227795
+  Trace records: 1,867,964. UART: 23,356 bytes; SHA-256 1cc7d829ab6b0afcec0b15c20aff4fe3387ef4f6e1f92f5e36c5ef3ab2d9a0b8
+
+Each trace replay exactly matches its own source run's full stop object and UART. All pre-existing data-observation values match their source sidecars; the new schema adds instruction_path_trace, and metadata fields schema_version, capture_scope, and limits change. Source run and replay inputs are identical; only the nonce differs between the two source runs.
+
+Trace comparison
+  The RIP/next-RIP sequences have a common prefix of 1,855,663 retirements. At RIP 0xffffffff8270ba55 (memcmp+0x65), run 1 takes the unequal-byte exit; run 2 branches to 0xffffffff8270ba40 for one more seven-instruction byte-compare iteration. The same +7 path occurs at trace indices 1,855,663 and 1,860,660 in run 1 (corresponding run 2 indices are shifted by 0 and 7), explaining the exact +14 record-count delta. After deleting these two insertions, all RIP/next-RIP transitions align. Aligned control-flow metadata does not: 100 records differ in captured flags/metadata and are not normalized or declared identical.
+  Debug ELF disassembly resolves the path as __parse_crashkernel -> get_last_crashkernel.constprop.0 -> strstr("crashkernel=") -> memcmp. Both exact guest command lines are 155 bytes and do not contain "crashkernel="; strstr checks 144 candidate starts. Astra independently checked all 2x144 byte comparisons and branch flags with zero mismatches; candidate 85 was the only candidate with a different equal-prefix length. At zero-based candidate 85, run 1 has "5d3f" and run 2 has "ca02". Run 2's 'c' matches the first byte of the needle, then the next byte differs, adding one seven-instruction memcmp-loop pass in each of the two parser calls. This explains the local +14 retired instructions and does not explain the remaining machine/UART differences.
+
+The original source comparator remains false with exactly two unexplained fields: run[1].machine_observations and run[1].ordered_uart_bytes after nonce normalization. The two manifests are diagnostic_not_counted because both `linux_norandmaps` and `linux_no_randomize_kstack_offset` are true; Stage4A itself is the counted CPUID profile, and `diagnostic_past_c7` is false. Their observed syscall order is [83,165,257,0,3,35,1,39,60], while the current S4-39j eligibility gate expects [83,165,257,0,3,1,39,35,60]. This is a separate eligibility failure; correcting syscall order alone does not clear the explicit diagnostic flags.
+
+Offline canonical-manifest audit
+  Canonical S4-39j series A/B: `work/stage5/stage5-s5-07-stage4a-nonce-crlf-20261114-{a,b}/series.json`.
+  Series SHA-256: A 0209b247019fd7ddf8a6b8c686bf8cd4f6d90c2ea23f128a34dd1343b5e3869b; B 7769a42a47a4de41b2a1c03b085aee636919b34370732e849e633a2eb0761999.
+  Manifest SHA-256: A dbf0129962f308ed387387c0ac8792d40a55332b34d7f6b5467dd6777a6dfbae; B db77c16ee5db8e5e36e22c4f128c6043131787d33422059f3d79c887d2833e90.
+  Both historical manifests are counted and share all inputs: kernel 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e, initramfs ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588, ACPI blob b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf, ACPI manifest 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2. Current release `--compare-results .../a/series.json .../b/series.json --linux-stage5 --json` returned exit 0, `matches=true`, `unexplained_differences=[]`. This is a comparison of two separate one-run series, not a common-ID counted N=2 S5-07 series.
+  Relative to that baseline, the current diagnostic pair adds the two randomization flags and uses initramfs 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7 and ACPI blob 6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d. Its syscall order also differs because the guest fixture's nanosleep precedes the nonce marker. Kernel hash, ACPI manifest hash, 3B budget, RAM128, scenario, CPL0 path, and Stage4A CPUID profile match the canonical baseline.
+
+Next valid candidate: use the verified canonical S4-39j input bytes and Stage4A counted profile with `--set-cpl0 --user-mode`, RAM128, and the 3B budget; omit `--linux-norandmaps`, `--linux-no-randomize-kstack-offset`, and `--diagnostic-past-c7`. Run a new common-ID N=2 series and let series mode generate fresh nonces and set acceptance. A successful strict `matches=true` / empty-unexplained result is still required; the old A/B comparison does not close S5-07. No comparator or eligibility gate was changed.
+
+Later diagnostic frontier in the original source pair, if needed after the counted series: callback 9,612 is at quantum 49,562 and RIP 0xffffffff8184aeb3 in both runs; callback 9,613 completes quantum 49,563. For that next quantum, the pre-dispatch charged-retirement gates are 1,214,375,282 (run 1) and 1,214,375,296 (run 2), with global callbacks 9,612→9,613. The quantum reports 5,277 instructions / through-count 1,214,380,559 / ending RDTSC RIP 0xffffffff8184f2f1 in run 1, and 23,463 / 1,214,398,759 / 0xffffffff8184aeb3 in run 2. Debug-ELF symbol/DWARF lookup places these sampled sites in `mm/slub.c` (`__refill_objects_any` and `get_from_any_partial`); this identifies an allocator-region sampling divergence, not the first differing instruction or a proven allocation decision. The 44 KiB memory-availability difference and exact branch cause remain unproven. Current schema-v13 hardcodes quantum 45,215 and cannot select this boundary; any future trace must preserve that schema-v13 meaning and add a separately gated target with per-run charged-retirement expectations. A 1.215-billion diagnostic budget may cover these existing through-counts but cannot replace counted 3B acceptance.
+
+Source comparator artifacts
+  work/stage5/stage5-s5-07-rdtsc-dual-site-stride512-n2-20261116-a/comparison.json
+  work/stage5/stage5-s5-07-rdtsc-dual-site-stride512-n2-20261116-a/series.json
+
+Status: the +14 retirement difference in quantum 45,215 is explained. S5-07 remains blocked/unaccepted; the strict comparator and eligibility gate are unchanged.
