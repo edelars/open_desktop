@@ -1375,3 +1375,20 @@ other-profile matrix cover the encoding, routing, fetch atomicity and profile
 boundary. Full od-isa, paged machine quantum (104/104), workspace all-targets
 offline check, scoped rustfmt and diff-check pass. Independent review approved
 with no findings.
+
+
+### Stage 7 runner frontier after ISSUE-377
+
+After exact `4D 89 E0` (MOV R8,R12) is admitted, firmware retires 9,849
+instructions and stops at RIP `0x201004`, bytes `41 89 D9` (MOV R9D,EBX,
+ISSUE-378; REX.W is clear and the dword write zero-extends R9), with
+`Unsupported { opcode: 137 }`. Image
+`/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1
+is empty. ISSUE-201 remains the unrelated stale CLD test expectation caveat.
+
+The admitted exact base-profile instruction copies qword R12 to R8, preserving
+RFLAGS, definedness and all other state. Four focused tests cover the encoding,
+routing, fetch atomicity and profile boundary. Full od-isa suites, paged machine
+quantum (104/104), workspace all-targets offline check, scoped rustfmt and
+diff-check pass. Independent review approved with no findings.

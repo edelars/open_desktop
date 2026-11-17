@@ -22607,6 +22607,29 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: exact firmware transfer `4D 89 E0` copies full-width R12 to
+        // R8. REX.R extends the ModRM reg source and REX.B extends the r/m
+        // destination; other register/REX combinations remain unsupported.
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x89
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x4d),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R8, OperandSize::Qword)
+            && source == RegisterView::low(Register::R12, OperandSize::Qword) =>
+        {
+            let value = state.read(source);
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: exact helper transfer `4D 89 F0` copies full-width R14 to
         // R8. REX.R extends the ModRM reg source and REX.B extends the r/m
         // destination; other register/REX combinations stay outside.

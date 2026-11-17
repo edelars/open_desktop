@@ -1438,3 +1438,28 @@ suites pass (2,322/1,591/126/29/6/1,218/7/15; zero doc tests), paged machine
 quantum passes (104/104), workspace all-targets offline cargo check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review
 approved with no findings.
+
+
+### ISSUE-377 — exact MOV R8,R12 (`4D 89 E0`)
+
+Admit only the no-prefix REX.W+R+B form `4D 89 E0` in base
+`PagedCpl0ProbeV1`. Opcode 89 and ModRM E0 select qword source R12 and
+qword destination R8. Commit only R8 and RIP+3; preserve flags, definedness and
+all remaining state. Faulting instruction fetch is atomic. Other register,
+REX, opcode-direction, width and prefix forms plus CPL3/other profiles remain
+unsupported. Four focused ISA tests cover high-bit routing, full-state/flags
+preservation, fetch-fault atomicity and neighbors; the other-profile matrix
+rejects this exact encoding.
+
+After admission, the runner retires 9,849 instructions and stops at `41 89 D9`
+(MOV R9D,EBX, ISSUE-378; REX.W is clear and the dword write zero-extends R9)
+at RIP `0x201004`, `Unsupported { opcode: 137 }`;
+COM1 is empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Validation: focused ISA 4/4 and other-profile matrix 1/1 pass. Full od-isa
+suites pass (2,322/1,591/126/29/6/1,222/7/15; zero doc tests), paged machine
+quantum passes (104/104), workspace all-targets offline cargo check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review
+approved with no findings.
