@@ -2212,3 +2212,21 @@ remains the unrelated CLD caveat.
 
 Runner advances to `41 83 FC 03` (CMP R12D,3; ISSUE-420) at RIP `0x20131f`,
 after 9,908 retired instructions, unsupported opcode 131, COM1 empty.
+
+### ISSUE-420 — exact `CMP R12D,3` (`41 83 FC 03`)
+
+At RIP `0x20131f`, admit only exact `41 83 FC 03` in the base paged profile.
+REX.B selects R12D, and opcode 83 sign-extends imm8 3 to dword width. The
+compare reads the low 32-bit operand, ignores upper R12, updates subtraction
+flags and their definedness, and leaves all GPRs unchanged. Final-immediate
+fetch faults leave flags and RIP unchanged. Focused dword-CMP/flags/
+definedness/register-preservation/fetch-fault/neighbors/CPL3 tests pass (4/4),
+other-profile matrix passes (1/1). Full od-isa passes
+(2,322/1,591/126/29/6/1,420/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
+remains the unrelated CLD caveat.
+
+Runner advances to `0F 87 5B 01 00 00` (JA rel32 +0x15b; ISSUE-421) at RIP
+`0x201323`, after 9,909 retired instructions, unsupported opcode 135, COM1
+empty.
