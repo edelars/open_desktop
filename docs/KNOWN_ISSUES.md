@@ -5392,7 +5392,17 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-431 — S7-04: exact JNZ rel8 +0x14 frontier (`75 14`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-430.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201378`.
-- **Статус:** открыта; следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base profile does not yet admit this exact `JNZ rel8 +0x14`. Add only the exact short branch, preserving flags/definedness and checking target canonicality only when taken; reject adjacent displacements, conditions and other profiles.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `75 14` (`JNZ rel8 +0x14`). JNZ tests ZF, adds signed rel8 +0x14 to next RIP when taken, preserves flags/definedness, and checks target canonicality only for the taken target. Fetch faults commit no state. Adjacent displacements, conditions, prefixes and CPL3/other profiles remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,922 instructions and reported `Unsupported { opcode: 117 }` at RIP `0x201378`; COM1 is empty. Bytes at the link-base shadow are `75 14`.
-- **Следующий шаг:** implement this exact JNZ rel8 slice, add focused branch/fault/neighbor/profile tests, verify the runner successor, and update Stage 7 documentation.
+- **Результат:** runner now retires 9,924 instructions and stops at RIP `0x20137e`, bytes `0F 84 00 01 00 00` (JZ rel32 +0x100; ISSUE-432), `Unsupported { opcode: 132 }`; COM1 is empty.
+- **Проверка:** focused JNZ/ZF-definedness/target-canonicality/fetch-fault/neighbors/CPL3 cases and other-profile matrix pass. Full od-isa passes (2,322/1,591/126/29/6/1,464/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review pending. ISSUE-201 remains the unrelated CLD caveat.
+- **Следующий шаг:** ISSUE-432, exact `0F 84 00 01 00 00` (JZ rel32 +0x100) at RIP `0x20137e`.
+
+### ISSUE-432 — S7-04: exact JZ rel32 +0x100 frontier (`0F 84 00 01 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-431.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20137e`.
+- **Статус:** открыта; следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base profile does not yet admit this exact `JZ rel32 +0x100`. Add only this branch form with ZF condition, signed rel32 from next RIP, preserved flags/definedness, taken-only canonicality and atomic fetch-fault behavior; neighboring encodings/profiles remain excluded.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,924 instructions and reported `Unsupported { opcode: 132 }` at RIP `0x20137e`; COM1 is empty. Bytes at the link-base shadow are `0F 84 00 01 00 00`.
+- **Следующий шаг:** implement this exact JZ rel32 slice, add focused branch/fault/neighbor/profile tests, verify the runner successor, and update Stage 7 documentation.

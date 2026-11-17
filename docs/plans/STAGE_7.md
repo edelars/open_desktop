@@ -2365,3 +2365,18 @@ od-isa passes (2,322/1,591/126/29/6/1,463/7/15; zero doc tests), paged machine
 quantum passes (110/110), workspace all-targets offline check passes with
 existing warnings, and scoped rustfmt/diff-check pass. Independent review
 pending. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-431 — exact `JNZ rel8 +0x14` (`75 14`)
+
+Admit only this exact unprefixed base-profile short JNZ. It tests ZF and adds
+signed rel8 +0x14 to next RIP when taken, preserving flags/definedness and
+checking canonicality only for the taken target. Focused tests cover both ZF
+outcomes with defined/undefined metadata, target state, taken-only canonicality,
+instruction-fetch fault atomicity, neighboring displacements/conditions and
+CPL3; other-profile matrix passes. Runner advances after 9,924 retired
+instructions to `0F 84 00 01 00 00` (JZ rel32 +0x100, ISSUE-432) at RIP
+`0x20137e`, Unsupported opcode 132, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,464/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review pending.
+ISSUE-201 remains the unrelated CLD caveat.

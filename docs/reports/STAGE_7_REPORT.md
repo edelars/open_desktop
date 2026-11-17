@@ -3689,3 +3689,17 @@ Unsupported opcode 117, COM1 empty. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review pending.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-431 — exact `JNZ rel8 +0x14` (`75 14`)
+
+Admitted only the exact base-profile short JNZ encoding. It branches when
+ZF=0 using signed rel8 +0x14 from next RIP, preserves flags/definedness, and
+checks canonicality only on the taken path. Focused cases cover ZF and
+metadata, taken/fallthrough state, target canonicality, fetch fault, neighbors
+and CPL3; other-profile matrix passes. Runner advances after 9,924 retired
+to `0F 84 00 01 00 00` (JZ rel32 +0x100, ISSUE-432) at RIP `0x20137e`,
+Unsupported opcode 132, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,464/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review pending.
+ISSUE-201 remains the unrelated CLD caveat.

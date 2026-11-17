@@ -8288,7 +8288,7 @@ fn rust_helper_jb_plus_2a_is_unsupported_in_cpl3_profile() {
 #[test]
 fn firmware_entry_jnz_checks_canonicality_only_when_taken() {
     for displacement in [
-        0x0a_u8, 0x20, 0x24, 0x2a, 0x38, 0x3c, 0x4a, 0x50, 0x77, 0xae,
+        0x0a_u8, 0x14, 0x20, 0x24, 0x2a, 0x38, 0x3c, 0x4a, 0x50, 0x77, 0xae,
     ] {
         // Positive targets cross the lower canonical boundary from the final low page;
         // the negative target crosses the upper canonical boundary from the first high page.
@@ -8378,10 +8378,41 @@ fn firmware_entry_jnz_rel8_0x3c_obeys_zf_and_preserves_state() {
 }
 
 #[test]
+fn firmware_entry_jnz_rel8_0x14_obeys_zf_and_preserves_state() {
+    let code = [0x75, 0x14]; // JNZ rel8 +0x14
+    for zero in [false, true] {
+        for zf_defined in [false, true] {
+            let defined = if zf_defined {
+                DEFINED
+            } else {
+                DEFINED & !(1 << 6)
+            };
+            let mut memory = Memory::new(&code);
+            let mut cpu = state();
+            cpu.gpr = gpr_patterns();
+            cpu.rflags = (state().rflags & !(1 << 6)) | (u64::from(zero) << 6);
+            let before = cpu.clone();
+            let mut pio = Pio::default();
+
+            let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, defined);
+            let mut expected = before;
+            expected.rip = if zero { RIP + 2 } else { RIP + 2 + 0x14 };
+            assert_eq!(cpu, expected, "ZF={zero}, ZF-defined={zf_defined}");
+            assert_eq!((memory.reads, memory.writes), (0, 0));
+            assert!(pio.reads.is_empty() && pio.writes.is_empty());
+        }
+    }
+}
+
+#[test]
 fn firmware_entry_jnz_fetch_fault_on_rel8_does_not_commit() {
     // Put the opcode at the last byte of a mapped code page so every admitted rel8 faults.
     for displacement in [
-        0x0a_u8, 0x20, 0x24, 0x2a, 0x38, 0x3c, 0x4a, 0x50, 0x77, 0xae,
+        0x0a_u8, 0x14, 0x20, 0x24, 0x2a, 0x38, 0x3c, 0x4a, 0x50, 0x77, 0xae,
     ] {
         let mut memory = Memory::new(&[]);
         memory.bytes[CODE_PHYSICAL + 0xfff] = 0x75;
@@ -8423,6 +8454,13 @@ fn firmware_entry_jnz_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
         (&[0x75, 0x09], 0x75),                // neighbor below +0x0a
         (&[0x75, 0x0b], 0x75),                // neighbor above +0x0a
+        (&[0x75, 0x13], 0x75),                // neighbor below +0x14
+        (&[0x75, 0x15], 0x75),                // neighbor above +0x14
+        (&[0x74, 0x14], 0x74),                // JZ with same displacement
+        (&[0x66, 0x75, 0x14], 0x75),          // prefixed JNZ
+        (&[0x40, 0x75, 0x14], 0x75),          // REX-prefixed JNZ
+        (&[0x0f, 0x85, 0x14, 0, 0, 0], 0x85), // near JNZ
+        (&[0xeb, 0x14], 0xeb),                // JMP rel8
         (&[0x74, 0x0a], 0x74),                // JZ with same displacement
         (&[0x66, 0x75, 0x0a], 0x75),          // operand-size prefix
         (&[0x40, 0x75, 0x0a], 0x75),          // REX prefix
@@ -8485,6 +8523,7 @@ fn firmware_entry_jnz_neighbours_stay_unsupported_without_mutation() {
 fn firmware_entry_jnz_is_unsupported_in_cpl3_profile() {
     let cases: &[&[u8]] = &[
         &[0x75, 0x0a],
+        &[0x75, 0x14],
         &[0x75, 0x20],
         &[0x75, 0x24],
         &[0x75, 0x2a],
@@ -45162,6 +45201,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x66, 0x39, 0xcb][..], 0x39),
         (&[0x75, 0x20][..], 0x75),
         (&[0x75, 0x0a][..], 0x75),
+        (&[0x75, 0x14][..], 0x75),
         (&[0x75, 0x24][..], 0x75),
         (&[0x75, 0x2a][..], 0x75),
         (&[0x75, 0x38][..], 0x75),
