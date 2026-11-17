@@ -5179,10 +5179,20 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Проверка:** focused dword flags/high-R8-ignored/fetch-fault/neighbors/CPL3 tests 4/4 and other-profile matrix 1/1 pass. Full od-isa passes (2,322/1,591/126/29/6/1,363/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
 - **Следующий шаг:** ISSUE-410, exact `0F 44 C5` (CMOVE EAX,EBP) at RIP `0x2012ec`.
 
-### ISSUE-410 — S7-04: exact CMOVE EAX,EBP frontier (`0F 44 C5`)
+### ISSUE-410 — S7-04: exact CMOVE EAX,EBP (`0F 44 C5`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-409.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012ec`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this exact register-register conditional move, outside the current bounded base-profile admission.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `0F 44 C5` (CMOVE EAX,EBP). If ZF=1, EAX receives low EBP; if ZF=0, old low EAX is written back, still zero-extending RAX. RFLAGS/definedness remain unchanged. Other conditions/operands/prefixes and CPL3/other profiles remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,898 instructions and reported `Unsupported { opcode: 68 }` at RIP `0x2012ec`; COM1 is empty. Bytes at the link-base shadow are `0F 44 C5`.
-- **Следующий шаг:** verify exact CMOVE condition and EAX/RBP routing; admit only this encoding.
+- **Результат:** runner now retires 9,899 instructions and stops at RIP `0x2012ef`, bytes `66 41 39 C1` (CMP R9W,AX; ISSUE-411), `Unsupported { opcode: 57 }`; COM1 is empty.
+- **Проверка:** focused ZF/definedness/dword zero-extension/state/fetch-fault/neighbors/CPL3 tests 4/4 and other-profile matrix 1/1 pass. Full od-isa passes (2,322/1,591/126/29/6/1,367/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+- **Следующий шаг:** ISSUE-411, exact `66 41 39 C1` (CMP R9W,AX) at RIP `0x2012ef`.
+
+### ISSUE-411 — S7-04: exact CMP R9W,AX frontier (`66 41 39 C1`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-410.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012ef`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware reaches this exact 16-bit register compare, outside current bounded base-profile admission.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,899 instructions and reported `Unsupported { opcode: 57 }` at RIP `0x2012ef`; COM1 is empty. Bytes at the link-base shadow are `66 41 39 C1`.
+- **Следующий шаг:** verify exact operand routing and 16-bit CMP semantics; admit only this encoding.

@@ -3374,8 +3374,23 @@ runner exit 5 for unsupported).
 
 ### ISSUE-410 — exact `CMOVE EAX,EBP` (`0F 44 C5`)
 
+Exact base-profile admission: ZF=1 copies low EBP into EAX; ZF=0 writes the old
+low EAX value back, zero-extending RAX either way. Flags and definedness are
+preserved. Focused tests pass (4/4), covering ZF true/false and defined/undefined
+metadata, full register/RFLAGS state, final-byte fetch fault, encoding neighbors
+and CPL3; other-profile matrix passes (1/1). Full od-isa passes
+(2,322/1,591/126/29/6/1,367/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with
+no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+Runner advances to `66 41 39 C1` (CMP R9W,AX, ISSUE-411) at RIP `0x2012ef`,
+after 9,899 retired instructions, unsupported opcode 57, COM1 empty.
+
+### ISSUE-411 — exact `CMP R9W,AX` (`66 41 39 C1`)
+
 Runner frontier: image SHA-256
 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, RIP
-`0x2012ec`, retired 9,898, bytes `0F 44 C5`, unsupported opcode 68, COM1 empty.
-Implementation and validation are pending. ISSUE-201 remains the unrelated CLD
-caveat.
+`0x2012ef`, retired 9,899, bytes `66 41 39 C1`, unsupported opcode 57, COM1
+empty. Implementation and validation are pending. ISSUE-201 remains the
+unrelated CLD caveat.

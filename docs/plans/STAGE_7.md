@@ -2049,7 +2049,22 @@ CLD caveat.
 
 ### ISSUE-410 — exact `CMOVE EAX,EBP` (`0F 44 C5`)
 
-The next runner frontier is this exact register-register conditional move in
-the base paged profile. Verify ZF condition, dword destination zero-extension,
-source routing, state preservation, and exact encoding/profile boundaries
-before admitting only this form. Preserve the unrelated ISSUE-201 CLD caveat.
+This slice admits only exact `0F 44 C5` in the base paged profile. ZF=1 copies
+low EBP into EAX; ZF=0 writes back old low EAX, zero-extending RAX in either
+case. RFLAGS and definedness are preserved. Focused state/ZF/definedness/fetch-
+fault/neighbor/CPL3 tests pass (4/4), and other-profile matrix passes (1/1).
+Full od-isa passes (2,322/1,591/126/29/6/1,367/7/15; zero doc tests), paged
+machine quantum passes (110/110), workspace all-targets offline check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review
+approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+Runner advances to exact `66 41 39 C1` (CMP R9W,AX; ISSUE-411) at RIP
+`0x2012ef`, after 9,899 retired instructions, with `Unsupported { opcode: 57}`
+and empty COM1.
+
+### ISSUE-411 — exact `CMP R9W,AX` (`66 41 39 C1`)
+
+The next frontier is a 16-bit register compare: operand-size prefix selects
+word width and REX.B selects R9W as the r/m destination, compared with AX.
+Verify routing, flag/definedness semantics, and exact profile boundaries before
+admitting only this encoding. Preserve the ISSUE-201 CLD caveat.

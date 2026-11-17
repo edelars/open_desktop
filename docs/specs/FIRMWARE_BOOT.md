@@ -1934,7 +1934,21 @@ runner advances to `0F 44 C5` (CMOVE EAX,EBP, ISSUE-410), RIP `0x2012ec`, after
 
 ### ISSUE-410 — exact `CMOVE EAX,EBP` (`0F 44 C5`)
 
-The next firmware instruction is exact bytes `0F 44 C5` at RIP `0x2012ec`
-after 9,898 retired instructions. The runner reports unsupported opcode 68
-and empty COM1. This instruction is not yet admitted. ISSUE-201 remains the
-unrelated CLD caveat.
+Only exact `0F 44 C5` is admitted in the base paged profile. ZF=1 copies EBP's
+low dword into EAX; ZF=0 writes back old low EAX, zero-extending RAX on either
+path. Flags and definedness remain unchanged. Focused tests pass (4/4), and
+other-profile matrix passes (1/1). Full od-isa passes
+(2,322/1,591/126/29/6/1,367/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no
+findings. ISSUE-201 remains the unrelated CLD caveat.
+
+Runner advances to `66 41 39 C1` (CMP R9W,AX, ISSUE-411), RIP `0x2012ef`, after
+9,899 retired instructions, `Unsupported { opcode: 57}`, COM1 empty.
+
+### ISSUE-411 — exact `CMP R9W,AX` (`66 41 39 C1`)
+
+The next firmware bytes are `66 41 39 C1` at RIP `0x2012ef` after 9,899
+retired instructions. The runner reports unsupported opcode 57 and empty
+COM1. The instruction is not yet admitted. ISSUE-201 remains the unrelated
+CLD caveat.

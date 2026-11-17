@@ -20644,6 +20644,35 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined,
             };
         }
+        // S7-04: the helper conditionally copies EBP to EAX only with exact
+        // `0F 44 C5`. A false dword CMOV preserves low EAX and still zero-extends RAX.
+        Operation::ConditionalMove {
+            condition,
+            dst: destination,
+            src: Operand::Register(source),
+        } if base_profile
+            && condition == ConditionCode::Equal
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x44
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes == Prefixes::default()
+            && destination == RegisterView::low(Register::Rax, OperandSize::Dword)
+            && source == RegisterView::low(Register::Rbp, OperandSize::Dword) =>
+        {
+            let value = if condition.evaluate(state.rflags) {
+                state.read(source)
+            } else {
+                state.read(destination)
+            };
+            state.write(destination, value);
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined,
+            };
+        }
         // S7-04: the helper conditionally copies ESI to R13D only with exact
         // `44 0F 44 EE`. REX.R extends ModRM.reg to R13D; a false condition
         // preserves R13's old low dword and still zero-extends R13.
