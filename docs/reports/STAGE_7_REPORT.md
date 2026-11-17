@@ -2995,3 +2995,21 @@ ISSUE-201 remains the unrelated CLD expectation caveat. Full od-isa suites pass
 (2,322/1,591/126/29/6/1,267/7/15; zero doc tests), paged machine quantum passes
 (110/110), workspace all-targets offline cargo check, scoped rustfmt and
 `git diff --check` pass. Independent review approved with no findings.
+
+### ISSUE-388 — exact MOV R14,imm64 (`49 BE 00 00 00 00 10 00 00 00`)
+
+Admit only exact `49 BE 00 00 00 00 10 00 00 00` in base
+`PagedCpl0ProbeV1`. The full immediate is written to R14; only R14 and RIP
+change, with flags and definedness preserved. Four focused tests cover exact
+state, final-byte fetch-fault atomicity, neighboring values/encodings and CPL3;
+the other-profile matrix covers the exact bytes.
+
+On image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), the
+runner advances to `4A 8D 04 19` (LEA RAX,[RCX+R11], ISSUE-389), RIP
+`0x201277`, after 9,869 retired instructions, `Unsupported { opcode: 141 }`;
+COM1 is empty. ISSUE-201 remains the unrelated CLD expectation caveat. Full
+od-isa suites pass (2,322/1,591/126/29/6/1,271/7/15; zero doc tests), paged
+machine quantum passes (110/110), workspace all-targets offline cargo check
+passes with existing warnings, and scoped rustfmt and `git diff --check` pass.
+Independent review approved with no findings.

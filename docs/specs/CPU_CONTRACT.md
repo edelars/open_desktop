@@ -28743,3 +28743,22 @@ ISSUE-388), RIP `0x20126a`, after 9,867 retired instructions; it reports
 (2,322/1,591/126/29/6/1,267/7/15; zero doc tests), paged machine quantum passes
 (110/110), workspace all-targets offline cargo check, scoped rustfmt and
 `git diff --check` pass. Independent review approved with no findings.
+
+### ISSUE-388: `49 BE 00 00 00 00 10 00 00 00` — MOV R14,0x1000000000
+
+This exact REX.W+B opcode B8+r form is admitted only in base
+`PagedCpl0ProbeV1`. It writes the complete imm64 value to R14 and advances RIP;
+all other GPRs, RFLAGS and definedness are preserved. The value distinguishes
+imm64 from a sign-extended imm32. The final immediate byte is fetched before
+architectural state commits. For this R14 form, tested neighboring values,
+destinations, REX/opcode/width/prefix forms, CPL3 and other profiles remain
+unsupported; the pre-existing exact MOV R15,imm64 admission is unchanged.
+ISSUE-201 remains the unrelated CLD caveat.
+
+Focused tests pass (4/4) and the other-profile matrix passes (1/1). The
+firmware runner advances to `4A 8D 04 19` (LEA RAX,[RCX+R11], ISSUE-389) at
+RIP `0x201277` after 9,869 retired instructions, `Unsupported { opcode: 141 }`;
+COM1 is empty. Full od-isa suites pass (2,322/1,591/126/29/6/1,271/7/15;
+zero doc tests), paged machine quantum passes (110/110), workspace all-targets
+offline cargo check passes with existing warnings, and scoped rustfmt and
+`git diff --check` pass. Independent review approved with no findings.

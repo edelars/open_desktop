@@ -1670,3 +1670,21 @@ pass (2,322/1,591/126/29/6/1,267/7/15; zero doc tests), paged machine quantum
 passes (110/110), workspace all-targets offline cargo check, scoped rustfmt and
 `git diff --check` pass. Independent review approved with no findings. ISSUE-201 remains the
 unrelated CLD caveat.
+
+### ISSUE-388 — exact MOV R14,imm64 (`49 BE 00 00 00 00 10 00 00 00`)
+
+Admit only this exact `MOV R14,0x1000000000` encoding in base
+`PagedCpl0ProbeV1`: REX.W+B, opcode B8+r, qword destination and full imm64.
+Only R14 and RIP change; RFLAGS and definedness are preserved. Cover the full
+value (not sign-extended imm32), final immediate-byte fetch fault, adjacent
+immediate/register/REX/width/prefix neighbors, CPL3 and other-profile
+isolation. ISSUE-201 remains the unrelated CLD caveat.
+
+Focused tests pass (4/4), and the other-profile matrix passes (1/1). The
+firmware runner advances to `4A 8D 04 19` (LEA RAX,[RCX+R11], ISSUE-389) at
+RIP `0x201277` after 9,869 retired instructions, `Unsupported { opcode: 141 }`;
+COM1 is empty. Full od-isa suites pass (2,322/1,591/126/29/6/1,271/7/15;
+zero doc tests), paged machine quantum passes (110/110), workspace all-targets
+offline cargo check passes with existing warnings, and scoped rustfmt and
+`git diff --check` pass. Independent review approved with no findings. ISSUE-201 remains the
+unrelated CLD caveat.

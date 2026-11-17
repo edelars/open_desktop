@@ -4983,7 +4983,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-388 — S7-04: exact helper MOV R14,imm64 frontier (`49 BE 00 00 00 00 10 00 00 00`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-387.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20126a`.
-- **Статус:** открыта.
-- **Суть и последствия:** after ISSUE-387 the firmware reaches exact `49 BE 00 00 00 00 10 00 00 00` (`MOV R14,0x1000000000`), not yet admitted by the bounded base profile.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** add only exact `49 BE 00 00 00 00 10 00 00 00` (`MOV R14,0x1000000000`) in this slice. The full imm64 is written to R14 and flags/definedness are preserved; only R14 and RIP change. For this R14 form, tested adjacent values/destinations, alternate encodings, CPL3 and other profiles remain unsupported; pre-existing exact MOV R15,imm64 support is unchanged.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,867 instructions and reported `Unsupported { opcode: 190 }` at RIP `0x20126a`; COM1 is empty.
-- **Следующий шаг:** graph-navigate exact MOV imm64 register admissions and implement only this REX.W+B form.
+- **Результат:** runner now retires 9,869 instructions and stops at RIP `0x201277`, bytes `4A 8D 04 19` (LEA RAX,[RCX+R11]; ISSUE-389), `Unsupported { opcode: 141 }`; COM1 is empty.
+- **Проверка:** focused state/fetch-fault/neighbor/CPL3 tests 4/4 and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,271/7/15; zero doc tests), paged machine quantum passes 110/110, workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-389 — S7-04: exact helper LEA RAX,[RCX+R11] frontier (`4A 8D 04 19`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-388.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201277`.
+- **Статус:** открыта.
+- **Суть и последствия:** after ISSUE-388 the firmware reaches exact `4A 8D 04 19` (`LEA RAX,[RCX+R11]`), not yet admitted by the bounded base profile.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,869 instructions and reported `Unsupported { opcode: 141 }` at RIP `0x201277`; COM1 is empty. The bytes are present at image offset `0x1277`, corresponding to the firmware link-base shadow.
+- **Следующий шаг:** graph-navigate exact register-only LEA forms and admit only this REX.W+X SIB encoding.
