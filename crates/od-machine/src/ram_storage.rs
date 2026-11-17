@@ -14,6 +14,13 @@
 //! - bulk copies are a sequence of independent relaxed accesses of up to 8 bytes (head to the
 //!   next natural boundary, 8-byte body, tail). They are not atomic as a whole and not ordered
 //!   against other accesses: another thread can observe any prefix of the sequence;
+//! - S6-31: a locked read-modify-write (`atomic_compare_exchange`, `atomic_swap`,
+//!   `atomic_fetch_add`) is one host atomic operation of the operand's width on a naturally aligned
+//!   cell, `SeqCst` (`AtomicU8/16/32/64::compare_exchange`/`swap`/`fetch_add`; S6-06 chose these
+//!   Rust std operations, which compile to `CASAL*`/`SWPAL*`/`LDADDAL*` on aarch64 with LSE and to
+//!   `lock cmpxchg`/`xchg`/`lock xadd` on x86_64). A misaligned operand is not served here (the
+//!   caller refuses it, `PhysicalMemory`); there is no 16-byte primitive (no consumer, see
+//!   `MACHINE_CONTRACT.md`, S6-31);
 //! - there is no lock anywhere. Exclusion of writers is the protocol of S6-30c, not of this layer.
 //!
 //! Decision S6-30a (Opus review; recorded in `MEMORY_MODEL.md`, "Решение S6-30a", and in
@@ -146,6 +153,41 @@ macro_rules! scalar_access {
     };
 }
 
+macro_rules! cell_rmw {
+    ($cas:ident, $swap:ident, $add:ident, $int:ty, $atomic:ty) => {
+        /// One host compare-exchange (`SeqCst`) of this width at host index `at`: `Ok(old)` when
+        /// the cell held `expected` and now holds `new`, `Err(observed)` otherwise (nothing
+        /// written). `at` must be naturally aligned and inside the store (hard-checked by the
+        /// caller, `locked_cell`).
+        #[inline(always)]
+        fn $cas(&self, at: usize, expected: $int, new: $int) -> Result<$int, $int> {
+            trace(at, self.lead, std::mem::size_of::<$int>());
+            // SAFETY: as in `cell_access!`: `locked_cell` has checked that `at` is a multiple of
+            // the width and `at + width <= lead + len`.
+            let cell = unsafe { <$atomic>::from_ptr(self.base().add(at).cast::<$int>()) };
+            cell.compare_exchange(expected, new, Ordering::SeqCst, Ordering::SeqCst)
+        }
+
+        /// One host swap (`SeqCst`); same preconditions as the compare-exchange.
+        #[inline(always)]
+        fn $swap(&self, at: usize, value: $int) -> $int {
+            trace(at, self.lead, std::mem::size_of::<$int>());
+            // SAFETY: as in the compare-exchange.
+            let cell = unsafe { <$atomic>::from_ptr(self.base().add(at).cast::<$int>()) };
+            cell.swap(value, Ordering::SeqCst)
+        }
+
+        /// One host fetch-add (`SeqCst`, wrapping); same preconditions as the compare-exchange.
+        #[inline(always)]
+        fn $add(&self, at: usize, value: $int) -> $int {
+            trace(at, self.lead, std::mem::size_of::<$int>());
+            // SAFETY: as in the compare-exchange.
+            let cell = unsafe { <$atomic>::from_ptr(self.base().add(at).cast::<$int>()) };
+            cell.fetch_add(value, Ordering::SeqCst)
+        }
+    };
+}
+
 impl RamStorage {
     /// A zeroed store of `len` bytes for a region whose guest start address is congruent to
     /// `lead` modulo 8. `Err` on size overflow or allocation failure.
@@ -178,6 +220,78 @@ impl RamStorage {
     cell_access!(cell_load_u16, cell_store_u16, u16, AtomicU16);
     cell_access!(cell_load_u32, cell_store_u32, u32, AtomicU32);
     cell_access!(cell_load_u64, cell_store_u64, u64, AtomicU64);
+
+    cell_rmw!(cell_cas_u8, cell_swap_u8, cell_add_u8, u8, AtomicU8);
+    cell_rmw!(cell_cas_u16, cell_swap_u16, cell_add_u16, u16, AtomicU16);
+    cell_rmw!(cell_cas_u32, cell_swap_u32, cell_add_u32, u32, AtomicU32);
+    cell_rmw!(cell_cas_u64, cell_swap_u64, cell_add_u64, u64, AtomicU64);
+
+    /// Host index of the cell of a locked operation of `width` (1, 2, 4 or 8) at region offset
+    /// `offset`. Panics when the operand is outside the store or not naturally aligned on the
+    /// host: a host atomic of this width on a misaligned address is undefined behaviour, so this
+    /// is a hard check (the guest-visible refusal of a misaligned operand is made before, in
+    /// `PhysicalMemory`; a guest-aligned operand is host-aligned because of `lead`).
+    fn locked_cell(&self, offset: usize, width: usize) -> usize {
+        assert!(matches!(width, 1 | 2 | 4 | 8), "locked width {width}");
+        self.check(offset, width);
+        let at = self.lead + offset;
+        assert!(
+            at % width == 0,
+            "locked operation of {width} bytes at a misaligned host index {at}"
+        );
+        at
+    }
+
+    /// S6-31: one host compare-exchange of `width` bytes at region offset `offset`, `SeqCst`.
+    /// `Ok(old)` when the cell held `expected` (truncated to the width) and now holds `new`;
+    /// `Err(observed)` otherwise, nothing written. Values are zero-extended.
+    pub(crate) fn atomic_compare_exchange(
+        &self,
+        offset: usize,
+        width: usize,
+        expected: u64,
+        new: u64,
+    ) -> Result<u64, u64> {
+        let at = self.locked_cell(offset, width);
+        match width {
+            1 => self
+                .cell_cas_u8(at, expected as u8, new as u8)
+                .map(u64::from)
+                .map_err(u64::from),
+            2 => self
+                .cell_cas_u16(at, expected as u16, new as u16)
+                .map(u64::from)
+                .map_err(u64::from),
+            4 => self
+                .cell_cas_u32(at, expected as u32, new as u32)
+                .map(u64::from)
+                .map_err(u64::from),
+            _ => self.cell_cas_u64(at, expected, new),
+        }
+    }
+
+    /// S6-31: one host swap of `width` bytes, `SeqCst`; returns the old value (zero-extended).
+    pub(crate) fn atomic_swap(&self, offset: usize, width: usize, value: u64) -> u64 {
+        let at = self.locked_cell(offset, width);
+        match width {
+            1 => u64::from(self.cell_swap_u8(at, value as u8)),
+            2 => u64::from(self.cell_swap_u16(at, value as u16)),
+            4 => u64::from(self.cell_swap_u32(at, value as u32)),
+            _ => self.cell_swap_u64(at, value),
+        }
+    }
+
+    /// S6-31: one host wrapping fetch-add of `width` bytes, `SeqCst`; returns the old value
+    /// (zero-extended); the stored sum wraps at the width.
+    pub(crate) fn atomic_fetch_add(&self, offset: usize, width: usize, addend: u64) -> u64 {
+        let at = self.locked_cell(offset, width);
+        match width {
+            1 => u64::from(self.cell_add_u8(at, addend as u8)),
+            2 => u64::from(self.cell_add_u16(at, addend as u16)),
+            4 => u64::from(self.cell_add_u32(at, addend as u32)),
+            _ => self.cell_add_u64(at, addend),
+        }
+    }
 
     scalar_access!(load_u8, store_u8, cell_load_u8, cell_store_u8, u8);
     scalar_access!(load_u16, store_u16, cell_load_u16, cell_store_u16, u16);
@@ -430,5 +544,136 @@ mod tests {
             stop.store(true, Ordering::Relaxed);
             let _ = seen;
         });
+    }
+
+    /// S6-31: a locked operation is exactly one host access of the operand's width, for every
+    /// width, lead and aligned offset; it wraps at the width, returns the old value
+    /// zero-extended and touches no neighbouring byte.
+    #[test]
+    fn locked_operations_are_one_host_access_of_their_width_and_touch_only_their_bytes() {
+        for lead in [0usize, 3, 5] {
+            for width in [1usize, 2, 4, 8] {
+                let mask = if width == 8 {
+                    u64::MAX
+                } else {
+                    (1u64 << (8 * width)) - 1
+                };
+                for offset in 0..40usize {
+                    if (lead + offset) % width != 0 {
+                        continue;
+                    }
+                    let ram = storage(64, lead);
+                    let mut fill = [0u8; 64];
+                    for (i, byte) in fill.iter_mut().enumerate() {
+                        *byte = (i as u8).wrapping_mul(37) | 0x80;
+                    }
+                    ram.copy_in(0, &fill);
+                    let mut old = [0u8; 8];
+                    old[..width].copy_from_slice(&fill[offset..offset + width]);
+                    let old = u64::from_le_bytes(old);
+                    let expect = |value: u64| {
+                        let mut bytes = fill;
+                        bytes[offset..offset + width]
+                            .copy_from_slice(&value.to_le_bytes()[..width]);
+                        bytes
+                    };
+                    let dump = |ram: &RamStorage| {
+                        let mut all = [0u8; 64];
+                        ram.copy_out(0, &mut all);
+                        all
+                    };
+
+                    // fetch-add wraps at the width
+                    let (got, log) = traced(|| ram.atomic_fetch_add(offset, width, u64::MAX));
+                    assert_eq!(got, old, "add width {width} offset {offset} lead {lead}");
+                    assert_eq!(log, vec![(offset, width)]);
+                    assert_eq!(dump(&ram), expect(old.wrapping_add(u64::MAX) & mask));
+                    ram.copy_in(0, &fill);
+
+                    // swap
+                    let (got, log) =
+                        traced(|| ram.atomic_swap(offset, width, 0x0123_4567_89ab_cdef));
+                    assert_eq!(got, old);
+                    assert_eq!(log, vec![(offset, width)]);
+                    assert_eq!(dump(&ram), expect(0x0123_4567_89ab_cdef & mask));
+                    ram.copy_in(0, &fill);
+
+                    // compare-exchange: a mismatch writes nothing and reports the observed value
+                    let (got, log) =
+                        traced(|| ram.atomic_compare_exchange(offset, width, old ^ 1, 0x55));
+                    assert_eq!(got, Err(old));
+                    assert_eq!(log, vec![(offset, width)]);
+                    assert_eq!(dump(&ram), fill);
+                    // a match writes; the expected value is truncated to the width
+                    let (got, log) =
+                        traced(|| ram.atomic_compare_exchange(offset, width, old | !mask, 0x55));
+                    assert_eq!(got, Ok(old));
+                    assert_eq!(log, vec![(offset, width)]);
+                    assert_eq!(dump(&ram), expect(0x55));
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "misaligned host index")]
+    fn a_locked_operation_on_a_misaligned_cell_panics_before_touching_memory() {
+        // Region offset 1 with lead 0: a 2-byte host atomic there would be undefined behaviour.
+        storage(16, 0).atomic_swap(1, 2, 7);
+    }
+
+    /// S6-31: the host operations are atomic against each other at every width (four threads,
+    /// one location per width): an exact fetch-add sum, and a compare-exchange increment loop
+    /// that loses nothing.
+    #[test]
+    fn concurrent_locked_operations_do_not_lose_updates_at_any_width() {
+        const THREADS: u64 = 4;
+        const ROUNDS: u64 = 20_000;
+        let ram = storage(64, 0);
+        for (index, width) in [1usize, 2, 4, 8].into_iter().enumerate() {
+            let mask = if width == 8 {
+                u64::MAX
+            } else {
+                (1u64 << (8 * width)) - 1
+            };
+            let adds = index * 16;
+            let counter = index * 16 + 8;
+            std::thread::scope(|scope| {
+                for _ in 0..THREADS {
+                    let ram = &ram;
+                    scope.spawn(move || {
+                        for _ in 0..ROUNDS {
+                            ram.atomic_fetch_add(adds, width, 1);
+                            let mut seen = 0u64;
+                            loop {
+                                match ram.atomic_compare_exchange(
+                                    counter,
+                                    width,
+                                    seen,
+                                    seen.wrapping_add(1) & mask,
+                                ) {
+                                    Ok(_) => break,
+                                    Err(observed) => seen = observed,
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+            let total = (THREADS * ROUNDS) & mask;
+            let read = |at: usize| {
+                let mut bytes = [0u8; 64];
+                ram.copy_out(0, &mut bytes);
+                let mut value = [0u8; 8];
+                value[..width].copy_from_slice(&bytes[at..at + width]);
+                u64::from_le_bytes(value)
+            };
+            assert_eq!(read(adds), total, "width {width}: fetch-add sum");
+            assert_eq!(
+                read(counter),
+                total,
+                "width {width}: compare-exchange counter"
+            );
+        }
     }
 }

@@ -800,6 +800,11 @@ impl SetStepMmio for MachineBusSetStepIo<'_> {
             RamAccessOperation::ReadPseudoDescriptor => {
                 Err(Backend("pseudo-descriptor reads are RAM-only".to_owned()))
             }
+            // S6-31: a locked operand is never served by a device; the walker refuses an MMIO
+            // operand before it reaches this dispatch.
+            RamAccessOperation::AtomicTarget { .. } => {
+                Err(Backend("locked operations are RAM-only".to_owned()))
+            }
         }
     }
 }
@@ -1028,6 +1033,12 @@ impl MachineBus {
                             "pseudo-descriptor reads are RAM-only".to_owned(),
                         ))
                     }
+                    // S6-31: refused by the walker before the dispatch.
+                    RamAccessOperation::AtomicTarget { .. } => {
+                        Err(crate::page_walk::MmioDispatchError::Backend(
+                            "locked operations are RAM-only".to_owned(),
+                        ))
+                    }
                 }
             },
         )
@@ -1059,6 +1070,12 @@ impl MachineBus {
         context: AccessContext,
     ) -> ProbeReport {
         crate::page_walk::probe_long64_4k(&self.memory, paging, address, access, context)
+    }
+
+    /// The physical memory the locked operations of an adapter run on (S6-31): a shared reference,
+    /// like the `Ram` forms of the adapter hold.
+    pub(crate) fn physical_memory(&self) -> &PhysicalMemory {
+        &self.memory
     }
 
     pub(crate) fn tracked_physical_range_is_ram(&self, range: GuestPhysicalRange) -> bool {

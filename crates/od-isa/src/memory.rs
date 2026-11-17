@@ -332,8 +332,10 @@ pub trait GuestMemory {
     /// The default implementation is the serial one for the interleaving mode (one host thread,
     /// the vCPU never switches inside an instruction): an ordinary read followed by an ordinary
     /// write. It is correct only because the scheduler runs whole instructions; a backend that
-    /// shares RAM between host threads (S6-30/S6-31) must override it with a host atomic
-    /// operation, and no instruction code changes.
+    /// shares RAM between host threads must override it with a host atomic operation, and no
+    /// instruction code changes. S6-31: `od-machine`'s `PagedMovMemoryAdapter` does (a
+    /// compare-exchange loop on the RAM cell; the three specializations are single host
+    /// operations); this default stays for the private single-threaded backends.
     fn atomic_rmw_integer(
         &mut self,
         address: u64,

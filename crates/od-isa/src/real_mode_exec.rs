@@ -379,9 +379,13 @@ pub trait RealModeMemory {
     /// byte-wise path updates the accessed/dirty bits of a page-table entry (see
     /// `paging::commit_touches`); an OR never takes back a bit another writer set. The default
     /// is the serial read followed by a write, correct while whole instructions are
-    /// interleaved (the instruction is indivisible). S6-31: replace with a CAS on the value the
-    /// walk read (see S6-31 step 5); an atomic OR without comparison is not enough: it can turn a
-    /// zeroed PTE into a nonzero one. Replacement points: this method and
+    /// interleaved (the instruction is indivisible). S6-31 did NOT replace it: a CAS on the value
+    /// the walk read needs that value here, and `Translation::touches` and this method carry only
+    /// (address, mask); an atomic OR without comparison is not enough (it can turn a zeroed PTE
+    /// into a nonzero one). The replacement changes this trait, `Translation::touches` and the
+    /// retry of the instruction in the protected-mode step: a recorded decision for the
+    /// architecture review (Opus, high), see `MACHINE_CONTRACT.md`, S6-31, "Путь AP". This path
+    /// runs only in the AP trampoline before long mode. Replacement points: this method and
     /// `paging::commit_touches`. Deviation from steps 1-2 of the S6-25 plan: the AP path reads
     /// an entry byte by byte and applies the touches as a deferred OR without comparison.
     fn or_u8(&mut self, linear: u32, mask: u8) -> bool {

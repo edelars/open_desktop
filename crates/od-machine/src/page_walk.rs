@@ -561,6 +561,16 @@ pub enum RamAccessOperation {
         width: AccessWidth,
         value: u64,
     },
+    /// S6-31: the translation half of a locked read-modify-write (`LOCK` forms and `XCHG` with
+    /// memory). It does what the serial read-then-write of S6-20 did to the page tables and
+    /// nothing to the data: a read walk (accessed bits, the faults of a read), then a write walk
+    /// (the faults of a write, accessed and dirty bits), then the physical region of the operand
+    /// is checked; the outcome is [`TrackedAccessOutcome::Located`], the physical address, on
+    /// which the caller runs the host atomic operation. No byte of the operand is read or
+    /// written here, and an MMIO operand is refused before any device or dirty bit is touched.
+    AtomicTarget {
+        width: AccessWidth,
+    },
 }
 
 impl RamAccessOperation {
@@ -568,14 +578,16 @@ impl RamAccessOperation {
         match self {
             Self::Fetch => AccessKind::Fetch,
             Self::Read { .. } | Self::ReadPseudoDescriptor => AccessKind::Read,
-            Self::Write { .. } => AccessKind::Write,
+            Self::Write { .. } | Self::AtomicTarget { .. } => AccessKind::Write,
         }
     }
 
     const fn width(self) -> u8 {
         match self {
             Self::Fetch => 1,
-            Self::Read { width } | Self::Write { width, .. } => width.bytes(),
+            Self::Read { width } | Self::Write { width, .. } | Self::AtomicTarget { width } => {
+                width.bytes()
+            }
             Self::ReadPseudoDescriptor => 10,
         }
     }
@@ -610,6 +622,9 @@ pub enum TrackedAccessOutcome {
     Read(u64),
     ReadPseudoDescriptor([u8; 10]),
     Written,
+    /// S6-31: the physical address of a locked operand after both walks
+    /// ([`RamAccessOperation::AtomicTarget`]).
+    Located(GuestPhysicalAddress),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -732,8 +747,8 @@ type TrackedTableWriter<'a> = dyn FnMut(
 
 /// The single place that writes a page-table entry during a walk or a dirty update (S6-25):
 /// every accessed and dirty bit goes through it, as one compare-and-replace of the 8-byte entry
-/// ([`PhysicalMemory::compare_replace_u64`]). S6-31 replaces the body with a host atomic
-/// operation; no caller changes.
+/// ([`PhysicalMemory::compare_replace_u64`]), which since S6-31 is one host compare-exchange on
+/// the cell; no caller changed.
 fn compare_replace_table_entry(
     memory: &PhysicalMemory,
     address: GuestPhysicalAddress,
@@ -769,6 +784,18 @@ fn commit_leaf_dirty(
     entry_value: u64,
 ) -> Result<Option<AdUpdate>, TrackedAccessError> {
     const AD: u64 = (1 << 5) | (1 << 6);
+    // S6-31: bits the translation ignores (the profile has no protection keys): 9..=11 and
+    // 52..=62. A concurrent change of only these (the soft-dirty and similar bits of a kernel)
+    // and of A/D does not change the translation the walk validated, so the update is recomputed
+    // from the observed value (the replace is retried over it) instead of being refused.
+    // Cross-reference: bits 59..=62 are ignored only because CR4.PKE is not allowed
+    // (`CR4_ALLOWED`, line ~34); if PKE is ever allowed, revise `IGNORED`.
+    const IGNORED: u64 = (0b111 << 9) | (0x7ff << 52);
+    const CR4_PKE: u64 = 1 << 22;
+    const _: () = assert!(
+        CR4_ALLOWED & CR4_PKE == 0,
+        "CR4.PKE allowed: revise IGNORED"
+    );
     let mut expected = entry_value;
     let mut failed_replaces = 0;
     loop {
@@ -788,7 +815,7 @@ fn commit_leaf_dirty(
             }
             Ok(TableReplace::Changed(observed)) => {
                 failed_replaces += 1;
-                if observed & !AD != entry_value & !AD
+                if observed & !(AD | IGNORED) != entry_value & !(AD | IGNORED)
                     || failed_replaces > TABLE_REPLACE_RETRY_LIMIT
                 {
                     return Err(TrackedAccessError::TableEntryChanged {
@@ -1394,6 +1421,128 @@ fn access_long64_4k_internal_with_writer(
     )
 }
 
+/// S6-31: the translation half of a locked read-modify-write ([`RamAccessOperation::AtomicTarget`]).
+/// The page-table effects are exactly those of the serial S6-20 sequence it replaces (an ordinary
+/// read of the operand, then an ordinary write): a read walk first (accessed bits; a missing or
+/// forbidden page is a read fault, error code without W), then a write walk (write rights, accessed
+/// bits, a write fault), then the physical region check of a write, then the dirty bit of the leaf.
+/// Only the data access is left out: the caller performs the host atomic operation on the returned
+/// physical address. Order of refusals: MMIO is refused before the dirty bit and before any
+/// device is reached (`DeviceUnavailable`); ROM and holes are the `ReadOnlyRegion` of a write; a
+/// Framebuffer operand is plain memory.
+fn locate_atomic_target(
+    memory: &PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    request: TrackedAccessRequest,
+    width: AccessWidth,
+    committed_write: &mut dyn FnMut(GuestPhysicalRange),
+    table_writer: &mut TrackedTableWriter<'_>,
+    allow_2m: bool,
+) -> TrackedAccessReport {
+    let mut ad_updates = [None; 5];
+    let mut ad_update_count = 0;
+    let mut trace = WalkTrace::new();
+    let mut translation = None;
+    for access in [AccessKind::Read, AccessKind::Write] {
+        let walk = walk_long64_4k_with_writer(
+            memory,
+            paging,
+            request.instruction_rip,
+            request.address,
+            request.context,
+            access,
+            committed_write,
+            table_writer,
+            allow_2m,
+        );
+        trace = walk.trace;
+        for update in walk.ad_updates[..walk.ad_update_count].iter().flatten() {
+            // At most four accessed updates and one dirty update in a serial run. Under
+            // concurrent clearing of accessed bits between the two walks the report could need
+            // more; the writes themselves were committed, only the extra records are dropped.
+            if ad_update_count < ad_updates.len() {
+                ad_updates[ad_update_count] = Some(*update);
+                ad_update_count += 1;
+            }
+        }
+        match walk.translation {
+            Ok(found) => translation = Some(found),
+            Err(error) => {
+                return TrackedAccessReport {
+                    outcome: Err(error),
+                    trace,
+                    ad_updates,
+                    ad_update_count,
+                };
+            }
+        }
+    }
+    let translation = translation.expect("the write walk succeeded");
+    let physical = translation.physical;
+    let fail = |error, trace, ad_updates, ad_update_count| TrackedAccessReport {
+        outcome: Err(error),
+        trace,
+        ad_updates,
+        ad_update_count,
+    };
+    match memory.locate_region_kind(physical, u64::from(width.bytes())) {
+        Ok(MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer) => {}
+        Ok(MemoryRegionKind::Mmio) => {
+            return fail(
+                TrackedAccessError::DeviceUnavailable { address: physical },
+                trace,
+                ad_updates,
+                ad_update_count,
+            );
+        }
+        Ok(kind) => {
+            return fail(
+                TrackedAccessError::OperandPhysical {
+                    address: physical,
+                    source: MemoryAccessError::ReadOnlyRegion(kind),
+                },
+                trace,
+                ad_updates,
+                ad_update_count,
+            );
+        }
+        Err(source) => {
+            return fail(
+                TrackedAccessError::OperandPhysical {
+                    address: physical,
+                    source,
+                },
+                trace,
+                ad_updates,
+                ad_update_count,
+            );
+        }
+    }
+    match commit_leaf_dirty(
+        memory,
+        table_writer,
+        committed_write,
+        translation.leaf_level,
+        translation.leaf_address,
+        translation.leaf_value,
+    ) {
+        Ok(Some(update)) => {
+            if ad_update_count < ad_updates.len() {
+                ad_updates[ad_update_count] = Some(update);
+                ad_update_count += 1;
+            }
+        }
+        Ok(None) => {}
+        Err(error) => return fail(error, trace, ad_updates, ad_update_count),
+    }
+    TrackedAccessReport {
+        outcome: Ok(TrackedAccessOutcome::Located(physical)),
+        trace,
+        ad_updates,
+        ad_update_count,
+    }
+}
+
 /// The tracked access. `mmio_windows`, when set, limits the MMIO the dispatch serves to the
 /// physical ranges `(base, size)` it lists: an operand in any other MMIO region takes the same typed
 /// error as without a dispatch, before the dirty bit or the device is touched (S4-38L9s; several
@@ -1428,6 +1577,17 @@ fn access_long64_4k_internal_windowed(
             trace,
             ad_updates,
             ad_update_count,
+        );
+    }
+    if let RamAccessOperation::AtomicTarget { width } = request.operation {
+        return locate_atomic_target(
+            memory,
+            paging,
+            request,
+            width,
+            committed_write,
+            table_writer,
+            allow_2m,
         );
     }
     let walk = walk_long64_4k_with_writer(
@@ -3501,6 +3661,51 @@ mod tracked_access_tests {
                 bit: AdBit::Dirty,
             })
         );
+        assert_eq!(memory.load_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0xa5));
+    }
+
+    /// S6-31: a concurrent change of only the bits the translation ignores (the software bits 9..=11
+    /// and 52..=62: soft-dirty and the like) does not change what the walk validated; the dirty
+    /// update is recomputed over the observed entry (the other writer's bits kept) and retried, not
+    /// refused as in S6-25. A change of a translation bit is still refused (the test above).
+    #[test]
+    fn dirty_replace_absorbs_a_change_of_the_software_bits() {
+        let software = (1u64 << 9) | (1 << 11) | (1 << 52) | (1 << 62);
+        let (mut memory, paging) = setup(0x4007, 0x6000);
+        let mut attempts = Vec::new();
+        let mut leaf_replaces = 0;
+        let mut writer = |memory: &PhysicalMemory,
+                          address: GuestPhysicalAddress,
+                          expected: u64,
+                          value: u64,
+                          callback: &mut dyn FnMut(GuestPhysicalRange)| {
+            if address == LEAF {
+                leaf_replaces += 1;
+                attempts.push((expected, value));
+                if leaf_replaces == 2 {
+                    memory.store_u64(LEAF, 0x4027 | software, |_| {}).unwrap();
+                }
+            }
+            compare_replace_table_entry(memory, address, expected, value, callback)
+        };
+        let mut callbacks = Vec::new();
+        let report = run_with_writer(
+            &mut memory,
+            &paging,
+            AccessKind::Write,
+            &mut callbacks,
+            &mut writer,
+        );
+        assert_eq!(report.outcome, Ok(TrackedAccessOutcome::Written));
+        assert_eq!(
+            attempts,
+            [
+                (0x4007, 0x4027),
+                (0x4027, 0x4067),
+                (0x4027 | software, 0x4067 | software)
+            ]
+        );
+        assert_eq!(entries(&memory)[3], 0x4067 | software);
         assert_eq!(memory.load_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0xa5));
     }
 

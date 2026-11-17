@@ -1,6 +1,7 @@
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::AccessWidth;
 use crate::ram_storage::RamStorage;
 
 /// A guest physical byte address. It is deliberately distinct from host pointers.
@@ -218,6 +219,15 @@ pub enum MemoryAccessError {
     AccessCrossesRegion(GuestPhysicalRange),
     UnreadableRegion(MemoryRegionKind),
     ReadOnlyRegion(MemoryRegionKind),
+    /// S6-31: a locked (atomic) operation of `width` bytes at an address that is not naturally
+    /// aligned to its width. It is refused and counted ([`PhysicalMemory::split_lock_refusals`]);
+    /// it is never executed non-atomically (the split-lock path, including the pair of 16-byte
+    /// operations for an operand inside one aligned 16-byte block, is not implemented: see
+    /// `MACHINE_CONTRACT.md`, S6-31).
+    MisalignedAtomic {
+        address: GuestPhysicalAddress,
+        width: u8,
+    },
 }
 
 impl fmt::Display for MemoryAccessError {
@@ -285,6 +295,9 @@ impl RamFrame {
 /// ```
 pub struct PhysicalMemory {
     regions: Vec<Region>,
+    /// S6-31: locked operations refused because the operand was not naturally aligned (the
+    /// split-lock path of S6-34 does not exist yet). Counted, never executed non-atomically.
+    split_lock_refusals: AtomicU64,
 }
 
 impl PhysicalMemory {
@@ -377,7 +390,10 @@ impl PhysicalMemory {
                 page_generations,
             });
         }
-        Ok(Self { regions })
+        Ok(Self {
+            regions,
+            split_lock_refusals: AtomicU64::new(0),
+        })
     }
 
     /// The generation of the RAM page holding `address` (starts at 1; raised once per committed
@@ -424,8 +440,31 @@ impl PhysicalMemory {
         address: GuestPhysicalAddress,
         len: u64,
         write: impl FnOnce(&RamStorage, usize),
-        mut committed_write: impl FnMut(GuestPhysicalRange),
+        committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
+        self.commit_write_with(
+            address,
+            len,
+            |storage, offset| {
+                write(storage, offset);
+                ((), true)
+            },
+            committed_write,
+        )
+    }
+
+    /// [`Self::commit_write`] for an operation that reports whether it changed memory (S6-31): `op`
+    /// returns its result and `true` when it wrote. Validation, the generation overflow check, the
+    /// order (data, then `Release` raise of every touched page, then one callback) and the
+    /// Framebuffer rule are those of `commit_write`; when `op` reports no write (a compare that
+    /// did not match) the generations are not raised and the callback does not run.
+    fn commit_write_with<R>(
+        &self,
+        address: GuestPhysicalAddress,
+        len: u64,
+        op: impl FnOnce(&RamStorage, usize) -> (R, bool),
+        mut committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<R, MemoryAccessError> {
         let (region_index, offset) = self.locate_index(address, len)?;
         let region = &self.regions[region_index];
         // ROM has read backing but the guest and ordinary loaders never write it.
@@ -438,8 +477,7 @@ impl PhysicalMemory {
                 .backing
                 .as_ref()
                 .ok_or(MemoryAccessError::ReadOnlyRegion(region.spec.kind))?;
-            write(backing, offset);
-            return Ok(());
+            return Ok(op(backing, offset).0);
         }
         let first_page = address.get() >> 12;
         let last_page = ((u128::from(address.get()) + u128::from(len) - 1) >> 12) as u64;
@@ -465,7 +503,10 @@ impl PhysicalMemory {
             .backing
             .as_ref()
             .ok_or(MemoryAccessError::ReadOnlyRegion(region.spec.kind))?;
-        write(backing, offset);
+        let (result, wrote) = op(backing, offset);
+        if !wrote {
+            return Ok(result);
+        }
         // Publish: a reader that `Acquire`-loads the raised value sees the data written above.
         for generation in generations {
             let previous = generation.fetch_add(1, Ordering::Release);
@@ -476,7 +517,7 @@ impl PhysicalMemory {
             len,
         };
         committed_write(committed);
-        Ok(())
+        Ok(result)
     }
 
     /// Machine-side one-time fill of a ROM region (the firmware image at power
@@ -516,17 +557,18 @@ impl PhysicalMemory {
         self.load_bytes(address, output)
     }
 
-    /// S6-25: compare-and-replace of one 8-byte value, the single backend
-    /// operation under every page-table accessed/dirty update (and the place S6-31 replaces
-    /// with a host atomic compare-exchange). It reads the 8 bytes; when they equal `expected`
-    /// it writes `replacement` through [`Self::store_u64`] (the callback runs once, after the
-    /// commit) and returns `Ok(Ok(()))`; otherwise it writes nothing, runs no callback and
-    /// returns `Ok(Err(observed))`. Region errors are those of the read and of the write, and
-    /// memory is unchanged on every error. Interleaving mode runs one whole instruction at a
-    /// time, so the read and the write cannot be separated by another vCPU; a backend shared
-    /// between host threads must make them one operation. Precondition: `address` is aligned
-    /// to 8 for the future host compare-exchange (S6-31); callers pass aligned addresses (a 4K
-    /// table base plus index * 8), checked by a debug assertion.
+    /// S6-25, S6-31: compare-and-replace of one 8-byte value, the single backend operation under
+    /// every page-table accessed/dirty update (the walk of `page_walk`, `compare_replace_table_entry`).
+    /// S6-31: it is one host compare-exchange (`AtomicU64::compare_exchange`, `SeqCst`) on the
+    /// cell, with no preceding read: when the 8 bytes equal `expected` the cell now holds
+    /// `replacement`, the generation of the page is raised and the callback runs once, and the
+    /// result is `Ok(Ok(()))`; otherwise nothing is written, no callback runs and the result is
+    /// `Ok(Err(observed))` (the value the compare saw, so the caller can recompute or retry).
+    /// Region errors are those of a write (`Unmapped`, `AccessCrossesRegion`, `ReadOnlyRegion`
+    /// for ROM and holes, `CodeGenerationExhausted`) and are reported before the compare; memory
+    /// is unchanged on every error. An address that is not 8-aligned is refused with
+    /// `MisalignedAtomic` (counted); table entries are 8-aligned by construction (4 KiB base plus
+    /// index * 8).
     pub fn compare_replace_u64(
         &self,
         address: GuestPhysicalAddress,
@@ -534,16 +576,176 @@ impl PhysicalMemory {
         replacement: u64,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<Result<(), u64>, MemoryAccessError> {
-        debug_assert!(
-            address.0 % 8 == 0,
-            "compare_replace_u64 needs an 8-aligned address"
-        );
-        let observed = self.load_u64(address)?;
-        if observed != expected {
-            return Ok(Err(observed));
+        self.locked_operation(
+            address,
+            AccessWidth::Qword,
+            |storage, offset| match storage.atomic_compare_exchange(
+                offset,
+                8,
+                expected,
+                replacement,
+            ) {
+                Ok(_) => (Ok(()), true),
+                Err(observed) => (Err(observed), false),
+            },
+            committed_write,
+        )
+    }
+
+    /// S6-31: how many locked operations were refused because the operand was not naturally
+    /// aligned to its width (the split-lock case: a pair of 16-byte operations for an operand
+    /// inside one aligned 16-byte block is not implemented, and stopping all vCPUs is S6-34).
+    /// The count only grows.
+    pub fn split_lock_refusals(&self) -> u64 {
+        self.split_lock_refusals.load(Ordering::Relaxed)
+    }
+
+    /// S6-31: counts one refused misaligned locked operation. An adapter that refuses the operand
+    /// before it translates the address (a linear address is not a physical one) calls this
+    /// directly; the physical operations call [`Self::refuse_misaligned_lock`].
+    pub(crate) fn count_split_lock_refusal(&self) {
+        self.split_lock_refusals.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// S6-31: counts one refused misaligned locked operation and returns the matching error.
+    fn refuse_misaligned_lock(
+        &self,
+        address: GuestPhysicalAddress,
+        width: AccessWidth,
+    ) -> MemoryAccessError {
+        self.count_split_lock_refusal();
+        MemoryAccessError::MisalignedAtomic {
+            address,
+            width: width.bytes(),
         }
-        self.store_u64(address, replacement, committed_write)?;
-        Ok(Ok(()))
+    }
+
+    /// The common shape of every locked operation (S6-31): refuse a misaligned operand (counted),
+    /// then run `op` on the aligned host cell inside the commit transaction. `op` returns its
+    /// result and whether it wrote.
+    fn locked_operation<R>(
+        &self,
+        address: GuestPhysicalAddress,
+        width: AccessWidth,
+        op: impl FnOnce(&RamStorage, usize) -> (R, bool),
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<R, MemoryAccessError> {
+        let bytes = u64::from(width.bytes());
+        if address.get() % bytes != 0 {
+            return Err(self.refuse_misaligned_lock(address, width));
+        }
+        self.commit_write_with(address, bytes, op, committed_write)
+    }
+
+    /// S6-31: atomic compare-exchange of `width` bytes at a naturally aligned `address`: one host
+    /// `compare_exchange` (`SeqCst`; `CASAL*` on aarch64 with LSE). Returns the old value,
+    /// zero-extended. `expected` and `replacement` are truncated to the width. Like the x86
+    /// `CMPXCHG`, the operation counts as a write even when the compare fails (the generation of
+    /// the page is raised and the callback runs once): the serial path of S6-20 wrote the old
+    /// value back, and the observers (code caches) see the same notifications. Errors as in
+    /// [`Self::compare_replace_u64`]; memory is unchanged on every error.
+    pub fn atomic_compare_exchange(
+        &self,
+        address: GuestPhysicalAddress,
+        width: AccessWidth,
+        expected: u64,
+        replacement: u64,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<u64, MemoryAccessError> {
+        let bytes = usize::from(width.bytes());
+        self.locked_operation(
+            address,
+            width,
+            |storage, offset| {
+                let old =
+                    match storage.atomic_compare_exchange(offset, bytes, expected, replacement) {
+                        Ok(old) | Err(old) => old,
+                    };
+                (old, true)
+            },
+            committed_write,
+        )
+    }
+
+    /// S6-31: atomic exchange (`SWPAL*`): stores `value` (truncated to the width) and returns the
+    /// old value. Alignment, notification and errors as in [`Self::atomic_compare_exchange`].
+    pub fn atomic_swap(
+        &self,
+        address: GuestPhysicalAddress,
+        width: AccessWidth,
+        value: u64,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<u64, MemoryAccessError> {
+        let bytes = usize::from(width.bytes());
+        self.locked_operation(
+            address,
+            width,
+            |storage, offset| (storage.atomic_swap(offset, bytes, value), true),
+            committed_write,
+        )
+    }
+
+    /// S6-31: atomic wrapping addition (`LDADDAL*`): adds `addend` (truncated to the width) and
+    /// returns the old value. Alignment, notification and errors as in
+    /// [`Self::atomic_compare_exchange`].
+    pub fn atomic_fetch_add(
+        &self,
+        address: GuestPhysicalAddress,
+        width: AccessWidth,
+        addend: u64,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<u64, MemoryAccessError> {
+        let bytes = usize::from(width.bytes());
+        self.locked_operation(
+            address,
+            width,
+            |storage, offset| (storage.atomic_fetch_add(offset, bytes, addend), true),
+            committed_write,
+        )
+    }
+
+    /// S6-31: the general locked read-modify-write behind `GuestMemory::atomic_rmw_integer` (the
+    /// forms `AND`, `OR`, `BTS`, `BTR`, `XADD`, `CMPXCHG`... pass a pure function of the old
+    /// value): a loop of host compare-exchanges (`SeqCst`) that stores `update(old)` (truncated
+    /// to the width) only over the value `update` was computed from, and returns that old value.
+    /// `update` may run more than once (once per lost compare); only the value of the successful
+    /// attempt is stored. The result is always stored, even when equal to the old value (the
+    /// write of a failed `CMPXCHG`); the compare-exchange of such a store still compares, so a
+    /// concurrent change is never overwritten. Alignment, notification and errors as in
+    /// [`Self::atomic_compare_exchange`].
+    pub fn atomic_rmw(
+        &self,
+        address: GuestPhysicalAddress,
+        width: AccessWidth,
+        update: &mut dyn FnMut(u64) -> u64,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<u64, MemoryAccessError> {
+        let bytes = usize::from(width.bytes());
+        let mask = if bytes == 8 {
+            u64::MAX
+        } else {
+            (1u64 << (8 * bytes)) - 1
+        };
+        self.locked_operation(
+            address,
+            width,
+            |storage, offset| {
+                let mut old = match bytes {
+                    1 => u64::from(storage.load_u8(offset, Ordering::SeqCst)),
+                    2 => u64::from(storage.load_u16(offset, Ordering::SeqCst)),
+                    4 => u64::from(storage.load_u32(offset, Ordering::SeqCst)),
+                    _ => storage.load_u64(offset, Ordering::SeqCst),
+                };
+                loop {
+                    let new = update(old) & mask;
+                    match storage.atomic_compare_exchange(offset, bytes, old, new) {
+                        Ok(_) => return (old, true),
+                        Err(observed) => old = observed,
+                    }
+                }
+            },
+            committed_write,
+        )
     }
 
     /// S6-30a: the region storage a read of `len` bytes at `address` goes to, with the offset in
@@ -1615,18 +1817,18 @@ mod tests {
         );
     }
 
-    /// S6-25: the compare-and-replace stays correct on the new storage and is made of single
-    /// aligned 8-byte accesses (a read and, on a match, a write), also in a region with
-    /// an odd start.
+    /// S6-25, S6-31: the compare-and-replace is ONE host compare-exchange of 8 bytes (S6-25: a
+    /// read and a write; the change is the point of S6-31), on a match and on a mismatch alike, also
+    /// in a region with an odd start.
     #[test]
-    fn compare_replace_u64_is_two_single_accesses_on_the_new_storage() {
+    fn compare_replace_u64_is_one_host_compare_exchange_on_the_new_storage() {
         use crate::ram_storage::traced;
         let memory = storage_test_memory();
         let at = GuestPhysicalAddress::new(0x1008); // aligned guest address, region start 0x1003
         memory.store_u64(at, 5, |_| {}).unwrap();
         let (result, log) = traced(|| memory.compare_replace_u64(at, 5, 6, |_| {}));
         assert_eq!(result, Ok(Ok(())));
-        assert_eq!(log, vec![(5, 8), (5, 8)]);
+        assert_eq!(log, vec![(5, 8)]);
         let (result, log) = traced(|| memory.compare_replace_u64(at, 5, 7, |_| {}));
         assert_eq!(result, Ok(Err(6)));
         assert_eq!(log, vec![(5, 8)]);
@@ -1788,6 +1990,409 @@ mod tests {
             memory.code_page_generation(shared(0)),
             Ok(1 + WRITERS * ROUNDS),
             "shared page: no lost increment"
+        );
+    }
+
+    fn width_of(bytes: usize) -> AccessWidth {
+        match bytes {
+            1 => AccessWidth::Byte,
+            2 => AccessWidth::Word,
+            4 => AccessWidth::Dword,
+            _ => AccessWidth::Qword,
+        }
+    }
+
+    fn width_mask(bytes: usize) -> u64 {
+        if bytes == 8 {
+            u64::MAX
+        } else {
+            (1u64 << (8 * bytes)) - 1
+        }
+    }
+
+    /// S6-31: the locked operations on random aligned operands of every width, in two RAM regions
+    /// with different host leads, against a byte model: old value returned zero-extended, the new
+    /// value wrapped at the width, neighbours untouched, ONE notification and ONE generation
+    /// raise per operation (also for a compare that does not match: the CMPXCHG write), ONE host
+    /// access for swap, add and compare-exchange.
+    #[test]
+    fn locked_operations_follow_a_byte_model_and_notify_once() {
+        use crate::ram_storage::traced;
+        let memory = storage_test_memory();
+        let mut model: std::collections::BTreeMap<u64, u8> = std::collections::BTreeMap::new();
+        let mut rng = XorShift(0x5eed_0031);
+        let mut count = 0u64;
+        for _ in 0..30_000 {
+            let bytes = [1usize, 2, 4, 8][(rng.next() % 4) as usize];
+            let (base, span) = if rng.next() % 2 == 0 {
+                (0x1008u64, 0x1000u64)
+            } else {
+                (0x3000u64, 0x800u64)
+            };
+            let at = base + (rng.next() % (span / bytes as u64)) * bytes as u64;
+            let address = GuestPhysicalAddress::new(at);
+            let width = width_of(bytes);
+            let mask = width_mask(bytes);
+            let mut old = 0u64;
+            for i in 0..bytes {
+                old |= u64::from(*model.get(&(at + i as u64)).unwrap_or(&0)) << (8 * i);
+            }
+            let operand = rng.next();
+            let generation = memory.code_page_generation(address).unwrap();
+            let mut notes = Vec::new();
+            let (kind, new, got, log) = match rng.next() % 4 {
+                0 => {
+                    let (got, log) =
+                        traced(|| memory.atomic_swap(address, width, operand, |r| notes.push(r)));
+                    ("swap", operand & mask, got, Some(log))
+                }
+                1 => {
+                    let (got, log) = traced(|| {
+                        memory.atomic_fetch_add(address, width, operand, |r| notes.push(r))
+                    });
+                    ("add", old.wrapping_add(operand) & mask, got, Some(log))
+                }
+                2 => {
+                    // Half of the compares match (the expected value carries junk above the width).
+                    let matching = rng.next() % 2 == 0;
+                    let expected = if matching {
+                        old | (operand & !mask)
+                    } else {
+                        old ^ 1
+                    };
+                    let (got, log) = traced(|| {
+                        memory.atomic_compare_exchange(address, width, expected, operand, |r| {
+                            notes.push(r)
+                        })
+                    });
+                    let new = if matching { operand & mask } else { old };
+                    ("cas", new, got, Some(log))
+                }
+                _ => {
+                    let mut calls = 0;
+                    let got = memory.atomic_rmw(
+                        address,
+                        width,
+                        &mut |value| {
+                            calls += 1;
+                            value ^ operand
+                        },
+                        |r| notes.push(r),
+                    );
+                    assert_eq!(calls, 1, "no concurrent writer: the update runs once");
+                    ("rmw", (old ^ operand) & mask, got, None)
+                }
+            };
+            assert_eq!(got, Ok(old), "{kind} at {at:#x} width {bytes}");
+            if let Some(log) = log {
+                let region_start = if base == 0x1008 { 0x1003 } else { 0x3000 };
+                assert_eq!(
+                    log,
+                    vec![((at - region_start) as usize, bytes)],
+                    "{kind}: one host access"
+                );
+            }
+            assert_eq!(
+                notes,
+                vec![range(at, bytes as u64)],
+                "{kind}: one notification"
+            );
+            assert_eq!(
+                memory.code_page_generation(address),
+                Ok(generation + 1),
+                "{kind}: one raise"
+            );
+            for i in 0..bytes {
+                model.insert(at + i as u64, (new >> (8 * i)) as u8);
+            }
+            count += 1;
+        }
+        assert_eq!(count, 30_000);
+        // The whole memory equals the model (neighbours untouched).
+        for at in PROBE_START..PROBE_END {
+            if let Ok(byte) = memory.load_u8(GuestPhysicalAddress::new(at)) {
+                assert_eq!(byte, *model.get(&at).unwrap_or(&0), "byte {at:#x}");
+            }
+        }
+        assert_eq!(memory.split_lock_refusals(), 0);
+    }
+
+    /// S6-31: errors of the locked operations: a misaligned operand is refused and counted (also
+    /// across a page or a region), never executed as two accesses; ROM, a reserved region and a
+    /// hole are the errors of a write; none of them changes memory, raises a generation or
+    /// notifies; a framebuffer operand is plain memory without generations and without callback.
+    #[test]
+    fn locked_operations_refuse_what_they_cannot_do_atomically() {
+        let memory = storage_test_memory();
+        let mut notes = Vec::new();
+        let mut refused = 0u64;
+        for bytes in [2usize, 4, 8] {
+            for delta in 1..bytes as u64 {
+                for base in [0x1008u64, 0x1ff8, 0x2ffe, 0x3ff8 - 8] {
+                    // `at` is aligned to `bytes` plus `delta`: misaligned by construction.
+                    let at = (base & !(bytes as u64 - 1)) + delta;
+                    let address = GuestPhysicalAddress::new(at);
+                    let width = width_of(bytes);
+                    let error = Err(MemoryAccessError::MisalignedAtomic {
+                        address,
+                        width: bytes as u8,
+                    });
+                    assert_eq!(
+                        memory.atomic_swap(address, width, 1, |r| notes.push(r)),
+                        error
+                    );
+                    assert_eq!(
+                        memory.atomic_fetch_add(address, width, 1, |r| notes.push(r)),
+                        error
+                    );
+                    assert_eq!(
+                        memory.atomic_compare_exchange(address, width, 0, 1, |r| notes.push(r)),
+                        error
+                    );
+                    assert_eq!(
+                        memory.atomic_rmw(address, width, &mut |v| v + 1, |r| notes.push(r)),
+                        error
+                    );
+                    refused += 4;
+                    assert_eq!(memory.split_lock_refusals(), refused);
+                }
+            }
+        }
+        // A pair of aligned-neighbour bytes proves nothing was written by any refusal above.
+        for at in PROBE_START..PROBE_END {
+            if let Ok(byte) = memory.load_u8(GuestPhysicalAddress::new(at)) {
+                assert_eq!(byte, 0, "refusals write nothing ({at:#x})");
+            }
+        }
+        // Aligned operands in regions that cannot be written atomically.
+        let rom = GuestPhysicalAddress::new(0x4000);
+        let reserved = GuestPhysicalAddress::new(0x5000);
+        let hole = GuestPhysicalAddress::new(0x9000);
+        for (address, error) in [
+            (
+                rom,
+                MemoryAccessError::ReadOnlyRegion(MemoryRegionKind::Rom),
+            ),
+            (
+                reserved,
+                MemoryAccessError::ReadOnlyRegion(MemoryRegionKind::Reserved),
+            ),
+            (hole, MemoryAccessError::Unmapped(hole)),
+        ] {
+            let width = AccessWidth::Dword;
+            assert_eq!(
+                memory.atomic_swap(address, width, 1, |r| notes.push(r)),
+                Err(error.clone())
+            );
+            assert_eq!(
+                memory.atomic_fetch_add(address, width, 1, |r| notes.push(r)),
+                Err(error.clone())
+            );
+            assert_eq!(
+                memory.atomic_compare_exchange(address, width, 0, 1, |r| notes.push(r)),
+                Err(error.clone())
+            );
+            assert_eq!(
+                memory.atomic_rmw(address, width, &mut |v| v, |r| notes.push(r)),
+                Err(error)
+            );
+        }
+        assert_eq!(
+            memory.split_lock_refusals(),
+            refused,
+            "region errors are not counted"
+        );
+        assert!(notes.is_empty());
+        // The framebuffer is plain memory: it works, has no generation and no callback.
+        let frame = GuestPhysicalAddress::new(0x6010);
+        assert_eq!(
+            memory.atomic_fetch_add(frame, AccessWidth::Qword, 5, |r| notes.push(r)),
+            Ok(0)
+        );
+        assert_eq!(
+            memory.atomic_swap(frame, AccessWidth::Qword, 9, |r| notes.push(r)),
+            Ok(5)
+        );
+        assert_eq!(memory.load_u64(frame), Ok(9));
+        assert!(notes.is_empty());
+        assert!(memory.code_page_generation(frame).is_err());
+        // An exhausted generation rejects a locked write before any byte changes.
+        let exhausted = memory_with_exhausted_generation();
+        let at = GuestPhysicalAddress::new(0x1000);
+        assert_eq!(
+            exhausted.atomic_swap(at, AccessWidth::Dword, 7, |_| {}),
+            Err(MemoryAccessError::CodeGenerationExhausted)
+        );
+        assert_eq!(exhausted.load_u32(at), Ok(0));
+    }
+
+    fn memory_with_exhausted_generation() -> PhysicalMemory {
+        let memory = memory(&[(0x1000, 0x1000, MemoryRegionKind::Ram)]);
+        memory.regions[0].page_generations[0].store(u64::MAX, Ordering::Relaxed);
+        memory
+    }
+
+    /// S6-31: four host threads on one memory: for every width the fetch-add sum is exact, a
+    /// compare-exchange spin lock gives mutual exclusion to an ordinary (non-atomic) load and
+    /// store of a counter, a swap-released lock works, and the closure RMW loses no update (the
+    /// update runs once per attempt and only the winning attempt is stored). One width per
+    /// location (S6-30a invariant d). The lock is released with `atomic_swap`.
+    #[test]
+    fn four_host_threads_see_every_locked_operation_as_indivisible_at_every_width() {
+        const THREADS: u64 = 4;
+        const ROUNDS: u64 = 4_000;
+        let memory = memory(&[(0x1000, 0x2000, MemoryRegionKind::Ram)]);
+        for (index, bytes) in [1usize, 2, 4, 8].into_iter().enumerate() {
+            let width = width_of(bytes);
+            let mask = width_mask(bytes);
+            let base = 0x1000 + index as u64 * 0x200;
+            let (sum, rmw, lock, data) = (
+                GuestPhysicalAddress::new(base),
+                GuestPhysicalAddress::new(base + 0x40),
+                GuestPhysicalAddress::new(base + 0x80),
+                GuestPhysicalAddress::new(base + 0xc0),
+            );
+            let attempts = AtomicU64::new(0);
+            let start = std::sync::Barrier::new(THREADS as usize);
+            std::thread::scope(|scope| {
+                for _ in 0..THREADS {
+                    let (memory, attempts, start) = (&memory, &attempts, &start);
+                    scope.spawn(move || {
+                        start.wait();
+                        for _ in 0..ROUNDS {
+                            memory.atomic_fetch_add(sum, width, 1, |_| {}).unwrap();
+                            let mut calls = 0u64;
+                            memory
+                                .atomic_rmw(
+                                    rmw,
+                                    width,
+                                    &mut |old| {
+                                        calls += 1;
+                                        old + 1
+                                    },
+                                    |_| {},
+                                )
+                                .unwrap();
+                            attempts.fetch_add(calls, Ordering::Relaxed);
+                            // Mutual exclusion: the critical section is an ordinary read and write.
+                            while memory
+                                .atomic_compare_exchange(lock, width, 0, 1, |_| {})
+                                .unwrap()
+                                != 0
+                            {
+                                std::hint::spin_loop();
+                            }
+                            let value = match bytes {
+                                1 => u64::from(memory.load_u8(data).unwrap()),
+                                2 => u64::from(memory.load_u16(data).unwrap()),
+                                4 => u64::from(memory.load_u32(data).unwrap()),
+                                _ => memory.load_u64(data).unwrap(),
+                            };
+                            std::hint::spin_loop();
+                            let next = value.wrapping_add(1);
+                            match bytes {
+                                1 => memory.store_u8(data, next as u8, |_| {}).unwrap(),
+                                2 => memory.store_u16(data, next as u16, |_| {}).unwrap(),
+                                4 => memory.store_u32(data, next as u32, |_| {}).unwrap(),
+                                _ => memory.store_u64(data, next, |_| {}).unwrap(),
+                            }
+                            memory.atomic_swap(lock, width, 0, |_| {}).unwrap();
+                        }
+                    });
+                }
+            });
+            let total = (THREADS * ROUNDS) & mask;
+            let load = |address| memory.atomic_fetch_add(address, width, 0, |_| {}).unwrap();
+            assert_eq!(load(sum), total, "width {bytes}: fetch-add sum");
+            assert_eq!(load(rmw), total, "width {bytes}: closure rmw counter");
+            assert_eq!(load(data), total, "width {bytes}: counter under the lock");
+            assert_eq!(load(lock), 0, "width {bytes}: lock released");
+            assert!(
+                attempts.load(Ordering::Relaxed) >= THREADS * ROUNDS,
+                "width {bytes}: the update ran at least once per call"
+            );
+        }
+    }
+
+    /// S6-31 step 5: the page-table compare-and-replace under real threads. Four threads set
+    /// disjoint bits in one entry, each retrying over the observed value (the accessed/dirty
+    /// protocol of the walk): no bit is lost, a lost compare changes and notifies nothing, and
+    /// the generation rises once per successful replace.
+    #[test]
+    fn compare_replace_u64_loses_no_bit_under_four_threads() {
+        let memory = memory(&[(0x1000, 0x1000, MemoryRegionKind::Ram)]);
+        let entry = GuestPhysicalAddress::new(0x1008);
+        let replaced = AtomicU64::new(0);
+        let notified = AtomicU64::new(0);
+        std::thread::scope(|scope| {
+            for thread in 0..4u32 {
+                let (memory, replaced, notified) = (&memory, &replaced, &notified);
+                scope.spawn(move || {
+                    for bit in 0..16u32 {
+                        let mask = 1u64 << (thread * 16 + bit);
+                        let mut expected = memory.load_u64(entry).unwrap();
+                        loop {
+                            match memory.compare_replace_u64(
+                                entry,
+                                expected,
+                                expected | mask,
+                                |_| {
+                                    notified.fetch_add(1, Ordering::Relaxed);
+                                },
+                            ) {
+                                Ok(Ok(())) => {
+                                    replaced.fetch_add(1, Ordering::Relaxed);
+                                    break;
+                                }
+                                Ok(Err(observed)) => expected = observed,
+                                Err(error) => panic!("{error:?}"),
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(memory.load_u64(entry), Ok(u64::MAX));
+        assert_eq!(replaced.load(Ordering::Relaxed), 64);
+        assert_eq!(
+            notified.load(Ordering::Relaxed),
+            64,
+            "one notification per success"
+        );
+        assert_eq!(memory.code_page_generation(entry), Ok(1 + 64));
+        // A counter: every thread adds one, ROUNDS times, by compare-and-replace over what it
+        // read; the total is exact and the generation rose once per success.
+        const ROUNDS: u64 = 20_000;
+        let counter = GuestPhysicalAddress::new(0x1010);
+        let start = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let (memory, start) = (&memory, &start);
+                scope.spawn(move || {
+                    start.wait();
+                    for _ in 0..ROUNDS {
+                        let mut expected = memory.load_u64(counter).unwrap();
+                        while let Ok(Err(observed)) =
+                            memory.compare_replace_u64(counter, expected, expected + 1, |_| {})
+                        {
+                            expected = observed;
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(memory.load_u64(counter), Ok(4 * ROUNDS));
+        assert_eq!(
+            memory.code_page_generation(counter),
+            Ok(1 + 64 + 4 * ROUNDS)
+        );
+        // Misaligned entries are refused, not run as two accesses.
+        assert_eq!(
+            memory.compare_replace_u64(GuestPhysicalAddress::new(0x1004), 0, 1, |_| {}),
+            Err(MemoryAccessError::MisalignedAtomic {
+                address: GuestPhysicalAddress::new(0x1004),
+                width: 8
+            })
         );
     }
 }

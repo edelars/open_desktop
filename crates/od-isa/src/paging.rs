@@ -115,8 +115,9 @@ pub struct Translation {
 }
 
 // S6-25 deviation (AP path): the entry is read byte by byte (eight `read_u8`), not as one 8-byte
-// access; correct in interleaving mode (the instruction is indivisible). S6-31 replaces this with
-// the CAS on the value the walk read (see `RealModeMemory::or_u8`).
+// access; correct in interleaving mode (the instruction is indivisible). S6-31 left this as it is:
+// the CAS on the value the walk read needs a trait change, recorded for the architecture review
+// (see `RealModeMemory::or_u8` and `MACHINE_CONTRACT.md`, S6-31, "Путь AP").
 fn read_entry<M: RealModeMemory>(mem: &M, phys: u32) -> Result<u64, PageRefusal> {
     let mut bytes = [0u8; 8];
     for (i, slot) in bytes.iter_mut().enumerate() {
@@ -219,9 +220,11 @@ pub fn translate<M: RealModeMemory>(
 /// through [`RealModeMemory::or_u8`] (S6-25: the single place of this path, no ordinary
 /// read-then-write here). Every address was checked writable by [`translate`], so this does not
 /// fail. S6-25 deviation (AP path): the OR is deferred and applied without comparing the entry
-/// with the value read by the walk; correct while whole instructions are interleaved. S6-31:
-/// replace with a CAS on the walk's value (an atomic OR alone could turn a zeroed PTE into a
-/// nonzero one); replacement points are this function and `RealModeMemory::or_u8`.
+/// with the value read by the walk; correct while whole instructions are interleaved. S6-31 did
+/// not replace it: a CAS on the walk's value (an atomic OR alone could turn a zeroed PTE into a
+/// nonzero one) needs the walked value in [`Translation::touches`] and a retry in the caller, a
+/// decision recorded for the architecture review; replacement points are this function and
+/// `RealModeMemory::or_u8`.
 pub fn commit_touches<M: RealModeMemory>(mem: &mut M, touches: &[(u32, u8)]) {
     for &(at, mask) in touches {
         assert!(
