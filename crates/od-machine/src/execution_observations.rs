@@ -44,6 +44,126 @@ pub const LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY: usize = 32_768;
 pub const LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_ORDINAL: u64 = 26_596;
 pub const LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP: u64 = 0xffff_ffff_8141_d753;
 pub const LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY: usize = 8;
+pub const LINUX_ELF_MMU_GATHER_SETUP_CAPACITY: usize = 8;
+pub const LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP: u64 = 0xffff_ffff_818f_24d5;
+pub const LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP: u64 = 0xffff_ffff_8182_bfdb;
+pub const LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP: u64 = 0xffff_ffff_8180_9fa1;
+pub const LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP: u64 = 0xffff_ffff_8182_bfe0;
+pub const LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP: u64 = 0xffff_ffff_818f_24e5;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElfMmuGatherContext {
+    pub rip: u64,
+    pub retired_instructions: u64,
+    pub cr3: u64,
+    pub cr3_changes: u64,
+    pub page_faults: u64,
+    pub rbp: u64,
+    pub rsp: u64,
+    pub tlb_pointer: Option<u64>,
+    pub saved_rbp: Option<u64>,
+    pub saved_return_rip: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElfMmuGatherRaw {
+    pub tlb: u64,
+    pub mm: u64,
+    pub start: u64,
+    pub end: u64,
+    pub flags: u32,
+    pub mm_tlb_flush_nested: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElfMmuGatherSetupData {
+    pub stack_shift: u64,
+    pub vma: u64,
+    pub vm_start: Option<u64>,
+    pub vm_end: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ElfMmuGatherClosure {
+    Active,
+    Returned,
+    Superseded,
+    RunEnded,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ElfMmuGatherPhase<T> {
+    NotObserved,
+    Captured {
+        context: ElfMmuGatherContext,
+        value: T,
+    },
+    ReadError {
+        context: ElfMmuGatherContext,
+        partial: Option<T>,
+        error: String,
+    },
+}
+
+impl<T> Default for ElfMmuGatherPhase<T> {
+    fn default() -> Self {
+        Self::NotObserved
+    }
+}
+
+impl<T> ElfMmuGatherPhase<T> {
+    fn context(&self) -> Option<&ElfMmuGatherContext> {
+        match self {
+            Self::NotObserved => None,
+            Self::Captured { context, .. } | Self::ReadError { context, .. } => Some(context),
+        }
+    }
+
+    fn is_not_observed(&self) -> bool {
+        matches!(self, Self::NotObserved)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfMmuGatherInvocation {
+    pub sequence: u64,
+    pub closure: ElfMmuGatherClosure,
+    pub association_mismatch: bool,
+    pub setup: ElfMmuGatherPhase<ElfMmuGatherSetupData>,
+    pub initial: ElfMmuGatherPhase<ElfMmuGatherRaw>,
+    pub actual_post: ElfMmuGatherPhase<ElfMmuGatherRaw>,
+    pub returned: ElfMmuGatherPhase<()>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfMmuGatherCapture {
+    pub setup_count: u64,
+    pub setups_omitted: u64,
+    pub setups: Vec<ElfMmuGatherInvocation>,
+    pub unpaired: Vec<ElfMmuGatherUnpaired>,
+    pub unpaired_omitted: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfMmuGatherUnpaired {
+    pub phase: &'static str,
+    pub status: &'static str,
+    pub context: ElfMmuGatherContext,
+    pub raw: Option<ElfMmuGatherRaw>,
+    pub error: Option<String>,
+}
+
+impl Default for ElfMmuGatherCapture {
+    fn default() -> Self {
+        Self {
+            setup_count: 0,
+            setups_omitted: 0,
+            setups: Vec::new(),
+            unpaired: Vec::new(),
+            unpaired_omitted: 0,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ElfStackCopyTargetCr3ChainStatus {
@@ -131,6 +251,7 @@ pub struct ElfStackCopyPreCopyCr3Ledger {
     pub events: Vec<ElfStackCopyPreCopyCr3Event>,
     pub boundary_markers: Vec<ElfStackCopyBoundaryMarker>,
     pub target_event: ElfStackCopyTargetCr3Capture,
+    pub mmu_gather: ElfMmuGatherCapture,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -662,6 +783,7 @@ pub(crate) struct LinuxExecutionObservationCollector {
     pre_copy_cr3_ledger_frozen: bool,
     pre_copy_boundary_markers: Vec<ElfStackCopyBoundaryMarker>,
     target_cr3_event: ElfStackCopyTargetCr3Capture,
+    mmu_gather: ElfMmuGatherCapture,
     retired_total: u64,
     delivered_exception_total: u64,
     cr3_change_total: u64,
@@ -680,6 +802,324 @@ impl LinuxExecutionObservationCollector {
             .is_some_and(|snapshot| snapshot.status == ElfStackCopyStatus::AwaitingTarget)
     }
 
+    pub(crate) fn wants_mmu_gather_capture(&self) -> bool {
+        self.wants_elf_stack_copy()
+            && !self.pre_copy_cr3_ledger_frozen
+            && self.mmu_gather.setups_omitted == 0
+            && self.mmu_gather.unpaired_omitted == 0
+    }
+
+    pub(crate) fn mmu_gather_context(
+        &self,
+        rip: u64,
+        cr3: u64,
+        rbp: u64,
+        rsp: u64,
+        tlb_pointer: Option<u64>,
+        saved_rbp: Option<u64>,
+        saved_return_rip: Option<u64>,
+    ) -> ElfMmuGatherContext {
+        ElfMmuGatherContext {
+            rip,
+            retired_instructions: self.retired_total,
+            cr3,
+            cr3_changes: self.cr3_change_total,
+            page_faults: self.page_faults_delivered,
+            rbp,
+            rsp,
+            tlb_pointer,
+            saved_rbp,
+            saved_return_rip,
+        }
+    }
+
+    pub(crate) fn record_mmu_gather_setup(
+        &mut self,
+        context: ElfMmuGatherContext,
+        stack_shift: u64,
+        vma: u64,
+        vm_start: Option<u64>,
+        vm_end: Option<u64>,
+        read_status: &'static str,
+        error: Option<String>,
+    ) {
+        if !self.wants_mmu_gather_capture() {
+            return;
+        }
+        self.mmu_gather.setup_count = self.mmu_gather.setup_count.saturating_add(1);
+        for previous in &mut self.mmu_gather.setups {
+            let same_anchor = previous
+                .setup
+                .context()
+                .is_some_and(|old| old.rbp == context.rbp && old.saved_rbp == context.saved_rbp);
+            if previous.closure == ElfMmuGatherClosure::Active && same_anchor {
+                previous.closure = ElfMmuGatherClosure::Superseded;
+            }
+        }
+        if self.mmu_gather.setups.len() >= LINUX_ELF_MMU_GATHER_SETUP_CAPACITY {
+            self.mmu_gather.setups_omitted = self.mmu_gather.setups_omitted.saturating_add(1);
+            return;
+        }
+        let data = ElfMmuGatherSetupData {
+            stack_shift,
+            vma,
+            vm_start,
+            vm_end,
+        };
+        let setup = if read_status == "captured" {
+            ElfMmuGatherPhase::Captured {
+                context,
+                value: data,
+            }
+        } else {
+            ElfMmuGatherPhase::ReadError {
+                context,
+                partial: Some(data),
+                error: error.unwrap_or_else(|| "setup checkpoint read failed".into()),
+            }
+        };
+        self.mmu_gather.setups.push(ElfMmuGatherInvocation {
+            sequence: self.mmu_gather.setup_count,
+            closure: ElfMmuGatherClosure::Active,
+            association_mismatch: false,
+            setup,
+            initial: ElfMmuGatherPhase::NotObserved,
+            actual_post: ElfMmuGatherPhase::NotObserved,
+            returned: ElfMmuGatherPhase::NotObserved,
+        });
+    }
+
+    pub(crate) fn record_mmu_gather_relocate(
+        &mut self,
+        context: ElfMmuGatherContext,
+        raw: Option<ElfMmuGatherRaw>,
+        status: &'static str,
+        error: Option<String>,
+    ) {
+        if !self.wants_mmu_gather_capture() {
+            return;
+        }
+        let frame_candidates = self
+            .mmu_gather
+            .setups
+            .iter()
+            .enumerate()
+            .filter_map(|(index, setup)| {
+                (setup.closure == ElfMmuGatherClosure::Active
+                    && setup.initial.is_not_observed()
+                    && setup.setup.context().is_some_and(|setup_context| {
+                        setup_context.rbp == context.saved_rbp.unwrap_or(0)
+                    }))
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let candidates = frame_candidates
+            .iter()
+            .copied()
+            .filter(|_| {
+                context.saved_return_rip == Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP)
+            })
+            .collect::<Vec<_>>();
+        if candidates.len() != 1 {
+            self.push_mmu_gather_unpaired(
+                "relocate_vma_down",
+                if status != "captured" {
+                    "read_error"
+                } else if candidates.is_empty() && frame_candidates.len() == 1 {
+                    "mismatch"
+                } else if candidates.is_empty() {
+                    "unpaired"
+                } else {
+                    "ambiguous"
+                },
+                context,
+                raw,
+                error,
+            );
+            return;
+        }
+        if context.saved_return_rip != Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP) {
+            self.push_mmu_gather_unpaired("relocate_vma_down", "mismatch", context, raw, error);
+            return;
+        }
+        let phase = if status == "captured" {
+            raw.map(|value| ElfMmuGatherPhase::Captured { context, value })
+                .unwrap_or_else(|| ElfMmuGatherPhase::ReadError {
+                    context,
+                    partial: None,
+                    error: "initial gather read failed".into(),
+                })
+        } else {
+            ElfMmuGatherPhase::ReadError {
+                context,
+                partial: raw,
+                error: error.unwrap_or_else(|| "initial gather read failed".into()),
+            }
+        };
+        self.mmu_gather.setups[candidates[0]].initial = phase;
+    }
+
+    pub(crate) fn record_mmu_gather_actual_post(
+        &mut self,
+        context: ElfMmuGatherContext,
+        raw: Option<ElfMmuGatherRaw>,
+        status: &'static str,
+        error: Option<String>,
+    ) {
+        if !self.wants_mmu_gather_capture() {
+            return;
+        }
+        let frame_candidates = self
+            .mmu_gather
+            .setups
+            .iter()
+            .enumerate()
+            .filter_map(|(index, setup)| {
+                (setup.closure == ElfMmuGatherClosure::Active
+                    && setup.actual_post.is_not_observed()
+                    && setup
+                        .initial
+                        .context()
+                        .is_some_and(|relocate| relocate.rbp == context.saved_rbp.unwrap_or(0)))
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let candidates = frame_candidates
+            .iter()
+            .copied()
+            .filter(|index| {
+                let relocate = self.mmu_gather.setups[*index].initial.context().unwrap();
+                relocate.tlb_pointer == context.tlb_pointer
+            })
+            .collect::<Vec<_>>();
+        if candidates.len() != 1 {
+            self.push_mmu_gather_unpaired(
+                "actual_post",
+                if status != "captured" {
+                    "read_error"
+                } else if candidates.is_empty() && frame_candidates.len() == 1 {
+                    "mismatch"
+                } else if candidates.is_empty() {
+                    "unpaired"
+                } else {
+                    "ambiguous"
+                },
+                context,
+                raw,
+                error,
+            );
+            return;
+        }
+        if context.saved_return_rip != Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP) {
+            self.push_mmu_gather_unpaired("actual_post", "mismatch", context, raw, error);
+            return;
+        }
+        let phase = if status == "captured" {
+            raw.map(|value| ElfMmuGatherPhase::Captured { context, value })
+                .unwrap_or_else(|| ElfMmuGatherPhase::ReadError {
+                    context,
+                    partial: None,
+                    error: "actual_post gather read failed".into(),
+                })
+        } else {
+            ElfMmuGatherPhase::ReadError {
+                context,
+                partial: raw,
+                error: error.unwrap_or_else(|| "actual_post gather read failed".into()),
+            }
+        };
+        self.mmu_gather.setups[candidates[0]].actual_post = phase;
+        let invocation = &mut self.mmu_gather.setups[candidates[0]];
+        if let (
+            ElfMmuGatherPhase::Captured { value: initial, .. },
+            ElfMmuGatherPhase::Captured {
+                value: actual_post, ..
+            },
+        ) = (&invocation.initial, &invocation.actual_post)
+        {
+            invocation.association_mismatch =
+                initial.tlb == actual_post.tlb && initial.mm != actual_post.mm;
+        }
+    }
+
+    pub(crate) fn record_mmu_gather_return(
+        &mut self,
+        context: ElfMmuGatherContext,
+        status: &'static str,
+        error: Option<String>,
+    ) {
+        if !self.wants_mmu_gather_capture() {
+            return;
+        }
+        let candidates = self
+            .mmu_gather
+            .setups
+            .iter()
+            .enumerate()
+            .filter_map(|(index, setup)| {
+                (setup.closure == ElfMmuGatherClosure::Active
+                    && setup.returned.is_not_observed()
+                    && setup.initial.context().is_some_and(|relocate| {
+                        relocate.rbp == context.rbp
+                            && relocate.rsp == context.rsp
+                            && relocate.saved_rbp == context.saved_rbp
+                            && relocate.saved_return_rip == context.saved_return_rip
+                    }))
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if candidates.len() != 1 || status != "captured" {
+            self.push_mmu_gather_unpaired(
+                "return",
+                if status != "captured" {
+                    "read_error"
+                } else if candidates.is_empty() {
+                    "unpaired"
+                } else {
+                    "ambiguous"
+                },
+                context,
+                None,
+                error,
+            );
+            return;
+        }
+        let setup = &mut self.mmu_gather.setups[candidates[0]];
+        setup.returned = if status == "captured" {
+            ElfMmuGatherPhase::Captured { context, value: () }
+        } else {
+            ElfMmuGatherPhase::ReadError {
+                context,
+                partial: None,
+                error: error.unwrap_or_else(|| "return frame read failed".into()),
+            }
+        };
+        if status == "captured" {
+            setup.closure = ElfMmuGatherClosure::Returned;
+        }
+    }
+
+    fn push_mmu_gather_unpaired(
+        &mut self,
+        phase: &'static str,
+        status: &'static str,
+        context: ElfMmuGatherContext,
+        raw: Option<ElfMmuGatherRaw>,
+        error: Option<String>,
+    ) {
+        if self.mmu_gather.unpaired.len() < LINUX_ELF_MMU_GATHER_SETUP_CAPACITY {
+            self.mmu_gather.unpaired.push(ElfMmuGatherUnpaired {
+                phase,
+                status,
+                context,
+                raw,
+                error,
+            });
+        } else {
+            self.mmu_gather.unpaired_omitted = self.mmu_gather.unpaired_omitted.saturating_add(1);
+        }
+    }
+
     pub(crate) fn wants_elf_copy_target_cr3_event(&self, rip: u64) -> bool {
         self.wants_elf_stack_copy()
             && self.cr3_change_total.saturating_add(1)
@@ -691,6 +1131,11 @@ impl LinuxExecutionObservationCollector {
     pub(crate) fn record_elf_stack_copy(&mut self, snapshot: ElfStackCopySnapshot) {
         if self.wants_elf_stack_copy() {
             let mut snapshot = snapshot;
+            for invocation in &mut self.mmu_gather.setups {
+                if invocation.closure == ElfMmuGatherClosure::Active {
+                    invocation.closure = ElfMmuGatherClosure::RunEnded;
+                }
+            }
             snapshot.pre_copy_cr3_ledger = Some(ElfStackCopyPreCopyCr3Ledger {
                 status: if self.pre_copy_cr3_ledger_overflow {
                     ElfStackCopyCr3LedgerStatus::IncompleteOverflow
@@ -705,6 +1150,7 @@ impl LinuxExecutionObservationCollector {
                     &mut self.target_cr3_event,
                     ElfStackCopyTargetCr3Capture::not_seen(),
                 ),
+                mmu_gather: std::mem::take(&mut self.mmu_gather),
             });
             self.pre_copy_cr3_ledger_frozen = true;
             if snapshot.status == ElfStackCopyStatus::Captured
@@ -1664,12 +2110,17 @@ impl LinuxExecutionObservationCollector {
         }
     }
 
-    pub(crate) fn finish(self) -> LinuxExecutionObservations {
+    pub(crate) fn finish(mut self) -> LinuxExecutionObservations {
         let cpl0_rdtsc_total = self.rdtsc_sites.values().copied().fold(
             self.rdtsc_unattributed_reads
                 .saturating_add(self.rdtsc_site_overflow_reads),
             u64::saturating_add,
         );
+        for invocation in &mut self.mmu_gather.setups {
+            if invocation.closure == ElfMmuGatherClosure::Active {
+                invocation.closure = ElfMmuGatherClosure::RunEnded;
+            }
+        }
         let rdtsc_prefix_missing =
             if self.rdtsc_prefix_status == RdtscPrefixStatus::CapacityExhausted {
                 cpl0_rdtsc_total.saturating_sub(self.rdtsc_prefix_samples.len() as u64)
@@ -1746,6 +2197,7 @@ impl LinuxExecutionObservationCollector {
                         events: self.pre_copy_cr3_events,
                         boundary_markers: self.pre_copy_boundary_markers,
                         target_event: self.target_cr3_event,
+                        mmu_gather: self.mmu_gather,
                     });
                 }
                 if let Some(invocation) = snapshot.invocation.as_mut()
@@ -1762,6 +2214,364 @@ impl LinuxExecutionObservationCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gather_context(
+        rip: u64,
+        rbp: u64,
+        rsp: u64,
+        saved_rbp: Option<u64>,
+        saved_return_rip: Option<u64>,
+    ) -> ElfMmuGatherContext {
+        ElfMmuGatherContext {
+            rip,
+            retired_instructions: 101,
+            cr3: 0x1000,
+            cr3_changes: 3,
+            page_faults: 2,
+            rbp,
+            rsp,
+            tlb_pointer: matches!(
+                rip,
+                LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP | LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP
+            )
+            .then_some(0xa000),
+            saved_rbp,
+            saved_return_rip,
+        }
+    }
+
+    fn gather_raw(tlb: u64, mm: u64, flags: u32) -> ElfMmuGatherRaw {
+        ElfMmuGatherRaw {
+            tlb,
+            mm,
+            start: 0x4000,
+            end: 0x8000,
+            flags,
+            mm_tlb_flush_nested: -1,
+        }
+    }
+
+    #[test]
+    fn mmu_gather_pairing_requires_direct_frame_links_and_exact_tlb() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        collector.record_mmu_gather_setup(
+            gather_context(
+                LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+                0x8000,
+                0x7000,
+                Some(0x8100),
+                Some(0x1234),
+            ),
+            0x2000,
+            0x9000,
+            Some(0x10000),
+            Some(0x20000),
+            "captured",
+            None,
+        );
+        collector.record_mmu_gather_relocate(
+            gather_context(
+                LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP,
+                0x7f00,
+                0x6ff0,
+                Some(0x8000),
+                Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP),
+            ),
+            Some(gather_raw(0xa000, 0xb000, 0x0000_0001)),
+            "captured",
+            None,
+        );
+        collector.record_mmu_gather_actual_post(
+            gather_context(
+                LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP,
+                0x7e00,
+                0x6fe0,
+                Some(0x7f00),
+                Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP),
+            ),
+            Some(gather_raw(0xa000, 0xb000, 0x0000_0800)),
+            "captured",
+            None,
+        );
+        collector.record_mmu_gather_return(
+            gather_context(
+                LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP,
+                0x7f00,
+                0x6ff0,
+                Some(0x8000),
+                Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP),
+            ),
+            "captured",
+            None,
+        );
+        let capture = &collector.mmu_gather;
+        assert_eq!(capture.setups.len(), 1);
+        assert_eq!(capture.unpaired.len(), 0);
+        assert_eq!(capture.setups[0].closure, ElfMmuGatherClosure::Returned);
+        assert!(matches!(
+            capture.setups[0].initial,
+            ElfMmuGatherPhase::Captured { .. }
+        ));
+        assert!(matches!(
+            capture.setups[0].actual_post,
+            ElfMmuGatherPhase::Captured { .. }
+        ));
+        assert!(matches!(
+            capture.setups[0].returned,
+            ElfMmuGatherPhase::Captured { .. }
+        ));
+        assert!(
+            matches!(capture.setups[0].actual_post, ElfMmuGatherPhase::Captured { value, .. } if value.flags & 0x08f4 != 0)
+        );
+
+        let mut wrong_tlb = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        wrong_tlb.record_mmu_gather_setup(
+            gather_context(
+                LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+                0x8000,
+                0x7000,
+                Some(0x8100),
+                Some(0x1234),
+            ),
+            0,
+            0x9000,
+            Some(0x10000),
+            Some(0x20000),
+            "captured",
+            None,
+        );
+        wrong_tlb.record_mmu_gather_relocate(
+            gather_context(
+                LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP,
+                0x7f00,
+                0x6ff0,
+                Some(0x8000),
+                Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP),
+            ),
+            Some(gather_raw(0xa000, 0xb000, 0)),
+            "captured",
+            None,
+        );
+        let mut wrong_tlb_context = gather_context(
+            LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP,
+            0x7e00,
+            0x6fe0,
+            Some(0x7f00),
+            Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP),
+        );
+        wrong_tlb_context.tlb_pointer = Some(0xa008);
+        wrong_tlb.record_mmu_gather_actual_post(
+            wrong_tlb_context,
+            Some(gather_raw(0xa008, 0xb000, 0)),
+            "captured",
+            None,
+        );
+        assert_eq!(wrong_tlb.mmu_gather.unpaired[0].status, "mismatch");
+
+        let mut wrong_frame =
+            LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        wrong_frame.record_mmu_gather_setup(
+            gather_context(
+                LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+                0x8000,
+                0x7000,
+                Some(0x8100),
+                Some(0x1234),
+            ),
+            0,
+            0x9000,
+            Some(0x10000),
+            Some(0x20000),
+            "captured",
+            None,
+        );
+        wrong_frame.record_mmu_gather_relocate(
+            gather_context(
+                LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP,
+                0x7f00,
+                0x6ff0,
+                Some(0x8000),
+                Some(0xdead),
+            ),
+            Some(gather_raw(0xa000, 0xb000, 0)),
+            "captured",
+            None,
+        );
+        assert!(wrong_frame.mmu_gather.setups[0].initial.is_not_observed());
+        assert_eq!(wrong_frame.mmu_gather.unpaired[0].status, "mismatch");
+    }
+
+    #[test]
+    fn mmu_gather_retains_raw_snapshots_but_marks_mm_association_mismatch() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        collector.record_mmu_gather_setup(
+            gather_context(
+                LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+                0x8000,
+                0x7000,
+                Some(0x8100),
+                Some(0x1234),
+            ),
+            0,
+            0x9000,
+            Some(0x10000),
+            Some(0x20000),
+            "captured",
+            None,
+        );
+        collector.record_mmu_gather_relocate(
+            gather_context(
+                LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP,
+                0x7f00,
+                0x6ff0,
+                Some(0x8000),
+                Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP),
+            ),
+            Some(gather_raw(0xa000, 0xb000, 0)),
+            "captured",
+            None,
+        );
+        collector.record_mmu_gather_actual_post(
+            gather_context(
+                LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP,
+                0x7e00,
+                0x6fe0,
+                Some(0x7f00),
+                Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP),
+            ),
+            Some(gather_raw(0xa000, 0xc000, 0x800)),
+            "captured",
+            None,
+        );
+
+        let invocation = &collector.mmu_gather.setups[0];
+        assert!(invocation.association_mismatch);
+        assert!(matches!(
+            invocation.initial,
+            ElfMmuGatherPhase::Captured { value, .. } if value.mm == 0xb000
+        ));
+        assert!(matches!(
+            invocation.actual_post,
+            ElfMmuGatherPhase::Captured { value, .. } if value.mm == 0xc000
+        ));
+    }
+
+    #[test]
+    fn mmu_gather_default_path_is_disabled_and_setup_prefix_is_capped() {
+        let setup = gather_context(
+            LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+            0x8000,
+            0x7000,
+            None,
+            None,
+        );
+        let mut disabled = LinuxExecutionObservationCollector::default().with_elf_stack_copy(false);
+        disabled.record_mmu_gather_setup(
+            setup,
+            0,
+            0x9000,
+            None,
+            None,
+            "read_error",
+            Some("bad read".into()),
+        );
+        assert!(disabled.mmu_gather.setups.is_empty());
+        assert_eq!(disabled.mmu_gather.setup_count, 0);
+
+        let mut capped = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        for _ in 0..=LINUX_ELF_MMU_GATHER_SETUP_CAPACITY {
+            capped.record_mmu_gather_setup(
+                setup,
+                0,
+                0x9000,
+                None,
+                None,
+                "read_error",
+                Some("bad read".into()),
+            );
+        }
+        assert_eq!(
+            capped.mmu_gather.setups.len(),
+            LINUX_ELF_MMU_GATHER_SETUP_CAPACITY
+        );
+        assert_eq!(
+            capped.mmu_gather.setup_count,
+            (LINUX_ELF_MMU_GATHER_SETUP_CAPACITY + 1) as u64
+        );
+        assert_eq!(capped.mmu_gather.setups_omitted, 1);
+        assert!(
+            capped
+                .mmu_gather
+                .setups
+                .iter()
+                .all(|item| { matches!(item.setup, ElfMmuGatherPhase::ReadError { .. }) })
+        );
+    }
+
+    #[test]
+    fn superseded_setup_preserves_captured_phase_and_cannot_receive_later_hit() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        let setup = gather_context(
+            LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+            0x8000,
+            0x7000,
+            Some(0x8100),
+            Some(0x1234),
+        );
+        collector.record_mmu_gather_setup(
+            setup,
+            0x1000,
+            0x9000,
+            Some(0x10000),
+            Some(0x20000),
+            "captured",
+            None,
+        );
+        let relocation = gather_context(
+            LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP,
+            0x7f00,
+            0x6ff0,
+            Some(0x8000),
+            Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP),
+        );
+        collector.record_mmu_gather_relocate(
+            relocation,
+            Some(gather_raw(0xa000, 0xb000, 0)),
+            "captured",
+            None,
+        );
+        collector.record_mmu_gather_setup(
+            setup,
+            0x2000,
+            0x9000,
+            Some(0x10000),
+            Some(0x20000),
+            "captured",
+            None,
+        );
+
+        assert_eq!(
+            collector.mmu_gather.setups[0].closure,
+            ElfMmuGatherClosure::Superseded
+        );
+        assert!(matches!(
+            collector.mmu_gather.setups[0].initial,
+            ElfMmuGatherPhase::Captured { .. }
+        ));
+        assert!(collector.mmu_gather.setups[0].actual_post.is_not_observed());
+
+        collector.record_mmu_gather_relocate(
+            relocation,
+            Some(gather_raw(0xa000, 0xb000, 0)),
+            "captured",
+            None,
+        );
+        assert!(collector.mmu_gather.setups[0].actual_post.is_not_observed());
+        assert!(matches!(
+            collector.mmu_gather.setups[1].initial,
+            ElfMmuGatherPhase::Captured { .. }
+        ));
+    }
 
     fn gated_instruction_trace_collector() -> LinuxExecutionObservationCollector {
         let mut collector =

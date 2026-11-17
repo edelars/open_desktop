@@ -1914,6 +1914,12 @@ fn validate_execution_observations_sidecar(
                             snapshot,
                             Some(runner),
                         ) && (schema_version < 18 || valid_elf_stack_copy_target_cr3_event(ledger))
+                            && (schema_version < 19
+                                || valid_elf_mmu_gather_capture(
+                                    ledger,
+                                    runner,
+                                    snapshot.get("invocation"),
+                                ))
                     });
                 let status_data_valid = match status {
                     Some("captured") => {
@@ -1981,7 +1987,508 @@ fn validate_execution_observations_sidecar(
 }
 
 fn supported_execution_observations_schema_version(version: u64) -> bool {
-    (1..=18).contains(&version)
+    (1..=19).contains(&version)
+}
+
+fn valid_elf_mmu_gather_capture(
+    ledger: &Value,
+    runner: &Value,
+    copy_invocation: Option<&Value>,
+) -> bool {
+    let Some(capture) = ledger.get("mmu_gather") else {
+        return false;
+    };
+    let Some(status) = capture.get("status").and_then(Value::as_str) else {
+        return false;
+    };
+    if !matches!(status, "not_seen" | "captured" | "incomplete" | "truncated")
+        || capture.get("association").and_then(Value::as_str) != Some("prefix_candidates")
+        || !capture.as_object().is_some_and(|object| object.len() == 7)
+    {
+        return false;
+    }
+    let (Some(setups), Some(unpaired)) = (
+        capture.get("setups").and_then(Value::as_array),
+        capture.get("unpaired").and_then(Value::as_array),
+    ) else {
+        return false;
+    };
+    let (Some(setup_count), Some(setups_omitted), Some(unpaired_omitted)) = (
+        capture.get("setup_count").and_then(Value::as_u64),
+        capture.get("setups_omitted").and_then(Value::as_u64),
+        capture.get("unpaired_omitted").and_then(Value::as_u64),
+    ) else {
+        return false;
+    };
+    let Some(observed_plus_omitted) = (setups.len() as u64).checked_add(setups_omitted) else {
+        return false;
+    };
+    if setup_count != observed_plus_omitted
+        || setups.len() > od_machine::LINUX_ELF_MMU_GATHER_SETUP_CAPACITY
+        || unpaired.len() > od_machine::LINUX_ELF_MMU_GATHER_SETUP_CAPACITY
+        || (setups_omitted > 0 && setups.len() != od_machine::LINUX_ELF_MMU_GATHER_SETUP_CAPACITY)
+        || (unpaired_omitted > 0
+            && unpaired.len() != od_machine::LINUX_ELF_MMU_GATHER_SETUP_CAPACITY)
+        || ((setups_omitted > 0 || unpaired_omitted > 0) != (status == "truncated"))
+    {
+        return false;
+    }
+    if status == "not_seen"
+        && (setup_count != 0
+            || setups_omitted != 0
+            || !setups.is_empty()
+            || unpaired_omitted != 0
+            || !unpaired.is_empty())
+    {
+        return false;
+    }
+    if matches!(status, "captured" | "incomplete") && setup_count == 0 && unpaired.is_empty() {
+        return false;
+    }
+
+    let stop = runner.get("stop").unwrap_or(&Value::Null);
+    let stop_counters = (
+        stop.get("retired").and_then(Value::as_u64),
+        stop.get("cr3_changes").and_then(Value::as_u64),
+        stop.get("page_faults_delivered").and_then(Value::as_u64),
+    );
+    if stop_counters.0.is_none() || stop_counters.1.is_none() || stop_counters.2.is_none() {
+        return false;
+    }
+    let Some(ledger_event_count) = ledger.get("event_count").and_then(Value::as_u64) else {
+        return false;
+    };
+    let entry = copy_invocation
+        .and_then(|invocation| invocation.get("entry"))
+        .filter(|entry| !entry.is_null());
+    let entry_counters = if let Some(entry) = entry {
+        let (Some(retired), Some(cr3_changes), Some(page_faults)) = (
+            entry
+                .get("retired_instructions_through_current")
+                .and_then(Value::as_u64),
+            entry.get("cr3_changes").and_then(Value::as_u64),
+            entry.get("delivered_page_faults").and_then(Value::as_u64),
+        ) else {
+            return false;
+        };
+        Some((retired, cr3_changes, page_faults))
+    } else {
+        None
+    };
+    let within_runner_bounds = |context: &Value| {
+        let counters = (
+            context.get("retired_instructions").and_then(Value::as_u64),
+            context.get("cr3_changes").and_then(Value::as_u64),
+            context.get("page_faults").and_then(Value::as_u64),
+        );
+        let (Some(retired), Some(cr3_changes), Some(page_faults)) = counters else {
+            return false;
+        };
+        retired <= stop_counters.0.unwrap()
+            && cr3_changes <= stop_counters.1.unwrap()
+            && page_faults <= stop_counters.2.unwrap()
+            && cr3_changes <= ledger_event_count
+            && entry_counters.is_none_or(|(entry_retired, entry_cr3, entry_faults)| {
+                retired <= entry_retired && cr3_changes <= entry_cr3 && page_faults <= entry_faults
+            })
+    };
+
+    for (index, invocation) in setups.iter().enumerate() {
+        if !invocation
+            .as_object()
+            .is_some_and(|object| object.len() == 8)
+        {
+            return false;
+        }
+        let Some(sequence) = invocation.get("sequence").and_then(Value::as_u64) else {
+            return false;
+        };
+        if sequence != index as u64 + 1 {
+            return false;
+        }
+        let Some(closure) = invocation.get("closure").and_then(Value::as_str) else {
+            return false;
+        };
+        if !matches!(closure, "active" | "returned" | "superseded" | "run_ended") {
+            return false;
+        }
+        let setup_phase = invocation.get("setup");
+        let initial_phase = invocation.get("initial");
+        let actual_phase = invocation.get("actual_post");
+        let returned_phase = invocation.get("returned");
+        if !valid_mmu_phase(
+            setup_phase,
+            0xffff_ffff_818f_24d5,
+            "value",
+            "partial",
+            valid_mmu_setup_data,
+        ) || !valid_mmu_phase(
+            initial_phase,
+            0xffff_ffff_8182_bfdb,
+            "value",
+            "partial",
+            valid_mmu_gather_raw,
+        ) || !valid_mmu_phase(
+            actual_phase,
+            0xffff_ffff_8180_9fa1,
+            "value",
+            "partial",
+            valid_mmu_gather_raw,
+        ) || !valid_mmu_phase(
+            returned_phase,
+            0xffff_ffff_8182_bfe0,
+            "value",
+            "partial",
+            |v| v == &json!(true),
+        ) {
+            return false;
+        }
+        let Some(setup_context) = mmu_phase_context(setup_phase) else {
+            return false;
+        };
+        let setup_status = setup_phase
+            .and_then(|v| v.get("status"))
+            .and_then(Value::as_str)
+            .unwrap();
+        if setup_status == "captured" {
+            if !setup_context
+                .get("saved_rbp")
+                .is_some_and(|v| v.as_str().is_some_and(canonical_hex64))
+                || !setup_context
+                    .get("saved_return_rip")
+                    .is_some_and(|v| v.as_str().is_some_and(canonical_hex64))
+                || setup_phase
+                    .and_then(|v| v.get("value"))
+                    .and_then(|v| v.get("vm_start"))
+                    .and_then(Value::as_str)
+                    .is_none_or(|v| !canonical_hex64(v))
+                || setup_phase
+                    .and_then(|v| v.get("value"))
+                    .and_then(|v| v.get("vm_end"))
+                    .and_then(Value::as_str)
+                    .is_none_or(|v| !canonical_hex64(v))
+            {
+                return false;
+            }
+        }
+        let initial_status = initial_phase
+            .and_then(|v| v.get("status"))
+            .and_then(Value::as_str)
+            .unwrap();
+        let initial_context = mmu_phase_context(initial_phase);
+        if initial_status != "not_observed" {
+            let Some(context) = initial_context else {
+                return false;
+            };
+            if context.get("saved_rbp") != setup_context.get("rbp")
+                || context.get("saved_return_rip") != Some(&json!("0xffffffff818f24e5"))
+                || context
+                    .get("tlb_pointer")
+                    .and_then(Value::as_str)
+                    .is_none_or(|v| !canonical_hex64(v))
+            {
+                return false;
+            }
+            if let Some(raw) = mmu_phase_raw(initial_phase) {
+                if context.get("tlb_pointer") != raw.get("tlb") {
+                    return false;
+                }
+            }
+        }
+        let actual_status = actual_phase
+            .and_then(|v| v.get("status"))
+            .and_then(Value::as_str)
+            .unwrap();
+        let actual_context = mmu_phase_context(actual_phase);
+        if actual_status != "not_observed" {
+            let (Some(context), Some(initial_context)) = (actual_context, initial_context) else {
+                return false;
+            };
+            if context.get("saved_rbp") != initial_context.get("rbp")
+                || context.get("saved_return_rip") != Some(&json!("0xffffffff8182bfe0"))
+                || context.get("tlb_pointer") != initial_context.get("tlb_pointer")
+            {
+                return false;
+            }
+            if let Some(raw) = mmu_phase_raw(actual_phase) {
+                if context.get("tlb_pointer") != raw.get("tlb") {
+                    return false;
+                }
+            }
+        }
+        let Some(association_mismatch) = invocation
+            .get("association_mismatch")
+            .and_then(Value::as_bool)
+        else {
+            return false;
+        };
+        let captured_mm_mismatch = if initial_status == "captured" && actual_status == "captured" {
+            let (Some(initial_raw), Some(actual_raw)) =
+                (mmu_phase_raw(initial_phase), mmu_phase_raw(actual_phase))
+            else {
+                return false;
+            };
+            initial_raw.get("tlb") == actual_raw.get("tlb")
+                && initial_raw.get("mm") != actual_raw.get("mm")
+        } else {
+            false
+        };
+        if association_mismatch != captured_mm_mismatch {
+            return false;
+        }
+        let returned_status = returned_phase
+            .and_then(|v| v.get("status"))
+            .and_then(Value::as_str)
+            .unwrap();
+        if returned_status == "captured" {
+            let (Some(return_context), Some(initial_context)) =
+                (mmu_phase_context(returned_phase), initial_context)
+            else {
+                return false;
+            };
+            if return_context.get("rbp") != initial_context.get("rbp")
+                || return_context.get("rsp") != initial_context.get("rsp")
+                || return_context.get("saved_rbp") != initial_context.get("saved_rbp")
+                || return_context.get("saved_return_rip") != initial_context.get("saved_return_rip")
+                || closure != "returned"
+            {
+                return false;
+            }
+        } else if closure == "returned" {
+            return false;
+        }
+
+        let contexts = [
+            mmu_phase_context(setup_phase),
+            initial_context,
+            actual_context,
+            mmu_phase_context(returned_phase),
+        ];
+        let mut previous = (0, 0, 0);
+        for context in contexts.into_iter().flatten() {
+            let counters = (
+                context.get("retired_instructions").and_then(Value::as_u64),
+                context.get("cr3_changes").and_then(Value::as_u64),
+                context.get("page_faults").and_then(Value::as_u64),
+            );
+            let (Some(retired), Some(cr3_changes), Some(page_faults)) = counters else {
+                return false;
+            };
+            if retired < previous.0
+                || cr3_changes < previous.1
+                || page_faults < previous.2
+                || retired > stop_counters.0.unwrap()
+                || cr3_changes > stop_counters.1.unwrap()
+                || page_faults > stop_counters.2.unwrap()
+                || cr3_changes > ledger_event_count
+                || !within_runner_bounds(context)
+            {
+                return false;
+            }
+            previous = (retired, cr3_changes, page_faults);
+        }
+        let derived_needs_flush = mmu_phase_raw(actual_phase).map(|raw| {
+            raw.get("flags")
+                .and_then(Value::as_str)
+                .and_then(parse_hex32)
+                .is_some_and(|flags| flags & 0x08f4 != 0)
+        });
+        let Some(predicate) = invocation.get("needs_flush") else {
+            return false;
+        };
+        if match derived_needs_flush {
+            Some(expected) => predicate.as_bool() != Some(expected),
+            None => !predicate.is_null(),
+        } {
+            return false;
+        }
+    }
+
+    let unpaired_valid = unpaired.iter().all(|event| {
+        if !event.as_object().is_some_and(|object| object.len() == 5) {
+            return false;
+        }
+        let phase = event.get("phase").and_then(Value::as_str);
+        let expected_rip = match phase {
+            Some("relocate_vma_down") => 0xffff_ffff_8182_bfdb,
+            Some("actual_post") => 0xffff_ffff_8180_9fa1,
+            Some("return") => 0xffff_ffff_8182_bfe0,
+            _ => return false,
+        };
+        matches!(
+            event.get("status").and_then(Value::as_str),
+            Some("unpaired" | "ambiguous" | "mismatch" | "read_error")
+        ) && valid_mmu_gather_context(event.get("context"), expected_rip)
+            && event
+                .get("context")
+                .is_some_and(|context| within_runner_bounds(context))
+            && event
+                .get("raw")
+                .is_some_and(|v| v.is_null() || valid_mmu_gather_raw(v))
+            && event
+                .get("error")
+                .is_some_and(|v| v.is_null() || v.is_string())
+    });
+    if !unpaired_valid {
+        return false;
+    }
+    let complete = unpaired.is_empty()
+        && !setups.is_empty()
+        && setups.iter().all(|invocation| {
+            invocation.get("closure").and_then(Value::as_str) == Some("returned")
+                && invocation
+                    .get("association_mismatch")
+                    .and_then(Value::as_bool)
+                    == Some(false)
+                && ["setup", "initial", "actual_post", "returned"]
+                    .iter()
+                    .all(|phase| {
+                        invocation
+                            .get(*phase)
+                            .and_then(|value| value.get("status"))
+                            .and_then(Value::as_str)
+                            == Some("captured")
+                    })
+        });
+    let expected_status = if setups_omitted != 0 || unpaired_omitted != 0 {
+        "truncated"
+    } else if setups.is_empty() && unpaired.is_empty() {
+        "not_seen"
+    } else if complete {
+        "captured"
+    } else {
+        "incomplete"
+    };
+    status == expected_status
+}
+
+fn valid_mmu_phase(
+    value: Option<&Value>,
+    expected_rip: u64,
+    value_key: &str,
+    partial_key: &str,
+    valid_payload: impl Fn(&Value) -> bool,
+) -> bool {
+    let Some(phase) = value else {
+        return false;
+    };
+    let Some(status) = phase.get("status").and_then(Value::as_str) else {
+        return false;
+    };
+    match status {
+        "not_observed" => phase.as_object().is_some_and(|o| o.len() == 1),
+        "captured" => {
+            phase.as_object().is_some_and(|o| o.len() == 3)
+                && phase
+                    .get("context")
+                    .is_some_and(|c| valid_mmu_gather_context(Some(c), expected_rip))
+                && phase.get(value_key).is_some_and(&valid_payload)
+                && !phase
+                    .as_object()
+                    .is_some_and(|o| o.contains_key(partial_key) || o.contains_key("error"))
+        }
+        "read_error" => {
+            phase.as_object().is_some_and(|o| o.len() == 4)
+                && phase
+                    .get("context")
+                    .is_some_and(|c| valid_mmu_gather_context(Some(c), expected_rip))
+                && phase
+                    .get(partial_key)
+                    .is_some_and(|v| v.is_null() || valid_payload(v))
+                && phase
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.is_empty())
+                && !phase.as_object().is_some_and(|o| o.contains_key(value_key))
+        }
+        _ => false,
+    }
+}
+
+fn mmu_phase_context(phase: Option<&Value>) -> Option<&Value> {
+    match phase?.get("status")?.as_str()? {
+        "captured" | "read_error" => phase?.get("context"),
+        _ => None,
+    }
+}
+
+fn mmu_phase_raw(phase: Option<&Value>) -> Option<&Value> {
+    match phase?.get("status")?.as_str()? {
+        "captured" => phase?.get("value"),
+        "read_error" => phase?.get("partial").filter(|v| !v.is_null()),
+        _ => None,
+    }
+}
+
+fn valid_mmu_gather_context(value: Option<&Value>, expected_rip: u64) -> bool {
+    let Some(context) = value else {
+        return false;
+    };
+    context.as_object().is_some_and(|o| o.len() == 10)
+        && context
+            .get("rip")
+            .and_then(Value::as_str)
+            .and_then(parse_hex64)
+            == Some(expected_rip)
+        && ["cr3", "rbp", "rsp"].iter().all(|key| {
+            context
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(canonical_hex64)
+        })
+        && context
+            .get("tlb_pointer")
+            .is_some_and(|v| v.is_null() || v.as_str().is_some_and(canonical_hex64))
+        && ["retired_instructions", "cr3_changes", "page_faults"]
+            .iter()
+            .all(|key| context.get(*key).and_then(Value::as_u64).is_some())
+        && ["saved_rbp", "saved_return_rip"]
+            .iter()
+            .all(|key| context.get(*key).is_some_and(valid_nullable_hex64))
+        && (context.get("saved_rbp") == Some(&Value::Null))
+            == (context.get("saved_return_rip") == Some(&Value::Null))
+}
+
+fn valid_mmu_setup_data(value: &Value) -> bool {
+    value.as_object().is_some_and(|o| o.len() == 4)
+        && value
+            .get("stack_shift")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_hex64)
+        && value
+            .get("vma")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_hex64)
+        && value.get("vm_start").is_some_and(valid_nullable_hex64)
+        && value.get("vm_end").is_some_and(valid_nullable_hex64)
+}
+
+fn valid_mmu_gather_raw(raw: &Value) -> bool {
+    raw.as_object().is_some_and(|o| o.len() == 6)
+        && ["tlb", "mm", "start", "end"].iter().all(|key| {
+            raw.get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(canonical_hex64)
+        })
+        && raw
+            .get("flags")
+            .and_then(Value::as_str)
+            .and_then(parse_hex32)
+            .is_some()
+        && raw
+            .get("mm_tlb_flush_nested")
+            .and_then(Value::as_i64)
+            .is_some_and(|value| i32::try_from(value).is_ok())
+}
+
+fn valid_nullable_hex64(value: &Value) -> bool {
+    value.is_null() || value.as_str().is_some_and(canonical_hex64)
+}
+
+fn parse_hex32(value: &str) -> Option<u32> {
+    value
+        .strip_prefix("0x")
+        .and_then(|digits| u32::from_str_radix(digits, 16).ok())
 }
 
 fn valid_elf_stack_copy_target_cr3_event(ledger: &Value) -> bool {
@@ -4297,7 +4804,7 @@ mod tests {
             byte_count,
             sha256,
         );
-        assert_eq!(raw["schema_version"], 18);
+        assert_eq!(raw["schema_version"], 19);
         assert_eq!(
             raw["delay_tsc_call_summary"]["entries"][0]["frame_chain_end"],
             "read_failed"
@@ -4528,6 +5035,7 @@ mod tests {
         assert!(supported_execution_observations_schema_version(16));
         assert!(supported_execution_observations_schema_version(17));
         assert!(supported_execution_observations_schema_version(18));
+        assert!(supported_execution_observations_schema_version(19));
         assert!(!supported_execution_observations_schema_version(u64::MAX));
     }
 
@@ -5551,6 +6059,108 @@ mod tests {
         fs::remove_dir_all(temp).unwrap();
     }
 
+    fn sample_mmu_gather_capture() -> od_machine::ElfMmuGatherCapture {
+        use od_machine::{
+            ElfMmuGatherCapture, ElfMmuGatherClosure, ElfMmuGatherContext, ElfMmuGatherInvocation,
+            ElfMmuGatherPhase, ElfMmuGatherRaw, ElfMmuGatherSetupData,
+        };
+        let setup_rbp = 0xffff_ffff_8000_1000;
+        let relocate_rbp = 0xffff_ffff_8000_2000;
+        let relocate_rsp = 0xffff_ffff_8000_0ff0;
+        let setup_context = ElfMmuGatherContext {
+            rip: od_machine::LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+            retired_instructions: 80,
+            cr3: 0x1000,
+            cr3_changes: 0,
+            page_faults: 0,
+            rbp: setup_rbp,
+            rsp: 0xffff_ffff_8000_1100,
+            tlb_pointer: None,
+            saved_rbp: Some(0xffff_ffff_8000_3000),
+            saved_return_rip: Some(0xffff_ffff_8180_0000),
+        };
+        let relocate_context = ElfMmuGatherContext {
+            rip: od_machine::LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP,
+            retired_instructions: 85,
+            cr3: 0x1000,
+            cr3_changes: 0,
+            page_faults: 1,
+            rbp: relocate_rbp,
+            rsp: relocate_rsp,
+            tlb_pointer: Some(0xffff_ffff_8000_4000),
+            saved_rbp: Some(setup_rbp),
+            saved_return_rip: Some(0xffff_ffff_818f_24e5),
+        };
+        let gather_context = ElfMmuGatherContext {
+            rip: od_machine::LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP,
+            retired_instructions: 90,
+            cr3: 0x1000,
+            cr3_changes: 0,
+            page_faults: 1,
+            rbp: 0xffff_ffff_8000_3000,
+            rsp: relocate_rsp - 16,
+            tlb_pointer: Some(0xffff_ffff_8000_4000),
+            saved_rbp: Some(relocate_rbp),
+            saved_return_rip: Some(od_machine::LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP),
+        };
+        let return_context = ElfMmuGatherContext {
+            rip: od_machine::LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP,
+            retired_instructions: 95,
+            cr3: 0x1000,
+            cr3_changes: 0,
+            page_faults: 2,
+            rbp: relocate_rbp,
+            rsp: relocate_rsp,
+            tlb_pointer: None,
+            saved_rbp: Some(setup_rbp),
+            saved_return_rip: Some(0xffff_ffff_818f_24e5),
+        };
+        let initial = ElfMmuGatherRaw {
+            tlb: 0xffff_ffff_8000_4000,
+            mm: 0xffff_ffff_8000_5000,
+            start: 0x4000,
+            end: 0x8000,
+            flags: 0,
+            mm_tlb_flush_nested: 0,
+        };
+        let actual_post = ElfMmuGatherRaw {
+            flags: 0x800,
+            ..initial
+        };
+        ElfMmuGatherCapture {
+            setup_count: 1,
+            setups_omitted: 0,
+            setups: vec![ElfMmuGatherInvocation {
+                sequence: 1,
+                closure: ElfMmuGatherClosure::Returned,
+                association_mismatch: false,
+                setup: ElfMmuGatherPhase::Captured {
+                    context: setup_context,
+                    value: ElfMmuGatherSetupData {
+                        stack_shift: 0x1000,
+                        vma: 0xffff_ffff_8000_6000,
+                        vm_start: Some(0x10000),
+                        vm_end: Some(0x20000),
+                    },
+                },
+                initial: ElfMmuGatherPhase::Captured {
+                    context: relocate_context,
+                    value: initial,
+                },
+                actual_post: ElfMmuGatherPhase::Captured {
+                    context: gather_context,
+                    value: actual_post,
+                },
+                returned: ElfMmuGatherPhase::Captured {
+                    context: return_context,
+                    value: (),
+                },
+            }],
+            unpaired: Vec::new(),
+            unpaired_omitted: 0,
+        }
+    }
+
     fn captured_elf_stack_copy_observations() -> od_machine::LinuxExecutionObservations {
         use od_machine::{
             ElfStackCopyBoundaryMarker, ElfStackCopyCounterSnapshot, ElfStackCopyCr3Event,
@@ -5623,6 +6233,7 @@ mod tests {
                     })
                     .collect(),
                 target_event: od_machine::ElfStackCopyTargetCr3Capture::default(),
+                mmu_gather: sample_mmu_gather_capture(),
             }),
             invocation: Some(ElfStackCopyInvocation {
                 status: ElfStackCopyInvocationStatus::Complete,
@@ -5684,7 +6295,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v18_captured_elf_stack_copy_serializes_and_loads_with_strict_validation() {
+    fn schema_v19_captured_elf_stack_copy_serializes_and_loads_with_strict_validation() {
         let temp = std::env::temp_dir().join(format!(
             "od-runner-stage5-elf-stack-copy-{}-{}",
             std::process::id(),
@@ -5720,7 +6331,7 @@ mod tests {
         );
         let original_bytes = fs::read(&sidecar_path).unwrap();
         let written: Value = serde_json::from_slice(&original_bytes).unwrap();
-        assert_eq!(written["schema_version"], 18);
+        assert_eq!(written["schema_version"], 19);
         assert_eq!(written["elf_stack_copy"]["status"], "captured");
         assert_eq!(
             written["elf_stack_copy"]["registers"]["r13"],
@@ -5729,6 +6340,15 @@ mod tests {
         assert_eq!(
             written["elf_stack_copy"]["probes"][2]["outcome"],
             "page_fault"
+        );
+        assert_eq!(
+            written["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["actual_post"]
+                ["value"]["flags"],
+            "0x00000800"
+        );
+        assert_eq!(
+            written["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["needs_flush"],
+            true
         );
 
         let update_metadata = |mut metadata: Value, bytes: &[u8]| {
@@ -5770,6 +6390,130 @@ mod tests {
         let loaded = fresh_manifest(&series_path).unwrap();
         load_run_manifest(&series_path, &loaded.runs[0]).unwrap();
 
+        let mut mm_mismatch = written.clone();
+        let gather = &mut mm_mismatch["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"];
+        gather["status"] = json!("incomplete");
+        gather["setups"][0]["association_mismatch"] = json!(true);
+        gather["setups"][0]["actual_post"]["value"]["mm"] = json!("0xffffffff80005001");
+        assert_eq!(
+            gather["setups"][0]["initial"]["value"]["mm"],
+            "0xffffffff80005000"
+        );
+        assert_eq!(
+            gather["setups"][0]["actual_post"]["value"]["mm"],
+            "0xffffffff80005001"
+        );
+        let mm_mismatch_bytes = serde_json::to_vec_pretty(&mm_mismatch).unwrap();
+        fs::write(&sidecar_path, &mm_mismatch_bytes).unwrap();
+        update_metadata(base_metadata.clone(), &mm_mismatch_bytes);
+        let loaded = fresh_manifest(&series_path).unwrap();
+        load_run_manifest(&series_path, &loaded.runs[0]).unwrap();
+        let mut unmarked_mm_mismatch = mm_mismatch.clone();
+        unmarked_mm_mismatch["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]
+            ["association_mismatch"] = json!(false);
+        assert_rejected(unmarked_mm_mismatch, "ELF stack copy snapshot is invalid");
+
+        let runner_bounds = json!({"stop": {
+            "retired": 200,
+            "cr3_changes": 1,
+            "page_faults_delivered": 4,
+        }});
+        let ledger = written["elf_stack_copy"]["pre_copy_cr3_ledger"].clone();
+        let copy_invocation = written["elf_stack_copy"]["invocation"].clone();
+        for (counter, value) in [
+            ("retired_instructions", 101),
+            ("cr3_changes", 1),
+            ("page_faults", 3),
+        ] {
+            let mut bounded = ledger.clone();
+            for phase in ["setup", "initial", "actual_post", "returned"] {
+                bounded["mmu_gather"]["setups"][0][phase]["context"][counter] = json!(value);
+            }
+            if counter == "cr3_changes" {
+                bounded["event_count"] = json!(1);
+            }
+            assert!(
+                !valid_elf_mmu_gather_capture(&bounded, &runner_bounds, Some(&copy_invocation),),
+                "copy-entry {counter} bound must reject while runner stop permits it"
+            );
+        }
+        let mut read_error_bound = ledger.clone();
+        let read_error = &mut read_error_bound["mmu_gather"]["setups"][0]["initial"];
+        read_error["status"] = json!("read_error");
+        read_error["partial"] = Value::Null;
+        read_error["error"] = json!("read failed");
+        read_error.as_object_mut().unwrap().remove("value");
+        for phase in ["setup", "initial", "actual_post", "returned"] {
+            read_error_bound["mmu_gather"]["setups"][0][phase]["context"]["page_faults"] = json!(3);
+        }
+        read_error_bound["mmu_gather"]["status"] = json!("incomplete");
+        assert!(!valid_elf_mmu_gather_capture(
+            &read_error_bound,
+            &runner_bounds,
+            Some(&copy_invocation),
+        ));
+        let mut unpaired_bound = ledger.clone();
+        unpaired_bound["mmu_gather"]["unpaired"] = json!([{
+            "phase": "actual_post",
+            "status": "read_error",
+            "context": ledger["mmu_gather"]["setups"][0]["actual_post"]["context"].clone(),
+            "raw": null,
+            "error": "read failed",
+        }]);
+        unpaired_bound["mmu_gather"]["unpaired"][0]["context"]["page_faults"] = json!(3);
+        unpaired_bound["mmu_gather"]["status"] = json!("incomplete");
+        assert!(!valid_elf_mmu_gather_capture(
+            &unpaired_bound,
+            &runner_bounds,
+            Some(&copy_invocation),
+        ));
+        let mut ledger_bound = ledger.clone();
+        for phase in ["setup", "initial", "actual_post", "returned"] {
+            ledger_bound["mmu_gather"]["setups"][0][phase]["context"]["cr3_changes"] = json!(1);
+        }
+        let mut entry_allows_ledger_bound = copy_invocation.clone();
+        entry_allows_ledger_bound["entry"]["cr3_changes"] = json!(1);
+        assert!(
+            !valid_elf_mmu_gather_capture(
+                &ledger_bound,
+                &runner_bounds,
+                Some(&entry_allows_ledger_bound),
+            ),
+            "context CR3 changes must be bounded by the full ledger event count"
+        );
+        let mut initial_read_error = written.clone();
+        let initial_phase = &mut initial_read_error["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]
+            ["setups"][0]["initial"];
+        initial_phase["status"] = json!("read_error");
+        initial_phase["partial"] = Value::Null;
+        initial_phase["error"] = json!("initial MMU gather read failed");
+        initial_phase.as_object_mut().unwrap().remove("value");
+        initial_read_error["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["status"] =
+            json!("incomplete");
+        assert_eq!(
+            initial_read_error["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]
+                ["actual_post"]["value"]["flags"],
+            "0x00000800"
+        );
+        let initial_read_error_bytes = serde_json::to_vec_pretty(&initial_read_error).unwrap();
+        fs::write(&sidecar_path, &initial_read_error_bytes).unwrap();
+        update_metadata(base_metadata.clone(), &initial_read_error_bytes);
+        let loaded = fresh_manifest(&series_path).unwrap();
+        load_run_manifest(&series_path, &loaded.runs[0]).unwrap();
+
+        let mut legacy_v18 = written.clone();
+        legacy_v18["schema_version"] = json!(18);
+        legacy_v18["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"] = Value::Null;
+        legacy_v18["elf_stack_copy"]["pre_copy_cr3_ledger"]
+            .as_object_mut()
+            .unwrap()
+            .remove("mmu_gather");
+        let legacy_v18_bytes = serde_json::to_vec_pretty(&legacy_v18).unwrap();
+        fs::write(&sidecar_path, &legacy_v18_bytes).unwrap();
+        update_metadata(base_metadata.clone(), &legacy_v18_bytes);
+        let loaded = fresh_manifest(&series_path).unwrap();
+        load_run_manifest(&series_path, &loaded.runs[0]).unwrap();
+
         let mut gate_mismatch = written.clone();
         gate_mismatch["elf_stack_copy"]["status"] = json!("gate_mismatch");
         gate_mismatch["elf_stack_copy"]["mismatch_reasons"] =
@@ -5801,6 +6545,78 @@ mod tests {
 
         let mut malformed = written.clone();
         malformed["elf_stack_copy"]["cs_selector"] = Value::Null;
+        assert_rejected(malformed, "ELF stack copy snapshot is invalid");
+
+        let mut malformed = written.clone();
+        malformed["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["actual_post"]
+            ["value"]["flags"] = json!("0x00000000");
+        assert_rejected(malformed, "ELF stack copy snapshot is invalid");
+
+        let mut malformed = written.clone();
+        malformed["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["initial"]
+            ["context"]["saved_rbp"] = json!("0xffffffff80009999");
+        assert_rejected(malformed, "ELF stack copy snapshot is invalid");
+
+        let mut malformed = written.clone();
+        malformed["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups_omitted"] =
+            json!(1);
+        assert_rejected(malformed, "ELF stack copy snapshot is invalid");
+
+        let mut malformed = written.clone();
+        malformed["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["setup"]["value"]
+            ["vm_start"] = Value::Null;
+        assert_rejected(malformed, "ELF stack copy snapshot is invalid");
+
+        let mut malformed = written.clone();
+        malformed["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["setup"]["context"]
+            ["saved_return_rip"] = Value::Null;
+        assert_rejected(malformed, "ELF stack copy snapshot is invalid");
+
+        let mut malformed = written.clone();
+        malformed["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["needs_flush"] =
+            Value::Null;
+        assert_rejected(malformed, "ELF stack copy snapshot is invalid");
+
+        let mut malformed = written.clone();
+        malformed["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("needs_flush");
+        assert_rejected(malformed, "ELF stack copy snapshot is invalid");
+
+        let mut malformed = written.clone();
+        malformed["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["actual_post"] =
+            json!({"status":"not_observed"});
+        malformed["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["returned"] =
+            json!({"status":"not_observed"});
+        malformed["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["closure"] =
+            json!("run_ended");
+        malformed["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["needs_flush"] =
+            json!("unknown");
+        malformed["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["status"] =
+            json!("incomplete");
+        assert_rejected(malformed, "ELF stack copy snapshot is invalid");
+
+        let mut malformed = written.clone();
+        malformed["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["actual_post"]
+            ["context"]["retired_instructions"] = json!(105);
+        assert_rejected(malformed, "ELF stack copy snapshot is invalid");
+
+        let mut malformed = written.clone();
+        malformed["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["actual_post"]
+            ["context"]["cr3_changes"] = json!(2);
+        assert_rejected(malformed, "ELF stack copy snapshot is invalid");
+
+        let mut malformed = written.clone();
+        malformed["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups"][0]["actual_post"]
+            ["context"]["page_faults"] = json!(0);
+        assert_rejected(malformed, "ELF stack copy snapshot is invalid");
+
+        let mut malformed = written.clone();
+        malformed["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setup_count"] =
+            json!(u64::MAX);
+        malformed["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"]["setups_omitted"] =
+            json!(u64::MAX);
         assert_rejected(malformed, "ELF stack copy snapshot is invalid");
 
         let mut malformed = written.clone();

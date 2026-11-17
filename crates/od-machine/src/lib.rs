@@ -224,6 +224,13 @@ pub use execution_observations::{
     RdtscClockTraceSample, RdtscEntrySample, RdtscPrefixSample, RdtscPrefixStatus,
     RdtscSampleWindow, RdtscSiteCount, RdtscSiteSample,
 };
+pub use execution_observations::{
+    ElfMmuGatherCapture, ElfMmuGatherClosure, ElfMmuGatherContext, ElfMmuGatherInvocation,
+    ElfMmuGatherPhase, ElfMmuGatherRaw, ElfMmuGatherSetupData, ElfMmuGatherUnpaired,
+    LINUX_ELF_MMU_GATHER_SETUP_CAPACITY, LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP,
+    LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP, LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+    LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP,
+};
 pub use firmware_board::{
     FIRMWARE_ACPI_FACS_BASE, FIRMWARE_ACPI_FACS_BYTES, FIRMWARE_ACPI_TABLES_BASE,
     FIRMWARE_ACPI_TABLES_BYTES, FIRMWARE_BOOT_PAGE_TABLES_GPA, FIRMWARE_BOOT_STACK_BASE,

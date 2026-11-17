@@ -2,12 +2,15 @@
 
 use crate::console_output_context::capture_frame_chain;
 use crate::execution_observations::{
-    DeliveredPageFaultObservation, ElfStackCopyProbe, ElfStackCopySnapshot, ElfStackCopyStatus,
-    ElfStackCopyTargetCr3Capture, ElfStackCopyTargetCr3ChainStatus, ElfStackCopyTargetCr3Frame,
-    FaultingPageFaultContext, FaultingPageWalkContext, InstructionPathControlFlow,
-    InstructionPathRegisterValue, InstructionPathTraceRecord, LINUX_ELF_STACK_COPY_PROBE_CAPACITY,
-    LINUX_ELF_STACK_COPY_RIP, LINUX_ELF_STACK_COPY_WALK_ENTRY_CAPACITY,
-    LinuxExecutionObservationCollector, PendingPostIretObservation, PostIretPageWalkSnapshot,
+    DeliveredPageFaultObservation, ElfMmuGatherRaw, ElfStackCopyProbe, ElfStackCopySnapshot,
+    ElfStackCopyStatus, ElfStackCopyTargetCr3Capture, ElfStackCopyTargetCr3ChainStatus,
+    ElfStackCopyTargetCr3Frame, FaultingPageFaultContext, FaultingPageWalkContext,
+    InstructionPathControlFlow, InstructionPathRegisterValue, InstructionPathTraceRecord,
+    LINUX_ELF_STACK_COPY_PROBE_CAPACITY, LINUX_ELF_STACK_COPY_RIP,
+    LINUX_ELF_STACK_COPY_WALK_ENTRY_CAPACITY, LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP,
+    LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP, LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+    LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP, LinuxExecutionObservationCollector,
+    PendingPostIretObservation, PostIretPageWalkSnapshot,
 };
 use crate::fetch_cache_report::{C5Split, LinuxWalkCounts, WalkCounter};
 use crate::fetch_cache_sweep::FetchCacheSweep;
@@ -1338,6 +1341,250 @@ fn is_canonical_48_bit(address: u64) -> bool {
     (sign == 0 && address >> 48 == 0) || (sign == 1 && address >> 48 == 0xffff)
 }
 
+#[cfg(test)]
+thread_local! {
+    static MMU_GATHER_DIAGNOSTIC_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn capture_elf_mmu_gather_boundary(
+    instruction_rip: u64,
+    state: &LongModeState,
+    bus: &mut MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+    cr3: u64,
+    observations: &mut LinuxExecutionObservationCollector,
+) {
+    if !observations.wants_mmu_gather_capture()
+        || !matches!(
+            instruction_rip,
+            LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP
+                | LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP
+                | LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP
+                | LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP
+        )
+    {
+        return;
+    }
+    use od_isa::Register::{R14, R15, Rbp, Rdi, Rsp};
+    let rbp = state.gpr[Rbp as usize];
+    let rsp = state.gpr[Rsp as usize];
+    let frame = read_mmu_gather_frame(bus, paging, instruction_rip, context, rbp);
+    let (saved_rbp, saved_return_rip, frame_error) = match frame {
+        Ok((saved_rbp, saved_return_rip)) => (Some(saved_rbp), Some(saved_return_rip), None),
+        Err(error) => (None, None, Some(error)),
+    };
+    let tlb_pointer = matches!(
+        instruction_rip,
+        LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP | LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP
+    )
+    .then_some(state.gpr[Rdi as usize]);
+    let event_context = observations.mmu_gather_context(
+        instruction_rip,
+        cr3,
+        rbp,
+        rsp,
+        tlb_pointer,
+        saved_rbp,
+        saved_return_rip,
+    );
+    match instruction_rip {
+        LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP => {
+            let vma = state.gpr[R15 as usize];
+            let bounds = read_mmu_gather_vma_bounds(bus, paging, instruction_rip, context, vma);
+            let (vm_start, vm_end, vma_error) = match bounds {
+                Ok((start, end)) => (Some(start), Some(end), None),
+                Err(error) => (None, None, Some(error)),
+            };
+            let error = frame_error.or(vma_error);
+            observations.record_mmu_gather_setup(
+                event_context,
+                state.gpr[R14 as usize],
+                vma,
+                vm_start,
+                vm_end,
+                if error.is_none() {
+                    "captured"
+                } else {
+                    "read_error"
+                },
+                error,
+            );
+        }
+        LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP => {
+            let (raw, raw_error) = read_mmu_gather_raw(
+                bus,
+                paging,
+                instruction_rip,
+                context,
+                state.gpr[Rdi as usize],
+            );
+            let error = frame_error.or(raw_error);
+            observations.record_mmu_gather_relocate(
+                event_context,
+                raw,
+                if error.is_none() {
+                    "captured"
+                } else {
+                    "read_error"
+                },
+                error,
+            );
+        }
+        LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP => {
+            let (raw, raw_error) = read_mmu_gather_raw(
+                bus,
+                paging,
+                instruction_rip,
+                context,
+                state.gpr[Rdi as usize],
+            );
+            let error = frame_error.or(raw_error);
+            observations.record_mmu_gather_actual_post(
+                event_context,
+                raw,
+                if error.is_none() {
+                    "captured"
+                } else {
+                    "read_error"
+                },
+                error,
+            );
+        }
+        LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP => {
+            observations.record_mmu_gather_return(
+                event_context,
+                if frame_error.is_none() {
+                    "captured"
+                } else {
+                    "read_error"
+                },
+                frame_error,
+            );
+        }
+        _ => {}
+    }
+}
+
+fn read_mmu_gather_frame(
+    bus: &mut MachineBus,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    context: AccessContext,
+    rbp: u64,
+) -> Result<(u64, u64), String> {
+    #[cfg(test)]
+    MMU_GATHER_DIAGNOSTIC_READS.with(|count| count.set(count.get() + 1));
+    if rbp == 0 || (rbp & 7) != 0 || !is_canonical_48_bit(rbp) {
+        return Err(format!("invalid RBP frame pointer 0x{rbp:016x}"));
+    }
+    rbp.checked_add(15)
+        .ok_or_else(|| "RBP frame address overflow".to_string())?;
+    let mut bytes = [0u8; 16];
+    bus.read_virtual_ram_diagnostic(
+        paging,
+        instruction_rip,
+        GuestLinearAddress::new(rbp),
+        context,
+        &mut bytes,
+    )
+    .map_err(|error| format!("RBP frame read: {error:?}"))?;
+    Ok((
+        u64::from_le_bytes(bytes[..8].try_into().expect("8-byte slice")),
+        u64::from_le_bytes(bytes[8..].try_into().expect("8-byte slice")),
+    ))
+}
+
+fn read_mmu_gather_vma_bounds(
+    bus: &mut MachineBus,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    context: AccessContext,
+    vma: u64,
+) -> Result<(u64, u64), String> {
+    #[cfg(test)]
+    MMU_GATHER_DIAGNOSTIC_READS.with(|count| count.set(count.get() + 1));
+    if (vma & 7) != 0 || !is_canonical_48_bit(vma) {
+        return Err(format!("invalid VMA pointer 0x{vma:016x}"));
+    }
+    vma.checked_add(15)
+        .ok_or_else(|| "VMA bounds address overflow".to_string())?;
+    let mut bytes = [0u8; 16];
+    bus.read_virtual_ram_diagnostic(
+        paging,
+        instruction_rip,
+        GuestLinearAddress::new(vma),
+        context,
+        &mut bytes,
+    )
+    .map_err(|error| format!("VMA bounds read: {error:?}"))?;
+    Ok((
+        u64::from_le_bytes(bytes[..8].try_into().expect("8-byte slice")),
+        u64::from_le_bytes(bytes[8..].try_into().expect("8-byte slice")),
+    ))
+}
+
+fn read_mmu_gather_raw(
+    bus: &mut MachineBus,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    context: AccessContext,
+    tlb: u64,
+) -> (Option<ElfMmuGatherRaw>, Option<String>) {
+    #[cfg(test)]
+    MMU_GATHER_DIAGNOSTIC_READS.with(|count| count.set(count.get() + 1));
+    if (tlb & 7) != 0 || !is_canonical_48_bit(tlb) {
+        return (None, Some(format!("invalid tlb pointer 0x{tlb:016x}")));
+    }
+    let Some(last) = tlb.checked_add(0x23) else {
+        return (None, Some("tlb field address overflow".into()));
+    };
+    let mut bytes = [0u8; 0x24];
+    if let Err(error) = bus.read_virtual_ram_diagnostic(
+        paging,
+        instruction_rip,
+        GuestLinearAddress::new(tlb),
+        context,
+        &mut bytes,
+    ) {
+        return (
+            None,
+            Some(format!("tlb fields read through 0x{last:016x}: {error:?}")),
+        );
+    }
+    let mm = u64::from_le_bytes(bytes[0..8].try_into().expect("8-byte slice"));
+    if (mm & 7) != 0 || !is_canonical_48_bit(mm) {
+        return (None, Some(format!("invalid mm pointer 0x{mm:016x}")));
+    }
+    let Some(nested_address) = mm.checked_add(0x61c) else {
+        return (None, Some("mm_tlb_flush_nested address overflow".into()));
+    };
+    if nested_address.checked_add(3).is_none() {
+        return (None, Some("mm_tlb_flush_nested field overflow".into()));
+    }
+    let mut nested_bytes = [0u8; 4];
+    if let Err(error) = bus.read_virtual_ram_diagnostic(
+        paging,
+        instruction_rip,
+        GuestLinearAddress::new(nested_address),
+        context,
+        &mut nested_bytes,
+    ) {
+        return (None, Some(format!("mm_tlb_flush_nested read: {error:?}")));
+    }
+    (
+        Some(ElfMmuGatherRaw {
+            tlb,
+            mm,
+            start: u64::from_le_bytes(bytes[0x10..0x18].try_into().expect("8-byte slice")),
+            end: u64::from_le_bytes(bytes[0x18..0x20].try_into().expect("8-byte slice")),
+            flags: u32::from_le_bytes(bytes[0x20..0x24].try_into().expect("4-byte slice")),
+            mm_tlb_flush_nested: i32::from_le_bytes(nested_bytes),
+        }),
+        None,
+    )
+}
+
 fn capture_elf_stack_copy_snapshot(
     state: &LongModeState,
     bus: &mut MachineBus,
@@ -2267,6 +2514,15 @@ fn run_cpl0_set_paged_2m_ram_with_cache_impl<
         if let Some(observations) = execution_observations.as_deref_mut() {
             last_instruction_rip = Some(instruction_rip);
             if ELF_COPY_ENABLED {
+                capture_elf_mmu_gather_boundary(
+                    instruction_rip,
+                    state,
+                    bus,
+                    &paging,
+                    context,
+                    reported_cr3,
+                    observations,
+                );
                 observations.observe_elf_stack_copy_boundary(instruction_rip);
                 if observations.elf_copy_invocation_active()
                     && observations.elf_copy_return_rip() == Some(instruction_rip)
@@ -6128,6 +6384,87 @@ mod tests {
             (pair.cpus[0].local.tpr, pair.cpus[1].local.tpr),
             (0x40, 0x30)
         );
+    }
+
+    #[test]
+    fn mmu_gather_diagnostic_capture_reads_raw_fields_without_page_table_writes() {
+        let mut bus = bus(0x9007);
+        put(&mut bus, 0x1000, 0x2007);
+        put(&mut bus, 0x2000, 0x3007);
+        put(&mut bus, 0x3000, 0x4007);
+        put(&mut bus, 0x4028, 0x9007);
+        put(&mut bus, 0x4030, 0xa007);
+        let mut tlb = [0u8; 0x24];
+        tlb[0..8].copy_from_slice(&0x6000u64.to_le_bytes());
+        tlb[0x10..0x18].copy_from_slice(&0x1111u64.to_le_bytes());
+        tlb[0x18..0x20].copy_from_slice(&0x2222u64.to_le_bytes());
+        tlb[0x20..0x24].copy_from_slice(&0x800u32.to_le_bytes());
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x9000), &tlb)
+            .unwrap();
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0xa61c), &(-7i32).to_le_bytes())
+            .unwrap();
+        let page_table_addresses = [0x1000, 0x2000, 0x3000, 0x4028, 0x4030];
+        let before = page_table_addresses.map(|address| {
+            bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap()
+        });
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let (raw, error) = read_mmu_gather_raw(
+            &mut bus,
+            &paging,
+            LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP,
+            context(),
+            0x5000,
+        );
+        assert_eq!(error, None);
+        let raw = raw.unwrap();
+        assert_eq!(
+            (raw.mm, raw.start, raw.end, raw.flags),
+            (0x6000, 0x1111, 0x2222, 0x800)
+        );
+        assert_eq!(raw.mm_tlb_flush_nested, -7);
+        let after = page_table_addresses.map(|address| {
+            bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap()
+        });
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn non_anchor_and_frozen_mmu_gather_capture_do_zero_guest_reads() {
+        let mut machine_bus = bus(0x7007);
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let mut state = LongModeState::default();
+        let mut observations =
+            LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+
+        MMU_GATHER_DIAGNOSTIC_READS.with(|count| count.set(0));
+        state.rip = LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP + 1;
+        capture_elf_mmu_gather_boundary(
+            state.rip,
+            &state,
+            &mut machine_bus,
+            &paging,
+            context(),
+            ROOT,
+            &mut observations,
+        );
+        assert_eq!(MMU_GATHER_DIAGNOSTIC_READS.with(std::cell::Cell::get), 0);
+
+        observations.record_elf_stack_copy(ElfStackCopySnapshot::empty(
+            ElfStackCopyStatus::GateMismatch,
+        ));
+        state.rip = LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP;
+        capture_elf_mmu_gather_boundary(
+            state.rip,
+            &state,
+            &mut machine_bus,
+            &paging,
+            context(),
+            ROOT,
+            &mut observations,
+        );
+        assert_eq!(MMU_GATHER_DIAGNOSTIC_READS.with(std::cell::Cell::get), 0);
     }
 }
 

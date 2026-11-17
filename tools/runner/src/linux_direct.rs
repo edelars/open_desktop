@@ -2202,6 +2202,15 @@ fn write_execution_observations_sidecar(
                     })).collect::<Vec<_>>(),
                     "error": ledger.target_event.error,
                 },
+                "mmu_gather": {
+                    "status": elf_mmu_gather_capture_status(&ledger.mmu_gather),
+                    "association": "prefix_candidates",
+                    "setup_count": ledger.mmu_gather.setup_count,
+                    "setups_omitted": ledger.mmu_gather.setups_omitted,
+                    "setups": ledger.mmu_gather.setups.iter().map(elf_mmu_gather_setup_json).collect::<Vec<_>>(),
+                    "unpaired_omitted": ledger.mmu_gather.unpaired_omitted,
+                    "unpaired": ledger.mmu_gather.unpaired.iter().map(elf_mmu_gather_unpaired_json).collect::<Vec<_>>(),
+                },
             })),
             "invocation": snapshot.invocation.as_ref().map(elf_stack_copy_invocation_json),
             "mismatch_reasons": snapshot.mismatch_reasons,
@@ -2467,7 +2476,7 @@ fn write_execution_observations_sidecar(
         })
     });
     let value = json!({
-        "schema_version": 18,
+        "schema_version": 19,
         "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, an optional bounded every-hit entry-RDTSC stream with clock ledger, an optional ordered RDTSC prefix through a sentinel RIP, an optional inclusive hit-ordinal window, an optional strictly gated single-quantum instruction path trace, an optional bounded delay_tsc per-call summary, and an optional ordered pre-copy CR3-write ledger",
         "limits": {
             "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
@@ -2555,6 +2564,132 @@ fn elf_stack_copy_status_name(status: od_machine::ElfStackCopyStatus) -> &'stati
         od_machine::ElfStackCopyStatus::ReadError => "read_error",
         od_machine::ElfStackCopyStatus::RunEndedBeforeTarget => "run_ended_before_target",
     }
+}
+
+fn elf_mmu_gather_context_json(context: od_machine::ElfMmuGatherContext) -> Value {
+    json!({
+        "rip": hex64(context.rip),
+        "retired_instructions": context.retired_instructions,
+        "cr3": hex64(context.cr3),
+        "cr3_changes": context.cr3_changes,
+        "page_faults": context.page_faults,
+        "rbp": hex64(context.rbp),
+        "rsp": hex64(context.rsp),
+        "tlb_pointer": context.tlb_pointer.map(hex64),
+        "saved_rbp": context.saved_rbp.map(hex64),
+        "saved_return_rip": context.saved_return_rip.map(hex64),
+    })
+}
+
+fn elf_mmu_gather_raw_json(raw: od_machine::ElfMmuGatherRaw) -> Value {
+    json!({
+        "tlb": hex64(raw.tlb),
+        "mm": hex64(raw.mm),
+        "start": hex64(raw.start),
+        "end": hex64(raw.end),
+        "flags": format!("0x{:08x}", raw.flags),
+        "mm_tlb_flush_nested": raw.mm_tlb_flush_nested,
+    })
+}
+
+fn elf_mmu_setup_data_json(data: &od_machine::ElfMmuGatherSetupData) -> Value {
+    json!({
+        "stack_shift": hex64(data.stack_shift),
+        "vma": hex64(data.vma),
+        "vm_start": data.vm_start.map(hex64),
+        "vm_end": data.vm_end.map(hex64),
+    })
+}
+
+fn elf_mmu_phase_json<T>(
+    phase: &od_machine::ElfMmuGatherPhase<T>,
+    encode: impl Fn(&T) -> Value,
+) -> Value {
+    match phase {
+        od_machine::ElfMmuGatherPhase::NotObserved => json!({"status": "not_observed"}),
+        od_machine::ElfMmuGatherPhase::Captured { context, value } => json!({
+            "status": "captured",
+            "context": elf_mmu_gather_context_json(*context),
+            "value": encode(value),
+        }),
+        od_machine::ElfMmuGatherPhase::ReadError {
+            context,
+            partial,
+            error,
+        } => json!({
+            "status": "read_error",
+            "context": elf_mmu_gather_context_json(*context),
+            "partial": partial.as_ref().map(&encode),
+            "error": error,
+        }),
+    }
+}
+
+fn elf_mmu_gather_setup_json(setup: &od_machine::ElfMmuGatherInvocation) -> Value {
+    let needs_flush = match &setup.actual_post {
+        od_machine::ElfMmuGatherPhase::Captured { value, .. } => Some(value.flags & 0x08f4 != 0),
+        od_machine::ElfMmuGatherPhase::ReadError {
+            partial: Some(value),
+            ..
+        } => Some(value.flags & 0x08f4 != 0),
+        _ => None,
+    };
+    json!({
+        "sequence": setup.sequence,
+        "association_mismatch": setup.association_mismatch,
+        "closure": match setup.closure {
+            od_machine::ElfMmuGatherClosure::Active => "active",
+            od_machine::ElfMmuGatherClosure::Returned => "returned",
+            od_machine::ElfMmuGatherClosure::Superseded => "superseded",
+            od_machine::ElfMmuGatherClosure::RunEnded => "run_ended",
+        },
+        "setup": elf_mmu_phase_json(&setup.setup, elf_mmu_setup_data_json),
+        "initial": elf_mmu_phase_json(&setup.initial, |raw| elf_mmu_gather_raw_json(*raw)),
+        "actual_post": elf_mmu_phase_json(&setup.actual_post, |raw| elf_mmu_gather_raw_json(*raw)),
+        "returned": elf_mmu_phase_json(&setup.returned, |_| json!(true)),
+        "needs_flush": needs_flush,
+    })
+}
+
+fn elf_mmu_gather_capture_status(capture: &od_machine::ElfMmuGatherCapture) -> &'static str {
+    if capture.setups_omitted != 0 || capture.unpaired_omitted != 0 {
+        return "truncated";
+    }
+    if capture.setups.is_empty() && capture.unpaired.is_empty() {
+        return "not_seen";
+    }
+    let complete = capture.unpaired.is_empty()
+        && capture.setups.iter().all(|invocation| {
+            invocation.closure == od_machine::ElfMmuGatherClosure::Returned
+                && !invocation.association_mismatch
+                && matches!(
+                    invocation.setup,
+                    od_machine::ElfMmuGatherPhase::Captured { .. }
+                )
+                && matches!(
+                    invocation.initial,
+                    od_machine::ElfMmuGatherPhase::Captured { .. }
+                )
+                && matches!(
+                    invocation.actual_post,
+                    od_machine::ElfMmuGatherPhase::Captured { .. }
+                )
+                && matches!(
+                    invocation.returned,
+                    od_machine::ElfMmuGatherPhase::Captured { .. }
+                )
+        });
+    if complete { "captured" } else { "incomplete" }
+}
+
+fn elf_mmu_gather_unpaired_json(event: &od_machine::ElfMmuGatherUnpaired) -> Value {
+    json!({
+        "phase": event.phase,
+        "status": event.status,
+        "context": elf_mmu_gather_context_json(event.context),
+        "raw": event.raw.map(elf_mmu_gather_raw_json),
+        "error": event.error,
+    })
 }
 
 fn elf_stack_copy_invocation_json(
