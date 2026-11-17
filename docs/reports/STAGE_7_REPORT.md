@@ -3948,3 +3948,21 @@ instructions and stops at `0F 84 E6 00 00 00` (JZ rel32 +0xe6), RIP
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-447 — exact JZ rel32
+
+Five focused tests cover both ZF values with defined/undefined ZF, signed target
+calculation relative to next RIP, flags/definedness preservation, taken-only
+canonicality, final-displacement fetch-fault atomicity, encoding neighbors and
+CPL3 rejection. The other-profile matrix passes 1/1. Firmware image
+`/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Runner `cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue447.com1 --budget 10000` retires 9,992
+instructions and stops at `75 23` (JNZ rel8 +0x23), RIP `0x20139b`,
+Unsupported opcode 117, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,534/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.
