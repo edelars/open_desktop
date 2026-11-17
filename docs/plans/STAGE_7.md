@@ -1069,3 +1069,16 @@ CLD expectation caveat remains open. Full od-isa (2,322/1,591/126/29/6/1,111/
 7/15; zero doc tests), paged machine quantum (79/79), scoped cargo check,
 rustfmt and diff-check pass; the existing unused page-walk helper warning
 remains. Independent review approved with no findings.
+
+### ISSUE-355 — exact JNZ rel32 -0x155
+
+Admitted only `0F 85 AB FE FF FF` in base `PagedCpl0ProbeV1`. JNZ reads ZF,
+preserves flags/definedness, and applies signed rel32 from next RIP; canonicality
+is checked only for taken targets. Five focused tests cover ZF outcomes and
+metadata, taken-only canonicality, final-byte fetch atomicity, neighbors, CPL3
+and other-profile isolation. Firmware now stops at ISSUE-356, `4D 39 F2`
+(`CMP R10,R14`) at `0x201802`, retired=9,074; COM1 is empty. ISSUE-201's
+unrelated CLD expectation caveat remains open. Full od-isa (2,322/1,591/126/29/6/1,116/7/15; zero doc tests), paged machine
+quantum (79/79), scoped cargo check, rustfmt and diff-check pass; cargo check
+reports only the existing unused page-walk helper warning. Independent review
+approved with no findings.

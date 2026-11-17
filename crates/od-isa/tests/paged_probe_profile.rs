@@ -8399,6 +8399,164 @@ fn rust_helper_jnz_rel32_minus_161_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn rust_helper_jnz_rel32_minus_155_obeys_zf_and_preserves_state() {
+    let code = [0x0f, 0x85, 0xab, 0xfe, 0xff, 0xff]; // JNZ rel32 -0x155
+    for zero in [false, true] {
+        for zf_defined in [false, true] {
+            let defined = if zf_defined {
+                DEFINED
+            } else {
+                DEFINED & !(1 << 6)
+            };
+            let mut memory = Memory::new(&code);
+            let mut cpu = state();
+            cpu.gpr = gpr_patterns();
+            cpu.rflags = (state().rflags & !(1 << 6)) | if zero { 1 << 6 } else { 0 };
+            let before = cpu.clone();
+            let expected_rip = if zero {
+                RIP + code.len() as u64
+            } else {
+                RIP + code.len() as u64 - 0x155
+            };
+
+            let result =
+                step_with_defined(&mut cpu, &mut memory, &mut Pio::default(), ring0(), defined);
+
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, defined);
+            let mut expected = before;
+            expected.rip = expected_rip;
+            assert_eq!(cpu, expected, "ZF={zero}, defined={zf_defined}");
+            assert_eq!((memory.reads, memory.writes), (0, 0));
+        }
+    }
+}
+
+#[test]
+fn rust_helper_jnz_rel32_minus_155_checks_canonicality_only_for_taken_target() {
+    let code = [0x0f, 0x85, 0xab, 0xfe, 0xff, 0xff];
+    let rip = 0x0000_7fff_ffff_fffa;
+    let mut memory = Memory::new(&[]);
+    memory.pages.insert(rip & !0xfff, CODE_PHYSICAL);
+    memory.bytes[CODE_PHYSICAL + 0xffa..CODE_PHYSICAL + 0x1000].copy_from_slice(&code);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.rflags |= 1 << 6; // Not taken; noncanonical fall-through is deferred.
+    let before = cpu.clone();
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    let mut expected = before;
+    expected.rip = 0x0000_8000_0000_0000;
+    assert_eq!(cpu, expected);
+
+    let rip = 0xffff_8000_0000_0000;
+    let mut memory = Memory::new(&[]);
+    memory.pages.insert(rip & !0xfff, CODE_PHYSICAL);
+    memory.bytes[CODE_PHYSICAL..CODE_PHYSICAL + code.len()].copy_from_slice(&code);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.rflags &= !(1 << 6); // Taken target crosses below the canonical upper range.
+    let before = cpu.clone();
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None,
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn rust_helper_jnz_rel32_minus_155_fetch_fault_is_atomic() {
+    let rip = RIP + 0xffb;
+    let mut memory = Memory::new(&[]);
+    memory.bytes[CODE_PHYSICAL + 0xffb..CODE_PHYSICAL + 0x1000]
+        .copy_from_slice(&[0x0f, 0x85, 0xab, 0xfe, 0xff]);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    memory.fail_fetch_at = Some((rip + 5, page_fault(0x10, rip + 5)));
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 5),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn rust_helper_jnz_rel32_minus_155_neighbours_stay_unsupported() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x0f, 0x85, 0xaa, 0xfe, 0xff, 0xff], 0x85), // nearby displacement
+        (&[0x0f, 0x85, 0xac, 0xfe, 0xff, 0xff], 0x85), // nearby displacement
+        (&[0x0f, 0x84, 0xab, 0xfe, 0xff, 0xff], 0x84), // JZ
+        (&[0x0f, 0x82, 0xab, 0xfe, 0xff, 0xff], 0x82), // JB
+        (&[0x0f, 0x87, 0xab, 0xfe, 0xff, 0xff], 0x87), // JA
+        (&[0x66, 0x0f, 0x85, 0xab, 0xfe, 0xff, 0xff], 0x85), // operand prefix
+        (&[0x40, 0x0f, 0x85, 0xab, 0xfe, 0xff, 0xff], 0x85), // REX prefix
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: *opcode });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "{bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn rust_helper_jnz_rel32_minus_155_is_unsupported_in_cpl3_profile() {
+    let code = [0x0f, 0x85, 0xab, 0xfe, 0xff, 0xff];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    let before = cpu.clone();
+
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x0f });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn rust_helper_jnz_rel32_minus_177_obeys_zf_and_preserves_state() {
     let code = [0x0f, 0x85, 0x89, 0xfe, 0xff, 0xff]; // JNZ rel32 -0x177
     for zero in [false, true] {
@@ -34267,6 +34425,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x0f, 0x85, 0x27, 0x02, 0, 0][..], 0x85),
         (&[0x0f, 0x85, 0xae, 0, 0, 0][..], 0x85),
         (&[0x0f, 0x85, 0xa0, 0xfe, 0xff, 0xff][..], 0x85),
+        (&[0x0f, 0x85, 0xab, 0xfe, 0xff, 0xff][..], 0x85),
         (&[0x0f, 0x85, 0x9f, 0xfe, 0xff, 0xff][..], 0x85),
         (&[0x0f, 0x85, 0x89, 0xfe, 0xff, 0xff][..], 0x85),
         (&[0x75, 0x4a][..], 0x75),

@@ -1073,3 +1073,16 @@ expectation caveat. Full od-isa (2,322/1,591/126/29/6/1,111/7/15; zero doc
 tests), paged machine quantum (79/79), scoped cargo check, rustfmt and
 diff-check pass. Cargo check reports only the existing unused page-walk helper
 warning. Independent review approved with no findings.
+
+### Stage 7 runner frontier after ISSUE-355
+
+After exact `0F 85 AB FE FF FF` (`JNZ rel32 -0x155`) is admitted, firmware
+retires 9,074 instructions and stops at RIP `0x201802`, bytes `4D 39 F2`
+(`CMP R10,R14`, ISSUE-356), with `Unsupported { opcode: 57 }`. Image
+`/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1 is
+empty. ISSUE-201 remains the unrelated stale CLD test expectation caveat. Full
+od-isa (2,322/1,591/126/29/6/1,116/7/15; zero doc tests), paged machine quantum
+(79/79), scoped cargo check, rustfmt and diff-check pass. Cargo check reports
+only the existing unused page-walk helper warning. Independent review is
+approved with no findings.

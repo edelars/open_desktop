@@ -28155,3 +28155,18 @@ caveat remains open. Full od-isa (2,322/1,591/126/29/6/1,111/7/15; zero doc
 tests), paged machine quantum (79/79), scoped cargo check, rustfmt and
 diff-check pass; the existing unused page-walk helper warning remains.
 Independent review approved with no findings.
+
+### S7-04 CPU-profile slice: exact JNZ rel32 (ISSUE-355)
+
+`PagedCpl0ProbeV1` admits only exact no-prefix bytes `0F 85 AB FE FF FF`.
+JNZ reads ZF; if clear, signed rel32 -0x155 is added to next RIP, otherwise
+execution falls through. RFLAGS and definedness are unchanged. Canonicality is
+checked only for a taken target, and instruction-fetch faults do not commit CPU
+state. Other displacements/conditions/prefixes, CPL3 and other profiles remain
+unsupported. Firmware advances to exact `4D 39 F2` (`CMP R10,R14`, ISSUE-356)
+at RIP `0x201802` after 9,074 retired instructions; COM1 is empty. ISSUE-201's
+unrelated CLD expectation caveat remains open. Full od-isa
+(2,322/1,591/126/29/6/1,116/7/15; zero doc tests), paged machine quantum
+(79/79), scoped cargo check, rustfmt and diff-check pass; cargo check reports
+only the existing unused page-walk helper warning. Independent review is
+approved with no findings.

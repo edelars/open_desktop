@@ -2357,3 +2357,14 @@ CLD expectation caveat remains open. Full od-isa (2,322/1,591/126/29/6/1,111/
 7/15; zero doc tests), paged machine quantum (79/79), scoped cargo check,
 rustfmt and diff-check pass; cargo check reports only the existing unused
 page-walk helper warning. Independent review approved with no findings.
+
+### ISSUE-355 — JNZ rel32 -0x155
+
+The base profile admits only `0F 85 AB FE FF FF`. Tests cover ZF and definedness,
+branch targets, taken-only canonicality, final displacement fetch faults,
+neighbors, CPL3 and other-profile isolation. Firmware advances to ISSUE-356,
+`4D 39 F2` (`CMP R10,R14`) at RIP `0x201802` after 9,074 retired instructions;
+COM1 is empty. ISSUE-201's unrelated CLD expectation caveat remains open. Full od-isa (2,322/1,591/126/29/6/1,116/7/15; zero doc tests), paged machine
+quantum (79/79), scoped cargo check, rustfmt and diff-check pass; cargo check
+reports only the existing unused page-walk helper warning. Independent review
+approved with no findings.
