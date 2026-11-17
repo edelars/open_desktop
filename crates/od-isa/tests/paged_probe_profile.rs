@@ -13264,6 +13264,141 @@ fn rust_helper_sete_r13b_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn rust_helper_seta_r13b_uses_cf_and_zf_and_preserves_other_state() {
+    const CF: u64 = 1;
+    const ZF: u64 = 1 << 6;
+    let code = [0x41, 0x0f, 0x97, 0xc5]; // SETA R13B
+
+    for cf in [false, true] {
+        for zf in [false, true] {
+            for cf_defined in [false, true] {
+                for zf_defined in [false, true] {
+                    let mut defined = DEFINED;
+                    if !cf_defined {
+                        defined &= !CF;
+                    }
+                    if !zf_defined {
+                        defined &= !ZF;
+                    }
+                    let mut memory = Memory::new(&code);
+                    let mut cpu = state();
+                    cpu.gpr = gpr_patterns();
+                    cpu.gpr[Register::R13 as usize] = 0x1122_3344_5566_77aa;
+                    cpu.rflags =
+                        (state().rflags & !(CF | ZF)) | (u64::from(cf) * CF) | (u64::from(zf) * ZF);
+                    let before = cpu.clone();
+                    let mut pio = Pio::default();
+
+                    let result =
+                        step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+
+                    assert_eq!(result.exit, PagedProbeExit::Retired);
+                    assert_eq!(result.instructions_executed, 1);
+                    assert_eq!(result.rflags_defined, defined);
+                    let mut expected = before;
+                    expected.rip = RIP + code.len() as u64;
+                    expected.gpr[Register::R13 as usize] =
+                        (expected.gpr[Register::R13 as usize] & !0xff) | u64::from(!cf && !zf);
+                    assert_eq!(cpu, expected, "CF={cf}, ZF={zf}");
+                    assert_eq!((memory.reads, memory.writes), (0, 0));
+                    assert!(memory.write_addresses.is_empty());
+                    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn rust_helper_seta_r13b_fetch_fault_is_atomic() {
+    let rip = RIP + 0xffd;
+    let code = [0x41, 0x0f, 0x97];
+    let mut memory = memory_with_code_at(&code, rip);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    memory.fail_fetch_at = Some((rip + 3, page_fault(0x10, rip + 3)));
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 3),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(memory.write_addresses.is_empty());
+}
+
+#[test]
+fn rust_helper_seta_r13b_neighbours_stay_unsupported_without_mutation() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x41, 0x0f, 0x96, 0xc5], 0x96),       // SETBE R13B
+        (&[0x41, 0x0f, 0x93, 0xc5], 0x93),       // SETAE R13B
+        (&[0x41, 0x0f, 0x97, 0xc4], 0x97),       // R12B destination
+        (&[0x41, 0x0f, 0x97, 0xc7], 0x97),       // R15B destination
+        (&[0x41, 0x0f, 0x97, 0xcd], 0x97),       // different ignored ModRM.reg
+        (&[0x45, 0x0f, 0x97, 0xc5], 0x97),       // unexpected REX.R
+        (&[0x44, 0x0f, 0x97, 0xc5], 0x97),       // REX.R without B selects BPL
+        (&[0x40, 0x0f, 0x97, 0xc5], 0x97),       // bare REX selects BPL
+        (&[0x49, 0x0f, 0x97, 0xc5], 0x97),       // REX.W+B
+        (&[0x0f, 0x97, 0xc5], 0x97),             // no REX selects CH
+        (&[0x41, 0x0f, 0x97, 0x05], 0x97),       // memory destination
+        (&[0x66, 0x41, 0x0f, 0x97, 0xc5], 0x97), // operand-size prefix
+        (&[0xf3, 0x41, 0x0f, 0x97, 0xc5], 0x97), // REP prefix
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "{bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(memory.write_addresses.is_empty());
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_seta_r13b_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x41, 0x0f, 0x97, 0xc5];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x41 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn rust_helper_or_dil_cl_updates_byte_and_logic_flags() {
     let code = [0x40, 0x08, 0xcf]; // OR DIL,CL
     let defined = DEFINED | (1 << 4); // AF starts defined and must become undefined.
@@ -33039,6 +33174,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x41, 0x0f, 0x92, 0xc2][..], 0x92),
         (&[0x41, 0x0f, 0x95, 0xc2][..], 0x95),
         (&[0x41, 0x0f, 0x97, 0xc3][..], 0x97),
+        (&[0x41, 0x0f, 0x97, 0xc5][..], 0x97),
         (&[0x41, 0x0f, 0x96, 0xc3][..], 0x96),
         (&[0x40, 0x0f, 0x94, 0xc7][..], 0x94),
         (&[0x40, 0x08, 0xcf][..], 0x08),

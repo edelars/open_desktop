@@ -27983,3 +27983,23 @@ Independent review approved with no findings. Firmware runner advances to
 ISSUE-346 (`41 0F 97 C5`, `SETA R13B`) at RIP `0x2017ca` after 9,062 retired
 instructions; COM1 is empty. ISSUE-201's stale CLD expectations remain
 unrelated and open.
+
+
+### S7-04 CPU-profile slice: exact helper `SETA R13B` (ISSUE-346)
+
+`PagedCpl0ProbeV1` admits only exact bytes `41 0F 97 C5`. REX.B selects
+R13B from ModRM r/m=5; without it the byte register would be CH. SETA writes
+`u8(CF == 0 && ZF == 0)` to the low byte of R13 and preserves the upper 56
+bits. It does not change RFLAGS or their definedness, including when either
+condition input is undefined. Other conditions, byte registers, prefixes, CPL3
+and other profiles remain unsupported.
+
+Four focused tests cover the CF/ZF truth table with both metadata states,
+complete register/flag preservation, final-byte fetch-fault atomicity, neighbor
+forms, CPL3 and other-profile isolation. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,071/7/15; zero doc tests), all 71 paged machine
+quantum tests pass, and scoped cargo check, rustfmt and diff-check pass.
+Independent review approved with no findings. Firmware runner advances to
+ISSUE-347 (`41 08 ED`, `OR R13B,BPL`) at RIP `0x2017ce` after 9,063 retired
+instructions; COM1 is empty. ISSUE-201's CLD expectation caveat remains open
+and unrelated.

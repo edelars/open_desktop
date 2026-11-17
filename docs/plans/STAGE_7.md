@@ -922,3 +922,18 @@ Four focused tests and the other-profile matrix pass. Full od-isa suites pass
 (2,322/1,591/126/29/6/1,067/7/15; zero doc tests); all 71 paged machine
 quantum tests pass. Scoped cargo check, rustfmt and diff-check pass. Independent
 review approved with no findings.
+
+### Текущий статус — 2026-11-16 — ISSUE-346
+
+ISSUE-346 admits only exact bytes `41 0F 97 C5` (`SETA R13B`) in base
+`PagedCpl0ProbeV1`. REX.B selects R13B rather than CH; SETA evaluates
+`CF=0 && ZF=0`, updates only the low destination byte, and preserves upper R13,
+RFLAGS and definedness. The runner advances to ISSUE-347, `41 08 ED`
+(`OR R13B,BPL`) at `0x2017ce` after 9,063 retired instructions; COM1 is empty.
+ISSUE-201 remains the unrelated pair of stale CLD-unsupported full-machine
+expectations. Do not mark the Stage 7 gate complete.
+
+Four focused tests and the other-profile matrix pass. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,071/7/15; zero doc tests); all 71 paged machine
+quantum tests pass. Scoped cargo check, rustfmt and diff-check pass. Independent
+review approved with no findings.

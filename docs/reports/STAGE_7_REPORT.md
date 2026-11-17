@@ -2170,3 +2170,26 @@ Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`)
 advances after 9,062 retired instructions to `41 0F 97 C5` (`SETA R13B`,
 ISSUE-346) at RIP `0x2017ca`, `Unsupported { opcode: 151 }`; COM1 is empty.
+
+
+### S7-04 exact helper `SETA R13B` — ISSUE-346
+
+`PagedCpl0ProbeV1` admits only exact bytes `41 0F 97 C5`. SETA evaluates
+CF=0 and ZF=0. REX.B extends ModRM r/m=5 to R13B; only that low byte receives
+0 or 1, with upper R13 preserved. RFLAGS and flag-definedness remain
+unchanged, including when CF or ZF is undefined. Other conditions, register
+encodings, prefixes, CPL3 and other profiles remain unsupported.
+
+Four focused tests cover all four CF/ZF concrete combinations crossed with
+defined/undefined metadata, complete CPU state and byte preservation, final
+ModRM fetch-fault atomicity, neighboring conditions/registers/REX/prefixes,
+CPL3 and other-profile rejection. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,071/7/15; zero doc tests), all 71 paged machine
+quantum tests pass, and scoped cargo check, rustfmt and diff-check pass.
+Independent review approved with no findings. ISSUE-201's stale CLD
+expectations remain unrelated and open.
+
+Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`)
+advances after 9,063 retired instructions to `41 08 ED` (`OR R13B,BPL`,
+ISSUE-347) at RIP `0x2017ce`, `Unsupported { opcode: 8 }`; COM1 is empty.
