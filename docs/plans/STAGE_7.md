@@ -1257,3 +1257,23 @@ CLD expectation caveat.
 Validation: full od-isa suites pass (2,322/1,591/126/29/6/1,171/7/15; zero
 doc tests), paged machine quantum passes (84/84), workspace all-targets cargo check
 passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD expectation caveat.
+
+
+### ISSUE-368 — exact POP R12
+
+Admit only exact `41 5C` in base `PagedCpl0ProbeV1`. REX.B selects R12 for the
+one-byte POP opcode; the qword is read from old RSP through GuestMemory. On
+success, R12 receives the value, RSP increases by eight, and RIP advances by two;
+flags and definedness remain unchanged. A noncanonical stack range raises #SS
+before data access, while a tracked read fault or instruction-fetch fault leaves
+CPU state unchanged. Six focused tests cover qword state, stack faults, the
+second-byte fetch fault, neighbors, CPL3 and profile isolation. Three machine
+tests verify four-level accessed/no-dirty effects, data-page #PF atomicity, and
+#SS. Firmware advances to ISSUE-369, `41 5D` (POP R13), at RIP `0x201833` after
+9,837 retired instructions; COM1 is empty. ISSUE-201 remains the unrelated CLD
+expectation caveat.
+
+Validation: full od-isa suites pass (2,322/1,591/126/29/6/1,177/7/15; zero
+doc tests), paged machine quantum passes (87/87), workspace all-targets cargo
+check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review is pending.

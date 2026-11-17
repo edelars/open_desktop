@@ -28351,3 +28351,23 @@ the unrelated CLD expectation caveat.
 Validation: full od-isa suites pass (2,322/1,591/126/29/6/1,171/7/15; zero
 doc tests), paged machine quantum passes (84/84), workspace all-targets cargo check
 passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD expectation caveat.
+
+
+### S7-04 CPU-profile slice: exact POP R12 (ISSUE-368)
+
+`PagedCpl0ProbeV1` admits only exact bytes `41 5C`. REX.B selects R12 for the
+opcode's register field. The qword stack address is old RSP; it is validated
+before the tracked GuestMemory read. Success writes R12, increments RSP by eight,
+and advances RIP by two; flags and definedness are preserved. Noncanonical stack
+range raises #SS; a data #PF/backend read error or instruction-fetch fault does
+not partially commit CPU state. The POP reads memory and does not write the
+stack data. This slice admits no additional POP destinations/encodings; CPL3
+and other profiles do not admit `41 5C`. Firmware advances to ISSUE-369 `41 5D`
+(POP R13) at `0x201833`
+after 9,837 retired instructions; COM1 is empty. ISSUE-201 remains the unrelated
+CLD expectation caveat.
+
+Validation: full od-isa suites pass (2,322/1,591/126/29/6/1,177/7/15; zero
+doc tests), paged machine quantum passes (87/87), workspace all-targets cargo
+check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review is pending.
