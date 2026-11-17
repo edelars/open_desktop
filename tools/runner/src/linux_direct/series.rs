@@ -142,6 +142,7 @@ struct SeriesCli {
     expected_stop_kind: String,
     expected_s5_marker_keys: Vec<String>,
     capture_execution_observations: bool,
+    execution_observations_quantum_trace: bool,
     execution_observations_rdtsc_rip: Option<u64>,
     execution_observations_rdtsc_stride: Option<u64>,
     execution_observations_rdtsc_entry_rip: Option<u64>,
@@ -197,6 +198,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
             cli.execution_observations_rdtsc_stride,
             cli.execution_observations_rdtsc_entry_rip,
             cli.execution_observations_rdtsc_window,
+            cli.execution_observations_quantum_trace,
         );
     }
     if let Err(error) = parse(&preflight_args) {
@@ -248,6 +250,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
                 cli.execution_observations_rdtsc_stride,
                 cli.execution_observations_rdtsc_entry_rip,
                 cli.execution_observations_rdtsc_window,
+                cli.execution_observations_quantum_trace,
             );
         }
         let options = match parse(&run_args) {
@@ -470,6 +473,7 @@ fn append_execution_observations_args(
     stride: Option<u64>,
     entry_rip: Option<u64>,
     window: Option<od_machine::RdtscSampleWindow>,
+    quantum_trace: bool,
 ) {
     args.extend([
         "--execution-observations-out".into(),
@@ -499,6 +503,9 @@ fn append_execution_observations_args(
             format!("{}:{}", window.first_hit, window.last_hit),
         ]);
     }
+    if quantum_trace {
+        args.push("--execution-observations-quantum-trace".into());
+    }
 }
 
 fn supported_schema_version(version: u32) -> bool {
@@ -513,6 +520,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     let mut out = None;
     let mut expected_s5_marker_keys = Vec::new();
     let mut capture_execution_observations = false;
+    let mut execution_observations_quantum_trace = false;
     let mut execution_observations_rdtsc_rip = None;
     let mut execution_observations_rdtsc_stride = None;
     let mut execution_observations_rdtsc_entry_rip = None;
@@ -548,6 +556,13 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
                 | "--linux-no-randomize-kstack-offset"
         ) {
             forwarded.push(name.to_string());
+            index += 1;
+            continue;
+        }
+        if name == "--execution-observations-quantum-trace" {
+            if std::mem::replace(&mut execution_observations_quantum_trace, true) {
+                return Err("duplicate --execution-observations-quantum-trace".into());
+            }
             index += 1;
             continue;
         }
@@ -677,6 +692,9 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     {
         return Err("--execution-observations-rdtsc-window needs --execution-observations and --execution-observations-rdtsc-rip".into());
     }
+    if execution_observations_quantum_trace && !capture_execution_observations {
+        return Err("--execution-observations-quantum-trace needs --execution-observations".into());
+    }
     if let Some(window) = execution_observations_rdtsc_window {
         super::validate_rdtsc_sample_window_capacity(
             window,
@@ -716,6 +734,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
         expected_stop_kind,
         expected_s5_marker_keys,
         capture_execution_observations,
+        execution_observations_quantum_trace,
         execution_observations_rdtsc_rip,
         execution_observations_rdtsc_stride,
         execution_observations_rdtsc_entry_rip,
@@ -1092,7 +1111,7 @@ fn validate_execution_observations_sidecar(
         .map_err(|error| format!("invalid execution-observations sidecar JSON: {error}"))?;
     let schema_version = sidecar_json["schema_version"]
         .as_u64()
-        .filter(|version| matches!(version, 7 | 8 | 9 | 10 | 11 | 12))
+        .filter(|version| matches!(version, 7 | 8 | 9 | 10 | 11 | 12 | 13))
         .ok_or_else(|| {
             "execution-observations sidecar schema_version is missing, invalid, or unsupported"
                 .to_string()
@@ -1538,7 +1557,291 @@ fn validate_execution_observations_sidecar(
             }
         }
     }
+    if schema_version >= 13 {
+        let raw_trace = sidecar_json.get("instruction_path_trace");
+        let metadata_status = sidecar.get("instruction_path_trace_status");
+        let metadata_count = sidecar.get("instruction_path_trace_record_count");
+        let metadata_omitted = sidecar.get("instruction_path_trace_omitted_records");
+        if matches!(raw_trace, Some(Value::Null)) {
+            if metadata_status != Some(&Value::Null)
+                || metadata_count != Some(&Value::Null)
+                || metadata_omitted != Some(&Value::Null)
+            {
+                return Err(
+                    "execution-observations instruction trace metadata is inconsistent".into(),
+                );
+            }
+        } else {
+            let trace = raw_trace.and_then(Value::as_object).ok_or_else(|| {
+                "execution-observations instruction trace is missing or invalid".to_string()
+            })?;
+            let status = trace.get("status").and_then(Value::as_str);
+            let records = trace.get("records").and_then(Value::as_array);
+            let count = records.map(|records| records.len() as u64);
+            let omitted = trace.get("omitted_records").and_then(Value::as_u64);
+            let quantum = trace
+                .get("quantum_instructions_executed")
+                .and_then(Value::as_u64);
+            let qordinal = trace.get("quantum_ordinal").and_then(Value::as_u64);
+            let charged = trace
+                .get("retired_instructions_charged")
+                .and_then(Value::as_u64);
+            let hits_before = trace
+                .get("rdtsc_cpl0_hits_before_dispatch")
+                .and_then(Value::as_u64);
+            let hits_after = trace
+                .get("rdtsc_cpl0_hits_after_quantum")
+                .and_then(Value::as_u64);
+            let requested = trace.get("requested").and_then(Value::as_bool);
+            let header = trace.get("header");
+            let valid_status = matches!(
+                status,
+                Some(
+                    "captured"
+                        | "gate_mismatch"
+                        | "missed_start"
+                        | "missed_end"
+                        | "capacity_exhausted"
+                )
+            );
+            let active_gate_matches = qordinal
+                == Some(od_machine::LINUX_INSTRUCTION_PATH_TRACE_QUANTUM)
+                && charged == Some(od_machine::LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE)
+                && hits_before == Some(od_machine::LINUX_INSTRUCTION_PATH_TRACE_START_HITS);
+            let status_gate_valid = match status {
+                Some("gate_mismatch") => {
+                    qordinal.is_some_and(|value| {
+                        value >= od_machine::LINUX_INSTRUCTION_PATH_TRACE_QUANTUM
+                    }) && charged.is_some()
+                        && hits_before.is_some()
+                        && !active_gate_matches
+                        && count == Some(0)
+                        && omitted == Some(0)
+                        && header.is_some_and(Value::is_null)
+                        && quantum.is_none()
+                        && hits_after.is_none()
+                }
+                Some("missed_start") => {
+                    (active_gate_matches
+                        || (qordinal.is_none()
+                            && charged.is_none()
+                            && hits_before.is_none()
+                            && quantum.is_none()
+                            && hits_after.is_none()))
+                        && count == Some(0)
+                        && omitted == Some(0)
+                        && header.is_some_and(Value::is_null)
+                }
+                Some("captured" | "missed_end" | "capacity_exhausted") => active_gate_matches,
+                _ => false,
+            };
+            let header_valid = header.is_some_and(|header| {
+                header.is_null() || valid_instruction_path_trace_header(header)
+            });
+            let first_record_matches_header = header
+                .and_then(|header| header.get("rip"))
+                .and_then(Value::as_str)
+                .zip(records.and_then(|records| records.first()))
+                .is_none_or(|(header_rip, first)| {
+                    first.get("rip").and_then(Value::as_str) == Some(header_rip)
+                });
+            if !valid_status
+                || requested != Some(true)
+                || count.is_none()
+                || omitted.is_none()
+                || count.unwrap_or(u64::MAX)
+                    > od_machine::LINUX_INSTRUCTION_PATH_TRACE_CAPACITY as u64
+                || metadata_status != trace.get("status")
+                || metadata_count.and_then(Value::as_u64) != count
+                || metadata_omitted.and_then(Value::as_u64) != omitted
+                || !status_gate_valid
+                || !header_valid
+                || !first_record_matches_header
+                || records
+                    .unwrap()
+                    .iter()
+                    .any(|record| !valid_instruction_path_trace_record(record))
+            {
+                return Err(
+                    "execution-observations instruction trace summary or record is invalid".into(),
+                );
+            }
+            match status.unwrap() {
+                "captured"
+                    if header.is_some_and(valid_instruction_path_trace_header)
+                        && quantum == count
+                        && omitted == Some(0)
+                        && qordinal == Some(od_machine::LINUX_INSTRUCTION_PATH_TRACE_QUANTUM)
+                        && charged
+                            == Some(od_machine::LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE)
+                        && hits_before
+                            == Some(od_machine::LINUX_INSTRUCTION_PATH_TRACE_START_HITS)
+                        && hits_after == Some(od_machine::LINUX_INSTRUCTION_PATH_TRACE_END_HIT)
+                        && records.is_some_and(|records| records.len() > 0) => {}
+                "captured" => {
+                    return Err(
+                        "complete instruction trace does not satisfy its gate or end marker".into(),
+                    );
+                }
+                "capacity_exhausted"
+                    if count == Some(od_machine::LINUX_INSTRUCTION_PATH_TRACE_CAPACITY as u64)
+                        && omitted.is_some_and(|value| value > 0) => {}
+                "capacity_exhausted" => {
+                    return Err("instruction trace capacity status is inconsistent".into());
+                }
+                "missed_start" if !header.is_some_and(Value::is_object) && count == Some(0) => {}
+                "missed_start" => {
+                    return Err("instruction trace missed-start status is inconsistent".into());
+                }
+                _ => {}
+            }
+        }
+    }
     Ok(())
+}
+
+fn valid_instruction_path_trace_header(value: &Value) -> bool {
+    let Some(header) = value.as_object() else {
+        return false;
+    };
+    let valid_cr3 = header
+        .get("cr3")
+        .is_some_and(|value| value.is_null() || value.as_str().is_some_and(canonical_hex64));
+    let valid_cs = header.get("cs_selector").is_some_and(|value| {
+        if value.is_null() {
+            return true;
+        }
+        value.as_str().is_some_and(|selector| {
+            selector.len() == 6
+                && selector.starts_with("0x")
+                && u16::from_str_radix(&selector[2..], 16)
+                    .is_ok_and(|parsed| format!("0x{parsed:04x}") == selector)
+        })
+    });
+    let valid_gpr = header
+        .get("gpr")
+        .and_then(Value::as_array)
+        .is_some_and(|registers| {
+            registers.len() == 16
+                && registers
+                    .iter()
+                    .all(|value| value.as_str().is_some_and(canonical_hex64))
+        });
+    let valid_frames = header
+        .get("frame_chain")
+        .and_then(Value::as_array)
+        .is_some_and(|frames| {
+            frames.len() <= od_machine::LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY
+                && frames.iter().all(|frame| {
+                    frame
+                        .get("frame_pointer")
+                        .and_then(Value::as_str)
+                        .is_some_and(canonical_hex64)
+                        && frame
+                            .get("return_address")
+                            .and_then(Value::as_str)
+                            .is_some_and(canonical_hex64)
+                })
+        });
+    let valid_frame_end = matches!(
+        header.get("frame_chain_end").and_then(Value::as_str),
+        Some(
+            "NullFramePointer"
+                | "NonCanonicalFramePointer"
+                | "UnalignedFramePointer"
+                | "OutsideStackWindow"
+                | "RepeatedFramePointer"
+                | "NonMonotonicFramePointer"
+                | "ReadFailed"
+                | "NonCanonicalReturnAddress"
+                | "FrameLimit"
+        )
+    );
+    header
+        .get("rip")
+        .and_then(Value::as_str)
+        .is_some_and(canonical_hex64)
+        && header
+            .get("rflags")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_hex64)
+        && valid_gpr
+        && valid_cr3
+        && valid_cs
+        && valid_frames
+        && valid_frame_end
+}
+
+fn valid_instruction_path_trace_record(record: &Value) -> bool {
+    let Some(record_object) = record.as_object() else {
+        return false;
+    };
+    let rip = record_object
+        .get("rip")
+        .and_then(Value::as_str)
+        .filter(|rip| canonical_hex64(rip));
+    let next_rip = record_object
+        .get("next_rip")
+        .and_then(Value::as_str)
+        .filter(|rip| canonical_hex64(rip));
+    let Some(flow) = record_object.get("control_flow") else {
+        return false;
+    };
+    if flow.is_null() {
+        return rip.is_some() && next_rip.is_some();
+    }
+    let Some(flow) = flow.as_object() else {
+        return false;
+    };
+    let kind = flow.get("kind").and_then(Value::as_str);
+    let condition = flow.get("condition");
+    let destination = flow
+        .get("destination")
+        .and_then(Value::as_str)
+        .filter(|address| canonical_hex64(address));
+    let registers = flow.get("destination_registers").and_then(Value::as_array);
+    let registers_valid = registers.is_some_and(|registers| {
+        registers.len() <= 2
+            && registers.iter().all(|register| {
+                register
+                    .get("register")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|index| index < 16)
+                    && register
+                        .get("value")
+                        .and_then(Value::as_str)
+                        .is_some_and(canonical_hex64)
+            })
+            && registers.iter().enumerate().all(|(index, register)| {
+                registers[index + 1..]
+                    .iter()
+                    .all(|other| register.get("register") != other.get("register"))
+            })
+    });
+    let condition_valid = match kind {
+        Some("branch") => condition
+            .and_then(Value::as_u64)
+            .is_some_and(|value| value <= 15),
+        Some(
+            "jump" | "call" | "return" | "syscall" | "sysret" | "indirect_jump" | "indirect_call",
+        ) => condition.is_some_and(Value::is_null),
+        _ => false,
+    };
+    rip.is_some()
+        && next_rip.is_some()
+        && condition_valid
+        && flow.get("taken").and_then(Value::as_bool).is_some()
+        && flow
+            .get("rflags_before")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_hex64)
+        && flow
+            .get("rflags_after")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_hex64)
+        && registers_valid
+        && destination.is_some()
+        && destination == next_rip
 }
 
 fn selected_rip_is_canonical_not_null(value: Option<&Value>) -> bool {
@@ -2880,7 +3183,7 @@ mod tests {
             );
         }
 
-        for version in [None, Some(Value::Null), Some(json!("8")), Some(json!(13))] {
+        for version in [None, Some(Value::Null), Some(json!("8")), Some(json!(14))] {
             let mut malformed_sidecar = sidecar_value.clone();
             if let Some(value) = version {
                 malformed_sidecar["schema_version"] = value;
@@ -3018,6 +3321,106 @@ mod tests {
         let loaded = fresh_manifest(&series_path).unwrap();
         let loaded_run = load_run_manifest(&series_path, &loaded.runs[0]);
         assert!(loaded_run.is_ok(), "{loaded_run:?}");
+        let mut v13_sidecar = v12_sidecar.clone();
+        v13_sidecar["schema_version"] = json!(13);
+        v13_sidecar["instruction_path_trace"] = Value::Null;
+        let mut v13_metadata = v12_metadata.clone();
+        v13_metadata["instruction_path_trace_status"] = Value::Null;
+        v13_metadata["instruction_path_trace_record_count"] = Value::Null;
+        v13_metadata["instruction_path_trace_omitted_records"] = Value::Null;
+        let mut v13_bytes = serde_json::to_vec_pretty(&v13_sidecar).unwrap();
+        v13_bytes.push(b'\n');
+        fs::write(&sidecar_path, &v13_bytes).unwrap();
+        v13_metadata["byte_count"] = json!(v13_bytes.len());
+        v13_metadata["sha256"] = json!(od_testkit::sha256_hex(&v13_bytes));
+        update_metadata(v13_metadata.clone());
+        let loaded = fresh_manifest(&series_path).unwrap();
+        assert!(load_run_manifest(&series_path, &loaded.runs[0]).is_ok());
+
+        let mut captured_trace = v13_sidecar.clone();
+        captured_trace["instruction_path_trace"] = json!({
+            "requested": true,
+            "status": "captured",
+            "quantum_ordinal": od_machine::LINUX_INSTRUCTION_PATH_TRACE_QUANTUM,
+            "retired_instructions_charged": od_machine::LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE,
+            "rdtsc_cpl0_hits_before_dispatch": od_machine::LINUX_INSTRUCTION_PATH_TRACE_START_HITS,
+            "quantum_instructions_executed": 1,
+            "rdtsc_cpl0_hits_after_quantum": od_machine::LINUX_INSTRUCTION_PATH_TRACE_END_HIT,
+            "omitted_records": 0,
+            "header": {
+                "rip": "0x1000",
+                "rflags": "0x202",
+                "gpr": ["0x0", "0x0", "0x0", "0x0", "0x0", "0x0", "0x0", "0x0", "0x0", "0x0", "0x0", "0x0", "0x0", "0x0", "0x0", "0x0"],
+                "cr3": "0x3000",
+                "cs_selector": "0x0008",
+                "frame_chain": [],
+                "frame_chain_end": "NullFramePointer"
+            },
+            "records": [{"rip": "0x1000", "next_rip": "0x1001", "control_flow": null}],
+        });
+        let mut captured_metadata = v13_metadata.clone();
+        captured_metadata["instruction_path_trace_status"] = json!("captured");
+        captured_metadata["instruction_path_trace_record_count"] = json!(1);
+        captured_metadata["instruction_path_trace_omitted_records"] = json!(0);
+        let mut captured_bytes = serde_json::to_vec_pretty(&captured_trace).unwrap();
+        captured_bytes.push(b'\n');
+        fs::write(&sidecar_path, &captured_bytes).unwrap();
+        captured_metadata["byte_count"] = json!(captured_bytes.len());
+        captured_metadata["sha256"] = json!(od_testkit::sha256_hex(&captured_bytes));
+        update_metadata(captured_metadata.clone());
+        let loaded = fresh_manifest(&series_path).unwrap();
+        assert!(load_run_manifest(&series_path, &loaded.runs[0]).is_ok());
+
+        let mut malformed_header = captured_trace.clone();
+        malformed_header["instruction_path_trace"]["header"] = json!({"rip": "0x1000"});
+        assert_rejected(
+            malformed_header,
+            captured_metadata.clone(),
+            "instruction trace summary or record is invalid",
+        );
+        let mut malformed_control_flow = captured_trace.clone();
+        malformed_control_flow["instruction_path_trace"]["records"][0]["control_flow"] =
+            json!({"kind": "branch"});
+        assert_rejected(
+            malformed_control_flow,
+            captured_metadata.clone(),
+            "instruction trace summary or record is invalid",
+        );
+
+        let mut incomplete_captured_trace = captured_trace.clone();
+        incomplete_captured_trace["instruction_path_trace"]["rdtsc_cpl0_hits_after_quantum"] =
+            json!(8382);
+        assert_rejected(
+            incomplete_captured_trace,
+            captured_metadata.clone(),
+            "complete instruction trace does not satisfy its gate or end marker",
+        );
+
+        let mut gate_mismatch_trace = v13_sidecar.clone();
+        gate_mismatch_trace["instruction_path_trace"] = json!({
+            "requested": true,
+            "status": "gate_mismatch",
+            "quantum_ordinal": od_machine::LINUX_INSTRUCTION_PATH_TRACE_QUANTUM,
+            "retired_instructions_charged": od_machine::LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE + 1,
+            "rdtsc_cpl0_hits_before_dispatch": 8_382,
+            "quantum_instructions_executed": null,
+            "rdtsc_cpl0_hits_after_quantum": null,
+            "omitted_records": 0,
+            "header": null,
+            "records": [],
+        });
+        let mut gate_mismatch_metadata = v13_metadata.clone();
+        gate_mismatch_metadata["instruction_path_trace_status"] = json!("gate_mismatch");
+        gate_mismatch_metadata["instruction_path_trace_record_count"] = json!(0);
+        gate_mismatch_metadata["instruction_path_trace_omitted_records"] = json!(0);
+        let mut gate_mismatch_bytes = serde_json::to_vec_pretty(&gate_mismatch_trace).unwrap();
+        gate_mismatch_bytes.push(b'\n');
+        fs::write(&sidecar_path, &gate_mismatch_bytes).unwrap();
+        gate_mismatch_metadata["byte_count"] = json!(gate_mismatch_bytes.len());
+        gate_mismatch_metadata["sha256"] = json!(od_testkit::sha256_hex(&gate_mismatch_bytes));
+        update_metadata(gate_mismatch_metadata);
+        let loaded = fresh_manifest(&series_path).unwrap();
+        assert!(load_run_manifest(&series_path, &loaded.runs[0]).is_ok());
         let mut empty_prefix_clock = v12_sidecar.clone();
         empty_prefix_clock["rdtsc_prefix_samples"][0]["clock"] = json!({});
         assert_rejected(
@@ -3584,6 +3987,38 @@ mod tests {
             parsed.execution_observations_rdtsc_entry_rip,
             Some(0xffff_ffff_8271_b31b)
         );
+        let mut instruction_trace = selected_entry.clone();
+        instruction_trace.push("--execution-observations-quantum-trace".into());
+        let parsed = parse_series_args(&instruction_trace).unwrap();
+        assert!(parsed.execution_observations_quantum_trace);
+        assert!(
+            parsed
+                .forwarded
+                .iter()
+                .all(|argument| argument != "--execution-observations-quantum-trace")
+        );
+        let mut composed = parsed.forwarded.clone();
+        append_execution_observations_args(
+            &mut composed,
+            std::path::Path::new("series/preflight-execution-observations.json"),
+            parsed.execution_observations_rdtsc_rip,
+            parsed.execution_observations_rdtsc_stride,
+            parsed.execution_observations_rdtsc_entry_rip,
+            parsed.execution_observations_rdtsc_window,
+            parsed.execution_observations_quantum_trace,
+        );
+        assert_eq!(
+            composed
+                .iter()
+                .filter(|argument| *argument == "--execution-observations-quantum-trace")
+                .count(),
+            1
+        );
+        let mut trace_without_entry_site = execution_observations.clone();
+        trace_without_entry_site.push("--execution-observations-quantum-trace".into());
+        let parsed = parse_series_args(&trace_without_entry_site).unwrap();
+        assert!(parsed.execution_observations_quantum_trace);
+        assert_eq!(parsed.execution_observations_rdtsc_entry_rip, None);
         let mut zero_stride = selected_rdtsc.clone();
         zero_stride.extend(["--execution-observations-rdtsc-stride".into(), "0".into()]);
         assert!(
@@ -3669,6 +4104,7 @@ mod tests {
                 first_hit: 1_150_000,
                 last_hit: 1_200_000,
             }),
+            true,
         );
         let mut second = vec!["--run".into()];
         append_execution_observations_args(
@@ -3681,8 +4117,14 @@ mod tests {
                 first_hit: 1_150_000,
                 last_hit: 1_200_000,
             }),
+            true,
         );
         assert_ne!(first[2], second[2]);
+        assert!(
+            first
+                .iter()
+                .any(|arg| arg == "--execution-observations-quantum-trace")
+        );
         assert!(first.windows(2).any(|pair| {
             pair[0] == "--execution-observations-rdtsc-entry-rip" && pair[1] == "0xffffffff8271b31b"
         }));

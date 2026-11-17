@@ -9,6 +9,12 @@ pub const LINUX_RDTSC_SAMPLE_CAPACITY: usize = 131_072;
 pub const LINUX_RDTSC_CLOCK_TRACE_CAPACITY: usize = 2;
 /// Maximum ordered RDTSC prefix events retained for the opt-in sentinel trace.
 pub const LINUX_RDTSC_PREFIX_CAPACITY: usize = 131_072;
+/// Hard cap for the one selected instruction-path quantum.
+pub const LINUX_INSTRUCTION_PATH_TRACE_CAPACITY: usize = 2_000_000;
+pub const LINUX_INSTRUCTION_PATH_TRACE_QUANTUM: u64 = 45_215;
+pub const LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE: u64 = 1_203_244_482;
+pub const LINUX_INSTRUCTION_PATH_TRACE_START_HITS: u64 = 8_382;
+pub const LINUX_INSTRUCTION_PATH_TRACE_END_HIT: u64 = 8_383;
 /// Linux delay_tsc entry instruction used to end the diagnostic prefix.
 pub const LINUX_RDTSC_PREFIX_SENTINEL_RIP: u64 = 0xffff_ffff_8271_b31b;
 /// Maximum successful delivered page-fault events retained in one diagnostic run.
@@ -114,6 +120,67 @@ pub struct RdtscPrefixSample {
     pub general_protection_faults_delivered_through: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InstructionPathTraceStatus {
+    NotRequested,
+    AwaitingStart,
+    Captured,
+    GateMismatch,
+    MissedStart,
+    MissedEnd,
+    CapacityExhausted,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstructionPathTraceHeader {
+    pub rip: u64,
+    pub rflags: u64,
+    pub gpr: [u64; 16],
+    pub cr3: Option<u64>,
+    pub cs_selector: Option<u16>,
+    pub frame_chain: Vec<crate::ConsoleContextFrame>,
+    pub frame_chain_end: crate::FrameChainEnd,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InstructionPathRegisterValue {
+    pub register: u8,
+    pub value: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InstructionPathControlFlow {
+    /// `branch`, `jump`, `call`, `return`, `indirect_jump`, or `indirect_call`.
+    pub kind: &'static str,
+    pub condition: Option<u8>,
+    pub taken: bool,
+    pub rflags_before: u64,
+    pub rflags_after: u64,
+    pub destination_registers: [Option<InstructionPathRegisterValue>; 2],
+    pub destination: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InstructionPathTraceRecord {
+    pub rip: u64,
+    pub next_rip: u64,
+    pub control_flow: Option<InstructionPathControlFlow>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstructionPathTrace {
+    pub requested: bool,
+    pub status: InstructionPathTraceStatus,
+    pub quantum_ordinal: Option<u64>,
+    pub retired_instructions_charged: Option<u64>,
+    pub rdtsc_cpl0_hits_before_dispatch: Option<u64>,
+    pub header: Option<InstructionPathTraceHeader>,
+    pub records: Vec<InstructionPathTraceRecord>,
+    pub omitted_records: u64,
+    pub quantum_instructions_executed: Option<u64>,
+    pub rdtsc_cpl0_hits_after_quantum: Option<u64>,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum RdtscPrefixStatus {
     #[default]
@@ -217,6 +284,7 @@ pub struct LinuxExecutionObservations {
     pub rdtsc_prefix_event_count: u64,
     pub rdtsc_prefix_missing: u64,
     pub rdtsc_prefix_status: RdtscPrefixStatus,
+    pub instruction_path_trace: Option<InstructionPathTrace>,
     /// CPL0 RDTSC reads for which the set loop did not report an instruction RIP.
     pub rdtsc_cpl0_unattributed_reads: u64,
     /// CPL0 RDTSC reads at new sites after the distinct-site table reached its capacity.
@@ -249,7 +317,9 @@ pub(crate) struct LinuxExecutionObservationCollector {
     rdtsc_prefix_event_ordinal: u64,
     rdtsc_prefix_missing: u64,
     rdtsc_prefix_status: RdtscPrefixStatus,
+    instruction_path_trace: Option<InstructionPathTrace>,
     rdtsc_sites: BTreeMap<u64, u64>,
+    rdtsc_cpl0_hits: u64,
     rdtsc_unattributed_reads: u64,
     rdtsc_site_overflow_reads: u64,
     page_faults_delivered: u64,
@@ -298,6 +368,153 @@ impl LinuxExecutionObservationCollector {
             RdtscPrefixStatus::NotRequested
         };
         self
+    }
+
+    pub(crate) fn with_instruction_path_trace(mut self, requested: bool) -> Self {
+        self.instruction_path_trace = requested.then(|| InstructionPathTrace {
+            requested: true,
+            status: InstructionPathTraceStatus::AwaitingStart,
+            quantum_ordinal: None,
+            retired_instructions_charged: None,
+            rdtsc_cpl0_hits_before_dispatch: None,
+            header: None,
+            records: Vec::new(),
+            omitted_records: 0,
+            quantum_instructions_executed: None,
+            rdtsc_cpl0_hits_after_quantum: None,
+        });
+        self
+    }
+
+    /// Called immediately before dispatching each board quantum. The gate is deliberately
+    /// specific to the recorded S5-07 divergence and does not change the dispatch budget.
+    pub(crate) fn begin_instruction_path_quantum(
+        &mut self,
+        quantum_ordinal: u64,
+        retired_instructions_charged: u64,
+    ) {
+        let Some(trace) = self.instruction_path_trace.as_mut() else {
+            return;
+        };
+        if trace.status != InstructionPathTraceStatus::AwaitingStart {
+            return;
+        }
+        if quantum_ordinal < LINUX_INSTRUCTION_PATH_TRACE_QUANTUM {
+            return;
+        }
+        trace.quantum_ordinal = Some(quantum_ordinal);
+        trace.retired_instructions_charged = Some(retired_instructions_charged);
+        trace.rdtsc_cpl0_hits_before_dispatch = Some(self.rdtsc_cpl0_hits);
+        if quantum_ordinal != LINUX_INSTRUCTION_PATH_TRACE_QUANTUM
+            || retired_instructions_charged != LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE
+            || self.rdtsc_cpl0_hits != LINUX_INSTRUCTION_PATH_TRACE_START_HITS
+        {
+            trace.status = InstructionPathTraceStatus::GateMismatch;
+            return;
+        }
+        trace.status = InstructionPathTraceStatus::AwaitingStart;
+        trace.records.clear();
+    }
+
+    pub(crate) fn wants_instruction_path_trace(&self) -> bool {
+        self.instruction_path_trace.as_ref().is_some_and(|trace| {
+            trace.requested
+                && trace.status == InstructionPathTraceStatus::AwaitingStart
+                && trace.quantum_ordinal == Some(LINUX_INSTRUCTION_PATH_TRACE_QUANTUM)
+                && trace.retired_instructions_charged
+                    == Some(LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE)
+                && trace.rdtsc_cpl0_hits_before_dispatch
+                    == Some(LINUX_INSTRUCTION_PATH_TRACE_START_HITS)
+        })
+    }
+
+    pub(crate) fn needs_instruction_path_header(&self) -> bool {
+        self.wants_instruction_path_trace()
+            && self
+                .instruction_path_trace
+                .as_ref()
+                .is_some_and(|trace| trace.header.is_none())
+    }
+
+    pub(crate) fn begin_instruction_path_header(
+        &mut self,
+        state: &od_isa::LongModeState,
+        frame_chain: Vec<crate::ConsoleContextFrame>,
+        frame_chain_end: crate::FrameChainEnd,
+    ) {
+        if !self.wants_instruction_path_trace() {
+            return;
+        }
+        if let Some(trace) = self.instruction_path_trace.as_mut() {
+            trace.header = Some(InstructionPathTraceHeader {
+                rip: state.rip,
+                rflags: state.rflags,
+                gpr: state.gpr,
+                cr3: state.cr3,
+                cs_selector: state.cs_selector,
+                frame_chain,
+                frame_chain_end,
+            });
+        }
+    }
+
+    pub(crate) fn record_instruction_path_retirement(
+        &mut self,
+        record: InstructionPathTraceRecord,
+    ) {
+        if !self.wants_instruction_path_trace() {
+            return;
+        }
+        let Some(trace) = self.instruction_path_trace.as_mut() else {
+            return;
+        };
+        if trace.records.len() >= LINUX_INSTRUCTION_PATH_TRACE_CAPACITY {
+            trace.omitted_records = trace.omitted_records.saturating_add(1);
+            trace.status = InstructionPathTraceStatus::CapacityExhausted;
+            return;
+        }
+        trace.records.push(record);
+    }
+
+    pub(crate) fn complete_instruction_path_quantum(
+        &mut self,
+        quantum_ordinal: u64,
+        quantum_instructions_executed: u64,
+    ) {
+        let Some(trace) = self.instruction_path_trace.as_mut() else {
+            return;
+        };
+        if trace.quantum_ordinal != Some(quantum_ordinal)
+            || trace.status == InstructionPathTraceStatus::GateMismatch
+        {
+            return;
+        }
+        trace.quantum_instructions_executed = Some(quantum_instructions_executed);
+        trace.rdtsc_cpl0_hits_after_quantum = Some(self.rdtsc_cpl0_hits);
+        if trace.status == InstructionPathTraceStatus::CapacityExhausted {
+            return;
+        }
+        if trace.header.is_none() {
+            trace.status = InstructionPathTraceStatus::MissedStart;
+        } else if self.rdtsc_cpl0_hits != LINUX_INSTRUCTION_PATH_TRACE_END_HIT {
+            trace.status = InstructionPathTraceStatus::MissedEnd;
+        } else if trace.records.len() as u64 != quantum_instructions_executed {
+            trace.status = InstructionPathTraceStatus::MissedEnd;
+        } else {
+            trace.status = InstructionPathTraceStatus::Captured;
+        }
+    }
+
+    pub(crate) fn finish_instruction_path_trace(&mut self) {
+        if let Some(trace) = self.instruction_path_trace.as_mut()
+            && trace.status == InstructionPathTraceStatus::AwaitingStart
+        {
+            trace.status = if trace.header.is_some() {
+                InstructionPathTraceStatus::MissedEnd
+            } else {
+                InstructionPathTraceStatus::MissedStart
+            };
+        }
     }
 
     pub(crate) fn wants_rdtsc_prefix(&self) -> bool {
@@ -560,6 +777,7 @@ impl LinuxExecutionObservationCollector {
     }
 
     pub(crate) fn record_cpl0_rdtsc(&mut self, rip: Option<u64>) {
+        self.rdtsc_cpl0_hits = self.rdtsc_cpl0_hits.saturating_add(1);
         let Some(rip) = rip else {
             self.rdtsc_unattributed_reads = self.rdtsc_unattributed_reads.saturating_add(1);
             return;
@@ -684,6 +902,7 @@ impl LinuxExecutionObservationCollector {
             rdtsc_prefix_event_count: self.rdtsc_prefix_event_ordinal,
             rdtsc_prefix_missing,
             rdtsc_prefix_status: self.rdtsc_prefix_status,
+            instruction_path_trace: self.instruction_path_trace,
             rdtsc_cpl0_unattributed_reads: self.rdtsc_unattributed_reads,
             rdtsc_cpl0_site_overflow_reads: self.rdtsc_site_overflow_reads,
             page_faults_delivered: self.page_faults_delivered,
@@ -699,6 +918,185 @@ impl LinuxExecutionObservationCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gated_instruction_trace_collector() -> LinuxExecutionObservationCollector {
+        let mut collector =
+            LinuxExecutionObservationCollector::default().with_instruction_path_trace(true);
+        for _ in 0..LINUX_INSTRUCTION_PATH_TRACE_START_HITS {
+            collector.record_cpl0_rdtsc(Some(LINUX_RDTSC_PREFIX_SENTINEL_RIP));
+        }
+        collector
+    }
+
+    fn trace_header() -> InstructionPathTraceHeader {
+        InstructionPathTraceHeader {
+            rip: 0x1000,
+            rflags: 0x202,
+            gpr: [0; 16],
+            cr3: Some(0x3000),
+            cs_selector: Some(8),
+            frame_chain: Vec::new(),
+            frame_chain_end: crate::FrameChainEnd::NullFramePointer,
+        }
+    }
+
+    #[test]
+    fn instruction_path_trace_starts_only_after_the_exact_quantum_gate() {
+        let mut collector = gated_instruction_trace_collector();
+        collector.begin_instruction_path_quantum(
+            LINUX_INSTRUCTION_PATH_TRACE_QUANTUM - 1,
+            LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE,
+        );
+        assert!(!collector.wants_instruction_path_trace());
+        collector.begin_instruction_path_quantum(
+            LINUX_INSTRUCTION_PATH_TRACE_QUANTUM,
+            LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE,
+        );
+        assert!(collector.wants_instruction_path_trace());
+        assert_eq!(
+            collector
+                .instruction_path_trace
+                .as_ref()
+                .unwrap()
+                .rdtsc_cpl0_hits_before_dispatch,
+            Some(LINUX_INSTRUCTION_PATH_TRACE_START_HITS)
+        );
+
+        let mut mismatch = gated_instruction_trace_collector();
+        mismatch.begin_instruction_path_quantum(
+            LINUX_INSTRUCTION_PATH_TRACE_QUANTUM,
+            LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE + 1,
+        );
+        assert!(!mismatch.wants_instruction_path_trace());
+        assert_eq!(
+            mismatch.instruction_path_trace.unwrap().status,
+            InstructionPathTraceStatus::GateMismatch
+        );
+
+        let mut hit_mismatch =
+            LinuxExecutionObservationCollector::default().with_instruction_path_trace(true);
+        for _ in 0..(LINUX_INSTRUCTION_PATH_TRACE_START_HITS - 1) {
+            hit_mismatch.record_cpl0_rdtsc(Some(LINUX_RDTSC_PREFIX_SENTINEL_RIP));
+        }
+        hit_mismatch.begin_instruction_path_quantum(
+            LINUX_INSTRUCTION_PATH_TRACE_QUANTUM,
+            LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE,
+        );
+        assert_eq!(
+            hit_mismatch.instruction_path_trace.unwrap().status,
+            InstructionPathTraceStatus::GateMismatch
+        );
+    }
+
+    #[test]
+    fn instruction_path_trace_keeps_record_order_and_branch_metadata() {
+        let mut collector = gated_instruction_trace_collector();
+        collector.begin_instruction_path_quantum(
+            LINUX_INSTRUCTION_PATH_TRACE_QUANTUM,
+            LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE,
+        );
+        collector.instruction_path_trace.as_mut().unwrap().header = Some(trace_header());
+        let flow = InstructionPathControlFlow {
+            kind: "branch",
+            condition: Some(4),
+            taken: true,
+            rflags_before: 0x242,
+            rflags_after: 0x202,
+            destination_registers: [None, None],
+            destination: 0x2000,
+        };
+        collector.record_instruction_path_retirement(InstructionPathTraceRecord {
+            rip: 0x1000,
+            next_rip: 0x2000,
+            control_flow: Some(flow),
+        });
+        collector.record_instruction_path_retirement(InstructionPathTraceRecord {
+            rip: 0x2000,
+            next_rip: 0x2001,
+            control_flow: None,
+        });
+        let records = &collector.instruction_path_trace.as_ref().unwrap().records;
+        assert_eq!((records[0].rip, records[0].next_rip), (0x1000, 0x2000));
+        assert_eq!((records[1].rip, records[1].next_rip), (0x2000, 0x2001));
+        assert_eq!(records[0].control_flow.unwrap(), flow);
+        assert_eq!(records[1].control_flow, None);
+        collector.record_cpl0_rdtsc(Some(LINUX_RDTSC_PREFIX_SENTINEL_RIP));
+        collector.complete_instruction_path_quantum(LINUX_INSTRUCTION_PATH_TRACE_QUANTUM, 2);
+        let trace = collector.instruction_path_trace.as_ref().unwrap();
+        assert_eq!(trace.status, InstructionPathTraceStatus::Captured);
+        assert_eq!(
+            trace.rdtsc_cpl0_hits_after_quantum,
+            Some(LINUX_INSTRUCTION_PATH_TRACE_END_HIT)
+        );
+    }
+
+    #[test]
+    fn instruction_path_trace_overflow_and_missing_boundaries_are_incomplete() {
+        let mut overflow = gated_instruction_trace_collector();
+        overflow.begin_instruction_path_quantum(
+            LINUX_INSTRUCTION_PATH_TRACE_QUANTUM,
+            LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE,
+        );
+        let trace = overflow.instruction_path_trace.as_mut().unwrap();
+        trace.records.resize(
+            LINUX_INSTRUCTION_PATH_TRACE_CAPACITY,
+            InstructionPathTraceRecord {
+                rip: 0x1000,
+                next_rip: 0x1001,
+                control_flow: None,
+            },
+        );
+        overflow.record_instruction_path_retirement(InstructionPathTraceRecord {
+            rip: 0x1001,
+            next_rip: 0x1002,
+            control_flow: None,
+        });
+        assert_eq!(
+            overflow.instruction_path_trace.as_ref().unwrap().status,
+            InstructionPathTraceStatus::CapacityExhausted
+        );
+        assert_eq!(
+            overflow
+                .instruction_path_trace
+                .as_ref()
+                .unwrap()
+                .omitted_records,
+            1
+        );
+
+        let mut missed_end = gated_instruction_trace_collector();
+        missed_end.begin_instruction_path_quantum(
+            LINUX_INSTRUCTION_PATH_TRACE_QUANTUM,
+            LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE,
+        );
+        missed_end.instruction_path_trace.as_mut().unwrap().header = Some(trace_header());
+        missed_end.complete_instruction_path_quantum(LINUX_INSTRUCTION_PATH_TRACE_QUANTUM, 0);
+        assert_eq!(
+            missed_end.instruction_path_trace.as_ref().unwrap().status,
+            InstructionPathTraceStatus::MissedEnd
+        );
+
+        let mut missed_start = gated_instruction_trace_collector();
+        missed_start.finish_instruction_path_trace();
+        assert_eq!(
+            missed_start.instruction_path_trace.unwrap().status,
+            InstructionPathTraceStatus::MissedStart
+        );
+    }
+
+    #[test]
+    fn instruction_path_trace_is_a_no_op_when_not_requested() {
+        let mut collector = LinuxExecutionObservationCollector::default();
+        collector.begin_instruction_path_quantum(1, 0);
+        collector.record_instruction_path_retirement(InstructionPathTraceRecord {
+            rip: 1,
+            next_rip: 2,
+            control_flow: None,
+        });
+        collector.complete_instruction_path_quantum(1, 1);
+        collector.finish_instruction_path_trace();
+        assert_eq!(collector.finish().instruction_path_trace, None);
+    }
 
     fn fault(rip: u64) -> DeliveredPageFaultObservation {
         DeliveredPageFaultObservation {

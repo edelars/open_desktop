@@ -2192,6 +2192,7 @@ impl LoadedFirmwareBoard {
             None,
             None,
             None,
+            false,
         )
     }
 
@@ -2209,6 +2210,7 @@ impl LoadedFirmwareBoard {
         selected_rdtsc_entry_sample_rip: Option<u64>,
         selected_rdtsc_sample_window: Option<crate::RdtscSampleWindow>,
         selected_rdtsc_prefix_sentinel_rip: Option<u64>,
+        selected_instruction_path_trace: bool,
     ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
         let context = AccessContext {
             mode: InstructionMode::Long64,
@@ -2229,6 +2231,7 @@ impl LoadedFirmwareBoard {
                 .with_rdtsc_entry_sample_rip(selected_rdtsc_entry_sample_rip)
                 .with_rdtsc_sample_window(selected_rdtsc_sample_window)
                 .with_rdtsc_prefix_sentinel(selected_rdtsc_prefix_sentinel_rip)
+                .with_instruction_path_trace(selected_instruction_path_trace)
         });
         let mut cpl3_retired = 0u64;
         let mut syscall_journal = crate::linux_direct::SyscallJournal::default();
@@ -2390,6 +2393,9 @@ impl LoadedFirmwareBoard {
                 }
             }
             // S4-38L4i: the recorder (opt-in, observation only) learns where the quantum starts.
+            if let Some(observations) = execution_observations.as_mut() {
+                observations.begin_instruction_path_quantum(quanta.saturating_add(1), retired);
+            }
             if self.checkpoints.is_some() {
                 let ns_at_start = self.clock.snapshot().now_ns();
                 if let Some(recorder) = self.checkpoints.as_mut() {
@@ -2561,6 +2567,10 @@ impl LoadedFirmwareBoard {
                     rdtsc_ns_charged = rdtsc_ns_charged.saturating_add(tick_ns);
                 }
             }
+            if let Some(observations) = execution_observations.as_mut() {
+                observations
+                    .complete_instruction_path_quantum(quanta, report.instructions_executed);
+            }
             let stop_reason = acpi_pm.as_ref().and_then(AcpiPmHandle::stop_request);
             // S4-39g: a halted CPU (`HLT`) with IF = 1 and a source that can wake it: the clock
             // skips to the wake time (the board has nothing else to run), the CPU is `Running`
@@ -2661,6 +2671,9 @@ impl LoadedFirmwareBoard {
         // back what it had.
         self.vcpus[BOOT_VCPU_INDEX].guest_cr2 = self.vcpus[BOOT_VCPU_INDEX].state.cr2;
         self.vcpus[BOOT_VCPU_INDEX].state.cr2 = prior_cr2;
+        if let Some(observations) = execution_observations.as_mut() {
+            observations.finish_instruction_path_trace();
+        }
         let leaf_2m_tag = fetch_cache && self.fetch_cache_tag == FetchCacheTag::Leaf2M;
         self.fetch_cache_report = fetch_report.map(|accumulator| {
             let mut report = accumulator.finish();

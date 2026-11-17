@@ -3,6 +3,7 @@
 use crate::console_output_context::capture_frame_chain;
 use crate::execution_observations::{
     DeliveredPageFaultObservation, FaultingPageFaultContext, FaultingPageWalkContext,
+    InstructionPathControlFlow, InstructionPathRegisterValue, InstructionPathTraceRecord,
     LinuxExecutionObservationCollector, PendingPostIretObservation, PostIretPageWalkSnapshot,
 };
 use crate::fetch_cache_report::{C5Split, LinuxWalkCounts, WalkCounter};
@@ -32,6 +33,7 @@ use od_isa::execute::{
     step_paged_mov_word_read as cpu_step_paged_mov_word_read,
     step_paged_mov_word_read_cross_page_fetch as cpu_step_paged_mov_word_read_cross_page_fetch,
 };
+use od_isa::long_decode::{AddressBase, Operand, Operation};
 use od_isa::memory::{
     AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, GuestMemory, InstructionMode,
     MemoryError, PageFaultRecord, PrivilegeLevel,
@@ -659,6 +661,193 @@ fn observed_fetch_view(
     (first, bytes)
 }
 
+#[derive(Clone, Copy)]
+struct InstructionPathBefore {
+    rip: u64,
+    control_flow: Option<InstructionPathControlFlow>,
+}
+
+struct InstructionPathBytes<'a> {
+    rip: u64,
+    bytes: &'a [u8],
+}
+
+impl GuestMemory for InstructionPathBytes<'_> {
+    fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+        let offset = address.wrapping_sub(self.rip) as usize;
+        self.bytes
+            .get(offset)
+            .copied()
+            .ok_or(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Fetch,
+            })
+    }
+
+    fn read(&mut self, _: u64, _: AccessContext, _: &mut [u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend("trace byte view is read-only".into()))
+    }
+
+    fn write(&mut self, _: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend("trace byte view is read-only".into()))
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: od_isa::OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(MemoryError::Backend("trace byte view is read-only".into()))
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: od_isa::OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(MemoryError::Backend("trace byte view is read-only".into()))
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: od_isa::OperandSize,
+        _: u64,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(MemoryError::Backend("trace byte view is read-only".into()))
+    }
+
+    fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend("trace byte view is read-only".into()))
+    }
+}
+
+fn trace_destination_register(
+    registers: &mut [Option<InstructionPathRegisterValue>; 2],
+    state: &LongModeState,
+    register: od_isa::Register,
+) {
+    if registers
+        .iter()
+        .flatten()
+        .any(|value| value.register == register as u8)
+    {
+        return;
+    }
+    if let Some(slot) = registers.iter_mut().find(|slot| slot.is_none()) {
+        *slot = Some(InstructionPathRegisterValue {
+            register: register as u8,
+            value: state.gpr[register as usize],
+        });
+    }
+}
+
+fn instruction_path_before(
+    rip: u64,
+    state: &LongModeState,
+    bus: &mut MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+) -> InstructionPathBefore {
+    let (_, bytes) = observed_fetch_view(rip, bus, paging, context);
+    let mut memory = InstructionPathBytes { rip, bytes: &bytes };
+    let decoded = od_isa::long_decode::decode(&mut memory, rip, context).ok();
+    let control_flow = decoded.and_then(|instruction| {
+        let (kind, condition, taken, operand) = match instruction.operation {
+            Operation::Branch { condition, .. } => (
+                "branch",
+                Some(condition as u8),
+                condition.evaluate(state.rflags),
+                None,
+            ),
+            Operation::Jump { .. } => ("jump", None, true, None),
+            Operation::Call { .. } => ("call", None, true, None),
+            Operation::Return { .. } | Operation::FarReturn | Operation::IretQ => {
+                ("return", None, true, None)
+            }
+            Operation::Syscall | Operation::Sysenter => ("syscall", None, true, None),
+            Operation::Sysret | Operation::Sysexit => ("sysret", None, true, None),
+            Operation::IndirectJump { operand } => ("indirect_jump", None, true, Some(operand)),
+            Operation::IndirectCall { operand } => ("indirect_call", None, true, Some(operand)),
+            _ => return None,
+        };
+        let mut destination_registers = [None, None];
+        match operand {
+            Some(Operand::Register(view)) => {
+                trace_destination_register(&mut destination_registers, state, view.register());
+            }
+            Some(Operand::Memory(memory)) => {
+                if let AddressBase::Register(register) = memory.base {
+                    trace_destination_register(&mut destination_registers, state, register);
+                }
+                if let Some(register) = memory.index {
+                    trace_destination_register(&mut destination_registers, state, register);
+                }
+            }
+            Some(Operand::Immediate(_)) | None => {}
+        }
+        if kind == "return" {
+            trace_destination_register(&mut destination_registers, state, od_isa::Register::Rsp);
+        }
+        if kind == "syscall" || kind == "sysret" {
+            trace_destination_register(&mut destination_registers, state, od_isa::Register::Rcx);
+        }
+        Some(InstructionPathControlFlow {
+            kind,
+            condition,
+            taken,
+            rflags_before: state.rflags,
+            rflags_after: 0,
+            destination_registers,
+            destination: 0,
+        })
+    });
+    InstructionPathBefore { rip, control_flow }
+}
+
+fn finish_instruction_path_record(
+    before: InstructionPathBefore,
+    state: &LongModeState,
+) -> InstructionPathTraceRecord {
+    let control_flow = before.control_flow.map(|mut flow| {
+        flow.rflags_after = state.rflags;
+        flow.destination = state.rip;
+        flow
+    });
+    InstructionPathTraceRecord {
+        rip: before.rip,
+        next_rip: state.rip,
+        control_flow,
+    }
+}
+
+fn capture_instruction_path_frame_chain(
+    state: &LongModeState,
+    bus: &mut MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+) -> (Vec<crate::ConsoleContextFrame>, crate::FrameChainEnd) {
+    let rbp = state.gpr[od_isa::Register::Rbp as usize];
+    capture_frame_chain(rbp, |frame_pointer| {
+        let mut bytes = [0; 16];
+        bus.read_virtual_ram_diagnostic(
+            paging,
+            state.rip,
+            GuestLinearAddress::new(frame_pointer),
+            context,
+            &mut bytes,
+        )
+        .map(|()| bytes)
+        .map_err(|_| ())
+    })
+}
+
 /// Whether the instruction at RIP is exactly `IRETQ` (`48 CF`). Same read-only walk as
 /// [`cpuid_leaf_at_rip`] (no accessed/dirty bit, RAM only); an untranslatable byte is `false`.
 /// Used for the RF rule of S4-38L5c: `IRETQ` loads RF from its own frame, so the board must not
@@ -1114,6 +1303,69 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
     instruction_budget: u64,
     rflags_defined: u64,
     set: &Cpl0ProfileSet<'_>,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    cpuid_boundary: bool,
+    cache: Option<&FetchTranslationCache>,
+    irq: Option<IrqBoundaryHook<'_>>,
+    checkpoints: Option<&mut CheckpointRecorder>,
+    execution_observations: Option<&mut LinuxExecutionObservationCollector>,
+) -> PagedCpl0SetReport {
+    let capture_instruction_path = execution_observations
+        .as_deref()
+        .is_some_and(LinuxExecutionObservationCollector::wants_instruction_path_trace);
+    if capture_instruction_path {
+        run_cpl0_set_paged_2m_ram_with_cache_impl::<true>(
+            state,
+            bus,
+            cr3,
+            efer,
+            context,
+            instruction_budget,
+            rflags_defined,
+            set,
+            rdtsc,
+            stop,
+            committed_write,
+            cpuid_boundary,
+            cache,
+            irq,
+            checkpoints,
+            execution_observations,
+        )
+    } else {
+        run_cpl0_set_paged_2m_ram_with_cache_impl::<false>(
+            state,
+            bus,
+            cr3,
+            efer,
+            context,
+            instruction_budget,
+            rflags_defined,
+            set,
+            rdtsc,
+            stop,
+            committed_write,
+            cpuid_boundary,
+            cache,
+            irq,
+            checkpoints,
+            execution_observations,
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_cpl0_set_paged_2m_ram_with_cache_impl<const TRACE_ENABLED: bool>(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
     mut rdtsc: Option<&mut dyn FnMut() -> u64>,
     mut stop: impl FnMut() -> bool,
     mut committed_write: impl FnMut(GuestPhysicalRange),
@@ -1290,8 +1542,32 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
             break (PagedCpl0SetExit::CpuidDivergence { leaf }, None, None);
         }
         let instruction_rip = state.rip;
+        let mut trace_before = None;
         if execution_observations.is_some() {
             last_instruction_rip = Some(instruction_rip);
+            if TRACE_ENABLED {
+                if execution_observations
+                    .as_deref()
+                    .is_some_and(LinuxExecutionObservationCollector::needs_instruction_path_header)
+                {
+                    let (frame_chain, frame_chain_end) =
+                        capture_instruction_path_frame_chain(state, bus, &paging, context);
+                    if let Some(observations) = execution_observations.as_deref_mut() {
+                        observations.begin_instruction_path_header(
+                            state,
+                            frame_chain,
+                            frame_chain_end,
+                        );
+                    }
+                }
+                trace_before = Some(instruction_path_before(
+                    instruction_rip,
+                    state,
+                    bus,
+                    &paging,
+                    context,
+                ));
+            }
         }
         // S4-38L5c: RF set before the instruction (a restarted instruction after a `#PF`
         // frame came back through `IRETQ`) is cleared once the instruction retires, except
@@ -1396,6 +1672,13 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
                 }
             }
             if done.instructions_executed > 0 {
+                if let Some(before) = trace_before
+                    && let Some(observations) = execution_observations.as_deref_mut()
+                {
+                    observations.record_instruction_path_retirement(
+                        finish_instruction_path_record(before, state),
+                    );
+                }
                 deliveries_without_retirement = 0;
                 if clear_resume_flag {
                     state.rflags &= !RFLAGS_RF;

@@ -88,7 +88,7 @@ pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-rdtsc-prefix] [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>] [--execution-observations-rdtsc-window <start:end>]]]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-rdtsc-prefix] [--execution-observations-quantum-trace] [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>] [--execution-observations-rdtsc-window <start:end>]]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -150,6 +150,8 @@ struct Options {
     execution_observations_rdtsc_window: Option<od_machine::RdtscSampleWindow>,
     /// Capture every CPL0 RDTSC through the fixed Linux delay_tsc entry sentinel.
     execution_observations_rdtsc_prefix: bool,
+    /// Capture one strictly gated, bounded instruction-path quantum for the S5-07 follow-up.
+    execution_observations_quantum_trace: bool,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -617,6 +619,7 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                         options.execution_observations_rdtsc_prefix.then_some(
                             od_machine::LINUX_RDTSC_PREFIX_SENTINEL_RIP,
                         ),
+                        options.execution_observations_quantum_trace,
                     )
                 } else if options.set_cpl0 {
                     run_linux_direct_board_set_observed(
@@ -1232,6 +1235,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut execution_observations_rdtsc_stride = None;
     let mut execution_observations_rdtsc_window = None;
     let mut execution_observations_rdtsc_prefix = false;
+    let mut execution_observations_quantum_trace = false;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1247,6 +1251,15 @@ fn parse(args: &[String]) -> Result<Options, String> {
             if std::mem::replace(&mut execution_observations_rdtsc_prefix, true) {
                 return Err(format!(
                     "duplicate option --execution-observations-rdtsc-prefix; usage: {USAGE}"
+                ));
+            }
+            index += 1;
+            continue;
+        }
+        if name == "--execution-observations-quantum-trace" {
+            if std::mem::replace(&mut execution_observations_quantum_trace, true) {
+                return Err(format!(
+                    "duplicate option --execution-observations-quantum-trace; usage: {USAGE}"
                 ));
             }
             index += 1;
@@ -1484,6 +1497,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--execution-observations-rdtsc-prefix needs --execution-observations-out; usage: {USAGE}"
         ));
     }
+    if execution_observations_quantum_trace && execution_observations_out.is_none() {
+        return Err(format!(
+            "--execution-observations-quantum-trace needs --execution-observations-out; usage: {USAGE}"
+        ));
+    }
     if execution_observations_post_iret_index.is_some() && execution_observations_out.is_none() {
         return Err(format!(
             "--execution-observations-post-iret-index needs --execution-observations-out; usage: {USAGE}"
@@ -1598,6 +1616,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         execution_observations_rdtsc_stride,
         execution_observations_rdtsc_window,
         execution_observations_rdtsc_prefix,
+        execution_observations_quantum_trace,
     })
 }
 
@@ -2227,15 +2246,65 @@ fn write_execution_observations_sidecar(
             })).collect::<Vec<_>>(),
         })
     });
+    let instruction_path_trace = observations.instruction_path_trace.as_ref().map(|trace| {
+        let status = match trace.status {
+            od_machine::InstructionPathTraceStatus::NotRequested => "not_requested",
+            od_machine::InstructionPathTraceStatus::AwaitingStart => "awaiting_start",
+            od_machine::InstructionPathTraceStatus::Captured => "captured",
+            od_machine::InstructionPathTraceStatus::GateMismatch => "gate_mismatch",
+            od_machine::InstructionPathTraceStatus::MissedStart => "missed_start",
+            od_machine::InstructionPathTraceStatus::MissedEnd => "missed_end",
+            od_machine::InstructionPathTraceStatus::CapacityExhausted => "capacity_exhausted",
+        };
+        json!({
+            "requested": trace.requested,
+            "status": status,
+            "quantum_ordinal": trace.quantum_ordinal,
+            "retired_instructions_charged": trace.retired_instructions_charged,
+            "rdtsc_cpl0_hits_before_dispatch": trace.rdtsc_cpl0_hits_before_dispatch,
+            "quantum_instructions_executed": trace.quantum_instructions_executed,
+            "rdtsc_cpl0_hits_after_quantum": trace.rdtsc_cpl0_hits_after_quantum,
+            "omitted_records": trace.omitted_records,
+            "header": trace.header.as_ref().map(|header| json!({
+                "rip": hex64(header.rip),
+                "rflags": hex64(header.rflags),
+                "gpr": header.gpr.map(hex64),
+                "cr3": header.cr3.map(hex64),
+                "cs_selector": header.cs_selector.map(|value| format!("0x{value:04x}")),
+                "frame_chain": header.frame_chain.iter().map(|frame| json!({
+                    "frame_pointer": hex64(frame.frame_pointer),
+                    "return_address": hex64(frame.return_address),
+                })).collect::<Vec<_>>(),
+                "frame_chain_end": format!("{:?}", header.frame_chain_end),
+            })),
+            "records": trace.records.iter().map(|record| json!({
+                "rip": hex64(record.rip),
+                "next_rip": hex64(record.next_rip),
+                "control_flow": record.control_flow.map(|flow| json!({
+                    "kind": flow.kind,
+                    "condition": flow.condition,
+                    "taken": flow.taken,
+                    "rflags_before": hex64(flow.rflags_before),
+                    "rflags_after": hex64(flow.rflags_after),
+                    "destination_registers": flow.destination_registers.iter().flatten().map(|value| json!({
+                        "register": value.register,
+                        "value": hex64(value.value),
+                    })).collect::<Vec<_>>(),
+                    "destination": hex64(flow.destination),
+                })),
+            })).collect::<Vec<_>>(),
+        })
+    });
     let value = json!({
-        "schema_version": 12,
-        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, an optional bounded every-hit entry-RDTSC stream with a two-hit pre-charge virtual-clock ledger, an optional ordered RDTSC prefix through a sentinel RIP, and an optional inclusive hit-ordinal window for selected-site samples",
+        "schema_version": 13,
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, an optional bounded every-hit entry-RDTSC stream with clock ledger, an optional ordered RDTSC prefix through a sentinel RIP, an optional inclusive hit-ordinal window, and an optional strictly gated single-quantum instruction path trace",
         "limits": {
             "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
             "rdtsc_site_samples": od_machine::LINUX_RDTSC_SAMPLE_CAPACITY,
             "rdtsc_entry_samples": od_machine::LINUX_RDTSC_SAMPLE_CAPACITY,
             "rdtsc_entry_clock_trace_samples": od_machine::LINUX_RDTSC_CLOCK_TRACE_CAPACITY,
             "rdtsc_prefix_samples": od_machine::LINUX_RDTSC_PREFIX_CAPACITY,
+            "instruction_path_trace_records": od_machine::LINUX_INSTRUCTION_PATH_TRACE_CAPACITY,
             "page_fault_events": od_machine::LINUX_PAGE_FAULT_EVENT_CAPACITY,
             "frame_links_per_page_fault": od_machine::LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY,
             "page_walk_entries_per_fault": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
@@ -2264,6 +2333,7 @@ fn write_execution_observations_sidecar(
         "rdtsc_prefix_samples": rdtsc_prefix_samples,
         "rdtsc_prefix_event_count": observations.rdtsc_prefix_event_count,
         "rdtsc_prefix_missing": observations.rdtsc_prefix_missing,
+        "instruction_path_trace": instruction_path_trace,
         "page_faults_delivered": observations.page_faults_delivered,
         "page_fault_events": page_fault_events,
         "page_fault_events_omitted": observations.page_fault_events_omitted,
@@ -2302,7 +2372,7 @@ fn execution_observations_sidecar_metadata(
 ) -> Value {
     json!({
         "path": path,
-        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events, with optional selected-site and entry-site samples and a two-hit entry-site pre-charge virtual-clock ledger",
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events, with bounded optional RDTSC streams and a strictly gated single-quantum instruction path trace",
         "write_error": null,
         "selected_rip": observations.rdtsc_sample_rip.map(hex64),
         "stride": observations.rdtsc_sample_stride,
@@ -2324,6 +2394,17 @@ fn execution_observations_sidecar_metadata(
         "rdtsc_prefix_sample_count": observations.rdtsc_prefix_samples.len(),
         "rdtsc_prefix_event_count": observations.rdtsc_prefix_event_count,
         "rdtsc_prefix_missing": observations.rdtsc_prefix_missing,
+        "instruction_path_trace_status": observations.instruction_path_trace.as_ref().map(|trace| match trace.status {
+            od_machine::InstructionPathTraceStatus::NotRequested => "not_requested",
+            od_machine::InstructionPathTraceStatus::AwaitingStart => "awaiting_start",
+            od_machine::InstructionPathTraceStatus::Captured => "captured",
+            od_machine::InstructionPathTraceStatus::GateMismatch => "gate_mismatch",
+            od_machine::InstructionPathTraceStatus::MissedStart => "missed_start",
+            od_machine::InstructionPathTraceStatus::MissedEnd => "missed_end",
+            od_machine::InstructionPathTraceStatus::CapacityExhausted => "capacity_exhausted",
+        }),
+        "instruction_path_trace_record_count": observations.instruction_path_trace.as_ref().map(|trace| trace.records.len()),
+        "instruction_path_trace_omitted_records": observations.instruction_path_trace.as_ref().map(|trace| trace.omitted_records),
         "byte_count": byte_count,
         "sha256": sha256,
     })
@@ -2492,6 +2573,7 @@ mod tests {
                 execution_observations_rdtsc_stride: None,
                 execution_observations_rdtsc_window: None,
                 execution_observations_rdtsc_prefix: false,
+                execution_observations_quantum_trace: false,
             };
             Self { dir, options }
         }
@@ -4134,6 +4216,40 @@ mod tests {
         )
         .unwrap();
         assert!(prefix.execution_observations_rdtsc_prefix);
+        let quantum_trace = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-rdtsc-rip",
+                    "0xffffffff8271b34d",
+                    "--execution-observations-rdtsc-entry-rip",
+                    "0xffffffff8271b31b",
+                    "--execution-observations-quantum-trace",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert!(quantum_trace.execution_observations_quantum_trace);
+        assert!(
+            parse_base(
+                &[
+                    &run[..],
+                    &[
+                        "--execution-observations-out",
+                        "observations.json",
+                        "--execution-observations-quantum-trace",
+                    ],
+                ]
+                .concat(),
+            )
+            .is_ok()
+        );
+        assert!(
+            parse_base(&[&run[..], &["--execution-observations-quantum-trace"]].concat()).is_err()
+        );
         assert!(
             parse_base(&[&run[..], &["--execution-observations-rdtsc-prefix"]].concat()).is_err()
         );
@@ -5052,6 +5168,7 @@ mod tests {
             rdtsc_prefix_event_count: 1,
             rdtsc_prefix_missing: 0,
             rdtsc_prefix_status: od_machine::RdtscPrefixStatus::SentinelSeen,
+            instruction_path_trace: None,
             rdtsc_cpl0_unattributed_reads: 2,
             rdtsc_cpl0_site_overflow_reads: 3,
             page_faults_delivered: 5,
@@ -5136,9 +5253,14 @@ mod tests {
         assert_eq!(metadata["rdtsc_prefix_status"], "sentinel_seen");
         assert_eq!(metadata["rdtsc_prefix_sample_count"], 1);
         let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema_version"], 12);
+        assert_eq!(value["schema_version"], 13);
         assert_eq!(value["rdtsc_prefix_status"], "sentinel_seen");
         assert_eq!(value["rdtsc_prefix_event_count"], 1);
+        assert!(value["instruction_path_trace"].is_null());
+        assert_eq!(
+            value["limits"]["instruction_path_trace_records"],
+            od_machine::LINUX_INSTRUCTION_PATH_TRACE_CAPACITY
+        );
         assert_eq!(
             value["rdtsc_prefix_samples"][0]["clock"]["rip"],
             "0xffffffff8271b31b"
@@ -5833,6 +5955,7 @@ mod tests {
             execution_observations_rdtsc_stride: None,
             execution_observations_rdtsc_window: None,
             execution_observations_rdtsc_prefix: false,
+            execution_observations_quantum_trace: false,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -5887,6 +6010,7 @@ mod tests {
             execution_observations_rdtsc_stride: None,
             execution_observations_rdtsc_window: None,
             execution_observations_rdtsc_prefix: false,
+            execution_observations_quantum_trace: false,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -5945,6 +6069,7 @@ mod tests {
             execution_observations_rdtsc_stride: None,
             execution_observations_rdtsc_window: None,
             execution_observations_rdtsc_prefix: false,
+            execution_observations_quantum_trace: false,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -6024,6 +6149,7 @@ mod tests {
             execution_observations_rdtsc_stride: None,
             execution_observations_rdtsc_window: None,
             execution_observations_rdtsc_prefix: false,
+            execution_observations_quantum_trace: false,
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");

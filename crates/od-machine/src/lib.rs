@@ -188,11 +188,16 @@ pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEve
 
 pub use execution_observations::{
     DeliveredPageFaultObservation, FaultingPageFaultContext, FaultingPageWalkContext,
-    LINUX_PAGE_FAULT_EVENT_CAPACITY, LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
-    LINUX_RDTSC_CLOCK_TRACE_CAPACITY, LINUX_RDTSC_PREFIX_CAPACITY, LINUX_RDTSC_PREFIX_SENTINEL_RIP,
-    LINUX_RDTSC_SAMPLE_CAPACITY, LINUX_RDTSC_SITE_CAPACITY, LinuxExecutionObservations,
-    PostIretPageWalkSnapshot, RdtscClockTraceSample, RdtscEntrySample, RdtscPrefixSample,
-    RdtscPrefixStatus, RdtscSampleWindow, RdtscSiteCount, RdtscSiteSample,
+    InstructionPathControlFlow, InstructionPathRegisterValue, InstructionPathTrace,
+    InstructionPathTraceHeader, InstructionPathTraceRecord, InstructionPathTraceStatus,
+    LINUX_INSTRUCTION_PATH_TRACE_CAPACITY, LINUX_INSTRUCTION_PATH_TRACE_END_HIT,
+    LINUX_INSTRUCTION_PATH_TRACE_QUANTUM, LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE,
+    LINUX_INSTRUCTION_PATH_TRACE_START_HITS, LINUX_PAGE_FAULT_EVENT_CAPACITY,
+    LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY, LINUX_RDTSC_CLOCK_TRACE_CAPACITY,
+    LINUX_RDTSC_PREFIX_CAPACITY, LINUX_RDTSC_PREFIX_SENTINEL_RIP, LINUX_RDTSC_SAMPLE_CAPACITY,
+    LINUX_RDTSC_SITE_CAPACITY, LinuxExecutionObservations, PostIretPageWalkSnapshot,
+    RdtscClockTraceSample, RdtscEntrySample, RdtscPrefixSample, RdtscPrefixStatus,
+    RdtscSampleWindow, RdtscSiteCount, RdtscSiteSample,
 };
 pub use firmware_board::{
     FIRMWARE_ACPI_FACS_BASE, FIRMWARE_ACPI_FACS_BYTES, FIRMWARE_ACPI_TABLES_BASE,

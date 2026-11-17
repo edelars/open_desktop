@@ -1210,6 +1210,7 @@ pub fn run_linux_direct_board_set_user_mode_with_execution_observations_options(
         None,
         None,
         None,
+        false,
     )
 }
 
@@ -1225,6 +1226,7 @@ pub fn run_linux_direct_board_set_user_mode_with_execution_observations_sampling
     selected_rdtsc_entry_sample_rip: Option<u64>,
     selected_rdtsc_sample_window: Option<crate::RdtscSampleWindow>,
     selected_rdtsc_prefix_sentinel_rip: Option<u64>,
+    selected_instruction_path_trace: bool,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
     run_linux_direct_board_set_with_post_iret_index(
         boot,
@@ -1240,6 +1242,7 @@ pub fn run_linux_direct_board_set_user_mode_with_execution_observations_sampling
         selected_rdtsc_entry_sample_rip,
         selected_rdtsc_sample_window,
         selected_rdtsc_prefix_sentinel_rip,
+        selected_instruction_path_trace,
     )
 }
 
@@ -1265,6 +1268,7 @@ pub fn run_linux_direct_board_set_user_mode_with_post_iret_index(
         None,
         None,
         None,
+        false,
     )
 }
 
@@ -1291,6 +1295,7 @@ fn run_linux_direct_board_set_with(
         None,
         None,
         None,
+        false,
     )
 }
 
@@ -1309,6 +1314,7 @@ fn run_linux_direct_board_set_with_post_iret_index(
     selected_rdtsc_entry_sample_rip: Option<u64>,
     selected_rdtsc_sample_window: Option<crate::RdtscSampleWindow>,
     selected_rdtsc_prefix_sentinel_rip: Option<u64>,
+    selected_instruction_path_trace: bool,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
     let pm_timer_reads_before = boot.board.acpi_pm().map(|pm| pm.timer_reads());
     // S4-39g: only the user-mode run of a board with the Linux-profile PIT and 8259 gets the
@@ -1540,6 +1546,7 @@ fn run_linux_direct_board_set_with_post_iret_index(
             selected_rdtsc_entry_sample_rip,
             selected_rdtsc_sample_window,
             selected_rdtsc_prefix_sentinel_rip,
+            selected_instruction_path_trace,
         )
     } else {
         boot.board.run_linux_boot_cpl0_set(
@@ -2317,6 +2324,51 @@ mod tests {
             observations,
         );
         (state, report)
+    }
+
+    #[test]
+    fn instruction_path_trace_records_retired_conditional_branch_and_following_order() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let mut boot = boot_with_entry(&[0x74, 0x02, 0x90, 0x90, 0x90, 0xF4]).0;
+        boot.board.state_mut().rflags |= 1 << 6;
+        let mut observations =
+            LinuxExecutionObservationCollector::default().with_instruction_path_trace(true);
+        for _ in 0..crate::LINUX_INSTRUCTION_PATH_TRACE_START_HITS {
+            observations.record_cpl0_rdtsc(Some(crate::LINUX_RDTSC_PREFIX_SENTINEL_RIP));
+        }
+        observations.begin_instruction_path_quantum(
+            crate::LINUX_INSTRUCTION_PATH_TRACE_QUANTUM,
+            crate::LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE,
+        );
+        let (state, report) = run_set_with_observations(
+            &mut boot,
+            true,
+            8,
+            &switch_set(&cli, &halt),
+            Some(&mut observations),
+        );
+        assert_eq!(report.instructions_executed, 3, "{report:?}");
+        assert_eq!(state.rip, ENTRY + 6);
+        let trace = observations.finish().instruction_path_trace.unwrap();
+        assert_eq!(trace.records.len(), 3);
+        assert_eq!(
+            (trace.records[0].rip, trace.records[0].next_rip),
+            (ENTRY, ENTRY + 4)
+        );
+        let branch = trace.records[0].control_flow.unwrap();
+        assert_eq!(branch.kind, "branch");
+        assert_eq!(branch.condition, Some(4));
+        assert!(branch.taken);
+        assert_ne!(branch.rflags_before & (1 << 6), 0);
+        assert_eq!(branch.destination, ENTRY + 4);
+        assert_eq!(
+            (trace.records[1].rip, trace.records[1].next_rip),
+            (ENTRY + 4, ENTRY + 5)
+        );
+        assert_eq!(
+            (trace.records[2].rip, trace.records[2].next_rip),
+            (ENTRY + 5, ENTRY + 6)
+        );
     }
 
     fn write_phys(boot: &mut LinuxDirectBoot, address: u64, bytes: &[u8]) {
@@ -10993,6 +11045,7 @@ mod tests {
                 Some(ENTRY + 2),
                 None,
                 None,
+                false,
             )
             .expect("board run");
 
