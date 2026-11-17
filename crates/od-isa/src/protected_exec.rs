@@ -1,29 +1,34 @@
 //! Execution of block 6 of the AP trampoline in 32-bit protected mode up to, but excluding, the
-//! first `RDMSR` (S6-14k).
+//! `MOV CR0, EAX` that enables paging (S6-14k, S6-14l).
 //!
 //! Scope is the closed set of forms of the S6-14a profile row 6 (CPU_CONTRACT.md, sections
-//! "S6-14a" and "S6-14k"), blob offsets `0x2000..0x203e`, entered from the block 5 far jump
-//! (S6-14j, [`RealModeCpu`]) with a flat 32-bit CS (`D = 1`) and no prefix byte:
+//! "S6-14a", "S6-14k" and "S6-14l"), blob offsets `0x2000..0x2062`, entered from the block 5 far
+//! jump (S6-14j, [`RealModeCpu`]) with a flat 32-bit CS (`D = 1`) and no prefix byte:
 //!
 //! | bytes                         | instruction                              |
 //! |-------------------------------|------------------------------------------|
 //! | `8e d2` / `da` / `c2` / `e2` / `ea` | `MOV SS`/`DS`/`ES`/`FS`/`GS, EDX`  |
 //! | `81 c4 imm32`                 | `ADD ESP, imm32`                         |
 //! | `0f ba 25 disp32 imm8`        | `BT m32, imm8` (DS:disp32, absolute)     |
-//! | `73 cb`                       | `JAE rel8`                               |
-//! | `a1 disp32`                   | `MOV EAX, moffs32` (DS:disp32)           |
+//! | `73 cb` / `75 cb` / `74 cb`   | `JAE` / `JNE` / `JE rel8`                |
+//! | `a1 disp32` / `8b 15 disp32`  | `MOV EAX, moffs32` / `MOV EDX, m32` (DS:disp32) |
+//! | `3b 05 disp32` / `3b 15 disp32` | `CMP EAX, m32` / `CMP EDX, m32` (DS:disp32) |
 //! | `0f 22 e0` / `d8`             | `MOV CR4, EAX` / `MOV CR3, EAX`          |
 //! | `b8 imm32` / `b9 imm32`       | `MOV EAX, imm32` / `MOV ECX, imm32`      |
+//! | `0f 32` / `0f 30`             | `RDMSR` / `WRMSR`, only with `ECX = 0xC0000080` (EFER) |
 //! | `0f 22 c0`                    | `MOV CR0, EAX`: always refused (below)   |
 //!
 //! Everything else is [`ProtectedRefusal::Unsupported`] with the address and bytes and no state
-//! change: in particular `RDMSR`/`WRMSR` (`0f 32`/`0f 30`), `CMP`, `JNE`/`JE` and every prefix
-//! byte (a `66` would select the 16-bit operand size). The slice ends at the first `RDMSR`
-//! (`0x203e` after `MOV ECX, 0xC0000080`, or `0x201f` inside the optional SME branch). `RDMSR`
-//! and `WRMSR` of EFER are part of the block 6 profile (row 6 of S6-14a: "EFER is read and
-//! conditionally updated from the header"); the S6-14g decision only deferred the Intel/AMD MSR
-//! branches inside `verify_cpu`. `ProtectedCpu` has no MSR model yet, so the slice temporarily
-//! ends with an explicit `Unsupported` at `0x203e`; S6-14l implements it.
+//! change: in particular `RDMSR`/`WRMSR` with any other `ECX` (the model has one MSR, EFER; the
+//! optional SME branch reads `0xC0010010` at `0x201f`, where a run stops), other `CMP`/`MOV`
+//! operand forms and every prefix byte (a `66` would select the 16-bit operand size).
+//!
+//! EFER (S6-14l): [`ProtectedCpu::efer`] is 0 at entry (after INIT). `RDMSR` returns it in
+//! `EDX:EAX`. `WRMSR` takes `EDX:EAX`: a bit outside `SCE` (0), `LME` (8), `LMA` (10) and `NXE`
+//! (11) is [`ProtectedRefusal::EferWriteReservedBits`] (the hardware `#GP(0)`; observed in the KVM
+//! oracle as a shutdown without an IDT); `SCE`, `LME` and `NXE` are stored; the `LMA` bit of the
+//! written value is ignored and `LMA` keeps its value, which is 0 here because long mode is never
+//! entered (observed in the oracle: KVM drops it without a fault). No other MSR exists.
 //!
 //! Paging is not modelled. `MOV CR0, EAX` with `PG = 1` is [`ProtectedRefusal::PagingNotModelled`]
 //! (the state is not changed); any other CR0 write is [`ProtectedRefusal::Cr0WriteUnmodelled`].
@@ -48,29 +53,44 @@
 //! ([`ProtectedCpu::from_real_entry`]): the GPRs, EIP, EFLAGS, CR0, GDTR, IDTR and the CS cache
 //! are copied; CR3 and CR4 are 0 (after INIT); DS/ES/SS/FS/GS keep their real-mode selector,
 //! base and limit with the attributes the oracle reports for them (access byte `0x93`, flags
-//! 0). EFER, CR2, CR8 and DR7 are not part of the state; LDTR and TR are not modelled. Memory is
+//! 0); EFER is 0. CR2, CR8 and DR7 are not part of the state; LDTR and TR are not modelled. Memory is
 //! physical = linear (no paging) through [`RealModeMemory`].
 //!
-//! Sources: Intel SDM Vol. 2 (`MOV` to/from control and segment registers, `BT`, `ADD`, `Jcc`),
-//! Vol. 3A chapters 2 (control registers) and 5 (protection), all from memory; the observed
-//! behaviour of each form is the KVM oracle of `docs/reports/data/stage6/s6-14k/` (native
-//! silicon under VMX, except where the S6-14i note on `CR0.ET` applies).
+//! Sources: Intel SDM Vol. 2 (`MOV` to/from control and segment registers, `BT`, `ADD`, `CMP`, `Jcc`,
+//! `RDMSR`, `WRMSR`), Vol. 3A (IA32_EFER),
+//! chapters 2 (control registers) and 5 (protection), all from memory; the observed behaviour of
+//! each form is the KVM oracle of `docs/reports/data/stage6/s6-14k/` and `s6-14l/` (native
+//! silicon under VMX, except where the S6-14i note on `CR0.ET` applies; `RDMSR`/`WRMSR` of EFER are
+//! emulated by KVM, so the oracle shows KVM's guest-visible behaviour).
 
 use crate::legacy_mode::ProtectedSegment;
 use crate::real_mode_exec::{
     CR0_PE, EAX, ECX, EDX, ESP, RealModeCpu, RealModeMemory, TableRegister, UNSUPPORTED_BYTES_MAX,
-    logic_flags,
+    logic_flags, sub_flags,
 };
 
 /// CR0.PG.
 pub const CR0_PG: u32 = 1 << 31;
 /// CR4 bits 0..10 (`VME` .. `OSXMMEXCPT`): the only bits `MOV CR4, EAX` may set in this slice.
 pub const CR4_MODELLED_MASK: u32 = 0x7FF;
+/// MSR index of `IA32_EFER`, the only MSR of the model.
+pub const MSR_EFER: u32 = 0xC000_0080;
+/// EFER.SCE (`SYSCALL` enable).
+pub const EFER_SCE: u64 = 1;
+/// EFER.LME (long mode enable).
+pub const EFER_LME: u64 = 1 << 8;
+/// EFER.LMA (long mode active): set by the processor, never by `WRMSR` (the written bit is ignored).
+pub const EFER_LMA: u64 = 1 << 10;
+/// EFER.NXE (no-execute enable).
+pub const EFER_NXE: u64 = 1 << 11;
+/// Bits a `WRMSR` of EFER may carry; any other bit of `EDX:EAX` is refused.
+pub const EFER_WRITABLE_MASK: u64 = EFER_SCE | EFER_LME | EFER_LMA | EFER_NXE;
 /// Access byte of a real-mode data segment register (present, DPL 0, `S = 1`, read/write,
 /// accessed), as the KVM oracle reports it (`type 3`, `P 1`, `DPL 0`).
 pub const REAL_MODE_DATA_ACCESS: u8 = 0x93;
 
 const EFLAGS_CF: u32 = 1;
+const EFLAGS_ZF: u32 = 1 << 6;
 /// CF, PF, AF, ZF, SF, OF: rewritten by `ADD`.
 const EFLAGS_ARITH: u32 = 0x8D5;
 const EFLAGS_AF: u32 = 1 << 4;
@@ -86,7 +106,7 @@ pub enum ProtectedSegReg {
     Gs,
 }
 
-/// Decoded instruction of block 6 (before the first `RDMSR`).
+/// Decoded instruction of block 6 (before the `MOV CR0` that enables paging).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProtectedInstruction {
     /// `8e /r` with `mod = 3`, `rm = EDX`: `MOV Sreg, EDX`.
@@ -97,8 +117,22 @@ pub enum ProtectedInstruction {
     BtDsImm8 { disp: u32, bit: u8 },
     /// `73 cb`: `JAE rel8`.
     JaeRel8(i8),
+    /// `75 cb`: `JNE rel8`.
+    JneRel8(i8),
+    /// `74 cb`: `JE rel8`.
+    JeRel8(i8),
     /// `a1 disp32`: `MOV EAX, DWORD PTR ds:disp32`.
     MovEaxFromDs(u32),
+    /// `8b 15 disp32`: `MOV EDX, DWORD PTR ds:disp32`.
+    MovEdxFromDs(u32),
+    /// `3b 05 disp32`: `CMP EAX, DWORD PTR ds:disp32`.
+    CmpEaxWithDs(u32),
+    /// `3b 15 disp32`: `CMP EDX, DWORD PTR ds:disp32`.
+    CmpEdxWithDs(u32),
+    /// `0f 32`: `RDMSR`; only `ECX = 0xC0000080` (EFER) is modelled.
+    Rdmsr,
+    /// `0f 30`: `WRMSR`; only `ECX = 0xC0000080` (EFER) is modelled.
+    Wrmsr,
     /// `0f 22 e0`.
     MovCr4Eax,
     /// `0f 22 d8`.
@@ -156,7 +190,7 @@ pub enum ProtectedRefusal {
     FetchBeyondLimit { eip: u32, offset: u64 },
     /// An instruction byte at `linear` is not readable in memory.
     FetchUnreadable { eip: u32, linear: u32 },
-    /// The target of a taken `JAE` is beyond the CS limit.
+    /// The target of a taken `JAE`/`JNE`/`JE` is beyond the CS limit.
     TargetBeyondLimit { eip: u32, offset: u32, limit: u32 },
     /// The 4-byte DS operand at `DS:disp` does not fit under the DS limit.
     DataBeyondLimit { eip: u32, disp: u32, limit: u32 },
@@ -169,6 +203,9 @@ pub enum ProtectedRefusal {
         selector: u16,
         reason: SegmentLoadReason,
     },
+    /// `WRMSR` of EFER with a bit outside [`EFER_WRITABLE_MASK`] in `EDX:EAX` (`value`): the
+    /// hardware raises `#GP(0)`.
+    EferWriteReservedBits { eip: u32, value: u64 },
     /// `MOV CR4, EAX` with a bit above bit 10 set (`value` is EAX).
     Cr4WriteUnmodelled { eip: u32, value: u32 },
     /// `MOV CR0, EAX` with `PG = 1`: paging is not modelled (`value` is EAX).
@@ -205,6 +242,9 @@ pub struct ProtectedCpu {
     pub cr3: u32,
     /// Stored by `MOV CR4, EAX` (bits 0..10 only).
     pub cr4: u32,
+    /// `IA32_EFER`, the only MSR: 0 at entry; `WRMSR` stores `SCE`, `LME`, `NXE`. `LMA` is never
+    /// changed by `WRMSR` (0 in this slice).
+    pub efer: u64,
     pub cs: ProtectedSegment,
     pub ds: ProtectedSegment,
     pub es: ProtectedSegment,
@@ -268,6 +308,7 @@ impl ProtectedCpu {
             cr0: real.mode.cr0,
             cr3: 0,
             cr4: 0,
+            efer: 0,
             cs,
             ds: real_data_segment(real.mode.ds),
             es: real_data_segment(real.mode.es),
@@ -364,6 +405,8 @@ impl ProtectedCpu {
                     let bit = self.fetch(mem, 7)?;
                     Ok((ProtectedInstruction::BtDsImm8 { disp, bit }, 8))
                 }
+                0x32 => Ok((ProtectedInstruction::Rdmsr, 2)),
+                0x30 => Ok((ProtectedInstruction::Wrmsr, 2)),
                 0x22 => match self.fetch(mem, 2)? {
                     0xE0 => Ok((ProtectedInstruction::MovCr4Eax, 3)),
                     0xD8 => Ok((ProtectedInstruction::MovCr3Eax, 3)),
@@ -373,6 +416,25 @@ impl ProtectedCpu {
                 _ => Err(self.unsupported(mem)),
             },
             0x73 => Ok((ProtectedInstruction::JaeRel8(self.fetch(mem, 1)? as i8), 2)),
+            0x75 => Ok((ProtectedInstruction::JneRel8(self.fetch(mem, 1)? as i8), 2)),
+            0x74 => Ok((ProtectedInstruction::JeRel8(self.fetch(mem, 1)? as i8), 2)),
+            0x3B => {
+                let insn = match self.fetch(mem, 1)? {
+                    0x05 => ProtectedInstruction::CmpEaxWithDs(self.fetch_u32(mem, 2)?),
+                    0x15 => ProtectedInstruction::CmpEdxWithDs(self.fetch_u32(mem, 2)?),
+                    _ => return Err(self.unsupported(mem)),
+                };
+                Ok((insn, 6))
+            }
+            0x8B => {
+                if self.fetch(mem, 1)? != 0x15 {
+                    return Err(self.unsupported(mem));
+                }
+                Ok((
+                    ProtectedInstruction::MovEdxFromDs(self.fetch_u32(mem, 2)?),
+                    6,
+                ))
+            }
             0xA1 => Ok((
                 ProtectedInstruction::MovEaxFromDs(self.fetch_u32(mem, 1)?),
                 5,
@@ -410,6 +472,20 @@ impl ProtectedCpu {
                 })?;
         }
         Ok(u32::from_le_bytes(bytes))
+    }
+
+    /// Target of a taken `Jcc rel8` whose next instruction is at `next_eip`: the 32-bit EIP wraps
+    /// at 4 GiB and the target must not exceed the CS limit.
+    fn jump_target(&self, next_eip: u32, rel: i8) -> Result<u32, ProtectedRefusal> {
+        let target = next_eip.wrapping_add(i32::from(rel) as u32);
+        if target > self.cs.limit {
+            return Err(ProtectedRefusal::TargetBeyondLimit {
+                eip: self.eip,
+                offset: target,
+                limit: self.cs.limit,
+            });
+        }
+        Ok(target)
     }
 
     /// Checks a `MOV Sreg` load of `selector` and returns the new cache and, if the descriptor's
@@ -543,19 +619,53 @@ impl ProtectedCpu {
             }
             ProtectedInstruction::JaeRel8(rel) => {
                 if self.eflags & EFLAGS_CF == 0 {
-                    let target = next_eip.wrapping_add(i32::from(rel) as u32);
-                    if target > self.cs.limit {
-                        return Err(ProtectedRefusal::TargetBeyondLimit {
-                            eip: self.eip,
-                            offset: target,
-                            limit: self.cs.limit,
-                        });
-                    }
-                    eip = target;
+                    eip = self.jump_target(next_eip, rel)?;
+                }
+            }
+            ProtectedInstruction::JneRel8(rel) => {
+                if self.eflags & EFLAGS_ZF == 0 {
+                    eip = self.jump_target(next_eip, rel)?;
+                }
+            }
+            ProtectedInstruction::JeRel8(rel) => {
+                if self.eflags & EFLAGS_ZF != 0 {
+                    eip = self.jump_target(next_eip, rel)?;
                 }
             }
             ProtectedInstruction::MovEaxFromDs(disp) => {
                 self.gpr[EAX] = self.read_ds_u32(mem, disp)?;
+            }
+            ProtectedInstruction::MovEdxFromDs(disp) => {
+                self.gpr[EDX] = self.read_ds_u32(mem, disp)?;
+            }
+            ProtectedInstruction::CmpEaxWithDs(disp) => {
+                let rhs = self.read_ds_u32(mem, disp)?;
+                self.eflags = (self.eflags & !EFLAGS_ARITH) | sub_flags(self.gpr[EAX], rhs);
+            }
+            ProtectedInstruction::CmpEdxWithDs(disp) => {
+                let rhs = self.read_ds_u32(mem, disp)?;
+                self.eflags = (self.eflags & !EFLAGS_ARITH) | sub_flags(self.gpr[EDX], rhs);
+            }
+            ProtectedInstruction::Rdmsr => {
+                if self.gpr[ECX] != MSR_EFER {
+                    return Err(self.unsupported(mem));
+                }
+                self.gpr[EAX] = self.efer as u32;
+                self.gpr[EDX] = (self.efer >> 32) as u32;
+            }
+            ProtectedInstruction::Wrmsr => {
+                if self.gpr[ECX] != MSR_EFER {
+                    return Err(self.unsupported(mem));
+                }
+                let value = (u64::from(self.gpr[EDX]) << 32) | u64::from(self.gpr[EAX]);
+                if value & !EFER_WRITABLE_MASK != 0 {
+                    return Err(ProtectedRefusal::EferWriteReservedBits {
+                        eip: self.eip,
+                        value,
+                    });
+                }
+                // LMA is set by the processor only: the written bit is ignored.
+                self.efer = (value & !EFER_LMA) | (self.efer & EFER_LMA);
             }
             ProtectedInstruction::MovCr4Eax => {
                 let value = self.gpr[EAX];
@@ -654,6 +764,7 @@ mod tests {
             cr0: 0x0005_0033,
             cr3: 0,
             cr4: 0,
+            efer: 0,
             cs: flat(0x08, 0x9B),
             ds: real,
             es: real,
@@ -725,20 +836,26 @@ mod tests {
     // ---- the linked bytes ----------------------------------------------------------------
 
     #[test]
-    fn linked_bytes_run_to_the_first_rdmsr() {
+    fn linked_bytes_run_13_steps_to_the_efer_rdmsr() {
+        // S6-14k stopped here (the RDMSR was Unsupported); S6-14l runs on, so the bound is explicit.
         let mut ram = new_ram();
         put_linked_block6(&mut ram);
         put(&mut ram, 0x5010, &0x0000_06B0u32.to_le_bytes());
         put(&mut ram, 0x5014, &0u32.to_le_bytes());
         let mut cpu = entry_cpu();
-        let run = cpu.run(&mut mem(&mut ram), 100);
+        let run = cpu.run(&mut mem(&mut ram), 13);
         // mov ss, add, mov ds/es/fs/gs, bt, jae (taken), mov eax, mov cr4, mov eax, mov cr3, mov ecx.
-        assert_eq!(run.steps, 13);
-        let Some(ProtectedRefusal::Unsupported { eip, bytes, .. }) = run.stop else {
-            panic!("expected a stop at the RDMSR, got {:?}", run.stop);
-        };
-        assert_eq!(eip, 0x203E);
-        assert_eq!(&bytes[..2], &[0x0F, 0x32], "the RDMSR is not executed");
+        assert_eq!(
+            run,
+            ProtectedRun {
+                steps: 13,
+                stop: None
+            }
+        );
+        assert_eq!(
+            cpu.gpr[EDX], 0x0003_0018,
+            "the RDMSR is not executed yet (it would load EDX = 0)"
+        );
         assert_eq!(cpu.eip, 0x203E);
         for seg in [cpu.ss, cpu.ds, cpu.es, cpu.fs, cpu.gs] {
             assert_eq!(seg, flat(0x18, 0x93));
@@ -750,6 +867,7 @@ mod tests {
         // `add esp, 0` on ESP = 0: ZF and PF; bt clears CF and keeps the rest; bit 1 stays.
         assert_eq!(cpu.eflags, 0x46);
         assert_eq!(cpu.cs, flat(0x08, 0x9B));
+        assert_eq!(cpu.efer, 0);
     }
 
     #[test]
@@ -776,7 +894,7 @@ mod tests {
         put_linked_block6(&mut ram);
         put(&mut ram, 0x5014, &0xFFFF_FFFEu32.to_le_bytes());
         let mut cpu = entry_cpu();
-        let run = cpu.run(&mut mem(&mut ram), 100);
+        let run = cpu.run(&mut mem(&mut ram), 13);
         assert_eq!(run.steps, 13);
         assert_eq!(cpu.eip, 0x203E);
     }
@@ -1249,13 +1367,403 @@ mod tests {
         }
     }
 
+    // ---- RDMSR / WRMSR of EFER ----------------------------------------------------------
+
+    fn efer_cpu(efer: u64) -> ProtectedCpu {
+        let mut cpu = entry_cpu();
+        cpu.gpr[ECX] = MSR_EFER;
+        cpu.gpr[EDX] = 0;
+        cpu.efer = efer;
+        cpu
+    }
+
+    #[test]
+    fn rdmsr_efer_returns_the_value_in_edx_eax() {
+        for (efer, eax, edx) in [
+            (0u64, 0u32, 0u32),
+            (0x901, 0x901, 0),
+            (0x0000_0001_0000_0D01, 0xD01, 1), // a high half cannot be written, but is read as is
+        ] {
+            let (mut cpu, mut ram) = (efer_cpu(efer), new_ram());
+            cpu.eflags = 0x246;
+            cpu.gpr[EAX] = 0xAAAA_AAAA;
+            cpu.gpr[EDX] = 0xBBBB_BBBB;
+            assert_eq!(
+                step_one(&mut cpu, &mut ram, &[0x0F, 0x32]),
+                Ok(ProtectedInstruction::Rdmsr)
+            );
+            assert_eq!((cpu.gpr[EAX], cpu.gpr[EDX]), (eax, edx));
+            assert_eq!(cpu.gpr[ECX], MSR_EFER, "ECX is not written");
+            assert_eq!((cpu.eflags, cpu.eip, cpu.efer), (0x246, 0x2002, efer));
+        }
+    }
+
+    #[test]
+    fn rdmsr_and_wrmsr_of_any_other_msr_are_unsupported() {
+        for msr in [
+            0u32,
+            0x1B,
+            0xC001_0010, // SYSCFG: the optional SME branch
+            0xC000_0081,
+            0xC000_007F,
+            0x4000_0080, // only the full index counts
+            0xC000_0080 | 0x1_0000,
+        ] {
+            for code in [[0x0F, 0x32], [0x0F, 0x30]] {
+                let (mut cpu, mut ram) = (efer_cpu(0x901), new_ram());
+                cpu.gpr[ECX] = msr;
+                cpu.gpr[EAX] = 0x100;
+                match step_one(&mut cpu, &mut ram, &code) {
+                    Err(ProtectedRefusal::Unsupported { eip, bytes, .. }) => {
+                        assert_eq!(eip, 0x2000);
+                        assert_eq!(&bytes[..2], &code);
+                    }
+                    other => panic!("msr {msr:#x} {code:02x?}: {other:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wrmsr_efer_stores_sce_lme_nxe_from_edx_eax() {
+        for (value, stored) in [
+            (0u64, 0u64),
+            (0x1, 0x1),
+            (0x100, 0x100),
+            (0x800, 0x800),
+            (0x901, 0x901), // SCE | LME | NXE: what Linux writes for the BSP
+            (0x101, 0x101),
+        ] {
+            let (mut cpu, mut ram) = (efer_cpu(0), new_ram());
+            cpu.gpr[EAX] = value as u32;
+            cpu.gpr[EDX] = (value >> 32) as u32;
+            cpu.eflags = 0x246;
+            assert_eq!(
+                step_one(&mut cpu, &mut ram, &[0x0F, 0x30]),
+                Ok(ProtectedInstruction::Wrmsr)
+            );
+            assert_eq!(cpu.efer, stored, "{value:#x}");
+            assert_eq!((cpu.gpr[EAX], cpu.gpr[ECX]), (value as u32, MSR_EFER));
+            assert_eq!((cpu.eflags, cpu.eip), (0x246, 0x2002));
+        }
+        // A later write replaces the whole value (it is not or-ed in).
+        let (mut cpu, mut ram) = (efer_cpu(0x901), new_ram());
+        cpu.gpr[EAX] = 0x100;
+        step_one(&mut cpu, &mut ram, &[0x0F, 0x30]).unwrap();
+        assert_eq!(cpu.efer, 0x100);
+    }
+
+    #[test]
+    fn wrmsr_efer_ignores_the_lma_bit_and_keeps_lma() {
+        // KVM oracle: 0x401 reads back 0x1, 0x400 reads back 0, no fault.
+        for (efer_before, value, after) in [
+            (0u64, 0x401u64, 0x1u64),
+            (0, 0x400, 0),
+            (0, 0xD01, 0x901),
+            // LMA is only set by the processor (never in this slice): an LMA that is set stays set.
+            (0x400, 0x101, 0x501),
+            (0x400, 0, 0x400),
+            (0x401, 0x400, 0x400),
+        ] {
+            let (mut cpu, mut ram) = (efer_cpu(efer_before), new_ram());
+            cpu.gpr[EAX] = value as u32;
+            cpu.gpr[EDX] = (value >> 32) as u32;
+            step_one(&mut cpu, &mut ram, &[0x0F, 0x30]).unwrap();
+            assert_eq!(cpu.efer, after, "{efer_before:#x} <- {value:#x}");
+        }
+    }
+
+    #[test]
+    fn wrmsr_efer_refuses_every_reserved_bit_and_keeps_the_state() {
+        let allowed = EFER_WRITABLE_MASK;
+        for bit in 0..64u32 {
+            let value = 1u64 << bit;
+            let (mut cpu, mut ram) = (efer_cpu(0x101), new_ram());
+            cpu.gpr[EAX] = value as u32;
+            cpu.gpr[EDX] = (value >> 32) as u32;
+            cpu.eflags = 0x246;
+            let result = step_one(&mut cpu, &mut ram, &[0x0F, 0x30]);
+            if allowed & value != 0 {
+                assert_eq!(result, Ok(ProtectedInstruction::Wrmsr), "bit {bit}");
+            } else {
+                // `step_one` has checked that the state and the memory are unchanged.
+                assert_eq!(
+                    result,
+                    Err(ProtectedRefusal::EferWriteReservedBits { eip: 0x2000, value }),
+                    "bit {bit}"
+                );
+                assert_eq!(cpu.efer, 0x101, "bit {bit}");
+            }
+        }
+        // A reserved bit next to legal ones refuses the whole write.
+        let (mut cpu, mut ram) = (efer_cpu(0), new_ram());
+        cpu.gpr[EAX] = 0x901 | 0x2;
+        assert!(matches!(
+            step_one(&mut cpu, &mut ram, &[0x0F, 0x30]),
+            Err(ProtectedRefusal::EferWriteReservedBits { value: 0x903, .. })
+        ));
+        assert_eq!(cpu.efer, 0);
+    }
+
+    // ---- CMP, JNE, JE, MOV EDX ----------------------------------------------------------
+
+    #[test]
+    fn cmp_with_ds_operand_sets_the_six_arithmetic_flags_only() {
+        // (register, operand, expected CF/PF/AF/ZF/SF/OF) by SDM Vol. 1 appendix A, from memory.
+        const CF: u32 = 0x1;
+        const PF: u32 = 0x4;
+        const AF: u32 = 0x10;
+        const ZF: u32 = 0x40;
+        const SF: u32 = 0x80;
+        const OF: u32 = 0x800;
+        for (lhs, rhs, flags) in [
+            (5u32, 5u32, ZF | PF),
+            (0, 0, ZF | PF),
+            (0, 1, CF | AF | SF | PF),                     // 0xffffffff
+            (1, 0, 0),                                     // 0x01: one bit, PF clear
+            (4, 1, PF),                                    // 0x03
+            (3, 1, 0),                                     // 0x02
+            (0x8000_0000, 1, OF | AF | PF),                // 0x7fffffff
+            (0x7FFF_FFFF, 0xFFFF_FFFF, CF | OF | SF | PF), // 0x80000000
+            (0x1000, 0x1001, CF | AF | SF | PF),
+            (0x901, 0xD01, CF | SF | PF), // 0xfffffc00: low byte 0 (PF)
+            (0xD01, 0x901, PF),           // 0x400
+        ] {
+            for (code, reg) in [
+                ([0x3B, 0x05, 0x08, 0x50, 0, 0], EAX),
+                ([0x3B, 0x15, 0x08, 0x50, 0, 0], EDX),
+            ] {
+                let (mut cpu, mut ram) = (entry_cpu(), new_ram());
+                cpu.ds = flat(0x18, 0x93);
+                put(&mut ram, 0x5008, &rhs.to_le_bytes());
+                cpu.gpr[reg] = lhs;
+                // Reserved bit 1, IF, RF and TF stay; all six arithmetic bits start set.
+                cpu.eflags = 0x2 | 0x200 | 0x10000 | 0x100 | 0x8D5;
+                let before_gpr = cpu.gpr;
+                let insn = step_one(&mut cpu, &mut ram, &code).unwrap();
+                assert_eq!(
+                    insn,
+                    if reg == EAX {
+                        ProtectedInstruction::CmpEaxWithDs(0x5008)
+                    } else {
+                        ProtectedInstruction::CmpEdxWithDs(0x5008)
+                    }
+                );
+                assert_eq!(
+                    cpu.eflags,
+                    0x2 | 0x200 | 0x10000 | 0x100 | flags,
+                    "{lhs:#x} - {rhs:#x}"
+                );
+                assert_eq!(cpu.gpr, before_gpr, "CMP writes no register");
+                assert_eq!(
+                    &ram[0x5008..0x500C],
+                    &rhs.to_le_bytes(),
+                    "CMP writes no memory"
+                );
+                assert_eq!(cpu.eip, 0x2006);
+            }
+        }
+    }
+
+    #[test]
+    fn cmp_and_mov_edx_operands_go_through_the_ds_base_and_limit() {
+        let (mut cpu, mut ram) = (entry_cpu(), new_ram());
+        cpu.ds = ProtectedSegment {
+            selector: 0x18,
+            base: 0x1000,
+            limit: 0x500F,
+            access: 0x93,
+            flags: 0x4,
+        };
+        put(&mut ram, 0x6008, &7u32.to_le_bytes());
+        put(&mut ram, 0x600C, &0xCAFE_F00Du32.to_le_bytes());
+        put(&mut ram, 0x5008, &9u32.to_le_bytes()); // decoy at the unbased address
+        cpu.gpr[EAX] = 7;
+        step_one(&mut cpu, &mut ram, &[0x3B, 0x05, 0x08, 0x50, 0, 0]).unwrap();
+        assert_eq!(cpu.eflags & EFLAGS_ZF, EFLAGS_ZF, "7 - 7");
+        cpu.eip = 0x2000;
+        step_one(&mut cpu, &mut ram, &[0x8B, 0x15, 0x0C, 0x50, 0, 0]).unwrap();
+        assert_eq!(cpu.gpr[EDX], 0xCAFE_F00D);
+        assert_eq!(cpu.eip, 0x2006);
+        // The last dword under the limit is fine, one byte further is refused, for all three.
+        for code in [
+            [0x3B, 0x05, 0x0D, 0x50, 0, 0],
+            [0x3B, 0x15, 0x0D, 0x50, 0, 0],
+            [0x8B, 0x15, 0x0D, 0x50, 0, 0],
+        ] {
+            cpu.eip = 0x2000;
+            assert_eq!(
+                step_one(&mut cpu, &mut ram, &code),
+                Err(ProtectedRefusal::DataBeyondLimit {
+                    eip: 0x2000,
+                    disp: 0x500D,
+                    limit: 0x500F
+                })
+            );
+        }
+        cpu.eip = 0x2000;
+        cpu.ds = flat(0x18, 0x93);
+        // The image ends at 0x6100: an operand half outside is unreadable.
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &[0x3B, 0x15, 0xFE, 0x60, 0, 0]),
+            Err(ProtectedRefusal::DataUnreadable {
+                eip: 0x2000,
+                linear: 0x6100
+            })
+        );
+    }
+
+    #[test]
+    fn jne_and_je_follow_zf_and_leave_the_flags() {
+        for (zf, rel, jne_to, je_to) in [
+            (0u32, 0x08u8, Some(0x200Au32), None),
+            (1, 0x08, None, Some(0x200A)),
+            (0, 0xFE, Some(0x2000), None), // to itself
+            (1, 0xFE, None, Some(0x2000)),
+            (0, 0x80, Some(0x2002 - 128), None),
+        ] {
+            for (code, taken_to, expect) in [
+                (0x75u8, jne_to, ProtectedInstruction::JneRel8(rel as i8)),
+                (0x74u8, je_to, ProtectedInstruction::JeRel8(rel as i8)),
+            ] {
+                let (mut cpu, mut ram) = (entry_cpu(), new_ram());
+                cpu.eflags = 0x2 | 0x80 | 0x1 | (zf << 6);
+                assert_eq!(step_one(&mut cpu, &mut ram, &[code, rel]), Ok(expect));
+                assert_eq!(
+                    cpu.eip,
+                    taken_to.unwrap_or(0x2002),
+                    "{code:#x} zf {zf} rel {rel:#x}"
+                );
+                assert_eq!(
+                    cpu.eflags,
+                    0x2 | 0x80 | 0x1 | (zf << 6),
+                    "no flag is written"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn taken_jne_and_je_beyond_the_cs_limit_are_refused_and_untaken_ones_are_not_checked() {
+        for (code, zf_taken) in [(0x75u8, 0u32), (0x74, 1)] {
+            let (mut cpu, mut ram) = (entry_cpu(), new_ram());
+            cpu.cs.limit = 0x2010;
+            cpu.eflags = 2 | (zf_taken << 6);
+            assert_eq!(
+                step_one(&mut cpu, &mut ram, &[code, 0x0F]),
+                Err(ProtectedRefusal::TargetBeyondLimit {
+                    eip: 0x2000,
+                    offset: 0x2011,
+                    limit: 0x2010
+                })
+            );
+            // The limit itself is allowed.
+            assert!(step_one(&mut cpu, &mut ram, &[code, 0x0E]).is_ok());
+            assert_eq!(cpu.eip, 0x2010);
+            // Not taken: no check.
+            let mut cpu = entry_cpu();
+            cpu.cs.limit = 0x2010;
+            cpu.eflags = 2 | ((1 - zf_taken) << 6);
+            assert!(step_one(&mut cpu, &mut ram, &[code, 0x0F]).is_ok());
+            assert_eq!(cpu.eip, 0x2002);
+        }
+        // A negative displacement that wraps below zero lands beyond the limit.
+        let (mut cpu, mut ram) = (entry_cpu(), new_ram());
+        cpu.cs.limit = 0xFFFF;
+        cpu.eip = 0x10;
+        cpu.eflags = 2;
+        put(&mut ram, 0x10, &[0x75, 0x80]);
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Err(ProtectedRefusal::TargetBeyondLimit {
+                eip: 0x10,
+                offset: 0xFFFF_FF92,
+                limit: 0xFFFF
+            })
+        );
+    }
+
+    // ---- the linked path 0x203e..0x2062 ----------------------------------------------------
+
+    /// Runs the linked block 6 from the entry state with the header EFER `(lo, hi)` and the
+    /// current `efer`, up to the refusal; returns the CPU and the run.
+    fn run_linked_with_header(efer: u64, lo: u32, hi: u32) -> (ProtectedCpu, ProtectedRun) {
+        let mut ram = new_ram();
+        put_linked_block6(&mut ram);
+        put(&mut ram, 0x5008, &lo.to_le_bytes());
+        put(&mut ram, 0x500C, &hi.to_le_bytes());
+        let mut cpu = entry_cpu();
+        cpu.efer = efer;
+        let run = cpu.run(&mut mem(&mut ram), 100);
+        (cpu, run)
+    }
+
+    #[test]
+    fn equal_efer_skips_the_wrmsr_and_stops_at_the_paging_write() {
+        // EFER = header: rdmsr, cmp, jne (not taken), cmp, je (taken) to 0x205d, mov eax.
+        for efer in [0u64, 0x901] {
+            let (cpu, run) = run_linked_with_header(efer, efer as u32, 0);
+            assert_eq!(run.steps, 13 + 6);
+            assert_eq!(
+                run.stop,
+                Some(ProtectedRefusal::PagingNotModelled {
+                    eip: 0x2062,
+                    value: 0x8005_0033
+                })
+            );
+            assert_eq!((cpu.efer, cpu.eip), (efer, 0x2062));
+            assert_eq!((cpu.gpr[EAX], cpu.gpr[EDX]), (0x8005_0033, 0));
+            assert_eq!(cpu.cr0, 0x0005_0033, "CR0 untouched");
+        }
+    }
+
+    #[test]
+    fn different_efer_is_written_from_the_header() {
+        // rdmsr, cmp, jne (taken) to 0x2050, mov eax, mov edx, wrmsr, mov eax.
+        for (header, efer_after) in [(0x901u32, 0x901u64), (0x100, 0x100), (0xD01, 0x901)] {
+            let (cpu, run) = run_linked_with_header(0, header, 0);
+            assert_eq!(run.steps, 13 + 7, "header {header:#x}");
+            assert!(matches!(
+                run.stop,
+                Some(ProtectedRefusal::PagingNotModelled { eip: 0x2062, .. })
+            ));
+            assert_eq!(cpu.efer, efer_after, "header {header:#x}");
+            assert_eq!((cpu.gpr[EAX], cpu.gpr[EDX]), (0x8005_0033, 0));
+        }
+        // Same low dword, different high dword: JNE falls through, CMP EDX differs, JE not
+        // taken, the write goes ahead (EDX:EAX = 1:0) and is refused (bit 32): the stop is at the
+        // WRMSR with the loads done and EFER unchanged.
+        let (cpu, run) = run_linked_with_header(0, 0, 1);
+        assert_eq!(run.steps, 13 + 7);
+        assert_eq!(
+            run.stop,
+            Some(ProtectedRefusal::EferWriteReservedBits {
+                eip: 0x205B,
+                value: 1 << 32
+            })
+        );
+        assert_eq!((cpu.eip, cpu.efer), (0x205B, 0));
+        assert_eq!((cpu.gpr[EAX], cpu.gpr[EDX]), (0, 1));
+        // A reserved bit in the low dword: refused at the same WRMSR.
+        let (cpu, run) = run_linked_with_header(0, 0x2, 0);
+        assert_eq!(run.steps, 13 + 5);
+        assert!(matches!(
+            run.stop,
+            Some(ProtectedRefusal::EferWriteReservedBits {
+                eip: 0x205B,
+                value: 2
+            })
+        ));
+        assert_eq!(cpu.efer, 0);
+    }
+
     // ---- decode boundaries ---------------------------------------------------------------
 
     #[test]
     fn everything_outside_the_closed_set_is_unsupported() {
         let rejected: [&[u8]; 20] = [
-            &[0x0F, 0x32],                            // RDMSR
-            &[0x0F, 0x30],                            // WRMSR
+            &[0x0F, 0x32],                            // RDMSR, ECX = 0 (not EFER)
+            &[0x0F, 0x30],                            // WRMSR, ECX = 0 (not EFER)
             &[0xF4],                                  // HLT
             &[0x66, 0xB8, 1, 0],                      // operand-size prefix
             &[0x67, 0xA1, 0, 0, 0, 0],                // address-size prefix
@@ -1270,9 +1778,9 @@ mod tests {
             &[0x0F, 0xBA, 0x24, 0x25, 0, 0, 0, 0, 0], // BT with SIB
             &[0x0F, 0x22, 0xC8],                      // MOV CR1
             &[0x0F, 0x20, 0xC0],                      // MOV EAX, CR0
-            &[0x3B, 0x05, 0, 0, 0, 0],                // CMP EAX, m32
-            &[0x75, 0x08],                            // JNE
-            &[0x8B, 0x15, 0, 0, 0, 0],                // MOV EDX, m32
+            &[0x39, 0x05, 0, 0, 0, 0],                // CMP m32, EAX
+            &[0x0F, 0x85, 8, 0, 0, 0],                // JNE rel32
+            &[0x8B, 0x0D, 0, 0, 0, 0],                // MOV ECX, m32
             &[0xEA, 0, 0, 0, 0, 0x10, 0],             // far JMP
         ];
         for code in rejected {
@@ -1386,7 +1894,7 @@ mod tests {
         let cpu = ProtectedCpu::from_real_entry(&real).unwrap();
         assert_eq!(cpu.gpr, real.gpr);
         assert_eq!((cpu.eip, cpu.eflags, cpu.cr0), (0x2000, 0x46, 0x0005_0033));
-        assert_eq!((cpu.cr3, cpu.cr4), (0, 0));
+        assert_eq!((cpu.cr3, cpu.cr4, cpu.efer), (0, 0, 0));
         assert_eq!(cpu.cs, flat(0x08, 0x9B));
         assert_eq!(
             cpu.ds,
@@ -1443,9 +1951,9 @@ mod tests {
         (gpa, bytes)
     }
 
-    fn compare_with_oracle_k(image: &[u8], json: &str, expected_steps: u64, hlt_at: u32) {
-        assert!(json.contains("\"stop_reason\":\"guest_hlt\""));
-        assert!(json.contains("\"exits\":[{\"kind\":\"hlt\"}]"));
+    /// Runs the S6-14j prefix of an oracle image through `RealModeCpu` and returns the protected
+    /// state at 0x2000 with the memory.
+    fn enter_from_oracle_image(image: &[u8], json: &str) -> (ProtectedCpu, Vec<u8>) {
         let mut real = RealModeCpu::at_cs_ip(0, 0, 0x6000_0010, oracle_signature(json));
         let mut ram = vec![0u8; RAM];
         ram[..image.len()].copy_from_slice(image);
@@ -1455,7 +1963,14 @@ mod tests {
             run.stop,
             Some(RealModeRefusal::NotRealMode { cr0: real.mode.cr0 })
         );
-        let mut cpu = ProtectedCpu::from_real_entry(&real).expect("protected entry");
+        let cpu = ProtectedCpu::from_real_entry(&real).expect("protected entry");
+        (cpu, ram)
+    }
+
+    fn compare_with_oracle_k(image: &[u8], json: &str, expected_steps: u64, hlt_at: u32) {
+        assert!(json.contains("\"stop_reason\":\"guest_hlt\""));
+        assert!(json.contains("\"exits\":[{\"kind\":\"hlt\"}]"));
+        let (mut cpu, mut ram) = enter_from_oracle_image(image, json);
         let run = cpu.run(&mut mem(&mut ram), 100);
         assert_eq!(run.steps, expected_steps);
         match run.stop {
@@ -1465,6 +1980,20 @@ mod tests {
             }
             other => panic!("expected a stop at the HLT, got {other:?}"),
         }
+        compare_state(&cpu, &ram, json, 1, 0);
+    }
+
+    /// Compares the model state with `final_state` of the oracle JSON: GPRs, RIP (`rip_delta` past
+    /// EIP: 1 after a HLT, 0 for a faulting instruction), EFLAGS (the bits of `rflags_ignore` are
+    /// cleared in the oracle value first), CR0/CR3/CR4/EFER, the six segments, GDTR/IDTR and the
+    /// captured memory block.
+    fn compare_state(
+        cpu: &ProtectedCpu,
+        ram: &[u8],
+        json: &str,
+        rip_delta: u64,
+        rflags_ignore: u64,
+    ) {
         let fs = |path: &[&str]| {
             let mut full = vec!["final_state"];
             full.extend_from_slice(path);
@@ -1483,20 +2012,16 @@ mod tests {
         for (name, index) in gprs {
             assert_eq!(u64::from(cpu.gpr[index]), fs(&["gpr", name]), "{name}");
         }
+        assert_eq!(u64::from(cpu.eip) + rip_delta, fs(&["rip"]), "RIP");
         assert_eq!(
-            u64::from(cpu.eip) + 1,
-            fs(&["rip"]),
-            "RIP is one past the HLT"
+            u64::from(cpu.eflags),
+            fs(&["rflags"]) & !rflags_ignore,
+            "EFLAGS"
         );
-        assert_eq!(u64::from(cpu.eflags), fs(&["rflags"]), "EFLAGS");
         for (name, value) in [("cr0", cpu.cr0), ("cr3", cpu.cr3), ("cr4", cpu.cr4)] {
             assert_eq!(u64::from(value), fs(&["control", name]), "{name}");
         }
-        assert_eq!(
-            fs(&["control", "efer"]),
-            0,
-            "EFER untouched before the RDMSR"
-        );
+        assert_eq!(cpu.efer, fs(&["control", "efer"]), "EFER");
         assert_eq!(fs(&["control", "cr2"]), 0);
         for (name, seg) in [
             ("cs", cpu.cs),
@@ -1596,5 +2121,149 @@ mod tests {
         "f-sme-flag-stop-at-rdmsr-201f-0000-0000",
         9,
         0x201F
+    );
+
+    // ---- comparison with the KVM oracle (S6-14l) ------------------------------------------
+    //
+    // Files in docs/reports/data/stage6/s6-14l/ (make-images.py, run-oracle.sh). Every image runs
+    // the S6-14j prefix through `RealModeCpu` and the linked block 6 bytes 0x2000..0x2062 through
+    // `ProtectedCpu`; the `MOV CR0, EAX` at 0x2062 is replaced by a HLT or by an EFER read-back
+    // (see make-images.py). Two outcomes: the model stops at the HLT (`Unsupported`, the oracle's
+    // RIP is one past it) or the WRMSR of EFER is refused (`EferWriteReservedBits`; the oracle
+    // takes `#GP` with an empty IDT, a shutdown with RIP at the WRMSR and RF set in RFLAGS, which
+    // is the only bit ignored in the comparison). Compared: GPRs, EIP, EFLAGS, CR0, CR3, CR4,
+    // EFER, the six segments, GDTR, IDTR and the captured GDT block.
+
+    #[derive(Clone, Copy)]
+    enum OracleOutcomeL {
+        /// The run stops at the HLT at this address.
+        Halt(u32),
+        /// The WRMSR at 0x205b is refused for this `EDX:EAX`.
+        WrmsrRefused(u64),
+    }
+
+    fn compare_with_oracle_l(
+        image: &[u8],
+        json: &str,
+        expected_steps: u64,
+        outcome: OracleOutcomeL,
+    ) {
+        let (mut cpu, mut ram) = enter_from_oracle_image(image, json);
+        let run = cpu.run(&mut mem(&mut ram), 100);
+        assert_eq!(run.steps, expected_steps);
+        match outcome {
+            OracleOutcomeL::Halt(hlt_at) => {
+                assert!(json.contains("\"stop_reason\":\"guest_hlt\""));
+                assert!(json.contains("\"exits\":[{\"kind\":\"hlt\"}]"));
+                match run.stop {
+                    Some(ProtectedRefusal::Unsupported { eip, bytes, .. }) => {
+                        assert_eq!(eip, hlt_at);
+                        assert_eq!(bytes[0], 0xF4, "stops at the HLT");
+                    }
+                    other => panic!("expected a stop at the HLT, got {other:?}"),
+                }
+                compare_state(&cpu, &ram, json, 1, 0);
+            }
+            OracleOutcomeL::WrmsrRefused(value) => {
+                assert!(json.contains("\"stop_reason\":\"triple_fault_or_shutdown\""));
+                assert!(json.contains("\"exits\":[{\"kind\":\"shutdown\"}]"));
+                assert_eq!(
+                    run.stop,
+                    Some(ProtectedRefusal::EferWriteReservedBits { eip: 0x205B, value })
+                );
+                compare_state(&cpu, &ram, json, 0, 0x1_0000);
+            }
+        }
+    }
+
+    macro_rules! oracle_case_l {
+        ($name:ident, $stem:literal, $steps:expr, $outcome:expr) => {
+            #[test]
+            fn $name() {
+                let image: &[u8] = include_bytes!(concat!(
+                    "../../../docs/reports/data/stage6/s6-14l/",
+                    $stem,
+                    ".bin"
+                ));
+                let json: &str = include_str!(concat!(
+                    "../../../docs/reports/data/stage6/s6-14l/oracle-",
+                    $stem,
+                    ".json"
+                ));
+                compare_with_oracle_l(image, json, $steps, $outcome);
+            }
+        };
+    }
+    use OracleOutcomeL::{Halt, WrmsrRefused};
+    // a: header EFER 0x901 (SCE|LME|NXE): rdmsr 0, cmp/jne taken, loads, wrmsr, read-back equal.
+    oracle_case_l!(
+        oracle_l_a_efer_901_written_and_read_back,
+        "a-efer-901-written-and-read-back-0000-0000",
+        25,
+        Halt(0x2075)
+    );
+    // b: header EFER 0: both compares equal, JE skips the WRMSR, HLT in place of MOV CR0.
+    oracle_case_l!(
+        oracle_l_b_equal_efer_skips_wrmsr,
+        "b-efer-0-equal-skips-wrmsr-0000-0000",
+        19,
+        Halt(0x2062)
+    );
+    oracle_case_l!(
+        oracle_l_c_lme_only,
+        "c-efer-lme-only-0000-0000",
+        25,
+        Halt(0x2075)
+    );
+    // d: low dword equal, high dword 1: JNE not taken, JE not taken, WRMSR of 1:0 refused.
+    oracle_case_l!(
+        oracle_l_d_high_dword_bit_32_refused,
+        "d-efer-high-dword-bit32-reserved-0000-0000",
+        20,
+        WrmsrRefused(1 << 32)
+    );
+    // e: 0x401 (SCE|LMA): LMA dropped, read-back 1 differs from the header: HLT at 0x2074.
+    oracle_case_l!(
+        oracle_l_e_lma_dropped_with_sce,
+        "e-efer-sce-lma-written-0000-0000",
+        23,
+        Halt(0x2074)
+    );
+    oracle_case_l!(
+        oracle_l_f_bit_1_refused,
+        "f-efer-bit1-reserved-0000-0000",
+        18,
+        WrmsrRefused(0x2)
+    );
+    oracle_case_l!(
+        oracle_l_g_bit_12_refused,
+        "g-efer-bit12-svme-0000-0000",
+        18,
+        WrmsrRefused(0x1000)
+    );
+    oracle_case_l!(
+        oracle_l_h_nxe_only,
+        "h-efer-nxe-only-0000-0000",
+        25,
+        Halt(0x2075)
+    );
+    oracle_case_l!(
+        oracle_l_i_bit_9_refused,
+        "i-efer-bit9-reserved-0000-0000",
+        18,
+        WrmsrRefused(0x200)
+    );
+    // j: 0x400 (LMA only): dropped, EFER stays 0.
+    oracle_case_l!(
+        oracle_l_j_lma_only_dropped,
+        "j-efer-lma-only-0000-0000",
+        23,
+        Halt(0x2074)
+    );
+    oracle_case_l!(
+        oracle_l_k_lma_dropped_from_d01,
+        "k-efer-d01-lma-dropped-0000-0000",
+        23,
+        Halt(0x2074)
     );
 }

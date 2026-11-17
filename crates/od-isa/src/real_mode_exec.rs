@@ -502,7 +502,7 @@ pub(crate) fn logic_flags(result: u32) -> u32 {
 /// Flags of the 32-bit subtraction `lhs - rhs` (`CMP`): `CF` = borrow, `OF` = signed overflow,
 /// `AF` = borrow out of bit 3, `SF`/`ZF`/`PF` from the result (SDM Vol. 1 appendix A, by
 /// memory). Only the six arithmetic bits are returned.
-fn sub_flags(lhs: u32, rhs: u32) -> u32 {
+pub(crate) fn sub_flags(lhs: u32, rhs: u32) -> u32 {
     let result = lhs.wrapping_sub(rhs);
     let mut flags = logic_flags(result);
     if lhs < rhs {
