@@ -1574,3 +1574,20 @@ After admission it retires 9,861 instructions and stops at `0F 84 17 02 00 00`
 COM1 is empty. ISSUE-201 remains the unrelated CLD expectation caveat.
 
 Full od-isa suites pass (2,322/1,591/126/29/6/1,245/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline cargo check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-383 — exact JZ rel32 +0x217 (`0F 84 17 02 00 00`)
+
+Admit only this exact no-prefix JZ rel32 encoding in base `PagedCpl0ProbeV1`.
+The condition reads ZF; compute the taken target from next RIP, preserve all
+flags and definedness, and check canonicality only for a taken target. Final
+displacement fetch faults are atomic. Five focused ISA tests pass for both ZF
+outcomes/definedness, branch targets, taken-only canonicality, fetch fault,
+neighbors and CPL3; the other-profile rejection matrix passes.
+
+The runner on `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) advances
+to `48 01 CE` (ADD RSI,RCX, ISSUE-384) at RIP `0x201257` after 9,862 retired
+instructions; it reports `Unsupported { opcode: 1 }` and COM1 is empty.
+ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Full od-isa suites pass (2,322/1,591/126/29/6/1,250/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline cargo check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.

@@ -21890,24 +21890,26 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                             ConditionCode::NotEqual,
                             0x85,
                             0xae | 0xd6 | 0x227 | -0x13b | -0x155 | -0x160 | -0x161 | -0x177
-                        ) | (ConditionCode::Equal, 0x84, 0xb4 | 0x149 | -0x12f | -0x14a)
-                            | (
-                                ConditionCode::Above,
-                                0x87,
-                                0x152
-                                    | 0x15f
-                                    | 0x168
-                                    | 0x16e
-                                    | 0x177
-                                    | 0x123
-                                    | 0x2a3
-                                    | 0x2cd
-                                    | 0x2d7
-                                    | 0x2e4
-                                    | 0x2ee
-                                    | 0x2fb
-                            )
-                            | (ConditionCode::Below, 0x82, 0xb7 | 0x230)
+                        ) | (
+                            ConditionCode::Equal,
+                            0x84,
+                            0xb4 | 0x149 | 0x217 | -0x12f | -0x14a
+                        ) | (
+                            ConditionCode::Above,
+                            0x87,
+                            0x152
+                                | 0x15f
+                                | 0x168
+                                | 0x16e
+                                | 0x177
+                                | 0x123
+                                | 0x2a3
+                                | 0x2cd
+                                | 0x2d7
+                                | 0x2e4
+                                | 0x2ee
+                                | 0x2fb
+                        ) | (ConditionCode::Below, 0x82, 0xb7 | 0x230)
                     ))) =>
         {
             if condition.evaluate(state.rflags) {

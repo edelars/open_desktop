@@ -28648,3 +28648,20 @@ is empty. ISSUE-201 remains the unrelated CLD expectation caveat.
 
 Focused ISA tests pass (6/6), other-profile matrix 1/1, and four-level machine
 tests 2/2. Full od-isa suites pass (2,322/1,591/126/29/6/1,245/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline cargo check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-383: `0F 84 17 02 00 00` — JZ rel32 +0x217
+
+`PagedCpl0ProbeV1` admits only this exact no-prefix JZ rel32 form. It reads ZF
+and, when set, adds signed displacement +0x217 to next RIP. When clear, RIP
+falls through by six bytes. RFLAGS and definedness are preserved. Canonicality
+is checked only for a taken target; a noncanonical fall-through is handled by
+the next fetch. A final displacement-byte fetch fault is atomic. Other
+displacements/conditions/prefixes, CPL3 and other profiles remain unsupported.
+
+The firmware runner advances to `48 01 CE` (ADD RSI,RCX, ISSUE-384), RIP
+`0x201257`, after 9,862 retired instructions; it reports `Unsupported { opcode:
+1 }` and COM1 is empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Five focused ISA tests and the other-profile matrix pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,250/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline cargo check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.

@@ -1482,3 +1482,15 @@ is empty. ISSUE-201 remains the unrelated stale CLD test expectation caveat.
 
 Focused ISA tests pass (6/6), other-profile matrix 1/1, and machine tests 2/2.
 Full od-isa suites pass (2,322/1,591/126/29/6/1,245/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### Stage 7 runner frontier after ISSUE-383
+
+After exact `0F 84 17 02 00 00` (JZ rel32 +0x217) is admitted, the firmware
+runner retires 9,862 instructions and stops at RIP `0x201257`, bytes `48 01 CE`
+(ADD RSI,RCX, ISSUE-384), with `Unsupported { opcode: 1 }`. The branch preserves
+RFLAGS/definedness, uses ZF, and canonicalizes only a taken target. Image
+`/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1
+is empty. ISSUE-201 remains the unrelated stale CLD test expectation caveat.
+
+Five focused ISA tests and the other-profile matrix pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,250/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.

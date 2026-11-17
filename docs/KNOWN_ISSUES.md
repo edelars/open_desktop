@@ -4939,7 +4939,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-383 — S7-04: exact helper JZ rel32 frontier (`0F 84 17 02 00 00`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-382.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201251`.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** допускается только `0F 84 17 02 00 00` (JZ rel32 +0x217). Ветка читает ZF; target считается от next RIP, флаги и definedness не меняются, canonicality проверяется только для taken target, а fetch fault не фиксирует CPU state.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; после admission runner retired 9,862 instructions and stopped at `Unsupported { opcode: 1 }` at RIP `0x201257`, bytes `48 01 CE` (ADD RSI,RCX; ISSUE-384); COM1 is empty.
+- **Проверка:** focused ISA tests 5/5 cover ZF outcomes/definedness, target/fallthrough, taken-only canonicality, final-displacement fetch fault, neighbors and CPL3; other-profile matrix 1/1 passes. Full od-isa suites pass (2,322/1,591/126/29/6/1,250/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline cargo check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-384 — S7-04: exact helper ADD register frontier (`48 01 CE`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-383.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201257`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches exact JZ rel32 +0x217 after ISSUE-382; this branch displacement is not yet admitted by the bounded base profile.
-- **Основание:** same firmware image/SHA and runner budget; retired 9,861 instructions, `Unsupported { opcode: 132 }` at RIP `0x201251`, bytes `0F 84 17 02 00 00`, COM1 empty.
-- **Следующий шаг:** separately review only this exact branch encoding.
+- **Суть и последствия:** firmware reaches `ADD RSI,RCX` after ISSUE-383; this exact qword register form is not yet admitted by the bounded base profile.
+- **Основание:** same firmware image/SHA and runner budget; retired 9,862 instructions, `Unsupported { opcode: 1 }` at RIP `0x201257`, bytes `48 01 CE`, COM1 empty.
+- **Следующий шаг:** separately review only this exact arithmetic instruction encoding.
