@@ -5432,7 +5432,17 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-435 — S7-04: exact CMP R15,0xffff frontier (`49 81 FF FF FF 00 00`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-434.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013c0`.
-- **Статус:** открыта; следующая точная инструкция Stage 7.
-- **Суть и последствия:** exact decode is CMP R15,imm32 `0x0000ffff` in qword operand width; arithmetic flags are updated and R15 is not written. This remains unsupported until an exact bounded implementation and tests are added.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `49 81 FF FF FF 00 00` (CMP R15,imm32 `0x0000ffff` at qword width). The decoder sign-extends imm32 (the value is positive); shared CMP semantics update arithmetic flags/definedness without writing R15. Final-immediate fetch faults are atomic; other encodings and CPL3/other profiles remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-434 runner retired 9,927 instructions and reported `Unsupported { opcode: 129 }` at RIP `0x2013c0`; COM1 is empty. Bytes at the link-base shadow are `49 81 FF FF FF 00 00`.
-- **Следующий шаг:** implement this exact CMP form, add focused semantic/fault/neighbor/profile coverage, and update the Stage 7 documentation.
+- **Результат:** runner now retires 9,928 instructions and stops at RIP `0x2013c7`, bytes `0F 87 B0 00 00 00` (JA rel32 +0xb0; ISSUE-436), `Unsupported { opcode: 135 }`; COM1 is empty.
+- **Проверка:** four focused qword CMP/flags/definedness/final-immediate-fetch/neighbor/CPL3 tests and other-profile matrix 1/1 pass. Full od-isa passes (2,322/1,591/126/29/6/1,482/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+- **Следующий шаг:** ISSUE-436, exact `0F 87 B0 00 00 00` (JA rel32 +0xb0) at RIP `0x2013c7`.
+
+### ISSUE-436 — S7-04: exact JA rel32 +0xb0 frontier (`0F 87 B0 00 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-435.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013c7`.
+- **Статус:** открыта; следующая точная инструкция Stage 7.
+- **Суть и последствия:** exact no-prefix JA rel32 +0xb0 remains unsupported until this bounded form receives implementation and tests.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-435 runner retired 9,928 instructions and reported `Unsupported { opcode: 135 }` at RIP `0x2013c7`; COM1 is empty. Bytes at the link-base shadow are `0F 87 B0 00 00 00`.
+- **Следующий шаг:** implement this exact JA form, add focused condition/target/fault/neighbor/profile coverage, and update the Stage 7 documentation.

@@ -2267,3 +2267,16 @@ focused cases and other-profile matrix 1/1 pass. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass; independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-435 runner frontier
+
+At RIP `0x2013c0`, the runner encountered exact bytes `49 81 FF FF FF 00 00`
+(CMP R15,0xffff). Admission advances execution to `0F 87 B0 00 00 00` (JA
+rel32 +0xb0; ISSUE-436) at RIP `0x2013c7` after 9,928 retired instructions,
+Unsupported opcode 135, COM1 empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`. Four
+focused tests and other-profile matrix 1/1 pass. Full od-isa passes
+(2,322/1,591/126/29/6/1,482/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass; independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.

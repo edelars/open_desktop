@@ -26184,6 +26184,41 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: the helper's exact `49 81 FF FF FF 00 00` compares qword
+        // R15 with imm32 0xffff. Decode sign-extends the imm32; CMP updates
+        // flags without changing R15.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Cmp,
+            dst: Operand::Register(destination),
+            src: Operand::Immediate(0xffff),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x81
+            && instruction.length == 7
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x49),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R15, OperandSize::Qword) =>
+        {
+            let lhs = state.read(destination);
+            let (_, flags) = arithmetic_result(
+                OperandSize::Qword,
+                ArithmeticKind::Cmp,
+                lhs,
+                0xffff,
+                state.rflags,
+            );
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: the Rust helper compares R12D with 7 using exact
         // `41 83 FC 07`. Opcode 83 sign-extends imm8 to the selected dword
         // width; upper R12 bits are ignored and no register is modified.

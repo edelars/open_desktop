@@ -2425,3 +2425,18 @@ matrix passes 1/1. Runner reaches ISSUE-435 (`49 81 FF FF FF 00 00`, CMP R15,
 0xffff) at RIP `0x2013c0` after 9,927 retired instructions, Unsupported opcode
 129, COM1 empty. Full od-isa passes (2,322/1,591/126/29/6/1,478/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
 remains the unrelated CLD caveat.
+
+### ISSUE-435 — exact CMP R15,0xffff (`49 81 FF FF FF 00 00`)
+
+Admit this exact REX.W+B qword compare in the base paged profile. Opcode 81
+uses a sign-extended imm32; `0x0000ffff` remains positive. Shared qword CMP
+semantics update arithmetic flags and definedness, without changing R15. Tests
+cover result/flag vectors including overflow, GPR preservation, final immediate
+fetch-fault atomicity, opcode/register/width/prefix neighbors, CPL3 and other
+profiles. The profile matrix is 1/1. Runner reaches ISSUE-436 (`0F 87 B0 00 00
+00`, JA rel32 +0xb0) at RIP `0x2013c7` after 9,928 retired instructions,
+Unsupported opcode 135, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,482/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.

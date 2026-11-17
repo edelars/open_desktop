@@ -29455,3 +29455,18 @@ profile matrix pass. Runner reaches `49 81 FF FF FF 00 00` (CMP R15,0xffff) at
 `0x2013c0`, after 9,927 retired instructions, Unsupported opcode 129, COM1
 empty. Full od-isa passes (2,322/1,591/126/29/6/1,478/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass; independent review approved with no findings. ISSUE-201 remains the
 unrelated CLD caveat.
+
+### ISSUE-435 — bounded CMP R15,0xffff
+
+`PagedCpl0ProbeV1` adds exact bytes `49 81 FF FF FF 00 00`: REX.W+B selects
+qword R15 and opcode 81 /7 compares against imm32 `0x0000ffff`, sign-extended
+to qword width (still positive). Shared CMP semantics update arithmetic flags
+and their definedness; no GPR or memory is written. A fault fetching the final
+immediate byte commits no state. Neighboring forms and CPL3/other profiles do
+not gain admission. Four focused tests and the other-profile matrix pass.
+Runner reaches `0F 87 B0 00 00 00` (JA rel32 +0xb0) at `0x2013c7`, after 9,928
+retired instructions, Unsupported opcode 135, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,482/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass; independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.
