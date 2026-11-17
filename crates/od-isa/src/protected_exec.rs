@@ -103,7 +103,7 @@
 //! emulated by KVM, so the oracle shows KVM's guest-visible behaviour).
 
 use crate::legacy_mode::{CR0_ET, ProtectedSegment};
-use crate::paging::{self, AccessKind, PageRefusal, PagingParams};
+use crate::paging::{self, AccessKind, PageRefusal, PagingParams, Touch};
 use crate::real_mode_exec::{
     CR0_PE, EAX, ECX, EDX, ESP, RealModeCpu, RealModeMemory, TableRegister, UNSUPPORTED_BYTES_MAX,
     logic_flags, sub_flags,
@@ -516,7 +516,7 @@ impl ProtectedCpu {
         mem: &M,
         linear: u32,
         access: AccessKind,
-        touches: &mut Vec<(u32, u8)>,
+        touches: &mut Vec<Touch>,
     ) -> Result<u32, ProtectedRefusal> {
         let Some(params) = self.paging_params() else {
             return Ok(linear);
@@ -605,7 +605,7 @@ impl ProtectedCpu {
         &self,
         mem: &M,
         cell: u64,
-        touches: &mut Vec<(u32, u8)>,
+        touches: &mut Vec<Touch>,
     ) -> Result<u64, ProtectedRefusal> {
         self.check_canonical(cell, AddressRole::Operand)?;
         self.check_canonical(cell.wrapping_add(7), AddressRole::Operand)?;
@@ -731,7 +731,7 @@ impl ProtectedCpu {
         &self,
         mem: &M,
         disp: u32,
-        touches: &mut Vec<(u32, u8)>,
+        touches: &mut Vec<Touch>,
     ) -> Result<u32, ProtectedRefusal> {
         if u64::from(disp) + 3 > u64::from(self.ds.limit) {
             return Err(ProtectedRefusal::DataBeyondLimit {
@@ -775,7 +775,7 @@ impl ProtectedCpu {
         mem: &M,
         descriptor_at: u32,
         access_at: u32,
-        touches: &mut Vec<(u32, u8)>,
+        touches: &mut Vec<Touch>,
     ) -> Result<u32, ProtectedRefusal> {
         self.physical(mem, access_at, AccessKind::Write, touches)
             .map_err(|refusal| match refusal {
@@ -802,7 +802,7 @@ impl ProtectedCpu {
         mem: &M,
         reg: ProtectedSegReg,
         selector: u16,
-        touches: &mut Vec<(u32, u8)>,
+        touches: &mut Vec<Touch>,
     ) -> Result<(ProtectedSegment, Option<u32>), ProtectedRefusal> {
         let refuse = |reason| ProtectedRefusal::SegmentLoadRefused {
             eip: self.eip,
@@ -897,7 +897,7 @@ impl ProtectedCpu {
         mem: &M,
         selector: u16,
         offset: u32,
-        touches: &mut Vec<(u32, u8)>,
+        touches: &mut Vec<Touch>,
     ) -> Result<(ProtectedSegment, Option<u32>), ProtectedRefusal> {
         let refuse = |reason| ProtectedRefusal::FarJumpRefused {
             eip: self.eip,
@@ -996,16 +996,18 @@ impl ProtectedCpu {
         &mut self,
         mem: &mut M,
     ) -> Result<ProtectedInstruction, ProtectedRefusal> {
-        let mut touches: Vec<(u32, u8)> = Vec::new();
+        let mut touches: Vec<Touch> = Vec::new();
         let result = self.step_collecting(mem, &mut touches);
-        paging::commit_touches(mem, &touches);
+        // S6-31b: a touch whose entry changed its translation bits meanwhile is discarded (the
+        // instruction is not repeated: its effects are already committed); the count is not used.
+        let _discarded = paging::commit_touches(mem, &touches);
         result
     }
 
     fn step_collecting<M: RealModeMemory>(
         &mut self,
         mem: &mut M,
-        touches: &mut Vec<(u32, u8)>,
+        touches: &mut Vec<Touch>,
     ) -> Result<ProtectedInstruction, ProtectedRefusal> {
         let (insn, len) = self.decode(mem)?;
         // Accessed/dirty updates of the paging structures walked by this instruction (the fetch
@@ -1202,7 +1204,9 @@ impl ProtectedCpu {
 mod tests {
     use super::*;
     use crate::legacy_mode::RealSegment;
-    use crate::real_mode_exec::{EBP, EBX, EDI, ESI, ImageMemory, ImageMemoryMut, RealModeRefusal};
+    use crate::real_mode_exec::{
+        EBP, EBX, EDI, ESI, ImageMemory, ImageMemoryMut, RealModeMemory, RealModeRefusal,
+    };
 
     const RAM: usize = 0x6100;
     const FLAT_CODE: [u8; 8] = [0xFF, 0xFF, 0, 0, 0, 0x9B, 0xCF, 0];
@@ -2987,6 +2991,83 @@ mod tests {
         assert_eq!(get_q(&ram, PT + 16), 0x3000 | 0x23);
         assert_eq!(get_q(&ram, PT + 40), 0x6000 | 0x23);
         assert_eq!(get_q(&ram, PT + 8), 0x1003, "page 1 was not used");
+    }
+
+    /// Memory that lets "another vCPU" change one entry right before the first replace of the
+    /// accessed/dirty update of a step (S6-31b), and counts the replaces.
+    struct Racy<'a> {
+        inner: ImageMemoryMut<'a>,
+        interfere: Option<(usize, u64)>,
+        replaces: u32,
+    }
+
+    impl RealModeMemory for Racy<'_> {
+        fn read_u8(&self, linear: u32) -> Option<u8> {
+            self.inner.read_u8(linear)
+        }
+        fn can_write(&self, linear: u32) -> bool {
+            self.inner.can_write(linear)
+        }
+        fn write_u8(&mut self, linear: u32, value: u8) -> bool {
+            self.inner.write_u8(linear, value)
+        }
+        fn compare_replace_entry(
+            &mut self,
+            linear: u32,
+            expected: u64,
+            replacement: u64,
+        ) -> Option<Result<(), u64>> {
+            if let Some((at, value)) = self.interfere.take() {
+                put_q(self.inner.bytes, at, value);
+            }
+            self.replaces += 1;
+            self.inner
+                .compare_replace_entry(linear, expected, replacement)
+        }
+    }
+
+    /// S6-31b (b), (c) at the step: the update of the entry runs after the instruction retired and
+    /// the instruction is never repeated. A change of the translation bits in between discards the
+    /// touch (the stale translation was used; no A bit); a change of only ignored bits keeps them
+    /// and sets A on the observed value.
+    #[test]
+    fn a_racing_change_of_an_entry_discards_or_absorbs_the_touch_and_never_repeats_the_step() {
+        // (new PTE value, expected PTE value after the step, replaces of the step). The load of a
+        // dword walks per byte: four touches of the same entry, each with the value it read. Case
+        // 1: all four fail on the changed translation. Case 2: the first fails once and wins over
+        // the observed value, the other three fail once and find A already set.
+        let soft = 0x1A5u64 << 52 | 0b101 << 9;
+        let cases = [
+            (0x7000u64 | 3, 0x7000u64 | 3, 4u32),
+            (0x6000 | 3 | soft, 0x6000 | 3 | soft | 0x20, 5),
+        ];
+        for (raced, after, replaces) in cases {
+            let mut ram = paged_ram(CODE32_COMPAT);
+            tables_4k(&mut ram);
+            put_q(&mut ram, PT + 16, 0x3000 | 3);
+            put_q(&mut ram, PT + 40, 0x6000 | 3);
+            ram[0x2065..0x206C].fill(0xF4);
+            put(&mut ram, 0x3065, &JMP_FAR_10_20F0);
+            put(&mut ram, 0x30F0, &[0xA1, 0x08, 0x50, 0, 0]); // mov eax, ds:0x5008
+            put(&mut ram, 0x6008, &0x1234_5678u32.to_le_bytes());
+            put(&mut ram, 0x7008, &0x8765_4321u32.to_le_bytes());
+            let mut cpu = ia32e_cpu();
+            cpu.step(&mut mem(&mut ram)).unwrap();
+            cpu.step(&mut mem(&mut ram)).unwrap();
+            let mut racy = Racy {
+                inner: mem(&mut ram),
+                interfere: Some((PT + 40, raced)),
+                replaces: 0,
+            };
+            assert_eq!(
+                cpu.step(&mut racy),
+                Ok(ProtectedInstruction::MovEaxFromDs(0x5008))
+            );
+            assert_eq!(racy.replaces, replaces, "{raced:#x}");
+            // The data came through the translation the walk used, once; EIP moved once.
+            assert_eq!((cpu.gpr[EAX], cpu.eip), (0x1234_5678, 0x20F5), "{raced:#x}");
+            assert_eq!(get_q(&ram, PT + 40), after, "{raced:#x}");
+        }
     }
 
     #[test]

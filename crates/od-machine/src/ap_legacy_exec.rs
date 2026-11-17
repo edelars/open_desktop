@@ -11,9 +11,10 @@
 //! What the models see is RAM only ([`BoardRam`]): an instruction fetch, a data access, a
 //! descriptor or page-table access outside the board's RAM (MMIO, ROM, a hole) is a refusal of the
 //! model, which is an [`ApLegacyRefusal`] here, never a panic and never a device access. Writes the
-//! models make (the `LOCK BTS` operand, the accessed bit of a descriptor, the accessed and dirty
-//! bits of a paging entry) go through `PhysicalMemory::store_bytes`, the tracked path that advances
-//! the code generation of the written pages like every other guest store.
+//! models make (the `LOCK BTS` operand, the accessed bit of a descriptor) go through
+//! `PhysicalMemory::store_bytes`, the tracked path that advances the code generation of the written
+//! pages like every other guest store. The accessed and dirty bits of a paging entry are one host
+//! compare-exchange of the entry (`PhysicalMemory::compare_replace_u64`, S6-31b).
 //!
 //! Not here: interrupts and NMI in legacy mode (the board refuses NMI, `deliver_pending_nmi`), the
 //! devices of the board (the trampoline models have no port or MMIO access), an instruction budget
@@ -70,6 +71,14 @@ impl<'a> BoardRam<'a> {
         let address = GuestPhysicalAddress::new(u64::from(linear));
         (self.memory.locate_region_kind(address, 1) == Ok(MemoryRegionKind::Ram)).then_some(address)
     }
+
+    /// The 8 bytes of an 8-aligned page-table entry, all in one RAM region (S6-31b).
+    fn entry_address(&self, linear: u32) -> Option<GuestPhysicalAddress> {
+        let address = GuestPhysicalAddress::new(u64::from(linear));
+        (linear.is_multiple_of(8)
+            && self.memory.locate_region_kind(address, 8) == Ok(MemoryRegionKind::Ram))
+        .then_some(address)
+    }
 }
 
 impl RealModeMemory for BoardRam<'_> {
@@ -86,6 +95,38 @@ impl RealModeMemory for BoardRam<'_> {
             Some(address) => self.memory.store_bytes(address, &[value], |_| {}).is_ok(),
             None => false,
         }
+    }
+
+    /// S6-31b: one aligned 8-byte load. An entry that is not 8-aligned or leaves the RAM region
+    /// has no 8-byte cell; it is read byte by byte (the default of the trait), never a host
+    /// load of an unaligned cell.
+    fn read_u64(&self, linear: u32) -> Option<u64> {
+        match self.entry_address(linear) {
+            Some(address) => self.memory.load_u64(address).ok(),
+            None => {
+                let mut bytes = [0u8; 8];
+                for (i, slot) in bytes.iter_mut().enumerate() {
+                    *slot = u32::checked_add(linear, i as u32).and_then(|a| self.read_u8(a))?;
+                }
+                Some(u64::from_le_bytes(bytes))
+            }
+        }
+    }
+
+    /// S6-31b: one host compare-exchange of the entry (`PhysicalMemory::compare_replace_u64`,
+    /// S6-31), so another vCPU's concurrent change of the entry is never overwritten. Replaces
+    /// the read-then-write of `or_u8` (S6-25). `None` for an entry that is not an 8-aligned cell
+    /// of one RAM region or whose write is refused (nothing is written).
+    fn compare_replace_entry(
+        &mut self,
+        linear: u32,
+        expected: u64,
+        replacement: u64,
+    ) -> Option<Result<(), u64>> {
+        let address = self.entry_address(linear)?;
+        self.memory
+            .compare_replace_u64(address, expected, replacement, |_| {})
+            .ok()
     }
 }
 
@@ -1122,5 +1163,279 @@ mod tests {
         assert!(ram.write_u8(MARKER as u32, 0x5A));
         assert_eq!(ram.read_u8(MARKER as u32), Some(0x5A));
         assert!(generation(&mut board, MARKER) > generation_before);
+    }
+
+    // ---- S6-31b: the accessed/dirty update of the AP walk is one host compare-exchange ----------
+
+    mod entry_cas {
+        use super::*;
+        use crate::{GuestPhysicalRange, MachineMemoryMap, MemoryRegionSpec, RamLimits};
+        use od_isa::paging::{self, AccessKind, PagingParams};
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+        const TPML4: u64 = 0x1000;
+        const TPDPT: u64 = 0x2000;
+        const TPD: u64 = 0x3000;
+        const TPT: u64 = 0x4000;
+        /// The leaf under test: PT[2], linear 0x2000.
+        const LEAF: u64 = TPT + 16;
+        const IMAGE: usize = 0x6000;
+        const ROM_AT: u64 = 0x2_0000;
+        const PARAMS: PagingParams = PagingParams {
+            cr3: TPML4 as u32,
+            wp: true,
+            nxe: true,
+        };
+
+        /// RAM below 0x2_0000 and a ROM page above it.
+        fn table_memory() -> PhysicalMemory {
+            let range = |start: u64, len: u64| {
+                GuestPhysicalRange::new(GuestPhysicalAddress::new(start), len).unwrap()
+            };
+            let regions = vec![
+                MemoryRegionSpec::new(range(0, ROM_AT), MemoryRegionKind::Ram),
+                MemoryRegionSpec::new(range(ROM_AT, 0x1000), MemoryRegionKind::Rom),
+            ];
+            PhysicalMemory::new(
+                &MachineMemoryMap::new(36, regions).unwrap(),
+                RamLimits::new(1 << 20),
+            )
+            .unwrap()
+        }
+
+        /// PML4[0] -> PDPT -> PD; PD[0] -> PT (PT[i] = page i, i < 5); PD[1] = 2 MiB page at
+        /// 2 MiB. Every entry gets `ad` (0 or 0x60) on top of P and RW.
+        fn tables(ad: u64) -> Vec<u8> {
+            let mut image = vec![0u8; IMAGE];
+            let mut put = |at: u64, value: u64| {
+                image[at as usize..at as usize + 8].copy_from_slice(&(value | ad).to_le_bytes());
+            };
+            put(TPML4, TPDPT | 3);
+            put(TPDPT, TPD | 3);
+            put(TPD, TPT | 3);
+            put(TPD + 8, 0x20_0000 | 0x80 | 3);
+            for page in 0..5u64 {
+                put(TPT + 8 * page, page << 12 | 3);
+            }
+            image
+        }
+
+        fn load_image(memory: &PhysicalMemory, image: &[u8]) {
+            memory
+                .store_bytes(GuestPhysicalAddress::new(0), image, |_| {})
+                .unwrap();
+        }
+
+        fn read_image(memory: &PhysicalMemory) -> Vec<u8> {
+            let mut bytes = vec![0u8; IMAGE];
+            memory
+                .load_bytes(GuestPhysicalAddress::new(0), &mut bytes)
+                .unwrap();
+            bytes
+        }
+
+        fn at(address: u64) -> GuestPhysicalAddress {
+            GuestPhysicalAddress::new(address)
+        }
+
+        #[test]
+        fn the_adapter_reads_an_entry_in_one_load_and_replaces_it_in_one_compare_exchange() {
+            let memory = table_memory();
+            load_image(&memory, &tables(0));
+            let mut ram = BoardRam::new(&memory);
+            assert_eq!(ram.read_u64(TPML4 as u32), Some(TPDPT | 3));
+            // Not aligned: read byte by byte (the default of the trait), never a host load.
+            let image = tables(0);
+            let from = TPML4 as usize + 4;
+            assert_eq!(
+                ram.read_u64(TPML4 as u32 + 4),
+                Some(u64::from_le_bytes(
+                    image[from..from + 8].try_into().unwrap()
+                ))
+            );
+            assert_eq!(
+                ram.read_u64(ROM_AT as u32 - 4),
+                None,
+                "crosses into ROM: not RAM"
+            );
+            let generation = memory.code_page_generation(at(LEAF)).unwrap();
+            // A mismatch writes nothing and moves no generation.
+            assert_eq!(
+                ram.compare_replace_entry(LEAF as u32, 1, 2),
+                Some(Err(0x2003))
+            );
+            assert_eq!(memory.code_page_generation(at(LEAF)), Ok(generation));
+            // A match writes the replacement and moves the generation once.
+            assert_eq!(
+                ram.compare_replace_entry(LEAF as u32, 0x2003, 0x2023),
+                Some(Ok(()))
+            );
+            assert_eq!(memory.load_u64(at(LEAF)), Ok(0x2023));
+            assert_eq!(memory.code_page_generation(at(LEAF)), Ok(generation + 1));
+            // ROM, a hole, a misaligned entry: None, nothing written, no split-lock count.
+            let refusals = memory.split_lock_refusals();
+            for linear in [ROM_AT as u32, 0x30_0000, LEAF as u32 + 4, LEAF as u32 + 1] {
+                assert_eq!(ram.compare_replace_entry(linear, 0, 1), None, "{linear:#x}");
+            }
+            assert_eq!(memory.split_lock_refusals(), refusals);
+            assert_eq!(memory.load_u64(at(LEAF)), Ok(0x2023));
+        }
+
+        /// S6-31b (a): the walk and the commit over the board's RAM leave the entries exactly as
+        /// the former byte OR did, for two accessed/dirty states and every leaf kind.
+        #[test]
+        fn the_walk_and_commit_on_board_ram_equal_the_former_byte_or() {
+            let leaves = [
+                (0x2000u32, AccessKind::Read),
+                (0x2000, AccessKind::Write),
+                (0x2000, AccessKind::Fetch),
+                (0x20_0123, AccessKind::Read),
+                (0x20_0123, AccessKind::Write),
+                (0x20_0123, AccessKind::Fetch),
+            ];
+            for ad in [0u64, 0x60] {
+                for (linear, kind) in leaves {
+                    let memory = table_memory();
+                    load_image(&memory, &tables(ad));
+                    let mut ram = BoardRam::new(&memory);
+                    let walked = paging::translate(&ram, PARAMS, linear, kind).unwrap();
+                    let mut expected = tables(ad);
+                    for touch in &walked.touches {
+                        expected[touch.at as usize] |= touch.mask;
+                    }
+                    assert_eq!(paging::commit_touches(&mut ram, &walked.touches), 0);
+                    assert_eq!(
+                        read_image(&memory),
+                        expected,
+                        "{linear:#x} {kind:?} ad {ad:#x}"
+                    );
+                    assert_eq!(walked.touches.is_empty(), ad == 0x60);
+                }
+            }
+        }
+
+        /// S6-31b (b), (c) on the board's RAM: another writer changes the leaf between the walk
+        /// and the commit.
+        #[test]
+        fn a_change_between_the_walk_and_the_commit_is_discarded_or_absorbed_on_board_ram() {
+            let soft = 0x155u64 << 52 | 0b110 << 9;
+            // (value written by the other vCPU, value after the commit, touches discarded). The
+            // walk read 0x2023 (A preset) and wants D.
+            for (raced, after, discarded) in [
+                (0x3003u64, 0x3003u64, 1usize),
+                (0x2001, 0x2001, 1),
+                (0, 0, 1),
+                (0x2003 | soft, 0x2003 | soft | 0x40, 0),
+                (0x2003 | 0x20, 0x2003 | 0x60, 0),
+                (0x2003 | 0x60 | soft, 0x2003 | 0x60 | soft, 0),
+            ] {
+                let memory = table_memory();
+                load_image(&memory, &tables(0x20));
+                let mut ram = BoardRam::new(&memory);
+                // Only the leaf lacks D: the one touch of the walk.
+                let walked = paging::translate(&ram, PARAMS, 0x2000, AccessKind::Write).unwrap();
+                assert_eq!(walked.touches.len(), 1, "A is preset, D is not");
+                assert_eq!(walked.touches[0].at, LEAF as u32);
+                memory.store_u64(at(LEAF), raced, |_| {}).unwrap();
+                assert_eq!(
+                    paging::commit_touches(&mut ram, &walked.touches),
+                    discarded,
+                    "{raced:#x}"
+                );
+                assert_eq!(memory.load_u64(at(LEAF)), Ok(after), "{raced:#x}");
+            }
+        }
+
+        /// S6-31b (d): an AP walk with its commit against another thread that rewrites the low
+        /// byte (P, RW, US, A, D, PS) and the ignored bits of the same PTE, including zeroing it.
+        /// The other thread is the only writer of the bits other than A and D and checks, on
+        /// every load, that nothing else changed (a stale value written back would revert its
+        /// last change; a zeroed entry must stay zero). Mutation check, made once: replacing the
+        /// host compare-exchange in `BoardRam::compare_replace_entry` by a load followed by a
+        /// store makes this test fail.
+        #[test]
+        fn an_ap_walk_against_a_concurrent_writer_of_the_same_entry_loses_no_change() {
+            const ROUNDS: u64 = 400_000;
+            const SOFT_BITS: [u64; 3] = [0x4, 0x80, 0x200];
+            let memory = table_memory();
+            let mut image = tables(0x60);
+            image[LEAF as usize..LEAF as usize + 8].copy_from_slice(&0x2003u64.to_le_bytes());
+            load_image(&memory, &image);
+            let stop = AtomicBool::new(false);
+            let (committed, discarded, corrupted) =
+                (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
+            let last_written = AtomicU64::new(0x2003);
+            std::thread::scope(|scope| {
+                // The other vCPU: flips bits through compare-exchange, clears A and D so the AP
+                // has more to do, now and then zeroes the entry and holds it zero.
+                scope.spawn(|| {
+                    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+                    let mut next = move || {
+                        state ^= state << 13;
+                        state ^= state >> 7;
+                        state ^= state << 17;
+                        state
+                    };
+                    let mut mine = 0x2003u64;
+                    let entry = at(LEAF);
+                    while !stop.load(Ordering::Relaxed) {
+                        let observed = memory.load_u64(entry).unwrap();
+                        // A zeroed entry must stay exactly zero: the unmasked check also catches
+                        // a zero turned into 0x20 / 0x60 (A/D set on a discarded walk).
+                        if observed & !0x60 != mine & !0x60 || (mine == 0 && observed != 0) {
+                            corrupted.fetch_add(1, Ordering::Relaxed);
+                        }
+                        let random = next();
+                        let new = if mine == 0 {
+                            // Held zero for a while, then restored.
+                            if random % 64 != 0 {
+                                continue;
+                            }
+                            0x2003 | SOFT_BITS[(random >> 8) as usize % 3]
+                        } else if random % 16 == 0 {
+                            0
+                        } else {
+                            (mine ^ SOFT_BITS[(random >> 8) as usize % 3]) & !0x60 | 0x3
+                        };
+                        // CAS over what was observed (A/D of the AP may differ from `mine`).
+                        if memory
+                            .compare_replace_u64(entry, observed, new, |_| {})
+                            .unwrap()
+                            .is_ok()
+                        {
+                            mine = new;
+                            last_written.store(new, Ordering::Relaxed);
+                        }
+                    }
+                });
+                // The AP: walk (write), then commit, ROUNDS times.
+                scope.spawn(|| {
+                    let mut ram = BoardRam::new(&memory);
+                    for _ in 0..ROUNDS {
+                        if let Ok(walked) =
+                            paging::translate(&ram, PARAMS, 0x2000, AccessKind::Write)
+                        {
+                            let lost = paging::commit_touches(&mut ram, &walked.touches);
+                            discarded.fetch_add(lost as u64, Ordering::Relaxed);
+                            committed
+                                .fetch_add((walked.touches.len() - lost) as u64, Ordering::Relaxed);
+                        }
+                    }
+                    stop.store(true, Ordering::Relaxed);
+                });
+            });
+            assert_eq!(corrupted.load(Ordering::Relaxed), 0, "a change was lost");
+            let last = last_written.load(Ordering::Relaxed);
+            let final_value = memory.load_u64(at(LEAF)).unwrap();
+            assert_eq!(final_value & !0x60, last & !0x60);
+            if last == 0 {
+                assert_eq!(final_value, 0, "a zeroed entry stayed zero");
+            }
+            assert!(committed.load(Ordering::Relaxed) > 0, "the AP set bits");
+            assert!(
+                discarded.load(Ordering::Relaxed) > 0,
+                "the race must be exercised on this host"
+            );
+        }
     }
 }

@@ -25,14 +25,15 @@
 //! - **accessed / dirty (decision of S6-14m):** a walk that succeeds sets `A` (bit 5) in every
 //!   entry it used (PML4E, PDPTE, PDE and, for a 4 KiB page, PTE) and, for a write, `D` (bit 6) in
 //!   the final entry (PDE for a 2 MiB page, PTE for a 4 KiB page). The bits are returned as
-//!   *touches* (entry address, OR mask) and written by the caller only after the whole instruction
-//!   is known to succeed. A walk that ends in a `#PF` sets `A` in none of its entries: the
+//!   *touches* (entry address, the value the walk read, OR mask) and written by the caller only
+//!   after the whole instruction is known to succeed. A walk that ends in a `#PF` sets `A` in none of its entries: the
 //!   model, like the oracle (images `k`, `m`..`q`, `s`), leaves the entries of a refused walk
 //!   untouched (contract S6-14m, decision 4; walks that completed earlier in the same instruction
 //!   keep their bits, see `ProtectedCpu::step`). A
 //!   touch needs the low byte of the entry writable in memory, otherwise the walk is refused with
-//!   [`PageRefusal::EntryUnwritable`]. Entries are 8 bytes, little-endian; `A` and `D` live in the
-//!   low byte, so one byte is OR-ed (S6-25: `RealModeMemory::or_u8`).
+//!   [`PageRefusal::EntryUnwritable`]. Entries are 8 bytes, little-endian, read with one 8-byte
+//!   load; the update is a compare-and-replace of the whole entry on the value the walk read
+//!   (S6-31b: [`commit_touches`], `RealModeMemory::compare_replace_entry`).
 
 use crate::real_mode_exec::RealModeMemory;
 
@@ -108,24 +109,28 @@ pub struct Translation {
     /// Physical address of the byte.
     pub phys: u32,
     pub size: PageSize,
-    /// Accessed/dirty updates still to be written: (address of the low byte of the entry, bits to
-    /// OR into it). Empty when every `A` (and, for a write, `D`) bit is already set. Every address
-    /// has been checked writable.
-    pub touches: Vec<(u32, u8)>,
+    /// Accessed/dirty updates still to be written (see [`Touch`]). Empty when every `A` (and, for
+    /// a write, `D`) bit is already set. Every address has been checked writable.
+    pub touches: Vec<Touch>,
 }
 
-// S6-25 deviation (AP path): the entry is read byte by byte (eight `read_u8`), not as one 8-byte
-// access; correct in interleaving mode (the instruction is indivisible). S6-31 left this as it is:
-// the CAS on the value the walk read needs a trait change, recorded for the architecture review
-// (see `RealModeMemory::or_u8` and `MACHINE_CONTRACT.md`, S6-31, "Путь AP").
+/// One accessed/dirty update of a walk (S6-31b): the entry, the value of it the walk read and the
+/// bits to set. [`commit_touches`] replaces `read` with `read | mask` only if the entry still holds
+/// `read` (compare-and-replace), so a concurrent change of the entry is never overwritten.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Touch {
+    /// Address of the entry (8-aligned).
+    pub at: u32,
+    /// The 8 bytes of the entry as the walk read them.
+    pub read: u64,
+    /// Bits to OR into the low byte (`A` and, for the final entry of a write, `D`).
+    pub mask: u8,
+}
+
+/// S6-31b: one 8-byte read of the entry (it was eight `read_u8` before).
 fn read_entry<M: RealModeMemory>(mem: &M, phys: u32) -> Result<u64, PageRefusal> {
-    let mut bytes = [0u8; 8];
-    for (i, slot) in bytes.iter_mut().enumerate() {
-        *slot = u32::checked_add(phys, i as u32)
-            .and_then(|a| mem.read_u8(a))
-            .ok_or(PageRefusal::EntryUnreadable { phys })?;
-    }
-    Ok(u64::from_le_bytes(bytes))
+    mem.read_u64(phys)
+        .ok_or(PageRefusal::EntryUnreadable { phys })
 }
 
 /// Walks the 4-level tables for the 32-bit `linear` address.
@@ -206,7 +211,11 @@ pub fn translate<M: RealModeMemory>(
             if !mem.can_write(entry_phys) {
                 return Err(PageRefusal::EntryUnwritable { phys: entry_phys });
             }
-            touches.push((entry_phys, want as u8));
+            touches.push(Touch {
+                at: entry_phys,
+                read: e,
+                mask: want as u8,
+            });
         }
     }
     Ok(Translation {
@@ -216,22 +225,67 @@ pub fn translate<M: RealModeMemory>(
     })
 }
 
-/// Writes the accessed/dirty updates of [`Translation::touches`]: ORs each mask into its byte
-/// through [`RealModeMemory::or_u8`] (S6-25: the single place of this path, no ordinary
-/// read-then-write here). Every address was checked writable by [`translate`], so this does not
-/// fail. S6-25 deviation (AP path): the OR is deferred and applied without comparing the entry
-/// with the value read by the walk; correct while whole instructions are interleaved. S6-31 did
-/// not replace it: a CAS on the walk's value (an atomic OR alone could turn a zeroed PTE into a
-/// nonzero one) needs the walked value in [`Translation::touches`] and a retry in the caller, a
-/// decision recorded for the architecture review; replacement points are this function and
-/// `RealModeMemory::or_u8`.
-pub fn commit_touches<M: RealModeMemory>(mem: &mut M, touches: &[(u32, u8)]) {
-    for &(at, mask) in touches {
-        assert!(
-            mem.or_u8(at, mask),
-            "the entry was read and can_write was true"
-        );
+/// Bits that take no part in the translation: `A`, `D`, 9..=11 and 52..=62 (the profile has no
+/// protection keys). Same set as `IGNORED` and `AD` in `commit_leaf_dirty` of `od-machine`.
+const NOT_TRANSLATION: u64 = ACCESSED | DIRTY | (0b111 << 9) | (0x7FF << 52);
+
+// Bits 59..=62 of an entry are protection-key bits when CR4.PKE (bit 22) is set; `NOT_TRANSLATION`
+// ignores them, which is right only while `MOV CR4` cannot set PKE.
+const _: () = assert!(
+    crate::protected_exec::CR4_MODELLED_MASK & (1 << 22) == 0,
+    "NOT_TRANSLATION ignores bits 59..=62: revisit it before CR4.PKE becomes settable"
+);
+
+/// How many failed replaces one touch takes before it is discarded (bounds the retry; the same
+/// number as `TABLE_REPLACE_RETRY_LIMIT` of the walk of `od-machine`).
+const TOUCH_RETRY_LIMIT: u32 = 16;
+
+/// Writes the accessed/dirty updates of [`Translation::touches`] (S6-31b) and returns how many
+/// touches were discarded. Each touch is a compare-and-replace
+/// ([`RealModeMemory::compare_replace_entry`]) of the entry from the value the walk read to that
+/// value with the mask ORed in: the single place of this path, no ordinary read-then-write here.
+/// Every address was checked writable by [`translate`], so a missing entry is a bug (panic).
+///
+/// When the entry no longer holds the value the walk read, the observed value is compared with it
+/// on the translation bits (all bits except `A`, `D`, 9..=11 and 52..=62): if they are equal the
+/// mask is ORed into the OBSERVED value and the replace is repeated (the other writer's bits are
+/// kept; the same protocol as `commit_leaf_dirty`); if a translation bit changed (or the retry
+/// limit is reached) the touch is DISCARDED: neither `A` nor `D` is set. The instruction is not
+/// repeated: the caller runs after the instruction retired (`ProtectedCpu::step`), and a repeat
+/// would duplicate its effects. Using the stale translation is allowed (like a stale TLB entry).
+/// A zeroed entry never becomes nonzero: the replace needs the entry to equal a value read by
+/// the walk or observed with equal translation bits (a not present entry would have a different
+/// `P`).
+pub fn commit_touches<M: RealModeMemory>(mem: &mut M, touches: &[Touch]) -> usize {
+    let mut discarded = 0;
+    for touch in touches {
+        let mut expected = touch.read;
+        let mut failed = 0;
+        loop {
+            let replacement = expected | u64::from(touch.mask);
+            if replacement == expected {
+                // The observed value already has the bits (another writer set them).
+                break;
+            }
+            let outcome = mem
+                .compare_replace_entry(touch.at, expected, replacement)
+                .expect("the entry was read and can_write was true");
+            match outcome {
+                Ok(()) => break,
+                Err(observed) => {
+                    failed += 1;
+                    if observed & !NOT_TRANSLATION != touch.read & !NOT_TRANSLATION
+                        || failed > TOUCH_RETRY_LIMIT
+                    {
+                        discarded += 1;
+                        break;
+                    }
+                    expected = observed;
+                }
+            }
+        }
     }
+    discarded
 }
 
 #[cfg(test)]
@@ -268,6 +322,15 @@ mod tests {
             set(&mut ram, PT + 8 * page, (page as u64) << 12 | 3);
         }
         ram
+    }
+
+    /// The touch of the entry at `at` as the walk reports it (the value read from `ram`).
+    fn touch(ram: &[u8], at: usize, mask: u8) -> Touch {
+        Touch {
+            at: at as u32,
+            read: entry(ram, at),
+            mask,
+        }
     }
 
     /// Walk over a writable copy (the touches are not committed).
@@ -307,10 +370,10 @@ mod tests {
         assert_eq!(
             t.touches,
             vec![
-                (PML4 as u32, 0x20),
-                (PDPT as u32, 0x20),
-                (PD as u32, 0x20),
-                ((PT + 16) as u32, 0x20),
+                touch(&ram, PML4, 0x20),
+                touch(&ram, PDPT, 0x20),
+                touch(&ram, PD, 0x20),
+                touch(&ram, PT + 16, 0x20),
             ]
         );
     }
@@ -324,7 +387,7 @@ mod tests {
         assert_eq!((t.phys, t.size), (0x3F_FFFF, PageSize::Size2M));
         // Three levels were used: PML4E, PDPTE and the PDE (no PTE).
         assert_eq!(t.touches.len(), 3);
-        assert_eq!(t.touches[2], (PD as u32, 0x20));
+        assert_eq!(t.touches[2], touch(&ram, PD, 0x20));
     }
 
     #[test]
@@ -344,11 +407,11 @@ mod tests {
     fn a_write_sets_dirty_in_the_final_entry_only() {
         let ram = tables_4k();
         let t = walk(&ram, 0x2000, AccessKind::Write).unwrap();
-        assert_eq!(t.touches.last(), Some(&((PT + 16) as u32, 0x60)));
-        assert!(t.touches[..3].iter().all(|&(_, m)| m == 0x20));
+        assert_eq!(t.touches.last(), Some(&touch(&ram, PT + 16, 0x60)));
+        assert!(t.touches[..3].iter().all(|t| t.mask == 0x20));
         // Fetch and read never set D.
         let t = walk(&ram, 0x2000, AccessKind::Fetch).unwrap();
-        assert_eq!(t.touches.last(), Some(&((PT + 16) as u32, 0x20)));
+        assert_eq!(t.touches.last(), Some(&touch(&ram, PT + 16, 0x20)));
     }
 
     #[test]
@@ -585,15 +648,203 @@ mod tests {
         );
     }
 
-    /// S6-25: the accessed/dirty bits of this path are written only through
-    /// `RealModeMemory::or_u8`: an ordinary `write_u8` is never called by `commit_touches`.
-    #[test]
-    fn commit_touches_goes_through_the_or_operation_only() {
-        struct OrOnly {
-            bytes: Vec<u8>,
-            ors: Vec<(u32, u8)>,
+    /// An image memory that records every call of the write paths and refuses the ordinary
+    /// byte write on the accessed/dirty path (S6-31b: only `compare_replace_entry` writes it).
+    struct CasOnly {
+        bytes: Vec<u8>,
+        cas: Vec<(u32, u64, u64)>,
+        /// Runs after the walk read the entry and before the compare of the next replace: lets a
+        /// test change the entry the way another vCPU would between the read and the CAS.
+        before_cas: Vec<(usize, u64)>,
+    }
+
+    impl CasOnly {
+        fn new(bytes: Vec<u8>) -> Self {
+            Self {
+                bytes,
+                cas: Vec::new(),
+                before_cas: Vec::new(),
+            }
         }
-        impl RealModeMemory for OrOnly {
+    }
+
+    impl RealModeMemory for CasOnly {
+        fn read_u8(&self, linear: u32) -> Option<u8> {
+            self.bytes.get(linear as usize).copied()
+        }
+        fn can_write(&self, _linear: u32) -> bool {
+            true
+        }
+        fn write_u8(&mut self, _linear: u32, _value: u8) -> bool {
+            panic!("an ordinary byte write on the accessed/dirty path");
+        }
+        fn compare_replace_entry(
+            &mut self,
+            linear: u32,
+            expected: u64,
+            replacement: u64,
+        ) -> Option<Result<(), u64>> {
+            // The interference of another writer scheduled for this replace, if any.
+            if !self.before_cas.is_empty() {
+                let (at, value) = self.before_cas.remove(0);
+                set(&mut self.bytes, at, value);
+            }
+            self.cas.push((linear, expected, replacement));
+            let observed = entry(&self.bytes, linear as usize);
+            if observed != expected {
+                return Some(Err(observed));
+            }
+            set(&mut self.bytes, linear as usize, replacement);
+            Some(Ok(()))
+        }
+    }
+
+    /// S6-31b: `commit_touches` writes a table entry only by the compare-and-replace of the value
+    /// the walk read; the same walk then leaves the same state as the former byte OR.
+    #[test]
+    fn commit_touches_goes_through_the_compare_and_replace_only() {
+        let mut mem = CasOnly::new(tables_4k());
+        let walked = translate(&mem, PARAMS, 0x2abc, AccessKind::Write).unwrap();
+        assert_eq!(commit_touches(&mut mem, &walked.touches), 0);
+        let expected: Vec<(u32, u64, u64)> = walked
+            .touches
+            .iter()
+            .map(|t| (t.at, t.read, t.read | u64::from(t.mask)))
+            .collect();
+        assert_eq!(mem.cas, expected);
+        assert_eq!(entry(&mem.bytes, PT + 16), 0x2000 | 0x63);
+    }
+
+    /// S6-31b (a): the state of the entries after walk and commit equals the former OR of the
+    /// mask into the low byte, for the two A/D states and every leaf kind.
+    #[test]
+    fn commit_equals_the_former_byte_or_for_two_ad_states_and_every_leaf() {
+        let leaves: [(&str, u32, AccessKind); 6] = [
+            ("4k read", 0x2000, AccessKind::Read),
+            ("4k write", 0x2000, AccessKind::Write),
+            ("4k fetch", 0x2000, AccessKind::Fetch),
+            ("2m read", 0x20_0123, AccessKind::Read),
+            ("2m write", 0x20_0123, AccessKind::Write),
+            ("2m fetch", 0x20_0123, AccessKind::Fetch),
+        ];
+        for ad in [0u64, 0x60] {
+            for (name, linear, kind) in leaves {
+                let mut ram = tables_4k();
+                // PD[1] = 2 MiB page at 2 MiB (linear 0x20_0000 is PD index 1).
+                set(&mut ram, PD + 8, 0x20_0000 | PS | 3);
+                for at in [PML4, PDPT, PD, PD + 8, PT + 16] {
+                    let e = entry(&ram, at);
+                    set(&mut ram, at, e | ad);
+                }
+                let t = walk(&ram, linear, kind).unwrap();
+                let mut by_or = ram.clone();
+                for tt in &t.touches {
+                    by_or[tt.at as usize] |= tt.mask;
+                }
+                let mut by_cas = ram.clone();
+                let discarded = commit_touches(
+                    &mut ImageMemoryMut {
+                        base: 0,
+                        bytes: &mut by_cas,
+                    },
+                    &t.touches,
+                );
+                assert_eq!(discarded, 0, "{name}, ad {ad:#x}");
+                assert_eq!(by_cas, by_or, "{name}, ad {ad:#x}");
+                assert_eq!(t.touches.is_empty(), ad == 0x60, "{name}, ad {ad:#x}");
+            }
+        }
+    }
+
+    /// S6-31b (b): a bit of the translation changed between the walk and the replace: the touch
+    /// is discarded (neither A nor D), the changed entry is left as the other writer made it,
+    /// and `commit_touches` neither repeats nor writes anything else.
+    #[test]
+    fn a_translation_change_between_the_walk_and_the_replace_discards_the_touch() {
+        // Each change: another vCPU re-points the page, drops RW, clears P or sets XD.
+        type Change = fn(u64) -> u64;
+        let changes: [(&str, Change); 5] = [
+            ("new frame", |e| (e & !ADDR_4K) | 0x3000),
+            ("RW cleared", |e| e & !RW),
+            ("P cleared", |e| e & !P),
+            ("zeroed", |_| 0),
+            ("XD set", |e| e | XD),
+        ];
+        for (name, change) in changes {
+            let mut mem = CasOnly::new(tables_4k());
+            let walked = translate(&mem, PARAMS, 0x2abc, AccessKind::Write).unwrap();
+            let read = entry(&mem.bytes, PT + 16);
+            let changed = change(read);
+            mem.before_cas = vec![(PT + 16, changed)];
+            let before_other = mem.bytes.clone();
+            assert_eq!(commit_touches(&mut mem, &walked.touches), 1, "{name}");
+            assert_eq!(entry(&mem.bytes, PT + 16), changed, "{name}: not touched");
+            // The other three entries got their A bits.
+            for at in [PML4, PDPT, PD] {
+                assert_eq!(
+                    entry(&mem.bytes, at),
+                    entry(&before_other, at) | 0x20,
+                    "{name}"
+                );
+            }
+            // One replace per entry, the failed one not repeated: the instruction (the caller)
+            // is not repeated either, the touch list is consumed once.
+            assert_eq!(mem.cas.len(), 4, "{name}");
+        }
+    }
+
+    /// S6-31b (c): only A/D or ignored bits (9..=11, 52..=62) changed: the replace is repeated
+    /// over the observed value, the other writer's bits are kept and A/D are set.
+    #[test]
+    fn a_change_of_ignored_or_ad_bits_is_absorbed_and_the_replace_repeated() {
+        let soft: u64 = (0b101 << 9) | (0x3A5 << 52);
+        for other in [soft, 0x40, 0x20, 0x60 | soft] {
+            let mut mem = CasOnly::new(tables_4k());
+            let walked = translate(&mem, PARAMS, 0x2abc, AccessKind::Write).unwrap();
+            let read = entry(&mem.bytes, PT + 16);
+            // Interference only before the replace of the leaf (the last touch).
+            let leaf = walked.touches.len() - 1;
+            let (head, tail) = walked.touches.split_at(leaf);
+            commit_touches(&mut mem, head);
+            let cas_before = mem.cas.len();
+            mem.before_cas = vec![(PT + 16, read | other)];
+            assert_eq!(commit_touches(&mut mem, tail), 0, "other {other:#x}");
+            assert_eq!(
+                entry(&mem.bytes, PT + 16),
+                read | other | 0x60,
+                "other {other:#x}: the observed bits are kept, A and D set"
+            );
+            // First replace on the stale value fails, the second (over the observed one) wins,
+            // unless the observed value already holds A and D (no second replace needed).
+            let made = mem.cas.len() - cas_before;
+            assert_eq!(
+                made,
+                if other & 0x60 == 0x60 { 1 } else { 2 },
+                "other {other:#x}"
+            );
+        }
+    }
+
+    /// S6-31b: a stale touch of an entry that was zeroed does not make it nonzero (the reason an
+    /// atomic OR without comparison is not enough), and the retry is bounded.
+    #[test]
+    fn a_zeroed_entry_stays_zero_and_an_endless_interference_ends() {
+        let mut mem = CasOnly::new(tables_4k());
+        let walked = translate(&mem, PARAMS, 0x2abc, AccessKind::Read).unwrap();
+        for at in [PML4, PDPT, PD, PT + 16] {
+            set(&mut mem.bytes, at, 0);
+        }
+        assert_eq!(commit_touches(&mut mem, &walked.touches), 4);
+        for at in [PML4, PDPT, PD, PT + 16] {
+            assert_eq!(entry(&mem.bytes, at), 0, "still zero");
+        }
+
+        // Another writer flips an ignored bit on every attempt: the touch gives up after the limit.
+        struct Churn {
+            bytes: Vec<u8>,
+            calls: u32,
+        }
+        impl RealModeMemory for Churn {
             fn read_u8(&self, linear: u32) -> Option<u8> {
                 self.bytes.get(linear as usize).copied()
             }
@@ -601,24 +852,64 @@ mod tests {
                 true
             }
             fn write_u8(&mut self, _linear: u32, _value: u8) -> bool {
-                panic!("an ordinary byte write on the accessed/dirty path");
+                false
             }
-            fn or_u8(&mut self, linear: u32, mask: u8) -> bool {
-                self.ors.push((linear, mask));
-                self.bytes[linear as usize] |= mask;
-                true
+            fn compare_replace_entry(
+                &mut self,
+                linear: u32,
+                _expected: u64,
+                _replacement: u64,
+            ) -> Option<Result<(), u64>> {
+                self.calls += 1;
+                let e = entry(&self.bytes, linear as usize) ^ (1 << 9) ^ (1 << 10);
+                set(&mut self.bytes, linear as usize, e);
+                Some(Err(e))
             }
         }
-        let mut ram = tables_4k();
-        let mut mem = OrOnly {
-            bytes: ram.split_off(0),
-            ors: Vec::new(),
+        let mut churn = Churn {
+            bytes: tables_4k(),
+            calls: 0,
         };
-        let walked = translate(&mem, PARAMS, 0x2abc, AccessKind::Write).unwrap();
-        // Another writer sets a bit of the same low byte after the walk: the OR keeps it.
-        mem.bytes[PT + 16] |= 1 << 4;
-        commit_touches(&mut mem, &walked.touches);
-        assert_eq!(mem.ors, walked.touches);
-        assert_eq!(mem.bytes[PT + 16] & 0x70, 0x70, "A, D and the other bit");
+        let touch = Touch {
+            at: PT as u32,
+            read: entry(&churn.bytes, PT),
+            mask: 0x20,
+        };
+        assert_eq!(commit_touches(&mut churn, &[touch]), 1);
+        assert_eq!(churn.calls, TOUCH_RETRY_LIMIT + 1);
+    }
+
+    /// The default 8-byte read and compare-and-replace on an image: unreadable and unwritable
+    /// entries are `None`, a mismatch writes nothing.
+    #[test]
+    fn the_default_entry_operations_on_an_image() {
+        let mut ram = tables_4k();
+        let mut mem = ImageMemoryMut {
+            base: 0,
+            bytes: &mut ram,
+        };
+        assert_eq!(mem.read_u64(PML4 as u32), Some(PDPT as u64 | 3));
+        assert_eq!(
+            mem.read_u64((RAM - 4) as u32),
+            None,
+            "crosses the image end"
+        );
+        assert_eq!(
+            mem.compare_replace_entry(PML4 as u32, 1, 2),
+            Some(Err(PDPT as u64 | 3))
+        );
+        assert_eq!(
+            mem.compare_replace_entry(PML4 as u32, PDPT as u64 | 3, PDPT as u64 | 0x23),
+            Some(Ok(()))
+        );
+        assert_eq!(mem.read_u64(PML4 as u32), Some(PDPT as u64 | 0x23));
+        let mut ro = ImageMemory {
+            base: 0,
+            bytes: &ram,
+        };
+        assert_eq!(
+            ro.compare_replace_entry(PML4 as u32, PDPT as u64 | 0x23, 0),
+            None
+        );
     }
 }

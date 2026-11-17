@@ -88,7 +88,7 @@ guest SB `0,0` outcome. Кроме того, atomic accesses разных раз
 результаты задают host primitive для однородных aligned width cases и сами по
 себе не выбирают завершённый RAM mapping. RAM mapping выбран в S6-30a (абзац
 «Решение S6-30a» выше: вариант A, смешение ширин при конкурентном доступе —
-принятое отклонение с инвариантами); доступ к RAM через `&self` без `&mut` сделан в S6-30c; S6-31 реализовала `LOCK` на выбранных здесь `compare_exchange`/`swap`/`fetch_add` (`SeqCst`); общий
+принятое отклонение с инвариантами); доступ к RAM через `&self` без `&mut` сделан в S6-30c; S6-31 реализовала `LOCK` на выбранных здесь `compare_exchange`/`swap`/`fetch_add` (`SeqCst`); S6-31b перевела на host-CAS по значению обхода и путь AP (A/D записи таблицы страниц в трамплине AP: `compare_replace_entry`, отбрасывание касания при изменении трансляционных битов, [контракт](MACHINE_CONTRACT.md#s6-31b--cas-по-значению-обхода-на-пути-ap)); общий
 writer/reader ownership protocol для нескольких потоков остаётся за S6-34. Page walk, DMA, descriptor,
 split-lock и MMIO transactions сохраняют свои отдельные требования.
 
