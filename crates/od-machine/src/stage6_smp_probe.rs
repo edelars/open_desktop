@@ -23,8 +23,10 @@
 //! transcript and the scheduler counters. Every line of the transcript is written by guest code.
 
 use crate::smp_scheduler::{
-    BoardSmpHost, Finished, QuantumPolicy, SmpError, SmpScheduler, StopRequest,
+    BoardSmpHost, Executed, Finished, QuantumPolicy, SafePoint, SmpError, SmpScheduler, StopError,
+    StopRequest,
 };
+use crate::vm_snapshot::VmSnapshot;
 use crate::{
     FirmwareBoardConfig, FirmwareBoardError, GuestPhysicalAddress, LoadedFirmwareBoard, PciEcam,
     firmware_board::{FIRMWARE_CR0, FIRMWARE_CR4, assemble_board},
@@ -365,44 +367,63 @@ impl Stage6SmpProbe {
             .collect()
     }
 
+    /// One quantum of one vCPU of the probe: the CPL0 set with `CLI`, `STI`, `HLT`, byte port I/O
+    /// and the vCPU's own `CR3` (what the scheduler's host runs).
+    fn probe_quantum(
+        board: &mut LoadedFirmwareBoard,
+        cpu: usize,
+        budget: u64,
+        stop: &mut dyn FnMut() -> bool,
+    ) -> Result<Executed, FirmwareBoardError> {
+        let (cli, sti, halt) = (
+            CliProfile::NonPviLong64V1,
+            StiProfile::NonPviLong64V1,
+            HaltProfile::Long64V1,
+        );
+        let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+            .with_cli(&cli)
+            .with_cpu_owned_cr3(MovCr3Long64V1)
+            .with_pio_u8()
+            .with_halt(&halt)
+            .with_sti(&sti);
+        board.run_vcpu_set_quantum(cpu, budget, stop, &set)
+    }
+
+    fn policy_of(quantum: Stage6SmpProbeQuantum) -> QuantumPolicy {
+        match quantum {
+            Stage6SmpProbeQuantum::Fixed(steps) => QuantumPolicy::Fixed(steps),
+            Stage6SmpProbeQuantum::Seeded(seed) => QuantumPolicy::seeded(seed),
+            Stage6SmpProbeQuantum::Schedule(list) => QuantumPolicy::Schedule(list),
+        }
+    }
+
     fn run_inner(
         &mut self,
         quantum: Stage6SmpProbeQuantum,
         budget: u64,
         record: bool,
     ) -> Result<Stage6SmpProbeReport, Stage6SmpProbeRunError> {
-        let policy = match quantum {
-            Stage6SmpProbeQuantum::Fixed(steps) => QuantumPolicy::Fixed(steps),
-            Stage6SmpProbeQuantum::Seeded(seed) => QuantumPolicy::seeded(seed),
-            Stage6SmpProbeQuantum::Schedule(list) => QuantumPolicy::Schedule(list),
-        };
         let vcpus = self.board.vcpu_count();
-        let mut scheduler = SmpScheduler::new(vcpus, policy, StopRequest::new())
+        let mut scheduler = SmpScheduler::new(vcpus, Self::policy_of(quantum), StopRequest::new())
             .map_err(|error| Stage6SmpProbeRunError::Scheduler(format!("{error:?}")))?;
         if record {
             scheduler.record_turns();
         }
         let outcome = {
-            let mut host = BoardSmpHost::new(
-                &mut self.board,
-                |board: &mut LoadedFirmwareBoard, cpu, budget, stop: &mut dyn FnMut() -> bool| {
-                    let (cli, sti, halt) = (
-                        CliProfile::NonPviLong64V1,
-                        StiProfile::NonPviLong64V1,
-                        HaltProfile::Long64V1,
-                    );
-                    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
-                        .with_cli(&cli)
-                        .with_cpu_owned_cr3(MovCr3Long64V1)
-                        .with_pio_u8()
-                        .with_halt(&halt)
-                        .with_sti(&sti);
-                    board.run_vcpu_set_quantum(cpu, budget, stop, &set)
-                },
-            )
-            .map_err(|error| Stage6SmpProbeRunError::Scheduler(format!("{error:?}")))?;
+            let mut host = BoardSmpHost::new(&mut self.board, Self::probe_quantum)
+                .map_err(|error| Stage6SmpProbeRunError::Scheduler(format!("{error:?}")))?;
             scheduler.run(&mut host, budget)
         };
+        self.finish(&scheduler, outcome, record)
+    }
+
+    /// The report of a run that ended with `outcome`.
+    fn finish(
+        &mut self,
+        scheduler: &SmpScheduler,
+        outcome: Result<Finished, SmpError<FirmwareBoardError>>,
+        record: bool,
+    ) -> Result<Stage6SmpProbeReport, Stage6SmpProbeRunError> {
         let com1 = self.board.com1_transcript().to_vec();
         let finished = match outcome {
             Ok(Finished::AllIdle) => Stage6SmpProbeFinish::AllIdle,
@@ -410,12 +431,12 @@ impl Stage6SmpProbe {
             Ok(Finished::Stopped) => Stage6SmpProbeFinish::Stopped,
             Ok(Finished::ScheduleEnd) => Stage6SmpProbeFinish::ScheduleEnd,
             Err(SmpError::Host(error)) => {
-                let cpus = self.cpu_reports(&scheduler);
+                let cpus = self.cpu_reports(scheduler);
                 return Err(Stage6SmpProbeRunError::Board { error, com1, cpus });
             }
             Err(other) => return Err(Stage6SmpProbeRunError::Scheduler(format!("{other:?}"))),
         };
-        let cpus = self.cpu_reports(&scheduler);
+        let cpus = self.cpu_reports(scheduler);
         let (idle_ns, idle_jumps) = scheduler.idle();
         let schedule = record.then(|| {
             let mut runs: Vec<(usize, u64)> = Vec::new();
@@ -436,5 +457,175 @@ impl Stage6SmpProbe {
             idle_jumps,
             schedule,
         })
+    }
+}
+
+/// Why [`Stage6SmpProbeSession::pause`] gave no stop.
+#[derive(Debug, Eq, PartialEq)]
+pub enum Stage6SmpProbeStopError {
+    /// These vCPUs did not reach a safe point before the round limit; the stop request was
+    /// withdrawn and nothing changed.
+    Timeout { unacked: Vec<usize>, rounds: u64 },
+    /// Anything else (a host error, a scheduler that does not match the machine).
+    Other(String),
+}
+
+/// The state of the vCPUs, the Local APICs with their event queues and the scheduler of a stopped
+/// probe machine, as a value in memory (S6-24). Not a snapshot of the machine: no RAM, no devices,
+/// no file format (`S9-24`/`S9-25`). Valid for the probe it was taken from.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Stage6SmpProbeSnapshot {
+    inner: VmSnapshot,
+}
+
+impl Stage6SmpProbeSnapshot {
+    /// The virtual time (ns) at which the machine stood.
+    pub fn now_ns(&self) -> u64 {
+        self.inner.now_ns()
+    }
+}
+
+/// A run of the probe in several steps over one scheduler (S6-24): run, stop every vCPU, take the
+/// state, reset, restore, resume, run on. The scheduler keeps its position between the steps, so a
+/// run that was stopped and resumed (with or without a restore) is the run that was never
+/// stopped.
+pub struct Stage6SmpProbeSession<'a> {
+    probe: &'a mut Stage6SmpProbe,
+    scheduler: SmpScheduler,
+    record: bool,
+    point: Option<SafePoint>,
+}
+
+impl Stage6SmpProbe {
+    /// Start a session with the given quantum policy. `record` keeps the turn record of the
+    /// scheduler (the report's `schedule`).
+    pub fn session(
+        &mut self,
+        quantum: Stage6SmpProbeQuantum,
+        record: bool,
+    ) -> Result<Stage6SmpProbeSession<'_>, Stage6SmpProbeRunError> {
+        let mut scheduler = SmpScheduler::new(
+            self.board.vcpu_count(),
+            Self::policy_of(quantum),
+            StopRequest::new(),
+        )
+        .map_err(|error| Stage6SmpProbeRunError::Scheduler(format!("{error:?}")))?;
+        if record {
+            scheduler.record_turns();
+        }
+        Ok(Stage6SmpProbeSession {
+            probe: self,
+            scheduler,
+            record,
+            point: None,
+        })
+    }
+
+    /// The virtual time of the board in nanoseconds.
+    pub fn now_ns(&self) -> u64 {
+        self.board.clock().now_ns()
+    }
+}
+
+impl Stage6SmpProbeSession<'_> {
+    /// Run until the end of `budget` (retired instructions, from now), nothing can run, or STOP;
+    /// the report counts everything since the session began.
+    pub fn run(&mut self, budget: u64) -> Result<Stage6SmpProbeReport, Stage6SmpProbeRunError> {
+        let outcome = {
+            let mut host = BoardSmpHost::new(&mut self.probe.board, Stage6SmpProbe::probe_quantum)
+                .map_err(|error| Stage6SmpProbeRunError::Scheduler(format!("{error:?}")))?;
+            self.scheduler.run(&mut host, budget)
+        };
+        self.probe.finish(&self.scheduler, outcome, self.record)
+    }
+
+    /// Stop every vCPU on a safe point (SMP_CONTRACT.md 9): each one must acknowledge within
+    /// `round_limit` rounds. The clock does not move. On success the stop stays in force (a `run`
+    /// ends as `Stopped`) until [`Self::resume`]; on a timeout nothing is stopped and nothing is
+    /// published.
+    pub fn pause(&mut self, round_limit: u64) -> Result<(), Stage6SmpProbeStopError> {
+        let mut host = BoardSmpHost::new(&mut self.probe.board, Stage6SmpProbe::probe_quantum)
+            .map_err(|error| Stage6SmpProbeStopError::Other(format!("{error:?}")))?;
+        match self.scheduler.stop_all(&mut host, round_limit) {
+            Ok(point) => {
+                self.point = Some(point);
+                Ok(())
+            }
+            Err(StopError::Timeout { unacked, rounds }) => {
+                Err(Stage6SmpProbeStopError::Timeout { unacked, rounds })
+            }
+            Err(other) => Err(Stage6SmpProbeStopError::Other(format!("{other:?}"))),
+        }
+    }
+
+    /// The explicit resume after [`Self::pause`].
+    pub fn resume(&mut self) {
+        self.scheduler.resume();
+        self.point = None;
+    }
+
+    /// Whether a stop is in force.
+    pub fn paused(&self) -> bool {
+        self.scheduler.paused()
+    }
+
+    /// Take the state of the stopped machine. Refused unless [`Self::pause`] succeeded and the
+    /// machine has not moved since.
+    pub fn snapshot(&self) -> Result<Stage6SmpProbeSnapshot, String> {
+        let point = self
+            .point
+            .as_ref()
+            .ok_or_else(|| "the machine is not stopped".to_string())?;
+        VmSnapshot::take(&self.probe.board, &self.scheduler, point)
+            .map(|inner| Stage6SmpProbeSnapshot { inner })
+            .map_err(|error| format!("{error:?}"))
+    }
+
+    /// The reset of the CPU complex and of the scheduler to the state of power-on (the vCPUs and
+    /// the Local APICs by `LoadedFirmwareBoard::reset_cpu_complex`, with the boot processor on
+    /// the probe's entry state, then the scheduler). RAM, devices and the clock are not touched.
+    pub fn reset(&mut self) -> Result<(), String> {
+        self.probe
+            .board
+            .reset_cpu_complex(long_boot_state(), PROBE_EFER)
+            .map_err(|error| format!("{error:?}"))?;
+        self.scheduler.reset();
+        Ok(())
+    }
+
+    /// Put the state of a snapshot of this machine back (the machine must be stopped).
+    pub fn restore(&mut self, snapshot: &Stage6SmpProbeSnapshot) -> Result<(), String> {
+        let point = self
+            .point
+            .as_ref()
+            .ok_or_else(|| "the machine is not stopped".to_string())?;
+        snapshot
+            .inner
+            .restore(&mut self.probe.board, &mut self.scheduler, point)
+            .map_err(|error| format!("{error:?}"))
+    }
+
+    /// The `(vector, irr, isr)` bits that are set in Local APIC `cpu` (see
+    /// [`Stage6SmpProbe::pending_vectors`]).
+    pub fn pending_vectors(&self, cpu: usize) -> Vec<(u8, bool, bool)> {
+        self.probe.pending_vectors(cpu)
+    }
+
+    /// The activity of vCPU `cpu`.
+    pub fn activity(&self, cpu: usize) -> Option<CpuActivity> {
+        self.probe.board.vcpu(cpu).map(|vcpu| vcpu.activity())
+    }
+
+    /// Whether Local APIC `cpu` holds a pending INIT, a pending SIPI, a pending NMI or any
+    /// request in IRR or ISR.
+    pub fn lapic_pending(&self, cpu: usize) -> Option<bool> {
+        let lapic = self.probe.board.local_apic_of(cpu)?;
+        let startup = lapic.pending_startup();
+        Some(
+            startup.init
+                || startup.sipi.is_some()
+                || lapic.pending_nmi()
+                || !self.probe.pending_vectors(cpu).is_empty(),
+        )
     }
 }

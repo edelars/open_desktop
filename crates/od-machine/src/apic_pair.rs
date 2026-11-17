@@ -369,6 +369,29 @@ impl PairState {
         Ok(())
     }
 
+    /// The power-on state of the whole APIC complex (S6-24, the board reset): every Local APIC
+    /// (not only one) returns to its reset state with its pending INIT, SIPI, NMI and requests
+    /// dropped and its timer queue emptied, the guest timer-write counters go back to 0, and the
+    /// IOAPIC route returns to its reset state, Remote IRR of every level entry included. Unlike
+    /// [`Self::reset_io`] and [`Self::reset_local`] it is not vetoed by a Remote IRR: hardware reset
+    /// clears it, and a vCPU that an INIT reset keeps the owner's decision that INIT does not
+    /// (SMP_CONTRACT.md 3), so nobody could ever send the EOI that clears it. The Local APICs
+    /// stay globally enabled and keep their APIC IDs and timer configuration (clock, frequency).
+    /// All or nothing: the change is built on a copy.
+    pub fn reset_all(&mut self) -> Result<(), DeviceError> {
+        let mut next = self.clone();
+        for apic in &mut next.cpus {
+            if let Some(timer) = &mut apic.timer {
+                timer.reset()?;
+            }
+            apic.local = State::default();
+            apic.timer_writes = 0;
+        }
+        next.route = Route::default();
+        *self = next;
+        Ok(())
+    }
+
     fn bit(vector: u8) -> (usize, u32) {
         (usize::from(vector / 32), 1 << (vector % 32))
     }

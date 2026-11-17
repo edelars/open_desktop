@@ -278,6 +278,37 @@ impl LocalApicHandle {
         device.write_from_cpu(sender, access(0x310), u64::from(destination) << 24)?;
         device.write_from_cpu(sender, access(0x300), u64::from(low))
     }
+    /// The state of every Local APIC of the board and of the IOAPIC route as a value (S6-24):
+    /// registers, IRR/ISR/TMR, pending INIT/SIPI/NMI, the timers with their event queues
+    /// (deadlines in virtual time and the generations) and the Remote IRR of the route.
+    pub(crate) fn snapshot_pair(&self) -> PairState {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+    /// Put back a state taken by [`Self::snapshot_pair`] from this same board. A state of another
+    /// number of Local APICs, or whose timers are another set (present or absent) or hang on another
+    /// clock, is refused and nothing changes. Not a reset: nothing is vetoed by a Remote IRR.
+    pub(crate) fn restore_pair(&self, state: &PairState) -> Result<(), DeviceError> {
+        let mut pair = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let same_timers = pair.cpus.len() == state.cpus.len()
+            && pair.cpus.iter().zip(&state.cpus).all(|(now, then)| {
+                match (&now.timer, &then.timer) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => a.clock == b.clock && a.hz == b.hz,
+                    _ => false,
+                }
+            });
+        if !same_timers {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
+        *pair = state.clone();
+        Ok(())
+    }
+    /// The power-on reset of every Local APIC and of the IOAPIC route (S6-24, see
+    /// [`PairState::reset_all`]); the board reset uses it. [`Self::reset_checked`] and
+    /// [`Self::reset_pair`] stay what they were: the reset of one LAPIC and the route.
+    pub(crate) fn reset_all(&self) -> Result<(), DeviceError> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).reset_all()
+    }
     /// Reset only the Local APIC; a level request awaiting EOI vetoes reset.
     pub fn reset(&self) -> Result<(), DeviceError> {
         self.0

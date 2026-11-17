@@ -80,6 +80,7 @@ mod uart_pic_irq_source;
 mod uart_rx_events;
 mod vcpu;
 mod virtual_clock;
+mod vm_snapshot;
 
 pub use acpi_blob::{
     ACPI_BLOB_ALIGN, ACPI_BLOB_DIR_ENTRY_BYTES, ACPI_BLOB_HEADER_BYTES, ACPI_BLOB_MAGIC,
@@ -410,7 +411,7 @@ pub use stage6_smp_probe::{
     STAGE6_SMP_PROBE_TRAMPOLINE_GPA, STAGE6_SMP_PROBE_VECTOR_AP, STAGE6_SMP_PROBE_VECTOR_BSP,
     STAGE6_SMP_PROBE_VECTOR_SHOOTDOWN, Stage6SmpProbe, Stage6SmpProbeCpu, Stage6SmpProbeFinish,
     Stage6SmpProbeLoadError, Stage6SmpProbeQuantum, Stage6SmpProbeReport, Stage6SmpProbeRunError,
-    load_stage6_smp_probe,
+    Stage6SmpProbeSession, Stage6SmpProbeSnapshot, Stage6SmpProbeStopError, load_stage6_smp_probe,
 };
 
 pub use nvme::{

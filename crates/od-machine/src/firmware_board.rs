@@ -1305,6 +1305,46 @@ impl LoadedFirmwareBoard {
         }
     }
 
+    /// The reset of the CPU complex of the board (S6-24; what S6-13 left open): every vCPU goes
+    /// back to its power-on state and every Local APIC and the IOAPIC route to theirs.
+    ///
+    /// - The boot processor gets `bsp_state` and `bsp_guest_efer` (the handoff state the loader
+    ///   gave it: the board does not keep it), `Running`, no legacy model, the guest cells at their
+    ///   initial values (SMP_CONTRACT.md 3, row "Power-on, index 0").
+    /// - Every application processor is `WaitForSipi` with the real-mode reset state, whatever it
+    ///   did before (Running, Halted, in long mode, shut down): [`Vcpu::new_ap`]. The CPUID
+    ///   configuration of every vCPU is kept.
+    /// - Every Local APIC, not only the boot processor's, drops its pending INIT, SIPI, NMI, its
+    ///   IRR/ISR/TMR and its armed timer, and the route drops its Remote IRR
+    ///   ([`LocalApicHandle::reset_all`]); an earlier INIT that the owner's decision left the
+    ///   Remote IRR of cannot veto it.
+    ///
+    /// Not touched: guest RAM, the devices of the board (UART, PIT, PIC, PM timer, NVMe, display),
+    /// the interrupt source and the clock: virtual time does not move. Resetting the devices is the
+    /// machine reset of `S9`. On an error nothing has changed.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn reset_cpu_complex(
+        &mut self,
+        bsp_state: LongModeState,
+        bsp_guest_efer: u64,
+    ) -> Result<(), FirmwareBoardError> {
+        self.lapic.reset_all().map_err(|_| {
+            FirmwareBoardError::Config("reset_cpu_complex: the Local APIC reset failed")
+        })?;
+        for (index, vcpu) in self.vcpus.iter_mut().enumerate() {
+            let cpuid = vcpu.cpuid;
+            *vcpu = if index == BOOT_VCPU_INDEX {
+                let mut boot = Vcpu::new(BOOT_VCPU_INDEX, bsp_state.clone());
+                boot.guest_efer = bsp_guest_efer;
+                boot
+            } else {
+                Vcpu::new_ap(index)
+            };
+            vcpu.set_cpuid(cpuid);
+        }
+        Ok(())
+    }
+
     /// The vCPU `index` applies the INIT and SIPI waiting in its own Local APIC (S6-13), on its
     /// own boundary: the LAPIC hands them over and the vCPU changes its state
     /// ([`Vcpu::apply_startup`]). The scheduler of S6-15 calls it on the boundary of every vCPU

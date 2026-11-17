@@ -192,6 +192,23 @@ pub(crate) trait SmpHost {
     fn boundary(&mut self, cpu: usize) -> Result<BoundaryReport, Self::Error>;
     /// Set a halted `cpu` (IF = 1, an acceptable vector in its Local APIC) to `Running`.
     fn wake(&mut self, cpu: usize) -> Result<(), Self::Error>;
+    /// The acknowledgement of a stop request by `cpu` (S6-24, SMP_CONTRACT.md 9): `Some` when the
+    /// vCPU stands on a safe point, that is when everything that can change its guest state is in
+    /// the host's vCPU structure (no live host-register value, no instruction in flight), or when
+    /// it is asleep; `None` when it has not arrived yet. The default is what the interleaved mode
+    /// gives by construction: only one vCPU runs and its call has ended on a boundary.
+    fn stop_ack(&self, cpu: usize) -> Option<StopAck> {
+        Some(match self.activity(cpu) {
+            SchedActivity::Running => StopAck::Boundary,
+            asleep => StopAck::Asleep(asleep),
+        })
+    }
+    /// One round of progress of `cpu` toward its safe point, called by [`SmpScheduler::stop_all`]
+    /// while [`Self::stop_ack`] answers `None`. It runs no guest instruction and does not move the
+    /// clock. The default does nothing: a host whose vCPUs always acknowledge never needs it.
+    fn settle(&mut self, _cpu: usize) -> Result<(), Self::Error> {
+        Ok(())
+    }
     /// Run `cpu` (in `Running` state) for at most `budget` (at least 1) steps with the existing
     /// interpreter loop, ending on a boundary: the budget is used up, or a partial `REP` progress
     /// (counted as a step), or the vCPU halts or shuts down, or `stop()` answers true. It must
@@ -277,6 +294,77 @@ pub(crate) struct TurnRecord {
     pub(crate) retired: u64,
 }
 
+/// A turn that STOP or the end of the shared budget cut before its quantum was used up (S6-24).
+/// The next [`SmpScheduler::run`] continues it without a boundary: the continuous run has none
+/// inside a turn either, so a run cut and resumed is the run that was never cut.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TurnCarry {
+    cpu: usize,
+    /// The quantum the policy gave (for the [`TurnRecord`]).
+    quantum: u64,
+    /// Steps of the quantum not used yet (not cut by the budget).
+    left: u64,
+    /// What the turn did before it was cut.
+    steps: u64,
+    retired: u64,
+}
+
+/// Everything the scheduler remembers between two calls of [`SmpScheduler::run`] (S6-24): the
+/// position of the quantum generator, the schedule position, the turn that was cut and the
+/// round-robin start (the current vCPU), the counters and the idle totals. The STOP handle is
+/// the caller's and is not part of it. A value, not a file: the format is `S9-24`/`S9-25`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SchedulerState {
+    policy: QuantumPolicy,
+    rng: SplitMix64,
+    position: usize,
+    next_cpu: usize,
+    carry: Option<TurnCarry>,
+    resume_turn: bool,
+    counters: Vec<VcpuCounters>,
+    turns: Option<Vec<TurnRecord>>,
+    idle_ns: u64,
+    idle_jumps: u64,
+}
+
+/// How one vCPU acknowledged a stop request (SMP_CONTRACT.md 9).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StopAck {
+    /// A completed instruction: the vCPU stands on a boundary.
+    Boundary,
+    /// The restart point of a partly executed `REP` (progress after some iteration).
+    RepRestart,
+    /// `Halted`, `WaitForSipi` or `Shutdown`: no guest instruction is needed to stop.
+    Asleep(SchedActivity),
+}
+
+/// The proof that every vCPU acknowledged the stop (S6-24): one acknowledgement per vCPU, in
+/// index order, and the virtual time at which they stood. A flag without it is not a stop (G6).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SafePoint {
+    pub(crate) acks: Vec<StopAck>,
+    pub(crate) now_ns: u64,
+    /// Rounds the stop needed (0 when every vCPU stood on a safe point at once).
+    pub(crate) rounds: u64,
+}
+
+/// Why [`SmpScheduler::stop_all`] gave no [`SafePoint`].
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum StopError<E> {
+    VcpuCountMismatch {
+        scheduler: usize,
+        host: usize,
+    },
+    /// The round limit passed with these vCPUs (index order) still not on a safe point. The STOP
+    /// request was withdrawn and nothing else changed: every vCPU has the activity it had, every
+    /// pending event and deadline is where it was, and no snapshot exists.
+    Timeout {
+        unacked: Vec<usize>,
+        rounds: u64,
+    },
+    Host(E),
+}
+
 #[derive(Debug)]
 pub(crate) struct SmpScheduler {
     policy: QuantumPolicy,
@@ -285,11 +373,23 @@ pub(crate) struct SmpScheduler {
     position: usize,
     /// Where the round-robin search for the next `Running` vCPU starts.
     next_cpu: usize,
+    /// The turn the last run left unfinished, if STOP or the budget cut it.
+    carry: Option<TurnCarry>,
+    /// [`Self::resume`] was called: the next run continues `carry`.
+    resume_turn: bool,
     stop: StopRequest,
     counters: Vec<VcpuCounters>,
     turns: Option<Vec<TurnRecord>>,
     idle_ns: u64,
     idle_jumps: u64,
+}
+
+/// The first value of the generator for a policy.
+fn initial_seed(policy: &QuantumPolicy) -> u64 {
+    match policy {
+        QuantumPolicy::Seeded { seed, .. } => *seed,
+        _ => 0,
+    }
 }
 
 impl SmpScheduler {
@@ -301,19 +401,20 @@ impl SmpScheduler {
         if vcpu_count == 0 {
             return Err(PolicyError("no vCPUs"));
         }
-        let seed = match &policy {
+        match &policy {
             QuantumPolicy::Fixed(0) => return Err(PolicyError("quantum 0")),
             QuantumPolicy::Seeded { min, max, .. } if *min == 0 || min > max => {
                 return Err(PolicyError("seeded quantum needs 1 <= min <= max"));
             }
-            QuantumPolicy::Seeded { seed, .. } => *seed,
-            _ => 0,
-        };
+            _ => {}
+        }
         Ok(Self {
+            rng: SplitMix64::new(initial_seed(&policy)),
             policy,
-            rng: SplitMix64::new(seed),
             position: 0,
             next_cpu: 0,
+            carry: None,
+            resume_turn: false,
             stop,
             counters: vec![VcpuCounters::default(); vcpu_count],
             turns: None,
@@ -384,6 +485,17 @@ impl SmpScheduler {
             {
                 return Ok(Finished::ScheduleEnd);
             }
+            // A turn cut by STOP or by the end of the budget goes on from where it stood, with no
+            // boundary (the continuous run has none inside a turn), but only after the explicit
+            // `resume` (S6-24). A plain new `run` starts a new turn on a boundary, as it always
+            // did: what the caller changed between the runs is taken at once.
+            if let Some(carry) = self.carry.take()
+                && std::mem::take(&mut self.resume_turn)
+            {
+                self.turn(host, carry.cpu, carry.quantum, Some(carry), &mut remaining)?;
+                continue;
+            }
+            self.resume_turn = false;
             self.boundaries(host)?;
             self.wake_ready(host)?;
             if !(0..count).any(|cpu| host.activity(cpu) == SchedActivity::Running) {
@@ -393,7 +505,141 @@ impl SmpScheduler {
                 continue;
             }
             let (cpu, quantum) = self.select(host)?;
-            self.turn(host, cpu, quantum, &mut remaining)?;
+            self.turn(host, cpu, quantum, None, &mut remaining)?;
+        }
+    }
+
+    /// The scheduler's own state as a value (S6-24). Call it on a stopped scheduler. With
+    /// [`Self::record_turns`] on the state holds a copy of the whole turn record, so taking it,
+    /// putting it back and comparing it cost as much as the record is long (one entry a turn, for
+    /// the whole run so far): a long recorded run makes every snapshot as big as the record.
+    pub(crate) fn state(&self) -> SchedulerState {
+        SchedulerState {
+            policy: self.policy.clone(),
+            rng: self.rng.clone(),
+            position: self.position,
+            next_cpu: self.next_cpu,
+            carry: self.carry,
+            resume_turn: self.resume_turn,
+            counters: self.counters.clone(),
+            turns: self.turns.clone(),
+            idle_ns: self.idle_ns,
+            idle_jumps: self.idle_jumps,
+        }
+    }
+
+    /// Put the scheduler back into a state taken by [`Self::state`] (S6-24). The STOP handle is
+    /// kept. A state of another number of vCPUs is refused and nothing changes.
+    pub(crate) fn set_state(&mut self, state: SchedulerState) -> Result<(), PolicyError> {
+        if state.counters.len() != self.counters.len() {
+            return Err(PolicyError("state of another number of vCPUs"));
+        }
+        let SchedulerState {
+            policy,
+            rng,
+            position,
+            next_cpu,
+            carry,
+            resume_turn,
+            counters,
+            turns,
+            idle_ns,
+            idle_jumps,
+        } = state;
+        self.policy = policy;
+        self.rng = rng;
+        self.position = position;
+        self.next_cpu = next_cpu;
+        self.carry = carry;
+        self.resume_turn = resume_turn;
+        self.counters = counters;
+        self.turns = turns;
+        self.idle_ns = idle_ns;
+        self.idle_jumps = idle_jumps;
+        Ok(())
+    }
+
+    /// The state of power-on: the generator at its seed, no schedule position, no cut turn, the
+    /// first vCPU current, counters and idle totals at 0 (the turn record, if kept, empty). The
+    /// policy and the STOP handle are kept (S6-24, the board reset of the scheduler).
+    pub(crate) fn reset(&mut self) {
+        self.rng = SplitMix64::new(initial_seed(&self.policy));
+        self.position = 0;
+        self.next_cpu = 0;
+        self.carry = None;
+        self.resume_turn = false;
+        self.counters.fill(VcpuCounters::default());
+        if let Some(turns) = self.turns.as_mut() {
+            turns.clear();
+        }
+        self.idle_ns = 0;
+        self.idle_jumps = 0;
+    }
+
+    /// The number of vCPUs the scheduler was built for.
+    pub(crate) fn vcpu_count(&self) -> usize {
+        self.counters.len()
+    }
+
+    /// Whether a stop is in force: [`Self::stop_all`] succeeded (or STOP was requested) and
+    /// [`Self::resume`] has not been called.
+    pub(crate) fn paused(&self) -> bool {
+        self.stop.requested()
+    }
+
+    /// The explicit command that lets the guest run again after [`Self::stop_all`] (SMP_CONTRACT.md 9):
+    /// the stop request is withdrawn and the turn that the stop (or the end of the budget) cut is
+    /// continued by the next `run`, with no boundary before it. Nothing else changes.
+    pub(crate) fn resume(&mut self) {
+        self.stop.clear();
+        self.resume_turn = true;
+    }
+
+    /// Stop every vCPU (S6-24, SMP_CONTRACT.md 9): request STOP and collect the acknowledgement of
+    /// each vCPU ([`SmpHost::stop_ack`]: a completed instruction, the restart point of a `REP`, or
+    /// asleep), in rounds. A vCPU that does not acknowledge gets [`SmpHost::settle`] before the next
+    /// round; after `round_limit` rounds (the common bounded deadline) the stop fails with the list
+    /// of vCPUs that did not arrive ([`StopError::Timeout`]): the request is withdrawn and nothing
+    /// is published. On success the request stays in force (every `run` ends as `Stopped`) until
+    /// [`Self::resume`]. The clock is not touched: virtual time stands over the whole stop. A vector
+    /// or IPI that arrives later stays pending in its Local APIC.
+    pub(crate) fn stop_all<H: SmpHost>(
+        &mut self,
+        host: &mut H,
+        round_limit: u64,
+    ) -> Result<SafePoint, StopError<H::Error>> {
+        let count = host.vcpu_count();
+        if count != self.counters.len() {
+            return Err(StopError::VcpuCountMismatch {
+                scheduler: self.counters.len(),
+                host: count,
+            });
+        }
+        self.stop.request();
+        let mut rounds = 0;
+        loop {
+            let acks: Vec<Option<StopAck>> = (0..count).map(|cpu| host.stop_ack(cpu)).collect();
+            if acks.iter().all(Option::is_some) {
+                return Ok(SafePoint {
+                    acks: acks.into_iter().flatten().collect(),
+                    now_ns: host.clock_owner().now_ns(),
+                    rounds,
+                });
+            }
+            if rounds >= round_limit {
+                self.stop.clear();
+                return Err(StopError::Timeout {
+                    unacked: (0..count).filter(|&cpu| acks[cpu].is_none()).collect(),
+                    rounds,
+                });
+            }
+            for cpu in (0..count).filter(|&cpu| acks[cpu].is_none()) {
+                if let Err(error) = host.settle(cpu) {
+                    self.stop.clear();
+                    return Err(StopError::Host(error));
+                }
+            }
+            rounds += 1;
         }
     }
 
@@ -491,19 +737,39 @@ impl SmpScheduler {
 
     /// One turn of `cpu`: calls of the host until the quantum (cut to the shared budget) is used
     /// up, the vCPU stops running, or STOP is seen. Each call is cut by the nearest deadline and
-    /// followed by the charge of what it retired and by the timer dispatch of the owner.
+    /// followed by the charge of what it retired and by the timer dispatch of the owner. A turn
+    /// that STOP or the end of the budget interrupts with quantum left is kept in `carry`, to be
+    /// continued by the next run (`resume` is that carry; the turn then is not counted again).
     fn turn<H: SmpHost>(
         &mut self,
         host: &mut H,
         cpu: usize,
         quantum: u64,
+        resume: Option<TurnCarry>,
         remaining: &mut u64,
     ) -> Result<(), SmpError<H::Error>> {
         let stop = self.stop.clone();
-        let mut left = quantum.min(*remaining);
-        let (mut steps, mut retired) = (0u64, 0u64);
-        self.counters[cpu].turns += 1;
-        loop {
+        let (mut quantum_left, mut steps, mut retired) = resume.map_or((quantum, 0, 0), |carry| {
+            (carry.left, carry.steps, carry.retired)
+        });
+        if resume.is_none() {
+            self.counters[cpu].turns += 1;
+        } else if let Some(turns) = self.turns.as_mut() {
+            // The record of the cut turn was kept with its steps so far; the finished turn
+            // replaces it.
+            turns.pop();
+        }
+        if resume.is_some() && host.activity(cpu) != SchedActivity::Running {
+            // The vCPU is not running any more (the state was replaced between the runs): the
+            // turn ends here.
+            quantum_left = 0;
+        }
+        while quantum_left > 0 && *remaining > 0 {
+            // The cut is recomputed at every call (S6-24 review M1): a partial `REP` spends a step
+            // of the quantum but retires nothing, so the quantum left can fall behind the shared
+            // budget only by steps; the part of the budget that is left must go on with this vCPU,
+            // as the continuous run would, not be given to another vCPU by a new turn.
+            let left = quantum_left.min(*remaining);
             let deadline = host.board_deadline();
             let budget = host.clock_owner().step_budget(left, deadline);
             let now_before = host.clock_owner().now_ns();
@@ -534,15 +800,27 @@ impl SmpScheduler {
             counters.retired += executed.retired;
             steps += done;
             retired += executed.retired;
-            left = left.saturating_sub(done);
+            quantum_left = quantum_left.saturating_sub(done);
             *remaining = remaining.saturating_sub(executed.retired);
             let running = host.activity(cpu) == SchedActivity::Running;
             if done == 0 && executed.device_ns == 0 && running && !stop.requested() {
                 return Err(SmpError::NoProgress { cpu });
             }
-            if left == 0 || *remaining == 0 || !running || stop.requested() {
+            if !running {
+                quantum_left = 0;
+            }
+            if !running || stop.requested() {
                 break;
             }
+        }
+        if quantum_left > 0 && (stop.requested() || *remaining == 0) {
+            self.carry = Some(TurnCarry {
+                cpu,
+                quantum,
+                left: quantum_left,
+                steps,
+                retired,
+            });
         }
         if let Some(turns) = self.turns.as_mut() {
             turns.push(TurnRecord {
@@ -699,6 +977,20 @@ where
         })
     }
 
+    /// A `Running` vCPU of the board stands on a completed instruction, or, when its last call
+    /// ended inside a `REP` (`skip_first_boundary`), on the restart point of that `REP`: all of its
+    /// state is the [`crate::vcpu::Vcpu`] (the quantum reads and writes it at every call). A
+    /// vCPU that is not there, or whose Local APIC the board cannot find, does not acknowledge.
+    fn stop_ack(&self, cpu: usize) -> Option<StopAck> {
+        let vcpu = self.board.vcpu(cpu)?;
+        self.board.local_apic_of(cpu)?;
+        Some(match SchedActivity::from(vcpu.activity()) {
+            SchedActivity::Running if vcpu.skip_first_boundary => StopAck::RepRestart,
+            SchedActivity::Running => StopAck::Boundary,
+            asleep => StopAck::Asleep(asleep),
+        })
+    }
+
     fn wake(&mut self, cpu: usize) -> Result<(), FirmwareBoardError> {
         let vcpu = self
             .board
@@ -791,6 +1083,12 @@ mod tests {
         board_deadline: Option<u64>,
         /// Keep a reached deadline instead of consuming it (a host that never consumes it).
         keep_board_deadline: bool,
+        /// vCPUs that do not acknowledge a stop (`stop_ack` is `None`) until `settle` brings them
+        /// (`settle_arrives`) or for ever.
+        stuck: Vec<usize>,
+        settle_arrives: bool,
+        /// The vCPU of every `settle` call.
+        settles: Vec<usize>,
     }
 
     impl Rig {
@@ -817,6 +1115,9 @@ mod tests {
                 nmi_taken: Vec::new(),
                 board_deadline: None,
                 keep_board_deadline: false,
+                stuck: Vec::new(),
+                settle_arrives: false,
+                settles: Vec::new(),
             };
             for cpu in 0..rig.cpus.len() {
                 rig.write(cpu, 0xf0, 0x1ff);
@@ -907,6 +1208,24 @@ mod tests {
 
         fn board_deadline(&self) -> Option<u64> {
             self.board_deadline
+        }
+
+        fn stop_ack(&self, cpu: usize) -> Option<StopAck> {
+            if self.stuck.contains(&cpu) {
+                return None;
+            }
+            Some(match self.activity(cpu) {
+                SchedActivity::Running => StopAck::Boundary,
+                asleep => StopAck::Asleep(asleep),
+            })
+        }
+
+        fn settle(&mut self, cpu: usize) -> Result<(), Infallible> {
+            self.settles.push(cpu);
+            if self.settle_arrives {
+                self.stuck.retain(|&stuck| stuck != cpu);
+            }
+            Ok(())
         }
 
         fn boundary(&mut self, cpu: usize) -> Result<BoundaryReport, Infallible> {
@@ -1511,6 +1830,293 @@ mod tests {
         rig.stop_hook = None;
         assert_eq!(again.run(&mut rig, 20).unwrap(), Finished::BudgetExhausted);
         assert_eq!(again.retired_total(), 20);
+    }
+
+    /// Cut the run of `racing(2, 40)` into two with the cut taken from `cut`, and compare it with
+    /// the run that was not cut: counters, turns, the cell and the clock.
+    fn raced_in_two(policy: QuantumPolicy, cut: u64, through_state: bool) {
+        let whole = {
+            let mut rig = Rig::racing(2, 40);
+            let mut scheduler = rig.scheduler(policy.clone());
+            scheduler.record_turns();
+            assert_eq!(scheduler.run(&mut rig, 1_000).unwrap(), Finished::AllIdle);
+            (
+                scheduler.counters().to_vec(),
+                scheduler.executed_schedule(),
+                scheduler.turns().to_vec(),
+                rig.cell(),
+                rig.now(),
+            )
+        };
+        let mut rig = Rig::racing(2, 40);
+        let mut scheduler = rig.scheduler(policy.clone());
+        scheduler.record_turns();
+        assert_eq!(
+            scheduler.run(&mut rig, cut).unwrap(),
+            Finished::BudgetExhausted
+        );
+        if through_state {
+            let state = scheduler.state();
+            scheduler.reset();
+            assert_eq!(scheduler.retired_total(), 0);
+            assert_ne!(scheduler.state(), state);
+            scheduler.set_state(state.clone()).unwrap();
+            assert_eq!(scheduler.state(), state);
+        }
+        scheduler.resume();
+        assert_eq!(
+            scheduler.run(&mut rig, 1_000 - cut).unwrap(),
+            Finished::AllIdle
+        );
+        let split = (
+            scheduler.counters().to_vec(),
+            scheduler.executed_schedule(),
+            scheduler.turns().to_vec(),
+            rig.cell(),
+            rig.now(),
+        );
+        assert_eq!(split, whole, "{policy:?} cut {cut}");
+    }
+
+    /// `rep stosb; hlt` on each of `count` vCPUs: `iterations` iterations, so a REP longer than
+    /// the work limit of one call (1024) comes back as a partial `REP` that retires nothing.
+    fn repping(count: usize, iterations: u64) -> Rig {
+        let cpus = (0..count)
+            .map(|i| {
+                let mut cpu = TestCpu::new(CODE[i], CODE[i] + 2, CELL, 0);
+                cpu.state.gpr[Register::Rcx as usize] = iterations;
+                cpu.state.gpr[Register::Rdi as usize] = 0x3d00 - 0x900 * i as u64;
+                cpu
+            })
+            .collect();
+        let mut rig = Rig::new(cpus);
+        for i in 0..count {
+            rig.ram.load(CODE[i], &[0xf3, 0xaa, 0xf4]);
+        }
+        rig
+    }
+
+    /// Run `repping(2, 2100)` whole and in pieces of `cut` retired instructions each, resuming
+    /// every piece, and compare counters, turns, memory and the clock.
+    fn repped_in_pieces(policy: QuantumPolicy, cut: u64) {
+        let outcome = |cut: Option<u64>| {
+            let mut rig = repping(2, 2100);
+            let mut scheduler = rig.scheduler(policy.clone());
+            scheduler.record_turns();
+            match cut {
+                None => assert_eq!(scheduler.run(&mut rig, 1_000).unwrap(), Finished::AllIdle),
+                Some(cut) => {
+                    let mut pieces = 0;
+                    loop {
+                        match scheduler.run(&mut rig, cut).unwrap() {
+                            Finished::AllIdle => break,
+                            Finished::BudgetExhausted => scheduler.resume(),
+                            other => panic!("{other:?}"),
+                        }
+                        pieces += 1;
+                        assert!(pieces < 1_000, "the pieces never end");
+                    }
+                }
+            }
+            (
+                scheduler.counters().to_vec(),
+                scheduler.executed_schedule(),
+                scheduler.turns().to_vec(),
+                rig.ram.0.clone(),
+                rig.now(),
+            )
+        };
+        assert_eq!(outcome(Some(cut)), outcome(None), "{policy:?} cut {cut}");
+    }
+
+    #[test]
+    fn a_budget_that_ends_inside_a_partial_rep_goes_on_with_the_same_vcpu() {
+        // The call that the budget cut ends on a partial REP: a step of the quantum was spent, no
+        // instruction retired, so the budget has a rest. The rest is the same vCPU's (the quantum
+        // is not over), as in the run that was not cut (S6-24 review M1).
+        let mut rig = repping(2, 2100);
+        let mut scheduler = rig.scheduler(QuantumPolicy::Fixed(5_000));
+        scheduler.record_turns();
+        assert_eq!(
+            scheduler.run(&mut rig, 1).unwrap(),
+            Finished::BudgetExhausted
+        );
+        assert_eq!(rig.calls, [(0, 1), (0, 1), (0, 1)], "vCPU 1 got nothing");
+        assert_eq!(scheduler.counters()[1].steps, 0);
+        assert_eq!(scheduler.counters()[0].retired, 1);
+        // Partial, partial, then the REP retires: three steps of the quantum in one turn.
+        assert_eq!(scheduler.counters()[0].steps, 3);
+        for cut in [1, 2, 3, 4, 7] {
+            for quantum in [1, 2, 3, 4, 5, 5_000] {
+                repped_in_pieces(QuantumPolicy::Fixed(quantum), cut);
+            }
+            for seed in 0..20 {
+                repped_in_pieces(QuantumPolicy::seeded(seed), cut);
+            }
+        }
+    }
+
+    #[test]
+    fn a_run_cut_by_the_budget_goes_on_as_the_run_that_was_not_cut() {
+        for seed in 0..40 {
+            for cut in [1, 2, 7, 33, 100, 150, 199] {
+                raced_in_two(QuantumPolicy::seeded(seed), cut, false);
+                raced_in_two(QuantumPolicy::seeded(seed), cut, true);
+            }
+        }
+        for quantum in [1, 3, 64, 1024] {
+            for cut in [1, 5, 100, 199] {
+                raced_in_two(QuantumPolicy::Fixed(quantum), cut, cut % 2 == 1);
+            }
+        }
+    }
+
+    #[test]
+    fn the_stop_inside_a_turn_leaves_the_rest_of_the_quantum_for_the_run_that_follows() {
+        let mut rig = Rig::spinning(2);
+        rig.stop_hook = Some((1, 3));
+        let mut scheduler = rig.scheduler(QuantumPolicy::Fixed(10));
+        scheduler.record_turns();
+        assert_eq!(scheduler.run(&mut rig, 1000).unwrap(), Finished::Stopped);
+        assert_eq!(scheduler.counters()[1].retired, 3);
+        // The resumed turn of vCPU 1 has its 7 steps; the record shows one turn of 10.
+        rig.stop_hook = None;
+        scheduler.resume();
+        assert_eq!(
+            scheduler.run(&mut rig, 17).unwrap(),
+            Finished::BudgetExhausted
+        );
+        assert_eq!(scheduler.counters()[1].retired, 10);
+        assert_eq!(scheduler.counters()[1].turns, 1);
+        // The 7 steps that were left, then the next turn of vCPU 0 with the rest of the budget.
+        assert_eq!(scheduler.counters()[0].retired, 20);
+        assert_eq!(
+            scheduler
+                .turns()
+                .iter()
+                .map(|turn| (turn.cpu, turn.steps))
+                .collect::<Vec<_>>(),
+            [(0, 10), (1, 10), (0, 10)]
+        );
+    }
+
+    #[test]
+    fn a_plain_run_after_a_cut_starts_a_new_turn_and_only_the_resume_continues_the_cut_one() {
+        let counters = |resume: bool| {
+            let mut rig = Rig::spinning(2);
+            let mut scheduler = rig.scheduler(QuantumPolicy::Fixed(10));
+            assert_eq!(
+                scheduler.run(&mut rig, 5).unwrap(),
+                Finished::BudgetExhausted
+            );
+            if resume {
+                scheduler.resume();
+            }
+            scheduler.run(&mut rig, 10).unwrap();
+            let c = scheduler.counters();
+            (c[0].retired, c[1].retired, c[0].turns, c[1].turns)
+        };
+        // Plain: vCPU 0 keeps its 5, the next turn is vCPU 1's, with the full 10 steps.
+        assert_eq!(counters(false), (5, 10, 1, 1));
+        // Resumed: vCPU 0 finishes its quantum (5 more), vCPU 1 takes the 5 that are left.
+        assert_eq!(counters(true), (10, 5, 1, 1));
+    }
+
+    fn halted_and_waiting() -> Rig {
+        let mut rig = Rig::spinning(3);
+        rig.cpus[1].state.activity = Some(CpuActivity::Halted);
+        rig.cpus[2].state.activity = Some(CpuActivity::WaitForSipi);
+        rig
+    }
+
+    #[test]
+    fn stop_all_takes_the_acknowledgement_of_every_vcpu_the_sleeping_ones_included() {
+        let mut rig = halted_and_waiting();
+        let mut scheduler = rig.scheduler(QuantumPolicy::Fixed(10));
+        scheduler.run(&mut rig, 25).unwrap();
+        let (now, state) = (rig.now(), scheduler.state());
+        let point = scheduler.stop_all(&mut rig, 4).unwrap();
+        assert_eq!(
+            point.acks,
+            [
+                StopAck::Boundary,
+                StopAck::Asleep(SchedActivity::Halted),
+                StopAck::Asleep(SchedActivity::WaitForSipi)
+            ]
+        );
+        assert_eq!((point.now_ns, point.rounds), (now, 0));
+        // Time stands, the scheduler keeps its state, and nothing runs until the explicit resume.
+        assert_eq!(rig.now(), now);
+        assert_eq!(scheduler.state(), state);
+        assert!(scheduler.paused());
+        let calls = rig.calls.len();
+        assert_eq!(scheduler.run(&mut rig, 1000).unwrap(), Finished::Stopped);
+        assert_eq!((rig.calls.len(), rig.now()), (calls, now));
+        scheduler.resume();
+        assert!(!scheduler.paused());
+        assert_eq!(
+            scheduler.run(&mut rig, 10).unwrap(),
+            Finished::BudgetExhausted
+        );
+        assert!(rig.now() > now);
+    }
+
+    #[test]
+    fn a_stop_without_the_acknowledgement_of_every_vcpu_is_no_stop() {
+        let mut rig = halted_and_waiting();
+        rig.stuck = vec![1];
+        let mut scheduler = rig.scheduler(QuantumPolicy::Fixed(10));
+        scheduler.run(&mut rig, 25).unwrap();
+        let (now, state, calls) = (rig.now(), scheduler.state(), rig.calls.len());
+        // vCPU 1 never arrives: the stop times out with its number, publishes no safe point,
+        // withdraws the request and leaves everything where it was.
+        let error = scheduler.stop_all(&mut rig, 3).unwrap_err();
+        assert_eq!(
+            error,
+            StopError::Timeout {
+                unacked: vec![1],
+                rounds: 3
+            }
+        );
+        assert_eq!(rig.settles, [1, 1, 1]);
+        assert!(!scheduler.paused());
+        assert!(!rig.stop.requested());
+        assert_eq!(
+            (rig.now(), scheduler.state(), rig.calls.len()),
+            (now, state, calls)
+        );
+        assert_eq!(rig.activity(1), SchedActivity::Halted);
+        assert_eq!(rig.activity(2), SchedActivity::WaitForSipi);
+        // Two vCPUs stuck are both named; a limit of 0 rounds gives up at once.
+        rig.stuck = vec![0, 2];
+        assert_eq!(
+            scheduler.stop_all(&mut rig, 0).unwrap_err(),
+            StopError::Timeout {
+                unacked: vec![0, 2],
+                rounds: 0
+            }
+        );
+        // A vCPU that the host brings to its safe point in time gives a stop.
+        rig.stuck = vec![1];
+        rig.settle_arrives = true;
+        rig.settles.clear();
+        let point = scheduler.stop_all(&mut rig, 3).unwrap();
+        assert_eq!((point.rounds, point.acks.len()), (1, 3));
+        assert_eq!(rig.settles, [1]);
+        assert!(scheduler.paused());
+    }
+
+    #[test]
+    fn the_state_of_the_scheduler_of_another_number_of_vcpus_is_refused() {
+        let rig = Rig::spinning(2);
+        let two = rig.scheduler(QuantumPolicy::Fixed(10));
+        let mut three = SmpScheduler::new(3, QuantumPolicy::Fixed(10), StopRequest::new()).unwrap();
+        let before = three.state();
+        assert_eq!(
+            three.set_state(two.state()),
+            Err(PolicyError("state of another number of vCPUs"))
+        );
+        assert_eq!(three.state(), before);
     }
 
     #[test]

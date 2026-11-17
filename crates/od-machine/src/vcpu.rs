@@ -170,8 +170,9 @@ pub(crate) enum NmiBoundary {
     Delivered,
 }
 
-/// CPU state and the guest-visible register cells of one virtual processor.
-#[derive(Debug)]
+/// CPU state and the guest-visible register cells of one virtual processor. A value: `Clone` is
+/// the state taken for a snapshot (S6-24).
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Vcpu {
     /// Position of this processor in the board's vCPU set, equal to its APIC ID (S6-11). Nothing
     /// outside tests reads it: the Local APIC of this processor is found by the same index.

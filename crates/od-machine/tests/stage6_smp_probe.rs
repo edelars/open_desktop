@@ -994,3 +994,199 @@ fn without_the_invlpg_the_machine_without_a_tlb_still_gives_the_new_frame_so_the
         );
     }
 }
+
+// ---- S6-24: stop every vCPU, take the state, reset, restore, go on ---------------------------
+
+/// The low 64 KiB of RAM: everything the probe image, its stacks and its tables touch.
+const RAM_COMPARED: usize = 0x1_0000;
+
+/// The exchange run in one piece through a session: the report, the low RAM and the virtual time at
+/// the end.
+fn continuous(
+    built: &Built,
+    quantum: Stage6SmpProbeQuantum,
+) -> (od_machine::Stage6SmpProbeReport, Vec<u8>, u64) {
+    let mut probe = load_stage6_smp_probe(&built.image, 2, NONCE).unwrap();
+    let report = {
+        let mut session = probe.session(quantum, true).unwrap();
+        session.run(BUDGET).unwrap()
+    };
+    assert_eq!(report.finished, Stage6SmpProbeFinish::AllIdle);
+    let (ram, now) = (probe.read_ram(0, RAM_COMPARED), probe.now_ns());
+    (report, ram, now)
+}
+
+/// The same run, cut after `cut` retired instructions (all vCPUs together): stop every vCPU, take
+/// the state; with `reset` the CPU complex and the scheduler go to the state of power-on (RAM,
+/// devices and the clock stay) and the state is put back; then the run goes on with the rest of
+/// the budget. The last value says what waited in the Local APIC of the AP at the stop:
+/// `(lapic_pending(1), a request in its IRR that was not accepted yet)`.
+fn cut_run(
+    built: &Built,
+    quantum: Stage6SmpProbeQuantum,
+    cut: u64,
+    reset: bool,
+) -> (
+    od_machine::Stage6SmpProbeReport,
+    Vec<u8>,
+    u64,
+    (Option<bool>, bool),
+) {
+    let mut probe = load_stage6_smp_probe(&built.image, 2, NONCE).unwrap();
+    let waiting;
+    let report = {
+        let mut session = probe.session(quantum.clone(), true).unwrap();
+        let first = session.run(cut).unwrap();
+        assert_eq!(first.finished, Stage6SmpProbeFinish::BudgetExhausted);
+        session.pause(8).unwrap();
+        assert!(session.paused());
+        let snapshot = session.snapshot().unwrap();
+        waiting = (
+            session.lapic_pending(1),
+            session
+                .pending_vectors(1)
+                .iter()
+                .any(|&(_, irr, isr)| irr && !isr),
+        );
+        // A paused machine does not run and does not move its clock.
+        let stopped = session.run(BUDGET).unwrap();
+        assert_eq!(
+            stopped.finished,
+            Stage6SmpProbeFinish::Stopped,
+            "{quantum:?}"
+        );
+        assert_eq!(stopped.turns, first.turns, "{quantum:?}");
+        assert_eq!(
+            stopped.cpus.iter().map(|c| c.retired).sum::<u64>(),
+            cut,
+            "{quantum:?}"
+        );
+        if reset {
+            let activities: Vec<_> = (0..2).map(|cpu| session.activity(cpu)).collect();
+            session.reset().unwrap();
+            // The application processor waits for SIPI again; no LAPIC holds anything pending.
+            assert_eq!(
+                session.activity(1),
+                Some(od_isa::CpuActivity::WaitForSipi),
+                "{quantum:?} cut {cut} (before: {activities:?})"
+            );
+            assert_eq!(session.activity(0), Some(od_isa::CpuActivity::Running));
+            assert_eq!(session.lapic_pending(0), Some(false));
+            assert_eq!(session.lapic_pending(1), Some(false));
+            session.restore(&snapshot).unwrap();
+            assert_eq!(
+                (0..2).map(|cpu| session.activity(cpu)).collect::<Vec<_>>(),
+                activities,
+                "{quantum:?} cut {cut}"
+            );
+        }
+        session.resume();
+        session.run(BUDGET - cut).unwrap()
+    };
+    assert_eq!(
+        report.finished,
+        Stage6SmpProbeFinish::AllIdle,
+        "{quantum:?}"
+    );
+    let (ram, now) = (probe.read_ram(0, RAM_COMPARED), probe.now_ns());
+    (report, ram, now, waiting)
+}
+
+#[test]
+fn a_run_stopped_on_a_safe_point_and_put_back_gives_the_run_that_was_never_stopped() {
+    let built = build_scenario("normal", "exchange", None);
+    let expected = built.expected(2).unwrap();
+    // Cut points across the whole run: before the AP is started (INIT and SIPI pending or just
+    // applied), inside the trampoline, in the middle of the exchange, near the end.
+    let mut checked = 0;
+    let (mut ap_waiting, mut ap_request_waiting) = (0, 0);
+    for seed in 0..24u64 {
+        let quantum = Stage6SmpProbeQuantum::Seeded(seed);
+        let whole = continuous(&built, quantum.clone());
+        let total: u64 = whole.0.cpus.iter().map(|cpu| cpu.retired).sum();
+        assert_eq!(String::from_utf8(whole.0.com1.clone()).unwrap(), expected);
+        for (index, cut) in [total / 40, total / 6, total / 2, total - 1]
+            .into_iter()
+            .enumerate()
+        {
+            let cut = cut.max(1);
+            let reset = (seed + index as u64) % 2 == 0;
+            let split = cut_run(&built, quantum.clone(), cut, reset);
+            assert_eq!(split.0, whole.0, "{quantum:?} cut {cut} reset {reset}");
+            assert_eq!(split.1, whole.1, "low RAM, {quantum:?} cut {cut}");
+            assert_eq!(split.2, whole.2, "virtual time, {quantum:?} cut {cut}");
+            ap_waiting += usize::from(split.3.0 == Some(true));
+            ap_request_waiting += usize::from(split.3.1);
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 96);
+    // The test proves what the plan says only if some stop found something waiting in the AP's
+    // Local APIC (an INIT, a SIPI, a request) that the run then took after the restore.
+    assert!(ap_waiting > 0, "no cut had anything waiting in LAPIC 1");
+    assert!(
+        ap_request_waiting > 0,
+        "no cut had an unaccepted request in the IRR of LAPIC 1"
+    );
+}
+
+#[test]
+fn a_run_stopped_and_put_back_under_fixed_quanta_gives_the_same_cells_and_quiet_lapics() {
+    let built = build_scenario("normal", "exchange", None);
+    for quantum in [
+        Stage6SmpProbeQuantum::Fixed(1),
+        Stage6SmpProbeQuantum::Fixed(7),
+        Stage6SmpProbeQuantum::Fixed(1024),
+    ] {
+        let whole = continuous(&built, quantum.clone());
+        let total: u64 = whole.0.cpus.iter().map(|cpu| cpu.retired).sum();
+        let cut = total / 2;
+        // The very first instruction, too: the boot processor has run once, the AP waits.
+        assert_eq!(cut_run(&built, quantum.clone(), 1, true).0, whole.0);
+        let split = cut_run(&built, quantum.clone(), cut, true);
+        assert_eq!(split.0, whole.0, "{quantum:?}");
+        assert_eq!(split.1, whole.1, "{quantum:?}");
+        assert_eq!(split.2, whole.2, "{quantum:?}");
+        // The cells of the protocol are those of the manifest: the exchange finished.
+        let mut probe = load_stage6_smp_probe(&built.image, 2, NONCE).unwrap();
+        {
+            let mut session = probe.session(quantum.clone(), false).unwrap();
+            session.run(cut).unwrap();
+            session.pause(1).unwrap();
+            let snapshot = session.snapshot().unwrap();
+            session.reset().unwrap();
+            session.restore(&snapshot).unwrap();
+            session.resume();
+            session.run(BUDGET - cut).unwrap();
+        }
+        check_exchange_cells(&built, &mut probe, &format!("{quantum:?}"));
+        assert_lapics_quiet(&probe, 2, &format!("{quantum:?}"));
+    }
+}
+
+#[test]
+fn a_snapshot_is_refused_unless_the_machine_is_stopped_and_a_restore_unless_it_stands_where_it_stood()
+ {
+    let built = build_scenario("normal", "exchange", None);
+    let mut probe = load_stage6_smp_probe(&built.image, 2, NONCE).unwrap();
+    let mut session = probe
+        .session(Stage6SmpProbeQuantum::Fixed(100), false)
+        .unwrap();
+    // The whole exchange is about 3100 instructions: two cuts inside it.
+    let first = session.run(1_000).unwrap();
+    assert_eq!(first.finished, Stage6SmpProbeFinish::BudgetExhausted);
+    // Not stopped: no snapshot (a flag nobody acknowledged is not a stop).
+    assert!(session.snapshot().is_err());
+    session.pause(1).unwrap();
+    let snapshot = session.snapshot().unwrap();
+    // The explicit resume ends the stop; the old proof does not give a snapshot of a running
+    // machine, and a restore into a running machine is refused.
+    session.resume();
+    assert!(session.snapshot().is_err());
+    assert!(session.restore(&snapshot).is_err());
+    // The clock moved: the deadlines of the snapshot are not those of this machine.
+    session.run(500).unwrap();
+    session.pause(1).unwrap();
+    let error = session.restore(&snapshot).unwrap_err();
+    assert!(error.starts_with("ClockMoved"), "{error}");
+}
