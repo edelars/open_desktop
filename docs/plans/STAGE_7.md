@@ -1333,3 +1333,21 @@ expectation caveat.
 Validation: focused ISA 6/6 and machine 3/3 pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,195/7/15; zero doc tests),
 paged machine quantum passes (96/96), workspace all-targets cargo check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-372 — exact POP RBP
+
+Admit only bare `5D` in base `PagedCpl0ProbeV1`. The one-byte POP opcode
+selects RBP; read a qword from old RSP through GuestMemory, then commit RBP,
+RSP+8 and RIP+1. Flags and definedness remain unchanged. Noncanonical stack
+address raises #SS before the read; tracked data faults and instruction-fetch
+faults leave CPU state unchanged. Six focused ISA tests cover state, flags,
+faults, neighbors, CPL3 and other-profile rejection. Three machine tests verify
+four-level accessed/no-dirty behavior, data-page #PF atomicity, and #SS. Firmware
+advances to ISSUE-373, `C3` (near RET), at RIP `0x20183a` after 9,841 retired
+instructions; COM1 is empty. ISSUE-201 remains the unrelated CLD expectation
+caveat.
+
+Validation: focused ISA 6/6 and machine 3/3 pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,201/7/15; zero doc tests),
+paged machine quantum passes (99/99), workspace all-targets cargo check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.

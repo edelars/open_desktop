@@ -4851,7 +4851,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-372 — S7-04: exact helper POP RBP frontier (`5D`)
 - **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-371.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201839`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only bare `5D` reads a qword from old RSP through GuestMemory and then writes RBP, increments RSP by eight, and advances RIP by one. Flags and definedness are preserved. Noncanonical stack range raises #SS before access; data-read and instruction-fetch faults do not partially commit CPU state.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner advanced to `Unsupported { opcode: 195 }` at RIP `0x20183a` after 9,841 retired instructions; next byte is `C3` (`RET`, ISSUE-373); COM1 is empty.
+- **Проверка:** six focused ISA tests cover qword state/flags/definedness, #PF/#SS/fetch-fault atomicity, neighbors, CPL3 and other profiles. Three machine tests cover four-level tracked read/A-no-D effects, data-page #PF atomicity and #SS. Full validation passes: od-isa suites (2,322/1,591/126/29/6/1,201/7/15; zero doc tests), paged machine quantum (99/99), workspace all-targets cargo check, scoped rustfmt and diff-check. Independent review approved with no findings. Results are in `docs/reports/STAGE_7_REPORT.md`.
+
+### ISSUE-373 — S7-04: exact helper near RET frontier (`C3`)
+- **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-372.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20183a`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches the unprefixed one-byte POP RBP form after 9,840 retired instructions; this exact helper instruction is not yet admitted by the bounded base profile.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 93 }` at RIP `0x201839`; bytes are `5D C3`; COM1 is empty.
-- **Следующий шаг:** analyze and admit only this exact firmware POP RBP form in a separate Stage 7 slice.
+- **Суть и последствия:** firmware reaches the one-byte near RET after 9,841 retired instructions; this exact control-transfer form is not yet admitted by the bounded base profile.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 195 }` at RIP `0x20183a`; bytes begin `C3`; COM1 is empty.
+- **Следующий шаг:** analyze the exact firmware RET form and admit it in a separate Stage 7 slice.

@@ -28424,3 +28424,20 @@ ISSUE-201 remains the unrelated CLD expectation caveat.
 Validation: focused ISA 6/6 and machine 3/3 pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,195/7/15; zero doc tests),
 paged machine quantum passes (96/96), workspace all-targets cargo check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact POP RBP (ISSUE-372)
+
+`PagedCpl0ProbeV1` admits only bare opcode `5D`. In long mode it selects RBP
+and defaults to a qword stack read. The old RSP address is validated before the
+tracked GuestMemory read. Success writes RBP, increments RSP by eight, and
+advances RIP by one; flags and definedness are preserved. Noncanonical stack
+range raises #SS; a data #PF/backend read error or instruction-fetch fault does
+not partially commit CPU state. This slice adds no other POP encodings; CPL3 and
+other profiles do not admit bare `5D`. Firmware advances to ISSUE-373 `C3`
+(near RET) at `0x20183a` after 9,841 retired instructions; COM1 is empty.
+ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Validation: focused ISA 6/6 and machine 3/3 pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,201/7/15; zero doc tests),
+paged machine quantum passes (99/99), workspace all-targets cargo check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
