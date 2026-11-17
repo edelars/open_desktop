@@ -22357,6 +22357,41 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: this helper advances R11 by exactly 0x30 with `49 83 C3 30`.
+        // Opcode 83 sign-extends imm8; reuse shared qword ADD flags/result.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Add,
+            dst: Operand::Register(destination),
+            src: Operand::Immediate(0x30),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x83
+            && instruction.length == 4
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x49),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R11, OperandSize::Qword) =>
+        {
+            let lhs = state.read(destination);
+            let (value, flags) = arithmetic_result(
+                OperandSize::Qword,
+                ArithmeticKind::Add,
+                lhs,
+                0x30,
+                state.rflags,
+            );
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: admit only the observed qword register INC `49 FF C3` (R11).
         // Shared INC semantics preserve CF while updating the other arithmetic flags.
         Operation::Arithmetic {

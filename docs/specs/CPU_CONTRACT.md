@@ -29564,3 +29564,16 @@ Firmware advances to `49 83 C3 30` (ADD R11,0x30, ISSUE-443) at RIP
 (2,322/1,591/126/29/6/1,512/7/15; zero doc tests), paged machine quantum
 (110/110), workspace all-targets offline check, scoped rustfmt and diff-check.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-443 — bounded ADD R11,0x30
+
+The base paged profile admits only exact `49 83 C3 30`: REX.W+B, opcode 83
+group /0, qword R11 destination, and sign-extended imm8 `0x30`. Shared ADD
+semantics write the wrapping qword sum and update CF/PF/AF/ZF/SF/OF plus their
+definedness; other GPRs and non-arithmetic RFLAGS bits are unchanged. A fault
+fetching the immediate commits no state. CPL3 and other profiles reject this
+exact encoding. Firmware advances to `49 FF C2` (INC R10, ISSUE-444) at RIP
+`0x2013ea` after 9,936 retired instructions. Full validation passes: od-isa
+(2,322/1,591/126/29/6/1,516/7/15; zero doc tests), paged machine quantum
+(110/110), workspace all-targets offline check, scoped rustfmt and diff-check.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

@@ -2539,3 +2539,17 @@ empty. Full od-isa passes (2,322/1,591/126/29/6/1,512/7/15; zero doc tests),
 paged machine quantum passes (110/110), workspace all-targets offline check
 passes with existing warnings, and scoped rustfmt/diff-check pass. Independent
 review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-443 — exact ADD R11,0x30 (`49 83 C3 30`)
+
+Admit only this REX.W+B form in the base `PagedCpl0ProbeV1` profile. Opcode
+83 sign-extends imm8 `0x30` to qword width; shared ADD updates R11 and
+arithmetic flags/definedness while preserving other registers and
+non-arithmetic RFLAGS bits. Tests cover arithmetic edge cases, state and flag
+definedness, final-immediate fetch atomicity, encoding neighbors, CPL3 and
+other-profile isolation. Runner advances to `49 FF C2` (INC R10, ISSUE-444),
+RIP `0x2013ea`, after 9,936 retired instructions; Unsupported opcode 255,
+COM1 empty. Full od-isa passes (2,322/1,591/126/29/6/1,516/7/15; zero doc
+tests), paged machine quantum passes (110/110), workspace all-targets offline
+check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
