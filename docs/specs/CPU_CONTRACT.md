@@ -29764,3 +29764,13 @@ address validation to the next fetch. A taken noncanonical target raises
 #GP(0). This fault and a displacement fetch fault preserve architectural
 state. The other CPL0 probes and the paged CPL3 MOV probe refuse this form.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-460 — bounded MOV EAX,2
+
+The base paged CPL0 profile admits exact unprefixed `B8 02 00 00 00`. The
+dword write sets RAX=2 by zero extension and advances RIP by five bytes.
+The instruction preserves RFLAGS, flag definedness and all other GPRs.
+A fault on the final immediate fetch preserves architectural state. The other
+CPL0 probes and the paged CPL3 MOV probe refuse this form. The unprefixed
+`BD 01 00 00 00` rule still admits only immediate 1 to EBP in this arm.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

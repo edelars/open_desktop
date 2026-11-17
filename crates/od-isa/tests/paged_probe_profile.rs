@@ -41349,9 +41349,13 @@ fn rust_helper_mov_ebp_ecx_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
-fn rust_helper_mov_eax_or_ebp_imm32_1_zero_extends_and_preserves_flags() {
-    for (opcode, destination) in [(0xb8, Register::Rax), (0xbd, Register::Rbp)] {
-        let code = [opcode, 0x01, 0x00, 0x00, 0x00];
+fn rust_helper_mov_eax_or_ebp_imm32_zero_extends_and_preserves_flags() {
+    for (opcode, destination, immediate) in [
+        (0xb8, Register::Rax, 1),
+        (0xb8, Register::Rax, 2),
+        (0xbd, Register::Rbp, 1),
+    ] {
+        let code = [opcode, immediate, 0x00, 0x00, 0x00];
         let mut memory = Memory::new(&code);
         let mut cpu = state();
         cpu.gpr = gpr_patterns();
@@ -41367,7 +41371,7 @@ fn rust_helper_mov_eax_or_ebp_imm32_1_zero_extends_and_preserves_flags() {
         assert_eq!(result.instructions_executed, 1);
         assert_eq!(result.rflags_defined, defined);
         let mut expected = before;
-        expected.gpr[destination as usize] = 1;
+        expected.gpr[destination as usize] = u64::from(immediate);
         expected.rip = RIP + code.len() as u64;
         assert_eq!(cpu, expected);
         assert_eq!((memory.reads, memory.writes), (0, 0));
@@ -41403,10 +41407,14 @@ fn rust_helper_mov_ax_or_bp_imm16_1_preexisting_form_preserves_upper_bits_and_fl
 }
 
 #[test]
-fn rust_helper_mov_eax_or_ebp_imm32_1_final_immediate_fetch_fault_is_atomic() {
-    for (opcode, destination) in [(0xb8, Register::Rax), (0xbd, Register::Rbp)] {
+fn rust_helper_mov_eax_or_ebp_imm32_final_immediate_fetch_fault_is_atomic() {
+    for (opcode, destination, immediate) in [
+        (0xb8, Register::Rax, 1),
+        (0xb8, Register::Rax, 2),
+        (0xbd, Register::Rbp, 1),
+    ] {
         let rip = RIP + 0xffc;
-        let mut memory = memory_with_code_at(&[opcode, 0x01, 0x00, 0x00], rip);
+        let mut memory = memory_with_code_at(&[opcode, immediate, 0x00, 0x00], rip);
         let mut cpu = state();
         cpu.rip = rip;
         cpu.gpr = gpr_patterns();
@@ -41440,7 +41448,7 @@ fn rust_helper_mov_eax_or_ebp_imm32_1_final_immediate_fetch_fault_is_atomic() {
 }
 
 #[test]
-fn rust_helper_mov_eax_or_ebp_imm32_1_neighbours_stay_unsupported_without_mutation() {
+fn rust_helper_mov_eax_or_ebp_imm32_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
         (&[0xbd, 0x00, 0x00, 0x00, 0x00], 0xbd), // different immediate
         (&[0xbd, 0x02, 0x00, 0x00, 0x00], 0xbd), // neighboring immediate
@@ -41452,7 +41460,7 @@ fn rust_helper_mov_eax_or_ebp_imm32_1_neighbours_stay_unsupported_without_mutati
         (&[0x67, 0xbd, 0x01, 0x00, 0x00, 0x00], 0xbd), // address-size prefix
         (&[0xc7, 0xc5, 0x01, 0x00, 0x00, 0x00], 0xc7), // group form
         (&[0xb8, 0x00, 0x00, 0x00, 0x00], 0xb8), // MOV EAX,0
-        (&[0xb8, 0x02, 0x00, 0x00, 0x00], 0xb8), // MOV EAX,2
+        (&[0xb8, 0x03, 0x00, 0x00, 0x00], 0xb8), // MOV EAX,3
         (&[0xb8, 0x01, 0x01, 0x00, 0x00], 0xb8), // Same low byte, different imm32
         (&[0x48, 0xb8, 1, 0, 0, 0, 0, 0, 0, 0], 0xb8), // MOV RAX,1
         (&[0x41, 0xb8, 0x01, 0x00, 0x00, 0x00], 0xb8), // MOV R8D,1
@@ -41460,6 +41468,14 @@ fn rust_helper_mov_eax_or_ebp_imm32_1_neighbours_stay_unsupported_without_mutati
         (&[0xf3, 0xb8, 0x01, 0x00, 0x00, 0x00], 0xb8), // REP prefix
         (&[0x67, 0xb8, 0x01, 0x00, 0x00, 0x00], 0xb8), // address-size prefix
         (&[0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00], 0xc7), // group form
+        (&[0xb8, 0x02, 0x01, 0x00, 0x00], 0xb8), // Same low byte, different imm32
+        (&[0xb9, 0x02, 0x00, 0x00, 0x00], 0xb9), // MOV ECX,2
+        (&[0x48, 0xb8, 2, 0, 0, 0, 0, 0, 0, 0], 0xb8), // MOV RAX,2
+        (&[0x41, 0xb8, 0x02, 0x00, 0x00, 0x00], 0xb8), // MOV R8D,2
+        (&[0x40, 0xb8, 0x02, 0x00, 0x00, 0x00], 0xb8), // redundant REX
+        (&[0xf3, 0xb8, 0x02, 0x00, 0x00, 0x00], 0xb8), // REP prefix
+        (&[0x67, 0xb8, 0x02, 0x00, 0x00, 0x00], 0xb8), // address-size prefix
+        (&[0xc7, 0xc0, 0x02, 0x00, 0x00, 0x00], 0xc7), // group form
     ];
     for (bytes, opcode) in cases {
         let mut memory = Memory::new(bytes);
@@ -41483,9 +41499,9 @@ fn rust_helper_mov_eax_or_ebp_imm32_1_neighbours_stay_unsupported_without_mutati
 }
 
 #[test]
-fn rust_helper_mov_eax_or_ebp_imm32_1_is_unsupported_in_cpl3_profile() {
-    for opcode in [0xb8, 0xbd] {
-        let bytes = [opcode, 0x01, 0x00, 0x00, 0x00];
+fn rust_helper_mov_eax_or_ebp_imm32_is_unsupported_in_cpl3_profile() {
+    for (opcode, immediate) in [(0xb8, 1), (0xb8, 2), (0xbd, 1)] {
+        let bytes = [opcode, immediate, 0x00, 0x00, 0x00];
         let mut memory = Memory::new(&bytes);
         let mut cpu = state();
         cpu.cr3 = Some(0x1000);
@@ -48138,6 +48154,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0xc3][..], 0xc3),
         (&[0x41, 0xbb, 0x01, 0x00, 0x00, 0x00][..], 0xbb),
         (&[0xb8, 0x01, 0x00, 0x00, 0x00][..], 0xb8),
+        (&[0xb8, 0x02, 0x00, 0x00, 0x00][..], 0xb8),
         (&[0xbd, 0x01, 0x00, 0x00, 0x00][..], 0xbd),
         (&[0x41, 0x0f, 0x94, 0xc5][..], 0x94),
         (&[0x44, 0x0f, 0x44, 0xee][..], 0x44),
