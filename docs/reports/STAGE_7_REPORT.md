@@ -2527,3 +2527,20 @@ scoped `rustfmt --edition 2024 --check` plus `git diff --check` pass. Workspace
 check reports existing unused/dead-code warnings in `od-machine` and `od-host`.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD expectation
 caveat.
+
+
+### ISSUE-366 — exact ADD RSP,8
+
+Admitted only `48 83 C4 08` in the base paged CPL0 profile. Four focused tests
+cover qword RSP arithmetic including wrap, shared arithmetic flag values and
+definedness, all other state preservation, final immediate-byte fetch-fault
+atomicity, neighboring operation/width/prefix encodings and CPL3; the other
+profile matrix rejects this exact form. Firmware on
+`/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) advances
+to `5B` (`POP RBX`, ISSUE-367) at RIP `0x201830` after 9,835 retired
+instructions; exit is unsupported opcode `0x5b`, COM1 empty. ISSUE-201 remains
+the unrelated CLD expectation caveat. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,165/7/15; zero doc tests), paged machine quantum passes
+(81/81), workspace all-targets check passes with existing warnings, and scoped
+rustfmt/diff-check pass. Independent review approved with no findings.

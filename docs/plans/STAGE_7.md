@@ -1224,3 +1224,18 @@ Full od-isa suites pass (2,322/1,591/126/29/6/1,161/7/15; zero doc tests);
 paged machine quantum passes (81/81); workspace all-targets cargo check passes
 with existing warnings; scoped rustfmt and diff-check pass. Independent review
 is pending. ISSUE-201 remains the unrelated CLD expectation caveat.
+
+
+### ISSUE-366 — exact ADD RSP,8
+
+Admit only no-prefix `48 83 C4 08` in base `PagedCpl0ProbeV1`: qword ADD
+RSP,sign-extended imm8 8. Shared ADD arithmetic updates RSP, arithmetic flags,
+and their definedness; all other GPRs and non-arithmetic flags remain unchanged.
+The instruction performs no data-memory access. Four focused tests cover result,
+wrap, flag vectors/definedness, complete state, final immediate-byte fetch fault,
+neighbors and CPL3; the other-profile matrix rejects the form. Firmware advances
+to ISSUE-367, `5B` (`POP RBX`) at RIP `0x201830` after 9,835 retired
+instructions; COM1 is empty. ISSUE-201 remains the unrelated CLD expectation caveat. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,165/7/15; zero doc tests), paged machine quantum passes
+(81/81), workspace all-targets check passes with existing warnings, and scoped
+rustfmt/diff-check pass. Independent review approved with no findings.

@@ -28316,3 +28316,19 @@ Five focused tests and the other-profile matrix pass. Full od-isa suites pass
 (81/81), workspace all-targets cargo check passes with existing warnings, and
 scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains
 the unrelated CLD test expectation caveat.
+
+
+### S7-04 CPU-profile slice: exact ADD RSP,8 (ISSUE-366)
+
+`PagedCpl0ProbeV1` admits only no-prefix `48 83 C4 08`. Opcode 83 sign-extends
+the imm8 and performs qword addition. RSP receives the result; shared arithmetic
+semantics update the arithmetic flags and mark those flags defined. Every other
+GPR and non-arithmetic flag/definedness bit is preserved. This register operation
+performs no guest-memory access. A fault fetching the immediate byte does not
+retire or change state. Other immediates, operations, widths, prefixes, CPL3 and
+other profiles remain unsupported. Firmware advances to ISSUE-367, `5B`
+(`POP RBX`) at `0x201830` after 9,835 retired instructions; COM1 is empty.
+ISSUE-201 remains the unrelated CLD expectation caveat. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,165/7/15; zero doc tests), paged machine quantum passes
+(81/81), workspace all-targets check passes with existing warnings, and scoped
+rustfmt/diff-check pass. Independent review approved with no findings.
