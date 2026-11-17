@@ -4691,7 +4691,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-352 — S7-04: exact helper `TEST byte ptr [RSP+7],BPL` frontier (`40 84 6C 24 07`)
 - **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-351.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017ec`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `40 84 6C 24 07` TEST the byte at `[RSP+7]` against BPL. The read is tracked; TEST changes logical flags, preserves AF's concrete value while marking it undefined, and writes neither GPRs nor memory. Read faults leave CPU state unchanged.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner advances to `Unsupported { opcode: 133 }` at RIP `0x2017f1` after 9,071 retired instructions; COM1 is empty.
+- **Проверка:** six focused tests cover result/flags and AF definedness, tracked byte reads, read/stack-canonicality/fetch faults, neighbors, CPL3 and other-profile isolation. Two four-level machine tests verify tracked read A-bit updates/no D-bit update and data-page fault atomicity. Full od-isa suites, paged machine quantum, scoped cargo check, rustfmt and diff-check pass; independent review approved with no findings.
+
+### ISSUE-353 — S7-04: exact helper `JNZ rel32 -0x161` frontier (`0F 85 9F FE FF FF`)
+- **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-352.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017f1`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this exact memory TEST form after 9,070 retired instructions. The base profile does not yet admit it.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 132 }` at RIP `0x2017ec`; COM1 is empty.
+- **Суть и последствия:** firmware reaches this exact near conditional branch after 9,071 retired instructions. The base profile does not yet admit it.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 133 }` at RIP `0x2017f1`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.

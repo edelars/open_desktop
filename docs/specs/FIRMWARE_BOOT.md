@@ -1035,3 +1035,14 @@ instructions and stops at RIP `0x2017ec`, bytes `40 84 6C 24 07`
 output is empty. ISSUE-201 remains the unrelated stale CLD test expectation
 caveat. Full od-isa suites, paged machine quantum, scoped cargo check, rustfmt,
 and diff-check pass; independent review approved with no findings.
+
+### Stage 7 runner frontier after ISSUE-352
+
+With exact `40 84 6C 24 07` (`TEST byte ptr [RSP+7],BPL`) admitted, firmware
+retires 9,071 instructions and stops at RIP `0x2017f1`, bytes
+`0F 85 9F FE FF FF` (`JNZ rel32 -0x161`, ISSUE-353),
+`Unsupported { opcode: 133 }`. Image `/private/tmp/od-fw-s7-04-issue256.bin` has
+SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`;
+COM1 output is empty. ISSUE-201 remains the unrelated stale CLD test expectation
+caveat. Full od-isa suites, paged machine quantum, scoped cargo check, rustfmt,
+and diff-check pass; independent review approved with no findings.

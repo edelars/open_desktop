@@ -21189,6 +21189,56 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     | (crate::ARITHMETIC_FLAGS & !crate::AF),
             };
         }
+        // S7-04: exact `40 84 6C 24 07` tests memory at [RSP+7] against BPL.
+        // Read through the tracked operand path, update logical flags only,
+        // and leave memory and every GPR untouched.
+        Operation::Logic {
+            kind: LogicKind::Test,
+            dst: Operand::Memory(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x84
+            && instruction.length == 5
+            && instruction.operand_size == OperandSize::Byte
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x40),
+                    ..Prefixes::default()
+                })
+            && destination.base == AddressBase::Register(Register::Rsp)
+            && destination.index.is_none()
+            && destination.scale == 1
+            && destination.displacement == 7
+            && destination.address_size == OperandSize::Qword
+            && destination.size == OperandSize::Byte
+            && source == RegisterView::low(Register::Rbp, OperandSize::Byte) =>
+        {
+            let lhs = match read_operand(
+                state,
+                memory,
+                context,
+                next_rip,
+                Operand::Memory(destination),
+            ) {
+                Ok(value) => value,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            let rhs = state.read(source);
+            let (_, flags) =
+                logic_result(OperandSize::Byte, LogicKind::Test, lhs, rhs, state.rflags);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: (initial_rflags_defined & !crate::AF)
+                    | (crate::ARITHMETIC_FLAGS & !crate::AF),
+            };
+        }
         // S7-04: the helper tests the low three bits of BPL with exact
         // `40 F6 C5 07`; TEST only changes flags and leaves AF undefined.
         Operation::Logic {

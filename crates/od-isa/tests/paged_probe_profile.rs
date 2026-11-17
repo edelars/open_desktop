@@ -15310,6 +15310,209 @@ fn rust_helper_test_r10b_r11b_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn rust_helper_test_rsp_disp8_07_bpl_updates_logic_flags_and_reads_one_byte() {
+    let code = [0x40, 0x84, 0x6c, 0x24, 0x07]; // TEST byte ptr [RSP+7],BPL
+    for (memory_byte, bpl) in [
+        (0x00, 0xff),
+        (0x80, 0xff),
+        (0x03, 0x01),
+        (0x03, 0x03),
+        (0x55, 0xaa),
+    ] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL + 0x17] = memory_byte;
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::Rsp as usize] = DATA + 0x10;
+        cpu.gpr[Register::Rbp as usize] = 0xaabb_ccdd_eeff_0000 | u64::from(bpl);
+        cpu.rflags = 0x8d5; // Keep AF set so TEST must preserve its concrete value.
+        let before = cpu.clone();
+        let defined = DEFINED | (1 << 4);
+        let result_byte = memory_byte & bpl;
+        let mut expected_logic_flags = 1 << 4; // AF is unchanged but becomes undefined.
+        if result_byte == 0 {
+            expected_logic_flags |= 1 << 6;
+        }
+        if result_byte & 0x80 != 0 {
+            expected_logic_flags |= 1 << 7;
+        }
+        if result_byte.count_ones() % 2 == 0 {
+            expected_logic_flags |= 1 << 2;
+        }
+
+        let result =
+            step_with_defined(&mut cpu, &mut memory, &mut Pio::default(), ring0(), defined);
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(
+            result.rflags_defined,
+            (defined & !(1 << 4)) | (DEFINED & !(1 << 4))
+        );
+        let mut expected = before;
+        expected.rip = RIP + code.len() as u64;
+        expected.rflags = (expected.rflags & !0x8d5) | expected_logic_flags;
+        assert_eq!(cpu, expected, "memory={memory_byte:#04x}, BPL={bpl:#04x}");
+        assert_eq!(memory.reads, 1);
+        assert_eq!(memory.read_addresses, [(DATA + 0x17, 1)]);
+        assert_eq!(memory.writes, 0);
+        assert!(memory.write_addresses.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_test_rsp_disp8_07_bpl_read_fault_is_atomic() {
+    let code = [0x40, 0x84, 0x6c, 0x24, 0x07];
+    let fault_address = DATA + 0x17;
+    let mut memory = Memory::new(&code);
+    memory.fail_read_at = Some((fault_address, page_fault(0, fault_address)));
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsp as usize] = DATA + 0x10;
+    cpu.gpr[Register::Rbp as usize] = 0xaabb_ccdd_eeff_00bb;
+    cpu.rflags = 0x8d5;
+    let before = cpu.clone();
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(fault_address),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.read_addresses, [(fault_address, 1)]);
+    assert_eq!(memory.writes, 0);
+    assert!(memory.write_addresses.is_empty());
+}
+
+#[test]
+fn rust_helper_test_rsp_disp8_07_bpl_noncanonical_address_faults_before_read() {
+    let code = [0x40, 0x84, 0x6c, 0x24, 0x07];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsp as usize] = 0x0000_8000_0000_0000;
+    cpu.rflags = 0x8d5;
+    let before = cpu.clone();
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 12,
+            error_code: Some(0),
+            linear_address: None,
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.reads, 0);
+    assert!(memory.read_addresses.is_empty());
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn rust_helper_test_rsp_disp8_07_bpl_fetch_fault_is_atomic() {
+    let rip = RIP + 0xffb;
+    let code = [0x40, 0x84, 0x6c, 0x24];
+    let mut memory = memory_with_code_at(&code, rip);
+    memory.fail_fetch_at = Some((rip + 4, page_fault(0x10, rip + 4)));
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsp as usize] = DATA + 0x10;
+    let before = cpu.clone();
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 4),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.reads, 0);
+    assert!(memory.read_addresses.is_empty());
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn rust_helper_test_rsp_disp8_07_bpl_neighbours_stay_unsupported_without_mutation() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x40, 0x84, 0x6c, 0x24, 0x06], 0x84), // adjacent displacement
+        (&[0x40, 0x84, 0x6c, 0x24, 0x08], 0x84), // adjacent displacement
+        (&[0x40, 0x84, 0x6c, 0x64, 0x07], 0x84), // SIB scale variant
+        (&[0x40, 0x84, 0x6c, 0x0c, 0x07], 0x84), // RCX index
+        (&[0x40, 0x84, 0x6d, 0x07], 0x84),       // RBP base, no SIB
+        (&[0x40, 0x84, 0xac, 0x24, 0x07, 0, 0, 0], 0x84), // disp32
+        (&[0x40, 0x84, 0xc5], 0x84),             // register destination
+        (&[0x40, 0x84, 0x64, 0x24, 0x07], 0x84), // SPL source
+        (&[0x41, 0x84, 0x6c, 0x24, 0x07], 0x84), // REX.B variant
+        (&[0x42, 0x84, 0x6c, 0x24, 0x07], 0x84), // REX.X variant
+        (&[0x44, 0x84, 0x6c, 0x24, 0x07], 0x84), // REX.R variant
+        (&[0x48, 0x84, 0x6c, 0x24, 0x07], 0x84), // REX.W variant
+        (&[0x84, 0x6c, 0x24, 0x07], 0x84),       // no REX selects CH, not BPL
+        (&[0x67, 0x40, 0x84, 0x6c, 0x24, 0x07], 0x84), // address-size prefix
+        (&[0x66, 0x40, 0x84, 0x6c, 0x24, 0x07], 0x84), // operand-size prefix
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "bytes {bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "bytes {bytes:02x?}");
+        assert_eq!(memory.reads, 0);
+        assert!(memory.read_addresses.is_empty());
+        assert_eq!(memory.writes, 0);
+        assert!(memory.write_addresses.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_test_rsp_disp8_07_bpl_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x40, 0x84, 0x6c, 0x24, 0x07];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x40 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn rust_helper_test_bpl_imm8_updates_only_logic_flags() {
     let code = [0x40, 0xf6, 0xc5, 0x07]; // TEST BPL,7
     let arithmetic_flags = 0x8d5;
@@ -33952,6 +34155,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x41, 0x0f, 0x97, 0xc5][..], 0x97),
         (&[0x41, 0x0f, 0x96, 0xc3][..], 0x96),
         (&[0x40, 0x0f, 0x94, 0xc7][..], 0x94),
+        (&[0x40, 0x84, 0x6c, 0x24, 0x07][..], 0x84),
         (&[0x40, 0x08, 0xcf][..], 0x08),
         (&[0x44, 0x09, 0xd5][..], 0x09),
         (&[0x45, 0x08, 0xd3][..], 0x08),

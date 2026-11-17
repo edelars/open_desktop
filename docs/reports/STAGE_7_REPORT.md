@@ -2309,3 +2309,24 @@ findings. ISSUE-201's stale CLD expectations remain unrelated and open.
 The firmware runner retires 9,070 instructions and stops at `40 84 6C 24 07`
 (`TEST byte ptr [RSP+7],BPL`, ISSUE-352) at RIP `0x2017ec`, with
 `Unsupported { opcode: 132 }`; COM1 remains empty.
+
+### S7-04 exact helper `TEST byte ptr [RSP+7],BPL` — ISSUE-352
+
+`PagedCpl0ProbeV1` admits only exact bytes `40 84 6C 24 07`. Bare REX selects
+BPL as the source register; the memory operand is the byte at `[RSP+7]`. Shared
+TEST semantics update CF/OF, SF/ZF/PF and AF-definedness while preserving AF's
+concrete value. The instruction writes neither a GPR nor memory. The read uses
+the tracked path; memory faults and a noncanonical stack address preserve CPU
+state.
+
+Six focused profile tests cover flag values/definedness, no register or memory
+writes, read faults, noncanonical-stack #SS, final-byte fetch fault, encoding
+neighbors and CPL3/other-profile isolation. Two four-level machine tests verify
+tracked A-bit updates with no D-bit update on a successful read and atomic CPU
+state on an absent data-page fault. Full od-isa suites, paged machine quantum,
+scoped cargo check, rustfmt and diff-check pass. Independent review approved with no findings.
+ISSUE-201's stale CLD expectations remain unrelated and open.
+
+The firmware runner retires 9,071 instructions and stops at `0F 85 9F FE FF FF`
+(`JNZ rel32 -0x161`, ISSUE-353) at RIP `0x2017f1`, with
+`Unsupported { opcode: 133 }`; COM1 remains empty.

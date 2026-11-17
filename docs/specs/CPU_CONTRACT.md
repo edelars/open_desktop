@@ -28103,3 +28103,23 @@ warning, and scoped rustfmt/diff-check pass. Independent review approved with no
 findings. Firmware advances to ISSUE-352 (`40 84 6C 24 07`, `TEST byte ptr
 [RSP+7],BPL`) at RIP `0x2017ec` after 9,070 retired instructions; COM1 is empty.
 ISSUE-201's unrelated CLD expectation caveat remains open.
+
+### S7-04 CPU-profile slice: exact memory `TEST` (ISSUE-352)
+
+`PagedCpl0ProbeV1` admits only exact bytes `40 84 6C 24 07`. The instruction
+reads the byte at `[RSP+7]` and the BPL source selected by REX presence, then
+updates logical flags through shared TEST semantics. CF/OF clear; SF/ZF/PF
+reflect the byte AND; AF retains its concrete bit but becomes undefined. GPRs
+and memory are not written. The byte read uses tracked guest memory. A read fault
+or noncanonical RSP-derived address leaves CPU state unchanged (#SS for a
+noncanonical stack address).
+
+Six focused tests cover result/flags/AF-definedness, exact address and byte read,
+read-fault, stack-canonicality and final-byte fetch-fault atomicity, neighboring
+encodings, CPL3 and other-profile isolation. Two four-level machine tests verify
+A-bit updates/no D-bit update and data-page fault atomicity. Full od-isa suites
+pass (2,322/1,591/126/29/6/1,101/7/15; zero doc tests), paged machine quantum
+passes (77/77), scoped cargo check passes with one existing unused page-walk
+helper warning, and scoped rustfmt/diff-check pass. Independent review approved with no findings. Firmware advances to ISSUE-353 (`0F 85 9F FE FF FF`, `JNZ rel32
+-0x161`) at RIP `0x2017f1` after 9,071 retired instructions; COM1 is empty.
+ISSUE-201's unrelated CLD expectation caveat remains open.

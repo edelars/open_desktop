@@ -1393,6 +1393,89 @@ fn paged_probe_setne_rsp_disp8_07_write_protection_fault_is_atomic() {
 }
 
 #[test]
+fn paged_probe_test_rsp_disp8_07_bpl_uses_tracked_four_level_read() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x40, 0x84, 0x6c, 0x24, 0x07]);
+    put_byte(&mut bus, DATA_PHYSICAL + 7, 0x03);
+    let mut state = initial_state(0);
+    state.gpr[Register::Rsp as usize] = DATA_LINEAR;
+    state.gpr[Register::Rbp as usize] = 0xaabb_ccdd_eeff_0003;
+    state.rflags = 0x8d5;
+    let before = state.clone();
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.page_fault, None);
+    assert_eq!(result.memory_error, None);
+    let mut expected = before;
+    expected.rip += 5;
+    expected.rflags = (expected.rflags & !0x8d5) | 0x14; // AF retained, PF set.
+    assert_eq!(state, expected);
+    assert_eq!(result.rflags_defined, FLAGS_DEFINED);
+    let data_range =
+        GuestPhysicalRange::new(GuestPhysicalAddress::new(DATA_PHYSICAL + 7), 1).unwrap();
+    assert!(
+        !writes.contains(&data_range),
+        "TEST must not write the data byte"
+    );
+    assert_eq!(
+        bus.read_physical(
+            GuestPhysicalAddress::new(DATA_PHYSICAL + 7),
+            AccessWidth::Byte,
+        )
+        .unwrap(),
+        0x03
+    );
+    for address in [ROOT, ROOT + 0x1000, ROOT + 0x2020, ROOT + 0x4000] {
+        assert_ne!(
+            qword(&mut bus, address) & (1 << 5),
+            0,
+            "A bit missing at {address:#x}"
+        );
+    }
+    assert_eq!(qword(&mut bus, ROOT + 0x2020) & (1 << 6), 0);
+    assert_eq!(qword(&mut bus, ROOT + 0x4000) & (1 << 6), 0);
+}
+
+#[test]
+fn paged_probe_test_rsp_disp8_07_bpl_data_page_fault_is_atomic() {
+    let (mut bus, _) = fixture();
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x40, 0x84, 0x6c, 0x24, 0x07]);
+    put(&mut bus, ROOT + 0x4000, 0); // absent leaf for the data page
+    let mut state = initial_state(0);
+    state.gpr[Register::Rsp as usize] = DATA_LINEAR;
+    state.gpr[Register::Rbp as usize] = 0xaabb_ccdd_eeff_0003;
+    state.rflags = 0x8d5;
+    let before = state.clone();
+    let mut writes = Vec::new();
+
+    let result = run(&mut state, &mut bus, 1, || false, &mut writes);
+
+    let expected_fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(DATA_LINEAR + 7),
+    };
+    assert_eq!(result.exit, PagedProbeExit::Fault(expected_fault.clone()));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    let data_range =
+        GuestPhysicalRange::new(GuestPhysicalAddress::new(DATA_PHYSICAL + 7), 1).unwrap();
+    assert!(
+        !writes.contains(&data_range),
+        "read fault must not write the data byte"
+    );
+    let record = result.page_fault.as_ref().expect("data read #PF");
+    assert_eq!(record.fault(), &expected_fault);
+    assert_eq!(record.saved_rip(), CODE_LINEAR);
+    assert_eq!(record.access(), AccessKind::Read);
+    assert_eq!(qword(&mut bus, ROOT + 0x4000), 0);
+}
+
+#[test]
 fn paged_probe_mov_rsp_disp8_rdx_store_uses_tracked_four_level_walk() {
     let (mut bus, _) = fixture();
     put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x48, 0x89, 0x54, 0x24, 0x30]);

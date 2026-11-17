@@ -1019,3 +1019,22 @@ the partial-register write, final-ModRM fetch-fault atomicity, neighbors and
 CPL3/other-profile isolation; the other-profile matrix passes. Full od-isa,
 paged machine quantum, scoped cargo check, rustfmt and diff-check pass.
 Independent review approved with no findings.
+
+### Текущий статус — 2026-11-17 — ISSUE-352
+
+ISSUE-352 admits only exact bytes `40 84 6C 24 07` (`TEST byte ptr
+[RSP+7],BPL`) in base `PagedCpl0ProbeV1`. REX presence selects BPL as the
+register operand. The tracked byte read feeds shared TEST semantics: CF/OF clear,
+SF/ZF/PF from the result, AF's concrete value retained but AF undefined. No GPR
+or memory write occurs. Read faults and noncanonical stack addresses do not
+commit CPU state. Runner advances to ISSUE-353, `0F 85 9F FE FF FF`
+(`JNZ rel32 -0x161`) at `0x2017f1` after 9,071 retired instructions; COM1 is
+empty. ISSUE-201 remains the unrelated pair of stale CLD-unsupported
+full-machine expectations. Do not mark the Stage 7 gate complete.
+
+Six focused tests cover result/flags/AF metadata, tracked read and no-write
+behavior, data-read and final-byte fetch-fault atomicity, noncanonical-stack
+#SS, neighbors, CPL3 and other-profile isolation. Two four-level machine tests
+verify page-walk A bits/no D bit and data-page fault atomicity. Full od-isa,
+paged machine quantum, scoped cargo check, rustfmt and diff-check pass.
+Independent review approved with no findings.
