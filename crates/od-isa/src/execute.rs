@@ -20366,6 +20366,40 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.gpr[Register::Rbp as usize] = value;
             state.rip = next_rip;
         }
+        // S7-04: admit only the observed bare near RET `C3` form. Read the
+        // qword target first, validate it, then commit RSP and RIP together.
+        Operation::Return { stack_adjust: 0 }
+            if base_profile
+                && instruction.length == 1
+                && instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0xc3
+                && instruction.prefixes == Prefixes::default()
+                && instruction.operand_size == OperandSize::Qword =>
+        {
+            let old_rsp = state.gpr[Register::Rsp as usize];
+            let stack_address = match stack_access_address(old_rsp, false, OperandSize::Qword) {
+                Ok(address) => address,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            let target = match memory.read_integer(stack_address, context, OperandSize::Qword) {
+                Ok(target) => target,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            if !canonical(target) {
+                let MemoryError::Architectural(fault) = general_protection() else {
+                    unreachable!()
+                };
+                return result(PagedProbeExit::Fault(fault), 0);
+            }
+            state.gpr[Register::Rsp as usize] = old_rsp.wrapping_add(8);
+            state.rip = target;
+        }
         Operation::Mov {
             dst: Operand::Register(destination),
             src: Operand::Memory(source),

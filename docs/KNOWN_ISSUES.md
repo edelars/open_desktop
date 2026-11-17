@@ -4859,7 +4859,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-373 — S7-04: exact helper near RET frontier (`C3`)
 - **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-372.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20183a`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only bare `C3` reads a qword return target from old RSP through GuestMemory. A noncanonical target raises #GP before RSP/RIP commit; on success RSP advances by eight and RIP takes the target. Flags and definedness are preserved. Stack faults leave CPU state unchanged.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner advanced to `Unsupported { opcode: 131 }` at RIP `0x200fe7` after 9,842 retired instructions; bytes are `66 83 7C 24 18 FF` (CMP word ptr [RSP+0x18],-1; ISSUE-374); COM1 is empty.
+- **Проверка:** seven focused ISA tests cover success, flags/definedness, #SS/#PF/#GP and fetch-fault atomicity, neighbors, CPL3 and other profiles. Three machine tests cover four-level tracked read/A-no-D effects, data-page #PF atomicity, and noncanonical target #GP. Full validation passes: od-isa suites (2,322/1,591/126/29/6/1,208/7/15; zero doc tests), paged machine quantum (102/102), workspace all-targets cargo check, scoped rustfmt and diff-check. Independent review approved with no findings. Results are in `docs/reports/STAGE_7_REPORT.md`.
+
+### ISSUE-374 — S7-04: exact helper word CMP memory frontier (`66 83 7C 24 18 FF`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-373.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x200fe7`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches the one-byte near RET after 9,841 retired instructions; this exact control-transfer form is not yet admitted by the bounded base profile.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 195 }` at RIP `0x20183a`; bytes begin `C3`; COM1 is empty.
-- **Следующий шаг:** analyze the exact firmware RET form and admit it in a separate Stage 7 slice.
+- **Суть и последствия:** firmware reaches `CMP word ptr [RSP+0x18],-1` after 9,842 retired instructions; this exact memory compare has not yet been admitted by the bounded base profile.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 131 }` at RIP `0x200fe7`; bytes are `66 83 7C 24 18 FF`; COM1 is empty.
+- **Следующий шаг:** analyze and admit only this exact firmware word CMP form in a separate Stage 7 slice.

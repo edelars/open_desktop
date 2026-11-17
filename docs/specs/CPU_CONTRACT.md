@@ -28441,3 +28441,21 @@ ISSUE-201 remains the unrelated CLD expectation caveat.
 Validation: focused ISA 6/6 and machine 3/3 pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,201/7/15; zero doc tests),
 paged machine quantum passes (99/99), workspace all-targets cargo check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact near RET (ISSUE-373)
+
+`PagedCpl0ProbeV1` admits only bare `C3`. In long mode it reads a qword target
+from old RSP through the tracked GuestMemory path. It checks target canonicality
+before committing CPU state: a noncanonical target raises #GP with RSP/RIP
+unchanged; success advances RSP by eight and assigns RIP to the target. Flags
+and definedness are preserved. Stack-address #SS, stack-read #PF/backend errors,
+and instruction-fetch faults do not partially commit CPU state. This slice adds
+no other RET encodings; CPL3 and other profiles do not admit bare `C3`. Firmware
+returns to ISSUE-374, `66 83 7C 24 18 FF` (CMP word [RSP+0x18],-1), at
+`0x200fe7` after 9,842 retired instructions; COM1 is empty. ISSUE-201 remains
+the unrelated CLD expectation caveat.
+
+Validation: focused ISA 7/7 and machine 3/3 pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,208/7/15; zero doc tests),
+paged machine quantum passes (102/102), workspace all-targets cargo check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.

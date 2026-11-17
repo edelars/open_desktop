@@ -2677,3 +2677,27 @@ unrelated stale CLD expectations remain open.
 Validation: focused ISA 6/6 and machine 3/3 pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,201/7/15; zero doc tests),
 paged machine quantum passes (99/99), workspace all-targets cargo check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-373 — exact near RET
+
+Admitted only bare `C3` in base `PagedCpl0ProbeV1`. It reads the qword target
+from old RSP through GuestMemory, checks target canonicality before committing,
+then advances RSP by eight and loads RIP from that target. Flags and definedness
+remain unchanged. Noncanonical RSP raises #SS; stack #PF or fetch fault does not
+partially commit; noncanonical target raises #GP without changing CPU state.
+Seven focused ISA tests cover successful state transition, flags metadata,
+#SS/#PF/#GP/fetch atomicity, neighbors, CPL3 and other-profile isolation. Three
+machine tests verify four-level A/no-D effects, stack-read #PF atomicity, and
+#GP for a noncanonical target.
+
+Firmware image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) followed
+RET to `66 83 7C 24 18 FF` (CMP word [RSP+0x18],-1, ISSUE-374) at RIP
+`0x200fe7` after 9,842 retired instructions; exit is
+`Unsupported { opcode: 131 }`, COM1 empty. ISSUE-201's unrelated stale CLD
+expectations remain open.
+
+Validation: focused ISA 7/7 and machine 3/3 pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,208/7/15; zero doc tests),
+paged machine quantum passes (102/102), workspace all-targets cargo check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.

@@ -1351,3 +1351,22 @@ caveat.
 Validation: focused ISA 6/6 and machine 3/3 pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,201/7/15; zero doc tests),
 paged machine quantum passes (99/99), workspace all-targets cargo check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-373 — exact near RET
+
+Admit only bare `C3` in base `PagedCpl0ProbeV1`. It reads a qword target from
+old RSP through GuestMemory, rejects noncanonical targets with #GP before CPU
+commit, and on success advances RSP by eight and loads RIP from the target.
+Flags and definedness remain unchanged. Stack #SS/#PF, noncanonical target and
+instruction-fetch faults leave CPU state uncommitted. Seven focused ISA tests
+cover outcome/state, flags, target canonicality, stack/fetch faults, neighbors,
+CPL3 and other-profile rejection. Three machine tests verify four-level
+accessed/no-dirty effects, stack-read #PF atomicity and noncanonical-target #GP.
+The runner follows the RET to ISSUE-374, `66 83 7C 24 18 FF` (CMP word
+[RSP+0x18],-1), at RIP `0x200fe7` after 9,842 retired instructions; COM1 is
+empty. ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Validation: focused ISA 7/7 and machine 3/3 pass. Full od-isa suites pass (2,322/1,591/126/29/6/1,208/7/15; zero doc tests),
+paged machine quantum passes (102/102), workspace all-targets cargo check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
