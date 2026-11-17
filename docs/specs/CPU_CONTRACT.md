@@ -29537,3 +29537,17 @@ passes: od-isa (2,322/1,591/126/29/6/1,503/7/15; zero doc tests), paged machine
 quantum (110/110), workspace all-targets offline check, scoped rustfmt and
 diff-check. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD
 caveat.
+
+### ISSUE-441 — bounded OR AL,R8B
+
+The base paged profile admits only exact `44 08 C0`. REX.R extends the opcode
+08 source register to R8B; destination AL receives the byte OR result, while
+upper RAX and all other GPRs are preserved. Shared logic semantics clear CF
+and OF, set SF/ZF/PF from the result, preserve AF's concrete bit while marking
+AF undefined, and update definedness accordingly. A fault fetching ModRM commits
+no state. CPL3 and other profiles reject this exact form. Firmware advances to
+`0F 85 97 00 00 00` (JNZ rel32 +0x97, ISSUE-442) at RIP `0x2013e0` after
+9,934 retired instructions. Full validation passes: od-isa
+(2,322/1,591/126/29/6/1,507/7/15; zero doc tests), paged machine quantum
+(110/110), workspace all-targets offline check, scoped rustfmt and diff-check.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

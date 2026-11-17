@@ -2344,3 +2344,17 @@ Four focused tests and the other-profile matrix (1/1) pass. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-441 runner frontier
+
+Exact base-profile `44 08 C0` (OR AL,R8B) retires, using REX.R to select R8B
+as source and writing only AL. CF/OF clear; SF/ZF/PF follow the byte result;
+AF becomes undefined, with remaining GPRs preserved. Runner reaches
+`0F 85 97 00 00 00` (JNZ rel32 +0x97, ISSUE-442) at RIP `0x2013e0` after
+9,934 retired instructions, Unsupported opcode 133, COM1 empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`. Four
+focused tests and the other-profile matrix (1/1) pass. Full od-isa passes
+(2,322/1,591/126/29/6/1,507/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.

@@ -2510,3 +2510,17 @@ instructions; Unsupported opcode 8, COM1 empty. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-441 — exact OR AL,R8B (`44 08 C0`)
+
+Admit only exact `44 08 C0` in the base `PagedCpl0ProbeV1` profile. REX.R
+extends the source to R8B and the byte result is written only to AL, preserving
+upper RAX and other GPRs. Shared OR semantics clear CF/OF, update SF/ZF/PF,
+preserve the concrete AF bit while marking AF undefined, and update flag
+definedness accordingly. Tests cover result/parity/sign/zero cases, full state,
+fetch-fault atomicity, neighbors, CPL3 and other-profile isolation. Runner
+advances to `0F 85 97 00 00 00` (JNZ rel32 +0x97, ISSUE-442), RIP `0x2013e0`,
+after 9,934 retired instructions; Unsupported opcode 133, COM1 empty. Full
+od-isa passes (2,322/1,591/126/29/6/1,507/7/15; zero doc tests), paged machine
+quantum passes (110/110), workspace all-targets offline check passes with
+existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

@@ -21254,6 +21254,40 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     | (crate::ARITHMETIC_FLAGS & !crate::AF),
             };
         }
+        // S7-04: exact `44 08 C0` performs byte OR AL,R8B. REX.R extends
+        // the reg source; the partial AL write preserves upper RAX and shared
+        // OR semantics leave AF undefined.
+        Operation::Logic {
+            kind: LogicKind::Or,
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x08
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Byte
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x44),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rax, OperandSize::Byte)
+            && source == RegisterView::low(Register::R8, OperandSize::Byte) =>
+        {
+            let lhs = state.read(destination);
+            let rhs = state.read(source);
+            let (value, flags) =
+                logic_result(OperandSize::Byte, LogicKind::Or, lhs, rhs, state.rflags);
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: (initial_rflags_defined & !crate::AF)
+                    | (crate::ARITHMETIC_FLAGS & !crate::AF),
+            };
+        }
         // S7-04: exact `41 08 ED` performs byte OR R13B,BPL.
         // REX.B selects the r/m destination R13B; the reg source remains BPL.
         // Partial-byte write preserves upper R13, while shared OR undefines AF.

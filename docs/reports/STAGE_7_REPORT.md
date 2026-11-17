@@ -3844,3 +3844,20 @@ opcode 8, COM1 empty. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-441 — exact OR AL,R8B
+
+Four focused tests pass for byte OR results, CF/OF clearing, SF/ZF/PF and AF
+undefinedness, AL-only mutation with upper RAX and source R8 preservation,
+final-ModRM fetch-fault atomicity, neighbors and CPL3; the other-profile matrix
+passes 1/1. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`. Runner
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue441.com1 --budget 10000` retires 9,934
+instructions and stops at `0F 85 97 00 00 00` (JNZ rel32 +0x97), RIP
+`0x2013e0`, Unsupported opcode 133, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,507/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.
