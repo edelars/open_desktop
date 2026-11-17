@@ -5272,7 +5272,17 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-419 — S7-04: exact MOV byte ptr [RSP+R8+8],1 frontier (`42 C6 44 04 08 01`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-418.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201319`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware reaches an immediate byte store through an RSP-based SIB address, outside the current bounded base-profile admission.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `42 C6 44 04 08 01`. REX.X selects R8 as the SIB index; RSP is the base, scale is 1, disp8 is +8, and the immediate byte is 1. The tracked byte store changes only the addressed byte and preserves flags/registers; fetch, noncanonical stack address or data-write faults leave memory and RIP uncommitted. Other addresses, values, widths, prefixes and CPL3/other profiles remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,907 instructions and reported `Unsupported { opcode: 198 }` at RIP `0x201319`; COM1 is empty. Bytes at the link-base shadow are `42 C6 44 04 08 01`.
-- **Следующий шаг:** verify REX.X/SIB address routing, immediate store width and tracked write/fault behavior; admit only this encoding.
+- **Результат:** runner now retires 9,908 instructions and stops at RIP `0x20131f`, bytes `41 83 FC 03` (CMP R12D,3; ISSUE-420), `Unsupported { opcode: 131 }`; COM1 is empty.
+- **Проверка:** focused byte-store/state/flags/write-fault/noncanonical-address/fetch-fault/neighbors/CPL3 tests 6/6 and other-profile matrix 1/1 pass. Full od-isa passes (2,322/1,591/126/29/6/1,416/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+- **Следующий шаг:** ISSUE-420, exact `41 83 FC 03` (CMP R12D,3) at RIP `0x20131f`.
+
+### ISSUE-420 — S7-04: exact CMP R12D,3 frontier (`41 83 FC 03`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-419.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20131f`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware reaches a REX.B-extended dword compare with sign-extended imm8, outside the current bounded base-profile admission.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,908 instructions and reported `Unsupported { opcode: 131 }` at RIP `0x20131f`; COM1 is empty. Bytes at the link-base shadow are `41 83 FC 03`.
+- **Следующий шаг:** verify REX.B register routing, dword CMP flags and tracked fetch behavior; admit only this encoding.

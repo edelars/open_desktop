@@ -3520,3 +3520,21 @@ remains the unrelated CLD caveat.
 Runner advances to `42 C6 44 04 08 01` (MOV byte ptr [RSP+R8+8],1; ISSUE-419),
 RIP `0x201319`, after 9,907 retired instructions, unsupported opcode 198,
 COM1 empty.
+
+### ISSUE-419 — exact `MOV byte ptr [RSP+R8+8],1` (`42 C6 44 04 08 01`)
+
+At RIP `0x201319`, admit only this exact immediate byte store in the base
+paged profile. REX.X selects R8 as the SIB index; RSP is the base, scale is 1,
+disp8 is +8 and the immediate is 1. The tracked store writes one byte and
+preserves registers and RFLAGS. Fetch, noncanonical RSP-based address and data
+write faults do not retire the instruction or commit RIP; the data fault is
+reported without partial memory modification. Focused byte-store/state/flags/
+write-fault/noncanonical/fetch-fault/neighbors/CPL3 tests pass (6/6), other-
+profile matrix passes (1/1). Full od-isa passes
+(2,322/1,591/126/29/6/1,416/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
+remains the unrelated CLD caveat.
+
+Runner advances to `41 83 FC 03` (CMP R12D,3; ISSUE-420) at RIP `0x20131f`,
+after 9,908 retired instructions, unsupported opcode 131, COM1 empty.

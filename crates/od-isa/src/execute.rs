@@ -25555,6 +25555,47 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, state.read(source));
             state.rip = next_rip;
         }
+        // S7-04: the helper initializes one byte with exact
+        // `42 C6 44 04 08 01` (MOV byte ptr [RSP+R8+8],1). REX.X selects R8
+        // as the SIB index; retain the exact byte width/address/immediate and
+        // commit RIP only after the tracked store succeeds.
+        Operation::MovImmediate {
+            dst: Operand::Memory(destination),
+            value,
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xc6
+            && instruction.length == 6
+            && instruction.operand_size == OperandSize::Byte
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x42),
+                    ..Prefixes::default()
+                })
+            && destination.size == OperandSize::Byte
+            && destination.address_size == OperandSize::Qword
+            && destination.base == AddressBase::Register(Register::Rsp)
+            && destination.index == Some(Register::R8)
+            && destination.scale == 1
+            && destination.displacement == 8
+            && value == 1 =>
+        {
+            if let Err(error) = write_operand(
+                state,
+                memory,
+                context,
+                next_rip,
+                Operand::Memory(destination),
+                value,
+            ) {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+            return result(PagedProbeExit::Retired, 1);
+        }
         // S7-04/S7-05: exact immediate stores initialize [RDI], clear
         // [RSP+0x10], and write the sign-extended imm32 zero to qword
         // [RSP+8]. Pin each address/width/value tuple and route the store
