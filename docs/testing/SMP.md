@@ -176,6 +176,24 @@ The following test budgets are deliberately not invented before their harnesses 
 | S6-35 | Save/restore cycles, pending-event variants, and failure-injection repetitions | S6-35 records an exact matrix and expected runtime before parallel save/load acceptance. |
 | S6-37 | Linux boot repetitions, workload duration, and soak duration | S6-37 records counts/duration from a measured run budget; a short run cannot stand in for soak. |
 
+### probe v1 (S6-16e)
+
+The project's own guest `Stage6SmpProbeV1`: the boot processor sends INIT and SIPI with ICR writes, the application processor runs the trampoline to long mode, writes a marker with the nonce to RAM and COM1, raises a flag and halts; on one vCPU the guest prints `SMP PROBE AP ABSENT <nonce>`. Contract: [MACHINE_CONTRACT.md](../specs/MACHINE_CONTRACT.md#s6-16e--probe-v1-старт-ap). Expected UART text and memory cells are derived from the protocol and the SDM and written by the builder into its manifest; the tests read them from there, never from the run.
+
+Build and check (no toolchain besides `python3`; the image is hand-encoded and reproducible, `probe.bin` SHA-256 is the same for every build):
+
+```
+python3 tools/build/build_stage6_smp_probe.py --output-dir work/stage6/smp_probe            # normal
+python3 tools/build/build_stage6_smp_probe.py --output-dir work/stage6/smp_probe_nlm --variant no_long_mode
+python3 tools/build/build_stage6_smp_probe.py --output-dir work/stage6/smp_probe_nf  --variant no_flag
+python3 -m unittest tools/build/test_build_stage6_smp_probe.py
+cargo test -p od-machine --offline --test stage6_smp_probe -- --test-threads=1
+```
+
+The integration test builds the image itself with `python3` (it fails, it does not skip, when the builder cannot run). The nonce is written by the loader into the 64-byte info block at GPA `0x7000`; it is not in the image. The probe is checked under fixed quanta 1, 2, 7, 100, 100000 and seeds 0..16 of the interleaving scheduler (same transcript and cells every time). The seed range of the CLI gate (`od-runner --stage6-smp-probe`) and the IPI exchange are S6-16f; until then there is no seed-range claim beyond those 16 seeds.
+
+**Limitation (measured at review, N=2).** The order of UART lines and the OK are deterministic for quanta up to about 300 000 steps: `Fixed(100)` gives OK with retired `[825, 195]`, `Fixed(100000)` gives OK `[100125, 195]`, `Fixed(300000)` gives OK `[300125, 195]`. With `Fixed(400000)` and `Fixed(1000000)` the probe gives `FAIL TIMEOUT` (the `AP1 UP` line is printed after the result; BSP retired `[328357, 195]`). The BSP executes about 327 000 steps on the `WAIT_UP` wait for the flag at any quantum (one processor: 326 steps in total without the wait), so for `Fixed` of about 327 000 steps or more (and for any quantum with which the BSP manages to run the whole wait before the AP runs) the probe gives `FAIL TIMEOUT`. There is no false OK. The fix is to raise `WAIT_UP` with a justification through the maximum quantum of the policy (S6-16f); `WAIT_UP` is not changed in v1.
+
 ## 6. Evidence and failure handling
 
 Every run records: fixture and corpus SHA-256; test ID; source revision; runner commit; compiler/toolchain and flags; mode; CPU model, OS and thread count; iteration count; seed or explicit schedule; elapsed time; histogram; and exit/result status. Physical-x86 evidence goes in `docs/reports/data/stage6/`; temporary logs and binaries stay under ignored `work/stage6/`.

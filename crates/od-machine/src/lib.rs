@@ -69,6 +69,7 @@ mod stage4_pit_irq0_probe;
 mod stage4_stack_probe;
 mod stage4_store_load_probe;
 mod stage4_uart_irq_probe;
+mod stage6_smp_probe;
 #[cfg(feature = "experimental-translation-probe-cache")]
 mod translation_probe_cache;
 mod uart16550;
@@ -385,6 +386,17 @@ pub use stage4_uart_irq_probe::{
     STAGE4_UART_IRQ_PROBE_TRACE_LIMIT, STAGE4_UART_IRQ_PROBE_VECTOR, Stage4UartIrqProbe,
     Stage4UartIrqProbeError, Stage4UartIrqProbeExit, Stage4UartIrqProbeLoadError,
     Stage4UartIrqProbeReport, UartIrqTraceEvent, UartIrqTraceKind, load_stage4_uart_irq_probe,
+};
+
+pub use stage6_smp_probe::{
+    STAGE6_SMP_PROBE_COUNT_GPA, STAGE6_SMP_PROBE_FLAG_GPA, STAGE6_SMP_PROBE_IMAGE_BYTES,
+    STAGE6_SMP_PROBE_IMAGE_GPA, STAGE6_SMP_PROBE_INFO_BYTES, STAGE6_SMP_PROBE_INFO_GPA,
+    STAGE6_SMP_PROBE_INFO_MAGIC, STAGE6_SMP_PROBE_INFO_VERSION, STAGE6_SMP_PROBE_LOCK_GPA,
+    STAGE6_SMP_PROBE_MARKER_AP_GPA, STAGE6_SMP_PROBE_MARKER_BSP_GPA, STAGE6_SMP_PROBE_MARKER_BYTES,
+    STAGE6_SMP_PROBE_MARKER_MAGIC, STAGE6_SMP_PROBE_NONCE_MAX, STAGE6_SMP_PROBE_PML4_GPA,
+    STAGE6_SMP_PROBE_SIPI_VECTOR, STAGE6_SMP_PROBE_TRAMPOLINE_GPA, Stage6SmpProbe,
+    Stage6SmpProbeCpu, Stage6SmpProbeFinish, Stage6SmpProbeLoadError, Stage6SmpProbeQuantum,
+    Stage6SmpProbeReport, Stage6SmpProbeRunError, load_stage6_smp_probe,
 };
 
 pub use nvme::{

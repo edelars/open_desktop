@@ -1614,6 +1614,16 @@ PDPT-индексы ≠ 0 и 2 МиБ-страницы не на нулевом 
 
 **Тесты** (`long_mode_entry::tests`, ожидаемые значения написаны вручную, не из вывода модели): `field_table` (каждое поле, заимствование); `what_init_keeps_comes_from_preserved_and_the_efer_of_syscall_from_the_cpu` (что берётся из `preserved`, подмена `syscall.efer`, ничего лишнего); `a_code_segment_base_and_limit_are_normalised_a_data_base_is_kept`; `a_mov_ss_shadow_is_an_interrupt_shadow`; `every_refusal_leaves_the_cpu_unchanged_and_is_checked_in_order` (все четыре отказа и порядок); `the_converted_state_runs_through_the_ordinary_interpreter` (состояние допущено `run_with_cpl0_profile_set` с `with_cpu_owned_cr3`, `mov eax, imm32` и `mov r9, rax` исполнены с высокого адреса цели). Не проверено: сквозной прогон trampoline → преобразование → исполнение цели `secondary_startup_64` (цель не исполняется до последующих срезов S6-16), сверка с KVM-оракулом (оракул S6-14n сравнивал `ProtectedCpu`, преобразование — чистое копирование).
 
+### S6-16e — формы кода probe v1 (старт AP)
+
+Образ `Stage6SmpProbeV1` ([MACHINE_CONTRACT.md](MACHINE_CONTRACT.md#s6-16e--probe-v1-старт-ap)) кодирует байты вручную; каждая инструкция записана в манифесте сборщика (`build_manifest.json`, раздел `code`) с байтами и мнемоникой. Новых форм CPU не добавлено: остаются только формы, которые исполняют модели.
+
+**Trampoline** (только формы S6-14a, исполнитель S6-16c): `CLI`; `MOV AX,CS`; `MOV DS/ES/SS,AX`; `66 F0 0F BA /5 ib` (`LOCK BTS`, операнд `DS:0x100`); `JAE`; `PAUSE`; `JMP`; `66 BC` (`MOV ESP,imm32`); `66 0F 01 /3` и `/2` (LIDT, LGDT с префиксом 66); `BA` (`MOV DX,imm16`); `66 B8` (`MOV EAX,imm32`); `MOV CR0,EAX`; `66 EA` (дальний переход); в protected mode `MOV SS/DS/ES,EDX`, `MOV EAX,imm32`, `MOV CR4/CR3,EAX`, `MOV ECX,imm32`, `A1` и `8B 15` (чтение EFER из ячеек), `WRMSR`, `MOV CR0,EAX` с PG, `EA` на 64-битный CS; `FF 25` (64-битный `JMP [RIP+rel32]`).
+
+**Код в long mode** (набор CPL0, S6-16d): `MOV r32,imm32` (`B8+r`), `MOV [RBX+disp32],EAX` (`89 83`) и `MOV EAX,[RBX+disp32]` (`8B 83`), `MOV EAX,[RSI/RDI/RBP(+disp8)]`, `MOV [RDI(+disp8)],EAX`, `MOV AL,[RSI]` (`8A 06`), `TEST AL,AL`, `TEST EAX,EAX`, `CMP EAX,imm8/imm32`, `CMP ESI,imm32`, `ADD r32,imm8`, `INC r32`, `DEC ECX`, `SHR EAX,24` (`C1 E8 18`), `OUT DX,AL` (`EE`), `JMP rel8` и `rel32` (`E9`), `JZ/JNZ/JNE/JB/JA rel8`, `CLI`, `STI`, `HLT`. Все они исполнились в тестах S6-16e; `PAUSE`, `IRETQ`, `IN` в образ не вошли (обмен IPI — S6-16f).
+
+**Что не исполняется и обойдено.** `LIDT` в long mode (набор знает только `[RSP+disp8]`) — IDTR грузит trampoline в real mode; шлюзов в образе нет, вектор в AP не доставляется. Вариант `no_long_mode` намеренно содержит форму вне S6-14a (`HLT` в protected mode) и получает `ApLegacyRefused`.
+
 ### S2-39a — Legacy FXSAVE/FXRSTOR contract (evidence-only)
 
 This section records the selected target's normative legacy FP/SIMD memory
