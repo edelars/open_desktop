@@ -2241,3 +2241,16 @@ focused profile tests and the other-profile matrix pass. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review is pending.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-433 runner frontier
+
+At RIP `0x201384`, the runner encountered exact bytes `48 85 C0`
+(TEST RAX,RAX). After admission it advances to `75 37` (JNZ rel8 +0x37,
+ISSUE-434) at RIP `0x201387` after 9,926 retired instructions, Unsupported
+opcode 117, COM1 empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`. Four
+focused TEST profile tests and the other-profile matrix pass. Full od-isa
+passes (2,322/1,591/126/29/6/1,473/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review is approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.

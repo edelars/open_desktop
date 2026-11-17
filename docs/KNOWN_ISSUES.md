@@ -5412,7 +5412,17 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-433 — S7-04: exact TEST RAX,RAX frontier (`48 85 C0`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-432.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201384`.
-- **Статус:** открыта; следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base profile does not yet admit exact `48 85 C0` (`TEST RAX,RAX`). Add only this form, preserving RAX and updating logical flags/definedness according to shared TEST semantics; keep neighboring encodings and profiles excluded.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `48 85 C0` (`TEST RAX,RAX`). It writes no GPR, clears CF/OF, updates SF/ZF/PF from RAX, marks AF undefined while preserving its concrete value, and updates flag definedness through shared logical semantics. Neighboring encodings and CPL3/other profiles remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-432 runner retired 9,925 instructions and reported `Unsupported { opcode: 133 }` at RIP `0x201384`; COM1 is empty. Instruction bytes at the link-base shadow are `48 85 C0` (followed by `75 37`).
-- **Следующий шаг:** implement exact `48 85 C0`, add focused semantic/fault/neighbor/profile coverage, and update Stage 7 documentation.
+- **Результат:** runner now retires 9,926 instructions and stops at RIP `0x201387`, bytes `75 37` (JNZ rel8 +0x37; ISSUE-434), `Unsupported { opcode: 117 }`; COM1 is empty.
+- **Проверка:** four focused TEST tests cover qword result/logic flags/AF definedness, no GPR write/full-state preservation, final-byte fetch-fault atomicity, neighbors and CPL3; the other-profile matrix passes 1/1. Full od-isa passes (2,322/1,591/126/29/6/1,473/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped formatting/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+- **Следующий шаг:** implement ISSUE-434, exact `75 37` (JNZ rel8 +0x37) at RIP `0x201387`.
+
+### ISSUE-434 — S7-04: exact JNZ rel8 +0x37 frontier (`75 37`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-433.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201387`.
+- **Статус:** открыта; следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base profile does not yet admit exact `75 37` (JNZ rel8 +0x37). Add only this branch form with ZF=0 condition, signed rel8 from next RIP, preserved flags/definedness, taken-only canonicality and atomic fetch-fault behavior; neighboring encodings/profiles remain excluded.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-433 runner retired 9,926 instructions and reported `Unsupported { opcode: 117 }` at RIP `0x201387`; COM1 is empty. Instruction bytes at the link-base shadow are `75 37` (followed by `E9 EF 00 00 00`).
+- **Следующий шаг:** implement exact `75 37`, add focused semantic/fault/neighbor/profile coverage, and update Stage 7 documentation.

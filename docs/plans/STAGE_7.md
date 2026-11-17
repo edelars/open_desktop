@@ -2396,3 +2396,18 @@ retired instructions, Unsupported opcode 133, COM1 empty. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review pending.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-433 — exact `TEST RAX,RAX` (`48 85 C0`)
+
+Admit only exact `48 85 C0` in the base paged profile. TEST writes no GPR,
+clears CF/OF, derives SF/ZF/PF from the qword result, and leaves AF undefined
+while retaining its concrete value; shared logical semantics update
+definedness. Focused tests cover representative qword values, all other
+registers and RFLAGS, AF definedness, final-byte fetch-fault atomicity,
+neighbors, CPL3 and other-profile isolation. Runner reaches ISSUE-434
+(`75 37`, JNZ rel8 +0x37) at RIP `0x201387` after 9,926 retired instructions,
+Unsupported opcode 117, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,473/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.

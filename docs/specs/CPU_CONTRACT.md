@@ -29424,3 +29424,20 @@ passes (2,322/1,591/126/29/6/1,469/7/15; zero doc tests), paged machine
 quantum passes (110/110), workspace all-targets offline check passes with
 existing warnings, and scoped rustfmt/diff-check pass. Independent review is
 pending. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-433 — bounded TEST RAX,RAX
+
+`PagedCpl0ProbeV1` admits exact no-prefix bytes `48 85 C0` only. This qword
+TEST reads RAX twice and writes no register. It clears CF and OF, derives SF,
+ZF and PF from the AND result, and marks AF undefined while retaining AF's
+concrete value; shared logical semantics determine the definedness mask. The
+instruction preserves all GPRs other than the normal RIP advance. Fetch faults
+commit no state. Tests cover qword values, logic flags/AF definedness, full
+state, final-byte fetch fault, neighboring operands/widths/prefixes, CPL3 and
+the other-profile refusal matrix. Runner advances to `75 37` (JNZ rel8 +0x37,
+ISSUE-434) at RIP `0x201387` after 9,926 retired instructions, Unsupported
+opcode 117, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,473/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.

@@ -21927,6 +21927,43 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     | (crate::ARITHMETIC_FLAGS & !crate::AF),
             };
         }
+        // S7-04: exact `48 85 C0` tests qword RAX against itself. TEST writes
+        // no GPR; shared logical semantics clear CF/OF, derive SF/ZF/PF from
+        // RAX, and mark AF undefined while retaining its concrete bit.
+        Operation::Logic {
+            kind: LogicKind::Test,
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x85
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x48),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rax, OperandSize::Qword)
+            && source == RegisterView::low(Register::Rax, OperandSize::Qword) =>
+        {
+            let value = state.read(destination);
+            let (_, flags) = logic_result(
+                OperandSize::Qword,
+                LogicKind::Test,
+                value,
+                value,
+                state.rflags,
+            );
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: (initial_rflags_defined & !crate::AF)
+                    | (crate::ARITHMETIC_FLAGS & !crate::AF),
+            };
+        }
         // S7-04: exact `48 85 F6` tests qword RSI against itself. TEST writes
         // no GPR; shared logical semantics clear CF/OF, derive SF/ZF/PF from
         // RSI, and mark AF undefined while retaining its concrete bit.
