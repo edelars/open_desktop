@@ -21648,6 +21648,35 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     | (crate::ARITHMETIC_FLAGS & !crate::AF),
             };
         }
+        // S7-04: exact `41 F6 C4 01` tests bit 0 of R12B. REX.B selects
+        // R12B; TEST changes logical flags only and leaves AF undefined.
+        Operation::Logic {
+            kind: LogicKind::Test,
+            dst: Operand::Register(destination),
+            src: Operand::Immediate(1),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xf6
+            && instruction.length == 4
+            && instruction.operand_size == OperandSize::Byte
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x41),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R12, OperandSize::Byte) =>
+        {
+            let lhs = state.read(destination);
+            let (_, flags) = logic_result(OperandSize::Byte, LogicKind::Test, lhs, 1, state.rflags);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: (initial_rflags_defined & !crate::AF)
+                    | (crate::ARITHMETIC_FLAGS & !crate::AF),
+            };
+        }
         // S7-04: the Rust helper tests exactly the three low bits of R15B with
         // `41 F6 C7 07`. TEST writes flags only and leaves AF undefined.
         Operation::Logic {

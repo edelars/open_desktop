@@ -2337,3 +2337,17 @@ Full od-isa passes (2,322/1,591/126/29/6/1,455/7/15; zero doc tests), paged
 machine quantum passes (110/110), workspace all-targets offline check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review
 approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-429 — exact `TEST R12B,1` (`41 F6 C4 01`)
+
+Admit only this exact base-profile byte TEST. REX.B selects R12B; TEST writes
+no GPR, clears CF/OF, updates SF/ZF/PF, and marks AF undefined while preserving
+its concrete value. Four focused tests cover bit-result/flags/definedness,
+full-state preservation, final-byte fetch fault, neighbors and CPL3. The
+other-profile matrix (1/1) passes. Runner advances after 9,920 retired
+instructions to `41 83 C8 08` (OR R8D,8, ISSUE-430) at RIP `0x201370`,
+Unsupported opcode 131, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,459/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.

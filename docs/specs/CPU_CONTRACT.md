@@ -29366,3 +29366,17 @@ opcode 246, COM1 empty. Full od-isa passes
 (110/110), workspace all-targets offline check passes with existing warnings,
 and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
 remains the unrelated CLD caveat.
+
+### ISSUE-429 — bounded `TEST R12B,1`
+
+The base paged profile admits exact `41 F6 C4 01` only. REX.B selects R12B.
+Shared byte TEST semantics clear CF/OF, set SF/ZF/PF from `R12B & 1`, preserve
+the concrete AF value while marking AF undefined, and do not write a GPR. The
+instruction preserves all other architectural state. Four focused tests and
+the other-profile matrix pass. Runner reaches `41 83 C8 08` (OR R8D,8,
+ISSUE-430) at RIP `0x201370` after 9,920 retired instructions, Unsupported
+opcode 131, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,459/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
+remains the unrelated CLD caveat.
