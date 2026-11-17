@@ -29551,3 +29551,16 @@ no state. CPL3 and other profiles reject this exact form. Firmware advances to
 (2,322/1,591/126/29/6/1,507/7/15; zero doc tests), paged machine quantum
 (110/110), workspace all-targets offline check, scoped rustfmt and diff-check.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-442 — bounded JNZ rel32 +0x97
+
+The base paged profile admits only exact no-prefix bytes `0F 85 97 00 00 00`.
+JNZ tests ZF; when clear, signed rel32 `+0x97` is added to next RIP, otherwise
+RIP falls through by six bytes. RFLAGS and flag definedness are unchanged.
+Canonicality is checked only for a taken target; final displacement fetch
+faults commit no state. CPL3 and other profiles reject this exact form.
+Firmware advances to `49 83 C3 30` (ADD R11,0x30, ISSUE-443) at RIP
+`0x2013e6` after 9,935 retired instructions. Full validation passes: od-isa
+(2,322/1,591/126/29/6/1,512/7/15; zero doc tests), paged machine quantum
+(110/110), workspace all-targets offline check, scoped rustfmt and diff-check.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
