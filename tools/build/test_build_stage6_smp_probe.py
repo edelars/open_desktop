@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproducibility and validator tests for the Stage6SmpProbeV2 builder (S6-16e, S6-16f).
+"""Reproducibility and validator tests for the Stage6SmpProbeV2 builder (S6-16e, S6-16f, S6-17).
 
 Expected values are written here by hand from the protocol and the Intel SDM, not read back from the
 builder's own expectation functions.
@@ -92,14 +92,14 @@ class Stage6SmpProbeBuilderTest(unittest.TestCase):
 
     def test_every_scenario_is_reproducible_and_differs_from_the_others(self) -> None:
         digests = {}
-        for scenario in ("normal", "exchange", "resipi", "bad-ipi", "nmi"):
+        for scenario in ("normal", "exchange", "resipi", "bad-ipi", "nmi", "shootdown"):
             first, second = self.image("normal", scenario), self.image("normal", scenario)
             self.assertEqual(first, second)
             digests[scenario] = hashlib.sha256(first).hexdigest()
             manifests = [self.manifest("--scenario", scenario) for _ in range(2)]
             self.assertEqual(manifests[0], manifests[1])
             self.assertEqual(manifests[0]["scenario"], scenario)
-        self.assertEqual(len(set(digests.values())), 5)
+        self.assertEqual(len(set(digests.values())), 6)
         # K is part of the image: another K is another image, and the manifest says which.
         four = self.manifest("--scenario", "exchange", "--rounds", "4")
         self.assertEqual(four["rounds"], 4)
@@ -178,6 +178,13 @@ class Stage6SmpProbeBuilderTest(unittest.TestCase):
         self.assertEqual(constants["STAGE6_SMP_PROBE_VECTOR_AP"], BUILDER.VECTOR_AP)
         self.assertEqual(constants["STAGE6_SMP_PROBE_VECTOR_BSP"], BUILDER.VECTOR_BSP)
         self.assertEqual(constants["STAGE6_SMP_PROBE_MAX_FIXED_QUANTUM"], BUILDER.MAX_FIXED_QUANTUM)
+        self.assertEqual(constants["STAGE6_SMP_PROBE_SD_ACK_GPA"], BUILDER.SD_ACK)
+        self.assertEqual(constants["STAGE6_SMP_PROBE_SD_POST_GPA"], BUILDER.SD_POST)
+        self.assertEqual(constants["STAGE6_SMP_PROBE_SD_SEEN_HANDLER_GPA"], BUILDER.SD_SEEN_H)
+        self.assertEqual(constants["STAGE6_SMP_PROBE_SD_SEEN_MAIN_GPA"], BUILDER.SD_SEEN_P)
+        self.assertEqual(constants["STAGE6_SMP_PROBE_SD_PTE_GPA"], BUILDER.PTE_X)
+        self.assertEqual(constants["STAGE6_SMP_PROBE_SD_X_LINEAR"], BUILDER.X_ADDR)
+        self.assertEqual(constants["STAGE6_SMP_PROBE_VECTOR_SHOOTDOWN"], BUILDER.VECTOR_SD)
         # Hand-derived: "SMP6" and "MARK" as little-endian ASCII, SIPI vector 0x08 = page 0x8000.
         self.assertEqual(BUILDER.INFO_MAGIC, int.from_bytes(b"SMP6", "little"))
         self.assertEqual(BUILDER.MARKER_MAGIC, int.from_bytes(b"MARK", "little"))
@@ -214,6 +221,9 @@ class Stage6SmpProbeBuilderTest(unittest.TestCase):
             (("--scenario", "bad-ipi"), 2, head2 + "SMP PROBE BAD-IPI {nonce}\n", "LapicDeviceError"),
             (("--scenario", "bad-ipi"), 1, absent, None),
             (("--scenario", "nmi"), 2, head2 + "SMP PROBE NMI OK {nonce}\n", None),
+            (("--scenario", "shootdown"), 2, head2 + "SMP PROBE SHOOTDOWN OK K=16 {nonce}\n", None),
+            (("--scenario", "shootdown", "--rounds", "3"), 2, head2 + "SMP PROBE SHOOTDOWN OK K=3 {nonce}\n", None),
+            (("--scenario", "shootdown"), 1, absent, None),
             (("--scenario", "exchange"), 1, absent, None),
         ]:
             manifest = self.manifest(*flags)
@@ -255,6 +265,54 @@ class Stage6SmpProbeBuilderTest(unittest.TestCase):
             self.assertEqual(n2["memory"]["nmi_cell"]["gpa"], "0xc028")
         self.assertEqual(self.manifest("--scenario", "exchange", "--rounds", "5")["expected"]["n2"]["memory"]["ap_rx"]["value"], "0x5")
 
+    def test_shootdown_cells_pages_and_protocol_by_hand(self) -> None:
+        # Hand-derived (S6-17). X = 0x201000: PD index 1 (0x201000 >> 21), PT index 1 ((0x201000 >> 12) & 0x1FF).
+        self.assertEqual((0x201000 >> 21, (0x201000 >> 12) & 0x1FF), (1, 1))
+        self.assertEqual(BUILDER.X_PAGE, 0x201000)
+        self.assertEqual(BUILDER.X_ADDR, 0x201100)
+        self.assertEqual((BUILDER.FRAME_A, BUILDER.FRAME_B), (0xC000, 0x7000))
+        self.assertEqual(BUILDER.PTE_X, 0x6008)  # PT_L[1]
+        self.assertEqual(BUILDER.VECTOR_SD, 0x32)
+        out = self.base / "sd-image"
+        build(out, "--scenario", "shootdown")
+        image = (out / "probe.bin").read_bytes()
+
+        def qword(gpa: int) -> int:
+            return int.from_bytes(image[gpa - BUILDER.IMAGE_BASE : gpa - BUILDER.IMAGE_BASE + 8], "little")
+
+        def dword(gpa: int) -> int:
+            return int.from_bytes(image[gpa - BUILDER.IMAGE_BASE : gpa - BUILDER.IMAGE_BASE + 4], "little")
+
+        self.assertEqual(qword(0x4008), 0x6000 | 3)  # PD[1] -> PT_L, present, writable
+        self.assertEqual(qword(0x6008), 0xC000 | 3)  # PT_L[1] -> frame A at the start
+        self.assertEqual(dword(0xC100), 0xA1A1A1A1)
+        self.assertEqual(dword(0x7100), 0xB2B2B2B2)
+        # The gate of vector 0x32: handler 0x9F00, selector 0x10, type 0x8E.
+        gate = image[0x9800 + 0x32 * 16 - BUILDER.IMAGE_BASE : 0x9800 + 0x33 * 16 - BUILDER.IMAGE_BASE]
+        self.assertEqual(gate, struct_gate(0x9F00, 0x10))
+        # The handler: INVLPG [r8] = REX.B 0F 01 /7 with ModRM 00 111 000.
+        handler = image[0x9F00 - BUILDER.IMAGE_BASE : 0x9F00 - BUILDER.IMAGE_BASE + 0x40]
+        self.assertIn(bytes([0x41, 0x0F, 0x01, 0x38]), handler)
+        self.assertEqual(handler.count(bytes([0x48, 0xCF])), 1)  # one IRETQ
+        # Other scenarios carry none of it: no gate, no PD[1], no values.
+        plain = self.image("normal", "exchange")
+        self.assertEqual(plain[0x4008 - BUILDER.IMAGE_BASE : 0x4010 - BUILDER.IMAGE_BASE], bytes(8))
+        self.assertEqual(plain[0x6008 - BUILDER.IMAGE_BASE : 0x6010 - BUILDER.IMAGE_BASE], bytes(8))
+        self.assertNotIn(bytes([0x41, 0x0F, 0x01, 0x38]), plain)
+        # Expected cells: K rounds, odd K ends on frame B, even K on frame A.
+        for rounds, frame, value in [(16, 0xC000, 0xA1A1A1A1), (1, 0x7000, 0xB2B2B2B2), (3, 0x7000, 0xB2B2B2B2), (100, 0xC000, 0xA1A1A1A1)]:
+            memory = self.manifest("--scenario", "shootdown", "--rounds", str(rounds))["expected"]["n2"]["memory"]
+            self.assertEqual(memory["sd_ack"]["value"], f"0x{rounds:x}")
+            self.assertEqual(memory["sd_post"]["value"], f"0x{rounds:x}")
+            self.assertEqual(memory["sd_seen_handler"]["value"], f"0x{value:x}")
+            self.assertEqual(memory["sd_seen_main"]["value"], f"0x{value:x}")
+            self.assertEqual(memory["pte_x_frame"]["value"], f"0x{frame:x}")
+            self.assertEqual(memory["ap_rx"]["value"], "0x0")
+        self.assertEqual(self.manifest("--scenario", "shootdown")["rounds"], 16)
+        single = self.manifest("--scenario", "shootdown")["expected"]["n1"]["memory"]
+        self.assertEqual(single["sd_ack"]["value"], "0x0")
+        self.assertEqual(single["pte_x_frame"]["value"], "0xc000")
+
     def test_trampoline_uses_the_forms_of_s6_14a_and_the_variant_breaks_it(self) -> None:
         manifest = {}
         for variant in ("normal", "no_long_mode"):
@@ -288,7 +346,7 @@ class Stage6SmpProbeBuilderTest(unittest.TestCase):
         build(out)
         code = json.loads((out / "build_manifest.json").read_text())["code"]
         allowed = {"mov", "add", "inc", "dec", "cmp", "test", "shr", "shl", "out", "sti", "cli", "hlt", "lidt", "jmp", "jz", "jnz", "jne", "je", "jb", "ja"}
-        for scenario in ("normal", "exchange", "resipi", "bad-ipi", "nmi"):
+        for scenario in ("normal", "exchange", "resipi", "bad-ipi", "nmi", "shootdown"):
             out_s = self.base / f"forms-{scenario}"
             build(out_s, "--scenario", scenario)
             scode = json.loads((out_s / "build_manifest.json").read_text())["code"]

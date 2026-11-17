@@ -42,6 +42,22 @@ Protocol (docs/plans/STAGE_6.md, S6-16, items 1-3; SMP_CONTRACT.md 5; Intel SDM 
     `SMP PROBE FAIL ACCEPTED`).
   - `nmi`: the BSP sends an NMI (ICR delivery mode 100b) to APIC ID 1 and waits for the AP handler
     of vector 2 to increment its cell; `SMP PROBE NMI OK <nonce>` (SDM Vol. 3A 6.7.1).
+  - `shootdown` (S6-17, TLB shootdown by the guest): both processors share the page tables. The
+    linear page X = 0x201000 is a 4 KiB page of the shared PT (`PD[1] -> PT_L`, `PT_L[1]`) that maps
+    frame A (0xC000, the data page) or frame B (0x7000, the info page); the cell at offset 0x100 of
+    A holds VA, the one of B holds VB (both in the image). The AP reads X before it raises the flag
+    ("AP up"), so its first translation of X is that of frame A. Then K rounds. Round r: the BSP
+    stores the PTE of X (frame B for odd r, A for even r), sends Fixed vector 0x32 to APIC ID 1 and
+    waits until the AP's post counter is r. The AP handler of vector 0x32 executes `INVLPG [X]`
+    (SDM Vol. 3A 4.10.4.1, from memory, not checked: invalidates the translations of that page), reads X into a cell, counts
+    the acknowledgement and writes EOI. After the handler the main loop of the AP (`CLI`, compare
+    the acknowledgement count with its post count, `STI; HLT` when equal: no lost wake-up) reads X
+    again, stores the value and counts it as post r. The BSP checks, after post r, that both values
+    the AP read after the `INVLPG` equal the value of the new frame: `SMP PROBE SHOOTDOWN OK K=<K> <nonce>`.
+    From memory of the SDM (not checked) a processor may use the old translation until its own invalidation and must not
+    after it; the protocol asserts only the second, so it holds on hardware and on a machine without
+    a TLB alike (on the latter the new value is also visible before the `INVLPG`, which the probe
+    does not assert).
 * Interrupt tables: the IDT (GPA 0x9800, vectors 0..0x3F, 64-bit interrupt gates with selector
   0x10, DPL 0) is in the image for every scenario. The AP loads its IDTR in real mode in the
   trampoline (`LIDT` with a 32-bit base, forms of S6-14a). The BSP loads its IDTR in long mode with
@@ -89,12 +105,17 @@ IDT_LIMIT = 0x3FF
 HANDLER_AP_AT = 0x9C00  # vector 0x30 on the AP
 HANDLER_BSP_AT = 0x9D00  # vector 0x31 on the BSP
 HANDLER_NMI_AT = 0x9E00  # vector 2 on the AP
+HANDLER_SD_AT = 0x9F00  # vector 0x32 on the AP (shootdown)
 DATA = 0xC000
 FLAG = DATA + 0x08  # "AP up"
 COUNT = DATA + 0x10  # start counter
 AP_RX = DATA + 0x18  # incremented by the AP handler of vector 0x30
 BSP_RX = DATA + 0x20  # incremented by the BSP handler of vector 0x31
 NMI_CELL = DATA + 0x28  # incremented by the AP handler of vector 2
+SD_ACK = DATA + 0x30  # incremented by the AP handler of vector 0x32 (shootdown acknowledgements)
+SD_POST = DATA + 0x38  # incremented by the AP main loop after it read X once more
+SD_SEEN_H = DATA + 0xC0  # X as the AP handler read it right after INVLPG
+SD_SEEN_P = DATA + 0xC8  # X as the AP main loop read it (also the first read, before the flag)
 MARKER_BSP = DATA + 0x40
 MARKER_AP = DATA + 0x80
 BSP_STACK_TOP = 0xE000
@@ -116,9 +137,11 @@ WAIT_UP = 0x10_0000  # T: iterations waiting for the flag "AP up"
 WAIT_RX = 0x10_0000  # R: iterations waiting for the reply of one round (and for the NMI cell)
 VECTOR_AP = 0x30
 VECTOR_BSP = 0x31
+VECTOR_SD = 0x32
 NMI_VECTOR = 2
 ICR_FIXED_AP = VECTOR_AP  # delivery Fixed, physical, level 0, edge
 ICR_FIXED_BSP = VECTOR_BSP
+ICR_FIXED_SD = VECTOR_SD
 ICR_NMI = 4 << 8
 ROUNDS_DEFAULT = 16
 ROUNDS_MAX = 100
@@ -128,7 +151,18 @@ ICR_INIT_DEASSERT = (5 << 8) | (1 << 15)  # delivery INIT, level 0, level trigge
 ICR_SIPI = (6 << 8) | SIPI_VECTOR
 
 VARIANTS = ("normal", "no_long_mode", "no_flag")
-SCENARIOS = ("normal", "exchange", "resipi", "bad-ipi", "nmi")
+SCENARIOS = ("normal", "exchange", "resipi", "bad-ipi", "nmi", "shootdown")
+
+# Shootdown scenario (S6-17): the page X and the two frames it is switched between.
+X_PAGE = 0x20_1000  # linear page: PD index 1, PT index 1
+X_ADDR = X_PAGE + 0x100  # the cell read through X
+FRAME_A = DATA  # 0xC000: the data page, cell at 0xC100
+FRAME_B = INFO  # 0x7000: the info page (the loader writes only its first 64 bytes), cell at 0x7100
+PTE_X = PT_L + 8  # PT_L[1]: low dword written by the BSP; the AP's walk sets the accessed bit
+VALUE_A = 0xA1A1_A1A1
+VALUE_B = 0xB2B2_B2B2
+PTE_A = FRAME_A | 3  # present, writable
+PTE_B = FRAME_B | 3
 
 # Segment descriptors (Intel SDM Vol. 3A 3.4.5): null, flat 32-bit code, 64-bit code (L=1), flat
 # data with the accessed bit clear (the load into SS sets it through the tracked path).
@@ -139,7 +173,9 @@ def messages(scenario: str = "normal", rounds: int = ROUNDS_DEFAULT) -> dict[str
     ok = "SMP PROBE OK " if scenario in ("normal", "nmi") else f"SMP PROBE OK K={rounds} "
     if scenario == "nmi":
         ok = "SMP PROBE NMI OK "
-    return {
+    if scenario == "shootdown":
+        ok = f"SMP PROBE SHOOTDOWN OK K={rounds} "
+    texts = {
         "bsp": "BSP",
         "ap": "AP",
         "up": " UP ",
@@ -155,6 +191,10 @@ def messages(scenario: str = "normal", rounds: int = ROUNDS_DEFAULT) -> dict[str
         "accepted": "SMP PROBE FAIL ACCEPTED ",
         "bad_ipi": "SMP PROBE BAD-IPI ",
     }
+    if scenario == "shootdown":
+        # Appended only here: the images of the other scenarios stay byte for byte as they were.
+        texts["shootdown"] = "SMP PROBE FAIL SHOOTDOWN "
+    return texts
 
 
 class BuildError(Exception):
@@ -361,6 +401,62 @@ def scenario_exchange(a: Asm, where: dict[str, int], rounds: int, resipi: bool) 
     print_result(a, where, "res")
 
 
+def load_abs(a: Asm, address: int) -> None:
+    """`mov eax, [address]`, the absolute (SIB, no base) form."""
+    a.op(f"mov eax, [0x{address:x}]", bytes([0x8B, 0x04, 0x25]) + le32(address))
+
+
+def store_abs(a: Asm, address: int) -> None:
+    a.op(f"mov [0x{address:x}], eax", bytes([0x89, 0x04, 0x25]) + le32(address))
+
+
+def scenario_shootdown(a: Asm, where: dict[str, int], rounds: int) -> None:
+    if not 1 <= rounds <= ROUNDS_MAX:
+        raise BuildError(f"--rounds must be 1..={ROUNDS_MAX}")
+    # The AP read X through frame A before it raised the flag.
+    load_abs(a, SD_SEEN_P)
+    a.op(f"cmp eax, 0x{VALUE_A:x}", bytes([0x3D]) + le32(VALUE_A))
+    a.jump32("jne shootdown", bytes([0x0F, 0x85]), "shootdown")
+    mov_r32(a, "esi", PTE_A)  # the PTE of X now
+    mov_r32(a, "ebp", 0)  # round counter
+    a.label("sd_round")
+    a.op("inc ebp", bytes([0xFF, 0xC5]))
+    a.op(f"cmp esi, 0x{PTE_A:x}", bytes([0x81, 0xFE]) + le32(PTE_A))
+    a.jump("jne to_a", 0x75, "sd_to_a")
+    mov_r32(a, "esi", PTE_B)
+    mov_r32(a, "edi", VALUE_B)  # the value the AP must read after this round
+    a.jump("jmp set", 0xEB, "sd_set")
+    a.label("sd_to_a")
+    mov_r32(a, "esi", PTE_A)
+    mov_r32(a, "edi", VALUE_A)
+    a.label("sd_set")
+    # The BSP changes the shared table: X is now another frame.
+    a.op("mov eax, esi", bytes([0x89, 0xF0]))
+    store_abs(a, PTE_X)
+    send_fixed(a, 1, ICR_FIXED_SD)
+    mov_r32(a, "ecx", WAIT_RX)
+    a.label("sd_wait")
+    load_abs(a, SD_POST)
+    a.op("cmp eax, ebp", bytes([0x39, 0xE8]))
+    a.jump("je got", 0x74, "sd_got")
+    a.op("dec ecx", bytes([0xFF, 0xC9]))
+    a.jump("jnz wait", 0x75, "sd_wait")
+    a.jump32("jmp shootdown", bytes([0xE9]), "shootdown")
+    a.label("sd_got")
+    # After the acknowledgement of this round: the handler counted it once per round, and the value
+    # the AP read right after INVLPG and the one its main loop read afterwards are the new frame's.
+    for cell, text in ((SD_ACK, None), (SD_SEEN_H, "edi"), (SD_SEEN_P, "edi")):
+        load_abs(a, cell)
+        if text is None:
+            a.op("cmp eax, ebp", bytes([0x39, 0xE8]))
+        else:
+            a.op("cmp eax, edi", bytes([0x39, 0xF8]))
+        a.jump32("jne shootdown", bytes([0x0F, 0x85]), "shootdown")
+    a.op(f"cmp ebp, {rounds}", bytes([0x83, 0xFD, rounds]))
+    a.jump32("jb round", bytes([0x0F, 0x82]), "sd_round")
+    print_result(a, where, "res")
+
+
 def scenario_bad_ipi(a: Asm, where: dict[str, int]) -> None:
     print_string(a, where["bad_ipi"], "m_bad")
     print_string(a, INFO + 16, "m_bad_nonce")
@@ -483,6 +579,7 @@ def bsp_code(where: dict[str, int], scenario: str = "normal", rounds: int = ROUN
         "resipi": lambda: scenario_exchange(a, where, rounds, resipi=True),
         "bad-ipi": lambda: scenario_bad_ipi(a, where),
         "nmi": lambda: scenario_nmi(a, where),
+        "shootdown": lambda: scenario_shootdown(a, where, rounds),
     }[scenario]()
     fail(a, "early", "early", where)
     fail(a, "timeout", "timeout", where)
@@ -490,10 +587,12 @@ def bsp_code(where: dict[str, int], scenario: str = "normal", rounds: int = ROUN
     fail(a, "marker", "marker", where)
     fail(a, "exchange", "exchange", where)
     fail(a, "accepted", "accepted", where)
+    if scenario == "shootdown":
+        fail(a, "shootdown", "shootdown", where)
     return a.assemble()
 
 
-def ap_code(where: dict[str, int], variant: str) -> tuple[bytes, list[dict], dict[str, int]]:
+def ap_code(where: dict[str, int], variant: str, scenario: str = "normal") -> tuple[bytes, list[dict], dict[str, int]]:
     a = Asm(AP_CODE)
     mov_r32(a, "ebx", LAPIC)
     mov_r32(a, "edx", UART)
@@ -510,10 +609,42 @@ def ap_code(where: dict[str, int], variant: str) -> tuple[bytes, list[dict], dic
     print_string(a, where["up"], "p_up")
     print_string(a, INFO + 16, "p_nonce")
     print_string(a, where["nl"], "p_nl")
+    if scenario == "shootdown":
+        # The first translation of X: read it before the flag, so the BSP sees the value only after
+        # the AP has used the mapping.
+        mov_r32(a, "esi", X_ADDR)
+        a.op("mov eax, [rsi]", bytes([0x8B, 0x06]))
+        mov_r32(a, "edi", SD_SEEN_P)
+        a.op("mov [rdi], eax", bytes([0x89, 0x07]))
     if variant != "no_flag":
         mov_r32(a, "edi", FLAG)
         mov_r32(a, "eax", 1)
         a.op("mov [rdi], eax", bytes([0x89, 0x07]))
+    if scenario == "shootdown":
+        # Main loop: with IF = 0 compare the acknowledgements of the handler with the posts of this
+        # loop; equal means nothing new and `STI; HLT` (the interrupt is taken only after HLT has
+        # started, so a vector that arrives between the compare and the HLT is not lost). A new
+        # acknowledgement means the handler has run INVLPG: read X again, store it, count the post.
+        a.label("sd_loop")
+        a.op("cli", bytes([0xFA]))
+        mov_r32(a, "edi", SD_ACK)
+        a.op("mov eax, [rdi]", bytes([0x8B, 0x07]))
+        mov_r32(a, "edi", SD_POST)
+        a.op("mov ecx, [rdi]", bytes([0x8B, 0x0F]))
+        a.op("cmp eax, ecx", bytes([0x39, 0xC8]))
+        a.jump("jne work", 0x75, "sd_work")
+        a.op("sti", bytes([0xFB]))
+        a.op("hlt", bytes([0xF4]))
+        a.jump("jmp loop", 0xEB, "sd_loop")
+        a.label("sd_work")
+        a.op("mov eax, [rsi]", bytes([0x8B, 0x06]))
+        mov_r32(a, "edi", SD_SEEN_P)
+        a.op("mov [rdi], eax", bytes([0x89, 0x07]))
+        a.op("inc ecx", bytes([0xFF, 0xC1]))
+        mov_r32(a, "edi", SD_POST)
+        a.op("mov [rdi], ecx", bytes([0x89, 0x0F]))
+        a.jump("jmp loop", 0xEB, "sd_loop")
+        return a.assemble()
     a.op("sti", bytes([0xFB]))
     a.label("hlt")
     a.op("hlt", bytes([0xF4]))
@@ -549,7 +680,21 @@ def send_from_r8(vector: int, destination: int) -> bytes:
 IRETQ = bytes([0x48, 0xCF])
 
 
-def handlers_blob() -> dict[int, tuple[bytes, str]]:
+def shootdown_handler() -> bytes:
+    """Vector 0x32 on the AP: INVLPG [X], read X into SEEN_H, count the acknowledgement, EOI.
+    Only R8..R10 are used (the programs do not use them)."""
+    return (
+        bytes([0x41, 0xB8]) + le32(X_ADDR)  # mov r8d, X
+        + bytes([0x41, 0x0F, 0x01, 0x38])  # invlpg [r8]
+        + bytes([0x45, 0x8B, 0x08])  # mov r9d, [r8]
+        + bytes([0x41, 0xB8]) + le32(SD_SEEN_H)  # mov r8d, SEEN_H
+        + bytes([0x45, 0x89, 0x08])  # mov [r8], r9d
+        + count_and_eoi(SD_ACK)
+        + IRETQ
+    )
+
+
+def handlers_blob(scenario: str = "normal") -> dict[int, tuple[bytes, str]]:
     ap = count_and_eoi(AP_RX) + send_from_r8(ICR_FIXED_BSP, 0) + IRETQ
     bsp = count_and_eoi(BSP_RX) + IRETQ
     nmi = (
@@ -557,18 +702,27 @@ def handlers_blob() -> dict[int, tuple[bytes, str]]:
         + bytes([0x45, 0x8B, 0x08, 0x41, 0xFF, 0xC1, 0x45, 0x89, 0x08])
         + IRETQ
     )
-    return {
+    blobs = {
         HANDLER_AP_AT: (ap, "vector 0x30 on the AP: count, EOI, Fixed 0x31 to APIC ID 0, IRETQ"),
         HANDLER_BSP_AT: (bsp, "vector 0x31 on the BSP: count, EOI, IRETQ"),
         HANDLER_NMI_AT: (nmi, "vector 2 on the AP: count, IRETQ (no EOI for an NMI)"),
     }
+    if scenario == "shootdown":
+        blobs[HANDLER_SD_AT] = (
+            shootdown_handler(),
+            "vector 0x32 on the AP: INVLPG [X], read X, count the acknowledgement, EOI, IRETQ",
+        )
+    return blobs
 
 
-def idt_bytes() -> bytes:
+def idt_bytes(scenario: str = "normal") -> bytes:
     """64-bit interrupt gates (SDM Vol. 3A 6.14.1): offset 15:0, selector 0x10, IST 0, type 0x8E
     (present, DPL 0, interrupt gate), offset 31:16, offset 63:32, reserved."""
     table = bytearray(IDT_LIMIT + 1)
-    for vector, handler in ((NMI_VECTOR, HANDLER_NMI_AT), (VECTOR_AP, HANDLER_AP_AT), (VECTOR_BSP, HANDLER_BSP_AT)):
+    gates = [(NMI_VECTOR, HANDLER_NMI_AT), (VECTOR_AP, HANDLER_AP_AT), (VECTOR_BSP, HANDLER_BSP_AT)]
+    if scenario == "shootdown":
+        gates.append((VECTOR_SD, HANDLER_SD_AT))
+    for vector, handler in gates:
         table[vector * 16 : vector * 16 + 16] = struct.pack("<HHBBHII", handler & 0xFFFF, 0x10, 0, 0x8E, handler >> 16, 0, 0)
     return bytes(table)
 
@@ -635,8 +789,8 @@ def build_image(variant: str, scenario: str = "normal", rounds: int = ROUNDS_DEF
         raise BuildError(f"--scenario must be one of {SCENARIOS}")
     blob, where = strings_blob(scenario, rounds)
     bsp, bsp_listing, bsp_labels = bsp_code(where, scenario, rounds)
-    ap, ap_listing, ap_labels = ap_code(where, variant)
-    handlers = handlers_blob()
+    ap, ap_listing, ap_labels = ap_code(where, variant, scenario)
+    handlers = handlers_blob(scenario)
     memory: dict[int, bytes] = {
         PML4: struct.pack("<Q", PDPT | 3),
         PDPT: struct.pack("<Q", PD | 3) + bytes(16) + struct.pack("<Q", PD_L | 3),
@@ -649,10 +803,18 @@ def build_image(variant: str, scenario: str = "normal", rounds: int = ROUNDS_DEF
         CELLS_AT: le32(0x901) + le32(0) + struct.pack("<Q", AP_CODE),  # EFER: SCE | LME | NXE
         GDT_AT: GDT,
         STR_AT: blob,
-        IDT_AT: idt_bytes(),
+        IDT_AT: idt_bytes(scenario),
         BSP_CODE: bsp,
         AP_CODE: ap,
     }
+    if scenario == "shootdown":
+        # X = 0x201000 is a 4 KiB page of the shared tables: PD[1] -> PT_L (the page that holds the
+        # Local APIC page entry too), PT_L[1] -> frame A. The two frames hold the values of the
+        # protocol at offset 0x100.
+        memory[PD + 8] = struct.pack("<Q", PT_L | 3)
+        memory[PT_L + 8] = struct.pack("<Q", PTE_A)
+        memory[FRAME_A + 0x100] = le32(VALUE_A)
+        memory[FRAME_B + 0x100] = le32(VALUE_B)
     for gpa, (data, _) in handlers.items():
         memory[gpa] = data
     tramp = trampoline(variant)
@@ -702,6 +864,7 @@ def expected_uart(variant: str, vcpus: int, scenario: str = "normal", rounds: in
         "resipi": f"SMP PROBE OK K={rounds} {{nonce}}\n",
         "bad-ipi": "SMP PROBE BAD-IPI {nonce}\n",
         "nmi": "SMP PROBE NMI OK {nonce}\n",
+        "shootdown": f"SMP PROBE SHOOTDOWN OK K={rounds} {{nonce}}\n",
     }[scenario]
 
 
@@ -727,6 +890,16 @@ def expected_memory(variant: str, vcpus: int, scenario: str = "normal", rounds: 
         "nmi_cell": {"gpa": f"0x{NMI_CELL:x}", "value": "0x1" if up and scenario == "nmi" else "0x0"},
         "marker_bsp": {"gpa": f"0x{MARKER_BSP:x}", "magic": f"0x{MARKER_MAGIC:x}", "apic_id_raw": "0x0", "nonce_at": f"0x{MARKER_BSP + 16:x}"},
     }
+    if scenario == "shootdown":
+        # Round r maps X to frame B for odd r and to frame A for even r; the AP's last read is that
+        # frame's value. The PTE is compared by its frame: the walk of the AP sets the accessed bit.
+        final = (FRAME_B, VALUE_B) if rounds % 2 == 1 else (FRAME_A, VALUE_A)
+        done = up and rounds >= 1
+        cells["sd_ack"] = {"gpa": f"0x{SD_ACK:x}", "value": f"0x{rounds if done else 0:x}"}
+        cells["sd_post"] = {"gpa": f"0x{SD_POST:x}", "value": f"0x{rounds if done else 0:x}"}
+        cells["sd_seen_handler"] = {"gpa": f"0x{SD_SEEN_H:x}", "value": f"0x{final[1] if done else 0:x}"}
+        cells["sd_seen_main"] = {"gpa": f"0x{SD_SEEN_P:x}", "value": f"0x{final[1] if done else (VALUE_A if up else 0):x}"}
+        cells["pte_x_frame"] = {"gpa": f"0x{PTE_X:x}", "value": f"0x{final[0] if done else FRAME_A:x}"}
     if vcpus > 1 and variant != "no_long_mode":
         cells["marker_ap"] = {
             "gpa": f"0x{MARKER_AP:x}",
@@ -766,7 +939,7 @@ def build(output: Path, variant: str, scenario: str = "normal", rounds: int = RO
         "profile": "Stage6SmpProbeV2",
         "variant": variant,
         "scenario": scenario,
-        "rounds": rounds if scenario in ("exchange", "resipi") else 0,
+        "rounds": rounds if scenario in ("exchange", "resipi", "shootdown") else 0,
         "method": "hand-encoded bytes; no assembler, compiler or linker",
         "layout": {
             "image_base": f"0x{IMAGE_BASE:x}",

@@ -23,7 +23,12 @@ use od_machine::{
     STAGE6_SMP_PROBE_VECTOR_AP, STAGE6_SMP_PROBE_VECTOR_BSP, Stage6SmpProbe, Stage6SmpProbeFinish,
     Stage6SmpProbeLoadError, Stage6SmpProbeQuantum, Stage6SmpProbeRunError, load_stage6_smp_probe,
 };
-use od_machine::{STAGE6_SMP_PROBE_IDTR_BSP_GPA, STAGE6_SMP_PROBE_MAX_FIXED_QUANTUM};
+use od_machine::{
+    STAGE6_SMP_PROBE_IDTR_BSP_GPA, STAGE6_SMP_PROBE_MAX_FIXED_QUANTUM, STAGE6_SMP_PROBE_SD_ACK_GPA,
+    STAGE6_SMP_PROBE_SD_POST_GPA, STAGE6_SMP_PROBE_SD_PTE_GPA,
+    STAGE6_SMP_PROBE_SD_SEEN_HANDLER_GPA, STAGE6_SMP_PROBE_SD_SEEN_MAIN_GPA,
+    STAGE6_SMP_PROBE_SD_X_LINEAR, STAGE6_SMP_PROBE_VECTOR_SHOOTDOWN,
+};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -545,7 +550,7 @@ fn the_exchange_takes_other_round_counts_from_the_build() {
 
 #[test]
 fn one_processor_prints_ap_absent_in_every_scenario() {
-    for scenario in ["exchange", "resipi", "bad-ipi", "nmi"] {
+    for scenario in ["exchange", "resipi", "bad-ipi", "nmi", "shootdown"] {
         let built = build_scenario("normal", scenario, None);
         let expected = built.expected(1).unwrap();
         assert_eq!(
@@ -817,4 +822,175 @@ fn the_recorded_maximum_and_5_million_fixed_give_ok_and_6_million_a_timeout_neve
     let uart = String::from_utf8(report.com1).unwrap();
     assert!(!uart.contains("SMP PROBE OK"), "{uart}");
     assert!(uart.contains("FAIL TIMEOUT"), "{uart}");
+}
+
+// ---- S6-17: shootdown by the guest on shared page tables ----------------------------------------
+
+/// Every cell of the manifest of the shootdown scenario (`n2`), read from the run: the counters of
+/// acknowledgements and posts, the last values of X the AP read, and the frame of the PTE of X.
+fn check_shootdown_cells(built: &Built, probe: &mut Stage6SmpProbe, context: &str) {
+    for (gpa, cell) in [
+        (STAGE6_SMP_PROBE_SD_ACK_GPA, "sd_ack"),
+        (STAGE6_SMP_PROBE_SD_POST_GPA, "sd_post"),
+        (STAGE6_SMP_PROBE_SD_SEEN_HANDLER_GPA, "sd_seen_handler"),
+        (STAGE6_SMP_PROBE_SD_SEEN_MAIN_GPA, "sd_seen_main"),
+    ] {
+        assert_eq!(
+            dword(probe, gpa),
+            built.expected_dword(2, cell),
+            "{cell} {context}"
+        );
+    }
+    // The accessed bit of the walks of the AP is in the low bits: the frame is compared.
+    assert_eq!(
+        dword(probe, STAGE6_SMP_PROBE_SD_PTE_GPA) & !0xFFF,
+        built.expected_dword(2, "pte_x_frame"),
+        "frame of the PTE of X {context}"
+    );
+    check_exchange_cells_started(built, probe, context);
+}
+
+/// The cells of the start of the AP (the shootdown scenario has no exchange counters).
+fn check_exchange_cells_started(built: &Built, probe: &mut Stage6SmpProbe, context: &str) {
+    for (gpa, cell) in [
+        (STAGE6_SMP_PROBE_LOCK_GPA, "lock_entered"),
+        (STAGE6_SMP_PROBE_FLAG_GPA, "flag_ap_up"),
+        (STAGE6_SMP_PROBE_COUNT_GPA, "start_count"),
+    ] {
+        assert_eq!(
+            dword(probe, gpa),
+            built.expected_dword(2, cell),
+            "{cell} {context}"
+        );
+    }
+    check_marker(
+        probe,
+        STAGE6_SMP_PROBE_MARKER_AP_GPA,
+        built.expected_apic_id_raw(2, "marker_ap"),
+    );
+}
+
+#[test]
+fn the_shootdown_of_k_rounds_gives_the_ap_the_new_frame_after_every_invlpg() {
+    let built = build_scenario("normal", "shootdown", None);
+    let expected = built.expected(2).unwrap();
+    assert_eq!(
+        expected,
+        "BSP0 UP s6-16e-nonce\nAP1 UP s6-16e-nonce\nSMP PROBE SHOOTDOWN OK K=16 s6-16e-nonce\n"
+    );
+    // K = 16 is even: the last round maps X back to frame A (the data page, 0xC000).
+    assert_eq!(built.expected_dword(2, "sd_ack"), ROUNDS);
+    assert_eq!(built.expected_dword(2, "sd_post"), ROUNDS);
+    assert_eq!(built.expected_dword(2, "sd_seen_main"), 0xA1A1_A1A1);
+    assert_eq!(built.expected_dword(2, "pte_x_frame"), 0xC000);
+    let (mut probe, uart) = n2_run(&built, Stage6SmpProbeQuantum::Fixed(1024));
+    assert_eq!(uart, expected);
+    check_shootdown_cells(&built, &mut probe, "Fixed(1024)");
+    assert_lapics_quiet(&probe, 2, "after the shootdown");
+    assert_eq!(STAGE6_SMP_PROBE_VECTOR_SHOOTDOWN, 0x32);
+    assert_eq!(STAGE6_SMP_PROBE_SD_X_LINEAR, 0x20_1100);
+}
+
+#[test]
+fn the_shootdown_gives_the_same_transcript_and_cells_under_every_quantum_and_seed() {
+    let built = build_scenario("normal", "shootdown", None);
+    let expected = built.expected(2).unwrap();
+    for quantum in quanta() {
+        let mut probe = load_stage6_smp_probe(&built.image, 2, NONCE).unwrap();
+        let report = probe.run(quantum.clone(), BUDGET).unwrap();
+        assert_eq!(
+            report.finished,
+            Stage6SmpProbeFinish::AllIdle,
+            "{quantum:?}"
+        );
+        assert_eq!(
+            String::from_utf8(report.com1.clone()).unwrap(),
+            expected,
+            "{quantum:?}"
+        );
+        // At most one wake of the AP per round; INIT once, SIPI once.
+        assert!(report.cpus[1].wakes <= u64::from(ROUNDS), "{quantum:?}");
+        assert_eq!(report.cpus[1].init_applied, 1);
+        assert_eq!(report.cpus[1].started, 1);
+        assert!(!report.cpus[1].legacy);
+        check_shootdown_cells(&built, &mut probe, &format!("{quantum:?}"));
+        assert_lapics_quiet(&probe, 2, &format!("{quantum:?}"));
+    }
+}
+
+#[test]
+fn the_shootdown_takes_other_round_counts_from_the_build_and_ends_on_the_matching_frame() {
+    // Odd K ends on frame B (the info page, 0x7000, value 0xB2B2B2B2), even K on frame A.
+    for (rounds, frame, value) in [
+        (1u32, 0x7000u32, 0xB2B2_B2B2u32),
+        (2, 0xC000, 0xA1A1_A1A1),
+        (3, 0x7000, 0xB2B2_B2B2),
+        (100, 0xC000, 0xA1A1_A1A1),
+    ] {
+        let built = build_scenario("normal", "shootdown", Some(rounds));
+        let expected = built.expected(2).unwrap();
+        assert!(
+            expected.contains(&format!("SHOOTDOWN OK K={rounds} ")),
+            "{expected}"
+        );
+        assert_eq!(built.expected_dword(2, "pte_x_frame"), frame);
+        assert_eq!(built.expected_dword(2, "sd_seen_main"), value);
+        let (mut probe, uart) = n2_run(&built, Stage6SmpProbeQuantum::Fixed(1024));
+        assert_eq!(uart, expected);
+        check_shootdown_cells(&built, &mut probe, &format!("K={rounds}"));
+    }
+}
+
+/// Replace the one occurrence of `pattern` in the image with `NOP`s (`0x90`).
+fn nop_out(image: &mut [u8], pattern: &[u8]) {
+    let hits: Vec<usize> = image
+        .windows(pattern.len())
+        .enumerate()
+        .filter(|(_, window)| *window == pattern)
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(hits.len(), 1, "exactly one {pattern:02x?} in the image");
+    image[hits[0]..hits[0] + pattern.len()].fill(0x90);
+}
+
+#[test]
+fn a_bsp_that_does_not_change_the_pte_is_caught_because_the_ap_reads_through_the_shared_table() {
+    let built = build_scenario("normal", "shootdown", None);
+    // `mov [0x6008], eax` (the PTE of X in the shared PT) removed from the BSP's round.
+    let mut image = built.image.clone();
+    nop_out(&mut image, &[0x89, 0x04, 0x25, 0x08, 0x60, 0x00, 0x00]);
+    let mut probe = load_stage6_smp_probe(&image, 2, NONCE).unwrap();
+    let report = probe
+        .run(Stage6SmpProbeQuantum::Fixed(1024), BUDGET)
+        .unwrap();
+    let uart = String::from_utf8(report.com1).unwrap();
+    assert!(!uart.contains("SHOOTDOWN OK"), "{uart}");
+    assert!(
+        uart.ends_with("SMP PROBE FAIL SHOOTDOWN s6-16e-nonce\n"),
+        "{uart}"
+    );
+}
+
+#[test]
+fn without_the_invlpg_the_machine_without_a_tlb_still_gives_the_new_frame_so_the_probe_is_not_sensitive_to_it()
+ {
+    // S6-17 step 5: no translation cache of the vCPU outlives a quantum (the quantum of the board
+    // has no fetch cache and the data walk is uncached), so the property "after its INVLPG the AP
+    // does not use the old translation" holds trivially. This test records exactly that: the
+    // `INVLPG [r8]` (`41 0F 01 38`) of the handler is replaced with NOPs and the run is still OK.
+    // It is not a proof that the INVLPG works; when a TLB appears, this test must start failing and
+    // be replaced by the sensitivity check of the plan.
+    let built = build_scenario("normal", "shootdown", None);
+    let expected = built.expected(2).unwrap();
+    let mut image = built.image.clone();
+    nop_out(&mut image, &[0x41, 0x0F, 0x01, 0x38]);
+    for quantum in quanta_small() {
+        let mut probe = load_stage6_smp_probe(&image, 2, NONCE).unwrap();
+        let report = probe.run(quantum.clone(), BUDGET).unwrap();
+        assert_eq!(
+            String::from_utf8(report.com1).unwrap(),
+            expected,
+            "{quantum:?}"
+        );
+    }
 }

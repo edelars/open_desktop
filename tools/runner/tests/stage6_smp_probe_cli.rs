@@ -111,6 +111,20 @@ fn check_cells(built: &Built, x: &Value) {
         .unwrap();
         assert_eq!(x["cells"][cell].as_u64().unwrap(), want, "{cell}");
     }
+    // The cells of the shootdown scenario (S6-17) are in the manifest of that scenario only.
+    if built.manifest["scenario"] == "shootdown" {
+        for cell in ["sd_ack", "sd_post", "sd_seen_handler", "sd_seen_main"] {
+            let want = u64::from_str_radix(
+                memory[cell]["value"]
+                    .as_str()
+                    .unwrap()
+                    .trim_start_matches("0x"),
+                16,
+            )
+            .unwrap();
+            assert_eq!(x["cells"][cell].as_u64().unwrap(), want, "{cell}");
+        }
+    }
 }
 
 #[test]
@@ -240,6 +254,30 @@ fn every_seed_gives_the_same_transcript_and_cells_and_the_same_seed_the_same_byt
 }
 
 #[test]
+fn the_shootdown_scenario_ends_ok_under_every_seed_and_leaves_the_cells_of_the_manifest() {
+    let built = build("shootdown", &["--scenario", "shootdown"]);
+    let expected = built.expected(2);
+    assert!(
+        expected.contains("SMP PROBE SHOOTDOWN OK K=16 "),
+        "{expected}"
+    );
+    for seed in CI_SEEDS {
+        let out = run(&built.image, &["--seed", &seed.to_string()]);
+        assert!(out.status.success(), "seed {seed}: {}", json(&out));
+        let x = json(&out);
+        assert_eq!(x["scenario"], "shootdown");
+        assert_eq!(x["com1_text"].as_str().unwrap(), expected, "seed {seed}");
+        assert_eq!(
+            x["lapic_vectors"],
+            serde_json::json!([[], []]),
+            "seed {seed}"
+        );
+        assert_eq!(numbers(&x["started"]), [0, 1], "seed {seed}");
+        check_cells(&built, &x);
+    }
+}
+
+#[test]
 fn the_negative_scenarios_end_as_the_manifest_says() {
     // One processor: AP ABSENT in every scenario, exit 0.
     let exchange = build("one", &["--scenario", "exchange"]);
@@ -342,7 +380,7 @@ fn the_cli_refuses_bad_arguments_with_exit_3_and_a_loader_error_with_exit_4() {
 ///
 /// ```text
 /// OD_S6_SMP_SEEDS=0..=9999 OD_S6_SMP_SEEDS_OUT=docs/reports/data/stage6/<file>.json \
-///   cargo test --release -p od-runner --offline --test stage6_smp_probe_cli -- --ignored seed_proof
+///   [OD_S6_SMP_SCENARIO=shootdown] cargo test --release -p od-runner --offline --test stage6_smp_probe_cli -- --ignored seed_proof
 /// ```
 ///
 /// It checks, for every seed, the same things as the CI range and writes one summary (range,
@@ -354,7 +392,9 @@ fn seed_proof() {
     let range = std::env::var("OD_S6_SMP_SEEDS").unwrap_or_else(|_| "0..=9999".to_string());
     let (first, last) = range.split_once("..=").expect("OD_S6_SMP_SEEDS=A..=B");
     let (first, last): (u64, u64) = (first.parse().unwrap(), last.parse().unwrap());
-    let built = build("proof", &["--scenario", "exchange"]);
+    // `OD_S6_SMP_SCENARIO=shootdown` proves the S6-17 scenario over the same range.
+    let scenario = std::env::var("OD_S6_SMP_SCENARIO").unwrap_or_else(|_| "exchange".to_string());
+    let built = build("proof", &["--scenario", &scenario]);
     let expected = built.expected(2);
     let started = std::time::Instant::now();
     let (mut turns, mut retired) = (BTreeSet::new(), BTreeSet::new());
@@ -379,7 +419,7 @@ fn seed_proof() {
     let elapsed = started.elapsed().as_secs_f64();
     let summary = serde_json::json!({
         "schema": "stage6-smp-probe-seed-proof-v1",
-        "scenario": "exchange",
+        "scenario": scenario,
         "vcpus": 2,
         "seeds": {"first": first, "last": last, "count": last - first + 1},
         "nonce": NONCE,

@@ -205,6 +205,7 @@ The same guest with the IPI exchange and the negative cases; the image is chosen
 | `resipi` | a second SIPI to the running AP, then as `exchange` | the same; `started` stays 1, start counter 1 (the AP is not restarted) |
 | `bad-ipi` | prints `SMP PROBE BAD-IPI <nonce>`, writes ICR to APIC ID `vcpu_count` | the run ends with a device error of the LAPIC (a `VcpuQuantum` board error whose MMIO write to `0xFEE00000` failed with `UnsupportedConfiguration`); the marker is the last line; IRR and ISR of every LAPIC empty |
 | `nmi` | NMI (ICR delivery mode 100b) to APIC ID 1, waits for the cell of the vector-2 handler | `SMP PROBE NMI OK <nonce>`; the board walks the NMI delivery on the CR3 of the AP, so the same holds when the AP's CR3 is not the board's `page_table_root` (a test patches the trampoline to a copy of the PML4; fixed in S6-16f after review) |
+| `shootdown` (S6-17, probe v3 below) | K rounds: PTE of a shared page remapped, Fixed `0x32` to the AP, the AP runs `INVLPG` and reads the page again | `SMP PROBE SHOOTDOWN OK K=16 <nonce>`, every value the AP read after its `INVLPG` is the new frame's |
 | any, N=1 | `SMP PROBE AP ABSENT <nonce>` | no success line |
 
 ```
@@ -224,6 +225,31 @@ od-runner --stage6-smp-probe work/stage6/smp_probe/probe.bin --nonce TOKEN --vcp
 - Proof: seeds `0..=9999` in a release build, `docs/reports/data/stage6/s6-16f-smp-probe-seeds-0-9999.json`: 10 000 runs, 140.7 seconds (14.07 ms per run, the 0..=255 smoke run took 3.6 seconds), one distinct transcript, 21 distinct turn counts (39..59), 816 distinct pairs of retired counts, image SHA-256 `8b45797e...43f0` (nonce `cli-nonce-16f`). The range was not reduced: its time is calibrated by that run, 2.35 minutes. Command: `OD_S6_SMP_SEEDS=0..=9999 OD_S6_SMP_SEEDS_OUT=docs/reports/data/stage6/<file>.json cargo test --release -p od-runner --offline --test stage6_smp_probe_cli -- --ignored seed_proof --nocapture`. This is a reproducibility budget (as in section 5), not a statistical claim.
 
 **Not covered by an oracle.** The expected transcripts and cells come from the protocol and the SDM by hand; there is no independent model of the interleaving of this guest (the S6-05 enumerator covers the litmus corpus only). The second SIPI is proved by `started = 1`, start counter = 1 and an unchanged transcript; the model does not count an ignored SIPI, so "ignored" is not observed directly. The NMI on another CR3 and the ICR device error are recorded as the board behaves, not as a hardware-confirmed rule.
+
+### probe v3 (S6-17, scenario `shootdown`)
+
+The same guest with a guest-run TLB shootdown on shared page tables (`--scenario shootdown`, K by `--rounds`, 16 by default). Contract: [MACHINE_CONTRACT.md](../specs/MACHINE_CONTRACT.md#s6-17--согласование-адресных-пространств-и-shootdown); property and rules for future caches: [MEMORY_MODEL.md](../specs/MEMORY_MODEL.md).
+
+| Step | Who | What |
+|---|---|---|
+| setup | image | `PD[1] -> PT_L`, `PT_L[1]` maps X = `0x201000` to frame A (`0xC000`, value `0xA1A1A1A1` at `+0x100`); frame B is `0x7000` (value `0xB2B2B2B2`) |
+| prime | AP | reads X before the flag "AP up" (first translation, frame A) |
+| round r | BSP | stores the PTE of X (frame B for odd r, A for even r), sends Fixed `0x32` to APIC ID 1, waits for the post counter = r |
+| shootdown | AP handler | `INVLPG [X]`, reads X (cell `0xC0C0`), counts the acknowledgement (`0xC030`), EOI, `IRETQ` |
+| post | AP main loop | `CLI`, compare acknowledgements with posts, `STI; HLT` when equal (no lost wake-up), otherwise reads X (`0xC0C8`) and counts the post (`0xC038`) |
+| check | BSP | acknowledgements = r, both values the AP read after its `INVLPG` equal the new frame's value; `SMP PROBE SHOOTDOWN OK K=<K> <nonce>` |
+
+From memory of the SDM (not checked against the source) a processor may use the old translation until its own invalidation and must not after it; the probe asserts only the second. **Sensitivity: not checked.** No translation cache of a vCPU outlives a quantum on the board (the quantum has no fetch cache, data walks are uncached, `INVLPG m` is a no-op in the model without a TLB), so the property holds trivially, and a test with the `INVLPG` cut out of the image gives the same result (`without_the_invlpg_...`): it records this and must start failing when a translation cache that outlives HLT or a quantum exists. What the scenario does prove: the AP really reads through the shared page table (a test with the BSP's PTE store cut out gives `FAIL SHOOTDOWN`), the IPI reaches the AP in every schedule, the handler with `INVLPG [r8]` runs in the AP quantum, and the order "PTE written, IPI, INVLPG, read" gives the new frame for every round and quantum. **Limitation:** when the BSP's wait for the post counter runs out (at most `WAIT_RX` iterations) the probe prints `FAIL SHOOTDOWN`, not `FAIL TIMEOUT`, so a timeout and a mismatch of the values are indistinguishable from the UART in this scenario.
+
+```
+python3 tools/build/build_stage6_smp_probe.py --output-dir work/stage6/smp_probe_sd --scenario shootdown --rounds 16
+cargo test -p od-machine --offline --test stage6_smp_probe
+cargo test -p od-runner --offline --test stage6_smp_probe_cli
+OD_S6_SMP_SEEDS=0..=9999 OD_S6_SMP_SCENARIO=shootdown OD_S6_SMP_SEEDS_OUT=docs/reports/data/stage6/s6-17-smp-probe-shootdown-seeds-0-9999.json \
+  cargo test --release -p od-runner --offline --test stage6_smp_probe_cli -- --ignored seed_proof
+```
+
+**Seed ranges (scenario `shootdown`, N=2).** CI: seeds `0..=63` through the CLI (`the_shootdown_scenario_ends_ok_under_every_seed_and_leaves_the_cells_of_the_manifest`) and quanta 1, 2, 7, 100, 100000 and seeds 0..16 through the library. Proof: seeds `0..=9999` in a release build, `docs/reports/data/stage6/s6-17-smp-probe-shootdown-seeds-0-9999.json`: 10 000 runs, 152.6 seconds (15.3 ms per run), one distinct transcript, 31 distinct turn counts (40..70), 459 distinct pairs of retired counts, image SHA-256 `22e60a47...b0513`. As in v2, the expected transcript and cells come from the protocol and the SDM by hand; there is no independent oracle of the interleaving.
 
 ### S6-19 — litmus в режиме чередования
 

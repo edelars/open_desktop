@@ -1,5 +1,6 @@
 //! S6-16e/f: loader and runner of the `Stage6SmpProbeV2` guest (INIT/SIPI start of an application
-//! processor by guest code, Fixed IPI exchange and the negative cases of S6-16f).
+//! processor by guest code, Fixed IPI exchange and the negative cases of S6-16f; S6-17: the
+//! `shootdown` scenario, a guest TLB shootdown between two processors on shared page tables).
 //!
 //! The image is built by `tools/build/build_stage6_smp_probe.py` (hand-encoded bytes, GPA
 //! `0x2000..0xD000`). It holds the page tables (identity map of the first 2 MiB and the Local APIC
@@ -61,6 +62,17 @@ pub const STAGE6_SMP_PROBE_MARKER_AP_GPA: u64 = 0xC080;
 pub const STAGE6_SMP_PROBE_AP_RX_GPA: u64 = 0xC018;
 pub const STAGE6_SMP_PROBE_BSP_RX_GPA: u64 = 0xC020;
 pub const STAGE6_SMP_PROBE_NMI_GPA: u64 = 0xC028;
+/// S6-17 scenario `shootdown`: the AP handler of [`STAGE6_SMP_PROBE_VECTOR_SHOOTDOWN`] counts its
+/// acknowledgements, the AP main loop counts its posts (one read of X after the handler); the
+/// values of X the handler and the main loop read last; the low dword of the PTE of X (the BSP
+/// writes it, the walks of the AP set its accessed bit) and the linear address the AP reads.
+pub const STAGE6_SMP_PROBE_SD_ACK_GPA: u64 = 0xC030;
+pub const STAGE6_SMP_PROBE_SD_POST_GPA: u64 = 0xC038;
+pub const STAGE6_SMP_PROBE_SD_SEEN_HANDLER_GPA: u64 = 0xC0C0;
+pub const STAGE6_SMP_PROBE_SD_SEEN_MAIN_GPA: u64 = 0xC0C8;
+pub const STAGE6_SMP_PROBE_SD_PTE_GPA: u64 = 0x6008;
+pub const STAGE6_SMP_PROBE_SD_X_LINEAR: u64 = 0x20_1100;
+pub const STAGE6_SMP_PROBE_VECTOR_SHOOTDOWN: u8 = 0x32;
 pub const STAGE6_SMP_PROBE_IDT_GPA: u64 = 0x9800;
 pub const STAGE6_SMP_PROBE_IDT_LIMIT: u16 = 0x3FF;
 /// The 10-byte descriptor (limit u16, base u64) the boot processor loads with `LIDT [RSP+0]`.

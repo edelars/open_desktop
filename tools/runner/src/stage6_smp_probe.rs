@@ -23,8 +23,10 @@
 use od_machine::{
     STAGE6_SMP_PROBE_AP_RX_GPA, STAGE6_SMP_PROBE_BSP_RX_GPA, STAGE6_SMP_PROBE_COUNT_GPA,
     STAGE6_SMP_PROBE_FLAG_GPA, STAGE6_SMP_PROBE_IMAGE_BYTES, STAGE6_SMP_PROBE_LOCK_GPA,
-    STAGE6_SMP_PROBE_NMI_GPA, Stage6SmpProbe, Stage6SmpProbeCpu, Stage6SmpProbeFinish,
-    Stage6SmpProbeQuantum, Stage6SmpProbeRunError, load_stage6_smp_probe,
+    STAGE6_SMP_PROBE_NMI_GPA, STAGE6_SMP_PROBE_SD_ACK_GPA, STAGE6_SMP_PROBE_SD_POST_GPA,
+    STAGE6_SMP_PROBE_SD_SEEN_HANDLER_GPA, STAGE6_SMP_PROBE_SD_SEEN_MAIN_GPA, Stage6SmpProbe,
+    Stage6SmpProbeCpu, Stage6SmpProbeFinish, Stage6SmpProbeQuantum, Stage6SmpProbeRunError,
+    load_stage6_smp_probe,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -38,7 +40,14 @@ const DEFAULT_BUDGET: u64 = 50_000_000;
 const MAX_BUDGET: u64 = 4_000_000_000;
 const SCHEDULE_MAX_STEPS: u64 = 10_000_000;
 const DEFAULT_QUANTUM: u64 = 1024;
-const SCENARIOS: [&str; 5] = ["normal", "exchange", "resipi", "bad-ipi", "nmi"];
+const SCENARIOS: [&str; 6] = [
+    "normal",
+    "exchange",
+    "resipi",
+    "bad-ipi",
+    "nmi",
+    "shootdown",
+];
 const EXIT_INVALID_INPUT: u8 = 3;
 const EXIT_LOADER: u8 = 4;
 const EXIT_GUEST: u8 = 5;
@@ -326,6 +335,10 @@ fn run_inner(args: &[String]) -> Result<(Value, u8), (Value, u8)> {
         "ap_rx": cell(&mut probe, STAGE6_SMP_PROBE_AP_RX_GPA),
         "bsp_rx": cell(&mut probe, STAGE6_SMP_PROBE_BSP_RX_GPA),
         "nmi_cell": cell(&mut probe, STAGE6_SMP_PROBE_NMI_GPA),
+        "sd_ack": cell(&mut probe, STAGE6_SMP_PROBE_SD_ACK_GPA),
+        "sd_post": cell(&mut probe, STAGE6_SMP_PROBE_SD_POST_GPA),
+        "sd_seen_handler": cell(&mut probe, STAGE6_SMP_PROBE_SD_SEEN_HANDLER_GPA),
+        "sd_seen_main": cell(&mut probe, STAGE6_SMP_PROBE_SD_SEEN_MAIN_GPA),
     });
     let lapic_vectors: Vec<Value> = (0..options.vcpus)
         .map(|cpu| {
