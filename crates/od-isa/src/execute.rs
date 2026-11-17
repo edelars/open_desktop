@@ -21314,6 +21314,38 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     | (crate::ARITHMETIC_FLAGS & !crate::AF),
             };
         }
+        // S7-04: exact firmware `41 83 CD 08` performs OR R13D,8. REX.B
+        // selects R13D and opcode 83 sign-extends imm8 8 to dword width; the
+        // write zero-extends R13 and shared logic semantics leave AF undefined.
+        Operation::Logic {
+            kind: LogicKind::Or,
+            dst: Operand::Register(destination),
+            src: Operand::Immediate(8),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x83
+            && instruction.length == 4
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x41),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R13, OperandSize::Dword) =>
+        {
+            let lhs = state.read(destination);
+            let (value, flags) =
+                logic_result(OperandSize::Dword, LogicKind::Or, lhs, 8, state.rflags);
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: (initial_rflags_defined & !crate::AF)
+                    | (crate::ARITHMETIC_FLAGS & !crate::AF),
+            };
+        }
         // S7-04: the helper uses exact `81 E5 FF 0F 00 00` (AND EBP,0xfff).
         // The dword write zero-extends RBP; shared logic semantics undefine AF.
         Operation::Logic {

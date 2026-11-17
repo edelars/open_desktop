@@ -2157,3 +2157,14 @@ COM1 empty. Image SHA-256 is
 od-isa passes (2,322/1,591/126/29/6/1,442/7/15; zero doc tests), paged machine
 quantum passes (110/110), workspace all-targets offline check passes with
 existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-426 runner frontier
+
+At RIP `0x20133c`, the runner encountered exact bytes `41 83 CD 08` (OR R13D,8).
+After admission it advances to `41 83 FD 09` (CMP R13D,9, ISSUE-427) at RIP
+`0x201340` after 9,916 retired instructions, Unsupported opcode 131, COM1
+empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`. Full
+od-isa passes (2,322/1,591/126/29/6/1,446/7/15; zero doc tests), paged machine
+quantum passes (110/110), workspace all-targets offline check passes with
+existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
