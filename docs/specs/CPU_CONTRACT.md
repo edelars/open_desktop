@@ -29441,3 +29441,17 @@ opcode 117, COM1 empty. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-434 — bounded JNZ rel8 +0x37
+
+`PagedCpl0ProbeV1` admits exact no-prefix `75 37` only. It reads ZF, branches
+to next RIP plus signed rel8 `+0x37` if ZF=0, otherwise retires to fall-through;
+RFLAGS and their definedness are unchanged. Taken targets receive canonicality
+validation; not-taken fall-through is validated on the next fetch. A fault while
+fetching the displacement commits no architectural state. This slice adds only
+`75 37` without changing prior admissions (`75 38` remains supported); CPL3 and
+other profiles reject this exact form. Five focused cases and the other-
+profile matrix pass. Runner reaches `49 81 FF FF FF 00 00` (CMP R15,0xffff) at
+`0x2013c0`, after 9,927 retired instructions, Unsupported opcode 129, COM1
+empty. Full od-isa passes (2,322/1,591/126/29/6/1,478/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass; independent review approved with no findings. ISSUE-201 remains the
+unrelated CLD caveat.

@@ -3124,6 +3124,7 @@ instructions, `Unsupported { opcode: 57 }`; COM1 is empty. Full od-isa passes
 and scoped rustfmt and diff-check pass. Independent review is pending.
 ISSUE-201 remains the unrelated CLD caveat.
 
+
 ### ISSUE-395 — `49 39 D0` (`CMP R8,RDX`)
 
 The base paged profile admits only this exact qword CMP form. REX.W/B select R8
@@ -3734,3 +3735,17 @@ neighbors and CPL3; the other-profile matrix is 1/1. Runner advances after
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-434 — exact JNZ rel8 +0x37
+
+Five focused tests pass for both ZF outcomes and ZF definedness, branch target
+and fall-through, taken-only canonicality, final-byte fetch-fault atomicity,
+neighbors and CPL3 rejection. The other-profile matrix passes 1/1. Image
+`/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`. Runner
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue434.com1 --budget 10000` retires 9,927
+instructions and stops at `49 81 FF FF FF 00 00` (CMP R15,0xffff), RIP
+`0x2013c0`, Unsupported opcode 129, COM1 empty. Full od-isa passes (2,322/1,591/126/29/6/1,478/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass; independent review approved with no findings. ISSUE-201 remains the
+unrelated CLD caveat.

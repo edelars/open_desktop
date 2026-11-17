@@ -2254,3 +2254,16 @@ passes (2,322/1,591/126/29/6/1,473/7/15; zero doc tests), paged machine quantum
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review is approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-434 runner frontier
+
+At RIP `0x201387`, the runner encountered exact bytes `75 37` (JNZ rel8 +0x37).
+Admission advances execution to `49 81 FF FF FF 00 00` (CMP R15,0xffff;
+ISSUE-435) at RIP `0x2013c0` after 9,927 retired instructions, Unsupported
+opcode 129, COM1 empty. The image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`. Five
+focused cases and other-profile matrix 1/1 pass. Full od-isa passes
+(2,322/1,591/126/29/6/1,478/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass; independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.

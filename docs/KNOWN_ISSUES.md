@@ -5422,7 +5422,17 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-434 — S7-04: exact JNZ rel8 +0x37 frontier (`75 37`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-433.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201387`.
-- **Статус:** открыта; следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base profile does not yet admit exact `75 37` (JNZ rel8 +0x37). Add only this branch form with ZF=0 condition, signed rel8 from next RIP, preserved flags/definedness, taken-only canonicality and atomic fetch-fault behavior; neighboring encodings/profiles remain excluded.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `75 37` (JNZ rel8 +0x37). It tests ZF, adds signed rel8 +0x37 to next RIP when taken, preserves flags/definedness, and checks target canonicality only for a taken branch. Fetch faults commit no state; adjacent displacements, conditions, prefixes, CPL3 and other profiles remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-433 runner retired 9,926 instructions and reported `Unsupported { opcode: 117 }` at RIP `0x201387`; COM1 is empty. Instruction bytes at the link-base shadow are `75 37` (followed by `E9 EF 00 00 00`).
-- **Следующий шаг:** implement exact `75 37`, add focused semantic/fault/neighbor/profile coverage, and update Stage 7 documentation.
+- **Результат:** runner now retires 9,927 instructions and stops at RIP `0x2013c0`, bytes `49 81 FF FF FF 00 00` (CMP R15,0xffff; ISSUE-435), `Unsupported { opcode: 129 }`; COM1 is empty.
+- **Проверка:** five focused JNZ tests cover both ZF outcomes/definedness, taken/fall-through RIP, taken-only canonicality, final-byte fetch-fault atomicity, neighboring forms and CPL3; the other-profile matrix passes 1/1. Full od-isa passes (2,322/1,591/126/29/6/1,478/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+- **Следующий шаг:** ISSUE-435, exact `49 81 FF FF FF 00 00` (CMP R15,0xffff) at RIP `0x2013c0`.
+
+### ISSUE-435 — S7-04: exact CMP R15,0xffff frontier (`49 81 FF FF FF 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-434.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013c0`.
+- **Статус:** открыта; следующая точная инструкция Stage 7.
+- **Суть и последствия:** exact decode is CMP R15,imm32 `0x0000ffff` in qword operand width; arithmetic flags are updated and R15 is not written. This remains unsupported until an exact bounded implementation and tests are added.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-434 runner retired 9,927 instructions and reported `Unsupported { opcode: 129 }` at RIP `0x2013c0`; COM1 is empty. Bytes at the link-base shadow are `49 81 FF FF FF 00 00`.
+- **Следующий шаг:** implement this exact CMP form, add focused semantic/fault/neighbor/profile coverage, and update the Stage 7 documentation.

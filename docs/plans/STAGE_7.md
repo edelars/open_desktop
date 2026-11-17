@@ -1662,6 +1662,7 @@ remains unsupported. Tests cover full state, final immediate fetch fault,
 immediate/destination/prefix neighbors, CPL3 and other-profile isolation.
 ISSUE-201 remains the unrelated CLD caveat.
 
+
 Focused tests pass (4/4), and the other-profile matrix passes (1/1). The
 firmware runner advances to `49 BE 00 00 00 00 10 00 00 00` (MOV
 R14,0x1000000000, ISSUE-388) at RIP `0x20126a` after 9,867 retired
@@ -2411,3 +2412,16 @@ Unsupported opcode 117, COM1 empty. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-434 — exact JNZ rel8 +0x37 (`75 37`)
+
+Admit only exact no-prefix `75 37` in the base paged profile. JNZ tests ZF and
+adds signed rel8 `+0x37` to next RIP when ZF=0; it preserves RFLAGS and their
+definedness. Check target canonicality only when taken; instruction fetch
+faults commit no state. Five focused tests cover both ZF outcomes and defined
+metadata, taken/fall-through RIP, taken-only canonicality, final-byte fetch
+fault, neighboring encodings and CPL3 rejection. The other-profile refusal
+matrix passes 1/1. Runner reaches ISSUE-435 (`49 81 FF FF FF 00 00`, CMP R15,
+0xffff) at RIP `0x2013c0` after 9,927 retired instructions, Unsupported opcode
+129, COM1 empty. Full od-isa passes (2,322/1,591/126/29/6/1,478/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
+remains the unrelated CLD caveat.
