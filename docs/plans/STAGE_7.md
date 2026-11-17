@@ -1874,7 +1874,23 @@ Independent review approved with no findings.
 
 ### ISSUE-400 — exact JA rel32 +0x24e (`0F 87 4E 02 00 00`)
 
-Next runner frontier is this exact JA form at RIP `0x2012b5`. Admit only this
-displacement in the base paged profile after covering CF/ZF semantics, taken
-and fallthrough targets, taken-only canonicality, fetch faults, and profile and
-encoding neighbors. Preserve ISSUE-201 as an unrelated CLD caveat.
+Implemented only this JA displacement in base `PagedCpl0ProbeV1`. The branch
+uses CF=0 && ZF=0, computes signed rel32 from next RIP, preserves flags and
+definedness, and validates canonicality only when taken. Focused condition,
+target, canonicality, fetch-fault, neighbor and CPL3 tests pass (5/5); other-
+profile matrix passes (1/1). ISSUE-201 remains the unrelated CLD caveat.
+
+Runner image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` advances
+to `0F 87 4F 02 00 00` (JA rel32 +0x24f, ISSUE-401) at RIP `0x2012c6` after
+9,888 retired instructions, `Unsupported { opcode: 135 }`; COM1 is empty. `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,323/7/15;
+zero doc tests), paged machine quantum passes (110/110), workspace all-targets
+offline check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings.
+
+### ISSUE-401 — exact JA rel32 +0x24f (`0F 87 4F 02 00 00`)
+
+The next runner frontier is this exact JA displacement at RIP `0x2012c6`. Add
+only this displacement after testing condition outcomes, target/fallthrough,
+taken-only canonicality, fetch faults and encoding/profile neighbors. Preserve
+the unrelated ISSUE-201 CLD caveat.

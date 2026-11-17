@@ -1764,3 +1764,17 @@ With image SHA-256
 advances to `0F 87 4E 02 00 00` (JA rel32 +0x24e, ISSUE-400), RIP `0x2012b5`,
 after 9,884 retired instructions, `Unsupported { opcode: 135 }`; COM1 is empty.
 Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,318/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review is pending.
+
+### ISSUE-400 — `0F 87 4E 02 00 00` (`JA rel32 +0x24e`)
+
+The firmware profile admits only this exact JA displacement. CF=0 && ZF=0
+selects the branch; rel32 is relative to next RIP, flags/definedness are
+preserved, and target canonicality is checked only when taken. Focused tests
+pass (5/5), and other-profile matrix passes (1/1). ISSUE-201 remains the
+unrelated CLD caveat.
+
+With image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, runner
+advances to `0F 87 4F 02 00 00` (JA rel32 +0x24f, ISSUE-401), RIP `0x2012c6`,
+after 9,888 retired instructions, `Unsupported { opcode: 135}`; COM1 is empty.
+Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,323/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review is pending.

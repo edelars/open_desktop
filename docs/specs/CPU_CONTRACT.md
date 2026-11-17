@@ -28942,3 +28942,14 @@ caveat.
 Runner frontier is now `0F 87 4E 02 00 00` (JA rel32 +0x24e, ISSUE-400), RIP
 `0x2012b5` after 9,884 retired instructions, `Unsupported { opcode: 135 }`;
 COM1 is empty. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,318/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review is pending.
+
+### ISSUE-400 — exact `JA rel32 +0x24e` (`0F 87 4E 02 00 00`)
+
+The base paged profile admits only this branch displacement. JA tests CF=0 &&
+ZF=0, applies signed rel32 from next RIP, preserves flags/definedness and
+checks canonicality only when taken. Focused tests pass (5/5); other-profile
+matrix passes (1/1). ISSUE-201 remains the unrelated CLD caveat.
+
+Runner advances to `0F 87 4F 02 00 00` (JA rel32 +0x24f, ISSUE-401), RIP
+`0x2012c6` after 9,888 retired instructions, `Unsupported { opcode: 135}`;
+COM1 is empty. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,323/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review is pending.
