@@ -21913,6 +21913,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                                 | 0x24c
                                 | 0x24d
                                 | 0x24e
+                                | 0x24f
                         ) | (ConditionCode::Below, 0x82, 0xb7 | 0x230)
                     ))) =>
         {

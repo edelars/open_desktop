@@ -1778,3 +1778,19 @@ With image SHA-256
 advances to `0F 87 4F 02 00 00` (JA rel32 +0x24f, ISSUE-401), RIP `0x2012c6`,
 after 9,888 retired instructions, `Unsupported { opcode: 135}`; COM1 is empty.
 Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,323/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review is pending.
+
+### ISSUE-401 — `0F 87 4F 02 00 00` (`JA rel32 +0x24f`)
+
+The firmware profile admits only this exact JA displacement. CF=0 && ZF=0
+selects the branch, signed rel32 is relative to next RIP, flags/definedness are
+preserved, and canonicality is checked only when taken. Focused tests pass
+(5/5), prior adjacent JA regressions pass (1/1 each), and other-profile matrix
+passes (1/1). ISSUE-201 remains the unrelated CLD caveat.
+
+Image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` runner
+advances to `46 8B 04 1E` (MOV R8D,dword ptr [RSI+R11], ISSUE-402), RIP
+`0x2012cc`, after 9,889 retired instructions, `Unsupported { opcode: 139}`;
+COM1 is empty. Full od-isa passes (2,322/1,591/126/29/6/1,328/7/15; zero doc
+tests), paged machine quantum passes (110/110), workspace check passes with
+existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.

@@ -5097,10 +5097,19 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Результат:** runner now retires 9,888 instructions and stops at RIP `0x2012c6`, bytes `0F 87 4F 02 00 00` (JA rel32 +0x24f; ISSUE-401), `Unsupported { opcode: 135 }`; COM1 is empty.
 - **Проверка:** focused JA condition/target/canonicality/fetch-fault/neighbor/CPL3 tests 5/5 and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,323/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review is pending. ISSUE-201 remains the unrelated CLD caveat.
 
-### ISSUE-401 — S7-04: exact helper JA rel32 +0x24f frontier (`0F 87 4F 02 00 00`)
+### ISSUE-401 — S7-04: exact helper JA rel32 +0x24f (`0F 87 4F 02 00 00`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-400.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012c6`.
+- **Статус:** решена только для точного displacement в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `0F 87 4F 02 00 00` (`JA rel32 +0x24f`). The condition is CF=0 && ZF=0; signed rel32 is relative to next RIP; flags/definedness are preserved; canonicality is checked only when taken. Other displacements/conditions/prefixes and CPL3/other profiles remain unsupported.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,888 instructions and reported `Unsupported { opcode: 135 }` at RIP `0x2012c6`; COM1 is empty. Bytes at image offset `0x12c6` are `0F 87 4F 02 00 00`.
+- **Результат:** runner now retires 9,889 instructions and stops at RIP `0x2012cc`, bytes `46 8B 04 1E` (MOV R8D,dword ptr [RSI+R11]; ISSUE-402), `Unsupported { opcode: 139 }`; COM1 is empty.
+- **Проверка:** focused JA condition/target/canonicality/fetch-fault/neighbor/CPL3 tests 5/5, the prior JA +0x24e and +0x24d neighbor regressions 1/1 each, and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,328/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-402 — S7-04: exact indexed dword load frontier (`46 8B 04 1E`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-401.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012cc`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this exact JA rel32 displacement, which is outside the bounded base-profile admission.
-- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,888 instructions and reported `Unsupported { opcode: 135 }` at RIP `0x2012c6`; COM1 is empty. Bytes at the link-base shadow are `0F 87 4F 02 00 00`.
-- **Следующий шаг:** verify exact JA condition/target/fault behavior and admit only this displacement.
+- **Суть и последствия:** firmware reaches exact `MOV R8D,dword ptr [RSI+R11]`; this indexed dword load is not yet admitted by the bounded base profile.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,889 instructions and reported `Unsupported { opcode: 139 }` at RIP `0x2012cc`; COM1 is empty. Bytes at the link-base shadow are `46 8B 04 1E`.
+- **Следующий шаг:** verify exact REX/SIB/load semantics and tracked-fault behavior, then admit only this form.

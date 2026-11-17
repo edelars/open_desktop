@@ -3215,3 +3215,18 @@ remains the unrelated CLD caveat.
 Runner advances to `0F 87 4F 02 00 00` (JA rel32 +0x24f, ISSUE-401) at RIP
 `0x2012c6` after 9,888 retired instructions, `Unsupported { opcode: 135}`;
 COM1 is empty. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,323/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review is pending.
+
+### ISSUE-401 — exact helper JA rel32 +0x24f (`0F 87 4F 02 00 00`)
+
+Implemented only this JA displacement in base `PagedCpl0ProbeV1`: CF=0 && ZF=0,
+signed rel32 from next RIP, unchanged flags/definedness, and taken-only target
+canonicality. Focused branch tests pass (5/5), both prior adjacent JA regression
+tests pass (1/1 each), and other-profile matrix passes (1/1). ISSUE-201 remains
+the unrelated CLD caveat.
+
+Runner advances to `46 8B 04 1E` (MOV R8D,dword ptr [RSI+R11], ISSUE-402) at RIP
+`0x2012cc` after 9,889 retired instructions, `Unsupported { opcode: 139}`;
+COM1 is empty. Full od-isa passes (2,322/1,591/126/29/6/1,328/7/15; zero doc
+tests), paged machine quantum passes (110/110), workspace all-targets offline
+check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings.

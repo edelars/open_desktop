@@ -1890,7 +1890,21 @@ Independent review approved with no findings.
 
 ### ISSUE-401 — exact JA rel32 +0x24f (`0F 87 4F 02 00 00`)
 
-The next runner frontier is this exact JA displacement at RIP `0x2012c6`. Add
-only this displacement after testing condition outcomes, target/fallthrough,
-taken-only canonicality, fetch faults and encoding/profile neighbors. Preserve
+Implemented only this displacement in the base paged profile. JA tests CF=0 &&
+ZF=0, applies signed rel32 from next RIP, preserves flags/definedness, and
+checks target canonicality only when taken. Focused tests pass (5/5), the prior
+JA neighbor regressions pass (1/1 each), and the other-profile matrix passes
+(1/1). ISSUE-201 remains the unrelated CLD caveat.
+
+Runner image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` advances
+to `46 8B 04 1E` (MOV R8D,dword ptr [RSI+R11], ISSUE-402), RIP `0x2012cc`,
+after 9,889 retired instructions, `Unsupported { opcode: 139 }`; COM1 is empty.
+Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,328/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-402 — exact indexed dword load (`46 8B 04 1E`)
+
+The runner frontier is `MOV R8D,dword ptr [RSI+R11]` at RIP `0x2012cc`. Confirm
+dword zero-extension, indexed address calculation, tracked reads/faults, and
+exact encoding/profile boundaries before admitting this instruction. Preserve
 the unrelated ISSUE-201 CLD caveat.
