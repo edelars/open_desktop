@@ -855,7 +855,8 @@ mod tests {
     /// with `Release`). Generations are raised by `store_*` (the single commit path).
     #[test]
     fn a_write_to_a_table_frame_drops_the_entry_by_callback_and_by_generation() {
-        let memory = memory();
+        let mut memory = memory();
+        memory.set_execution_mode(crate::ExecutionMode::Parallel);
         let ring0 = context(PrivilegeLevel::Ring0);
         let table = GuestPhysicalAddress::new(0x3008);
         let ctx = key(0x1000, PrivilegeLevel::Ring0);

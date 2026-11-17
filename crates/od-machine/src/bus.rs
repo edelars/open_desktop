@@ -1072,6 +1072,17 @@ impl MachineBus {
         crate::page_walk::probe_long64_4k(&self.memory, paging, address, access, context)
     }
 
+    /// S6-32: sets the execution mode of the machine memory (the one switch; see
+    /// [`crate::ExecutionMode`]). `&mut self`: only while nothing shares the memory.
+    pub fn set_execution_mode(&mut self, mode: crate::ExecutionMode) {
+        self.memory.set_execution_mode(mode);
+    }
+
+    /// S6-32: the execution mode of the machine memory.
+    pub fn execution_mode(&self) -> crate::ExecutionMode {
+        self.memory.execution_mode()
+    }
+
     /// The physical memory the locked operations of an adapter run on (S6-31): a shared reference,
     /// like the `Ram` forms of the adapter hold.
     pub(crate) fn physical_memory(&self) -> &PhysicalMemory {

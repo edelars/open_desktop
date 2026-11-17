@@ -68,8 +68,9 @@ pub use lretq::{
     run_with_lretq_profile, step_with_lretq_profile,
 };
 pub use memory::{
-    AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, DoubleFaultRecord, GuestMemory,
-    InstructionMode, MemoryError, PageFaultRecord, PrivilegeLevel, page_fault_error_code,
+    AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, DoubleFaultRecord, FenceKind,
+    GuestMemory, InstructionMode, MemoryError, PageFaultRecord, PrivilegeLevel,
+    page_fault_error_code,
 };
 pub use port_io::PortIo;
 pub use state::{

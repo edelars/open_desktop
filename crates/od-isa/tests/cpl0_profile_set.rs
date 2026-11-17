@@ -15719,6 +15719,10 @@ struct BitsMemory {
     write_fault_range: Option<std::ops::Range<u64>>,
     /// When set, every data read fails with this fault (a not-present page).
     read_fault: Option<ArchitecturalFault>,
+    /// S6-32: the kind of every `fence` call, in order.
+    fences: Vec<od_isa::FenceKind>,
+    /// S6-32: when set, `fence` fails with a backend error (after recording the call).
+    fence_error: bool,
 }
 
 impl BitsMemory {
@@ -15731,6 +15735,8 @@ impl BitsMemory {
             write_fault: None,
             write_fault_range: None,
             read_fault: None,
+            fences: Vec::new(),
+            fence_error: false,
         }
     }
 
@@ -15830,6 +15836,14 @@ impl GuestMemory for BitsMemory {
 
     fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
         unreachable!()
+    }
+
+    fn fence(&mut self, kind: od_isa::FenceKind) -> Result<(), MemoryError> {
+        self.fences.push(kind);
+        if self.fence_error {
+            return Err(MemoryError::Backend("fence refused".into()));
+        }
+        Ok(())
     }
 }
 
@@ -49350,7 +49364,8 @@ fn segment_80_family_is_not_reachable_from_cpl3() {
 // order memory operations; with one vCPU and no buffers visible to another processor they
 // change nothing but RIP and the retired count. Only the bare register encodings are admitted;
 // the memory forms of `0F AE` are other instructions (FXSAVE, LDMXCSR, ...). The test memories
-// fail on any data read/write and on any backend `mfence` call. ----
+// fail on any data read/write and on any backend `mfence` call (S6-32: the set's fences call the
+// memory's `fence` instead, a provided no-op, and nothing else). ----
 
 const FENCE_FORMS: [(&str, [u8; 3]); 3] = [
     ("lfence", [0x0f, 0xae, 0xe8]),
@@ -49436,6 +49451,90 @@ fn every_fence_then_nop_retires_both() {
         let result = run_fence_set(&mut state, &mut memory, 2).unwrap();
         assert_eq!(result.instructions_executed, 2, "{name}");
         assert_eq!(state, expected, "{name}");
+    }
+}
+
+// ---- S6-32: the CPL0 set's fences call the memory's `fence` with the kind of the instruction
+// (MFENCE Full, SFENCE Store, LFENCE Load), once per retired fence; the state is the same as
+// without the call (the default `fence` is a no-op). ----
+
+#[test]
+fn each_fence_calls_the_memory_fence_once_with_its_kind() {
+    for (name, code, kind) in [
+        ("lfence", [0x0f, 0xae, 0xe8], od_isa::FenceKind::Load),
+        ("mfence", [0x0f, 0xae, 0xf0], od_isa::FenceKind::Full),
+        ("sfence", [0x0f, 0xae, 0xf8], od_isa::FenceKind::Store),
+    ] {
+        let mut state = endbr_state();
+        let mut expected = state.clone();
+        expected.rip += 3;
+        let mut memory = BitsMemory::new(&code);
+        let result = run_fence_set(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{name}");
+        assert_eq!(memory.fences, vec![kind], "{name}");
+        // The call changes no state and touches no data.
+        assert_eq!(state, expected, "{name}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{name}"
+        );
+        assert!(memory.data.is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn a_sequence_of_fences_calls_the_memory_fence_in_program_order() {
+    let code = [
+        0x0f, 0xae, 0xf0, // mfence
+        0x0f, 0xae, 0xf8, // sfence
+        0x90, // nop (no call)
+        0x0f, 0xae, 0xe8, // lfence
+        0x0f, 0xae, 0xf0, // mfence
+    ];
+    let mut state = endbr_state();
+    let mut expected = state.clone();
+    expected.rip += 13;
+    let mut memory = BitsMemory::new(&code);
+    let result = run_fence_set(&mut state, &mut memory, 5).unwrap();
+    assert_eq!(result.instructions_executed, 5);
+    assert_eq!(
+        memory.fences,
+        vec![
+            od_isa::FenceKind::Full,
+            od_isa::FenceKind::Store,
+            od_isa::FenceKind::Load,
+            od_isa::FenceKind::Full
+        ]
+    );
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn the_fences_never_reach_the_s2_21g_completion_hook() {
+    // `BitsMemory::mfence` is `unreachable!()`: the set's MFENCE must use `fence`, not `mfence`.
+    let mut state = endbr_state();
+    let mut memory = BitsMemory::new(&[0x0f, 0xae, 0xf0]);
+    run_fence_set(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(memory.fences, vec![od_isa::FenceKind::Full]);
+}
+
+#[test]
+fn a_failing_memory_fence_is_reported_and_the_fence_is_not_retired() {
+    for (name, code) in FENCE_FORMS {
+        let mut state = endbr_state();
+        let before = state.clone();
+        let mut memory = BitsMemory::new(&code);
+        memory.fence_error = true;
+        let result = run_fence_set(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(memory.fences.len(), 1, "{name}");
+        // The one actual outcome: the run ends with the memory error, nothing retired.
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert!(
+            matches!(exit(&result), RunExit::MemoryError(MemoryError::Backend(message)) if message == "fence refused"),
+            "{name}: {:?}",
+            exit(&result)
+        );
+        assert_eq!(state, before, "{name}");
     }
 }
 

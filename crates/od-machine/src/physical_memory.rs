@@ -1,8 +1,50 @@
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering, fence};
 
 use crate::AccessWidth;
 use crate::ram_storage::RamStorage;
+
+/// S6-32: the host order of every ordinary RAM load and store (scalar, split into bytes, bulk
+/// copy, frame byte): parallel `SeqCst` (the choice of S6-06, MEMORY_MODEL.md "Выбор по замеру"),
+/// interleaving `Relaxed` (no barrier: one host thread runs every vCPU and every writer). Locked
+/// operations and generations keep their own orders in both modes. The macro runs `$body` with
+/// `$order` bound to that order: one branch on the mode, a constant order in each arm. A
+/// runtime-valued `Ordering` passed to an atomic access costs a second branch per access (a first
+/// version did that and `page_walk_compare` showed it, see the S6-32 report); with the constant
+/// the compiler emits a plain load or store.
+macro_rules! by_mode {
+    ($mode:expr, $order:ident => $body:expr) => {
+        match $mode {
+            ExecutionMode::Parallel => {
+                let $order = Ordering::SeqCst;
+                $body
+            }
+            ExecutionMode::Interleaved => {
+                let $order = Ordering::Relaxed;
+                $body
+            }
+        }
+    };
+}
+
+/// The execution mode of the machine (S6-32), the one switch (`PhysicalMemory::set_execution_mode`,
+/// reached through the board). The interpreter (`od-isa`) does not know it. The mode orders the
+/// ordinary scalar accesses and the bulk copies (each host access of a copy), and sets the host
+/// fence of the guest fences.
+///
+/// - `Interleaved` (the default and the only mode that runs a machine today): every vCPU and every
+///   RAM writer runs on one host thread and switches only on instruction/event boundaries. Ordinary
+///   scalar RAM accesses are `Relaxed` (no barrier) and the guest fences place no host fence.
+/// - `Parallel` (S6-34 starts vCPU threads; until then it is selectable and single-threaded
+///   runs are byte-identical to the interleaving mode): ordinary scalar RAM accesses are `SeqCst`
+///   (the choice of S6-06) and the guest fences place a host fence (`MFENCE` `SeqCst`, `SFENCE`
+///   `Release`, `LFENCE` `Acquire`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ExecutionMode {
+    #[default]
+    Interleaved,
+    Parallel,
+}
 
 /// A guest physical byte address. It is deliberately distinct from host pointers.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -295,6 +337,13 @@ impl RamFrame {
 /// ```
 pub struct PhysicalMemory {
     regions: Vec<Region>,
+    /// S6-32: the machine's execution mode. It chooses the host memory order of ordinary scalar
+    /// accesses and of bulk copies, and the host fence of the guest fences. Set once, before the memory is shared (`&mut self`), so
+    /// no access reads it through an atomic. The default is [`ExecutionMode::Interleaved`].
+    mode: ExecutionMode,
+    /// S6-32: host fences issued by [`Self::fence`] in the parallel mode (the interleaving mode
+    /// issues none). Measurement and tests only.
+    host_fences: AtomicU64,
     /// S6-31: locked operations refused because the operand was not naturally aligned (the
     /// split-lock path of S6-34 does not exist yet). Counted, never executed non-atomically.
     split_lock_refusals: AtomicU64,
@@ -392,8 +441,45 @@ impl PhysicalMemory {
         }
         Ok(Self {
             regions,
+            mode: ExecutionMode::default(),
+            host_fences: AtomicU64::new(0),
             split_lock_refusals: AtomicU64::new(0),
         })
+    }
+
+    /// S6-32: the execution mode of this memory (see [`ExecutionMode`]).
+    pub fn execution_mode(&self) -> ExecutionMode {
+        self.mode
+    }
+
+    /// S6-32: the one switch of the execution mode on the memory side. The machine sets it while
+    /// it still owns the memory exclusively (`&mut self`), before any vCPU adapter shares it; the
+    /// interpreter never sees it. Switching changes only the host memory order of ordinary
+    /// scalar accesses and the host fence of the guest fences: results of a single-threaded run
+    /// are identical in both modes.
+    pub fn set_execution_mode(&mut self, mode: ExecutionMode) {
+        self.mode = mode;
+    }
+
+    /// S6-32: the host side of a guest fence instruction. Parallel: a host fence of the kind
+    /// (`MFENCE` is `SeqCst`, `SFENCE` is `Release`, `LFENCE` is `Acquire`; ordinary accesses are
+    /// already `SeqCst`, so the fences add nothing the model needs, and are kept because the
+    /// contract names them and no barrier is removed because a test passes). Interleaving: no
+    /// operation. Changes no guest RAM.
+    pub fn fence(&self, kind: od_isa::FenceKind) {
+        if self.mode == ExecutionMode::Parallel {
+            self.host_fences.fetch_add(1, Ordering::Relaxed);
+            fence(match kind {
+                od_isa::FenceKind::Full => Ordering::SeqCst,
+                od_isa::FenceKind::Store => Ordering::Release,
+                od_isa::FenceKind::Load => Ordering::Acquire,
+            });
+        }
+    }
+
+    /// S6-32: how many host fences [`Self::fence`] issued (always zero in the interleaving mode).
+    pub fn host_fences_issued(&self) -> u64 {
+        self.host_fences.load(Ordering::Relaxed)
     }
 
     /// The generation of the RAM page holding `address` (starts at 1; raised once per committed
@@ -538,7 +624,7 @@ impl PhysicalMemory {
             .backing
             .as_ref()
             .ok_or(MemoryAccessError::ReadOnlyRegion(region.spec.kind))?;
-        backing.copy_in(offset, input);
+        backing.copy_in(offset, input, Ordering::Relaxed);
         Ok(())
     }
 
@@ -821,7 +907,8 @@ impl PhysicalMemory {
         let at = frame
             .offset
             .checked_add(usize::try_from(in_frame & mask).ok()?)?;
-        region.backing.as_ref()?.try_load_u8(at)
+        let storage = region.backing.as_ref()?;
+        by_mode!(self.mode, order => storage.try_load_u8(at, order))
     }
 
     pub(crate) fn locate_region_kind(
@@ -875,11 +962,15 @@ impl PhysicalMemory {
 /// vCPU adapter holds a shared reference to the memory and any number of adapters share it.
 ///
 /// Loads and stores of 1, 2, 4 and 8 bytes at a naturally aligned address are one host atomic
-/// access of that width (`SeqCst`, the choice of S6-06; the order itself is revisited in S6-32);
+/// access of that width (S6-32: `SeqCst` in the parallel mode, the choice of S6-06, and `Relaxed`
+/// in the interleaving mode, see [`ExecutionMode`]; the default memory is in the latter);
 /// a misaligned access is split into ascending one-byte accesses (MEMORY_MODEL.md, "Атомарность
-/// и разделённые доступы"). `load_bytes`/`store_bytes` are bulk copies: not atomic as a whole,
-/// not ordered, and another thread can see any prefix of one (relaxed accesses of up to 8
-/// bytes, ascending; see `ram_storage`).
+/// и разделённые доступы"). `load_bytes`/`store_bytes` are bulk copies: the copy as a whole is
+/// not atomic, and another thread can see any prefix of one. The order of each host access of a
+/// bulk copy is the order of the ordinary accesses of the mode (S6-32: `SeqCst` in the parallel
+/// mode, `Relaxed` in the interleaving mode); an aligned copy of 1, 2, 4 or 8 bytes is ONE host
+/// access of that width (`chunk_width`, normative); otherwise ascending accesses of up to 8
+/// bytes (see `ram_storage`).
 ///
 /// S6-30b: the stores take a `committed_write` callback and go through one commit transaction
 /// (`commit_write`): validation and errors, the data is stored first, then every touched page
@@ -892,7 +983,7 @@ impl PhysicalMemory {
         output: &mut [u8],
     ) -> Result<(), MemoryAccessError> {
         let (storage, offset) = self.readable_storage(address, output.len())?;
-        storage.copy_out(offset, output);
+        by_mode!(self.mode, order => storage.copy_out(offset, output, order));
         Ok(())
     }
 
@@ -903,32 +994,32 @@ impl PhysicalMemory {
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
         let len = checked_access_len(input.len())?;
-        self.commit_write(
+        by_mode!(self.mode, order => self.commit_write(
             address,
             len,
-            |storage, offset| storage.copy_in(offset, input),
+            |storage, offset| storage.copy_in(offset, input, order),
             committed_write,
-        )
+        ))
     }
 
     pub fn load_u8(&self, address: GuestPhysicalAddress) -> Result<u8, MemoryAccessError> {
         let (storage, offset) = self.readable_storage(address, 1)?;
-        Ok(storage.load_u8(offset, Ordering::SeqCst))
+        Ok(by_mode!(self.mode, order => storage.load_u8(offset, order)))
     }
 
     pub fn load_u16(&self, address: GuestPhysicalAddress) -> Result<u16, MemoryAccessError> {
         let (storage, offset) = self.readable_storage(address, 2)?;
-        Ok(storage.load_u16(offset, Ordering::SeqCst))
+        Ok(by_mode!(self.mode, order => storage.load_u16(offset, order)))
     }
 
     pub fn load_u32(&self, address: GuestPhysicalAddress) -> Result<u32, MemoryAccessError> {
         let (storage, offset) = self.readable_storage(address, 4)?;
-        Ok(storage.load_u32(offset, Ordering::SeqCst))
+        Ok(by_mode!(self.mode, order => storage.load_u32(offset, order)))
     }
 
     pub fn load_u64(&self, address: GuestPhysicalAddress) -> Result<u64, MemoryAccessError> {
         let (storage, offset) = self.readable_storage(address, 8)?;
-        Ok(storage.load_u64(offset, Ordering::SeqCst))
+        Ok(by_mode!(self.mode, order => storage.load_u64(offset, order)))
     }
 
     pub fn store_u8(
@@ -937,12 +1028,12 @@ impl PhysicalMemory {
         value: u8,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
-        self.commit_write(
+        by_mode!(self.mode, order => self.commit_write(
             address,
             1,
-            |storage, offset| storage.store_u8(offset, value, Ordering::SeqCst),
+            |storage, offset| storage.store_u8(offset, value, order),
             committed_write,
-        )
+        ))
     }
 
     pub fn store_u16(
@@ -951,12 +1042,12 @@ impl PhysicalMemory {
         value: u16,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
-        self.commit_write(
+        by_mode!(self.mode, order => self.commit_write(
             address,
             2,
-            |storage, offset| storage.store_u16(offset, value, Ordering::SeqCst),
+            |storage, offset| storage.store_u16(offset, value, order),
             committed_write,
-        )
+        ))
     }
 
     pub fn store_u32(
@@ -965,12 +1056,12 @@ impl PhysicalMemory {
         value: u32,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
-        self.commit_write(
+        by_mode!(self.mode, order => self.commit_write(
             address,
             4,
-            |storage, offset| storage.store_u32(offset, value, Ordering::SeqCst),
+            |storage, offset| storage.store_u32(offset, value, order),
             committed_write,
-        )
+        ))
     }
 
     pub fn store_u64(
@@ -979,12 +1070,12 @@ impl PhysicalMemory {
         value: u64,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
-        self.commit_write(
+        by_mode!(self.mode, order => self.commit_write(
             address,
             8,
-            |storage, offset| storage.store_u64(offset, value, Ordering::SeqCst),
+            |storage, offset| storage.store_u64(offset, value, order),
             committed_write,
-        )
+        ))
     }
 }
 
@@ -1839,7 +1930,8 @@ mod tests {
     fn physical_memory_can_be_shared_between_threads_by_reference() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<PhysicalMemory>();
-        let memory = storage_test_memory();
+        let mut memory = storage_test_memory();
+        memory.set_execution_mode(ExecutionMode::Parallel);
         let words = [0x1008u64, 0x1010, 0x1ff8];
         std::thread::scope(|scope| {
             for thread in 0..4u8 {
@@ -1938,7 +2030,8 @@ mod tests {
         const WRITERS: u64 = 4;
         const ROUNDS: u64 = 5_000;
         // Pages 0x1000..=0x4000 are private, 0x5000 is shared.
-        let memory = memory(&[(0x1000, 0x5000, MemoryRegionKind::Ram)]);
+        let mut memory = memory(&[(0x1000, 0x5000, MemoryRegionKind::Ram)]);
+        memory.set_execution_mode(ExecutionMode::Parallel);
         let private = |index: u64| GuestPhysicalAddress::new(0x1000 + index * 0x1000 + 8);
         let shared = |index: u64| GuestPhysicalAddress::new(0x5000 + index);
         let done = AtomicBool::new(false);
@@ -2241,7 +2334,8 @@ mod tests {
     fn four_host_threads_see_every_locked_operation_as_indivisible_at_every_width() {
         const THREADS: u64 = 4;
         const ROUNDS: u64 = 4_000;
-        let memory = memory(&[(0x1000, 0x2000, MemoryRegionKind::Ram)]);
+        let mut memory = memory(&[(0x1000, 0x2000, MemoryRegionKind::Ram)]);
+        memory.set_execution_mode(ExecutionMode::Parallel);
         for (index, bytes) in [1usize, 2, 4, 8].into_iter().enumerate() {
             let width = width_of(bytes);
             let mask = width_mask(bytes);
@@ -2320,7 +2414,8 @@ mod tests {
     /// the generation rises once per successful replace.
     #[test]
     fn compare_replace_u64_loses_no_bit_under_four_threads() {
-        let memory = memory(&[(0x1000, 0x1000, MemoryRegionKind::Ram)]);
+        let mut memory = memory(&[(0x1000, 0x1000, MemoryRegionKind::Ram)]);
+        memory.set_execution_mode(ExecutionMode::Parallel);
         let entry = GuestPhysicalAddress::new(0x1008);
         let replaced = AtomicU64::new(0);
         let notified = AtomicU64::new(0);
@@ -2394,5 +2489,180 @@ mod tests {
                 width: 8
             })
         );
+    }
+    // ---- S6-32: the execution mode ----
+
+    /// Drives every scalar access function over random addresses and widths (aligned, misaligned,
+    /// across region edges, into ROM, holes and the framebuffer) and returns what it read and the
+    /// committed-write notifications, in order.
+    fn drive_scalar_ops(
+        memory: &PhysicalMemory,
+        seed: u64,
+        steps: usize,
+    ) -> (Vec<String>, Vec<GuestPhysicalRange>) {
+        let mut rng = XorShift(seed);
+        let mut seen = Vec::new();
+        let mut log = Vec::new();
+        for _ in 0..steps {
+            let at = random_address(&mut rng);
+            let value = rng.next();
+            let mut note = |range| log.push(range);
+            let result = match rng.next() % 8 {
+                0 => format!("{:?}", memory.load_u8(at)),
+                1 => format!("{:?}", memory.load_u16(at)),
+                2 => format!("{:?}", memory.load_u32(at)),
+                3 => format!("{:?}", memory.load_u64(at)),
+                4 => format!("{:?}", memory.store_u8(at, value as u8, &mut note)),
+                5 => format!("{:?}", memory.store_u16(at, value as u16, &mut note)),
+                6 => format!("{:?}", memory.store_u32(at, value as u32, &mut note)),
+                _ => format!("{:?}", memory.store_u64(at, value, &mut note)),
+            };
+            seen.push(result);
+        }
+        (seen, log)
+    }
+
+    /// The generations of every page of the probed window.
+    fn generations(memory: &PhysicalMemory) -> Vec<String> {
+        (0..=0x7u64)
+            .map(|page| {
+                format!(
+                    "{:?}",
+                    memory.code_page_generation(GuestPhysicalAddress::new(page * 0x1000))
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_default_mode_is_interleaved_and_the_switch_reads_back() {
+        let mut memory = storage_test_memory();
+        assert_eq!(memory.execution_mode(), ExecutionMode::Interleaved);
+        assert_eq!(ExecutionMode::default(), ExecutionMode::Interleaved);
+        memory.set_execution_mode(ExecutionMode::Parallel);
+        assert_eq!(memory.execution_mode(), ExecutionMode::Parallel);
+        memory.set_execution_mode(ExecutionMode::Interleaved);
+        assert_eq!(memory.execution_mode(), ExecutionMode::Interleaved);
+    }
+
+    #[test]
+    fn ordinary_scalar_accesses_use_the_order_of_the_execution_mode() {
+        use crate::ram_storage::traced_orders;
+        for (mode, expected) in [
+            (ExecutionMode::Interleaved, Ordering::Relaxed),
+            (ExecutionMode::Parallel, Ordering::SeqCst),
+        ] {
+            let mut memory = storage_test_memory();
+            memory.set_execution_mode(mode);
+            let (_, orders) = traced_orders(|| {
+                // Aligned and misaligned (byte path) of every width, inside RAM.
+                for width in 0..4u32 {
+                    for at in [0x2000u64, 0x2001, 0x2002, 0x2003, 0x2007] {
+                        let at = GuestPhysicalAddress::new(at);
+                        match width {
+                            0 => {
+                                memory.store_u8(at, 1, |_| {}).unwrap();
+                                memory.load_u8(at).unwrap();
+                            }
+                            1 => {
+                                memory.store_u16(at, 2, |_| {}).unwrap();
+                                memory.load_u16(at).unwrap();
+                            }
+                            2 => {
+                                memory.store_u32(at, 3, |_| {}).unwrap();
+                                memory.load_u32(at).unwrap();
+                            }
+                            _ => {
+                                memory.store_u64(at, 4, |_| {}).unwrap();
+                                memory.load_u64(at).unwrap();
+                            }
+                        }
+                    }
+                }
+            });
+            // Bulk copies (the operand pieces of the page walk, DMA, the loader) follow the mode
+            // too: every host access of a copy has the ordinary order (S6-32).
+            let (_, bulk) = traced_orders(|| {
+                for (at, len) in [
+                    (0x2000u64, 8usize),
+                    (0x2003, 8),
+                    (0x2001, 5),
+                    (0x2000, 13),
+                    (0x2005, 1),
+                ] {
+                    let at = GuestPhysicalAddress::new(at);
+                    memory.store_bytes(at, &vec![9u8; len], |_| {}).unwrap();
+                    memory.load_bytes(at, &mut vec![0u8; len]).unwrap();
+                }
+            });
+            assert!(bulk.len() >= 10, "{mode:?}: {} bulk accesses", bulk.len());
+            assert!(
+                bulk.iter().all(|order| *order == expected),
+                "{mode:?}: every access of a bulk copy is {expected:?}"
+            );
+            assert!(orders.len() >= 40, "{mode:?}: {} accesses", orders.len());
+            assert!(
+                orders.iter().all(|order| *order == expected),
+                "{mode:?}: every ordinary access is {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_single_threaded_run_is_identical_in_both_modes() {
+        for seed in [0x5eed_0001u64, 0x5eed_0002, 0x5eed_0003] {
+            let mut interleaved = storage_test_memory();
+            let mut parallel = storage_test_memory();
+            interleaved.set_execution_mode(ExecutionMode::Interleaved);
+            parallel.set_execution_mode(ExecutionMode::Parallel);
+            let (results_i, log_i) = drive_scalar_ops(&interleaved, seed, 20_000);
+            let (results_p, log_p) = drive_scalar_ops(&parallel, seed, 20_000);
+            assert_eq!(results_i, results_p, "seed {seed:#x}: every result");
+            assert_eq!(log_i, log_p, "seed {seed:#x}: the notification log");
+            assert!(!log_i.is_empty(), "seed {seed:#x}: the log is exercised");
+            assert_eq!(dump(&interleaved), dump(&parallel), "seed {seed:#x}: dump");
+            // The generations (Release in both) of every page of the window and the locked
+            // operations are mode independent.
+            assert_eq!(
+                generations(&interleaved),
+                generations(&parallel),
+                "seed {seed:#x}: generations"
+            );
+            let cell = GuestPhysicalAddress::new(0x2008);
+            for memory in [&interleaved, &parallel] {
+                memory.store_u64(cell, 5, |_| {}).unwrap();
+            }
+            assert_eq!(
+                interleaved.atomic_fetch_add(cell, AccessWidth::Qword, 7, |_| {}),
+                parallel.atomic_fetch_add(cell, AccessWidth::Qword, 7, |_| {})
+            );
+        }
+    }
+
+    #[test]
+    fn a_fence_places_a_host_fence_only_in_the_parallel_mode_and_changes_no_byte() {
+        use od_isa::FenceKind;
+        for (mode, issued) in [
+            (ExecutionMode::Interleaved, 0u64),
+            (ExecutionMode::Parallel, 6),
+        ] {
+            let mut memory = storage_test_memory();
+            memory.set_execution_mode(mode);
+            drive_scalar_ops(&memory, 0x5eed_0004, 500);
+            let before = dump(&memory);
+            let generation = memory.code_page_generation(GuestPhysicalAddress::new(0x2000));
+            assert_eq!(memory.host_fences_issued(), 0);
+            for kind in [FenceKind::Full, FenceKind::Store, FenceKind::Load] {
+                memory.fence(kind);
+                memory.fence(kind);
+            }
+            assert_eq!(memory.host_fences_issued(), issued, "{mode:?}");
+            assert_eq!(dump(&memory), before, "{mode:?}: no byte changed");
+            assert_eq!(
+                memory.code_page_generation(GuestPhysicalAddress::new(0x2000)),
+                generation,
+                "{mode:?}: no generation changed"
+            );
+        }
     }
 }

@@ -80,6 +80,26 @@ fn trace(at: usize, lead: usize, width: usize) {
 #[inline(always)]
 fn trace(_at: usize, _lead: usize, _width: usize) {}
 
+#[cfg(test)]
+thread_local! {
+    /// Test hook (S6-32): the host memory order of every scalar load and store made by this thread.
+    static ORDERS: std::cell::RefCell<Option<Vec<Ordering>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn trace_order(order: Ordering) {
+    ORDERS.with(|orders| {
+        if let Some(log) = orders.borrow_mut().as_mut() {
+            log.push(order);
+        }
+    });
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn trace_order(_order: Ordering) {}
+
 /// Width of the next host access of a copy that starts at host index `at` with `remaining`
 /// bytes left: the largest of 8, 4, 2, 1 that is naturally aligned at `at` and fits.
 fn chunk_width(at: usize, remaining: usize) -> usize {
@@ -97,6 +117,7 @@ macro_rules! cell_access {
             const WIDTH: usize = std::mem::size_of::<$int>();
             debug_assert!(at % WIDTH == 0 && at + WIDTH <= self.lead + self.len);
             trace(at, self.lead, WIDTH);
+            trace_order(order);
             // SAFETY: `at` is a multiple of the width inside the allocation, `base()` is
             // 8-aligned, so the pointer is non-null, naturally aligned and valid for the
             // lifetime of `self`; it derives from the whole slice, whose cells are atomics
@@ -113,6 +134,7 @@ macro_rules! cell_access {
             const WIDTH: usize = std::mem::size_of::<$int>();
             debug_assert!(at % WIDTH == 0 && at + WIDTH <= self.lead + self.len);
             trace(at, self.lead, WIDTH);
+            trace_order(order);
             // SAFETY: as in the load.
             let cell = unsafe { <$atomic>::from_ptr(self.base().add(at).cast::<$int>()) };
             cell.store(value, order);
@@ -124,6 +146,7 @@ macro_rules! scalar_access {
     ($load:ident, $store:ident, $cell_load:ident, $cell_store:ident, $int:ty) => {
         /// Scalar load of `offset` (region offset). A naturally aligned access is one host access
         /// of this width; otherwise ascending one-byte accesses. Panics when out of range.
+        #[inline(always)]
         pub(crate) fn $load(&self, offset: usize, order: Ordering) -> $int {
             const WIDTH: usize = std::mem::size_of::<$int>();
             self.check(offset, WIDTH);
@@ -139,6 +162,7 @@ macro_rules! scalar_access {
         }
 
         /// Scalar store; the split rule is that of the load.
+        #[inline(always)]
         pub(crate) fn $store(&self, offset: usize, value: $int, order: Ordering) {
             const WIDTH: usize = std::mem::size_of::<$int>();
             self.check(offset, WIDTH);
@@ -299,14 +323,17 @@ impl RamStorage {
     scalar_access!(load_u64, store_u64, cell_load_u64, cell_store_u64, u64);
 
     /// One byte, or `None` outside the store (frame reads of the fetch cache).
-    pub(crate) fn try_load_u8(&self, offset: usize) -> Option<u8> {
-        (offset < self.len).then(|| self.cell_load_u8(self.lead + offset, Ordering::Relaxed))
+    #[inline(always)]
+    pub(crate) fn try_load_u8(&self, offset: usize, order: Ordering) -> Option<u8> {
+        (offset < self.len).then(|| self.cell_load_u8(self.lead + offset, order))
     }
 
-    /// Bulk read into `out` (`offset + out.len() <= len`, else panic). Not atomic as a whole and
-    /// not ordered: a sequence of relaxed host accesses, each naturally aligned and as wide as
-    /// the position and the remaining length allow (so an aligned 1/2/4/8-byte copy is one access).
-    pub(crate) fn copy_out(&self, offset: usize, out: &mut [u8]) {
+    /// Bulk read into `out` (`offset + out.len() <= len`, else panic). Not atomic as a whole: a
+    /// sequence of host accesses, each of memory order `order` (S6-32: the machine's ordinary
+    /// order, `Relaxed` in the interleaving mode), each naturally aligned and as wide as the
+    /// position and the remaining length allow (so an aligned 1/2/4/8-byte copy is one access).
+    #[inline(always)]
+    pub(crate) fn copy_out(&self, offset: usize, out: &mut [u8], order: Ordering) {
         self.check(offset, out.len());
         let mut done = 0;
         while done < out.len() {
@@ -314,16 +341,10 @@ impl RamStorage {
             let width = chunk_width(at, out.len() - done);
             let target = &mut out[done..done + width];
             match width {
-                8 => {
-                    target.copy_from_slice(&self.cell_load_u64(at, Ordering::Relaxed).to_le_bytes())
-                }
-                4 => {
-                    target.copy_from_slice(&self.cell_load_u32(at, Ordering::Relaxed).to_le_bytes())
-                }
-                2 => {
-                    target.copy_from_slice(&self.cell_load_u16(at, Ordering::Relaxed).to_le_bytes())
-                }
-                _ => target[0] = self.cell_load_u8(at, Ordering::Relaxed),
+                8 => target.copy_from_slice(&self.cell_load_u64(at, order).to_le_bytes()),
+                4 => target.copy_from_slice(&self.cell_load_u32(at, order).to_le_bytes()),
+                2 => target.copy_from_slice(&self.cell_load_u16(at, order).to_le_bytes()),
+                _ => target[0] = self.cell_load_u8(at, order),
             }
             done += width;
         }
@@ -331,7 +352,8 @@ impl RamStorage {
 
     /// Bulk write of `input`; the granularity and the (absent) atomicity are those of
     /// [`Self::copy_out`]. Writes ascend in address order.
-    pub(crate) fn copy_in(&self, offset: usize, input: &[u8]) {
+    #[inline(always)]
+    pub(crate) fn copy_in(&self, offset: usize, input: &[u8], order: Ordering) {
         self.check(offset, input.len());
         let mut done = 0;
         while done < input.len() {
@@ -339,22 +361,10 @@ impl RamStorage {
             let width = chunk_width(at, input.len() - done);
             let source = &input[done..done + width];
             match width {
-                8 => self.cell_store_u64(
-                    at,
-                    u64::from_le_bytes(source.try_into().unwrap()),
-                    Ordering::Relaxed,
-                ),
-                4 => self.cell_store_u32(
-                    at,
-                    u32::from_le_bytes(source.try_into().unwrap()),
-                    Ordering::Relaxed,
-                ),
-                2 => self.cell_store_u16(
-                    at,
-                    u16::from_le_bytes(source.try_into().unwrap()),
-                    Ordering::Relaxed,
-                ),
-                _ => self.cell_store_u8(at, source[0], Ordering::Relaxed),
+                8 => self.cell_store_u64(at, u64::from_le_bytes(source.try_into().unwrap()), order),
+                4 => self.cell_store_u32(at, u32::from_le_bytes(source.try_into().unwrap()), order),
+                2 => self.cell_store_u16(at, u16::from_le_bytes(source.try_into().unwrap()), order),
+                _ => self.cell_store_u8(at, source[0], order),
             }
             done += width;
         }
@@ -373,6 +383,16 @@ pub(crate) fn traced<R>(f: impl FnOnce() -> R) -> (R, Vec<(usize, usize)>) {
     TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
     let result = f();
     let log = TRACE.with(|trace| trace.borrow_mut().take().unwrap());
+    (result, log)
+}
+
+/// Runs `f` and returns its result with the host memory order of every scalar load and store it
+/// made on this thread (S6-32).
+#[cfg(test)]
+pub(crate) fn traced_orders<R>(f: impl FnOnce() -> R) -> (R, Vec<Ordering>) {
+    ORDERS.with(|orders| *orders.borrow_mut() = Some(Vec::new()));
+    let result = f();
+    let log = ORDERS.with(|orders| orders.borrow_mut().take().unwrap());
     (result, log)
 }
 
@@ -444,18 +464,18 @@ mod tests {
     fn bulk_copy_uses_one_access_for_an_aligned_scalar_and_ascending_chunks_otherwise() {
         let ram = storage(64, 0);
         for width in [1usize, 2, 4, 8] {
-            let (_, log) = traced(|| ram.copy_in(width * 2, &vec![7u8; width]));
+            let (_, log) = traced(|| ram.copy_in(width * 2, &vec![7u8; width], Ordering::Relaxed));
             assert_eq!(log, vec![(width * 2, width)], "aligned {width}-byte copy");
             let mut out = vec![0u8; width];
-            let (_, log) = traced(|| ram.copy_out(width * 2, &mut out));
+            let (_, log) = traced(|| ram.copy_out(width * 2, &mut out, Ordering::Relaxed));
             assert_eq!(log, vec![(width * 2, width)]);
             assert_eq!(out, vec![7u8; width]);
         }
         // 13 bytes from offset 3: 1 (to 4), 4 (to 8), 8 (to 16); chunks ascend and tile the range.
-        let (_, log) = traced(|| ram.copy_in(3, &[1u8; 13]));
+        let (_, log) = traced(|| ram.copy_in(3, &[1u8; 13], Ordering::Relaxed));
         assert_eq!(log, vec![(3, 1), (4, 4), (8, 8)]);
         // 7 bytes from offset 8: 4, 2, 1.
-        let (_, log) = traced(|| ram.copy_in(8, &[1u8; 7]));
+        let (_, log) = traced(|| ram.copy_in(8, &[1u8; 7], Ordering::Relaxed));
         assert_eq!(log, vec![(8, 4), (12, 2), (14, 1)]);
     }
 
@@ -467,23 +487,23 @@ mod tests {
                 for len in 1..33usize {
                     let before: Vec<u8> = {
                         let mut all = vec![0u8; 80];
-                        ram.copy_out(0, &mut all);
+                        ram.copy_out(0, &mut all, Ordering::Relaxed);
                         all
                     };
                     let data: Vec<u8> = (0..len)
                         .map(|i| (i as u8).wrapping_mul(31).wrapping_add(offset as u8) | 1)
                         .collect();
-                    ram.copy_in(offset, &data);
+                    ram.copy_in(offset, &data, Ordering::Relaxed);
                     let mut after = vec![0u8; 80];
-                    ram.copy_out(0, &mut after);
+                    ram.copy_out(0, &mut after, Ordering::Relaxed);
                     let mut expected = before.clone();
                     expected[offset..offset + len].copy_from_slice(&data);
                     assert_eq!(after, expected, "lead {lead} offset {offset} len {len}");
                     let mut back = vec![0u8; len];
-                    ram.copy_out(offset, &mut back);
+                    ram.copy_out(offset, &mut back, Ordering::Relaxed);
                     assert_eq!(back, data);
                     // restore
-                    ram.copy_in(0, &before);
+                    ram.copy_in(0, &before, Ordering::Relaxed);
                 }
             }
         }
@@ -494,13 +514,13 @@ mod tests {
         let ram = storage(32, 2);
         ram.store_u64(6, 0x0807_0605_0403_0201, Ordering::SeqCst);
         let mut bytes = [0u8; 8];
-        ram.copy_out(6, &mut bytes);
+        ram.copy_out(6, &mut bytes, Ordering::Relaxed);
         assert_eq!(bytes, [1, 2, 3, 4, 5, 6, 7, 8]);
         assert_eq!(ram.load_u32(10, Ordering::SeqCst), 0x0807_0605);
         assert_eq!(ram.load_u16(7, Ordering::SeqCst), 0x0302); // misaligned host: byte path
         assert_eq!(ram.load_u8(13, Ordering::SeqCst), 8);
-        assert_eq!(ram.try_load_u8(13), Some(8));
-        assert_eq!(ram.try_load_u8(32), None);
+        assert_eq!(ram.try_load_u8(13, Ordering::Relaxed), Some(8));
+        assert_eq!(ram.try_load_u8(32, Ordering::Relaxed), None);
     }
 
     #[test]
@@ -524,7 +544,7 @@ mod tests {
                         ram.store_u64(0, u64::from_ne_bytes([x; 8]), Ordering::SeqCst);
                         ram.store_u32(16, u32::from_ne_bytes([x; 4]), Ordering::SeqCst);
                         ram.store_u16(24, u16::from_ne_bytes([x; 2]), Ordering::SeqCst);
-                        ram.copy_in(32, &[x; 8]); // aligned 8-byte copy is one access
+                        ram.copy_in(32, &[x; 8], Ordering::Relaxed); // aligned 8-byte copy is one access
                     }
                 });
             }
@@ -534,7 +554,7 @@ mod tests {
                 let b = ram.load_u32(16, Ordering::SeqCst).to_ne_bytes();
                 let c = ram.load_u16(24, Ordering::SeqCst).to_ne_bytes();
                 let mut d = [0u8; 8];
-                ram.copy_out(32, &mut d);
+                ram.copy_out(32, &mut d, Ordering::Relaxed);
                 assert!(a.iter().all(|&v| v == a[0]), "torn u64 {a:?}");
                 assert!(b.iter().all(|&v| v == b[0]), "torn u32 {b:?}");
                 assert!(c.iter().all(|&v| v == c[0]), "torn u16 {c:?}");
@@ -567,7 +587,7 @@ mod tests {
                     for (i, byte) in fill.iter_mut().enumerate() {
                         *byte = (i as u8).wrapping_mul(37) | 0x80;
                     }
-                    ram.copy_in(0, &fill);
+                    ram.copy_in(0, &fill, Ordering::Relaxed);
                     let mut old = [0u8; 8];
                     old[..width].copy_from_slice(&fill[offset..offset + width]);
                     let old = u64::from_le_bytes(old);
@@ -579,7 +599,7 @@ mod tests {
                     };
                     let dump = |ram: &RamStorage| {
                         let mut all = [0u8; 64];
-                        ram.copy_out(0, &mut all);
+                        ram.copy_out(0, &mut all, Ordering::Relaxed);
                         all
                     };
 
@@ -588,7 +608,7 @@ mod tests {
                     assert_eq!(got, old, "add width {width} offset {offset} lead {lead}");
                     assert_eq!(log, vec![(offset, width)]);
                     assert_eq!(dump(&ram), expect(old.wrapping_add(u64::MAX) & mask));
-                    ram.copy_in(0, &fill);
+                    ram.copy_in(0, &fill, Ordering::Relaxed);
 
                     // swap
                     let (got, log) =
@@ -596,7 +616,7 @@ mod tests {
                     assert_eq!(got, old);
                     assert_eq!(log, vec![(offset, width)]);
                     assert_eq!(dump(&ram), expect(0x0123_4567_89ab_cdef & mask));
-                    ram.copy_in(0, &fill);
+                    ram.copy_in(0, &fill, Ordering::Relaxed);
 
                     // compare-exchange: a mismatch writes nothing and reports the observed value
                     let (got, log) =
@@ -663,7 +683,7 @@ mod tests {
             let total = (THREADS * ROUNDS) & mask;
             let read = |at: usize| {
                 let mut bytes = [0u8; 64];
-                ram.copy_out(0, &mut bytes);
+                ram.copy_out(0, &mut bytes, Ordering::Relaxed);
                 let mut value = [0u8; 8];
                 value[..width].copy_from_slice(&bytes[at..at + width]);
                 u64::from_le_bytes(value)

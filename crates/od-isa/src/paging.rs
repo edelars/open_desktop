@@ -879,6 +879,62 @@ mod tests {
         assert_eq!(churn.calls, TOUCH_RETRY_LIMIT + 1);
     }
 
+    /// S6-32 step 4: the walk reads each table entry with ONE `read_u64` and never with `read_u8`
+    /// (the memory counts both). Every level of a 4 KiB and a 2 MiB walk, for every access kind.
+    #[test]
+    fn the_walk_reads_each_entry_with_one_read_u64_and_no_read_u8() {
+        use std::cell::RefCell;
+        struct Counting {
+            bytes: Vec<u8>,
+            u8_reads: RefCell<Vec<u32>>,
+            u64_reads: RefCell<Vec<u32>>,
+        }
+        impl RealModeMemory for Counting {
+            fn read_u8(&self, linear: u32) -> Option<u8> {
+                self.u8_reads.borrow_mut().push(linear);
+                self.bytes.get(linear as usize).copied()
+            }
+            fn read_u64(&self, linear: u32) -> Option<u64> {
+                self.u64_reads.borrow_mut().push(linear);
+                let at = linear as usize;
+                let bytes: [u8; 8] = self.bytes.get(at..at + 8)?.try_into().ok()?;
+                Some(u64::from_le_bytes(bytes))
+            }
+            fn can_write(&self, _linear: u32) -> bool {
+                true
+            }
+            fn write_u8(&mut self, _linear: u32, _value: u8) -> bool {
+                false
+            }
+        }
+        for (linear, entries) in [
+            (0x2abcu32, vec![PML4, PDPT, PD, PT + 16]),
+            (0x20_0123, vec![PML4, PDPT, PD + 8]),
+        ] {
+            for access in [AccessKind::Read, AccessKind::Write, AccessKind::Fetch] {
+                let mut bytes = tables_4k();
+                // PD[1] = 2 MiB page at 2 MiB.
+                set(&mut bytes, PD + 8, 0x20_0000 | PS | 3);
+                let mem = Counting {
+                    bytes,
+                    u8_reads: RefCell::new(Vec::new()),
+                    u64_reads: RefCell::new(Vec::new()),
+                };
+                translate(&mem, PARAMS, linear, access).unwrap();
+                assert_eq!(
+                    *mem.u64_reads.borrow(),
+                    entries.iter().map(|at| *at as u32).collect::<Vec<_>>(),
+                    "{linear:#x} {access:?}: one read_u64 per level, in walk order"
+                );
+                assert!(
+                    mem.u8_reads.borrow().is_empty(),
+                    "{linear:#x} {access:?}: no read_u8 in the walk: {:?}",
+                    mem.u8_reads.borrow()
+                );
+            }
+        }
+    }
+
     /// The default 8-byte read and compare-and-replace on an image: unreadable and unwritable
     /// entries are `None`, a mismatch writes nothing.
     #[test]

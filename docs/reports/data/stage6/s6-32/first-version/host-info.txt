@@ -1,0 +1,10 @@
+date: 2026-11-17T21:47:31Z
+ProductName:		macOS
+ProductVersion:		26.7.1
+BuildVersion:		25G241
+Apple M3 Max
+14
+38654705664
+rustc 1.99.0 (b940084d7 2026-09-28)
+Darwin 192.168.1.100 25.6.0 Darwin Kernel Version 25.6.0: Tue Aug 18 17:51:35 PDT 2026; root:xnu-12377.161.15.700.19~2/RELEASE_ARM64_T6031 arm64
+before: worktree of 1ef4897 (release, --locked --offline, od-runner and od-bench, CARGO_TARGET_DIR=/private/tmp/s632_target_before); after: working tree on top of 1ef4897 (S6-32) (release, --locked --offline, CARGO_TARGET_DIR=/private/tmp/s632_target_after); parallel: scratch worktree 1ef4897 + S6-32 diff + PhysicalMemory::new default Parallel (CARGO_TARGET_DIR=/private/tmp/s632_target_parallel), not in the repository; other users' processes (including other cargo test runs) were active on the host, see load in the logs

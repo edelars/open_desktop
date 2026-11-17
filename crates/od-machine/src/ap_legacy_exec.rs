@@ -1357,7 +1357,8 @@ mod tests {
         fn an_ap_walk_against_a_concurrent_writer_of_the_same_entry_loses_no_change() {
             const ROUNDS: u64 = 400_000;
             const SOFT_BITS: [u64; 3] = [0x4, 0x80, 0x200];
-            let memory = table_memory();
+            let mut memory = table_memory();
+            memory.set_execution_mode(crate::ExecutionMode::Parallel);
             let mut image = tables(0x60);
             image[LEAF as usize..LEAF as usize + 8].copy_from_slice(&0x2003u64.to_le_bytes());
             load_image(&memory, &image);

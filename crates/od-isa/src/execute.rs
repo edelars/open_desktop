@@ -11,8 +11,8 @@ use crate::long_decode::{
     general_protection,
 };
 use crate::memory::{
-    AccessContext, AccessOrigin, ArchitecturalFault, GuestMemory, InstructionMode, MemoryError,
-    PrivilegeLevel,
+    AccessContext, AccessOrigin, ArchitecturalFault, FenceKind, GuestMemory, InstructionMode,
+    MemoryError, PrivilegeLevel,
 };
 use crate::msr::MsrProfile;
 use crate::sep::SepProfile;
@@ -18799,6 +18799,9 @@ impl<M: GuestMemory> GuestMemory for FetchCapture<'_, M> {
     }
     fn mfence(&mut self, c: AccessContext) -> Result<(), MemoryError> {
         self.inner.mfence(c)
+    }
+    fn fence(&mut self, kind: FenceKind) -> Result<(), MemoryError> {
+        self.inner.fence(kind)
     }
 }
 
@@ -51502,9 +51505,16 @@ fn step_configured(
                 Err(error) => return Err(error),
             }
         }
-        // S4-38L9o: inside the CPL0 set MFENCE does not call the backend completion hook (no
-        // buffers to drain for a single vCPU); outside it the existing backend call is kept.
-        Operation::Mfence if control_policy.is_some() => {}
+        // S4-38L9o: inside the CPL0 set MFENCE does not call the backend completion hook
+        // (`mfence`); outside it the existing backend call is kept. S6-32: inside the set it
+        // calls the memory's `fence` (a provided method, a no-op by default) with the full kind,
+        // so a backend that shares RAM between host threads can place its host fence there.
+        Operation::Mfence if control_policy.is_some() => {
+            match memory.fence(FenceKind::Full) {
+                Ok(()) => {}
+                Err(error) => return report_memory_error(error),
+            }
+        }
         operation @ (Operation::MovImmediate { .. }
         | Operation::Mov { .. }
         | Operation::MovFsLoad { .. }
@@ -53129,9 +53139,20 @@ fn step_configured(
             return Ok(StepOutcome::Branched);
         }
         Operation::Endbr64Nop | Operation::Pause | Operation::NopModrm | Operation::Invlpg => {}
-        // S4-38L9o: the fences change nothing but RIP and the retired count; inside the CPL0
-        // set MFENCE does not call the backend completion hook either (no buffers to drain).
-        Operation::Lfence | Operation::Sfence => {}
+        // S4-38L9o: the fences change nothing but RIP and the retired count. S6-32: each one
+        // calls the memory's `fence` with its own kind (Load for LFENCE, Store for SFENCE; MFENCE
+        // is the arm above) so a backend that shares RAM between host threads can place its host
+        // fence there; the default is a no-op.
+        Operation::Lfence | Operation::Sfence => {
+            let kind = if matches!(instruction.operation, Operation::Lfence) {
+                FenceKind::Load
+            } else {
+                FenceKind::Store
+            };
+            if let Err(error) = memory.fence(kind) {
+                return report_memory_error(error);
+            }
+        }
         Operation::Leave => {
             // S4-38L6d: `RSP <- RBP; RBP <- POP qword` (Intel SDM Vol.2 LEAVE, 64-bit mode;
             // from memory). The qword at [RBP] is read first (#SS(0) for a non-canonical

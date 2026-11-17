@@ -2520,6 +2520,57 @@ mod tracked_access_tests {
         }
     }
 
+    /// S6-32 step 4: the walk reads each table entry as ONE 8-byte access (never byte by byte),
+    /// in both execution modes, for a read, a write (A/D set by compare-and-replace) and a fetch.
+    /// The host access log of the storage (`ram_storage::traced`) is the counter: every host
+    /// access that lands inside a table entry is one access of width 8 at the entry's address.
+    #[test]
+    fn the_walk_reads_each_table_entry_with_one_eight_byte_access_in_both_modes() {
+        use crate::ExecutionMode;
+        use crate::ram_storage::traced;
+        const ENTRIES: [usize; 4] = [0x1008, 0x2010, 0x3018, 0x4020];
+        for mode in [ExecutionMode::Interleaved, ExecutionMode::Parallel] {
+            for access in [AccessKind::Read, AccessKind::Write, AccessKind::Fetch] {
+                let (mut memory, paging) = setup(0x4007, 0x6000);
+                memory.set_execution_mode(mode);
+                let (report, log) = traced(|| {
+                    access_long64_4k_ram(&memory, &paging, request(operation(access)), |_| {})
+                });
+                assert!(
+                    report.outcome.is_ok(),
+                    "{mode:?} {access:?}: {:?}",
+                    report.outcome
+                );
+                for entry in ENTRIES {
+                    let inside: Vec<_> = log
+                        .iter()
+                        .filter(|(at, width)| *at < entry + 8 && at + width > entry)
+                        .collect();
+                    assert!(
+                        !inside.is_empty(),
+                        "{mode:?} {access:?}: entry {entry:#x} read"
+                    );
+                    assert!(
+                        inside.iter().all(|&&(at, width)| at == entry && width == 8),
+                        "{mode:?} {access:?}: entry {entry:#x} is only touched by 8-byte accesses \
+                         at its address: {inside:?}"
+                    );
+                    // One load of the entry, plus at most one compare-and-replace per A and per D
+                    // bit (the leaf of a write): never a byte access.
+                    assert!(
+                        inside.len() <= 3,
+                        "{mode:?} {access:?}: {entry:#x}: {inside:?}"
+                    );
+                }
+                // The operand itself is one byte, outside every entry.
+                assert!(
+                    log.iter().any(|&(at, width)| at == 0x4abc && width == 1),
+                    "{mode:?} {access:?}: {log:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn tracked_nonpresent_matrix_covers_every_level_access_and_cpl() {
         let privileges = [PrivilegeLevel::Ring0, PrivilegeLevel::Ring3];
