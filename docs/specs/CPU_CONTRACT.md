@@ -28815,3 +28815,21 @@ after 9,872 retired instructions, `Unsupported { opcode: 135 }`; COM1 is empty.
 Full od-isa passes (2,322/1,591/126/29/6/1,283/7/15; 0 doc tests), paged
 machine quantum passes (110/110), workspace all-targets offline check passes,
 and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-392: `0F 87 48 02 00 00` — JA rel32 +0x248
+
+Base `PagedCpl0ProbeV1` admits only this exact unprefixed rel32 JA displacement.
+The condition is CF=0 && ZF=0; the signed displacement is added to next RIP.
+The instruction preserves RFLAGS and definedness. A taken target must be
+canonical or the instruction faults without retirement; a noncanonical
+fallthrough is not checked by this instruction. Fetch faults, including on
+the final displacement byte, are atomic. Adjacent displacements, other
+conditions/prefixes, CPL3 and other profiles remain unsupported. ISSUE-201 is
+the unrelated CLD caveat.
+
+Five focused tests and the other-profile matrix pass. Full od-isa passes
+(2,322/1,591/126/29/6/1,288/7/15; 0 doc tests); paged machine quantum passes
+(110/110), workspace all-targets offline check passes, and scoped rustfmt and
+diff-check pass. Independent review approved with no findings. Runner advances to `4E 8D 04 19`
+at RIP `0x201288` after 9,873 retired instructions, `Unsupported { opcode: 141 }`;
+COM1 is empty.

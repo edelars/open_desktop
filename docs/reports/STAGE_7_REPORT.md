@@ -2884,7 +2884,6 @@ machine quantum passes (110/110), workspace all-targets offline cargo check
 passes with existing warnings, and scoped rustfmt and `git diff --check` pass.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
 
-
 ### ISSUE-381 — exact word store `[RSP+0x10],0` (`66 C7 44 24 10 00 00`)
 
 Only exact `66 C7 44 24 10 00 00` is admitted in base `PagedCpl0ProbeV1`.
@@ -3070,3 +3069,22 @@ On `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
 runner advances to `0F 87 48 02 00 00` (JA rel32 +0x248, ISSUE-392), RIP
 `0x201282`, after 9,872 retired instructions, `Unsupported { opcode: 135 }`;
 COM1 is empty. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-392 — exact `JA rel32 +0x248` (`0F 87 48 02 00 00`)
+
+Only this exact displacement is admitted in base `PagedCpl0ProbeV1`. The branch
+uses CF=0 && ZF=0, computes the signed rel32 target from next RIP, and preserves
+all flags and definedness. Only taken targets receive a canonicality check.
+Five focused tests cover condition/definedness, target/fallthrough, canonicality,
+fetch-fault atomicity, neighboring forms and CPL3; the other-profile matrix
+passes.
+
+The firmware image `/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`. After
+admission, runner retires 9,873 instructions and stops at `4E 8D 04 19`
+(`LEA R8,[RCX+R11]`, ISSUE-393), RIP `0x201288`,
+`Unsupported { opcode: 141 }`; COM1 is empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,288/7/15; 0 doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes, and scoped rustfmt and
+diff-check pass. Independent review approved with no findings. ISSUE-201 remains
+the unrelated CLD caveat.

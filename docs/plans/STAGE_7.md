@@ -1742,3 +1742,20 @@ Scoped rustfmt and `git diff --check` pass. The firmware runner advances to
 `0F 87 48 02 00 00` (JA rel32 +0x248, ISSUE-392) at RIP `0x201282` after
 9,872 retired instructions, `Unsupported { opcode: 135 }`; COM1 is empty.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-392 — exact JA rel32 +0x248 (`0F 87 48 02 00 00`)
+
+Admit this displacement only in base `PagedCpl0ProbeV1`, using JA's exact
+CF=0 && ZF=0 predicate and signed rel32 from next RIP. Preserve flags and their
+definedness; check target canonicality only when taken. Cover taken and
+fallthrough RIP, defined/undefined CF/ZF, taken-only canonicality, final-byte
+fetch fault, adjacent displacements and other condition/prefix forms, CPL3 and
+other profiles. ISSUE-201 remains the unrelated CLD caveat.
+
+Focused tests pass (5/5), other-profile matrix passes (1/1), full od-isa passes
+(2,322/1,591/126/29/6/1,288/7/15; 0 doc tests), and paged machine quantum
+passes (110/110). The runner advances to `4E 8D 04 19` (LEA R8,[RCX+R11],
+ISSUE-393) at RIP `0x201288` after 9,873 retired instructions,
+`Unsupported { opcode: 141 }`; COM1 is empty. Workspace all-targets offline
+check, scoped rustfmt and `git diff --check` pass. Independent review approved
+with no findings.

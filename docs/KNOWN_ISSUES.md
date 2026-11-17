@@ -5019,7 +5019,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-392 — S7-04: exact helper JA rel32 +0x248 frontier (`0F 87 48 02 00 00`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-391.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201282`.
-- **Статус:** открыта.
-- **Суть и последствия:** after ISSUE-391 the firmware reaches exact `0F 87 48 02 00 00` (`JA rel32 +0x248`), not yet admitted by the bounded base profile.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only `0F 87 48 02 00 00` (`JA rel32 +0x248`) under condition CF=0 && ZF=0. Target is computed from next RIP with signed rel32; flags and definedness are preserved, and only a taken target is canonicality-checked. Other displacements/conditions, prefixes, CPL3 and other profiles remain unsupported.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,872 instructions and reported `Unsupported { opcode: 135 }` at RIP `0x201282`; COM1 is empty. The bytes are present at image offset `0x1282`, corresponding to the firmware link-base shadow.
-- **Следующий шаг:** graph-navigate exact JA rel32 conditions and admit only this displacement.
+- **Результат:** runner now retires 9,873 instructions and stops at RIP `0x201288`, bytes `4E 8D 04 19` (`LEA R8,[RCX+R11]`, ISSUE-393), `Unsupported { opcode: 141 }`; COM1 is empty.
+- **Проверка:** focused Jcc cases 5/5 and other-profile matrix 1/1 pass; full od-isa passes (2,322/1,591/126/29/6/1,288/7/15; 0 doc tests), paged machine quantum 110/110 passes, workspace all-targets offline check passes, and scoped rustfmt plus diff-check pass. Independent review approved with no findings; ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-393 — S7-04: exact helper LEA R8,[RCX+R11] frontier (`4E 8D 04 19`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-392.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201288`.
+- **Статус:** открыта.
+- **Суть и последствия:** after ISSUE-392, firmware reaches exact `4E 8D 04 19` (`LEA R8,[RCX+R11]`), not yet admitted by the bounded base profile.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,873 instructions and reported `Unsupported { opcode: 141 }` at RIP `0x201288`; COM1 is empty. The bytes are present at image offset `0x1288`, corresponding to the firmware link-base shadow.
+- **Следующий шаг:** add only this exact register-only LEA form after checking REX/SIB routing and profile boundaries.
