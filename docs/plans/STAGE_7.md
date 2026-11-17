@@ -949,6 +949,7 @@ cleared. Runner advances to ISSUE-348, `0F 85 89 FE FF FF`
 empty. ISSUE-201 remains the unrelated pair of stale CLD-unsupported
 full-machine expectations. Do not mark the Stage 7 gate complete.
 
+
 Four focused tests and the other-profile matrix pass. Full od-isa suites pass
 (2,322/1,591/126/29/6/1,075/7/15; zero doc tests); all 71 paged machine
 quantum tests pass. Scoped cargo check, rustfmt and diff-check pass. Independent
@@ -1038,3 +1039,17 @@ behavior, data-read and final-byte fetch-fault atomicity, noncanonical-stack
 verify page-walk A bits/no D bit and data-page fault atomicity. Full od-isa,
 paged machine quantum, scoped cargo check, rustfmt and diff-check pass.
 Independent review approved with no findings.
+
+### ISSUE-353 — exact JNZ rel32 -0x161
+
+Admitted only `0F 85 9F FE FF FF` in the base `PagedCpl0ProbeV1` profile. JNZ
+tests ZF and preserves flags/definedness; signed rel32 is relative to next RIP,
+and canonicality is checked only for a taken target. Five focused tests cover
+both ZF values and metadata, canonicality, final-displacement fetch-fault
+atomicity, neighbors and CPL3; the other-profile matrix rejects the bytes.
+Firmware stops at `41 83 3C 04 00` (`CMP dword ptr [R12+RAX],0`, ISSUE-354) at
+RIP `0x2017f7`, retired=9,072, COM1 empty. ISSUE-201's stale CLD expectations
+remain unrelated and open. Full od-isa (2,322/1,591/126/29/6/1,106/7/15;
+zero doc tests), paged machine quantum (77/77), scoped cargo check, rustfmt and
+diff-check pass; cargo check reports only the existing unused page-walk helper
+warning. Independent review approved with no remaining findings.

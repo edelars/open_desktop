@@ -2330,3 +2330,16 @@ ISSUE-201's stale CLD expectations remain unrelated and open.
 The firmware runner retires 9,071 instructions and stops at `0F 85 9F FE FF FF`
 (`JNZ rel32 -0x161`, ISSUE-353) at RIP `0x2017f1`, with
 `Unsupported { opcode: 133 }`; COM1 remains empty.
+
+### ISSUE-353 — JNZ rel32 -0x161
+
+Admitted the exact `0F 85 9F FE FF FF` form in the base profile. Tests verify
+ZF truth/definedness, flags and state preservation, next-RIP-relative target,
+taken-only canonicality, final-byte fetch-fault atomicity, adjacent encodings,
+CPL3 rejection, and other-profile isolation. Firmware advances to ISSUE-354:
+`41 83 3C 04 00` (`CMP dword ptr [R12+RAX],0`) at RIP `0x2017f7` after 9,072
+retired instructions; COM1 is empty. The unrelated ISSUE-201 CLD expectation
+caveat remains open. Full od-isa suites pass (2,322/1,591/126/29/6/1,106/7/15;
+zero doc tests), paged machine quantum passes (77/77), scoped cargo check passes
+with one existing unused page-walk helper warning, and scoped rustfmt/diff-check
+pass. Independent review approved with no remaining findings.

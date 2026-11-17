@@ -28104,6 +28104,21 @@ findings. Firmware advances to ISSUE-352 (`40 84 6C 24 07`, `TEST byte ptr
 [RSP+7],BPL`) at RIP `0x2017ec` after 9,070 retired instructions; COM1 is empty.
 ISSUE-201's unrelated CLD expectation caveat remains open.
 
+### S7-04 CPU-profile slice: exact JNZ rel32 (ISSUE-353)
+
+`PagedCpl0ProbeV1` admits only exact no-prefix bytes `0F 85 9F FE FF FF`.
+JNZ reads ZF; when clear, signed rel32 -0x161 is added to next RIP, otherwise
+execution falls through. RFLAGS and definedness are unchanged. Canonicality is
+checked only for a taken target; fetch faults leave CPU state unchanged. Other
+displacements/conditions/prefixes, CPL3 and other profiles remain unsupported.
+The next firmware instruction is `41 83 3C 04 00` (`CMP dword ptr
+[R12+RAX],0`) at RIP `0x2017f7`, after 9,072 retired; COM1 is empty.
+ISSUE-201's unrelated stale CLD expectation caveat remains open. Full od-isa
+suites pass (2,322/1,591/126/29/6/1,106/7/15; zero doc tests), paged machine
+quantum passes (77/77), scoped cargo check passes with one existing unused
+page-walk helper warning, and scoped rustfmt/diff-check pass. Independent review
+approved with no remaining findings.
+
 ### S7-04 CPU-profile slice: exact memory `TEST` (ISSUE-352)
 
 `PagedCpl0ProbeV1` admits only exact bytes `40 84 6C 24 07`. The instruction

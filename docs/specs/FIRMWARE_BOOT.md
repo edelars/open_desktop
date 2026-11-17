@@ -1036,6 +1036,19 @@ output is empty. ISSUE-201 remains the unrelated stale CLD test expectation
 caveat. Full od-isa suites, paged machine quantum, scoped cargo check, rustfmt,
 and diff-check pass; independent review approved with no findings.
 
+### Stage 7 runner frontier after ISSUE-353
+
+With exact `0F 85 9F FE FF FF` (`JNZ rel32 -0x161`) admitted, firmware retires
+9,072 instructions and stops at RIP `0x2017f7`, bytes `41 83 3C 04 00`
+(`CMP dword ptr [R12+RAX],0`, ISSUE-354), with `Unsupported { opcode: 131 }`.
+Image `/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1
+output is empty. ISSUE-201 remains the unrelated stale CLD test expectation
+caveat. Focused tests, full od-isa (2,322/1,591/126/29/6/1,106/7/15; zero doc
+tests), paged machine quantum (77/77), scoped cargo check, rustfmt and
+diff-check pass. Cargo check reports only the existing unused page-walk helper
+warning. Independent review approved with no remaining findings.
+
 ### Stage 7 runner frontier after ISSUE-352
 
 With exact `40 84 6C 24 07` (`TEST byte ptr [RSP+7],BPL`) admitted, firmware

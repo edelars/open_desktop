@@ -4699,7 +4699,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-353 — S7-04: exact helper `JNZ rel32 -0x161` frontier (`0F 85 9F FE FF FF`)
 - **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-352.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017f1`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `0F 85 9F FE FF FF` admit JNZ rel32 -0x161. The branch tests ZF, preserves flags/definedness, and validates canonicality only for a taken target; neighboring encodings remain unsupported.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner now stops at `Unsupported { opcode: 131 }` at RIP `0x2017f7` after 9,072 retired instructions; bytes are `41 83 3C 04 00`; COM1 is empty.
+- **Проверка:** five focused tests cover ZF outcomes/definedness, taken-only canonicality, final-displacement fetch-fault atomicity, neighboring encodings and CPL3 isolation; the other-profile matrix rejects the exact bytes. Full od-isa (2,322/1,591/126/29/6/1,106/7/15; zero doc tests), paged machine quantum (77/77), scoped cargo check, rustfmt and diff-check pass. Cargo check reports only the existing unused page-walk helper warning. Independent review approved with no remaining findings.
+
+### ISSUE-354 — S7-04: exact helper `CMP dword ptr [R12+RAX],0` frontier (`41 83 3C 04 00`)
+- **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-353.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017f7`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this exact near conditional branch after 9,071 retired instructions. The base profile does not yet admit it.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 133 }` at RIP `0x2017f1`; COM1 is empty.
-- **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.
+- **Суть и последствия:** firmware reaches this memory compare after 9,072 retired instructions. The bounded base profile does not yet admit the exact REX.B/SIB form.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 131 }` at RIP `0x2017f7`; COM1 is empty.
+- **Следующий шаг:** analyze the exact dword tracked-read/CMP form in a separate Stage 7 slice.
