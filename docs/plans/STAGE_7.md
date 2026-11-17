@@ -2161,3 +2161,19 @@ ISSUE-201 remains the unrelated CLD caveat.
 Runner advances to `4A 8B 44 1E 10` (MOV RAX,qword ptr [RSI+R11+0x10]; ISSUE-417)
 at RIP `0x20130f`, after 9,905 retired instructions, unsupported opcode 139,
 COM1 empty.
+
+### ISSUE-417 — exact `MOV RAX,qword ptr [RSI+R11+0x10]` (`4A 8B 44 1E 10`)
+
+Admit only this exact indexed qword load in the base paged profile. REX.X
+selects R11 as the SIB index; RSI is the base and disp8 is +0x10. The tracked
+read writes RAX and leaves flags unchanged. Fetch, noncanonical-address and
+data-read faults commit neither destination nor RIP. Focused load/state/flags/
+tracked-read/fault/neighbors/CPL3 tests pass (6/6), other-profile matrix passes
+(1/1). Full od-isa passes (2,322/1,591/126/29/6/1,404/7/15; zero doc tests),
+paged machine quantum passes (110/110), workspace all-targets offline check
+passes with existing warnings, and scoped rustfmt/diff-check pass. Independent
+review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+Runner advances to `46 8B 6C 1E 1C` (MOV R13D,dword ptr [RSI+R11+0x1c]; ISSUE-418)
+at RIP `0x201314`, after 9,906 retired instructions, unsupported opcode 139,
+COM1 empty.

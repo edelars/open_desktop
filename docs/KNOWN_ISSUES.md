@@ -5252,7 +5252,17 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-417 — S7-04: exact MOV RAX,qword ptr [RSI+R11+0x10] frontier (`4A 8B 44 1E 10`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-416.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20130f`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this exact indexed qword load into RAX, outside the current bounded base-profile admission.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `4A 8B 44 1E 10`. REX.X selects R11 as the SIB index; RSI is the base, disp8 is +0x10 and the destination is RAX. The tracked qword load preserves flags. Fetch, canonicality or data-read faults commit neither RAX nor RIP. Other addresses, widths, prefixes and CPL3/other profiles remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,905 instructions and reported `Unsupported { opcode: 139 }` at RIP `0x20130f`; COM1 is empty. Bytes at the link-base shadow are `4A 8B 44 1E 10`.
-- **Следующий шаг:** verify REX/SIB register routing, tracked qword load and fault semantics; admit only this encoding.
+- **Результат:** runner now retires 9,906 instructions and stops at RIP `0x201314`, bytes `46 8B 6C 1E 1C` (MOV R13D,dword ptr [RSI+R11+0x1c]; ISSUE-418), `Unsupported { opcode: 139 }`; COM1 is empty.
+- **Проверка:** focused qword-load/state/flags/tracked-read/read-fault/noncanonical-address/fetch-fault/neighbors/CPL3 tests 6/6 and other-profile matrix 1/1 pass. Full od-isa passes (2,322/1,591/126/29/6/1,404/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+- **Следующий шаг:** ISSUE-418, exact `46 8B 6C 1E 1C` (MOV R13D,dword ptr [RSI+R11+0x1c]) at RIP `0x201314`.
+
+### ISSUE-418 — S7-04: exact MOV R13D,dword ptr [RSI+R11+0x1c] frontier (`46 8B 6C 1E 1C`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-417.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201314`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware reaches an indexed dword load into R13D, outside the current bounded base-profile admission.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,906 instructions and reported `Unsupported { opcode: 139 }` at RIP `0x201314`; COM1 is empty. Bytes at the link-base shadow are `46 8B 6C 1E 1C`.
+- **Следующий шаг:** verify REX/SIB destination/index routing, tracked dword load and zero-extension/fault semantics; admit only this encoding.
