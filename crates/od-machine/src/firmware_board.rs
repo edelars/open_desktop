@@ -6890,6 +6890,7 @@ mod tests {
                 Some(IrqBoundaryHook {
                     source,
                     counters,
+                    delivered_mirror: None,
                     skip_first_boundary: false,
                 }),
                 None,

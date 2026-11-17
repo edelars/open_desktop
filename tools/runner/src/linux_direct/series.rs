@@ -5098,7 +5098,12 @@ mod tests {
             );
         }
 
-        for version in [None, Some(Value::Null), Some(json!("8")), Some(json!(17))] {
+        for version in [
+            None,
+            Some(Value::Null),
+            Some(json!("8")),
+            Some(json!(u64::MAX)),
+        ] {
             let mut malformed_sidecar = sidecar_value.clone();
             if let Some(value) = version {
                 malformed_sidecar["schema_version"] = value;

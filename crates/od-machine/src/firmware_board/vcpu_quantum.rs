@@ -189,6 +189,7 @@ impl LoadedFirmwareBoard {
             Some(IrqBoundaryHook {
                 source,
                 counters: &mut counters,
+                delivered_mirror: None,
                 skip_first_boundary,
             }),
             None,

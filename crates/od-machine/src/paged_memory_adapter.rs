@@ -1994,6 +1994,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
         run_cpl0_set_paged_2m_ram_with_cache_impl::<true, true>(
             state,
             bus,
+            vcpu,
             cr3,
             efer,
             context,
@@ -2013,6 +2014,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
         run_cpl0_set_paged_2m_ram_with_cache_impl::<true, false>(
             state,
             bus,
+            vcpu,
             cr3,
             efer,
             context,
@@ -2032,6 +2034,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
         run_cpl0_set_paged_2m_ram_with_cache_impl::<false, true>(
             state,
             bus,
+            vcpu,
             cr3,
             efer,
             context,
@@ -2051,6 +2054,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
         run_cpl0_set_paged_2m_ram_with_cache_impl::<false, false>(
             state,
             bus,
+            vcpu,
             cr3,
             efer,
             context,
@@ -2076,6 +2080,7 @@ fn run_cpl0_set_paged_2m_ram_with_cache_impl<
 >(
     state: &mut LongModeState,
     bus: &mut MachineBus,
+    vcpu: usize,
     cr3: u64,
     efer: u64,
     context: AccessContext,
