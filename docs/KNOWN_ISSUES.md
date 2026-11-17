@@ -5359,10 +5359,20 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Проверка:** four focused CMP/flags/definedness/register-preservation/fetch-fault/neighbor/CPL3 tests and other-profile matrix 1/1 pass. Full od-isa passes (2,322/1,591/126/29/6/1,450/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
 - **Следующий шаг:** ISSUE-428, exact `0F 85 3A 01 00 00` (JNZ rel32 +0x13a) at RIP `0x201344`.
 
-### ISSUE-428 — S7-04: exact JNZ rel32 +0x13a frontier (`0F 85 3A 01 00 00`)
+### ISSUE-428 — S7-04: exact JNZ rel32 +0x13a (`0F 85 3A 01 00 00`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-427.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201344`.
-- **Статус:** открыта; следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base profile does not yet admit this exact `JNZ rel32 +0x13a`. Add only this form, with ZF condition, signed displacement from next RIP, taken-only target canonicality, preserved flags/definedness, and atomic instruction-fetch faults. Neighboring displacements/conditions and other profiles remain excluded.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact no-prefix `0F 85 3A 01 00 00`. JNZ tests ZF, adds signed rel32 `+0x13a` to next RIP when taken, and preserves flags and definedness. Target canonicality is checked only when taken; fetch faults commit no state. Other displacements, conditions, prefixes, CPL3 and other profiles remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,917 instructions and reported `Unsupported { opcode: 133 }` at RIP `0x201344`; COM1 is empty. Bytes at the link-base shadow are `0F 85 3A 01 00 00`.
-- **Следующий шаг:** implement this exact JNZ slice, add focused branch/fault/neighbor/profile tests, verify the runner successor, and update Stage 7 documentation.
+- **Результат:** runner now retires 9,918 instructions and stops at RIP `0x20134a`, bytes `41 F6 C4 01` (TEST R12B,1; ISSUE-429), `Unsupported { opcode: 246 }`; COM1 is empty.
+- **Проверка:** five focused JNZ/ZF-definedness/target-canonicality/fetch-fault/neighbor/CPL3 tests and other-profile matrix 1/1 pass. Full od-isa passes (2,322/1,591/126/29/6/1,455/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+- **Следующий шаг:** ISSUE-429, exact `41 F6 C4 01` (TEST R12B,1) at RIP `0x20134a`.
+
+### ISSUE-429 — S7-04: exact TEST R12B,1 frontier (`41 F6 C4 01`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-428.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20134a`.
+- **Статус:** открыта; следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base profile does not yet admit this exact `TEST R12B,1`. Add only the exact byte-register/immediate form, preserving all GPRs while applying logical-AND flags and definedness; reject neighboring operands/encodings and other profiles.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,918 instructions and reported `Unsupported { opcode: 246 }` at RIP `0x20134a`; COM1 is empty. Bytes at the link-base shadow are `41 F6 C4 01`.
+- **Следующий шаг:** implement this exact TEST slice, add focused flag/fault/neighbor/profile tests, verify the runner successor, and update Stage 7 documentation.

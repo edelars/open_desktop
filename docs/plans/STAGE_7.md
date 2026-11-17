@@ -2310,6 +2310,8 @@ passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
 
+
+
 ### ISSUE-427 — exact `CMP R13D,9` (`41 83 FD 09`)
 
 Admit only this exact base-profile REX.B dword CMP with sign-extended imm8 9.
@@ -2321,3 +2323,17 @@ passes (2,322/1,591/126/29/6/1,450/7/15; zero doc tests), paged machine quantum
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-428 — exact `JNZ rel32 +0x13a` (`0F 85 3A 01 00 00`)
+
+Admit only this exact unprefixed base-profile branch. JNZ tests ZF and adds
+signed rel32 +0x13a to next RIP when taken; flags and definedness are
+preserved, and canonicality is checked only for the taken target. Five focused
+tests cover ZF outcomes/definedness, target choice, taken-only canonicality,
+final-byte fetch fault, neighbors and CPL3. The other-profile matrix (1/1)
+passes. Runner advances after 9,918 retired instructions to `41 F6 C4 01`
+(TEST R12B,1, ISSUE-429) at RIP `0x20134a`, Unsupported opcode 246, COM1 empty.
+Full od-isa passes (2,322/1,591/126/29/6/1,455/7/15; zero doc tests), paged
+machine quantum passes (110/110), workspace all-targets offline check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review
+approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

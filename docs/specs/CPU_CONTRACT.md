@@ -29352,3 +29352,17 @@ Unsupported opcode 133, COM1 empty. Full od-isa passes
 (110/110), workspace all-targets offline check passes with existing warnings,
 and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
 remains the unrelated CLD caveat.
+
+### ISSUE-428 — bounded `JNZ rel32 +0x13a`
+
+The base paged profile admits exact no-prefix bytes `0F 85 3A 01 00 00`.
+Condition evaluation uses ZF; a taken branch adds signed rel32 +0x13a to next
+RIP. It preserves RFLAGS and flag definedness and checks canonicality only for
+the taken target. Fetch faults are atomic. Five focused tests and the
+other-profile matrix pass. Runner reaches `41 F6 C4 01` (TEST R12B,1,
+ISSUE-429) at RIP `0x20134a` after 9,918 retired instructions, Unsupported
+opcode 246, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,455/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
+remains the unrelated CLD caveat.
