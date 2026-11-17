@@ -2566,3 +2566,18 @@ RIP `0x2013ed`, after 9,937 retired instructions; Unsupported opcode 57, COM1
 empty. Full od-isa passes (2,322/1,591/126/29/6/1,520/7/15; zero doc tests),
 paged machine quantum passes (110/110), workspace all-targets offline check
 passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-445 — exact CMP RBX,R11 (`4C 39 DB`)
+
+Admit only the exact `4C 39 DB` form in base `PagedCpl0ProbeV1`. REX.W selects
+qword width and REX.R extends the ModRM.reg source to R11; opcode 39 compares
+the r/m destination RBX against R11. Shared CMP subtraction updates arithmetic
+flags and their definedness without writing any GPR. Tests cover routing,
+flags/definedness, register preservation, final-ModRM fetch-fault atomicity,
+neighbors, CPL3 and other-profile isolation. Runner advances to `0F 85 81 FE
+FF FF` (JNZ rel32 -0x17f, ISSUE-446), RIP `0x2013f0`, after 9,938 retired
+instructions; Unsupported opcode 133, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,524/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.

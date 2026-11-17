@@ -24517,6 +24517,42 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: exact `4C 39 DB` compares qword RBX (r/m destination) with
+        // R11 (reg source); REX.R extends only the source register field.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Cmp,
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x39
+            && instruction.length == 3
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x4c),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rbx, OperandSize::Qword)
+            && source == RegisterView::low(Register::R11, OperandSize::Qword) =>
+        {
+            let lhs = state.read(destination);
+            let rhs = state.read(source);
+            let (_, flags) = arithmetic_result(
+                OperandSize::Qword,
+                ArithmeticKind::Cmp,
+                lhs,
+                rhs,
+                state.rflags,
+            );
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: exact `66 41 39 C1` compares word R9 with AX. Operand-size
         // override selects word width and REX.B extends the r/m destination.
         Operation::Arithmetic {

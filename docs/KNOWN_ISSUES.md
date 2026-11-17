@@ -5524,7 +5524,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-445 — S7-04: exact CMP RBX,R11 frontier (`4C 39 DB`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-444.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013ed`.
-- **Статус:** открыта; следующая точная инструкция Stage 7.
-- **Суть и последствия:** exact `4C 39 DB` (`CMP RBX,R11`) remains unsupported pending bounded implementation and tests.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `4C 39 DB` (`CMP RBX,R11`). Opcode 39 with REX.W compares qword RBX against qword R11; shared CMP subtraction semantics update arithmetic flags and definedness while all GPRs remain unchanged. CPL3 and other profiles do not admit this exact form.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-444 runner retired 9,937 instructions and reported `Unsupported { opcode: 57 }` at RIP `0x2013ed`; COM1 is empty. Bytes at the link-base shadow are `4C 39 DB`.
-- **Следующий шаг:** implement this exact qword CMP form and add operand-routing/arithmetic-flags/profile coverage.
+- **Результат:** runner now retires 9,938 instructions and stops at RIP `0x2013f0`, bytes `0F 85 81 FE FF FF` (`JNZ rel32 -0x17f`, ISSUE-446), `Unsupported { opcode: 133 }`; COM1 is empty.
+- **Проверка:** four focused tests cover qword operand routing, subtraction flags/definedness, unchanged GPRs, final-ModRM fetch-fault atomicity, encoding neighbors and CPL3; the other-profile matrix includes this exact form and passes 1/1. Full od-isa passes (2,322/1,591/126/29/6/1,524/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-446 — S7-04: exact JNZ rel32 frontier (`0F 85 81 FE FF FF`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-445.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013f0`.
+- **Статус:** открыта; следующая точная инструкция Stage 7.
+- **Суть и последствия:** exact `0F 85 81 FE FF FF` (`JNZ rel32 -0x17f`) remains unsupported pending bounded implementation and tests.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-445 runner retired 9,938 instructions and reported `Unsupported { opcode: 133 }` at RIP `0x2013f0`; COM1 is empty. Bytes at the link-base shadow are `0F 85 81 FE FF FF`.
+- **Следующий шаг:** implement this exact JNZ rel32 form and add condition, target, fault, and profile-boundary coverage.

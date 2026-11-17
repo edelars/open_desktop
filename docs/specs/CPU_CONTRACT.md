@@ -29590,3 +29590,16 @@ exact encoding. Firmware advances to `4C 39 DB` (CMP RBX,R11, ISSUE-445) at RIP
 (2,322/1,591/126/29/6/1,520/7/15; zero doc tests), paged machine quantum
 (110/110), workspace all-targets offline check, scoped rustfmt and diff-check.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-445 — bounded CMP RBX,R11
+
+The base paged profile admits only exact `4C 39 DB`. REX.W selects qword
+operands and REX.R extends ModRM.reg to R11; opcode 39 compares r/m RBX against
+R11. Shared CMP performs subtraction for arithmetic flags and definedness while
+all GPRs remain unchanged. Fetch failure at the final ModRM byte commits no
+state. CPL3 and other profiles reject this exact encoding. Firmware advances
+to `0F 85 81 FE FF FF` (JNZ rel32 -0x17f, ISSUE-446) at RIP `0x2013f0` after
+9,938 retired instructions. Full validation passes: od-isa
+(2,322/1,591/126/29/6/1,524/7/15; zero doc tests), paged machine quantum
+(110/110), workspace all-targets offline check, scoped rustfmt and diff-check.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
