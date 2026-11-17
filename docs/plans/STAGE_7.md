@@ -2243,3 +2243,16 @@ retired instructions to ISSUE-422 `41 83 FD 04` (CMP R13D,4) at RIP
 zero doc tests), paged machine quantum passes (110/110), workspace all-targets
 offline check passes with existing warnings, and scoped rustfmt/diff-check pass.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-422 — exact `CMP R13D,4` (`41 83 FD 04`)
+
+At RIP `0x201329`, admit only exact REX.B dword CMP with sign-extended imm8
+4. The compare reads low R13D, updates arithmetic flags and definedness, and
+leaves R13 unchanged. Four focused tests cover dword flag cases and definedness, register
+preservation, final-immediate fetch fault, neighbors, CPL3, and other profiles.
+Runner advances after 9,911 retired instructions to ISSUE-423 `0F 83 76 01 00 00`
+(JAE rel32 +0x176) at RIP `0x20132d`; COM1 is empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,429/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains
+the unrelated CLD caveat.

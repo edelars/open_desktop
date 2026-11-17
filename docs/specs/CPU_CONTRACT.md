@@ -29276,3 +29276,15 @@ pass; full od-isa passes (2,322/1,591/126/29/6/1,425/7/15; zero doc tests),
 paged machine quantum passes (110/110), workspace all-targets offline check
 passes with existing warnings, and scoped rustfmt/diff-check pass. Independent
 review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-422 — bounded `CMP R13D,4`
+
+The base paged profile admits exact `41 83 FD 04`. REX.B selects the dword
+R13 operand; opcode 83 sign-extends imm8 4. CMP compares low R13D, updates the
+subtraction flags and their definedness, and does not write a register. Final
+immediate-fetch faults do not commit state. Other encodings and profiles are not
+implied. Four focused tests and other-profile matrix pass; full od-isa passes
+(2,322/1,591/126/29/6/1,429/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
+remains the unrelated CLD caveat.

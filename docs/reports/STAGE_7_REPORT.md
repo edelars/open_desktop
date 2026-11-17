@@ -3570,3 +3570,15 @@ other-profile matrix pass. Runner reaches ISSUE-422 `41 83 FD 04` at RIP
 (110/110), workspace all-targets offline check passes with existing warnings,
 and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
 remains the unrelated CLD caveat.
+
+### ISSUE-422 — exact `CMP R13D,4` (`41 83 FD 04`)
+
+Admitted only exact REX.B dword compare with sign-extended imm8 4. CMP updates
+dword subtraction flags/definedness without changing R13. Four focused tests and
+the other-profile matrix pass. Runner reaches ISSUE-423 `0F 83 76 01 00 00` at
+RIP `0x20132d` after 9,911 retired instructions, then reports Unsupported
+opcode 131 with empty COM1. Full od-isa passes
+(2,322/1,591/126/29/6/1,429/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
+remains the unrelated CLD caveat.
