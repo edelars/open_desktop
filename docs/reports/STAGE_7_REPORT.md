@@ -3703,3 +3703,19 @@ Unsupported opcode 132, COM1 empty. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review pending.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-432 — exact JZ rel32 +0x100
+
+The base paged profile admits only `0F 84 00 01 00 00`. JZ reads ZF and adds
+signed rel32 `+0x100` to next RIP when taken; flags and definedness are
+unchanged, and only a taken target is checked for canonicality. Five focused
+profile tests cover both ZF values/definedness, taken/fall-through RIP,
+taken-only canonicality, last-byte fetch-fault atomicity, neighbors and CPL3;
+the other-profile matrix is 1/1. Runner SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` advances
+after 9,925 retired instructions to `48 85 C0` (TEST RAX,RAX, ISSUE-433) at
+RIP `0x201384`, Unsupported opcode 133, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,469/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review is pending.
+ISSUE-201 remains the unrelated CLD caveat.

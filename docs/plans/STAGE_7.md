@@ -2380,3 +2380,19 @@ instructions to `0F 84 00 01 00 00` (JZ rel32 +0x100, ISSUE-432) at RIP
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review pending.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-432 — exact `JZ rel32 +0x100` (`0F 84 00 01 00 00`)
+
+Admit only this exact no-prefix JZ form in the base paged profile. It tests
+ZF, branches to next RIP plus signed rel32 `+0x100` when ZF is set, and
+preserves RFLAGS and definedness. Canonicality is checked only for a taken
+target; a not-taken fall-through is checked by the next fetch, and instruction
+fetch faults commit no state. Tests cover ZF outcomes/metadata, target choice,
+taken-only canonicality, the last displacement-byte fault, neighboring
+displacements/conditions/prefixes, CPL3 and other-profile isolation. Runner
+reaches ISSUE-433 (`48 85 C0`, TEST RAX,RAX) at RIP `0x201384` after 9,925
+retired instructions, Unsupported opcode 133, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,469/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review pending.
+ISSUE-201 remains the unrelated CLD caveat.

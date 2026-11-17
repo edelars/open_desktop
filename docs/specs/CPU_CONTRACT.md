@@ -29407,3 +29407,20 @@ Unsupported opcode 132, COM1 empty. Full od-isa passes
 (110/110), workspace all-targets offline check passes with existing warnings,
 and scoped rustfmt/diff-check pass. Independent review pending. ISSUE-201
 remains the unrelated CLD caveat.
+
+### ISSUE-432 — bounded JZ rel32 +0x100
+
+`PagedCpl0ProbeV1` admits exact no-prefix bytes `0F 84 00 01 00 00` only.
+JZ reads ZF and, when set, sets RIP to next RIP plus signed rel32 `+0x100`;
+otherwise it falls through. RFLAGS and definedness are unchanged. Only a
+taken target is checked for canonicality; the next fetch validates a
+not-taken fall-through. A displacement-byte fetch fault commits no CPU state.
+Tests cover both ZF values with defined and undefined metadata, target choice,
+taken-only canonicality, final-byte fetch fault, neighboring displacements,
+conditions and prefixes, CPL3 rejection, and the other-profile refusal matrix.
+Runner advances to `48 85 C0` (TEST RAX,RAX, ISSUE-433) at RIP `0x201384` after
+9,925 retired instructions, Unsupported opcode 133, COM1 empty. Full od-isa
+passes (2,322/1,591/126/29/6/1,469/7/15; zero doc tests), paged machine
+quantum passes (110/110), workspace all-targets offline check passes with
+existing warnings, and scoped rustfmt/diff-check pass. Independent review is
+pending. ISSUE-201 remains the unrelated CLD caveat.
