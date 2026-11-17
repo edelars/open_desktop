@@ -1299,8 +1299,9 @@ impl LoadedFirmwareBoard {
     /// is in the handler (`Delivered`: the latch is taken, `nmi_blocked` is set, a `Halted` vCPU
     /// is `Running`). The scheduler of S6-15 calls it on the boundary of every vCPU, after
     /// [`Self::apply_pending_startup`] and before it picks one (`BoardSmpHost::boundary`); the run
-    /// loop of the board does not. A gate that cannot deliver (not present, IST other than 0, a failed frame store) and
-    /// a state the board cannot deliver through are errors, not holds: a state that is not
+    /// loop of the board does not. A gate that cannot deliver (not present, a failed frame store
+    /// or a failed read of the TSS `IST[n]` slot; IST ≠ 0 is supported only for NMI delivery,
+    /// S6-12c) and a state the board cannot deliver through are errors, not holds: a state that is not
     /// modelled (activity or STI shadow `None`), a vCPU on a legacy-mode model (`legacy` is
     /// `Some`, the trampoline of S6-16c is still running: NMI in real or protected mode is not
     /// modelled; the error text says "real mode"), paging the walker rejects (the EFER is
@@ -1341,7 +1342,7 @@ impl LoadedFirmwareBoard {
         // A started application processor (or one reset by INIT) holds its state in `legacy`
         // until it enters long mode; the long-mode `state` is not rewritten from it, so delivering
         // through the long-mode IDT would be wrong. NMI delivery in real and protected mode is not
-        // modelled (decision 3.9 of S6-16: an error).
+        // modelled (item 6(d) of S6-16: an error).
         if vcpu.legacy.is_some() {
             return Err(FirmwareBoardError::Config(
                 "deliver_pending_nmi: NMI in real mode not modelled",
