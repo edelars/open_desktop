@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproducibility and validator tests for the Stage6SmpProbeV1 builder (S6-16e).
+"""Reproducibility and validator tests for the Stage6SmpProbeV2 builder (S6-16e, S6-16f).
 
 Expected values are written here by hand from the protocol and the Intel SDM, not read back from the
 builder's own expectation functions.
@@ -29,6 +29,14 @@ SPEC.loader.exec_module(BUILDER)
 NONCE = "s6-16e-nonce"
 
 
+def struct_gate(handler: int, selector: int) -> bytes:
+    """A 64-bit interrupt gate written out by hand (SDM Vol. 3A 6.14.1)."""
+    return (
+        (handler & 0xFFFF).to_bytes(2, "little") + selector.to_bytes(2, "little") + bytes([0, 0x8E])
+        + (handler >> 16).to_bytes(2, "little") + bytes(8)
+    )
+
+
 def build(output: Path, *flags: str) -> None:
     subprocess.run(
         [sys.executable, str(SCRIPT), "--output-dir", str(output), *flags],
@@ -41,7 +49,7 @@ def build(output: Path, *flags: str) -> None:
 
 def rust_constants() -> dict[str, int]:
     text = RUST.read_text()
-    found = re.findall(r"pub const (STAGE6_SMP_PROBE_\w+): \w+ = (0x[0-9A-Fa-f_]+|\d+);", text)
+    found = re.findall(r"pub const (STAGE6_SMP_PROBE_\w+): \w+ = (0x[0-9A-Fa-f_]+|[\d_]+);", text)
     return {name: int(value.replace("_", ""), 0) for name, value in found}
 
 
@@ -51,10 +59,15 @@ class Stage6SmpProbeBuilderTest(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.base = Path(self.temporary.name)
 
-    def image(self, variant: str = "normal") -> bytes:
-        out = self.base / variant
-        build(out, "--variant", variant)
+    def image(self, variant: str = "normal", scenario: str = "normal") -> bytes:
+        out = self.base / f"{variant}-{scenario}"
+        build(out, "--variant", variant, "--scenario", scenario)
         return (out / "probe.bin").read_bytes()
+
+    def manifest(self, *flags: str) -> dict:
+        out = self.base / ("m" + "".join(flag.replace("-", "") for flag in flags))
+        build(out, *flags)
+        return json.loads((out / "build_manifest.json").read_text())
 
     def test_two_builds_are_byte_identical_and_match_the_manifest(self) -> None:
         outputs = [self.base / "one", self.base / "two"]
@@ -67,7 +80,7 @@ class Stage6SmpProbeBuilderTest(unittest.TestCase):
         self.assertEqual(manifests[0], manifests[1])
         digest = hashlib.sha256(raw[0]).hexdigest()
         self.assertEqual(manifests[0]["artifacts"]["probe.bin"]["sha256"], digest)
-        self.assertEqual(manifests[0]["profile"], "Stage6SmpProbeV1")
+        self.assertEqual(manifests[0]["profile"], "Stage6SmpProbeV2")
 
     def test_every_variant_is_reproducible_and_differs_from_the_others(self) -> None:
         digests = {}
@@ -76,6 +89,60 @@ class Stage6SmpProbeBuilderTest(unittest.TestCase):
             self.assertEqual(first, second)
             digests[variant] = hashlib.sha256(first).hexdigest()
         self.assertEqual(len(set(digests.values())), 3)
+
+    def test_every_scenario_is_reproducible_and_differs_from_the_others(self) -> None:
+        digests = {}
+        for scenario in ("normal", "exchange", "resipi", "bad-ipi", "nmi"):
+            first, second = self.image("normal", scenario), self.image("normal", scenario)
+            self.assertEqual(first, second)
+            digests[scenario] = hashlib.sha256(first).hexdigest()
+            manifests = [self.manifest("--scenario", scenario) for _ in range(2)]
+            self.assertEqual(manifests[0], manifests[1])
+            self.assertEqual(manifests[0]["scenario"], scenario)
+        self.assertEqual(len(set(digests.values())), 5)
+        # K is part of the image: another K is another image, and the manifest says which.
+        four = self.manifest("--scenario", "exchange", "--rounds", "4")
+        self.assertEqual(four["rounds"], 4)
+        self.assertNotEqual(self.image("normal", "exchange"), (self.base / "mscenarioexchangerounds4" / "probe.bin").read_bytes())
+        self.assertEqual(self.manifest("--scenario", "exchange")["rounds"], 16)
+        for bad in ("0", "101"):
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--output-dir", str(self.base / "badk"), "--scenario", "exchange", "--rounds", bad],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, bad)
+
+    def test_idt_gates_and_idtr_follow_the_sdm(self) -> None:
+        raw = self.image("normal", "exchange")
+        at = lambda gpa, length: raw[gpa - 0x2000 : gpa - 0x2000 + length]  # noqa: E731
+        # IDTR descriptor of the trampoline (limit u16, 32-bit base): 0x3FF, 0x9800.
+        self.assertEqual(at(0x8140, 6), bytes([0xFF, 0x03, 0x00, 0x98, 0x00, 0x00]))
+        # The BSP's descriptor (limit u16, base u64) for `LIDT [RSP+0]`, and the three instructions
+        # around it: mov esp, 0x8150; lidt [rsp+0] (0F 01 /3, ModRM 0x5C, SIB 0x24, disp8 0); mov esp, 0xE000.
+        self.assertEqual(at(0x8150, 10), bytes([0xFF, 0x03, 0x00, 0x98, 0, 0, 0, 0, 0, 0]))
+        bsp = [step["bytes"] for step in self.manifest("--scenario", "exchange")["code"]["bsp"]]
+        index = bsp.index("0f015c2400")
+        self.assertEqual(bsp[index - 1], "bc50810000")
+        self.assertEqual(bsp[index + 1], "bc00e00000")
+        # SDM Vol. 3A 6.14.1: 64-bit interrupt gate = offset 15:0, selector, IST, type/attr
+        # (0x8E: present, DPL 0, type 0xE), offset 31:16, offset 63:32, reserved.
+        for vector, handler in ((0x02, 0x9E00), (0x30, 0x9C00), (0x31, 0x9D00)):
+            gate = at(0x9800 + vector * 16, 16)
+            self.assertEqual(gate, struct_gate(handler, 0x10), hex(vector))
+        for vector in range(0x40):
+            if vector not in (2, 0x30, 0x31):
+                self.assertEqual(at(0x9800 + vector * 16, 16), bytes(16), hex(vector))
+        # The handler of the AP: count, EOI to 0xFEE000B0, Fixed 0x31 to APIC ID 0, IRETQ.
+        ap = at(0x9C00, 0x80).hex()
+        self.assertIn("41b8" + "18c00000", ap)  # mov r8d, AP_RX (0xC018)
+        self.assertIn("4589" + "90b0000000", ap)  # mov [r8+0xB0], r10d: the EOI
+        self.assertIn("41ba31000000", ap)  # mov r10d, Fixed | 0x31
+        handlers = self.manifest("--scenario", "exchange")["code"]["handlers"]
+        self.assertTrue(handlers["0x9c00"]["bytes"].endswith("48cf"))
+        self.assertTrue(handlers["0x9d00"]["bytes"].endswith("48cf"))
+        self.assertTrue(handlers["0x9e00"]["bytes"].endswith("48cf"))
+        self.assertIn("41b820c00000", handlers["0x9d00"]["bytes"])  # BSP counter 0xC020
 
     def test_the_nonce_and_the_run_are_not_in_the_image(self) -> None:
         raw = self.image()
@@ -102,6 +169,15 @@ class Stage6SmpProbeBuilderTest(unittest.TestCase):
         self.assertEqual(constants["STAGE6_SMP_PROBE_MARKER_BSP_GPA"], BUILDER.MARKER_BSP)
         self.assertEqual(constants["STAGE6_SMP_PROBE_MARKER_AP_GPA"], BUILDER.MARKER_AP)
         self.assertEqual(constants["STAGE6_SMP_PROBE_MARKER_MAGIC"], BUILDER.MARKER_MAGIC)
+        self.assertEqual(constants["STAGE6_SMP_PROBE_AP_RX_GPA"], BUILDER.AP_RX)
+        self.assertEqual(constants["STAGE6_SMP_PROBE_BSP_RX_GPA"], BUILDER.BSP_RX)
+        self.assertEqual(constants["STAGE6_SMP_PROBE_NMI_GPA"], BUILDER.NMI_CELL)
+        self.assertEqual(constants["STAGE6_SMP_PROBE_IDT_GPA"], BUILDER.IDT_AT)
+        self.assertEqual(constants["STAGE6_SMP_PROBE_IDT_LIMIT"], BUILDER.IDT_LIMIT)
+        self.assertEqual(constants["STAGE6_SMP_PROBE_IDTR_BSP_GPA"], BUILDER.IDTR_BSP_AT)
+        self.assertEqual(constants["STAGE6_SMP_PROBE_VECTOR_AP"], BUILDER.VECTOR_AP)
+        self.assertEqual(constants["STAGE6_SMP_PROBE_VECTOR_BSP"], BUILDER.VECTOR_BSP)
+        self.assertEqual(constants["STAGE6_SMP_PROBE_MAX_FIXED_QUANTUM"], BUILDER.MAX_FIXED_QUANTUM)
         # Hand-derived: "SMP6" and "MARK" as little-endian ASCII, SIPI vector 0x08 = page 0x8000.
         self.assertEqual(BUILDER.INFO_MAGIC, int.from_bytes(b"SMP6", "little"))
         self.assertEqual(BUILDER.MARKER_MAGIC, int.from_bytes(b"MARK", "little"))
@@ -113,27 +189,43 @@ class Stage6SmpProbeBuilderTest(unittest.TestCase):
         self.assertEqual(BUILDER.ICR_INIT_ASSERT, 0xC500)
         self.assertEqual(BUILDER.ICR_INIT_DEASSERT, 0x8500)
         self.assertEqual(BUILDER.ICR_SIPI, 0x0608)
+        # Fixed: delivery mode 000, vector in 7:0, level 0 / edge, physical. NMI: delivery mode 100b
+        # at bits 10:8 (vector ignored).
+        self.assertEqual(BUILDER.ICR_FIXED_AP, 0x30)
+        self.assertEqual(BUILDER.ICR_FIXED_BSP, 0x31)
+        self.assertEqual(BUILDER.ICR_NMI, 0x400)
+        # The waits: 5 BSP steps per iteration; the largest Fixed quantum has to fit with room.
+        self.assertEqual(BUILDER.WAIT_UP, 0x100000)
+        self.assertEqual(BUILDER.WAIT_RX, 0x100000)
+        self.assertLess(BUILDER.MAX_FIXED_QUANTUM + 1_000_000, BUILDER.WAIT_UP * 5)
 
     def test_expected_uart_is_derived_from_the_protocol(self) -> None:
-        for variant, vcpus, expected in [
-            ("normal", 1, "BSP0 UP {nonce}\nSMP PROBE AP ABSENT {nonce}\n"),
-            ("normal", 2, "BSP0 UP {nonce}\nAP1 UP {nonce}\nSMP PROBE OK {nonce}\n"),
-            ("no_flag", 2, "BSP0 UP {nonce}\nAP1 UP {nonce}\nSMP PROBE FAIL TIMEOUT {nonce}\n"),
-            ("no_flag", 1, "BSP0 UP {nonce}\nSMP PROBE AP ABSENT {nonce}\n"),
-            ("no_long_mode", 2, None),
+        head2 = "BSP0 UP {nonce}\nAP1 UP {nonce}\n"
+        absent = "BSP0 UP {nonce}\nSMP PROBE AP ABSENT {nonce}\n"
+        for flags, vcpus, expected, error in [
+            (("--variant", "normal"), 1, absent, None),
+            (("--variant", "normal"), 2, head2 + "SMP PROBE OK {nonce}\n", None),
+            (("--variant", "no_flag"), 2, head2 + "SMP PROBE FAIL TIMEOUT {nonce}\n", None),
+            (("--variant", "no_flag"), 1, absent, None),
+            (("--variant", "no_long_mode"), 2, None, "ApLegacyRefused"),
+            (("--scenario", "exchange"), 2, head2 + "SMP PROBE OK K=16 {nonce}\n", None),
+            (("--scenario", "exchange", "--rounds", "3"), 2, head2 + "SMP PROBE OK K=3 {nonce}\n", None),
+            (("--scenario", "resipi"), 2, head2 + "SMP PROBE OK K=16 {nonce}\n", None),
+            (("--scenario", "bad-ipi"), 2, head2 + "SMP PROBE BAD-IPI {nonce}\n", "LapicDeviceError"),
+            (("--scenario", "bad-ipi"), 1, absent, None),
+            (("--scenario", "nmi"), 2, head2 + "SMP PROBE NMI OK {nonce}\n", None),
+            (("--scenario", "exchange"), 1, absent, None),
         ]:
-            out = self.base / f"{variant}-expect"
-            build(out, "--variant", variant)
-            manifest = json.loads((out / "build_manifest.json").read_text())
+            manifest = self.manifest(*flags)
+            out = self.base / ("m" + "".join(flag.replace("-", "") for flag in flags))
             entry = manifest["expected"][f"n{vcpus}"]
-            self.assertEqual(entry["uart_template"], expected, (variant, vcpus))
+            self.assertEqual(entry["uart_template"], expected, (flags, vcpus))
             path = out / f"expected_uart_n{vcpus}.txt"
             if expected is None:
                 self.assertFalse(path.exists())
-                self.assertEqual(entry["run_error"], "ApLegacyRefused")
             else:
                 self.assertEqual(path.read_text(), expected)
-                self.assertIsNone(entry["run_error"])
+            self.assertEqual(entry["run_error"], error, (flags, vcpus))
 
     def test_expected_memory_cells(self) -> None:
         out = self.base / "mem"
@@ -144,9 +236,24 @@ class Stage6SmpProbeBuilderTest(unittest.TestCase):
         self.assertEqual(memory["lock_entered"]["value"], "0x1")
         self.assertEqual(memory["marker_ap"]["apic_id_raw"], "0x1000000")
         self.assertEqual(memory["marker_bsp"]["apic_id_raw"], "0x0")
+        self.assertEqual(memory["ap_rx"]["value"], "0x0")
         single = json.loads((out / "build_manifest.json").read_text())["expected"]["n1"]["memory"]
         self.assertEqual(single["start_count"]["value"], "0x0")
         self.assertNotIn("marker_ap", single)
+        # By scenario: K rounds give K at both reply cells (the AP handler and the BSP handler),
+        # the start counter stays 1 (also after a second SIPI), the NMI cell is 1 only for `nmi`.
+        for scenario, rx, nmi in [("exchange", "0x10", "0x0"), ("resipi", "0x10", "0x0"), ("bad-ipi", "0x0", "0x0"), ("nmi", "0x0", "0x1")]:
+            manifest = self.manifest("--scenario", scenario)
+            n2 = manifest["expected"]["n2"]
+            self.assertEqual(n2["memory"]["ap_rx"]["value"], rx, scenario)
+            self.assertEqual(n2["memory"]["bsp_rx"]["value"], rx, scenario)
+            self.assertEqual(n2["memory"]["nmi_cell"]["value"], nmi, scenario)
+            self.assertEqual(n2["memory"]["start_count"]["value"], "0x1", scenario)
+            self.assertEqual((n2["ap_init_applied"], n2["ap_started"]), (1, 1), scenario)
+            self.assertEqual(n2["memory"]["ap_rx"]["gpa"], "0xc018")
+            self.assertEqual(n2["memory"]["bsp_rx"]["gpa"], "0xc020")
+            self.assertEqual(n2["memory"]["nmi_cell"]["gpa"], "0xc028")
+        self.assertEqual(self.manifest("--scenario", "exchange", "--rounds", "5")["expected"]["n2"]["memory"]["ap_rx"]["value"], "0x5")
 
     def test_trampoline_uses_the_forms_of_s6_14a_and_the_variant_breaks_it(self) -> None:
         manifest = {}
@@ -180,11 +287,15 @@ class Stage6SmpProbeBuilderTest(unittest.TestCase):
         out = self.base / "forms"
         build(out)
         code = json.loads((out / "build_manifest.json").read_text())["code"]
-        allowed = {"mov", "add", "inc", "dec", "cmp", "test", "shr", "out", "sti", "cli", "hlt", "jmp", "jz", "jnz", "jne", "jb", "ja"}
-        for part in ("bsp", "ap"):
-            for step in code[part]:
-                self.assertIn(step["asm"].split()[0], allowed, step)
-            self.assertTrue(code[part], part)
+        allowed = {"mov", "add", "inc", "dec", "cmp", "test", "shr", "shl", "out", "sti", "cli", "hlt", "lidt", "jmp", "jz", "jnz", "jne", "je", "jb", "ja"}
+        for scenario in ("normal", "exchange", "resipi", "bad-ipi", "nmi"):
+            out_s = self.base / f"forms-{scenario}"
+            build(out_s, "--scenario", scenario)
+            scode = json.loads((out_s / "build_manifest.json").read_text())["code"]
+            for part in ("bsp", "ap"):
+                for step in scode[part]:
+                    self.assertIn(step["asm"].split()[0], allowed, (scenario, step))
+                self.assertTrue(scode[part], part)
         # The AP prints before it raises the flag; the BSP prints its result after seeing the flag.
         ap = [step["asm"] for step in code["ap"]]
         flag_store = max(i for i, asm in enumerate(ap) if asm == f"mov edi, 0x{BUILDER.FLAG:x}")

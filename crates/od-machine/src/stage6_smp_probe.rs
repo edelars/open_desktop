@@ -1,5 +1,5 @@
-//! S6-16e: loader and runner of the `Stage6SmpProbeV1` guest (INIT/SIPI start of an application
-//! processor by guest code).
+//! S6-16e/f: loader and runner of the `Stage6SmpProbeV2` guest (INIT/SIPI start of an application
+//! processor by guest code, Fixed IPI exchange and the negative cases of S6-16f).
 //!
 //! The image is built by `tools/build/build_stage6_smp_probe.py` (hand-encoded bytes, GPA
 //! `0x2000..0xD000`). It holds the page tables (identity map of the first 2 MiB and the Local APIC
@@ -11,7 +11,9 @@
 //!   [`STAGE6_SMP_PROBE_INFO_GPA`] (`magic, version, vcpu_count, nonce_len, nonce`): the nonce is
 //!   never part of the image;
 //! * gives vCPU 0 (the boot processor) the state of the stage 4 probes: 64-bit, CPL0, IF = 0,
-//!   `CR3` = the image's PML4 (the board's `page_table_root` too), `EFER` = SCE | LME | LMA | NXE;
+//!   `CR3` = the image's PML4 (the board's `page_table_root` too), `EFER` = SCE | LME | LMA | NXE,
+//!   (the guest loads its own `IDTR` with `LIDT [RSP+0]`, the application processor in the
+//!   trampoline);
 //! * gives the application processors nothing: they stay in `WaitForSipi` until the guest's own ICR
 //!   writes start them, run the trampoline in the executor of S6-16c and the long-mode code in the
 //!   quantum of S6-16d with the page tables the trampoline loaded into their own `CR3`.
@@ -54,6 +56,19 @@ pub const STAGE6_SMP_PROBE_COUNT_GPA: u64 = 0xC010;
 /// Marker of the boot processor: `magic u32, apic id register u32, 8 reserved, nonce[16]`.
 pub const STAGE6_SMP_PROBE_MARKER_BSP_GPA: u64 = 0xC040;
 pub const STAGE6_SMP_PROBE_MARKER_AP_GPA: u64 = 0xC080;
+/// Counters of the IPI exchange: the AP handler of vector [`STAGE6_SMP_PROBE_VECTOR_AP`], the BSP
+/// handler of [`STAGE6_SMP_PROBE_VECTOR_BSP`], and the AP handler of the NMI (vector 2).
+pub const STAGE6_SMP_PROBE_AP_RX_GPA: u64 = 0xC018;
+pub const STAGE6_SMP_PROBE_BSP_RX_GPA: u64 = 0xC020;
+pub const STAGE6_SMP_PROBE_NMI_GPA: u64 = 0xC028;
+pub const STAGE6_SMP_PROBE_IDT_GPA: u64 = 0x9800;
+pub const STAGE6_SMP_PROBE_IDT_LIMIT: u16 = 0x3FF;
+/// The 10-byte descriptor (limit u16, base u64) the boot processor loads with `LIDT [RSP+0]`.
+pub const STAGE6_SMP_PROBE_IDTR_BSP_GPA: u64 = 0x8150;
+pub const STAGE6_SMP_PROBE_VECTOR_AP: u8 = 0x30;
+pub const STAGE6_SMP_PROBE_VECTOR_BSP: u8 = 0x31;
+/// The largest `Fixed` quantum the image's wait loops are sized for (see the builder).
+pub const STAGE6_SMP_PROBE_MAX_FIXED_QUANTUM: u64 = 4_000_000;
 pub const STAGE6_SMP_PROBE_MARKER_MAGIC: u32 = 0x4B52_414D;
 pub const STAGE6_SMP_PROBE_MARKER_BYTES: usize = 64;
 const BSP_ENTRY: u64 = 0xA000;
@@ -79,12 +94,27 @@ pub enum Stage6SmpProbeLoadError {
 }
 
 /// How the scheduler cuts the turns of the run.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Stage6SmpProbeQuantum {
     /// Every turn is this many steps (at least 1).
     Fixed(u64),
     /// Every turn is drawn from SplitMix64(seed) between 1 and 256 steps.
     Seeded(u64),
+    /// The vCPU of every step, in order (a turn is one step of the named vCPU, which must be
+    /// running at that point); the run ends with [`Stage6SmpProbeFinish::ScheduleEnd`] after the
+    /// last entry.
+    Schedule(Vec<usize>),
+}
+
+impl Stage6SmpProbeQuantum {
+    /// The policy as one line: `fixed:Q`, `seeded:S:1..=256`, `schedule:<steps>`.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Fixed(steps) => format!("fixed:{steps}"),
+            Self::Seeded(seed) => format!("seeded:{seed}:1..=256"),
+            Self::Schedule(list) => format!("schedule:{}", list.len()),
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -93,14 +123,20 @@ pub enum Stage6SmpProbeFinish {
     AllIdle,
     BudgetExhausted,
     Stopped,
+    /// An explicit schedule ran out.
+    ScheduleEnd,
 }
 
 /// What the scheduler counted for one vCPU, and where the vCPU stands.
 #[derive(Debug, Eq, PartialEq)]
 pub struct Stage6SmpProbeCpu {
     pub retired: u64,
+    pub turns: u64,
+    pub steps: u64,
+    pub wakes: u64,
     pub init_applied: u64,
     pub started: u64,
+    pub nmi_delivered: u64,
     pub activity: CpuActivity,
     /// The vCPU still runs the trampoline's legacy model (it did not reach long mode).
     pub legacy: bool,
@@ -112,6 +148,13 @@ pub struct Stage6SmpProbeReport {
     /// Every byte the guest wrote to COM1.
     pub com1: Vec<u8>,
     pub cpus: Vec<Stage6SmpProbeCpu>,
+    /// Turns of all vCPUs together.
+    pub turns: u64,
+    /// Virtual nanoseconds the scheduler skipped while nothing ran, and the number of jumps.
+    pub idle_ns: u64,
+    pub idle_jumps: u64,
+    /// The executed schedule as runs `(vCPU, steps)`; only for [`Stage6SmpProbe::run_recorded`].
+    pub schedule: Option<Vec<(usize, u64)>>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -122,6 +165,8 @@ pub enum Stage6SmpProbeRunError {
     Board {
         error: FirmwareBoardError,
         com1: Vec<u8>,
+        /// The counters of the scheduler and the state of every vCPU at the error.
+        cpus: Vec<Stage6SmpProbeCpu>,
     },
     /// The scheduler refused the run for a reason of its own (policy, vCPU count, no progress).
     Scheduler(String),
@@ -184,7 +229,7 @@ fn info_block(
     Ok(block)
 }
 
-/// Place a `Stage6SmpProbeV1` image on a board with `vcpu_count` vCPUs and write the info block
+/// Place a `Stage6SmpProbeV2` image (the builder's `probe.bin`) on a board with `vcpu_count` vCPUs and write the info block
 /// for `nonce`. Only the boot processor is made runnable; the others wait for SIPI.
 pub fn load_stage6_smp_probe(
     image: &[u8],
@@ -249,6 +294,23 @@ impl Stage6SmpProbe {
             .map_err(|error| Stage6SmpProbeLoadError::Memory(format!("{error:?}")))
     }
 
+    /// The `(IRR, ISR)` bits of `vector` in the Local APIC of vCPU `cpu`.
+    pub fn vector_state(&self, cpu: usize, vector: u8) -> Option<(bool, bool)> {
+        self.board
+            .local_apic_of(cpu)
+            .map(|lapic| lapic.vector_state(vector))
+    }
+
+    /// The `(IRR, ISR)` bits of every vector of vCPU `cpu` that is set, as `(vector, irr, isr)`.
+    pub fn pending_vectors(&self, cpu: usize) -> Vec<(u8, bool, bool)> {
+        (0..=255u8)
+            .filter_map(|vector| {
+                let (irr, isr) = self.vector_state(cpu, vector)?;
+                (irr || isr).then_some((vector, irr, isr))
+            })
+            .collect()
+    }
+
     /// Run the scheduler of S6-15 over the board until nothing can run, `budget` instructions
     /// (all vCPUs together) were retired, or an error.
     pub fn run(
@@ -256,13 +318,58 @@ impl Stage6SmpProbe {
         quantum: Stage6SmpProbeQuantum,
         budget: u64,
     ) -> Result<Stage6SmpProbeReport, Stage6SmpProbeRunError> {
+        self.run_inner(quantum, budget, false)
+    }
+
+    /// [`Self::run`] that also records the executed schedule (one entry per turn: memory grows
+    /// with the number of turns).
+    pub fn run_recorded(
+        &mut self,
+        quantum: Stage6SmpProbeQuantum,
+        budget: u64,
+    ) -> Result<Stage6SmpProbeReport, Stage6SmpProbeRunError> {
+        self.run_inner(quantum, budget, true)
+    }
+
+    fn cpu_reports(&self, scheduler: &SmpScheduler) -> Vec<Stage6SmpProbeCpu> {
+        scheduler
+            .counters()
+            .iter()
+            .enumerate()
+            .map(|(cpu, counters)| {
+                let vcpu = self.board.vcpu(cpu).expect("a vCPU of the board");
+                Stage6SmpProbeCpu {
+                    retired: counters.retired,
+                    turns: counters.turns,
+                    steps: counters.steps,
+                    wakes: counters.wakes,
+                    init_applied: counters.init_applied,
+                    started: counters.started,
+                    nmi_delivered: counters.nmi_delivered,
+                    activity: vcpu.activity(),
+                    legacy: vcpu.legacy.is_some(),
+                }
+            })
+            .collect()
+    }
+
+    fn run_inner(
+        &mut self,
+        quantum: Stage6SmpProbeQuantum,
+        budget: u64,
+        record: bool,
+    ) -> Result<Stage6SmpProbeReport, Stage6SmpProbeRunError> {
         let policy = match quantum {
             Stage6SmpProbeQuantum::Fixed(steps) => QuantumPolicy::Fixed(steps),
             Stage6SmpProbeQuantum::Seeded(seed) => QuantumPolicy::seeded(seed),
+            Stage6SmpProbeQuantum::Schedule(list) => QuantumPolicy::Schedule(list),
         };
         let vcpus = self.board.vcpu_count();
         let mut scheduler = SmpScheduler::new(vcpus, policy, StopRequest::new())
             .map_err(|error| Stage6SmpProbeRunError::Scheduler(format!("{error:?}")))?;
+        if record {
+            scheduler.record_turns();
+        }
         let outcome = {
             let mut host = BoardSmpHost::new(
                 &mut self.board,
@@ -289,35 +396,33 @@ impl Stage6SmpProbe {
             Ok(Finished::AllIdle) => Stage6SmpProbeFinish::AllIdle,
             Ok(Finished::BudgetExhausted) => Stage6SmpProbeFinish::BudgetExhausted,
             Ok(Finished::Stopped) => Stage6SmpProbeFinish::Stopped,
-            Ok(Finished::ScheduleEnd) => {
-                return Err(Stage6SmpProbeRunError::Scheduler(
-                    "the probe has no explicit schedule".to_string(),
-                ));
-            }
+            Ok(Finished::ScheduleEnd) => Stage6SmpProbeFinish::ScheduleEnd,
             Err(SmpError::Host(error)) => {
-                return Err(Stage6SmpProbeRunError::Board { error, com1 });
+                let cpus = self.cpu_reports(&scheduler);
+                return Err(Stage6SmpProbeRunError::Board { error, com1, cpus });
             }
             Err(other) => return Err(Stage6SmpProbeRunError::Scheduler(format!("{other:?}"))),
         };
-        let cpus = scheduler
-            .counters()
-            .iter()
-            .enumerate()
-            .map(|(cpu, counters)| {
-                let vcpu = self.board.vcpu(cpu).expect("a vCPU of the board");
-                Stage6SmpProbeCpu {
-                    retired: counters.retired,
-                    init_applied: counters.init_applied,
-                    started: counters.started,
-                    activity: vcpu.activity(),
-                    legacy: vcpu.legacy.is_some(),
+        let cpus = self.cpu_reports(&scheduler);
+        let (idle_ns, idle_jumps) = scheduler.idle();
+        let schedule = record.then(|| {
+            let mut runs: Vec<(usize, u64)> = Vec::new();
+            for turn in scheduler.turns() {
+                match runs.last_mut() {
+                    Some((cpu, steps)) if *cpu == turn.cpu => *steps += turn.steps,
+                    _ => runs.push((turn.cpu, turn.steps)),
                 }
-            })
-            .collect();
+            }
+            runs
+        });
         Ok(Stage6SmpProbeReport {
             finished,
             com1,
+            turns: cpus.iter().map(|cpu| cpu.turns).sum(),
             cpus,
+            idle_ns,
+            idle_jumps,
+            schedule,
         })
     }
 }

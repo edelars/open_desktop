@@ -1304,7 +1304,7 @@ impl LoadedFirmwareBoard {
     /// modelled (activity or STI shadow `None`), a vCPU on a legacy-mode model (`legacy` is
     /// `Some`, the trampoline of S6-16c is still running: NMI in real or protected mode is not
     /// modelled; the error text says "real mode"), paging the walker rejects (the EFER is
-    /// the vCPU's own `guest_efer`). On an error the vCPU is unchanged and the NMI stays pending,
+    /// the vCPU's own `guest_efer`, the root is the vCPU's own CR3, S6-16f). On an error the vCPU is unchanged and the NMI stays pending,
     /// never silently dropped.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn deliver_pending_nmi(
@@ -1357,11 +1357,13 @@ impl LoadedFirmwareBoard {
             }
         }
         // The walker's EFER is the vCPU's own guest EFER (the guest may change only `SCE`).
-        let paging =
-            Long64ProbeConfig::from_cpu_state(&vcpu.state, self.page_table_root, vcpu.guest_efer)
-                .map_err(|_| {
-                FirmwareBoardError::Config("deliver_pending_nmi: no paging for the vCPU")
-            })?;
+        // The walk is built on the vCPU's own CR3 (as the S6-16d quantum does); a vCPU without a
+        // modelled CR3 uses the board's `page_table_root`.
+        let paging_root = vcpu.state.cr3.unwrap_or(self.page_table_root);
+        let paging = Long64ProbeConfig::from_cpu_state(&vcpu.state, paging_root, vcpu.guest_efer)
+            .map_err(|_| {
+            FirmwareBoardError::Config("deliver_pending_nmi: no paging for the vCPU")
+        })?;
         let context = AccessContext {
             mode: InstructionMode::Long64,
             privilege: if vcpu.state.cs_selector.is_some_and(|cs| cs & 3 == 3) {

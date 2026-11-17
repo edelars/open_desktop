@@ -1,4 +1,6 @@
-//! S6-16e: the `Stage6SmpProbeV1` guest starts an application processor with INIT and SIPI.
+//! S6-16e/f: the `Stage6SmpProbeV2` guest starts an application processor with INIT and SIPI,
+//! exchanges Fixed IPIs with it and meets the negative cases (second SIPI, IPI to a missing APIC
+//! ID, NMI to the AP, one processor).
 //!
 //! The image comes from the real builder (`tools/build/build_stage6_smp_probe.py`, run with
 //! `python3`; there is no skip when it is missing: the test fails). The expectations are the
@@ -14,12 +16,14 @@
 
 use od_machine::{ApLegacyRefusal, FirmwareBoardError};
 use od_machine::{
-    STAGE6_SMP_PROBE_COUNT_GPA, STAGE6_SMP_PROBE_FLAG_GPA, STAGE6_SMP_PROBE_IMAGE_BYTES,
-    STAGE6_SMP_PROBE_INFO_GPA, STAGE6_SMP_PROBE_LOCK_GPA, STAGE6_SMP_PROBE_MARKER_AP_GPA,
-    STAGE6_SMP_PROBE_MARKER_BSP_GPA, STAGE6_SMP_PROBE_MARKER_MAGIC, STAGE6_SMP_PROBE_NONCE_MAX,
-    Stage6SmpProbe, Stage6SmpProbeFinish, Stage6SmpProbeLoadError, Stage6SmpProbeQuantum,
-    Stage6SmpProbeRunError, load_stage6_smp_probe,
+    STAGE6_SMP_PROBE_AP_RX_GPA, STAGE6_SMP_PROBE_BSP_RX_GPA, STAGE6_SMP_PROBE_COUNT_GPA,
+    STAGE6_SMP_PROBE_FLAG_GPA, STAGE6_SMP_PROBE_IMAGE_BYTES, STAGE6_SMP_PROBE_INFO_GPA,
+    STAGE6_SMP_PROBE_LOCK_GPA, STAGE6_SMP_PROBE_MARKER_AP_GPA, STAGE6_SMP_PROBE_MARKER_BSP_GPA,
+    STAGE6_SMP_PROBE_MARKER_MAGIC, STAGE6_SMP_PROBE_NMI_GPA, STAGE6_SMP_PROBE_NONCE_MAX,
+    STAGE6_SMP_PROBE_VECTOR_AP, STAGE6_SMP_PROBE_VECTOR_BSP, Stage6SmpProbe, Stage6SmpProbeFinish,
+    Stage6SmpProbeLoadError, Stage6SmpProbeQuantum, Stage6SmpProbeRunError, load_stage6_smp_probe,
 };
+use od_machine::{STAGE6_SMP_PROBE_IDTR_BSP_GPA, STAGE6_SMP_PROBE_MAX_FIXED_QUANTUM};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -58,6 +62,25 @@ impl Built {
         u64::from_str_radix(&digits[..digits.find('"')?], 16).ok()
     }
 
+    /// A number of the section `n<vcpus>` of the manifest (`"ap_started": 1`).
+    fn manifest_number(&self, vcpus: usize, key: &str) -> u64 {
+        let text = std::fs::read_to_string(self.dir.join("build_manifest.json")).unwrap();
+        let section = text.find(&format!("\"n{vcpus}\": {{")).unwrap();
+        let rest = &text[section..];
+        let at = rest
+            .find(&format!("\"{key}\": "))
+            .unwrap_or_else(|| panic!("manifest has no {key}"));
+        let digits = &rest[at + key.len() + 4..];
+        digits[..digits.find([',', '\n']).unwrap()]
+            .trim()
+            .parse()
+            .unwrap()
+    }
+
+    fn manifest_text(&self) -> String {
+        std::fs::read_to_string(self.dir.join("build_manifest.json")).unwrap()
+    }
+
     fn expected_dword(&self, vcpus: usize, cell: &str) -> u32 {
         self.manifest_cell(vcpus, cell, "value")
             .unwrap_or_else(|| panic!("manifest has no value for {cell} (n{vcpus})")) as u32
@@ -77,16 +100,27 @@ impl Drop for Built {
 }
 
 fn build(variant: &str) -> Built {
+    build_scenario(variant, "normal", None)
+}
+
+fn build_scenario(variant: &str, scenario: &str, rounds: Option<u32>) -> Built {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let dir = std::env::temp_dir().join(format!(
-        "od-stage6-smp-probe-{}-{variant}-{:?}",
+        "od-stage6-smp-probe-{}-{variant}-{scenario}-{}-{:?}",
         std::process::id(),
+        rounds.unwrap_or(0),
         std::thread::current().id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    let output = Command::new("python3")
+    let mut command = Command::new("python3");
+    command
         .arg(root.join("tools/build/build_stage6_smp_probe.py"))
-        .args(["--variant", variant, "--output-dir"])
+        .args(["--variant", variant, "--scenario", scenario]);
+    if let Some(rounds) = rounds {
+        command.args(["--rounds", &rounds.to_string()]);
+    }
+    let output = command
+        .args(["--output-dir"])
         .arg(&dir)
         .output()
         .expect("python3 runs the builder");
@@ -164,7 +198,7 @@ fn the_run_is_the_same_under_every_quantum_and_every_seed() {
     ];
     quanta.extend((0..16).map(Stage6SmpProbeQuantum::Seeded));
     for quantum in quanta {
-        let (mut probe, uart) = n2_run(&built, quantum);
+        let (mut probe, uart) = n2_run(&built, quantum.clone());
         assert_eq!(uart, expected, "{quantum:?}");
         for (gpa, cell) in [
             (STAGE6_SMP_PROBE_LOCK_GPA, "lock_entered"),
@@ -257,6 +291,7 @@ fn a_trampoline_without_the_transition_to_long_mode_is_refused() {
         Stage6SmpProbeRunError::Board {
             error: FirmwareBoardError::ApLegacyRefused { cpu, refusal },
             com1,
+            ..
         } => {
             assert_eq!(cpu, 1);
             assert!(
@@ -361,4 +396,425 @@ fn the_loader_refuses_what_the_guest_could_not_use() {
         ));
     }
     assert!(load(&built.image, 2, &[b'a'; STAGE6_SMP_PROBE_NONCE_MAX]).is_none());
+}
+
+// ---- S6-16f: IPI exchange and negative cases --------------------------------------------------
+
+const ROUNDS: u32 = 16;
+
+fn quanta() -> Vec<Stage6SmpProbeQuantum> {
+    let mut quanta = vec![
+        Stage6SmpProbeQuantum::Fixed(1),
+        Stage6SmpProbeQuantum::Fixed(2),
+        Stage6SmpProbeQuantum::Fixed(7),
+        Stage6SmpProbeQuantum::Fixed(100),
+        Stage6SmpProbeQuantum::Fixed(100_000),
+    ];
+    quanta.extend((0..16).map(Stage6SmpProbeQuantum::Seeded));
+    quanta
+}
+
+/// The quanta of the scenarios that do not need the long wait of `Fixed(100000)`.
+fn quanta_small() -> Vec<Stage6SmpProbeQuantum> {
+    let mut quanta = vec![
+        Stage6SmpProbeQuantum::Fixed(1),
+        Stage6SmpProbeQuantum::Fixed(2),
+        Stage6SmpProbeQuantum::Fixed(7),
+        Stage6SmpProbeQuantum::Fixed(100),
+        Stage6SmpProbeQuantum::Fixed(1024),
+    ];
+    quanta.extend((0..16).map(Stage6SmpProbeQuantum::Seeded));
+    quanta
+}
+
+/// Every cell of the manifest of the exchange (`n2`), read from the run.
+fn check_exchange_cells(built: &Built, probe: &mut Stage6SmpProbe, context: &str) {
+    for (gpa, cell) in [
+        (STAGE6_SMP_PROBE_LOCK_GPA, "lock_entered"),
+        (STAGE6_SMP_PROBE_FLAG_GPA, "flag_ap_up"),
+        (STAGE6_SMP_PROBE_COUNT_GPA, "start_count"),
+        (STAGE6_SMP_PROBE_AP_RX_GPA, "ap_rx"),
+        (STAGE6_SMP_PROBE_BSP_RX_GPA, "bsp_rx"),
+        (STAGE6_SMP_PROBE_NMI_GPA, "nmi_cell"),
+    ] {
+        assert_eq!(
+            dword(probe, gpa),
+            built.expected_dword(2, cell),
+            "{cell} {context}"
+        );
+    }
+    check_marker(
+        probe,
+        STAGE6_SMP_PROBE_MARKER_BSP_GPA,
+        built.expected_apic_id_raw(2, "marker_bsp"),
+    );
+    check_marker(
+        probe,
+        STAGE6_SMP_PROBE_MARKER_AP_GPA,
+        built.expected_apic_id_raw(2, "marker_ap"),
+    );
+}
+
+/// No vector is pending or in service in any Local APIC (every IPI of the exchange was taken and
+/// acknowledged with an EOI).
+fn assert_lapics_quiet(probe: &Stage6SmpProbe, cpus: usize, context: &str) {
+    for cpu in 0..cpus {
+        assert_eq!(
+            probe.pending_vectors(cpu),
+            vec![],
+            "IRR/ISR of LAPIC {cpu} {context}"
+        );
+    }
+}
+
+#[test]
+fn the_exchange_of_k_fixed_ipis_leaves_both_counters_at_k_and_every_lapic_quiet() {
+    let built = build_scenario("normal", "exchange", None);
+    let expected = built.expected(2).unwrap();
+    assert_eq!(
+        expected,
+        "BSP0 UP s6-16e-nonce\nAP1 UP s6-16e-nonce\nSMP PROBE OK K=16 s6-16e-nonce\n"
+    );
+    assert_eq!(built.expected_dword(2, "ap_rx"), ROUNDS);
+    assert_eq!(built.expected_dword(2, "bsp_rx"), ROUNDS);
+    let (mut probe, uart) = n2_run(&built, Stage6SmpProbeQuantum::Fixed(1024));
+    assert_eq!(uart, expected);
+    check_exchange_cells(&built, &mut probe, "Fixed(1024)");
+    assert_lapics_quiet(&probe, 2, "after the exchange");
+    // Both vectors of the exchange are the plan's: the numbers are the image's gates.
+    assert_eq!(STAGE6_SMP_PROBE_VECTOR_AP, 0x30);
+    assert_eq!(STAGE6_SMP_PROBE_VECTOR_BSP, 0x31);
+}
+
+#[test]
+fn the_exchange_gives_the_same_transcript_and_cells_under_every_quantum_and_seed() {
+    let built = build_scenario("normal", "exchange", None);
+    let expected = built.expected(2).unwrap();
+    for quantum in quanta() {
+        let mut probe = load_stage6_smp_probe(&built.image, 2, NONCE).unwrap();
+        let report = probe.run(quantum.clone(), BUDGET).unwrap();
+        assert_eq!(
+            report.finished,
+            Stage6SmpProbeFinish::AllIdle,
+            "{quantum:?}"
+        );
+        assert_eq!(
+            String::from_utf8(report.com1.clone()).unwrap(),
+            expected,
+            "{quantum:?}"
+        );
+        // At most one wake of the AP per IPI of the exchange (an IPI that comes before the AP
+        // halts needs no wake, so the count depends on the schedule), INIT once, SIPI once.
+        assert!(report.cpus[1].wakes <= u64::from(ROUNDS), "{quantum:?}");
+        assert_eq!(report.cpus[1].init_applied, 1);
+        assert_eq!(report.cpus[1].started, 1);
+        assert_eq!(report.cpus[0].init_applied, 0);
+        check_exchange_cells(&built, &mut probe, &format!("{quantum:?}"));
+        assert_lapics_quiet(&probe, 2, &format!("{quantum:?}"));
+    }
+}
+
+#[test]
+fn different_seeds_cut_the_exchange_differently_and_the_same_seed_repeats_it_exactly() {
+    let built = build_scenario("normal", "exchange", None);
+    let run = |seed: u64| {
+        let mut probe = load_stage6_smp_probe(&built.image, 2, NONCE).unwrap();
+        probe
+            .run_recorded(Stage6SmpProbeQuantum::Seeded(seed), BUDGET)
+            .unwrap()
+    };
+    let (a, b, again) = (run(3), run(4), run(3));
+    assert_eq!(a, again, "one seed, one run (counters, schedule, bytes)");
+    assert_eq!(a.com1, b.com1);
+    assert_ne!(a.turns, b.turns, "the seeds cut the turns differently");
+    assert_ne!(a.schedule, b.schedule);
+}
+
+#[test]
+fn the_exchange_takes_other_round_counts_from_the_build() {
+    for rounds in [1u32, 100] {
+        let built = build_scenario("normal", "exchange", Some(rounds));
+        let expected = built.expected(2).unwrap();
+        assert!(expected.contains(&format!("OK K={rounds} ")), "{expected}");
+        let (mut probe, uart) = n2_run(&built, Stage6SmpProbeQuantum::Fixed(1024));
+        assert_eq!(uart, expected);
+        assert_eq!(dword(&mut probe, STAGE6_SMP_PROBE_AP_RX_GPA), rounds);
+        assert_eq!(dword(&mut probe, STAGE6_SMP_PROBE_BSP_RX_GPA), rounds);
+    }
+}
+
+#[test]
+fn one_processor_prints_ap_absent_in_every_scenario() {
+    for scenario in ["exchange", "resipi", "bad-ipi", "nmi"] {
+        let built = build_scenario("normal", scenario, None);
+        let expected = built.expected(1).unwrap();
+        assert_eq!(
+            expected,
+            "BSP0 UP s6-16e-nonce\nSMP PROBE AP ABSENT s6-16e-nonce\n"
+        );
+        let mut probe = load_stage6_smp_probe(&built.image, 1, NONCE).unwrap();
+        let report = probe
+            .run(Stage6SmpProbeQuantum::Fixed(1024), BUDGET)
+            .unwrap();
+        assert_eq!(report.finished, Stage6SmpProbeFinish::AllIdle, "{scenario}");
+        assert_eq!(String::from_utf8(report.com1).unwrap(), expected);
+        assert_eq!(dword(&mut probe, STAGE6_SMP_PROBE_AP_RX_GPA), 0);
+        assert_eq!(dword(&mut probe, STAGE6_SMP_PROBE_BSP_RX_GPA), 0);
+        assert_lapics_quiet(&probe, 1, scenario);
+    }
+}
+
+#[test]
+fn a_second_sipi_to_the_running_ap_is_ignored_and_the_exchange_goes_on() {
+    let built = build_scenario("normal", "resipi", None);
+    let plain = build_scenario("normal", "exchange", None);
+    assert_ne!(built.image, plain.image, "the second SIPI is in the image");
+    let expected = built.expected(2).unwrap();
+    assert_eq!(
+        expected,
+        "BSP0 UP s6-16e-nonce\nAP1 UP s6-16e-nonce\nSMP PROBE OK K=16 s6-16e-nonce\n"
+    );
+    assert_eq!(built.manifest_number(2, "ap_started"), 1);
+    assert_eq!(built.manifest_number(2, "ap_init_applied"), 1);
+    for quantum in quanta_small() {
+        let mut probe = load_stage6_smp_probe(&built.image, 2, NONCE).unwrap();
+        let report = probe.run(quantum.clone(), BUDGET).unwrap();
+        assert_eq!(
+            report.finished,
+            Stage6SmpProbeFinish::AllIdle,
+            "{quantum:?}"
+        );
+        assert_eq!(String::from_utf8(report.com1.clone()).unwrap(), expected);
+        // The AP did not start again: SIPI applied once, the trampoline ran once (start counter 1,
+        // the manifest value), no second INIT.
+        assert_eq!(
+            report.cpus[1].started,
+            built.manifest_number(2, "ap_started"),
+            "{quantum:?}"
+        );
+        assert_eq!(
+            report.cpus[1].init_applied,
+            built.manifest_number(2, "ap_init_applied")
+        );
+        assert!(!report.cpus[1].legacy);
+        check_exchange_cells(&built, &mut probe, &format!("{quantum:?}"));
+        assert_lapics_quiet(&probe, 2, &format!("{quantum:?}"));
+    }
+}
+
+/// The text of a device error of the Local APIC as the board reports it: a refused MMIO write at
+/// the window of the LAPIC (`0xFEE00000`), error `UnsupportedConfiguration` (SMP_CONTRACT 5: an
+/// ICR value outside the closed set is an explicit device error and changes no state).
+fn assert_lapic_device_error(error: &FirmwareBoardError, cpu: usize) {
+    match error {
+        FirmwareBoardError::VcpuQuantum { cpu: at, detail } => {
+            assert_eq!(*at, cpu);
+            assert!(
+                detail.contains("MMIO device") && detail.contains("write failed"),
+                "{detail}"
+            );
+            assert!(detail.contains("UnsupportedConfiguration"), "{detail}");
+            assert!(detail.contains("4276093696"), "0xFEE00000: {detail}");
+        }
+        other => panic!("expected a device error of the LAPIC, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_ipi_to_a_missing_apic_id_ends_the_run_with_a_device_error_and_changes_no_lapic() {
+    let built = build_scenario("normal", "bad-ipi", None);
+    let expected = built.expected(2).unwrap();
+    assert_eq!(
+        expected,
+        "BSP0 UP s6-16e-nonce\nAP1 UP s6-16e-nonce\nSMP PROBE BAD-IPI s6-16e-nonce\n"
+    );
+    for quantum in quanta_small() {
+        let mut probe = load_stage6_smp_probe(&built.image, 2, NONCE).unwrap();
+        assert_lapics_quiet(&probe, 2, "before the run");
+        let error = probe.run(quantum.clone(), BUDGET).unwrap_err();
+        match error {
+            Stage6SmpProbeRunError::Board { error, com1, cpus } => {
+                assert_lapic_device_error(&error, 0);
+                // The marker is the last thing the guest printed: nothing after it, no failure line.
+                assert_eq!(String::from_utf8(com1).unwrap(), expected, "{quantum:?}");
+                // The AP was started once and halted; nothing was sent to it.
+                assert_eq!(cpus[1].started, 1);
+                assert_eq!(cpus[1].wakes, 0, "no IPI reached the AP");
+                assert_eq!(cpus[1].nmi_delivered, 0);
+                assert_eq!(cpus[1].activity, od_isa::CpuActivity::Halted);
+            }
+            other => panic!("expected a board error, got {other:?}"),
+        }
+        // IRR and ISR of both LAPICs are as before the run: empty; the counters of the exchange
+        // are untouched; the AP's own marker and the start counter are as after a normal start.
+        assert_lapics_quiet(&probe, 2, &format!("after the refused ICR {quantum:?}"));
+        for (gpa, cell) in [
+            (STAGE6_SMP_PROBE_COUNT_GPA, "start_count"),
+            (STAGE6_SMP_PROBE_AP_RX_GPA, "ap_rx"),
+            (STAGE6_SMP_PROBE_BSP_RX_GPA, "bsp_rx"),
+        ] {
+            assert_eq!(
+                dword(&mut probe, gpa),
+                built.expected_dword(2, cell),
+                "{cell}"
+            );
+        }
+    }
+    assert!(built.manifest_text().contains("LapicDeviceError"));
+}
+
+#[test]
+fn the_missing_apic_id_is_the_first_one_past_the_processors_whatever_their_number() {
+    let built = build_scenario("normal", "bad-ipi", None);
+    for vcpus in [3usize, 4] {
+        let mut probe = load_stage6_smp_probe(&built.image, vcpus, NONCE).unwrap();
+        let error = probe
+            .run(Stage6SmpProbeQuantum::Fixed(1024), BUDGET)
+            .unwrap_err();
+        match error {
+            Stage6SmpProbeRunError::Board { error, com1, cpus } => {
+                assert_lapic_device_error(&error, 0);
+                assert_eq!(
+                    String::from_utf8(com1).unwrap(),
+                    built.expected(2).unwrap(),
+                    "N={vcpus}"
+                );
+                // Only the AP the BSP started ran; the others never got SIPI.
+                assert_eq!(cpus[1].started, 1);
+                assert!(cpus[2..].iter().all(|cpu| cpu.started == 0), "{cpus:?}");
+            }
+            other => panic!("expected a board error, got {other:?}"),
+        }
+        assert_lapics_quiet(&probe, vcpus, &format!("N={vcpus}"));
+    }
+}
+
+#[test]
+fn an_nmi_to_the_ap_on_the_board_tables_runs_the_handler_of_vector_2() {
+    let built = build_scenario("normal", "nmi", None);
+    let expected = built.expected(2).unwrap();
+    assert_eq!(
+        expected,
+        "BSP0 UP s6-16e-nonce\nAP1 UP s6-16e-nonce\nSMP PROBE NMI OK s6-16e-nonce\n"
+    );
+    for quantum in quanta_small() {
+        let mut probe = load_stage6_smp_probe(&built.image, 2, NONCE).unwrap();
+        let report = probe.run(quantum.clone(), BUDGET).unwrap();
+        assert_eq!(String::from_utf8(report.com1.clone()).unwrap(), expected);
+        assert_eq!(report.cpus[1].nmi_delivered, 1, "{quantum:?}");
+        assert_eq!(report.cpus[0].nmi_delivered, 0);
+        assert_eq!(
+            dword(&mut probe, STAGE6_SMP_PROBE_NMI_GPA),
+            built.expected_dword(2, "nmi_cell")
+        );
+        assert_eq!(built.expected_dword(2, "nmi_cell"), 1);
+    }
+}
+
+/// The page tables of the AP at another root than the board's `page_table_root`: the trampoline's
+/// `MOV EAX, 0x2000; MOV CR3, EAX` is patched to a copy of the PML4 page at `0x10000`.
+fn patch_ap_cr3(probe: &mut Stage6SmpProbe, new_root: u32) {
+    let pml4 = probe.read_ram(0x2000, 0x1000);
+    probe.write_ram(u64::from(new_root), &pml4).unwrap();
+    let trampoline = probe.read_ram(0x8200, 0x100);
+    let pattern = [0xB8, 0x00, 0x20, 0x00, 0x00, 0x0F, 0x22, 0xD8];
+    let at = trampoline
+        .windows(pattern.len())
+        .position(|window| window == pattern)
+        .expect("mov eax, PML4; mov cr3, eax in the protected-mode block");
+    probe
+        .write_ram(0x8200 + at as u64 + 1, &new_root.to_le_bytes())
+        .unwrap();
+}
+
+#[test]
+fn an_nmi_to_an_ap_on_its_own_cr3_is_delivered_and_the_handler_of_vector_2_runs() {
+    let built = build_scenario("normal", "nmi", None);
+    let expected = built.expected(2).unwrap();
+    for quantum in quanta_small() {
+        let mut probe = load_stage6_smp_probe(&built.image, 2, NONCE).unwrap();
+        patch_ap_cr3(&mut probe, 0x1_0000);
+        let report = probe.run(quantum.clone(), BUDGET).unwrap();
+        // The board walks the NMI delivery on the CR3 of the vCPU (0x10000, not the board's root):
+        // the SDM transcript is complete, the handler of vector 2 stored its cell.
+        assert_eq!(
+            String::from_utf8(report.com1).unwrap(),
+            expected,
+            "{quantum:?}"
+        );
+        assert_eq!(report.cpus[1].nmi_delivered, 1, "{quantum:?}");
+        assert_eq!(report.cpus[0].nmi_delivered, 0);
+        assert_eq!(
+            dword(&mut probe, STAGE6_SMP_PROBE_NMI_GPA),
+            built.expected_dword(2, "nmi_cell")
+        );
+    }
+}
+
+#[test]
+fn the_bsp_loads_its_idtr_with_lidt_rsp_disp8_and_the_descriptor_decides_whether_the_reply_arrives()
+{
+    let built = build_scenario("normal", "exchange", None);
+    let expected = built.expected(2).unwrap();
+    // The descriptor (limit u16, base u64) at 0x8150 is what the guest's `LIDT [RSP+0]` loads.
+    let mut probe = load_stage6_smp_probe(&built.image, 2, NONCE).unwrap();
+    assert_eq!(
+        probe.read_ram(STAGE6_SMP_PROBE_IDTR_BSP_GPA, 10),
+        [0xFF, 0x03, 0x00, 0x98, 0, 0, 0, 0, 0, 0]
+    );
+    let report = probe
+        .run(Stage6SmpProbeQuantum::Fixed(1024), BUDGET)
+        .unwrap();
+    assert_eq!(String::from_utf8(report.com1).unwrap(), expected);
+    // The same image with a limit of 0 in the descriptor: the LIDT is executed, the BSP has no gate
+    // for vector 0x31 and the reply of the AP cannot be delivered.
+    let mut probe = load_stage6_smp_probe(&built.image, 2, NONCE).unwrap();
+    probe
+        .write_ram(STAGE6_SMP_PROBE_IDTR_BSP_GPA, &[0, 0])
+        .unwrap();
+    let outcome = probe.run(Stage6SmpProbeQuantum::Fixed(1024), BUDGET);
+    match outcome {
+        Err(Stage6SmpProbeRunError::Board { error, com1, .. }) => {
+            match error {
+                FirmwareBoardError::ExternalInterruptDelivery {
+                    vector, failure, ..
+                } => {
+                    assert_eq!(vector, STAGE6_SMP_PROBE_VECTOR_BSP);
+                    assert!(failure.contains("GateBeyondIdtLimit"), "{failure}");
+                }
+                other => panic!("expected a refused delivery, got {other:?}"),
+            }
+            assert_eq!(
+                String::from_utf8(com1).unwrap(),
+                "BSP0 UP s6-16e-nonce\nAP1 UP s6-16e-nonce\n"
+            );
+        }
+        other => panic!("a limit of 0 must stop the exchange, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_recorded_maximum_and_5_million_fixed_give_ok_and_6_million_a_timeout_never_a_false_ok() {
+    let built = build("normal");
+    let expected = built.expected(2).unwrap();
+    // 4M is the recorded maximum; 5M still ends OK in the `normal` scenario (the AP's turn comes
+    // before the wait of 5.24M BSP steps runs out), 6M is past the wait: a timeout.
+    for quantum in [STAGE6_SMP_PROBE_MAX_FIXED_QUANTUM, 5_000_000] {
+        let mut probe = load_stage6_smp_probe(&built.image, 2, NONCE).unwrap();
+        let report = probe
+            .run(Stage6SmpProbeQuantum::Fixed(quantum), 40_000_000)
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(report.com1).unwrap(),
+            expected,
+            "Fixed({quantum})"
+        );
+    }
+    let mut probe = load_stage6_smp_probe(&built.image, 2, NONCE).unwrap();
+    let report = probe
+        .run(Stage6SmpProbeQuantum::Fixed(6_000_000), 40_000_000)
+        .unwrap();
+    let uart = String::from_utf8(report.com1).unwrap();
+    assert!(!uart.contains("SMP PROBE OK"), "{uart}");
+    assert!(uart.contains("FAIL TIMEOUT"), "{uart}");
 }

@@ -868,11 +868,22 @@ mod tests {
     }
 
     #[test]
-    fn an_nmi_to_an_ap_that_entered_long_mode_meets_the_boards_page_table_root_until_s6_16f() {
-        // After the hand-over the AP is a long-mode vCPU on its own CR3. The NMI path builds the
-        // walk from the board's `page_table_root`, so it refuses the state: a typed error, the NMI
-        // stays pending. Recorded as the open point of S6-16f (MACHINE_CONTRACT.md, S6-16c).
+    fn an_nmi_to_an_ap_that_entered_long_mode_is_delivered_on_its_own_cr3() {
+        // After the hand-over the AP is a long-mode vCPU on its own CR3 (`PML4` of the trampoline,
+        // not the board's `page_table_root` 0x1000): the NMI walk is built on the vCPU's CR3
+        // (S6-16f), so the vector-2 gate of the AP's own IDT is read and the NMI is delivered.
+        const IDT_AP: u64 = 0xE000;
+        const HANDLER: u64 = 0xF000;
         let mut board = board();
+        let mut idtr = vec![0xFF, 0x0F];
+        idtr.extend(le32(IDT_AP as u32));
+        fixture::patch(&mut board, IDTR_AT, &idtr);
+        let mut gate = [0u8; 16];
+        gate[0..2].copy_from_slice(&(HANDLER as u16).to_le_bytes());
+        gate[2..4].copy_from_slice(&0x10u16.to_le_bytes()); // 64-bit code of the trampoline's GDT
+        gate[5] = 0x8E; // present, DPL 0, 64-bit interrupt gate
+        fixture::patch(&mut board, IDT_AP + 2 * 16, &gate);
+        fixture::patch(&mut board, HANDLER, &[0xF4]); // the handler of vector 2: HLT
         let mut call = 0;
         let mut host = BoardSmpHost::new(
             &mut board,
@@ -885,14 +896,16 @@ mod tests {
             SmpScheduler::new(2, QuantumPolicy::default(), StopRequest::new()).unwrap();
         scheduler.run(&mut host, 2 + LEGACY_STEPS).unwrap();
         assert!(host.board().vcpu(1).unwrap().legacy.is_none());
+        assert_eq!(host.board().vcpu(1).unwrap().state.cr3, Some(PML4));
         host.apic(0).write_icr(0, 1, NMI).unwrap();
-        assert_eq!(
-            scheduler.run(&mut host, 1_000).unwrap_err(),
-            SmpError::Host(FirmwareBoardError::Config(
-                "deliver_pending_nmi: no paging for the vCPU"
-            ))
-        );
-        assert!(host.apic(1).pending_nmi());
+        scheduler.run(&mut host, 1_000).unwrap();
+        // The latch is taken, the handler of vector 2 ran (its HLT retired), NMI stays blocked until
+        // an IRETQ that this handler does not execute.
+        assert!(!host.apic(1).pending_nmi());
+        let ap = host.board().vcpu(1).unwrap();
+        assert!(ap.state.nmi_blocked);
+        assert_eq!(ap.state.rip, HANDLER + 1);
+        assert_eq!(ap.activity(), CpuActivity::Halted);
     }
 
     #[test]
