@@ -2093,3 +2093,20 @@ remains the unrelated CLD caveat.
 Runner advances to `42 80 7C 04 08 01` (CMP byte ptr [RSP+R8+8],1; ISSUE-413)
 at RIP `0x2012f9`, after 9,901 retired instructions, unsupported opcode 128,
 COM1 empty.
+
+### ISSUE-413 — exact `CMP byte ptr [RSP+R8+8],1` (`42 80 7C 04 08 01`)
+
+Admit only this exact byte comparison in the base paged profile. REX.X selects
+R8 as the SIB index, RSP is the base, and disp8 is +8. Read the byte through
+the tracked memory path before computing byte subtraction flags; do not write
+memory or registers, and preserve state on fetch/read faults. Focused flags,
+definedness, address/read fault, fetch fault, neighbor and CPL3 tests pass
+(5/5); other-profile matrix passes (1/1). Full od-isa passes
+(2,322/1,591/126/29/6/1,381/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
+remains the unrelated CLD caveat.
+
+Runner advances to `0F 84 9D 01 00 00` (JZ rel32 +0x19d; ISSUE-414) at RIP
+`0x2012ff`, after 9,902 retired instructions, unsupported opcode 132, COM1
+empty.

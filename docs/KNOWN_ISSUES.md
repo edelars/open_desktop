@@ -5212,7 +5212,17 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-413 — S7-04: exact CMP byte ptr [RSP+R8+8],1 frontier (`42 80 7C 04 08 01`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-412.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012f9`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this exact indexed stack-byte compare with imm8 1, outside current bounded base-profile admission.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `42 80 7C 04 08 01`. REX.X extends the SIB index to R8; the effective address is RSP+R8+8, with byte-width CMP against imm8 1. Shared arithmetic updates flags and their definedness; no register or memory write occurs. A tracked read fault commits neither flags nor RIP. Other addresses, widths, operations, prefixes and CPL3/other profiles remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,901 instructions and reported `Unsupported { opcode: 128 }` at RIP `0x2012f9`; COM1 is empty. Bytes at the link-base shadow are `42 80 7C 04 08 01`.
-- **Следующий шаг:** verify exact SIB address, byte read and CMP flag semantics; admit only this encoding.
+- **Результат:** runner now retires 9,902 instructions and stops at RIP `0x2012ff`, bytes `0F 84 9D 01 00 00` (JZ rel32 +0x19d; ISSUE-414), `Unsupported { opcode: 132 }`; COM1 is empty.
+- **Проверка:** focused byte/flags/definedness/read-fault/fetch-fault/neighbors/CPL3 tests 5/5 and other-profile matrix 1/1 pass. Full od-isa passes (2,322/1,591/126/29/6/1,381/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+- **Следующий шаг:** ISSUE-414, exact `0F 84 9D 01 00 00` (JZ rel32 +0x19d) at RIP `0x2012ff`.
+
+### ISSUE-414 — S7-04: exact JZ rel32 +0x19d frontier (`0F 84 9D 01 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-413.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012ff`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware reaches this exact near conditional branch on ZF, outside the current bounded base-profile admission.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,902 instructions and reported `Unsupported { opcode: 132 }` at RIP `0x2012ff`; COM1 is empty. Bytes at the link-base shadow are `0F 84 9D 01 00 00`.
+- **Следующий шаг:** verify exact JZ condition/target/fault semantics; admit only this displacement.

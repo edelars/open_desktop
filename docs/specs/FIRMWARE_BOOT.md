@@ -1974,3 +1974,17 @@ remains the unrelated CLD caveat.
 Runner advances to `42 80 7C 04 08 01` (CMP byte ptr [RSP+R8+8],1; ISSUE-413),
 RIP `0x2012f9`, after 9,901 retired instructions, unsupported opcode 128,
 COM1 empty.
+
+### ISSUE-413 — exact `CMP byte ptr [RSP+R8+8],1` (`42 80 7C 04 08 01`)
+
+The exact base-profile instruction uses REX.X to select R8 as the SIB index,
+with RSP base and disp8 +8. It reads one byte through tracked memory and
+compares it with 1, updating arithmetic flags/definedness without register or
+memory writes. Fetch and read faults are atomic. Focused tests pass (5/5),
+other-profile matrix passes (1/1), full od-isa passes
+(2,322/1,591/126/29/6/1,381/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check and scoped rustfmt/diff-check
+pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+Runner advances to `0F 84 9D 01 00 00` (JZ rel32 +0x19d; ISSUE-414), RIP
+`0x2012ff`, after 9,902 retired instructions, unsupported opcode 132, COM1 empty.

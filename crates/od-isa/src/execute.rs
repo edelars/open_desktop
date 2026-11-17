@@ -25686,6 +25686,54 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
+        // S7-04: firmware compares one byte at exact `[RSP+R8+8]` with imm8 1
+        // (`42 80 7C 04 08 01`). REX.X extends the SIB index to R8; keep the
+        // base, index, displacement, byte width, group /7 and immediate exact.
+        // The tracked memory read must succeed before CMP flags or RIP commit.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Cmp,
+            dst: Operand::Memory(destination),
+            src: Operand::Immediate(1),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x80
+            && instruction.length == 6
+            && instruction.operand_size == OperandSize::Byte
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x42),
+                    ..Prefixes::default()
+                })
+            && destination.base == AddressBase::Register(Register::Rsp)
+            && destination.index == Some(Register::R8)
+            && destination.scale == 1
+            && destination.displacement == 8
+            && destination.address_size == OperandSize::Qword
+            && destination.size == OperandSize::Byte =>
+        {
+            let lhs = match read_operand(
+                state,
+                memory,
+                context,
+                next_rip,
+                Operand::Memory(destination),
+            ) {
+                Ok(value) => value,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            let (_, flags) =
+                arithmetic_result(OperandSize::Byte, ArithmeticKind::Cmp, lhs, 1, state.rflags);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
+            };
+        }
         // S7-04: the Rust entry checks the handoff GPA with exactly
         // `48 81 FF 00 00 10 00` (CMP RDI,0x00100000). Reuse the qword CMP
         // flags semantics; the destination register is never written.
