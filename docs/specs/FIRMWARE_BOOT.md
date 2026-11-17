@@ -938,3 +938,9 @@ The admitted near JZ reads ZF, uses next RIP as rel32 base, preserves flags/defi
 With exact `4D 8B 54 04 EC` admitted, the firmware runner retires 9,055 instructions and stops at RIP `0x2017af`, bytes `89 F5` (`MOV EBP,ESI`, ISSUE-342), `Unsupported { opcode: 137 }`. Image `/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1 output is empty.
 
 The qword SIB load uses a tracked four-level read, updates only R10/RIP after success, and leaves the page dirty bits clear. Independent review approved with no findings. ISSUE-201 remains the unrelated stale CLD test expectation caveat.
+
+### Stage 7 runner frontier after ISSUE-342
+
+With exact `89 F5` admitted, the firmware runner retires 9,058 instructions and stops at RIP `0x2017ba`, bytes `0F 85 A0 FE FF FF` (`JNZ rel32 -0x160`, ISSUE-343), `Unsupported { opcode: 133 }`. Image `/private/tmp/od-fw-s7-04-issue256.bin` has SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`; COM1 output is empty.
+
+The dword move zero-extends ESI into RBP and preserves RFLAGS/definedness. Independent review approved with no findings. ISSUE-201 remains the unrelated stale CLD test expectation caveat.

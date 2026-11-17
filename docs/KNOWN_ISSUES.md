@@ -4607,9 +4607,18 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-342 — S7-04: exact helper `MOV EBP,ESI` (`89 F5`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-341.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017af`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this exact 32-bit register move after 9,055 retired instructions. The base profile does not yet admit this exact no-prefix register form.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact no-prefix bytes `89 F5` copy ESI's low dword into EBP; the dword write zero-extends RBP. Only RBP and RIP change; RFLAGS and definedness are preserved.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 137 }` at RIP `0x2017af`; COM1 is empty.
-- **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.
+- **Проверка:** four focused tests cover zero-extension/full state/flag-definedness, final-ModRM fetch-fault atomicity, neighboring encodings, and CPL3 rejection; the other-profile matrix rejects the exact bytes. Full od-isa suites pass (2,322/1,591/126/29/6/1,054/7/15; 0 doc tests), all 71 paged machine quantum tests pass, and scoped cargo check, rustfmt and diff-check pass. Independent review approved with no findings.
+- **Следующий шаг:** implement only ISSUE-343's exact `JNZ rel32 -0x160` form in a separate Stage 7 slice.
+
+### ISSUE-343 — S7-04: exact helper `JNZ rel32 -0x160` (`0F 85 A0 FE FF FF`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-342.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2017ba`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware reaches this exact near conditional branch after 9,058 retired instructions. The base profile does not yet admit this exact rel32 displacement.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 133 }` at RIP `0x2017ba`; COM1 is empty.
+- **Следующий шаг:** analyze and admit only this exact firmware branch in a separate Stage 7 slice.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.

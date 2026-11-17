@@ -853,6 +853,22 @@ and both targeted machine tests pass. Full od-isa suites pass
 tests pass. Scoped cargo check, rustfmt on touched Rust files and diff-check
 pass. Independent review approved with no findings.
 
+### Текущий статус — 2026-11-16 — ISSUE-342
+
+ISSUE-342 admits only exact no-prefix bytes `89 F5` (`MOV EBP,ESI`) in the
+base `PagedCpl0ProbeV1` profile. The dword register write zero-extends RBP;
+only RBP and RIP change, while RFLAGS and definedness are preserved. The
+runner advances to ISSUE-343, `0F 85 A0 FE FF FF` (`JNZ rel32 -0x160`) at
+`0x2017ba` after 9,058 retired instructions; COM1 is empty. ISSUE-201 remains
+the unrelated pair of stale CLD-unsupported full-machine expectations. Do not
+mark the Stage 7 gate complete.
+
+Four focused profile tests, the other-profile matrix and relevant prior-MOV
+neighbor regression pass. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,054/7/15; zero doc tests), all 71 paged machine
+quantum tests pass, and scoped cargo check/rustfmt/diff-check pass.
+Independent review approved with no findings.
+
 ## 10. Проверка документа
 
 Подготовка плана не является реализацией прошивки, устройств, TPM или проведённым экспериментом. Для текущей задачи проверялись: соответствие scope roadmap/architecture/layout/`firmware/AGENTS.md`, фактическое состояние кода на 2026-11-07 (пустой `firmware/uefi/`, только Long64 в `od-isa`, отсутствие ROM backing, PCI, NVMe, RTC, TPM, NVRAM; наличие `MachineBus`, `PhysicalMemory`, flat probe этапа 4, UART, LAPIC/IOAPIC, дисплейного устройства S10-03, политики зависимостей и ADR-0001/0002), последовательность и критерии задач, ссылки и Markdown. CPU-тесты, запуск гостя и SSH не требовались.

@@ -29230,6 +29230,118 @@ fn rust_helper_mov_ebp_ecx_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
+fn rust_helper_mov_ebp_esi_dword_zero_extends_and_preserves_flags() {
+    let code = [0x89, 0xf5]; // MOV EBP,ESI
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsi as usize] = 0xfeed_face_89ab_cdef;
+    cpu.gpr[Register::Rbp as usize] = 0xaabb_ccdd_eeff_0011;
+    cpu.rflags = 0x8d7;
+    let defined = DEFINED ^ (1 << 6);
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, defined);
+    let mut expected = before;
+    expected.gpr[Register::Rbp as usize] = 0x89ab_cdef;
+    expected.rip = RIP + code.len() as u64;
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(memory.write_addresses.is_empty());
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn rust_helper_mov_ebp_esi_fetch_fault_is_atomic() {
+    let rip = RIP + 0xfff;
+    let mut memory = memory_with_code_at(&[0x89], rip);
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+    memory.fail_fetch_at = Some((rip + 1, page_fault(0x10, rip + 1)));
+
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 1),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn rust_helper_mov_ebp_esi_neighbours_stay_unsupported_without_mutation() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x89, 0xf4], 0x89),             // MOV ESP,ESI
+        (&[0x89, 0xfd], 0x89),             // MOV EBP,EDI
+        (&[0x89, 0xee], 0x89),             // MOV ESI,EBP
+        (&[0x89, 0xed], 0x89),             // MOV EBP,EBP
+        (&[0x8b, 0xee], 0x8b),             // reverse opcode direction
+        (&[0x4c, 0x89, 0xf5], 0x89),       // qword form
+        (&[0x66, 0x89, 0xf5], 0x89),       // word form
+        (&[0x88, 0xf5], 0x88),             // byte form
+        (&[0xf3, 0x89, 0xf5], 0x89),       // REP prefix
+        (&[0x67, 0x89, 0xf5], 0x89),       // address-size prefix
+        (&[0x89, 0x35, 0, 0, 0, 0], 0x89), // memory destination
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "{bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_mov_ebp_esi_is_unsupported_in_cpl3_profile() {
+    let bytes = [0x89, 0xf5];
+    let mut memory = Memory::new(&bytes);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    let before = cpu.clone();
+
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x89 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn rust_helper_mov_ebp_r14d_zero_extends_and_preserves_flags() {
     let code = [0x44, 0x89, 0xf5]; // MOV EBP,R14D
     let mut memory = Memory::new(&code);
@@ -29286,7 +29398,6 @@ fn rust_helper_mov_ebp_r14d_neighbours_stay_unsupported_without_mutation() {
         (&[0x44, 0x89, 0xed], 0x89),             // MOV EBP,R13D
         (&[0x45, 0x89, 0xf5], 0x89),             // MOV R13D,R14D
         (&[0x45, 0x89, 0xf4], 0x89),             // MOV R12D,R14D
-        (&[0x89, 0xf5], 0x89),                   // MOV EBP,ESI
         (&[0x44, 0x8b, 0xf5], 0x8b),             // reverse direction
         (&[0x4c, 0x89, 0xf5], 0x89),             // qword destination
         (&[0x66, 0x44, 0x89, 0xf5], 0x89),       // word destination
@@ -32339,6 +32450,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x4c, 0x39, 0xef][..], 0x39),
         (&[0x76, 0x22][..], 0x76),
         (&[0x89, 0x1c, 0x24][..], 0x89),
+        (&[0x89, 0xf5][..], 0x89),
         (&[0x49, 0x89, 0xf8][..], 0x89),
         (&[0x48, 0x89, 0xf0][..], 0x89),
         (&[0x48, 0x8d, 0x3d, 0x09, 0x2b, 0, 0][..], 0x8d),

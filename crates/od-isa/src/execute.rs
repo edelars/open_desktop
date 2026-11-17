@@ -24020,6 +24020,23 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: exact `89 F5` copies ESI to EBP. A dword GPR write zero
+        // extends RBP; no flags or other registers are changed.
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x89
+            && instruction.length == 2
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes == Prefixes::default()
+            && destination == RegisterView::low(Register::Rbp, OperandSize::Dword)
+            && source == RegisterView::low(Register::Rsi, OperandSize::Dword) =>
+        {
+            state.write(destination, state.read(source));
+            state.rip = next_rip;
+        }
         // S7-04: the Rust helper spills with exact RSP-relative stores:
         // dword `89 1C 24` (EBX) and qword `48 89 54 24 30` (RDX),
         // `48 89 74 24 10` (RSI), `48 89 44 24 08` (RAX). The decoded tuple

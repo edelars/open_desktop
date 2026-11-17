@@ -27952,3 +27952,7 @@ Five focused tests cover both outcomes with defined/undefined ZF, taken target c
 ### S7-04 CPU-profile slice: exact helper `MOV R10,qword ptr [R12+RAX-0x14]` (ISSUE-341)
 
 `PagedCpl0ProbeV1` admits only exact bytes `4D 8B 54 04 EC`. REX.R selects R10 and REX.B selects R12 as SIB base; RAX is the scale-1 index and disp8 `0xec` sign-extends to -0x14. The 64-bit effective address wraps before canonicality validation and the qword is read through tracked memory. Success changes only R10 and RIP; faults leave CPU state untouched. Flags and definedness are preserved. Exact adjacent forms, CPL3 and other profiles remain unsupported. Focused/profile and tracked machine tests, full od-isa and paged-machine suites, scoped cargo check, rustfmt and diff-check pass; independent review approved with no findings. ISSUE-201's unrelated stale CLD expectations remain open.
+
+### S7-04 CPU-profile slice: exact helper `MOV EBP,ESI` (ISSUE-342)
+
+`PagedCpl0ProbeV1` admits only exact no-prefix bytes `89 F5`. The dword source reads ESI's low 32 bits; writing EBP zero-extends into RBP. Only RBP/RIP change. RFLAGS and definedness remain unchanged. Other registers, operand widths, opcode direction, prefixes, CPL3 and other profiles remain unsupported. Focused/profile tests, full od-isa and paged-machine suites, scoped cargo check, rustfmt and diff-check pass; independent review approved with no findings. ISSUE-201's unrelated stale CLD expectations remain open.
