@@ -1992,6 +1992,24 @@ Independent review approved with no findings.
 
 ### ISSUE-407 — exact `SETE AL` (`0F 94 C0`)
 
-The next runner frontier is this exact register SETE form. Verify ZF behavior,
-AL write/preservation, flag definedness and fetch-fault atomicity before
-admitting only this encoding; preserve the unrelated ISSUE-201 CLD caveat.
+The base paged profile admits only this exact unprefixed register form. ZF
+selects the value written to AL; the partial-byte update preserves upper RAX.
+RFLAGS and definedness remain unchanged, with no data-memory access. Focused
+truth-table/state/definedness/fetch-fault/neighbor/CPL3 tests pass (4/4), and
+the other-profile matrix passes (1/1). ISSUE-201 remains the unrelated CLD
+caveat.
+
+Runner image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` advances
+to `01 C0` (ADD EAX,EAX, ISSUE-408), RIP `0x2012e6`, after 9,896 retired
+instructions, `Unsupported { opcode: 1}`; COM1 is empty. Full
+`cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,355/7/15;
+zero doc tests), paged machine quantum passes (110/110), workspace all-targets
+offline check passes with existing warnings, and scoped rustfmt/diff-check pass.
+Independent review approved with no findings.
+
+### ISSUE-408 — exact `ADD EAX,EAX` (`01 C0`)
+
+The next runner frontier is this exact dword register ADD. Verify operand
+routing and arithmetic flags/definedness, then admit only this encoding while
+preserving the unrelated ISSUE-201 CLD caveat.

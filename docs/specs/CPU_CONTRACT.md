@@ -29044,3 +29044,20 @@ Runner advances to `0F 94 C0` (SETE AL, ISSUE-407), RIP `0x2012e3`, after
 (2,322/1,591/126/29/6/1,351/7/15; zero doc tests), paged machine quantum passes
 (110/110), workspace all-targets offline check passes with existing warnings,
 and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-407 — exact `SETE AL` (`0F 94 C0`)
+
+Only the exact unprefixed register form is admitted in the base paged profile.
+ZF determines the byte value; the write updates AL and preserves upper RAX.
+RFLAGS and their definedness are unchanged, and there is no data-memory access.
+Focused tests pass (4/4), including ZF/definedness combinations, register and
+flags preservation, fetch fault, neighbors and CPL3; other-profile matrix
+passes (1/1). ISSUE-201 remains the unrelated CLD caveat.
+
+Runner advances to `01 C0` (ADD EAX,EAX, ISSUE-408), RIP `0x2012e6`, after
+9,896 retired instructions, `Unsupported { opcode: 1}`; COM1 is empty. Full
+`cargo test --offline -p od-isa --quiet` passes
+(2,322/1,591/126/29/6/1,355/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Independent review approved with no findings.

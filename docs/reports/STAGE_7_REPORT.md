@@ -3319,3 +3319,22 @@ exit 5 for unsupported). Full `cargo test --offline -p od-isa --quiet` passes
 (2,322/1,591/126/29/6/1,351/7/15; zero doc tests), paged machine quantum
 passes (110/110), workspace all-targets offline cargo check passes with
 existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-407 — exact `SETE AL` (`0F 94 C0`)
+
+Admitted only the exact unprefixed register encoding in the base paged profile.
+ZF controls AL's 0/1 result; only AL is written, preserving upper RAX. Flags and
+definedness are unchanged and the instruction performs no data-memory access.
+Focused tests pass (4/4), covering both ZF values and definedness states, full
+register/flags preservation, fetch fault, neighbors and CPL3. Other-profile
+matrix passes (1/1). ISSUE-201 remains the unrelated CLD caveat.
+
+Runner image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` advances
+to `01 C0` (ADD EAX,EAX, ISSUE-408), RIP `0x2012e6`, after 9,896 retired
+instructions, `Unsupported { opcode: 1}`, `com1_bytes=0` (expected runner
+exit 5 for unsupported). Full `cargo test --offline -p od-isa --quiet` passes
+(2,322/1,591/126/29/6/1,355/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline cargo check passes with
+existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.

@@ -5151,10 +5151,19 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Результат:** runner now retires 9,895 instructions and stops at RIP `0x2012e3`, bytes `0F 94 C0` (SETE AL; ISSUE-407), `Unsupported { opcode: 148 }`; COM1 is empty.
 - **Проверка:** focused dword compare/flags/fetch-fault/neighbors/CPL3 tests 4/4, prior CMP EAX regression tests 4/4, and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,351/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
 
-### ISSUE-407 — S7-04: exact SETE AL frontier (`0F 94 C0`)
+### ISSUE-407 — S7-04: exact SETE AL (`0F 94 C0`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-406.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012e3`.
-- **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this exact SETE register form, which is outside the current bounded base-profile admission.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact unprefixed `0F 94 C0` (SETE AL). ZF determines whether AL becomes 1 or 0; the partial-byte write preserves upper RAX. Flags and definedness are unchanged; there is no data-memory access. Prefixed/different destinations/conditions, CPL3 and other profiles remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,895 instructions and reported `Unsupported { opcode: 148 }` at RIP `0x2012e3`; COM1 is empty. Bytes at the link-base shadow are `0F 94 C0`.
-- **Следующий шаг:** verify exact SETE condition and AL write/preservation semantics, then admit only this encoding.
+- **Результат:** runner now retires 9,896 instructions and stops at RIP `0x2012e6`, bytes `01 C0` (ADD EAX,EAX; ISSUE-408), `Unsupported { opcode: 1 }`; COM1 is empty.
+- **Проверка:** focused SETE ZF/state/definedness/fetch-fault/neighbor/CPL3 tests 4/4 and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,355/7/15; zero doc tests), paged machine quantum passes (110/110), `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-408 — S7-04: exact ADD EAX,EAX frontier (`01 C0`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-407.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012e6`.
+- **Статус:** открыта.
+- **Суть и последствия:** firmware reaches this exact dword register ADD, outside the current bounded base-profile admission.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; runner retired 9,896 instructions and reported `Unsupported { opcode: 1 }` at RIP `0x2012e6`; COM1 is empty. Bytes at the link-base shadow are `01 C0`.
+- **Следующий шаг:** verify dword register routing and ADD flags/definedness, then admit only this encoding.
