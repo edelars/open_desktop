@@ -1775,3 +1775,19 @@ passes (110/110). The runner advances to `49 83 C0 08` (ADD R8,8, ISSUE-394)
 at RIP `0x20128c` after 9,874 retired instructions, `Unsupported { opcode: 131 }`;
 COM1 is empty. Workspace all-targets offline check, scoped rustfmt and
 `git diff --check` pass. Independent review approved with no findings.
+
+### ISSUE-394 — exact ADD R8,8 (`49 83 C0 08`)
+
+Base `PagedCpl0ProbeV1` admits only this exact unprefixed qword register ADD.
+REX.W/B select R8, and opcode 83 sign-extends imm8 +8. Shared arithmetic
+semantics update R8 and arithmetic flags/definedness; unrelated state is
+preserved. Adjacent immediates, other destinations/widths/opcodes/prefixes,
+CPL3 and other profiles remain unsupported. ISSUE-201's unrelated CLD caveat
+remains open.
+
+Focused tests pass (4/4), other-profile matrix passes (1/1), full od-isa passes
+(2,322/1,591/126/29/6/1,296/7/15; 0 doc tests), and paged machine quantum
+passes (110/110). The runner advances to `49 39 D0` (CMP R8,RDX, ISSUE-395)
+at RIP `0x201290` after 9,875 retired instructions, `Unsupported { opcode: 57 }`;
+COM1 is empty. Workspace all-targets offline check, scoped rustfmt and
+`git diff --check` pass. Independent review is pending.

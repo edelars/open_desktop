@@ -1666,3 +1666,20 @@ runner advances to `49 83 C0 08` (ADD R8,8, ISSUE-394), RIP `0x20128c`, after
 od-isa passes (2,322/1,591/126/29/6/1,292/7/15; zero doc tests), paged machine
 quantum passes (110/110), workspace all-targets offline check passes, and
 scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-394 — `49 83 C0 08` (`ADD R8,8`)
+
+The base paged profile admits this exact unprefixed qword R8 ADD form. REX.W/B
+select R8, and opcode 83 sign-extends imm8 +8. It updates R8 and arithmetic
+flags/definedness while preserving all other state. Focused tests pass (4/4),
+and the other-profile matrix passes (1/1). ISSUE-201 remains the unrelated CLD
+caveat.
+
+With image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, the
+runner advances to `49 39 D0` (CMP R8,RDX, ISSUE-395), RIP `0x201290`, after
+9,875 retired instructions, `Unsupported { opcode: 57 }`; COM1 is empty. Full
+od-isa passes (2,322/1,591/126/29/6/1,296/7/15; zero doc tests), paged machine
+quantum passes (110/110), workspace all-targets offline check passes with
+existing warnings, and scoped rustfmt/diff-check pass. Independent review is
+pending.

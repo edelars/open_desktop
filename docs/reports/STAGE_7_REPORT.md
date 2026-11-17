@@ -3105,3 +3105,21 @@ instructions, `Unsupported { opcode: 131 }`; COM1 is empty. Full od-isa passes
 (110/110), workspace all-targets offline check passes, and scoped rustfmt and
 diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated
 CLD caveat.
+
+### ISSUE-394 — exact `ADD R8,8` (`49 83 C0 08`)
+
+Base `PagedCpl0ProbeV1` admits only this exact qword R8 immediate ADD. REX.W/B
+select R8 and opcode 83 sign-extends imm8 +8. Shared ADD updates the qword
+result and arithmetic flags/definedness, preserving other state. Focused tests
+cover result/flag vectors, definedness, final-immediate fetch-fault atomicity,
+neighbor encodings and CPL3 rejection (4/4); the other-profile matrix passes
+(1/1).
+
+The runner on image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` advances
+to `49 39 D0` (CMP R8,RDX, ISSUE-395), RIP `0x201290`, after 9,875 retired
+instructions, `Unsupported { opcode: 57 }`; COM1 is empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,296/7/15; 0 doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt and diff-check pass. Independent review is pending.
+ISSUE-201 remains the unrelated CLD caveat.

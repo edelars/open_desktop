@@ -28352,7 +28352,6 @@ ISSUE-201 remains the unrelated CLD expectation caveat. Full od-isa suites pass
 (81/81), workspace all-targets check passes with existing warnings, and scoped
 rustfmt/diff-check pass. Independent review approved with no findings.
 
-
 ### S7-04 CPU-profile slice: exact POP RBX (ISSUE-367)
 
 `PagedCpl0ProbeV1` admits only the bare one-byte opcode `5B`. The effective stack
@@ -28852,3 +28851,21 @@ retired instructions, `Unsupported { opcode: 131 }`; COM1 is empty. Full od-isa
 passes (2,322/1,591/126/29/6/1,292/7/15; 0 doc tests), paged machine quantum
 passes (110/110), workspace all-targets offline check passes, and scoped
 rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-394: `49 83 C0 08` — ADD R8,8
+
+Base `PagedCpl0ProbeV1` admits only this exact unprefixed qword register form.
+REX.W/B select R8, and opcode 83 sign-extends the encoded imm8 +8. Shared ADD
+updates R8 and arithmetic flags/definedness; all other registers and state are
+preserved. The operation has no data-memory access. Neighboring immediates,
+registers, widths, opcode groups, prefixes, CPL3 and other profiles remain
+outside this admission. ISSUE-201 is the unrelated CLD caveat.
+
+Focused result/flags/definedness/fetch-fault/neighbor/CPL3 tests pass (4/4),
+and the other-profile matrix passes (1/1). On image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, runner
+advances to `49 39 D0` (CMP R8,RDX, ISSUE-395), RIP `0x201290`, after 9,875
+retired instructions, `Unsupported { opcode: 57 }`; COM1 is empty. Full od-isa
+passes (2,322/1,591/126/29/6/1,296/7/15; 0 doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review is pending.
