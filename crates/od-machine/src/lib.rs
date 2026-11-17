@@ -178,6 +178,7 @@ pub use linux_direct::{
     LinuxStopRecord, SYSCALL_JOURNAL_CAPACITY, SyscallJournal, SyscallJournalEntry,
     load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
     run_linux_direct_board_set_observed, run_linux_direct_board_set_user_mode,
+    run_linux_direct_board_set_user_mode_with_delay_tsc_summary,
     run_linux_direct_board_set_user_mode_with_elf_stack_copy,
     run_linux_direct_board_set_user_mode_with_execution_observations,
     run_linux_direct_board_set_user_mode_with_execution_observations_options,
@@ -188,10 +189,12 @@ pub use linux_direct::{
 pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEvent};
 
 pub use execution_observations::{
+    DelayTscCallSummary, DelayTscCallSummaryCollection, DelayTscPollSequenceStatus,
     DeliveredPageFaultObservation, ElfStackCopyProbe, ElfStackCopySnapshot, ElfStackCopyStatus,
     FaultingPageFaultContext, FaultingPageWalkContext, InstructionPathControlFlow,
     InstructionPathRegisterValue, InstructionPathTrace, InstructionPathTraceHeader,
-    InstructionPathTraceRecord, InstructionPathTraceStatus, LINUX_ELF_STACK_COPY_PROBE_CAPACITY,
+    InstructionPathTraceRecord, InstructionPathTraceStatus, LINUX_DELAY_TSC_CALL_CAPACITY,
+    LINUX_DELAY_TSC_ENTRY_RIP, LINUX_DELAY_TSC_POLL_RIP, LINUX_ELF_STACK_COPY_PROBE_CAPACITY,
     LINUX_ELF_STACK_COPY_PROFILE, LINUX_ELF_STACK_COPY_RIP,
     LINUX_ELF_STACK_COPY_WALK_ENTRY_CAPACITY, LINUX_INSTRUCTION_PATH_TRACE_CAPACITY,
     LINUX_INSTRUCTION_PATH_TRACE_END_HIT, LINUX_INSTRUCTION_PATH_TRACE_QUANTUM,

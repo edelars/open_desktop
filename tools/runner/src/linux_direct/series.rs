@@ -142,6 +142,7 @@ struct SeriesCli {
     expected_stop_kind: String,
     expected_s5_marker_keys: Vec<String>,
     capture_execution_observations: bool,
+    execution_observations_delay_call_summary: bool,
     execution_observations_elf_stack_copy: bool,
     execution_observations_quantum_trace: bool,
     execution_observations_rdtsc_rip: Option<u64>,
@@ -201,6 +202,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
             cli.execution_observations_rdtsc_window,
             cli.execution_observations_quantum_trace,
             cli.execution_observations_elf_stack_copy,
+            cli.execution_observations_delay_call_summary,
         );
     }
     if let Err(error) = parse(&preflight_args) {
@@ -254,6 +256,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
                 cli.execution_observations_rdtsc_window,
                 cli.execution_observations_quantum_trace,
                 cli.execution_observations_elf_stack_copy,
+                cli.execution_observations_delay_call_summary,
             );
         }
         let options = match parse(&run_args) {
@@ -478,6 +481,7 @@ fn append_execution_observations_args(
     window: Option<od_machine::RdtscSampleWindow>,
     quantum_trace: bool,
     elf_stack_copy: bool,
+    delay_call_summary: bool,
 ) {
     args.extend([
         "--execution-observations-out".into(),
@@ -513,6 +517,9 @@ fn append_execution_observations_args(
     if elf_stack_copy {
         args.push("--execution-observations-elf-stack-copy".into());
     }
+    if delay_call_summary {
+        args.push("--execution-observations-delay-call-summary".into());
+    }
 }
 
 fn supported_schema_version(version: u32) -> bool {
@@ -527,6 +534,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     let mut out = None;
     let mut expected_s5_marker_keys = Vec::new();
     let mut capture_execution_observations = false;
+    let mut execution_observations_delay_call_summary = false;
     let mut execution_observations_quantum_trace = false;
     let mut execution_observations_elf_stack_copy = false;
     let mut execution_observations_rdtsc_rip = None;
@@ -540,6 +548,13 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
         if name == "--execution-observations" {
             if std::mem::replace(&mut capture_execution_observations, true) {
                 return Err("duplicate --execution-observations".into());
+            }
+            index += 1;
+            continue;
+        }
+        if name == "--execution-observations-delay-call-summary" {
+            if std::mem::replace(&mut execution_observations_delay_call_summary, true) {
+                return Err("duplicate --execution-observations-delay-call-summary".into());
             }
             index += 1;
             continue;
@@ -657,6 +672,21 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
         index += 2;
     }
     let requested_runs = requested_runs.ok_or("series requires --test-runs N")?;
+    if execution_observations_delay_call_summary && !capture_execution_observations {
+        return Err(
+            "--execution-observations-delay-call-summary needs --execution-observations".into(),
+        );
+    }
+    if execution_observations_delay_call_summary
+        && (execution_observations_rdtsc_rip
+            .is_some_and(|rip| rip != od_machine::LINUX_DELAY_TSC_POLL_RIP)
+            || execution_observations_rdtsc_entry_rip
+                .is_some_and(|rip| rip != od_machine::LINUX_DELAY_TSC_ENTRY_RIP)
+            || execution_observations_rdtsc_stride.is_some_and(|stride| stride != 1)
+            || execution_observations_rdtsc_window.is_some())
+    {
+        return Err("--execution-observations-delay-call-summary conflicts with selected RIP, stride, or window options".into());
+    }
     let series_id = required_id(series_id, "--series-id")?;
     let scenario_id = required_id(scenario_id, "--scenario-id")?;
     let expected_stop_kind = required_id(expected_stop_kind, "--expected-stop-kind")?;
@@ -754,6 +784,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
         expected_stop_kind,
         expected_s5_marker_keys,
         capture_execution_observations,
+        execution_observations_delay_call_summary,
         execution_observations_quantum_trace,
         execution_observations_elf_stack_copy,
         execution_observations_rdtsc_rip,
@@ -1898,11 +1929,205 @@ fn validate_execution_observations_sidecar(
             }
         }
     }
+    if schema_version >= 15 && !valid_delay_tsc_call_summary(&sidecar_json, sidecar) {
+        return Err("execution-observations delay_tsc call summary is inconsistent".into());
+    }
     Ok(())
 }
 
 fn supported_execution_observations_schema_version(version: u64) -> bool {
-    (1..=14).contains(&version)
+    (1..=15).contains(&version)
+}
+
+fn valid_delay_tsc_call_summary(raw: &Value, metadata: &Value) -> bool {
+    let Some(summary) = raw.get("delay_tsc_call_summary") else {
+        return false;
+    };
+    let metadata_keys = [
+        "delay_tsc_call_summary_entry_count",
+        "delay_tsc_call_summary_retained_count",
+        "delay_tsc_call_summary_entries_omitted",
+        "delay_tsc_call_summary_poll_count",
+        "delay_tsc_call_summary_unmatched_polls",
+        "delay_tsc_call_summary_ambiguous_polls",
+    ];
+    if summary.is_null() {
+        return metadata_keys
+            .iter()
+            .all(|key| metadata.get(*key).is_some_and(Value::is_null));
+    }
+    let Some(summary) = summary.as_object() else {
+        return false;
+    };
+    let Some(entries) = summary.get("entries").and_then(Value::as_array) else {
+        return false;
+    };
+    let (Some(entry_count), Some(omitted), Some(poll_count), Some(unmatched), Some(ambiguous)) = (
+        summary.get("entry_count").and_then(Value::as_u64),
+        summary.get("entries_omitted").and_then(Value::as_u64),
+        summary.get("poll_count").and_then(Value::as_u64),
+        summary.get("unmatched_polls").and_then(Value::as_u64),
+        summary.get("ambiguous_polls").and_then(Value::as_u64),
+    ) else {
+        return false;
+    };
+    let expected_entry_rip = format!("0x{:x}", od_machine::LINUX_DELAY_TSC_ENTRY_RIP);
+    let expected_poll_rip = format!("0x{:x}", od_machine::LINUX_DELAY_TSC_POLL_RIP);
+    let Some(sites) = raw.get("rdtsc_cpl0_sites").and_then(Value::as_array) else {
+        return false;
+    };
+    let mut histogram = BTreeMap::new();
+    for site in sites {
+        let (Some(rip), Some(reads)) = (
+            site.get("rip").and_then(Value::as_str),
+            site.get("reads").and_then(Value::as_u64),
+        ) else {
+            return false;
+        };
+        if !canonical_hex64(rip) || reads == 0 || histogram.insert(rip, reads).is_some() {
+            return false;
+        }
+    }
+    let histogram_count = |rip: &str| histogram.get(rip).copied().unwrap_or(0);
+    let metadata_match = [
+        entry_count,
+        entries.len() as u64,
+        omitted,
+        poll_count,
+        unmatched,
+        ambiguous,
+    ]
+    .into_iter()
+    .zip(metadata_keys)
+    .all(|(value, key)| metadata.get(key).and_then(Value::as_u64) == Some(value));
+    let Some(entry_sum) = (entries.len() as u64).checked_add(omitted) else {
+        return false;
+    };
+    let Some(poll_sum) = entries.iter().try_fold(0u64, |sum, entry| {
+        sum.checked_add(entry.get("poll_count")?.as_u64()?)
+    }) else {
+        return false;
+    };
+    let recognized_chain_end = |value: &str| {
+        matches!(
+            value,
+            "null_frame_pointer"
+                | "non_canonical_frame_pointer"
+                | "unaligned_frame_pointer"
+                | "outside_stack_window"
+                | "repeated_frame_pointer"
+                | "non_monotonic_frame_pointer"
+                | "read_failed"
+                | "non_canonical_return_address"
+                | "frame_limit"
+        )
+    };
+    let valid_entry = |entry: &Value, index: usize| {
+        let Some(entry) = entry.as_object() else {
+            return false;
+        };
+        let Some(request) = entry
+            .get("requested_cycles")
+            .and_then(Value::as_str)
+            .filter(|value| canonical_hex64(value))
+            .and_then(|value| u64::from_str_radix(value.trim_start_matches("0x"), 16).ok())
+        else {
+            return false;
+        };
+        let elapsed = entry.get("last_elapsed_cycles");
+        let elapsed_value = match elapsed {
+            Some(Value::Null) => None,
+            Some(Value::String(value)) if canonical_hex64(value) => {
+                u64::from_str_radix(value.trim_start_matches("0x"), 16).ok()
+            }
+            _ => return false,
+        };
+        let count = entry.get("poll_count").and_then(Value::as_u64);
+        let first = entry.get("first_poll_ordinal");
+        let last = entry.get("last_poll_ordinal");
+        let ordinals_valid = match (count, first, last, elapsed_value) {
+            (Some(0), Some(Value::Null), Some(Value::Null), None) => true,
+            (Some(count @ 1..), Some(first), Some(last), Some(_)) => first
+                .as_u64()
+                .zip(last.as_u64())
+                .is_some_and(|(first, last)| {
+                    first > 0
+                        && first <= last
+                        && last <= poll_count
+                        && count <= poll_count
+                        && last
+                            .checked_sub(first)
+                            .and_then(|span| span.checked_add(1))
+                            .is_some_and(|span| count <= span)
+                        && (count != 1 || first == last)
+                }),
+            _ => false,
+        };
+        let links_valid = entry
+            .get("frame_links")
+            .and_then(Value::as_array)
+            .is_some_and(|links| {
+                links.len() <= 4
+                    && links.iter().all(|link| {
+                        ["frame_pointer", "return_address"].iter().all(|key| {
+                            link.get(*key)
+                                .and_then(Value::as_str)
+                                .is_some_and(canonical_hex64)
+                        })
+                    })
+            });
+        let cr3_valid = matches!(entry.get("cr3"), Some(Value::Null))
+            || entry
+                .get("cr3")
+                .and_then(Value::as_str)
+                .is_some_and(canonical_hex64);
+        let registers_valid = ["entry_tsc", "rbp", "rsp"].iter().all(|key| {
+            entry
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(canonical_hex64)
+        });
+        let terminal = entry
+            .get("terminal_threshold_seen")
+            .and_then(Value::as_bool);
+        let status = entry.get("poll_sequence_status").and_then(Value::as_str);
+        let chain_end = entry.get("frame_chain_end").and_then(Value::as_str);
+        let chain_incomplete = entry.get("frame_chain_incomplete").and_then(Value::as_bool);
+        let terminal_valid = match (terminal, status, elapsed_value) {
+            (Some(true), Some("threshold_seen"), Some(elapsed)) => elapsed >= request,
+            (Some(false), Some("partial"), Some(elapsed)) => elapsed < request,
+            (Some(false), Some("partial"), None) => true,
+            _ => false,
+        };
+        entry.get("ordinal").and_then(Value::as_u64) == Some(index as u64 + 1)
+            && entry
+                .get("frame_chain_end")
+                .and_then(Value::as_str)
+                .is_some_and(recognized_chain_end)
+            && chain_incomplete == chain_end.map(|end| end != "null_frame_pointer")
+            && ordinals_valid
+            && links_valid
+            && cr3_valid
+            && registers_valid
+            && terminal_valid
+    };
+    summary.get("entry_rip").and_then(Value::as_str) == Some(expected_entry_rip.as_str())
+        && summary.get("poll_rip").and_then(Value::as_str) == Some(expected_poll_rip.as_str())
+        && entries.len() <= od_machine::LINUX_DELAY_TSC_CALL_CAPACITY
+        && entry_count == entry_sum
+        && histogram_count(&expected_entry_rip) == entry_count
+        && histogram_count(&expected_poll_rip) == poll_count
+        && poll_sum.checked_add(unmatched) == Some(poll_count)
+        && ambiguous <= unmatched
+        && entries
+            .iter()
+            .enumerate()
+            .all(|(index, entry)| valid_entry(entry, index))
+        && raw
+            .get("rdtsc_site_samples")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+        && metadata_match
 }
 
 fn valid_elf_stack_copy_walk_entry(entry: &Value) -> bool {
@@ -3162,6 +3387,321 @@ mod tests {
     use super::*;
 
     #[test]
+    fn delay_tsc_summary_validator_checks_histograms_and_partial_call_status() {
+        let raw = json!({
+            "rdtsc_cpl0_sites": [
+                {"rip": format!("0x{:x}", od_machine::LINUX_DELAY_TSC_ENTRY_RIP), "reads": 1},
+                {"rip": format!("0x{:x}", od_machine::LINUX_DELAY_TSC_POLL_RIP), "reads": 1}
+            ],
+            "rdtsc_site_samples": [],
+            "delay_tsc_call_summary": {
+                "entry_rip": format!("0x{:x}", od_machine::LINUX_DELAY_TSC_ENTRY_RIP),
+                "poll_rip": format!("0x{:x}", od_machine::LINUX_DELAY_TSC_POLL_RIP),
+                "entry_count": 1,
+                "entries_omitted": 0,
+                "poll_count": 1,
+                "unmatched_polls": 0,
+                "ambiguous_polls": 0,
+                "entries": [{
+                    "ordinal": 1,
+                    "requested_cycles": "0x64",
+                    "entry_tsc": "0x1000",
+                    "cr3": null,
+                    "rbp": "0x8000",
+                    "rsp": "0x7ff0",
+                    "frame_links": [],
+                    "frame_chain_end": "read_failed",
+                    "frame_chain_incomplete": true,
+                    "poll_count": 1,
+                    "first_poll_ordinal": 1,
+                    "last_poll_ordinal": 1,
+                    "last_elapsed_cycles": "0x64",
+                    "terminal_threshold_seen": true,
+                    "poll_sequence_status": "threshold_seen"
+                }]
+            }
+        });
+        let metadata = json!({
+            "delay_tsc_call_summary_entry_count": 1,
+            "delay_tsc_call_summary_retained_count": 1,
+            "delay_tsc_call_summary_entries_omitted": 0,
+            "delay_tsc_call_summary_poll_count": 1,
+            "delay_tsc_call_summary_unmatched_polls": 0,
+            "delay_tsc_call_summary_ambiguous_polls": 0
+        });
+        assert!(valid_delay_tsc_call_summary(&raw, &metadata));
+
+        let mut malformed = raw.clone();
+        malformed["delay_tsc_call_summary"]["unmatched_polls"] = json!(1);
+        assert!(!valid_delay_tsc_call_summary(&malformed, &metadata));
+
+        let mut duplicate_histogram_site = raw.clone();
+        let duplicate_row = duplicate_histogram_site["rdtsc_cpl0_sites"][0].clone();
+        duplicate_histogram_site["rdtsc_cpl0_sites"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate_row);
+        assert!(!valid_delay_tsc_call_summary(
+            &duplicate_histogram_site,
+            &metadata
+        ));
+
+        let mut malformed_histogram_site = raw.clone();
+        malformed_histogram_site["rdtsc_cpl0_sites"][0]["reads"] = json!("1");
+        assert!(!valid_delay_tsc_call_summary(
+            &malformed_histogram_site,
+            &metadata
+        ));
+
+        let mut impossible_span = raw.clone();
+        impossible_span["delay_tsc_call_summary"]["poll_count"] = json!(3);
+        impossible_span["rdtsc_cpl0_sites"][1]["reads"] = json!(3);
+        impossible_span["delay_tsc_call_summary"]["entries"][0]["poll_count"] = json!(3);
+        impossible_span["delay_tsc_call_summary"]["entries"][0]["last_poll_ordinal"] = json!(2);
+        let mut impossible_span_metadata = metadata.clone();
+        impossible_span_metadata["delay_tsc_call_summary_poll_count"] = json!(3);
+        assert!(!valid_delay_tsc_call_summary(
+            &impossible_span,
+            &impossible_span_metadata
+        ));
+
+        let mut single_poll_span = raw.clone();
+        single_poll_span["delay_tsc_call_summary"]["poll_count"] = json!(2);
+        single_poll_span["delay_tsc_call_summary"]["unmatched_polls"] = json!(1);
+        single_poll_span["rdtsc_cpl0_sites"][1]["reads"] = json!(2);
+        single_poll_span["delay_tsc_call_summary"]["entries"][0]["last_poll_ordinal"] = json!(2);
+        let mut single_poll_span_metadata = metadata.clone();
+        single_poll_span_metadata["delay_tsc_call_summary_poll_count"] = json!(2);
+        single_poll_span_metadata["delay_tsc_call_summary_unmatched_polls"] = json!(1);
+        assert!(!valid_delay_tsc_call_summary(
+            &single_poll_span,
+            &single_poll_span_metadata
+        ));
+
+        let mut partial = raw;
+        partial["delay_tsc_call_summary"]["poll_count"] = json!(0);
+        partial["delay_tsc_call_summary"]["unmatched_polls"] = json!(0);
+        partial["rdtsc_cpl0_sites"]
+            .as_array_mut()
+            .unwrap()
+            .remove(1);
+        partial["delay_tsc_call_summary"]["entries"][0]["poll_count"] = json!(0);
+        partial["delay_tsc_call_summary"]["entries"][0]["first_poll_ordinal"] = Value::Null;
+        partial["delay_tsc_call_summary"]["entries"][0]["last_poll_ordinal"] = Value::Null;
+        partial["delay_tsc_call_summary"]["entries"][0]["last_elapsed_cycles"] = Value::Null;
+        partial["delay_tsc_call_summary"]["entries"][0]["terminal_threshold_seen"] = json!(false);
+        partial["delay_tsc_call_summary"]["entries"][0]["poll_sequence_status"] = json!("partial");
+        let mut partial_metadata = metadata;
+        partial_metadata["delay_tsc_call_summary_poll_count"] = json!(0);
+        assert!(valid_delay_tsc_call_summary(&partial, &partial_metadata));
+    }
+
+    #[test]
+    fn delay_tsc_summary_serialization_round_trips_into_strict_validator() {
+        let path = std::env::temp_dir().join(format!(
+            "od-runner-delay-call-summary-{}-{}.json",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let observations = od_machine::LinuxExecutionObservations {
+            rdtsc_cpl0_sites: vec![
+                od_machine::RdtscSiteCount {
+                    rip: od_machine::LINUX_DELAY_TSC_ENTRY_RIP,
+                    reads: 1,
+                },
+                od_machine::RdtscSiteCount {
+                    rip: od_machine::LINUX_DELAY_TSC_POLL_RIP,
+                    reads: 1,
+                },
+            ],
+            rdtsc_sample_rip: Some(od_machine::LINUX_DELAY_TSC_POLL_RIP),
+            rdtsc_sample_stride: 1,
+            rdtsc_sample_site_hits: 1,
+            rdtsc_entry_sample_rip: Some(od_machine::LINUX_DELAY_TSC_ENTRY_RIP),
+            rdtsc_entry_sample_hits: 1,
+            delay_tsc_call_summary: Some(od_machine::DelayTscCallSummaryCollection {
+                entry_rip: od_machine::LINUX_DELAY_TSC_ENTRY_RIP,
+                poll_rip: od_machine::LINUX_DELAY_TSC_POLL_RIP,
+                entry_count: 1,
+                entries_omitted: 0,
+                poll_count: 1,
+                unmatched_polls: 0,
+                ambiguous_polls: 0,
+                entries: vec![od_machine::DelayTscCallSummary {
+                    ordinal: 1,
+                    requested_cycles: 100,
+                    entry_tsc: 1_000,
+                    cr3: Some(0x5000),
+                    rbp: 0x8000,
+                    rsp: 0x7ff0,
+                    frame_links: vec![od_machine::ConsoleContextFrame {
+                        frame_pointer: 0x8000,
+                        return_address: 0xffff_ffff_8100_1234,
+                    }],
+                    frame_chain_end: od_machine::FrameChainEnd::ReadFailed,
+                    poll_count: 1,
+                    first_poll_ordinal: Some(1),
+                    last_poll_ordinal: Some(1),
+                    last_elapsed_cycles: Some(25),
+                    terminal_threshold_seen: false,
+                    poll_sequence_status: od_machine::DelayTscPollSequenceStatus::Partial,
+                }],
+            }),
+            ..Default::default()
+        };
+        let (byte_count, sha256) = super::super::write_execution_observations_sidecar(
+            &mut file,
+            path.to_str().unwrap(),
+            &observations,
+        )
+        .unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let raw: Value = serde_json::from_slice(&bytes).unwrap();
+        let metadata = super::super::execution_observations_sidecar_metadata(
+            path.to_str().unwrap(),
+            &observations,
+            byte_count,
+            sha256,
+        );
+        assert_eq!(raw["schema_version"], 15);
+        assert_eq!(
+            raw["delay_tsc_call_summary"]["entries"][0]["frame_chain_end"],
+            "read_failed"
+        );
+        assert_eq!(
+            raw["delay_tsc_call_summary"]["entries"][0]["frame_chain_incomplete"],
+            true
+        );
+        assert!(valid_delay_tsc_call_summary(&raw, &metadata));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn delay_tsc_summary_loader_accepts_zero_entries_and_entry_without_polls() {
+        let temp = std::env::temp_dir().join(format!(
+            "od-runner-delay-call-empty-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let series_path = write_test_series(&temp, "delay-empty", "nonceDelayEmpty001", "PASS");
+        let root = series_path.parent().unwrap();
+        let run_id = "delay-empty-run-0001";
+        let sidecar_path = root
+            .join("runs")
+            .join(run_id)
+            .join("execution-observations.json");
+        let relative_sidecar = format!("runs/{run_id}/execution-observations.json");
+
+        let observations_for = |include_entry: bool| {
+            let entries = if include_entry {
+                vec![od_machine::DelayTscCallSummary {
+                    ordinal: 1,
+                    requested_cycles: 100,
+                    entry_tsc: 1_000,
+                    cr3: Some(0x5000),
+                    rbp: 0x8000,
+                    rsp: 0x7ff0,
+                    frame_links: vec![],
+                    frame_chain_end: od_machine::FrameChainEnd::NullFramePointer,
+                    poll_count: 0,
+                    first_poll_ordinal: None,
+                    last_poll_ordinal: None,
+                    last_elapsed_cycles: None,
+                    terminal_threshold_seen: false,
+                    poll_sequence_status: od_machine::DelayTscPollSequenceStatus::Partial,
+                }]
+            } else {
+                vec![]
+            };
+            let entry_samples = if include_entry {
+                vec![od_machine::RdtscEntrySample {
+                    rip: od_machine::LINUX_DELAY_TSC_ENTRY_RIP,
+                    hit_ordinal: 1,
+                    requested_cycles: 100,
+                    observed_tsc: 1_000,
+                    rbp: 0x8000,
+                    rsp: 0x7ff0,
+                    cr3: Some(0x5000),
+                }]
+            } else {
+                vec![]
+            };
+            od_machine::LinuxExecutionObservations {
+                rdtsc_cpl0_sites: if include_entry {
+                    vec![od_machine::RdtscSiteCount {
+                        rip: od_machine::LINUX_DELAY_TSC_ENTRY_RIP,
+                        reads: 1,
+                    }]
+                } else {
+                    vec![]
+                },
+                rdtsc_sample_rip: Some(od_machine::LINUX_DELAY_TSC_POLL_RIP),
+                rdtsc_sample_stride: 1,
+                rdtsc_entry_sample_rip: Some(od_machine::LINUX_DELAY_TSC_ENTRY_RIP),
+                rdtsc_entry_sample_hits: u64::from(include_entry),
+                rdtsc_entry_samples: entry_samples,
+                rdtsc_entry_clock_trace_missing: if include_entry { 1 } else { 0 },
+                delay_tsc_call_summary: Some(od_machine::DelayTscCallSummaryCollection {
+                    entry_rip: od_machine::LINUX_DELAY_TSC_ENTRY_RIP,
+                    poll_rip: od_machine::LINUX_DELAY_TSC_POLL_RIP,
+                    entry_count: u64::from(include_entry),
+                    entries_omitted: 0,
+                    poll_count: 0,
+                    unmatched_polls: 0,
+                    ambiguous_polls: 0,
+                    entries,
+                }),
+                ..Default::default()
+            }
+        };
+
+        let write_and_load = |observations: &od_machine::LinuxExecutionObservations,
+                              create: bool| {
+            let mut options = OpenOptions::new();
+            options.write(true);
+            if create {
+                options.create_new(true);
+            } else {
+                options.truncate(true);
+            }
+            let mut file = options.open(&sidecar_path).unwrap();
+            let (byte_count, sha256) = super::super::write_execution_observations_sidecar(
+                &mut file,
+                sidecar_path.to_str().unwrap(),
+                observations,
+            )
+            .unwrap();
+            drop(file);
+            let metadata = super::super::execution_observations_sidecar_metadata(
+                &relative_sidecar,
+                observations,
+                byte_count,
+                sha256,
+            );
+            rewrite_raw_and_series(&series_path, |raw| {
+                raw["execution_observations_sidecar"] = metadata;
+            });
+            let manifest = fresh_manifest(&series_path).unwrap();
+            load_run_manifest(&series_path, &manifest.runs[0]).unwrap();
+        };
+
+        write_and_load(&observations_for(false), true);
+        write_and_load(&observations_for(true), false);
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
     fn automatic_series_configuration_records_linux_boot_diagnostics() {
         let configuration = configuration_from_runner(&json!({
             "cmdline": "nokaslr norandmaps randomize_kstack_offset=off",
@@ -3258,7 +3798,8 @@ mod tests {
             assert!(supported_execution_observations_schema_version(version));
         }
         assert!(supported_execution_observations_schema_version(14));
-        assert!(!supported_execution_observations_schema_version(15));
+        assert!(supported_execution_observations_schema_version(15));
+        assert!(!supported_execution_observations_schema_version(16));
         assert!(!supported_execution_observations_schema_version(u64::MAX));
     }
 
@@ -4009,7 +4550,7 @@ mod tests {
         );
         let original_bytes = fs::read(&sidecar_path).unwrap();
         let written: Value = serde_json::from_slice(&original_bytes).unwrap();
-        assert_eq!(written["schema_version"], 14);
+        assert_eq!(written["schema_version"], 15);
         assert_eq!(written["elf_stack_copy"]["status"], "captured");
         assert_eq!(
             written["elf_stack_copy"]["registers"]["r13"],
@@ -4382,6 +4923,30 @@ mod tests {
         execution_observations.push("--execution-observations".into());
         let parsed = parse_series_args(&execution_observations).unwrap();
         assert!(parsed.capture_execution_observations);
+        let mut delay_summary = execution_observations.clone();
+        delay_summary.push("--execution-observations-delay-call-summary".into());
+        let parsed_summary = parse_series_args(&delay_summary).unwrap();
+        assert!(parsed_summary.execution_observations_delay_call_summary);
+        let mut generated_args = parsed_summary.forwarded.clone();
+        append_execution_observations_args(
+            &mut generated_args,
+            std::path::Path::new("series/run/execution-observations.json"),
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            parsed_summary.execution_observations_delay_call_summary,
+        );
+        assert!(
+            generated_args
+                .iter()
+                .any(|argument| argument == "--execution-observations-delay-call-summary")
+        );
+        let mut summary_without_capture = base.clone();
+        summary_without_capture.push("--execution-observations-delay-call-summary".into());
+        assert!(parse_series_args(&summary_without_capture).is_err());
         let mut selected_rdtsc = execution_observations.clone();
         selected_rdtsc.extend([
             "--execution-observations-rdtsc-rip".into(),
@@ -4472,6 +5037,7 @@ mod tests {
             parsed.execution_observations_rdtsc_window,
             parsed.execution_observations_quantum_trace,
             parsed.execution_observations_elf_stack_copy,
+            parsed.execution_observations_delay_call_summary,
         );
         assert_eq!(
             composed
@@ -4490,6 +5056,7 @@ mod tests {
             None,
             true,
             true,
+            false,
         );
         assert_eq!(
             composed
@@ -4597,6 +5164,7 @@ mod tests {
             }),
             true,
             false,
+            false,
         );
         let mut second = vec!["--run".into()];
         append_execution_observations_args(
@@ -4610,6 +5178,7 @@ mod tests {
                 last_hit: 1_200_000,
             }),
             true,
+            false,
             false,
         );
         assert_ne!(first[2], second[2]);

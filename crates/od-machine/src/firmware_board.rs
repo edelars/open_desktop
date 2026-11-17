@@ -1392,6 +1392,46 @@ impl LoadedFirmwareBoard {
         (frames, ended)
     }
 
+    fn capture_delay_tsc_frame_chain(
+        &mut self,
+        rip: u64,
+        rbp: u64,
+        cr3: u64,
+    ) -> (Vec<crate::ConsoleContextFrame>, crate::FrameChainEnd) {
+        const CR0_LONG_PAGING: u64 = (1 << 31) | (1 << 16) | (1 << 4) | 1;
+        const CR4_PAE: u64 = 1 << 5;
+        let paging = Long64ProbeConfig::new(
+            self.state().cr0.unwrap_or(CR0_LONG_PAGING),
+            cr3,
+            self.state().cr4.unwrap_or(CR4_PAE),
+            FIRMWARE_EFER,
+        );
+        match paging {
+            Ok(paging) => crate::console_output_context::capture_frame_chain_with_limit(
+                rbp,
+                4,
+                |frame_pointer| {
+                    let mut bytes = [0; 16];
+                    self.bus
+                        .read_virtual_ram_diagnostic(
+                            &paging,
+                            rip,
+                            GuestLinearAddress::new(frame_pointer),
+                            AccessContext {
+                                mode: InstructionMode::Long64,
+                                privilege: PrivilegeLevel::Ring0,
+                                origin: AccessOrigin::Explicit,
+                            },
+                            &mut bytes,
+                        )
+                        .map(|()| bytes)
+                        .map_err(|_| ())
+                },
+            ),
+            Err(_) => (Vec::new(), crate::FrameChainEnd::ReadFailed),
+        }
+    }
+
     pub fn uart(&self) -> Uart16550Handle {
         self.uart.clone()
     }
@@ -2194,6 +2234,7 @@ impl LoadedFirmwareBoard {
             None,
             false,
             false,
+            false,
         )
     }
 
@@ -2213,6 +2254,7 @@ impl LoadedFirmwareBoard {
         selected_rdtsc_prefix_sentinel_rip: Option<u64>,
         selected_instruction_path_trace: bool,
         selected_elf_stack_copy: bool,
+        selected_delay_tsc_call_summary: bool,
     ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
         let context = AccessContext {
             mode: InstructionMode::Long64,
@@ -2234,6 +2276,7 @@ impl LoadedFirmwareBoard {
                 .with_rdtsc_entry_sample_rip(selected_rdtsc_entry_sample_rip)
                 .with_rdtsc_sample_window(selected_rdtsc_sample_window)
                 .with_rdtsc_prefix_sentinel(selected_rdtsc_prefix_sentinel_rip)
+                .with_delay_tsc_call_summary(selected_delay_tsc_call_summary)
                 .with_instruction_path_trace(selected_instruction_path_trace)
         });
         let mut cpl3_retired = 0u64;
@@ -2527,6 +2570,24 @@ impl LoadedFirmwareBoard {
                 if cpl == 0
                     && let Some(observations) = execution_observations.as_mut()
                 {
+                    let (frame_links, frame_chain_end) = if observations
+                        .wants_delay_tsc_call_summary()
+                        && report.last_instruction_rip == Some(crate::LINUX_DELAY_TSC_ENTRY_RIP)
+                    {
+                        self.capture_delay_tsc_frame_chain(
+                            report.last_instruction_rip.unwrap_or_default(),
+                            self.state().gpr[Register::Rbp as usize],
+                            self.page_table_root,
+                        )
+                    } else {
+                        (Vec::new(), crate::FrameChainEnd::NullFramePointer)
+                    };
+                    observations.record_delay_tsc_entry(
+                        report.last_instruction_rip,
+                        self.state(),
+                        frame_links,
+                        frame_chain_end,
+                    );
                     observations.record_cpl0_rdtsc(report.last_instruction_rip);
                     observations.record_rdtsc_site_sample(
                         report.last_instruction_rip,

@@ -5,6 +5,11 @@ use std::collections::BTreeMap;
 pub const LINUX_RDTSC_SITE_CAPACITY: usize = 128;
 /// Maximum post-instruction register samples retained for one selected CPL0 RDTSC RIP.
 pub const LINUX_RDTSC_SAMPLE_CAPACITY: usize = 131_072;
+/// Maximum per-call delay_tsc summaries retained for the opt-in canonical replay diagnostic.
+pub const LINUX_DELAY_TSC_CALL_CAPACITY: usize = 131_072;
+pub const LINUX_DELAY_TSC_ENTRY_RIP: u64 = 0xffff_ffff_8271_b31b;
+pub const LINUX_DELAY_TSC_POLL_RIP: u64 = 0xffff_ffff_8271_b34d;
+const OMITTED_DELAY_TSC_ENTRY_SENTINEL: usize = usize::MAX;
 /// Number of entry-site RDTSC callbacks for which the exact pre-charge clock ledger is retained.
 pub const LINUX_RDTSC_CLOCK_TRACE_CAPACITY: usize = 2;
 /// Maximum ordered RDTSC prefix events retained for the opt-in sentinel trace.
@@ -137,6 +142,43 @@ pub struct RdtscEntrySample {
     pub rbp: u64,
     pub rsp: u64,
     pub cr3: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DelayTscPollSequenceStatus {
+    ThresholdSeen,
+    Partial,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DelayTscCallSummary {
+    pub ordinal: u64,
+    pub requested_cycles: u64,
+    pub entry_tsc: u64,
+    pub cr3: Option<u64>,
+    pub rbp: u64,
+    pub rsp: u64,
+    pub frame_links: Vec<crate::ConsoleContextFrame>,
+    pub frame_chain_end: crate::FrameChainEnd,
+    pub poll_count: u64,
+    pub first_poll_ordinal: Option<u64>,
+    pub last_poll_ordinal: Option<u64>,
+    pub last_elapsed_cycles: Option<u64>,
+    pub terminal_threshold_seen: bool,
+    pub poll_sequence_status: DelayTscPollSequenceStatus,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DelayTscCallSummaryCollection {
+    pub entry_rip: u64,
+    pub poll_rip: u64,
+    pub entry_count: u64,
+    pub entries_omitted: u64,
+    pub poll_count: u64,
+    /// Includes ambiguous polls; `ambiguous_polls` is a subset of this value.
+    pub unmatched_polls: u64,
+    pub ambiguous_polls: u64,
+    pub entries: Vec<DelayTscCallSummary>,
 }
 
 /// Clock-owner state observed inside the RDTSC callback, before the current quantum is charged.
@@ -357,6 +399,7 @@ pub struct LinuxExecutionObservations {
     pub rdtsc_entry_sample_hits: u64,
     pub rdtsc_entry_samples: Vec<RdtscEntrySample>,
     pub rdtsc_entry_samples_omitted: u64,
+    pub delay_tsc_call_summary: Option<DelayTscCallSummaryCollection>,
     pub rdtsc_entry_clock_trace_samples: Vec<RdtscClockTraceSample>,
     pub rdtsc_entry_clock_trace_missing: u64,
     pub rdtsc_prefix_sentinel_rip: Option<u64>,
@@ -391,6 +434,14 @@ pub(crate) struct LinuxExecutionObservationCollector {
     rdtsc_entry_sample_hits: u64,
     rdtsc_entry_samples: Vec<RdtscEntrySample>,
     rdtsc_entry_samples_omitted: u64,
+    delay_tsc_summary_requested: bool,
+    delay_tsc_entry_count: u64,
+    delay_tsc_entries_omitted: u64,
+    delay_tsc_poll_count: u64,
+    delay_tsc_unmatched_polls: u64,
+    delay_tsc_ambiguous_polls: u64,
+    delay_tsc_entries: Vec<DelayTscCallSummary>,
+    delay_tsc_open_entries: BTreeMap<(u64, u64, u64, u64), Vec<usize>>,
     rdtsc_entry_clock_trace_samples: Vec<RdtscClockTraceSample>,
     rdtsc_entry_clock_trace_missing: u64,
     rdtsc_prefix_sentinel_rip: Option<u64>,
@@ -458,6 +509,99 @@ impl LinuxExecutionObservationCollector {
     pub(crate) fn with_rdtsc_entry_sample_rip(mut self, rip: Option<u64>) -> Self {
         self.rdtsc_entry_sample_rip = rip;
         self
+    }
+
+    pub(crate) fn with_delay_tsc_call_summary(mut self, requested: bool) -> Self {
+        self.delay_tsc_summary_requested = requested;
+        self
+    }
+
+    pub(crate) fn wants_delay_tsc_call_summary(&self) -> bool {
+        self.delay_tsc_summary_requested
+    }
+
+    pub(crate) fn record_delay_tsc_entry(
+        &mut self,
+        rip: Option<u64>,
+        state: &od_isa::LongModeState,
+        frame_links: Vec<crate::ConsoleContextFrame>,
+        frame_chain_end: crate::FrameChainEnd,
+    ) {
+        if !self.delay_tsc_summary_requested || rip != Some(LINUX_DELAY_TSC_ENTRY_RIP) {
+            return;
+        }
+        self.delay_tsc_entry_count = self.delay_tsc_entry_count.saturating_add(1);
+        use od_isa::Register;
+        let rax = state.gpr[Register::Rax as usize] & u64::from(u32::MAX);
+        let rdx = state.gpr[Register::Rdx as usize] & u64::from(u32::MAX);
+        let requested_cycles = state.gpr[Register::R8 as usize];
+        let entry_tsc = (rdx << 32) | rax;
+        let rbp = state.gpr[Register::Rbp as usize];
+        let rsp = state.gpr[Register::Rsp as usize];
+        let key = (entry_tsc, requested_cycles, rbp, rsp);
+        if self.delay_tsc_entries.len() >= LINUX_DELAY_TSC_CALL_CAPACITY {
+            self.delay_tsc_entries_omitted = self.delay_tsc_entries_omitted.saturating_add(1);
+            if let Some(retained) = self.delay_tsc_open_entries.get_mut(&key) {
+                if !retained.contains(&OMITTED_DELAY_TSC_ENTRY_SENTINEL) {
+                    retained.push(OMITTED_DELAY_TSC_ENTRY_SENTINEL);
+                }
+            }
+            return;
+        }
+        let index = self.delay_tsc_entries.len();
+        self.delay_tsc_open_entries
+            .entry(key)
+            .or_default()
+            .push(index);
+        self.delay_tsc_entries.push(DelayTscCallSummary {
+            ordinal: self.delay_tsc_entry_count,
+            requested_cycles,
+            entry_tsc,
+            cr3: state.cr3,
+            rbp,
+            rsp,
+            frame_links: frame_links.into_iter().take(4).collect(),
+            frame_chain_end,
+            poll_count: 0,
+            first_poll_ordinal: None,
+            last_poll_ordinal: None,
+            last_elapsed_cycles: None,
+            terminal_threshold_seen: false,
+            poll_sequence_status: DelayTscPollSequenceStatus::Partial,
+        });
+    }
+
+    fn record_delay_tsc_poll(&mut self, sample: &RdtscSiteSample) {
+        if !self.delay_tsc_summary_requested || sample.rip != LINUX_DELAY_TSC_POLL_RIP {
+            return;
+        }
+        self.delay_tsc_poll_count = self.delay_tsc_poll_count.saturating_add(1);
+        let key = (
+            sample.start_tsc,
+            sample.requested_cycles,
+            sample.rbp,
+            sample.rsp,
+        );
+        let Some(matches) = self.delay_tsc_open_entries.get(&key) else {
+            self.delay_tsc_unmatched_polls = self.delay_tsc_unmatched_polls.saturating_add(1);
+            return;
+        };
+        if matches.len() != 1 {
+            self.delay_tsc_unmatched_polls = self.delay_tsc_unmatched_polls.saturating_add(1);
+            self.delay_tsc_ambiguous_polls = self.delay_tsc_ambiguous_polls.saturating_add(1);
+            return;
+        }
+        let index = matches[0];
+        let entry = &mut self.delay_tsc_entries[index];
+        entry.poll_count = entry.poll_count.saturating_add(1);
+        entry.first_poll_ordinal.get_or_insert(sample.hit_ordinal);
+        entry.last_poll_ordinal = Some(sample.hit_ordinal);
+        entry.last_elapsed_cycles = Some(sample.elapsed_cycles);
+        if sample.elapsed_cycles >= entry.requested_cycles {
+            entry.terminal_threshold_seen = true;
+            entry.poll_sequence_status = DelayTscPollSequenceStatus::ThresholdSeen;
+            self.delay_tsc_open_entries.remove(&key);
+        }
     }
 
     pub(crate) fn with_rdtsc_prefix_sentinel(mut self, sentinel_rip: Option<u64>) -> Self {
@@ -714,6 +858,25 @@ impl LinuxExecutionObservationCollector {
         };
         self.rdtsc_sample_site_hits = self.rdtsc_sample_site_hits.saturating_add(1);
         let hit_ordinal = self.rdtsc_sample_site_hits;
+        if self.delay_tsc_summary_requested && rip == LINUX_DELAY_TSC_POLL_RIP {
+            use od_isa::Register;
+            let rax = state.gpr[Register::Rax as usize] & u64::from(u32::MAX);
+            let rdx = state.gpr[Register::Rdx as usize] & u64::from(u32::MAX);
+            let observed_tsc = (rdx << 32) | rax;
+            let start_tsc = state.gpr[Register::Rdi as usize];
+            self.record_delay_tsc_poll(&RdtscSiteSample {
+                rip: LINUX_DELAY_TSC_POLL_RIP,
+                hit_ordinal,
+                requested_cycles: state.gpr[Register::R8 as usize],
+                start_tsc,
+                observed_tsc,
+                elapsed_cycles: observed_tsc.wrapping_sub(start_tsc),
+                rbp: state.gpr[Register::Rbp as usize],
+                rsp: state.gpr[Register::Rsp as usize],
+                cr3: state.cr3,
+            });
+            return;
+        }
         if self
             .rdtsc_sample_window
             .is_some_and(|window| !(window.first_hit..=window.last_hit).contains(&hit_ordinal))
@@ -979,6 +1142,18 @@ impl LinuxExecutionObservationCollector {
                 "event_not_seen"
             }
         });
+        let delay_tsc_call_summary =
+            self.delay_tsc_summary_requested
+                .then(|| DelayTscCallSummaryCollection {
+                    entry_rip: LINUX_DELAY_TSC_ENTRY_RIP,
+                    poll_rip: LINUX_DELAY_TSC_POLL_RIP,
+                    entry_count: self.delay_tsc_entry_count,
+                    entries_omitted: self.delay_tsc_entries_omitted,
+                    poll_count: self.delay_tsc_poll_count,
+                    unmatched_polls: self.delay_tsc_unmatched_polls,
+                    ambiguous_polls: self.delay_tsc_ambiguous_polls,
+                    entries: self.delay_tsc_entries,
+                });
         LinuxExecutionObservations {
             rdtsc_cpl0_sites: self
                 .rdtsc_sites
@@ -995,6 +1170,7 @@ impl LinuxExecutionObservationCollector {
             rdtsc_entry_sample_hits: self.rdtsc_entry_sample_hits,
             rdtsc_entry_samples: self.rdtsc_entry_samples,
             rdtsc_entry_samples_omitted: self.rdtsc_entry_samples_omitted,
+            delay_tsc_call_summary,
             rdtsc_entry_clock_trace_samples: self.rdtsc_entry_clock_trace_samples,
             rdtsc_entry_clock_trace_missing: self.rdtsc_entry_clock_trace_missing,
             rdtsc_prefix_sentinel_rip: self.rdtsc_prefix_sentinel_rip,
@@ -1450,6 +1626,172 @@ mod tests {
             observations.rdtsc_sample_site_hits,
             LINUX_RDTSC_SAMPLE_CAPACITY as u64 + 1
         );
+    }
+
+    #[test]
+    fn delay_tsc_summary_associates_only_verified_polls_and_keeps_partial_status() {
+        use od_isa::{LongModeState, Register};
+
+        let mut collector = LinuxExecutionObservationCollector::default()
+            .with_rdtsc_sample_rip(Some(LINUX_DELAY_TSC_POLL_RIP))
+            .with_rdtsc_entry_sample_rip(Some(LINUX_DELAY_TSC_ENTRY_RIP))
+            .with_delay_tsc_call_summary(true);
+        let mut entry = LongModeState::default();
+        entry.gpr[Register::R8 as usize] = 100;
+        entry.gpr[Register::Rax as usize] = 1_000;
+        entry.gpr[Register::Rbp as usize] = 0x8000;
+        entry.gpr[Register::Rsp as usize] = 0x7ff0;
+        entry.cr3 = Some(0x9000);
+        collector.record_delay_tsc_entry(
+            Some(LINUX_DELAY_TSC_ENTRY_RIP),
+            &entry,
+            vec![],
+            crate::FrameChainEnd::ReadFailed,
+        );
+
+        let mut poll = entry.clone();
+        poll.gpr[Register::Rdi as usize] = 1_000;
+        poll.gpr[Register::Rax as usize] = 1_040;
+        collector.record_rdtsc_site_sample(Some(LINUX_DELAY_TSC_POLL_RIP), &poll, None);
+        poll.gpr[Register::Rax as usize] = 1_100;
+        collector.record_rdtsc_site_sample(Some(LINUX_DELAY_TSC_POLL_RIP), &poll, None);
+        collector.record_rdtsc_site_sample(Some(LINUX_DELAY_TSC_POLL_RIP), &poll, None);
+
+        let summary = collector.finish().delay_tsc_call_summary.unwrap();
+        assert_eq!(summary.entry_count, 1);
+        assert_eq!(summary.poll_count, 3);
+        assert_eq!(summary.unmatched_polls, 1);
+        assert_eq!(summary.ambiguous_polls, 0);
+        assert!(summary.entries[0].terminal_threshold_seen);
+        assert_eq!(summary.entries[0].poll_count, 2);
+        assert_eq!(summary.entries[0].first_poll_ordinal, Some(1));
+        assert_eq!(summary.entries[0].last_poll_ordinal, Some(2));
+        assert_eq!(summary.entries[0].last_elapsed_cycles, Some(100));
+        assert_eq!(
+            summary.entries[0].poll_sequence_status,
+            DelayTscPollSequenceStatus::ThresholdSeen
+        );
+    }
+
+    #[test]
+    fn exact_delay_tsc_rips_keep_legacy_poll_samples_without_summary_opt_in() {
+        use od_isa::{LongModeState, Register};
+
+        let mut collector = LinuxExecutionObservationCollector::default()
+            .with_rdtsc_sample_rip(Some(LINUX_DELAY_TSC_POLL_RIP))
+            .with_rdtsc_entry_sample_rip(Some(LINUX_DELAY_TSC_ENTRY_RIP));
+        let mut state = LongModeState::default();
+        state.gpr[Register::R8 as usize] = 100;
+        state.gpr[Register::Rdi as usize] = 1_000;
+        state.gpr[Register::Rax as usize] = 1_025;
+        collector.record_rdtsc_site_sample(Some(LINUX_DELAY_TSC_POLL_RIP), &state, None);
+        let observations = collector.finish();
+        assert_eq!(observations.rdtsc_site_samples.len(), 1);
+        assert!(observations.delay_tsc_call_summary.is_none());
+    }
+
+    #[test]
+    fn delay_tsc_summary_counts_ambiguous_polls_as_unmatched_and_marks_partial_call() {
+        use od_isa::{LongModeState, Register};
+
+        let mut collector = LinuxExecutionObservationCollector::default()
+            .with_rdtsc_sample_rip(Some(LINUX_DELAY_TSC_POLL_RIP))
+            .with_rdtsc_entry_sample_rip(Some(LINUX_DELAY_TSC_ENTRY_RIP))
+            .with_delay_tsc_call_summary(true);
+        let mut entry = LongModeState::default();
+        entry.gpr[Register::R8 as usize] = 50;
+        entry.gpr[Register::Rax as usize] = 1_000;
+        entry.gpr[Register::Rbp as usize] = 0x8000;
+        entry.gpr[Register::Rsp as usize] = 0x7ff0;
+        for _ in 0..2 {
+            collector.record_delay_tsc_entry(
+                Some(LINUX_DELAY_TSC_ENTRY_RIP),
+                &entry,
+                vec![],
+                crate::FrameChainEnd::NullFramePointer,
+            );
+        }
+        let mut poll = entry.clone();
+        poll.gpr[Register::Rdi as usize] = 1_000;
+        poll.gpr[Register::Rax as usize] = 1_025;
+        collector.record_rdtsc_site_sample(Some(LINUX_DELAY_TSC_POLL_RIP), &poll, None);
+
+        let summary = collector.finish().delay_tsc_call_summary.unwrap();
+        assert_eq!(summary.unmatched_polls, 1);
+        assert_eq!(summary.ambiguous_polls, 1);
+        assert_eq!(
+            summary
+                .entries
+                .iter()
+                .map(|entry| entry.poll_count)
+                .sum::<u64>(),
+            0
+        );
+        assert!(
+            summary
+                .entries
+                .iter()
+                .all(|entry| !entry.terminal_threshold_seen)
+        );
+        assert!(
+            summary
+                .entries
+                .iter()
+                .all(|entry| entry.poll_sequence_status == DelayTscPollSequenceStatus::Partial)
+        );
+    }
+
+    #[test]
+    fn omitted_duplicate_delay_tsc_entry_makes_retained_key_ambiguous() {
+        use od_isa::{LongModeState, Register};
+
+        let mut collector = LinuxExecutionObservationCollector::default()
+            .with_rdtsc_sample_rip(Some(LINUX_DELAY_TSC_POLL_RIP))
+            .with_rdtsc_entry_sample_rip(Some(LINUX_DELAY_TSC_ENTRY_RIP))
+            .with_delay_tsc_call_summary(true);
+        let mut entry = LongModeState::default();
+        entry.gpr[Register::R8 as usize] = 100;
+        entry.gpr[Register::Rbp as usize] = 0x8000;
+        entry.gpr[Register::Rsp as usize] = 0x7ff0;
+        for ordinal in 0..LINUX_DELAY_TSC_CALL_CAPACITY as u64 {
+            entry.gpr[Register::Rax as usize] = ordinal;
+            collector.record_delay_tsc_entry(
+                Some(LINUX_DELAY_TSC_ENTRY_RIP),
+                &entry,
+                vec![],
+                crate::FrameChainEnd::NullFramePointer,
+            );
+        }
+        // This omitted call collides with the first retained entry's verified key.
+        entry.gpr[Register::Rax as usize] = 0;
+        collector.record_delay_tsc_entry(
+            Some(LINUX_DELAY_TSC_ENTRY_RIP),
+            &entry,
+            vec![],
+            crate::FrameChainEnd::NullFramePointer,
+        );
+        // Repeating the omitted key keeps only one ambiguity marker in its retained bucket.
+        collector.record_delay_tsc_entry(
+            Some(LINUX_DELAY_TSC_ENTRY_RIP),
+            &entry,
+            vec![],
+            crate::FrameChainEnd::NullFramePointer,
+        );
+
+        let mut poll = entry;
+        poll.gpr[Register::Rdi as usize] = 0;
+        poll.gpr[Register::Rax as usize] = 100;
+        collector.record_rdtsc_site_sample(Some(LINUX_DELAY_TSC_POLL_RIP), &poll, None);
+        let summary = collector.finish().delay_tsc_call_summary.unwrap();
+        assert_eq!(
+            summary.entry_count,
+            LINUX_DELAY_TSC_CALL_CAPACITY as u64 + 2
+        );
+        assert_eq!(summary.entries.len(), LINUX_DELAY_TSC_CALL_CAPACITY);
+        assert_eq!(summary.entries_omitted, 2);
+        assert_eq!(summary.unmatched_polls, 1);
+        assert_eq!(summary.ambiguous_polls, 1);
+        assert_eq!(summary.entries[0].poll_count, 0);
     }
 
     #[test]

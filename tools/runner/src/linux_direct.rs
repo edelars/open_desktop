@@ -72,7 +72,7 @@ use od_machine::{
     LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput,
     LinuxExecutionObservations, LinuxStopRecord, MachineStopReason, load_linux_direct_board,
     run_linux_direct_board, run_linux_direct_board_set_observed,
-    run_linux_direct_board_set_user_mode_with_elf_stack_copy,
+    run_linux_direct_board_set_user_mode_with_delay_tsc_summary,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -88,7 +88,7 @@ pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-elf-stack-copy] [--execution-observations-rdtsc-prefix] [--execution-observations-quantum-trace] [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>] [--execution-observations-rdtsc-window <start:end>]]]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-delay-call-summary] [--execution-observations-elf-stack-copy] [--execution-observations-rdtsc-prefix] [--execution-observations-quantum-trace] [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>] [--execution-observations-rdtsc-window <start:end>]]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -150,6 +150,7 @@ struct Options {
     execution_observations_rdtsc_window: Option<od_machine::RdtscSampleWindow>,
     /// Capture every CPL0 RDTSC through the fixed Linux delay_tsc entry sentinel.
     execution_observations_rdtsc_prefix: bool,
+    execution_observations_delay_call_summary: bool,
     /// Capture one strictly gated, bounded instruction-path quantum for the S5-07 follow-up.
     execution_observations_quantum_trace: bool,
     execution_observations_elf_stack_copy: bool,
@@ -607,7 +608,7 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                 };
                 let run_started = std::time::Instant::now();
                 let result = if options.execution_observations_out.is_some() {
-                    run_linux_direct_board_set_user_mode_with_elf_stack_copy(
+                    run_linux_direct_board_set_user_mode_with_delay_tsc_summary(
                         &mut boot,
                         &machine_input,
                         budget,
@@ -622,6 +623,7 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                             .then_some(od_machine::LINUX_RDTSC_PREFIX_SENTINEL_RIP),
                         options.execution_observations_quantum_trace,
                         options.execution_observations_elf_stack_copy,
+                        options.execution_observations_delay_call_summary,
                     )
                 } else if options.set_cpl0 {
                     run_linux_direct_board_set_observed(
@@ -1237,6 +1239,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut execution_observations_rdtsc_stride = None;
     let mut execution_observations_rdtsc_window = None;
     let mut execution_observations_rdtsc_prefix = false;
+    let mut execution_observations_delay_call_summary = false;
     let mut execution_observations_quantum_trace = false;
     let mut execution_observations_elf_stack_copy = false;
     let mut index = 0;
@@ -1254,6 +1257,15 @@ fn parse(args: &[String]) -> Result<Options, String> {
             if std::mem::replace(&mut execution_observations_rdtsc_prefix, true) {
                 return Err(format!(
                     "duplicate option --execution-observations-rdtsc-prefix; usage: {USAGE}"
+                ));
+            }
+            index += 1;
+            continue;
+        }
+        if name == "--execution-observations-delay-call-summary" {
+            if std::mem::replace(&mut execution_observations_delay_call_summary, true) {
+                return Err(format!(
+                    "duplicate option --execution-observations-delay-call-summary; usage: {USAGE}"
                 ));
             }
             index += 1;
@@ -1509,6 +1521,25 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--execution-observations-rdtsc-prefix needs --execution-observations-out; usage: {USAGE}"
         ));
     }
+    if execution_observations_delay_call_summary {
+        if execution_observations_out.is_none() {
+            return Err(format!(
+                "--execution-observations-delay-call-summary needs --execution-observations-out; usage: {USAGE}"
+            ));
+        }
+        if execution_observations_rdtsc_rip
+            .is_some_and(|rip| rip != od_machine::LINUX_DELAY_TSC_POLL_RIP)
+            || execution_observations_rdtsc_entry_rip
+                .is_some_and(|rip| rip != od_machine::LINUX_DELAY_TSC_ENTRY_RIP)
+            || execution_observations_rdtsc_stride.is_some_and(|stride| stride != 1)
+            || execution_observations_rdtsc_window.is_some()
+        {
+            return Err("--execution-observations-delay-call-summary conflicts with selected RIP, stride, or window options".into());
+        }
+        execution_observations_rdtsc_rip = Some(od_machine::LINUX_DELAY_TSC_POLL_RIP);
+        execution_observations_rdtsc_entry_rip = Some(od_machine::LINUX_DELAY_TSC_ENTRY_RIP);
+        execution_observations_rdtsc_stride = Some(1);
+    }
     if execution_observations_quantum_trace && execution_observations_out.is_none() {
         return Err(format!(
             "--execution-observations-quantum-trace needs --execution-observations-out; usage: {USAGE}"
@@ -1633,6 +1664,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         execution_observations_rdtsc_stride,
         execution_observations_rdtsc_window,
         execution_observations_rdtsc_prefix,
+        execution_observations_delay_call_summary,
         execution_observations_quantum_trace,
         execution_observations_elf_stack_copy,
     })
@@ -2181,6 +2213,38 @@ fn write_execution_observations_sidecar(
             })
         })
         .collect::<Vec<_>>();
+    let delay_tsc_call_summary = observations.delay_tsc_call_summary.as_ref().map(|summary| {
+        json!({
+            "entry_rip": hex64(summary.entry_rip),
+            "poll_rip": hex64(summary.poll_rip),
+            "entry_count": summary.entry_count,
+            "entries_omitted": summary.entries_omitted,
+            "poll_count": summary.poll_count,
+            "unmatched_polls": summary.unmatched_polls,
+            "ambiguous_polls": summary.ambiguous_polls,
+            "entries": summary.entries.iter().map(|entry| json!({
+                "ordinal": entry.ordinal,
+                "requested_cycles": hex64(entry.requested_cycles),
+                "entry_tsc": hex64(entry.entry_tsc),
+                "cr3": entry.cr3.map(hex64),
+                "rbp": hex64(entry.rbp),
+                "rsp": hex64(entry.rsp),
+                "frame_links": entry.frame_links.iter().map(|link| json!({
+                    "frame_pointer": hex64(link.frame_pointer),
+                    "return_address": hex64(link.return_address),
+                })).collect::<Vec<_>>(),
+                "frame_chain_end": frame_chain_end_name(entry.frame_chain_end),
+                "frame_chain_incomplete": entry.frame_chain_end
+                    != od_machine::FrameChainEnd::NullFramePointer,
+                "poll_count": entry.poll_count,
+                "first_poll_ordinal": entry.first_poll_ordinal,
+                "last_poll_ordinal": entry.last_poll_ordinal,
+                "last_elapsed_cycles": entry.last_elapsed_cycles.map(hex64),
+                "terminal_threshold_seen": entry.terminal_threshold_seen,
+                "poll_sequence_status": delay_tsc_poll_sequence_status_name(entry.poll_sequence_status),
+            })).collect::<Vec<_>>(),
+        })
+    });
     let entry_clock_trace_samples = observations
         .rdtsc_entry_clock_trace_samples
         .iter()
@@ -2355,12 +2419,14 @@ fn write_execution_observations_sidecar(
         })
     });
     let value = json!({
-        "schema_version": 14,
-        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, an optional bounded every-hit entry-RDTSC stream with clock ledger, an optional ordered RDTSC prefix through a sentinel RIP, an optional inclusive hit-ordinal window, and an optional strictly gated single-quantum instruction path trace",
+        "schema_version": 15,
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, an optional bounded every-hit entry-RDTSC stream with clock ledger, an optional ordered RDTSC prefix through a sentinel RIP, an optional inclusive hit-ordinal window, an optional strictly gated single-quantum instruction path trace, and an optional bounded delay_tsc per-call summary",
         "limits": {
             "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
             "rdtsc_site_samples": od_machine::LINUX_RDTSC_SAMPLE_CAPACITY,
             "rdtsc_entry_samples": od_machine::LINUX_RDTSC_SAMPLE_CAPACITY,
+            "delay_tsc_call_summaries": od_machine::LINUX_DELAY_TSC_CALL_CAPACITY,
+            "delay_tsc_frame_links_per_entry": 4,
             "rdtsc_entry_clock_trace_samples": od_machine::LINUX_RDTSC_CLOCK_TRACE_CAPACITY,
             "rdtsc_prefix_samples": od_machine::LINUX_RDTSC_PREFIX_CAPACITY,
             "instruction_path_trace_records": od_machine::LINUX_INSTRUCTION_PATH_TRACE_CAPACITY,
@@ -2387,6 +2453,7 @@ fn write_execution_observations_sidecar(
         "rdtsc_entry_sample_hits": observations.rdtsc_entry_sample_hits,
         "rdtsc_entry_samples": entry_samples,
         "rdtsc_entry_samples_omitted": observations.rdtsc_entry_samples_omitted,
+        "delay_tsc_call_summary": delay_tsc_call_summary,
         "rdtsc_entry_clock_trace_samples": entry_clock_trace_samples,
         "rdtsc_entry_clock_trace_missing": observations.rdtsc_entry_clock_trace_missing,
         "rdtsc_prefix_sentinel_rip": observations.rdtsc_prefix_sentinel_rip.map(hex64),
@@ -2437,6 +2504,15 @@ fn elf_stack_copy_status_name(status: od_machine::ElfStackCopyStatus) -> &'stati
     }
 }
 
+fn delay_tsc_poll_sequence_status_name(
+    status: od_machine::DelayTscPollSequenceStatus,
+) -> &'static str {
+    match status {
+        od_machine::DelayTscPollSequenceStatus::ThresholdSeen => "threshold_seen",
+        od_machine::DelayTscPollSequenceStatus::Partial => "partial",
+    }
+}
+
 fn execution_observations_sidecar_metadata(
     path: &str,
     observations: &LinuxExecutionObservations,
@@ -2460,6 +2536,12 @@ fn execution_observations_sidecar_metadata(
         "entry_hits": observations.rdtsc_entry_sample_hits,
         "entry_sample_count": observations.rdtsc_entry_samples.len(),
         "entry_samples_omitted": observations.rdtsc_entry_samples_omitted,
+        "delay_tsc_call_summary_entry_count": observations.delay_tsc_call_summary.as_ref().map(|summary| summary.entry_count),
+        "delay_tsc_call_summary_retained_count": observations.delay_tsc_call_summary.as_ref().map(|summary| summary.entries.len()),
+        "delay_tsc_call_summary_entries_omitted": observations.delay_tsc_call_summary.as_ref().map(|summary| summary.entries_omitted),
+        "delay_tsc_call_summary_poll_count": observations.delay_tsc_call_summary.as_ref().map(|summary| summary.poll_count),
+        "delay_tsc_call_summary_unmatched_polls": observations.delay_tsc_call_summary.as_ref().map(|summary| summary.unmatched_polls),
+        "delay_tsc_call_summary_ambiguous_polls": observations.delay_tsc_call_summary.as_ref().map(|summary| summary.ambiguous_polls),
         "entry_clock_trace_sample_count": observations.rdtsc_entry_clock_trace_samples.len(),
         "entry_clock_trace_missing": observations.rdtsc_entry_clock_trace_missing,
         "rdtsc_prefix_sentinel_rip": observations.rdtsc_prefix_sentinel_rip.map(hex64),
@@ -2647,6 +2729,7 @@ mod tests {
                 execution_observations_rdtsc_stride: None,
                 execution_observations_rdtsc_window: None,
                 execution_observations_rdtsc_prefix: false,
+                execution_observations_delay_call_summary: false,
                 execution_observations_quantum_trace: false,
                 execution_observations_elf_stack_copy: false,
             };
@@ -4291,6 +4374,31 @@ mod tests {
         )
         .unwrap();
         assert!(prefix.execution_observations_rdtsc_prefix);
+        let delay_summary = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-delay-call-summary",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert!(delay_summary.execution_observations_delay_call_summary);
+        assert_eq!(
+            delay_summary.execution_observations_rdtsc_rip,
+            Some(od_machine::LINUX_DELAY_TSC_POLL_RIP)
+        );
+        assert_eq!(
+            delay_summary.execution_observations_rdtsc_entry_rip,
+            Some(od_machine::LINUX_DELAY_TSC_ENTRY_RIP)
+        );
+        assert!(
+            parse_base(&[&run[..], &["--execution-observations-delay-call-summary"]].concat())
+                .is_err()
+        );
         let elf_stack_copy = parse_base(
             &[
                 &run[..],
@@ -5200,6 +5308,7 @@ mod tests {
                 cr3: Some(0x4000),
             }],
             rdtsc_entry_samples_omitted: 2,
+            delay_tsc_call_summary: None,
             rdtsc_entry_clock_trace_samples: vec![
                 od_machine::RdtscClockTraceSample {
                     rip: 0xffff_ffff_8271_b31b,
@@ -5360,7 +5469,7 @@ mod tests {
         assert_eq!(metadata["rdtsc_prefix_status"], "sentinel_seen");
         assert_eq!(metadata["rdtsc_prefix_sample_count"], 1);
         let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema_version"], 14);
+        assert_eq!(value["schema_version"], 15);
         assert!(value["elf_stack_copy"].is_null());
         assert_eq!(value["rdtsc_prefix_status"], "sentinel_seen");
         assert_eq!(value["rdtsc_prefix_event_count"], 1);
@@ -6063,6 +6172,7 @@ mod tests {
             execution_observations_rdtsc_stride: None,
             execution_observations_rdtsc_window: None,
             execution_observations_rdtsc_prefix: false,
+            execution_observations_delay_call_summary: false,
             execution_observations_quantum_trace: false,
             execution_observations_elf_stack_copy: false,
         };
@@ -6119,6 +6229,7 @@ mod tests {
             execution_observations_rdtsc_stride: None,
             execution_observations_rdtsc_window: None,
             execution_observations_rdtsc_prefix: false,
+            execution_observations_delay_call_summary: false,
             execution_observations_quantum_trace: false,
             execution_observations_elf_stack_copy: false,
         };
@@ -6179,6 +6290,7 @@ mod tests {
             execution_observations_rdtsc_stride: None,
             execution_observations_rdtsc_window: None,
             execution_observations_rdtsc_prefix: false,
+            execution_observations_delay_call_summary: false,
             execution_observations_quantum_trace: false,
             execution_observations_elf_stack_copy: false,
         };
@@ -6260,6 +6372,7 @@ mod tests {
             execution_observations_rdtsc_stride: None,
             execution_observations_rdtsc_window: None,
             execution_observations_rdtsc_prefix: false,
+            execution_observations_delay_call_summary: false,
             execution_observations_quantum_trace: false,
             execution_observations_elf_stack_copy: false,
         };
