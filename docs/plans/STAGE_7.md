@@ -833,6 +833,26 @@ workspace fmt check reports only existing diffs in untouched files.
 Independent review approved with no findings. ISSUE-201 remains the unrelated open pair of
 stale CLD-unsupported expectations. Do not mark the Stage 7 gate complete.
 
+### Текущий статус — 2026-11-16 — ISSUE-341
+
+ISSUE-341 admits only exact bytes `4D 8B 54 04 EC` (`MOV R10,qword ptr
+[R12+RAX-0x14]`) in the base `PagedCpl0ProbeV1` profile. The SIB effective
+address is computed at qword width with signed disp8 and 64-bit wrapping; the
+canonical address is read through the tracked memory path. R10/RIP commit only
+after the qword read succeeds; flags/definedness and other state are preserved.
+Focused profile tests, other-profile matrix, tracked four-level success/fault
+machine tests, full validation and independent review are recorded in the Stage
+7 report. The runner advances to ISSUE-342, exact `89 F5` (`MOV EBP,ESI`) at
+`0x2017af` after 9,055 retired instructions; COM1 is empty. ISSUE-201 remains
+the unrelated pair of stale CLD-unsupported full-machine expectations. Do not
+mark the Stage 7 gate complete.
+
+Validation: all six focused profile tests, the one other-profile matrix test,
+and both targeted machine tests pass. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,050/7/15; zero doc tests); all 71 paged machine quantum
+tests pass. Scoped cargo check, rustfmt on touched Rust files and diff-check
+pass. Independent review approved with no findings.
+
 ## 10. Проверка документа
 
 Подготовка плана не является реализацией прошивки, устройств, TPM или проведённым экспериментом. Для текущей задачи проверялись: соответствие scope roadmap/architecture/layout/`firmware/AGENTS.md`, фактическое состояние кода на 2026-11-07 (пустой `firmware/uefi/`, только Long64 в `od-isa`, отсутствие ROM backing, PCI, NVMe, RTC, TPM, NVRAM; наличие `MachineBus`, `PhysicalMemory`, flat probe этапа 4, UART, LAPIC/IOAPIC, дисплейного устройства S10-03, политики зависимостей и ADR-0001/0002), последовательность и критерии задач, ссылки и Markdown. CPU-тесты, запуск гостя и SSH не требовались.

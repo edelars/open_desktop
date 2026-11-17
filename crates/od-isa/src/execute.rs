@@ -23984,6 +23984,42 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: exact `4D 8B 54 04 EC` loads a qword into R10 from
+        // `[R12+RAX-0x14]`. REX.R/B extend the ModRM destination and SIB base;
+        // the signed disp8 participates in the 64-bit EA. Commit R10/RIP only
+        // after the tracked qword read succeeds.
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Memory(source),
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x8b
+            && instruction.length == 5
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x4d),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R10, OperandSize::Qword)
+            && source.displacement == -0x14
+            && source.base == AddressBase::Register(Register::R12)
+            && source.index == Some(Register::Rax)
+            && source.scale == 1
+            && source.address_size == OperandSize::Qword
+            && source.size == OperandSize::Qword =>
+        {
+            let value =
+                match read_operand(state, memory, context, next_rip, Operand::Memory(source)) {
+                    Ok(value) => value,
+                    Err(MemoryError::Architectural(fault)) => {
+                        return result(PagedProbeExit::Fault(fault), 0);
+                    }
+                    Err(error) => return result(PagedProbeExit::Backend(error), 0),
+                };
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: the Rust helper spills with exact RSP-relative stores:
         // dword `89 1C 24` (EBX) and qword `48 89 54 24 30` (RDX),
         // `48 89 74 24 10` (RSI), `48 89 44 24 08` (RAX). The decoded tuple
