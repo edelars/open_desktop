@@ -1842,6 +1842,20 @@ is pending.
 
 ### ISSUE-398 — exact JA rel32 +0x24d (`0F 87 4D 02 00 00`)
 
-The next runner frontier is this exact JA displacement. Admit only this target
-offset, preserving CF/ZF flags and definedness and checking canonicality only
-when the branch is taken.
+Admit only this exact JA displacement in base `PagedCpl0ProbeV1`: CF=0 && ZF=0,
+signed rel32 relative to next RIP, flags/definedness preserved, canonicality
+checked only for a taken target. Cover both outcomes, final displacement fetch
+fault, adjacent encodings, CPL3 and other profiles. ISSUE-201 remains the
+unrelated CLD caveat.
+
+Focused tests pass (5/5), other-profile matrix passes (1/1), full od-isa passes
+(2,322/1,591/126/29/6/1,314/7/15; 0 doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline check passes with existing warnings,
+and scoped rustfmt/diff-check pass. Runner advances to `49 83 C0 18`
+(ADD R8,0x18, ISSUE-399) at RIP `0x2012ae` after 9,882 retired instructions,
+`Unsupported { opcode: 131 }`; COM1 is empty. Independent review is pending.
+
+### ISSUE-399 — exact ADD R8,0x18 (`49 83 C0 18`)
+
+The next firmware frontier is this exact qword R8 ADD immediate. Pin admission
+to these bytes and verify signed imm8, arithmetic flags and profile boundaries.

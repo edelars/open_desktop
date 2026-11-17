@@ -3175,8 +3175,25 @@ machine quantum passes (110/110), workspace all-targets offline check passes
 with existing warnings, and scoped rustfmt/diff-check pass. Independent review
 is pending.
 
-### ISSUE-398 — runner frontier `0F 87 4D 02 00 00`
+### ISSUE-398 — exact `JA rel32 +0x24d` (`0F 87 4D 02 00 00`)
 
-Firmware next reaches exact JA rel32 +0x24d. Keep admission exact, preserve
-flags/definedness, and validate canonicality only for the taken target.
-ISSUE-201 remains the unrelated CLD caveat.
+The base paged profile admits only this exact displacement. JA tests CF=0 &&
+ZF=0, applies signed rel32 from next RIP, preserves flags/definedness and checks
+canonicality only when taken. Focused condition/target/fetch-fault/neighbor/CPL3
+tests pass (5/5); other-profile matrix passes (1/1). ISSUE-201 remains the
+unrelated CLD caveat.
+
+With image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, runner
+advances to `49 83 C0 18` (ADD R8,0x18, ISSUE-399), RIP `0x2012ae`, after
+9,882 retired instructions, `Unsupported { opcode: 131 }`; COM1 is empty. Full
+od-isa passes (2,322/1,591/126/29/6/1,314/7/15; zero doc tests), paged machine
+quantum passes (110/110), workspace all-targets offline check passes with
+existing warnings, and scoped rustfmt/diff-check pass. Independent review is
+pending.
+
+### ISSUE-399 — runner frontier `49 83 C0 18`
+
+Firmware reaches exact qword `ADD R8,0x18` after ISSUE-398. Verify the signed
+imm8 result and arithmetic flags while keeping the admission exact. ISSUE-201
+remains the unrelated CLD caveat.

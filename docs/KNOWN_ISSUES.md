@@ -5073,7 +5073,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-398 — S7-04: exact helper JA rel32 +0x24d frontier (`0F 87 4D 02 00 00`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-397.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012a4`.
-- **Статус:** открыта.
-- **Суть и последствия:** after ISSUE-397, firmware reaches exact `0F 87 4D 02 00 00` (`JA rel32 +0x24d`); this displacement is not yet admitted by the bounded base profile.
+- **Статус:** решена только для точного displacement в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `0F 87 4D 02 00 00` (`JA rel32 +0x24d`). JA tests CF=0 && ZF=0, adds signed rel32 to next RIP, preserves flags/definedness and checks canonicality only when taken.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,880 instructions and reported `Unsupported { opcode: 135 }` at RIP `0x2012a4`; COM1 is empty. The bytes are present at image offset `0x12a4`, corresponding to the firmware link-base shadow.
-- **Следующий шаг:** add only this exact JA displacement after verifying condition, target and profile boundaries.
+- **Результат:** runner now retires 9,882 instructions and stops at RIP `0x2012ae`, bytes `49 83 C0 18` (ADD R8,0x18; ISSUE-399), `Unsupported { opcode: 131 }`; COM1 is empty.
+- **Проверка:** focused condition/definedness/target/canonicality/fetch-fault/neighbor/CPL3 tests 5/5 and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,314/7/15; zero doc tests), paged machine quantum passes 110/110, workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review is pending. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-399 — S7-04: exact helper ADD R8,0x18 frontier (`49 83 C0 18`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-398.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2012ae`.
+- **Статус:** открыта.
+- **Суть и последствия:** after ISSUE-398, firmware reaches exact `49 83 C0 18` (`ADD R8,0x18`); this immediate form is not yet admitted by the bounded base profile.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,882 instructions and reported `Unsupported { opcode: 131 }` at RIP `0x2012ae`; COM1 is empty. The bytes are present at image offset `0x12ae`, corresponding to the firmware link-base shadow.
+- **Следующий шаг:** implement only this exact qword R8 immediate ADD after validating result, flags and profile boundaries.
