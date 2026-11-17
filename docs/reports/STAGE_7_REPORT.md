@@ -2941,3 +2941,20 @@ Full od-isa suites pass (2,322/1,591/126/29/6/1,254/7/15; zero doc tests),
 paged machine quantum passes (110/110), workspace all-targets offline check
 passes with existing warnings, and scoped rustfmt/diff-check pass. Independent
 review approved with no findings.
+
+### ISSUE-385 — exact SHL R8,4 (`49 C1 E0 04`)
+
+The base `PagedCpl0ProbeV1` admits only exact REX.W+B `49 C1 E0 04`, raw
+ModRM `/4`, qword SHL R8 by immediate 4. Shared shift semantics update R8 and
+CF/SF/ZF/PF; OF and AF become undefined while their stored values are retained.
+Four focused tests cover qword results/flags, final immediate fetch-fault
+atomicity, neighbors and CPL3; the other-profile matrix passes.
+
+The runner advances to `4B 8D 1C 40` (LEA RBX,[R8+R8*2], ISSUE-386), RIP
+`0x20125e`, after 9,864 retired instructions, `Unsupported { opcode: 141 }`;
+COM1 is empty. Image SHA-256 remains
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201 remains the unrelated CLD expectation caveat. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,258/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline cargo check, scoped rustfmt and
+`git diff --check` pass. Independent review approved with no findings.

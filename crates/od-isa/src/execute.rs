@@ -23010,6 +23010,51 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     .apply(initial_rflags_defined),
             };
         }
+        // S7-04: the helper shifts qword R8 left by four with exact
+        // `49 C1 E0 04`; REX.B selects R8 and raw ModRM `/4` selects SHL.
+        Operation::Shift {
+            kind: ShiftKind::Shl,
+            dst: Operand::Register(destination),
+            source: None,
+            count: Operand::Immediate(4),
+            raw_modrm,
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xc1
+            && instruction.length == 4
+            && raw_modrm == 0xe0
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x49),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::R8, OperandSize::Qword) =>
+        {
+            let kind = ShiftKind::Shl;
+            let raw_count = 4;
+            let count = shift_count(kind, instruction.operand_size, raw_count);
+            let lhs = state.read(destination);
+            let (result, flags) = shift_result(
+                instruction.operand_size,
+                kind,
+                lhs,
+                0,
+                count,
+                raw_count & 0x3f,
+                state.rflags,
+            );
+            state.write(destination, result);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction
+                    .flag_effects_for_count(raw_count)
+                    .apply(initial_rflags_defined),
+            };
+        }
         // S7-04: the helper shifts R12D by 8 with only
         // `41 C1 EC 08`; preserve the existing count/flag rules.
         Operation::Shift {

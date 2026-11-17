@@ -1613,3 +1613,21 @@ od-isa suites pass (2,322/1,591/126/29/6/1,254/7/15; zero doc tests), paged
 machine quantum passes (110/110), workspace all-targets offline cargo check
 passes with existing warnings, and scoped rustfmt/diff-check pass. Independent
 review approved with no findings.
+
+### ISSUE-385 — exact SHL R8,4 (`49 C1 E0 04`)
+
+Admit only exact REX.W+B `49 C1 E0 04` in base `PagedCpl0ProbeV1`. Raw ModRM
+`E0` pins `/4` SHL (not the decoder-normalized `/6` SAL alias); count is the
+immediate 4 and operand width is qword. Update only R8, arithmetic shift flags
+and their definedness, and RIP. For count 4 CF/SF/ZF/PF are defined, OF and AF
+are undefined; the shared helper retains their prior stored bit values. Test
+edge values, count/ModRM/REX/prefix neighbors, fetch fault, CPL3 and other
+profile isolation. ISSUE-201 remains the unrelated CLD caveat.
+
+Focused tests pass (4/4), and the other-profile matrix passes (1/1). The
+firmware runner advances to `4B 8D 1C 40` (LEA RBX,[R8+R8*2], ISSUE-386) at RIP
+`0x20125e` after 9,864 retired instructions, `Unsupported { opcode: 141 }`;
+COM1 is empty. Full od-isa suites pass (2,322/1,591/126/29/6/1,258/7/15; zero
+doc tests), paged machine quantum passes (110/110), workspace all-targets
+offline cargo check, scoped rustfmt and `git diff --check` pass. Independent
+review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

@@ -4956,7 +4956,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-385 — S7-04: exact helper SHL R8,4 frontier (`49 C1 E0 04`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-384.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20125a`.
-- **Статус:** открыта.
-- **Суть и последствия:** after ISSUE-384 the firmware reaches exact `49 C1 E0 04` (SHL R8,4), not yet admitted by the bounded base profile.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `49 C1 E0 04` as qword `SHL R8,4`. Shared shift semantics update R8 and CF/SF/ZF/PF; OF and AF become undefined for count 4, while the shared helper retains their stored bit values. Neighboring counts, raw `/6` SAL alias, other registers/widths/prefixes, CPL3 and other profiles remain unsupported.
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,863 instructions and reported `Unsupported { opcode: 193 }` at RIP `0x20125a`; COM1 is empty.
-- **Следующий шаг:** implement only the exact qword SHL form and validate its shift flag semantics.
+- **Результат:** runner now retires 9,864 instructions and stops at RIP `0x20125e`, bytes `4B 8D 1C 40` (LEA RBX,[R8+R8*2], ISSUE-386), `Unsupported { opcode: 141 }`; COM1 is empty.
+- **Проверка:** focused SHL/fault/neighbor/CPL3 tests 4/4 and other-profile matrix 1/1 pass. Full `cargo test --offline -p od-isa --quiet` passes (2,322/1,591/126/29/6/1,258/7/15; zero doc tests), paged machine quantum passes 110/110, `cargo check --workspace --all-targets --offline` passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+
+### ISSUE-386 — S7-04: exact helper LEA RBX,[R8+R8*2] frontier (`4B 8D 1C 40`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-385.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20125e`.
+- **Статус:** открыта.
+- **Суть и последствия:** after ISSUE-385 the firmware reaches exact `4B 8D 1C 40` (LEA RBX,[R8+R8*2]), not yet admitted by the bounded base profile.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner retired 9,864 instructions and reported `Unsupported { opcode: 141 }` at RIP `0x20125e`; COM1 is empty.
+- **Следующий шаг:** graph-navigate existing exact LEA SIB admissions and add only this qword effective-address form.

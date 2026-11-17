@@ -28686,3 +28686,21 @@ suites pass (2,322/1,591/126/29/6/1,254/7/15; zero doc tests), paged machine
 quantum passes (110/110), workspace all-targets offline check passes with
 existing warnings, and scoped rustfmt/diff-check pass. Independent review
 approved with no findings.
+
+### ISSUE-385: `49 C1 E0 04` — SHL R8,4
+
+`PagedCpl0ProbeV1` admits only this exact REX.W+B qword register shift. The raw
+ModRM byte `E0` requires `/4`; `/6` SAL normalization does not widen admission.
+The shared SHL semantics write qword R8 and CF/SF/ZF/PF, preserve other
+architectural state, and advance RIP. OF and AF are undefined for count 4, with
+their stored values retained by the shared helper. Fetch faults do not retire.
+Other counts/registers/widths/prefixes and CPL3/other profiles remain outside
+this slice. ISSUE-201 remains the unrelated CLD expectation caveat.
+
+Focused tests pass (4/4), as does the other-profile matrix (1/1). The firmware
+runner advances to `4B 8D 1C 40` (LEA RBX,[R8+R8*2], ISSUE-386), RIP
+`0x20125e`, after 9,864 retired instructions; it reports
+`Unsupported { opcode: 141 }`, and COM1 is empty. Full od-isa suites pass
+(2,322/1,591/126/29/6/1,258/7/15; zero doc tests), paged machine quantum passes
+(110/110), workspace all-targets offline cargo check, scoped rustfmt and
+`git diff --check` pass. Independent review approved with no findings.
