@@ -2479,3 +2479,16 @@ ISSUE-363, `E9 9E FE FF FF` (JMP rel32 -0x162) at RIP `0x20181a` after 9,831
 retired instructions; `Unsupported { opcode: 233 }`, COM1 empty. Image SHA-256
 is `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 ISSUE-201's unrelated CLD caveat remains open. Full od-isa suites pass (2,322/1,591/126/29/6/1,146/7/15; zero doc tests), paged machine quantum passes (79/79), workspace all-targets `cargo check --offline` passes, scoped rustfmt and diff-check pass. Workspace `cargo fmt --all -- --check` still reports pre-existing formatting differences in untouched `crates/od-host/src/storage_abi_v1.rs` and `tools/image-tool/tests/cli.rs`. Independent review approved with no findings.
+
+### ISSUE-363 — JMP rel32 -0x162
+
+The base profile admits only exact bytes `E9 9E FE FF FF`. The signed rel32
+-0x162 is added to next RIP; the target is canonicality-checked before RIP
+commits. Registers, RFLAGS and flag-definedness are preserved. Five focused
+tests cover signed target calculation, canonicality fault, final-immediate
+fetch-fault atomicity, neighbors and CPL3; the other-profile rejection matrix
+passes. The runner advances to ISSUE-364, `66 C7 07 FF FF` (MOV word ptr
+[RDI],0xffff) at RIP `0x2016bd` after 9,832 retired instructions;
+`Unsupported { opcode: 199 }`, COM1 empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201's unrelated CLD caveat remains open. Full od-isa suites pass (2,322/1,591/126/29/6/1,151/7/15; zero doc tests), paged machine quantum passes (79/79), workspace all-targets `cargo check --offline` passes, scoped rustfmt and diff-check pass. Workspace `cargo fmt --all -- --check` still reports pre-existing formatting differences in untouched `crates/od-host/src/storage_abi_v1.rs` and `tools/image-tool/tests/cli.rs`. Independent review approved with no findings.

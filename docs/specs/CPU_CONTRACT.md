@@ -28274,3 +28274,14 @@ conditions and prefixes, CPL3 and other profiles remain unsupported. Firmware
 advances to `E9 9E FE FF FF` (JMP rel32 -0x162, ISSUE-363) at RIP `0x20181a`
 after 9,831 retired instructions; COM1 is empty. ISSUE-201's unrelated CLD
 caveat remains open. Full od-isa suites pass (2,322/1,591/126/29/6/1,146/7/15; zero doc tests), paged machine quantum passes (79/79), workspace all-targets `cargo check --offline` passes, scoped rustfmt and diff-check pass. Workspace `cargo fmt --all -- --check` still reports pre-existing formatting differences in untouched `crates/od-host/src/storage_abi_v1.rs` and `tools/image-tool/tests/cli.rs`. Independent review approved with no findings.
+
+### S7-04 CPU-profile slice: exact JMP rel32 -0x162 (ISSUE-363)
+
+`PagedCpl0ProbeV1` admits only exact no-prefix bytes `E9 9E FE FF FF`. The
+signed rel32 -0x162 is added to next RIP, and the target is checked for
+canonicality before RIP commits. The instruction preserves all GPRs, RFLAGS
+and flag-definedness; a fetch fault before the final immediate byte is atomic.
+Other displacements, prefixes, CPL3 and other profiles remain unsupported.
+Firmware advances to `66 C7 07 FF FF` (MOV word ptr [RDI],0xffff, ISSUE-364) at
+RIP `0x2016bd` after 9,832 retired instructions; COM1 is empty. ISSUE-201's
+unrelated CLD caveat remains open. Full od-isa suites pass (2,322/1,591/126/29/6/1,151/7/15; zero doc tests), paged machine quantum passes (79/79), workspace all-targets `cargo check --offline` passes, scoped rustfmt and diff-check pass. Workspace `cargo fmt --all -- --check` still reports pre-existing formatting differences in untouched `crates/od-host/src/storage_abi_v1.rs` and `tools/image-tool/tests/cli.rs`. Independent review approved with no findings.

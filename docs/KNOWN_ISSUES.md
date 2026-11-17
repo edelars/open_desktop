@@ -4779,7 +4779,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-363 — S7-04: exact helper JMP rel32 -0x162 frontier (`E9 9E FE FF FF`)
 - **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-362.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20181a`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `E9 9E FE FF FF` jump by signed rel32 -0x162 from next RIP. The target is checked for canonicality; registers and flags/definedness remain unchanged.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; after admission runner stops at `Unsupported { opcode: 199 }` at RIP `0x2016bd` after 9,832 retired instructions; bytes are `66 C7 07 FF FF`; COM1 is empty.
+- **Проверка:** five focused tests cover signed next-RIP target arithmetic, state/flags preservation, target canonicality, final-immediate fetch-fault atomicity, neighboring displacements/opcodes/prefixes and CPL3; other-profile isolation rejects this exact form. Full validation and independent review are recorded in `docs/reports/STAGE_7_REPORT.md`.
+
+### ISSUE-364 — S7-04: exact helper MOV word ptr [RDI],0xffff frontier (`66 C7 07 FF FF`)
+- **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-363.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x2016bd`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this near unconditional jump after 9,831 retired instructions. The bounded base profile does not yet admit this exact rel32 displacement.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 233 }` at RIP `0x20181a`; bytes are `E9 9E FE FF FF`; COM1 is empty.
-- **Следующий шаг:** analyze and admit only this exact firmware JMP rel32 form in a separate Stage 7 slice.
+- **Суть и последствия:** firmware reaches this word memory-immediate store after 9,832 retired instructions. The bounded base profile does not yet admit this exact form.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 199 }` at RIP `0x2016bd`; bytes are `66 C7 07 FF FF`; COM1 is empty.
+- **Следующий шаг:** analyze and admit only this exact firmware MOV word ptr [RDI],0xffff form in a separate Stage 7 slice.
