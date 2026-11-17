@@ -2179,6 +2179,29 @@ fn write_execution_observations_sidecar(
                     "rip": hex64(marker.rip),
                     "retired_instructions_before_current": marker.retired_instructions_before_current,
                 })).collect::<Vec<_>>(),
+                "target_event": {
+                    "status": ledger.target_event.status,
+                    "sequence": ledger.target_event.sequence,
+                    "rip": ledger.target_event.rip.map(hex64),
+                    "cr3": ledger.target_event.cr3.map(hex64),
+                    "retired_instructions": ledger.target_event.retired_instructions,
+                    "rsp": ledger.target_event.rsp.map(hex64),
+                    "rbp": ledger.target_event.rbp.map(hex64),
+                    "chain_status": ledger.target_event.chain_status.map(|status| match status {
+                        od_machine::ElfStackCopyTargetCr3ChainStatus::Complete => "complete",
+                        od_machine::ElfStackCopyTargetCr3ChainStatus::Unreadable => "unreadable",
+                        od_machine::ElfStackCopyTargetCr3ChainStatus::Malformed => "malformed",
+                        od_machine::ElfStackCopyTargetCr3ChainStatus::FrameLimit => "frame_limit",
+                    }),
+                    "frames": ledger.target_event.frames.iter().map(|frame| json!({
+                        "rbp": hex64(frame.rbp),
+                        "saved_rbp_slot": hex64(frame.saved_rbp_slot),
+                        "saved_rbp": hex64(frame.saved_rbp),
+                        "return_address_slot": hex64(frame.return_address_slot),
+                        "return_address": hex64(frame.return_address),
+                    })).collect::<Vec<_>>(),
+                    "error": ledger.target_event.error,
+                },
             })),
             "invocation": snapshot.invocation.as_ref().map(elf_stack_copy_invocation_json),
             "mismatch_reasons": snapshot.mismatch_reasons,
@@ -2444,7 +2467,7 @@ fn write_execution_observations_sidecar(
         })
     });
     let value = json!({
-        "schema_version": 17,
+        "schema_version": 18,
         "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, an optional bounded every-hit entry-RDTSC stream with clock ledger, an optional ordered RDTSC prefix through a sentinel RIP, an optional inclusive hit-ordinal window, an optional strictly gated single-quantum instruction path trace, an optional bounded delay_tsc per-call summary, and an optional ordered pre-copy CR3-write ledger",
         "limits": {
             "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,

@@ -1913,7 +1913,7 @@ fn validate_execution_observations_sidecar(
                             ledger,
                             snapshot,
                             Some(runner),
-                        )
+                        ) && (schema_version < 18 || valid_elf_stack_copy_target_cr3_event(ledger))
                     });
                 let status_data_valid = match status {
                     Some("captured") => {
@@ -1981,7 +1981,232 @@ fn validate_execution_observations_sidecar(
 }
 
 fn supported_execution_observations_schema_version(version: u64) -> bool {
-    (1..=17).contains(&version)
+    (1..=18).contains(&version)
+}
+
+fn valid_elf_stack_copy_target_cr3_event(ledger: &Value) -> bool {
+    let Some(target) = ledger.get("target_event") else {
+        return false;
+    };
+    let Some(status) = target.get("status").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(frames) = target.get("frames").and_then(Value::as_array) else {
+        return false;
+    };
+    if frames.len() > od_machine::LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY {
+        return false;
+    }
+    if status == "not_seen" {
+        let target_event_was_seen =
+            ledger
+                .get("events")
+                .and_then(Value::as_array)
+                .is_some_and(|events| {
+                    events.iter().any(|event| {
+                        event.get("sequence").and_then(Value::as_u64)
+                            == Some(od_machine::LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_ORDINAL)
+                            && event.get("rip").and_then(Value::as_str)
+                                == Some("0xffffffff8141d753")
+                    })
+                });
+        return !target_event_was_seen
+            && target.get("sequence") == Some(&Value::Null)
+            && target.get("rip") == Some(&Value::Null)
+            && target.get("cr3") == Some(&Value::Null)
+            && target.get("retired_instructions") == Some(&Value::Null)
+            && target.get("rsp") == Some(&Value::Null)
+            && target.get("rbp") == Some(&Value::Null)
+            && target.get("chain_status") == Some(&Value::Null)
+            && frames.is_empty()
+            && target.get("error") == Some(&Value::Null);
+    }
+    if status != "captured"
+        || target.get("sequence").and_then(Value::as_u64)
+            != Some(od_machine::LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_ORDINAL)
+        || target.get("rip").and_then(Value::as_str) != Some("0xffffffff8141d753")
+        || !target
+            .get("cr3")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_hex64)
+        || !target
+            .get("rsp")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_hex64)
+        || !target
+            .get("rbp")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_hex64)
+        || target
+            .get("retired_instructions")
+            .and_then(Value::as_u64)
+            .is_none()
+    {
+        return false;
+    }
+    let matching_event = ledger
+        .get("events")
+        .and_then(Value::as_array)
+        .and_then(|events| {
+            events.iter().find(|event| {
+                event.get("sequence").and_then(Value::as_u64)
+                    == Some(od_machine::LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_ORDINAL)
+            })
+        });
+    let Some(matching_event) = matching_event else {
+        return false;
+    };
+    if matching_event.get("rip") != target.get("rip")
+        || matching_event.get("new_cr3") != target.get("cr3")
+        || matching_event.get("retired_instructions_through_current")
+            != target.get("retired_instructions")
+    {
+        return false;
+    }
+    let chain_status = target.get("chain_status").and_then(Value::as_str);
+    if !matches!(
+        chain_status,
+        Some("complete" | "unreadable" | "malformed" | "frame_limit")
+    ) {
+        return false;
+    }
+    let error = target.get("error");
+    if (chain_status == Some("complete") && error != Some(&Value::Null))
+        || (chain_status != Some("complete")
+            && !error
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty()))
+        || (chain_status == Some("frame_limit")
+            && frames.len() != od_machine::LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY)
+        || (chain_status == Some("unreadable")
+            && frames.len() == od_machine::LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY)
+    {
+        return false;
+    }
+    let initial_rbp = target
+        .get("rbp")
+        .and_then(Value::as_str)
+        .and_then(parse_hex64);
+    let Some(initial_rbp) = initial_rbp else {
+        return false;
+    };
+    if (initial_rbp == 0 && chain_status != Some("complete"))
+        || (matches!(chain_status, Some("unreadable" | "frame_limit"))
+            && (initial_rbp == 0
+                || initial_rbp & 7 != 0
+                || !canonical_guest_address(initial_rbp)
+                || initial_rbp.checked_add(8).is_none()))
+        || (chain_status == Some("malformed")
+            && frames.is_empty()
+            && (initial_rbp == 0
+                || (initial_rbp & 7 == 0
+                    && canonical_guest_address(initial_rbp)
+                    && initial_rbp.checked_add(8).is_some())))
+    {
+        return false;
+    }
+    let mut previous_rbp = target
+        .get("rbp")
+        .and_then(Value::as_str)
+        .and_then(parse_hex64);
+    for (index, frame) in frames.iter().enumerate() {
+        let (Some(rbp), Some(saved_slot), Some(saved_rbp), Some(return_slot), Some(return_address)) = (
+            frame
+                .get("rbp")
+                .and_then(Value::as_str)
+                .and_then(parse_hex64),
+            frame
+                .get("saved_rbp_slot")
+                .and_then(Value::as_str)
+                .and_then(parse_hex64),
+            frame
+                .get("saved_rbp")
+                .and_then(Value::as_str)
+                .and_then(parse_hex64),
+            frame
+                .get("return_address_slot")
+                .and_then(Value::as_str)
+                .and_then(parse_hex64),
+            frame
+                .get("return_address")
+                .and_then(Value::as_str)
+                .and_then(parse_hex64),
+        ) else {
+            return false;
+        };
+        let terminal_malformed_frame =
+            chain_status == Some("malformed") && index + 1 == frames.len();
+        let bad_saved_rbp = saved_rbp != 0
+            && (saved_rbp & 7 != 0 || !canonical_guest_address(saved_rbp) || saved_rbp <= rbp);
+        let bad_return_address = !canonical_guest_address(return_address);
+        let next_frame_slot_overflow = saved_rbp != 0 && saved_rbp.checked_add(8).is_none();
+        if Some(rbp) != previous_rbp
+            || rbp & 7 != 0
+            || !canonical_guest_address(rbp)
+            || saved_slot != rbp
+            || rbp.checked_add(8) != Some(return_slot)
+            || (!terminal_malformed_frame && (bad_saved_rbp || bad_return_address))
+            || (!terminal_malformed_frame && saved_rbp == 0 && index + 1 != frames.len())
+            || (terminal_malformed_frame
+                && !bad_saved_rbp
+                && !bad_return_address
+                && (!next_frame_slot_overflow
+                    || frames.len() == od_machine::LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY))
+        {
+            return false;
+        }
+        previous_rbp = (saved_rbp != 0).then_some(saved_rbp);
+    }
+    if chain_status == Some("complete") {
+        if frames.is_empty() {
+            if target
+                .get("rbp")
+                .and_then(Value::as_str)
+                .and_then(parse_hex64)
+                != Some(0)
+            {
+                return false;
+            }
+        } else if frames
+            .last()
+            .and_then(|frame| frame.get("saved_rbp"))
+            .and_then(Value::as_str)
+            .and_then(parse_hex64)
+            != Some(0)
+        {
+            return false;
+        }
+    } else if chain_status == Some("unreadable")
+        && frames
+            .last()
+            .and_then(|frame| frame.get("saved_rbp"))
+            .and_then(Value::as_str)
+            .and_then(parse_hex64)
+            .is_some_and(|saved_rbp| saved_rbp == 0 || saved_rbp.checked_add(8).is_none())
+    {
+        return false;
+    } else if chain_status == Some("frame_limit")
+        && frames
+            .last()
+            .and_then(|frame| frame.get("saved_rbp"))
+            .and_then(Value::as_str)
+            .and_then(parse_hex64)
+            == Some(0)
+    {
+        return false;
+    }
+    true
+}
+
+fn parse_hex64(value: &str) -> Option<u64> {
+    value
+        .strip_prefix("0x")
+        .and_then(|digits| u64::from_str_radix(digits, 16).ok())
+}
+
+fn canonical_guest_address(address: u64) -> bool {
+    let sign = (address >> 47) & 1;
+    (sign == 0 && address >> 48 == 0) || (sign == 1 && address >> 48 == 0xffff)
 }
 
 #[cfg(test)]
@@ -4072,7 +4297,7 @@ mod tests {
             byte_count,
             sha256,
         );
-        assert_eq!(raw["schema_version"], 17);
+        assert_eq!(raw["schema_version"], 18);
         assert_eq!(
             raw["delay_tsc_call_summary"]["entries"][0]["frame_chain_end"],
             "read_failed"
@@ -4302,7 +4527,7 @@ mod tests {
         assert!(supported_execution_observations_schema_version(15));
         assert!(supported_execution_observations_schema_version(16));
         assert!(supported_execution_observations_schema_version(17));
-        assert!(!supported_execution_observations_schema_version(18));
+        assert!(supported_execution_observations_schema_version(18));
         assert!(!supported_execution_observations_schema_version(u64::MAX));
     }
 
@@ -4312,6 +4537,170 @@ mod tests {
         let over_cap = vec![Value::Null; od_machine::LINUX_ELF_STACK_COPY_PROBE_CAPACITY + 1];
         assert!(elf_stack_copy_probe_count_valid(&within_cap));
         assert!(!elf_stack_copy_probe_count_valid(&over_cap));
+    }
+
+    #[test]
+    fn elf_stack_copy_target_cr3_event_validates_not_seen_and_chain_outcomes() {
+        let not_seen = json!({
+            "events": [],
+            "target_event": {
+                "status": "not_seen", "sequence": null, "rip": null, "cr3": null,
+                "retired_instructions": null, "rsp": null, "rbp": null,
+                "chain_status": null, "frames": [], "error": null
+            }
+        });
+        assert!(valid_elf_stack_copy_target_cr3_event(&not_seen));
+
+        let event = json!({
+            "sequence": 26596,
+            "rip": "0xffffffff8141d753",
+            "old_cr3": "0x1000",
+            "new_cr3": "0x2000",
+            "cpl": 0,
+            "retired_instructions_through_current": 456
+        });
+        let base_target = json!({
+            "status": "captured", "sequence": 26596, "rip": "0xffffffff8141d753",
+            "cr3": "0x2000", "retired_instructions": 456, "rsp": "0x8000",
+            "rbp": "0x8100", "chain_status": "complete", "frames": [], "error": null
+        });
+        let mut captured = json!({"events": [event], "target_event": base_target});
+        assert!(!valid_elf_stack_copy_target_cr3_event(&captured));
+        captured["target_event"]["rbp"] = json!("0x0");
+        assert!(valid_elf_stack_copy_target_cr3_event(&captured));
+
+        let mut unreadable = captured.clone();
+        unreadable["target_event"]["chain_status"] = json!("unreadable");
+        unreadable["target_event"]["error"] = json!("read-only RAM read failed");
+        unreadable["target_event"]["rbp"] = json!("0x8100");
+        assert!(valid_elf_stack_copy_target_cr3_event(&unreadable));
+
+        let mut malformed = captured.clone();
+        malformed["target_event"]["chain_status"] = json!("malformed");
+        malformed["target_event"]["error"] = json!("invalid frame pointer");
+        malformed["target_event"]["rbp"] = json!("0x8101");
+        assert!(valid_elf_stack_copy_target_cr3_event(&malformed));
+        malformed["target_event"]["rbp"] = json!("0x8100");
+        assert!(!valid_elf_stack_copy_target_cr3_event(&malformed));
+        let mut zero_rbp_unreadable = captured.clone();
+        zero_rbp_unreadable["target_event"]["chain_status"] = json!("unreadable");
+        zero_rbp_unreadable["target_event"]["error"] = json!("unmapped");
+        assert!(!valid_elf_stack_copy_target_cr3_event(&zero_rbp_unreadable));
+        let mut zero_rbp_malformed = captured.clone();
+        zero_rbp_malformed["target_event"]["chain_status"] = json!("malformed");
+        zero_rbp_malformed["target_event"]["error"] = json!("bad chain");
+        assert!(!valid_elf_stack_copy_target_cr3_event(&zero_rbp_malformed));
+
+        let mut wrong_sequence = captured.clone();
+        wrong_sequence["target_event"]["sequence"] = json!(26595);
+        assert!(!valid_elf_stack_copy_target_cr3_event(&wrong_sequence));
+        let mut wrong_rip = captured.clone();
+        wrong_rip["target_event"]["rip"] = json!("0xffffffff8141d752");
+        assert!(!valid_elf_stack_copy_target_cr3_event(&wrong_rip));
+
+        let frames = (0..od_machine::LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY)
+            .map(|index| {
+                let rbp = 0x1000 + index as u64 * 0x10;
+                json!({
+                    "rbp": format!("0x{rbp:x}"),
+                    "saved_rbp_slot": format!("0x{rbp:x}"),
+                    "saved_rbp": format!("0x{:x}", rbp + 0x10),
+                    "return_address_slot": format!("0x{:x}", rbp + 8),
+                    "return_address": "0xffffffff81000000"
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut frame_limit = captured.clone();
+        frame_limit["target_event"]["rbp"] = json!("0x1000");
+        frame_limit["target_event"]["chain_status"] = json!("frame_limit");
+        frame_limit["target_event"]["frames"] = json!(frames);
+        frame_limit["target_event"]["error"] = json!("frame cap");
+        assert!(valid_elf_stack_copy_target_cr3_event(&frame_limit));
+        frame_limit["target_event"]["frames"][7]["saved_rbp"] = json!("0xfffffffffffffff8");
+        assert!(valid_elf_stack_copy_target_cr3_event(&frame_limit));
+        let mut malformed_payload_at_frame_cap = frame_limit.clone();
+        malformed_payload_at_frame_cap["target_event"]["chain_status"] = json!("malformed");
+        malformed_payload_at_frame_cap["target_event"]["error"] =
+            json!("malformed saved RBP in eighth frame");
+        malformed_payload_at_frame_cap["target_event"]["frames"][7]["saved_rbp"] = json!("0x1081");
+        assert!(valid_elf_stack_copy_target_cr3_event(
+            &malformed_payload_at_frame_cap
+        ));
+        let mut malformed_at_frame_cap = frame_limit.clone();
+        malformed_at_frame_cap["target_event"]["chain_status"] = json!("malformed");
+        malformed_at_frame_cap["target_event"]["error"] = json!("forged next slot overflow");
+        assert!(!valid_elf_stack_copy_target_cr3_event(
+            &malformed_at_frame_cap
+        ));
+        frame_limit["target_event"]["frames"][7]["saved_rbp"] = json!("0x1080");
+        let mut unreadable_after_frame_cap = frame_limit.clone();
+        unreadable_after_frame_cap["target_event"]["chain_status"] = json!("unreadable");
+        unreadable_after_frame_cap["target_event"]["error"] = json!("forged read error");
+        assert!(!valid_elf_stack_copy_target_cr3_event(
+            &unreadable_after_frame_cap
+        ));
+        frame_limit["target_event"]["frames"][7]["saved_rbp"] = json!("0x0");
+        assert!(!valid_elf_stack_copy_target_cr3_event(&frame_limit));
+        frame_limit["target_event"]["frames"][7]["saved_rbp"] = json!("0x1080");
+        frame_limit["target_event"]["frames"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+        assert!(!valid_elf_stack_copy_target_cr3_event(&frame_limit));
+
+        let good_prefix = json!([
+            {"rbp":"0x1000", "saved_rbp_slot":"0x1000", "saved_rbp":"0x1010", "return_address_slot":"0x1008", "return_address":"0xffffffff81000000"},
+            {"rbp":"0x1010", "saved_rbp_slot":"0x1010", "saved_rbp":"0x1011", "return_address_slot":"0x1018", "return_address":"0xffffffff81000010"}
+        ]);
+        let mut malformed_terminal = captured.clone();
+        malformed_terminal["target_event"]["rbp"] = json!("0x1000");
+        malformed_terminal["target_event"]["chain_status"] = json!("malformed");
+        malformed_terminal["target_event"]["frames"] = good_prefix;
+        malformed_terminal["target_event"]["error"] = json!("malformed saved RBP");
+        assert!(valid_elf_stack_copy_target_cr3_event(&malformed_terminal));
+        malformed_terminal["target_event"]["frames"][0]["return_address"] = json!("0x800000000000");
+        assert!(!valid_elf_stack_copy_target_cr3_event(&malformed_terminal));
+
+        let mut slot_overflow = captured.clone();
+        slot_overflow["target_event"]["chain_status"] = json!("malformed");
+        slot_overflow["target_event"]["error"] = json!("frame slot address overflow");
+        slot_overflow["target_event"]["rbp"] = json!("0xfffffffffffffff8");
+        assert!(valid_elf_stack_copy_target_cr3_event(&slot_overflow));
+
+        let mut malformed_after_valid_prefix = captured.clone();
+        malformed_after_valid_prefix["target_event"]["chain_status"] = json!("malformed");
+        malformed_after_valid_prefix["target_event"]["error"] = json!("next frame slot overflow");
+        malformed_after_valid_prefix["target_event"]["rbp"] = json!("0x1000");
+        malformed_after_valid_prefix["target_event"]["frames"] = json!([{
+            "rbp":"0x1000", "saved_rbp_slot":"0x1000",
+            "saved_rbp":"0xfffffffffffffff8", "return_address_slot":"0x1008",
+            "return_address":"0xffffffff81000000"
+        }]);
+        assert!(valid_elf_stack_copy_target_cr3_event(
+            &malformed_after_valid_prefix
+        ));
+        malformed_after_valid_prefix["target_event"]["chain_status"] = json!("unreadable");
+        assert!(!valid_elf_stack_copy_target_cr3_event(
+            &malformed_after_valid_prefix
+        ));
+
+        let mut unreadable_initial_slot_overflow = captured.clone();
+        unreadable_initial_slot_overflow["target_event"]["chain_status"] = json!("unreadable");
+        unreadable_initial_slot_overflow["target_event"]["error"] = json!("forged read failure");
+        unreadable_initial_slot_overflow["target_event"]["rbp"] = json!("0xfffffffffffffff8");
+        assert!(!valid_elf_stack_copy_target_cr3_event(
+            &unreadable_initial_slot_overflow
+        ));
+        malformed_terminal["target_event"]["frames"][0]["return_address"] =
+            json!("0xffffffff81000000");
+        malformed_terminal["target_event"]["frames"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "rbp":"0x1020", "saved_rbp_slot":"0x1020", "saved_rbp":"0x1030",
+                "return_address_slot":"0x1028", "return_address":"0xffffffff81000020"
+            }));
+        assert!(!valid_elf_stack_copy_target_cr3_event(&malformed_terminal));
     }
 
     #[test]
@@ -5228,6 +5617,7 @@ mod tests {
                         retired_instructions_before_current: [5, 20, 50][index],
                     })
                     .collect(),
+                target_event: od_machine::ElfStackCopyTargetCr3Capture::default(),
             }),
             invocation: Some(ElfStackCopyInvocation {
                 status: ElfStackCopyInvocationStatus::Complete,
@@ -5289,7 +5679,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v17_captured_elf_stack_copy_serializes_and_loads_with_strict_validation() {
+    fn schema_v18_captured_elf_stack_copy_serializes_and_loads_with_strict_validation() {
         let temp = std::env::temp_dir().join(format!(
             "od-runner-stage5-elf-stack-copy-{}-{}",
             std::process::id(),
@@ -5325,7 +5715,7 @@ mod tests {
         );
         let original_bytes = fs::read(&sidecar_path).unwrap();
         let written: Value = serde_json::from_slice(&original_bytes).unwrap();
-        assert_eq!(written["schema_version"], 17);
+        assert_eq!(written["schema_version"], 18);
         assert_eq!(written["elf_stack_copy"]["status"], "captured");
         assert_eq!(
             written["elf_stack_copy"]["registers"]["r13"],

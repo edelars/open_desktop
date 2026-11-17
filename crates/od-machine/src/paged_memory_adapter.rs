@@ -3,6 +3,7 @@
 use crate::console_output_context::capture_frame_chain;
 use crate::execution_observations::{
     DeliveredPageFaultObservation, ElfStackCopyProbe, ElfStackCopySnapshot, ElfStackCopyStatus,
+    ElfStackCopyTargetCr3Capture, ElfStackCopyTargetCr3ChainStatus, ElfStackCopyTargetCr3Frame,
     FaultingPageFaultContext, FaultingPageWalkContext, InstructionPathControlFlow,
     InstructionPathRegisterValue, InstructionPathTraceRecord, LINUX_ELF_STACK_COPY_PROBE_CAPACITY,
     LINUX_ELF_STACK_COPY_RIP, LINUX_ELF_STACK_COPY_WALK_ENTRY_CAPACITY,
@@ -848,6 +849,102 @@ fn capture_instruction_path_frame_chain(
         .map(|()| bytes)
         .map_err(|_| ())
     })
+}
+
+fn capture_elf_stack_copy_target_rbp_chain(
+    state: &LongModeState,
+    bus: &mut MachineBus,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    context: AccessContext,
+) -> (
+    ElfStackCopyTargetCr3ChainStatus,
+    Vec<ElfStackCopyTargetCr3Frame>,
+    Option<String>,
+) {
+    let mut rbp = state.gpr[od_isa::Register::Rbp as usize];
+    let mut previous_rbp = None;
+    let mut frames = Vec::with_capacity(crate::LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY);
+    for _ in 0..crate::LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY {
+        if rbp == 0 {
+            return (ElfStackCopyTargetCr3ChainStatus::Complete, frames, None);
+        }
+        if (rbp & 7) != 0 || !is_canonical_48_bit(rbp) {
+            return (
+                ElfStackCopyTargetCr3ChainStatus::Malformed,
+                frames,
+                Some(format!("invalid frame pointer 0x{rbp:016x}")),
+            );
+        }
+        if previous_rbp.is_some_and(|previous| rbp <= previous) {
+            return (
+                ElfStackCopyTargetCr3ChainStatus::Malformed,
+                frames,
+                Some(format!("non-monotonic frame pointer 0x{rbp:016x}")),
+            );
+        }
+        let Some(return_address_slot) = rbp.checked_add(8) else {
+            return (
+                ElfStackCopyTargetCr3ChainStatus::Malformed,
+                frames,
+                Some("frame slot address overflow".into()),
+            );
+        };
+        let mut bytes = [0u8; 16];
+        if let Err(error) = bus.read_virtual_ram_diagnostic(
+            paging,
+            instruction_rip,
+            GuestLinearAddress::new(rbp),
+            context,
+            &mut bytes,
+        ) {
+            return (
+                ElfStackCopyTargetCr3ChainStatus::Unreadable,
+                frames,
+                Some(error),
+            );
+        }
+        let saved_rbp = u64::from_le_bytes(bytes[..8].try_into().expect("8-byte slice"));
+        let return_address = u64::from_le_bytes(bytes[8..].try_into().expect("8-byte slice"));
+        frames.push(ElfStackCopyTargetCr3Frame {
+            rbp,
+            saved_rbp_slot: rbp,
+            saved_rbp,
+            return_address_slot,
+            return_address,
+        });
+        if !is_canonical_48_bit(return_address) {
+            return (
+                ElfStackCopyTargetCr3ChainStatus::Malformed,
+                frames,
+                Some(format!(
+                    "non-canonical return address 0x{return_address:016x}"
+                )),
+            );
+        }
+        if saved_rbp == 0 {
+            return (ElfStackCopyTargetCr3ChainStatus::Complete, frames, None);
+        }
+        if (saved_rbp & 7) != 0 || !is_canonical_48_bit(saved_rbp) || saved_rbp <= rbp {
+            return (
+                ElfStackCopyTargetCr3ChainStatus::Malformed,
+                frames,
+                Some(format!("malformed saved RBP 0x{saved_rbp:016x}")),
+            );
+        }
+        previous_rbp = Some(rbp);
+        rbp = saved_rbp;
+    }
+    (
+        ElfStackCopyTargetCr3ChainStatus::FrameLimit,
+        frames,
+        Some("frame chain reached the 8-frame capture limit".into()),
+    )
+}
+
+fn is_canonical_48_bit(address: u64) -> bool {
+    let sign = (address >> 47) & 1;
+    (sign == 0 && address >> 48 == 0) || (sign == 1 && address >> 48 == 0xffff)
 }
 
 fn capture_elf_stack_copy_snapshot(
@@ -2118,12 +2215,58 @@ fn run_cpl0_set_paged_2m_ram_with_cache_impl<
                 TranslationContextChange::Cr3Write { old_cr3, new_cr3 },
             ) = &result.exit
             {
-                observations.record_elf_copy_cr3(
-                    instruction_rip,
-                    *old_cr3,
-                    *new_cr3,
-                    if cpl3 { 3 } else { 0 },
-                );
+                let target_capture =
+                    if observations.wants_elf_copy_target_cr3_event(instruction_rip) {
+                        let rsp = state.gpr[od_isa::Register::Rsp as usize];
+                        let rbp = state.gpr[od_isa::Register::Rbp as usize];
+                        let chain_paging = Long64ProbeConfig::from_cpu_state(state, *new_cr3, efer);
+                        let (chain_status, frames, error) = match chain_paging {
+                            Ok(chain_paging) => capture_elf_stack_copy_target_rbp_chain(
+                                state,
+                                bus,
+                                &chain_paging,
+                                instruction_rip,
+                                context,
+                            ),
+                            Err(error) => (
+                                ElfStackCopyTargetCr3ChainStatus::Unreadable,
+                                Vec::new(),
+                                Some(format!(
+                                    "post-write paging configuration rejected: {error:?}"
+                                )),
+                            ),
+                        };
+                        Some(ElfStackCopyTargetCr3Capture {
+                            status: "captured",
+                            sequence: None,
+                            rip: Some(instruction_rip),
+                            cr3: Some(*new_cr3),
+                            retired_instructions: None,
+                            rsp: Some(rsp),
+                            rbp: Some(rbp),
+                            chain_status: Some(chain_status),
+                            frames,
+                            error,
+                        })
+                    } else {
+                        None
+                    };
+                if let Some(target_capture) = target_capture {
+                    observations.record_elf_copy_cr3_with_target(
+                        instruction_rip,
+                        *old_cr3,
+                        *new_cr3,
+                        if cpl3 { 3 } else { 0 },
+                        Some(target_capture),
+                    );
+                } else {
+                    observations.record_elf_copy_cr3(
+                        instruction_rip,
+                        *old_cr3,
+                        *new_cr3,
+                        if cpl3 { 3 } else { 0 },
+                    );
+                }
             }
         }
         instructions_executed += result.instructions_executed;
@@ -3636,8 +3779,9 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
 mod tests {
     use super::*;
     use crate::{
-        AccessWidth, GuestPhysicalAddress, MachineMemoryMap, MemoryRegionKind, MemoryRegionSpec,
-        RamLimits,
+        AccessWidth, GuestPhysicalAddress, LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY,
+        LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP, MachineMemoryMap, MemoryRegionKind,
+        MemoryRegionSpec, RamLimits,
     };
     use od_isa::memory::{AccessOrigin, InstructionMode, PrivilegeLevel};
     use od_isa::{CpuActivity, InvlpgExit, StiShadow, TranslationInvalidation};
@@ -3849,6 +3993,142 @@ mod tests {
         paging: &Long64ProbeConfig,
     ) -> ElfStackCopySnapshot {
         capture_elf_stack_copy_snapshot(state, bus, paging, context(), ROOT)
+    }
+
+    fn put_elf_copy_frame(bus: &mut MachineBus, rbp: u64, saved_rbp: u64, return_address: u64) {
+        let physical = 0x12_000 + (rbp & 0xfff);
+        put(bus, physical, saved_rbp);
+        put(bus, physical + 8, return_address);
+    }
+
+    fn elf_copy_page_table_snapshot(bus: &mut MachineBus) -> Vec<u64> {
+        (0x1000..0x10_000)
+            .step_by(8)
+            .map(|address| {
+                bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn selected_cr3_rbp_chain_reader_reports_all_terminal_states_without_writes() {
+        let (mut bus, paging) = elf_copy_bus(true, true);
+        let first_rbp = ELF_COPY_R13 + 0x200;
+        let second_rbp = ELF_COPY_R13 + 0x300;
+        let return_address = 0xffff_ffff_8100_1234;
+        put_elf_copy_frame(&mut bus, first_rbp, second_rbp, return_address);
+        put_elf_copy_frame(&mut bus, second_rbp, 0, return_address + 0x10);
+        let before = elf_copy_page_table_snapshot(&mut bus);
+        let mut state = LongModeState::default();
+        state.rip = LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP;
+        state.gpr[od_isa::Register::Rbp as usize] = first_rbp;
+        let (status, frames, error) = capture_elf_stack_copy_target_rbp_chain(
+            &state,
+            &mut bus,
+            &paging,
+            LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP,
+            context(),
+        );
+        assert_eq!(status, ElfStackCopyTargetCr3ChainStatus::Complete);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].saved_rbp_slot, first_rbp);
+        assert_eq!(frames[0].saved_rbp, second_rbp);
+        assert_eq!(frames[0].return_address_slot, first_rbp + 8);
+        assert_eq!(frames[0].return_address, return_address);
+        assert_eq!(frames[1].saved_rbp, 0);
+        assert_eq!(error, None);
+        assert_eq!(elf_copy_page_table_snapshot(&mut bus), before);
+
+        let (mut bus, paging) = elf_copy_bus(true, true);
+        let mut state = LongModeState::default();
+        state.rip = LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP;
+        let (status, frames, error) = capture_elf_stack_copy_target_rbp_chain(
+            &state,
+            &mut bus,
+            &paging,
+            LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP,
+            context(),
+        );
+        assert_eq!(status, ElfStackCopyTargetCr3ChainStatus::Complete);
+        assert!(frames.is_empty());
+        assert_eq!(error, None);
+
+        let (mut bus, paging) = elf_copy_bus(true, true);
+        state.gpr[od_isa::Register::Rbp as usize] = 0xffff_8880_0000_0000;
+        let (status, frames, error) = capture_elf_stack_copy_target_rbp_chain(
+            &state,
+            &mut bus,
+            &paging,
+            LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP,
+            context(),
+        );
+        assert_eq!(status, ElfStackCopyTargetCr3ChainStatus::Unreadable);
+        assert!(frames.is_empty());
+        assert!(error.is_some());
+
+        let (mut bus, paging) = elf_copy_bus(true, true);
+        let malformed_rbp = ELF_COPY_R13 + 0x200;
+        put_elf_copy_frame(&mut bus, malformed_rbp, malformed_rbp, return_address);
+        state.gpr[od_isa::Register::Rbp as usize] = malformed_rbp;
+        let (status, frames, error) = capture_elf_stack_copy_target_rbp_chain(
+            &state,
+            &mut bus,
+            &paging,
+            LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP,
+            context(),
+        );
+        assert_eq!(status, ElfStackCopyTargetCr3ChainStatus::Malformed);
+        assert_eq!(frames.len(), 1);
+        assert!(error.is_some());
+
+        let (mut bus, paging) = elf_copy_bus(true, true);
+        state.gpr[od_isa::Register::Rbp as usize] = 0xffff_ffff_ffff_fff8;
+        let (status, frames, error) = capture_elf_stack_copy_target_rbp_chain(
+            &state,
+            &mut bus,
+            &paging,
+            LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP,
+            context(),
+        );
+        assert_eq!(status, ElfStackCopyTargetCr3ChainStatus::Malformed);
+        assert!(frames.is_empty());
+        assert!(error.is_some());
+
+        let (mut bus, paging) = elf_copy_bus(true, true);
+        let prefix_rbp = ELF_COPY_R13 + 0x200;
+        put_elf_copy_frame(&mut bus, prefix_rbp, 0xffff_ffff_ffff_fff8, return_address);
+        state.gpr[od_isa::Register::Rbp as usize] = prefix_rbp;
+        let (status, frames, error) = capture_elf_stack_copy_target_rbp_chain(
+            &state,
+            &mut bus,
+            &paging,
+            LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP,
+            context(),
+        );
+        assert_eq!(status, ElfStackCopyTargetCr3ChainStatus::Malformed);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].saved_rbp, 0xffff_ffff_ffff_fff8);
+        assert!(error.is_some());
+
+        let (mut bus, paging) = elf_copy_bus(true, true);
+        let initial_rbp = ELF_COPY_R13 + 0x100;
+        for index in 0..LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY {
+            let rbp = initial_rbp + index as u64 * 0x10;
+            put_elf_copy_frame(&mut bus, rbp, rbp + 0x10, return_address);
+        }
+        state.gpr[od_isa::Register::Rbp as usize] = initial_rbp;
+        let (status, frames, error) = capture_elf_stack_copy_target_rbp_chain(
+            &state,
+            &mut bus,
+            &paging,
+            LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP,
+            context(),
+        );
+        assert_eq!(status, ElfStackCopyTargetCr3ChainStatus::FrameLimit);
+        assert_eq!(frames.len(), LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY);
+        assert_ne!(frames.last().unwrap().saved_rbp, 0);
+        assert!(error.is_some());
     }
 
     #[test]

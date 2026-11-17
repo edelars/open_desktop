@@ -41,6 +41,63 @@ pub const LINUX_ELF_STACK_COPY_PF_EVENT_CAPACITY: usize = 64;
 pub const LINUX_ELF_STACK_COPY_RETIRED_CAPACITY: u64 = 1_000_000;
 /// Maximum CR3 writes retained from observation accounting start through the ELF-copy gate.
 pub const LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY: usize = 32_768;
+pub const LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_ORDINAL: u64 = 26_596;
+pub const LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP: u64 = 0xffff_ffff_8141_d753;
+pub const LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY: usize = 8;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ElfStackCopyTargetCr3ChainStatus {
+    Complete,
+    Unreadable,
+    Malformed,
+    FrameLimit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyTargetCr3Frame {
+    pub rbp: u64,
+    pub saved_rbp_slot: u64,
+    pub saved_rbp: u64,
+    pub return_address_slot: u64,
+    pub return_address: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyTargetCr3Capture {
+    pub status: &'static str,
+    pub sequence: Option<u64>,
+    pub rip: Option<u64>,
+    pub cr3: Option<u64>,
+    pub retired_instructions: Option<u64>,
+    pub rsp: Option<u64>,
+    pub rbp: Option<u64>,
+    pub chain_status: Option<ElfStackCopyTargetCr3ChainStatus>,
+    pub frames: Vec<ElfStackCopyTargetCr3Frame>,
+    pub error: Option<String>,
+}
+
+impl ElfStackCopyTargetCr3Capture {
+    fn not_seen() -> Self {
+        Self {
+            status: "not_seen",
+            sequence: None,
+            rip: None,
+            cr3: None,
+            retired_instructions: None,
+            rsp: None,
+            rbp: None,
+            chain_status: None,
+            frames: Vec::new(),
+            error: None,
+        }
+    }
+}
+
+impl Default for ElfStackCopyTargetCr3Capture {
+    fn default() -> Self {
+        Self::not_seen()
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ElfStackCopyCr3LedgerStatus {
@@ -73,6 +130,7 @@ pub struct ElfStackCopyPreCopyCr3Ledger {
     pub events_omitted: u64,
     pub events: Vec<ElfStackCopyPreCopyCr3Event>,
     pub boundary_markers: Vec<ElfStackCopyBoundaryMarker>,
+    pub target_event: ElfStackCopyTargetCr3Capture,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -603,6 +661,7 @@ pub(crate) struct LinuxExecutionObservationCollector {
     pre_copy_cr3_ledger_overflow: bool,
     pre_copy_cr3_ledger_frozen: bool,
     pre_copy_boundary_markers: Vec<ElfStackCopyBoundaryMarker>,
+    target_cr3_event: ElfStackCopyTargetCr3Capture,
     retired_total: u64,
     delivered_exception_total: u64,
     cr3_change_total: u64,
@@ -621,6 +680,14 @@ impl LinuxExecutionObservationCollector {
             .is_some_and(|snapshot| snapshot.status == ElfStackCopyStatus::AwaitingTarget)
     }
 
+    pub(crate) fn wants_elf_copy_target_cr3_event(&self, rip: u64) -> bool {
+        self.wants_elf_stack_copy()
+            && self.cr3_change_total.saturating_add(1)
+                == LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_ORDINAL
+            && rip == LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP
+            && self.target_cr3_event.status == "not_seen"
+    }
+
     pub(crate) fn record_elf_stack_copy(&mut self, snapshot: ElfStackCopySnapshot) {
         if self.wants_elf_stack_copy() {
             let mut snapshot = snapshot;
@@ -634,6 +701,10 @@ impl LinuxExecutionObservationCollector {
                 events_omitted: self.pre_copy_cr3_events_omitted,
                 events: std::mem::take(&mut self.pre_copy_cr3_events),
                 boundary_markers: std::mem::take(&mut self.pre_copy_boundary_markers),
+                target_event: std::mem::replace(
+                    &mut self.target_cr3_event,
+                    ElfStackCopyTargetCr3Capture::not_seen(),
+                ),
             });
             self.pre_copy_cr3_ledger_frozen = true;
             if snapshot.status == ElfStackCopyStatus::Captured
@@ -825,10 +896,36 @@ impl LinuxExecutionObservationCollector {
     }
 
     pub(crate) fn record_elf_copy_cr3(&mut self, rip: u64, old_cr3: u64, new_cr3: u64, cpl: u8) {
+        self.record_elf_copy_cr3_with_target(rip, old_cr3, new_cr3, cpl, None);
+    }
+
+    pub(crate) fn record_elf_copy_cr3_with_target(
+        &mut self,
+        rip: u64,
+        old_cr3: u64,
+        new_cr3: u64,
+        cpl: u8,
+        target_capture: Option<ElfStackCopyTargetCr3Capture>,
+    ) {
         if !self.tracks_elf_copy_counters() {
             return;
         }
         self.cr3_change_total = self.cr3_change_total.saturating_add(1);
+        if let Some(target_capture) = target_capture
+            && self.wants_elf_stack_copy()
+            && rip == LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP
+            && self.cr3_change_total == LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_ORDINAL
+            && self.target_cr3_event.status == "not_seen"
+        {
+            self.target_cr3_event = ElfStackCopyTargetCr3Capture {
+                status: "captured",
+                sequence: Some(self.cr3_change_total),
+                rip: Some(rip),
+                cr3: Some(new_cr3),
+                retired_instructions: Some(self.retired_total),
+                ..target_capture
+            };
+        }
         let retired = self.retired_total;
         if !self.pre_copy_cr3_ledger_frozen {
             if self.pre_copy_cr3_events.len() < LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY {
@@ -1648,6 +1745,7 @@ impl LinuxExecutionObservationCollector {
                         events_omitted: self.pre_copy_cr3_events_omitted,
                         events: self.pre_copy_cr3_events,
                         boundary_markers: self.pre_copy_boundary_markers,
+                        target_event: self.target_cr3_event,
                     });
                 }
                 if let Some(invocation) = snapshot.invocation.as_mut()
@@ -1672,6 +1770,57 @@ mod tests {
             collector.record_cpl0_rdtsc(Some(LINUX_RDTSC_PREFIX_SENTINEL_RIP));
         }
         collector
+    }
+
+    #[test]
+    fn target_cr3_event_capture_requires_exact_ordinal_and_rip_once() {
+        let mut wrong_rip = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        wrong_rip.cr3_change_total = LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_ORDINAL - 1;
+        wrong_rip.retired_total = 123;
+        let capture = ElfStackCopyTargetCr3Capture {
+            status: "captured",
+            sequence: None,
+            rip: None,
+            cr3: None,
+            retired_instructions: None,
+            rsp: Some(0x8000),
+            rbp: Some(0x8100),
+            chain_status: Some(ElfStackCopyTargetCr3ChainStatus::Complete),
+            frames: Vec::new(),
+            error: None,
+        };
+        assert!(
+            !wrong_rip
+                .wants_elf_copy_target_cr3_event(LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP + 1)
+        );
+        wrong_rip.record_elf_copy_cr3_with_target(
+            LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP + 1,
+            0x1000,
+            0x2000,
+            0,
+            Some(capture.clone()),
+        );
+        assert_eq!(wrong_rip.target_cr3_event.status, "not_seen");
+
+        let mut exact = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        exact.cr3_change_total = LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_ORDINAL - 1;
+        exact.retired_total = 456;
+        assert!(exact.wants_elf_copy_target_cr3_event(LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP));
+        exact.record_elf_copy_cr3_with_target(
+            LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP,
+            0x1000,
+            0x2000,
+            0,
+            Some(capture),
+        );
+        assert_eq!(exact.target_cr3_event.status, "captured");
+        assert_eq!(
+            exact.target_cr3_event.sequence,
+            Some(LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_ORDINAL)
+        );
+        assert_eq!(exact.target_cr3_event.cr3, Some(0x2000));
+        assert_eq!(exact.target_cr3_event.retired_instructions, Some(456));
+        assert!(!exact.wants_elf_copy_target_cr3_event(LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP));
     }
 
     #[test]
