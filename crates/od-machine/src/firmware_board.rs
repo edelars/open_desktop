@@ -297,6 +297,13 @@ pub enum FirmwareBoardError {
         rip: u64,
         cs_selector: Option<u16>,
     },
+    /// An application processor in legacy mode (the trampoline between SIPI and its 64-bit jump,
+    /// S6-16c) stopped on an instruction or a state the real-mode, protected-mode or long-mode
+    /// entry models do not admit. The vCPU keeps its state (the refusal changes nothing).
+    ApLegacyRefused {
+        cpu: usize,
+        refusal: crate::ap_legacy_exec::ApLegacyRefusal,
+    },
 }
 
 impl fmt::Display for FirmwareBoardError {
@@ -1284,8 +1291,9 @@ impl LoadedFirmwareBoard {
     /// [`Self::apply_pending_startup`] and before it picks one (`BoardSmpHost::boundary`); the run
     /// loop of the board does not. A gate that cannot deliver (not present, IST other than 0, a failed frame store) and
     /// a state the board cannot deliver through are errors, not holds: a state that is not
-    /// modelled (activity or STI shadow `None`), a vCPU with a real-mode state (`real_mode` is
-    /// `Some`: NMI in real mode is not modelled, S6-16), paging the walker rejects (the EFER is
+    /// modelled (activity or STI shadow `None`), a vCPU on a legacy-mode model (`legacy` is
+    /// `Some`, the trampoline of S6-16c is still running: NMI in real or protected mode is not
+    /// modelled; the error text says "real mode"), paging the walker rejects (the EFER is
     /// the vCPU's own `guest_efer`). On an error the vCPU is unchanged and the NMI stays pending,
     /// never silently dropped.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -1320,10 +1328,11 @@ impl LoadedFirmwareBoard {
                 ));
             }
         }
-        // A started application processor (or one reset by INIT) holds its state in
-        // `real_mode`; the long-mode `state` is not rewritten from it, so delivering through the
-        // long-mode IDT would be wrong. Real-mode NMI delivery is not modelled (S6-16).
-        if vcpu.real_mode.is_some() {
+        // A started application processor (or one reset by INIT) holds its state in `legacy`
+        // until it enters long mode; the long-mode `state` is not rewritten from it, so delivering
+        // through the long-mode IDT would be wrong. NMI delivery in real and protected mode is not
+        // modelled (decision 3.9 of S6-16: an error).
+        if vcpu.legacy.is_some() {
             return Err(FirmwareBoardError::Config(
                 "deliver_pending_nmi: NMI in real mode not modelled",
             ));

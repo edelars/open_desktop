@@ -3,6 +3,7 @@
 mod absent_ports;
 mod acpi_blob;
 mod acpi_pm;
+mod ap_legacy_exec;
 mod apic_pair;
 mod bus;
 mod clock_owner;
@@ -186,6 +187,7 @@ pub use linux_direct::{
 
 pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEvent};
 
+pub use ap_legacy_exec::ApLegacyRefusal;
 pub use execution_observations::{
     DeliveredPageFaultObservation, FaultingPageFaultContext, FaultingPageWalkContext,
     LINUX_PAGE_FAULT_EVENT_CAPACITY, LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,

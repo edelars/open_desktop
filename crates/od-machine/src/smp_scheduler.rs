@@ -520,9 +520,12 @@ impl SmpScheduler {
 ///
 /// The quantum itself is the caller's: `run` is the existing interpreter loop of the board (the
 /// CPL0-set quantum with its device ticks), which a later slice extracts from
-/// `run_linux_boot_cpl0_set`; this slice does not copy it. The host refuses a vCPU with a
-/// real-mode state (an application processor after SIPI or INIT): the interpreter has no real mode
-/// until S6-16, so such a vCPU is an error, never silently skipped and never run as long mode.
+/// `run_linux_boot_cpl0_set`; this slice does not copy it. A vCPU in a legacy mode (an application
+/// processor after SIPI, `Vcpu::legacy` is `Some`, S6-16c) is not run by `run`: the host executes its
+/// trampoline on the RAM of the board ([`crate::ap_legacy_exec::run_legacy`]) and, when the
+/// trampoline's 64-bit jump has retired, calls `run` for the rest of the budget in the same call (a
+/// call that retired nothing would be `NoProgress` to the scheduler). Whatever the legacy models
+/// refuse is an error, never a silent skip.
 ///
 /// The `run` closure must not call `charge_retired`, `charge_ns`, `idle_to` or any other
 /// [`ClockOwner`] method: only the scheduler moves the clock. This is a condition of wiring the
@@ -586,10 +589,7 @@ where
         self.board
             .vcpu(cpu)
             .expect("a vCPU of the board")
-            .state
-            .rflags
-            & (1 << 9)
-            != 0
+            .interrupts_enabled()
     }
 
     fn apic(&self, cpu: usize) -> LocalApicHandle {
@@ -633,12 +633,21 @@ where
             .board
             .vcpu(cpu)
             .ok_or(FirmwareBoardError::Config("smp scheduler: no such vCPU"))?;
-        if vcpu.real_mode.is_some() {
-            return Err(FirmwareBoardError::Config(
-                "smp scheduler: a vCPU in real mode cannot run yet (S6-16)",
-            ));
+        if vcpu.legacy.is_none() {
+            return (self.run)(self.board, cpu, budget, stop);
         }
-        (self.run)(self.board, cpu, budget, stop)
+        let legacy = crate::ap_legacy_exec::run_legacy(self.board, cpu, budget, stop)?;
+        let mut executed = legacy.executed;
+        // The trampoline reached long mode: the rest of the budget is the long-mode quantum, in this
+        // call, because the scheduler takes a call without a step for lack of progress.
+        let left = budget.saturating_sub(executed.retired);
+        if legacy.entered_long_mode && left > 0 {
+            let rest = (self.run)(self.board, cpu, left, stop)?;
+            executed.retired += rest.retired;
+            executed.partial_rep = rest.partial_rep;
+            executed.device_ns += rest.device_ns;
+        }
+        Ok(executed)
     }
 }
 
@@ -1512,7 +1521,8 @@ mod tests {
     }
 
     #[test]
-    fn init_and_sipi_are_applied_on_the_boundary_of_the_target_and_a_real_mode_vcpu_is_refused() {
+    fn init_and_sipi_are_applied_on_the_boundary_of_the_target_and_the_started_vcpu_runs_in_real_mode()
+     {
         let mut board = board(2);
         let mut call = 0;
         let mut host = BoardSmpHost::new(
@@ -1528,13 +1538,20 @@ mod tests {
             SmpScheduler::new(2, QuantumPolicy::default(), StopRequest::new()).unwrap();
         let error = scheduler.run(&mut host, 1000).unwrap_err();
         // INIT and SIPI were applied by the AP's own boundary, INIT first (the AP is started), and
-        // then the host refused to run a vCPU in real mode: an error, not a silent skip.
-        assert_eq!(
-            error,
-            SmpError::Host(FirmwareBoardError::Config(
-                "smp scheduler: a vCPU in real mode cannot run yet (S6-16)"
-            ))
-        );
+        // then the host ran it in real mode (S6-16c) at the SIPI address: the RAM of the board is
+        // zero there, and `00` is no form of the real-mode model, so the model refuses it. A typed
+        // error of the vCPU, not a silent skip and not a run as long mode (S6-16c: before it, this
+        // error was "a vCPU in real mode cannot run yet").
+        let SmpError::Host(FirmwareBoardError::ApLegacyRefused { cpu: 1, refusal }) = error else {
+            panic!("{error:?}")
+        };
+        assert!(matches!(
+            refusal,
+            crate::ApLegacyRefusal::Real(od_isa::real_mode_exec::RealModeRefusal::Unsupported {
+                linear: 0x8000,
+                ..
+            })
+        ));
         let counters = scheduler.counters();
         assert_eq!((counters[1].init_applied, counters[1].started), (1, 1));
         assert_eq!((counters[0].init_applied, counters[0].started), (0, 0));
