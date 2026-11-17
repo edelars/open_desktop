@@ -29673,3 +29673,15 @@ and defers its validation to the next fetch. A noncanonical taken target
 raises #GP(0). A fault on the final displacement fetch commits no
 architectural state. CPL3 and other paged profiles reject this encoding.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-452 — bounded JMP rel8 +0x31
+
+The base paged CPL0 profile admits exact unprefixed `EB 31` in Long64. The
+decoder sign-extends rel8 and the executor adds it to next RIP using 64-bit
+wrapping arithmetic. A canonical target commits only RIP. A noncanonical
+target raises #GP(0) and a displacement fetch fault reports the original
+fault. Both faults commit no architectural state or retirement. The CPL0
+CR0.WP, CR3 and stack probes and the paged CPL3 MOV probe refuse this form.
+The separate Linux CPL3 short-JMP policy continues to admit its existing
+unprefixed rel8 forms. Independent review approved with no findings. ISSUE-201 remains the
+unrelated CLD caveat.

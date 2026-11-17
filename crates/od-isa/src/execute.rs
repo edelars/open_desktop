@@ -22243,17 +22243,17 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             }
             return result(PagedProbeExit::Retired, 1);
         }
-        // S7-04: the firmware uses two exact rel32 JMP targets. Validate the
-        // signed next-RIP target before committing RIP; flags and registers
-        // are untouched.
+        // S7-04: the firmware uses exact short and near JMP encodings.
+        // Validate the signed next-RIP target before committing RIP.
         Operation::Jump { displacement }
             if base_profile
                 && instruction.opcode.map == OpcodeMap::Primary
-                && instruction.opcode.byte == 0xe9
-                && instruction.length == 5
                 && instruction.operand_size == OperandSize::Qword
                 && instruction.prefixes == Prefixes::default()
-                && matches!(displacement, -0x162 | 0x165) =>
+                && matches!(
+                    (instruction.opcode.byte, instruction.length, displacement),
+                    (0xeb, 2, 0x31) | (0xe9, 5, -0x162 | 0x165)
+                ) =>
         {
             let target = next_rip.wrapping_add_signed(i64::from(displacement));
             if !canonical(target) {

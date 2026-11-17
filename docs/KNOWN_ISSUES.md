@@ -5587,7 +5587,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-452 — S7-04: exact JMP rel8 +0x31 frontier (`EB 31`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-451.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013b3`.
-- **Статус:** открыта. Следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base firmware CPU profile stops on unprefixed `EB 31` (JMP rel8 +0x31).
+- **Статус:** решена для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** unprefixed `EB 31` computes next RIP plus signed rel8 and commits the canonical target to RIP. The jump preserves flags, definedness and all other architectural state.
 - **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 10000, the runner reports `Unsupported { opcode: 235 }` at RIP `0x2013b3` after 9,999 retired instructions. COM1 is empty. Bytes at the link-base shadow are `EB 31`.
-- **Следующий шаг:** admit this exact short JMP and cover its signed displacement, target canonicality, fetch faults and profile isolation. Set the runner budget above 10000 to observe the next stop after this instruction retires.
+- **Результат:** with budget 10000 the runner retires the jump and exhausts its budget at RIP `0x2013e6` after 10,000 instructions. With budget 20000 it retires 10,181 instructions and stops at RIP `0x201350` on `41 83 F8 07` (CMP R8D,0x7, ISSUE-453) with `Unsupported { opcode: 131 }`. COM1 is empty in both runs.
+- **Проверка:** five focused tests cover next-RIP arithmetic, flags and definedness, target canonicality, displacement fetch faults, neighboring encodings and the CPL3 MOV probe. The other CPL0 probe matrix passes. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-453 — S7-04: exact CMP R8D,0x7 frontier (`41 83 F8 07`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-452.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201350`.
+- **Статус:** открыта. Следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base firmware CPU profile stops on `41 83 F8 07` (CMP R8D,0x7).
+- **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 131 }` at RIP `0x201350` after 10,181 retired instructions. COM1 is empty. Bytes at the link-base shadow are `41 83 F8 07`.
+- **Следующий шаг:** admit this exact CMP form and cover dword operands, arithmetic flags, fetch faults and profile isolation.

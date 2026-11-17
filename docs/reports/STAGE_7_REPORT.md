@@ -4050,3 +4050,30 @@ all-targets offline check passes with existing warnings. Scoped rustfmt and
 diff checks pass.
 
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-452 — exact JMP rel8 +0x31
+
+Five focused tests check the next-RIP target, state preservation, target
+canonicality, displacement fetch fault, neighboring encodings and the CPL3
+MOV probe. The other CPL0 probe matrix passes 1/1.
+
+After building with `cargo build --offline -q -p od-runner`, the runner
+command `target/debug/od-runner boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue452-<budget>.com1 --budget <budget>` uses image
+SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+
+| Budget | Retired | RIP | Stop | COM1 bytes |
+|---:|---:|---|---|---:|
+| 10000 | 10,000 | `0x2013e6` | Budget exhausted after the jump | 0 |
+| 20000 | 10,181 | `0x201350` | Unsupported opcode 131 | 0 |
+
+Both invocations exit 5. At the second stop, bytes `41 83 F8 07` select
+CMP R8D,0x7 (ISSUE-453).
+
+The full offline `od-isa` suite passes (2,322/1,591/126/29/6/1,544/7/15 and
+zero doctests). The paged machine quantum suite passes 110/110. The workspace
+all-targets offline check passes with existing warnings. Scoped rustfmt and
+diff checks pass.
+
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

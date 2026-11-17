@@ -2657,3 +2657,16 @@ final-byte fetch fault, neighboring encodings, CPL3 and other profiles.
 The runner retires 9,999 instructions and stops at RIP `0x2013b3` on
 `EB 31` (JMP rel8 +0x31, ISSUE-452) with Unsupported opcode 235 and empty
 COM1. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-452 — exact JMP rel8 +0x31 (`EB 31`)
+
+Base `PagedCpl0ProbeV1` admits the exact unprefixed short jump. It uses next
+RIP plus the signed rel8 and validates the target for canonicality before
+retirement. It preserves flags, definedness and registers other than RIP.
+Tests cover the target, canonicality, displacement fetch fault, neighbors
+and isolation from the other CPL0 probes and the CPL3 MOV probe.
+Budget 10000 reaches `BudgetExhausted` at RIP `0x2013e6` with 10,000
+retired. Budget 20000 reaches ISSUE-453, `41 83 F8 07` (CMP R8D,0x7), at
+RIP `0x201350` with 10,181 retired and Unsupported opcode 131. COM1 is
+empty in both runs. Independent review approved with no findings. ISSUE-201 remains the
+unrelated CLD caveat.

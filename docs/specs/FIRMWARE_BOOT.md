@@ -2481,3 +2481,13 @@ only a taken target for canonicality. This runner reaches `EB 31` (JMP rel8
 reports Unsupported opcode 235 with empty COM1. Image SHA-256 is
 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-452 runner frontier
+
+Exact base-profile `EB 31` (JMP rel8 +0x31) at RIP `0x2013b3` targets
+`0x2013e6`. With budget 10000 the runner stops there with 10,000 retired and
+`BudgetExhausted`. With budget 20000 it reaches `41 83 F8 07` (CMP R8D,0x7,
+ISSUE-453) at RIP `0x201350` with 10,181 retired and Unsupported opcode 131.
+COM1 is empty in both runs. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
