@@ -22190,6 +22190,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                                 | -0x160
                                 | -0x161
                                 | -0x177
+                                | -0x17f
                                 | 0x97
                         ) | (
                             ConditionCode::Equal,

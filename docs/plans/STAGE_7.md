@@ -2581,3 +2581,18 @@ instructions; Unsupported opcode 133, COM1 empty. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-446 — exact JNZ rel32 (`0F 85 81 FE FF FF`)
+
+Admit only exact `0F 85 81 FE FF FF` in base `PagedCpl0ProbeV1`. The branch
+uses ZF=0, computes its signed rel32 target from next RIP, preserves flags and
+their definedness, and checks target canonicality only when taken. Tests cover
+both condition outcomes, definedness, noncanonical taken target versus deferred
+not-taken fall-through, final-displacement fetch fault, neighboring conditions
+and displacements, CPL3 and other-profile isolation. Runner advances to
+`0F 84 E6 00 00 00` (JZ rel32 +0xe6, ISSUE-447), RIP `0x201391`, after 9,990
+retired instructions; Unsupported opcode 132, COM1 empty. Full od-isa passes
+(2,322/1,591/126/29/6/1,529/7/15; zero doc tests), paged machine quantum
+passes (110/110), workspace all-targets offline check passes with existing
+warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
+ISSUE-201 remains the unrelated CLD caveat.

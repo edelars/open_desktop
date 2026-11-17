@@ -5533,7 +5533,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-446 — S7-04: exact JNZ rel32 frontier (`0F 85 81 FE FF FF`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-445.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013f0`.
-- **Статус:** открыта; следующая точная инструкция Stage 7.
-- **Суть и последствия:** exact `0F 85 81 FE FF FF` (`JNZ rel32 -0x17f`) remains unsupported pending bounded implementation and tests.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact `0F 85 81 FE FF FF` (`JNZ rel32 -0x17f`). The branch tests ZF=0, preserves flags/definedness and computes the signed target from next RIP; only a taken target is checked for canonicality. CPL3 and other profiles do not admit this exact form.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-445 runner retired 9,938 instructions and reported `Unsupported { opcode: 133 }` at RIP `0x2013f0`; COM1 is empty. Bytes at the link-base shadow are `0F 85 81 FE FF FF`.
-- **Следующий шаг:** implement this exact JNZ rel32 form and add condition, target, fault, and profile-boundary coverage.
+- **Результат:** runner now retires 9,990 instructions and stops at RIP `0x201391`, bytes `0F 84 E6 00 00 00` (`JZ rel32 +0xe6`, ISSUE-447), `Unsupported { opcode: 132 }`; COM1 is empty.
+- **Проверка:** five focused tests cover both ZF outcomes and definedness, signed next-RIP target, taken-only canonicality, final-displacement fetch-fault atomicity, neighbors and CPL3; the other-profile matrix includes this exact form and passes 1/1. Full od-isa, paged machine quantum, workspace all-targets offline check, scoped rustfmt and diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-447 — S7-04: exact JZ rel32 frontier (`0F 84 E6 00 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-446.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201391`.
+- **Статус:** открыта; следующая точная инструкция Stage 7.
+- **Суть и последствия:** exact `0F 84 E6 00 00 00` (`JZ rel32 +0xe6`) remains unsupported pending bounded implementation and tests.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-446 runner retired 9,990 instructions and reported `Unsupported { opcode: 132 }` at RIP `0x201391`; COM1 is empty. Bytes at the link-base shadow are `0F 84 E6 00 00 00`.
+- **Следующий шаг:** implement this exact JZ rel32 form and add condition, target, fault, and profile-boundary coverage.

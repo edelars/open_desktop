@@ -29603,3 +29603,16 @@ to `0F 85 81 FE FF FF` (JNZ rel32 -0x17f, ISSUE-446) at RIP `0x2013f0` after
 (2,322/1,591/126/29/6/1,524/7/15; zero doc tests), paged machine quantum
 (110/110), workspace all-targets offline check, scoped rustfmt and diff-check.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-446 — bounded JNZ rel32
+
+The base paged profile admits only exact `0F 85 81 FE FF FF` (JNZ rel32
+-0x17f). It reads ZF without modifying flags or definedness, uses next RIP as
+the displacement base, and canonicality-checks only a taken target; a not-taken
+fall-through is deferred to the next fetch. Final-displacement fetch failure
+commits no state. CPL3 and other profiles reject this exact encoding. Firmware
+advances to `0F 84 E6 00 00 00` (JZ rel32 +0xe6, ISSUE-447) at RIP `0x201391`
+after 9,990 retired instructions. Full validation passes: od-isa
+(2,322/1,591/126/29/6/1,529/7/15; zero doc tests), paged machine quantum
+(110/110), workspace all-targets offline check, scoped rustfmt and diff-check.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
