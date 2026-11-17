@@ -2544,3 +2544,20 @@ the unrelated CLD expectation caveat. Full od-isa suites pass
 (2,322/1,591/126/29/6/1,165/7/15; zero doc tests), paged machine quantum passes
 (81/81), workspace all-targets check passes with existing warnings, and scoped
 rustfmt/diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-367 — exact POP RBX
+
+Admitted only bare `5B` in the base paged CPL0 profile. The qword stack value is
+read via GuestMemory; RBX/RSP/RIP are committed only after the read succeeds, and
+flags remain unchanged. Focused tests cover qword state, stack #SS/#PF and fetch
+fault atomicity, neighbors, CPL3 and other-profile isolation. Three machine tests
+verify four-level successful read with accessed/no-dirty effects, nonpresent data
+page #PF with atomic CPU state, and noncanonical RSP #SS. Firmware on
+`/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`) advances
+to `41 5C` (POP R12, ISSUE-368) at RIP `0x201831` after 9,836 retired
+instructions; exit is unsupported opcode `0x5c`, COM1 empty. ISSUE-201 remains
+the unrelated CLD expectation caveat. Full od-isa suites pass (2,322/1,591/126/29/6/1,171/7/15; zero doc tests),
+paged machine quantum passes (84/84), workspace all-targets cargo check passes
+with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.

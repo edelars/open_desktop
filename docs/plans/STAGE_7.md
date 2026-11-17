@@ -1239,3 +1239,21 @@ instructions; COM1 is empty. ISSUE-201 remains the unrelated CLD expectation cav
 (2,322/1,591/126/29/6/1,165/7/15; zero doc tests), paged machine quantum passes
 (81/81), workspace all-targets check passes with existing warnings, and scoped
 rustfmt/diff-check pass. Independent review approved with no findings.
+
+
+### ISSUE-367 — exact POP RBX
+
+Admit only bare `5B` in base `PagedCpl0ProbeV1`. The instruction reads a qword
+from the stack through GuestMemory, then commits RBX, RSP+8 and RIP; flags remain
+unchanged. Canonical stack-address validation raises #SS before data access,
+and a tracked read fault leaves CPU state unchanged. Six focused tests cover
+state/flags, #SS/#PF/fetch-fault atomicity, neighbors, CPL3 and profile isolation.
+Three machine tests cover four-level A-bit/no-D behavior, data-page #PF atomicity
+and #SS. Firmware advances to ISSUE-368, `41 5C` (POP R12) at RIP `0x201831`
+after 9,836 retired instructions; COM1 is empty. ISSUE-201 remains the unrelated
+CLD expectation caveat.
+
+
+Validation: full od-isa suites pass (2,322/1,591/126/29/6/1,171/7/15; zero
+doc tests), paged machine quantum passes (84/84), workspace all-targets cargo check
+passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD expectation caveat.

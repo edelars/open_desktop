@@ -28332,3 +28332,22 @@ ISSUE-201 remains the unrelated CLD expectation caveat. Full od-isa suites pass
 (2,322/1,591/126/29/6/1,165/7/15; zero doc tests), paged machine quantum passes
 (81/81), workspace all-targets check passes with existing warnings, and scoped
 rustfmt/diff-check pass. Independent review approved with no findings.
+
+
+### S7-04 CPU-profile slice: exact POP RBX (ISSUE-367)
+
+`PagedCpl0ProbeV1` admits only the bare one-byte opcode `5B`. The effective stack
+address is the old RSP and is validated as a qword stack access (#SS for a
+noncanonical stack range) before the tracked GuestMemory read. On success, RBX
+receives the qword and RSP increments by eight; RIP advances and flags/definedness
+remain unchanged. A #SS, data #PF/backend read error, or instruction-fetch fault
+does not partially commit CPU state. The operation reads memory and never writes
+the stack data. Other POP destinations, REX/prefix forms, CPL3 and other profiles
+remain unsupported. Firmware advances to ISSUE-368 `41 5C` (POP R12) at
+`0x201831` after 9,836 retired instructions; COM1 is empty. ISSUE-201 remains
+the unrelated CLD expectation caveat.
+
+
+Validation: full od-isa suites pass (2,322/1,591/126/29/6/1,171/7/15; zero
+doc tests), paged machine quantum passes (84/84), workspace all-targets cargo check
+passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD expectation caveat.

@@ -4808,10 +4808,18 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner advanced to `Unsupported { opcode: 91 }` at RIP `0x201830` after 9,835 retired instructions; bytes are `5B` (`POP RBX`); COM1 is empty.
 - **Проверка:** four focused tests cover qword wrap/flags/definedness and full-state preservation, final-immediate fetch-fault atomicity, neighboring encodings and CPL3; other-profile isolation rejects this exact form. Focused and full validation pass; independent review approved with no findings. Results are recorded in `docs/reports/STAGE_7_REPORT.md`.
 
-### ISSUE-367 — S7-04: exact helper POP RBX frontier (`5B`)
+### ISSUE-367 — S7-04: exact helper POP RBX (`5B`)
 - **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-366.
-- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201830`.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), with tracked stack reads through `crates/od-machine/`, firmware at `0x201830`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bare `5B` reads a qword from `[RSP]`, writes RBX, increments RSP by eight, and advances RIP. Flags are preserved. Both RSP/RIP and RBX commit only after canonical stack-address validation and a successful tracked read; noncanonical RSP raises #SS and data access faults leave state unchanged.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; runner advanced to `Unsupported { opcode: 92 }` at RIP `0x201831` after 9,836 retired instructions; bytes are `41 5C` (`POP R12`); COM1 is empty.
+- **Проверка:** six focused tests cover qword result/flags/state, #PF and #SS atomicity, instruction-fetch fault, neighboring forms and CPL3; the other-profile matrix rejects the exact encoding. Three machine tests cover four-level tracked read/A-no-D effects, data-page #PF atomicity, and #SS. Full validation passes; independent review approved with no findings. Full results are recorded in `docs/reports/STAGE_7_REPORT.md`.
+
+### ISSUE-368 — S7-04: exact helper POP R12 frontier (`41 5C`)
+- **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-367.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201831`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches an unprefixed POP RBX after 9,835 retired instructions; the bounded base profile does not admit it.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 91 }` at RIP `0x201830`; bytes are `5B`; COM1 is empty.
-- **Следующий шаг:** analyze and admit only this exact firmware POP form in a separate Stage 7 slice.
+- **Суть и последствия:** firmware reaches POP R12 after 9,836 retired instructions; the bounded base profile does not admit the REX.B-extended stack-register form.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 92 }` at RIP `0x201831`; bytes are `41 5C`; COM1 is empty.
+- **Следующий шаг:** analyze and admit only this exact firmware POP R12 form in a separate Stage 7 slice.
