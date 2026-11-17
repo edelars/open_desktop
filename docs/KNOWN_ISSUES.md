@@ -4563,9 +4563,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-337 — S7-04: exact helper `JZ rel32 -0x12f` (`0F 84 D1 FE FF FF`)
 - **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-336.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x201796`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `0F 84 D1 FE FF FF` are admitted for JZ with signed rel32 -0x12f. The branch reads ZF, preserves flags/definedness, checks target canonicality only when taken, and leaves the not-taken fall-through check to the next fetch.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, prior `Unsupported { opcode: 132 }` at RIP `0x201796`; COM1 is empty.
+- **Проверка:** five focused tests cover taken/not-taken targets with defined/undefined ZF, taken-only canonicality including a noncanonical-target #GP, final-displacement fetch-fault atomicity, neighboring forms and CPL3 rejection; the other-paged-profile matrix rejects this exact form. Runner now retires 9,051 instructions and stops at `49 8B 74 04 F4` (`MOV RSI,qword ptr [R12+RAX-0x0c]`, ISSUE-338) at RIP `0x20179c`, `Unsupported { opcode: 139 }`; COM1 is empty. Full validation and independent review are recorded in the Stage 7 report and CPU contract. ISSUE-201 remains the unrelated pair of stale CLD-unsupported expectations in full `od-machine` tests.
+
+### ISSUE-338 — S7-04: exact helper `MOV RSI,qword ptr [R12+RAX-0x0c]` (`49 8B 74 04 F4`)
+- **Дата обнаружения:** 2026-11-16, runner-прогон после ISSUE-337.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20179c`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this near conditional branch after 9,050 retired instructions. The base profile does not yet admit this exact rel32 displacement.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 132 }` at RIP `0x201796`; COM1 is empty.
+- **Суть и последствия:** firmware reaches this qword SIB load after 9,051 retired instructions. REX.B selects R12 as SIB base, RAX is the scale-1 index, and disp8 `0xf4` sign-extends to -0x0c. The base profile does not yet admit this exact load.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 139 }` at RIP `0x20179c`; COM1 is empty.
 - **Следующий шаг:** analyze and admit only this exact firmware instruction in a separate Stage 7 slice.
 
 ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsupported; isolated reproduction showed this is unrelated to the Stage 7 paged-profile slices.
