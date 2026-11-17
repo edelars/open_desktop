@@ -5623,7 +5623,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-456 — S7-04: exact JZ rel32 +0x83 frontier (`0F 84 83 00 00 00`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-455.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20135d`.
-- **Статус:** открыта. Следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base firmware CPU profile stops on unprefixed `0F 84 83 00 00 00` (JZ rel32 +0x83).
+- **Статус:** решена для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** exact unprefixed `0F 84 83 00 00 00` branches on ZF=1 to next RIP plus signed rel32. Only a taken target needs to be canonical. The branch preserves flags and their definedness.
 - **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 132 }` at RIP `0x20135d` after 10,184 retired instructions. COM1 is empty. Bytes at the link-base shadow are `0F 84 83 00 00 00`.
-- **Следующий шаг:** admit this exact JZ and cover the ZF predicate, signed target, target canonicality, fetch faults and profile isolation.
+- **Результат:** runner retires 10,299 instructions and stops at RIP `0x2013f6` on `B8 01 00 00 00` (MOV EAX,1, ISSUE-457). It reports `Unsupported { opcode: 184 }` with empty COM1.
+- **Проверка:** five focused tests and the other CPL0 probe matrix cover ZF values and definedness, target and fall-through, taken-only canonicality, final-byte fetch fault, neighboring encodings and profile isolation. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-457 — S7-04: exact MOV EAX,1 frontier (`B8 01 00 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-456.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013f6`.
+- **Статус:** открыта. Следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base firmware CPU profile stops on unprefixed `B8 01 00 00 00` (MOV EAX,1).
+- **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 184 }` at RIP `0x2013f6` after 10,299 retired instructions. COM1 is empty. Bytes at the link-base shadow are `B8 01 00 00 00`.
+- **Следующий шаг:** admit the exact dword MOV and cover RAX zero extension, preserved flags, immediate fetch fault and profile isolation.

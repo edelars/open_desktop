@@ -2704,3 +2704,14 @@ CPL3 MOV and other CPL0 probes. With budget 20000 the runner executes 10,184
 instructions and stops at RIP `0x20135d` on `0F 84 83 00 00 00` (JZ rel32 +0x83,
 ISSUE-456). It reports Unsupported opcode 132 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-456 — exact JZ rel32 +0x83 (`0F 84 83 00 00 00`)
+
+Base `PagedCpl0ProbeV1` admits the exact unprefixed JZ. ZF=1 branches to
+next RIP plus signed rel32. The taken target must be canonical. Both outcomes
+preserve flags and their definedness. Tests cover ZF outcomes and definedness,
+target and fall-through, final-byte fetch fault, neighbors, the CPL3 MOV probe
+and the other CPL0 probes. With budget 20000 the runner retires 10,299
+instructions and stops at RIP `0x2013f6` on `B8 01 00 00 00` (MOV EAX,1,
+ISSUE-457). It reports Unsupported opcode 184 with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

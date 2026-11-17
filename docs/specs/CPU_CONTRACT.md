@@ -29719,3 +29719,14 @@ and their definedness and all other GPRs are preserved. The final ModRM fetch
 fault commits no architectural state. The other CPL0 probes and the paged
 CPL3 MOV probe refuse this encoding.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-456 — bounded JZ rel32 +0x83
+
+The base paged CPL0 profile admits exact unprefixed `0F 84 83 00 00 00`.
+JZ uses the concrete ZF value and preserves flags and definedness. With ZF=1
+the executor adds signed rel32 +0x83 to next RIP using 64-bit wrapping
+arithmetic and checks target canonicality. With ZF=0 it advances to next RIP
+and defers fetch checks. A taken noncanonical target raises #GP(0). This
+fault and a fault on the final displacement fetch commit no architectural
+state. The other CPL0 probes and the paged CPL3 MOV probe refuse this form.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
