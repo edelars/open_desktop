@@ -1,0 +1,122 @@
+S5-07 counted canonical page-fault event exact replays — 2026-11-17
+
+Purpose and source
+------------------
+Capture the complete successfully delivered #PF event lists for the two source
+runs in common-ID series `s5-07-counted-canonical-n2-20261117-a` using the
+existing `--execution-observations-out` sidecar. The replays used the exact
+nonce and guest inputs/configuration from each corresponding source run; no
+additional RDTSC/quantum trace or randomization options were enabled.
+
+Canonical input hashes were revalidated by each runner:
+
+* kernel: `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`
+* initramfs: `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`
+* ACPI blob: `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`
+* ACPI manifest: `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`
+
+Both were local macOS/aarch64 release-runner 0.1.0 runs on source revision
+`dd7712141f582117cf0ab2c2fa28e6b44f9646d5`, with Stage4A, CPL0 set, user mode,
+RAM 128 MiB and budget 3,000,000,000. The series profile remains
+`smoke_not_acceptance`.
+
+Replay comparability and capture completeness
+---------------------------------------------
+Each replay exactly matches its corresponding source `stop` JSON object,
+including the COM1 hex payload, and the decoded COM1 bytes exactly match the
+source `uart.bin`. Nonce and acceptance also match. Each observations sidecar
+has schema 13, `write_error=null`, and a runner-recorded byte count and SHA-256
+matching the file.
+
+| Run | Nonce | Source/replay PF total | Events | Omitted | Fault walks present |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 0001 | `OD518e8be9ac44221a00000fb3400000000` | 33 / 33 | 33 | 0 | 33 |
+| 0002 | `OD518e8bfb13a39d1980000fb3400000001` | 34 / 34 | 34 | 0 | 34 |
+
+The collector retains up to 256 delivered #PF events. The observed 33 and 34
+events are complete: the array lengths equal both sidecar and source stop
+totals, with zero omissions. Each event includes delivery-order RIP, CR2,
+error code, access, CPL, pre-delivery context and the optional original fault
+page walk; all page walks in these replays are present.
+
+Fault event alignment
+---------------------
+The delivered-event sequences were aligned by the tuple
+`(RIP, CR2, error_code, access, CPL)`. The first 30 events match in order. Run 2
+has one inserted event at its zero-based index 30; the three following event
+tuples match run 1 indices 30–32 and run 2 indices 31–33. Thus the one-event
+count delta is localized in the recorded sequence; this does not classify the
+variation as benign or prove nonce causality. Some later matched-event context
+fields differ, including CR3, user RSP, frame pointers and page-table physical
+addresses, so full observation payloads are not identical.
+
+The inserted run 2 event is:
+
+* RIP `0xffffffff8271a9c1`, CPL0, write, CR2 `0x7fff9d9d7429`, error code `0x2`.
+* The original access walk has present PML4/PDPT/PD entries and a raw zero PT
+  leaf at index 471: `NotPresent { level: Pt }`.
+* Fault context records RDI=CR2, RCX=7, RSI=`0xffffffff82fdeb8f`.
+* The return chain reaches `create_elf_tables` in `binfmt_elf.c:206`, then
+  `load_elf_binary`, `kernel_execve`, `run_init_process`, and `kernel_init`.
+
+The matching debug ELF is BuildID
+`338e542e384c46228f7a378babc0f9bb2b6a5997`, SHA-256
+`7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f`.
+`llvm-dwarfdump --lookup` maps the fault RIP to `rep_movs_alternative+0x11` in
+`copy_user_64.S:47`; the bytes at the RIP are `88 07` (`movb %al,(%rdi)`). The
+debug ELF bytes at RSI decode to `x86_64\0`. This is the seven-byte platform
+string copied by `_copy_to_user` into the initial `/init` user stack at
+`arch_align_stack(...) - 7`. CR2 and the later initial CPL3 RSP
+`0x7fff9d9d7270` are on the same 4 KiB page; the seven-byte write itself does
+not cross a page boundary.
+
+This localizes the extra successfully delivered #PF to initial ELF stack
+population by the kernel. It does not explain why that target page was absent
+in run 2 but no corresponding fault occurred in run 1. The different user stack
+addresses, CR3 values and page-table addresses are observations, not a proven
+cause. No comparator/allowlist change follows.
+
+Commands
+--------
+The two invocations were identical except for nonce/output paths; flags below
+show the shared command shape:
+
+```sh
+target/release/od-runner linux-direct \
+  --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/s5-07-canonical-initramfs-rebuild/initramfs.cpio \
+  --acpi-blob work/stage5/staging/s5-07-canonical-acpi-20261117.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --run --budget 3000000000 --set-cpl0 \
+  --cpuid-profile stage4a --user-mode --nonce <source-run-nonce> \
+  --out <replay-runner-json> --execution-observations-out <sidecar-json>
+```
+
+Artifacts are ignored under
+`work/stage5/s5-07-counted-canonical-pf-exact-replay-20261117-a/`.
+
+| Artifact | SHA-256 | Bytes |
+| --- | --- | ---: |
+| run 0001 runner JSON | `829d6aef32ba4e3c5702d8892a5d15cf1d29007cecfd4b8c49398ad3fe2ae8a9` | 84,777 |
+| run 0001 observations | `c8a5fd100624cd7c03e31aaeabe4cc516ac514b7fc11b870ad5021d96fe2c25a` | 48,291 |
+| run 0001 stdout | `53feb6627fce8fdde3b5f09000f6b24ecea33c7c205b2202380babe3d65e05f5` | 81,893 |
+| run 0002 runner JSON | `7cf472169325a1c7f26a9fc563c5e6a67c7b3bd924b089ae14733ddcf5a367d5` | 83,744 |
+| run 0002 observations | `8ed4a11ab989d614343b4233ef18765ef2129213fbd624ed2af4e1b1c15b9510` | 50,979 |
+| run 0002 stdout | `1514af78097d95bd4513712cdab0491f2639200edfdb90a1011bd1c76e2ca36f` | 80,860 |
+
+Both stderr files are empty (SHA-256
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`).
+
+Next step
+---------
+S5-07 remains blocked because the counted common-ID comparator still reports
+unexplained machine/UART differences. If the next question is whether this
+specific write fault's handler installs the missing mapping before retry, the
+existing exact-nonce replay can add
+`--execution-observations-post-iret-index 30`; require
+`post_iret_page_walk_status=captured`, matching fault identity and a successful
+post-IRET write translation. That would not explain why the source run 1 did
+not fault at the corresponding stack setup and does not justify relaxing the
+comparator.
