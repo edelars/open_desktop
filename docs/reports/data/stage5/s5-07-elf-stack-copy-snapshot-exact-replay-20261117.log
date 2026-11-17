@@ -106,3 +106,16 @@ variation as benign. It does not resolve the source series' strict
 `matches=false` result, explain its other machine/UART differences, or satisfy
 S5-07 acceptance. No comparator or normalization rule changed. The schema-v14
 capture implementation was independently reviewed and committed as `003baf1`.
+
+Counter coverage audit (2026-11-17)
+----------------------------------
+The exact-pair schema-v14 sidecars were checked for invocation-local counter
+coverage. `elf_stack_copy` contains one pre-CALL snapshot (including the input
+CR3 and three read-only page walks); it does not contain a post-copy snapshot
+or local `cr3_changes`, RDTSC, retired-instruction, or exception deltas. The
+sidecar separately contains whole-run page-fault events and aggregate RDTSC
+site histograms, while the runner stop contains whole-run endpoint counters.
+Those aggregates do not attribute counter changes to this single copy
+invocation. This confirms the local extra-`#PF` mechanism but leaves its
+invocation-local CR3-counter contribution unmeasured. No new replay was run
+for this audit.

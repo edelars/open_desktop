@@ -114,8 +114,9 @@ and allowlist remain unchanged.
 
 The existing schema-v14 capture is from this exact pair and confirms the
 local stack-copy fault mechanism, but it does not record invocation-local
-`cr3_changes`, RDTSC or retired deltas. If pursuing the remaining +1 CR3
-counter, the next diagnostic slice can bound a trace to the identified
+`cr3_changes`, RDTSC or retired deltas. Its separate whole-run PF events,
+RDTSC histograms and stop counters cannot assign counter changes to this call.
+If pursuing the remaining +1 CR3 counter, a diagnostic slice can bound a trace to the identified
 `create_elf_tables` platform-string copy invocation, from copy-site entry
 through fault/return, and record those local deltas plus PF/exception counts.
 Mark a capped capture incomplete. This would not explain later terminal-loop
