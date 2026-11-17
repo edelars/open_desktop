@@ -2440,3 +2440,16 @@ Unsupported opcode 135, COM1 empty. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-436 — exact JA rel32 +0xb0 (`0F 87 B0 00 00 00`)
+
+Admit only this exact no-prefix JA form in the base paged profile. It branches
+when CF=0 and ZF=0, adds signed rel32 `+0xb0` to next RIP, and preserves
+RFLAGS/definedness. Check canonicality only for a taken target; fetch faults on
+the displacement commit no state. Five focused tests cover all CF/ZF and
+definedness combinations, taken/fall-through RIP, taken-only canonicality,
+final-displacement fetch fault, neighboring conditions/displacements/prefixes,
+CPL3 and other-profile isolation. Runner reaches ISSUE-437 (`4C 01 F8`, ADD
+RAX,R15) at RIP `0x2013cd` after 9,929 retired instructions, Unsupported opcode
+1, COM1 empty. Full od-isa passes (2,322/1,591/126/29/6/1,487/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201
+remains the unrelated CLD caveat.

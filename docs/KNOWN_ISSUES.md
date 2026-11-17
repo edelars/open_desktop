@@ -5442,7 +5442,17 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-436 — S7-04: exact JA rel32 +0xb0 frontier (`0F 87 B0 00 00 00`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-435.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013c7`.
-- **Статус:** открыта; следующая точная инструкция Stage 7.
-- **Суть и последствия:** exact no-prefix JA rel32 +0xb0 remains unsupported until this bounded form receives implementation and tests.
+- **Статус:** решена только для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** admit only exact no-prefix `0F 87 B0 00 00 00` (JA rel32 +0xb0). JA branches iff CF=0 and ZF=0, computes the target relative to next RIP, and preserves flags/definedness. Canonicality is checked only for a taken target; final-displacement fetch faults are atomic. Other conditions/displacements, prefixes, CPL3 and other profiles remain outside this slice.
 - **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-435 runner retired 9,928 instructions and reported `Unsupported { opcode: 135 }` at RIP `0x2013c7`; COM1 is empty. Bytes at the link-base shadow are `0F 87 B0 00 00 00`.
-- **Следующий шаг:** implement this exact JA form, add focused condition/target/fault/neighbor/profile coverage, and update the Stage 7 documentation.
+- **Результат:** runner now retires 9,929 instructions and stops at RIP `0x2013cd`, bytes `4C 01 F8` (ADD RAX,R15; ISSUE-437), `Unsupported { opcode: 1 }`; COM1 is empty.
+- **Проверка:** five focused JA truth-table/definedness/target/canonicality/fetch-fault/neighbor/CPL3 tests and other-profile matrix 1/1 pass. Full od-isa passes (2,322/1,591/126/29/6/1,487/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+- **Следующий шаг:** ISSUE-437, exact `4C 01 F8` (ADD RAX,R15) at RIP `0x2013cd`.
+
+### ISSUE-437 — S7-04: exact ADD RAX,R15 frontier (`4C 01 F8`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-436.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2013cd`.
+- **Статус:** открыта; следующая точная инструкция Stage 7.
+- **Суть и последствия:** exact REX.W+R ADD RAX,R15 remains unsupported until a bounded implementation and tests are added.
+- **Основание:** image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, budget 10000; after ISSUE-436 runner retired 9,929 instructions and reported `Unsupported { opcode: 1 }` at RIP `0x2013cd`; COM1 is empty. Bytes at the link-base shadow are `4C 01 F8`.
+- **Следующий шаг:** implement this exact ADD form, add arithmetic/fault/neighbor/profile coverage, and update Stage 7 docs.

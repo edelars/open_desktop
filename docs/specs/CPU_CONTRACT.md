@@ -29470,3 +29470,15 @@ retired instructions, Unsupported opcode 135, COM1 empty. Full od-isa passes
 passes (110/110), workspace all-targets offline check passes with existing
 warnings, and scoped rustfmt/diff-check pass; independent review approved with no findings.
 ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-436 — bounded JA rel32 +0xb0
+
+`PagedCpl0ProbeV1` admits exact no-prefix `0F 87 B0 00 00 00` only. JA reads
+CF and ZF, branches to next RIP plus signed rel32 `+0xb0` only when both are
+clear, and preserves RFLAGS/definedness. Validate canonicality only for a taken
+target; a not-taken fall-through is checked on the next fetch. A fetch fault
+on the last displacement byte commits no state. Neighboring conditions,
+displacements, prefixes, CPL3 and other profiles remain outside this exact
+slice. Five focused tests and the other-profile matrix pass. Runner reaches
+`4C 01 F8` (ADD RAX,R15) at `0x2013cd` after 9,929 retired instructions,
+Unsupported opcode 1, COM1 empty. Full od-isa passes (2,322/1,591/126/29/6/1,487/7/15; zero doc tests), paged machine quantum passes (110/110), workspace all-targets offline check passes with existing warnings, and scoped rustfmt/diff-check pass; independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
