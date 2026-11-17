@@ -13318,6 +13318,7 @@ mod tests {
         run_cpl0_set_paged_2m_ram_with_cache(
             state,
             boot.board.bus_mut(),
+            crate::vcpu::BOOT_VCPU_INDEX,
             cr3,
             efer,
             long64(),
@@ -13805,6 +13806,7 @@ mod tests {
         let mut report = run_cpl0_set_paged_2m_ram_with_cache(
             &mut state,
             boot.board.bus_mut(),
+            crate::vcpu::BOOT_VCPU_INDEX,
             cr3,
             efer,
             long64(),

@@ -1464,6 +1464,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
     run_cpl0_set_paged_2m_ram_with_cache(
         state,
         bus,
+        crate::vcpu::BOOT_VCPU_INDEX,
         cr3,
         efer,
         context,
@@ -1499,6 +1500,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
 pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
     state: &mut LongModeState,
     bus: &mut MachineBus,
+    vcpu: usize,
     cr3: u64,
     efer: u64,
     context: AccessContext,
@@ -1711,14 +1713,14 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
             && cache.is_some_and(FetchTranslationCache::sweep_active)
             && invlpg_at_rip(state, bus, &paging, context, None);
         let control_before = (state.cr0, state.cr4);
-        let (ram, io) = bus.split_for_set_step();
+        let (ram, io) = bus.split_for_set_step_of_vcpu(vcpu);
         let mut port = PitWriteWatch {
             inner: io.port_io(),
             pit_written: false,
         };
         let mut memory = set_loop_adapter(
             ram,
-            Some(&io),
+            Some((&io, vcpu)),
             paging,
             instruction_rip,
             &mut watch,
@@ -2087,7 +2089,7 @@ fn continuation_key(
 /// whole CPL0 set read and write widths, the optional fetch cache.
 fn set_loop_adapter<'a>(
     ram: &'a mut crate::PhysicalMemory,
-    mmio: Option<&'a dyn crate::bus::SetStepMmio>,
+    mmio: Option<(&'a dyn crate::bus::SetStepMmio, usize)>,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
@@ -2096,7 +2098,7 @@ fn set_loop_adapter<'a>(
 ) -> PagedMovMemoryAdapter<'a> {
     PagedMovMemoryAdapter {
         bus: match mmio {
-            Some(mmio) => AdapterBus::RamMmio(ram, mmio),
+            Some((mmio, vcpu)) => AdapterBus::RamMmio(ram, mmio, vcpu),
             None => AdapterBus::Ram(ram),
         },
         paging,
@@ -2634,9 +2636,11 @@ enum AdapterBus<'a> {
     Ram(&'a mut crate::PhysicalMemory),
     /// `Ram` plus the MMIO dispatch of the set loop (S4-38L9s): an operand in an MMIO region
     /// goes to the board's device, as on the `Machine` form; the rest is the large-RAM walk.
+    /// The last member is the index of the vCPU whose set loop it is (S6-16a).
     RamMmio(
         &'a mut crate::PhysicalMemory,
         &'a dyn crate::bus::SetStepMmio,
+        usize,
     ),
 }
 
@@ -2649,11 +2653,12 @@ impl<'a> From<&'a mut MachineBus> for AdapterBus<'a> {
 impl AdapterBus<'_> {
     /// Index of the vCPU that owns this adapter: its MMIO accesses reach the per-processor
     /// devices (the Local APIC window, S6-11) as that vCPU's. Only the `Machine` form carries
-    /// one; the RAM-only forms serve the boot processor's set loop.
+    /// one, and so does the `RamMmio` form of the set loop (S6-16a); the `Ram` form serves the
+    /// boot processor's set loop.
     fn vcpu(&self) -> usize {
         match self {
-            Self::Machine(_, vcpu) => *vcpu,
-            Self::Ram(_) | Self::RamMmio(..) => crate::vcpu::BOOT_VCPU_INDEX,
+            Self::Machine(_, vcpu) | Self::RamMmio(_, _, vcpu) => *vcpu,
+            Self::Ram(_) => crate::vcpu::BOOT_VCPU_INDEX,
         }
     }
 
@@ -2682,10 +2687,10 @@ impl AdapterBus<'_> {
             }
             // A split access never reaches a device (S4-38L9s): it is the RAM walk, whose MMIO
             // operand is the typed error it always was.
-            Self::RamMmio(memory, _) if !mmio_allowed => {
+            Self::RamMmio(memory, _, _) if !mmio_allowed => {
                 crate::page_walk::access_long64_2m_ram(memory, paging, request, committed_write)
             }
-            Self::RamMmio(memory, mmio) => crate::page_walk::access_long64_2m_with_mmio(
+            Self::RamMmio(memory, mmio, _) => crate::page_walk::access_long64_2m_with_mmio(
                 memory,
                 paging,
                 request,
@@ -2699,14 +2704,14 @@ impl AdapterBus<'_> {
     /// The physical memory of the `Ram` forms.
     fn ram_mut(&mut self) -> Option<&mut crate::PhysicalMemory> {
         match self {
-            Self::Ram(memory) | Self::RamMmio(memory, _) => Some(memory),
+            Self::Ram(memory) | Self::RamMmio(memory, _, _) => Some(memory),
             Self::Machine(..) => None,
         }
     }
 
     fn ram_ref(&self) -> Option<&crate::PhysicalMemory> {
         match self {
-            Self::Ram(memory) | Self::RamMmio(memory, _) => Some(memory),
+            Self::Ram(memory) | Self::RamMmio(memory, _, _) => Some(memory),
             Self::Machine(..) => None,
         }
     }
@@ -2905,7 +2910,7 @@ impl PagedMovMemoryAdapter<'_> {
             _ => AccessKind::Read,
         };
         let (translation, trace) = match &mut self.bus {
-            AdapterBus::Ram(memory) | AdapterBus::RamMmio(memory, _) => {
+            AdapterBus::Ram(memory) | AdapterBus::RamMmio(memory, _, _) => {
                 translate_long64_2m_ram_read_only_with_trace(
                     memory,
                     &self.paging,
@@ -3234,7 +3239,7 @@ impl PagedMovMemoryAdapter<'_> {
         for check_address in [address, second_page] {
             let mut trace = None;
             let result = match &mut self.bus {
-                AdapterBus::Ram(memory) | AdapterBus::RamMmio(memory, _) => {
+                AdapterBus::Ram(memory) | AdapterBus::RamMmio(memory, _, _) => {
                     if self.capture_page_fault_trace {
                         crate::page_walk::translate_long64_2m_ram_write_check_with_fault_trace(
                             memory,

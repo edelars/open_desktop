@@ -4031,3 +4031,23 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 **Хост платы (`BoardSmpHost`).** Берёт `LoadedFirmwareBoard` с включённым `enable_clock_owner` (иначе `Config`), даёт активность из `Vcpu::activity()` и IF из `state.rflags`, LAPIC из `local_apic_of`, границу из двух методов платы и владельца часов платы. Замыкание `run` не должно вызывать `charge_retired` / `charge_ns` / `idle_to` / методы `ClockOwner`: часы двигает только планировщик (условие подключения в S6-16/S6-17). Квант исполнения — замыкание вызывающего: это существующий цикл платы, который отдельный срез вынесет из `run_linux_boot_cpl0_set`; копировать его здесь нельзя. vCPU с состоянием real mode (`real_mode` — `Some`: AP после SIPI или INIT) хост отказывается исполнять (`Config`, до S6-16), а не пропускает и не исполняет как long mode. `idle_to` платы теперь строит виды арбитра из `Vcpu::activity()` и IF каждого vCPU (раньше: BSP halted, остальные `WaitForSipi`).
 
 **Не входит.** Подключение к `run_linux_boot_cpl0_set` и paged-пробам (цикл BSP-only: `page_table_root` общий на плате, источник IRQ привязан к BSP; paged probe не использует планировщик); исполнение AP (S6-16: real mode, trampoline); проверки `WaitForSipi` в точках входа `od_isa::execute` вне CPL0-набора (планировщик их не вызывает, но сами точки не проверяют); `page_table_root` в `Vcpu`; запись `IA32_APIC_BASE.EN` из гостя (WRMSR EN), `hardware_reset_only`, синхронизация `real_mode.cr0` с `state.cr0` (S6-16); потоки, приоритеты, «честность» (нет замера); параллельный режим. Тесты: `smp_scheduler::tests::*`, `firmware_board::tests::idle_to_shows_every_vcpu_with_its_own_activity`.
+
+## S6-16a — индекс vCPU в MMIO и LapicIrqSource
+
+Реализация: `bus.rs` (`MachineBusSetStepIo::vcpu`, `MachineBus::split_for_set_step_of_vcpu`), `paged_memory_adapter.rs` (`AdapterBus::RamMmio(ram, mmio, vcpu)`, параметр `vcpu` у `run_cpl0_set_paged_2m_ram_with_cache`), новый `lapic_irq_source.rs` (`LapicIrqSource`). Дополняет раздел [LAPIC на каждый vCPU (S6-11)](#lapic-на-каждый-vcpu-s6-11): там индекс vCPU нёс только `AdapterBus::Machine`; путь MMIO CPL0-цикла был процессор 0.
+
+**Что изменено.**
+- `MachineBusSetStepIo` хранит `vcpu`; его `dispatch` обращается к устройству через `read_from_cpu(vcpu, …)`/`write_from_cpu(vcpu, …)`. Для устройств, не различающих процессоры (все, кроме `LocalApic`), это прежние `read`/`write` (так устроены реализации по умолчанию `BusDevice`).
+- `MachineBus::split_for_set_step()` остаётся и означает процессор 0; `split_for_set_step_of_vcpu(vcpu)` — цикл vCPU `vcpu`.
+- `AdapterBus::RamMmio` несёт индекс vCPU; `AdapterBus::vcpu()` возвращает его (форма `Ram` — по-прежнему процессор 0). Окно `0xFEE0_0000` из цикла CPL0-набора обслуживается как окно того vCPU, который исполняется: чтение `0x20` даёт `index << 24`, запись ICR/EOI/SVR действует на его LAPIC.
+- `run_cpl0_set_paged_2m_ram_with_cache(state, bus, vcpu, cr3, …)` получил параметр `vcpu` (после `bus`). `_observed`, `_observed_with_sweep` и плата `run_linux_boot_cpl0_set` передают `BOOT_VCPU_INDEX`.
+- `LapicIrqSource(LocalApicHandle)` — `BoardIrqSource` LAPIC одного vCPU: `pending_vector` = `eligible()` своего LAPIC, `acknowledge` = `acknowledge_vector` своего LAPIC (IRR → ISR, только если вектор всё ещё eligible), `next_deadline_ns` = `None` (сроки таймера LAPIC учитывает `ClockOwner`), `wake_ns` и остальное — по умолчанию (`None`/`false`/0). Вектор доставляется через IDT vCPU штатным `deliver_pending_irq` цикла; EOI гостя от этого vCPU снимает ISR только его LAPIC.
+
+**Что не меняется для vCPU 0.** Все существующие вызовы передают `BOOT_VCPU_INDEX`; `read_from_cpu(0, …)` у `LocalApic` равно `read`, у остальных устройств — тоже `read`. Окна, которые обслуживает цикл (ECAM, при профиле APIC — LAPIC и IOAPIC), не менялись; прочие MMIO — прежняя типизированная ошибка. Источник `PitIoapicIrqSource` платы не менялся.
+
+**Ограничения.**
+- Плата по-прежнему исполняет только процессор 0 (`run_linux_boot_cpl0_set` не подключён к планировщику S6-15): `vcpu != 0` в цикл передают только тесты и будущий исполнитель S6-16. Состояние AP (CS/SS-кэши, IDT) вызывающий готовит сам.
+- Индекс должен быть `< vcpu_count` платы; иначе доступ к LAPIC — `UnsupportedConfiguration` как в S6-11 (обращение цикла к окну завершится ошибкой устройства).
+- Разделяемый `PendingIrq`/IOAPIC-линии для AP не подключены: `LapicIrqSource` видит только то, что уже в IRR своего LAPIC (самоIPI, IPI от другого vCPU, вход IOAPIC, адресованный этому APIC ID, таймер после `dispatch_timer`).
+- `wake_ns` не реализован: пробуждение vCPU из `HLT` остаётся за планировщиком S6-15.
+- Страничный размер таблиц: используется тот же обход, что и у процессора 0; отдельных проверок для AP не добавлено.

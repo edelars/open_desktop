@@ -6412,4 +6412,270 @@ mod tests {
             ))
         );
     }
+
+    // ---- S6-16a: the set loop of a vCPU reaches its own Local APIC ----
+
+    mod vcpu_mmio {
+        use super::*;
+        use crate::lapic_irq_source::LapicIrqSource;
+        use crate::paged_memory_adapter::{
+            PagedCpl0SetReport, run_cpl0_set_paged_2m_ram_with_cache,
+        };
+        use od_isa::execute::{ControlRegisterPolicy, MovCr3Long64V1};
+        use od_isa::{CliProfile, HaltProfile, StiProfile};
+
+        const IDT_AT: u64 = 0x0030_1000;
+        const GDT_AT: u64 = 0x0030_2000;
+        const HANDLER_AT: u64 = 0x0030_0000;
+        const VECTOR: u8 = 0x30;
+        /// SDM, ICR: Self shorthand (bits 19:18 = 01), Level = assert (bit 14), edge trigger,
+        /// Fixed delivery mode, vector 0x30.
+        const SELF_IPI: u32 = 0x0004_4000 | VECTOR as u32;
+
+        fn mov_ebx_lapic_base() -> Vec<u8> {
+            let mut code = vec![0xBB];
+            code.extend_from_slice(&(LOCAL_APIC_MMIO_BASE as u32).to_le_bytes());
+            code
+        }
+
+        fn mov_eax(value: u32) -> Vec<u8> {
+            let mut code = vec![0xB8];
+            code.extend_from_slice(&value.to_le_bytes());
+            code
+        }
+
+        /// `MOV [RBX+offset], EAX` (`89 83 disp32`).
+        fn store_eax(offset: u32) -> Vec<u8> {
+            let mut code = vec![0x89, 0x83];
+            code.extend_from_slice(&offset.to_le_bytes());
+            code
+        }
+
+        /// The guest of 6 instructions: `MOV EBX, LAPIC base; MOV ECX, [RBX+0x20]` (APIC ID);
+        /// `MOV EAX, 0x1FF; MOV [RBX+0xF0], EAX` (SVR: software enable);
+        /// `MOV EAX, SELF_IPI; MOV [RBX+0x300], EAX` (ICR_LOW).
+        fn guest() -> Vec<u8> {
+            let mut code = mov_ebx_lapic_base();
+            code.extend([0x8B, 0x4B, 0x20]);
+            code.extend(mov_eax(0x1FF));
+            code.extend(store_eax(0xF0));
+            code.extend(mov_eax(SELF_IPI));
+            code.extend(store_eax(0x300));
+            code
+        }
+
+        /// A two-vCPU Linux-profile board whose set loop serves the Local APIC window, running
+        /// `code` at the entry, with the handler (`MOV EAX, 0; MOV [RBX+0xB0], EAX; IRETQ`) and the
+        /// IDT gate of `VECTOR` in guest RAM. Returns the board and a state of IF = 1 that can run
+        /// on any vCPU (a copy of the boot state).
+        fn board_and_state(code: &[u8]) -> (LoadedFirmwareBoard, LongModeState) {
+            let config = FirmwareBoardConfig {
+                vcpu_count: 2,
+                ..linux_config()
+            };
+            let mut board = load_firmware_image(&minor2_image(code), &config).unwrap();
+            board.bus_mut().enable_apic_mmio_windows();
+            let mut handler = mov_eax(0);
+            handler.extend(store_eax(0xB0));
+            handler.extend([0x48, 0xCF]); // IRETQ
+            let mut gate = [0u8; 16];
+            gate[0..2].copy_from_slice(&(HANDLER_AT as u16).to_le_bytes());
+            gate[2..4].copy_from_slice(&0x08u16.to_le_bytes());
+            gate[5] = 0x8E; // present, DPL 0, 64-bit interrupt gate
+            gate[6..8].copy_from_slice(&((HANDLER_AT >> 16) as u16).to_le_bytes());
+            let bus = board.bus_mut();
+            bus.patch_physical_ram(GuestPhysicalAddress::new(HANDLER_AT), &handler)
+                .unwrap();
+            bus.patch_physical_ram(
+                GuestPhysicalAddress::new(IDT_AT + u64::from(VECTOR) * 16),
+                &gate,
+            )
+            .unwrap();
+            // GDT: null, 64-bit ring-0 code (0x08), ring-0 data (0x10).
+            let mut gdt = [0u8; 24];
+            gdt[8..16].copy_from_slice(&0x00AF_9B00_0000_FFFFu64.to_le_bytes());
+            gdt[16..24].copy_from_slice(&0x00CF_9300_0000_FFFFu64.to_le_bytes());
+            board
+                .bus_mut()
+                .patch_physical_ram(GuestPhysicalAddress::new(GDT_AT), &gdt)
+                .unwrap();
+            let mut state = board.state().clone();
+            state.cr3 = Some(board.cr3());
+            state.cs_selector = Some(0x08);
+            state.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+                base: 0,
+                limit: u32::MAX,
+                access: 0x9B,
+                flags: 2,
+            });
+            state.ss_selector = Some(0x10);
+            state.ss_cache = Some(od_isa::StackSegmentDescriptorCache {
+                base: 0,
+                limit: u32::MAX,
+                access: 0x93,
+                flags: 0,
+            });
+            state.gdtr = Some(od_isa::state::Gdtr {
+                base: GDT_AT,
+                limit: 0x17,
+            });
+            state.idtr = Some(od_isa::state::Idtr {
+                base: IDT_AT,
+                limit: 0xFFF,
+            });
+            state.rflags = 2 | (1 << 9);
+            state.sti_shadow = Some(StiShadow::Clear);
+            state.activity = Some(CpuActivity::Running);
+            (board, state)
+        }
+
+        /// One call of the set loop of vCPU `vcpu`, with `source` as its interrupt source.
+        fn run(
+            board: &mut LoadedFirmwareBoard,
+            vcpu: usize,
+            state: &mut LongModeState,
+            budget: u64,
+            source: &mut dyn BoardIrqSource,
+            counters: &mut IrqCounters,
+        ) -> PagedCpl0SetReport {
+            let (cli, sti, halt) = (
+                CliProfile::NonPviLong64V1,
+                StiProfile::NonPviLong64V1,
+                HaltProfile::Long64V1,
+            );
+            let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+                .with_cli(&cli)
+                .with_cpu_owned_cr3(MovCr3Long64V1)
+                .with_pio_u8()
+                .with_halt(&halt)
+                .with_sti(&sti);
+            let cr3 = board.cr3();
+            run_cpl0_set_paged_2m_ram_with_cache(
+                state,
+                board.bus_mut(),
+                vcpu,
+                cr3,
+                FIRMWARE_EFER,
+                AccessContext {
+                    mode: InstructionMode::Long64,
+                    privilege: PrivilegeLevel::Ring0,
+                    origin: AccessOrigin::Explicit,
+                },
+                budget,
+                INTEGER_FLAGS,
+                &set,
+                None,
+                || false,
+                |_| {},
+                false,
+                None,
+                Some(IrqBoundaryHook {
+                    source,
+                    counters,
+                    skip_first_boundary: false,
+                }),
+                None,
+                None,
+            )
+        }
+
+        fn irr_isr(board: &LoadedFirmwareBoard, vcpu: usize) -> (bool, bool) {
+            board.local_apic_of(vcpu).unwrap().vector_state(VECTOR)
+        }
+
+        #[test]
+        fn a_set_loop_of_vcpu_1_reads_its_own_apic_id_and_its_self_ipi_lands_in_its_own_irr() {
+            let (mut board, mut state) = board_and_state(&guest());
+            let (mut source, mut counters) = (NoIrqSource, IrqCounters::default());
+            // 6 instructions retire; the pending vector (IRR of vCPU 1) is not offered to this
+            // call's source, which is the empty one.
+            let report = run(&mut board, 1, &mut state, 6, &mut source, &mut counters);
+            assert_eq!(report.instructions_executed, 6, "{report:?}");
+            assert_eq!(report.memory_error, None, "{report:?}");
+            // The APIC ID register reads the index of the vCPU in bits 31:24 (SDM).
+            assert_eq!(state.gpr[Register::Rcx as usize], 1 << 24);
+            // The self-IPI is in the IRR of vCPU 1 and of no other LAPIC.
+            assert_eq!(irr_isr(&board, 1), (true, false));
+            assert_eq!(irr_isr(&board, 0), (false, false));
+            // The SVR write enabled vCPU 1's LAPIC only.
+            assert_eq!(
+                board.local_apic_of(1).unwrap().spurious_vector(),
+                Some(0xFF)
+            );
+            assert_eq!(
+                board.local_apic_of(0).unwrap().eligible(),
+                None,
+                "vCPU 0's LAPIC is untouched"
+            );
+        }
+
+        #[test]
+        fn the_same_guest_on_vcpu_0_is_the_old_path() {
+            let (mut board, mut state) = board_and_state(&guest());
+            let (mut source, mut counters) = (NoIrqSource, IrqCounters::default());
+            let report = run(&mut board, 0, &mut state, 6, &mut source, &mut counters);
+            assert_eq!(report.instructions_executed, 6, "{report:?}");
+            assert_eq!(state.gpr[Register::Rcx as usize], 0);
+            assert_eq!(irr_isr(&board, 0), (true, false));
+            assert_eq!(irr_isr(&board, 1), (false, false));
+        }
+
+        #[test]
+        fn lapic_irq_source_of_vcpu_1_delivers_through_the_idt_and_the_eoi_clears_isr_of_vcpu_1() {
+            let (mut board, mut state) = board_and_state(&guest());
+            let lapic1 = board.local_apic_of(1).unwrap();
+            let mut source = LapicIrqSource::new(lapic1);
+            let mut counters = IrqCounters::default();
+            let rsp = state.gpr[Register::Rsp as usize];
+            // 6 guest instructions, the delivery at the boundary after the ICR write (retires
+            // nothing), then the handler's first instruction.
+            let report = run(&mut board, 1, &mut state, 7, &mut source, &mut counters);
+            assert_eq!(report.instructions_executed, 7, "{report:?}");
+            assert_eq!(counters.irqs_delivered, 1);
+            assert_eq!(
+                state.rip,
+                HANDLER_AT + 5,
+                "inside the handler of the IDT gate"
+            );
+            assert_eq!(state.rflags & (1 << 9), 0, "an interrupt gate clears IF");
+            assert_eq!(state.gpr[Register::Rsp as usize], (rsp & !15) - 40);
+            // Acknowledged in vCPU 1's LAPIC (IRR -> ISR) and in no other.
+            assert_eq!(irr_isr(&board, 1), (false, true));
+            assert_eq!(irr_isr(&board, 0), (false, false));
+            // The handler's EOI (written as vCPU 1) clears the ISR of vCPU 1; the IRETQ returns.
+            let report = run(&mut board, 1, &mut state, 2, &mut source, &mut counters);
+            assert_eq!(report.instructions_executed, 2, "{report:?}");
+            assert_eq!(counters.irqs_delivered, 1);
+            assert_eq!(irr_isr(&board, 1), (false, false));
+            assert_eq!(irr_isr(&board, 0), (false, false));
+            assert_eq!(state.rflags & (1 << 9), 1 << 9, "IRETQ restores IF");
+        }
+
+        #[test]
+        fn an_eoi_of_vcpu_1_does_not_touch_the_isr_of_vcpu_0() {
+            // The same vector is in service on both processors; vCPU 1's handler writes EOI.
+            let (mut board, mut state) = board_and_state(&guest());
+            let lapic0 = board.local_apic_of(0).unwrap();
+            let lapic1 = board.local_apic_of(1).unwrap();
+            let (mut source0, mut source1) = (
+                LapicIrqSource::new(lapic0.clone()),
+                LapicIrqSource::new(lapic1),
+            );
+            let mut counters = IrqCounters::default();
+            // vCPU 0 runs the guest to the delivery of its own self-IPI: ISR of vCPU 0 holds it.
+            let mut state0 = state.clone();
+            run(&mut board, 0, &mut state0, 7, &mut source0, &mut counters);
+            assert_eq!(irr_isr(&board, 0), (false, true));
+            // vCPU 1 does the same and then runs its handler to the EOI and the IRETQ.
+            run(&mut board, 1, &mut state, 7, &mut source1, &mut counters);
+            assert_eq!(irr_isr(&board, 1), (false, true));
+            run(&mut board, 1, &mut state, 2, &mut source1, &mut counters);
+            assert_eq!(irr_isr(&board, 1), (false, false));
+            assert_eq!(
+                irr_isr(&board, 0),
+                (false, true),
+                "vCPU 0 is still in service"
+            );
+        }
+    }
 }

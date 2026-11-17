@@ -810,7 +810,7 @@ A-биты обхода высокой цели: `0x4ff8` (PML4[511]), `0xaff0`,
 
 Проверки: `cargo fmt -p od-machine -- --check` чисто; `cargo check --workspace --all-targets --offline` чисто (предупреждения `od-host` и прежнее `access_long64_4k_internal_with_writer` не от среза); `cargo test -p od-machine --offline --lib -- lapic_irq_source local_apic paged bus --test-threads=1` — 195 прошли, до добавления тестов цикла; полный `cargo test -p od-machine --offline -- --test-threads=1` — результат ниже.
 
-Полный прогон: FULL_RESULT_PLACEHOLDER
+Полный прогон: `cargo test -p od-machine --offline -- --test-threads=1` — один раз, на финальном коде: lib 1456 прошли, 0 упали, 7 ignored (1463 теста, из них 9 новых); все остальные тестовые бинарники крейта (интеграционные) — 0 упавших, код выхода 0. Все пути с индексом 0 проходят прежние тесты без изменения ожиданий.
 
 Не покрыто: плата и `run_linux_boot_cpl0_set` по-прежнему исполняют только процессор 0 (планировщик S6-15 не подключён к циклу); состояние AP (CS/SS-кэши, GDT/IDT) в тестах готовит тест; `wake_ns` источника не реализован; доставка IOAPIC-линий в AP и логика HLT-пробуждения — следующие срезы S6-16.
 

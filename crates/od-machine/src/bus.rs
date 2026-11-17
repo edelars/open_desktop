@@ -672,6 +672,9 @@ pub(crate) struct MachineBusSetStepIo<'a> {
     mmio: &'a [MmioBinding],
     mmio_lens: &'a [u64],
     windows: &'static [crate::page_walk::MmioWindow],
+    /// Index of the vCPU whose set loop this is (S6-16a): its MMIO accesses reach the
+    /// per-processor devices (the Local APIC window) as that vCPU's. Every other device ignores it.
+    vcpu: usize,
 }
 
 /// The port view of [`MachineBusSetStepIo`].
@@ -767,9 +770,10 @@ impl SetStepMmio for MachineBusSetStepIo<'_> {
             .try_borrow_mut()
             .map_err(|_| Backend("the device table is already borrowed".to_owned()))?;
         let device = &mut devices[binding.device_index];
+        let vcpu = self.vcpu;
         match operation {
             RamAccessOperation::Read { .. } => device
-                .read(access)
+                .read_from_cpu(vcpu, access)
                 .map(|value| value & width.mask())
                 .map_err(|error| {
                     Backend(format!(
@@ -778,7 +782,7 @@ impl SetStepMmio for MachineBusSetStepIo<'_> {
                     ))
                 }),
             RamAccessOperation::Write { value, .. } => device
-                .write(access, value & width.mask())
+                .write_from_cpu(vcpu, access, value & width.mask())
                 .map(|()| 0)
                 .map_err(|error| {
                     Backend(format!(
@@ -882,7 +886,17 @@ impl PortIo for SetStepPortIo<'_, '_> {
 impl MachineBus {
     /// Memory, ports and MMIO of one set-loop instruction (S4-38L9s); the cell inside the
     /// returned value lets the port view and the MMIO dispatch share the device table.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn split_for_set_step(&mut self) -> (&mut PhysicalMemory, MachineBusSetStepIo<'_>) {
+        self.split_for_set_step_of_vcpu(crate::vcpu::BOOT_VCPU_INDEX)
+    }
+
+    /// [`MachineBus::split_for_set_step`] for the set loop of vCPU `vcpu` (S6-16a): the MMIO
+    /// dispatch of the returned value serves a Local APIC access as that processor's.
+    pub(crate) fn split_for_set_step_of_vcpu(
+        &mut self,
+        vcpu: usize,
+    ) -> (&mut PhysicalMemory, MachineBusSetStepIo<'_>) {
         let Self {
             memory,
             devices,
@@ -903,6 +917,7 @@ impl MachineBus {
                 } else {
                     &SET_STEP_WINDOWS
                 },
+                vcpu,
             },
         )
     }

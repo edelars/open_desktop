@@ -23,6 +23,7 @@ mod interleaved_harness;
 mod interrupt_pump;
 mod io_apic;
 mod irq_source;
+mod lapic_irq_source;
 mod linux_boot;
 mod linux_boot_params;
 mod linux_checkpoints;
