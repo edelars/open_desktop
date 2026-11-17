@@ -4747,7 +4747,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-359 — S7-04: exact helper `INC R11` frontier (`49 FF C3`)
 - **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-358.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20180b`.
+- **Статус:** решена для точной формы base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** only exact bytes `49 FF C3` increment qword R11. Shared INC semantics update OF/SF/ZF/AF/PF while preserving CF; definedness for CF is preserved, and other GPRs remain unchanged.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000; after admission runner stops at `Unsupported { opcode: 137 }` at RIP `0x20180e` after 9,078 retired instructions; bytes are `49 89 F6`; COM1 is empty.
+- **Проверка:** four focused tests cover INC flag vectors, CF value/definedness preservation, final-ModRM fetch-fault atomicity, neighboring encodings and CPL3; other-profile isolation rejects this exact encoding. Full validation passed and independent review approved with no remaining findings; details are in `docs/reports/STAGE_7_REPORT.md`.
+
+### ISSUE-360 — S7-04: exact helper `MOV R14,RSI` frontier (`49 89 F6`)
+- **Дата обнаружения:** 2026-11-17, runner-прогон после ISSUE-359.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at address `0x20180e`.
 - **Статус:** открыта.
-- **Суть и последствия:** firmware reaches this qword register increment after 9,077 retired instructions. The bounded base profile does not yet admit this exact form.
-- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 255 }` at RIP `0x20180b`; COM1 is empty.
-- **Следующий шаг:** analyze and admit only this exact firmware INC R11 form in a separate Stage 7 slice.
+- **Суть и последствия:** firmware reaches this qword register move after 9,078 retired instructions. Opcode 89's r/m destination is R14 (REX.B), and the reg source is RSI; the bounded base profile does not yet admit this exact encoding.
+- **Основание:** image `/private/tmp/od-fw-s7-04-issue256.bin` (SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`), budget 10000, `Unsupported { opcode: 137 }` at RIP `0x20180e`; bytes are `49 89 F6`; COM1 is empty.
+- **Следующий шаг:** analyze and admit only this exact firmware MOV R14,RSI form in a separate Stage 7 slice.

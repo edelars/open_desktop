@@ -28218,3 +28218,19 @@ unrelated CLD caveat remains open. Full od-isa
 diff-check pass. `cargo fmt --all -- --check` reports an unrelated pre-existing
 formatting diff in `crates/od-host/src/storage_abi_v1.rs`; that file was not
 changed. Independent review approved with no remaining findings.
+
+### S7-04 CPU-profile slice: exact INC R11 (ISSUE-359)
+
+`PagedCpl0ProbeV1` admits only exact bytes `49 FF C3` with no additional
+prefixes. REX.W/B and FF /0 select qword R11. Shared INC semantics update OF,
+SF, ZF, AF and PF while preserving CF; the CF definedness metadata remains
+unchanged, and other GPRs are preserved. The final ModRM byte must be fetched
+before state commits. Other registers, widths, group extensions, prefixes, CPL3
+and other profiles do not admit this form. Firmware advances to `49 89 F6`
+(`MOV R14,RSI`, ISSUE-360) at RIP `0x20180e` after 9,078 retired instructions;
+COM1 is empty. ISSUE-201's unrelated CLD caveat remains open. Full od-isa
+(2,322/1,591/126/29/6/1,133/7/15; zero doc tests), paged machine quantum
+(79/79), workspace all-targets check, scoped rustfmt and diff-check pass.
+`cargo fmt --all -- --check` reports an unrelated pre-existing formatting diff
+in `crates/od-host/src/storage_abi_v1.rs`; that file was not changed.
+Independent review approved with no remaining findings.

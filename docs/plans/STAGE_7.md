@@ -1126,3 +1126,19 @@ paged machine quantum (79/79), workspace all-targets check, scoped rustfmt and
 diff-check pass. `cargo fmt --all -- --check` reports the unrelated pre-existing
 formatting diff in `crates/od-host/src/storage_abi_v1.rs`; that file was not
 changed. Independent review approved with no remaining findings.
+
+### ISSUE-359 — exact INC R11
+
+Admit only `49 FF C3` in base `PagedCpl0ProbeV1`: REX.W/B selects qword R11
+for FF /0. Shared INC semantics update OF/SF/ZF/AF/PF and preserve CF; the CF
+definedness bit is likewise preserved. Four focused tests cover overflow,
+zero/sign/parity/AF behavior, both CF states and definedness, R11-only mutation,
+final-ModRM fetch-fault atomicity, neighbors and CPL3; the other-profile matrix
+rejects the bytes. Firmware advances to ISSUE-360, `49 89 F6` (`MOV R14,RSI`)
+at RIP `0x20180e` after 9,078 retired instructions; COM1 is empty. ISSUE-201's
+unrelated CLD caveat remains open. Full od-isa
+(2,322/1,591/126/29/6/1,133/7/15; zero doc tests), paged machine quantum
+(79/79), workspace all-targets check, scoped rustfmt and diff-check pass.
+`cargo fmt --all -- --check` still reports the unrelated pre-existing formatting
+diff in `crates/od-host/src/storage_abi_v1.rs`; that file was not changed.
+Independent review approved with no remaining findings.

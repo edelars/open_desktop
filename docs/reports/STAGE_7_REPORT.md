@@ -2400,6 +2400,24 @@ in `crates/od-host/src/storage_abi_v1.rs`; that file was not changed. Existing
 unused-code/import/variable warnings are in od-machine and od-host. Independent
 review approved with no remaining findings.
 
+### ISSUE-359 — INC R11
+
+The base profile admits only exact bytes `49 FF C3`. REX.W/B select qword R11
+for FF /0; shared INC updates OF/SF/ZF/AF/PF while preserving CF and its
+definedness. Four focused profile tests cover wrap/overflow, zero/sign/parity
+and AF vectors, CF value/metadata, preservation of other state, final-ModRM
+fetch-fault atomicity, neighbors and CPL3; the other-profile matrix rejects the
+encoding. Firmware advances to ISSUE-360 (`49 89 F6`, `MOV R14,RSI`) at RIP
+`0x20180e` after 9,078 retired instructions; COM1 is empty. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+ISSUE-201's unrelated CLD caveat remains open. Full od-isa
+(2,322/1,591/126/29/6/1,133/7/15; zero doc tests), paged machine quantum
+(79/79), workspace all-targets check, scoped rustfmt and diff-check pass.
+`cargo fmt --all -- --check` reports the unrelated pre-existing formatting diff
+in `crates/od-host/src/storage_abi_v1.rs`; that file was not changed. Existing
+warnings remain confined to unrelated od-machine/od-host code. Independent
+review approved with no remaining findings.
+
 ### ISSUE-358 — ADD RAX,0x20
 
 The base profile admits only `48 83 C0 20`, qword ADD RAX,sign-extended imm8
