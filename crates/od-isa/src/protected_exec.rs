@@ -1,5 +1,6 @@
 //! Execution of block 6 of the AP trampoline in 32-bit protected mode, the `MOV CR0, EAX` that
-//! enables paging and the compatibility-mode far jump of block 7 (S6-14k, S6-14l, S6-14m).
+//! enables paging, the far jump of block 7 and the 64-bit indirect jump of block 8 (S6-14k,
+//! S6-14l, S6-14m, S6-14n).
 //!
 //! Scope is the closed set of forms of the S6-14a profile row 6 (CPU_CONTRACT.md, sections
 //! "S6-14a", "S6-14k" and "S6-14l"), blob offsets `0x2000..0x2062` and the tail up to `0x206c` (`JMP 0x2065`), entered from the block 5 far
@@ -18,6 +19,7 @@
 //! | `0f 32` / `0f 30`             | `RDMSR` / `WRMSR`, only with `ECX = 0xC0000080` (EFER) |
 //! | `0f 22 c0`                    | `MOV CR0, EAX` (S6-14m: enables paging, below) |
 //! | `ea off32 sel16`              | `JMP FAR ptr16:32` (S6-14m, block 7 at `0x2065`) |
+//! | `ff 25 disp32`                | `JMP QWORD PTR [rip+disp32]` (S6-14n, block 8 at `0x20f0`, 64-bit mode only) |
 //!
 //! Everything else is [`ProtectedRefusal::Unsupported`] with the address and bytes and no state
 //! change: in particular `RDMSR`/`WRMSR` with any other `ECX` (the model has one MSR, EFER; the
@@ -49,13 +51,31 @@
 //! descriptor with `L = 1` and `D = 1` is refused, `L = 1`, `D = 0` selects 64-bit mode (no limit
 //! check, `RIP` is the zero-extended offset) and `L = 0` the compatibility mode (offset under the
 //! limit); outside IA-32e mode `L = 1` is a model refusal. The model does not execute in 64-bit
-//! mode: [`ProtectedRefusal::Mode64NotModelled`] is returned for any step with `CS.L = 1`
-//! (S6-14n). `MOV CR3, EAX` stores the value (no PDPTR load, no TLB); `MOV CR4, EAX`
+//! mode beyond block 8 (S6-14n, below). `MOV CR3, EAX` stores the value (no PDPTR load, no TLB); `MOV CR4, EAX`
 //! stores a value whose bits above bit 10 are clear and refuses any other as
 //! [`ProtectedRefusal::Cr4WriteUnmodelled`] (a model refusal, not a hardware effect: per the SDM,
 //! from memory, a reserved or unsupported CR4 bit is `#GP(0)`, bits 11.. name features
 //! (`UMIP`, `LA57`, `VMXE`, `PCIDE`, `OSXSAVE`, ...) that the profile does not enable, and the
 //! model does not gate bits 0..10 by CPUID).
+//!
+//! 64-bit mode, block 8 (S6-14n, CPU_CONTRACT.md "S6-14n"). With `EFER.LMA = 1` and `CS.L = 1` the
+//! closed set is the one instruction of the linked path at `0x20f0`: `ff 25 disp32`, `JMP
+//! QWORD PTR [rip+disp32]` (no prefix, no REX). `RIP` is 64 bits ([`ProtectedCpu::rip`]; the low
+//! half stays in `eip`, the high half in `rip_high`, nonzero only after this jump). Segmentation is
+//! off: the instruction bytes and the pointer cell are at the linear address itself (the CS and DS
+//! bases and limits are ignored, so a 64-bit `CS` with a nonzero base behaves like base 0); the
+//! cell is `RIP of the next instruction + sign_extend(disp32)` (64-bit wrap), read as 8 bytes
+//! through the paging walk of [`crate::paging`] (so an `A` bit of every entry it used is set, as for
+//! any read). A cell address or a target that is not canonical (bits 63:47 not all equal, 48-bit
+//! addresses; `CR4.LA57` is never set in the model) is [`ProtectedRefusal::NonCanonicalAddress`]
+//! (the `#GP(0)` of hardware, by memory of the SDM Vol. 1 section 3.3.7.1); the model checks both the first
+//! and the last byte of the cell. The page model covers linear addresses below 4 GiB: a cell or an
+//! instruction byte above is [`ProtectedRefusal::LinearBeyond4GiB`]. After the jump `RIP` is the
+//! target (`secondary_startup_64` in the linked path, `0xffffffff8139c090`) and the next step is
+//! [`ProtectedRefusal::Mode64TargetEntered`]: the target is neither fetched nor executed (the
+//! `CALL verify_cpu` there is only the boundary of the slice). Any other 64-bit instruction is
+//! [`ProtectedRefusal::Unsupported`]; a `RIP` above 4 GiB that was not reached by this jump is
+//! [`ProtectedRefusal::Mode64NotModelled`].
 //!
 //! Segment loads (`MOV Sreg, r32` uses the low 16 bits of the register) follow the SDM Vol. 3A
 //! chapter 5 rules, from memory, with CPL = 0: a null selector, TI = 1 (the LDT is not modelled)
@@ -171,6 +191,8 @@ pub enum ProtectedInstruction {
     MovCr0Eax,
     /// `ea off32 sel16`: `JMP FAR ptr16:32` (32-bit operand size, no prefix).
     JmpFarPtr { selector: u16, offset: u32 },
+    /// `ff 25 disp32`: `JMP QWORD PTR [rip+disp32]` in 64-bit mode (block 8, S6-14n).
+    JmpIndirectRipRel { disp: i32 },
     /// `b8 imm32`.
     MovEaxImm32(u32),
     /// `b9 imm32`.
@@ -295,8 +317,31 @@ pub enum ProtectedRefusal {
         selector: u16,
         reason: FarJumpReason,
     },
-    /// `CS.L = 1`: the model does not execute 64-bit code (S6-14n). `eip` is the 64-bit `RIP`.
-    Mode64NotModelled { eip: u32 },
+    /// 64-bit mode with a `RIP` above 4 GiB that the jump of block 8 did not set: the instruction
+    /// fetch is outside the page model (see [`ProtectedCpu::step`]).
+    Mode64NotModelled { rip: u64 },
+    /// The indirect jump of block 8 has set `RIP` to its target (`rip`); the model does not fetch
+    /// or execute the target (S6-14n).
+    Mode64TargetEntered { rip: u64 },
+    /// A 64-bit address of the instruction at `rip` is not canonical (`#GP(0)`).
+    NonCanonicalAddress {
+        rip: u64,
+        address: u64,
+        role: AddressRole,
+    },
+    /// A linear address of the 64-bit instruction at `rip` is `linear` >= 4 GiB: the page model
+    /// walks 32-bit linear addresses only.
+    LinearBeyond4GiB { rip: u64, linear: u64 },
+}
+
+/// What a non-canonical 64-bit address of [`ProtectedRefusal::NonCanonicalAddress`] was used for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AddressRole {
+    /// The memory operand of the indirect jump (its first byte or, for the last byte, the address
+    /// plus 7).
+    Operand,
+    /// The jump target read from the cell.
+    JumpTarget,
 }
 
 /// Why [`ProtectedCpu::from_real_entry`] did not build a state.
@@ -321,7 +366,12 @@ pub struct ProtectedRun {
 pub struct ProtectedCpu {
     /// EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI (index constants of `real_mode_exec`).
     pub gpr: [u32; 8],
+    /// Low 32 bits of `RIP` (the whole instruction pointer outside 64-bit mode).
     pub eip: u32,
+    /// Bits 63:32 of `RIP`: 0 except after the indirect jump of block 8 (S6-14n).
+    pub rip_high: u32,
+    /// Set by the indirect jump of block 8: `RIP` is the target, which the model does not execute.
+    pub target_entered: bool,
     pub eflags: u32,
     pub cr0: u32,
     /// Stored by `MOV CR3, EAX`; the PML4 base of the walk once `CR0.PG` is set.
@@ -390,6 +440,8 @@ impl ProtectedCpu {
         Ok(Self {
             gpr: real.gpr,
             eip: real.mode.eip,
+            rip_high: 0,
+            target_entered: false,
             eflags: real.mode.eflags,
             cr0: real.mode.cr0,
             cr3: 0,
@@ -407,15 +459,38 @@ impl ProtectedCpu {
         })
     }
 
+    /// The 64-bit `RIP`.
+    pub fn rip(&self) -> u64 {
+        (u64::from(self.rip_high) << 32) | u64::from(self.eip)
+    }
+
+    /// 64-bit mode: `EFER.LMA = 1` and `CS.L = 1` (segmentation is off, `CS.D` must be 0).
+    fn is_64bit(&self) -> bool {
+        self.cs.flags & 0x2 != 0 && self.efer & EFER_LMA != 0
+    }
+
+    /// Base added to `EIP` for the linear address of an instruction byte: the CS base, 0 in 64-bit
+    /// mode.
+    fn code_base(&self) -> u32 {
+        if self.is_64bit() { 0 } else { self.cs.base }
+    }
+
     fn fetch<M: RealModeMemory>(&self, mem: &M, i: u32) -> Result<u8, ProtectedRefusal> {
         let offset = u64::from(self.eip) + u64::from(i);
-        if offset > u64::from(self.cs.limit) {
+        if !self.is_64bit() && offset > u64::from(self.cs.limit) {
             return Err(ProtectedRefusal::FetchBeyondLimit {
                 eip: self.eip,
                 offset,
             });
         }
-        let linear = self.cs.base.wrapping_add(offset as u32);
+        let linear = if self.is_64bit() {
+            u32::try_from(offset).map_err(|_| ProtectedRefusal::LinearBeyond4GiB {
+                rip: self.rip(),
+                linear: offset,
+            })?
+        } else {
+            self.cs.base.wrapping_add(offset as u32)
+        };
         let phys = self.physical(mem, linear, AccessKind::Fetch, &mut Vec::new())?;
         mem.read_u8(phys).ok_or(ProtectedRefusal::FetchUnreadable {
             eip: self.eip,
@@ -479,9 +554,77 @@ impl ProtectedCpu {
         }
         ProtectedRefusal::Unsupported {
             eip: self.eip,
-            linear: self.cs.base.wrapping_add(self.eip),
+            linear: self.code_base().wrapping_add(self.eip),
             bytes,
         }
+    }
+
+    /// Decodes the closed 64-bit set (block 8, S6-14n) at `RIP`.
+    fn decode64<M: RealModeMemory>(
+        &self,
+        mem: &M,
+    ) -> Result<(ProtectedInstruction, u32), ProtectedRefusal> {
+        if self.target_entered {
+            return Err(ProtectedRefusal::Mode64TargetEntered { rip: self.rip() });
+        }
+        if self.rip_high != 0 {
+            return Err(ProtectedRefusal::Mode64NotModelled { rip: self.rip() });
+        }
+        if self.cs.flags & 0x4 != 0 {
+            // The far jump refuses L = 1 with D = 1, so this state is not reachable by the model.
+            return Err(self.unsupported(mem));
+        }
+        // `ff /4` with `mod = 00`, `rm = 101`: the RIP-relative memory operand.
+        if self.fetch(mem, 0)? != 0xFF || self.fetch(mem, 1)? != 0x25 {
+            return Err(self.unsupported(mem));
+        }
+        Ok((
+            ProtectedInstruction::JmpIndirectRipRel {
+                disp: self.fetch_u32(mem, 2)? as i32,
+            },
+            6,
+        ))
+    }
+
+    /// `Err` when `address` is not canonical (bits 63:47 not all equal).
+    fn check_canonical(&self, address: u64, role: AddressRole) -> Result<(), ProtectedRefusal> {
+        if ((address as i64) << 16) >> 16 == address as i64 {
+            Ok(())
+        } else {
+            Err(ProtectedRefusal::NonCanonicalAddress {
+                rip: self.rip(),
+                address,
+                role,
+            })
+        }
+    }
+
+    /// Reads the QWORD at the 64-bit linear address `cell` of the instruction at `RIP` (the first
+    /// and the last byte must be canonical, every byte below 4 GiB, readable through the walk).
+    fn read_linear_u64<M: RealModeMemory>(
+        &self,
+        mem: &M,
+        cell: u64,
+        touches: &mut Vec<(u32, u8)>,
+    ) -> Result<u64, ProtectedRefusal> {
+        self.check_canonical(cell, AddressRole::Operand)?;
+        self.check_canonical(cell.wrapping_add(7), AddressRole::Operand)?;
+        let mut bytes = [0u8; 8];
+        for (i, slot) in bytes.iter_mut().enumerate() {
+            let at = cell.wrapping_add(i as u64);
+            let Ok(linear) = u32::try_from(at) else {
+                return Err(ProtectedRefusal::LinearBeyond4GiB {
+                    rip: self.rip(),
+                    linear: at,
+                });
+            };
+            let phys = self.physical(mem, linear, AccessKind::Read, touches)?;
+            *slot = mem.read_u8(phys).ok_or(ProtectedRefusal::DataUnreadable {
+                eip: self.eip,
+                linear,
+            })?;
+        }
+        Ok(u64::from_le_bytes(bytes))
     }
 
     /// Decodes the instruction at `CS:EIP`; returns it with its length.
@@ -489,8 +632,8 @@ impl ProtectedCpu {
         &self,
         mem: &M,
     ) -> Result<(ProtectedInstruction, u32), ProtectedRefusal> {
-        if self.cs.flags & 0x2 != 0 && self.efer & EFER_LMA != 0 {
-            return Err(ProtectedRefusal::Mode64NotModelled { eip: self.eip });
+        if self.is_64bit() {
+            return self.decode64(mem);
         }
         if self.cs.flags & 0x4 == 0 {
             return Err(ProtectedRefusal::CsNot32Bit {
@@ -869,7 +1012,7 @@ impl ProtectedCpu {
         // walks come first, as in hardware), written by `step` at the end.
         if self.cr0 & CR0_PG != 0 {
             for i in 0..len {
-                let linear = self.cs.base.wrapping_add(self.eip).wrapping_add(i);
+                let linear = self.code_base().wrapping_add(self.eip).wrapping_add(i);
                 self.physical(mem, linear, AccessKind::Fetch, touches)?;
             }
         }
@@ -1013,6 +1156,17 @@ impl ProtectedCpu {
                 self.cs = segment;
                 eip = offset;
             }
+            ProtectedInstruction::JmpIndirectRipRel { disp } => {
+                // The cell is relative to the next instruction (`RIP` is below 4 GiB here).
+                let next = u64::from(self.eip).wrapping_add(u64::from(len));
+                let cell = next.wrapping_add(i64::from(disp) as u64);
+                let target = self.read_linear_u64(mem, cell, touches)?;
+                self.check_canonical(target, AddressRole::JumpTarget)?;
+                // Nothing after this can refuse: commit the new `RIP`.
+                eip = target as u32;
+                self.rip_high = (target >> 32) as u32;
+                self.target_entered = true;
+            }
             ProtectedInstruction::MovEaxImm32(imm) => self.gpr[EAX] = imm,
             ProtectedInstruction::MovEcxImm32(imm) => self.gpr[ECX] = imm,
         }
@@ -1081,6 +1235,8 @@ mod tests {
         ProtectedCpu {
             gpr,
             eip: 0x2000,
+            rip_high: 0,
+            target_entered: false,
             eflags: 0x2,
             cr0: 0x0005_0033,
             cr3: 0,
@@ -2362,7 +2518,7 @@ mod tests {
         for (name, index) in gprs {
             assert_eq!(u64::from(cpu.gpr[index]), fs(&["gpr", name]), "{name}");
         }
-        assert_eq!(u64::from(cpu.eip) + rip_delta, fs(&["rip"]), "RIP");
+        assert_eq!(cpu.rip() + rip_delta, fs(&["rip"]), "RIP");
         assert_eq!(
             u64::from(cpu.eflags),
             fs(&["rflags"]) & !rflags_ignore,
@@ -2866,10 +3022,16 @@ mod tests {
             assert_eq!(get_q(&ram, PML4), PDPT as u64 | 0x23);
             assert_eq!(get_q(&ram, PDPT), PD as u64 | 0x23);
             assert_eq!(get_q(&ram, PD), pde_after);
+            // S6-14n: the 64-bit step now decodes; the HLT that stands at 0x20f0 in these RAMs is
+            // outside the closed set of block 8 (the S6-14m expectation was `Mode64NotModelled`).
             let (before_cpu, before_ram) = (cpu, ram.clone());
             assert_eq!(
                 cpu.step(&mut mem(&mut ram)),
-                Err(ProtectedRefusal::Mode64NotModelled { eip: 0x20F0 })
+                Err(ProtectedRefusal::Unsupported {
+                    eip: 0x20F0,
+                    linear: 0x20F0,
+                    bytes: before_ram[0x20F0..0x20F0 + UNSUPPORTED_BYTES_MAX].to_vec()
+                })
             );
             assert_eq!((cpu, ram), (before_cpu, before_ram));
         }
@@ -3175,7 +3337,9 @@ mod tests {
     }
 
     #[test]
-    fn a_64_bit_cs_is_not_executed() {
+    fn a_64_bit_cs_executes_only_the_block_8_jump() {
+        // S6-14m expected `Mode64NotModelled` for every 64-bit step; S6-14n decodes the one form
+        // of block 8 and refuses the rest as `Unsupported` (with the bytes).
         let (mut cpu, mut ram) = (active_cpu(), paged_ram(CODE64_A_SET));
         preset_accessed_dirty(&mut ram, false);
         cpu.cs = ProtectedSegment {
@@ -3185,9 +3349,14 @@ mod tests {
             access: 0x9B,
             flags: 0xA,
         };
+        let Err(ProtectedRefusal::Unsupported { eip, linear, bytes }) =
+            step_one(&mut cpu, &mut ram, &[0xB8, 0, 0, 0, 0])
+        else {
+            panic!("expected Unsupported");
+        };
         assert_eq!(
-            step_one(&mut cpu, &mut ram, &[0xB8, 0, 0, 0, 0]),
-            Err(ProtectedRefusal::Mode64NotModelled { eip: 0x2000 })
+            (eip, linear, &bytes[..5]),
+            (0x2000, 0x2000, &[0xB8, 0, 0, 0, 0][..])
         );
     }
 
@@ -3203,10 +3372,11 @@ mod tests {
         let run = cpu.run(&mut mem(&mut ram), 100);
         // 13 steps to the RDMSR, 7 with the WRMSR path, `mov cr0` and the far jump.
         assert_eq!(run.steps, 22);
-        assert_eq!(
+        // S6-14n: the 64-bit CS is executed; the HLT at 0x20f0 is not a form of block 8.
+        assert!(matches!(
             run.stop,
-            Some(ProtectedRefusal::Mode64NotModelled { eip: 0x20F0 })
-        );
+            Some(ProtectedRefusal::Unsupported { eip: 0x20F0, .. })
+        ));
         assert_eq!(
             (cpu.cr0, cpu.cr3, cpu.cr4, cpu.efer),
             (0x8005_0033, 0x4000, 0x6B0, 0xD01)
@@ -3238,7 +3408,8 @@ mod tests {
 
     #[derive(Clone, Copy)]
     enum OracleOutcomeM {
-        /// 64-bit CS: the model stops before the HLT at 0x20f0 (`Mode64NotModelled`).
+        /// 64-bit CS: the HLT at 0x20f0 is `Unsupported` for the model (S6-14n; S6-14m: stop
+        /// with `Mode64NotModelled`).
         Long64,
         /// Compatibility CS: the HLT at 0x20f0 is `Unsupported` for the model.
         Compat,
@@ -3276,14 +3447,9 @@ mod tests {
         let run = cpu.run(&mut mem(&mut ram), 100);
         assert_eq!(run.steps, expected_steps);
         let (halt, rip_delta, rflags_ignore, cr2) = match outcome {
-            Long64 => {
-                assert_eq!(
-                    run.stop,
-                    Some(ProtectedRefusal::Mode64NotModelled { eip: 0x20F0 })
-                );
-                (true, 1, 0, 0)
-            }
-            Compat => {
+            // S6-14n: the 64-bit CS is executed, so the HLT at 0x20f0 is `Unsupported` in both
+            // cases (the S6-14m expectation for `Long64` was `Mode64NotModelled`).
+            Long64 | Compat => {
                 let Some(ProtectedRefusal::Unsupported { eip, bytes, .. }) = run.stop else {
                     panic!("expected a stop at the HLT, got {:?}", run.stop);
                 };
@@ -3534,5 +3700,562 @@ mod tests {
         "t-tables-accessed-dirty-preset-0000-0000",
         22,
         Long64
+    );
+
+    // ---- block 8: the 64-bit indirect jump (S6-14n) ----------------------------------------
+
+    const JMP_RIP_2F0A: [u8; 6] = [0xFF, 0x25, 0x0A, 0x2F, 0x00, 0x00];
+    const SECONDARY_STARTUP_64: u64 = 0xFFFF_FFFF_8139_C090;
+
+    /// IA-32e mode with the 64-bit CS (selector 0x10, `L = 1`) at the block 8 jump, 0x20f0.
+    fn cpu64() -> ProtectedCpu {
+        let mut cpu = active_cpu();
+        cpu.cs = ProtectedSegment {
+            selector: 0x10,
+            base: 0,
+            limit: 0xFFFF_FFFF,
+            access: 0x9B,
+            flags: 0xA,
+        };
+        cpu.eip = 0x20F0;
+        cpu
+    }
+
+    /// The paged RAM of the S6-14n images: `jmp [rip+0x2f0a]` at 0x20f0 and `cell` at 0x5000; the
+    /// tables are 2 MiB (or 4 KiB with `pt`) identity ones with A and D preset, so that no walk
+    /// writes memory.
+    fn block8_ram(cell: u64, pt: bool) -> Vec<u8> {
+        let mut ram = paged_ram(CODE64_A_SET);
+        if pt {
+            tables_4k(&mut ram);
+        }
+        preset_accessed_dirty(&mut ram, pt);
+        put(&mut ram, 0x20F0, &JMP_RIP_2F0A);
+        put_q(&mut ram, 0x5000, cell);
+        ram
+    }
+
+    #[test]
+    fn rip_relative_jump_reads_the_cell_and_takes_its_value_as_rip() {
+        let mut ram = block8_ram(SECONDARY_STARTUP_64, false);
+        let mut cpu = cpu64();
+        cpu.eflags = 0x97;
+        cpu.gpr[EAX] = 0x1234;
+        let before = cpu;
+        // 0x20f0 + 6 + 0x2f0a = 0x5000: the displacement is relative to the next instruction.
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Ok(ProtectedInstruction::JmpIndirectRipRel { disp: 0x2F0A })
+        );
+        assert_eq!(cpu.rip(), SECONDARY_STARTUP_64);
+        assert_eq!((cpu.eip, cpu.rip_high), (0x8139_C090, 0xFFFF_FFFF));
+        assert!(cpu.target_entered);
+        // Registers, flags, segments and control state are as before.
+        assert_eq!(
+            ProtectedCpu {
+                eip: before.eip,
+                rip_high: 0,
+                target_entered: false,
+                ..cpu
+            },
+            before
+        );
+        // The target is neither fetched nor executed: every further step stops there.
+        let (stopped, ram_stopped) = (cpu, ram.clone());
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Err(ProtectedRefusal::Mode64TargetEntered {
+                rip: SECONDARY_STARTUP_64
+            })
+        );
+        assert_eq!((cpu, ram), (stopped, ram_stopped));
+    }
+
+    #[test]
+    fn the_displacement_is_relative_to_the_next_instruction_and_signed() {
+        // Same cell at 0x5000 from another instruction address: 0x2200 + 6 + 0x2dfa.
+        let mut ram = block8_ram(0x0000_0000_0000_2100, false);
+        put(&mut ram, 0x2200, &[0xFF, 0x25, 0xFA, 0x2D, 0x00, 0x00]);
+        let mut cpu = cpu64();
+        cpu.eip = 0x2200;
+        assert!(cpu.step(&mut mem(&mut ram)).is_ok());
+        assert_eq!((cpu.rip(), cpu.target_entered), (0x2100, true));
+        // A negative displacement is sign-extended: 0x20f0 + 6 - 0x16 = 0x20e0.
+        let mut ram = block8_ram(0, false);
+        put(&mut ram, 0x20F0, &[0xFF, 0x25, 0xEA, 0xFF, 0xFF, 0xFF]);
+        put_q(&mut ram, 0x20E0, 0x0000_1234_5678_9ABC);
+        let mut cpu = cpu64();
+        assert!(cpu.step(&mut mem(&mut ram)).is_ok());
+        assert_eq!(cpu.rip(), 0x0000_1234_5678_9ABC);
+        assert_eq!((cpu.eip, cpu.rip_high), (0x5678_9ABC, 0x1234));
+    }
+
+    #[test]
+    fn canonical_means_bits_63_to_47_are_equal() {
+        // SDM Vol. 1 section 3.3.7.1 (by memory): 48-bit addresses, sign-extended from bit 47.
+        let cpu = cpu64();
+        for (address, canonical) in [
+            (0, true),
+            (0x0000_7FFF_FFFF_FFFF, true),
+            (0x0000_8000_0000_0000, false),
+            (0x0001_0000_0000_0000, false),
+            (0x8000_0000_0000_0000, false),
+            (0xFFFF_7FFF_FFFF_FFFF, false),
+            (0xFFFF_8000_0000_0000, true),
+            (SECONDARY_STARTUP_64, true),
+            (u64::MAX, true),
+        ] {
+            assert_eq!(
+                cpu.check_canonical(address, AddressRole::JumpTarget)
+                    .is_ok(),
+                canonical,
+                "{address:#x}"
+            );
+        }
+        // An operand that is canonical at its first byte and not at its last is refused too.
+        let mut touches = Vec::new();
+        let ram = block8_ram(0, false);
+        let m = ImageMemory {
+            base: 0,
+            bytes: &ram,
+        };
+        assert_eq!(
+            cpu.read_linear_u64(&m, 0x0000_7FFF_FFFF_FFFC, &mut touches),
+            Err(ProtectedRefusal::NonCanonicalAddress {
+                rip: 0x20F0,
+                address: 0x0000_8000_0000_0003,
+                role: AddressRole::Operand
+            })
+        );
+        assert_eq!(
+            cpu.read_linear_u64(&m, 0x0000_8000_0000_0000, &mut touches),
+            Err(ProtectedRefusal::NonCanonicalAddress {
+                rip: 0x20F0,
+                address: 0x0000_8000_0000_0000,
+                role: AddressRole::Operand
+            })
+        );
+    }
+
+    #[test]
+    fn a_non_canonical_target_is_refused_and_changes_nothing() {
+        for target in [
+            0x0000_8000_0000_0000u64,
+            0xFFFF_7FFF_FFFF_FFFF,
+            0x1234_0000_0000_2100,
+        ] {
+            let (mut cpu, mut ram) = (cpu64(), block8_ram(target, false));
+            assert_eq!(
+                step_one(&mut cpu, &mut ram, &[]),
+                Err(ProtectedRefusal::NonCanonicalAddress {
+                    rip: 0x20F0,
+                    address: target,
+                    role: AddressRole::JumpTarget
+                })
+            );
+        }
+        // The boundary values are accepted (they are canonical; the model never fetches them).
+        for target in [0x0000_7FFF_FFFF_FFFFu64, 0xFFFF_8000_0000_0000, 0] {
+            let (mut cpu, mut ram) = (cpu64(), block8_ram(target, false));
+            assert!(cpu.step(&mut mem(&mut ram)).is_ok());
+            assert_eq!(cpu.rip(), target);
+        }
+    }
+
+    #[test]
+    fn a_cell_beyond_4_gib_is_outside_the_page_model() {
+        // disp = -0x8000_0000: 0x20f6 - 0x8000_0000 sign-extends to 0xffff_ffff_8000_20f6.
+        let (mut cpu, mut ram) = (cpu64(), block8_ram(0, false));
+        put(&mut ram, 0x20F0, &[0xFF, 0x25, 0x00, 0x00, 0x00, 0x80]);
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &[]),
+            Err(ProtectedRefusal::LinearBeyond4GiB {
+                rip: 0x20F0,
+                linear: 0xFFFF_FFFF_8000_20F6
+            })
+        );
+        // disp = 0x7fff_ffff: 0x20f6 + 0x7fff_ffff = 0x8000_20f5, below 4 GiB, not mapped (PDPT[2]).
+        put(&mut ram, 0x20F0, &[0xFF, 0x25, 0xFF, 0xFF, 0xFF, 0x7F]);
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &[]),
+            Err(ProtectedRefusal::PageFault {
+                eip: 0x20F0,
+                linear: 0x8000_20F5,
+                access: AccessKind::Read,
+                reason: PageRefusal::NotPresent { level: 3, entry: 0 }
+            })
+        );
+    }
+
+    #[test]
+    fn the_cell_is_read_through_the_paging_walk_and_sets_accessed_bits() {
+        // 4 KiB pages: the cell's linear page 5 is physical 0x6000; the fetch uses page 2.
+        let mut ram = paged_ram(CODE64_A_SET);
+        tables_4k(&mut ram);
+        put_q(&mut ram, PT + 40, 0x6000 | 3);
+        put(&mut ram, 0x20F0, &JMP_RIP_2F0A);
+        put_q(&mut ram, 0x6000, SECONDARY_STARTUP_64);
+        put_q(&mut ram, 0x5000, 0xDEAD_BEEF);
+        let mut cpu = cpu64();
+        assert!(cpu.step(&mut mem(&mut ram)).is_ok());
+        assert_eq!(cpu.rip(), SECONDARY_STARTUP_64);
+        // A in PML4E, PDPTE, PDE, PTE(2) (fetch) and PTE(5) (read); no D; others untouched.
+        assert_eq!(get_q(&ram, PML4), PDPT as u64 | 0x23);
+        assert_eq!(get_q(&ram, PDPT), PD as u64 | 0x23);
+        assert_eq!(get_q(&ram, PD), PT as u64 | 0x23);
+        assert_eq!(get_q(&ram, PT + 16), 0x2000 | 0x23);
+        assert_eq!(get_q(&ram, PT + 40), 0x6000 | 0x23);
+        assert_eq!(get_q(&ram, PT), 0x3, "page 0 was not used");
+        assert_eq!(get_q(&ram, PT + 8), 0x1003, "page 1 was not used");
+        // A read-only PDE (R/W = 0) lets the read through and does not set D.
+        let mut ram = block8_ram(SECONDARY_STARTUP_64, false);
+        put_q(&mut ram, PD, 0x81 | 0x20);
+        let mut cpu = cpu64();
+        cpu.cr0 |= CR0_WP;
+        assert!(cpu.step(&mut mem(&mut ram)).is_ok());
+        assert_eq!(get_q(&ram, PD), 0xA1);
+    }
+
+    #[test]
+    fn a_cell_across_a_page_boundary_walks_both_pages() {
+        // disp = 0x5ffc - 0x20f6 = 0x3f06; the QWORD covers 0x5ffc..0x6003 (PT[5] and PT[6]).
+        let mut ram = paged_ram(CODE64_A_SET);
+        tables_4k(&mut ram);
+        put(&mut ram, 0x20F0, &[0xFF, 0x25, 0x06, 0x3F, 0x00, 0x00]);
+        put_q(&mut ram, 0x5FFC, SECONDARY_STARTUP_64);
+        let mut cpu = cpu64();
+        assert!(cpu.step(&mut mem(&mut ram)).is_ok());
+        assert_eq!(cpu.rip(), SECONDARY_STARTUP_64);
+        assert_eq!(get_q(&ram, PT + 40), 0x5000 | 0x23);
+        assert_eq!(get_q(&ram, PT + 48), 0x6000 | 0x23);
+        // The second page not present: the walk of byte 4 faults at 0x6000. The walk of bytes 0..3
+        // (PTE(5)) is complete, so its A bit stays set (S6-14m rule: completed walks of an
+        // instruction that faults later are committed; model behaviour, not confirmed by the oracle).
+        let mut ram = paged_ram(CODE64_A_SET);
+        tables_4k(&mut ram);
+        put(&mut ram, 0x20F0, &[0xFF, 0x25, 0x06, 0x3F, 0x00, 0x00]);
+        put_q(&mut ram, PT + 48, 0);
+        let mut cpu = cpu64();
+        let before = cpu;
+        // Not `step_one`: it asserts that memory is unchanged, which is not so here (A bits).
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Err(ProtectedRefusal::PageFault {
+                eip: 0x20F0,
+                linear: 0x6000,
+                access: AccessKind::Read,
+                reason: PageRefusal::NotPresent { level: 1, entry: 0 }
+            })
+        );
+        assert_eq!(cpu, before, "state unchanged by the refusal");
+        assert_eq!(
+            get_q(&ram, PT + 40),
+            0x5000 | 0x23,
+            "PTE(5): A set by the completed walk"
+        );
+        assert_eq!(get_q(&ram, PT + 48), 0, "PTE(6) stays not present");
+    }
+
+    #[test]
+    fn a_cell_page_that_is_not_present_is_a_page_fault_at_the_cell() {
+        let (mut cpu, mut ram) = (cpu64(), block8_ram(SECONDARY_STARTUP_64, true));
+        put_q(&mut ram, PT + 40, 0);
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &[]),
+            Err(ProtectedRefusal::PageFault {
+                eip: 0x20F0,
+                linear: 0x5000,
+                access: AccessKind::Read,
+                reason: PageRefusal::NotPresent { level: 1, entry: 0 }
+            })
+        );
+        // The same with the PML4 entry not present.
+        let (mut cpu, mut ram) = (cpu64(), block8_ram(SECONDARY_STARTUP_64, false));
+        put_q(&mut ram, PML4, 0);
+        // The fetch of the instruction faults first (decode), at 0x20f0.
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &[]),
+            Err(ProtectedRefusal::PageFault {
+                eip: 0x20F0,
+                linear: 0x20F0,
+                access: AccessKind::Fetch,
+                reason: PageRefusal::NotPresent { level: 4, entry: 0 }
+            })
+        );
+    }
+
+    #[test]
+    fn the_64_bit_cs_base_and_limit_are_ignored() {
+        let (mut cpu, mut ram) = (cpu64(), block8_ram(SECONDARY_STARTUP_64, false));
+        cpu.cs.base = 0x1000;
+        cpu.cs.limit = 0xFFF;
+        assert!(cpu.step(&mut mem(&mut ram)).is_ok());
+        assert_eq!(cpu.rip(), SECONDARY_STARTUP_64);
+        // DS has no effect on the cell either.
+        let (mut cpu, mut ram) = (cpu64(), block8_ram(SECONDARY_STARTUP_64, false));
+        cpu.ds.base = 0x1000;
+        cpu.ds.limit = 0;
+        assert!(cpu.step(&mut mem(&mut ram)).is_ok());
+        assert_eq!(cpu.rip(), SECONDARY_STARTUP_64);
+    }
+
+    #[test]
+    fn every_other_64_bit_instruction_is_unsupported() {
+        for code in [
+            &[0xF4u8][..],                                   // HLT
+            &[0x48, 0xFF, 0x25, 0x0A, 0x2F, 0x00, 0x00][..], // REX.W prefix
+            &[0xFF, 0x24, 0x25, 0x00, 0x50, 0x00, 0x00][..], // JMP [disp32] with a SIB byte
+            &[0xFF, 0x2D, 0x0A, 0x2F, 0x00, 0x00][..],       // /5: JMP FAR m16:32
+            &[0xFF, 0xE0][..],                               // JMP RAX
+            &[0xFF, 0x15, 0x0A, 0x2F, 0x00, 0x00][..],       // CALL [rip+disp32]
+            &[0xE8, 0x6B, 0x01, 0x00, 0x00][..],             // CALL rel32 (the target's first byte)
+            &[0x66, 0xFF, 0x25, 0x0A, 0x2F, 0x00, 0x00][..], // operand-size prefix
+        ] {
+            let (mut cpu, mut ram) = (cpu64(), block8_ram(SECONDARY_STARTUP_64, false));
+            cpu.eip = 0x2000;
+            let Err(ProtectedRefusal::Unsupported { eip, linear, bytes }) =
+                step_one(&mut cpu, &mut ram, code)
+            else {
+                panic!("{code:02x?} must be Unsupported");
+            };
+            assert_eq!((eip, linear), (0x2000, 0x2000));
+            assert_eq!(bytes[..code.len()], code[..], "{code:02x?}");
+        }
+    }
+
+    #[test]
+    fn the_64_bit_decoder_needs_ia32e_and_a_default_size_clear() {
+        // L = 1 without EFER.LMA stays the 32-bit decoder's refusal (D/B = 0).
+        let (mut cpu, mut ram) = (cpu64(), block8_ram(SECONDARY_STARTUP_64, false));
+        cpu.efer &= !EFER_LMA;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &[]),
+            Err(ProtectedRefusal::CsNot32Bit { flags: 0xA })
+        );
+        // A RIP above 4 GiB that the jump did not set is outside the fetch model.
+        let (mut cpu, mut ram) = (cpu64(), block8_ram(SECONDARY_STARTUP_64, false));
+        cpu.rip_high = 1;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &[]),
+            Err(ProtectedRefusal::Mode64NotModelled { rip: 0x1_0000_20F0 })
+        );
+    }
+
+    #[test]
+    fn linked_bytes_run_23_steps_to_the_64_bit_target() {
+        let mut ram = paged_ram(CODE64_A_SET);
+        put_linked_block6(&mut ram);
+        put(&mut ram, 0x20F0, &JMP_RIP_2F0A);
+        put(&mut ram, 0x5000, &SECONDARY_STARTUP_64.to_le_bytes());
+        put(&mut ram, 0x5008, &0x901u32.to_le_bytes());
+        put(&mut ram, 0x5010, &0x6B0u32.to_le_bytes());
+        let mut cpu = entry_cpu();
+        let run = cpu.run(&mut mem(&mut ram), 100);
+        // 22 steps to the 64-bit CS (S6-14m) and the indirect jump of block 8.
+        assert_eq!(run.steps, 23);
+        assert_eq!(
+            run.stop,
+            Some(ProtectedRefusal::Mode64TargetEntered {
+                rip: SECONDARY_STARTUP_64
+            })
+        );
+        assert_eq!(
+            (cpu.cr0, cpu.cr3, cpu.cr4, cpu.efer),
+            (0x8005_0033, 0x4000, 0x6B0, 0xD01)
+        );
+        // The cell was only read: it keeps its value.
+        assert_eq!(get_q(&ram, 0x5000), SECONDARY_STARTUP_64);
+    }
+
+    // ---- comparison with the KVM oracle (S6-14n) ------------------------------------------
+    //
+    // Files in docs/reports/data/stage6/s6-14n/ (make-images.py, run-oracle.sh): the S6-14m path
+    // up to the 64-bit CS, then the linked `jmp QWORD PTR [rip+0x2f0a]` at 0x20f0 with the cell at
+    // 0x5000 and the target of the cell varied per image (a HLT stands at the target, so the
+    // oracle executes it: its RIP is one past the target). The model stops before the target
+    // (`Mode64TargetEntered`). Compared: GPRs, RIP, EFLAGS, CR0, CR3, CR4, EFER, the six segments,
+    // GDTR, IDTR, `CR2` for a `#PF`, the GDT block and the first 64 bytes of PML4, PDPT, PD, PT and
+    // of the trampoline header (the cell). Not compared (the model does not walk the target): the
+    // entries of the oracle's fetch walk to the high target, `*-high.jsonl`.
+
+    const RAM_N: usize = 0xE000;
+
+    #[derive(Clone, Copy)]
+    enum OracleOutcomeN {
+        /// The jump is taken, the oracle executes the HLT at the target (the model stops there).
+        Target(u64),
+        /// The jump is taken to a canonical, unmapped target: `#PF` at its fetch, `CR2` = target.
+        TargetFetchFault(u64),
+        /// `#GP` at the jump: the cell holds this non-canonical address.
+        NonCanonical(u64),
+        /// `#PF` at the read of the cell at 0x5000 (PTE of page 5 not present).
+        CellPageFault,
+    }
+
+    fn compare_tables_n(ram: &[u8], tables: &str) {
+        let lines: Vec<&str> = tables.lines().collect();
+        assert_eq!(lines.len(), 5);
+        for (line, expected_gpa) in lines.iter().zip([PML4, PDPT, PD, PT, 0x5000]) {
+            let (gpa, bytes) = oracle_result_block(line);
+            assert_eq!(gpa as usize, expected_gpa);
+            assert_eq!(
+                &ram[expected_gpa..expected_gpa + 64],
+                &bytes[..],
+                "block {gpa:#x}"
+            );
+        }
+    }
+
+    fn compare_with_oracle_n(image: &[u8], json: &str, tables: &str, outcome: OracleOutcomeN) {
+        use OracleOutcomeN::*;
+        let (mut cpu, mut ram) = enter_from_oracle_image_sized(image, json, RAM_N);
+        let run = cpu.run(&mut mem(&mut ram), 100);
+        let (steps, stop, halt, rip_delta, cr2) = match outcome {
+            Target(rip) => (
+                23,
+                ProtectedRefusal::Mode64TargetEntered { rip },
+                true,
+                1,
+                0,
+            ),
+            TargetFetchFault(rip) => (
+                23,
+                ProtectedRefusal::Mode64TargetEntered { rip },
+                false,
+                0,
+                rip,
+            ),
+            NonCanonical(address) => (
+                22,
+                ProtectedRefusal::NonCanonicalAddress {
+                    rip: 0x20F0,
+                    address,
+                    role: AddressRole::JumpTarget,
+                },
+                false,
+                0,
+                0,
+            ),
+            CellPageFault => (
+                22,
+                ProtectedRefusal::PageFault {
+                    eip: 0x20F0,
+                    linear: 0x5000,
+                    access: AccessKind::Read,
+                    reason: PageRefusal::NotPresent { level: 1, entry: 0 },
+                },
+                false,
+                0,
+                0x5000,
+            ),
+        };
+        assert_eq!(run.steps, steps);
+        assert_eq!(run.stop, Some(stop));
+        if halt {
+            assert!(json.contains("\"stop_reason\":\"guest_hlt\""));
+            assert!(json.contains("\"exits\":[{\"kind\":\"hlt\"}]"));
+        } else {
+            assert!(json.contains("\"stop_reason\":\"triple_fault_or_shutdown\""));
+            assert!(json.contains("\"exits\":[{\"kind\":\"shutdown\"}]"));
+        }
+        compare_state_cr2(
+            &cpu,
+            &ram,
+            json,
+            rip_delta,
+            if halt { 0 } else { 0x1_0000 },
+            cr2,
+        );
+        compare_tables_n(&ram, tables);
+    }
+
+    macro_rules! oracle_case_n {
+        ($name:ident, $stem:literal, $outcome:expr) => {
+            #[test]
+            fn $name() {
+                let image: &[u8] = include_bytes!(concat!(
+                    "../../../docs/reports/data/stage6/s6-14n/",
+                    $stem,
+                    ".bin"
+                ));
+                let json: &str = include_str!(concat!(
+                    "../../../docs/reports/data/stage6/s6-14n/oracle-",
+                    $stem,
+                    ".json"
+                ));
+                let tables: &str = include_str!(concat!(
+                    "../../../docs/reports/data/stage6/s6-14n/oracle-",
+                    $stem,
+                    "-tables.jsonl"
+                ));
+                compare_with_oracle_n(image, json, tables, $outcome);
+            }
+        };
+    }
+    use OracleOutcomeN::{CellPageFault, NonCanonical, Target, TargetFetchFault};
+    // a: the linked path, 2 MiB identity page, cell = 0xffffffff8139c090.
+    oracle_case_n!(
+        oracle_n_a_2mib_secondary_startup_64,
+        "a-2mib-secondary-startup-64-0000-0000",
+        Target(SECONDARY_STARTUP_64)
+    );
+    // b: 4 KiB pages: the cell read sets A in PTE(5).
+    oracle_case_n!(
+        oracle_n_b_4k_secondary_startup_64,
+        "b-4k-secondary-startup-64-0000-0000",
+        Target(SECONDARY_STARTUP_64)
+    );
+    oracle_case_n!(
+        oracle_n_c_low_target_0x2100,
+        "c-low-target-0x2100-0000-0000",
+        Target(0x2100)
+    );
+    oracle_case_n!(
+        oracle_n_d_noncanonical_low_gp,
+        "d-noncanonical-low-gp-0000-0000",
+        NonCanonical(0x0000_8000_0000_0000)
+    );
+    oracle_case_n!(
+        oracle_n_e_noncanonical_high_gp,
+        "e-noncanonical-high-gp-0000-0000",
+        NonCanonical(0xFFFF_7FFF_FFFF_FFFF)
+    );
+    oracle_case_n!(
+        oracle_n_f_canonical_low_max_unmapped_pf,
+        "f-canonical-low-max-unmapped-pf-0000-0000",
+        TargetFetchFault(0x0000_7FFF_FFFF_FFFF)
+    );
+    oracle_case_n!(
+        oracle_n_g_canonical_high_min_unmapped_pf,
+        "g-canonical-high-min-unmapped-pf-0000-0000",
+        TargetFetchFault(0xFFFF_8000_0000_0000)
+    );
+    oracle_case_n!(
+        oracle_n_h_pte_cell_page_not_present_pf,
+        "h-pte-cell-page-not-present-pf-0000-0000",
+        CellPageFault
+    );
+    oracle_case_n!(
+        oracle_n_i_pde_readonly_cell_read,
+        "i-pde-readonly-cell-read-0000-0000",
+        Target(SECONDARY_STARTUP_64)
+    );
+    // j: `ff 25 ea ff ff ff`: the cell at 0x20e0 (negative displacement).
+    oracle_case_n!(
+        oracle_n_j_negative_disp_cell_at_0x20e0,
+        "j-negative-disp-cell-at-0x20e0-0000-0000",
+        Target(SECONDARY_STARTUP_64)
+    );
+    // k: the cell at 0x5ffc..0x6003 crosses a page boundary (PTE(5) and PTE(6) get A).
+    oracle_case_n!(
+        oracle_n_k_4k_cell_crosses_page,
+        "k-4k-cell-crosses-page-0000-0000",
+        Target(SECONDARY_STARTUP_64)
+    );
+    // l: the CS descriptor has a base of 0x1000, which 64-bit mode ignores (the oracle reports it).
+    oracle_case_n!(
+        oracle_n_l_code64_base_1000_ignored,
+        "l-code64-base-1000-ignored-0000-0000",
+        Target(SECONDARY_STARTUP_64)
     );
 }
