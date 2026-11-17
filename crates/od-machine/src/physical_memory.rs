@@ -534,6 +534,36 @@ impl PhysicalMemory {
         self.write_bytes(address, &value.to_le_bytes(), committed_write)
     }
 
+    /// S6-25: compare-and-replace of one 8-byte value, the single backend
+    /// operation under every page-table accessed/dirty update (and the place S6-31 replaces
+    /// with a host atomic compare-exchange). It reads the 8 bytes; when they equal `expected`
+    /// it writes `replacement` through [`Self::write_u64`] (the callback runs once, after the
+    /// commit) and returns `Ok(Ok(()))`; otherwise it writes nothing, runs no callback and
+    /// returns `Ok(Err(observed))`. Region errors are those of the read and of the write, and
+    /// memory is unchanged on every error. Interleaving mode runs one whole instruction at a
+    /// time, so the read and the write cannot be separated by another vCPU; a backend shared
+    /// between host threads must make them one operation. Precondition: `address` is aligned
+    /// to 8 for the future host compare-exchange (S6-31); callers pass aligned addresses (a 4K
+    /// table base plus index * 8), checked by a debug assertion.
+    pub fn compare_replace_u64(
+        &mut self,
+        address: GuestPhysicalAddress,
+        expected: u64,
+        replacement: u64,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<Result<(), u64>, MemoryAccessError> {
+        debug_assert!(
+            address.0 % 8 == 0,
+            "compare_replace_u64 needs an 8-aligned address"
+        );
+        let observed = self.read_u64(address)?;
+        if observed != expected {
+            return Ok(Err(observed));
+        }
+        self.write_u64(address, replacement, committed_write)?;
+        Ok(Ok(()))
+    }
+
     fn locate(
         &self,
         address: GuestPhysicalAddress,
@@ -709,6 +739,47 @@ mod tests {
             top_byte.read_u8(GuestPhysicalAddress::new(u64::MAX)),
             Ok(0x5a)
         );
+    }
+
+    /// S6-25: compare-and-replace writes (and notifies, and bumps the generation) only when the
+    /// 8 bytes equal `expected`; otherwise it returns the observed value and changes nothing.
+    #[test]
+    fn compare_replace_u64_replaces_only_a_matching_value() {
+        let mut ram = memory(&[
+            (0, 0x2000, MemoryRegionKind::Ram),
+            (0x2000, 0x1000, MemoryRegionKind::Rom),
+        ]);
+        let at = GuestPhysicalAddress::new(0x100);
+        ram.write_u64(at, 7, |_| {}).unwrap();
+        let generation = ram.code_page_generation(at).unwrap();
+        let mut log = Vec::new();
+        assert_eq!(
+            ram.compare_replace_u64(at, 8, 9, |r| log.push(r)),
+            Ok(Err(7))
+        );
+        assert!(log.is_empty());
+        assert_eq!(ram.read_u64(at), Ok(7));
+        assert_eq!(ram.code_page_generation(at), Ok(generation));
+        assert_eq!(
+            ram.compare_replace_u64(at, 7, 9, |r| log.push(r)),
+            Ok(Ok(()))
+        );
+        assert_eq!(log, [range(0x100, 8)]);
+        assert_eq!(ram.read_u64(at), Ok(9));
+        assert_eq!(ram.code_page_generation(at), Ok(generation + 1));
+        // Errors leave memory unchanged and notify nothing.
+        let rom = GuestPhysicalAddress::new(0x2000);
+        assert_eq!(
+            ram.compare_replace_u64(rom, 0, 1, |r| log.push(r)),
+            Err(MemoryAccessError::ReadOnlyRegion(MemoryRegionKind::Rom))
+        );
+        assert_eq!(
+            ram.compare_replace_u64(GuestPhysicalAddress::new(0x9000), 0, 1, |r| log.push(r)),
+            Err(MemoryAccessError::Unmapped(GuestPhysicalAddress::new(
+                0x9000
+            )))
+        );
+        assert_eq!(log.len(), 1);
     }
 
     #[test]

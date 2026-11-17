@@ -374,6 +374,22 @@ pub trait RealModeMemory {
     fn can_write(&self, linear: u32) -> bool;
     /// Writes one byte. Returns `false` (and writes nothing) when `linear` is not writable.
     fn write_u8(&mut self, linear: u32, value: u8) -> bool;
+    /// S6-25: ORs `mask` into the byte at `linear` as one operation; `false` (nothing written)
+    /// when the byte is not readable or not writable. It is the single place where this
+    /// byte-wise path updates the accessed/dirty bits of a page-table entry (see
+    /// `paging::commit_touches`); an OR never takes back a bit another writer set. The default
+    /// is the serial read followed by a write, correct while whole instructions are
+    /// interleaved (the instruction is indivisible). S6-31: replace with a CAS on the value the
+    /// walk read (see S6-31 step 5); an atomic OR without comparison is not enough: it can turn a
+    /// zeroed PTE into a nonzero one. Replacement points: this method and
+    /// `paging::commit_touches`. Deviation from steps 1-2 of the S6-25 plan: the AP path reads
+    /// an entry byte by byte and applies the touches as a deferred OR without comparison.
+    fn or_u8(&mut self, linear: u32, mask: u8) -> bool {
+        match self.read_u8(linear) {
+            Some(old) => self.write_u8(linear, old | mask),
+            None => false,
+        }
+    }
 }
 
 /// Read-only memory made of one byte image placed at `base`; everything else is unreadable,

@@ -159,7 +159,8 @@ frame, A/D или D effects; CPU entry state коммитится только �
 строке таблицы точке. Исключение — `CR2`, обновляемый при входе в bounded `#PF`
 до попыток записи exception frame. Ошибка отдельного backing write не меняет
 байты/generation и не вызывает его callback. Page-walk A/D принадлежат S6-25 и
-проходят собственный update/commit path; descriptor A/Bits и busy image не
+проходят собственный update/commit path (реализован: один compare-and-replace
+`PhysicalMemory::compare_replace_u64`, повтор обхода с уровня, см. `MACHINE_CONTRACT.md`, «S6-25»); descriptor A/Bits и busy image не
 являются A/D.
 
 **Общее правило descriptor access privilege.** Все descriptor-table memory

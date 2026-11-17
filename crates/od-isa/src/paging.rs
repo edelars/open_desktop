@@ -32,7 +32,7 @@
 //!   keep their bits, see `ProtectedCpu::step`). A
 //!   touch needs the low byte of the entry writable in memory, otherwise the walk is refused with
 //!   [`PageRefusal::EntryUnwritable`]. Entries are 8 bytes, little-endian; `A` and `D` live in the
-//!   low byte, so one byte is read-modified-written.
+//!   low byte, so one byte is OR-ed (S6-25: `RealModeMemory::or_u8`).
 
 use crate::real_mode_exec::RealModeMemory;
 
@@ -114,6 +114,9 @@ pub struct Translation {
     pub touches: Vec<(u32, u8)>,
 }
 
+// S6-25 deviation (AP path): the entry is read byte by byte (eight `read_u8`), not as one 8-byte
+// access; correct in interleaving mode (the instruction is indivisible). S6-31 replaces this with
+// the CAS on the value the walk read (see `RealModeMemory::or_u8`).
 fn read_entry<M: RealModeMemory>(mem: &M, phys: u32) -> Result<u64, PageRefusal> {
     let mut bytes = [0u8; 8];
     for (i, slot) in bytes.iter_mut().enumerate() {
@@ -212,12 +215,19 @@ pub fn translate<M: RealModeMemory>(
     })
 }
 
-/// Writes the accessed/dirty updates of [`Translation::touches`]: reads each byte, ORs the mask
-/// in. Every address was checked writable by [`translate`], so this does not fail.
+/// Writes the accessed/dirty updates of [`Translation::touches`]: ORs each mask into its byte
+/// through [`RealModeMemory::or_u8`] (S6-25: the single place of this path, no ordinary
+/// read-then-write here). Every address was checked writable by [`translate`], so this does not
+/// fail. S6-25 deviation (AP path): the OR is deferred and applied without comparing the entry
+/// with the value read by the walk; correct while whole instructions are interleaved. S6-31:
+/// replace with a CAS on the walk's value (an atomic OR alone could turn a zeroed PTE into a
+/// nonzero one); replacement points are this function and `RealModeMemory::or_u8`.
 pub fn commit_touches<M: RealModeMemory>(mem: &mut M, touches: &[(u32, u8)]) {
     for &(at, mask) in touches {
-        let old = mem.read_u8(at).expect("the entry was read by the walk");
-        assert!(mem.write_u8(at, old | mask), "can_write was true");
+        assert!(
+            mem.or_u8(at, mask),
+            "the entry was read and can_write was true"
+        );
     }
 }
 
@@ -570,5 +580,42 @@ mod tests {
             walk(&ram, 0x2000, AccessKind::Read),
             Err(PageRefusal::PhysicalBeyond4GiB { phys: 1 << 32 })
         );
+    }
+
+    /// S6-25: the accessed/dirty bits of this path are written only through
+    /// `RealModeMemory::or_u8`: an ordinary `write_u8` is never called by `commit_touches`.
+    #[test]
+    fn commit_touches_goes_through_the_or_operation_only() {
+        struct OrOnly {
+            bytes: Vec<u8>,
+            ors: Vec<(u32, u8)>,
+        }
+        impl RealModeMemory for OrOnly {
+            fn read_u8(&self, linear: u32) -> Option<u8> {
+                self.bytes.get(linear as usize).copied()
+            }
+            fn can_write(&self, _linear: u32) -> bool {
+                true
+            }
+            fn write_u8(&mut self, _linear: u32, _value: u8) -> bool {
+                panic!("an ordinary byte write on the accessed/dirty path");
+            }
+            fn or_u8(&mut self, linear: u32, mask: u8) -> bool {
+                self.ors.push((linear, mask));
+                self.bytes[linear as usize] |= mask;
+                true
+            }
+        }
+        let mut ram = tables_4k();
+        let mut mem = OrOnly {
+            bytes: ram.split_off(0),
+            ors: Vec::new(),
+        };
+        let walked = translate(&mem, PARAMS, 0x2abc, AccessKind::Write).unwrap();
+        // Another writer sets a bit of the same low byte after the walk: the OR keeps it.
+        mem.bytes[PT + 16] |= 1 << 4;
+        commit_touches(&mut mem, &walked.touches);
+        assert_eq!(mem.ors, walked.touches);
+        assert_eq!(mem.bytes[PT + 16] & 0x70, 0x70, "A, D and the other bit");
     }
 }

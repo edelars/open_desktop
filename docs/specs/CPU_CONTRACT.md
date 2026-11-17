@@ -118,7 +118,7 @@ lists A by level, D, operand and callbacks for every access path (4 KiB and
 2 MiB, cross-page, RMW/LOCK, MMIO, LTR, `#PF` frame delivery, peeks, fetch
 cache). On a protection fault A is set on every walked level including the
 denying entry; on a nonpresent or reserved fault only on the predecessors. The
-CPU contract claims no atomic compare-and-replace of A/D (S6-25) and no
+CPU contract claims no atomicity of A/D; the machine provides a serial compare-and-replace (S6-25); host atomics are S6-31. It also claims no
 cross-vCPU or DMA ordering; where this file and the table differ, the table
 and its linked tests decide.
 
