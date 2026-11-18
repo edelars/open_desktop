@@ -10,8 +10,8 @@
 
 ### Источники и редакции
 
-- ACPI Specification, главы 20 «ACPI Machine Language (AML) Specification» (грамматика 20.2.2–20.2.5, Table 20.2), 6.4 «Resource Data Types for ACPI» (Tables 6.28, 6.33, 6.37, 6.43, 6.46, 6.47, 6.49, 6.52), 6.2.13 (`_PRT`), 8.4 (processor device object), 19.3.4 (EISAID), 5.2.6, 5.2.11.1 и 5.2.12.2 (заголовок таблицы, DSDT, MADT Local APIC).
-- **Редакция фактически прочитанного текста — ACPI 6.4** (HTML-копия `uefi.org/htmlspecs/ACPI_Spec_6_4_html`, полученная через Context7, библиотека `/websites/uefi_htmlspecs_acpi_spec_6_4_html`, 2026-11-07). Страницы ACPI 6.6, на которые ссылается [VIRTUAL_BOARD.md](VIRTUAL_BOARD.md) («Нормативные источники и редакции»), на `uefi.org/specs/ACPI/6.6/…` вернули HTTP 403 (curl и WebFetch). Совпадение указанных таблиц и кодировок в 6.6 **не проверено**.
+- Исходные ссылки ACPI 6.4. Главы 20 «ACPI Machine Language (AML) Specification» (грамматика 20.2.2–20.2.5, Table 20.2), 6.4 «Resource Data Types for ACPI» (Tables 6.28, 6.33, 6.37, 6.43, 6.46, 6.47, 6.49, 6.52), 6.2.13 (`_PRT`), 8.4 (processor device object), 19.3.4 (EISAID), 5.2.6, 5.2.11.1 и 5.2.12.2 (заголовок таблицы, DSDT, MADT Local APIC).
+- Исходные эталоны 2026-11-07 получены по ACPI 6.4. Выборочная сверка с ACPI 6.6 и область покрытия описаны ниже.
 - Чужие `.asl`/`.aml`, DSDT QEMU/OVMF/ПК и исходники других кодировщиков не использовались. Опкоды и поля взяты из таблиц спецификации; у каждой константы в `firmware/uefi/src/acpi/aml/opcodes.rs` указан раздел или таблица.
 - Эталонные байты в тестах вычислены вручную по спецификации (конструкты) и независимой Python-программой по тексту ACPI 6.4 (DSDT); скрипт не сохранён, общего кода с Rust у него нет. Для S4-31 prerequisite итоговая DSDT дополнительно разобрана ACPICA `iasl` версии 20260408; это проверка синтаксиса AML, не установка или поведение таблиц в ОС.
 
@@ -50,16 +50,22 @@ DSDT: заголовок 36 байт (Table 5.17: сигнатура `DSDT`, р�
 
 У `\_SB.PCI0` нет `_ADR`: у устройства должен быть `_HID` или `_ADR`, не оба (исправлено по ревью S7-12; эталон `both` пересчитан).
 
-**Пробел контракта (не выдумано).** Manifest v1.0 не содержит окон I/O и MMIO корневого моста PCIe и маршрутов прерываний PCI. Поэтому `_CRS` PCI0 содержит диапазон шин и порты conf1 `0xCF8..=0xCFF` (S4-31b; это факт платы S4-30c, не окно моста), а `_PRT` пуст (ACPI 6.2.13 допускает пустой `_PRT`: маршрутов нет; текст 6.2.13 не сверен). Такая PCI0 не позволит ОС назначать BAR; окна и маршруты должны появиться в handoff block (повышение `version_minor`, S4-30/S7-13), после чего DSDT получит `DWordMemory`/`QWordMemory`/`IO` из них. Записано в [KNOWN_ISSUES.md](../KNOWN_ISSUES.md#issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes). Запись ECAM имеет `PRESENT = 0` до S4-30, поэтому до него PCI0 в DSDT не выводится.
+**Общие ресурсы PCI0.** Запись ECAM v1.0 передаёт диапазон шин.
+В базовой DSDT _CRS содержит этот диапазон и порты conf1 `0xCF8..=0xCFF`.
+_PRT возвращает пустой пакет, ACPICA сообщает об этом предупреждением.
+В специальном профиле PCI NVMe добавлены producer MMIO и один фиксированный
+маршрут INTA. Для общих апертур BAR и маршрутов оставлено открытое
+[ISSUE-065](../KNOWN_ISSUES.md#issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes).
+_PRT описывает маршруты корневых мостов. [ACPI 6.6, §6.2.14](https://uefi.org/specs/ACPI/6.6/06_Device_Configuration.html#prt-pci-routing-table)
 
 ### Отложено
 
 | Что | Почему не здесь | Кто делает |
 |---|---|---|
-| RTC `PNP0B00`, HPET `PNP0103` | в manifest v1.0 нет их записей (коды 8–15 зарезервированы под S7-14); устройств на плате нет | S7-14 |
+| RTC `PNP0B00`, HPET `PNP0103` | RTC/CMOS доступен плате по опциональной записи code 10 v1.4. Декларация RTC в DSDT остаётся открытой. Для HPET требуется подтверждённая потребность и модель устройства. | S7-14 |
 | TPM `MSFT0101`, `_CRS` CRB `0xFED4_0000` | запись типа 6 `PRESENT = 0` до S7-22; CRB-устройства на плате нет | S7-22 |
 | IOAPIC, дисплей, NVRAM в DSDT | описываются таблицами MADT и конфигурацией ОС, а не AML; отдельного решения «описывать ли в DSDT» нет | S7-13 (состав — после S7-30) |
-| Установка DSDT как configuration table, `X_DSDT` в FADT | остальные таблицы — S7-13 | S7-13 |
+| Публикация RSDP через UEFI configuration table | В текущем blob FADT уже указывает на DSDT полем `X_DSDT`. Путь публикации через UEFI относится к S7-13. | S7-13 |
 
 Механизм «устройство есть в manifest» реализован для PCI0 и COM1; для отложенных устройств добавление означает новую запись manifest и новый вывод в `dsdt.rs`, а не изменение кодировщика.
 
@@ -67,12 +73,20 @@ DSDT: заголовок 36 байт (Table 5.17: сигнатура `DSDT`, р�
 
 `validate_dsdt` (`dsdt.rs`) проверяет: длину таблицы (поле `Length` равно числу байтов), сигнатуру, контрольную сумму (Table 5.4/5.17: вся таблица, включая поле контрольной суммы, в сумме по модулю 256 даёт нуль), затем `validate_definition_block`: границы каждого пакета внутри родительского и отсутствие повторяющихся имён объектов в одном Scope. `build_dsdt` вызывает его для собственного результата.
 
-### Что не сверено с текстом спецификации
+### Выборочная сверка с ACPI 6.6
 
-- Все значения — по ACPI 6.4, не по 6.6 (см. выше).
-- `ReturnOp` `0xA4`: часть Table 20.2 выше `0x74` источник не вернул. Используется только `Return(integer)` в `Method` (в DSDT методов нет; опкод проверен лишь тестом по значению).
-- QWord Address Space Descriptor: тег `0x8A`, длина 43 и порядок полей взяты по аналогии с проверенными Word (13) и DWord (23); Table 6.45 источник не вернул. В DSDT не используется.
-- Грамматика `DefBuffer := BufferOp PkgLength BufferSize ByteList` и `DefPackage := PackageOp PkgLength NumElements …` не получена дословно; подтверждены фиксированные аргументы в Table 20.2 и правило 5.4.1 (все объекты с явной длиной начинаются с PkgLength).
+- Сверены расположение битов и диапазон PkgLength, код ReturnOp
+  и порядок полей Buffer и Package. Выборочная сверка относится
+  к кодированию этих конструкций. [ACPI 6.6, §20.2](https://uefi.org/specs/ACPI/6.6/20_AML_Specification.html)
+- Для QWord Address Space Descriptor сверены тег, минимальная длина и
+  смещения пяти 64-битных полей. Для End Tag сверены тег и правило
+  обработки нулевого checksum. [ACPI 6.6, §6.4](https://uefi.org/specs/ACPI/6.6/06_Device_Configuration.html)
+- Для фиксированного INTx-маршрута сверены четыре поля пакета,
+  номер функции `0xFFFF` и связь нулевого Source с GSI в Source Index.
+  [ACPI 6.6, §6.2.14](https://uefi.org/specs/ACPI/6.6/06_Device_Configuration.html#prt-pci-routing-table)
+
+### Остались для сверки
+
 - Type Specific Flags для диапазона номеров шин пишутся нулём; таблица флагов для `Resource Type = 2` не получена (для памяти Table 6.49 проверена).
 - General Flags бит 0 дескрипторов адресного пространства Table 6.46/6.47 называет «Ignored»; пишется 0 (ResourceProducer), соответствие ASL `ResourceUsage` не проверено.
 - Контрольная сумма End Tag пишется нулём («0 — проверка считается успешной», Table 6.37); правило вычисления ненулевой суммы макросом `ResourceTemplate` не проверено.
@@ -82,6 +96,8 @@ DSDT: заголовок 36 байт (Table 5.17: сигнатура `DSDT`, р�
 ### Проверка
 
 `cargo test --manifest-path firmware/uefi/Cargo.toml --offline` — модули `acpi::aml::tests` (конструкты, отрицательные случаи), `acpi::dsdt::tests` (эталонные DSDT побайтно, вариации manifest, повреждения), `acpi::manifest::tests`, `acpi::table::tests`. Результат — в [отчёте этапа 7](../reports/STAGE_7_REPORT.md#s7-12-aml-кодировщик-и-dsdt-из-manifest).
+
+Повторная сборка обоих профилей, проверка контрольной суммы DSDT и интерпретация _CRS/_PRT через ACPICA описаны в [отчёте S7-12](../reports/STAGE_7_REPORT.md#s7-12-aml-кодировщик-и-dsdt-из-manifest).
 
 ## Состав ACPI-таблиц для Linux-пути этапа 4 (S4-31a)
 

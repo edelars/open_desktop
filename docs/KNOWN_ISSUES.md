@@ -1904,16 +1904,13 @@ S5-21 residual handoff (2026-11-13): both rootfs and E-inclusive exact inventori
 
 <a id="issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes"></a>
 
-### ISSUE-065 — S7-12: DSDT PCI0 has no I/O, MMIO windows or interrupt routes
+### ISSUE-065 — S7-12: общие окна и маршруты PCI в DSDT
 
-- **Ревью S7-12 (2026-11-18):** ограниченное качество реализованного AML/DSDT профиля одобрено независимым ревью; ISSUE-065 остаётся открытой, поскольку CRS/PRT gap подтверждён и не исправлялся. Suite evidence: 165 тестов прошло. ACPI 6.6 и точность кодировок не проверены; RTC/HPET/S5 (S7-14), TPM (S7-22) и поведение Windows/Linux остаются вне подтверждённого объёма.
-- **Дата обнаружения:** 2026-11-07.
-- **Компонент:** handoff block v1.0 ([FIRMWARE_BOOT.md §6.3](specs/FIRMWARE_BOOT.md)), DSDT из manifest ([`dsdt.rs`](../firmware/uefi/src/acpi/dsdt.rs), S7-12).
-- **Статус:** открыта; ограничение контракта, не runtime-дефект (без флага платы `pci_ecam` код 7 остаётся `PRESENT = 0` и PCI0 не выводится; с флагом `pci_ecam` (S4-30c) код 7 — `PRESENT = 1`, DSDT выводит `PCI0` с одним `WordBusNumber` и пустым `_PRT`, и это ограничение становится достижимым; MCFG, `_CRS` с окнами, host bridge и функции — S4-31/S4-38/S7).
-- **Суть и последствия:** запись PCIe ECAM (тип 7) несёт только базу и длину ECAM, сегмент и диапазон шин. Окон I/O и MMIO корневого моста и маршрутов прерываний PCI в handoff block нет, а DSDT строится только из него. `_CRS` `\_SB.PCI0` поэтому содержит один `WordBusNumber`, `_PRT` — пустой пакет. ОС не получит от ACPI окон для назначения BAR и маршрутов INTx устройств PCI (NVMe S7-16, xHCI, сеть).
-- **Основание:** чтение FIRMWARE_BOOT.md §6.3 и `docs/specs/VIRTUAL_BOARD.md` (окна HPET и ACPI fixed hardware «не назначены, S7-14»); окно ECAM выбрано в S4-30a, под флагом `pci_ecam` код 7 `PRESENT = 1` (S4-30c, MACHINE_CONTRACT.md); тесты `dsdt_for_pci_root_and_com1_matches_the_independent_reference` и `ecam_entry_emitted_by_the_board_with_the_pci_flag_is_accepted`.
-- **Следующий шаг:** при S4-30/S7-13 добавить окна и маршруты в handoff block (повышение `version_minor`, запись в FIRMWARE_BOOT.md) и вывести из них `DWordMemory`/`QWordMemory`/`IO` и `_PRT` в `dsdt.rs`; до этого не заявлять работу PCI-устройств в ОС по ACPI.
-- **Обновление (2026-11-18):** закрыта часть описания для Linux direct PCI NVMe. Handoff v1.3 передаёт апертуру и INTA, AML через `iasl` и `acpiexec` показал producer MMIO `0xFC00_4000..=0xFC00_5FFF` и GSI 16. Общие окна и маршруты для будущих устройств и привязка драйвера Linux остаются открытыми. [Отчёт S5-09…11](reports/STAGE_5_REPORT.md#s5-09-11-pci-nvme-and-scenario-gates)
+- **Дата обнаружения и статус.** 2026-11-07, открыто. Компоненты — handoff block и сериализатор AML устройства PCI0.
+- **Исходное ограничение.** Запись PCIe ECAM v1.0 передаёт базу, длину, сегмент и диапазон шин. Она не передаёт апертуры для назначения BAR и маршруты INTx. Базовая DSDT описывает диапазон шин и порты конфигурации conf1. Для неё _PRT пуст.
+- **Профиль PCI NVMe.** Добавление апертуры и INTA для одного устройства подтверждено в [отчёте S5-09…11](reports/STAGE_5_REPORT.md#s5-09-11-pci-nvme-and-scenario-gates). Повторная проверка S7-12 на `994aaf9` подтвердила producer MMIO `0xFC004000..=0xFC005FFF` и фиксированный GSI 16 для устройства 4 и любой функции. Базовый профиль по-прежнему выдаёт пустой _PRT. [Отчёт проверки S7-12](reports/STAGE_7_REPORT.md#s7-12-aml-кодировщик-и-dsdt-из-manifest)
+- **Последствие.** Вне специального NVMe-профиля перечисленных ресурсов недостаточно для описания общих окон и маршрутов корневого моста. Декодирование AML охватывает только существующие конфигурации.
+- **Следующий шаг.** Передать реальные окна и маршруты дополнительных устройств через handoff в _CRS/_PRT и проверить соответствие ресурсам платы.
 
 <a id="issue-064-s7-rsa-private-ops-not-constant-time"></a>
 

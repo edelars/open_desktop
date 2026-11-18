@@ -32,7 +32,7 @@
 | S7-09 | not_started | — | — | Variable services (volatile) и versioned store codec |
 | S7-10 | not_started | — | — | NVRAM-устройство в `od-machine`, драйвер прошивки, NV-переменные через сброс |
 | S7-11 | not_started | — | — | Runtime Services: время, `SetVirtualAddressMap`, `ResetSystem`, RT-переменные |
-| S7-12 | in_progress | — | Принято ограниченное качество реализации, 2026-11-18 | Независимое ревью одобрило ограниченный профиль; 165 тестов прошли. DSDT только для PCI0/COM1; CRS/PRT ограничены [ISSUE-065](../KNOWN_ISSUES.md#issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes); RTC/HPET/S5 и TPM отложены на S7-14/S7-22; поведения Windows/Linux нет; ACPI 6.6 и кодировки не сверены. См. [ACPI_SMBIOS_TABLES.md](../specs/ACPI_SMBIOS_TABLES.md#aml-и-dsdt). |
+| S7-12 | in_progress | `0df7dff` | Независимое ревью одобрило ограниченный профиль | 172 теста и ACPICA-диагностика двух текущих DSDT. [Наблюдения и открытые условия](#s7-12-aml-кодировщик-и-dsdt-из-manifest). |
 | S7-13 | not_started | — | — | ACPI (RSDP/XSDT/FADT/MADT/MCFG/HPET/TPM2/DSDT) и SMBIOS из handoff block, configuration tables |
 | S7-14 | in_progress | `330ea41` | Независимое ревью RTC/CMOS-среза одобрило, замечаний нет | Опциональный RTC/CMOS из handoff v1.4, shared `VirtualClock`, календарные регистры и documented fidelity limits; HPET, IRQ/квантовая интеграция и guest evidence остаются открыты. См. подробности ниже и [ISSUE-509](../KNOWN_ISSUES.md#issue-509-s7-14-rtc-interrupts-and-intra-quantum-time). |
 | S7-15 | not_started | — | — | GOP поверх собственного дисплейного устройства |
@@ -357,7 +357,47 @@ RSA, состоянии policy-сессий, защите контекстов �
 
 ### S7-12. AML-кодировщик и DSDT из manifest
 
-Статус `in_progress`: независимое ревью 2026-11-18 приняло качество реализованного ограниченного профиля; задача целиком не закрыта. 165 профильных тестов прошли. Коммита реализации в этом worktree нет. Контракт, источники, перечень отложенного и не сверенных мест — [ACPI_SMBIOS_TABLES.md](../specs/ACPI_SMBIOS_TABLES.md#aml-и-dsdt).
+Статус `in_progress`. Исходный сериализатор включён в ветку коммитом
+`0df7dff`. Независимое ревью 2026-11-18 одобрило ограниченный профиль.
+
+#### Повторная проверка 2026-11-18
+
+На `994aaf9` прошли 172 теста `cargo test --manifest-path firmware/uefi/Cargo.toml --offline`.
+Гостевой сериализатор пересобран штатным `tools/build/build_stage4_acpi_blob.py`
+для обоих профилей. Повторить сборку из корня можно так.
+
+```sh
+od_s712_check=$(mktemp -d)
+python3 tools/build/build_stage4_acpi_blob.py --output-dir "$od_s712_check/default" --target-dir "$od_s712_check/target"
+python3 tools/build/build_stage4_acpi_blob.py --linux-nvme --output-dir "$od_s712_check/nvme" --target-dir "$od_s712_check/target"
+```
+
+Из каждого blob извлечена DSDT. Начало таблицы вычислено как сумма
+`payload_offset` blob и `payload_offset` записи DSDT в JSON. Длина из
+заголовка, сумма байтов по модулю 256 и SHA-256 сверены с метаданными.
+Таблицы разобраны `iasl -d DSDT.aml` и загружены `acpiexec` версии 20260408.
+В последнем выполнены `evaluate` для _PRT, _CRS, _S5 и UID CPU0 и
+`resources` для PCI0.
+
+| Профиль | DSDT | _CRS PCI0 | _PRT PCI0 |
+|---|---:|---|---|
+| Базовый | 273 байта, SHA-256 `3739c910…764c2` | Шина 0, conf1 `0xCF8..=0xCFF` | Пустой пакет |
+| PCI NVMe | 311 байт, SHA-256 `2a5ce89c…78719` | Те же ресурсы и producer MMIO `0xFC004000..=0xFC005FFF` | Устройство 4, любая функция, INTA, фиксированный GSI 16 |
+
+В обеих таблицах UID CPU0 равен 0, _S5 возвращает `{5,5,0,0}`.
+ACPICA предупреждает о пустом _PRT в базовой таблице. Сообщение о
+четырёх outstanding cache allocations при завершении утилиты
+повторяется у обоих артефактов с `-b quit`. Проверки фиксируют
+декодирование этих AML-объектов. Прогон кода гостевой ОС остаётся
+проверкой S7-31/S7-32. Сверенные поля и оставшиеся допущения описаны в
+[ACPI_SMBIOS_TABLES.md](../specs/ACPI_SMBIOS_TABLES.md#выборочная-сверка-с-acpi-66).
+
+S7-12 остаётся открытой по общим окнам и маршрутам [ISSUE-065](../KNOWN_ISSUES.md#issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes)
+и условным декларациям RTC, HPET и TPM в соответствующих задачах этапа.
+
+#### История исходного среза
+
+Сведения ниже относятся к исходным результатам 2026-11-07.
 
 Создано (`firmware/uefi/src/acpi/`): `aml/{opcodes,names,encoder,resource,builder,validate}.rs` (кодировщик без `alloc`, интерпретатора нет), `manifest.rs` (`BoardManifest` по таблице устройств FIRMWARE_BOOT.md §6.3), `table.rs` (заголовок SDT, контрольная сумма, `validate_table`), `dsdt.rs` (`build_dsdt`, `validate_dsdt`), тесты `aml/tests.rs`, `dsdt/tests.rs` и модульные тесты `manifest.rs`/`table.rs`. Cargo-зависимости не добавлялись; `crates/` и контракты не менялись.
 
