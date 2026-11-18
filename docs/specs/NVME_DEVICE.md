@@ -281,7 +281,7 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 
 ### 13.1. Команды
 
-Opcode `Flush = 0x00`, `Write = 0x01`, `Read = 0x02` сверены с Linux `include/linux/nvme.h` (master, 2026-11-07), не с NVMe Base 2.4 / NVM Command Set 1.3. Значения статусов раздела 13.2 (включая `LBA Out of Range` `0x80`, `Namespace Not Ready` `0x82`, `Internal Error` `0x06`) и бит DNR (`0x4000`) тоже сверены с `nvme.h`. **Всё остальное в этом разделе — `NOT VERIFIED against NVMe Base 2.4`:** раскладка полей `Read`/`Write`, DNR для статусов и условия их применения, порядок проверок, поведение `Flush`.
+Раскладка `Read` и `Write` сверена с NVM Command Set 1.3. Для условий и DNR отдельных статусов остаются пункты сверки в разделе 13.5. [Формат Read](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=49) · [Формат Write](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=54)
 
 | Поле | Read / Write |
 |---|---|
@@ -289,13 +289,13 @@ Opcode `Flush = 0x00`, `Write = 0x01`, `Read = 0x02` сверены с Linux `in
 | `PRP1`, `PRP2` | данные; правила PRP — раздел 6 |
 | `CDW10`, `CDW11` | `SLBA` (младшие, старшие 32 бита) |
 | `CDW12[15:0]` | `NLB`, 0-based: 1…2048 секторов (512 байт … 1 MiB, `MDTS = 8`) |
-| `CDW12[31:16]` | `FUA` (бит 30), `LR` (31), `PRINFO` (26–29), `DTYPE` (20–23) и прочее — не поддержаны: любое ненулевое значение — `Invalid Field` |
-| `CDW13` | подсказки Dataset Management (`DSM`) — не поддержаны: ненулевое — `Invalid Field` |
+| `CDW12[31:16]` | `FUA` (бит 30) и `LR` (31) допустимы. Backend работает в режиме write-through, контроллер выполняет одно обращение к backend. Для `Write` `DTYPE` игнорируется при выключенных директивах. Остальные биты должны быть нулевыми |
+| `CDW13` | `DSM[7:0]` содержит подсказки, которые контроллер не использует для оптимизации. `AF[3:0]` допустим от 0 до 8 для `Read` и от 0 до 6 для `Write`. Для `Write` `DSPEC[31:16]` игнорируется при выключенных директивах. Остальные биты должны быть нулевыми |
 | `CDW14`, `CDW15`, `MPTR` | игнорируются: защиты данных (`PRINFO = 0`) и метаданных (`MS = 0`) нет |
 
 `Flush`: `NSID = 1`; `PRP`, `CDW10..15` игнорируются. `NSID = 0xFFFF_FFFF` (все пространства имён) не принимается: `Invalid Namespace or Format`.
 
-**Порядок проверок** (первая ошибка — статус команды): opcode (`Invalid Command Opcode`) → `FUSE ≠ 0` или `PSDT ≠ 0` (`Invalid Field`) → `NSID ≠ 1` (`Invalid Namespace or Format`) → backend не подключён (`Namespace Not Ready`) → (Read/Write) `CDW12[31:16]`/`CDW13 ≠ 0` (`Invalid Field`) → `NLB + 1 > 2048` (`Invalid Field`) → `SLBA + NLB + 1 > NSZE` с проверкой переполнения 64 бит (`LBA Out of Range`) → передача.
+**Порядок проверок** (первая ошибка — статус команды): opcode (`Invalid Command Opcode`) → `FUSE ≠ 0` или `PSDT ≠ 0` (`Invalid Field`) → `NSID ≠ 1` (`Invalid Namespace or Format`) → backend не подключён (`Namespace Not Ready`) → (Read/Write) недопустимые биты в `CDW12`/`CDW13` или зарезервированное значение `AF` (`Invalid Field`) → `NLB + 1 > 2048` (`Invalid Field`) → `SLBA + NLB + 1 > NSZE` с проверкой переполнения 64 бит (`LBA Out of Range`) → передача.
 
 **Передача.** `Read`: чтение из backend, затем запись в память гостя по PRP. `Write`: сначала весь буфер читается из памяти гостя по PRP, потом пишется в backend; при ошибке PRP диск не меняется. Память гостя — только RAM (раздел 3).
 
@@ -328,8 +328,8 @@ Opcode `Flush = 0x00`, `Write = 0x01`, `Read = 0x02` сверены с Linux `in
 | Что | Статус |
 |---|---|
 | LBA 4 KiB, несколько форматов LBA, Format NVM | не поддержаны (решение выше) |
-| `Dataset Management` (команда и подсказки `CDW13`), `Write Zeroes`, `Compare`, `Write Uncorrectable`, `Verify`, `Copy` | `Invalid Command Opcode` / `Invalid Field`; `ONCS = 0` |
-| `FUA`, `LR`, `PRINFO` (защита данных), метаданные | `Invalid Field`; не объявлены |
+| Команды `Dataset Management`, `Write Zeroes`, `Compare`, `Write Uncorrectable`, `Verify`, `Copy` | `Invalid Command Opcode`. Подсказки DSM в `Read`/`Write` принимаются независимо от `ONCS` |
+| `PRINFO`, `STC` (защита данных), метаданные | формат LBA без метаданных и защиты данных. `PRINFO` и `STC` должны быть нулевыми |
 | Namespace Management, несколько NS, широковещательный `NSID = 0xFFFF_FFFF` | вне scope; Flush на `0xFFFF_FFFF` отвергается |
 | SGL | `PSDT ≠ 0` — `Invalid Field`, `SGLS = 0` |
 | Файловый/CoW backend | вне `od-machine` (`od-storage`) |
@@ -342,7 +342,7 @@ Opcode `Flush = 0x00`, `Write = 0x01`, `Read = 0x02` сверены с Linux `in
 ### 13.5. Открытые вопросы среза B (NOT VERIFIED)
 
 1. Значения `LBA Out of Range` (`0x80`), `Namespace Not Ready` (`0x82`), `Internal Error` (`0x06`) сверены с `nvme.h`; `DNR` для них и условия применения — NOT VERIFIED против NVMe Base 2.4; для отказа backend спецификация, вероятно, предписывает медиа-статусы SCT 2.
-2. Раскладка `CDW12`/`CDW13` Read/Write (позиции `FUA`, `LR`, `PRINFO`, `DTYPE`) и реакция на их ненулевые значения; нужен ли `Invalid Field` для `CDW14/15` при `PRINFO = 0`.
+2. Точный статус для ненулевых полей защиты данных в `Read`/`Write` при формате LBA без метаданных и защиты данных.
 3. `Flush` с `NSID = 0` и поведение `Flush` без volatile write cache (`VWC.VWCP = 0`). Отказ для `NSID = 0xFFFF_FFFF` сверён с объявленным `VWC.FB = 10b`.
 4. Порядок проверок (`Namespace Not Ready` после `NSID`, до полей), `MDTS`: статус при превышении (`Invalid Field`).
 5. Единицы и округление `Data Units Read/Written` в SMART.

@@ -2066,19 +2066,42 @@ fn namespace_id_other_than_one_is_invalid_namespace_or_format() {
 }
 
 #[test]
+fn read_write_accept_fua_limited_retry_and_dataset_attributes() {
+    let (mut rig, disk) = Rig::with_disk();
+    let data = pattern(512, 3);
+    rig.mem_write(BUF_A, &data);
+    let write = Sqe::new(OPC_WRITE)
+        .nsid(1)
+        .prp(BUF_A, 0)
+        .rw(5, 0)
+        .cdw12_bits((3 << 30) | (1 << 20)) // LR, FUA and ignored Write DTYPE
+        .cdw13((0x1234 << 16) | 0xF6); // ignored DSPEC and valid DSM attributes
+    assert_eq!(rig.io(write).status(), (0, 0));
+    assert_eq!(disk.bytes(5, 1), data);
+
+    let read = Sqe::new(OPC_READ)
+        .nsid(1)
+        .prp(BUF_B, 0)
+        .rw(5, 0)
+        .cdw12_bits(3 << 30)
+        .cdw13(0xF8); // access frequency 8 is valid for Read only
+    assert_eq!(rig.io(read).status(), (0, 0));
+    assert_eq!(rig.mem_read(BUF_B, 512), data);
+    assert_eq!(disk.flushes(), 0, "FUA uses the write-through backend");
+}
+
+#[test]
 fn unsupported_fields_and_sgl_are_invalid_field_and_change_nothing() {
     let (mut rig, disk) = Rig::with_disk();
     rig.mem_write(BUF_A, &[0xEE; 512]);
     let base = || Sqe::new(OPC_WRITE).nsid(1).prp(BUF_A, 0).rw(5, 0);
     let rejected = [
-        ("FUA", base().cdw12_bits(1 << 30)),
-        ("LR", base().cdw12_bits(1 << 31)),
         ("PRCHK", base().cdw12_bits(1 << 26)),
         ("PRACT", base().cdw12_bits(1 << 29)),
-        ("DTYPE", base().cdw12_bits(1 << 20)),
-        ("CDW12 bit 16", base().cdw12_bits(1 << 16)),
-        ("DSM", base().cdw13(1)),
-        ("DSM incompressible", base().cdw13(1 << 7)),
+        ("STC", base().cdw12_bits(1 << 24)),
+        ("CETYPE", base().cdw12_bits(1 << 16)),
+        ("reserved CDW13 bit 8", base().cdw13(1 << 8)),
+        ("reserved DSM frequency", base().cdw13(9)),
         ("SGL", base().psdt(1)),
         ("fused", base().fuse(2)),
     ];
@@ -2089,6 +2112,14 @@ fn unsupported_fields_and_sgl_are_invalid_field_and_change_nothing() {
             assert_eq!(cqe.status(), (0, 0x02), "{name}, opcode {opcode}");
             assert!(cqe.dnr, "{name}");
         }
+    }
+    assert_eq!(rig.io(base().cdw13(7)).status(), (0, 0x02));
+    for sqe in [base().cdw12_bits(1 << 20), base().cdw13(1 << 16)] {
+        let read = Sqe {
+            opcode: OPC_READ,
+            ..sqe
+        };
+        assert_eq!(rig.io(read).status(), (0, 0x02));
     }
     assert!(disk.bytes(5, 1).iter().all(|&b| b == 0));
     // The same command without the field is accepted.

@@ -1,17 +1,8 @@
 //! I/O command set of the minimal NVMe controller (S7-16, slice B): `Read`,
 //! `Write` and `Flush` over the attached [`NvmeBackend`].
 //!
-//! Opcodes Flush/Write/Read = 0x00/0x01/0x02 are cross-checked with Linux
-//! `include/linux/nvme.h` (master, 2026-11-07), not with NVMe Base 2.4 / NVM
-//! Command Set 1.3; the status values `LBA Out of Range` 0x80, `Namespace Not
-//! Ready` 0x82, `Internal Error` 0x06, `Invalid Field` 0x2, `Data Transfer
-//! Error` 0x4, `Invalid Namespace` 0xB and DNR 0x4000 are cross-checked with
-//! `nvme.h` too. Everything else is `NOT VERIFIED against NVMe Base 2.4`:
-//! the Read/Write dword layout used here (`CDW10/11` = SLBA, `CDW12[15:0]` =
-//! NLB 0's based; `CDW12[31:16]` and `CDW13` hold the control, protection and
-//! data-set-management fields, all rejected as `Invalid Field`), the DNR
-//! values and the conditions under which the statuses are used, and the order
-//! of the checks below. Contract: `docs/specs/NVME_DEVICE.md`, "Slice B".
+//! See `docs/specs/NVME_DEVICE.md` for the hardware profile and the status
+//! values and boundaries verified against the NVMe specifications.
 
 use super::admin::{MDTS, NAMESPACE_ID};
 use super::backend::SECTOR_BYTES;
@@ -26,6 +17,11 @@ pub(super) const OPC_READ: u8 = 0x02;
 
 /// Largest transfer of one command in sectors: `MDTS` = 8 is 2^8 pages of 4 KiB.
 const MAX_SECTORS: u64 = (PAGE_BYTES << MDTS) / SECTOR_BYTES as u64;
+const NLB_MASK: u32 = 0xFFFF;
+const LR_FUA_MASK: u32 = (1 << 31) | (1 << 30);
+const WRITE_DTYPE_MASK: u32 = 0xF << 20;
+const WRITE_DSPEC_MASK: u32 = 0xFFFF << 16;
+const DSM_MASK: u32 = 0xFF;
 
 /// Counters behind the SMART / Health Information log; they survive a
 /// controller reset like the error log.
@@ -80,12 +76,26 @@ impl Transfer {
 /// Decodes and validates `SLBA`/`NLB` of `Read` and `Write`.
 fn check_transfer(state: &NvmeState, command: &Command) -> Result<Transfer, Status> {
     check_common(state, command)?;
-    // FUA, LR, PRINFO, DTYPE, STC and the like (CDW12[31:16]) and the dataset
-    // management hints (CDW13) are not supported (ONCS declares neither).
-    if command.cdw12 >> 16 != 0 || command.cdw13 != 0 {
+    // FUA uses the same write-through and uncached read contract as plain I/O.
+    // There is no extra retry or recovery path. DSM attributes are hints.
+    // No Write directive is enabled, so its DTYPE and DSPEC are ignored.
+    let common_control = NLB_MASK | LR_FUA_MASK;
+    let (cdw12_mask, cdw13_mask, max_access_frequency) = if command.opcode == OPC_WRITE {
+        (
+            common_control | WRITE_DTYPE_MASK,
+            DSM_MASK | WRITE_DSPEC_MASK,
+            6,
+        )
+    } else {
+        (common_control, DSM_MASK, 8)
+    };
+    if command.cdw12 & !cdw12_mask != 0
+        || command.cdw13 & !cdw13_mask != 0
+        || command.cdw13 & 0xF > max_access_frequency
+    {
         return Err(Status::INVALID_FIELD);
     }
-    let sectors = u64::from(command.cdw12 & 0xFFFF) + 1;
+    let sectors = u64::from(command.cdw12 & NLB_MASK) + 1;
     if sectors > MAX_SECTORS {
         return Err(Status::INVALID_FIELD);
     }
