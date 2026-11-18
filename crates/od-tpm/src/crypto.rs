@@ -5,14 +5,15 @@
 //! The protocol-level constructions (KDFa, session HMACs, the DRBG that uses them) stay in this
 //! crate; only the primitives come from the libraries. No function here logs or prints a key.
 //!
-//! RSA and the timing side channel (ISSUE-064, RUSTSEC-2023-0071): the private RSA operation
-//! (`rsa_sign`) is the `rsa =0.10.0-rc.22` implementation, for which no constant-time version is
-//! confirmed; the advisory has no patched release. This is an accepted risk recorded in
-//! `docs/KNOWN_ISSUES.md` (ISSUE-064) and ADR-0009: the exposure is a timing attack on the host
-//! process that runs the vTPM, not on a firmware stack. Signing is called with a blinding RNG (the
-//! TPM DRBG), which the crate documents as the mitigation it offers; that does not make the
-//! implementation constant-time and is not claimed to. ECDSA runs on `p256` (`crypto-bigint`
-//! arithmetic); its constant-time property is the vendor's claim, not checked here (ADR-0009).
+//! RSA and the timing side channel (ISSUE-064, RUSTSEC-2023-0071): private RSA operations use
+//! `rsa =0.10.0`, selected after RustSec marked `>=0.10.0` patched and the upstream release
+//! documented constant-time modular exponentiation and further private-operation hardening. The
+//! TPM DRBG is supplied for blinding. The migration's deterministic keys, signatures, ciphertext
+//! compatibility, and tests pass; this project does not certify the dependency's complete
+//! constant-time behavior; independent review approved the migration on 2026-11-18, resolving
+//! ISSUE-064 as the selected-version migration requirement. The exposure is a timing attack on the host process that runs the vTPM, not on a
+//! firmware stack. ECDSA runs on `p256` (`crypto-bigint` arithmetic); its constant-time property is
+//! the vendor's claim, not checked here (ADR-0009).
 
 use hmac::{Hmac, KeyInit, Mac};
 use p256::ecdsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
