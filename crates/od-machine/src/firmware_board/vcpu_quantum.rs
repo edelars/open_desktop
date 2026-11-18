@@ -340,6 +340,7 @@ pub(crate) struct ThreadQuantumEnv<'a> {
     pub(crate) uart: Uart16550Handle,
     pub(crate) acpi_pm: Option<AcpiPmHandle>,
     pub(crate) pit: Option<Pit8254Handle>,
+    pub(crate) nvme: Option<crate::NvmeHandle>,
     pub(crate) uart_irq_source: Option<&'a UartPicIrqSource>,
     pub(crate) uart_ioapic_source: Option<&'a UartIoapicIrqSource>,
     /// The COM1 log. The lock is taken for the whole pump (it is above the UART lock: the pump

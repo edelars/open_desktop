@@ -276,7 +276,8 @@ pub use host_parallel::{
     HostParallelControl, HostParallelFinish, HostParallelReport, HostQuantumCall, HostQuantumExit,
     HostQuantumFn, HostQuantumResult, HostSetStepReport, HostSplitGate, HostStopError,
     HostStopProof, HostThreadExitFn, host_deliver_pending_irq, host_install_vcpu,
-    host_parallel_board, run_host_set_step, run_host_threads, run_host_threads_with_nmi_paging,
+    host_parallel_board, host_parallel_board_with_nvme, run_host_set_step, run_host_threads,
+    run_host_threads_with_nmi_paging,
 };
 pub use paged_apic_entry::{PagedApicEntryReport, PagedApicEntryResult, poll_paged_apic_entry};
 pub use paged_descriptor::{

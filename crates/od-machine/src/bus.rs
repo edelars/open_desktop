@@ -8,7 +8,7 @@ use od_isa::{
     PortIo,
     memory::{AccessContext, AccessKind, AccessOrigin},
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -677,6 +677,7 @@ pub(crate) struct MachineBusPortIo<'a> {
 /// sits in a `RefCell`. One instruction makes its accesses one after another, so the cell is never
 /// borrowed twice; if it ever is, that is a typed `Busy` error and not a panic.
 pub(crate) struct MachineBusSetStepIo<'a> {
+    mmio_written: Cell<bool>,
     devices: DeviceTable<'a>,
     /// The gate of the split `LOCK` of the vCPU thread (S6-34 step 8); `None` outside the
     /// parallel runner.
@@ -748,6 +749,10 @@ pub(crate) trait SetStepMmio {
 impl<'a> MachineBusSetStepIo<'a> {
     pub(crate) fn port_io(&self) -> SetStepPortIo<'a, '_> {
         SetStepPortIo(self)
+    }
+
+    pub(crate) fn mmio_written(&self) -> bool {
+        self.mmio_written.get()
     }
 
     /// The same view with the gate of the split `LOCK` of the vCPU thread (S6-34 step 8).
@@ -866,7 +871,10 @@ impl SetStepMmio for MachineBusSetStepIo<'_> {
                     devices[device_index].write_from_cpu(vcpu, access, value & width.mask())
                 })
                 .map_err(|_| Backend("the device table is already borrowed".to_owned()))?
-                .map(|()| 0)
+                .map(|()| {
+                    self.mmio_written.set(true);
+                    0
+                })
                 .map_err(|error| {
                     Backend(format!(
                         "MMIO device {device_index} write failed: {error:?}"
@@ -990,6 +998,7 @@ impl MachineBus {
         (
             memory,
             MachineBusSetStepIo {
+                mmio_written: Cell::new(false),
                 devices: DeviceTable::Exclusive(RefCell::new(
                     exclusive_devices(devices).as_mut_slice(),
                 )),
@@ -1014,6 +1023,7 @@ impl MachineBus {
         (
             &self.memory,
             MachineBusSetStepIo {
+                mmio_written: Cell::new(false),
                 devices: DeviceTable::Shared(&self.devices),
                 gate: None,
                 ports: &self.ports,

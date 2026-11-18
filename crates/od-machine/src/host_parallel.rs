@@ -160,6 +160,8 @@ trait HostDeviceWork {
     fn pending(&self) -> bool;
     fn service(&self) -> u64;
     fn stop_request(&self) -> Option<MachineStopReason>;
+    fn nvme_pending(&self) -> bool;
+    fn service_nvme(&self, committed_write: &mut dyn FnMut(GuestPhysicalRange));
 }
 
 impl HostDeviceWork for ThreadQuantumEnv<'_> {
@@ -184,6 +186,27 @@ impl HostDeviceWork for ThreadQuantumEnv<'_> {
 
     fn stop_request(&self) -> Option<MachineStopReason> {
         self.acpi_pm.as_ref().and_then(|pm| pm.stop_request())
+    }
+
+    fn nvme_pending(&self) -> bool {
+        self.nvme
+            .as_ref()
+            .is_some_and(crate::NvmeHandle::doorbell_pending)
+    }
+
+    fn service_nvme(&self, committed_write: &mut dyn FnMut(GuestPhysicalRange)) {
+        let Some(nvme) = self.nvme.as_ref().filter(|nvme| nvme.doorbell_pending()) else {
+            return;
+        };
+        if self.stop_request().is_some() {
+            return;
+        }
+        let mut written = Vec::new();
+        nvme.service_ram(self.bus.physical_memory(), |range| written.push(range));
+        // The physical stores already published generations. Observers run outside the device lock.
+        for range in written {
+            committed_write(range);
+        }
     }
 }
 
@@ -210,6 +233,17 @@ impl HostDeviceServices<'_> {
     /// Observe the first guest ACPI PM machine stop, latched by the device.
     pub fn stop_request(&self) -> Option<MachineStopReason> {
         self.0.and_then(HostDeviceWork::stop_request)
+    }
+
+    pub fn nvme_pending(&self) -> bool {
+        self.0.is_some_and(HostDeviceWork::nvme_pending)
+    }
+
+    /// Service a pending doorbell and publish committed DMA ranges.
+    pub fn service_nvme(&self, mut committed_write: impl FnMut(GuestPhysicalRange)) {
+        if let Some(work) = self.0 {
+            work.service_nvme(&mut committed_write);
+        }
     }
 }
 
@@ -499,12 +533,29 @@ const HOST_BOARD_ROOT: u64 = 0x1000;
 /// [`host_install_vcpu`]. The board starts in the interleaved mode; [`run_host_threads`] switches
 /// it to the parallel mode for the run.
 pub fn host_parallel_board(vcpu_count: usize) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
+    make_host_parallel_board(vcpu_count, None)
+}
+
+/// Build a host test board with its Linux-profile NVMe PCI endpoint installed.
+pub fn host_parallel_board_with_nvme(
+    vcpu_count: usize,
+    nvme: crate::NvmeConfig,
+) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
+    make_host_parallel_board(vcpu_count, Some(nvme))
+}
+
+fn make_host_parallel_board(
+    vcpu_count: usize,
+    nvme: Option<crate::NvmeConfig>,
+) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
     let config = FirmwareBoardConfig {
         vcpu_count,
         pci_ecam: true,
         acpi_pm: true,
         acpi_tables: true,
         linux_profile: true,
+        nvme_pci: nvme.is_some(),
+        nvme,
         ..FirmwareBoardConfig::default()
     };
     let mut board = crate::firmware_board::assemble_board(&config, PciEcam::new(), None, None)?
@@ -700,6 +751,8 @@ pub struct HostSetStepReport {
     pub pit_written: bool,
     /// The guest successfully accessed a port. The caller can check for queued device work.
     pub port_accessed: bool,
+    /// The guest completed a write through the MMIO adapter.
+    pub mmio_written: bool,
 }
 
 /// One instruction of vCPU `step.vcpu` through the CPL0 profile set `set` over `&MachineBus`
@@ -758,6 +811,7 @@ pub fn run_host_set_step(
         timer_register_written,
         pit_written: report.pit_written,
         port_accessed: report.port_accessed,
+        mmio_written: report.mmio_written,
     })
 }
 

@@ -774,7 +774,7 @@ pub(crate) fn run_paged_host_loop_core(
                     report.exit = PagedHostLoopExit::MachineStop(reason);
                     return report;
                 }
-                if env.devices.pending() {
+                if env.devices.pending() || env.devices.nvme_pending() {
                     report.exit = PagedHostLoopExit::DeviceBoundary;
                     return report;
                 }
@@ -981,7 +981,8 @@ pub(crate) fn run_paged_host_loop_core(
                             step.delivered_exceptions,
                             step.timer_register_written
                                 || (step.pit_written && env.board_irq.pit_write_ends_quantum())
-                                || (step.port_accessed && env.devices.pending()),
+                                || (step.port_accessed && env.devices.pending())
+                                || (step.mmio_written && env.devices.nvme_pending()),
                         ));
                         step.report
                     }

@@ -2107,6 +2107,7 @@ pub(crate) struct PagedCpl0SetReport {
     pub(crate) delivered_general_protection_faults: u64,
     pub(crate) pit_written: bool,
     pub(crate) port_accessed: bool,
+    pub(crate) mmio_written: bool,
     /// S4-13: the counters of the call's fetch translation cache (`None` without one).
     pub(crate) fetch_cache_stats: Option<FetchCacheStats>,
     /// S4-39c: instructions retired through the CPL3 entry (`run_with_cpl3_profile_set`) in this
@@ -2658,6 +2659,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
                 delivered_general_protection_faults: 0,
                 pit_written: false,
                 port_accessed: false,
+                mmio_written: false,
                 fetch_cache_stats: None,
                 cpl3_retired: 0,
                 syscall_events: Vec::new(),
@@ -2699,6 +2701,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
     let mut pit_write_pending = false;
     let mut pit_written = false;
     let mut port_accessed = false;
+    let mut mmio_written = false;
     let (exit, page_fault, memory_error) = loop {
         if stop() {
             break (PagedCpl0SetExit::Run(RunExit::StopRequested), None, None);
@@ -2942,6 +2945,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
         };
         pit_written |= port.pit_written;
         port_accessed |= port.port_accessed;
+        mmio_written |= io.mmio_written();
         pit_write_pending |= pit_write_ends_quantum && port.pit_written;
         if let Ok(done) = &result {
             if iretq_detected && done.instructions_executed == 1 {
@@ -3301,6 +3305,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
         delivered_general_protection_faults,
         pit_written,
         port_accessed,
+        mmio_written,
         fetch_cache_stats: cache.map(FetchTranslationCache::stats),
         cpl3_retired,
         syscall_events: syscall_events.into_iter().collect(),

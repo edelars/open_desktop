@@ -320,12 +320,6 @@ impl JitHostQuantum {
                 &mut *call.stop,
                 call.native_stop,
             );
-            if let Some(log) = &self.write_log {
-                log[cpu]
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .extend(logged);
-            }
             {
                 let mut stats = self.stats[cpu]
                     .lock()
@@ -369,48 +363,63 @@ impl JitHostQuantum {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(detail);
             }
+            let service_nvme = matches!(
+                report.exit,
+                PagedHostLoopExit::DeviceBoundary
+                    | PagedHostLoopExit::BudgetExhausted
+                    | PagedHostLoopExit::Interpreter(PagedProbeExit::Halted)
+            );
             let exit = match report.exit {
                 PagedHostLoopExit::BudgetExhausted
                 | PagedHostLoopExit::StopRequested
                 | PagedHostLoopExit::FinishRequested
                 | PagedHostLoopExit::EventPending
-                | PagedHostLoopExit::DeviceBoundary => HostQuantumExit::Running,
-                PagedHostLoopExit::Interpreter(PagedProbeExit::Halted) => HostQuantumExit::Halted,
+                | PagedHostLoopExit::DeviceBoundary => Ok(HostQuantumExit::Running),
+                PagedHostLoopExit::Interpreter(PagedProbeExit::Halted) => {
+                    Ok(HostQuantumExit::Halted)
+                }
                 PagedHostLoopExit::Interpreter(PagedProbeExit::Shutdown) => {
-                    HostQuantumExit::Shutdown
+                    Ok(HostQuantumExit::Shutdown)
                 }
-                PagedHostLoopExit::MachineStop(reason) => HostQuantumExit::MachineStop(reason),
+                PagedHostLoopExit::MachineStop(reason) => Ok(HostQuantumExit::MachineStop(reason)),
                 PagedHostLoopExit::Interpreter(_) => {
-                    return Err("host JIT quantum: the interpreter refused the instruction");
+                    Err("host JIT quantum: the interpreter refused the instruction")
                 }
-                PagedHostLoopExit::GuestFault(_) => {
-                    return Err(if self.cpl0_set {
-                        "host JIT quantum: a guest fault the guest IDT did not take"
-                    } else {
-                        "host JIT quantum: a guest fault (no delivery in this quantum)"
-                    });
-                }
+                PagedHostLoopExit::GuestFault(_) => Err(if self.cpl0_set {
+                    "host JIT quantum: a guest fault the guest IDT did not take"
+                } else {
+                    "host JIT quantum: a guest fault (no delivery in this quantum)"
+                }),
                 PagedHostLoopExit::IrqDeliveryFailed(_) => {
-                    return Err("host JIT quantum: an interrupt could not be delivered");
+                    Err("host JIT quantum: an interrupt could not be delivered")
                 }
                 PagedHostLoopExit::InterpreterIntegration(_) => {
-                    return Err("host JIT quantum: the CPL0 set returned an exit it cannot resume");
+                    Err("host JIT quantum: the CPL0 set returned an exit it cannot resume")
                 }
                 PagedHostLoopExit::JitHostFailure(_) | PagedHostLoopExit::AtomicHostFailure(_) => {
-                    return Err("host JIT quantum: the JIT boundary failed");
+                    Err("host JIT quantum: the JIT boundary failed")
                 }
                 PagedHostLoopExit::InvalidRflagsDefined { .. } => {
-                    return Err("host JIT quantum: invalid definedness mask");
+                    Err("host JIT quantum: invalid definedness mask")
                 }
             };
-            let device_ns = if self.cpl0_set {
+            let device_ns = if self.cpl0_set && exit.is_ok() {
+                if service_nvme && !(call.stop)() {
+                    call.devices.service_nvme(&mut record);
+                }
                 call.devices.service()
             } else {
                 0
             };
+            if let Some(log) = &self.write_log {
+                log[cpu]
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .extend(logged);
+            }
             Ok(HostQuantumResult {
                 retired,
-                exit,
+                exit: exit?,
                 device_ns,
             })
         })
