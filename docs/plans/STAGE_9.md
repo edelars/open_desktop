@@ -218,6 +218,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-06. Провести durability от storage до host
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-18):** по-прежнему частично. Добавлено: журнал порядка вызовов commit на реальном host-файле (`tests/system/stage9_storage_kill.rs`) и kill процесса на реальных файлах для 9 операций (уровень 1, S9-38). Не закрыто: namespace durability и публикация через rename ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)), уровни 2–3; трактовка ENOTSUP/EINVAL остаётся защитным предположением.
 - **Текущий статус (2026-11-05):** частично, коммит `69e0b02`: только durability данных файла на macOS через `F_FULLFSYNC` и sticky reconcile-required. Namespace durability не реализована ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)), power-loss не проверен, трактовка ENOTSUP/EINVAL — защитное предположение. Задача не принята — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-06-durability-от-storage-до-host--частично).
 - **Где:** `od-storage`, `od-host`, методика и отчёт.
 - **Сделать:** реализовать выбранный в S9-00 порядок data/metadata/namespace persistence с проверенными API. Зафиксировать volume/medium assumptions и что именно обещает successful flush. Для unsupported backend отказать в заявленной durable операции.
@@ -490,7 +491,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-38. Полная матрица fault injection и повреждений
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-18):** частично: storage-матрица уровня 0 полная — [STORAGE_RECOVERY.md §4.1](../testing/STORAGE_RECOVERY.md#41-матрица-s9-38-на-уровне-0-модель-faultbackend-2026-11-18); уровень 1 (kill процесса по операциям) не сделан; VM-часть заблокирована S9-37, S9-29…31, S9-13.
+- **Текущий статус (2026-11-18):** частично: storage-матрица уровней 0 и 1 — [STORAGE_RECOVERY.md §4.1–4.2](../testing/STORAGE_RECOVERY.md#41-матрица-s9-38-на-уровне-0-модель-faultbackend-2026-11-18); VM-часть заблокирована S9-37, S9-29…31, S9-13.
 - **Где:** `tests/system/`, local parser/writer tests, методика/малые regression fixtures.
 - **Сделать:** перебрать реальные persistence cut points всех mutating операций; добавить short/torn/lost/reordered writes, corrupted lengths/root/map/payload, ENOSPC/I/O errors и interruption recovery. Fuzz parser bounded inputs; seeds/repro сохранять.
 - **Проверить:** independent oracle сохраняет последний durable watermark и referenced snapshots; valid-but-stale root не даёт PASS. Corruption вне обещанной repair модели обнаруживается явно, а не «восстанавливается» silent rollback.
@@ -525,7 +526,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-42. Собрать воспроизводимый итоговый набор
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-18):** подготовлено, не принято: `tools/stage9/run_checks.sh` и [STAGE_9_REPRO.md](../testing/STAGE_9_REPRO.md); последний запуск `20261118-s9-38a`: 11 passed, 0 failed, 2 not_run, 7 blocked. Real guest, lifecycle, corruption matrix (S9-38), приём power-loss (S9-39) и итоговое ревью (S9-43) остаются видимыми `blocked`/`not_run`; optional S9-34 из claim исключён.
+- **Текущий статус (2026-11-18):** подготовлено, не принято: `tools/stage9/run_checks.sh` и [STAGE_9_REPRO.md](../testing/STAGE_9_REPRO.md); последний запуск `20261118-s9-38c`: 12 passed, 0 failed, 1 not_run, 7 blocked. Real guest, lifecycle, corruption matrix (S9-38), приём power-loss (S9-39) и итоговое ревью (S9-43) остаются видимыми `blocked`/`not_run`; optional S9-34 из claim исключён.
 - **Где:** методика, существующие tools, отчёт и support matrix.
 - **Сделать:** freeze commit/config/artifact hashes и выполнить offline storage, real guest, lifecycle, corruption/crash, repeated recovery и power-loss matrix. Для optional S9-34 либо добавить выполненные provider tests, либо явно исключить соответствующий claim.
 - **Проверить:** каждый case имеет `passed`/`failed`/`not_run`/`blocked`, environment и evidence reference; большие images/logs в ignored `work/stage9/<run-id>/`, в Git только малые собственные fixtures/отчёты без секретов.
