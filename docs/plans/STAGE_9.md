@@ -217,9 +217,10 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-06. Провести durability от storage до host
 
-- [ ] Принято после ревью.
-- **Текущий статус (2026-11-18):** по-прежнему частично. Добавлено: журнал порядка вызовов commit на реальном host-файле (`tests/system/stage9_storage_kill.rs`) и kill процесса на реальных файлах для 9 операций (уровень 1, S9-38). Не закрыто: namespace durability и публикация через rename ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)), уровни 2–3; трактовка ENOTSUP/EINVAL остаётся защитным предположением.
-- **Текущий статус (2026-11-05):** частично, коммит `69e0b02`: только durability данных файла на macOS через `F_FULLFSYNC` и sticky reconcile-required. Namespace durability не реализована ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)), power-loss не проверен, трактовка ENOTSUP/EINVAL — защитное предположение. Задача не принята — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-06-durability-от-storage-до-host--частично).
+- [x] Принято после ревью (решение владельца 2026-11-18: закрыта в суженном объёме v1 — durable только данные файла; создание и публикация файлов без durable-гарантии, ISSUE-055 остаётся пределом).
+- **Текущий статус (2026-11-18, итог):** закрыта в суженном объёме v1 (решение владельца 2026-11-18): durable-гарантия только для данных файла; создание и публикация файлов — без durable-гарантии, ISSUE-055 — предел v1.
+- **Статус (2026-11-18, до решения, история):** по-прежнему частично. Добавлено: журнал порядка вызовов commit на реальном host-файле (`tests/system/stage9_storage_kill.rs`) и kill процесса на реальных файлах для 9 операций (уровень 1, S9-38). Не закрыто: namespace durability и публикация через rename ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)), уровни 2–3; трактовка ENOTSUP/EINVAL остаётся защитным предположением.
+- **Текущий статус (2026-11-05):** частично, коммит `69e0b02`: только durability данных файла на macOS через `F_FULLFSYNC` и sticky reconcile-required. Namespace durability не реализована ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)), power-loss не проверен, трактовка ENOTSUP/EINVAL — защитное предположение. Задача не принята — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-06-durability-от-storage-до-host--закрыта-в-суженном-объёме-v1-решение-владельца-2026-11-18).
 - **Где:** `od-storage`, `od-host`, методика и отчёт.
 - **Сделать:** реализовать выбранный в S9-00 порядок data/metadata/namespace persistence с проверенными API. Зафиксировать volume/medium assumptions и что именно обещает successful flush. Для unsupported backend отказать в заявленной durable операции.
 - **Проверить:** flush error до/после потенциального commit, short write, delayed completion, file creation/rename publication; лог операций подтверждает порядок. Process-kill/reopen — отдельный уровень, не power-loss proof.
@@ -490,8 +491,9 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-38. Полная матрица fault injection и повреждений
 
-- [ ] Принято после ревью.
-- **Текущий статус (2026-11-18):** частично: storage-матрица уровней 0 и 1 — [STORAGE_RECOVERY.md §4.1–4.2](../testing/STORAGE_RECOVERY.md#41-матрица-s9-38-на-уровне-0-модель-faultbackend-2026-11-18); VM-часть заблокирована S9-37, S9-29…31, S9-13.
+- [x] Принято после ревью (решение владельца 2026-11-18: закрыта в объёме storage — уровни 0 и 1; VM-часть заблокирована S9-37, S9-29…31, S9-13).
+- **Текущий статус (2026-11-18, итог):** закрыта в объёме storage (решение владельца 2026-11-18); VM-часть заблокирована S9-37, S9-29…31, S9-13.
+- **Статус (2026-11-18, до решения, история):** частично: storage-матрица уровней 0 и 1 — [STORAGE_RECOVERY.md §4.1–4.2](../testing/STORAGE_RECOVERY.md#41-матрица-s9-38-на-уровне-0-модель-faultbackend-2026-11-18); VM-часть заблокирована S9-37, S9-29…31, S9-13.
 - **Где:** `tests/system/`, local parser/writer tests, методика/малые regression fixtures.
 - **Сделать:** перебрать реальные persistence cut points всех mutating операций; добавить short/torn/lost/reordered writes, corrupted lengths/root/map/payload, ENOSPC/I/O errors и interruption recovery. Fuzz parser bounded inputs; seeds/repro сохранять.
 - **Проверить:** independent oracle сохраняет последний durable watermark и referenced snapshots; valid-but-stale root не даёт PASS. Corruption вне обещанной repair модели обнаруживается явно, а не «восстанавливается» silent rollback.
@@ -544,7 +546,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-44. Документировать приёмку и оставшиеся ограничения
 
 - [ ] Этап принят по gates раздела 8.
-- **Текущий статус (2026-11-18):** решение — этап 9 не принят ([STAGE_9_REPORT.md §7, §10](../reports/STAGE_9_REPORT.md#7-приёмка-s9-44)); storage-часть реализована и прошла итоговое ревью в своём объёме; G3/G4, S9-38 и приём S9-39 открыты; ревью S9-43 засчитано, S9-22 закрыта в объёме v1 (решения владельца 2026-11-18).
+- **Текущий статус (2026-11-18):** решение — этап 9 не принят ([STAGE_9_REPORT.md §7, §10](../reports/STAGE_9_REPORT.md#7-приёмка-s9-44)); storage-часть реализована и прошла итоговое ревью в своём объёме; G3/G4, VM-часть S9-38 и приём S9-39 открыты; решения владельца 2026-11-18: ревью S9-43 засчитано, S9-22 закрыта в объёме v1, S9-06 — в суженном объёме v1, S9-38 — в объёме storage.
 - **Где:** этот план, `STAGE_9_REPORT.md`, `ROADMAP.md`, затронутые architecture/layout/specs/testing/support matrix и `KNOWN_ISSUES.md`.
 - **Сделать:** записать реальные гарантии и форматы, поддержанные host/guest combinations, команды check/export/recovery, migration/rollback/clone policy, доказательства и результаты ревью. Открытые дефекты получают scope, последствия, воспроизведение/основание и следующий шаг.
 - **Проверить:** документация не называет disk snapshot backup всех данных VM или filesystem freeze application consistency без evidence; все локальные ссылки и структуры корректны.
