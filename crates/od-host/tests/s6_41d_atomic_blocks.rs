@@ -17,7 +17,7 @@
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 
 use std::sync::Mutex;
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use od_host::atomic_inline::{AtomicInlineBlock, AtomicInlineEnv, AtomicInlineExit};
 use od_host::{
@@ -59,6 +59,7 @@ const DEFINED_FLAGS: u64 = 0x8d5;
 /// Leaf entries: present, writable, user; accessed (`0x20`); dirty (`0x40`).
 const PTE_RW_ACCESSED: u64 = 0x7027;
 const PTE_RO_ACCESSED: u64 = 0x7025;
+const PTE_RO_UNACCESSED: u64 = 0x7005;
 const PTE_NOT_PRESENT: u64 = 0x7006;
 /// Operand slots (offsets from `DATA_LINEAR`): three on page 0, one on page 1.
 const PAGE0_SLOTS: [u64; 3] = [0x40, 0x80, 0x100];
@@ -648,9 +649,8 @@ fn s6_41d_blocks_of_two_and_three_atomic_instructions_equal_the_interpreter() {
 
 /// (7) A fault between the instructions of a block: the page of the faulting instruction is
 /// read-only (`#PF` P|W) or not present; the instructions before it have retired in full (data,
-/// flags, generation, RIP), the faulting one and the later ones changed nothing. The state, RAM,
-/// tables, generations, committed writes and the fault record equal the interpreter's. Both
-/// modes.
+/// flags, generation, RIP). The faulting operation may set Accessed on its read-only leaf.
+/// The state, RAM, tables, generations, committed writes and fault record match the interpreter.
 #[test]
 fn s6_41d_a_fault_between_the_instructions_of_a_block_leaves_the_earlier_ones_retired() {
     let _guard = JIT_LOCK
@@ -661,10 +661,10 @@ fn s6_41d_a_fault_between_the_instructions_of_a_block_leaves_the_earlier_ones_re
     for sequence in 0..48usize {
         let count = 2 + sequence % 2;
         let fault_at = rng.below(count);
-        let pte_1 = if sequence % 2 == 0 {
-            PTE_RO_ACCESSED
-        } else {
-            PTE_NOT_PRESENT
+        let pte_1 = match sequence % 3 {
+            0 => PTE_RO_ACCESSED,
+            1 => PTE_NOT_PRESENT,
+            _ => PTE_RO_UNACCESSED,
         };
         let mut items: Vec<Item> = (0..count)
             .map(|_| pick_item(&mut rng, &PAGE0_SLOTS, true))
@@ -762,6 +762,10 @@ fn s6_41d_a_fault_between_the_instructions_of_a_block_leaves_the_earlier_ones_re
                 assert_eq!(actual.data, expected.data, "memory: {label}");
                 assert_eq!(actual.tables, expected.tables, "tables: {label}");
                 assert_eq!(actual.generations, expected.generations, "{label}");
+                if pte_1 == PTE_RO_UNACCESSED {
+                    assert_ne!(memory.load_u64(at(0x5008)).unwrap() & 0x20, 0, "{label}");
+                    assert!(writes_j.iter().any(|range| range.start() == at(0x5008)));
+                }
                 assert_eq!(
                     sorted(actual.writes),
                     sorted(expected.writes),
@@ -846,6 +850,35 @@ fn s6_41d_the_guards_between_instructions_leave_the_earlier_ones_retired() {
         assert_eq!(report.exit, AtomicInlineExit::StopRequested);
         assert_eq!((report.retired, report.helper_calls), (0, 0));
         assert_eq!(state, before);
+
+        // The walk sets the first operand's Dirty bit after the first guard.
+        // Raise STOP there to exercise the next guard in the same native call.
+        stop.store(0, Ordering::SeqCst);
+        let mut writes = Vec::new();
+        let report = block
+            .run(&mut state, memory, env(), 3, Some(&stop), &mut |range| {
+                if range.start() == at(0x5000) {
+                    stop.store(1, Ordering::SeqCst);
+                }
+                writes.push(range);
+            })
+            .unwrap();
+        assert_eq!(report.exit, AtomicInlineExit::StopRequested);
+        assert_eq!((report.retired, report.helper_calls), (1, 1));
+        assert_eq!(report.remaining_budget, 2);
+        assert_eq!(report.committed_writes.len(), 1);
+
+        let reference = world(PTE_RW_ACCESSED, PTE_RW_ACCESSED, exec);
+        let reference = reference.atomic_inline_memory();
+        put_code(reference, &code);
+        let mut interpreted = before;
+        let (_, retired, expected_writes, fault) = interpret(reference, &mut interpreted, 1);
+        assert_eq!(retired, 1);
+        assert!(fault.is_none());
+        assert_eq!(state, interpreted);
+        assert_eq!(data_frames(memory), data_frames(reference));
+        assert_eq!(tables(memory), tables(reference));
+        assert_eq!(writes, expected_writes);
     }
 }
 

@@ -75,6 +75,10 @@ pub enum AtomicBlockError {
     },
     /// More than one atomic read-modify-write in one guest instruction.
     MoreThanOneMemoryEffect,
+    /// An instruction in the block has neither an atomic operation nor a fence.
+    MissingAtomicEffect {
+        rip: u64,
+    },
     /// The host lacks FEAT_LSE (S6-41b (л)): no inline atomic form is generated.
     LseUnavailable,
     /// A 16-bit atomic operand: the lowering accepts the width but no differential covers it
@@ -287,6 +291,16 @@ pub fn compile_atomic_block_with(
         let operand = memory.next();
         if memory.next().is_some() {
             return Err(AtomicBlockError::MoreThanOneMemoryEffect);
+        }
+        if operand.is_none()
+            && !part
+                .operations
+                .iter()
+                .any(|operation| matches!(operation, Operation::Fence { .. }))
+        {
+            return Err(AtomicBlockError::MissingAtomicEffect {
+                rip: part.guest_instructions[0].guest_rip,
+            });
         }
         operands.push(operand);
     }
@@ -1000,8 +1014,18 @@ mod tests {
             ],
             code_end: RIP + 1,
         };
-        // An empty instruction compiles to guards and a retirement: it is not atomic, but it has
-        // no effect the block could get wrong; the profile check is the guest instruction count.
-        assert!(compile_atomic_block(&no_atomic, MemoryOrderMode::Parallel).is_ok());
+        let mut mixed = sequence(&[true, false, true]);
+        mixed
+            .operations
+            .retain(|operation| !matches!(operation, Operation::Fence { .. }));
+        let middle = mixed.guest_instructions[1].guest_rip;
+        for mode in [MemoryOrderMode::Interleaved, MemoryOrderMode::Parallel] {
+            for (program, rip) in [(&no_atomic, RIP), (&mixed, middle)] {
+                assert_eq!(
+                    compile_atomic_block_with(program, mode, &|_| true),
+                    Err(AtomicBlockError::MissingAtomicEffect { rip })
+                );
+            }
+        }
     }
 }
