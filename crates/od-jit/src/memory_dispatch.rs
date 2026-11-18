@@ -284,8 +284,9 @@ where
                 memory_executor,
             )
         };
-        let report = match report {
-            Ok(report) => report,
+        let (report, invalid_fault_site) = match report {
+            Ok(report) => (report, false),
+            Err(BoundedMemoryError::InvalidFaultReport { report, .. }) => (report, true),
             Err(error) => {
                 if state.rip != plan.load_rip {
                     return Err(BoundedArithmeticLoadError::InvalidPhaseRip {
@@ -338,7 +339,11 @@ where
                 actual: state.rip,
             });
         }
-        if expected_rip != Some(state.rip) || !exit_matches_retirement || !blocks_match_exit {
+        if invalid_fault_site
+            || expected_rip != Some(state.rip)
+            || !exit_matches_retirement
+            || !blocks_match_exit
+        {
             return Err(BoundedArithmeticLoadError::InvalidMemoryReport { report });
         }
         if report.exit
@@ -1083,6 +1088,10 @@ pub enum BoundedMemoryError<E> {
     InvalidBlockProgress {
         rip: u64,
     },
+    InvalidFaultReport {
+        rip: u64,
+        report: BoundedMemoryResult,
+    },
     InterpreterMemory {
         rip: u64,
         error: MemoryError,
@@ -1304,12 +1313,6 @@ pub unsafe fn run_controlled<E: MemoryBlockExecutor>(
                 report,
             });
         }
-        if matches!(report.exit, MemoryBlockExit::GuestFault(_))
-            && !report.is_at_pending_fault_site(sites, state.rip)
-        {
-            return Err(BoundedMemoryError::InvalidBlockProgress { rip: state.rip });
-        }
-
         if report.exit == MemoryBlockExit::EventPending {
             if report.retired_instructions != 0
                 || report.remaining_budget != incoming_budget
@@ -1368,6 +1371,8 @@ pub unsafe fn run_controlled<E: MemoryBlockExecutor>(
             .checked_add(1)
             .ok_or(BoundedMemoryError::CounterOverflow)?;
 
+        let invalid_fault_site = matches!(report.exit, MemoryBlockExit::GuestFault(_))
+            && !report.is_at_pending_fault_site(sites, state.rip);
         match report.exit {
             MemoryBlockExit::Complete => {
                 if report.retired_instructions == 0 || state.rip == prior_rip {
@@ -1414,12 +1419,19 @@ pub unsafe fn run_controlled<E: MemoryBlockExecutor>(
             }
             MemoryBlockExit::EventPending => unreachable!("handled before accounting commit"),
             MemoryBlockExit::GuestFault(fault) => {
-                return Ok(result(
+                let report = result(
                     BoundedMemoryExit::GuestFault(fault),
                     remaining,
                     retired,
                     blocks,
-                ));
+                );
+                if invalid_fault_site {
+                    return Err(BoundedMemoryError::InvalidFaultReport {
+                        rip: state.rip,
+                        report,
+                    });
+                }
+                return Ok(report);
             }
         }
     }
@@ -3669,10 +3681,17 @@ mod tests {
                 assert_eq!(report.remaining_budget, budget - retired);
                 assert_eq!(report.retired_instructions, retired);
             } else {
-                assert_eq!(
-                    result,
-                    Err(BoundedMemoryError::InvalidBlockProgress { rip })
-                );
+                let Err(BoundedMemoryError::InvalidFaultReport {
+                    rip: reported_rip,
+                    report,
+                }) = result
+                else {
+                    panic!("expected invalid fault at {rip:#x}, got {result:?}");
+                };
+                assert_eq!(reported_rip, rip);
+                assert!(matches!(report.exit, BoundedMemoryExit::GuestFault(_)));
+                assert_eq!(report.remaining_budget, budget - retired);
+                assert_eq!(report.retired_instructions, retired);
             }
         }
     }
