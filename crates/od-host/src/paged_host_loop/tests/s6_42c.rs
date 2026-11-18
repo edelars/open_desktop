@@ -378,6 +378,97 @@ fn s6_42c_a_fixed_vector_is_delivered_to_a_guest_that_runs_native_steps() {
     drop(region);
 }
 
+#[test]
+fn s6_42d_a_pending_irq_waits_for_partial_rep_across_a_stop() {
+    let _guard = jit_guard();
+    const SOURCE: u64 = 0x5_0000;
+    const DEST: u64 = 0x5_1000;
+    const WORK_LIMIT: u64 = od_isa::execute::REP_ITERATION_WORK_LIMIT;
+
+    let mut board = board(1);
+    put(&mut board, CODE_0, &[0xF3, 0xA4, 0xF4]); // REP MOVSB; HLT
+    put(&mut board, SOURCE, &vec![0xA5; (WORK_LIMIT + 1) as usize]);
+    let lapic = board.local_apic_of(0).unwrap();
+    let bus = board.bus_mut();
+    bus.write_mmio_shared(
+        0,
+        GuestPhysicalAddress::new(LOCAL_APIC + 0xF0),
+        AccessWidth::Dword,
+        0x1FF,
+    )
+    .unwrap();
+    let mut state = state(CODE_0, STACK_TOP_0);
+    state.gpr[Register::Rsi as usize] = SOURCE;
+    state.gpr[Register::Rdi as usize] = DEST;
+    state.gpr[Register::Rcx as usize] = WORK_LIMIT + 1;
+    let control = PagedHostLoopControl::new();
+    let set = Cpl0ProfileSet::new(od_isa::execute::ControlRegisterPolicy::Cpl0BaseLong64V1)
+        .with_cpu_owned_cr3(od_isa::MovCr3Long64V1);
+    let mut session = PagedFetchedLoadSession::new();
+    let mut defined = RFLAGS_DEFINED;
+    let mut skip_boundary = false;
+    let mut run = |state: &mut LongModeState,
+                   write: &mut dyn FnMut(od_machine::GuestPhysicalRange)| {
+        run_paged_host_loop_shared_set(
+            &mut session,
+            &control,
+            config(),
+            state,
+            bus,
+            0,
+            PagedHostSetEnv {
+                lapic: &lapic,
+                gate: HostSplitGate::none(),
+                set: &set,
+                skip_first_boundary: &mut skip_boundary,
+            },
+            &mut defined,
+            1,
+            write,
+            || false,
+        )
+    };
+
+    let partial = run(&mut state, &mut |range| {
+        if range.start().get() == DEST {
+            lapic.request_fixed_edge(VECTOR_IRQ).unwrap();
+            control.request_stop();
+        }
+    });
+    assert_eq!(
+        partial.exit,
+        PagedHostLoopExit::StopRequested,
+        "{partial:?}"
+    );
+    assert_eq!(partial.retired_total(), 0);
+    assert_eq!(partial.irqs_delivered, 0);
+    assert_eq!(state.rip, CODE_0);
+    assert_eq!(state.gpr[Register::Rcx as usize], 1);
+    assert_eq!(state.gpr[Register::Rdi as usize], DEST + WORK_LIMIT);
+    assert_eq!(lapic.vector_state(VECTOR_IRQ), (true, false));
+
+    control.clear_stop_request();
+    let complete = run(&mut state, &mut |_| {});
+    assert_eq!(complete.exit, PagedHostLoopExit::BudgetExhausted);
+    assert_eq!(complete.retired_interpreter, 1);
+    assert_eq!(complete.irqs_delivered, 0);
+    assert_eq!(state.rip, CODE_0 + 2);
+    assert_eq!(state.gpr[Register::Rcx as usize], 0);
+    assert_eq!(lapic.vector_state(VECTOR_IRQ), (true, false));
+    assert_eq!(
+        bus.atomic_inline_memory()
+            .load_u64(GuestPhysicalAddress::new(DEST + WORK_LIMIT))
+            .unwrap(),
+        0xA5,
+    );
+
+    let handler = run(&mut state, &mut |_| {});
+    assert_eq!(handler.exit, PagedHostLoopExit::BudgetExhausted);
+    assert_eq!(handler.irqs_delivered, 1);
+    assert_eq!(state.rip, HANDLER_IRQ + 6);
+    assert_eq!(lapic.vector_state(VECTOR_IRQ), (false, true));
+}
+
 /// The one-shot timer of the vCPU's own Local APIC (the clock owner dispatches it on a charge)
 /// fires exactly once and is delivered: the guest programs the timer registers by MMIO writes
 /// (each ends the call, `DeviceBoundary`), runs on, and its handler counts the one expiry.
