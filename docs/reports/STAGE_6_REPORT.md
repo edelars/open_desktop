@@ -1476,6 +1476,14 @@ KVM с подменённой CPUID: принял `EFER.LME|NXE|SCE`, `CR4 = 0x6
 - Перевод допуска на слоты заранее взятой region (M1/M2) остаётся в S6-42: блокера в этапе 3 нет. После перевода тесты S3-38o повторяются на слотовом backend.
 - Устранено расхождение: блокер S3-38o теперь есть и в таблице зависимостей, и в первой строке S6-42.
 
+#### S6-40 — сверка архитектурных источников 2026-11-18
+
+Для нормативной ревизии Intel 253668-093US исправлены номера разделов до §11.1.3 и §11.3. Проверены сигнал и сериализующая инструкция в протоколе cross-modifying code. [Intel SDM Volume 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190).
+
+Правило Apple об одной `MAP_JIT` region относится к Hardened Runtime с `allow-jit`. Man page из macOS SDK 27.0 подтверждает `pthread_jit_write_protect_np` для вызывающего потока. В Apple libplatform-375.120.2 проверен `ISB` в реализации `sys_icache_invalidate` для непустого диапазона. `JitRegion` сохраняет явный `ISB` перед входом в новый слот. [Руководство Apple](https://developer.apple.com/documentation/apple-silicon/porting-just-in-time-compilers-to-apple-silicon), [libpthread](https://raw.githubusercontent.com/apple-oss-distributions/libpthread/main/man/pthread_jit_write_protect_np.3), [libplatform](https://raw.githubusercontent.com/apple-oss-distributions/libplatform/libplatform-375.120.2/src/cachecontrol/arm64/cache.s).
+
+Материалы Arm подтверждают синхронизацию на исполняющем потоке. При FEAT_ExS поля EIS и EOS определяют участие исключений в context synchronization. Уточнение внесено в M4. Сверка точной нормы DDI0487 для однобайтовой single-copy atomicity в S4 остаётся открытой. [Arm об исполнении кода между потоками](https://developer.arm.com/community/arm-community-blogs/b/architectures-and-processors-blog/posts/caches-self-modifying-code-working-with-threads), [Arm SCTLR_EL1](https://support.arm.com/documentation/ddi0601/2026-09/AArch64-Registers/SCTLR-EL1--System-Control-Register--EL1-), [контракт S6-40](../specs/JIT_CONTRACT.md#s6-40-кэш-кода-при-нескольких-vcpu-контракт).
+
 ### S6-41 — атомарные операции и барьеры в lowering ARM64 (реализовано частично)
 
 Дата: 2026-11-18. Чекбокс S6-41 в `STAGE_6.md` не отмечен. Подробный отчёт — [STAGE_6_S6-41_2026-11-18.md](STAGE_6_S6-41_2026-11-18.md); контракт — [JIT_CONTRACT.md, S6-41](../specs/JIT_CONTRACT.md#s6-41-атомарные-операции-и-барьеры-в-lowering-arm64).
