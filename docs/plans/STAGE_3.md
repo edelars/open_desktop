@@ -2612,6 +2612,11 @@ S3-25 и S3-28 приняты с ограничениями (gate-ревью Cla
 после завершения пары. `cargo test --offline -p od-jit --lib
 guest_fault_requires_pending` проверяет допустимые отчёты и отклонения.
 
+В локальный селектор Stage 3 входят три обязательных точных теста этих
+границ. Самопроверка стенда требует каждую запись и отклоняет результат
+`ignored` даже при успешном коде выхода Cargo. См.
+[протокол тестирования](../testing/JIT.md#s3-27-local-fault-boundary-regressions).
+
 #### S3-27b. Faulting next fetch after a committed two-site memory pair — partial
 
 Native execution of either exact pair returns its canonical `A+6` CPU/RAM

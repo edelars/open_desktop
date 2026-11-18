@@ -20,10 +20,10 @@ from pathlib import Path
 import stage3_harness as harness
 
 # Keep inventory pins independent of the runtime registries.
-EXPECTED_SELF_TESTS = 153
-EXPECTED_RUST_GATES = 327
-EXPECTED_LOCAL_ACCEPTANCE_GATES = 309
-EXPECTED_LOCAL_STEPS = 345
+EXPECTED_SELF_TESTS = 154
+EXPECTED_RUST_GATES = 330
+EXPECTED_LOCAL_ACCEPTANCE_GATES = 312
+EXPECTED_LOCAL_STEPS = 348
 
 _result_smoke_spec = importlib.util.spec_from_file_location(
     "vmhost_result_state_smoke",
@@ -14525,6 +14525,60 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 harness.validate_required_rust_test_evidence(forged_argv, run_root)
 
 
+    def test_s3_27_fault_boundary_gates_are_pinned_and_fail_closed(self):
+        expected = (
+            (
+                "s3_27_pc_map_snapshot_boundary",
+                "statepoints::tests::maps_cover_code_with_checked_half_open_ranges_and_separate_boundaries",
+                "crates/od-jit/src/statepoints.rs",
+            ),
+            (
+                "s3_27_uncached_memory_fault_boundary",
+                "memory_dispatch::tests::guest_fault_requires_pending_memory_site",
+                "crates/od-jit/src/memory_dispatch.rs",
+            ),
+            (
+                "s3_27_cached_memory_fault_boundary",
+                "memory_cache::tests::guest_fault_requires_pending_cached_memory_site",
+                "crates/od-jit/src/memory_cache.rs",
+            ),
+        )
+        with tempfile.TemporaryDirectory(dir=harness.ROOT / "work") as tmp:
+            run_root = Path(tmp).resolve()
+            log_dir = run_root / "logs"
+            log_dir.mkdir()
+            steps = passing_rust_gate_steps(log_dir)
+            harness.validate_required_rust_test_evidence(steps, run_root)
+            for step, identity, source in expected:
+                with self.subTest(step=step):
+                    self.assertEqual(harness.LOCAL_STEPS.count(step), 1)
+                    self.assertEqual(harness.LOCAL_RUST_TEST_SOURCES.count(source), 1)
+                    self.assertEqual(
+                        harness.RUST_TEST_GATES.count((step, "local_acceptance", "od-jit", identity)),
+                        1,
+                    )
+                    missing = steps.copy()
+                    del missing[step]
+                    with self.assertRaisesRegex(harness.HarnessError, f"not passed: {step}"):
+                        harness.validate_required_rust_test_evidence(missing, run_root)
+
+                    ignored_output = f"test {identity} ... ignored\n"
+                    ignored = {
+                        **steps[step],
+                        "output_tail": ignored_output,
+                        "output_sha256": harness.sha256_bytes(ignored_output.encode("utf-8")),
+                        "test_outcomes": {identity: "ignored"},
+                    }
+                    log_path = log_dir / f"{step}.log"
+                    try:
+                        log_path.write_text(ignored_output)
+                        with self.assertRaisesRegex(
+                            harness.HarnessError, f"lacks exact passing output: {step}"
+                        ):
+                            harness.validate_required_rust_test_evidence({**steps, step: ignored}, run_root)
+                    finally:
+                        log_path.write_text(steps[step]["output_tail"])
+
     def test_s3_16_publication_refusal_gate_is_pinned(self):
         step = "s3_16_publication_refusal"
         identity = "paged_host_loop::tests::s3_16_publication_refusal_interprets_once_and_resumes_native"
@@ -14737,7 +14791,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         )
         source_path = "crates/od-jit/src/memory_cache.rs"
         self.assertEqual(harness.LOCAL_RUST_TEST_SOURCES.count(source_path), 1)
-        self.assertEqual(len(harness.LOCAL_RUST_TEST_SOURCES), 19)
+        self.assertEqual(len(harness.LOCAL_RUST_TEST_SOURCES), 20)
 
         source_manifest = {
             "gates": manifest,

@@ -1871,6 +1871,17 @@ observation as `StaleCodeResult` and a corrupted backing generation as
 `BackingGenerationMismatch`. This does not disable production validation or
 claim physical x86 equivalence.
 
+### S3-27 local fault boundary regressions
+
+`python3 tests/cpu/stage3_harness.py --suite local` requires three exact
+`od-jit` tests. `s3_27_pc_map_snapshot_boundary` checks aligned PC lookup and
+rejects invalid offsets. `s3_27_uncached_memory_fault_boundary` and
+`s3_27_cached_memory_fault_boundary` check the executor report against the
+pending instruction's RIP and budget. The cache test also verifies mapping
+release after a rejected report. The manifest fingerprints all three test
+source files. A harness self-test verifies that missing or ignored results
+fail validation for each gate.
+
 ### S3-34e unified local Stage 3 correctness harness
 
 Run `python3 tests/cpu/stage3_harness.py --suite local`. It first runs its own

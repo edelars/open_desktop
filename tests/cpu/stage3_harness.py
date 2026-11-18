@@ -204,6 +204,7 @@ SELF_TEST_NAMES = (
     "test_s3_30p3_allocator_helper_clobber_gate_is_pinned_and_fails_closed",
     "test_s3_16_not_rcx_fallback_gate_is_pinned_and_fail_closed",
     "test_s3_16_publication_refusal_gate_is_pinned",
+    "test_s3_27_fault_boundary_gates_are_pinned_and_fail_closed",
 )
 SELF_TEST_IDENTITIES = {
     f"__main__.Stage3HarnessValidationTests.{name}" for name in SELF_TEST_NAMES
@@ -235,6 +236,18 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_38f_session_proxy_fresh_state_lease", "local_lifecycle", "od-host",
         "session_abi_v1::tests::s3_38f_proxy_reuses_code_with_fresh_state_and_exclusive_lease",
+    ),
+    (
+        "s3_27_pc_map_snapshot_boundary", "local_acceptance", "od-jit",
+        "statepoints::tests::maps_cover_code_with_checked_half_open_ranges_and_separate_boundaries",
+    ),
+    (
+        "s3_27_uncached_memory_fault_boundary", "local_acceptance", "od-jit",
+        "memory_dispatch::tests::guest_fault_requires_pending_memory_site",
+    ),
+    (
+        "s3_27_cached_memory_fault_boundary", "local_acceptance", "od-jit",
+        "memory_cache::tests::guest_fault_requires_pending_cached_memory_site",
     ),
     (
         "s3_27d_direct_memory_v2_pc_map", "local_acceptance", "od-jit",
@@ -1816,6 +1829,7 @@ LOCAL_RUST_TEST_SOURCES = (
     "crates/od-jit/src/lowering.rs",
     "crates/od-jit/src/dispatch.rs",
     "crates/od-jit/src/memory_dispatch.rs",
+    "crates/od-jit/src/statepoints.rs",
     "crates/od-jit/src/translation.rs",
     "tests/cpu/stage3_harness.py",
     "tests/cpu/test_stage3_harness.py",
