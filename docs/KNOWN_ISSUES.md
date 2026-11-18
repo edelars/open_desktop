@@ -1350,7 +1350,7 @@
 
 ### ISSUE-504 (закрыто) — S4 UART echo CLI test: exit-code assertion mismatch
 
-- **Дата обнаружения:** 2026-11-14 (линия этапа 5, в реестре codex значилась как ISSUE-497; переименована при слиянии с main, где номер 100 занят).
+- **Дата обнаружения:** 2026-11-14 (линия этапа 5, в реестре codex значилась как ISSUE-100; при слиянии с main переименована в ISSUE-107, затем в ISSUE-504 из-за конфликта с S7-04).
 - **Компонент:** `tools/runner/tests/stage4_probe_cli.rs` (`uart_echo_profile_checks_rx_expectation_budgets_and_stop`) и соответствие кодов выхода пробы UART echo Stage 4.
 - **Статус:** закрыта. Исправление: коммит `6265daa` («S4-44b probe_cli exit code»), он в main; после слияния линии этапа 5 (`63027b0`) тест `stage4_probe_cli::uart_echo_profile_checks_rx_expectation_budgets_and_stop` проходит.
 - **Суть и последствия (исторически):** полный прогон `od-runner` останавливался на проверке кода выхода `6` для `--stage4-uart-echo-probe --expect-byte 1`, а runner возвращал `5`; последующие JSON-проверки теста не выполнялись.
