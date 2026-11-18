@@ -48,6 +48,7 @@ use crate::uart_pic_irq_source::UartPicIrqSource;
 use crate::vcpu::Vcpu;
 use crate::{AcpiPmHandle, LocalApicHandle, MachineBus, Pit8254Handle, Uart16550Handle};
 use od_isa::execute::Cpl0ProfileSet;
+use std::cell::Cell;
 use std::sync::{Mutex, PoisonError};
 
 /// The source of the boot processor in the quantum of the scheduler (S6-21 step 1): the interrupt
@@ -59,19 +60,20 @@ use std::sync::{Mutex, PoisonError};
 struct BootProcessorSource<'a> {
     board: &'a mut dyn BoardIrqSource,
     lapic: LapicIrqSource,
+    selected_board_vector: Cell<Option<u8>>,
 }
 
 impl BoardIrqSource for BootProcessorSource<'_> {
     fn pending_vector(&self) -> Option<u8> {
-        self.board
-            .pending_vector()
-            .or_else(|| self.lapic.pending_vector())
+        let board_vector = self.board.pending_vector();
+        self.selected_board_vector.set(board_vector);
+        board_vector.or_else(|| self.lapic.pending_vector())
     }
 
     fn acknowledge(&mut self, vector: u8) {
-        // The loop acknowledges only the vector `pending_vector` gave, and nothing moved since: the
-        // board's source gave it exactly when it still reports it.
-        if self.board.pending_vector() == Some(vector) {
+        // The guest frame is already committed. A later request can change
+        // the board's answer, but the original source still owns this delivery.
+        if self.selected_board_vector.take() == Some(vector) {
             self.board.acknowledge(vector);
         } else {
             self.lapic.acknowledge(vector);
@@ -154,6 +156,7 @@ fn quantum_loop(
         boot_source = BootProcessorSource {
             board: board_source,
             lapic: own.clone(),
+            selected_board_vector: Cell::new(None),
         };
         &mut boot_source
     } else {
@@ -1444,6 +1447,40 @@ mod tests {
             assert_eq!(vector_state(&board, 1, BOARD_VECTOR), (false, false));
             assert!(board.clock().now_ns() >= 8381);
         }
+    }
+
+    #[test]
+    fn the_boot_processor_acknowledges_the_source_that_supplied_the_frame() {
+        use crate::{AccessWidth, GuestPhysicalAddress};
+
+        let mut board = board(2);
+        assert!(board.enable_pit_ioapic_irq());
+        board
+            .bus_mut()
+            .write_mmio_shared(
+                0,
+                GuestPhysicalAddress::new(LOCAL_APIC_MMIO_BASE + 0xf0),
+                AccessWidth::Dword,
+                0x1ff,
+            )
+            .unwrap();
+        let boot_lapic = board.local_apic_of(0).unwrap();
+        let sender = board.local_apic_of(1).unwrap();
+        let mut ioapic_source = board.pit_ioapic_source().unwrap();
+        let stats = ioapic_source.clone();
+        let mut source = BootProcessorSource {
+            board: &mut ioapic_source,
+            lapic: LapicIrqSource::new(boot_lapic.clone()),
+            selected_board_vector: Cell::new(None),
+        };
+        sender.write_icr(1, 0, 0x30).unwrap();
+        assert_eq!(source.pending_vector(), Some(0x30));
+        sender.write_icr(1, 0, 0x50).unwrap();
+        source.acknowledge(0x30);
+        assert_eq!(boot_lapic.vector_state(0x30), (false, true));
+        assert_eq!(boot_lapic.vector_state(0x50), (true, false));
+        assert_eq!(stats.stats().acknowledged, 1);
+        assert_eq!(stats.stats().ack_refused, 0);
     }
 
     /// A source with one vector, pending until it was acknowledged once.

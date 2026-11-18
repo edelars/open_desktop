@@ -36,7 +36,8 @@
 //! the IRR bit that is already set stays set when the entry is masked afterwards. The Local APIC
 //! decides what is deliverable (`eligible`): the highest IRR vector whose priority class is above
 //! the processor priority (TPR and ISR), the Local APIC enabled by the software enable bit of
-//! SVR. [`BoardIrqSource::acknowledge`] is the INTA-like step (`acknowledge_vector`: IRR -> ISR);
+//! SVR. [`BoardIrqSource::acknowledge`] moves the vector already delivered by the vCPU from IRR
+//! to ISR, so a higher request arriving during delivery remains pending.
 //! the EOI register of the Local APIC clears the highest ISR bit. Without an EOI the same vector,
 //! and every vector of the same or a lower class, stays blocked.
 //!
@@ -286,7 +287,7 @@ impl BoardIrqSource for PitIoapicIrqSource {
 
     fn acknowledge(&mut self, vector: u8) {
         let mut inner = self.inner();
-        if inner.lapic.acknowledge_vector(vector, || {}) {
+        if inner.lapic.acknowledge_delivered_vector(vector) {
             inner.stats.acknowledged += 1;
         } else {
             inner.stats.ack_refused += 1;
@@ -772,7 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn acknowledge_of_a_vector_that_is_not_eligible_changes_nothing_and_is_counted() {
+    fn acknowledge_of_a_vector_that_is_not_pending_changes_nothing_and_is_counted() {
         let mut rig = Rig::new();
         rig.program(0x34, 10);
         rig.step_to_deadline();
@@ -783,6 +784,24 @@ mod tests {
         source.acknowledge(VECTOR);
         assert_eq!(rig.irr_isr(), (false, true));
         assert_eq!(rig.source.stats().acknowledged, 1);
+    }
+
+    #[test]
+    fn acknowledge_commits_the_delivered_vector_when_a_higher_request_arrives() {
+        let mut rig = Rig::new();
+        rig.program(0x34, 10);
+        rig.step_to_deadline();
+        let mut source = rig.source.clone();
+        let selected = source.pending_vector().unwrap();
+        assert_eq!(selected, VECTOR);
+
+        const HIGHER: u8 = 0xe0;
+        rig.lapic.request_fixed_edge(HIGHER).unwrap();
+        source.acknowledge(selected);
+        assert_eq!(rig.irr_isr(), (false, true));
+        assert_eq!(rig.lapic.vector_state(HIGHER), (true, false));
+        assert_eq!(source.stats().acknowledged, 1);
+        assert_eq!(source.stats().ack_refused, 0);
     }
 
     #[test]
