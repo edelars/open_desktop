@@ -37412,6 +37412,197 @@ fn rust_helper_cmp_dword_r12_rax_imm8_is_unsupported_in_cpl3_profile() {
     assert_eq!((memory.reads, memory.writes), (0, 0));
 }
 
+const CMP_QWORD_RSI_DISP8_ZERO: [u8; 5] = [0x48, 0x83, 0x7e, 0x20, 0x00];
+
+#[test]
+fn rust_helper_cmp_qword_rsi_disp8_zero_reads_and_updates_only_flags() {
+    use od_isa::integer_flags::DEFINED_ARITHMETIC_FLAGS;
+
+    const PF: u64 = 1 << 2;
+    const ZF: u64 = 1 << 6;
+    const SF: u64 = 1 << 7;
+    let rsi = DATA | 0x0000_0010_0000_0000;
+    for (value, flags) in [
+        (0u64, PF | ZF),
+        (1, 0),
+        (0x0000_0001_0000_0000, PF),
+        (0x8000_0000_0000_0000, PF | SF),
+        (u64::MAX, PF | SF),
+    ] {
+        let mut memory = Memory::new(&CMP_QWORD_RSI_DISP8_ZERO);
+        memory.pages.insert(rsi & !0xfff, DATA_PHYSICAL);
+        memory.bytes[DATA_PHYSICAL + 0x20..DATA_PHYSICAL + 0x28]
+            .copy_from_slice(&value.to_le_bytes());
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::Rsi as usize] = rsi;
+        cpu.rflags = 0x602 | DEFINED_ARITHMETIC_FLAGS;
+        let defined = DEFINED & !DEFINED_ARITHMETIC_FLAGS;
+        let mut expected = cpu.clone();
+        expected.rip += 5;
+        expected.rflags = (expected.rflags & !DEFINED_ARITHMETIC_FLAGS) | flags;
+        let mut pio = Pio::default();
+
+        let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined | DEFINED_ARITHMETIC_FLAGS);
+        assert_eq!(cpu, expected, "qword={value:#018x}");
+        assert_eq!((memory.reads, memory.writes), (1, 0));
+        assert_eq!(memory.read_addresses, [(rsi + 0x20, 8)]);
+        assert!(memory.write_addresses.is_empty());
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn rust_helper_cmp_qword_rsi_disp8_zero_read_fault_is_atomic() {
+    let mut memory = Memory::new(&CMP_QWORD_RSI_DISP8_ZERO);
+    let address = DATA + 0x20;
+    memory.fail_read_at = Some((address, page_fault(0, address)));
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsi as usize] = DATA;
+    let before = cpu.clone();
+    let defined = DEFINED & !(1 << 6);
+
+    let result = step_with_defined(&mut cpu, &mut memory, &mut Pio::default(), ring0(), defined);
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(address),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, defined);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.read_addresses, [(address, 8)]);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn rust_helper_cmp_qword_rsi_disp8_zero_noncanonical_range_faults_before_read() {
+    for address in [0x0000_8000_0000_0000, 0x0000_7fff_ffff_fff9] {
+        let mut memory = Memory::new(&CMP_QWORD_RSI_DISP8_ZERO);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::Rsi as usize] = address - 0x20;
+        let before = cpu.clone();
+        let defined = DEFINED & !(1 << 6);
+
+        let result =
+            step_with_defined(&mut cpu, &mut memory, &mut Pio::default(), ring0(), defined);
+
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, defined);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn rust_helper_cmp_qword_rsi_disp8_zero_fetch_fault_is_atomic() {
+    let rip = RIP + 0xffc;
+    let mut memory = memory_with_code_at(&CMP_QWORD_RSI_DISP8_ZERO[..4], rip);
+    memory.fail_fetch_at = Some((rip + 4, page_fault(0x10, rip + 4)));
+    let mut cpu = state();
+    cpu.rip = rip;
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rsi as usize] = DATA;
+    let before = cpu.clone();
+    let defined = DEFINED & !(1 << 6);
+
+    let result = step_with_defined(&mut cpu, &mut memory, &mut Pio::default(), ring0(), defined);
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 4),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, defined);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn rust_helper_cmp_qword_rsi_disp8_zero_neighbours_stay_unsupported() {
+    let cases: &[(&[u8], u8)] = &[
+        (&[0x48, 0x83, 0x7e, 0x1f, 0], 0x83), // Adjacent displacement.
+        (&[0x48, 0x83, 0x7e, 0x21, 0], 0x83), // Adjacent displacement.
+        (&[0x48, 0x83, 0x7e, 0x20, 1], 0x83), // Different immediate.
+        (&[0x48, 0x83, 0x7e, 0x20, 0xff], 0x83), // Signed imm8 -1.
+        (&[0x48, 0x83, 0x7f, 0x20, 0], 0x83), // RDI base.
+        (&[0x48, 0x83, 0x3c, 0x06, 0], 0x83), // Indexed qword address.
+        (&[0x49, 0x83, 0x3c, 0x04, 0], 0x83), // Qword variant of [R12+RAX].
+        (&[0x41, 0x83, 0x7e, 0x20, 0], 0x83), // Dword with R14 base.
+        (&[0x83, 0x7e, 0x20, 0], 0x83),       // Dword [RSI+0x20].
+        (&[0x48, 0x83, 0xbe, 0x20, 0, 0, 0, 0], 0x83), // Disp32.
+        (&[0x48, 0x81, 0x7e, 0x20, 0, 0, 0, 0], 0x81), // Imm32.
+        (&[0x48, 0x83, 0x76, 0x20, 0], 0x83), // XOR /6.
+        (&[0x4c, 0x83, 0x7e, 0x20, 0], 0x83), // Extra REX.R bit.
+        (&[0x66, 0x48, 0x83, 0x7e, 0x20, 0], 0x83), // Operand-size prefix.
+        (&[0x67, 0x48, 0x83, 0x7e, 0x20, 0], 0x83), // Address-size prefix.
+        (&[0x3e, 0x48, 0x83, 0x7e, 0x20, 0], 0x83), // Segment prefix.
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+
+        let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn rust_helper_cmp_qword_rsi_disp8_zero_is_unsupported_in_cpl3_profile() {
+    let mut memory = Memory::new(&CMP_QWORD_RSI_DISP8_ZERO);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    cpu.gpr = gpr_patterns();
+    let before = cpu.clone();
+
+    let result = execute::step_paged_cpl3_mov(
+        &mut cpu,
+        &mut memory,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+        0xd00,
+        DEFINED,
+    );
+
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x83 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
 #[test]
 fn rust_helper_cmp_byte_rsp_r8_disp8_imm8_reads_and_updates_only_flags() {
     const CF: u64 = 1 << 0;
@@ -48793,6 +48984,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x83, 0xf8, 0x09][..], 0x83),
         (&[0x83, 0xf8, 0x01][..], 0x83),
         (&[0x41, 0x83, 0x3c, 0x04, 0x00][..], 0x83),
+        (&CMP_QWORD_RSI_DISP8_ZERO[..], 0x83),
         (&[0x66, 0x83, 0x7c, 0x24, 0x18, 0xff][..], 0x83),
         (&[0x41, 0x83, 0xf8, 0x30][..], 0x83),
         (&[0x49, 0x83, 0xf8, 0x01][..], 0x83),

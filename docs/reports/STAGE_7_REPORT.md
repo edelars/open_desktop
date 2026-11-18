@@ -4976,3 +4976,39 @@ all-targets offline check passes with existing warnings. Scoped rustfmt and
 diff checks pass.
 
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-489 — exact CMP qword ptr [RSI+0x20],0
+
+Six focused tests cover the exact qword compare. They check a 64-bit
+effective address above 4 GiB, one eight-byte read, qword subtraction
+flags and definedness, GPR preservation, noncanonical data ranges,
+data-read and final-immediate fetch page faults, neighboring encodings and
+CPL3 MOV probe isolation. The existing dword [R12+RAX] compare tests pass
+5/5 and the other CPL0 probe matrix passes 1/1.
+
+The runner command
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue489.com1 --budget 20000` uses image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+
+| Budget and retired | RIP | Instruction at RIP |
+| ---: | --- | --- |
+| 10,342 | `0x2018d8` | `48 83 7E 20 00`, CMP qword ptr [RSI+0x20],0 |
+| 10,343 | `0x2018dd` | `74 1D`, JZ rel8 +0x1d |
+| 10,344 | `0x2018df` | `0F B7 46 58`, MOVZX EAX,word ptr [RSI+0x58] (ISSUE-490) |
+
+All three boundary runs report BudgetExhausted and empty COM1. For the
+existing JZ at `0x2018dd`, ZF=1 selects `0x2018dd + 2 + 0x1d = 0x2018fc`.
+The firmware run follows the ZF=0 path to `0x2018df`. With budget 20000
+the runner attempts MOVZX and exits 5 with 10,344 retired and empty COM1.
+Unsupported opcode 183 is the decimal value of the MOVZX opcode byte
+`0xb7` after the `0x0f` escape. The previous stop reported 131 for
+CMP opcode byte `0x83` after the REX.W prefix.
+
+The full offline `od-isa` suite passes (2,322/1,591/126/29/6/1,565/7/15 and
+zero doctests). The paged machine quantum suite passes 110/110. The workspace
+all-targets offline check passes with existing warnings. Scoped rustfmt and
+diff checks pass.
+
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

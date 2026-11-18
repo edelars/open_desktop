@@ -5920,7 +5920,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-489 — S7-04: exact CMP qword ptr [RSI+0x20],0 frontier (`48 83 7E 20 00`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-488.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2018d8`.
-- **Статус:** открыта. Следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base firmware CPU profile stops on exact `48 83 7E 20 00` (CMP qword ptr [RSI+0x20],0).
+- **Статус:** решена для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** exact `48 83 7E 20 00` reads eight bytes at RSI+0x20, defines arithmetic flags from qword minus zero and advances RIP. GPRs and memory contents are preserved.
 - **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 131 }` at RIP `0x2018d8` after 10,342 retired instructions. COM1 is empty. Bytes at the link-base shadow are `48 83 7E 20 00`.
-- **Следующий шаг:** admit the exact qword memory CMP and cover addressing, read width, arithmetic flags, data and fetch faults and profile isolation.
+- **Результат:** the runner executes CMP and the existing JZ fall-through, then stops after 10,344 retired instructions at `0x2018df` on `0F B7 46 58` (MOVZX EAX,word ptr [RSI+0x58], ISSUE-490). It reports `Unsupported { opcode: 183 }` with empty COM1.
+- **Проверка:** six focused tests cover 64-bit addressing, eight-byte reads, qword flags and definedness, noncanonical ranges, data and fetch faults, neighboring encodings and profile isolation. The existing dword SIB compare tests pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-490 — S7-04: exact MOVZX EAX,word ptr [RSI+0x58] frontier (`0F B7 46 58`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-489.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2018df`.
+- **Статус:** открыта. Следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base firmware CPU profile stops on exact `0F B7 46 58` (MOVZX EAX,word ptr [RSI+0x58]).
+- **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 183 }` at RIP `0x2018df` after 10,344 retired instructions. COM1 is empty. Bytes at the link-base shadow are `0F B7 46 58`.
+- **Следующий шаг:** admit the exact word load with zero extension and cover read width, flags, data and fetch faults and profile isolation.

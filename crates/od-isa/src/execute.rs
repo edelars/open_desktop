@@ -26279,10 +26279,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
-        // S7-04: the helper compares the dword at `[R12+RAX]` against zero
-        // with exact `41 83 3C 04 00`. REX.B extends the SIB base to R12;
-        // opcode 83 /7 sign-extends imm8. Keep the address tuple exact and
-        // use tracked memory so read faults commit neither flags nor RIP.
+        // S7-04: `41 83 3C 04 00` compares dword [R12+RAX] with zero.
+        // `48 83 7E 20 00` compares qword [RSI+0x20] with zero. Both use
+        // the tracked read before committing flags and RIP.
         Operation::Arithmetic {
             kind: ArithmeticKind::Cmp,
             dst: Operand::Memory(destination),
@@ -26291,18 +26290,27 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x83
             && instruction.length == 5
-            && instruction.operand_size == OperandSize::Dword
-            && instruction.prefixes
-                == (Prefixes {
-                    rex: Some(0x41),
-                    ..Prefixes::default()
-                })
-            && destination.base == AddressBase::Register(Register::R12)
-            && destination.index == Some(Register::Rax)
+            && ((instruction.operand_size == OperandSize::Dword
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x41),
+                        ..Prefixes::default()
+                    })
+                && destination.base == AddressBase::Register(Register::R12)
+                && destination.index == Some(Register::Rax)
+                && destination.displacement == 0)
+                || (instruction.operand_size == OperandSize::Qword
+                    && instruction.prefixes
+                        == (Prefixes {
+                            rex: Some(0x48),
+                            ..Prefixes::default()
+                        })
+                    && destination.base == AddressBase::Register(Register::Rsi)
+                    && destination.index.is_none()
+                    && destination.displacement == 0x20))
             && destination.scale == 1
-            && destination.displacement == 0
             && destination.address_size == OperandSize::Qword
-            && destination.size == OperandSize::Dword =>
+            && destination.size == instruction.operand_size =>
         {
             let lhs = match read_operand(
                 state,
@@ -26318,7 +26326,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 Err(error) => return result(PagedProbeExit::Backend(error), 0),
             };
             let (_, flags) = arithmetic_result(
-                OperandSize::Dword,
+                instruction.operand_size,
                 ArithmeticKind::Cmp,
                 lhs,
                 0,

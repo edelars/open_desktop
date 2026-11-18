@@ -2839,3 +2839,14 @@ ISSUE-489) after 10,342 retired instructions. It reports Unsupported
 opcode 131 with empty COM1. Image SHA-256 is
 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-489 runner frontier
+
+Exact base-profile `48 83 7E 20 00` (CMP qword ptr [RSI+0x20],0) reads eight
+bytes, updates arithmetic flags and advances RIP. With budget 20000 the
+runner executes the CMP and falls through the existing JZ to `0x2018df`.
+It stops on `0F B7 46 58` (MOVZX EAX,word ptr [RSI+0x58], ISSUE-490) after
+10,344 retired instructions and reports Unsupported opcode 183 with empty
+COM1. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

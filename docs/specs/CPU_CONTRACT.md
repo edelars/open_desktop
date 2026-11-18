@@ -30096,3 +30096,16 @@ taken target raises #GP(0). This fault and a displacement fetch fault
 commit no architectural state. The other CPL0 probes and the paged CPL3
 MOV probe refuse this form.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-489 — bounded CMP qword ptr [RSI+0x20],0
+
+The base paged CPL0 profile admits exact `48 83 7E 20 00` in Long64. It
+forms the 64-bit address RSI plus sign-extended disp8 0x20 and reads
+eight bytes through the tracked memory path. Subtraction of sign-extended
+imm8 zero defines CF, PF, AF, ZF, SF and OF at qword width. RIP advances
+five bytes. GPRs, memory contents, other flags and their definedness are
+preserved. A noncanonical data range raises #GP(0) before the read.
+A data-read page fault or final immediate fetch fault commits no
+architectural CPU state or retirement. The other CPL0 probes and the
+paged CPL3 MOV probe refuse this encoding.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

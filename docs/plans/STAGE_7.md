@@ -3085,3 +3085,16 @@ falls through to `0x2018d8` and stops after 10,342 retired instructions on
 `48 83 7E 20 00` (CMP qword ptr [RSI+0x20],0, ISSUE-489). It reports
 Unsupported opcode 131 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-489 — exact CMP qword ptr [RSI+0x20],0 (`48 83 7E 20 00`)
+
+Base `PagedCpl0ProbeV1` admits the exact REX.W qword memory compare. It
+reads eight bytes from RSI+0x20, defines the arithmetic flags from qword
+minus zero and advances RIP. Tests cover address width, the qword read,
+flags, data and fetch faults, noncanonical ranges and profile isolation.
+The existing dword SIB compare remains supported. With budget 20000 the
+runner executes the CMP and existing JZ fall-through, then stops after
+10,344 retired instructions at RIP `0x2018df` on `0F B7 46 58`
+(MOVZX EAX,word ptr [RSI+0x58], ISSUE-490). It reports Unsupported opcode
+183 with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
