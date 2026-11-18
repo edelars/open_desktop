@@ -5686,7 +5686,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-463 — S7-04: exact MOV EAX,3 frontier (`B8 03 00 00 00`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-462.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20140e`.
-- **Статус:** открыта. Следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base firmware CPU profile stops on exact unprefixed `B8 03 00 00 00` (MOV EAX,3).
+- **Статус:** решена для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** exact unprefixed `B8 03 00 00 00` writes 3 to EAX and zeroes RAX[63:32]. It advances RIP and preserves flags and definedness.
 - **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 184 }` at RIP `0x20140e` after 10,305 retired instructions. COM1 is empty. Bytes at the link-base shadow are `B8 03 00 00 00`.
-- **Следующий шаг:** admit the exact dword MOV and cover zero extension, preserved flags, immediate fetch fault and profile isolation.
+- **Результат:** runner retires 10,306 instructions and stops at RIP `0x201413` on `80 7C 24 0B 01` (CMP byte ptr [RSP+0xb],1, ISSUE-464). It reports `Unsupported { opcode: 128 }` with empty COM1.
+- **Проверка:** four focused tests cover zero extension, flags and definedness, immediate fetch fault, encoding neighbors and the CPL3 MOV probe. AX/BP and other CPL0 probe regressions pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-464 — S7-04: exact CMP byte ptr [RSP+0xb],1 frontier (`80 7C 24 0B 01`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-463.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201413`.
+- **Статус:** открыта. Следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base firmware CPU profile stops on exact `80 7C 24 0B 01` (CMP byte ptr [RSP+0xb],1).
+- **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 128 }` at RIP `0x201413` after 10,306 retired instructions. COM1 is empty. Bytes at the link-base shadow are `80 7C 24 0B 01`.
+- **Следующий шаг:** admit the exact byte CMP and cover addressing, arithmetic flags, data and fetch faults and profile isolation.

@@ -4303,3 +4303,26 @@ all-targets offline check passes with existing warnings. Scoped rustfmt and
 diff checks pass.
 
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-463 — exact MOV EAX,3
+
+Four focused tests cover EAX immediates 1, 2 and 3 and EBP immediate 1.
+They check zero extension, preservation of flags and definedness, the
+final immediate fetch fault, neighboring encodings and the CPL3 MOV probe.
+The AX/BP word-form regression and other CPL0 probe matrix each pass 1/1.
+
+The runner command
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue463.com1 --budget 20000` uses image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+It exits 5 with 10,306 retired instructions, RIP `0x201413`, Unsupported
+opcode 128 and empty COM1. Bytes `80 7C 24 0B 01` select CMP byte ptr
+[RSP+0xb],1 (ISSUE-464).
+
+The full offline `od-isa` suite passes (2,322/1,591/126/29/6/1,554/7/15 and
+zero doctests). The paged machine quantum suite passes 110/110. The workspace
+all-targets offline check passes with existing warnings. Scoped rustfmt and
+diff checks pass.
+
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

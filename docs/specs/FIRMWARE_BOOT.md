@@ -2584,3 +2584,13 @@ target for canonicality. With budget 20000 the runner reaches
 instructions. It reports Unsupported opcode 184 with empty COM1.
 Image SHA-256 is `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-463 runner frontier
+
+Exact base-profile `B8 03 00 00 00` (MOV EAX,3) zero-extends into RAX and
+advances RIP while preserving flags and definedness. With budget 20000 the
+runner reaches `80 7C 24 0B 01` (CMP byte ptr [RSP+0xb],1, ISSUE-464) at RIP
+`0x201413` after 10,306 retired instructions. It reports Unsupported opcode
+128 with empty COM1. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

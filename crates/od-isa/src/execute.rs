@@ -27163,7 +27163,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
-        // S7-04: exact unprefixed MOV EAX,1, MOV EAX,2 and MOV EBP,1.
+        // S7-04: exact unprefixed MOV immediate forms used by the helper.
         // The dword write zero-extends into the full register and preserves flags.
         Operation::MovImmediate {
             dst: Operand::Register(destination),
@@ -27175,7 +27175,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             && instruction.prefixes == Prefixes::default()
             && ((instruction.opcode.byte == 0xb8
                 && destination == RegisterView::low(Register::Rax, OperandSize::Dword)
-                && matches!(value, 1 | 2))
+                && matches!(value, 1 | 2 | 3))
                 || (instruction.opcode.byte == 0xbd
                     && destination == RegisterView::low(Register::Rbp, OperandSize::Dword)
                     && value == 1)) =>
