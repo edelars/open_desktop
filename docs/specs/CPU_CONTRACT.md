@@ -29865,3 +29865,14 @@ taken target raises #GP(0). This fault and a displacement fetch fault
 commit no architectural state. The other CPL0 probes and the paged CPL3
 MOV probe refuse this form.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-469 — bounded MOV EAX,5
+
+The base paged CPL0 profile admits exact unprefixed `B8 05 00 00 00`. The
+dword write sets RAX=5 by zero extension and advances RIP by five bytes.
+RFLAGS, flag definedness and all other GPRs are preserved. A fault on the
+final immediate fetch commits no architectural state. The other CPL0 probes
+and the paged CPL3 MOV probe refuse this form. The dword EBP pair requires
+immediate 1. The existing word form `66 B8 05 00` writes AX and preserves
+RAX[63:16].
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
