@@ -247,7 +247,7 @@ Evidence: `cargo test -p od-tpm` passed **264/264 tests**, including determinist
 | A | `435d7f6` | Иерархии, HMAC-сессии и базовые операции NV. Sol High одобрил заявленный объём. |
 | B | `454f351` | Объекты RSA/ECC, создание ключей, подпись и проверка. Ревью завершено без новых дефектов в объёме среза. |
 | C1 | `46f0300` | RSA/ECDH, защита от перебора (DA), snapshot v2. Закрыт [ISSUE-517](../KNOWN_ISSUES.md#issue-517). |
-| C2 | `2da9887` | Политики, контексты, HMAC, Quote и Certify. Для приёмки остаются [ISSUE-514](../KNOWN_ISSUES.md#issue-514), [ISSUE-516](../KNOWN_ISSUES.md#issue-516) и расхождение Restart [ISSUE-518](../KNOWN_ISSUES.md#issue-518). |
+| C2 | `2da9887` | Политики, контексты, HMAC, Quote и Certify. Закрыт [ISSUE-514](../KNOWN_ISSUES.md#issue-514). Открыты [ISSUE-516](../KNOWN_ISSUES.md#issue-516), [ISSUE-518](../KNOWN_ISSUES.md#issue-518) и [ISSUE-520](../KNOWN_ISSUES.md#issue-520). |
 | C3 | `9c7f46c` | NV counter/bits/extend, GetTime, шифрование параметров, snapshot v3. Открыт [ISSUE-515](../KNOWN_ISSUES.md#issue-515). |
 
 
@@ -264,6 +264,10 @@ RSA, состоянии policy-сессий, защите контекстов �
 Восстановление RSA теперь проверяет соответствие exponent публичной части закрытому ключу с exponent `65537`. Тесты через `Tpm::restore` проверяют побайтовое сохранение snapshot и ответ `ReadPublic`, включая Name и Qualified Name, для допустимых кодировок `0` и `65537`. Подпись совпадает после восстановления. Несовместимый exponent отклоняется на общем пути декодирования `TPM2B_SENSITIVE` и при чтении snapshot. [Контракт TPM](../specs/VTPM.md), [ISSUE-517](../KNOWN_ISSUES.md#issue-517).
 
 `cargo test -p od-tpm --offline` прошёл с 265 успешными тестами. Workspace check, форматирование и `git diff --check` прошли. Независимое ревью `gpt-6.1-sol` с уровнем рассуждения `high` одобрило исправление и повторило целевой регрессионный тест. Открытых замечаний к ISSUE-517 нет.
+
+Продолжаемая policy-сессия получает новый `nonceTPM` и начальные значения `PolicyState` после формирования защищённого ответа на команду, которую она успешно авторизовала. Тесты покрывают ответ с HMAC и AES-шифрованием, ошибки параметров и второй авторизации, повторное построение assertions и `ContextSave/Load` после сброса. В `PolicySecret` проверены сброс авторизующей сессии и обновление отдельной целевой. [ISSUE-514](../KNOWN_ISSUES.md#issue-514), [ISSUE-520](../KNOWN_ISSUES.md#issue-520).
+
+`cargo test -p od-tpm --offline` прошёл с 266 успешными тестами. Workspace check, форматирование и `git diff --check` прошли. Graphify обновлён. Независимое ревью `gpt-6.1-sol` с уровнем рассуждения `high` одобрило исправление. Открытых замечаний к ISSUE-514 нет.
 
 Далее приведены результаты и ограничения, зафиксированные при исходной
 реализации срезов A–C3 7 ноября 2026 года. Актуальные итоги независимых

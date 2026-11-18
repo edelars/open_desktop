@@ -55,9 +55,11 @@ use crate::paramenc::{
     first_response_parameter_is_sized,
 };
 use crate::pcr::resolve_pcr_handle;
+use crate::policy::PolicyState;
 use crate::response::{Output, Rc, SessionAck, error_response, success_response};
 use crate::session::{
-    authorization_key, check_hmac_session_attributes, response_hmac, verify_command_hmac,
+    SessionKind, authorization_key, check_hmac_session_attributes, response_hmac,
+    verify_command_hmac,
 };
 use crate::state::Tpm;
 
@@ -670,7 +672,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         }
     }
 
-    // Acknowledgements; an HMAC session rolls its nonce and, with `continueSession` CLEAR, ends.
+    // Acknowledgements roll the nonce and release sessions that do not continue.
     let rp_hash = response_parameter_hash(spec.code, &out.params);
     let mut acks: Vec<SessionAck> = Vec::with_capacity(sessions.len());
     for (i, s) in sessions.iter().enumerate() {
@@ -697,6 +699,12 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                     tpm.sessions.release(*slot);
                 } else if let Some(session) = tpm.sessions.get_mut(*slot) {
                     session.nonce_tpm = nonce.clone();
+                    // All sessions in this area authorize handles. A continuing policy session
+                    // starts a fresh policy after its response has been protected (Part 1 v185,
+                    // 16.7.1 and 16.7.8).
+                    if session.kind == SessionKind::Policy {
+                        session.policy = PolicyState::new();
+                    }
                 }
                 acks.push(SessionAck {
                     nonce,

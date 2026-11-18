@@ -6279,10 +6279,9 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 
 ### ISSUE-514 — S7-23: состояние policy-сессии сохраняется после успешной авторизации
 
-- **Дата и компонент.** 2026-11-18, `od-tpm`, завершение авторизации policy-сессией из среза C2. Статус открыт.
-- **Основание.** При `continueSession=1` ветка в `crates/od-tpm/src/dispatch.rs` обновляет `nonce_tpm` и сохраняет прежний `PolicyState`. Тест в `tests_c2.rs` ожидает сохранения policy digest после успешной команды. TPM Library v184 Part 1 §17.7.8 требует сброса временных ограничений и digest при успешном использовании продолжаемой policy-сессии. [TPM Library v184 Part 1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_1_Version_184_pub_0d89c60386.pdf)
-- **Последствие.** Продолжаемая сессия сохраняет пройденные assertions между авторизациями. Клиент с корректным жизненным циклом policy получает состояние, отличающееся от спецификации.
-- **Следующий шаг.** Сбрасывать policy state после успешной авторизации с сохранением контекста продолжаемой сессии. Проверить повторное создание assertions и отдельно подтвердить поведение при ошибке.
+- **Дата и компонент.** 2026-11-18, `od-tpm`, завершение авторизации policy-сессией из среза C2. Закрыто.
+- **Основание.** До исправления `continueSession = 1` сохранял `PolicyState` между командами. TPM требует возвращать значения policy-контекста к начальным после успешной авторизации. [TPM Library v185 Part 1, §§16.7.1 и 16.7.8](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-1-Architecture_Version-185_pub.pdf#page=139).
+- **Исправление и проверка.** Успешная команда формирует защищённый ответ и сбрасывает assertions продолжаемой авторизующей policy-сессии. Тесты проверяют нулевой digest, новый nonce, повторную настройку assertions, HMAC и шифрование ответа, ошибки параметров и второй авторизации, освобождение сессии и `ContextSave/Load`. Отдельная целевая сессия `PolicySecret` сохраняет добавленный assertion. [Отчёт S7-23](reports/STAGE_7_REPORT.md#s7-23--реализация-и-проверки-фазы-b).
 
 <a id="issue-515"></a>
 
@@ -6326,3 +6325,11 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Дата и компонент.** 2026-11-18, `od-machine`, NVMe Controller Configuration и Create I/O SQ/CQ. Закрыто.
 - **Основание.** В `0411d82` функция `enable` выставляла CFS при `IOSQES != 6` или `IOCQES != 4`, а `write_cc` теряла запись этих полей после включения. При допустимых AMS, MPS, CSS и admin-очередях драйвер не мог выполнить Identify перед настройкой I/O-очередей. Base 2.4 относит ошибки неинициализированных полей к Create I/O SQ/CQ. [NVMe Base 2.4, с. 59–60](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=85).
 - **Исправление и проверка.** Модель запускает admin-очереди с нулевыми полями, сохраняет запись размеров после включения и проверяет соответствующее поле в Create I/O SQ/CQ. Регрессионный тест проходит через Identify, ошибки `Invalid Queue Size`, создание и удаление I/O-очередей. [Контракт CC](specs/NVME_DEVICE.md#4-регистры-контроллера), [отчёт S7-16](reports/STAGE_7_REPORT.md#настройка-размеров-записей-io-очередей).
+
+<a id="issue-520"></a>
+
+### ISSUE-520 — S7-23: PolicySecret и атрибут userWithAuth
+
+- **Дата и компонент.** 2026-11-18, `od-tpm`, проверка `authHandle` команды `PolicySecret`. Статус открыт.
+- **Основание и последствие.** Для обычного объекта в `authHandle` TPM Library требует `userWithAuth = SET`. Путь policy-авторизации проверяет требование `PolicyAuthValue`, а проверка этого атрибута отсутствует. До проверки ISSUE-514 тест `policy_secret_can_be_authorized_by_a_policy_session` принимал обычный объект с битом CLEAR. Это допускает объект вне профиля команды. [TPM Library v185 Part 3, §23.4.1, Table 146](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=218).
+- **Следующий шаг.** Сверить код отказа и добавить проверку обычного объекта при разрешении `authHandle`. Покрыть обе формы атрибута, сохранив авторизацию иерархий и специальную проверку `PolicyAuthValue`.

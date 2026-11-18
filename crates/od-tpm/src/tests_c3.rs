@@ -1168,13 +1168,17 @@ fn crypt(
 
 /// Starts a session with the given `symmetric` (the start helper of `tests_b` uses NULL).
 fn start_sym(t: &mut Tpm, bind: u32, bind_auth: &[u8], sym: &[u8]) -> Hs {
+    start_sym_kind(t, bind, bind_auth, sym, se::HMAC)
+}
+
+fn start_sym_kind(t: &mut Tpm, bind: u32, bind_auth: &[u8], sym: &[u8], kind: u8) -> Hs {
     let nonce_caller = [0x44u8; 16];
     let resp = run(
         t,
         start_cmd(
             NULL,
             bind,
-            &start_params(&nonce_caller, &[], se::HMAC, sym, alg::SHA256),
+            &start_params(&nonce_caller, &[], kind, sym, alg::SHA256),
         ),
     );
     ok(&resp);
@@ -1347,6 +1351,48 @@ fn an_encrypted_response_parameter_decrypts_with_the_new_tpm_nonce() {
         let plain = crypt(sym, &s, OWNER_PW, &s.nonce_tpm, &c.nonce_caller, &ct, false);
         assert_eq!(plain, PLAIN, "{sym:?}");
     }
+}
+
+#[test]
+fn policy_use_protects_the_response_and_resets_its_assertions() {
+    const PASSWORD: &[u8] = b"sealed-password";
+    let (mut t, parent) = with_ecc_parent();
+    let mut session = start_sym_kind(&mut t, NULL, b"", &AES_SYM, se::POLICY);
+    let policy_handle = [session.handle];
+    ok(&run(
+        &mut t,
+        plain(cc::POLICY_AUTH_VALUE, &policy_handle, &[]),
+    ));
+    ok(&run(
+        &mut t,
+        plain(cc::POLICY_COMMAND_CODE, &policy_handle, &u32b(cc::UNSEAL)),
+    ));
+    let digest = run(&mut t, plain(cc::POLICY_GET_DIGEST, &policy_handle, &[]));
+    let mut template = sealed();
+    template.auth_policy = Reader::new(params(&digest, 0)).tpm2b(32).unwrap().to_vec();
+    let (object, name, _) = make_child(&mut t, parent, &template, PASSWORD, PLAIN);
+    let mut command = hc(cc::UNSEAL, &[object], Vec::new(), (object, PASSWORD));
+    command.names = vec![name];
+    command.attrs = session_attr::CONTINUE_SESSION | session_attr::ENCRYPT;
+
+    // Check the response HMAC over ciphertext, then decrypt with the returned nonce.
+    let response = run_hmac(&mut t, &mut session, &command);
+    let ciphertext = Reader::new(params(&response, 0)).tpm2b(64).unwrap();
+    assert_ne!(ciphertext, PLAIN);
+    assert_eq!(
+        crypt(
+            &AES_SYM,
+            &session,
+            PASSWORD,
+            &session.nonce_tpm,
+            &command.nonce_caller,
+            ciphertext,
+            false
+        ),
+        PLAIN
+    );
+    let digest = run(&mut t, plain(cc::POLICY_GET_DIGEST, &policy_handle, &[]));
+    assert_eq!(params(&digest, 0), tpm2b(&[0; 32]));
 }
 
 #[test]

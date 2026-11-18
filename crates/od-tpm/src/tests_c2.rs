@@ -13,8 +13,8 @@
 use sha2::{Digest, Sha256};
 
 use super::tests_b::{
-    Hc, Hs, hc, hmac_command, set_auth, shutdown, split_response, start_hmac, start_session,
-    startup,
+    Hc, Hs, hc, hmac_command, run_hmac, set_auth, shutdown, split_response, start_hmac,
+    start_session, startup,
 };
 use super::tests_obj::*;
 use super::*;
@@ -591,18 +591,30 @@ fn an_object_with_an_auth_policy_is_authorized_by_the_policy_session() {
         Rc::POLICY_FAIL.in_session(1),
     );
     // The policy session of the right policy authorizes (nothing to prove: unbound session, no
-    // authValue in the policy, so an empty HMAC); it can be used again.
+    // authValue in the policy, so an empty HMAC).
     let mut s = policy_session(&mut t, se::POLICY);
     ok(&pol_cc(&mut t, &s, cc::SIGN));
     assert_eq!(digest(&mut t, &s), hex(V_CC_SIGN));
     let c = sign_command(key, &name, b"kpw");
+    let mut bad_params = sign_command(key, &name, b"kpw");
+    bad_params.params.push(0);
+    err(
+        &use_session(&mut t, &mut s, &bad_params, 0, true, false),
+        Rc::SIZE,
+    );
+    assert_eq!(digest(&mut t, &s), hex(V_CC_SIGN));
     let r1 = use_session(&mut t, &mut s, &c, 0, true, false);
     ok(&r1);
     let sig = params(&r1, 0).to_vec();
-    ok(&use_session(&mut t, &mut s, &c, 0, true, false));
     ok(&verify(&mut t, key, &[7u8; 32], &sig));
-    // The digest does not change by use.
-    assert_eq!(digest(&mut t, &s), hex(V_CC_SIGN));
+    assert_eq!(digest(&mut t, &s), [0; 32]);
+    err(
+        &use_session(&mut t, &mut s, &c, 0, true, false),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    ok(&pol_cc(&mut t, &s, cc::SIGN));
+    ok(&use_session(&mut t, &mut s, &c, 0, true, false));
+    assert_eq!(digest(&mut t, &s), [0; 32]);
     // A session of another policy: TPM_RC_POLICY_FAIL; the same command code but a zero digest.
     let mut z = policy_session(&mut t, se::POLICY);
     err(
@@ -679,7 +691,10 @@ fn a_policy_with_authvalue_needs_the_hmac_and_a_policy_failure_is_not_a_da_failu
     ok(&pol_cc(&mut t, &s, cc::SIGN));
     let c = sign_command(key, &name, b"kpw");
     // The right HMAC (key = sessionKey || authValue) authorizes.
-    ok(&use_session(&mut t, &mut s, &c, 0, false, false));
+    ok(&run_hmac(&mut t, &mut s, &c));
+    assert_eq!(digest(&mut t, &s), [0; 32]);
+    ok(&pol(&mut t, cc::POLICY_AUTH_VALUE, &s, &[]));
+    ok(&pol_cc(&mut t, &s, cc::SIGN));
     // A wrong or an empty HMAC is an authorization failure counted by DA (the object is
     // DA-protected): TPM_RC_AUTH_FAIL.
     assert_eq!(tries(&mut t), 0);
@@ -733,6 +748,8 @@ fn a_pcr_policy_stops_working_when_a_pcr_changes() {
     ok(&pol_pcr(&mut t, &s, &[], &sel04()));
     ok(&pol_cc(&mut t, &s, cc::SIGN));
     ok(&use_session(&mut t, &mut s, &c, 0, true, false));
+    ok(&pol_pcr(&mut t, &s, &[], &sel04()));
+    ok(&pol_cc(&mut t, &s, cc::SIGN));
     // A PCR changes (even one that the policy does not name): the session fails until restarted.
     ok(&extend(&mut t, 7, &hex(SHA256_ABC)));
     err(
@@ -780,8 +797,11 @@ fn policy_secret_can_be_authorized_by_a_policy_session() {
     let tr2 = policy_session(&mut t, se::TRIAL);
     ok(&pol_cc(&mut t, &tr2, cc::POLICY_SECRET));
     let without_av = digest(&mut t, &tr2);
-    let (k1, n1, _) = make_child(&mut t, parent, &policy_key(&with_av), b"k1", b"");
-    let (k2, _, _) = make_child(&mut t, parent, &policy_key(&without_av), b"k2", b"");
+    let mut object = ecc_sign();
+    object.auth_policy = with_av;
+    let (k1, n1, _) = make_child(&mut t, parent, &object, b"k1", b"");
+    object.auth_policy = without_av;
+    let (k2, _, _) = make_child(&mut t, parent, &object, b"k2", b"");
     let target = policy_session(&mut t, se::POLICY);
     // A policy session without PolicyAuthValue/PolicyPassword cannot authorize PolicySecret
     // (TPM_RC_MODE, Part 3, clause 23.4.1).
@@ -810,7 +830,8 @@ fn policy_secret_can_be_authorized_by_a_policy_session() {
         (k1, b"k1"),
     );
     c1.names[0] = n1.clone();
-    ok(&use_session(&mut t, &mut a1, &c1, 0, false, false));
+    ok(&run_hmac(&mut t, &mut a1, &c1));
+    assert_eq!(digest(&mut t, &a1), [0; 32]);
     assert_eq!(
         digest(&mut t, &target),
         h256(&[&h256(&[&[0u8; 32], &u32b(cc::POLICY_SECRET), &n1]), b"r"])
@@ -855,13 +876,18 @@ fn certify_is_an_admin_role_command() {
     c.names = vec![name.clone(), signer.name.clone()];
     // (the digest of this session is zero: policy failure as well)
     err(
-        &run(&mut t, certify_two_sessions(&p, &c, true)),
+        &run(&mut t, certify_two_sessions(&p, &c, b"")),
         Rc::POLICY_FAIL.in_session(1),
     );
     // With the command code the policy session authorizes `objectHandle`, a password the key.
     ok(&pol_cc(&mut t, &p, cc::CERTIFY));
     assert_eq!(digest(&mut t, &p), hex(V_CC_CERTIFY));
-    let resp = run(&mut t, certify_two_sessions(&p, &c, true));
+    err(
+        &run(&mut t, certify_two_sessions(&p, &c, b"wrong")),
+        Rc::AUTH_FAIL.in_session(2),
+    );
+    assert_eq!(digest(&mut t, &p), hex(V_CC_CERTIFY));
+    let resp = run(&mut t, certify_two_sessions(&p, &c, b""));
     ok(&resp);
     let (_, acks) = split_response(&resp, 0);
     p.nonce_tpm = acks[0].0.clone();
@@ -920,8 +946,7 @@ fn certify_is_an_admin_role_command() {
 
 /// A `TPM2_Certify` command with the policy session `p` (empty HMAC) for `objectHandle` and a
 /// password session for `signHandle`.
-fn certify_two_sessions(p: &Hs, c: &Hc, empty: bool) -> Vec<u8> {
-    let _ = empty;
+fn certify_two_sessions(p: &Hs, c: &Hc, signer_password: &[u8]) -> Vec<u8> {
     let mut area = Vec::new();
     area.extend_from_slice(&p.handle.to_be_bytes());
     area.extend_from_slice(&tpm2b(&[0x33; 16]));
@@ -930,7 +955,7 @@ fn certify_two_sessions(p: &Hs, c: &Hc, empty: bool) -> Vec<u8> {
     area.extend_from_slice(&handle::RS_PW.to_be_bytes());
     area.extend_from_slice(&tpm2b(&[]));
     area.push(1);
-    area.extend_from_slice(&tpm2b(&[]));
+    area.extend_from_slice(&tpm2b(signer_password));
     let mut auth = (area.len() as u32).to_be_bytes().to_vec();
     auth.extend_from_slice(&area);
     frame(st::SESSIONS, c.code, &c.handles, &auth, &c.params)
@@ -1955,6 +1980,8 @@ fn session_contexts_save_once_and_load_once() {
     ok(&use_session(&mut t2, &mut s, &c, 0, true, false));
     let sctx = params(&save(&mut t2, s.handle), 0).to_vec();
     assert_eq!(loaded(&load_ctx(&mut t2, &sctx)), s.handle);
+    assert_eq!(digest(&mut t2, &s), [0; 32]);
+    ok(&pol_cc(&mut t2, &s, cc::SIGN));
     ok(&use_session(&mut t2, &mut s, &c, 0, true, false));
     // A newer save supersedes an older context of the same session (replay protection).
     let old = params(&save(&mut t2, s.handle), 0).to_vec();
