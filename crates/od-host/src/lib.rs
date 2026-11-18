@@ -1460,14 +1460,12 @@ impl PublishedCode {
                 self.execute_memory_store_v2(state, memory, access_context, 1, None, stop_requested)
             }
         });
-        let page_start = active_code_page.get() & !0xfff;
-        let page_end = u128::from(page_start) + 0x1000;
         if let Ok(result) = &mut scope.memory.callback_result
-            && result.exit == MemoryOperationExecutionExitV2::Complete
-            && scope.memory.committed_writes.iter().any(|range| {
-                u128::from(range.start().get()) < page_end
-                    && range.end_exclusive() > u128::from(page_start)
-            })
+            && store_invalidates_active_code(
+                result,
+                active_code_page.get(),
+                &scope.memory.committed_writes,
+            )
         {
             result.exit = MemoryOperationExecutionExitV2::CodeInvalidated;
         }
@@ -2177,6 +2175,33 @@ pub struct MemoryOperationExecutionResultV2 {
     pub exit: MemoryOperationExecutionExitV2,
     pub remaining_budget: u64,
     pub retired_instructions: u64,
+}
+
+/// S4-16i: whether a store block's result must be reported as
+/// `CodeInvalidated` (and the admitted block retired). True when the store
+/// retired (`Complete`, or `StopRequested` with one retired instruction: the
+/// STOP byte was raised by another thread after the commit, S3-38o) and a
+/// committed write overlaps the page the block's bytes were fetched from.
+/// Rewriting `StopRequested` does not lose the STOP: native code only reads
+/// the byte, the host loop clears it and re-reads the request flags at the
+/// next safe point (S6-40 §5 S3).
+fn store_invalidates_active_code(
+    result: &MemoryOperationExecutionResultV2,
+    active_code_page: u64,
+    committed_writes: &[od_machine::GuestPhysicalRange],
+) -> bool {
+    let retired_store = match result.exit {
+        MemoryOperationExecutionExitV2::Complete => true,
+        MemoryOperationExecutionExitV2::StopRequested => result.retired_instructions == 1,
+        _ => false,
+    };
+    let page_start = active_code_page & !0xfff;
+    let page_end = u128::from(page_start) + 0x1000;
+    retired_store
+        && committed_writes.iter().any(|range| {
+            u128::from(range.start().get()) < page_end
+                && range.end_exclusive() > u128::from(page_start)
+        })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -120333,5 +120358,72 @@ pub(crate) mod tests {
             assert_eq!(state.gpr[RAX], s4_16h_immediate(&code));
             assert_eq!(s4_16g_publications(&session), 1);
         }
+    }
+}
+
+#[cfg(test)]
+mod store_invalidates_active_code_tests {
+    use super::{
+        MemoryOperationExecutionExitV2 as Exit, MemoryOperationExecutionResultV2,
+        store_invalidates_active_code,
+    };
+    use od_machine::{GuestPhysicalAddress, GuestPhysicalRange};
+
+    fn result(exit: Exit, retired_instructions: u64) -> MemoryOperationExecutionResultV2 {
+        MemoryOperationExecutionResultV2 {
+            exit,
+            remaining_budget: 0,
+            retired_instructions,
+        }
+    }
+
+    fn write(address: u64) -> GuestPhysicalRange {
+        GuestPhysicalRange::new(GuestPhysicalAddress::new(address), 8).unwrap()
+    }
+
+    /// S4-16i after S3-38o: a store into its own code page that retired before
+    /// the STOP byte was observed (`StopRequested`, retired 1) is reported as
+    /// `CodeInvalidated` exactly like `Complete`; a STOP before the store
+    /// (retired 0), another exit, or a write to another page is not.
+    #[test]
+    fn a_retired_store_into_the_code_page_invalidates_even_when_stop_was_observed() {
+        let code_page = 0x5123;
+        let on_page = [write(0x5ff8)];
+        let off_page = [write(0x6000)];
+        assert!(store_invalidates_active_code(
+            &result(Exit::Complete, 1),
+            code_page,
+            &on_page
+        ));
+        assert!(store_invalidates_active_code(
+            &result(Exit::StopRequested, 1),
+            code_page,
+            &on_page
+        ));
+        assert!(!store_invalidates_active_code(
+            &result(Exit::StopRequested, 0),
+            code_page,
+            &on_page
+        ));
+        assert!(!store_invalidates_active_code(
+            &result(Exit::StopRequested, 0),
+            code_page,
+            &[]
+        ));
+        assert!(!store_invalidates_active_code(
+            &result(Exit::StopRequested, 1),
+            code_page,
+            &off_page
+        ));
+        assert!(!store_invalidates_active_code(
+            &result(Exit::Complete, 1),
+            code_page,
+            &off_page
+        ));
+        assert!(!store_invalidates_active_code(
+            &result(Exit::BudgetExhausted, 0),
+            code_page,
+            &on_page
+        ));
     }
 }
