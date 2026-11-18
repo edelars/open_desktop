@@ -44,9 +44,10 @@ use crate::firmware_board::{FirmwareBoardConfig, FirmwareRunReport, LoadedFirmwa
 use crate::irq_source::IrqCounters;
 use crate::linux_boot::{LinuxBzImageHeader, LinuxHeaderError, parse_linux_bzimage_header};
 use crate::linux_boot_params::{LINUX_E820_MAX_ENTRIES, LinuxBootParamsError};
+use crate::linux_checkpoints::{LinuxCheckpointRecord, LinuxCheckpointTable};
 use crate::linux_load::{LinuxLoadError, LinuxLoadInput, load_linux_direct};
 use crate::linux_placement::LinuxPlacementError;
-use crate::{GuestPhysicalAddress, MachineStopReason};
+use crate::{GuestPhysicalAddress, LinuxExecutionObservations, MachineStopReason};
 use od_isa::cpuid::CpuidProfile;
 use od_isa::execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, MovCr3Long64V1, TranslationContextChange,
@@ -511,6 +512,18 @@ pub struct LinuxStopRecord {
     pub retired: u64,
     pub quanta: u64,
     pub virtual_ns: u64,
+    /// Successful reads of the ACPI PM timer during this run; `None` when the board has no PM block.
+    pub pm_timer_reads: Option<u64>,
+    /// Successful guest RDTSC reads during this run; `None` without the Linux-profile source.
+    pub rdtsc_reads: Option<u64>,
+    /// Successful guest RDTSC reads by CPL ring 0..3; `None` without the Linux-profile source.
+    pub rdtsc_reads_by_cpl: Option<[u64; 4]>,
+    /// Present only when requested by the one-shot execution-observations diagnostic.
+    pub execution_observations: Option<LinuxExecutionObservations>,
+    /// Successful guest reads of PIT port B (`0x61`) during this run; `None` without a PIT.
+    pub pit_port_b_reads: Option<u64>,
+    /// Successful guest reads of PIT channel 2 (`0x42`) during this run; `None` without a PIT.
+    pub pit_counter_port_reads: Option<u64>,
     pub tsc_hz: u64,
     /// The bytes the guest transmitted through COM1.
     pub com1: Vec<u8>,
@@ -558,9 +571,13 @@ pub struct LinuxStopRecord {
     /// S4-39f: the last system calls of a user-mode run (a ring of
     /// [`SYSCALL_JOURNAL_CAPACITY`] entries); empty without `user_mode`.
     pub syscall_journal: SyscallJournal,
-    /// S4-38L5c: how many guest `#PF` exceptions the CPL0 set board delivered through the guest
+    /// How many guest `#PF` and `#GP(0)` exceptions the CPL0 set board delivered through the guest
     /// IDT in this run (0 on the `paged_probe` path). A delivery is not a retired instruction.
     pub exceptions_delivered: u64,
+    /// Guest `#PF` exception deliveries in this run (0 on the `paged_probe` path).
+    pub page_faults_delivered: u64,
+    /// Guest `#GP(0)` exception deliveries in this run (0 on the `paged_probe` path).
+    pub general_protection_faults_delivered: u64,
     /// S4-38L8b: external interrupts the CPL0 set board delivered through the guest IDT in this
     /// run. `0` while the board has no interrupt source (and on the `paged_probe` path).
     pub irqs_delivered: u64,
@@ -581,6 +598,10 @@ pub struct LinuxStopRecord {
     /// ([`LinuxCpl0SetMembers::diagnostic_past_c7`]): the CPUID boundary was off, so the result is
     /// diagnostic only and is NOT counted. `false` on every other run.
     pub diagnostic_past_c7: bool,
+    /// S4-38L4i: the checkpoints C0..C17 reached by the run, in id order (only those reached), when
+    /// the run was made with a checkpoint table ([`run_linux_direct_board_set_observed`]); `None`
+    /// otherwise, and then the record is what it always was.
+    pub checkpoints: Option<Vec<LinuxCheckpointRecord>>,
 }
 
 /// S4-39f: how many system calls the journal of a stop record keeps (the last ones).
@@ -666,6 +687,7 @@ pub fn run_linux_direct_board(
     input: &LinuxDirectInput<'_>,
     instruction_budget: u64,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
+    let pm_timer_reads_before = boot.board.acpi_pm().map(|pm| pm.timer_reads());
     let report = boot
         .board
         .run_linux_boot(instruction_budget)
@@ -678,6 +700,7 @@ pub fn run_linux_direct_board(
         boot,
         input,
         report,
+        pm_timer_reads_before,
         SetExtras {
             path: "paged_probe",
             members: Vec::new(),
@@ -689,8 +712,12 @@ pub fn run_linux_direct_board(
             cpl3_retired: 0,
             syscall_journal: SyscallJournal::default(),
             exceptions_delivered: 0,
+            page_faults_delivered: 0,
+            general_protection_faults_delivered: 0,
+            execution_observations: None,
             irq: IrqCounters::default(),
             diagnostic_past_c7: false,
+            checkpoints: None,
         },
     ))
 }
@@ -707,14 +734,19 @@ struct SetExtras<'a> {
     cpl3_retired: u64,
     syscall_journal: SyscallJournal,
     exceptions_delivered: u64,
+    page_faults_delivered: u64,
+    general_protection_faults_delivered: u64,
+    execution_observations: Option<LinuxExecutionObservations>,
     irq: IrqCounters,
     diagnostic_past_c7: bool,
+    checkpoints: Option<Vec<LinuxCheckpointRecord>>,
 }
 
 fn stop_record(
     boot: &mut LinuxDirectBoot,
     input: &LinuxDirectInput<'_>,
     report: FirmwareRunReport,
+    pm_timer_reads_before: Option<u64>,
     extras: SetExtras<'_>,
 ) -> LinuxStopRecord {
     let state = boot.board.state().clone();
@@ -724,6 +756,9 @@ fn stop_record(
         PagedProbeExit::Unsupported { opcode } => Some(opcode),
         _ => None,
     };
+    let pm_timer_reads = pm_timer_reads_before
+        .zip(boot.board.acpi_pm().map(|pm| pm.timer_reads()))
+        .map(|(before, after)| after.saturating_sub(before));
     LinuxStopRecord {
         exit_kind: if extras.cpuid_divergence_leaf.is_some() {
             "cpuid_divergence"
@@ -768,6 +803,12 @@ fn stop_record(
         retired: report.retired,
         quanta: report.quanta,
         virtual_ns: report.virtual_ns,
+        pm_timer_reads,
+        rdtsc_reads: report.rdtsc_reads,
+        rdtsc_reads_by_cpl: report.rdtsc_reads_by_cpl,
+        execution_observations: extras.execution_observations,
+        pit_port_b_reads: report.pit_port_b_reads,
+        pit_counter_port_reads: report.pit_counter_port_reads,
         tsc_hz: report.tsc_hz,
         com1: report.com1,
         linux_profile: boot.board.has_linux_profile(),
@@ -790,6 +831,8 @@ fn stop_record(
         cpl3_retired: extras.cpl3_retired,
         syscall_journal: extras.syscall_journal,
         exceptions_delivered: extras.exceptions_delivered,
+        page_faults_delivered: extras.page_faults_delivered,
+        general_protection_faults_delivered: extras.general_protection_faults_delivered,
         irqs_delivered: extras.irq.irqs_delivered,
         irq0_edges: extras.irq.irq0_edges,
         irq_refused_masked: extras.irq.irq_refused_masked,
@@ -798,6 +841,7 @@ fn stop_record(
         halt_wakes: extras.irq.halt_wakes,
         halt_idle_ns: extras.irq.halt_idle_ns,
         diagnostic_past_c7: extras.diagnostic_past_c7,
+        checkpoints: extras.checkpoints,
         cr3_changes: extras.changes.len() as u64,
         // The set loop records `MOV CR3` only; anything else it stops on as an integration error.
         last_cr3_change: extras
@@ -896,6 +940,13 @@ pub struct LinuxCpl0SetMembers {
     /// [`Self::linux_default`] (so a default run is unchanged); the runner turns it on only with
     /// `--cpuid-profile stage4a`. Independent of [`Self::msr`] and the other MSR members.
     pub msr_tdx_keyid_partitioning_read: bool,
+    /// `with_msr_apic_base` (S4-38L8g): `RDMSR` of IA32_APIC_BASE (`0x1B`) at CPL0 returns
+    /// `EDX:EAX = 0:0xFEE00900` (base `0xFEE00000`, EN, BSP); `WRMSR` accepts exactly that value and
+    /// refuses every other one (`Unsupported`) before any change. `false` in [`Self::minimal`] and
+    /// [`Self::linux_default`]; `run_linux_direct_board_set_observed` turns it on only for the APIC
+    /// profile (`X8664V1Stage4AApic`), whose board has the Local APIC enabled at that base, so the
+    /// member list of `stage4a` and of the default run does not change.
+    pub msr_apic_base: bool,
     /// `with_fp_state` (S4-38L9d): the FP member of the set: `FNINIT`, the plain RIP-relative
     /// `FXSAVE` and `MOV CR0, RDI` (the `fpu__init_system` path of the kernel), with the guest FP
     /// state kept in the board between runs (`guest_fp`). It needs a CPUID profile that declares
@@ -957,6 +1008,16 @@ pub struct LinuxCpl0SetMembers {
     /// the board set: it is listed in `set_members` as `irq`. `false` in [`Self::minimal`], `true`
     /// in [`Self::linux_default`].
     pub irq: bool,
+    /// S4-23j: the single clock owner drives the clock of the set loop (`ClockOwner`, decision D7:
+    /// retired instructions one ns each, device ticks, the idle jump of a halted CPU through the
+    /// idle arbiter, the quantum cut by `ClockOwner::step_budget`). Opt-in: `false` in
+    /// [`Self::minimal`] and [`Self::linux_default`], and the member is named `clock_owner` in
+    /// `set_members` only when it is on, so a default run (and every manifest) is byte-for-byte
+    /// the same. The board claims the clock for good (a later standalone advance fails with
+    /// `ClockAlreadyOwned`); the run is refused as `run_failed` when the board cannot give it
+    /// (a timer on another clock, an owner already present). The Linux-visible frequency and the
+    /// LAPIC timer as a wake source stay S4-38.
+    pub clock_owner: bool,
 }
 
 impl LinuxCpl0SetMembers {
@@ -977,6 +1038,7 @@ impl LinuxCpl0SetMembers {
             msr_syscall_mask: false,
             msr_kernel_gs_base: false,
             msr_tdx_keyid_partitioning_read: false,
+            msr_apic_base: false,
             fp_state: false,
             int3: false,
             halt: false,
@@ -987,6 +1049,7 @@ impl LinuxCpl0SetMembers {
             fetch_cache: false,
             diagnostic_past_c7: false,
             irq: false,
+            clock_owner: false,
         }
     }
 
@@ -1017,6 +1080,7 @@ impl LinuxCpl0SetMembers {
             msr_syscall_mask: true,
             msr_kernel_gs_base: true,
             msr_tdx_keyid_partitioning_read: false,
+            msr_apic_base: false,
             fp_state: false,
             int3: false,
             fetch_cache: true,
@@ -1058,7 +1122,7 @@ pub fn run_linux_direct_board_set(
     instruction_budget: u64,
     members: LinuxCpl0SetMembers,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
-    run_linux_direct_board_set_with(boot, input, instruction_budget, members, false)
+    run_linux_direct_board_set_with(boot, input, instruction_budget, members, false, None, false)
 }
 
 /// [`run_linux_direct_board_set`] with the user mode of the board (S4-39c): the set is built
@@ -1066,10 +1130,11 @@ pub fn run_linux_direct_board_set(
 /// check commits, and the board then follows the CPL of the state: CS RPL 0 runs the CPL0 entry,
 /// RPL 3 the CPL3 entry (`run_with_cpl3_profile_set`, its allow-list and Ring3 context). The run
 /// goes on from CPL0 into CPL3 on the same state; the record carries `user_mode` and
-/// `cpl3_retired`, and a stop in CPL3 is `user_mode_fault` / `user_mode_unsupported`. Fault
-/// delivery and interrupts from CPL3 are refused by the CPU delivery (S4-39d, S4-39g), which ends
-/// the run as an `ExceptionDeliveryFailed` fault (`set_exit_detail`). Without the user mode the
-/// `IRETQ` stops at the `user_entry` boundary as before. S4-39e: a user-mode set that carries
+/// `cpl3_retired`, and a stop in CPL3 is `user_mode_fault` / `user_mode_unsupported`. Supported
+/// CPL3 `#PF`/`#GP(0)` exceptions and external IRQs switch through `TSS.RSP0` to their CPL0
+/// handlers (S4-39d/S4-39h). A refused or aborted external IRQ ends as `run_failed`; failed
+/// `#PF`/`#GP` delivery remains a guest fault with its delivery detail.
+/// Without the user mode the `IRETQ` stops at the `user_entry` boundary as before. S4-39e: a user-mode set that carries
 /// the EFER (`msr`), STAR, LSTAR and SYSCALL_MASK members also gets `with_syscall` (named
 /// `syscall` in `set_members`), so `SYSCALL` from CPL3 enters the kernel at LSTAR.
 pub fn run_linux_direct_board_set_user_mode(
@@ -1078,7 +1143,72 @@ pub fn run_linux_direct_board_set_user_mode(
     instruction_budget: u64,
     members: LinuxCpl0SetMembers,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
-    run_linux_direct_board_set_with(boot, input, instruction_budget, members, true)
+    run_linux_direct_board_set_with(boot, input, instruction_budget, members, true, None, false)
+}
+
+/// [`run_linux_direct_board_set`] (`user_mode` false) or [`run_linux_direct_board_set_user_mode`]
+/// (`user_mode` true) with the opt-in checkpoint recorder of S4-38L4i. With `Some(table)` the
+/// board records C0..C17 on the instruction boundaries of the loop (see `linux_checkpoints`) and
+/// the record carries them in `checkpoints`; with `None` this is exactly the function it wraps.
+/// The recorder only observes: the run retires the same instructions in the same quanta and the
+/// record is equal to the one without it except for the `checkpoints` field.
+pub fn run_linux_direct_board_set_observed(
+    boot: &mut LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    instruction_budget: u64,
+    members: LinuxCpl0SetMembers,
+    user_mode: bool,
+    checkpoints: Option<LinuxCheckpointTable>,
+) -> Result<LinuxStopRecord, LinuxDirectError> {
+    run_linux_direct_board_set_with(
+        boot,
+        input,
+        instruction_budget,
+        members,
+        user_mode,
+        checkpoints,
+        false,
+    )
+}
+
+/// One-shot user-mode CPL0-set run with bounded RDTSC-site and delivered-#PF observations.
+/// The diagnostic fields are absent from ordinary runs and do not alter guest-visible state.
+pub fn run_linux_direct_board_set_user_mode_with_execution_observations(
+    boot: &mut LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    instruction_budget: u64,
+    members: LinuxCpl0SetMembers,
+) -> Result<LinuxStopRecord, LinuxDirectError> {
+    run_linux_direct_board_set_with_post_iret_index(
+        boot,
+        input,
+        instruction_budget,
+        members,
+        true,
+        None,
+        true,
+        None,
+    )
+}
+
+/// One-shot user-mode run with an additional read-only post-IRET walk for one delivered #PF.
+pub fn run_linux_direct_board_set_user_mode_with_post_iret_index(
+    boot: &mut LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    instruction_budget: u64,
+    members: LinuxCpl0SetMembers,
+    delivered_page_fault_ordinal: u64,
+) -> Result<LinuxStopRecord, LinuxDirectError> {
+    run_linux_direct_board_set_with_post_iret_index(
+        boot,
+        input,
+        instruction_budget,
+        members,
+        true,
+        None,
+        true,
+        Some(delivered_page_fault_ordinal),
+    )
 }
 
 fn run_linux_direct_board_set_with(
@@ -1087,14 +1217,66 @@ fn run_linux_direct_board_set_with(
     instruction_budget: u64,
     members: LinuxCpl0SetMembers,
     user_mode: bool,
+    checkpoint_table: Option<LinuxCheckpointTable>,
+    capture_execution_observations: bool,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
+    run_linux_direct_board_set_with_post_iret_index(
+        boot,
+        input,
+        instruction_budget,
+        members,
+        user_mode,
+        checkpoint_table,
+        capture_execution_observations,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_linux_direct_board_set_with_post_iret_index(
+    boot: &mut LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    instruction_budget: u64,
+    members: LinuxCpl0SetMembers,
+    user_mode: bool,
+    checkpoint_table: Option<LinuxCheckpointTable>,
+    capture_execution_observations: bool,
+    selected_post_iret_ordinal: Option<u64>,
+) -> Result<LinuxStopRecord, LinuxDirectError> {
+    let pm_timer_reads_before = boot.board.acpi_pm().map(|pm| pm.timer_reads());
     // S4-39g: only the user-mode run of a board with the Linux-profile PIT and 8259 gets the
     // timer line: the PIT -> 8259 IR0 source becomes the board source, and the set carries `halt`
     // (an idle `sti; hlt` ends the quantum and the board wakes the CPU at the next timer edge)
     // and the interrupt hook. Every other run (also `--diagnostic-past-c7` without the flag,
     // `DiagnosticV1`, the base probe) keeps the board as it was.
     let mut members = members;
-    if user_mode && boot.board.enable_pit_pic_irq() {
+    // S4-38L8d: the APIC profile (`X8664V1Stage4AApic`) gets the timer line through the IOAPIC and the
+    // Local APIC instead (PIT OUT0 -> INTIN2 -> LAPIC IRR), the clock owner (the LAPIC timer and the
+    // idle wake need it: without it the tick hangs after `check_timer`), `halt` and the interrupt
+    // hook. The 8259 source is not installed. S4-38L9-um: the user mode is allowed here too; the
+    // CPL3 interrupt goes through the same boundary hook (the Local APIC IRR vector, the guest IDT,
+    // `TSS.RSP0`) as at CPL0, so the source of the vector (IOAPIC or the LAPIC timer) is not
+    // looked at by the privilege entry.
+    if members.cpuid_profile == CpuidProfile::X8664V1Stage4AApic {
+        let refuse = |detail: &str| {
+            let mut error = LinuxDirectError::text("run_failed", "run", detail.to_string());
+            error.retired = Some(0);
+            error
+        };
+        // Only a check here: the board is changed after the last refusal below (the clock owner,
+        // the checkpoint table), see `enable_pit_ioapic_irq` further down.
+        if !boot.board.pit_ioapic_irq_available() {
+            return Err(refuse(
+                "the X8664V1Stage4AApic profile needs the Linux-profile PIT and no 8259 source",
+            ));
+        }
+        members.halt = true;
+        members.irq = true;
+        members.clock_owner = true;
+        // S4-38L8g: the kernel reads IA32_APIC_BASE (the Local APIC is enabled at the default
+        // base; without the member the read is `#GP`, "BSP APIC 0 is not marked in APICBASE MSR").
+        members.msr_apic_base = true;
+    } else if user_mode && boot.board.enable_pit_pic_irq() {
         // S4-39i: the UART THRE line goes to master IR4, so the kernel's 8250 driver can send
         // `tty` output (it writes THR from the THRE interrupt).
         boot.board.enable_uart_irq4();
@@ -1182,6 +1364,10 @@ fn run_linux_direct_board_set_with(
         set = set.with_msr_tdx_keyid_partitioning_read();
         names.push("msr:tdx_keyid_partitioning_read".into());
     }
+    if members.msr_apic_base {
+        set = set.with_msr_apic_base();
+        names.push("msr:apic_base".into());
+    }
     if members.fp_state {
         set = set.with_fp_state(&fp_cell);
         names.push("fp_state".into());
@@ -1214,6 +1400,13 @@ fn run_linux_direct_board_set_with(
     if members.irq {
         names.push("irq".into());
     }
+    if members.clock_owner {
+        // S4-23j: before the first instruction, so a refusal leaves the guest untouched.
+        boot.board
+            .enable_clock_owner()
+            .map_err(|error| LinuxDirectError::new("run_failed", "run", error))?;
+        names.push("clock_owner".into());
+    }
     if user_mode {
         set = set.with_user_mode();
         names.push("user_mode".into());
@@ -1225,15 +1418,66 @@ fn run_linux_direct_board_set_with(
             names.push("syscall".into());
         }
     }
-    let result = boot.board.run_linux_boot_cpl0_set(
-        instruction_budget,
-        &set,
-        // The C7 boundary exists for the made-up DiagnosticV1 identity only (S4-38L9a): a
-        // subset profile answers leaves 1 and 0x8000_0001 for what it declares.
-        members.cpuid && !members.diagnostic_past_c7 && cpuid == CpuidProfile::DiagnosticV1,
-        members.fetch_cache,
-        members.irq,
-    );
+    // S4-38L4i: after every refusal that leaves the guest untouched, before the first
+    // instruction; the recorder only observes.
+    if let Some(table) = checkpoint_table {
+        // A bad table is refused before the first instruction (`run_failed`, nothing retired).
+        boot.board.enable_checkpoints(table).map_err(|error| {
+            let mut error = LinuxDirectError::new("run_failed", "run", error);
+            error.retired = Some(0);
+            error
+        })?;
+    }
+    // S4-38L8d: the APIC profile's timer line is installed last, so that a refusal above (the clock
+    // owner, the checkpoint table) leaves the board without it. `pit_ioapic_irq_available` was
+    // checked at the top, so this cannot fail; the refusal is kept for a broken invariant.
+    if members.cpuid_profile == CpuidProfile::X8664V1Stage4AApic
+        && !boot.board.enable_pit_ioapic_irq()
+    {
+        let mut error = LinuxDirectError::text(
+            "run_failed",
+            "run",
+            "the X8664V1Stage4AApic profile could not install the IOAPIC timer source".to_string(),
+        );
+        error.retired = Some(0);
+        return Err(error);
+    }
+    // S4-38 (UART -> INTIN4): the UART interrupt output goes to IOAPIC INTIN4 on top of the timer
+    // source above (the 8259 variant `enable_uart_irq4` is the stage4a user-mode one).
+    if members.cpuid_profile == CpuidProfile::X8664V1Stage4AApic
+        && !boot.board.enable_uart_ioapic_irq4()
+    {
+        let mut error = LinuxDirectError::text(
+            "run_failed",
+            "run",
+            "the X8664V1Stage4AApic profile could not install the IOAPIC UART source".to_string(),
+        );
+        error.retired = Some(0);
+        return Err(error);
+    }
+    // The C7 boundary exists for the made-up DiagnosticV1 identity only (S4-38L9a): a subset
+    // profile answers leaves 1 and 0x8000_0001 for what it declares.
+    let cpuid_boundary =
+        members.cpuid && !members.diagnostic_past_c7 && cpuid == CpuidProfile::DiagnosticV1;
+    let result = if capture_execution_observations {
+        boot.board.run_linux_boot_cpl0_set_with_post_iret_index(
+            instruction_budget,
+            &set,
+            cpuid_boundary,
+            members.fetch_cache,
+            members.irq,
+            true,
+            selected_post_iret_ordinal,
+        )
+    } else {
+        boot.board.run_linux_boot_cpl0_set(
+            instruction_budget,
+            &set,
+            cpuid_boundary,
+            members.fetch_cache,
+            members.irq,
+        )
+    };
     // The EFER the guest left stays whatever way the run ended.
     boot.board.set_guest_efer(efer_cell.get());
     boot.board.set_pci_config_address(pci_cell.get());
@@ -1247,6 +1491,7 @@ fn run_linux_direct_board_set_with(
     boot.board
         .set_guest_kernel_gs_base(kernel_gs_base_cell.get());
     boot.board.set_guest_fp(fp_cell.into_inner());
+    let checkpoints = boot.board.take_checkpoints();
     let report = result.map_err(|failure| {
         let mut error = LinuxDirectError::new("run_failed", "run", failure.error);
         error.retired = Some(failure.retired);
@@ -1256,7 +1501,9 @@ fn run_linux_direct_board_set_with(
         boot,
         input,
         report.run,
+        pm_timer_reads_before,
         SetExtras {
+            checkpoints,
             path: "cpl0_set",
             members: names,
             exit_detail: Some(report.set_exit_detail),
@@ -1267,6 +1514,9 @@ fn run_linux_direct_board_set_with(
             cpl3_retired: report.cpl3_retired,
             syscall_journal: report.syscall_journal,
             exceptions_delivered: report.exceptions_delivered,
+            page_faults_delivered: report.page_faults_delivered,
+            general_protection_faults_delivered: report.general_protection_faults_delivered,
+            execution_observations: report.execution_observations,
             irq: report.irq,
             diagnostic_past_c7: members.diagnostic_past_c7,
         },
@@ -1753,6 +2003,55 @@ mod tests {
     }
 
     #[test]
+    fn stop_record_counts_pm_timer_reads_and_keeps_their_virtual_time_tick() {
+        // MOV DX, 0x0608; IN AL, DX. Each successful PM_TMR read queues one microsecond
+        // after the instruction quantum, so two retired instructions advance time by 1,002 ns.
+        let code = [0x66, 0xba, 0x08, 0x06, 0xec];
+        let (mut boot, file) = boot_with_entry(&code);
+        let first = run_set_facade(&mut boot, &file, 2, halting_default());
+        assert_eq!(first.exit, PagedProbeExit::BudgetExhausted, "{first:?}");
+        assert_eq!(first.retired, 2);
+        assert_eq!(first.pm_timer_reads, Some(1));
+        assert_eq!(first.virtual_ns, 1_002);
+
+        // The same board can continue across calls; this field is the per-run delta, not the
+        // handle's cumulative count since board construction.
+        boot.board.state_mut().rip = ENTRY;
+        let second = run_set_facade(&mut boot, &file, 2, halting_default());
+        assert_eq!(second.pm_timer_reads, Some(1));
+        assert_eq!(second.virtual_ns, 2_004);
+    }
+
+    #[test]
+    fn stop_record_counts_rdtsc_and_pit_reads_per_invocation() {
+        // RDTSC; MOV DX,0x61; IN; MOV DX,0x42; IN; MOV DX,0x608; IN; HLT.
+        let code = [
+            0x0f, 0x31, 0x66, 0xba, 0x61, 0x00, 0xec, 0x66, 0xba, 0x42, 0x00, 0xec, 0x66, 0xba,
+            0x08, 0x06, 0xec, 0xf4,
+        ];
+        let (mut boot, file) = boot_with_entry(&code);
+        program_pit_channel_2(&mut boot);
+        let check = |record: &LinuxStopRecord| {
+            assert_eq!(record.rdtsc_reads, Some(1));
+            assert_eq!(record.rdtsc_reads_by_cpl, Some([1, 0, 0, 0]));
+            assert_eq!(record.pit_port_b_reads, Some(1));
+            assert_eq!(record.pit_counter_port_reads, Some(1));
+            assert_eq!(record.pm_timer_reads, Some(1));
+        };
+
+        let first = run_set_facade(&mut boot, &file, 32, halting_default());
+        assert_eq!(first.exit, PagedProbeExit::Halted, "{first:?}");
+        check(&first);
+
+        // Resuming the same board reports the invocation delta, not cumulative device counts.
+        boot.board.state_mut().rip = ENTRY;
+        boot.board.state_mut().activity = Some(CpuActivity::Running);
+        let second = run_set_facade(&mut boot, &file, 32, halting_default());
+        assert_eq!(second.exit, PagedProbeExit::Halted, "{second:?}");
+        check(&second);
+    }
+
+    #[test]
     fn the_4k_walker_on_the_linux_board_is_a_walk_error_not_unsupported() {
         // The Linux tables map low RAM with 2 MiB leaves; the 4 KiB walker (`run_boot`) refuses
         // the leaf while it walks, before any opcode is decoded.
@@ -1875,8 +2174,11 @@ mod tests {
     }
     // ---- S2-45f: the CPL0 profile set through the board walker ----
 
+    use super::run_linux_direct_board_set_observed;
+    use crate::execution_observations::LinuxExecutionObservationCollector;
     use crate::paged_memory_adapter::{
         PagedCpl0SetExit, PagedCpl0SetReport, run_cpl0_set_paged_2m_ram,
+        run_cpl0_set_paged_2m_ram_observed,
     };
     use od_isa::execute::{
         ControlRegisterPolicy, Cpl0ProfileSet, MovCr3Long64V1, RunExit, TranslationContextChange,
@@ -1911,10 +2213,20 @@ mod tests {
         budget: u64,
         set: &Cpl0ProfileSet<'_>,
     ) -> (LongModeState, PagedCpl0SetReport) {
+        run_set_with_observations(boot, owned_cr3, budget, set, None)
+    }
+
+    fn run_set_with_observations(
+        boot: &mut LinuxDirectBoot,
+        owned_cr3: bool,
+        budget: u64,
+        set: &Cpl0ProfileSet<'_>,
+        observations: Option<&mut LinuxExecutionObservationCollector>,
+    ) -> (LongModeState, PagedCpl0SetReport) {
         let (cr3, efer) = (boot.board.cr3(), boot.board.efer());
         let mut state = boot.board.state().clone();
         state.cr3 = owned_cr3.then_some(cr3);
-        let report = run_cpl0_set_paged_2m_ram(
+        let report = run_cpl0_set_paged_2m_ram_observed(
             &mut state,
             boot.board.bus_mut(),
             cr3,
@@ -1926,6 +2238,11 @@ mod tests {
             None,
             || false,
             |_| {},
+            false,
+            None,
+            None,
+            None,
+            observations,
         );
         (state, report)
     }
@@ -10410,13 +10727,45 @@ mod tests {
         let cli = CliProfile::NonPviLong64V1;
         let (mut boot, _) = pf_board(0x5A, &[]);
         let pde_address = pf_pde_address(&boot);
+        let cr3 = boot.board.cr3();
+        let pml4_index = ((PF_VA >> 39) & 0x1ff) as u16;
+        let pml4_address = cr3 + u64::from(pml4_index) * 8;
+        let pml4_value = read_qword(&mut boot, pml4_address);
+        let pdpt_address = (pml4_value & 0x000f_ffff_ffff_f000) + (((PF_VA >> 30) & 0x1ff) * 8);
+        let pdpt_value = read_qword(&mut boot, pdpt_address);
+        let pd_address = (pdpt_value & 0x000f_ffff_ffff_f000) + (((PF_VA >> 21) & 0x1ff) * 8);
+        let pd_value_before = read_qword(&mut boot, pd_address);
+        assert_eq!(pd_address, pde_address);
+        assert_eq!(pd_value_before, 0, "the original PDE is not present");
         // 2 MiB leaf (P, W, PS) onto the 2 MiB frame that holds `DATA`.
         let handler = pf_repair_handler(pde_address, (DATA & !(2 * MIB - 1)) | 0x83);
         write_phys(&mut boot, PF_HANDLER_AT, &handler);
         let rsp = boot.board.state().gpr[Register::Rsp as usize];
+        let faulting_rbp = 0x5550;
+        let faulting_rsi = 0x6666;
+        let faulting_rdi = 0x7777;
+        let mut fault_frames = Vec::new();
+        fault_frames.extend_from_slice(&0x5560u64.to_le_bytes());
+        fault_frames.extend_from_slice(&0xffff_ffff_8100_1000u64.to_le_bytes());
+        fault_frames.extend_from_slice(&0u64.to_le_bytes());
+        fault_frames.extend_from_slice(&0xffff_ffff_8100_2000u64.to_le_bytes());
+        write_phys(&mut boot, faulting_rbp, &fault_frames);
+        {
+            let state = boot.board.state_mut();
+            state.gpr[Register::Rbp as usize] = faulting_rbp;
+            state.gpr[Register::Rsi as usize] = faulting_rsi;
+            state.gpr[Register::Rdi as usize] = faulting_rdi;
+        }
         // The store faults, the frame is pushed, six handler instructions retire and IRETQ is
         // the last of them: the store is back at RIP and RF is set (it came from the frame).
-        let (state, report) = run_set(&mut boot, true, 6, &minimal_set(&cli));
+        let mut observations = LinuxExecutionObservationCollector::default();
+        let (state, report) = run_set_with_observations(
+            &mut boot,
+            true,
+            6,
+            &minimal_set(&cli),
+            Some(&mut observations),
+        );
         assert_eq!(
             report.exit,
             PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
@@ -10428,6 +10777,91 @@ mod tests {
         assert_eq!(state.gpr[Register::Rsp as usize], rsp);
         assert_eq!(state.gpr[Register::Rax as usize], PF_VA + 0x20, "CR2 read");
         assert_eq!(state.cr2, Some(PF_VA + 0x20));
+        let observations = observations.finish();
+        assert_eq!(observations.page_faults_delivered, 1);
+        assert_eq!(observations.page_fault_events_omitted, 0);
+        let event = &observations.page_fault_events[0];
+        assert_eq!(
+            (event.rip, event.cr2, event.error_code, event.cpl),
+            (ENTRY, PF_VA + 0x20, 2, 0)
+        );
+        assert_eq!(event.access, "Write");
+        let context = &event.faulting_context;
+        assert_eq!(
+            (context.cr3, context.rsp, context.rbp),
+            (cr3, rsp, faulting_rbp)
+        );
+        assert_eq!(
+            (context.rcx, context.rsi, context.rdi),
+            (0x5A, faulting_rsi, faulting_rdi)
+        );
+        assert_eq!(
+            context.frame_chain,
+            [
+                crate::ConsoleContextFrame {
+                    frame_pointer: faulting_rbp,
+                    return_address: 0xffff_ffff_8100_1000,
+                },
+                crate::ConsoleContextFrame {
+                    frame_pointer: faulting_rbp + 16,
+                    return_address: 0xffff_ffff_8100_2000,
+                },
+            ]
+        );
+        assert_eq!(
+            context.frame_chain_end,
+            crate::FrameChainEnd::NullFramePointer
+        );
+        let page_walk = context.page_walk.as_ref().unwrap();
+        assert_eq!(
+            page_walk.reason,
+            crate::PageFaultReason::NotPresent {
+                level: crate::PageTableLevel::Pd,
+            }
+        );
+        assert_eq!(page_walk.entries.len(), 3);
+        for (entry, (level, index, address, value)) in page_walk.entries.iter().zip([
+            (
+                crate::PageTableLevel::Pml4,
+                pml4_index,
+                pml4_address,
+                pml4_value,
+            ),
+            (
+                crate::PageTableLevel::Pdpt,
+                ((PF_VA >> 30) & 0x1ff) as u16,
+                pdpt_address,
+                pdpt_value,
+            ),
+            (
+                crate::PageTableLevel::Pd,
+                ((PF_VA >> 21) & 0x1ff) as u16,
+                pd_address,
+                pd_value_before,
+            ),
+        ]) {
+            assert_eq!(
+                (entry.level, entry.index, entry.entry_address.get()),
+                (level, index, address)
+            );
+            if level == crate::PageTableLevel::Pd {
+                assert_eq!(entry.entry_value, value);
+            } else {
+                // Instruction fetch may set A on the shared upper-level path before this data
+                // access. The raw trace must otherwise match the pre-run table entries.
+                assert_eq!(entry.entry_value & !0x20, value & !0x20);
+            }
+        }
+        assert_eq!(
+            read_qword(&mut boot, pde_address),
+            (DATA & !(2 * MIB - 1)) | 0x83,
+            "the handler repairs the absent PDE after the raw walk was captured"
+        );
+        assert_eq!(read_qword(&mut boot, faulting_rbp), 0x5560);
+        assert_eq!(
+            read_qword(&mut boot, faulting_rbp + 8),
+            0xffff_ffff_8100_1000
+        );
         assert_ne!(
             state.rflags & (1 << 16),
             0,
@@ -10461,6 +10895,35 @@ mod tests {
         read(&mut boot.board, DATA + 0x20, &mut byte).expect("read");
         assert_eq!(byte[0], 0x5A);
         assert_eq!((report.page_fault, report.memory_error), (None, None));
+    }
+
+    #[test]
+    fn opt_in_execution_observations_attribute_rdtsc_to_exact_instruction_rip() {
+        let cli = CliProfile::NonPviLong64V1;
+        let code = [0x0F, 0x31, 0xF4]; // RDTSC; HLT
+        let (mut boot, _) = boot_with_entry(&code);
+        let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+            .with_cli(&cli)
+            .with_cpu_owned_cr3(MovCr3Long64V1)
+            .with_rdtsc();
+        let report = boot
+            .board
+            .run_linux_boot_cpl0_set_with_observations(2, &set, false, false, false, true)
+            .expect("board run");
+
+        assert_eq!(report.run.retired, 1, "{report:?}");
+        let observations = report
+            .execution_observations
+            .expect("opt-in report is present");
+        assert_eq!(
+            observations.rdtsc_cpl0_sites,
+            [crate::RdtscSiteCount {
+                rip: ENTRY,
+                reads: 1,
+            }]
+        );
+        assert_eq!(observations.rdtsc_cpl0_unattributed_reads, 0);
+        assert_eq!(observations.rdtsc_cpl0_site_overflow_reads, 0);
     }
 
     #[test]
@@ -10552,6 +11015,13 @@ mod tests {
         );
         assert_eq!(report.instructions_executed, 4);
         assert_eq!(report.delivered_exceptions, 1);
+        assert_eq!(
+            (
+                report.delivered_page_faults,
+                report.delivered_general_protection_faults
+            ),
+            (0, 1)
+        );
         assert_eq!(
             state.rip,
             ENTRY + 3,
@@ -10802,6 +11272,13 @@ mod tests {
         assert_eq!(first.exit, PagedProbeExit::BudgetExhausted, "{first:?}");
         assert_eq!((first.retired, first.exceptions_delivered), (1, 1));
         assert_eq!(
+            (
+                first.page_faults_delivered,
+                first.general_protection_faults_delivered
+            ),
+            (1, 0)
+        );
+        assert_eq!(
             first.rip,
             PF_HANDLER_AT + 7,
             "in the handler, before the CR2 read"
@@ -10811,6 +11288,13 @@ mod tests {
         let second = run_set_facade(&mut boot, &file, 8, members);
         assert_eq!(second.exit, PagedProbeExit::Halted, "{second:?}");
         assert_eq!((second.retired, second.exceptions_delivered), (2, 0));
+        assert_eq!(
+            (
+                second.page_faults_delivered,
+                second.general_protection_faults_delivered
+            ),
+            (0, 0)
+        );
         assert_eq!(second.gpr[Register::Rax as usize], PF_VA + 0x20);
         assert_eq!(boot.board.state().cr2, None);
     }
@@ -11021,7 +11505,19 @@ mod tests {
     /// that map it (PML4E, PDPTE and the 2 MiB PDE of the first GiB) get the user bit; without
     /// it the page stays supervisor-only.
     fn user_mode_board(user_code: &[u8], user_page: bool) -> (LinuxDirectBoot, Vec<u8>) {
-        let (mut boot, file) = boot_with_entry(&[0x48, 0xCF]);
+        user_mode_board_with(&[], user_code, user_page, 0x202)
+    }
+
+    /// `user_mode_board` with `prefix` (CPL0 code that runs before the `IRETQ`, no stack effect)
+    /// and the RFLAGS of the `IRETQ` frame (`0x202`: IF set; `0x2`: IF clear in CPL3).
+    fn user_mode_board_with(
+        prefix: &[u8],
+        user_code: &[u8],
+        user_page: bool,
+        user_rflags: u64,
+    ) -> (LinuxDirectBoot, Vec<u8>) {
+        let entry: Vec<u8> = prefix.iter().copied().chain([0x48, 0xCF]).collect();
+        let (mut boot, file) = boot_with_entry(&entry);
         write_phys(
             &mut boot,
             USER_GDT + 0x10,
@@ -11037,7 +11533,7 @@ mod tests {
         for (offset, value) in [
             (0u64, USER_CODE_AT),
             (8, 0x13),
-            (16, 0x202),
+            (16, user_rflags),
             (24, ENTRY + 0x800),
             (32, 0x1b),
         ] {
@@ -11102,6 +11598,28 @@ mod tests {
             ["cli", "cpu_owned_cr3", "halt", "irq", "user_mode"]
         );
         assert_eq!(record.path, "cpl0_set");
+    }
+
+    #[test]
+    fn unsupported_cpl3_rdtsc_does_not_increment_read_counts() {
+        let (mut boot, file) = user_mode_board(&[0x0f, 0x31, 0x0f, 0x05], true);
+        let members = LinuxCpl0SetMembers {
+            rdtsc: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let record = run_linux_direct_board_set_user_mode(
+            &mut boot,
+            &input(&file, &[], BLOB, board_hash()),
+            8,
+            members,
+        )
+        .expect("runs");
+
+        assert_eq!(record.exit_kind, "user_mode_unsupported", "{record:?}");
+        assert_eq!(record.cpl, 3);
+        assert_eq!(record.cpl3_retired, 0);
+        assert_eq!(record.rdtsc_reads, Some(0));
+        assert_eq!(record.rdtsc_reads_by_cpl, Some([0, 0, 0, 0]));
     }
 
     const SYSCALL_KERNEL_AT: u64 = ENTRY + 0x600;
@@ -11408,6 +11926,51 @@ mod tests {
     }
 
     #[test]
+    fn execution_observation_keeps_cpl3_registers_from_before_page_fault_delivery() {
+        let (mut boot, _) = user_pf_board(&[0x90], &|_, _| vec![0x90, 0x90, 0x90], true);
+        let faulting_rbp = 0x5555;
+        let faulting_rcx = 0x6666;
+        let faulting_rsi = 0x7777;
+        let faulting_rdi = 0x8888;
+        {
+            let state = boot.board.state_mut();
+            state.gpr[Register::Rbp as usize] = faulting_rbp;
+            state.gpr[Register::Rcx as usize] = faulting_rcx;
+            state.gpr[Register::Rsi as usize] = faulting_rsi;
+            state.gpr[Register::Rdi as usize] = faulting_rdi;
+        }
+        let cli = CliProfile::NonPviLong64V1;
+        let set = minimal_set(&cli).with_user_mode();
+        let mut observations = LinuxExecutionObservationCollector::default();
+        let (state, report) =
+            run_set_with_observations(&mut boot, true, 3, &set, Some(&mut observations));
+
+        assert_eq!(report.delivered_page_faults, 1, "{report:?}");
+        assert_eq!(report.cpl3_retired, 0, "{report:?}");
+        assert_eq!(state.gpr[Register::Rsp as usize], (USER_RSP0 & !15) - 48);
+        let observations = observations.finish();
+        assert_eq!(observations.page_fault_events.len(), 1);
+        let context = &observations.page_fault_events[0].faulting_context;
+        assert_eq!(context.cr3, boot.board.cr3());
+        assert_eq!(context.rsp, ENTRY + 0x800);
+        assert_eq!(context.rbp, faulting_rbp);
+        assert_eq!(context.rcx, faulting_rcx);
+        assert_eq!(context.rsi, faulting_rsi);
+        assert_eq!(context.rdi, faulting_rdi);
+        assert!(context.frame_chain.is_empty());
+        assert_eq!(
+            context.frame_chain_end,
+            crate::FrameChainEnd::UnalignedFramePointer
+        );
+        assert!(context.page_walk.is_some());
+        assert_ne!(
+            observations.page_fault_events[0].faulting_context.rsp,
+            state.gpr[Register::Rsp as usize],
+            "the event records user RSP before delivery, not handler RSP0"
+        );
+    }
+
+    #[test]
     fn user_mode_facade_the_handler_repairs_the_page_and_iretq_returns_to_cpl3() {
         // The handler makes the PDE of the user page a user page, drops the error code and
         // returns: the user `mov` retires in CPL3 and the `syscall` is the next honest stop.
@@ -11594,10 +12157,22 @@ mod tests {
         set: &Cpl0ProfileSet<'_>,
         budget: u64,
     ) -> (CacheOutcome, FetchCacheStats) {
-        let plain = run_cache_case(build, set, budget, false);
+        let mut plain = run_cache_case(build, set, budget, false);
         let mut cached = run_cache_case(build, set, budget, true);
         assert_eq!(plain.report.fetch_cache_stats, None);
         let stats = cached.report.fetch_cache_stats.take().expect("cache stats");
+        // S4-13b: the walk counters are measurement. The cache is invisible to data accesses
+        // (same data walks) and can only remove instruction-fetch walks; the rest of the report
+        // is compared as before.
+        let (cached_walks, plain_walks) = (cached.report.walk_counts, plain.report.walk_counts);
+        assert_eq!(cached_walks.data_read, plain_walks.data_read);
+        assert_eq!(cached_walks.data_write, plain_walks.data_write);
+        assert!(
+            cached_walks.fetch <= plain_walks.fetch,
+            "{cached_walks:?} {plain_walks:?}"
+        );
+        cached.report.walk_counts = Default::default();
+        plain.report.walk_counts = Default::default();
         assert_eq!(cached.report, plain.report);
         assert_eq!(cached.state, plain.state);
         assert_eq!(cached.writes, plain.writes);
@@ -12076,6 +12651,1927 @@ mod tests {
         assert_eq!(format!("{cached:?}"), format!("{plain:?}"));
     }
 
+    // ---- S4-14h: the guest-driven invalidation policy of the fetch cache ----
+
+    use crate::fetch_translation_cache::FetchCacheInvalidation;
+    use crate::paged_memory_adapter::run_cpl0_set_paged_2m_ram_with_policy;
+
+    const OLD_MARKER: u64 = 0x1111;
+    const NEW_MARKER: u64 = 0x3333;
+    /// `INVLPG [RBX]`: the operand is never evaluated (S4-38L7ab), RBX only has to be a register.
+    const INVLPG_RBX: [u8; 3] = [0x0F, 0x01, 0x3B];
+    /// `NOP DWORD [RAX]`: the same length as the `INVLPG` and no effect.
+    const NOP3: [u8; 3] = [0x0F, 0x1F, 0x00];
+    const MOV_CR3_RAX: [u8; 3] = [0x0F, 0x22, 0xD8];
+    const MOV_CR0_RAX: [u8; 3] = [0x0F, 0x22, 0xC0];
+    const MOV_CR4_RAX: [u8; 3] = [0x0F, 0x22, 0xE0];
+    const CR4_PAE: u64 = 1 << 5;
+    const CR4_PAE_PGE: u64 = CR4_PAE | (1 << 7);
+
+    struct PolicyOutcome {
+        state: LongModeState,
+        report: PagedCpl0SetReport,
+        stats: FetchCacheStats,
+    }
+
+    /// Runs the set loop with the fetch cache policy `policy` over the case `build` lays out.
+    fn run_policy_case(
+        build: &dyn Fn(&mut LinuxDirectBoot) -> LongModeState,
+        set: &Cpl0ProfileSet<'_>,
+        budget: u64,
+        policy: FetchCacheInvalidation,
+    ) -> PolicyOutcome {
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let mut state = build(&mut boot);
+        let efer = boot.board.efer();
+        let cr3 = state.cr3.expect("the case runs with a CPU-owned CR3");
+        let mut report = run_cpl0_set_paged_2m_ram_with_policy(
+            &mut state,
+            boot.board.bus_mut(),
+            cr3,
+            efer,
+            long64(),
+            budget,
+            INTEGER_FLAGS,
+            set,
+            None,
+            || false,
+            |_| {},
+            true,
+            Some(policy),
+            None,
+        );
+        let stats = report.fetch_cache_stats.take().expect("the cache is on");
+        PolicyOutcome {
+            state,
+            report,
+            stats,
+        }
+    }
+
+    /// The remap layout. Page A (always mapped to `SPLIT_PAGE0`) ends with
+    /// `[prefix] MOV RBX, PTE1; MOV RCX, new PTE; MOV [RBX], RCX` and the last byte of that store
+    /// lies on page X (`SPLIT_VA + 0x1000`), so X is fetched, and cached, before the store
+    /// retires. The store rewrites the PTE of X from the old frame (`OLD_MARKER` code) to
+    /// `ALT_PAGE1` (`NEW_MARKER` code). Both frames hold the same bytes up to the marker:
+    /// the rest of the store, then `sync` (what the guest does to invalidate, or a no-op of the
+    /// same length), then `MOV RDX, marker; HLT`. RDX tells which frame the marker was fetched
+    /// from: a stale cached translation of X runs `sync` and the marker of the old frame.
+    fn remap_case(
+        boot: &mut LinuxDirectBoot,
+        prefix: &[u8],
+        sync: &[u8],
+        cr4: Option<u64>,
+    ) -> LongModeState {
+        write_tree(
+            boot,
+            TREE_PML4,
+            &[
+                (0, SPLIT_PAGE0 | A_PRESENT_WRITABLE),
+                (1, SPLIT_PAGE1 | A_PRESENT_WRITABLE),
+            ],
+            Some(TREE_PML4 + 0x3000),
+        );
+        let mut head = prefix.to_vec();
+        head.extend(mov_imm32(3, (WINDOW_VA + 8) as u32));
+        head.extend(mov_imm32(1, (ALT_PAGE1 | 3) as u32));
+        head.extend([0x48, 0x89, 0x0B]);
+        let on_first = head.len() - 1;
+        write_phys(
+            boot,
+            SPLIT_PAGE0 + 0x1000 - on_first as u64,
+            &head[..on_first],
+        );
+        for (page, marker) in [(SPLIT_PAGE1, OLD_MARKER), (ALT_PAGE1, NEW_MARKER)] {
+            let mut bytes = head[on_first..].to_vec();
+            bytes.extend(sync);
+            bytes.extend(mov_imm32(2, marker as u32));
+            bytes.push(0xF4);
+            write_phys(boot, page, &bytes);
+        }
+        let mut state = tree_state(boot, TREE_PML4, SPLIT_VA + 0x1000 - on_first as u64);
+        if let Some(cr4) = cr4 {
+            state.cr4 = Some(cr4);
+        }
+        state
+    }
+
+    fn assert_halted_with_marker(outcome: &PolicyOutcome, marker: u64) {
+        assert_eq!(
+            outcome.report.exit,
+            PagedCpl0SetExit::Run(RunExit::Halted),
+            "{:?}",
+            outcome.report
+        );
+        assert_eq!(
+            outcome.state.gpr[Register::Rdx as usize],
+            marker,
+            "{:?}",
+            outcome.stats
+        );
+    }
+
+    /// The guest rewrites the PTE of a cached page and executes `INVLPG`: under `GuestOnly` the
+    /// store alone drops nothing, the retired `INVLPG` does, and the next fetch of the page walks
+    /// the new frame.
+    #[test]
+    fn guest_only_invlpg_after_a_pte_store_runs_the_new_code() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], &INVLPG_RBX, None);
+        let outcome = run_policy_case(
+            &build,
+            &switch_set(&cli, &halt),
+            16,
+            FetchCacheInvalidation::GuestOnly,
+        );
+        assert_halted_with_marker(&outcome, NEW_MARKER);
+        let stats = outcome.stats;
+        assert_eq!(stats.invlpg_flushes, 1, "{stats:?}");
+        assert_eq!(stats.write_flushes, 0, "{stats:?}");
+        assert!(stats.ignored_table_writes >= 1, "{stats:?}");
+        assert_eq!((stats.control_flushes, stats.context_flushes), (0, 0));
+        // MOV RBX, MOV RCX, store, INVLPG, MOV RDX, HLT.
+        assert_eq!(outcome.report.instructions_executed, 6);
+    }
+
+    /// The same program without the `INVLPG`: a TLB-like cache may keep the old translation, a
+    /// write-watching one may not. Both outcomes are pinned.
+    #[test]
+    fn guest_only_without_invlpg_keeps_the_stale_translation_and_write_watch_does_not() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], &NOP3, None);
+        let guest_only = run_policy_case(
+            &build,
+            &switch_set(&cli, &halt),
+            16,
+            FetchCacheInvalidation::GuestOnly,
+        );
+        assert_halted_with_marker(&guest_only, OLD_MARKER);
+        let stats = guest_only.stats;
+        assert_eq!(
+            (
+                stats.invlpg_flushes,
+                stats.control_flushes,
+                stats.context_flushes,
+                stats.write_flushes
+            ),
+            (0, 0, 0, 0),
+            "{stats:?}"
+        );
+        assert!(stats.ignored_table_writes >= 1, "{stats:?}");
+        let write_watch = run_policy_case(
+            &build,
+            &switch_set(&cli, &halt),
+            16,
+            FetchCacheInvalidation::WriteWatch,
+        );
+        assert_halted_with_marker(&write_watch, NEW_MARKER);
+        assert_eq!(write_watch.stats.write_flushes, 1);
+        assert_eq!(
+            (
+                write_watch.stats.invlpg_flushes,
+                write_watch.stats.control_flushes,
+                write_watch.stats.ignored_table_writes
+            ),
+            (0, 0, 0)
+        );
+    }
+
+    /// `INVLPG` is not what makes `WriteWatch` see the new page: the policy is unchanged and the
+    /// `INVLPG` flushes nothing there (the table write already did).
+    #[test]
+    fn write_watch_ignores_the_invlpg_of_the_guest() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], &INVLPG_RBX, None);
+        let outcome = run_policy_case(
+            &build,
+            &switch_set(&cli, &halt),
+            16,
+            FetchCacheInvalidation::WriteWatch,
+        );
+        assert_halted_with_marker(&outcome, NEW_MARKER);
+        assert_eq!(outcome.stats.write_flushes, 1);
+        assert_eq!(outcome.stats.invlpg_flushes, 0);
+    }
+
+    /// S4-13c: the shadows of a `WriteWatch` run see the guest's `INVLPG` (detected by a peek that
+    /// bypasses the cache) and the table write, and the run itself is the one without the sweep:
+    /// same state, same report, same counters of the real cache.
+    #[test]
+    fn sweep_shadows_see_the_guest_invlpg_of_a_write_watch_run_without_changing_it() {
+        use crate::paged_memory_adapter::run_cpl0_set_paged_2m_ram_observed_with_sweep;
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let set = switch_set(&cli, &halt);
+        let shadow = |invalidation| crate::SweepConfig {
+            invalidation,
+            ..crate::SweepConfig::REFERENCE
+        };
+        let configs = [
+            shadow(crate::SweepInvalidation::WriteWatch),
+            shadow(crate::SweepInvalidation::GuestOnly),
+        ];
+        for (sync, invlpgs) in [(&INVLPG_RBX, 1u64), (&NOP3, 0)] {
+            let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], sync, None);
+            let plain = run_policy_case(&build, &set, 16, FetchCacheInvalidation::WriteWatch);
+            let sweep = std::rc::Rc::new(crate::fetch_cache_sweep::FetchCacheSweep::new(&configs));
+            let (mut boot, _) = boot_with_entry(&[0xF4]);
+            let mut state = build(&mut boot);
+            let efer = boot.board.efer();
+            let cr3 = state.cr3.expect("the case runs with a CPU-owned CR3");
+            let mut report = run_cpl0_set_paged_2m_ram_observed_with_sweep(
+                &mut state,
+                boot.board.bus_mut(),
+                cr3,
+                efer,
+                long64(),
+                16,
+                INTEGER_FLAGS,
+                &set,
+                None,
+                || false,
+                |_| {},
+                true,
+                Some(FetchCacheInvalidation::WriteWatch),
+                None,
+                None,
+                None,
+                Some(&sweep),
+                crate::fetch_translation_cache::FetchCacheTag::Page4K,
+            );
+            let stats = report.fetch_cache_stats.take().expect("the cache is on");
+            assert_eq!(stats, plain.stats, "the real cache counts the same");
+            assert_eq!(state.gpr, plain.state.gpr);
+            assert_eq!(state.rip, plain.state.rip);
+            assert_eq!(
+                format!("{report:?}"),
+                format!("{:?}", {
+                    let mut other = plain.report;
+                    other.fetch_cache_stats = None;
+                    other
+                })
+            );
+            let report = sweep.report();
+            let (watch, guest) = (&report.configs[0].total, &report.configs[1].total);
+            // The write-watch shadow is the real cache, whatever the guest invalidates.
+            assert_eq!(*watch, stats);
+            assert_eq!((watch.invlpg_flushes, watch.ignored_table_writes), (0, 0));
+            assert_eq!(guest.invlpg_flushes, invlpgs, "{guest:?}");
+            assert_eq!(guest.write_flushes, 0, "{guest:?}");
+            assert!(guest.ignored_table_writes >= 1, "{guest:?}");
+            assert_eq!(report.events.calls, 1);
+        }
+    }
+
+    /// `MOV CR3` with the value it already has, after the remap: no table is written afterwards
+    /// and the paging snapshot is unchanged, so only the flush of the retired `MOV CR3` makes the
+    /// next fetch walk the new frame.
+    #[test]
+    fn guest_only_reloading_cr3_with_the_same_value_runs_the_new_code() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| {
+            remap_case(boot, &mov_imm32(0, TREE_PML4 as u32), &MOV_CR3_RAX, None)
+        };
+        let outcome = run_policy_case(
+            &build,
+            &switch_set(&cli, &halt),
+            16,
+            FetchCacheInvalidation::GuestOnly,
+        );
+        assert_halted_with_marker(&outcome, NEW_MARKER);
+        assert_eq!(outcome.report.translation_context_changes.len(), 1);
+        assert_eq!(outcome.report.cr3, TREE_PML4);
+        let stats = outcome.stats;
+        assert_eq!(stats.context_flushes, 1, "{stats:?}");
+        assert_eq!((stats.invlpg_flushes, stats.control_flushes), (0, 0));
+        assert_eq!(stats.write_flushes, 0, "{stats:?}");
+    }
+
+    /// CR4.PGE 1 -> 0 -> 1 after the remap: the CPU state returns to where it was, the paging
+    /// snapshot of the cache key never changes, so only the comparison of CR4 around each
+    /// instruction flushes.
+    #[test]
+    fn guest_only_toggling_cr4_pge_runs_the_new_code() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let mut sync = mov_eax(CR4_PAE as u32);
+        sync.extend(MOV_CR4_RAX);
+        sync.extend(mov_eax(CR4_PAE_PGE as u32));
+        sync.extend(MOV_CR4_RAX);
+        let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], &sync, Some(CR4_PAE_PGE));
+        let outcome = run_policy_case(
+            &build,
+            &switch_set(&cli, &halt),
+            24,
+            FetchCacheInvalidation::GuestOnly,
+        );
+        assert_halted_with_marker(&outcome, NEW_MARKER);
+        assert_eq!(outcome.state.cr4, Some(CR4_PAE_PGE));
+        let stats = outcome.stats;
+        assert_eq!(stats.control_flushes, 2, "{stats:?}");
+        assert_eq!((stats.invlpg_flushes, stats.context_flushes), (0, 0));
+        assert_eq!(stats.write_flushes, 0, "{stats:?}");
+    }
+
+    /// A rewrite of CR0 (AM toggled and restored) is a control change too: the cache is flushed.
+    #[test]
+    fn guest_only_rewriting_cr0_runs_the_new_code() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let cr0 = {
+            let (boot, _) = boot_with_entry(&[0xF4]);
+            boot.board.state().cr0.expect("the board models CR0")
+        };
+        let mut sync = mov_eax((cr0 | (1 << 18)) as u32);
+        sync.extend(MOV_CR0_RAX);
+        sync.extend(mov_eax(cr0 as u32));
+        sync.extend(MOV_CR0_RAX);
+        let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], &sync, None);
+        let outcome = run_policy_case(
+            &build,
+            &switch_set(&cli, &halt),
+            24,
+            FetchCacheInvalidation::GuestOnly,
+        );
+        assert_halted_with_marker(&outcome, NEW_MARKER);
+        assert_eq!(outcome.state.cr0, Some(cr0));
+        let stats = outcome.stats;
+        assert_eq!(stats.control_flushes, 2, "{stats:?}");
+        assert_eq!(stats.write_flushes, 0, "{stats:?}");
+    }
+
+    /// A MOV to a control register that changes nothing (the value it already has) is not a
+    /// reason to flush: the stale translation survives, as without the instruction.
+    #[test]
+    fn guest_only_a_cr4_write_of_the_same_value_flushes_nothing() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let mut sync = mov_eax(CR4_PAE_PGE as u32);
+        sync.extend(MOV_CR4_RAX);
+        let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], &sync, Some(CR4_PAE_PGE));
+        let outcome = run_policy_case(
+            &build,
+            &switch_set(&cli, &halt),
+            24,
+            FetchCacheInvalidation::GuestOnly,
+        );
+        assert_halted_with_marker(&outcome, OLD_MARKER);
+        assert_eq!(outcome.stats.control_flushes, 0, "{:?}", outcome.stats);
+    }
+
+    /// A 2 MiB leaf that the guest tightens (`NX` set, or not present) while its code runs from
+    /// the cached translation. `sync` is the `INVLPG` or a no-op; the walk of the instruction after
+    /// `sync` is exact when the cache was flushed and may hit the cache when it was not.
+    /// Returns the outcome of the `GuestOnly` and the `WriteWatch` run.
+    fn two_mib_tightening(
+        offset: u64,
+        value: u32,
+        sync: &[u8],
+        set: &Cpl0ProfileSet<'_>,
+    ) -> (PolicyOutcome, PolicyOutcome) {
+        let build = |boot: &mut LinuxDirectBoot| {
+            // The tree of the window onto the PD, then PD index 8 becomes a 2 MiB leaf
+            // (present, writable, accessed, page size) over the frame of the split pages.
+            write_tree(boot, TREE_PML4, &[], Some(TREE_PML4 + 0x2000));
+            write_phys(
+                boot,
+                TREE_PML4 + 0x2000 + 8 * 8,
+                &(SPLIT_PAGE0 | 0xA3).to_le_bytes(),
+            );
+            let mut code = mov_imm32(3, (WINDOW_VA + 8 * 8 + offset) as u32);
+            code.extend(mov_imm32(0, value));
+            code.extend([0x89, 0x03]);
+            code.extend(sync);
+            code.extend(mov_imm32(2, OLD_MARKER as u32));
+            code.push(0xF4);
+            write_phys(boot, SPLIT_PAGE0 + 0x200, &code);
+            tree_state(boot, TREE_PML4, SPLIT_VA + 0x200)
+        };
+        (
+            run_policy_case(&build, set, 16, FetchCacheInvalidation::GuestOnly),
+            run_policy_case(&build, set, 16, FetchCacheInvalidation::WriteWatch),
+        )
+    }
+
+    /// The fetch fault of a run that retired `retired` instructions of `MOV RBX` (7 bytes),
+    /// `MOV RAX` (7), store (2) and `sync` (3): the next instruction faults.
+    fn assert_fetch_fault(outcome: &PolicyOutcome, error_code: u32, retired: u64) {
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &outcome.report.exit else {
+            panic!("{:?}", outcome.report);
+        };
+        let rip = SPLIT_VA + 0x200 + 16 + 3 * (retired - 3);
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(error_code), Some(rip)),
+            "{:?}",
+            outcome.report
+        );
+        assert_eq!(
+            outcome.report.page_fault.as_ref().map(|r| r.saved_rip()),
+            Some(rip)
+        );
+        assert_eq!(outcome.report.instructions_executed, retired);
+    }
+
+    /// After `INVLPG` the tightened 2 MiB leaf is walked again: a fetch of an `NX` page is the
+    /// exact `#PF` (present, instruction fetch). Without it the stale translation may run on
+    /// (allowed). `WriteWatch` sees the fault right after the table store (3 retired), at the
+    /// instruction that would have been the `INVLPG`.
+    #[test]
+    fn guest_only_two_mib_leaf_made_nx_faults_exactly_after_invlpg() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let set = switch_set(&cli, &halt);
+        // The high dword of the PDE gets bit 31: PDE bit 63 (NX).
+        let (with_invlpg, watch) = two_mib_tightening(4, 0x8000_0000, &INVLPG_RBX, &set);
+        assert_fetch_fault(&with_invlpg, 0x11, 4);
+        assert_eq!(with_invlpg.stats.invlpg_flushes, 1);
+        assert_fetch_fault(&watch, 0x11, 3);
+        assert_eq!(watch.stats.write_flushes, 1);
+        let (without, watch) = two_mib_tightening(4, 0x8000_0000, &NOP3, &set);
+        assert_halted_with_marker(&without, OLD_MARKER);
+        assert_eq!(without.stats.invlpg_flushes, 0);
+        assert_fetch_fault(&watch, 0x11, 3);
+    }
+
+    /// The same for a leaf that becomes not present: the fetch fault has no present bit.
+    #[test]
+    fn guest_only_two_mib_leaf_made_not_present_faults_exactly_after_invlpg() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let set = switch_set(&cli, &halt);
+        let (with_invlpg, watch) = two_mib_tightening(0, 0, &INVLPG_RBX, &set);
+        assert_fetch_fault(&with_invlpg, 0x10, 4);
+        assert_eq!(with_invlpg.stats.invlpg_flushes, 1);
+        assert_fetch_fault(&watch, 0x10, 3);
+        let (without, watch) = two_mib_tightening(0, 0, &NOP3, &set);
+        assert_halted_with_marker(&without, OLD_MARKER);
+        assert_fetch_fault(&watch, 0x10, 3);
+    }
+
+    /// `INVLPG` with a GS override and with a REX byte (no W): the peek skips the prefixes, so the
+    /// retired instruction flushes the cache like the bare form.
+    #[test]
+    fn guest_only_prefixed_invlpg_forms_run_the_new_code() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        for sync in [
+            &[0x65u8, 0x0F, 0x01, 0x38][..], // INVLPG GS:[RAX]
+            &[0x41, 0x0F, 0x01, 0x3F],       // INVLPG [R15]
+            &[0x64, 0x41, 0x0F, 0x01, 0x3F], // INVLPG FS:[R15]
+        ] {
+            let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], sync, None);
+            let outcome = run_policy_case(
+                &build,
+                &switch_set(&cli, &halt),
+                16,
+                FetchCacheInvalidation::GuestOnly,
+            );
+            assert_halted_with_marker(&outcome, NEW_MARKER);
+            assert_eq!(outcome.stats.invlpg_flushes, 1, "{sync:02x?}");
+        }
+    }
+
+    /// What the peek calls an `INVLPG` is what the decoder admits as one: an optional FS/GS
+    /// override, an optional REX without W directly before the opcode, `0F 01 /7` with a memory
+    /// operand. `SWAPGS` (`0F 01 F8`), `RDTSCP` (`0F 01 F9`) and every other `mod = 3` form are
+    /// not; neither are the other `0F 01` groups, REX.W and the prefixes the decoder refuses.
+    #[test]
+    fn the_invlpg_peek_recognizes_exactly_the_decoded_shapes() {
+        use crate::paged_memory_adapter::invlpg_at_rip;
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let cr3 = boot.board.cr3();
+        let mut state = boot.board.state().clone();
+        state.cr3 = Some(cr3);
+        state.rip = ENTRY;
+        let paging =
+            crate::page_walk::Long64ProbeConfig::from_cpu_state(&state, cr3, boot.board.efer())
+                .expect("the board state is a valid snapshot");
+        for (bytes, expected) in [
+            (&[0x0Fu8, 0x01, 0x3B][..], true),
+            (&[0x0F, 0x01, 0x38], true),
+            (&[0x0F, 0x01, 0x7B, 0x10], true),
+            (&[0x65, 0x0F, 0x01, 0x38], true),
+            (&[0x64, 0x0F, 0x01, 0x3B], true),
+            (&[0x41, 0x0F, 0x01, 0x3F], true),
+            (&[0x47, 0x0F, 0x01, 0x3F], true),
+            (&[0x65, 0x41, 0x0F, 0x01, 0x38], true),
+            // The register forms of `0F 01 /7` and the other `mod = 3` forms.
+            (&[0x0F, 0x01, 0xF8], false), // SWAPGS
+            (&[0x0F, 0x01, 0xF9], false), // RDTSCP
+            (&[0x0F, 0x01, 0xFB], false), // reg 7, mod 3
+            (&[0x0F, 0x01, 0xC1], false), // VMCALL, mod 3
+            (&[0x65, 0x0F, 0x01, 0xF8], false),
+            (&[0x41, 0x0F, 0x01, 0xFF], false),
+            // Memory forms of the other groups.
+            (&[0x0F, 0x01, 0x10], false), // LGDT
+            (&[0x0F, 0x01, 0x18], false), // LIDT
+            (&[0x0F, 0x01, 0x00], false), // SGDT
+            (&[0x0F, 0x01, 0x20], false), // SMSW
+            // Prefixes the decoder refuses or that are not directly before the opcode.
+            (&[0x48, 0x0F, 0x01, 0x3B], false),
+            (&[0x4F, 0x0F, 0x01, 0x3F], false),
+            (&[0x41, 0x65, 0x0F, 0x01, 0x38], false),
+            (&[0x66, 0x0F, 0x01, 0x3B], false),
+            (&[0xF0, 0x0F, 0x01, 0x3B], false),
+            (&[0x26, 0x0F, 0x01, 0x3B], false),
+            (&[0x0F, 0x00, 0x3B], false),
+            (&[0x90, 0x0F, 0x01, 0x3B], false),
+        ] {
+            let mut window = bytes.to_vec();
+            window.resize(8, 0x90);
+            write_phys(&mut boot, ENTRY, &window);
+            assert_eq!(
+                invlpg_at_rip(
+                    &state,
+                    boot.board.bus_mut().physical_memory(),
+                    &paging,
+                    long64(),
+                    None
+                ),
+                expected,
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    /// The tree for the delivered-`#PF` case: the board's own tree with PD index 40 (VA
+    /// `0x0500_0000`) replaced by a PT that maps page A to `SPLIT_PAGE0` and page X (`+ 0x1000`) to
+    /// `SPLIT_PAGE1`. The code on X (both frames) stores to an unmapped page, so it takes a `#PF`
+    /// right after it has been cached; the handler (through the guest IDT) remaps PTE 1 to
+    /// `ALT_PAGE1` WITHOUT an `INVLPG`, maps the faulting page and returns to the store, which is
+    /// followed by `MOV RDX, marker; HLT`.
+    const PF_TEST_VA: u64 = 0x0500_0000;
+    const PF_TEST_PT: u64 = 0x0400_3000;
+
+    fn page_fault_remap_case(boot: &mut LinuxDirectBoot) -> LongModeState {
+        let cr3 = boot.board.cr3();
+        write_phys(
+            boot,
+            cr3 + 0x2000 + (PF_TEST_VA / (2 * MIB)) * 8,
+            &(PF_TEST_PT | A_PRESENT_WRITABLE).to_le_bytes(),
+        );
+        write_phys(
+            boot,
+            PF_TEST_PT,
+            &(SPLIT_PAGE0 | A_PRESENT_WRITABLE).to_le_bytes(),
+        );
+        write_phys(
+            boot,
+            PF_TEST_PT + 8,
+            &(SPLIT_PAGE1 | A_PRESENT_WRITABLE).to_le_bytes(),
+        );
+        for (frame, marker) in [(SPLIT_PAGE1, OLD_MARKER), (ALT_PAGE1, NEW_MARKER)] {
+            let mut code = mov_imm32(3, (PF_VA + 0x20) as u32);
+            code.extend(PF_STORE);
+            code.extend(mov_imm32(2, marker as u32));
+            code.push(0xF4);
+            write_phys(boot, frame, &code);
+        }
+        // PTE 1 -> ALT_PAGE1 (no INVLPG), then the repair of the faulting page and IRETQ.
+        let mut handler = mov_imm32(2, (PF_TEST_PT + 8) as u32);
+        handler.extend(mov_imm32(6, (ALT_PAGE1 | 3) as u32));
+        handler.extend([0x48, 0x89, 0x32]); // MOV [RDX], RSI
+        handler.extend(pf_repair_handler(
+            pf_pde_address(boot),
+            (DATA & !(2 * MIB - 1)) | 0x83,
+        ));
+        write_phys(boot, PF_HANDLER_AT, &handler);
+        let mut gate = [0u8; 16];
+        gate[0..2].copy_from_slice(&(PF_HANDLER_AT as u16).to_le_bytes());
+        gate[2..4].copy_from_slice(&0x10u16.to_le_bytes());
+        gate[5] = 0x8E;
+        gate[6..8].copy_from_slice(&((PF_HANDLER_AT >> 16) as u16).to_le_bytes());
+        write_phys(boot, PF_IDT_AT + 14 * 16, &gate);
+        let state = boot.board.state_mut();
+        state.idtr = Some(od_isa::state::Idtr {
+            base: PF_IDT_AT,
+            limit: 0xFF,
+        });
+        state.gpr[Register::Rcx as usize] = 0x5A;
+        state.rflags = 2 | (1 << 9) | 1;
+        let mut state = boot.board.state().clone();
+        state.cr3 = Some(cr3);
+        state.rip = PF_TEST_VA + 0x1000;
+        state
+    }
+
+    /// A `#PF` delivered to the guest drops the whole cache (a deliberate superset of what
+    /// the architecture requires: it would only invalidate the translation of the faulting
+    /// address). This test pins the stricter implementation behaviour, not an architectural
+    /// requirement: the handler changes the PTE of a page that is not the faulting one, with
+    /// no `INVLPG`, and the restarted instruction must be fetched through the new frame.
+    #[test]
+    fn guest_only_a_delivered_page_fault_drops_the_cached_translation() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let guest_only = run_policy_case(
+            &page_fault_remap_case,
+            &switch_set(&cli, &halt),
+            24,
+            FetchCacheInvalidation::GuestOnly,
+        );
+        assert_halted_with_marker(&guest_only, NEW_MARKER);
+        assert_eq!(guest_only.report.delivered_exceptions, 1);
+        let stats = guest_only.stats;
+        assert_eq!(stats.fault_flushes, 1, "{stats:?}");
+        assert_eq!(
+            (
+                stats.invlpg_flushes,
+                stats.control_flushes,
+                stats.context_flushes,
+                stats.write_flushes
+            ),
+            (0, 0, 0, 0),
+            "{stats:?}"
+        );
+        // The write-watching policy sees the handler's PTE store itself.
+        let write_watch = run_policy_case(
+            &page_fault_remap_case,
+            &switch_set(&cli, &halt),
+            24,
+            FetchCacheInvalidation::WriteWatch,
+        );
+        assert_halted_with_marker(&write_watch, NEW_MARKER);
+        assert_eq!(write_watch.stats.fault_flushes, 0);
+    }
+
+    /// The default of the board and of the runner is untouched: the same layout through the
+    /// `bool` entry point (S4-13) is the write-watching cache.
+    #[test]
+    fn the_bool_entry_point_is_the_write_watch_cache() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], &NOP3, None);
+        let outcome = run_cache_case(&build, &switch_set(&cli, &halt), 16, true);
+        let stats = outcome.report.fetch_cache_stats.expect("cache stats");
+        assert_eq!(outcome.state.gpr[Register::Rdx as usize], NEW_MARKER);
+        assert_eq!(stats.write_flushes, 1, "{stats:?}");
+        assert_eq!(
+            (stats.invlpg_flushes, stats.control_flushes),
+            (0, 0),
+            "{stats:?}"
+        );
+    }
+
+    // ---- S4-14i: the fetch cache that outlives a call of the set loop ----
+
+    use crate::fetch_translation_cache::FetchTranslationCache;
+    use crate::paged_memory_adapter::run_cpl0_set_paged_2m_ram_with_cache;
+
+    /// One call of the set loop over `cache` (`None`: no cache). A cache built with
+    /// `with_invalidation` and dropped afterwards is the per-call cache of every earlier caller.
+    fn run_call_with_cache(
+        boot: &mut LinuxDirectBoot,
+        state: &mut LongModeState,
+        set: &Cpl0ProfileSet<'_>,
+        budget: u64,
+        cache: Option<&FetchTranslationCache>,
+    ) -> PagedCpl0SetReport {
+        let efer = boot.board.efer();
+        let cr3 = state.cr3.expect("the case runs with a CPU-owned CR3");
+        run_cpl0_set_paged_2m_ram_with_cache(
+            state,
+            boot.board.bus_mut(),
+            crate::vcpu::BOOT_VCPU_INDEX,
+            cr3,
+            efer,
+            long64(),
+            budget,
+            INTEGER_FLAGS,
+            set,
+            None,
+            || false,
+            |_| {},
+            true,
+            cache,
+            None,
+            None,
+            None,
+        )
+    }
+
+    /// Two calls over the remap layout of S4-14h (`sync` between the store and the marker). The
+    /// first call retires `first` instructions (3 stop right after the PTE store, 4 after the
+    /// instruction behind it), the second runs to the `HLT`. `between` is the host's action
+    /// between the calls (it gets the board and the cache). With `persistent` the same cache
+    /// serves both calls, otherwise each call gets a fresh one. Returns the end state, the report
+    /// of the first and of the second call (their `fetch_cache_stats` are the cache's counters
+    /// at the end of that call: cumulative for a persistent cache).
+    fn run_two_calls(
+        sync: &[u8],
+        policy: FetchCacheInvalidation,
+        persistent: bool,
+        first: u64,
+        between: &dyn Fn(&mut LinuxDirectBoot, &FetchTranslationCache),
+    ) -> (LongModeState, PagedCpl0SetReport, PagedCpl0SetReport) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let set = switch_set(&cli, &halt);
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let mut state = remap_case(&mut boot, &[], sync, None);
+        let shared = if persistent {
+            FetchTranslationCache::persistent(policy)
+        } else {
+            FetchTranslationCache::with_invalidation(policy)
+        };
+        let call = |boot: &mut LinuxDirectBoot, state: &mut LongModeState, budget: u64| {
+            if persistent {
+                run_call_with_cache(boot, state, &set, budget, Some(&shared))
+            } else {
+                let fresh = FetchTranslationCache::with_invalidation(policy);
+                run_call_with_cache(boot, state, &set, budget, Some(&fresh))
+            }
+        };
+        let one = call(&mut boot, &mut state, first);
+        assert_eq!(
+            one.exit,
+            PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
+            "{one:?}"
+        );
+        assert_eq!(one.instructions_executed, first);
+        between(&mut boot, &shared);
+        let two = call(&mut boot, &mut state, 16);
+        assert_eq!(two.exit, PagedCpl0SetExit::Run(RunExit::Halted), "{two:?}");
+        (state, one, two)
+    }
+
+    fn stats_of(report: &PagedCpl0SetReport) -> FetchCacheStats {
+        report.fetch_cache_stats.expect("the cache is on")
+    }
+
+    /// The cache survives the end of a call. After the PTE store of call 1 the page the code
+    /// runs on is still cached with its old frame, and call 2 (no event in between, no flush of
+    /// the policy) fetches through it and runs the old marker: the hit counter grows over the
+    /// boundary. The per-call cache, with the same two calls, has lost it and walks the new PTE.
+    #[test]
+    fn persistent_cache_keeps_its_entries_over_the_call_boundary() {
+        let none = |_: &mut LinuxDirectBoot, _: &FetchTranslationCache| {};
+        let (state, one, two) =
+            run_two_calls(&NOP3, FetchCacheInvalidation::GuestOnly, true, 3, &none);
+        assert_eq!(state.gpr[Register::Rdx as usize], OLD_MARKER);
+        let (after_one, after_two) = (stats_of(&one), stats_of(&two));
+        assert!(
+            after_two.hits > after_one.hits,
+            "{after_one:?} {after_two:?}"
+        );
+        assert_eq!(
+            (
+                after_two.host_flushes,
+                after_two.invlpg_flushes,
+                after_two.control_flushes,
+                after_two.context_flushes,
+                after_two.write_flushes,
+                after_two.fault_flushes
+            ),
+            (0, 0, 0, 0, 0, 0),
+            "{after_two:?}"
+        );
+        // Call 2 inserted nothing: the entries of call 1 served it.
+        assert_eq!(after_two.inserts, after_one.inserts, "{after_two:?}");
+
+        let (state, _, two) =
+            run_two_calls(&NOP3, FetchCacheInvalidation::GuestOnly, false, 3, &none);
+        assert_eq!(state.gpr[Register::Rdx as usize], NEW_MARKER);
+        assert!(stats_of(&two).inserts >= 1);
+    }
+
+    /// 40 `MOV RAX, imm32` and a `HLT` on one page behind a PT entry with its accessed bit
+    /// already walked, run in two calls (10 instructions, then to the `HLT`). `between` is the host's
+    /// action between the calls. Returns the end state and the two reports.
+    fn run_straight_line_two_calls(
+        policy: FetchCacheInvalidation,
+        persistent: bool,
+        between: &dyn Fn(&mut LinuxDirectBoot),
+    ) -> (LongModeState, [PagedCpl0SetReport; 2]) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let set = switch_set(&cli, &halt);
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        write_tree(&mut boot, TREE_PML4, &[(0, SPLIT_PAGE0 | 3)], None);
+        let mut code = Vec::new();
+        for value in 0..40u32 {
+            code.extend(mov_imm32(0, value));
+        }
+        code.push(0xF4);
+        write_phys(&mut boot, SPLIT_PAGE0 + 0x200, &code);
+        let mut state = tree_state(&boot, TREE_PML4, SPLIT_VA + 0x200);
+        let shared = FetchTranslationCache::persistent(policy);
+        let call = |boot: &mut LinuxDirectBoot, state: &mut LongModeState, budget: u64| {
+            if persistent {
+                run_call_with_cache(boot, state, &set, budget, Some(&shared))
+            } else {
+                let fresh = FetchTranslationCache::with_invalidation(policy);
+                run_call_with_cache(boot, state, &set, budget, Some(&fresh))
+            }
+        };
+        let one = call(&mut boot, &mut state, 10);
+        assert_eq!(
+            one.exit,
+            PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted)
+        );
+        between(&mut boot);
+        let two = call(&mut boot, &mut state, 100);
+        assert_eq!(two.exit, PagedCpl0SetExit::Run(RunExit::Halted), "{two:?}");
+        (state, [one, two])
+    }
+
+    /// Straight-line code over two calls, in both policies: the persistent cache walks the code
+    /// page once for both calls (one insert), the per-call cache once per call, and the end state
+    /// and the retired count are the same.
+    #[test]
+    fn persistent_cache_changes_no_result_and_saves_the_second_walk() {
+        for policy in [
+            FetchCacheInvalidation::WriteWatch,
+            FetchCacheInvalidation::GuestOnly,
+        ] {
+            let none = |_: &mut LinuxDirectBoot| {};
+            let (state, reports) = run_straight_line_two_calls(policy, true, &none);
+            let (plain_state, plain) = run_straight_line_two_calls(policy, false, &none);
+            assert_eq!(state, plain_state, "{policy:?}");
+            assert_eq!(state.gpr[Register::Rax as usize], 39);
+            assert_eq!(
+                reports[1].instructions_executed,
+                plain[1].instructions_executed
+            );
+            let total = stats_of(&reports[1]);
+            assert_eq!(total.inserts, 1, "{policy:?} {total:?}");
+            assert_eq!(total.host_flushes, 0, "{policy:?} {total:?}");
+            assert!(total.hits > stats_of(&reports[0]).hits, "{policy:?}");
+            // The per-call cache of call 2 had to walk the page again.
+            assert_eq!(stats_of(&plain[1]).inserts, 1);
+            assert!(stats_of(&plain[1]).misses >= 1);
+            assert_eq!(stats_of(&plain[1]).host_flushes, 0, "{policy:?}");
+        }
+    }
+
+    /// The host rewrites the PTE of the cached code page between the calls (same value, new
+    /// page generation: only the generation shows it), in both policies: call 2 starts with an
+    /// empty cache and walks the page again. A write to another frame keeps the cache.
+    #[test]
+    fn persistent_cache_drops_entries_for_a_host_write_to_a_watched_table_frame() {
+        let pte = TREE_PML4 + 0x3000;
+        for policy in [
+            FetchCacheInvalidation::WriteWatch,
+            FetchCacheInvalidation::GuestOnly,
+        ] {
+            // The first walk set the accessed bit: the value the PTE has now.
+            let rewrite = |boot: &mut LinuxDirectBoot| {
+                write_phys(boot, pte, &(SPLIT_PAGE0 | 0x23).to_le_bytes());
+            };
+            let (state, reports) = run_straight_line_two_calls(policy, true, &rewrite);
+            assert_eq!(state.gpr[Register::Rax as usize], 39);
+            let total = stats_of(&reports[1]);
+            assert_eq!(total.host_flushes, 1, "{policy:?} {total:?}");
+            assert_eq!(total.inserts, 2, "{policy:?} {total:?}");
+            // Not a table of any entry, and not code.
+            let unrelated = |boot: &mut LinuxDirectBoot| {
+                write_phys(boot, SPLIT_PAGE2, &[0xAA; 8]);
+            };
+            let (_, reports) = run_straight_line_two_calls(policy, true, &unrelated);
+            let total = stats_of(&reports[1]);
+            assert_eq!((total.host_flushes, total.inserts), (0, 1), "{total:?}");
+        }
+    }
+
+    /// A retired `INVLPG` at the end of call 1 drops the stale entry; call 2 fetches through the
+    /// new frame. The same program with a `NOP` in its place (the persistent test above) runs the
+    /// old code, so this fails if the flush does not reach the cache that crosses the boundary.
+    #[test]
+    fn persistent_cache_after_a_guest_invlpg_runs_the_new_code_in_the_next_call() {
+        let none = |_: &mut LinuxDirectBoot, _: &FetchTranslationCache| {};
+        let (state, one, two) = run_two_calls(
+            &INVLPG_RBX,
+            FetchCacheInvalidation::GuestOnly,
+            true,
+            4,
+            &none,
+        );
+        assert_eq!(state.gpr[Register::Rdx as usize], NEW_MARKER);
+        assert_eq!(stats_of(&one).invlpg_flushes, 1);
+        assert_eq!(stats_of(&two).invlpg_flushes, 1);
+        assert_eq!(stats_of(&two).host_flushes, 0);
+    }
+
+    /// The write-watching policy over the boundary: the guest's PTE store in call 1 dropped the
+    /// entry then, so call 2 runs the new code.
+    #[test]
+    fn persistent_write_watch_cache_sees_the_pte_store_of_the_previous_call() {
+        let none = |_: &mut LinuxDirectBoot, _: &FetchTranslationCache| {};
+        let (state, one, two) =
+            run_two_calls(&NOP3, FetchCacheInvalidation::WriteWatch, true, 3, &none);
+        assert_eq!(state.gpr[Register::Rdx as usize], NEW_MARKER);
+        assert_eq!(stats_of(&one).write_flushes, 1);
+        assert_eq!(stats_of(&two).write_flushes, 1);
+    }
+
+    /// `GuestOnly` keeps the stale translation of the guest's own PTE store over the boundary
+    /// (the test above); the host then rewrites that PTE between the calls (the loader or a
+    /// harness through the host API, a DMA: none of them reaches `note_write`). The generation of
+    /// the table frame has moved, so call 2 starts with an empty cache and runs the new code.
+    /// A write to a frame that holds no table of an entry keeps the cache.
+    #[test]
+    fn persistent_guest_only_cache_drops_the_stale_entry_on_a_host_pte_write() {
+        let rewrite = |boot: &mut LinuxDirectBoot, _: &FetchTranslationCache| {
+            write_phys(boot, TREE_PML4 + 0x3000 + 8, &(ALT_PAGE1 | 3).to_le_bytes());
+        };
+        let (state, _, two) =
+            run_two_calls(&NOP3, FetchCacheInvalidation::GuestOnly, true, 3, &rewrite);
+        assert_eq!(state.gpr[Register::Rdx as usize], NEW_MARKER);
+        assert_eq!(stats_of(&two).host_flushes, 1, "{:?}", stats_of(&two));
+        let unrelated = |boot: &mut LinuxDirectBoot, _: &FetchTranslationCache| {
+            write_phys(boot, SPLIT_PAGE2, &[0xAA; 8]);
+        };
+        let (state, _, two) = run_two_calls(
+            &NOP3,
+            FetchCacheInvalidation::GuestOnly,
+            true,
+            3,
+            &unrelated,
+        );
+        assert_eq!(state.gpr[Register::Rdx as usize], OLD_MARKER);
+        assert_eq!(stats_of(&two).host_flushes, 0);
+    }
+
+    /// A host write to the code bytes of the cached frame is seen at once: the cache holds the
+    /// frame, never the byte.
+    #[test]
+    fn persistent_cache_reads_the_code_bytes_fresh_from_the_cached_frame() {
+        // The marker immediate of the old frame: the dword of `MOV RDX, imm32` is replaced.
+        let patch = |boot: &mut LinuxDirectBoot, _: &FetchTranslationCache| {
+            // The frame bytes of page X after the store are `NOP3; MOV RDX, imm32; HLT`: the store
+            // has one byte on X, so the immediate sits at offset 1 + 3 + 3.
+            write_phys(boot, SPLIT_PAGE1 + 7, &0x7777u32.to_le_bytes());
+        };
+        let (state, _, two) =
+            run_two_calls(&NOP3, FetchCacheInvalidation::GuestOnly, true, 3, &patch);
+        assert_eq!(state.gpr[Register::Rdx as usize], 0x7777);
+        assert_eq!(stats_of(&two).host_flushes, 0);
+    }
+
+    /// The explicit host events: `flush_for_host_event` and `reset` (a cache object handed to a
+    /// new machine session) both make call 2 walk the new PTE, though no table generation moved.
+    #[test]
+    fn persistent_cache_is_dropped_by_the_explicit_host_event_and_by_reset() {
+        let flush = |_: &mut LinuxDirectBoot, cache: &FetchTranslationCache| {
+            cache.flush_for_host_event();
+        };
+        let (state, _, two) =
+            run_two_calls(&NOP3, FetchCacheInvalidation::GuestOnly, true, 3, &flush);
+        assert_eq!(state.gpr[Register::Rdx as usize], NEW_MARKER);
+        assert_eq!(stats_of(&two).host_flushes, 1);
+        let reset = |_: &mut LinuxDirectBoot, cache: &FetchTranslationCache| cache.reset();
+        let (state, _, two) =
+            run_two_calls(&NOP3, FetchCacheInvalidation::GuestOnly, true, 3, &reset);
+        assert_eq!(state.gpr[Register::Rdx as usize], NEW_MARKER);
+        // The counters restarted with the reset: only call 2 is in them.
+        assert_eq!(stats_of(&two).host_flushes, 0);
+        assert_eq!(stats_of(&two).inserts, 1, "{:?}", stats_of(&two));
+    }
+
+    /// Two calls of the remap layout over ONE cache built with `with_invalidation` (not
+    /// `persistent`): the loop seals and checks every cache it is given (S4-14i, review), so the
+    /// constructor does not decide whether a host event between the calls is seen.
+    fn run_two_calls_over_one_plain_cache(
+        policy: FetchCacheInvalidation,
+        first: u64,
+        between: &dyn Fn(&mut LinuxDirectBoot),
+    ) -> (LongModeState, PagedCpl0SetReport, PagedCpl0SetReport) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let set = switch_set(&cli, &halt);
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let mut state = remap_case(&mut boot, &[], &NOP3, None);
+        let cache = FetchTranslationCache::with_invalidation(policy);
+        assert!(!cache.is_persistent());
+        let one = run_call_with_cache(&mut boot, &mut state, &set, first, Some(&cache));
+        assert_eq!(one.instructions_executed, first);
+        between(&mut boot);
+        let two = run_call_with_cache(&mut boot, &mut state, &set, 16, Some(&cache));
+        assert_eq!(two.exit, PagedCpl0SetExit::Run(RunExit::Halted), "{two:?}");
+        (state, one, two)
+    }
+
+    /// A cache that is not `persistent` and is handed to a second call is sealed and checked like
+    /// any other (it was not, before the S4-14i review: a `WriteWatch` cache then lost a host write
+    /// to a table frame, against the promise that such a write always flushes). `GuestOnly`: the
+    /// host rewrites the PTE of the entry's table (same value, new generation) and call 2 walks it
+    /// again; before, the stale translation served call 2 and ran `OLD_MARKER`. `WriteWatch`: the
+    /// guest's own store dropped the old entry in call 1, call 1 cached the new frame; the host
+    /// points the PTE back to the old frame and call 2 must follow it. Without a host write the
+    /// entry survives the boundary in both.
+    #[test]
+    fn a_cache_that_is_not_persistent_is_sealed_and_checked_like_any_other() {
+        let pte_x = TREE_PML4 + 0x3000 + 8;
+        let none = |_: &mut LinuxDirectBoot| {};
+        for policy in [
+            FetchCacheInvalidation::WriteWatch,
+            FetchCacheInvalidation::GuestOnly,
+        ] {
+            let (state, _, two) = run_two_calls_over_one_plain_cache(policy, 4, &none);
+            let expected = match policy {
+                // The guest store already dropped the old entry (and `sync` ran on the new frame).
+                FetchCacheInvalidation::WriteWatch => NEW_MARKER,
+                FetchCacheInvalidation::GuestOnly => OLD_MARKER,
+            };
+            assert_eq!(state.gpr[Register::Rdx as usize], expected, "{policy:?}");
+            assert_eq!(stats_of(&two).host_flushes, 0, "{policy:?}");
+            assert!(
+                stats_of(&two).hits > 0 && stats_of(&two).inserts >= 1,
+                "{policy:?} {:?}",
+                stats_of(&two)
+            );
+        }
+        // GuestOnly: a host write to the watched PTE page, after the guest's ignored store.
+        let rewrite = |boot: &mut LinuxDirectBoot| {
+            write_phys(boot, pte_x, &(ALT_PAGE1 | 3).to_le_bytes());
+        };
+        let (state, one, two) =
+            run_two_calls_over_one_plain_cache(FetchCacheInvalidation::GuestOnly, 3, &rewrite);
+        assert_eq!(state.gpr[Register::Rdx as usize], NEW_MARKER);
+        assert_eq!(stats_of(&one).host_flushes, 0);
+        assert_eq!(stats_of(&two).host_flushes, 1, "{:?}", stats_of(&two));
+        // WriteWatch: the host redirects the PTE to the old frame behind the cached new one.
+        let redirect = |boot: &mut LinuxDirectBoot| {
+            write_phys(boot, pte_x, &(SPLIT_PAGE1 | 3).to_le_bytes());
+        };
+        let (state, one, two) =
+            run_two_calls_over_one_plain_cache(FetchCacheInvalidation::WriteWatch, 4, &redirect);
+        assert_eq!(state.gpr[Register::Rdx as usize], OLD_MARKER);
+        assert_eq!(stats_of(&one).host_flushes, 0);
+        assert_eq!(stats_of(&two).host_flushes, 1, "{:?}", stats_of(&two));
+    }
+
+    /// The ordinary paths of a one-shot `WriteWatch` cache (the default of every caller) are what
+    /// they were: the per-call cache of the `_observed` entry point and the S4-13 counters show no
+    /// host flush, and the end state is the one of the run without any cache.
+    #[test]
+    fn a_one_shot_write_watch_cache_never_counts_a_host_flush() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let set = switch_set(&cli, &halt);
+        let build = |boot: &mut LinuxDirectBoot| remap_case(boot, &[], &NOP3, None);
+        let cached = run_policy_case(&build, &set, 16, FetchCacheInvalidation::WriteWatch);
+        assert_halted_with_marker(&cached, NEW_MARKER);
+        assert_eq!(cached.stats.host_flushes, 0, "{:?}", cached.stats);
+        assert_eq!(cached.stats.write_flushes, 1, "{:?}", cached.stats);
+        let plain = run_cache_case(&build, &set, 16, false);
+        let with = run_cache_case(&build, &set, 16, true);
+        assert_eq!(with.state, plain.state);
+        assert_eq!(with.writes, plain.writes);
+        assert!(with.memory == plain.memory, "frame bytes differ");
+        assert_eq!(
+            with.report
+                .fetch_cache_stats
+                .expect("cache stats")
+                .host_flushes,
+            0
+        );
+    }
+
+    /// The host changes CR3 between the calls (not a guest `MOV CR3`, no flush of the loop) and
+    /// then puts it back. The entry of the code page (`GuestOnly`: stale after the guest's PTE
+    /// store, which the ignored write leaves in place) is dropped by the first check that sees the
+    /// other context, so the return does not find it, though no table generation moved after the
+    /// call under the other CR3 sealed its own. Without the switch the same entry serves call 2
+    /// (`persistent_cache_keeps_its_entries_over_the_call_boundary`), which the key check does not
+    /// touch: one flush for the call under B, one for the return to A (CR3 differs from the seal).
+    #[test]
+    fn the_host_switching_cr3_between_calls_drops_the_cache() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let set = switch_set(&cli, &halt);
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let mut state = remap_case(&mut boot, &[], &NOP3, None);
+        let root_a = state.cr3.expect("CPU-owned CR3");
+        let root_b = root_a + 0x8000;
+        let cache = FetchTranslationCache::persistent(FetchCacheInvalidation::GuestOnly);
+        let one = run_call_with_cache(&mut boot, &mut state, &set, 3, Some(&cache));
+        assert_eq!(stats_of(&one).host_flushes, 0);
+        state.cr3 = Some(root_b);
+        let other = run_call_with_cache(&mut boot, &mut state, &set, 0, Some(&cache));
+        assert_eq!(
+            other.exit,
+            PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted)
+        );
+        assert_eq!(stats_of(&other).host_flushes, 1, "{:?}", stats_of(&other));
+        state.cr3 = Some(root_a);
+        let two = run_call_with_cache(&mut boot, &mut state, &set, 16, Some(&cache));
+        assert_eq!(two.exit, PagedCpl0SetExit::Run(RunExit::Halted), "{two:?}");
+        assert_eq!(state.gpr[Register::Rdx as usize], NEW_MARKER);
+        assert_eq!(stats_of(&two).host_flushes, 2, "{:?}", stats_of(&two));
+    }
+
+    // ---- S4-13d: the 2 MiB leaf tag of the real cache and the extended differential gate ----
+    //
+    // Every case runs three times over the same layout: with no cache, with the 4 KiB cache and
+    // with the cache that tags a 2 MiB leaf as one entry; the three must agree on the CPU state,
+    // the report (exit, fault record, context changes), every committed write in order and the
+    // bytes of the frames listed by the case (page tables with their accessed/dirty bits, code
+    // and data). The cache is the default `WriteWatch` one.
+
+    use crate::fetch_translation_cache::FetchCacheTag;
+
+    const GATE_LEAF1: u64 = 0x0600_0000;
+    const GATE_LEAF2: u64 = 0x0620_0000;
+    const GATE_LEAF3: u64 = 0x0640_0000;
+    const GATE_FRAME3: u64 = 0x0500_a000;
+    const GATE_DATA_FRAME: u64 = 0x0500_b000;
+    /// Where the code of every layout starts: page 1 of the leaf, offset 0x800 (so also GVA
+    /// `SPLIT_VA + 0x1000 + 0x800` for the 4 KiB layout, whose PTE 1 maps that page).
+    const GATE_CODE_VA: u64 = SPLIT_VA + 0x1800;
+    /// The second 2 MiB leaf (PD index 10) of the data cases.
+    const GATE_OTHER_LEAF_VA: u64 = SPLIT_VA + 0x40_0000;
+    const MID_MARKER: u64 = 0x2222;
+    const MOV_RBX_RAX_STORE: [u8; 3] = [0x48, 0x89, 0x03];
+    const MOV_RBX_RCX_STORE: [u8; 3] = [0x48, 0x89, 0x0B];
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum CacheMode {
+        Plain,
+        Tag4k,
+        Tag2m,
+    }
+
+    struct ModeOutcome {
+        state: LongModeState,
+        report: PagedCpl0SetReport,
+        writes: Vec<(u64, u64)>,
+        memory: Vec<u8>,
+        stats: Option<FetchCacheStats>,
+    }
+
+    /// One run of the case `build` lays out, with the cache mode `mode`; `frames` are the
+    /// `(address, length)` ranges whose bytes are returned (concatenated) after the run.
+    fn run_mode_case(
+        build: &dyn Fn(&mut LinuxDirectBoot) -> LongModeState,
+        set: &Cpl0ProfileSet<'_>,
+        budget: u64,
+        mode: CacheMode,
+        policy: FetchCacheInvalidation,
+        frames: &[(u64, usize)],
+    ) -> ModeOutcome {
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let mut state = build(&mut boot);
+        let efer = boot.board.efer();
+        let cr3 = state.cr3.expect("the case runs with a CPU-owned CR3");
+        let cache = match mode {
+            CacheMode::Plain => None,
+            CacheMode::Tag4k => Some(FetchTranslationCache::with_invalidation(policy)),
+            CacheMode::Tag2m => Some(
+                FetchTranslationCache::with_invalidation(policy).with_tag(FetchCacheTag::Leaf2M),
+            ),
+        };
+        let mut writes = Vec::new();
+        let mut report = run_cpl0_set_paged_2m_ram_with_cache(
+            &mut state,
+            boot.board.bus_mut(),
+            crate::vcpu::BOOT_VCPU_INDEX,
+            cr3,
+            efer,
+            long64(),
+            budget,
+            INTEGER_FLAGS,
+            set,
+            None,
+            || false,
+            |range| writes.push((range.start().get(), range.len())),
+            true,
+            cache.as_ref(),
+            None,
+            None,
+            None,
+        );
+        let stats = report.fetch_cache_stats.take();
+        let mut memory = Vec::new();
+        for &(start, len) in frames {
+            let mut bytes = vec![0u8; len];
+            read(&mut boot.board, start, &mut bytes).expect("frames are RAM");
+            memory.extend(bytes);
+        }
+        ModeOutcome {
+            state,
+            report,
+            writes,
+            memory,
+            stats,
+        }
+    }
+
+    struct ModesAgree {
+        /// The outcome of the run with the 2 MiB tag.
+        tagged: ModeOutcome,
+        stats_4k: FetchCacheStats,
+        stats_2m: FetchCacheStats,
+        /// Instruction-fetch walks of the plain, the 4 KiB and the 2 MiB run.
+        fetch_walks: [u64; 3],
+    }
+
+    /// The differential gate: no cache, the 4 KiB cache and the 2 MiB-tag cache agree on
+    /// everything the guest or a device can see; data walks are equal and the caches can only
+    /// remove instruction-fetch walks.
+    fn assert_modes_agree(
+        build: &dyn Fn(&mut LinuxDirectBoot) -> LongModeState,
+        set: &Cpl0ProfileSet<'_>,
+        budget: u64,
+        frames: &[(u64, usize)],
+    ) -> ModesAgree {
+        assert_modes_agree_with(
+            FetchCacheInvalidation::WriteWatch,
+            build,
+            set,
+            budget,
+            frames,
+        )
+    }
+
+    /// [`assert_modes_agree`] with the invalidation policy of both caches chosen. Only a case in
+    /// which the guest itself performs every invalidation the policy relies on may use
+    /// `GuestOnly` (a TLB-like cache is allowed to differ from an uncached run otherwise).
+    fn assert_modes_agree_with(
+        policy: FetchCacheInvalidation,
+        build: &dyn Fn(&mut LinuxDirectBoot) -> LongModeState,
+        set: &Cpl0ProfileSet<'_>,
+        budget: u64,
+        frames: &[(u64, usize)],
+    ) -> ModesAgree {
+        let mut plain = run_mode_case(build, set, budget, CacheMode::Plain, policy, frames);
+        let mut k4 = run_mode_case(build, set, budget, CacheMode::Tag4k, policy, frames);
+        let mut k2 = run_mode_case(build, set, budget, CacheMode::Tag2m, policy, frames);
+        assert_eq!(plain.stats, None);
+        let walks = [
+            plain.report.walk_counts,
+            k4.report.walk_counts,
+            k2.report.walk_counts,
+        ];
+        for counts in &walks[1..] {
+            assert_eq!(counts.data_read, walks[0].data_read);
+            assert_eq!(counts.data_write, walks[0].data_write);
+            assert!(counts.fetch <= walks[0].fetch, "{counts:?} {:?}", walks[0]);
+        }
+        for outcome in [&mut plain, &mut k4, &mut k2] {
+            outcome.report.walk_counts = Default::default();
+        }
+        for (name, other) in [("4k", &k4), ("2m", &k2)] {
+            assert_eq!(other.report, plain.report, "{name}");
+            assert_eq!(other.state, plain.state, "{name}");
+            assert_eq!(other.writes, plain.writes, "{name}");
+            assert!(other.memory == plain.memory, "{name}: frame bytes differ");
+        }
+        let stats_4k = k4.stats.take().expect("4k cache stats");
+        let stats_2m = k2.stats.take().expect("2m cache stats");
+        ModesAgree {
+            stats_4k,
+            stats_2m,
+            fetch_walks: [walks[0].fetch, walks[1].fetch, walks[2].fetch],
+            tagged: k2,
+        }
+    }
+
+    /// The two layouts of the gate: the page the code runs on is a 4 KiB page behind a PT, or
+    /// a page of a 2 MiB leaf (PD entry with the page-size bit).
+    #[derive(Clone, Copy, Debug)]
+    enum Leaf {
+        Small,
+        Large,
+    }
+
+    impl Leaf {
+        /// The 4 KiB frame (`Small`, `variant` 0..3) or 2 MiB leaf (`Large`) behind the code.
+        fn backing(self, variant: usize) -> u64 {
+            match self {
+                Leaf::Small => [SPLIT_PAGE1, ALT_PAGE1, GATE_FRAME3][variant],
+                Leaf::Large => [GATE_LEAF1, GATE_LEAF2, GATE_LEAF3][variant],
+            }
+        }
+
+        /// Physical address of the instruction at `GATE_CODE_VA` for the variant.
+        fn code_phys(self, variant: usize) -> u64 {
+            match self {
+                Leaf::Small => self.backing(variant) + 0x800,
+                Leaf::Large => self.backing(variant) + 0x1800,
+            }
+        }
+
+        /// The bytes of the page of the code, per variant, for the frame comparison.
+        fn code_frames(self) -> Vec<(u64, usize)> {
+            (0..3)
+                .map(|variant| (self.code_phys(variant) & !0xfff, 0x1000))
+                .collect()
+        }
+
+        /// Flags of the leaf entry: present, writable, and the accessed/dirty bits asked for
+        /// (plus the page-size bit for a 2 MiB leaf).
+        fn flags(self, accessed: bool, dirty: bool) -> u64 {
+            let base = match self {
+                Leaf::Small => 0x03,
+                Leaf::Large => 0x83,
+            };
+            base | if accessed { 0x20 } else { 0 } | if dirty { 0x40 } else { 0 }
+        }
+
+        /// The tree `pml4` (PML4 -> PDPT -> PD [-> PT]) that maps `SPLIT_VA + 0x1000` (`Small`,
+        /// PTE 1) or `SPLIT_VA` (`Large`, PD entry 8) to the variant; `window` maps `WINDOW_VA`
+        /// to a table frame (see `write_tree`).
+        fn install(
+            self,
+            boot: &mut LinuxDirectBoot,
+            pml4: u64,
+            variant: usize,
+            flags: u64,
+            window: Option<u64>,
+        ) {
+            match self {
+                Leaf::Small => {
+                    write_tree(boot, pml4, &[(1, self.backing(variant) | flags)], window)
+                }
+                Leaf::Large => {
+                    write_tree(boot, pml4, &[], window);
+                    write_phys(
+                        boot,
+                        pml4 + 0x2000 + 8 * 8,
+                        &(self.backing(variant) | flags).to_le_bytes(),
+                    );
+                }
+            }
+        }
+
+        /// The table frame and the offset in it of the leaf entry of tree A (`TREE_PML4`).
+        fn leaf_entry_of_tree_a(self) -> (u64, u64) {
+            match self {
+                Leaf::Small => (TREE_PML4 + 0x3000, 8),
+                Leaf::Large => (TREE_PML4 + 0x2000, 8 * 8),
+            }
+        }
+    }
+
+    /// `head`, then `MOV RDX, marker; HLT`.
+    fn with_marker(head: &[u8], marker: u64) -> Vec<u8> {
+        let mut code = head.to_vec();
+        code.extend(mov_imm32(2, marker as u32));
+        code.push(0xF4);
+        code
+    }
+
+    /// Page tables of the first tree and the second tree as `[(address, len)]` frame ranges.
+    const GATE_TREE_FRAMES: [(u64, usize); 2] = [(TREE_PML4, 0x5000), (TREE2_PML4, 0x5000)];
+
+    fn frames_of(leaf: Leaf, extra: &[(u64, usize)]) -> Vec<(u64, usize)> {
+        let mut frames = GATE_TREE_FRAMES.to_vec();
+        frames.extend(leaf.code_frames());
+        frames.extend_from_slice(extra);
+        frames
+    }
+
+    fn assert_halted(outcome: &ModeOutcome, marker: u64) {
+        assert_eq!(
+            outcome.report.exit,
+            PagedCpl0SetExit::Run(RunExit::Halted),
+            "{:?}",
+            outcome.report
+        );
+        assert_eq!(outcome.state.gpr[Register::Rdx as usize], marker);
+    }
+
+    // -- the 2 MiB tag itself --
+
+    /// 640 `MOV RAX, i` (7 bytes each) straight through three 4 KiB pages of ONE 2 MiB leaf
+    /// (from offset 0xf00 of the leaf to 0x2080), then `HLT`. The 4 KiB cache takes a walk per
+    /// page; the 2 MiB-tag cache takes one for the leaf and serves the bytes of every page of it
+    /// from the entry with the offset of each request: a wrong offset or frame would decode
+    /// other bytes and end elsewhere than the uncached run, whose `RAX` is the last immediate.
+    #[test]
+    fn cache_2m_tag_serves_every_4k_page_of_a_leaf_from_one_entry() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let start = 0xf00u64;
+        let build = |boot: &mut LinuxDirectBoot| {
+            Leaf::Large.install(boot, TREE_PML4, 0, Leaf::Large.flags(true, true), None);
+            let mut code = Vec::new();
+            for value in 0..640u32 {
+                code.extend(mov_imm32(0, value));
+            }
+            code.push(0xF4);
+            write_phys(boot, GATE_LEAF1 + start, &code);
+            tree_state(boot, TREE_PML4, SPLIT_VA + start)
+        };
+        let frames = [(TREE_PML4, 0x5000usize), (GATE_LEAF1, 0x3000)];
+        let agreed = assert_modes_agree(&build, &switch_set(&cli, &halt), 1000, &frames);
+        assert_eq!(
+            agreed.tagged.report.exit,
+            PagedCpl0SetExit::Run(RunExit::Halted),
+            "{:?}",
+            agreed.tagged.report
+        );
+        assert_eq!(agreed.tagged.state.gpr[Register::Rax as usize], 639);
+        assert_eq!(agreed.tagged.report.instructions_executed, 641);
+        // Three pages of the leaf: three entries with the 4 KiB tag, one with the 2 MiB tag.
+        assert_eq!(agreed.stats_4k.inserts, 3, "{:?}", agreed.stats_4k);
+        assert_eq!(agreed.stats_2m.inserts, 1, "{:?}", agreed.stats_2m);
+        assert!(agreed.stats_2m.misses < agreed.stats_4k.misses);
+        assert_eq!(
+            agreed.stats_2m.hits + agreed.stats_2m.misses,
+            agreed.stats_4k.hits + agreed.stats_4k.misses,
+            "the same lookups, only answered differently"
+        );
+        assert!(
+            agreed.fetch_walks[2] < agreed.fetch_walks[1]
+                && agreed.fetch_walks[1] < agreed.fetch_walks[0],
+            "{:?}",
+            agreed.fetch_walks
+        );
+    }
+
+    // -- a 4 KiB leaf whose frame is congruent with its address modulo 2 MiB --
+
+    /// Lays out a PT in which page 1 (GVA `SPLIT_VA + 0x1000`) maps the frame at
+    /// `GATE_LEAF1 + 0x1000`: its physical address minus the offset of the request inside the
+    /// 2 MiB region is the 2 MiB-aligned `GATE_LEAF1`, plain RAM, which is exactly what a
+    /// 2 MiB leaf would look like to the cache tag. Page 2 is `page2` (another PTE). The code
+    /// is one 7-byte `MOV RAX` that ends page 1 and, on page 2, `MOV RDX, marker; HLT`; the
+    /// bytes at `GATE_LEAF1 + 0x2000` (where a wrongly 2 MiB-tagged entry would read page 2)
+    /// are a decoy that ends with another marker.
+    fn congruent_4k_leaf_case(boot: &mut LinuxDirectBoot, page2: u64) -> LongModeState {
+        let congruent = GATE_LEAF1 + 0x1000;
+        write_tree(boot, TREE_PML4, &[(1, congruent | 0x23), (2, page2)], None);
+        write_phys(boot, congruent + 0xff9, &mov_imm32(0, 7));
+        write_phys(boot, GATE_LEAF1 + 0x2000, &with_marker(&[], NEW_MARKER));
+        write_phys(boot, GATE_FRAME3, &with_marker(&[], OLD_MARKER));
+        tree_state(boot, TREE_PML4, SPLIT_VA + 0x1ff9)
+    }
+
+    fn congruent_4k_frames() -> Vec<(u64, usize)> {
+        let mut frames = GATE_TREE_FRAMES.to_vec();
+        frames.extend([
+            (GATE_LEAF1 + 0x1000, 0x1000),
+            (GATE_LEAF1 + 0x2000, 0x1000),
+            (GATE_FRAME3, 0x1000),
+        ]);
+        frames
+    }
+
+    /// A 4 KiB page with a frame congruent modulo 2 MiB stays a 4 KiB entry under the 2 MiB
+    /// tag: the NEXT page of the same PT maps another frame, and the fetch of it must read that
+    /// frame (marker `OLD_MARKER`), not the bytes that a 2 MiB entry for `GATE_LEAF1` would
+    /// serve at the same offset (`NEW_MARKER`). Two 4 KiB entries are inserted, never one leaf.
+    #[test]
+    fn gate_2m_congruent_4k_page_stays_a_4k_entry_and_the_next_page_is_its_own() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| congruent_4k_leaf_case(boot, GATE_FRAME3 | 0x23);
+        let agreed =
+            assert_modes_agree(&build, &switch_set(&cli, &halt), 16, &congruent_4k_frames());
+        assert_halted(&agreed.tagged, OLD_MARKER);
+        assert_eq!(agreed.tagged.state.gpr[Register::Rax as usize], 7);
+        assert_eq!(agreed.stats_2m.inserts, 2, "{:?}", agreed.stats_2m);
+        assert_eq!(agreed.stats_4k.inserts, 2, "{:?}", agreed.stats_4k);
+    }
+
+    /// The same layout with the next PTE not present: the fetch of page 2 is the precise `#PF`
+    /// (not present, instruction fetch: 0x10) with either cache; a 2 MiB entry for the
+    /// congruent page would have run the decoy instead.
+    #[test]
+    fn gate_2m_congruent_4k_page_next_pte_not_present_faults_like_without_the_cache() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| congruent_4k_leaf_case(boot, 0);
+        let agreed =
+            assert_modes_agree(&build, &switch_set(&cli, &halt), 16, &congruent_4k_frames());
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &agreed.tagged.report.exit else {
+            panic!("{:?}", agreed.tagged.report);
+        };
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(0x10), Some(SPLIT_VA + 0x2000))
+        );
+        assert_eq!(agreed.stats_2m.inserts, 1, "{:?}", agreed.stats_2m);
+    }
+
+    // -- (a) remap and NX of a 2 MiB leaf under WriteWatch --
+
+    /// The code of a 2 MiB leaf stores into the PD entry of its own leaf (through a window onto
+    /// the PD frame): `MOV RBX, window + offset; MOV RAX, value; store`. Leaf 1 holds the old
+    /// marker after the store, leaf 2 the new one, at the same offsets.
+    fn leaf_pde_store_case(
+        boot: &mut LinuxDirectBoot,
+        offset: u64,
+        value: u32,
+        wide: bool,
+    ) -> LongModeState {
+        let leaf = Leaf::Large;
+        leaf.install(
+            boot,
+            TREE_PML4,
+            0,
+            leaf.flags(true, true),
+            Some(TREE_PML4 + 0x2000),
+        );
+        let mut head = mov_imm32(3, (WINDOW_VA + offset) as u32);
+        head.extend(mov_imm32(0, value));
+        head.extend(if wide {
+            MOV_RBX_RAX_STORE.to_vec()
+        } else {
+            // `MOV [RBX], EAX`: a 32-bit store of the low half of RAX.
+            vec![0x89, 0x03]
+        });
+        for (variant, marker) in [(0, OLD_MARKER), (1, NEW_MARKER)] {
+            write_phys(boot, leaf.code_phys(variant), &with_marker(&head, marker));
+        }
+        tree_state(boot, TREE_PML4, GATE_CODE_VA)
+    }
+
+    fn leaf_store_frames() -> Vec<(u64, usize)> {
+        frames_of(Leaf::Large, &[])
+    }
+
+    /// Remap of the leaf the code runs on: the guest stores a new PD entry (another 2 MiB
+    /// leaf); the next instruction is fetched through it. The 2 MiB entry covers the whole leaf,
+    /// so a stale one would run the old marker. Same stop record, same state, same writes.
+    #[test]
+    fn gate_2m_leaf_remap_under_write_watch_runs_the_new_leaf() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let new_pde = (GATE_LEAF2 | Leaf::Large.flags(true, true)) as u32;
+        let build = |boot: &mut LinuxDirectBoot| leaf_pde_store_case(boot, 8 * 8, new_pde, true);
+        let agreed = assert_modes_agree(&build, &switch_set(&cli, &halt), 16, &leaf_store_frames());
+        assert_halted(&agreed.tagged, NEW_MARKER);
+        for stats in [agreed.stats_4k, agreed.stats_2m] {
+            assert_eq!(stats.write_flushes, 1, "{stats:?}");
+            assert_eq!(stats.context_flushes, 0, "{stats:?}");
+            assert!(stats.hits > 0, "{stats:?}");
+        }
+        // The PD entry is the new one in the end.
+        let pde = u64::from_le_bytes(agreed.tagged.memory[0x2040..0x2048].try_into().unwrap());
+        assert_eq!(pde, GATE_LEAF2 | 0xE3);
+    }
+
+    /// NX set on the PD entry of the leaf the code runs on: the next fetch is the same precise
+    /// `#PF` (present, instruction fetch: error code 0x11, linear address and saved RIP of the
+    /// next instruction) with the cache of either tag: a hit would have run the instruction.
+    #[test]
+    fn gate_2m_leaf_nx_store_faults_like_without_the_cache() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        // The high dword of the PD entry at offset 0x40 gets bit 31 (bit 63 of the entry).
+        let build =
+            |boot: &mut LinuxDirectBoot| leaf_pde_store_case(boot, 8 * 8 + 4, 0x8000_0000, false);
+        let agreed = assert_modes_agree(&build, &switch_set(&cli, &halt), 16, &leaf_store_frames());
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &agreed.tagged.report.exit else {
+            panic!("{:?}", agreed.tagged.report);
+        };
+        // MOV RBX (7) + MOV RAX (7) + the 32-bit store (2) = 16 bytes retired before the fault.
+        let next = GATE_CODE_VA + 16;
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(0x11), Some(next))
+        );
+        assert_eq!(
+            agreed
+                .tagged
+                .report
+                .page_fault
+                .as_ref()
+                .map(|r| r.saved_rip()),
+            Some(next)
+        );
+        assert_eq!(agreed.tagged.report.instructions_executed, 3);
+        for stats in [agreed.stats_4k, agreed.stats_2m] {
+            assert_eq!(stats.write_flushes, 1, "{stats:?}");
+        }
+    }
+
+    /// The guest clears the present bit of the PD entry of its own leaf: the next fetch is the
+    /// same `#PF` (not present, instruction fetch: 0x10); a failed walk is never cached.
+    #[test]
+    fn gate_2m_leaf_unmap_store_faults_like_without_the_cache() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| leaf_pde_store_case(boot, 8 * 8, 0, true);
+        let agreed = assert_modes_agree(&build, &switch_set(&cli, &halt), 16, &leaf_store_frames());
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &agreed.tagged.report.exit else {
+            panic!("{:?}", agreed.tagged.report);
+        };
+        let next = GATE_CODE_VA + 17;
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(0x10), Some(next))
+        );
+        assert_eq!(agreed.tagged.report.instructions_executed, 3);
+        for stats in [agreed.stats_4k, agreed.stats_2m] {
+            assert_eq!(stats.write_flushes, 1, "{stats:?}");
+        }
+    }
+
+    // -- (b) the accessed bit cleared at every level of the path --
+
+    #[derive(Clone, Copy, Debug)]
+    enum Level {
+        Pml4e,
+        Pdpte,
+        Pde,
+    }
+
+    /// The table frame, the offset of the entry in it and the new value (accessed bit CLEAR,
+    /// same target) of the entry of `level` on the path of the code.
+    fn level_entry(level: Level, leaf: Leaf) -> (u64, u64, u64) {
+        match (level, leaf) {
+            (Level::Pml4e, _) => (TREE_PML4, 0, (TREE_PML4 + 0x1000) | 0x03),
+            (Level::Pdpte, _) => (TREE_PML4 + 0x1000, 0, (TREE_PML4 + 0x2000) | 0x03),
+            (Level::Pde, Leaf::Small) => (TREE_PML4 + 0x2000, 8 * 8, (TREE_PML4 + 0x3000) | 0x03),
+            (Level::Pde, Leaf::Large) => (
+                TREE_PML4 + 0x2000,
+                8 * 8,
+                GATE_LEAF1 | leaf.flags(false, true),
+            ),
+        }
+    }
+
+    /// The guest rewrites an entry of the path of its own code with the accessed bit clear (the
+    /// same target) through a window: the next fetch must walk again and set the bit again, as
+    /// without the cache. A cache that kept the old translation would leave the bit clear in RAM.
+    fn assert_clear_accessed_is_set_again(level: Level, leaf: Leaf) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let (frame, offset, new_value) = level_entry(level, leaf);
+        let build = |boot: &mut LinuxDirectBoot| {
+            leaf.install(
+                boot,
+                TREE_PML4,
+                0,
+                leaf.flags(true, matches!(leaf, Leaf::Large)),
+                Some(frame),
+            );
+            let mut head = mov_imm32(3, (WINDOW_VA + offset) as u32);
+            head.extend(mov_imm32(0, new_value as u32));
+            head.extend(MOV_RBX_RAX_STORE);
+            write_phys(boot, leaf.code_phys(0), &with_marker(&head, OLD_MARKER));
+            tree_state(boot, TREE_PML4, GATE_CODE_VA)
+        };
+        let agreed =
+            assert_modes_agree(&build, &switch_set(&cli, &halt), 16, &frames_of(leaf, &[]));
+        let what = format!("{level:?} {leaf:?}");
+        assert_halted(&agreed.tagged, OLD_MARKER);
+        let at = (frame - TREE_PML4 + offset) as usize;
+        let entry = u64::from_le_bytes(agreed.tagged.memory[at..at + 8].try_into().unwrap());
+        assert_eq!(entry & 0x20, 0x20, "{what}: accessed bit is set again");
+        assert_eq!(
+            agreed.tagged.writes.last().copied(),
+            Some((frame + offset, 8)),
+            "{what}: the last committed write is that accessed-bit commit"
+        );
+        for stats in [agreed.stats_4k, agreed.stats_2m] {
+            assert_eq!(stats.write_flushes, 1, "{what}: {stats:?}");
+            assert!(stats.hits > 0, "{what}: {stats:?}");
+        }
+    }
+
+    #[test]
+    fn gate_cleared_accessed_bit_of_a_pde_is_set_again_on_the_next_fetch() {
+        for leaf in [Leaf::Small, Leaf::Large] {
+            assert_clear_accessed_is_set_again(Level::Pde, leaf);
+        }
+    }
+
+    #[test]
+    fn gate_cleared_accessed_bit_of_a_pdpte_is_set_again_on_the_next_fetch() {
+        for leaf in [Leaf::Small, Leaf::Large] {
+            assert_clear_accessed_is_set_again(Level::Pdpte, leaf);
+        }
+    }
+
+    #[test]
+    fn gate_cleared_accessed_bit_of_a_pml4e_is_set_again_on_the_next_fetch() {
+        for leaf in [Leaf::Small, Leaf::Large] {
+            assert_clear_accessed_is_set_again(Level::Pml4e, leaf);
+        }
+    }
+
+    // -- (c) the dirty bit committed in a table of the cached code --
+
+    /// The code stores to data whose leaf entry has the dirty bit clear: the walk of the store
+    /// commits the bit into the table frame the cached code translation watches. The commit is a
+    /// write to a watched frame: the cache drops the entry (one write flush), the next fetch
+    /// walks again, and the dirty bit, the data and the committed writes equal the uncached run.
+    /// `same_page`: the data is on the page of the code (the same entry); else on another page
+    /// of the same PT (`Small`) or in another 2 MiB leaf of the same PD (`Large`).
+    fn assert_dirty_commit_in_the_table_of_the_code(leaf: Leaf, same_page: bool) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let (data_va, data_phys, entry_at) = match (leaf, same_page) {
+            (_, true) => {
+                let (frame, offset) = leaf.leaf_entry_of_tree_a();
+                (
+                    GATE_CODE_VA + 0x100,
+                    leaf.code_phys(0) + 0x100,
+                    frame + offset,
+                )
+            }
+            (Leaf::Small, false) => (
+                SPLIT_VA + 0x2000 + 0x100,
+                GATE_DATA_FRAME + 0x100,
+                TREE_PML4 + 0x3000 + 2 * 8,
+            ),
+            (Leaf::Large, false) => (
+                GATE_OTHER_LEAF_VA + 0x100,
+                GATE_LEAF2 + 0x100,
+                TREE_PML4 + 0x2000 + 10 * 8,
+            ),
+        };
+        let build = |boot: &mut LinuxDirectBoot| {
+            leaf.install(boot, TREE_PML4, 0, leaf.flags(true, false), None);
+            if !same_page {
+                match leaf {
+                    Leaf::Small => write_phys(
+                        boot,
+                        TREE_PML4 + 0x3000 + 2 * 8,
+                        &(GATE_DATA_FRAME | leaf.flags(true, false)).to_le_bytes(),
+                    ),
+                    Leaf::Large => write_phys(
+                        boot,
+                        TREE_PML4 + 0x2000 + 10 * 8,
+                        &(GATE_LEAF2 | leaf.flags(true, false)).to_le_bytes(),
+                    ),
+                }
+            }
+            let mut head = mov_imm32(3, data_va as u32);
+            head.extend(mov_imm32(0, 0x5a5a));
+            head.extend(MOV_RBX_RAX_STORE);
+            write_phys(boot, leaf.code_phys(0), &with_marker(&head, OLD_MARKER));
+            tree_state(boot, TREE_PML4, GATE_CODE_VA)
+        };
+        let data_frame = (data_phys & !0xfff, 0x1000usize);
+        let agreed = assert_modes_agree(
+            &build,
+            &switch_set(&cli, &halt),
+            16,
+            &frames_of(leaf, &[data_frame]),
+        );
+        let what = format!("{leaf:?} same_page={same_page}");
+        assert_halted(&agreed.tagged, OLD_MARKER);
+        let memory = &agreed.tagged.memory;
+        let entry_index = (entry_at - TREE_PML4) as usize;
+        let entry = u64::from_le_bytes(memory[entry_index..entry_index + 8].try_into().unwrap());
+        assert_eq!(entry & 0x40, 0x40, "{what}: the dirty bit is committed");
+        let data_index = memory.len() - 0x1000 + (data_phys & 0xfff) as usize;
+        assert_eq!(
+            &memory[data_index..data_index + 2],
+            &[0x5a, 0x5a],
+            "{what}: the data is stored"
+        );
+        for stats in [agreed.stats_4k, agreed.stats_2m] {
+            assert_eq!(stats.write_flushes, 1, "{what}: {stats:?}");
+            assert!(
+                stats.inserts >= 2,
+                "{what}: refilled after the flush {stats:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn gate_dirty_commit_on_the_page_of_the_cached_code_matches_the_uncached_run() {
+        for leaf in [Leaf::Small, Leaf::Large] {
+            assert_dirty_commit_in_the_table_of_the_code(leaf, true);
+        }
+    }
+
+    #[test]
+    fn gate_dirty_commit_for_another_page_of_the_same_table_matches_the_uncached_run() {
+        for leaf in [Leaf::Small, Leaf::Large] {
+            assert_dirty_commit_in_the_table_of_the_code(leaf, false);
+        }
+    }
+
+    // -- (d) CR3 A -> B -> A with the tables of A edited in between --
+
+    /// One run: the code starts under tree A on the page behind variant 0, loads tree B
+    /// (`MOV CR3`), where the same linear page is variant 1; in B it rewrites the entry of that
+    /// page in tree A (through a window onto A's table) to variant 2 and loads A again. The
+    /// instruction after the second `MOV CR3` must come from variant 2: neither the entry cached
+    /// under A before the first switch (variant 0, an old translation) nor the one cached under
+    /// B (variant 1) may serve it.
+    fn assert_cr3_a_b_a_runs_the_edited_tables_of_a(leaf: Leaf, policy: FetchCacheInvalidation) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let (frame, offset) = leaf.leaf_entry_of_tree_a();
+        let new_entry = leaf.backing(2) | leaf.flags(true, matches!(leaf, Leaf::Large));
+        let mut prefix = mov_imm32(0, TREE2_PML4 as u32);
+        prefix.extend(MOV_CR3_RAX);
+        let mut b_phase = mov_imm32(3, (WINDOW_VA + offset) as u32);
+        b_phase.extend(mov_imm32(1, new_entry as u32));
+        b_phase.extend(MOV_RBX_RCX_STORE);
+        b_phase.extend(mov_imm32(0, TREE_PML4 as u32));
+        b_phase.extend(MOV_CR3_RAX);
+        let (after_first, after_second) = (prefix.len(), prefix.len() + b_phase.len());
+        let build = |boot: &mut LinuxDirectBoot| {
+            let dirty = matches!(leaf, Leaf::Large);
+            leaf.install(boot, TREE_PML4, 0, leaf.flags(true, dirty), None);
+            leaf.install(boot, TREE2_PML4, 1, leaf.flags(true, dirty), Some(frame));
+            // Variant 0 (tree A, old): the prefix, and the OLD marker wherever it would be fetched
+            // from after a switch that was not honoured or a stale entry.
+            let old = leaf.code_phys(0);
+            write_phys(boot, old, &prefix);
+            write_phys(
+                boot,
+                old + after_first as u64,
+                &with_marker(&[], OLD_MARKER),
+            );
+            write_phys(
+                boot,
+                old + after_second as u64,
+                &with_marker(&[], OLD_MARKER),
+            );
+            // Variant 1 (tree B): the B phase, then the MID marker if A were not restored.
+            let mid = leaf.code_phys(1);
+            write_phys(boot, mid + after_first as u64, &b_phase);
+            write_phys(
+                boot,
+                mid + after_second as u64,
+                &with_marker(&[], MID_MARKER),
+            );
+            // Variant 2 (tree A, edited): the NEW marker.
+            write_phys(
+                boot,
+                leaf.code_phys(2) + after_second as u64,
+                &with_marker(&[], NEW_MARKER),
+            );
+            tree_state(boot, TREE_PML4, GATE_CODE_VA)
+        };
+        let agreed = assert_modes_agree_with(
+            policy,
+            &build,
+            &switch_set(&cli, &halt),
+            32,
+            &frames_of(leaf, &[]),
+        );
+        let what = format!("{leaf:?} {policy:?}");
+        assert_halted(&agreed.tagged, NEW_MARKER);
+        assert_eq!(agreed.tagged.report.cr3, TREE_PML4, "{what}");
+        assert_eq!(
+            agreed.tagged.report.translation_context_changes.len(),
+            2,
+            "{what}"
+        );
+        for stats in [agreed.stats_4k, agreed.stats_2m] {
+            assert_eq!(stats.context_flushes, 2, "{what}: {stats:?}");
+            assert!(stats.hits > 0, "{what}: {stats:?}");
+            // `GuestOnly` never drops an entry for a table write: `MOV CR3` is the only thing that
+            // keeps the old translation of A from being served after A's table was edited.
+            if policy == FetchCacheInvalidation::GuestOnly {
+                assert_eq!(stats.write_flushes, 0, "{what}: {stats:?}");
+            }
+        }
+    }
+
+    /// Under `WriteWatch` the store into A's table also drops the entries that watch it; under
+    /// `GuestOnly` (a TLB: the store drops nothing) only the guest's `MOV CR3` does, so the second
+    /// policy is the one that fails if the flush at `MOV CR3` is lost or the key ignores CR3.
+    #[test]
+    fn gate_cr3_a_b_a_with_a_4k_page_runs_the_edited_tables_of_a() {
+        for policy in [
+            FetchCacheInvalidation::WriteWatch,
+            FetchCacheInvalidation::GuestOnly,
+        ] {
+            assert_cr3_a_b_a_runs_the_edited_tables_of_a(Leaf::Small, policy);
+        }
+    }
+
+    #[test]
+    fn gate_cr3_a_b_a_with_a_2m_leaf_runs_the_edited_tables_of_a() {
+        for policy in [
+            FetchCacheInvalidation::WriteWatch,
+            FetchCacheInvalidation::GuestOnly,
+        ] {
+            assert_cr3_a_b_a_runs_the_edited_tables_of_a(Leaf::Large, policy);
+        }
+    }
+
+    // -- the board: the option, the report and the stop record --
+
+    /// One board run of the CR3-switch program (two 4 KiB trees) with the report on.
+    fn run_board_with_tag(
+        mode: CacheMode,
+        enable_tag: bool,
+    ) -> (String, crate::LinuxFetchCacheReport) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let (mut boot, _) = boot_with_entry(&cr3_switch_program(TREE_PML4, 0x1111));
+        install_second_tree(&mut boot, 0x2222);
+        boot.board.enable_fetch_cache_report();
+        if enable_tag {
+            boot.board.enable_fetch_cache_leaf_2m_tag();
+        }
+        let report = boot
+            .board
+            .run_linux_boot_cpl0_set(
+                64,
+                &switch_set(&cli, &halt),
+                false,
+                mode != CacheMode::Plain,
+                false,
+            )
+            .expect("runs");
+        let fetch = boot.board.take_fetch_cache_report().expect("requested");
+        (format!("{report:?}"), fetch)
+    }
+
+    /// The tag is off unless asked: the report says so; with it the run report is the same text
+    /// as without the cache and with the 4 KiB cache; asking for the tag with the cache off
+    /// changes nothing and reports `false`. This checks only the opt-in and the equality of the
+    /// `Debug` text of the report; it does not catch a wrong offset or frame of a 2 MiB entry
+    /// (the synthetic `gate_2m_*` and `cache_2m_*` cases do).
+    #[test]
+    fn the_2m_tag_is_opt_in_on_the_board_and_leaves_the_run_report_unchanged() {
+        let (plain, plain_fetch) = run_board_with_tag(CacheMode::Plain, false);
+        let (plain_tagged, plain_tagged_fetch) = run_board_with_tag(CacheMode::Plain, true);
+        let (default, default_fetch) = run_board_with_tag(CacheMode::Tag4k, false);
+        let (tagged, tagged_fetch) = run_board_with_tag(CacheMode::Tag2m, true);
+        assert!(!plain_fetch.leaf_2m_tag && !default_fetch.leaf_2m_tag);
+        assert!(!plain_tagged_fetch.leaf_2m_tag, "no cache, no tag");
+        assert!(tagged_fetch.leaf_2m_tag);
+        for text in [&plain_tagged, &default, &tagged] {
+            assert_eq!(text, &plain);
+        }
+        let (d, t) = (default_fetch.total.walks, tagged_fetch.total.walks);
+        assert_eq!((d.data_read, d.data_write), (t.data_read, t.data_write));
+        assert!(t.fetch <= d.fetch, "{t:?} {d:?}");
+    }
+
     /// The same check on the real kernel: the 2M-instruction prefix of the Linux board run ends
     /// with the same stop record and leaves byte-identical guest RAM (hence identical page-table
     /// accessed/dirty bits) with the fetch translation cache on and off.
@@ -12137,13 +14633,13 @@ mod tests {
         use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters};
         use crate::paged_memory_adapter::IrqDeliveryFailure;
         use od_isa::{Cpl0ExternalInterruptPhase, Cpl0ExternalInterruptRefusal, StiShadow};
-        use std::cell::RefCell;
-        use std::rc::Rc;
+        use std::sync::{Arc, Mutex};
 
         /// What the scripted source does, shared with the test that owns it.
         #[derive(Default)]
         struct Script {
             pending: Option<u8>,
+            pending_after_queries: u64,
             /// Stays pending after the acknowledge (a level line).
             keep_pending: bool,
             acked: Vec<u8>,
@@ -12153,26 +14649,32 @@ mod tests {
         }
 
         #[derive(Clone, Default)]
-        struct ScriptedSource(Rc<RefCell<Script>>);
+        struct ScriptedSource(Arc<Mutex<Script>>);
 
         impl BoardIrqSource for ScriptedSource {
             fn pending_vector(&self) -> Option<u8> {
-                self.0.borrow().pending
+                let mut script = self.0.lock().unwrap();
+                if script.pending_after_queries > 0 {
+                    script.pending_after_queries -= 1;
+                    None
+                } else {
+                    script.pending
+                }
             }
             fn acknowledge(&mut self, vector: u8) {
-                let mut script = self.0.borrow_mut();
+                let mut script = self.0.lock().unwrap();
                 script.acked.push(vector);
                 if !script.keep_pending {
                     script.pending = None;
                 }
             }
             fn next_deadline_ns(&self) -> Option<u64> {
-                let mut script = self.0.borrow_mut();
+                let mut script = self.0.lock().unwrap();
                 script.polls += 1;
                 script.deadline
             }
             fn pit_write_ends_quantum(&self) -> bool {
-                self.0.borrow().pit_ends
+                self.0.lock().unwrap().pit_ends
             }
         }
 
@@ -12214,7 +14716,10 @@ mod tests {
         ) -> (LongModeState, PagedCpl0SetReport) {
             let cli = CliProfile::NonPviLong64V1;
             let sti = StiProfile::NonPviLong64V1;
-            let set = minimal_set(&cli).with_pio_u8().with_sti(&sti);
+            let set = minimal_set(&cli)
+                .with_pio_u8()
+                .with_sti(&sti)
+                .with_user_mode();
             let (cr3, efer) = (boot.board.cr3(), boot.board.efer());
             let mut state = boot.board.state().clone();
             state.cr3 = Some(cr3);
@@ -12301,13 +14806,13 @@ mod tests {
             let (mut boot, _) = irq_board(&[CLD; 8]);
             let rsp = boot.board.state().gpr[Register::Rsp as usize];
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             let (mut source, mut counters) = (script.clone(), IrqCounters::default());
             // The delivery retires nothing; the budget of 1 is the handler's first `CLD`.
             let (state, report) = run_hook(&mut boot, 1, &mut source, &mut counters, false);
             assert_eq!(report.instructions_executed, 1, "{report:?}");
             assert_eq!(counters.irqs_delivered, 1);
-            assert_eq!(script.0.borrow().acked, [IRQ_VECTOR]);
+            assert_eq!(script.0.lock().unwrap().acked, [IRQ_VECTOR]);
             assert_eq!(state.rip, IRQ_HANDLER_AT + 1);
             assert_eq!(state.rflags & (1 << 9), 0, "an interrupt gate clears IF");
             assert_eq!(state.gpr[Register::Rsp as usize], (rsp & !15) - 40);
@@ -12329,7 +14834,7 @@ mod tests {
             assert_eq!(report.instructions_executed, 3);
             assert_eq!(state.rip, rip_before + 3);
             assert_eq!(counters, IrqCounters::default());
-            assert!(script.0.borrow().acked.is_empty());
+            assert!(script.0.lock().unwrap().acked.is_empty());
         }
 
         #[test]
@@ -12337,7 +14842,7 @@ mod tests {
             let (mut boot, _) = irq_board(&[CLD; 8]);
             boot.board.state_mut().rflags = 2;
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             let (mut source, mut counters) = (script.clone(), IrqCounters::default());
             let (state, report) = run_hook(&mut boot, 3, &mut source, &mut counters, false);
             // Boundaries 0, 1 and 2; the budget check precedes the interrupt check at 3.
@@ -12345,8 +14850,12 @@ mod tests {
             assert_eq!(counters.irq_refused_masked, 3);
             assert_eq!(counters.irq_refused_shadow, 0);
             assert_eq!(counters.irqs_delivered, 0);
-            assert!(script.0.borrow().acked.is_empty());
-            assert_eq!(script.0.borrow().pending, Some(IRQ_VECTOR), "still pending");
+            assert!(script.0.lock().unwrap().acked.is_empty());
+            assert_eq!(
+                script.0.lock().unwrap().pending,
+                Some(IRQ_VECTOR),
+                "still pending"
+            );
             assert_eq!(state.rip, ENTRY + 3);
         }
 
@@ -12355,7 +14864,7 @@ mod tests {
             let (mut boot, _) = irq_board(&[CLD; 8]);
             boot.board.state_mut().sti_shadow = Some(StiShadow::Blocking);
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             let (mut source, mut counters) = (script.clone(), IrqCounters::default());
             // Boundary 0: shadow, refused; `CLD` retires and ends the shadow; boundary 1:
             // delivered; the second retired instruction is the handler's first.
@@ -12364,7 +14873,7 @@ mod tests {
             assert_eq!(counters.irq_refused_shadow, 1);
             assert_eq!(counters.irq_refused_masked, 0);
             assert_eq!(counters.irqs_delivered, 1);
-            assert_eq!(script.0.borrow().acked, [IRQ_VECTOR]);
+            assert_eq!(script.0.lock().unwrap().acked, [IRQ_VECTOR]);
             assert_eq!(state.rip, IRQ_HANDLER_AT + 1);
         }
 
@@ -12373,12 +14882,12 @@ mod tests {
             let (mut boot, _) = irq_board(&[CLD; 8]);
             boot.board.state_mut().sti_shadow = None;
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             let (mut source, mut counters) = (script.clone(), IrqCounters::default());
             let (_, _report) = run_hook(&mut boot, 1, &mut source, &mut counters, false);
             assert_eq!(counters.irq_refused_shadow, 1);
             assert_eq!(counters.irqs_delivered, 0);
-            assert!(script.0.borrow().acked.is_empty());
+            assert!(script.0.lock().unwrap().acked.is_empty());
         }
 
         #[test]
@@ -12386,7 +14895,7 @@ mod tests {
             let (mut boot, _) = irq_board(&[CLD; 8]);
             let script = ScriptedSource::default();
             {
-                let mut script = script.0.borrow_mut();
+                let mut script = script.0.lock().unwrap();
                 script.pending = Some(IRQ_VECTOR);
                 script.keep_pending = true;
             }
@@ -12396,7 +14905,7 @@ mod tests {
             assert_eq!(report.instructions_executed, 1);
             assert_eq!(state.rip, ENTRY + 1);
             assert_eq!(counters, IrqCounters::default());
-            assert!(script.0.borrow().acked.is_empty());
+            assert!(script.0.lock().unwrap().acked.is_empty());
             // Without the skip the same pending vector is delivered at once.
             let (mut boot, _) = irq_board(&[CLD; 8]);
             let mut counters = IrqCounters::default();
@@ -12415,7 +14924,7 @@ mod tests {
                 &[0u8; 16],
             );
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             let (mut source, mut counters) = (script.clone(), IrqCounters::default());
             let before = boot.board.state().clone();
             let (state, report) = run_hook(&mut boot, 4, &mut source, &mut counters, false);
@@ -12431,7 +14940,7 @@ mod tests {
             );
             assert_eq!(report.instructions_executed, 0);
             assert_eq!(counters.irqs_delivered, 0);
-            assert!(script.0.borrow().acked.is_empty());
+            assert!(script.0.lock().unwrap().acked.is_empty());
             assert_eq!(
                 (state.rip, state.gpr, state.rflags),
                 (before.rip, before.gpr, before.rflags)
@@ -12447,7 +14956,7 @@ mod tests {
                 limit: 0xFFF,
             });
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             let (mut source, mut counters) = (script.clone(), IrqCounters::default());
             let (_, report) = run_hook(&mut boot, 4, &mut source, &mut counters, false);
             let PagedCpl0SetExit::IrqDeliveryFailed { vector, failure } = &report.exit else {
@@ -12465,7 +14974,7 @@ mod tests {
                 "{failure:?}"
             );
             assert_eq!(report.instructions_executed, 0);
-            assert!(script.0.borrow().acked.is_empty());
+            assert!(script.0.lock().unwrap().acked.is_empty());
         }
 
         #[test]
@@ -12474,7 +14983,7 @@ mod tests {
             // The stack lies in an unmapped page: the first frame store faults.
             boot.board.state_mut().gpr[Register::Rsp as usize] = PF_VA + 0x1000;
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             let (mut source, mut counters) = (script.clone(), IrqCounters::default());
             let before = boot.board.state().clone();
             let (state, report) = run_hook(&mut boot, 4, &mut source, &mut counters, false);
@@ -12494,7 +15003,7 @@ mod tests {
             );
             assert_eq!(report.instructions_executed, 0);
             assert_eq!(counters.irqs_delivered, 0);
-            assert!(script.0.borrow().acked.is_empty());
+            assert!(script.0.lock().unwrap().acked.is_empty());
             assert_eq!(
                 (state.rip, state.gpr, state.rflags),
                 (before.rip, before.gpr, before.rflags)
@@ -12510,7 +15019,7 @@ mod tests {
                 &[0u8; 16],
             );
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             boot.board.set_irq_source(Box::new(script.clone()));
             let error = run_linux_direct_board_set(
                 &mut boot,
@@ -12520,12 +15029,27 @@ mod tests {
             )
             .expect_err("the delivery is refused");
             assert_eq!(error.code, "run_failed");
-            assert!(error.detail.contains("external interrupt"), "{error:?}");
-            assert!(script.0.borrow().acked.is_empty());
+            assert!(
+                error.detail.contains("ExternalInterruptDelivery"),
+                "{error:?}"
+            );
+            assert!(
+                error.detail.contains(&format!("vector: {}", IRQ_VECTOR)),
+                "{error:?}"
+            );
+            assert!(
+                error
+                    .detail
+                    .contains("failure: \"Refused(GateNotPresent)\""),
+                "{error:?}"
+            );
+            assert!(error.detail.contains("rip: "), "{error:?}");
+            assert!(error.detail.contains("cs_selector: Some("), "{error:?}");
+            assert!(script.0.lock().unwrap().acked.is_empty());
             // Without the `irq` member the same source is never asked.
             let (mut boot, file) = irq_board(&[CLD; 8]);
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             boot.board.set_irq_source(Box::new(script.clone()));
             let record = run_set_facade(
                 &mut boot,
@@ -12537,21 +15061,95 @@ mod tests {
                 },
             );
             assert_eq!(record.irqs_delivered, 0);
-            assert!(script.0.borrow().acked.is_empty());
-            assert_eq!(script.0.borrow().polls, 0);
+            assert!(script.0.lock().unwrap().acked.is_empty());
+            assert_eq!(script.0.lock().unwrap().polls, 0);
         }
 
         #[test]
         fn the_board_delivers_and_counts_through_the_facade() {
             let (mut boot, file) = irq_board(&[CLD; 8]);
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             boot.board.set_irq_source(Box::new(script.clone()));
             let record = run_set_facade(&mut boot, &file, 3, LinuxCpl0SetMembers::linux_default());
             assert_eq!(record.irqs_delivered, 1);
-            assert_eq!(script.0.borrow().acked, [IRQ_VECTOR]);
+            assert_eq!(script.0.lock().unwrap().acked, [IRQ_VECTOR]);
             assert_eq!(record.rip, IRQ_HANDLER_AT + 3);
             assert_eq!(record.retired, 3);
+        }
+
+        #[test]
+        fn a_pending_irq_at_cpl3_switches_to_rsp0_and_user_code_resumes_after_iretq() {
+            let (mut boot, _file) = user_mode_board(
+                &[
+                    0xb8, 0x53, 0, 0, 0, // MOV EAX, 0x53
+                    0xb8, 0x54, 0, 0, 0, // MOV EAX, 0x54
+                    0xb8, 0x55, 0, 0, 0, // MOV EAX, 0x55
+                ],
+                true,
+            );
+            write_phys(
+                &mut boot,
+                USER_GDT + 0x08,
+                &0x00af_9b00_0000_ffff_u64.to_le_bytes(),
+            );
+            write_phys(&mut boot, USER_HANDLER_AT, &[0x48, 0xcf]);
+            write_phys(&mut boot, USER_TSS_AT + 4, &USER_RSP0.to_le_bytes());
+            let mut gate = [0u8; 16];
+            gate[0..2].copy_from_slice(&(USER_HANDLER_AT as u16).to_le_bytes());
+            gate[2..4].copy_from_slice(&0x08u16.to_le_bytes());
+            gate[5] = 0x8E;
+            gate[6..8].copy_from_slice(&((USER_HANDLER_AT >> 16) as u16).to_le_bytes());
+            write_phys(&mut boot, USER_IDT_AT + u64::from(IRQ_VECTOR) * 16, &gate);
+            let state = boot.board.state_mut();
+            state.idtr = Some(od_isa::state::Idtr {
+                base: USER_IDT_AT,
+                limit: 0xFFF,
+            });
+            state.tr = Some(od_isa::TaskRegisterCache {
+                selector: 0x20,
+                base: USER_TSS_AT,
+                limit: 0x67,
+                access: 0x8B,
+                flags: 0,
+            });
+
+            let source = ScriptedSource::default();
+            {
+                let mut script = source.0.lock().unwrap();
+                // First boundary is the kernel IRETQ; the next boundary is in CPL3.
+                script.pending_after_queries = 1;
+                script.pending = Some(IRQ_VECTOR);
+            }
+            let mut counters = IrqCounters::default();
+            let (state, report) = run_hook(&mut boot, 5, &mut source.clone(), &mut counters, false);
+
+            assert_eq!(
+                report.exit,
+                PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
+                "{report:?}"
+            );
+            assert_eq!(counters.irqs_delivered, 1, "{report:?}");
+            assert_eq!(source.0.lock().unwrap().acked, [IRQ_VECTOR]);
+            assert_eq!(report.instructions_executed, 5, "{report:?}");
+            assert_eq!(report.cpl3_retired, 3, "{report:?}");
+            assert_eq!(state.cs_selector, Some(0x13), "{report:?}");
+            assert_eq!(state.rip, USER_CODE_AT + 15, "{report:?}");
+            assert_eq!(state.gpr[Register::Rax as usize], 0x55);
+            assert_eq!(state.gpr[Register::Rsp as usize], ENTRY + 0x800);
+            let frame = USER_RSP0 & !15;
+            assert_eq!(state.gpr[Register::Rsp as usize] & 15, 0);
+            let mut raw = [0u8; 8];
+            for (address, expected) in [
+                (frame - 8, 0x1b),
+                (frame - 16, ENTRY + 0x800),
+                (frame - 24, 0x202),
+                (frame - 32, 0x13),
+                (frame - 40, USER_CODE_AT),
+            ] {
+                read(&mut boot.board, address, &mut raw).expect("interrupt frame");
+                assert_eq!(u64::from_le_bytes(raw), expected, "{address:#x}");
+            }
         }
 
         #[test]
@@ -12566,7 +15164,7 @@ mod tests {
             // one instruction (the minimum) until the budget is spent.
             let (mut boot, file) = boot_with_entry(&program);
             let script = ScriptedSource::default();
-            script.0.borrow_mut().deadline = Some(boot.board.clock().now_ns() + 5);
+            script.0.lock().unwrap().deadline = Some(boot.board.clock().now_ns() + 5);
             boot.board.set_irq_source(Box::new(script.clone()));
             let record = run_set_facade(&mut boot, &file, 8, LinuxCpl0SetMembers::linux_default());
             assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
@@ -12577,7 +15175,7 @@ mod tests {
             // The deadline is not consulted without the member.
             let (mut boot, file) = boot_with_entry(&program);
             let script = ScriptedSource::default();
-            script.0.borrow_mut().deadline = Some(boot.board.clock().now_ns() + 5);
+            script.0.lock().unwrap().deadline = Some(boot.board.clock().now_ns() + 5);
             boot.board.set_irq_source(Box::new(script.clone()));
             let record = run_set_facade(
                 &mut boot,
@@ -12589,7 +15187,7 @@ mod tests {
                 },
             );
             assert_eq!((record.quanta, record.quantum_cut_by_deadline), (1, 0));
-            assert_eq!(script.0.borrow().polls, 0);
+            assert_eq!(script.0.lock().unwrap().polls, 0);
         }
 
         /// `MOV AL, 0x34; MOV DX, 0x43; OUT DX, AL; CLD; CLD; CLD; CLD`.
@@ -12602,7 +15200,7 @@ mod tests {
             for pit_ends in [false, true] {
                 let (mut boot, _) = irq_board(&PIT_WRITE_PROGRAM);
                 let script = ScriptedSource::default();
-                script.0.borrow_mut().pit_ends = pit_ends;
+                script.0.lock().unwrap().pit_ends = pit_ends;
                 let (mut source, mut counters) = (script.clone(), IrqCounters::default());
                 let (state, report) = run_hook(&mut boot, 20, &mut source, &mut counters, false);
                 exits.push((
@@ -12637,7 +15235,7 @@ mod tests {
         fn a_pit_write_quantum_end_is_resumed_by_the_board_and_deadline_is_asked_again() {
             let (mut boot, file) = boot_with_entry(&PIT_WRITE_PROGRAM);
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pit_ends = true;
+            script.0.lock().unwrap().pit_ends = true;
             boot.board.set_irq_source(Box::new(script.clone()));
             let record = run_set_facade(&mut boot, &file, 6, LinuxCpl0SetMembers::linux_default());
             assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
@@ -12645,11 +15243,226 @@ mod tests {
             // The OUT ended the first quantum; the rest is the second.
             assert_eq!(record.quanta, 2);
             // One question before each quantum.
-            assert_eq!(script.0.borrow().polls, 2);
+            assert_eq!(script.0.lock().unwrap().polls, 2);
             // The same program without the request is one quantum.
             let (mut boot, file) = boot_with_entry(&PIT_WRITE_PROGRAM);
             let record = run_set_facade(&mut boot, &file, 6, LinuxCpl0SetMembers::linux_default());
             assert_eq!((record.retired, record.quanta), (6, 1));
+        }
+    }
+
+    // ---- S6-12b: NMI through vector 2, blocking until IRETQ, one remembered NMI ----
+
+    mod nmi {
+        use super::irq_hook::{CLD, IRQ_HANDLER_AT, IRQ_IDT_AT, irq_board};
+        use super::*;
+        use crate::FirmwareBoardError;
+        use crate::vcpu::NmiBoundary;
+        use od_isa::{StiProfile, StiShadow};
+
+        /// ICR_LOW of an NMI to the physical APIC ID in ICR_HIGH (delivery mode 100).
+        const NMI_ICR: u32 = 4 << 8;
+        const IRETQ: [u8; 2] = [0x48, 0xCF];
+
+        /// A board whose entry is eight `CLD`s, IF = 1 (the IRQ board), with the IDT gate of
+        /// vector 2 an interrupt gate (CS 0x10) to a handler that is one `IRETQ`.
+        fn nmi_board() -> LinuxDirectBoot {
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            write_phys(&mut boot, IRQ_HANDLER_AT, &IRETQ);
+            let mut gate = [0u8; 16];
+            gate[0..2].copy_from_slice(&(IRQ_HANDLER_AT as u16).to_le_bytes());
+            gate[2..4].copy_from_slice(&0x10u16.to_le_bytes());
+            gate[5] = 0x8E;
+            gate[6..8].copy_from_slice(&((IRQ_HANDLER_AT >> 16) as u16).to_le_bytes());
+            write_phys(&mut boot, IRQ_IDT_AT + 2 * 16, &gate);
+            boot
+        }
+
+        /// An NMI IPI from vCPU 0 to the APIC ID 0 (itself: physical addressing names an ID).
+        fn send_nmi(boot: &LinuxDirectBoot) {
+            boot.board
+                .local_apic()
+                .write_icr(0, 0, NMI_ICR)
+                .expect("NMI IPI");
+        }
+
+        /// Run `budget` instructions of the set from the board's state and keep the result.
+        fn run(boot: &mut LinuxDirectBoot, budget: u64) -> PagedCpl0SetReport {
+            let cli = CliProfile::NonPviLong64V1;
+            let sti = StiProfile::NonPviLong64V1;
+            let set = minimal_set(&cli).with_sti(&sti);
+            let (state, report) = run_set(boot, true, budget, &set);
+            assert_eq!(report.instructions_executed, budget, "{report:?}");
+            *boot.board.state_mut() = state;
+            report
+        }
+
+        #[test]
+        fn an_nmi_is_delivered_through_vector_2_whatever_the_interrupt_flag() {
+            for interrupt_flag in [0, 1 << 9] {
+                let mut boot = nmi_board();
+                boot.board.state_mut().rflags = 2 | interrupt_flag;
+                let rsp = boot.board.state().gpr[Register::Rsp as usize];
+                assert_eq!(
+                    boot.board.deliver_pending_nmi(0),
+                    Ok(NmiBoundary::NoPending)
+                );
+                send_nmi(&boot);
+                assert!(boot.board.local_apic().pending_nmi());
+                assert_eq!(
+                    boot.board.deliver_pending_nmi(0),
+                    Ok(NmiBoundary::Delivered)
+                );
+                // The handler has control: RIP is the gate offset, CS the gate selector, the
+                // frame (RIP, CS, RFLAGS, old RSP, SS) is on the stack, IF is cleared and the
+                // latch is free again.
+                let state = boot.board.state().clone();
+                assert_eq!(state.rip, IRQ_HANDLER_AT);
+                assert_eq!(state.cs_selector, Some(0x10));
+                assert!(state.nmi_blocked);
+                assert_eq!(state.rflags & (1 << 9), 0);
+                let frame = state.gpr[Register::Rsp as usize];
+                assert_eq!(frame, (rsp & !15) - 40);
+                assert_eq!(read_qword(&mut boot, frame), ENTRY);
+                assert_eq!(read_qword(&mut boot, frame + 8), 0x10);
+                assert_eq!(read_qword(&mut boot, frame + 16) & (1 << 9), interrupt_flag);
+                assert_eq!(read_qword(&mut boot, frame + 24), rsp);
+                assert!(!boot.board.local_apic().pending_nmi());
+            }
+        }
+
+        #[test]
+        fn the_second_nmi_during_the_handler_is_delivered_after_iretq_and_the_third_is_lost() {
+            let mut boot = nmi_board();
+            let rsp = boot.board.state().gpr[Register::Rsp as usize];
+            // First NMI: delivered, the handler (one IRETQ) has not run yet.
+            send_nmi(&boot);
+            assert_eq!(
+                boot.board.deliver_pending_nmi(0),
+                Ok(NmiBoundary::Delivered)
+            );
+            assert_eq!(boot.board.state().rip, IRQ_HANDLER_AT);
+            // Second and third NMI arrive during the handler: one is remembered, the other lost.
+            // NMI blocking holds the remembered one: no second frame, RIP and RSP unchanged.
+            send_nmi(&boot);
+            send_nmi(&boot);
+            let in_handler = boot.board.state().clone();
+            assert_eq!(boot.board.deliver_pending_nmi(0), Ok(NmiBoundary::Held));
+            assert_eq!(*boot.board.state(), in_handler);
+            assert!(boot.board.local_apic().pending_nmi());
+            // The handler's IRETQ retires: blocking ends and the interrupted code is resumed.
+            run(&mut boot, 1);
+            let state = boot.board.state().clone();
+            assert!(!state.nmi_blocked);
+            assert_eq!(state.rip, ENTRY);
+            assert_eq!(state.gpr[Register::Rsp as usize], rsp);
+            assert!(boot.board.local_apic().pending_nmi(), "still waiting");
+            // The second NMI is delivered now: the handler has control again.
+            assert_eq!(
+                boot.board.deliver_pending_nmi(0),
+                Ok(NmiBoundary::Delivered)
+            );
+            assert_eq!(boot.board.state().rip, IRQ_HANDLER_AT);
+            assert!(boot.board.state().nmi_blocked);
+            assert!(!boot.board.local_apic().pending_nmi());
+            // After the second IRETQ nothing waits: the third NMI was lost.
+            run(&mut boot, 1);
+            assert_eq!(boot.board.state().rip, ENTRY);
+            assert_eq!(
+                boot.board.deliver_pending_nmi(0),
+                Ok(NmiBoundary::NoPending)
+            );
+            assert_eq!(boot.board.state().rip, ENTRY);
+            assert!(!boot.board.state().nmi_blocked);
+        }
+
+        #[test]
+        fn an_nmi_under_the_sti_shadow_waits_one_instruction_and_is_never_dropped() {
+            let mut boot = nmi_board();
+            boot.board.state_mut().sti_shadow = Some(StiShadow::Blocking);
+            send_nmi(&boot);
+            let before = boot.board.state().clone();
+            assert_eq!(boot.board.deliver_pending_nmi(0), Ok(NmiBoundary::Held));
+            assert_eq!(*boot.board.state(), before);
+            assert!(boot.board.local_apic().pending_nmi());
+            // One `CLD` retires and ends the shadow; then the NMI is delivered.
+            run(&mut boot, 1);
+            assert_eq!(
+                boot.board.deliver_pending_nmi(0),
+                Ok(NmiBoundary::Delivered)
+            );
+            assert_eq!(boot.board.state().rip, IRQ_HANDLER_AT);
+        }
+
+        #[test]
+        fn a_halted_vcpu_wakes_for_an_nmi() {
+            let mut boot = nmi_board();
+            boot.board.state_mut().activity = Some(CpuActivity::Halted);
+            // IF = 0: only an NMI can wake it.
+            boot.board.state_mut().rflags = 2;
+            send_nmi(&boot);
+            assert_eq!(
+                boot.board.deliver_pending_nmi(0),
+                Ok(NmiBoundary::Delivered)
+            );
+            assert_eq!(boot.board.state().activity, Some(CpuActivity::Running));
+            assert_eq!(boot.board.state().rip, IRQ_HANDLER_AT);
+        }
+
+        #[test]
+        fn a_state_that_is_not_modelled_is_an_error_not_a_hold() {
+            // Activity `None` and STI shadow `None` say nothing about the processor: the board
+            // does not guess a hold, it refuses before any change and the NMI stays pending.
+            let mut boot = nmi_board();
+            boot.board.state_mut().activity = None;
+            send_nmi(&boot);
+            let before = boot.board.state().clone();
+            assert_eq!(
+                boot.board.deliver_pending_nmi(0),
+                Err(FirmwareBoardError::Config(
+                    "deliver_pending_nmi: vCPU activity not modelled"
+                ))
+            );
+            assert_eq!(*boot.board.state(), before);
+            assert!(boot.board.local_apic().pending_nmi());
+
+            let mut boot = nmi_board();
+            boot.board.state_mut().sti_shadow = None;
+            send_nmi(&boot);
+            let before = boot.board.state().clone();
+            assert_eq!(
+                boot.board.deliver_pending_nmi(0),
+                Err(FirmwareBoardError::Config(
+                    "deliver_pending_nmi: STI shadow not modelled"
+                ))
+            );
+            assert_eq!(*boot.board.state(), before);
+            assert!(boot.board.local_apic().pending_nmi());
+        }
+
+        #[test]
+        fn a_gate_that_cannot_deliver_is_an_error_and_the_nmi_stays_pending() {
+            let mut boot = nmi_board();
+            write_phys(&mut boot, IRQ_IDT_AT + 2 * 16, &[0u8; 16]);
+            send_nmi(&boot);
+            let before = boot.board.state().clone();
+            let error = boot.board.deliver_pending_nmi(0).expect_err("no gate");
+            assert!(
+                matches!(
+                    &error,
+                    FirmwareBoardError::ExternalInterruptDelivery { vector: 2, failure, .. }
+                        if failure == "Refused(GateNotPresent)"
+                ),
+                "{error:?}"
+            );
+            assert_eq!(*boot.board.state(), before);
+            assert!(boot.board.local_apic().pending_nmi());
+            assert_eq!(
+                boot.board.deliver_pending_nmi(7),
+                Err(FirmwareBoardError::Config(
+                    "deliver_pending_nmi: no such vCPU"
+                ))
+            );
         }
     }
 
@@ -12926,6 +15739,281 @@ mod tests {
             assert!(!record.set_members.iter().any(|member| member == "halt"));
             assert!(boot.board.pit_pic_source().is_none());
         }
+
+        /// S4-23j: the opt-in single clock owner in the set loop. The default board never takes
+        /// the clock; with the opt-in the PIT -> IR0 runs above give the same results.
+        mod clock_owner {
+            use super::*;
+            use crate::{FirmwareBoardError, LOCAL_APIC_MMIO_BASE, VirtualClockError};
+
+            /// Everything observable of one run on a board with the PIT -> IR0 source.
+            #[derive(Debug, Eq, PartialEq)]
+            struct Outcome {
+                report: crate::firmware_board::LinuxSetRunReport,
+                state: LongModeState,
+                com1: Vec<u8>,
+                now: u64,
+                pic: (u8, u8),
+            }
+
+            fn outcome(code: &[u8], handler: &[u8], owner: bool, budget: u64) -> Outcome {
+                let (mut boot, _) = board(code, handler, true);
+                if owner {
+                    boot.board.enable_clock_owner().expect("the board can");
+                }
+                assert_eq!(boot.board.clock_owner_enabled(), owner);
+                let report = run(&mut boot, budget);
+                Outcome {
+                    report,
+                    state: boot.board.state().clone(),
+                    com1: boot.board.com1_transcript().to_vec(),
+                    now: boot.board.clock().now_ns(),
+                    pic: pic(&boot),
+                }
+            }
+
+            fn same_with_and_without_owner(code: &[u8], handler: &[u8], budget: u64) -> Outcome {
+                let default = outcome(code, handler, false, budget);
+                let owned = outcome(code, handler, true, budget);
+                assert_eq!(owned, default);
+                default
+            }
+
+            /// The Local APIC register of the board through the bus, as the host (a guest cannot
+            /// reach it from the set loop).
+            fn lapic_write(boot: &mut LinuxDirectBoot, offset: u64, value: u64) {
+                boot.board
+                    .bus_mut()
+                    .write_physical(
+                        GuestPhysicalAddress::new(LOCAL_APIC_MMIO_BASE + offset),
+                        AccessWidth::Dword,
+                        value,
+                        |_| {},
+                    )
+                    .expect("the register accepts the write");
+            }
+
+            /// SVR enabled; a one-shot LVT timer of `vector` that fires `ns` after now (the timer
+            /// runs at 100 MHz and the divider is 1, so one count is 10 ns).
+            fn arm_lapic_timer(boot: &mut LinuxDirectBoot, vector: u64, ns: u64) {
+                lapic_write(boot, 0xF0, 0x1ff);
+                lapic_write(boot, 0x320, vector);
+                lapic_write(boot, 0x3E0, 0xB);
+                lapic_write(boot, 0x380, ns / 10);
+            }
+
+            #[test]
+            fn opt_in_matches_default_for_sti_hlt_woken_by_ir0() {
+                let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
+                // The wake of the first HLT, and then 20000 instructions of the spin loop with
+                // the periodic edge every 8381 ns delivered at its own time.
+                let woken = same_with_and_without_owner(&code, &eoi_handler(), 300);
+                assert_eq!(woken.report.irq.halt_wakes, 1, "{woken:?}");
+                assert!(woken.report.irq.halt_idle_ns >= 8000, "{woken:?}");
+                let spin = same_with_and_without_owner(&code, &eoi_handler(), 20_000);
+                assert!(spin.report.irq.irqs_delivered >= 2, "{spin:?}");
+                assert!(spin.report.irq.quantum_cut_by_deadline >= 1, "{spin:?}");
+                // No EOI: the second HLT stays halted with IR0 in service.
+                let code = program(0x00, &[&STI_HLT, &MARK, &STI_HLT, &MARK2, &SPIN]);
+                let in_service = same_with_and_without_owner(&code, &IRETQ, 400);
+                assert_eq!(in_service.report.run.exit, PagedProbeExit::Halted);
+                // IF = 0: the HLT is not woken.
+                let code = program(0x00, &[&CLI_HLT, &MARK, &SPIN]);
+                let no_if = same_with_and_without_owner(&code, &eoi_handler(), 300);
+                assert_eq!(no_if.report.irq.halt_wakes, 0, "{no_if:?}");
+                assert_eq!(no_if.report.run.exit, PagedProbeExit::Halted);
+                // IR0 masked: the same.
+                let code = program(0x01, &[&STI_HLT, &MARK, &SPIN]);
+                let masked = same_with_and_without_owner(&code, &eoi_handler(), 300);
+                assert_eq!(masked.report.irq.halt_wakes, 0, "{masked:?}");
+                assert_eq!(masked.report.run.exit, PagedProbeExit::Halted);
+            }
+
+            #[test]
+            fn default_never_claims_the_clock() {
+                let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
+                let (mut boot, _) = board(&code, &eoi_handler(), true);
+                let report = run(&mut boot, 300);
+                assert_eq!(report.irq.halt_wakes, 1, "{report:?}");
+                assert!(!boot.board.clock_owner_enabled());
+                // The standalone advance still works: nobody claimed the clock.
+                let now = boot.board.clock().now_ns();
+                boot.board.advance_time_ns(5).expect("not claimed");
+                assert_eq!(boot.board.clock().now_ns(), now + 5);
+            }
+
+            /// Total of `total` instructions in calls of at most `chunk`; the clock, the wakes and
+            /// the deliveries at the end.
+            fn trace(code: &[u8], owner: bool, chunk: u64, total: u64) -> (u64, u64, u64) {
+                let (mut boot, _) = board(code, &eoi_handler(), true);
+                if owner {
+                    boot.board.enable_clock_owner().expect("the board can");
+                }
+                let (mut left, mut wakes, mut irqs) = (total, 0, 0);
+                while left > 0 {
+                    let budget = left.min(chunk);
+                    let report = run(&mut boot, budget);
+                    wakes += report.irq.halt_wakes;
+                    irqs += report.irq.irqs_delivered;
+                    left -= budget;
+                }
+                (boot.board.clock().now_ns(), wakes, irqs)
+            }
+
+            #[test]
+            fn opt_in_quantum_does_not_change_wake_times() {
+                const CHUNK: u64 = 311;
+                let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
+                let whole = trace(&code, true, 30_000, 30_000);
+                assert!(whole.2 >= 3, "{whole:?}");
+                assert_eq!(trace(&code, true, CHUNK, 30_000), whole);
+                assert_eq!(trace(&code, true, 29, 30_000), whole);
+                // The default board gives the same trace in either shape.
+                assert_eq!(trace(&code, false, CHUNK, 30_000), whole);
+                assert_eq!(trace(&code, false, 30_000, 30_000), whole);
+            }
+
+            #[test]
+            fn opt_in_host_armed_lapic_timer_cuts_quantum_and_clock_stays_single() {
+                // The PIT line is masked, so the only deadline is the host-armed Local APIC timer
+                // at 9000 ns (not the 8381 ns of the PIT edge of the other tests).
+                let code = program(0x01, &[&SPIN]);
+                let spin = |owner: bool| {
+                    let (mut boot, _) = board(&code, &eoi_handler(), true);
+                    arm_lapic_timer(&mut boot, 0x40, 9000);
+                    assert_eq!(boot.board.local_apic().next_timer_deadline(), Some(9000));
+                    if owner {
+                        boot.board.enable_clock_owner().expect("the board can");
+                    }
+                    let report = run(&mut boot, 12_000);
+                    (boot, report)
+                };
+                let (mut default, default_report) = spin(false);
+                let (mut owned, owned_report) = spin(true);
+                // The default board never looks at the Local APIC deadline; the owner cuts the
+                // quanta that end before 9000 ns at it (the masked PIT line still has its edge
+                // deadline, which both boards cut at). Retired and the clock are the same.
+                assert!(
+                    owned_report.irq.quantum_cut_by_deadline
+                        > default_report.irq.quantum_cut_by_deadline,
+                    "{owned_report:?} {default_report:?}"
+                );
+                assert!(owned_report.run.quanta > default_report.run.quanta);
+                assert_eq!(owned_report.run.retired, default_report.run.retired);
+                assert_eq!(owned_report.run.virtual_ns, default_report.run.virtual_ns);
+                // The timer fired once (a one-shot) and its vector waits in the IRR; the default
+                // board never dispatched it.
+                let (lapic, plain) = (owned.board.local_apic(), default.board.local_apic());
+                assert_eq!(lapic.next_timer_deadline(), None);
+                assert_eq!(lapic.vector_state(0x40), (true, false));
+                assert_eq!(plain.next_timer_deadline(), Some(9000));
+                // One clock: a standalone advance of the owned board fails, the default is fine.
+                assert!(matches!(
+                    owned.board.advance_time_ns(1),
+                    Err(FirmwareBoardError::Clock(
+                        VirtualClockError::ClockAlreadyOwned
+                    ))
+                ));
+                assert!(default.board.advance_time_ns(1).is_ok());
+            }
+
+            #[test]
+            fn opt_in_refuses_a_lapic_vector_that_would_wake_the_cpu() {
+                // The timer fires at 100 ns and leaves its vector eligible in the LAPIC. The
+                // guest then halts with IF = 1 and the board source has a wake time: the arbiter
+                // would see a LAPIC wake, but the loop delivers the board source only, so the
+                // run is refused instead of letting the guest pass its HLT with no interrupt.
+                let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
+                let (mut boot, _) = board(&code, &eoi_handler(), true);
+                arm_lapic_timer(&mut boot, 0x40, 100);
+                boot.board.enable_clock_owner().expect("the board can");
+                let cli = CliProfile::NonPviLong64V1;
+                let sti = StiProfile::NonPviLong64V1;
+                let halt = HaltProfile::Long64V1;
+                let set = minimal_set(&cli)
+                    .with_pio_u8()
+                    .with_sti(&sti)
+                    .with_halt(&halt);
+                let failure = boot
+                    .board
+                    .run_linux_boot_cpl0_set(300, &set, false, false, true)
+                    .expect_err("refused");
+                assert!(
+                    matches!(
+                        failure.error,
+                        FirmwareBoardError::Config(text) if text.contains("Local APIC vector")
+                    ),
+                    "{failure:?}"
+                );
+                assert_eq!(rax_low(&boot), 0x00, "the HLT was not passed");
+            }
+
+            #[test]
+            fn opt_in_zero_budget_executes_nothing() {
+                let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
+                let zero = same_with_and_without_owner(&code, &eoi_handler(), 0);
+                assert_eq!(zero.report.run.retired, 0, "{zero:?}");
+                assert_eq!(zero.now, 0, "{zero:?}");
+                assert_eq!(zero.report.run.exit, PagedProbeExit::BudgetExhausted);
+            }
+
+            #[test]
+            fn the_set_loop_has_no_local_apic_mmio() {
+                // The owner dispatches the Local APIC timers only; that is sound while the set
+                // loop cannot let a guest write the Local APIC (S4-38L9s): this is the sentinel.
+                use crate::bus::SetStepMmio;
+                let (mut boot, _) = boot_with_entry(&[0xF4]);
+                let (_, io) = boot.board.bus_mut().split_for_set_step();
+                let read = crate::RamAccessOperation::Read {
+                    width: AccessWidth::Dword,
+                };
+                let write = crate::RamAccessOperation::Write {
+                    width: AccessWidth::Dword,
+                    value: 0,
+                };
+                for offset in [0xF0, 0x320, 0x380, 0xB0] {
+                    let address = GuestPhysicalAddress::new(LOCAL_APIC_MMIO_BASE + offset);
+                    assert!(io.dispatch(address, 4, read).is_err(), "{offset:#x}");
+                    assert!(io.dispatch(address, 4, write).is_err(), "{offset:#x}");
+                }
+            }
+
+            #[test]
+            fn the_user_mode_facade_names_the_member_only_when_it_is_on() {
+                let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
+                let members = LinuxCpl0SetMembers {
+                    pio_u8: true,
+                    sti: true,
+                    ..LinuxCpl0SetMembers::minimal()
+                };
+                assert!(!members.clock_owner);
+                assert!(!LinuxCpl0SetMembers::linux_default().clock_owner);
+                let run_record = |clock_owner: bool| {
+                    let (mut boot, file) = board(&code, &eoi_handler(), false);
+                    let record = run_linux_direct_board_set_user_mode(
+                        &mut boot,
+                        &input(&file, &[], BLOB, board_hash()),
+                        20_000,
+                        LinuxCpl0SetMembers {
+                            clock_owner,
+                            ..members
+                        },
+                    )
+                    .expect("runs");
+                    (boot, record)
+                };
+                let (default_boot, default) = run_record(false);
+                let (owned_boot, mut owned) = run_record(true);
+                assert!(!default_boot.board.clock_owner_enabled());
+                assert!(owned_boot.board.clock_owner_enabled());
+                assert!(!default.set_members.iter().any(|name| name == "clock_owner"));
+                assert!(owned.set_members.iter().any(|name| name == "clock_owner"));
+                // Apart from its name the record is the same, byte for byte.
+                owned.set_members.retain(|name| name != "clock_owner");
+                assert_eq!(owned, default);
+                assert!(default.halt_wakes >= 1, "{default:?}");
+            }
+        }
     }
 
     /// S4-39i: the UART THRE line to master IR4 under the user-mode facade. The guest enables
@@ -13028,6 +16116,38 @@ mod tests {
             assert_eq!((pic.irr, pic.isr), (0, 0));
             assert_eq!(boot.board.uart().peek_iir(), 0x01);
             assert_eq!(boot.board.state().gpr[Register::Rsi as usize], TABLE + 18);
+        }
+
+        #[test]
+        fn opt_in_matches_default_for_the_uart_ir4_run() {
+            // S4-23j: the single clock owner changes nothing of the THRE -> IR4 run.
+            let run_record = |clock_owner: bool| {
+                let (mut boot, file) = board();
+                let record = run_linux_direct_board_set_user_mode(
+                    &mut boot,
+                    &input(&file, &[], BLOB, board_hash()),
+                    4000,
+                    LinuxCpl0SetMembers {
+                        clock_owner,
+                        ..members()
+                    },
+                )
+                .expect("runs");
+                (boot, record)
+            };
+            let (default_boot, default) = run_record(false);
+            let (owned_boot, mut owned) = run_record(true);
+            assert!(!default_boot.board.clock_owner_enabled());
+            assert!(owned_boot.board.clock_owner_enabled());
+            assert_eq!(default.com1, NONCE, "{default:?}");
+            assert!(owned.set_members.iter().any(|name| name == "clock_owner"));
+            owned.set_members.retain(|name| name != "clock_owner");
+            assert_eq!(owned, default);
+            assert_eq!(
+                owned_boot.board.clock().now_ns(),
+                default_boot.board.clock().now_ns()
+            );
+            assert_eq!(owned_boot.board.state(), default_boot.board.state());
         }
 
         #[test]
@@ -13351,6 +16471,1326 @@ mod tests {
         }
     }
 
+    // ---- S4-38L8d: the APIC profile (`X8664V1Stage4AApic`): guest access to the LAPIC and the IOAPIC ----
+
+    mod apic_profile {
+        use super::irq_hook::{CLD, IRQ_HANDLER_AT, IRQ_VECTOR, irq_board};
+        use super::*;
+        use crate::{IO_APIC_MMIO_BASE, LOCAL_APIC_MMIO_BASE};
+        use od_isa::StiProfile;
+
+        const PIT_HZ: u64 = 1_193_182;
+        const MASKED: u32 = 1 << 16;
+        const CHUNK: u64 = 500;
+
+        /// The deadline of the PIT tick, by hand: `ceil(tick * 1e9 / 1_193_182)`.
+        fn deadline(tick: u64) -> u64 {
+            (tick * 1_000_000_000).div_ceil(PIT_HZ)
+        }
+
+        /// `MOV <r32>, imm32` (`B8 + r`): EAX = 0, ECX = 1, EBX = 3.
+        fn mov32(register: u8, value: u32) -> Vec<u8> {
+            let mut code = vec![0xB8 + register];
+            code.extend_from_slice(&value.to_le_bytes());
+            code
+        }
+
+        /// `MOV AL, control; MOV DX, 0x43; OUT DX, AL; MOV AL, lo; MOV DX, 0x40; OUT DX, AL;
+        /// MOV AL, hi; OUT DX, AL` (`n` < 256, so AL = 0 afterwards).
+        fn pit_program(control: u8, n: u8) -> Vec<u8> {
+            vec![
+                0xB0, control, 0x66, 0xBA, 0x43, 0x00, 0xEE, 0xB0, n, 0x66, 0xBA, 0x40, 0x00, 0xEE,
+                0xB0, 0x00, 0xEE,
+            ]
+        }
+
+        /// `EBX = LAPIC base`, `ECX = IOAPIC base`; SVR := 0x1FF (software enable, spurious
+        /// vector 0xFF); IOREGSEL := 0x14, IOWIN := `entry2` (the low dword of redirection entry 2);
+        /// then `EAX = 0`.
+        fn apic_setup(entry2: u32) -> Vec<u8> {
+            let mut code = mov32(3, LOCAL_APIC_MMIO_BASE as u32);
+            code.extend(mov32(1, IO_APIC_MMIO_BASE as u32));
+            code.extend(mov32(0, 0x1FF));
+            code.extend([0x89, 0x83, 0xF0, 0x00, 0x00, 0x00]); // MOV [RBX+0xF0], EAX
+            code.extend(mov32(0, 0x14));
+            code.extend([0x89, 0x01]); // MOV [RCX], EAX
+            code.extend(mov32(0, entry2));
+            code.extend([0x89, 0x41, 0x10]); // MOV [RCX+0x10], EAX
+            code.extend(mov32(0, 0));
+            code
+        }
+
+        /// The guest: set the APIC up, load a PIT mode 2 count of `n`, `STI`, spin.
+        fn timer_guest(entry2: u32, n: u8) -> Vec<u8> {
+            let mut code = apic_setup(entry2);
+            code.extend(pit_program(0x34, n));
+            code.push(0xFB); // STI
+            code.extend([0xEB, 0xFE]); // JMP $
+            code
+        }
+
+        /// The handler at `IRQ_HANDLER_AT`: with `eoi` the guest writes the Local APIC EOI register
+        /// (`MOV [RBX+0xB0], EAX`, EAX = 0, RBX = the Local APIC base), then `IRETQ`.
+        fn handler(eoi: bool) -> Vec<u8> {
+            let mut code = Vec::new();
+            if eoi {
+                code.extend([0x89, 0x83, 0xB0, 0x00, 0x00, 0x00]);
+            }
+            code.extend([0x48, 0xCF]);
+            code
+        }
+
+        /// The loader's tables identity-map the first GiB only (2 MiB leaves in the PD at
+        /// `cr3 + 0x2000`): map GVA = GPA for the 2 MiB pages of the IOAPIC (`0xFEC00000`) and of the
+        /// Local APIC (`0xFEE00000`) through a PD of its own behind PDPT entry 3.
+        fn map_apic_windows(boot: &mut LinuxDirectBoot) {
+            const PD: u64 = TREE_PML4;
+            let cr3 = boot.board.cr3();
+            write_phys(boot, cr3 + 0x1000 + 3 * 8, &(PD | 3).to_le_bytes());
+            for base in [IO_APIC_MMIO_BASE, LOCAL_APIC_MMIO_BASE] {
+                let index = (base >> 21) & 511;
+                write_phys(boot, PD + index * 8, &(base | 0x83).to_le_bytes());
+            }
+        }
+
+        /// A board of `irq_board` with the APIC profile's timer line enabled.
+        fn apic_board(code: &[u8], eoi: bool) -> LinuxDirectBoot {
+            let (mut boot, _) = irq_board(code);
+            map_apic_windows(&mut boot);
+            write_phys(&mut boot, IRQ_HANDLER_AT, &handler(eoi));
+            assert!(boot.board.enable_pit_ioapic_irq());
+            boot
+        }
+
+        fn set<'a>(
+            cli: &'a CliProfile,
+            sti: &'a StiProfile,
+            halt: &'a HaltProfile,
+        ) -> Cpl0ProfileSet<'a> {
+            Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+                .with_cli(cli)
+                .with_cpu_owned_cr3(MovCr3Long64V1)
+                .with_pio_u8()
+                .with_halt(halt)
+                .with_sti(sti)
+        }
+
+        /// Chunks of the board loop until the clock reaches `until_ns`; the delivered vectors.
+        fn run_until(boot: &mut LinuxDirectBoot, until_ns: u64) -> u64 {
+            let (cli, sti, halt) = (
+                CliProfile::NonPviLong64V1,
+                StiProfile::NonPviLong64V1,
+                HaltProfile::Long64V1,
+            );
+            let set = set(&cli, &sti, &halt);
+            let mut delivered = 0;
+            while boot.board.clock().now_ns() < until_ns {
+                let report = boot
+                    .board
+                    .run_linux_boot_cpl0_set(CHUNK, &set, false, false, true)
+                    .expect("runs");
+                assert_eq!(
+                    report.run.exit,
+                    PagedProbeExit::BudgetExhausted,
+                    "{report:?}"
+                );
+                delivered += report.irq.irqs_delivered;
+            }
+            delivered
+        }
+
+        /// `MOV EBX, 0xFEE00000; MOV EAX, [RBX+0x30]; MOV ECX, 0xFEC00000; MOV EAX, 1;
+        /// MOV [RCX], EAX; MOV EDX, [RCX+0x10]; MOV EAX, [RBX+0x30]; HLT`: the Local APIC version in
+        /// EAX, the IOAPIC version (IOREGSEL 1, IOWIN) in EDX.
+        fn register_guest() -> Vec<u8> {
+            let mut code = mov32(3, LOCAL_APIC_MMIO_BASE as u32);
+            code.extend([0x8B, 0x43, 0x30]); // MOV EAX, [RBX+0x30]
+            code.extend(mov32(1, IO_APIC_MMIO_BASE as u32));
+            code.extend(mov32(0, 1));
+            code.extend([0x89, 0x01]); // MOV [RCX], EAX: IOREGSEL := 1
+            code.extend([0x8B, 0x51, 0x10]); // MOV EDX, [RCX+0x10]
+            code.extend([0x8B, 0x43, 0x30]); // MOV EAX, [RBX+0x30]
+            code.push(0xF4);
+            code
+        }
+
+        fn run_register_guest(apic: bool) -> (LinuxDirectBoot, crate::FirmwareRunReport) {
+            run_guest_code(&register_guest(), apic)
+        }
+
+        fn run_guest_code(code: &[u8], apic: bool) -> (LinuxDirectBoot, crate::FirmwareRunReport) {
+            let (mut boot, _) = boot_with_entry(code);
+            map_apic_windows(&mut boot);
+            if apic {
+                assert!(boot.board.enable_pit_ioapic_irq());
+            }
+            let (cli, sti, halt) = (
+                CliProfile::NonPviLong64V1,
+                StiProfile::NonPviLong64V1,
+                HaltProfile::Long64V1,
+            );
+            let set = set(&cli, &sti, &halt);
+            let report = boot
+                .board
+                .run_linux_boot_cpl0_set(64, &set, false, false, true)
+                .expect("runs");
+            (boot, report.run)
+        }
+
+        #[test]
+        fn the_guest_reads_the_lapic_version_and_the_ioapic_version_under_the_apic_profile() {
+            let (boot, run) = run_register_guest(true);
+            assert_eq!(run.exit, PagedProbeExit::Halted, "{run:?}");
+            assert_eq!(run.memory_error, None);
+            let state = boot.board.state();
+            assert_eq!(state.gpr[Register::Rax as usize], 0x0003_0014);
+            assert_eq!(state.gpr[Register::Rdx as usize], 0x0017_0020);
+        }
+
+        /// `MOV ECX, 0xFEC00000; MOV EAX, 0x22; MOV [RCX], EAX; MOV EAX, 0xA020;
+        /// MOV [RCX+0x10], EAX; MOV EDX, [RCX+0x10]; HLT`: the SCI redirection entry (GSI 9) written
+        /// as level, active low, vector 0x20, unmasked (the write the L8d run stopped on), and read
+        /// back in EDX.
+        fn sci_rte_guest() -> Vec<u8> {
+            let mut code = mov32(1, IO_APIC_MMIO_BASE as u32);
+            code.extend(mov32(0, 0x22));
+            code.extend([0x89, 0x01]); // MOV [RCX], EAX: IOREGSEL := 0x22
+            code.extend(mov32(0, 0xA020));
+            code.extend([0x89, 0x41, 0x10]); // MOV [RCX+0x10], EAX
+            code.extend([0x8B, 0x51, 0x10]); // MOV EDX, [RCX+0x10]
+            code.push(0xF4);
+            code
+        }
+
+        /// S4-38L8e: under the APIC profile the guest's level/active-low SCI entry is accepted
+        /// through IOREGSEL/IOWIN and reads back; the run reaches HLT without a memory error.
+        #[test]
+        fn the_sci_rte_write_is_accepted_under_the_apic_profile() {
+            let (boot, run) = run_guest_code(&sci_rte_guest(), true);
+            assert_eq!(run.exit, PagedProbeExit::Halted, "{run:?}");
+            assert_eq!(run.memory_error, None);
+            assert_eq!(boot.board.state().gpr[Register::Rdx as usize], 0xA020);
+        }
+
+        /// S4-38L8e: stage4a keeps the former typed error: the IOAPIC window is not served by its
+        /// set loop, so the very first register access (IOREGSEL) is a `DeviceUnavailable` error
+        /// and the guest does not halt.
+        #[test]
+        fn stage4a_keeps_the_sci_rte_write_a_typed_error() {
+            let (boot, run) = run_guest_code(&sci_rte_guest(), false);
+            assert!(
+                matches!(
+                    run.memory_error,
+                    Some(crate::TrackedAccessError::DeviceUnavailable { address })
+                        if address.get() == IO_APIC_MMIO_BASE
+                ),
+                "{run:?}"
+            );
+            assert_ne!(run.exit, PagedProbeExit::Halted);
+            assert_eq!(boot.board.state().gpr[Register::Rdx as usize], 0);
+        }
+
+        /// Stage4a keeps the typed error: the Local APIC window is not served by its set loop.
+        #[test]
+        fn stage4a_keeps_the_lapic_access_a_typed_error() {
+            let (boot, run) = run_register_guest(false);
+            assert!(
+                matches!(
+                    run.memory_error,
+                    Some(crate::TrackedAccessError::OperandPhysical { address, .. })
+                        if address.get() == LOCAL_APIC_MMIO_BASE + 0x30
+                ),
+                "{run:?}"
+            );
+            assert_ne!(run.exit, PagedProbeExit::Halted);
+            assert_eq!(boot.board.state().gpr[Register::Rax as usize], 0);
+        }
+
+        #[test]
+        fn a_thousand_periods_give_a_thousand_vectors_with_a_guest_eoi_and_an_iretq_each() {
+            let n = 4u8;
+            let mut boot = apic_board(&timer_guest(u32::from(IRQ_VECTOR), n), true);
+            let rsp = boot.board.state().gpr[Register::Rsp as usize];
+            // The count is loaded by the guest's own accesses in the first microseconds.
+            run_until(&mut boot, 2000);
+            let source = boot.board.pit_ioapic_source().expect("installed");
+            let run = source.channel0_run().expect("loaded by the guest");
+            assert_eq!(u8::try_from(run.reload).unwrap(), n);
+            let t0 = run.start_tick;
+            let until = deadline(t0 + 1000 * u64::from(n)) + 1000;
+            let first = source.stats().acknowledged;
+            let delivered = run_until(&mut boot, until);
+            let stats = source.stats();
+            assert!(delivered >= 1000, "delivered {delivered}, {stats:?}");
+            assert_eq!(stats.acknowledged, first + delivered);
+            assert_eq!(
+                (stats.edges_refused, stats.ack_refused, stats.queue_faults),
+                (0, 0, 0),
+                "{stats:?}"
+            );
+            let state = boot.board.state();
+            assert_eq!(
+                state.gpr[Register::Rsp as usize],
+                rsp,
+                "the IRETQ circle is balanced"
+            );
+            assert_ne!(state.rflags & (1 << 9), 0, "IRETQ restored IF");
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false)
+            );
+        }
+
+        #[test]
+        fn a_masked_entry_delivers_nothing() {
+            let n = 10u8;
+            let mut boot = apic_board(&timer_guest(MASKED | u32::from(IRQ_VECTOR), n), true);
+            run_until(&mut boot, 2000);
+            let source = boot.board.pit_ioapic_source().expect("installed");
+            let t0 = source.channel0_run().expect("loaded").start_tick;
+            let delivered = run_until(&mut boot, deadline(t0 + 40) + 1000);
+            assert_eq!(delivered, 0);
+            assert_eq!(source.stats().edges, 4, "presented and lost at the IOAPIC");
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false)
+            );
+        }
+
+        /// `STI; HLT`, a mark (`MOV AL, 0x5A`) and a spin: the code after the `HLT` runs only when
+        /// the halted CPU was woken and the vector went through the handler.
+        const STI_HLT_MARK_SPIN: [u8; 6] = [0xFB, 0xF4, 0xB0, 0x5A, 0xEB, 0xFE];
+
+        fn halt_guest(entry2: u32, n: u8) -> Vec<u8> {
+            let mut code = apic_setup(entry2);
+            code.extend(pit_program(0x34, n));
+            code.extend(STI_HLT_MARK_SPIN);
+            code
+        }
+
+        fn run_set(
+            boot: &mut LinuxDirectBoot,
+            budget: u64,
+        ) -> crate::firmware_board::LinuxSetRunReport {
+            let (cli, sti, halt) = (
+                CliProfile::NonPviLong64V1,
+                StiProfile::NonPviLong64V1,
+                HaltProfile::Long64V1,
+            );
+            let set = set(&cli, &sti, &halt);
+            boot.board
+                .run_linux_boot_cpl0_set(budget, &set, false, false, true)
+                .expect("runs")
+        }
+
+        /// S4-38L8f: a halted CPU with IF = 1 under the APIC profile is woken at the PIT edge
+        /// (`wake_ns` of the IOAPIC source), the vector of entry 2 goes through the guest IDT and
+        /// the Local APIC (guest EOI), and the instruction after the `HLT` runs.
+        #[test]
+        fn an_idle_sti_hlt_is_woken_by_the_pit_through_the_ioapic() {
+            let code = halt_guest(u32::from(IRQ_VECTOR), 10);
+            let mut boot = apic_board(&code, true);
+            let rsp = boot.board.state().gpr[Register::Rsp as usize];
+            let report = run_set(&mut boot, 300);
+            assert_eq!(
+                report.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(report.irq.halt_wakes, 1, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            // The clock skipped from the HLT to the first edge after the guest's PIT write.
+            assert!(report.irq.halt_idle_ns > 0, "{report:?}");
+            assert_eq!(boot.board.state().gpr[Register::Rax as usize] as u8, 0x5A);
+            let state = boot.board.state();
+            assert_eq!(state.gpr[Register::Rsp as usize], rsp, "IRETQ balanced");
+            assert_ne!(state.rflags & (1 << 9), 0, "IRETQ restored IF");
+            assert_eq!(state.activity, Some(CpuActivity::Running));
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false),
+                "the guest EOI cleared ISR"
+            );
+            let source = boot.board.pit_ioapic_source().expect("installed");
+            let stats = source.stats();
+            assert_eq!(
+                (stats.acknowledged, stats.edges_refused, stats.ack_refused),
+                (1, 0, 0),
+                "{stats:?}"
+            );
+        }
+
+        /// S4-38L8f: a masked entry 2 gives no wake time: the run ends as `halted`, not woken by
+        /// a false deadline, and no vector reaches the guest.
+        #[test]
+        fn hlt_with_a_masked_entry_is_not_woken_under_the_apic_profile() {
+            let code = halt_guest(MASKED | u32::from(IRQ_VECTOR), 10);
+            let mut boot = apic_board(&code, true);
+            let report = run_set(&mut boot, 300);
+            assert_eq!(report.run.exit, PagedProbeExit::Halted, "{report:?}");
+            assert_eq!(report.irq.halt_wakes, 0, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 0, "{report:?}");
+            assert_eq!(boot.board.state().activity, Some(CpuActivity::Halted));
+            assert_ne!(boot.board.state().gpr[Register::Rax as usize] as u8, 0x5A);
+        }
+
+        /// S4-38L8f: stage4a (no IOAPIC source, no APIC windows) is unchanged: `STI; HLT` with the
+        /// empty source ends the run as `halted`, nothing wakes it.
+        #[test]
+        fn stage4a_hlt_with_if_set_still_ends_the_run_as_halted() {
+            let mut code = pit_program(0x34, 10);
+            code.extend(STI_HLT_MARK_SPIN);
+            let (mut boot, _) = irq_board(&code);
+            assert!(boot.board.pit_ioapic_source().is_none());
+            let report = run_set(&mut boot, 300);
+            assert_eq!(report.run.exit, PagedProbeExit::Halted, "{report:?}");
+            assert_eq!(report.irq.halt_wakes, 0, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 0, "{report:?}");
+        }
+
+        /// LVT Timer bits: periodic mode, mask.
+        const LVT_PERIODIC: u32 = 1 << 17;
+        const LVT_MASKED: u32 = 1 << 16;
+
+        /// Instructions of `apic_setup` (9) and of `lapic_timer_setup` (7) before `STI; HLT`, and
+        /// the `STI` and `HLT` themselves: the clock reads 18 ns at the `HLT` (one ns each).
+        const RETIRED_AT_HLT: u64 = 18;
+
+        /// After `apic_setup` (the PIT entry masked, so the PIT is no source): divide by 1 (DCR
+        /// `0xB`), the LVT Timer `lvt`, the initial count `count` (100 MHz: one count is 10 ns);
+        /// then `EAX = 0` (the handler's EOI writes it).
+        fn lapic_timer_setup(lvt: u32, count: u32) -> Vec<u8> {
+            let mut code = apic_setup(MASKED | u32::from(IRQ_VECTOR));
+            code.extend(lapic_timer_program(lvt, count));
+            code
+        }
+
+        /// The timer registers only (`RBX` = the Local APIC base, as `apic_setup` leaves it);
+        /// 7 instructions, `EAX = 0` afterwards.
+        fn lapic_timer_program(lvt: u32, count: u32) -> Vec<u8> {
+            let mut code = Vec::new();
+            code.extend(mov32(0, 0xB));
+            code.extend([0x89, 0x83, 0xE0, 0x03, 0x00, 0x00]); // MOV [RBX+0x3E0], EAX
+            code.extend(mov32(0, lvt));
+            code.extend([0x89, 0x83, 0x20, 0x03, 0x00, 0x00]); // MOV [RBX+0x320], EAX
+            code.extend(mov32(0, count));
+            code.extend([0x89, 0x83, 0x80, 0x03, 0x00, 0x00]); // MOV [RBX+0x380], EAX
+            code.extend(mov32(0, 0));
+            code
+        }
+
+        fn lapic_timer_guest(lvt: u32, count: u32) -> Vec<u8> {
+            let mut code = lapic_timer_setup(lvt, count);
+            code.extend(STI_HLT_MARK_SPIN);
+            code
+        }
+
+        /// A board with the APIC profile's timer line and the clock owner (the owner dispatches
+        /// the Local APIC timers; the APIC-profile run enables it, S4-23j).
+        fn owned_apic_board(code: &[u8]) -> LinuxDirectBoot {
+            let mut boot = apic_board(code, true);
+            boot.board.enable_clock_owner().expect("the board can");
+            boot
+        }
+
+        /// S4-38L8i: a one-shot Local APIC timer wakes a halted CPU with IF = 1 at its deadline
+        /// (the clock owner and the arbiter, no PIT, no 8259), the vector goes through the Local
+        /// APIC IRR and the guest IDT, the guest EOIs, and the code after the `HLT` runs.
+        #[test]
+        fn an_idle_sti_hlt_is_woken_by_a_one_shot_lapic_timer() {
+            // 100 counts of 10 ns: the timer starts at 0 ns, its deadline is 1000 ns.
+            let mut boot = owned_apic_board(&lapic_timer_guest(u32::from(IRQ_VECTOR), 100));
+            let rsp = boot.board.state().gpr[Register::Rsp as usize];
+            let report = run_set(&mut boot, 300);
+            assert_eq!(
+                report.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(report.irq.halt_wakes, 1, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            // The clock jumped from the `HLT` to the deadline, not past it.
+            assert_eq!(report.irq.halt_idle_ns, 1000 - RETIRED_AT_HLT, "{report:?}");
+            // Only retired instructions and the idle jump moved it: it stood on the deadline when
+            // the vector was delivered.
+            assert_eq!(
+                report.run.virtual_ns,
+                report.run.retired + report.irq.halt_idle_ns,
+                "{report:?}"
+            );
+            assert_eq!(boot.board.state().gpr[Register::Rax as usize] as u8, 0x5A);
+            let state = boot.board.state();
+            assert_eq!(state.gpr[Register::Rsp as usize], rsp, "IRETQ balanced");
+            assert_ne!(state.rflags & (1 << 9), 0, "IRETQ restored IF");
+            assert_eq!(state.activity, Some(CpuActivity::Running));
+            let lapic = boot.board.local_apic();
+            assert_eq!(lapic.vector_state(IRQ_VECTOR), (false, false), "EOI");
+            assert_eq!(lapic.next_timer_deadline(), None, "one-shot: fired once");
+        }
+
+        /// S4-38L8i: a periodic Local APIC timer wakes the halted CPU on every period: the guest
+        /// loops `HLT; INC EDX; JMP HLT`, every period is one wake and one vector.
+        #[test]
+        fn an_idle_hlt_loop_is_woken_on_every_period_of_a_periodic_lapic_timer() {
+            let mut code = lapic_timer_setup(LVT_PERIODIC | u32::from(IRQ_VECTOR), 100);
+            // STI; HLT; INC EDX; JMP -5 (back to the HLT).
+            code.extend([0xFB, 0xF4, 0xFF, 0xC2, 0xEB, 0xFB]);
+            let mut boot = owned_apic_board(&code);
+            let report = run_set(&mut boot, 300);
+            // Every wake costs one unit of the budget: the run ends in a `HLT` with nothing left.
+            assert_eq!(report.run.exit, PagedProbeExit::Halted, "{report:?}");
+            assert_eq!(
+                report.run.retired + report.irq.halt_wakes,
+                300,
+                "{report:?}"
+            );
+            let wakes = report.irq.halt_wakes;
+            assert!(wakes >= 3, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, wakes, "{report:?}");
+            // The setup and the first `STI; HLT` retire 18 instructions; every wake then runs the
+            // handler (EOI, `IRETQ`), `INC EDX`, `JMP` and the next `HLT`: 5 more.
+            assert_eq!(report.run.retired, RETIRED_AT_HLT + 5 * wakes, "{report:?}");
+            // Each period is 1000 ns and the clock stands on every deadline: after the last wake
+            // only its 5 instructions have run. The idle skips are the rest.
+            assert_eq!(report.run.virtual_ns, 1000 * wakes + 5, "{report:?}");
+            assert_eq!(
+                report.irq.halt_idle_ns,
+                report.run.virtual_ns - report.run.retired,
+                "{report:?}"
+            );
+            assert_eq!(
+                boot.board.state().gpr[Register::Rdx as usize] & 0xFFFF_FFFF,
+                report.irq.halt_wakes,
+                "{report:?}"
+            );
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false)
+            );
+        }
+
+        /// S4-38L8i: a masked LVT Timer gives no wake time (a masked expiry raises nothing): the
+        /// run ends as `halted`, no false deadline, no vector.
+        #[test]
+        fn hlt_with_a_masked_lapic_timer_is_not_woken() {
+            let mut boot =
+                owned_apic_board(&lapic_timer_guest(LVT_MASKED | u32::from(IRQ_VECTOR), 100));
+            let report = run_set(&mut boot, 300);
+            assert_eq!(report.run.exit, PagedProbeExit::Halted, "{report:?}");
+            assert_eq!(report.irq.halt_wakes, 0, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 0, "{report:?}");
+            assert_eq!(boot.board.state().activity, Some(CpuActivity::Halted));
+            assert_ne!(boot.board.state().gpr[Register::Rax as usize] as u8, 0x5A);
+        }
+
+        /// S4-38L8i: stage4a is unchanged: the Local APIC window is not served by its set loop, so
+        /// the guest's first Local APIC register WRITE (SVR; the read path is the test above) is
+        /// the typed `DeviceUnavailable` error, the guest never reaches the timer registers or
+        /// its `HLT`, and no timer is armed.
+        #[test]
+        fn stage4a_lapic_timer_programming_is_a_typed_write_error_and_arms_nothing() {
+            let (boot, run) = run_guest_code(&lapic_timer_guest(u32::from(IRQ_VECTOR), 100), false);
+            assert!(
+                matches!(
+                    run.memory_error,
+                    Some(crate::TrackedAccessError::DeviceUnavailable { address })
+                        if address.get() == LOCAL_APIC_MMIO_BASE + 0xF0
+                ),
+                "{run:?}"
+            );
+            assert_ne!(run.exit, PagedProbeExit::Halted);
+            assert!(!boot.board.clock_owner_enabled());
+            assert_eq!(boot.board.local_apic().next_timer_deadline(), None);
+        }
+
+        /// S4-38L8i: a vector the Local APIC would not accept (TPR class not below the vector's
+        /// class) gives no wake time, although the LVT Timer is unmasked and armed: the run ends
+        /// as `halted`, the clock does not skip (the vector would sit in IRR and the CPU would
+        /// pass its `HLT` with no interrupt).
+        #[test]
+        fn hlt_with_a_timer_vector_blocked_by_the_tpr_is_not_woken() {
+            let mut code = lapic_timer_setup(u32::from(IRQ_VECTOR), 100);
+            code.extend(mov32(0, u32::from(IRQ_VECTOR & 0xF0)));
+            code.extend([0x89, 0x83, 0x80, 0x00, 0x00, 0x00]); // MOV [RBX+0x80], EAX: TPR
+            code.extend(mov32(0, 0));
+            code.extend(STI_HLT_MARK_SPIN);
+            let mut boot = owned_apic_board(&code);
+            let report = run_set(&mut boot, 300);
+            assert_eq!(report.run.exit, PagedProbeExit::Halted, "{report:?}");
+            assert_eq!(report.irq.halt_wakes, 0, "{report:?}");
+            assert_eq!(report.irq.halt_idle_ns, 0, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 0, "{report:?}");
+            assert_eq!(boot.board.state().activity, Some(CpuActivity::Halted));
+            assert_ne!(boot.board.state().gpr[Register::Rax as usize] as u8, 0x5A);
+            let lapic = boot.board.local_apic();
+            assert_eq!(lapic.vector_state(IRQ_VECTOR), (false, false));
+            assert!(lapic.next_timer_deadline().is_some(), "armed, never fired");
+        }
+
+        /// S4-38L8i: the PIT line is open (entry 2 unmasked on another vector, a count of 255
+        /// ticks: the first edge is about 213 us away) and the Local APIC timer is due at 1000
+        /// ns: the halted CPU is woken by the timer, not by the PIT.
+        #[test]
+        fn an_earlier_lapic_timer_wakes_the_cpu_before_the_pit_edge() {
+            let mut code = apic_setup(u32::from(IRQ_VECTOR + 0x10));
+            code.extend(pit_program(0x34, 255));
+            code.extend(lapic_timer_program(u32::from(IRQ_VECTOR), 100));
+            code.extend(STI_HLT_MARK_SPIN);
+            let mut boot = owned_apic_board(&code);
+            let report = run_set(&mut boot, 300);
+            assert_eq!(
+                report.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(report.irq.halt_wakes, 1, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            assert_eq!(
+                report.run.virtual_ns,
+                report.run.retired + report.irq.halt_idle_ns,
+                "{report:?}"
+            );
+            assert!(
+                (900..1000).contains(&report.irq.halt_idle_ns),
+                "idle up to the LAPIC deadline, not the PIT edge: {report:?}"
+            );
+            assert_eq!(boot.board.state().gpr[Register::Rax as usize] as u8, 0x5A);
+            let source = boot.board.pit_ioapic_source().expect("installed");
+            assert_eq!(source.stats().edges, 0, "the PIT edge has not come");
+            let lapic = boot.board.local_apic();
+            assert_eq!(lapic.vector_state(IRQ_VECTOR), (false, false));
+            assert_eq!(lapic.vector_state(IRQ_VECTOR + 0x10), (false, false));
+        }
+
+        #[test]
+        fn without_a_guest_eoi_the_second_irq_is_not_delivered() {
+            let n = 10u8;
+            let mut boot = apic_board(&timer_guest(u32::from(IRQ_VECTOR), n), false);
+            run_until(&mut boot, 2000);
+            let source = boot.board.pit_ioapic_source().expect("installed");
+            let t0 = source.channel0_run().expect("loaded").start_tick;
+            run_until(&mut boot, deadline(t0 + 40) + 1000);
+            let stats = source.stats();
+            assert_eq!(stats.acknowledged, 1, "{stats:?}");
+            assert_eq!(stats.edges, 4);
+            // In service, and one coalesced request waits in IRR.
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (true, true)
+            );
+        }
+
+        /// S4-38L8d measurement (AGENTS.md: performance decisions rest on measurements): the wall
+        /// time per retired instruction of a `JMP $` spin without the interrupt hook, with the hook and
+        /// the empty source, and with the hook and the PIT -> IOAPIC -> Local APIC source (the PIT
+        /// count of 65536 ticks gives no edge inside the run, so every boundary asks
+        /// `pending_vector` and gets `None`). `cargo test -p od-machine --release --lib
+        /// the_pending_vector_cost -- --ignored --nocapture`.
+        #[test]
+        #[ignore = "measurement, not an assertion of speed: run with --release -- --ignored --nocapture"]
+        fn the_pending_vector_cost_per_boundary_is_measured() {
+            const N: u64 = 20_000_000;
+            const ROUNDS: usize = 7;
+            let (cli, sti, halt) = (
+                CliProfile::NonPviLong64V1,
+                StiProfile::NonPviLong64V1,
+                HaltProfile::Long64V1,
+            );
+            let set = set(&cli, &sti, &halt);
+            let run = |mode: usize| -> f64 {
+                let mut boot = match mode {
+                    0 | 1 => irq_board(&[0xEB, 0xFE]).0,
+                    _ => apic_board(&timer_guest(u32::from(IRQ_VECTOR), 0), true),
+                };
+                if mode == 2 {
+                    // Let the guest program the APIC and the PIT first (a few dozen instructions).
+                    boot.board
+                        .run_linux_boot_cpl0_set(200, &set, false, false, true)
+                        .expect("runs");
+                }
+                let started = std::time::Instant::now();
+                let report = boot
+                    .board
+                    .run_linux_boot_cpl0_set(N, &set, false, false, mode != 0)
+                    .expect("runs");
+                let elapsed = started.elapsed();
+                assert_eq!(report.run.exit, PagedProbeExit::BudgetExhausted);
+                assert_eq!(report.irq.irqs_delivered, 0);
+                elapsed.as_nanos() as f64 / report.run.retired as f64
+            };
+            let mut samples = [const { Vec::new() }; 3];
+            for _ in 0..ROUNDS {
+                for (mode, bucket) in samples.iter_mut().enumerate() {
+                    bucket.push(run(mode));
+                }
+            }
+            let names = [
+                "no hook",
+                "hook, empty source",
+                "hook, PIT->IOAPIC->LAPIC source",
+            ];
+            for (name, bucket) in names.iter().zip(samples.iter_mut()) {
+                bucket.sort_by(f64::total_cmp);
+                println!(
+                    "{name:34} median {:7.2} ns/instr  min {:7.2}  max {:7.2}",
+                    bucket[ROUNDS / 2],
+                    bucket[0],
+                    bucket[ROUNDS - 1]
+                );
+            }
+        }
+
+        #[test]
+        fn the_two_irq_sources_are_exclusive() {
+            let (mut boot, _) = boot_with_entry(&[CLD]);
+            assert!(boot.board.enable_pit_pic_irq());
+            assert!(
+                !boot.board.enable_pit_ioapic_irq(),
+                "the 8259 source is installed"
+            );
+            assert!(boot.board.pit_ioapic_source().is_none());
+            let (mut boot, _) = boot_with_entry(&[CLD]);
+            assert!(boot.board.enable_pit_ioapic_irq());
+            assert!(
+                boot.board.enable_pit_ioapic_irq(),
+                "a second call keeps the source"
+            );
+            assert!(
+                !boot.board.enable_pit_pic_irq(),
+                "the IOAPIC source is installed"
+            );
+            assert!(!boot.board.enable_uart_irq4(), "no 8259 source to wrap");
+            // S4-38 (UART -> INTIN4): the IOAPIC UART source needs the IOAPIC PIT source and
+            // excludes the 8259 variant in both directions.
+            assert!(boot.board.enable_uart_ioapic_irq4());
+            assert!(
+                boot.board.enable_uart_ioapic_irq4(),
+                "a second call keeps the source"
+            );
+            assert!(boot.board.uart_ioapic_source().is_some());
+            assert!(boot.board.uart_irq_source().is_none());
+            let (mut boot, _) = boot_with_entry(&[CLD]);
+            assert!(
+                !boot.board.enable_uart_ioapic_irq4(),
+                "no IOAPIC PIT source to wrap"
+            );
+            assert!(boot.board.enable_pit_pic_irq());
+            assert!(
+                !boot.board.enable_uart_ioapic_irq4(),
+                "the 8259 source is installed"
+            );
+            assert!(boot.board.enable_uart_irq4());
+            assert!(boot.board.uart_ioapic_source().is_none());
+        }
+
+        fn members(profile: CpuidProfile) -> LinuxCpl0SetMembers {
+            LinuxCpl0SetMembers {
+                cpuid_profile: profile,
+                ..LinuxCpl0SetMembers::linux_default()
+            }
+        }
+
+        #[test]
+        fn the_apic_profile_turns_on_irq_halt_and_the_clock_owner_and_stage4a_does_not() {
+            let (mut boot, file) = boot_with_entry(&com1_program(b'X'));
+            let record = run_set_facade(
+                &mut boot,
+                &file,
+                64,
+                members(CpuidProfile::X8664V1Stage4AApic),
+            );
+            assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+            assert_eq!(record.com1, b"X");
+            for name in ["cpuid:X8664V1Stage4AApic", "halt", "irq", "clock_owner"] {
+                assert!(record.set_members.iter().any(|m| m == name), "{name}");
+            }
+            assert!(!record.set_members.iter().any(|m| m == "user_mode"));
+            assert!(boot.board.clock_owner_enabled());
+            assert!(boot.board.pit_ioapic_source().is_some());
+            assert!(boot.board.uart_ioapic_source().is_some());
+
+            let (mut boot, file) = boot_with_entry(&com1_program(b'X'));
+            let record =
+                run_set_facade(&mut boot, &file, 64, members(CpuidProfile::X8664V1Stage4A));
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode: 0xF4 },
+                "{record:?}"
+            );
+            assert!(
+                !record
+                    .set_members
+                    .iter()
+                    .any(|m| m == "clock_owner" || m == "halt")
+            );
+            assert!(!boot.board.clock_owner_enabled());
+            assert!(boot.board.pit_ioapic_source().is_none());
+            assert!(boot.board.uart_ioapic_source().is_none());
+        }
+
+        // S4-38 (UART -> INTIN4). The guest programs the Local APIC (SVR) and redirection entry 4
+        // (IOREGSEL 0x18), enables OUT2 and the RDA interrupt of the UART, and sets IF. The
+        // receive byte is injected before the run (the S4-23c RX event of the host). The handler
+        // at `IRQ_HANDLER_AT` (vector `IRQ_VECTOR`) counts in RSI, optionally reads RBR (which
+        // clears the RDA condition), writes the Local APIC EOI and returns.
+
+        const ENTRY4_EDGE: u32 = IRQ_VECTOR as u32;
+        const ENTRY4_LEVEL: u32 = (1 << 15) | IRQ_VECTOR as u32;
+        const ENTRY4_MASKED: u32 = (1 << 16) | IRQ_VECTOR as u32;
+
+        /// `MOV AL, value; MOV DX, port; OUT DX, AL`.
+        fn outb(port: u16, value: u8) -> Vec<u8> {
+            vec![0xB0, value, 0x66, 0xBA, port as u8, (port >> 8) as u8, 0xEE]
+        }
+
+        /// SVR := 0x1FF, IOREGSEL := 0x18, IOWIN := `entry4`, MCR := OUT2, IER := RDA.
+        fn uart_setup(entry4: u32) -> Vec<u8> {
+            uart_setup_with(entry4, 0x1FF, 0x01)
+        }
+
+        /// The same with the SVR value `svr` and the IER value `ier`.
+        fn uart_setup_with(entry4: u32, svr: u32, ier: u8) -> Vec<u8> {
+            let mut code = mov32(3, LOCAL_APIC_MMIO_BASE as u32);
+            code.extend(mov32(1, IO_APIC_MMIO_BASE as u32));
+            code.extend(mov32(0, svr));
+            code.extend([0x89, 0x83, 0xF0, 0x00, 0x00, 0x00]); // MOV [RBX+0xF0], EAX
+            code.extend(mov32(0, 0x18));
+            code.extend([0x89, 0x01]); // MOV [RCX], EAX
+            code.extend(mov32(0, entry4));
+            code.extend([0x89, 0x41, 0x10]); // MOV [RCX+0x10], EAX
+            code.extend(outb(0x3FC, 0x08));
+            code.extend(outb(0x3F9, ier));
+            code
+        }
+
+        /// `INC RSI`, `[MOV DX, 0x3F8; IN AL, DX]` with `read_rbr`, `XOR EAX, EAX`, the EOI, `IRETQ`.
+        fn uart_handler(read_rbr: bool) -> Vec<u8> {
+            let mut code = vec![0x48, 0xFF, 0xC6];
+            if read_rbr {
+                code.extend([0x66, 0xBA, 0xF8, 0x03, 0xEC]);
+            }
+            code.extend([0x31, 0xC0]); // XOR EAX, EAX (the EOI register takes 0)
+            code.extend([0x89, 0x83, 0xB0, 0x00, 0x00, 0x00]); // MOV [RBX+0xB0], EAX
+            code.extend([0x48, 0xCF]);
+            code
+        }
+
+        /// An APIC-profile board (IOAPIC PIT source and UART source installed) running `code`
+        /// with a received byte waiting in the UART.
+        fn uart_board(code: &[u8], read_rbr: bool) -> LinuxDirectBoot {
+            let boot = uart_board_empty(code, read_rbr);
+            boot.board.uart().inject_received_byte(b'A').unwrap();
+            boot
+        }
+
+        /// The same board with nothing received yet.
+        fn uart_board_empty(code: &[u8], read_rbr: bool) -> LinuxDirectBoot {
+            let mut boot = apic_board(code, true);
+            write_phys(&mut boot, IRQ_HANDLER_AT, &uart_handler(read_rbr));
+            assert!(boot.board.enable_uart_ioapic_irq4());
+            boot.board.state_mut().gpr[Register::Rsi as usize] = 0;
+            boot
+        }
+
+        /// `uart_setup`, `STI`, spin.
+        fn uart_guest(entry4: u32) -> Vec<u8> {
+            let mut code = uart_setup(entry4);
+            code.push(0xFB);
+            code.extend([0xEB, 0xFE]);
+            code
+        }
+
+        /// UART RX event -> INTIN4 (edge form) -> Local APIC IRR -> guest IDT -> handler -> EOI.
+        #[test]
+        fn a_uart_rx_event_reaches_the_guest_through_intin4_and_the_local_apic() {
+            let mut boot = uart_board(&uart_guest(ENTRY4_EDGE), true);
+            let rsp = boot.board.state().gpr[Register::Rsp as usize];
+            let report = run_set(&mut boot, 300);
+            assert_eq!(
+                report.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            let state = boot.board.state();
+            assert_eq!(state.gpr[Register::Rsi as usize], 1, "the handler ran once");
+            assert_eq!(state.gpr[Register::Rsp as usize], rsp, "IRETQ balanced");
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false),
+                "the guest EOI cleared ISR"
+            );
+            // The handler's RBR read took the byte and the condition.
+            assert_eq!(boot.board.uart().received_byte(), None);
+            assert_eq!(boot.board.uart().peek_iir(), 0x01);
+            let source = boot.board.uart_ioapic_source().expect("installed");
+            assert_eq!((source.uart_edges(), source.uart_refused()), (1, 0));
+            assert_eq!(source.pit_source().stats().acknowledged, 1);
+        }
+
+        /// The same through the board's installed source, with the PIC untouched.
+        #[test]
+        fn the_uart_intin4_run_leaves_the_8259_alone() {
+            let mut boot = uart_board(&uart_guest(ENTRY4_EDGE), true);
+            let report = run_set(&mut boot, 300);
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            let pic = boot.board.pic_master().expect("the PIC exists").snapshot();
+            assert_eq!((pic.irr, pic.isr), (0, 0));
+            assert!(boot.board.uart_irq_source().is_none());
+        }
+
+        /// A masked entry 4: the line rises, nothing reaches the Local APIC.
+        #[test]
+        fn a_masked_intin4_gives_no_delivery() {
+            let mut boot = uart_board(&uart_guest(ENTRY4_MASKED), true);
+            let report = run_set(&mut boot, 300);
+            assert_eq!(
+                report.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(report.irq.irqs_delivered, 0, "{report:?}");
+            assert_eq!(boot.board.state().gpr[Register::Rsi as usize], 0);
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false)
+            );
+            // The byte is still waiting: nothing took it.
+            assert_eq!(boot.board.uart().received_byte(), Some(b'A'));
+            let source = boot.board.uart_ioapic_source().expect("installed");
+            assert_eq!(source.uart_edges(), 1, "the line rose");
+        }
+
+        /// Level form, the handler does not read RBR: the line stays high, so the guest EOI
+        /// redelivers the vector (Remote IRR semantics of INTIN4), again and again.
+        #[test]
+        fn a_level_intin4_with_the_line_still_active_is_redelivered_after_the_eoi() {
+            let mut boot = uart_board(&uart_guest(ENTRY4_LEVEL), false);
+            let report = run_set(&mut boot, 400);
+            assert!(report.irq.irqs_delivered >= 2, "{report:?}");
+            assert_eq!(
+                boot.board.state().gpr[Register::Rsi as usize],
+                report.irq.irqs_delivered
+            );
+            assert_eq!(boot.board.uart().received_byte(), Some(b'A'));
+        }
+
+        /// Level form, the handler reads RBR: the line falls inside the handler, so exactly one
+        /// delivery happens and the EOI redelivers nothing.
+        #[test]
+        fn a_level_intin4_with_the_line_cleared_is_delivered_once() {
+            let mut boot = uart_board(&uart_guest(ENTRY4_LEVEL), true);
+            let report = run_set(&mut boot, 400);
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            assert_eq!(boot.board.state().gpr[Register::Rsi as usize], 1);
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false)
+            );
+        }
+
+        /// Edge form, the handler does not read RBR: the EOI redelivers nothing (no new edge),
+        /// so the vector comes once however long the line stays high.
+        #[test]
+        fn an_edge_intin4_with_the_line_still_active_is_delivered_once() {
+            let mut boot = uart_board(&uart_guest(ENTRY4_EDGE), false);
+            let report = run_set(&mut boot, 400);
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            assert_eq!(boot.board.uart().received_byte(), Some(b'A'));
+        }
+
+        /// `uart_setup`, `STI`, `HLT`, a mark (`MOV AL, 0x5A`) and a spin.
+        fn uart_halt_guest(entry4: u32) -> Vec<u8> {
+            let mut code = uart_setup(entry4);
+            code.extend(STI_HLT_MARK_SPIN);
+            code
+        }
+
+        /// A halted CPU (`STI; HLT`) with a UART byte already waiting is woken (the sample before
+        /// `wake_ns` puts the request in IRR) and the vector goes through the guest IDT.
+        #[test]
+        fn a_halted_cpu_is_woken_by_a_waiting_uart_rx_byte() {
+            let mut boot = uart_board(&uart_halt_guest(ENTRY4_EDGE), true);
+            // IF = 0 until the guest's `STI`, so the vector waits for the `HLT`.
+            boot.board.state_mut().rflags &= !(1 << 9);
+            let report = run_set(&mut boot, 400);
+            assert_eq!(
+                report.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(report.irq.halt_wakes, 1, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            assert_eq!(boot.board.state().gpr[Register::Rax as usize] as u8, 0x5A);
+            assert_eq!(boot.board.state().gpr[Register::Rsi as usize], 1);
+        }
+
+        /// With nothing received the line stays low: `STI; HLT` ends the run as `halted`, no
+        /// wake and no delivery (the UART source gives a wake only for a live request).
+        #[test]
+        fn a_halted_cpu_with_a_quiet_uart_is_not_woken() {
+            let mut boot = uart_board_empty(&uart_halt_guest(ENTRY4_EDGE), true);
+            boot.board.state_mut().rflags &= !(1 << 9);
+            let report = run_set(&mut boot, 400);
+            assert_eq!(report.run.exit, PagedProbeExit::Halted, "{report:?}");
+            assert_eq!(report.irq.halt_wakes, 0, "{report:?}");
+            assert_eq!(report.irq.irqs_delivered, 0, "{report:?}");
+            assert_eq!(boot.board.state().activity, Some(CpuActivity::Halted));
+        }
+
+        /// A level request refused by a software-disabled Local APIC (SVR bit 8 clear) is not
+        /// lost: the source keeps trying, and once the guest enables the SVR the vector is
+        /// delivered, exactly once (one accepted rise, one refused rise).
+        #[test]
+        fn a_refused_intin4_rise_is_retried_after_the_local_apic_is_enabled() {
+            let mut code = uart_setup_with(ENTRY4_LEVEL, 0x0FF, 0x01);
+            code.extend(mov32(0, 0x1FF));
+            code.extend([0x89, 0x83, 0xF0, 0x00, 0x00, 0x00]); // MOV [RBX+0xF0], EAX
+            code.push(0xFB); // STI
+            code.extend([0xEB, 0xFE]);
+            let mut boot = uart_board(&code, true);
+            // IF = 0 until the guest's `STI`, after the SVR enable.
+            boot.board.state_mut().rflags &= !(1 << 9);
+            let report = run_set(&mut boot, 400);
+            assert_eq!(
+                report.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(report.irq.irqs_delivered, 1, "{report:?}");
+            assert_eq!(boot.board.state().gpr[Register::Rsi as usize], 1);
+            let source = boot.board.uart_ioapic_source().expect("installed");
+            assert_eq!((source.uart_refused(), source.uart_edges()), (1, 1));
+            assert_eq!(boot.board.uart().received_byte(), None);
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false)
+            );
+        }
+
+        /// The THRE interrupt through INTIN4 (edge form): the handler writes the next byte of a
+        /// table to THR (the THRE condition drops) and the loop's pump raises it again, one edge
+        /// per byte; the NUL at the end writes nothing. N bytes give N + 1 deliveries (the IER
+        /// enable is the first) and the N bytes reach COM1.
+        #[test]
+        fn the_thre_interrupt_through_intin4_sends_one_byte_per_delivery() {
+            const TABLE: u64 = DATA + 0x3000;
+            const MESSAGE: &[u8] = b"OD_NONCE=s4-38\n";
+            let mut code = uart_setup_with(ENTRY4_EDGE, 0x1FF, 0x02);
+            code.push(0xFB); // STI
+            code.extend([0xEB, 0xFE]);
+            let mut boot = uart_board_empty(&code, true);
+            // `MOV AL, [RSI]; TEST AL, AL; JZ +8; MOV DX, 0x3F8; OUT DX, AL; INC RSI;
+            // XOR EAX, EAX; MOV [RBX+0xB0], EAX; IRETQ`.
+            let handler = [
+                vec![0x8A, 0x06, 0x84, 0xC0, 0x74, 0x08],
+                vec![0x66, 0xBA, 0xF8, 0x03, 0xEE, 0x48, 0xFF, 0xC6],
+                vec![0x31, 0xC0, 0x89, 0x83, 0xB0, 0x00, 0x00, 0x00, 0x48, 0xCF],
+            ]
+            .concat();
+            write_phys(&mut boot, IRQ_HANDLER_AT, &handler);
+            let mut table = MESSAGE.to_vec();
+            table.push(0);
+            write_phys(&mut boot, TABLE, &table);
+            boot.board.state_mut().gpr[Register::Rsi as usize] = TABLE;
+            let report = run_set(&mut boot, 1500);
+            assert_eq!(
+                report.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(boot.board.com1_transcript(), MESSAGE, "{report:?}");
+            assert_eq!(
+                report.irq.irqs_delivered,
+                MESSAGE.len() as u64 + 1,
+                "{report:?}"
+            );
+            let source = boot.board.uart_ioapic_source().expect("installed");
+            assert_eq!(source.uart_edges(), MESSAGE.len() as u64 + 1);
+            assert_eq!(source.uart_refused(), 0);
+        }
+
+        // ---- S4-38L9-um: the user mode under the APIC profile (ISSUE-090 for the APIC board) ----
+
+        /// A user-mode board for the APIC profile: `user_mode_board_with` plus the APIC windows,
+        /// the kernel code descriptor at GDT 0x08, an interrupt gate `IRQ_VECTOR` to the handler
+        /// at `USER_HANDLER_AT` (guest EOI, `IRETQ`; `RBX` = the Local APIC base from the prefix and
+        /// `EAX` = 0 from the user spin) and a task register over a TSS whose RSP0 is `USER_RSP0`.
+        /// `prefix` is the CPL0 setup that runs before the `IRETQ` to CPL3.
+        fn user_apic_board(
+            prefix: &[u8],
+            user_code: &[u8],
+            user_rflags: u64,
+        ) -> (LinuxDirectBoot, Vec<u8>) {
+            let (mut boot, file) = user_mode_board_with(prefix, user_code, true, user_rflags);
+            map_apic_windows(&mut boot);
+            write_phys(
+                &mut boot,
+                USER_GDT + 0x08,
+                &0x00af_9b00_0000_ffff_u64.to_le_bytes(),
+            );
+            write_phys(&mut boot, USER_HANDLER_AT, &handler(true));
+            let mut gate = [0u8; 16];
+            gate[0..2].copy_from_slice(&(USER_HANDLER_AT as u16).to_le_bytes());
+            gate[2..4].copy_from_slice(&0x08u16.to_le_bytes());
+            gate[5] = 0x8E;
+            gate[6..8].copy_from_slice(&((USER_HANDLER_AT >> 16) as u16).to_le_bytes());
+            write_phys(&mut boot, USER_IDT_AT + u64::from(IRQ_VECTOR) * 16, &gate);
+            write_phys(&mut boot, USER_TSS_AT + 4, &USER_RSP0.to_le_bytes());
+            let state = boot.board.state_mut();
+            state.idtr = Some(od_isa::state::Idtr {
+                base: USER_IDT_AT,
+                limit: 0xFFF,
+            });
+            state.tr = Some(od_isa::TaskRegisterCache {
+                selector: 0x20,
+                base: USER_TSS_AT,
+                limit: 0x67,
+                access: 0x8B,
+                flags: 0,
+            });
+            (boot, file)
+        }
+
+        /// CPL3 code: `MOV EAX, 0; JMP -7` (a spin that retires two instructions per turn and
+        /// keeps `EAX` = 0 for the handler's EOI write).
+        const USER_SPIN: [u8; 7] = [0xB8, 0, 0, 0, 0, 0xEB, 0xF9];
+
+        fn run_user_apic(boot: &mut LinuxDirectBoot, file: &[u8], budget: u64) -> LinuxStopRecord {
+            run_linux_direct_board_set_user_mode(
+                boot,
+                &input(file, &[], BLOB, board_hash()),
+                budget,
+                members(CpuidProfile::X8664V1Stage4AApic),
+            )
+            .expect("the APIC profile runs in user mode")
+        }
+
+        /// The Local APIC timer armed by the host before the run (the clock owner of the facade
+        /// then cuts the first quantum at its deadline): SVR enabled, a one-shot LVT timer of
+        /// `IRQ_VECTOR`, divider 1, `count` counts of 10 ns. A timer armed by the guest inside a
+        /// quantum is dispatched at the next quantum boundary (a Local APIC write does not end
+        /// the quantum), so these tests do not arm it from the guest.
+        fn arm_lapic_timer(boot: &mut LinuxDirectBoot, count: u64) {
+            for (offset, value) in [
+                (0xF0, 0x1ff),
+                (0x320, u64::from(IRQ_VECTOR)),
+                (0x3E0, 0xB),
+                (0x380, count),
+            ] {
+                boot.board
+                    .bus_mut()
+                    .write_physical(
+                        GuestPhysicalAddress::new(LOCAL_APIC_MMIO_BASE + offset),
+                        crate::AccessWidth::Dword,
+                        value,
+                        |_| {},
+                    )
+                    .expect("the register accepts the write");
+            }
+        }
+
+        #[test]
+        fn a_lapic_timer_irq_in_cpl3_goes_through_the_idt_and_iretq_returns_to_cpl3() {
+            // The timer, armed by the host, fires at 200 ns, while the user spin runs (one
+            // instruction is one ns; the `IRETQ` to CPL3 retires at 1 ns). The handler runs at
+            // CPL0 on `TSS.RSP0`, writes the EOI and `IRETQ`s to the spin, which goes on to the
+            // end of the budget.
+            let (mut boot, file) =
+                user_apic_board(&mov32(3, LOCAL_APIC_MMIO_BASE as u32), &USER_SPIN, 0x202);
+            arm_lapic_timer(&mut boot, 20);
+            let record = run_user_apic(&mut boot, &file, 1000);
+            assert_eq!(record.exit_kind, "budget_exhausted", "{record:?}");
+            assert_eq!(record.irqs_delivered, 1, "{record:?}");
+            assert_eq!(record.irq_refused_masked, 0, "{record:?}");
+            assert_eq!(record.cpl, 3, "{record:?}");
+            assert_eq!(record.retired, 1000, "{record:?}");
+            // The user code kept retiring after the return: the IRQ came after about 200 retired
+            // user instructions, and everything but the `IRETQ` and the two handler
+            // instructions is user code.
+            assert!(record.cpl3_retired > 900, "{record:?}");
+            assert!(
+                (USER_CODE_AT..USER_CODE_AT + 7).contains(&record.rip),
+                "{record:?}"
+            );
+            assert_eq!(
+                record.gpr[Register::Rsp as usize],
+                ENTRY + 0x800,
+                "the frame on TSS.RSP0 was popped by the IRETQ"
+            );
+            for name in ["user_mode", "irq", "clock_owner", "halt"] {
+                assert!(
+                    record.set_members.iter().any(|member| member == name),
+                    "{name}: {:?}",
+                    record.set_members
+                );
+            }
+            // The handler's EOI (a CPL0 access to the Local APIC) cleared the vector.
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false)
+            );
+            let frame = USER_RSP0 & !15;
+            // The frame the delivery pushed (no error code for an external vector) is still in
+            // memory: the CPL3 SS, RSP, RFLAGS (IF set), CS and the interrupted user RIP.
+            assert_eq!(read_qword(&mut boot, frame - 8), 0x1b, "SS");
+            assert_eq!(read_qword(&mut boot, frame - 16), ENTRY + 0x800, "RSP");
+            assert_ne!(read_qword(&mut boot, frame - 24) & (1 << 9), 0, "RFLAGS.IF");
+            assert_eq!(read_qword(&mut boot, frame - 32), 0x13, "CS");
+            let rip = read_qword(&mut boot, frame - 40);
+            assert!((USER_CODE_AT..USER_CODE_AT + 7).contains(&rip), "{rip:#x}");
+        }
+
+        #[test]
+        fn a_pit_ioapic_irq_in_cpl3_is_delivered_each_period_and_the_user_code_goes_on() {
+            // PIT mode 2, count 10 (one edge every 8381 ns), entry 2 -> `IRQ_VECTOR`, all set up
+            // by the guest at CPL0 before the `IRETQ`. Two edges fall in 20000 ns.
+            let mut prefix = apic_setup(u32::from(IRQ_VECTOR));
+            prefix.extend(pit_program(0x34, 10));
+            let (mut boot, file) = user_apic_board(&prefix, &USER_SPIN, 0x202);
+            let record = run_user_apic(&mut boot, &file, 20_000);
+            assert_eq!(record.exit_kind, "budget_exhausted", "{record:?}");
+            assert!(record.irqs_delivered >= 2, "{record:?}");
+            assert_eq!(record.irq_refused_masked, 0, "{record:?}");
+            assert_eq!(record.cpl, 3, "{record:?}");
+            assert!(record.cpl3_retired > 19_000, "{record:?}");
+            assert_eq!(record.gpr[Register::Rsp as usize], ENTRY + 0x800);
+            let source = boot.board.pit_ioapic_source().expect("installed");
+            let stats = source.stats();
+            assert_eq!(stats.acknowledged, record.irqs_delivered, "{stats:?}");
+            assert_eq!(
+                (stats.edges_refused, stats.ack_refused, stats.queue_faults),
+                (0, 0, 0),
+                "{stats:?}"
+            );
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false)
+            );
+        }
+
+        #[test]
+        fn a_cpl3_irq_with_if_clear_is_refused_as_masked_and_stays_pending() {
+            // The `IRETQ` frame carries IF = 0: the timer vector reaches the Local APIC IRR and
+            // each user instruction boundary counts a masked refusal; nothing is delivered and
+            // the run does not fail.
+            let (mut boot, file) =
+                user_apic_board(&mov32(3, LOCAL_APIC_MMIO_BASE as u32), &USER_SPIN, 0x2);
+            arm_lapic_timer(&mut boot, 20);
+            let record = run_user_apic(&mut boot, &file, 1000);
+            assert_eq!(record.exit_kind, "budget_exhausted", "{record:?}");
+            assert_eq!(record.irqs_delivered, 0, "{record:?}");
+            assert!(record.irq_refused_masked > 100, "{record:?}");
+            assert_eq!(record.cpl, 3, "{record:?}");
+            assert_eq!(record.exceptions_delivered, 0, "{record:?}");
+            assert!(record.cpl3_retired > 900, "{record:?}");
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (true, false),
+                "the vector waits in the IRR"
+            );
+            assert_eq!(boot.board.state().rflags & (1 << 9), 0);
+        }
+
+        /// S4-38L8g: `MOV ECX, 0x1B; MOV EDX, 0x66; <body>; HLT`.
+        fn apic_base_guest(body: &[u8]) -> Vec<u8> {
+            let mut code = mov32(1, 0x1B);
+            code.extend(mov32(2, 0x66));
+            code.extend_from_slice(body);
+            code.push(0xF4);
+            code
+        }
+
+        /// `MOV EAX, eax; MOV EDX, edx; WRMSR` (the guest's ECX is 0x1B from the prologue).
+        fn wrmsr_apic_base(eax: u32, edx: u32) -> Vec<u8> {
+            let mut code = mov32(0, eax);
+            code.extend(mov32(2, edx));
+            code.extend([0x0F, 0x30]);
+            code
+        }
+
+        #[test]
+        fn rdmsr_0x1b_returns_the_apic_base_with_bsp_and_en_under_the_apic_profile() {
+            let (mut boot, file) = boot_with_entry(&apic_base_guest(&[0x0F, 0x32]));
+            let record = run_set_facade(
+                &mut boot,
+                &file,
+                64,
+                members(CpuidProfile::X8664V1Stage4AApic),
+            );
+            assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+            // Oracle (SDM, by hand): base 0xFEE00000 | BSP (bit 8) | EN (bit 11) = 0xFEE00900.
+            assert_eq!(record.gpr[Register::Rax as usize], 0xFEE0_0900);
+            assert_eq!(record.gpr[Register::Rdx as usize], 0);
+            assert_eq!(record.gpr[Register::Rcx as usize], 0x1B);
+            assert!(record.set_members.iter().any(|m| m == "msr:apic_base"));
+        }
+
+        #[test]
+        fn wrmsr_0x1b_accepts_only_the_matching_fields_and_refuses_the_rest_unchanged() {
+            let apic = || members(CpuidProfile::X8664V1Stage4AApic);
+            // The kernel's own value is accepted, and the read after it is the same constant.
+            let mut body = wrmsr_apic_base(0xFEE0_0900, 0);
+            body.extend([0x0F, 0x32]);
+            let (mut boot, file) = boot_with_entry(&apic_base_guest(&body));
+            let record = run_set_facade(&mut boot, &file, 64, apic());
+            assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+            assert_eq!(record.gpr[Register::Rax as usize], 0xFEE0_0900);
+            assert_eq!(record.gpr[Register::Rdx as usize], 0);
+            // Another base, EN or BSP clear, an upper half: a typed refusal before the write.
+            for (eax, edx) in [
+                (0xFEE0_1900u32, 0u32),
+                (0xFEE0_0800, 0),
+                (0xFEE0_0100, 0),
+                (0xFEE0_0900, 1),
+            ] {
+                let (mut boot, file) =
+                    boot_with_entry(&apic_base_guest(&wrmsr_apic_base(eax, edx)));
+                let record = run_set_facade(&mut boot, &file, 64, apic());
+                assert_eq!(
+                    record.exit,
+                    PagedProbeExit::Unsupported { opcode: 0x30 },
+                    "{eax:#x}:{edx:#x} {record:?}"
+                );
+                assert_eq!(record.retired, 4, "MOV ECX, MOV EDX, MOV EAX, MOV EDX");
+                assert_eq!(record.gpr[Register::Rax as usize], u64::from(eax));
+                assert_eq!(record.gpr[Register::Rdx as usize], u64::from(edx));
+            }
+        }
+
+        #[test]
+        fn stage4a_and_the_default_keep_the_0x1b_msr_access_refused() {
+            for profile in [CpuidProfile::X8664V1Stage4A, CpuidProfile::DiagnosticV1] {
+                let (mut boot, file) = boot_with_entry(&apic_base_guest(&[0x0F, 0x32]));
+                let record = run_set_facade(&mut boot, &file, 64, members(profile));
+                // Unchanged since S4-38L9v: the read of an unmodelled index is `#GP(0)` (no IDT
+                // here, so the run ends with the fault), RAX and RDX as the MOVs left them.
+                assert_eq!(
+                    record.exit,
+                    PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+                        vector: 13,
+                        error_code: Some(0),
+                        linear_address: None,
+                    }),
+                    "{record:?}"
+                );
+                assert_eq!(record.retired, 2, "MOV ECX, MOV EDX; the RDMSR faults");
+                assert_eq!(record.gpr[Register::Rdx as usize], 0x66);
+                assert!(!record.set_members.iter().any(|m| m == "msr:apic_base"));
+                let (mut boot, file) =
+                    boot_with_entry(&apic_base_guest(&wrmsr_apic_base(0xFEE0_0900, 0)));
+                let record = run_set_facade(&mut boot, &file, 64, members(profile));
+                assert_eq!(
+                    record.exit,
+                    PagedProbeExit::Unsupported { opcode: 0x30 },
+                    "{record:?}"
+                );
+            }
+            assert!(!LinuxCpl0SetMembers::minimal().msr_apic_base);
+            assert!(!LinuxCpl0SetMembers::linux_default().msr_apic_base);
+        }
+    }
+
     // ---- S4-38L9s: ECAM (PCI MMCONFIG) data accesses of the set loop ----
 
     /// GPA of the ECAM byte for bus 0, `device`, `function`, `register`.
@@ -13582,11 +18022,11 @@ mod tests {
             width: crate::AccessWidth::Dword,
         };
         assert_eq!(
-            io.window(),
-            (
+            io.windows(),
+            [(
                 crate::PCI_ECAM_DESCRIPTOR.base,
                 crate::PCI_ECAM_DESCRIPTOR.size
-            )
+            )]
         );
         for base in [LOCAL_APIC_MMIO_BASE, IO_APIC_MMIO_BASE] {
             assert!(
@@ -13645,4 +18085,356 @@ mod tests {
         );
         assert_ne!(out.report.exit, PagedCpl0SetExit::Run(RunExit::Halted));
     }
+
+    // ---- S4-38L4i: the opt-in checkpoint recorder on the board ----
+
+    fn target(id: u8, name: &str, pa: u64) -> crate::LinuxCheckpointTarget {
+        target_at(id, name, None, pa)
+    }
+
+    fn target_at(id: u8, name: &str, va: Option<u64>, pa: u64) -> crate::LinuxCheckpointTarget {
+        crate::LinuxCheckpointTarget {
+            id,
+            name: name.to_string(),
+            va,
+            pa: Some(pa),
+            cpl3: false,
+            after: None,
+        }
+    }
+
+    /// Runs `cr3_switch_program` through the board loop with the recorder and returns its records
+    /// and the run report (`Debug` text, for equality) of a fresh board each time.
+    fn run_switch_with_recorder(
+        targets: Option<Vec<crate::LinuxCheckpointTarget>>,
+        fetch_cache: bool,
+        budget: u64,
+    ) -> (Option<Vec<crate::LinuxCheckpointRecord>>, String) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let (mut boot, _) = boot_with_entry(&cr3_switch_program(TREE_PML4, 0x1111));
+        install_second_tree(&mut boot, 0x2222);
+        if let Some(targets) = targets {
+            boot.board
+                .enable_checkpoints(crate::LinuxCheckpointTable { targets })
+                .expect("valid table");
+        }
+        let report = boot
+            .board
+            .run_linux_boot_cpl0_set(budget, &switch_set(&cli, &halt), false, fetch_cache, false)
+            .expect("runs");
+        (boot.board.take_checkpoints(), format!("{report:?}"))
+    }
+
+    #[test]
+    fn checkpoints_follow_the_boundaries_of_the_board_loop_in_order() {
+        // CLI, MOV RAX, MOV CR3 (retired 3), then the old RIP + 0xB is fetched through the new
+        // tree: its physical address is in the code page of the second tree, not at ENTRY + 0xB.
+        let new_gpa = TREE_CODE + 0x20B;
+        for fetch_cache in [false, true] {
+            let (records, _) = run_switch_with_recorder(
+                Some(vec![
+                    target_at(8, "after_cr3", Some(ENTRY + 0xB), new_gpa),
+                    target_at(9, "old_mapping", Some(ENTRY + 0xB), ENTRY + 0xB),
+                    target_at(10, "halt", Some(ENTRY + 0x12), TREE_CODE + 0x212),
+                ]),
+                fetch_cache,
+                64,
+            );
+            let records = records.expect("recorder was enabled");
+            let ids: Vec<u8> = records.iter().map(|record| record.id).collect();
+            assert_eq!(ids, [0, 3, 8, 10], "{records:?}");
+            let by = |id: u8| records.iter().find(|record| record.id == id).unwrap();
+            let c0 = by(0);
+            assert_eq!(
+                (c0.rip, c0.gpa, c0.retired, c0.quanta, c0.cr3),
+                (ENTRY, Some(ENTRY), 0, 1, c0.cr3)
+            );
+            let board_cr3 = c0.cr3;
+            assert_ne!(board_cr3, TREE_PML4);
+            let c3 = by(3);
+            assert_eq!(
+                (c3.kind, c3.rip, c3.retired),
+                ("after_event", ENTRY + 0xB, 3)
+            );
+            assert_eq!((c3.cr3, c3.gpa), (TREE_PML4, Some(new_gpa)));
+            let c8 = by(8);
+            assert_eq!(
+                (c8.rip, c8.gpa, c8.retired, c8.virtual_ns, c8.cpl),
+                (ENTRY + 0xB, Some(new_gpa), 3, 3, 0)
+            );
+            assert_eq!(c8.bytes.len(), 16);
+            // The HLT, the fourth instruction: the table row of the old mapping never matched.
+            let c10 = by(10);
+            assert_eq!(
+                (c10.rip, c10.retired, c10.name.as_str()),
+                (ENTRY + 0x12, 4, "halt")
+            );
+        }
+    }
+
+    #[test]
+    fn the_recorder_does_not_change_the_run() {
+        for fetch_cache in [false, true] {
+            let (none, without) = run_switch_with_recorder(None, fetch_cache, 64);
+            assert_eq!(none, None);
+            let (some, with) = run_switch_with_recorder(Some(Vec::new()), fetch_cache, 64);
+            assert!(some.is_some_and(|records| !records.is_empty()));
+            assert_eq!(with, without, "fetch_cache {fetch_cache}");
+        }
+        // A budget that ends the run right after the MOV CR3 (before the next fetch).
+        let (_, without) = run_switch_with_recorder(None, false, 3);
+        let (records, with) = run_switch_with_recorder(Some(Vec::new()), false, 3);
+        assert_eq!(with, without);
+        let records = records.unwrap();
+        // The budget ended the run on the boundary after the MOV CR3: C3 is not seen (the boundary
+        // hook runs after the budget check), and nothing past C0 is invented.
+        assert_eq!(records.iter().map(|r| r.id).collect::<Vec<_>>(), [0]);
+    }
+
+    // ---- S4-13b: the opt-in fetch cache report of the board loop ----
+
+    /// `run_switch_with_recorder` with the report requested or not; returns the `Debug` text of
+    /// the run report and the fetch cache report.
+    fn run_switch_with_fetch_report(
+        targets: Option<Vec<crate::LinuxCheckpointTarget>>,
+        fetch_cache: bool,
+        report_on: bool,
+    ) -> (String, Option<crate::LinuxFetchCacheReport>) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let (mut boot, _) = boot_with_entry(&cr3_switch_program(TREE_PML4, 0x1111));
+        install_second_tree(&mut boot, 0x2222);
+        if let Some(targets) = targets {
+            boot.board
+                .enable_checkpoints(crate::LinuxCheckpointTable { targets })
+                .expect("valid table");
+        }
+        if report_on {
+            boot.board.enable_fetch_cache_report();
+        }
+        let report = boot
+            .board
+            .run_linux_boot_cpl0_set(64, &switch_set(&cli, &halt), false, fetch_cache, false)
+            .expect("runs");
+        let fetch_report = boot.board.take_fetch_cache_report();
+        // Taking the report ends the request: a second take has nothing.
+        assert_eq!(boot.board.take_fetch_cache_report(), None);
+        (format!("{report:?}"), fetch_report)
+    }
+
+    /// The report changes nothing in the run, is split at the boundary of C5 (the HLT here, the
+    /// fifth instruction) and its phases add up to the total.
+    #[test]
+    fn fetch_cache_report_splits_at_c5_and_leaves_the_run_unchanged() {
+        let c5 = || {
+            Some(vec![target_at(
+                5,
+                "e_entry",
+                Some(ENTRY + 0x12),
+                TREE_CODE + 0x212,
+            )])
+        };
+        let mut walks_by_cache = Vec::new();
+        for fetch_cache in [false, true] {
+            let (plain, none) = run_switch_with_fetch_report(c5(), fetch_cache, false);
+            assert_eq!(none, None, "no opt-in, no report");
+            let (observed, report) = run_switch_with_fetch_report(c5(), fetch_cache, true);
+            assert_eq!(observed, plain, "fetch_cache {fetch_cache}");
+            let report = report.expect("requested");
+            assert_eq!(report.cache_enabled, fetch_cache);
+            assert_eq!(report.phase_rule, crate::FETCH_CACHE_PHASE_RULE_C5);
+            assert!(report.c5_reached);
+            // Four instructions retire before the boundary of C5 (the HLT, as in the checkpoint
+            // test above); the HLT itself is after it.
+            assert_eq!(report.total.retired, 5);
+            assert_eq!(report.before_c5.retired, 4);
+            assert_eq!(report.after_c5.retired, 1);
+            assert_eq!((report.total.calls, report.before_c5.calls), (1, 1));
+            assert_eq!(report.after_c5.calls, 0);
+            // The HLT after the boundary is fetched by a walk or served by the cache.
+            assert!(report.after_c5.walks.fetch + report.after_c5.cache.hits > 0);
+            let mut both = report.before_c5;
+            both += report.after_c5;
+            assert_eq!(both, report.total);
+            assert!(report.total.walks.fetch > 0, "{report:?}");
+            if fetch_cache {
+                assert!(report.total.cache.hits > 0, "{report:?}");
+                assert!(report.total.cache.misses > 0, "{report:?}");
+                assert!(report.total.cache.context_flushes > 0, "{report:?}");
+            } else {
+                assert_eq!(report.total.cache, crate::FetchCacheStats::default());
+            }
+            walks_by_cache.push(report.total.walks);
+        }
+        let (plain, cached) = (walks_by_cache[0], walks_by_cache[1]);
+        assert_eq!(plain.data_read, cached.data_read);
+        assert_eq!(plain.data_write, cached.data_write);
+        assert!(cached.fetch < plain.fetch, "{cached:?} {plain:?}");
+    }
+
+    /// Without the checkpoint recorder nothing is split: everything is phase 1 and the report
+    /// says which rule applied.
+    #[test]
+    fn fetch_cache_report_without_checkpoints_has_no_split() {
+        let (_, report) = run_switch_with_fetch_report(None, true, true);
+        let report = report.expect("requested");
+        assert_eq!(report.phase_rule, crate::FETCH_CACHE_PHASE_RULE_NONE);
+        assert!(!report.c5_reached);
+        assert_eq!(report.before_c5, report.total);
+        assert_eq!(report.after_c5, crate::LinuxFetchCachePhase::default());
+        assert_eq!(report.total.retired, 5);
+    }
+
+    // ---- S4-13c: the opt-in shadow caches of the board loop ----
+
+    /// `run_switch_with_fetch_report` with the sweep asked for or not (the fetch report is on in
+    /// both runs); returns the `Debug` text of the run report and both reports.
+    fn run_switch_with_sweep(
+        sweep_on: bool,
+        fetch_cache: bool,
+    ) -> (
+        String,
+        Option<crate::LinuxFetchCacheReport>,
+        Option<crate::FetchSweepReport>,
+    ) {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let (mut boot, _) = boot_with_entry(&cr3_switch_program(TREE_PML4, 0x1111));
+        install_second_tree(&mut boot, 0x2222);
+        boot.board
+            .enable_checkpoints(crate::LinuxCheckpointTable {
+                targets: vec![target_at(
+                    5,
+                    "e_entry",
+                    Some(ENTRY + 0x12),
+                    TREE_CODE + 0x212,
+                )],
+            })
+            .expect("valid table");
+        boot.board.enable_fetch_cache_report();
+        if sweep_on {
+            boot.board
+                .enable_fetch_cache_sweep(crate::SweepConfig::full_grid());
+        }
+        let report = boot
+            .board
+            .run_linux_boot_cpl0_set(64, &switch_set(&cli, &halt), false, fetch_cache, false)
+            .expect("runs");
+        let fetch_report = boot.board.take_fetch_cache_report();
+        let sweep = boot.board.take_fetch_cache_sweep();
+        // Taking the result ends the request.
+        assert_eq!(boot.board.take_fetch_cache_sweep(), None);
+        (format!("{report:?}"), fetch_report, sweep)
+    }
+
+    /// The sweep leaves the run and the real cache's counters as they were, the reference shadow
+    /// counts exactly like the real cache in both phases and in total, and no sweep is built
+    /// without the cache or without the request.
+    #[test]
+    fn the_sweep_leaves_the_board_run_unchanged_and_the_reference_shadow_equals_the_real_cache() {
+        let (plain, plain_fetch, none) = run_switch_with_sweep(false, true);
+        assert_eq!(none, None, "no request, no sweep");
+        let (observed, fetch, sweep) = run_switch_with_sweep(true, true);
+        assert_eq!(observed, plain, "the run report is the same byte for byte");
+        assert_eq!(fetch, plain_fetch, "the real cache counts the same");
+        let sweep = sweep.expect("requested");
+        assert!(sweep.c5_reached);
+        assert_eq!(sweep.configs.len(), 112);
+        let reference = sweep
+            .find(crate::SweepConfig::REFERENCE)
+            .expect("the grid has the reference");
+        let fetch = fetch.expect("report on");
+        assert_eq!(reference.total, fetch.total.cache);
+        assert_eq!(reference.before_c5, fetch.before_c5.cache);
+        assert_eq!(reference.after_c5, fetch.after_c5.cache);
+        assert!(reference.total.hits > 0 && reference.total.context_flushes > 0);
+        // One call, hence one start of the shadows.
+        assert_eq!(sweep.events.calls, fetch.total.calls);
+        // Without the cache there are no events and no sweep.
+        let (_, _, without_cache) = run_switch_with_sweep(true, false);
+        assert_eq!(without_cache, None);
+    }
+
+    #[test]
+    fn checkpoints_through_the_facade_cpuid_leaves_and_the_c7_stop() {
+        // CLI; MOV EAX, 0; CPUID; MOV EAX, 1; CPUID. DiagnosticV1 answers leaf 0 and stops before
+        // leaf 1 (cpuid_divergence), at the address the table calls C7.
+        let program = [
+            0xFA, 0xB8, 0, 0, 0, 0, 0x0F, 0xA2, 0xB8, 1, 0, 0, 0, 0x0F, 0xA2,
+        ];
+        let c7_gpa = ENTRY + 13;
+        let table = crate::LinuxCheckpointTable {
+            targets: vec![
+                target(7, "cpuid1", c7_gpa),
+                // One byte off: the same instruction, but not this address.
+                target(8, "shifted", c7_gpa + 1),
+            ],
+        };
+        let members = LinuxCpl0SetMembers::linux_default();
+        let (mut boot, file) = boot_with_entry(&program);
+        let with = run_linux_direct_board_set_observed(
+            &mut boot,
+            &input(&file, &[], BLOB, board_hash()),
+            64,
+            members,
+            false,
+            Some(table),
+        )
+        .expect("runs");
+        assert_eq!(with.exit_kind, "cpuid_divergence");
+        assert_eq!(with.cpuid_divergence_leaf, Some(1));
+        let records = with.checkpoints.clone().expect("enabled");
+        assert_eq!(
+            records.iter().map(|record| record.id).collect::<Vec<_>>(),
+            [0, 6, 7]
+        );
+        let c6 = &records[1];
+        assert_eq!((c6.rip, c6.retired, c6.kind), (ENTRY + 6, 2, "boundary"));
+        let c7 = &records[2];
+        // The boundary of the stop: the same retired and quanta count as the stop record.
+        assert_eq!((c7.rip, c7.gpa), (c7_gpa, Some(c7_gpa)));
+        assert_eq!((c7.retired, c7.quanta), (with.retired, with.quanta));
+        assert_eq!(c7.virtual_ns, with.virtual_ns);
+        assert_eq!(with.retired, 4);
+
+        // The same run without the table: the record is equal except for the field.
+        let (mut boot, file) = boot_with_entry(&program);
+        let without = run_linux_direct_board_set(
+            &mut boot,
+            &input(&file, &[], BLOB, board_hash()),
+            64,
+            members,
+        )
+        .expect("runs");
+        assert_eq!(without.checkpoints, None);
+        let mut with = with;
+        with.checkpoints = None;
+        assert_eq!(with, without);
+    }
+
+    #[test]
+    fn a_checkpoint_table_with_an_id_out_of_range_is_refused_before_the_run() {
+        let (mut boot, file) = boot_with_entry(&CHECKPOINT_PROGRAM_HLT);
+        let error = run_linux_direct_board_set_observed(
+            &mut boot,
+            &input(&file, &[], BLOB, board_hash()),
+            64,
+            LinuxCpl0SetMembers::linux_default(),
+            false,
+            Some(crate::LinuxCheckpointTable {
+                targets: vec![target(18, "beyond", ENTRY)],
+            }),
+        )
+        .expect_err("refused");
+        assert_eq!((error.code, error.stage), ("run_failed", "run"));
+        assert_eq!(error.retired, Some(0));
+        assert!(error.detail.contains("IdOutOfRange"), "{error:?}");
+        // Nothing ran and no recorder was left on the board.
+        assert_eq!(boot.board.state().rip, ENTRY);
+        assert_eq!(boot.board.take_checkpoints(), None);
+    }
+
+    const CHECKPOINT_PROGRAM_HLT: [u8; 1] = [0xF4];
+
+    // ---- S4-09f: system acceptance of the A/D bits through the set loop ----
+
+    mod stage4_ad_acceptance;
 }

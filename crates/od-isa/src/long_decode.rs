@@ -915,7 +915,8 @@ pub enum Operation {
     },
     /// Bare (no LOCK) long-mode qword XADD from a GPR into ordinary memory. S4-38L9k: the dword
     /// form (no REX.W) decodes here too; both widths execute in the CPL0 set as `LockXaddMem`
-    /// (on one vCPU LOCK changes nothing), outside it only the qword form exists (atomic call).
+    /// (both go through the single atomic API, S6-20), outside it the qword form and, in the
+    /// bare run, the dword LOCK form exist.
     XaddMemory {
         destination: MemoryOperand,
         source: RegisterView,
@@ -923,8 +924,8 @@ pub enum Operation {
     /// S4-38L7ay: `F0 [REX] 0F C1 /r` (LOCK XADD m32, r32, or m64, r64 with REX.W), memory
     /// destination only. Outside the CPL0 set the qword form keeps the S2-21f behaviour (one
     /// `GuestMemory::atomic_fetch_add_integer` call) and the dword form is refused; in the CPL0
-    /// set it is read -> write on the single vCPU (the sum is always written back, the register
-    /// source receives the old value).
+    /// set it is one `atomic_rmw_integer` call (the sum is always written back, the register
+    /// source receives the old value; see CPU_CONTRACT S6-20).
     LockXaddMem {
         destination: MemoryOperand,
         source: RegisterView,
@@ -939,8 +940,9 @@ pub enum Operation {
     },
     /// S4-38L9x: `64 [REX] 0F C0 /r` (XADD m8, r8), `64 [66] [REX] 0F C1 /r` (XADD m16, r16, or
     /// m32, r32) with the FS base, memory destination only, no LOCK; the qword form (REX.W) is
-    /// refused. Executed only in the CPL0 set, as `LockXaddMem` on one vCPU (read -> write, the old
-    /// value goes to the register) with the address taken from the FS base.
+    /// refused. Executed only in the CPL0 set, as `LockXaddMem` (the old value goes to the
+    /// register) with the address taken from the FS base; see CPU_CONTRACT S6-20 (DS -> LOCK
+    /// decision).
     XaddFsMem {
         destination: MemoryOperand,
         source: RegisterView,
@@ -8401,8 +8403,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 // legacy prefix, which would silently change the width).
                 let ds = ds_lock_substitute(&prefixes, &prefix_bytes[..prefix_count]);
                 // S4-38L9k: the bare memory form (no LOCK, no segment byte; 0x66/0x67 are refused
-                // below) is the LOCK-equivalent on the single vCPU (the kernel leaves it where its
-                // SMP-alternatives patch does not apply). The dword form decodes to `XaddMemory`
+                // below) is executed as the LOCK form (CPU_CONTRACT S6-20, DS -> LOCK decision;
+                // the kernel leaves it where its SMP-alternatives patch does not apply). The dword form decodes to `XaddMemory`
                 // as well; the execute gate lets the qword form run outside the CPL0 set (the
                 // S2-21d atomic fetch-add) and both widths inside it (Ring0).
                 let plain = prefixes.group1.is_none() && prefixes.segment.is_none();
@@ -8539,9 +8541,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 // the DS byte in place of LOCK (`ds_lock_substitute`); the register form with DS
                 // stays refused.
                 let ds = ds_lock_substitute(&prefixes, &prefix_bytes[..prefix_count]);
-                // S4-38L9k: the bare memory form (no LOCK, no segment byte) is the LOCK-equivalent
-                // on the single vCPU and decodes to `CmpxchgMemory` (dword and qword); the
-                // register form stays qword only.
+                // S4-38L9k: the bare memory form (no LOCK, no segment byte) is executed as the LOCK
+                // form (see CPU_CONTRACT S6-20, DS -> LOCK decision) and decodes to `CmpxchgMemory`
+                // (dword and qword); the register form stays qword only.
                 let plain = prefixes.group1.is_none() && prefixes.segment.is_none();
                 let dword = size == OperandSize::Dword
                     && (prefixes.group1 == Some(0xf0) || ds || plain)
@@ -10755,8 +10757,9 @@ pub(crate) fn canonical(address: u64) -> bool {
 /// S4-38L9g/S4-38L9h: the DS-prefix form of a LOCK memory RMW instruction. The kernel's
 /// SMP-alternatives patch (`alternatives_smp_unlock`, the `.smp_locks` table) replaces the LOCK
 /// byte (`F0`) of every locked instruction by a DS override (`3E`) on a single-CPU board; in 64-bit
-/// mode DS has no effect on the address, and on one vCPU LOCK changes no result, so the DS form is
-/// the LOCK form. True only when `prefix_bytes` (every legacy and REX prefix byte in order) holds
+/// mode DS has no effect on the address, and the DS form is executed as the LOCK form (see
+/// CPU_CONTRACT S6-20, DS -> LOCK decision; a stronger atomic result is a valid refinement of the
+/// unlocked one). True only when `prefix_bytes` (every legacy and REX prefix byte in order) holds
 /// the `3E` byte as the only non-REX prefix, so LOCK/REP/REPNE, `66`, `67` and any other or a
 /// second segment override make it false, and the REX byte, if any, is directly before the opcode
 /// (the decoder drops a REX that precedes a legacy prefix, which would silently change the width).
@@ -29251,6 +29254,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             let before = state.clone();
             assert_eq!(

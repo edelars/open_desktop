@@ -11,8 +11,8 @@ use crate::long_decode::{
     general_protection,
 };
 use crate::memory::{
-    AccessContext, AccessOrigin, ArchitecturalFault, GuestMemory, InstructionMode, MemoryError,
-    PrivilegeLevel,
+    AccessContext, AccessOrigin, ArchitecturalFault, FenceKind, GuestMemory, InstructionMode,
+    MemoryError, PrivilegeLevel,
 };
 use crate::msr::MsrProfile;
 use crate::sep::SepProfile;
@@ -64,26 +64,44 @@ const fn minss_unmasked_denormal_mxcsr_supported(mxcsr: u32) -> bool {
         && mxcsr & MIN_MAX_MXCSR_DAZ_FTZ == 0
 }
 
+/// S6-20: `WaitForSipi` (an application processor before its start-up IPI) and `Shutdown` execute
+/// nothing. Every public entry point of this module checks it at entry and refuses without any
+/// state change (SMP_CONTRACT.md 3); `Halted` keeps its own, older, per-entry handling.
+fn activity_is_not_running(state: &LongModeState) -> bool {
+    matches!(
+        state.activity,
+        Some(crate::CpuActivity::WaitForSipi | crate::CpuActivity::Shutdown)
+    )
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StepOutcome {
     Advanced,
     Branched,
     Halted,
+    /// S6-20: the vCPU is `WaitForSipi` or `Shutdown`: it executes nothing, no state changed.
+    NotRunning,
     RepIterationBudgetExhausted,
     StopRequested,
     Fault(ArchitecturalFault),
-    Unsupported { opcode: u8 },
+    Unsupported {
+        opcode: u8,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RunExit {
     StopAddress,
     Halted,
+    /// S6-20: the vCPU is `WaitForSipi` or `Shutdown` at entry: nothing executed.
+    NotRunning,
     InstructionBudgetExhausted,
     RepIterationBudgetExhausted,
     StopRequested,
     Fault(ArchitecturalFault),
-    Unsupported { opcode: u8 },
+    Unsupported {
+        opcode: u8,
+    },
     MemoryError(MemoryError),
 }
 
@@ -1913,6 +1931,7 @@ pub struct Cpl0ProfileSet<'a> {
     msr_syscall_mask: Option<&'a Cell<u64>>,
     msr_kernel_gs_base: Option<&'a Cell<u64>>,
     msr_tdx_keyid_partitioning_read: bool,
+    msr_apic_base: bool,
     halt: Option<&'a crate::HaltProfile>,
     cpu_owned_cr3: bool,
     pio_u8: bool,
@@ -1943,6 +1962,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             msr_syscall_mask: None,
             msr_kernel_gs_base: None,
             msr_tdx_keyid_partitioning_read: false,
+            msr_apic_base: false,
             halt: None,
             cpu_owned_cr3: false,
             pio_u8: false,
@@ -2140,6 +2160,22 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// covers `0x87`, so the member is never overridden.
     pub const fn with_msr_tdx_keyid_partitioning_read(mut self) -> Self {
         self.msr_tdx_keyid_partitioning_read = true;
+        self
+    }
+
+    /// S4-38L8g: admit `RDMSR`/`WRMSR` of IA32_APIC_BASE (`0x1B`) at CPL0 under Long64, for the
+    /// board whose Local APIC is enabled at the default base (the APIC profile). `RDMSR` returns
+    /// the constant `EDX:EAX = 0:0xFEE00900` (base `0xFEE00000`, BSP bit 8, EN bit 11,
+    /// [`crate::msr::ApicBaseCpu::ENABLED`]). `WRMSR` is accepted only with exactly that value
+    /// (what the kernel writes at start; nothing changes, so the write is a no-op that advances
+    /// RIP); any other value (another base, EN or BSP clear, a reserved bit, x2APIC) keeps the
+    /// refusal of the index (`Unsupported`) before any state change. No cell. Only the bare
+    /// two-byte forms `0F 32` / `0F 30` are admitted. Without the member `RDMSR` of `0x1B` is the
+    /// `#GP(0)` of an unmodelled index and `WRMSR` of it stays `Unsupported` (stage4a).
+    ///
+    /// Precedence: an MSR profile that handles the index would keep it; today none covers `0x1B`.
+    pub const fn with_msr_apic_base(mut self) -> Self {
+        self.msr_apic_base = true;
         self
     }
 
@@ -2528,6 +2564,8 @@ struct GuestMsrCells<'a> {
     kernel_gs_base: Option<&'a Cell<u64>>,
     /// S4-38L9c: `RDMSR` of IA32_MKTME_KEYID_PARTITIONING (`0x87`) returns `0:0`; no cell.
     tdx_keyid_partitioning_read: bool,
+    /// S4-38L8g: `RDMSR`/`WRMSR` of IA32_APIC_BASE (`0x1B`) with the constant `0xFEE00900`; no cell.
+    apic_base: bool,
     /// S4-39e: the set carries `with_syscall`; `SYSCALL` consumes the EFER cell of the profiles
     /// and the STAR, LSTAR and SYSCALL_MASK cells above.
     syscall: bool,
@@ -2778,9 +2816,15 @@ pub enum RunInputError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MovCr3InputError {
-    InvalidRflagsDefined { value: u64 },
+    InvalidRflagsDefined {
+        value: u64,
+    },
+    /// S6-20: the activity is `WaitForSipi` (`Shutdown` keeps its `MovCr3Exit::Shutdown`).
+    NotRunning,
     MissingCr3,
-    InvalidInitialCr3 { value: u64 },
+    InvalidInitialCr3 {
+        value: u64,
+    },
     InvalidProfileState,
     WrongInstructionMode,
 }
@@ -2873,7 +2917,11 @@ pub struct PagedMovCrossPageWordFetchLong64V1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PioU8AdmissionError {
-    InvalidRflagsDefined { value: u64 },
+    InvalidRflagsDefined {
+        value: u64,
+    },
+    /// S6-20: the activity is `WaitForSipi` or `Shutdown`.
+    NotRunning,
     WrongMode,
     WrongPrivilege,
     ControlRegistersPresent,
@@ -2940,8 +2988,14 @@ pub struct PagedProbeResult<E> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MaskableRequestRunInputError {
-    InvalidRflagsDefined { value: u64 },
-    IncompatibleEntryFlags { value: u64 },
+    InvalidRflagsDefined {
+        value: u64,
+    },
+    /// S6-20: the activity is `WaitForSipi` or `Shutdown`; no request is delivered to it.
+    NotRunning,
+    IncompatibleEntryFlags {
+        value: u64,
+    },
     Cr0StateOutsideSelectedProfile,
     Cr3StateOutsideSelectedProfile,
     InterruptInhibitionActive,
@@ -3050,7 +3104,11 @@ enum RepContinuationOperand {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RepRunInputError {
-    InvalidRflagsDefined { value: u64 },
+    InvalidRflagsDefined {
+        value: u64,
+    },
+    /// S6-20: the activity is `WaitForSipi` or `Shutdown`.
+    NotRunning,
     InterruptInhibitionActive,
     Cr0StateOutsideSelectedProfile,
     Cr3StateOutsideSelectedProfile,
@@ -3074,6 +3132,9 @@ pub fn run_with_rep_continuation(
     }
     if state.cr0.is_some() || state.cr4.is_some() {
         return Err(RepRunInputError::Cr0StateOutsideSelectedProfile);
+    }
+    if activity_is_not_running(state) {
+        return Err(RepRunInputError::NotRunning);
     }
     if state.sti_shadow == Some(crate::StiShadow::Blocking) {
         return Err(RepRunInputError::InterruptInhibitionActive);
@@ -3168,6 +3229,9 @@ pub fn run_with_rep_continuation(
                 }
                 Ok(StepOutcome::Halted) => {
                     return Ok(rep_run_result(RunExit::Halted, retired, defined));
+                }
+                Ok(StepOutcome::NotRunning) => {
+                    return Ok(rep_run_result(RunExit::NotRunning, retired, defined));
                 }
                 Ok(StepOutcome::Unsupported { opcode })
                     if matches!(opcode, 0xae | 0xaf | 0xa6 | 0xa7) =>
@@ -3289,6 +3353,9 @@ pub fn run_with_rep_continuation(
                 }
                 Ok(StepOutcome::Halted) => {
                     return Ok(rep_run_result(RunExit::Halted, retired, defined));
+                }
+                Ok(StepOutcome::NotRunning) => {
+                    return Ok(rep_run_result(RunExit::NotRunning, retired, defined));
                 }
                 Ok(StepOutcome::Unsupported { opcode }) => {
                     return Ok(rep_run_result(
@@ -18721,8 +18788,20 @@ impl<M: GuestMemory> GuestMemory for FetchCapture<'_, M> {
     ) -> Result<u64, MemoryError> {
         self.inner.atomic_compare_exchange_integer(a, c, z, e, r)
     }
+    fn atomic_rmw_integer(
+        &mut self,
+        a: u64,
+        c: AccessContext,
+        z: OperandSize,
+        update: &mut dyn FnMut(u64) -> u64,
+    ) -> Result<u64, MemoryError> {
+        self.inner.atomic_rmw_integer(a, c, z, update)
+    }
     fn mfence(&mut self, c: AccessContext) -> Result<(), MemoryError> {
         self.inner.mfence(c)
+    }
+    fn fence(&mut self, kind: FenceKind) -> Result<(), MemoryError> {
+        self.inner.fence(kind)
     }
 }
 
@@ -18741,6 +18820,9 @@ fn step_mov_cr3_with_profiles(
             instructions_executed: 0,
             rflags_defined: initial_rflags_defined,
         });
+    }
+    if state.activity == Some(crate::CpuActivity::WaitForSipi) {
+        return Err(MovCr3InputError::NotRunning);
     }
     if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
         return Err(MovCr3InputError::InvalidRflagsDefined {
@@ -18877,6 +18959,9 @@ pub fn step_pio_u8<P: crate::PortIo>(
     if state.cr0.is_some() || state.cr3.is_some() || state.cr4.is_some() {
         return rejected(PioU8AdmissionError::ControlRegistersPresent);
     }
+    if activity_is_not_running(state) {
+        return rejected(PioU8AdmissionError::NotRunning);
+    }
     if state.activity == Some(crate::CpuActivity::Halted) {
         return rejected(PioU8AdmissionError::Halted);
     }
@@ -18928,6 +19013,9 @@ pub fn step_paged_pio_u8<P: crate::PortIo>(
             .is_some_and(|value| Cr4Profile::PagedMovLong64V1.accepts(value))
     {
         return rejected(PioU8AdmissionError::ControlRegistersOutsideProfile);
+    }
+    if activity_is_not_running(state) {
+        return rejected(PioU8AdmissionError::NotRunning);
     }
     if state.activity == Some(crate::CpuActivity::Halted) {
         return rejected(PioU8AdmissionError::Halted);
@@ -27707,6 +27795,9 @@ pub fn run_with_maskable_request(
             value: initial_rflags_defined,
         });
     }
+    if activity_is_not_running(state) {
+        return Err(MaskableRequestRunInputError::NotRunning);
+    }
     if state.sti_shadow == Some(crate::StiShadow::Blocking) {
         return Err(MaskableRequestRunInputError::InterruptInhibitionActive);
     }
@@ -29017,6 +29108,7 @@ fn run_cpl0_profile_set_inner(
                 || set.msr_syscall_mask.is_some()
                 || set.msr_kernel_gs_base.is_some()
                 || set.msr_tdx_keyid_partitioning_read
+                || set.msr_apic_base
                 || set.syscall
             {
                 Some(GuestMsrCells {
@@ -29029,6 +29121,7 @@ fn run_cpl0_profile_set_inner(
                     syscall_mask: set.msr_syscall_mask,
                     kernel_gs_base: set.msr_kernel_gs_base,
                     tdx_keyid_partitioning_read: set.msr_tdx_keyid_partitioning_read,
+                    apic_base: set.msr_apic_base,
                     syscall: set.syscall,
                 })
             } else {
@@ -29211,6 +29304,15 @@ fn run_configured(
     let rdtsc_source = &mut runtime.rdtsc_source;
     let stop_requested = &mut runtime.stop_requested;
     let control_policy = profiles.control_policy;
+    // S6-20: a `WaitForSipi` or `Shutdown` vCPU executes nothing (before every other check, so
+    // no profile decision is taken for it).
+    if activity_is_not_running(state) {
+        return RunResult {
+            exit: RunExit::NotRunning,
+            instructions_executed: 0,
+            rflags_defined,
+        };
+    }
     if let Some(policy) = control_policy {
         // A policy is exclusive with per-register profiles and requires an
         // admitted Long64 control-register state at every entry. A violated
@@ -29483,6 +29585,7 @@ fn run_configured(
                     None
                 }
                 Ok(StepOutcome::Halted) => Some(RunExit::Halted),
+                Ok(StepOutcome::NotRunning) => Some(RunExit::NotRunning),
                 Ok(StepOutcome::Fault(fault)) => Some(RunExit::Fault(fault)),
                 Ok(StepOutcome::RepIterationBudgetExhausted) => {
                     Some(RunExit::RepIterationBudgetExhausted)
@@ -35746,7 +35849,8 @@ fn matching_paged_mov_profiles(cr0: Option<Cr0Profile>, cr4: Option<Cr4Profile>)
 /// S4-38L9v: every MSR index some MSR member or profile of the set names (EFER, FS_BASE, GS_BASE,
 /// KERNEL_GS_BASE, STAR, LSTAR, CSTAR, SYSCALL_MASK, SYSENTER_CS/ESP/EIP and the `0x87` read),
 /// whether or not the set configures that member. `RDMSR` of any other index raises `#GP(0)` in
-/// a set that models an MSR file.
+/// a set that models an MSR file. IA32_APIC_BASE (`0x1B`, S4-38L8g) is not listed: it is
+/// handled by its own branch above this check, only in a set with `with_msr_apic_base`.
 const fn is_set_member_msr_index(index: u32) -> bool {
     matches!(
         index,
@@ -36128,6 +36232,10 @@ fn step_configured(
         exact_hlt_only,
         stop_requested,
     } = runtime;
+    // S6-20: a `WaitForSipi` or `Shutdown` vCPU executes nothing; no state changes.
+    if activity_is_not_running(state) {
+        return Ok(StepOutcome::NotRunning);
+    }
     if let Some(policy) = control_policy {
         // Unreachable from outside (the field is private); a violated
         // exclusion is reported as Unsupported identically in debug and
@@ -42532,6 +42640,37 @@ fn step_configured(
             state.rip = next_rip;
             return Ok(StepOutcome::Advanced);
         }
+        // S4-38L8g: IA32_APIC_BASE (`0x1B`) with the set's member: `RDMSR` gives the constant
+        // `0xFEE00900` (base | EN | BSP) and `WRMSR` accepts exactly that value (no state
+        // changes but RIP). Same conditions as the other cells. Every other `WRMSR` value falls
+        // through to the existing refusal (`Unsupported`) before any change; without the member
+        // both forms keep their previous answer (stage4a: `#GP(0)` / `Unsupported`).
+        if matches!(
+            instruction.operation,
+            Operation::ReadMsr | Operation::WriteMsr
+        ) && msr_index == 0x1b
+            && guest_msr_cells.is_some_and(|cells| cells.apic_base)
+            && !msr_profile.is_some_and(|profile| profile.handles_index(0x1b))
+            && control_policy.is_some()
+            && context.privilege == PrivilegeLevel::Ring0
+            && context.mode.eq(&InstructionMode::Long64)
+            && instruction.length == 2
+            && instruction.prefixes == Prefixes::default()
+        {
+            const APIC_BASE: u64 = crate::msr::ApicBaseCpu::ENABLED;
+            if instruction.operation == Operation::ReadMsr {
+                state.gpr[Register::Rax as usize] = APIC_BASE & 0xffff_ffff;
+                state.gpr[Register::Rdx as usize] = APIC_BASE >> 32;
+                state.rip = next_rip;
+                return Ok(StepOutcome::Advanced);
+            }
+            let value = (u64::from(state.gpr[Register::Rdx as usize] as u32) << 32)
+                | u64::from(state.gpr[Register::Rax as usize] as u32);
+            if value == APIC_BASE {
+                state.rip = next_rip;
+                return Ok(StepOutcome::Advanced);
+            }
+        }
         // S4-38L9v: `RDMSR` of an index no MSR member of the set names raises `#GP(0)`, the
         // architectural answer for an MSR the CPU does not implement (the kernel's `rdmsr_safe`
         // relies on it: its `__ex_table` fixup turns the fault into `-EIO`). Only inside a set
@@ -44476,10 +44615,6 @@ fn step_configured(
         // S4-39f1: and for the FS/GS-based PUSH m64.
         | Operation::PushFsMem { .. }
         | Operation::PushGsMem { .. }
-        // S4-38L7k: and for LOCK CMPXCHG m64, r64.
-        | Operation::LockCmpxchgMem { .. }
-        // S4-38L7l: and for LOCK INC m32/m64.
-        | Operation::LockIncMem { .. }
         // S4-38L7bn: and for LOCK DEC m32/m64.
         | Operation::LockDecMem { .. }
         // S4-38L7s: and for LOCK OR m8/m32/m64, imm.
@@ -45499,6 +45634,26 @@ fn step_configured(
                 && instruction.length == 2
                 && instruction.prefixes == Prefixes::default()
         }
+        // S6-20: LOCK INC m32/m64 and LOCK CMPXCHG m32/m64 are admitted in the CPL0 set (Ring0).
+        // New in S6-20, the bare run (no CR profile, no CPL0 set) admits exactly the dword
+        // forms of the S6-05 litmus corpus with a real LOCK byte (not the DS substitute): both
+        // reach memory through one `GuestMemory::atomic_rmw_integer` call, the single definition
+        // of LOCK atomicity. The decoder has already validated the prefixes. Every other LOCK
+        // form (qword INC/CMPXCHG, DEC, OR, ADD, AND, BTS/BTR) stays refused outside the CPL0 set
+        // (`Unsupported`, never executed as a plain read/write).
+        Operation::LockIncMem { destination }
+        | Operation::LockCmpxchgMem { destination, .. } => {
+            if control_policy.is_some() {
+                context.privilege == PrivilegeLevel::Ring0
+            } else {
+                destination.size == OperandSize::Dword
+                    && instruction.prefixes.group1 == Some(0xf0)
+                    && cr0_profile.is_none()
+                    && cr4_profile.is_none()
+                    && mov_cr3_profile.is_none()
+                    && cpu_owned_cr3.is_none()
+            }
+        }
         Operation::XchgMemory { memory, .. } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0x87
@@ -45508,10 +45663,17 @@ fn step_configured(
                 && instruction.prefixes.segment.is_none()
                 && if memory.size == OperandSize::Dword {
                     // S4-38L9p: XCHG r/m32, r32 with memory (`[REX] 87 /r`, no REX.W): the CPL0
-                    // set only (Ring0), run as read -> write on the single vCPU; outside the set
-                    // the dword form is refused.
-                    control_policy.is_some()
-                        && context.privilege == PrivilegeLevel::Ring0
+                    // set (Ring0) and, new in S6-20, the bare run (no CR profile, no CPL0 set);
+                    // both run it as one `atomic_rmw_integer` call. Any other profile refuses
+                    // the dword form.
+                    (if control_policy.is_some() {
+                        context.privilege == PrivilegeLevel::Ring0
+                    } else {
+                        cr0_profile.is_none()
+                            && cr4_profile.is_none()
+                            && mov_cr3_profile.is_none()
+                            && cpu_owned_cr3.is_none()
+                    })
                         && instruction.operand_size == OperandSize::Dword
                         && instruction.prefixes.rex.is_none_or(|rex| rex & 8 == 0)
                 } else {
@@ -45526,9 +45688,10 @@ fn step_configured(
         } => {
             if control_policy.is_some() {
                 // S4-38L9k: in the CPL0 set the bare memory form (dword or qword) runs as the
-                // LOCK form (`LockXaddMem`): on the single vCPU LOCK changes only the atomicity
-                // against other processors. The decoder has already validated the prefixes
-                // (no LOCK/REP/0x66/0x67/segment byte, REX directly before the opcode).
+                // LOCK form (`LockXaddMem`); the atomicity of both is the single
+                // `atomic_rmw_integer` call (CPU_CONTRACT.md, S6-20). The decoder has already
+                // validated the prefixes (no LOCK/REP/0x66/0x67/segment byte, REX directly before
+                // the opcode).
                 // S4-38L7ay: the board adapters have no atomic fetch-add, hence the outside-set
                 // gate below keeps the qword-only S2-21d path.
                 context.privilege == PrivilegeLevel::Ring0
@@ -45561,6 +45724,23 @@ fn step_configured(
         } => {
             if control_policy.is_some() {
                 context.privilege == PrivilegeLevel::Ring0
+            } else if destination.size == OperandSize::Dword {
+                // S6-20: the dword form (`F0 [REX] 0F C1 /r`, no REX.W) in the bare run, executed
+                // as one `atomic_rmw_integer` call by `transfer` (the S6-05 corpus form). Any
+                // CR profile refuses it, as before.
+                cr0_profile.is_none()
+                    && cr4_profile.is_none()
+                    && mov_cr3_profile.is_none()
+                    && cpu_owned_cr3.is_none()
+                    && instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0xc1
+                    && instruction.operand_size == OperandSize::Dword
+                    && source.size() == OperandSize::Dword
+                    && instruction.prefixes.rex.is_none_or(|rex| rex & 8 == 0)
+                    && instruction.prefixes.group1 == Some(0xf0)
+                    && !instruction.prefixes.operand_override
+                    && !instruction.prefixes.address_override
+                    && instruction.prefixes.segment.is_none()
             } else {
                 instruction.opcode.map == OpcodeMap::Escape0f
                     && instruction.opcode.byte == 0xc1
@@ -58439,10 +58619,11 @@ fn step_configured(
             x87.instruction_pointer = state.rip;
         }
         // S4-38L7ay: outside the CPL0 set the LOCK form keeps the S2-21f path (one atomic call).
+        // S6-20: the dword bare form (the corpus form) goes to `transfer` (one rmw call).
         Operation::LockXaddMem {
             destination,
             source,
-        } if control_policy.is_none() => {
+        } if control_policy.is_none() && destination.size != OperandSize::Dword => {
             if let Err(error) =
                 xadd_memory_atomic(state, memory, context, next_rip, destination, source)
             {
@@ -58450,8 +58631,8 @@ fn step_configured(
             }
         }
         // S4-38L9q: XCHG r/m64, r64 with memory (`REX.W 87 /r`, bare or LOCK) in the CPL0 set
-        // (Ring0) runs as read -> write on the single vCPU with synchronous memory, like the
-        // dword form of S4-38L9p (`transfer`); the address is resolved first, a failing read or
+        // (Ring0) is one `atomic_rmw_integer` call (S6-20), like the dword form of S4-38L9p
+        // (`transfer`); the address is resolved first, a failing read or
         // write leaves memory and the register untouched, flags are not affected. Outside the
         // set (and at Ring3) the qword form keeps the atomic-exchange call in `transfer`.
         Operation::XchgMemory {
@@ -58464,8 +58645,9 @@ fn step_configured(
             let result = (|| -> Result<(), MemoryError> {
                 let address = operand.access_address_48(state, next_rip)?;
                 let replacement = state.read(register);
-                let old = memory.read_integer(address, context, operand.size)?;
-                memory.write_integer(address, context, operand.size, replacement)?;
+                let old = memory.atomic_rmw_integer(address, context, operand.size, &mut |_| {
+                    replacement
+                })?;
                 state.write(register, old);
                 Ok(())
             })();
@@ -58476,7 +58658,7 @@ fn step_configured(
             }
         }
         // S4-38L9k: in the CPL0 set the bare XADD/CMPXCHG memory forms (dword and qword) share the
-        // LOCK-form arms of `transfer` (one vCPU: LOCK changes nothing); outside the set they
+        // LOCK-form arms of `transfer` (the same `atomic_rmw_integer` call, S6-20); outside the set they
         // keep the atomic-call arms below.
         operation @ (Operation::XaddMemory { .. } | Operation::CmpxchgMemory { .. })
             if control_policy.is_some() =>
@@ -58487,9 +58669,16 @@ fn step_configured(
                 Err(error) => return Err(error),
             }
         }
-        // S4-38L9o: inside the CPL0 set MFENCE does not call the backend completion hook (no
-        // buffers to drain for a single vCPU); outside it the existing backend call is kept.
-        Operation::Mfence if control_policy.is_some() => {}
+        // S4-38L9o: inside the CPL0 set MFENCE does not call the backend completion hook
+        // (`mfence`); outside it the existing backend call is kept. S6-32: inside the set it
+        // calls the memory's `fence` (a provided method, a no-op by default) with the full kind,
+        // so a backend that shares RAM between host threads can place its host fence there.
+        Operation::Mfence if control_policy.is_some() => {
+            match memory.fence(FenceKind::Full) {
+                Ok(()) => {}
+                Err(error) => return report_memory_error(error),
+            }
+        }
         operation @ (Operation::MovImmediate { .. }
         | Operation::Mov { .. }
         | Operation::MovFsLoad { .. }
@@ -59812,12 +60001,13 @@ fn step_configured(
                 Ok(address) => address,
                 Err(error) => return report_memory_error(error),
             };
-            let observed = match memory.atomic_compare_exchange_integer(
+            // S6-20: the qword form goes through the same single `atomic_rmw_integer` entry
+            // point as the dword form; a mismatch still writes the old value back.
+            let observed = match memory.atomic_rmw_integer(
                 address,
                 context,
                 OperandSize::Qword,
-                expected,
-                replacement,
+                &mut |old| if old == expected { replacement } else { old },
             ) {
                 Ok(observed) => observed,
                 Err(error) => return report_memory_error(error),
@@ -60114,9 +60304,20 @@ fn step_configured(
             return Ok(StepOutcome::Branched);
         }
         Operation::Endbr64Nop | Operation::Pause | Operation::NopModrm | Operation::Invlpg => {}
-        // S4-38L9o: the fences change nothing but RIP and the retired count; inside the CPL0
-        // set MFENCE does not call the backend completion hook either (no buffers to drain).
-        Operation::Lfence | Operation::Sfence => {}
+        // S4-38L9o: the fences change nothing but RIP and the retired count. S6-32: each one
+        // calls the memory's `fence` with its own kind (Load for LFENCE, Store for SFENCE; MFENCE
+        // is the arm above) so a backend that shares RAM between host threads can place its host
+        // fence there; the default is a no-op.
+        Operation::Lfence | Operation::Sfence => {
+            let kind = if matches!(instruction.operation, Operation::Lfence) {
+                FenceKind::Load
+            } else {
+                FenceKind::Store
+            };
+            if let Err(error) = memory.fence(kind) {
+                return report_memory_error(error);
+            }
+        }
         Operation::Leave => {
             // S4-38L6d: `RSP <- RBP; RBP <- POP qword` (Intel SDM Vol.2 LEAVE, 64-bit mode;
             // from memory). The qword at [RBP] is read first (#SS(0) for a non-canonical
@@ -62643,6 +62844,8 @@ fn iretq_cpl0(
     };
 
     state.rip = target;
+    // A retired IRETQ ends NMI blocking (S6-12b); the one commit point of this implementation.
+    state.nmi_blocked = false;
     state.cs_selector = Some(cs_selector);
     state.cs_cache = Some(crate::state::CodeSegmentDescriptorCache {
         base: 0,
@@ -63695,7 +63898,7 @@ fn push_stack_value(
 }
 
 /// S2-21d/S2-21f (and `LockXaddMem` outside the CPL0 set, S4-38L7ay): the qword memory XADD
-/// through one `GuestMemory::atomic_fetch_add_integer` call. The register input is saved before
+/// through one `GuestMemory::atomic_rmw_integer` call (S6-20). The register input is saved before
 /// anything is resolved or mutated (it may also provide the memory base or index); the source
 /// register and the flags are committed only after the atomic call succeeded.
 fn xadd_memory_atomic(
@@ -63708,7 +63911,9 @@ fn xadd_memory_atomic(
 ) -> Result<(), MemoryError> {
     let addend = state.read(source);
     let address = destination.access_address_48(state, next_rip)?;
-    let old = memory.atomic_fetch_add_integer(address, context, OperandSize::Qword, addend)?;
+    let old = memory.atomic_rmw_integer(address, context, OperandSize::Qword, &mut |old| {
+        old.wrapping_add(addend)
+    })?;
     let (_, flags) = arithmetic_result(
         OperandSize::Qword,
         ArithmeticKind::Add,
@@ -64977,7 +65182,7 @@ fn transfer(
             let value = memory.read_integer(address, context, OperandSize::Qword)?;
             push_stack_value(state, memory, context, value, OperandSize::Qword)?;
         }
-        // S4-38L9k: and the bare memory form (CPL0 set only; one vCPU, LOCK changes nothing).
+        // S4-38L9k: and the bare memory form (CPL0 set only; executed as the LOCK form, S6-20).
         Operation::LockCmpxchgMem {
             destination,
             source,
@@ -64986,11 +65191,12 @@ fn transfer(
             destination,
             source,
         } => {
-            // S4-38L7k: one vCPU, so the read-compare-write needs no bus lock. The address
-            // (non-canonical start or last byte is #GP(0)) and every operand are taken from the
-            // pre-instruction state. The destination is written on both branches (SDM: a failed
-            // compare still writes the old value back), so a read-only page faults either way;
-            // RAX and the flags commit only after that write succeeded.
+            // S4-38L7k: the compare-and-replace is one `GuestMemory::atomic_rmw_integer` call
+            // (S6-20, CPU_CONTRACT.md: the atomicity of LOCK forms is defined there, not here).
+            // The address (non-canonical start or last byte is #GP(0)) and every operand are
+            // taken from the pre-instruction state. The destination is written on both branches
+            // (SDM: a failed compare still writes the old value back), so a read-only page
+            // faults either way; RAX and the flags commit only after that call succeeded.
             // S4-38L7y: the width follows the destination (dword: EAX, a dword source; the
             // compare uses the dword flags). On inequality EAX is written through the dword
             // register write, which zero-extends into RAX; on equality RAX is not touched.
@@ -64999,10 +65205,11 @@ fn transfer(
             let expected = state.read(accumulator);
             let replacement = state.read(source);
             let address = destination.access_address_48(state, next_rip)?;
-            let observed = memory.read_integer(address, context, size)?;
+            let observed =
+                memory.atomic_rmw_integer(address, context, size, &mut |old| {
+                    if old == expected { replacement } else { old }
+                })?;
             let equal = expected == observed;
-            let stored = if equal { replacement } else { observed };
-            memory.write_integer(address, context, size, stored)?;
             let (_, flags) =
                 arithmetic_result(size, ArithmeticKind::Cmp, expected, observed, state.rflags);
             if !equal {
@@ -65011,52 +65218,57 @@ fn transfer(
             state.rflags = flags;
         }
         Operation::LockIncMem { destination } => {
-            // S4-38L7l: one vCPU, so read -> write needs no bus lock. The address (non-canonical
-            // start or last byte is #GP(0), RSP/RBP bases #SS(0)) is resolved before any access;
-            // the flags (OF/SF/ZF/AF/PF from the result, CF kept) commit only after the write
-            // succeeded, so a faulting write leaves memory and flags untouched.
+            // S4-38L7l: one `atomic_rmw_integer` call (S6-20; the atomicity is defined by the
+            // GuestMemory contract). The address (non-canonical start or last byte is #GP(0),
+            // RSP/RBP bases #SS(0)) is resolved before any access; the flags (OF/SF/ZF/AF/PF
+            // from the result, CF kept) commit only after the call succeeded, so a faulting
+            // write leaves memory and flags untouched.
             let address = destination.access_address_48(state, next_rip)?;
-            let old = memory.read_integer(address, context, destination.size)?;
-            let (result, flags) =
-                arithmetic_result(destination.size, ArithmeticKind::Inc, old, 1, state.rflags);
-            memory.write_integer(address, context, destination.size, result)?;
+            let rflags = state.rflags;
+            let old = memory.atomic_rmw_integer(address, context, destination.size, &mut |old| {
+                arithmetic_result(destination.size, ArithmeticKind::Inc, old, 1, rflags).0
+            })?;
+            // The flags are a function of the returned old value and the operand, computed outside
+            // the closure: `update` stays a pure function (GuestMemory::atomic_rmw_integer).
+            let (_, flags) = arithmetic_result(destination.size, ArithmeticKind::Inc, old, 1, rflags);
             state.rflags = flags;
         }
         Operation::LockDecMem { destination } => {
             // S4-38L7bn: as LockIncMem with the shared DEC (`arithmetic_result` with
-            // `ArithmeticKind::Dec`: OF/SF/ZF/AF/PF from the result, CF kept). One vCPU, so
-            // read -> write needs no bus lock. The address (non-canonical start or last byte is
-            // #GP(0), RSP/RBP bases #SS(0)) is resolved before any access; the result is written
-            // back always; the flags commit only after the write succeeded, so a faulting write
-            // leaves memory and flags untouched.
+            // `ArithmeticKind::Dec`: OF/SF/ZF/AF/PF from the result, CF kept). One
+            // `atomic_rmw_integer` call (S6-20). The address (non-canonical start or last byte
+            // is #GP(0), RSP/RBP bases #SS(0)) is resolved before any access; the result is
+            // written back always; the flags commit only after the call succeeded, so a
+            // faulting write leaves memory and flags untouched.
             let address = destination.access_address_48(state, next_rip)?;
-            let old = memory.read_integer(address, context, destination.size)?;
-            let (result, flags) =
-                arithmetic_result(destination.size, ArithmeticKind::Dec, old, 1, state.rflags);
-            memory.write_integer(address, context, destination.size, result)?;
+            let rflags = state.rflags;
+            let old = memory.atomic_rmw_integer(address, context, destination.size, &mut |old| {
+                arithmetic_result(destination.size, ArithmeticKind::Dec, old, 1, rflags).0
+            })?;
+            // The flags are a function of the returned old value and the operand, computed outside
+            // the closure: `update` stays a pure function (GuestMemory::atomic_rmw_integer).
+            let (_, flags) = arithmetic_result(destination.size, ArithmeticKind::Dec, old, 1, rflags);
             state.rflags = flags;
         }
         Operation::LockOrMem {
             destination,
             immediate,
         } => {
-            // S4-38L7s: one vCPU, so read -> write needs no bus lock. The address (non-canonical
+            // S4-38L7s: one `atomic_rmw_integer` call (S6-20). The address (non-canonical
             // start or last byte is #GP(0), RSP/RBP bases #SS(0)) is resolved before any access
             // (a RIP-relative operand is relative to the end of the instruction, immediate
             // included). The OR goes through the shared `logic_result` (CF = OF = 0, SF/ZF from
             // the top bit, PF from the low byte of the result, AF kept). The result is written
-            // back even when it equals the old value; the flags commit only after the write
+            // back even when it equals the old value; the flags commit only after the call
             // succeeded, so a faulting write leaves memory and flags untouched.
             let address = destination.access_address_48(state, next_rip)?;
-            let old = memory.read_integer(address, context, destination.size)?;
-            let (result, flags) = logic_result(
-                destination.size,
-                LogicKind::Or,
-                old,
-                immediate,
-                state.rflags,
-            );
-            memory.write_integer(address, context, destination.size, result)?;
+            let rflags = state.rflags;
+            let old = memory.atomic_rmw_integer(address, context, destination.size, &mut |old| {
+                logic_result(destination.size, LogicKind::Or, old, immediate, rflags).0
+            })?;
+            // The flags are a function of the returned old value and the operand, computed outside
+            // the closure: `update` stays a pure function (GuestMemory::atomic_rmw_integer).
+            let (_, flags) = logic_result(destination.size, LogicKind::Or, old, immediate, rflags);
             state.rflags = flags;
         }
         Operation::LockAddMem {
@@ -65064,22 +65276,32 @@ fn transfer(
             immediate,
         } => {
             // S4-38L7z: as LockOrMem, but the shared ADD (`arithmetic_result`: all six flags from
-            // the sum at the destination width). One vCPU, so read -> write needs no bus lock. The
+            // the sum at the destination width). One `atomic_rmw_integer` call (S6-20). The
             // address (non-canonical start or last byte is #GP(0), RSP/RBP bases #SS(0)) is
             // resolved before any access (a RIP-relative operand is relative to the end of the
             // instruction, immediate included). The sum is written back even for a zero addend;
-            // the flags commit only after the write succeeded, so a faulting write leaves memory
+            // the flags commit only after the call succeeded, so a faulting write leaves memory
             // and flags untouched.
             let address = destination.access_address_48(state, next_rip)?;
-            let old = memory.read_integer(address, context, destination.size)?;
-            let (result, flags) = arithmetic_result(
-                destination.size,
-                ArithmeticKind::Add,
-                old,
-                immediate,
-                state.rflags,
-            );
-            memory.write_integer(address, context, destination.size, result)?;
+            let rflags = state.rflags;
+            let old = memory.atomic_rmw_integer(address, context, destination.size, &mut |old| {
+                arithmetic_result(
+                    destination.size,
+                    ArithmeticKind::Add,
+                    old,
+                    immediate,
+                    rflags,
+                ).0
+            })?;
+            // The flags are a function of the returned old value and the operand, computed outside
+            // the closure: `update` stays a pure function (GuestMemory::atomic_rmw_integer).
+            let (_, flags) = arithmetic_result(
+                    destination.size,
+                    ArithmeticKind::Add,
+                    old,
+                    immediate,
+                    rflags,
+                );
             state.rflags = flags;
         }
         Operation::LockAddMemReg {
@@ -65087,31 +65309,43 @@ fn transfer(
             source,
         } => {
             // S4-38L7ai: as LockAddMem, with a register addend (read before the access, masked
-            // to the operand width by the register view). One vCPU, so read -> write needs no bus
-            // lock. The address (non-canonical start or last byte is #GP(0), RSP/RBP bases
-            // #SS(0)) is resolved before any access (a RIP-relative operand is relative to the
-            // end of the instruction). The sum is written back even for a zero addend; the flags
-            // commit only after the write succeeded, so a faulting write leaves memory and flags
+            // to the operand width by the register view). One `atomic_rmw_integer` call (S6-20).
+            // The address (non-canonical start or last byte is #GP(0), RSP/RBP bases #SS(0)) is
+            // resolved before any access (a RIP-relative operand is relative to the end of the
+            // instruction). The sum is written back even for a zero addend; the flags commit
+            // only after the call succeeded, so a faulting write leaves memory and flags
             // untouched. Nothing is written to a register.
             let addend = state.read(source);
             let address = destination.access_address_48(state, next_rip)?;
-            let old = memory.read_integer(address, context, destination.size)?;
-            let (result, flags) = arithmetic_result(
-                destination.size,
-                ArithmeticKind::Add,
-                old,
-                addend,
-                state.rflags,
-            );
-            memory.write_integer(address, context, destination.size, result)?;
+            let rflags = state.rflags;
+            let old = memory.atomic_rmw_integer(address, context, destination.size, &mut |old| {
+                arithmetic_result(
+                    destination.size,
+                    ArithmeticKind::Add,
+                    old,
+                    addend,
+                    rflags,
+                ).0
+            })?;
+            // The flags are a function of the returned old value and the operand, computed outside
+            // the closure: `update` stays a pure function (GuestMemory::atomic_rmw_integer).
+            let (_, flags) = arithmetic_result(
+                    destination.size,
+                    ArithmeticKind::Add,
+                    old,
+                    addend,
+                    rflags,
+                );
             state.rflags = flags;
         }
         Operation::LockXaddMem {
             destination,
             source,
         }
-        // S4-38L9g: the DS-override form without LOCK; on one vCPU LOCK changes nothing, so the
-        // two forms share this arm (SDM XADD: TEMP = SRC + DEST, SRC = DEST, DEST = TEMP).
+        // S4-38L9g: the DS-override form without LOCK; it is executed as the LOCK form (S6-20
+        // decision, CPU_CONTRACT.md: the DS byte is the Linux `.smp_locks` substitute, a stronger
+        // atomic result is a valid refinement of the unlocked one), so the two forms share this
+        // arm (SDM XADD: TEMP = SRC + DEST, SRC = DEST, DEST = TEMP).
         | Operation::XaddDsMem {
             destination,
             source,
@@ -65121,20 +65355,23 @@ fn transfer(
             destination,
             source,
         } => {
-            // S4-38L7ay: as LockAddMemReg, plus the exchange. One vCPU, so read -> write needs no
-            // bus lock. The addend is read before the access (it may also be the base or index
+            // S4-38L7ay: as LockAddMemReg, plus the exchange. One `atomic_rmw_integer` call
+            // (S6-20). The addend is read before the access (it may also be the base or index
             // register); the address (non-canonical start or last byte is #GP(0), RSP/RBP bases
-            // #SS(0)) is resolved before any access. The sum is written back through one write
-            // (a read-only page faults), and the old value goes to the source register and the
-            // flags commit only after that write succeeded, so a faulting write leaves memory,
+            // #SS(0)) is resolved before any access. The sum is written back by the call (a
+            // read-only page faults), and the old value goes to the source register and the
+            // flags commit only after that call succeeded, so a faulting write leaves memory,
             // register and flags untouched.
             let size = destination.size;
             let addend = state.read(source);
             let address = destination.access_address_48(state, next_rip)?;
-            let old = memory.read_integer(address, context, size)?;
-            let (result, flags) =
-                arithmetic_result(size, ArithmeticKind::Add, old, addend, state.rflags);
-            memory.write_integer(address, context, size, result)?;
+            let rflags = state.rflags;
+            let old = memory.atomic_rmw_integer(address, context, size, &mut |old| {
+                arithmetic_result(size, ArithmeticKind::Add, old, addend, rflags).0
+            })?;
+            // The flags are a function of the returned old value and the operand, computed outside
+            // the closure: `update` stays a pure function (GuestMemory::atomic_rmw_integer).
+            let (_, flags) = arithmetic_result(size, ArithmeticKind::Add, old, addend, rflags);
             state.write(source, old);
             state.rflags = flags;
         }
@@ -65143,26 +65380,25 @@ fn transfer(
             immediate,
         } => {
             // S4-38L7ag: as LockOrMem, with the shared AND (`logic_result`: CF = OF = 0, SF/ZF/PF
-            // from the byte result, AF kept). One vCPU, so read -> write needs no bus lock. The
+            // from the byte result, AF kept). One `atomic_rmw_integer` call (S6-20). The
             // address (non-canonical start or last byte is #GP(0), RSP/RBP bases #SS(0)) is
             // resolved before any access (a RIP-relative operand is relative to the end of the
             // instruction, immediate included). The result is written back even when it equals
-            // the old value; the flags commit only after the write succeeded, so a faulting write
+            // the old value; the flags commit only after the call succeeded, so a faulting write
             // leaves memory and flags untouched.
             let address = destination.access_address_48(state, next_rip)?;
-            let old = memory.read_integer(address, context, destination.size)?;
-            let (result, flags) = logic_result(
-                destination.size,
-                LogicKind::And,
-                old,
-                immediate,
-                state.rflags,
-            );
-            memory.write_integer(address, context, destination.size, result)?;
+            let rflags = state.rflags;
+            let old = memory.atomic_rmw_integer(address, context, destination.size, &mut |old| {
+                logic_result(destination.size, LogicKind::And, old, immediate, rflags).0
+            })?;
+            // The flags are a function of the returned old value and the operand, computed outside
+            // the closure: `update` stays a pure function (GuestMemory::atomic_rmw_integer).
+            let (_, flags) = logic_result(destination.size, LogicKind::And, old, immediate, rflags);
             state.rflags = flags;
         }
         Operation::LockBitMem { kind, base, source } => {
-            // S4-38L7n/S4-38L7t (BTS sets, BTR resets the bit; no other kind is decoded): one vCPU, so read -> write needs no bus lock. The register is a signed
+            // S4-38L7n/S4-38L7t (BTS sets, BTR resets the bit; no other kind is decoded): one
+            // `atomic_rmw_integer` call (S6-20). The register is a signed
             // bit offset: the qword that holds the bit is at base + floor(offset / 64) * 8 (an
             // arithmetic shift, so negative offsets reach the preceding qwords) and the bit is
             // `offset & 63`. The address (non-canonical start or last byte is #GP(0), RSP/RBP bases
@@ -65178,15 +65414,15 @@ fn transfer(
                 .wrapping_add((offset >> 6).wrapping_mul(8));
             let address = element.access_address_48(state, next_rip)?;
             let mask = 1u64 << (offset & 63);
-            let old = memory.read_integer(address, context, element.size)?;
-            let new = match kind {
-                BitKind::Set => old | mask,
-                BitKind::Reset => old & !mask,
-                BitKind::Test | BitKind::Complement => {
-                    unreachable!("LockBitMem decodes only BTS and BTR")
+            let old = memory.atomic_rmw_integer(address, context, element.size, &mut |old| {
+                match kind {
+                    BitKind::Set => old | mask,
+                    BitKind::Reset => old & !mask,
+                    BitKind::Test | BitKind::Complement => {
+                        unreachable!("LockBitMem decodes only BTS and BTR")
+                    }
                 }
-            };
-            memory.write_integer(address, context, element.size, new)?;
+            })?;
             state.rflags = (state.rflags & !crate::CF) | u64::from(old & mask != 0);
         }
         Operation::LockBitMemImm {
@@ -65197,7 +65433,7 @@ fn transfer(
             // S4-39g1: the same path serves LOCK BTR (`F0 [REX] 0F BA /6 ib`, `BitKind::Reset`):
             // the bit is cleared instead of set; CF is the original bit; the destination is
             // written back even when the bit was already clear.
-            // S4-38L7bi: one vCPU, so read -> write needs no bus lock. The immediate is a bit
+            // S4-38L7bi: one `atomic_rmw_integer` call (S6-20). The immediate is a bit
             // index inside the operand, not a bit-string offset: it is taken modulo the operand
             // width (Intel SDM Vol.2A, BTS: an imm8 offset on a memory operand addresses a bit
             // inside the operand itself, the register form of the offset alone reaches adjacent
@@ -65210,15 +65446,15 @@ fn transfer(
             let address = destination.access_address_48(state, next_rip)?;
             let width = destination.size.bytes() * 8;
             let mask = 1u64 << (u64::from(bit) % width as u64);
-            let old = memory.read_integer(address, context, destination.size)?;
-            let new = match kind {
-                BitKind::Set => old | mask,
-                BitKind::Reset => old & !mask,
-                BitKind::Test | BitKind::Complement => {
-                    unreachable!("LockBitMemImm decodes only BTS and BTR")
+            let old = memory.atomic_rmw_integer(address, context, destination.size, &mut |old| {
+                match kind {
+                    BitKind::Set => old | mask,
+                    BitKind::Reset => old & !mask,
+                    BitKind::Test | BitKind::Complement => {
+                        unreachable!("LockBitMemImm decodes only BTS and BTR")
+                    }
                 }
-            };
-            memory.write_integer(address, context, destination.size, new)?;
+            })?;
             state.rflags = (state.rflags & !crate::CF) | u64::from(old & mask != 0);
         }
         Operation::MovFsStore { dst, src } => {
@@ -65301,15 +65537,12 @@ fn transfer(
         } => {
             let address = operand.access_address_48(state, next_rip)?;
             let replacement = state.read(register);
-            let previous = if operand.size == OperandSize::Dword {
-                // S4-38L9p: the CPL0-set dword form is read -> write (one vCPU, synchronous
-                // memory); a failing read or write leaves memory and the register untouched.
-                let old = memory.read_integer(address, context, operand.size)?;
-                memory.write_integer(address, context, operand.size, replacement)?;
-                old
-            } else {
-                memory.atomic_exchange_integer(address, context, operand.size, replacement)?
-            };
+            // S4-38L9p / S6-20: every width (the dword form in the CPL0 set and the bare run, the
+            // qword form outside the set) is one `atomic_rmw_integer` call, so one backend gives
+            // the same atomicity to both widths (XCHG with memory is implicitly locked); a failing
+            // read or write leaves memory and the register untouched.
+            let previous =
+                memory.atomic_rmw_integer(address, context, operand.size, &mut |_| replacement)?;
             state.write(register, previous);
         }
         Operation::Nop => {}
@@ -65458,6 +65691,7 @@ mod tests {
         atomic_exchanges: Vec<(u64, OperandSize, u64)>,
         atomic_adds: Vec<(u64, OperandSize, u64)>,
         atomic_compare_exchanges: Vec<(u64, OperandSize, u64, u64)>,
+        atomic_rmws: Vec<(u64, OperandSize)>,
         atomic_error: Option<MemoryError>,
         pub(super) fetch_error: Option<(u64, MemoryError)>,
         pub(super) supervisor_only_code: bool,
@@ -65485,6 +65719,7 @@ mod tests {
                 atomic_exchanges: vec![],
                 atomic_adds: vec![],
                 atomic_compare_exchanges: vec![],
+                atomic_rmws: vec![],
                 atomic_error: None,
                 fetch_error: None,
                 supervisor_only_code: false,
@@ -65621,6 +65856,45 @@ mod tests {
             let range = self.range(address, source.len(), AccessKind::Write)?;
             self.bytes[range].copy_from_slice(source);
             Ok(())
+        }
+
+        // S6-20: the qword LOCK/XCHG/XADD/CMPXCHG paths call `atomic_rmw_integer` directly. This
+        // double records those calls and honours `atomic_error` (a backend that fails the one call);
+        // other widths keep the provided read -> write sequence (and its `accesses`).
+        fn atomic_rmw_integer(
+            &mut self,
+            address: u64,
+            context: AccessContext,
+            size: OperandSize,
+            update: &mut dyn FnMut(u64) -> u64,
+        ) -> Result<u64, MemoryError> {
+            if size != OperandSize::Qword {
+                let old = self.read_integer(address, context, size)?;
+                let new = update(old);
+                self.write_integer(address, context, size, new)?;
+                return Ok(old);
+            }
+            self.atomic_rmws.push((address, size));
+            if let Some(error) = &self.atomic_error {
+                return Err(error.clone());
+            }
+            let length = size.bytes();
+            let start = address
+                .checked_sub(0x1000)
+                .and_then(|value| usize::try_from(value).ok());
+            let range = start
+                .and_then(|start| start.checked_add(length).map(|end| start..end))
+                .filter(|range| range.end <= self.bytes.len())
+                .ok_or(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })?;
+            let mut old_bytes = [0u8; 8];
+            old_bytes[..length].copy_from_slice(&self.bytes[range.clone()]);
+            let old = u64::from_le_bytes(old_bytes);
+            let new = update(old);
+            self.bytes[range].copy_from_slice(&new.to_le_bytes()[..length]);
+            Ok(old)
         }
 
         fn atomic_exchange_integer(
@@ -67663,6 +67937,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         let mut defined = crate::ARITHMETIC_FLAGS;
         let mut memory = Memory::new(&[0x74, 0x02]); // JZ +2, target 4
@@ -67757,6 +68032,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::R8 as usize] = 0xffff_8000_0000_1234;
         let before_flags = state.rflags;
@@ -67818,6 +68094,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         let mut state = before.clone();
         state.gpr[Register::Rax as usize] = 0x0000_8000_0000_0000;
@@ -67884,6 +68161,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rax as usize] = 0x1008;
         let target = 0xffff_8000_0000_1234u64;
@@ -67936,6 +68214,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rax as usize] = 0x1000;
         let before = state.clone();
@@ -68012,6 +68291,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rax as usize] = 0x1008;
         state.gpr[Register::Rsp as usize] = 0x1018;
@@ -68097,6 +68377,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[Register::Rax as usize] = 0x1008;
             state.gpr[Register::Rsp as usize] = 0x1018;
@@ -68152,6 +68433,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rax as usize] = 0x1008;
         state.gpr[Register::Rsp as usize] = 0x1018;
@@ -68212,6 +68494,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rsp as usize] = 0x1008;
         let mut memory = Memory::at(&[0x9d], 0x1000);
@@ -68281,6 +68564,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rsp as usize] = 0x1008;
         let before = state.clone();
@@ -68406,6 +68690,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rsp as usize] = 0x1010;
         let mut memory = Memory::at(&[0x9c], 0x1000);
@@ -68466,6 +68751,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rsp as usize] = 0x1010;
         let before = state.clone();
@@ -68529,6 +68815,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rsp as usize] = 0x1010;
         let mut memory = Memory::at(&[0x66, 0x9c], 0x1000);
@@ -68586,6 +68873,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rsp as usize] = 0x1010;
         let before = state.clone();
@@ -68650,6 +68938,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[Register::Rsp as usize] = 0x1000;
             let mut memory = Memory::at(&[0xc2, immediate as u8, (immediate >> 8) as u8], 0x2000);
@@ -68707,6 +68996,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rsp as usize] = 0x1000;
         let before = state.clone();
@@ -68796,6 +69086,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         let mut memory = Memory::at(&[0x74, 0x01], base); // next RIP wraps to zero, target one
         assert_eq!(
@@ -68845,6 +69136,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         let mut state = before.clone();
         let mut defined = 0x8d7;
@@ -68913,6 +69205,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             let before = state.clone();
             let mut memory = Memory::new(code);
@@ -68963,6 +69256,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         let before = state.clone();
         let mut memory = Memory::new(&[0x0f, 0x84, 0, 0, 0, 0]);
@@ -69054,6 +69348,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             if register == Register::R15 {
                 state.gpr[Register::R15 as usize] = 0x1122_3344_5566_77ff;
@@ -69121,6 +69416,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rbp as usize] = 0x1000;
         let before = state.clone();
@@ -69229,6 +69525,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rbx as usize] = 0x1_0000_1000;
         let mut memory = Memory::new(&[0x67, 0x0f, 0x94, 0x03]); // [EBX]
@@ -69284,6 +69581,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             let before = state.clone();
             let mut memory = Memory::new(code);
@@ -69339,6 +69637,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rbx as usize] = 0x1000;
         let flags = state.rflags;
@@ -69400,6 +69699,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rbx as usize] = 0x1000;
         let mut memory = Memory::new(&code);
@@ -69457,6 +69757,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rbp as usize] = 0x1000;
         let before = state.clone();
@@ -69545,6 +69846,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rbx as usize] = 0x1_0000_1000;
         let mut memory = Memory::new(&[0x67, 0x66, 0x0f, 0x44, 0x03]); // CMOVE AX, [EBX]
@@ -69602,6 +69904,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             let before = state.clone();
             let mut memory = Memory::new(code);
@@ -69682,6 +69985,7 @@ mod tests {
                         es_cache: None,
 
                         activity: None,
+                        nmi_blocked: false,
                     };
                     state.gpr[3] = 0x1000;
                     let before = state.clone();
@@ -69776,6 +70080,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[0] = 0x1122_3344_5566_7788;
         state.gpr[3] = 0x1000;
@@ -69858,6 +70163,7 @@ mod tests {
                     es_cache: None,
 
                     activity: None,
+                    nmi_blocked: false,
                 };
                 let mut memory = Memory::new(&code);
                 assert_eq!(
@@ -69944,6 +70250,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rax as usize] = 0x1122_3344_5566_00f0;
         state.gpr[Register::Rbx as usize] = 2;
@@ -70095,6 +70402,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[Register::Rax as usize] = initial_rax;
             if target != Register::Rax {
@@ -70249,6 +70557,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rax as usize] = 0x100;
         state.gpr[Register::Rbx as usize] = 1;
@@ -70304,6 +70613,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rax as usize] = 0xff80; // signed AX dividend = -128
         state.gpr[Register::Rbx as usize] = 0xff; // signed BL divisor = -1
@@ -70358,6 +70668,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rax as usize] = 0x100;
         state.gpr[Register::Rbx as usize] = 1;
@@ -70422,6 +70733,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rax as usize] = 0;
         state.gpr[Register::Rdx as usize] = 0x8000_0000_0000_0000;
@@ -70476,6 +70788,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rcx as usize] = 0;
         let before = state.clone();
@@ -70559,6 +70872,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rbx as usize] = 0x1000;
         let before = state.clone();
@@ -70665,6 +70979,7 @@ mod tests {
                     es_cache: None,
 
                     activity: None,
+                    nmi_blocked: false,
                 };
                 state.gpr[3] = 0x1000;
                 let before = state.clone();
@@ -70821,6 +71136,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[0] = 0x1122_3344_5566_7788;
             let mut memory = Memory::new(code);
@@ -70924,6 +71240,7 @@ mod tests {
                         es_cache: None,
 
                         activity: None,
+                        nmi_blocked: false,
                     };
                     state.gpr[0] = 0x8877_6655_4433_2211;
                     let mut memory = Memory::new(&code);
@@ -71025,6 +71342,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[0] = 0x1122_3344_5566_7788;
             state.gpr[3] = source;
@@ -71111,6 +71429,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[0] = 0x1122_3344_5566_7788;
             state.gpr[3] = base;
@@ -71171,6 +71490,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             let before = state.clone();
             assert_eq!(
@@ -71242,6 +71562,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[0] = 0x1122_3344_5566_7788;
             let mut memory = Memory::new(code);
@@ -71299,6 +71620,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rax as usize] = 0x1008;
         let mut memory = Memory::new(&code);
@@ -71322,10 +71644,7 @@ mod tests {
             &0x1008u64.to_le_bytes(),
             "the source RAX value is written using the original effective address"
         );
-        assert_eq!(
-            memory.atomic_exchanges,
-            vec![(0x1008, OperandSize::Qword, 0x1008)]
-        );
+        assert_eq!(memory.atomic_rmws, vec![(0x1008, OperandSize::Qword)]);
         assert!(
             memory.accesses.is_empty(),
             "no separate data read/write calls"
@@ -71379,6 +71698,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[Register::Rax as usize] = 0x1008;
             let before_state = state.clone();
@@ -71404,10 +71724,7 @@ mod tests {
             }
             assert_eq!(state, before_state);
             assert_eq!(memory.bytes, before_ram);
-            assert_eq!(
-                memory.atomic_exchanges,
-                vec![(0x1008, OperandSize::Qword, 0x1008)]
-            );
+            assert_eq!(memory.atomic_rmws, vec![(0x1008, OperandSize::Qword)]);
             assert!(memory.accesses.is_empty());
         }
     }
@@ -71455,6 +71772,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rax as usize] = 0x1007;
         let mut memory = Memory::new(&code);
@@ -71475,10 +71793,7 @@ mod tests {
         assert_eq!(state.gpr[Register::Rax as usize], u64::MAX);
         assert_eq!(state.rflags, 0x0417);
         assert_eq!(&memory.bytes[7..15], &0x1006u64.to_le_bytes());
-        assert_eq!(
-            memory.atomic_adds,
-            vec![(0x1007, OperandSize::Qword, 0x1007)]
-        );
+        assert_eq!(memory.atomic_rmws, vec![(0x1007, OperandSize::Qword)]);
         assert!(
             memory.accesses.is_empty(),
             "no separate data read/write calls"
@@ -71532,6 +71847,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[Register::Rax as usize] = 0x1007;
             let before_state = state.clone();
@@ -71558,10 +71874,7 @@ mod tests {
             }
             assert_eq!(state, before_state);
             assert_eq!(memory.bytes, before_ram);
-            assert_eq!(
-                memory.atomic_adds,
-                vec![(0x1007, OperandSize::Qword, 0x1007)]
-            );
+            assert_eq!(memory.atomic_rmws, vec![(0x1007, OperandSize::Qword)]);
             assert!(memory.accesses.is_empty());
         }
     }
@@ -71609,6 +71922,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rax as usize] = 0x1007;
         let mut memory = Memory::new(&code);
@@ -71629,10 +71943,7 @@ mod tests {
         assert_eq!(state.gpr[Register::Rax as usize], u64::MAX);
         assert_eq!(state.rflags, 0x0417);
         assert_eq!(&memory.bytes[7..15], &0x1006u64.to_le_bytes());
-        assert_eq!(
-            memory.atomic_adds,
-            vec![(0x1007, OperandSize::Qword, 0x1007)]
-        );
+        assert_eq!(memory.atomic_rmws, vec![(0x1007, OperandSize::Qword)]);
         assert!(
             memory.accesses.is_empty(),
             "no separate data read/write calls"
@@ -71686,6 +71997,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[Register::Rax as usize] = 0x1007;
             let before_state = state.clone();
@@ -71712,10 +72024,7 @@ mod tests {
             }
             assert_eq!(state, before_state);
             assert_eq!(memory.bytes, before_ram);
-            assert_eq!(
-                memory.atomic_adds,
-                vec![(0x1007, OperandSize::Qword, 0x1007)]
-            );
+            assert_eq!(memory.atomic_rmws, vec![(0x1007, OperandSize::Qword)]);
             assert!(memory.accesses.is_empty());
         }
     }
@@ -71763,6 +72072,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rax as usize] = 0x1007;
         let mut memory = Memory::new(&code);
@@ -71783,10 +72093,7 @@ mod tests {
         assert_eq!(state.gpr[Register::Rax as usize], 0x1008);
         assert_eq!(state.rflags, 0x0297);
         assert_eq!(&memory.bytes[7..15], &0x1008u64.to_le_bytes());
-        assert_eq!(
-            memory.atomic_compare_exchanges,
-            vec![(0x1007, OperandSize::Qword, 0x1007, 0x1007)]
-        );
+        assert_eq!(memory.atomic_rmws, vec![(0x1007, OperandSize::Qword)]);
         assert!(
             memory.accesses.is_empty(),
             "no separate data read/write calls"
@@ -71840,6 +72147,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[Register::Rax as usize] = 0x1007;
             let before_state = state.clone();
@@ -71866,10 +72174,7 @@ mod tests {
             }
             assert_eq!(state, before_state);
             assert_eq!(memory.bytes, before_ram);
-            assert_eq!(
-                memory.atomic_compare_exchanges,
-                vec![(0x1007, OperandSize::Qword, 0x1007, 0x1007)]
-            );
+            assert_eq!(memory.atomic_rmws, vec![(0x1007, OperandSize::Qword)]);
             assert!(memory.accesses.is_empty());
         }
     }
@@ -71917,6 +72222,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[Register::Rax as usize] = 0x7fff_ffff_ffff_ffff;
         let before = state.clone();
@@ -71983,6 +72289,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         extended_state.gpr[Register::R8 as usize] = 2;
         extended_state.gpr[Register::R9 as usize] = 3;
@@ -72048,6 +72355,7 @@ mod tests {
                         es_cache: None,
 
                         activity: None,
+                        nmi_blocked: false,
                     };
                     let before = state.clone();
                     let mut memory = Memory::new(if architectural { code } else { &code[..cut] });
@@ -72129,6 +72437,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             let before = state.clone();
             let mut memory = Memory::new(code);
@@ -72357,6 +72666,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[0] = initial;
             state.gpr[1] = other;
@@ -72459,6 +72769,7 @@ mod tests {
                         es_cache: None,
 
                         activity: None,
+                        nmi_blocked: false,
                     };
                     state.gpr[3] = 0x1000;
                     let before = state.clone();
@@ -72540,6 +72851,7 @@ mod tests {
                         es_cache: None,
 
                         activity: None,
+                        nmi_blocked: false,
                     };
                     let before = state.clone();
                     let mut memory = Memory::new(if architectural { code } else { &code[..cut] });
@@ -72724,6 +73036,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[0] = input;
             state.gpr[1] = source;
@@ -72776,6 +73089,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[4] = 0x1122_3344_5566_77f0;
         state.gpr[1] = 0xff;
@@ -72839,6 +73153,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[3] = 0x1000;
             let before = state.gpr;
@@ -72907,6 +73222,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[0] = 0x8000_0000_0000_0000;
             assert_eq!(
@@ -72975,6 +73291,7 @@ mod tests {
                     es_cache: None,
 
                     activity: None,
+                    nmi_blocked: false,
                 };
                 state.gpr[3] = 0x1000;
                 let before = state.clone();
@@ -73036,6 +73353,7 @@ mod tests {
                     es_cache: None,
 
                     activity: None,
+                    nmi_blocked: false,
                 };
                 let before = state.clone();
                 let mut memory = Memory::new(&code[..cut]);
@@ -73119,6 +73437,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             let mut memory = Memory::new(code);
             let result = run(
@@ -73204,6 +73523,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[0] = initial;
             let mut memory = Memory::new(code);
@@ -73268,6 +73588,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[0] = 1;
         let mut flags_defined = 0;
@@ -73328,6 +73649,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[0] = 0x80;
         let mut flags_defined = 0;
@@ -73388,6 +73710,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[0] = 0x8000_0000_0000_0081;
         let mut flags_defined = 0;
@@ -73448,6 +73771,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[index] = 0xabcd_ef01_1234_5678;
             assert_eq!(
@@ -73499,6 +73823,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[3] = 0x1000;
             let before = state.clone();
@@ -73559,6 +73884,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[0] = 0x80;
         assert_eq!(
@@ -73613,6 +73939,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[0] = 0x8000_0000_0000_0001;
         state.gpr[1] = 0x8000_0000_0000_0000;
@@ -73674,6 +74001,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[0] = 0x8001;
             state.gpr[1] = 0x4003;
@@ -73735,6 +74063,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         state.gpr[0] = 0x1234;
         let before = state.clone();
@@ -73794,6 +74123,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[3] = 0x1000;
             let before = state.clone();
@@ -73934,6 +74264,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         let before = state.clone();
         assert!(matches!(
@@ -74160,6 +74491,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         let before = state.clone();
         let mut truncated = Memory::new(&[0x0f, 0xba, 0xe0]); // BT EAX, imm8 missing
@@ -74997,6 +75329,7 @@ mod tests {
                 es_cache: None,
 
                 activity: None,
+                nmi_blocked: false,
             };
             state.gpr[dst as usize] = old_dst;
             state.gpr[src as usize] = source;
@@ -75075,6 +75408,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         let mut memory = Memory::new(&[0x48, 0x8c, 0xe0]);
         let before = state.clone();
@@ -75130,6 +75464,7 @@ mod tests {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         let mut memory = Memory::new(&[0x48, 0x8c, 0xe8]);
         assert_eq!(
@@ -75980,17 +76315,18 @@ mod tests {
     }
 
     #[test]
-    fn lock_cmpxchg_stays_unsupported_in_bare_run_and_step() {
-        // S4-38L7k widened the CPL0-set path only: without the set (no control policy) bare `run`
-        // and `step` refuse `LOCK CMPXCHG m64, r64` with opcode 0xb1 and without mutation.
-        for bytes in [
-            &[0xf0, 0x48, 0x0f, 0xb1, 0x13][..],
-            &[0xf0, 0x4c, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00][..],
-            // S4-38L7y: the dword form is refused here too.
-            &[0xf0, 0x0f, 0xb1, 0x13][..],
-        ] {
+    fn lock_cmpxchg_is_executed_in_bare_run_and_step_since_s6_20() {
+        // S4-38L7k widened the CPL0-set path only and this test used to assert that bare `run` and
+        // `step` refuse `LOCK CMPXCHG` (opcode 0xb1). S6-20 admits the dword form in the bare
+        // run (the S6-05 litmus corpus needs it): it executes through one `atomic_rmw_integer`
+        // call. The expectation is changed on purpose. The qword and the DS-substitute forms stay
+        // refused (the loop below the dword form), as do the other LOCK forms
+        // (`crates/od-isa/tests/s6_20_lock_atomic.rs`).
+        for bytes in [&[0xf0, 0x0f, 0xb1, 0x13][..]] {
             let mut bare = LongModeState::default();
             bare.gpr[Register::Rbx as usize] = 0x1000;
+            // RAX = 0 differs from the cell (bytes 0, 1, 2, ...): a failed compare, the cell is
+            // written back unchanged and RAX takes it.
             let before = bare.clone();
 
             let mut state = bare.clone();
@@ -76007,14 +76343,34 @@ mod tests {
             );
             assert_eq!(
                 result.exit,
-                RunExit::Unsupported { opcode: 0xb1 },
+                RunExit::InstructionBudgetExhausted,
                 "{bytes:02x?}"
             );
-            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
-            assert_eq!(state, before, "{bytes:02x?}");
-            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+            assert_eq!(result.instructions_executed, 1, "{bytes:02x?}");
+            assert_ne!(state, before, "{bytes:02x?}");
+            assert!(
+                memory
+                    .accesses
+                    .iter()
+                    .any(|(kind, ..)| *kind == AccessKind::Write),
+                "{bytes:02x?}: a CMPXCHG writes even when the compare fails"
+            );
 
             let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced),
+                "{bytes:02x?}"
+            );
+        }
+        for bytes in [
+            &[0xf0, 0x48, 0x0f, 0xb1, 0x13][..],
+            &[0x3e, 0x0f, 0xb1, 0x13][..],
+        ] {
+            let mut state = LongModeState::default();
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
             let mut memory = Memory::new(bytes);
             assert_eq!(
                 step(&mut state, &mut memory, AccessContext::default()),
@@ -76690,12 +77046,15 @@ mod tests {
     }
 
     #[test]
-    fn lock_inc_stays_unsupported_in_bare_run_and_step() {
-        // S4-38L7l widened the CPL0-set path only: without the set (no control policy) bare `run`
-        // and `step` refuse `LOCK INC m32/m64` with opcode 0xff and without mutation.
-        for bytes in [
-            &[0xf0, 0xff, 0x43, 0x58][..],
-            &[0xf0, 0x48, 0xff, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+    fn lock_inc_is_executed_in_bare_run_and_step_since_s6_20() {
+        // S4-38L7l widened the CPL0-set path only and this test used to assert that bare `run` and
+        // `step` refuse `LOCK INC m32/m64` (opcode 0xff). S6-20 admits only the dword form in the
+        // bare run (the S6-05 litmus corpus needs it): one `atomic_rmw_integer` call. The
+        // expectation is changed on purpose; the qword form is not in the corpus and stays
+        // refused (last loop). The data window is bytes 0, 1, 2, ... at 0x1000.
+        for (bytes, expected) in [
+            // lock incl (%rbx): 0x03020100 + 1
+            (&[0xf0, 0xff, 0x03][..], 0x0302_0101u64),
         ] {
             let mut bare = LongModeState::default();
             bare.gpr[Register::Rbx as usize] = 0x1000;
@@ -76715,23 +77074,33 @@ mod tests {
             );
             assert_eq!(
                 result.exit,
-                RunExit::Unsupported { opcode: 0xff },
+                RunExit::InstructionBudgetExhausted,
                 "{bytes:02x?}"
             );
-            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
-            assert_eq!(state, before, "{bytes:02x?}");
-            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+            assert_eq!(result.instructions_executed, 1, "{bytes:02x?}");
+            assert_ne!(state, before, "{bytes:02x?}");
+            let mut cell = [0u8; 8];
+            cell[..4].copy_from_slice(&memory.bytes[..4]);
+            assert_eq!(u64::from_le_bytes(cell), expected, "{bytes:02x?}");
 
             let mut state = bare.clone();
             let mut memory = Memory::new(bytes);
             assert_eq!(
                 step(&mut state, &mut memory, AccessContext::default()),
-                Ok(StepOutcome::Unsupported { opcode: 0xff }),
+                Ok(StepOutcome::Advanced),
                 "{bytes:02x?}"
             );
-            assert_eq!(state, before, "{bytes:02x?}");
-            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
         }
+        let mut state = LongModeState::default();
+        state.gpr[Register::Rbx as usize] = 0x1000;
+        let before = state.clone();
+        let mut memory = Memory::new(&[0xf0, 0x48, 0xff, 0x03]);
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0xff })
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
     }
 
     #[test]

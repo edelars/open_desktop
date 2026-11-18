@@ -1242,6 +1242,10 @@ impl GuestMemory for AccessTraceMemory {
     fn mfence(&mut self, context: AccessContext) -> Result<(), MemoryError> {
         self.inner.mfence(context)
     }
+
+    fn fence(&mut self, kind: od_isa::FenceKind) -> Result<(), MemoryError> {
+        self.inner.fence(kind)
+    }
 }
 
 fn execute_data_transfer_fixture(raw: &[u8], changes: &[(usize, u64)], retired: u64) -> FlatMemory {
@@ -2546,6 +2550,10 @@ impl GuestMemory for MovsbAccessLog {
             return Err(error.clone());
         }
         self.inner.mfence(context)
+    }
+
+    fn fence(&mut self, kind: od_isa::FenceKind) -> Result<(), MemoryError> {
+        self.inner.fence(kind)
     }
 }
 
@@ -11018,6 +11026,7 @@ fn movsb_rejects_prefixes_and_other_string_widths_without_commit() {
             es_cache: None,
 
             activity: None,
+            nmi_blocked: false,
         };
         let before = state.clone();
         let outcome = step(

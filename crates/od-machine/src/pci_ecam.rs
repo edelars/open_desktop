@@ -107,7 +107,7 @@ pub fn decode_ecam_offset(offset: u64) -> Result<EcamAddress, EcamAddressError> 
 
 /// A PCI configuration function. Accesses are already validated: width is
 /// 1, 2 or 4 bytes and `register` is aligned to it.
-pub trait PciFunction {
+pub trait PciFunction: Send {
     fn config_read(&mut self, register: u16, width: AccessWidth) -> u32;
     fn config_write(&mut self, register: u16, width: AccessWidth, value: u32);
 }
@@ -421,8 +421,8 @@ mod tests {
         MemoryRegionKind, MemoryRegionSpec, MmioBinding, PortAddress, PortRange, PortRegionBinding,
         RamLimits,
     };
-    use std::cell::Cell;
-    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     // diagnostic-only, не объявляется платой
     const TEST_VENDOR: u16 = 0xD1A6;
@@ -574,20 +574,20 @@ mod tests {
         assert_eq!(ecam.read(pio), Ok(0xFF));
     }
 
-    struct Counting(Rc<Cell<u32>>);
+    struct Counting(Arc<AtomicU32>);
     impl PciFunction for Counting {
         fn config_read(&mut self, _: u16, _: AccessWidth) -> u32 {
-            self.0.set(self.0.get() + 1);
+            self.0.fetch_add(1, Ordering::Relaxed);
             0
         }
         fn config_write(&mut self, _: u16, _: AccessWidth, _: u32) {
-            self.0.set(self.0.get() + 1);
+            self.0.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     #[test]
     fn absent_function() {
-        let calls = Rc::new(Cell::new(0));
+        let calls = Arc::new(AtomicU32::new(0));
         let mut ecam = PciEcam::new();
         ecam.add_function(0, 1, 0, Box::new(Counting(calls.clone())))
             .unwrap();
@@ -600,7 +600,7 @@ mod tests {
             ecam.write(acc(o + 4, Word), 0x7).unwrap();
             ecam.write(acc(o + 0x3C, Byte), 0x55).unwrap();
         }
-        assert_eq!(calls.get(), 0);
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
         let present = off(3, 0, 4);
         assert_eq!(ecam.read(acc(present, Word)), Ok(0));
         assert_eq!(ecam.read(acc(off(3, 0, 0x3C), Byte)), Ok(0));
@@ -969,7 +969,7 @@ mod tests {
         outl(&mut bus, CF8, conf1(3, 0, 0xFC));
         assert_eq!(inl(&mut bus, CFC), 0);
         // Writes to an absent function are dropped and never reach it.
-        let calls = Rc::new(Cell::new(0));
+        let calls = Arc::new(AtomicU32::new(0));
         let mut ecam = PciEcam::new();
         ecam.add_function(0, 1, 0, Box::new(Counting(calls.clone())))
             .unwrap();
@@ -982,11 +982,11 @@ mod tests {
             .unwrap();
         ecam.write(pio(4, Dword), 0xFFFF_FFFF).unwrap();
         assert_eq!(ecam.read(pio(4, Dword)), Ok(0xFFFF_FFFF));
-        assert_eq!(calls.get(), 0);
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
         ecam.write(pio(0, Dword), u64::from(conf1(1, 0, 4)))
             .unwrap();
         ecam.write(pio(4, Word), 1).unwrap();
-        assert_eq!(calls.get(), 1);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]

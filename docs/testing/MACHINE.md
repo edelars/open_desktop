@@ -48,7 +48,7 @@ git diff --check
 13. execution regression через `od_isa::execute::run` и
     `IdentityMemoryAdapter`: fetch/load/store, unmapped fault, CPU state/RIP,
     retirement, RAM и committed callback;
-14. explicit rejection atomic/fence operations в diagnostic flat mode.
+14. explicit rejection atomic/fence operations в diagnostic flat mode (S6-20: включая единый `atomic_rmw_integer`, через который идут все LOCK-формы и XCHG m, без чтения и записи).
 15. four-level 4 KiB literal page tables: geometry, canonicality before reads,
     physical36/CR3, present/reserved/PS, cumulative permissions, WP/NXE,
     literal PFEC, trace, table-read errors and no A/D mutation;
@@ -682,7 +682,10 @@ vector (0, 1, 15, 0xFF при unmasked), все семь не-Fixed delivery mod
 зарезервированные `011`/`110`; masked и unmasked), logical destination mode
 (бит 11), polarity, reserved-биты и ненулевой high dword отклоняются для входов 0,
 4 и 23 без изменения снимка; политика: masked entry допускает любой vector; на входах без линии под маской
-хранится active-low (бит 13, pin 9), без маски — отказ без изменения снимка,
+хранится active-low (бит 13, pin 9), без маски — отказ без изменения снимка (кроме формы
+level/active-low pin 9, принимаемой S4-38L8e; тесты `sci_*` и `other_unsupported_entry_fields_stay_refused_with_the_sci_form_accepted`
+в `io_apic.rs`, гостевые `the_sci_rte_write_is_accepted_under_the_apic_profile` и
+`stage4a_keeps_the_sci_rte_write_a_typed_error` в `linux_direct.rs`),
 INTIN4 по-прежнему отказывает active-low.
 Согласование с MADT: тест `model_agrees_with_the_firmware_madt` читает ID из байтов
 MADT в реальном blob-фикстуре S4-31d/g, число входов из константы прошивки
@@ -1830,4 +1833,4 @@ target/release/od-runner linux-direct-gate \
 
 **Что воспроизводится локально без артефактов.** Только гейт на сохранённых отчётах: `od-runner linux-direct-gate --report docs/reports/data/stage4/s4-39j-gate-counted-cold1-stage4a-run.json --nonce s4-38l4a` с теми же тремя `--expected-*` и `--out` даёт `PASS` и вердикт, побайтно равный `s4-39j-gate-counted-verdict.json` (run ID `9d34785c…92c2`); проверено при подготовке S4-46 на release-сборке `od-runner` из этого checkout. Это проверка самосогласованности отчёта, а не повторное исполнение Linux: хеш отчёта входит в run ID, подписи нет.
 
-**Что НЕ воспроизводится без артефактов.** Сам прогон ядра (`linux-direct --run`), положительный и негативные Linux-прогоны, проверка хешей входов против реальных файлов, повторение двух холодных запусков и сравнение их отчётов. Для них нужны vmlinuz и initramfs, которых в репозитории нет, и входной каталог пакетов Ubuntu (см. «требует уточнения»). Не подтверждены повтор на другом хосте, release/debug-различия, JIT, новый nonce на прогон (nonce фиксированный, ISSUE-092), IRQ из CPL3 (ISSUE-090), профили кроме `stage4a` (ISSUE-091). Связанные записи реестра: ISSUE-088, ISSUE-090…ISSUE-099 в [KNOWN_ISSUES](../KNOWN_ISSUES.md).
+**Что НЕ воспроизводится без артефактов.** Сам прогон ядра (`linux-direct --run`), положительный и негативные Linux-прогоны, проверка хешей входов против реальных файлов, повторение двух холодных запусков и сравнение их отчётов. Для них нужны vmlinuz и initramfs, которых в репозитории нет, и входной каталог пакетов Ubuntu (см. «требует уточнения»). Не подтверждены повтор на другом хосте, release/debug-различия, JIT, новый nonce на прогон (nonce фиксированный, ISSUE-092), live IRQ из CPL3 на Linux-госте (моделируемый путь ISSUE-090 реализован и покрыт board test), профили кроме `stage4a` (ISSUE-091). Связанные записи реестра: ISSUE-088, ISSUE-090…ISSUE-099 в [KNOWN_ISSUES](../KNOWN_ISSUES.md).

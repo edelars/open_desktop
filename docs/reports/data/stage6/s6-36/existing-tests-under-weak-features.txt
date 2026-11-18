@@ -1,0 +1,14 @@
+# existing exact-count LOCK tests under --features nonatomic-lock-test (expected: they FAIL), debug, 2026-11-18T05:25:33Z
+test parallel_run::tests::the_aligned_lock_counter_is_exact_on_two_and_four_vcpus ... FAILED
+test parallel_run::tests::a_split_lock_is_atomic_against_an_aligned_lock_on_the_bytes_they_share ... FAILED
+test parallel_run::tests::the_split_lock_counter_through_a_page_is_exact_on_two_and_four_vcpus ... ok
+thread 'parallel_run::tests::the_aligned_lock_counter_is_exact_on_two_and_four_vcpus' (48825444) panicked at crates/od-machine/src/parallel_run.rs:2032:9:
+assertion `left == right` failed: 2 vCPUs x 1500: the counter lost an update (ParallelReport { finished: AllIdle, cpus: [ParallelCpuReport { retired: 4505, calls: 71, wakes: 0, init_applied: 0, started: 0, nmi_delivered: 0, sleeps: 1, split_locks: 0, split_los
+thread 'parallel_run::tests::a_split_lock_is_atomic_against_an_aligned_lock_on_the_bytes_they_share' (48825443) panicked at crates/od-machine/src/parallel_run.rs:2201:9:
+assertion `left == right` failed: pages false, 4 vCPUs: the aligned counter lost an update (ParallelReport { finished: AllIdle, cpus: [ParallelCpuReport { retired: 905, calls: 163, wakes: 0, init_applied: 0, started: 0, nmi_delivered: 0, sleeps: 61, split_lock
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 1636 filtered out; finished in 6.91s
+
+# the ordering test under --features weak-host-ordering (expected: FAILS: SeqCst is expected on the parallel path)
+test physical_memory::tests::a_fence_places_a_host_fence_only_in_the_parallel_mode_and_changes_no_byte ... FAILED
+thread 'physical_memory::tests::a_fence_places_a_host_fence_only_in_the_parallel_mode_and_changes_no_byte' (48826606) panicked at crates/od-machine/src/physical_memory.rs:2807:13:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1637 filtered out; finished in 0.02s

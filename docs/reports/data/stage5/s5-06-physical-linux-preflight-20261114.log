@@ -1,0 +1,51 @@
+S5-06 physical Linux script preflight
+Date: 2026-11-14
+Host: mini; Ubuntu 26.04.1 LTS; Linux 7.0.0-42-generic; x86_64.
+Compiler: gcc-15 (Ubuntu 15.2.0-16ubuntu1), version 15.2.0.
+Scope: host-side script behavior checks only; no Linux guest was booted.
+
+The owner-authorized transfer to /tmp/od-stage5-s5-06-d48c009 contained
+guest/linux/tests/ and tests/fixtures/guest/stage5/. All 15 files matched the
+workspace SHA-256 manifest:
+
+01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b  guest/linux/tests/.gitkeep
+40d2e66f52db0e7ed59991258afbb77f3418c4cd7177bf11dfc822ac9ba1f2e3  guest/linux/tests/s5_a_boot_shutdown.sh
+598e43684ed46f2a8b1b79c82531575be66cfb8b600da9465f63eac164df4ad6  guest/linux/tests/s5_b_disk_persistence.sh
+a0065ebb776255f352a6553d87384741ee2d3a49c667ea8792347106aef5e149  guest/linux/tests/s5_c_archive_fs.sh
+2eca0533e5f7d2287ccdd2e6e87b577e0ec73a0738dcdb9bfac6e396ce2c61b8  guest/linux/tests/s5_d_compile.sh
+036a49c6e1ae8b6aade1f067168dd7874a2f8d0b3afc475c7f6e911bee44d798  guest/linux/tests/s5_e_wx_interpreter.sh
+f67d2ee94f66b9a651510e5f0cac56c7eebe971119813a7bd923995eb5a3df32  guest/linux/tests/s5_f_network_transfer.sh
+d70e0702a82c7a2b9360f3567c6c79d7b25a0797514647ac23d2f3300c423f90  guest/linux/tests/s5_g_bounded_memory_stop.sh
+b28e9810490ccbf5175edce3e8c3c71861251ad56d3a443af32de16d76dcd79b  tests/fixtures/guest/stage5/README.md
+59e8180edc4a28efb13dad9c6f8edaf896dcfde6ab5c428418ee3c0d87a47895  tests/fixtures/guest/stage5/stage5_d.c
+a0ec6b7432722b9073cf927b75f815b1a82cd509f2967c97d7cc568f098cee28  tests/fixtures/guest/stage5/stage5_d_math.c
+9341d7fa286e8355718483e28f05d001ea37275a9e610d5fdbe1944faf08f700  tests/fixtures/guest/stage5/stage5_e.c
+217fe91e26b73d237501cd864e2890154b36e6ac7bb6b457b372e51c40225a79  tests/fixtures/guest/stage5/stage5_f.c
+44297b1f45392b6b42da7769078e90953754bca239d32be3d62f835c505c6793  tests/fixtures/guest/stage5/stage5_g.c
+3115bec63023ded31b4fac559ecb77a107d388b1e3c3ff72fadbc840c134d58b  tests/fixtures/guest/stage5/test_stage5_f_errors.c
+
+Checks:
+- sh -n passed for all seven s5_*.sh scripts.
+- Each script rejected the invalid nonce "bad nonce" with exit 64 and the
+  nonce validation failure marker.
+- A with nonce physical-preflight-20261114 and no opt-in printed
+  OD_S5_A_NOT_RUN and exited 78; no poweroff was attempted.
+- C printed OD_S5_C_TREE_MATCH (files=4) and OD_S5_C_PASS. Its unique
+  /var/tmp test directory was removed after the run.
+- D printed OD_S5_D_RESULT (sum=5050) and OD_S5_D_PASS. This was a standalone
+  host-native helper run, not a guest run; its unique /var/tmp directory was
+  removed after the run.
+- E printed OD_S5_E_RESULT (first=41, second=42, nx=denied) and OD_S5_E_PASS
+  with profile=interpreter and jit_claim=none. It was executed on the physical
+  host, not in the guest; its unique /var/tmp directory was removed.
+- F without endpoint configuration printed OD_S5_F_BLOCKED for missing
+  S5_F_HOST and exited 78 before network activity.
+- G with S5_G_MEMORY_MIB=129 rejected the over-limit value with exit 64 before
+  persistent writes.
+- GCC-15 -fsyntax-only passed for stage5_d.c, stage5_d_math.c, stage5_e.c,
+  stage5_f.c, and stage5_g.c. The host-only F error-classifier harness built
+  and passed without opening a socket.
+
+No B positive write/verify phase, A poweroff, G stop orchestration, F network
+transfer, guest boot, guest persistence, or scenario acceptance was tested.
+S5-06 remains blocked/unaccepted.

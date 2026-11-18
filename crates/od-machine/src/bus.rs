@@ -10,6 +10,7 @@ use od_isa::{
 };
 use std::cell::RefCell;
 use std::fmt;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 // Must match the bounded 36-bit physical-address format accepted by
 // page_walk.rs. Higher PTE bits can contain software metadata or NX.
@@ -116,7 +117,10 @@ impl fmt::Display for DeviceError {
 }
 impl std::error::Error for DeviceError {}
 
-pub trait BusDevice {
+/// A device on the bus. `Send` (S6-33): the device table sits behind one lock and is used from the
+/// thread of the vCPU that holds it (MACHINE_CONTRACT.md, lock order); a device does not call back
+/// into the bus.
+pub trait BusDevice: Send {
     /// An error must be returned before any guest-visible state or external
     /// effect is committed. Implementations validate the complete operation
     /// before applying its synchronous effect.
@@ -250,11 +254,19 @@ impl std::error::Error for BusAccessError {}
 
 pub struct MachineBus {
     memory: PhysicalMemory,
-    devices: Vec<Box<dyn BusDevice>>,
+    /// The device table, behind the one device lock of S6-33 (MACHINE_CONTRACT.md, lock order).
+    /// RAM is not behind it: `memory` is a separate field, reached through a shared reference
+    /// without the lock. Code that owns the bus exclusively (every interleaved path) reaches the
+    /// table with [`exclusive_devices`], which takes no lock.
+    devices: Mutex<Vec<Box<dyn BusDevice>>>,
     mmio: Vec<MmioBinding>,
     /// Byte length of the region of each `mmio` binding (same order), for the set-step MMIO
     /// dispatch, which must not look at `memory` while the page walk holds it (S4-38L9s).
     mmio_lens: Vec<u64>,
+    /// S4-38L8d: the set loop also serves the Local APIC and IOAPIC windows. `false` unless the
+    /// board turned the APIC profile on (`enable_apic_mmio_windows`), so every other run keeps the ECAM
+    /// window as the only MMIO of the set loop.
+    apic_mmio_windows: bool,
     ports: Vec<PortRegionBinding>,
 }
 
@@ -264,6 +276,28 @@ pub struct TrackedCodeSnapshot {
     pub physical_base: GuestPhysicalAddress,
     pub bytes: Vec<u8>,
     pub backing_generation: u64,
+}
+
+/// Executable bytes of one range spanning at most two guest 4 KiB pages
+/// (S4-16g). `first` starts at `linear_base`; `second` starts at the next
+/// 4 KiB boundary and exists only when the range reaches it. Each part has its
+/// own physical page and generation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrackedCrossPageCodeSnapshot {
+    pub linear_base: u64,
+    pub first: TrackedCodeSnapshot,
+    pub second: Option<TrackedCodeSnapshot>,
+}
+
+impl TrackedCrossPageCodeSnapshot {
+    /// All captured bytes in linear order.
+    pub fn bytes(&self) -> Vec<u8> {
+        let mut bytes = self.first.bytes.clone();
+        if let Some(second) = &self.second {
+            bytes.extend_from_slice(&second.bytes);
+        }
+        bytes
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -287,6 +321,50 @@ pub enum TrackedCodePatchError {
 }
 
 impl MachineBus {
+    /// Diagnostic-only read of one guest virtual range. The page walk uses a no-op A/D writer,
+    /// and the final physical access is admitted only when its entire range is backed by RAM.
+    pub(crate) fn read_virtual_ram_diagnostic(
+        &mut self,
+        paging: &Long64ProbeConfig,
+        rip: u64,
+        linear: GuestLinearAddress,
+        context: AccessContext,
+        output: &mut [u8],
+    ) -> Result<(), String> {
+        let mut offset = 0usize;
+        while offset < output.len() {
+            let linear_address = linear
+                .get()
+                .checked_add(u64::try_from(offset).map_err(|_| "virtual offset overflow")?)
+                .ok_or("virtual address overflow")?;
+            let bytes_to_page_end = 4096 - (linear_address as usize & 0xfff);
+            let fragment_len = bytes_to_page_end.min(output.len() - offset);
+            let physical = crate::page_walk::translate_long64_2m_ram_read_only(
+                &mut self.memory,
+                paging,
+                rip,
+                GuestLinearAddress::new(linear_address),
+                context,
+                AccessKind::Read,
+            )
+            .map_err(|error| format!("read-only translation failed: {error:?}"))?;
+            let end = u128::from(physical.get()) + fragment_len as u128;
+            let in_ram = self.memory.region_specs().any(|region| {
+                region.kind == MemoryRegionKind::Ram
+                    && physical.get() >= region.range.start().get()
+                    && end <= region.range.end_exclusive()
+            });
+            if !in_ram {
+                return Err("translated range is not wholly backed by RAM".into());
+            }
+            self.memory
+                .load_bytes(physical, &mut output[offset..offset + fragment_len])
+                .map_err(|error| format!("RAM read failed: {error:?}"))?;
+            offset += fragment_len;
+        }
+        Ok(())
+    }
+
     pub fn code_page_generation(
         &self,
         address: GuestPhysicalAddress,
@@ -324,10 +402,109 @@ impl MachineBus {
         if length == 0 || length > 0x1000 - offset {
             return Err(TrackedCodeSnapshotError::InvalidLength);
         }
+        self.capture_code_page(
+            paging,
+            linear_start,
+            linear_start,
+            length,
+            context,
+            committed_write,
+        )
+    }
+
+    /// Capture one executable byte range that starts in the 4 KiB page of
+    /// `linear_start` and may continue into the next page, at most two pages
+    /// in total (S4-16g). The first page is walked as an instruction fetch at
+    /// `linear_start`; the second page, when the range reaches it, gets its own
+    /// fetch walk at the page boundary with the original `linear_start` as the
+    /// instruction RIP, so a second-page fault carries the same
+    /// `PageFaultRecord` (saved RIP, CR2 = boundary address) as a byte-wise
+    /// interpreter fetch. Each page keeps its own physical base and
+    /// generation; the physical pages need not be adjacent. A range that does
+    /// not fit two pages is `InvalidLength` before any walk. A second-page
+    /// failure keeps the first-page walk effects (reported through the
+    /// callback) and returns no snapshot.
+    pub fn tracked_code_snapshot_two_pages_with_callback(
+        &mut self,
+        paging: &Long64ProbeConfig,
+        linear_start: u64,
+        length: usize,
+        context: AccessContext,
+        mut committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<TrackedCrossPageCodeSnapshot, TrackedCodeSnapshotError> {
+        if context.origin != AccessOrigin::Explicit {
+            return Err(TrackedCodeSnapshotError::InvalidAccessContext);
+        }
+        let offset = (linear_start & 0xfff) as usize;
+        let first_length_max = 0x1000 - offset;
+        if length == 0 || length > first_length_max + 0x1000 {
+            return Err(TrackedCodeSnapshotError::InvalidLength);
+        }
+        let first_length = length.min(first_length_max);
+        let mut first = self.capture_code_page(
+            paging,
+            linear_start,
+            linear_start,
+            first_length,
+            context,
+            &mut committed_write,
+        )?;
+        if length == first_length {
+            return Ok(TrackedCrossPageCodeSnapshot {
+                linear_base: linear_start,
+                first,
+                second: None,
+            });
+        }
+        let second_linear = (linear_start & !0xfff)
+            .checked_add(0x1000)
+            .ok_or(TrackedCodeSnapshotError::InvalidLength)?;
+        let second = self.capture_code_page(
+            paging,
+            linear_start,
+            second_linear,
+            length - first_length,
+            context,
+            &mut committed_write,
+        )?;
+        // The second walk can commit A/D bits into a page-table page that is
+        // also the first code page. Re-read the first page so both snapshots
+        // describe memory as it is when the call returns.
+        let first_generation = self
+            .memory
+            .code_page_generation(first.physical_base)
+            .map_err(TrackedCodeSnapshotError::Physical)?;
+        if first_generation != first.backing_generation {
+            let byte_address = GuestPhysicalAddress::new(first.physical_base.get() + offset as u64);
+            self.memory
+                .load_bytes(byte_address, &mut first.bytes)
+                .map_err(TrackedCodeSnapshotError::Physical)?;
+            first.backing_generation = first_generation;
+        }
+        Ok(TrackedCrossPageCodeSnapshot {
+            linear_base: linear_start,
+            first,
+            second: Some(second),
+        })
+    }
+
+    /// Walk `fetch_linear` as an instruction fetch of the instruction at
+    /// `instruction_rip` and read `length` bytes from its page. The caller
+    /// guarantees that the range lies within the page of `fetch_linear`.
+    fn capture_code_page(
+        &mut self,
+        paging: &Long64ProbeConfig,
+        instruction_rip: u64,
+        linear_start: u64,
+        length: usize,
+        context: AccessContext,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<TrackedCodeSnapshot, TrackedCodeSnapshotError> {
+        let offset = (linear_start & 0xfff) as usize;
         let report = self.access_tracked_ram(
             paging,
             TrackedAccessRequest {
-                instruction_rip: linear_start,
+                instruction_rip,
                 address: crate::GuestLinearAddress::new(linear_start),
                 context,
                 operation: RamAccessOperation::Fetch,
@@ -355,18 +532,22 @@ impl MachineBus {
             return Err(TrackedCodeSnapshotError::NotRam(physical_base));
         }
         let byte_address = GuestPhysicalAddress::new(physical + offset as u64);
+        // S6-30b: the generation is read BEFORE the bytes (it is an `Acquire` load). A write that
+        // lands between the two leaves the snapshot older than the page, so the next generation
+        // check refreshes it; the reverse order could pair old bytes with a new generation.
+        let backing_generation = self
+            .memory
+            .code_page_generation(physical_base)
+            .map_err(TrackedCodeSnapshotError::Physical)?;
         let mut bytes = vec![0; length];
         self.memory
-            .read_bytes(byte_address, &mut bytes)
+            .load_bytes(byte_address, &mut bytes)
             .map_err(TrackedCodeSnapshotError::Physical)?;
         Ok(TrackedCodeSnapshot {
             linear_base: linear_start,
             physical_base,
             bytes,
-            backing_generation: self
-                .memory
-                .code_page_generation(physical_base)
-                .map_err(TrackedCodeSnapshotError::Physical)?,
+            backing_generation,
         })
     }
 
@@ -482,7 +663,7 @@ impl MachineBus {
         bytes: &[u8],
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
-        self.memory.write_bytes(address, bytes, committed_write)
+        self.memory.store_bytes(address, bytes, committed_write)
     }
 }
 
@@ -498,20 +679,60 @@ pub(crate) struct MachineBusPortIo<'a> {
 /// sits in a `RefCell`. One instruction makes its accesses one after another, so the cell is never
 /// borrowed twice; if it ever is, that is a typed `Busy` error and not a panic.
 pub(crate) struct MachineBusSetStepIo<'a> {
-    devices: RefCell<&'a mut [Box<dyn BusDevice>]>,
+    devices: DeviceTable<'a>,
+    /// The gate of the split `LOCK` of the vCPU thread (S6-34 step 8); `None` outside the
+    /// parallel runner.
+    gate: Option<&'a dyn SplitLockGate>,
     ports: &'a [PortRegionBinding],
     mmio: &'a [MmioBinding],
     mmio_lens: &'a [u64],
+    windows: &'static [crate::page_walk::MmioWindow],
+    /// Index of the vCPU whose set loop this is (S6-16a): its MMIO accesses reach the
+    /// per-processor devices (the Local APIC window) as that vCPU's. Every other device ignores it.
+    vcpu: usize,
 }
+
+/// How the set-step view of one instruction reaches the device table (S6-34). `Exclusive`: the
+/// caller owns the bus (`&mut MachineBus`, every interleaved path); the table is borrowed through
+/// a cell, no lock is taken. `Shared`: the caller holds only `&MachineBus` (a vCPU thread); every
+/// access takes the one device lock of the bus for the duration of that access and releases it
+/// before returning (MACHINE_CONTRACT.md, lock order, rule 3: never held across an instruction, a
+/// `HLT` or a wait).
+enum DeviceTable<'a> {
+    Exclusive(RefCell<&'a mut [Box<dyn BusDevice>]>),
+    Shared(&'a Mutex<Vec<Box<dyn BusDevice>>>),
+}
+
+impl DeviceTable<'_> {
+    /// Run `f` on the table for one access; `Err` when the exclusive cell is already borrowed.
+    fn with<R>(
+        &self,
+        f: impl FnOnce(&mut [Box<dyn BusDevice>]) -> R,
+    ) -> Result<R, DeviceTableBusy> {
+        match self {
+            Self::Exclusive(cell) => {
+                let mut devices = cell.try_borrow_mut().map_err(|_| DeviceTableBusy)?;
+                Ok(f(&mut devices))
+            }
+            Self::Shared(lock) => {
+                let mut devices = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                Ok(f(&mut devices))
+            }
+        }
+    }
+}
+
+struct DeviceTableBusy;
 
 /// The port view of [`MachineBusSetStepIo`].
 pub(crate) struct SetStepPortIo<'a, 'b>(&'b MachineBusSetStepIo<'a>);
 
 /// MMIO dispatch of one tracked data access, for the page walker of the set loop.
 pub(crate) trait SetStepMmio {
-    /// The only physical range this dispatch serves, `(base, size)`: every other MMIO operand of
-    /// the set loop stays the typed error it was before S4-38L9s.
-    fn window(&self) -> crate::page_walk::MmioWindow;
+    /// Every physical range this dispatch serves: the ECAM window, and with the APIC profile
+    /// (S4-38L8d) the Local APIC and IOAPIC windows. Every other MMIO operand of the set loop
+    /// stays the typed error it was before S4-38L9s.
+    fn windows(&self) -> &[crate::page_walk::MmioWindow];
 
     fn dispatch(
         &self,
@@ -519,27 +740,63 @@ pub(crate) trait SetStepMmio {
         width: u8,
         operation: RamAccessOperation,
     ) -> Result<u64, crate::page_walk::MmioDispatchError>;
+
+    /// The gate of the split `LOCK` of the vCPU thread, if the view belongs to one (S6-34 step 8).
+    fn split_gate(&self) -> Option<&dyn SplitLockGate> {
+        None
+    }
 }
 
 impl<'a> MachineBusSetStepIo<'a> {
     pub(crate) fn port_io(&self) -> SetStepPortIo<'a, '_> {
         SetStepPortIo(self)
     }
+
+    /// The same view with the gate of the split `LOCK` of the vCPU thread (S6-34 step 8).
+    pub(crate) fn with_split_gate(mut self, gate: Option<&'a dyn SplitLockGate>) -> Self {
+        self.gate = gate;
+        self
+    }
 }
 
-/// The set loop reaches ECAM and nothing else (S4-38L9s): the PCI configuration device is the one
-/// MMIO device its profile needs, and the other MMIO (local APIC, I/O APIC, display, NVMe) is not
-/// admitted by this slice.
-fn set_step_mmio_window() -> crate::page_walk::MmioWindow {
-    (
-        crate::PCI_ECAM_DESCRIPTOR.base,
-        crate::PCI_ECAM_DESCRIPTOR.size,
-    )
+/// The stop of every other vCPU around a split `LOCK` (S6-34 step 8, MEMORY_MODEL.md D8). The
+/// vCPU that executes a locked operand which is not naturally aligned (so that no host atomic
+/// covers it) calls [`Self::acquire`] before ANY visible effect of the instruction (before its
+/// first walk, so before an accessed or dirty bit is set) and [`Self::release`] when the
+/// operation is done. `acquire` returns when every other vCPU is quiet (stands on an instruction
+/// boundary, is asleep, or waits in its own `acquire` before any effect); it fails (`Err`, no
+/// effect, nothing to release) when that does not happen in the time allowed. When two vCPUs ask
+/// at once, one gets it and the other waits inside `acquire`, quiet, until the first has released,
+/// and then asks again: the instruction of the loser has had no effect, so it starts over.
+pub(crate) trait SplitLockGate {
+    fn acquire(&self) -> Result<(), String>;
+    fn release(&self);
 }
+
+/// The ECAM window: the PCI configuration device is the one MMIO device the set loop's own profile
+/// needs (S4-38L9s). Without the APIC profile it is the only MMIO the set loop serves; the other
+/// MMIO (Local APIC, IOAPIC, display, NVMe) is not admitted.
+const ECAM_WINDOW: crate::page_walk::MmioWindow = (
+    crate::PCI_ECAM_DESCRIPTOR.base,
+    crate::PCI_ECAM_DESCRIPTOR.size,
+);
+
+const SET_STEP_WINDOWS: [crate::page_walk::MmioWindow; 1] = [ECAM_WINDOW];
+/// S4-38L8d: with the APIC profile the set loop also reaches the Local APIC and the IOAPIC (one 4 KiB
+/// window each, MADT addresses), and still nothing else.
+const SET_STEP_APIC_WINDOWS: [crate::page_walk::MmioWindow; 3] = [
+    ECAM_WINDOW,
+    (crate::LOCAL_APIC_MMIO_BASE, crate::LOCAL_APIC_MMIO_SIZE),
+    (crate::IO_APIC_MMIO_BASE, crate::IO_APIC_MMIO_SIZE),
+];
 
 impl SetStepMmio for MachineBusSetStepIo<'_> {
-    fn window(&self) -> crate::page_walk::MmioWindow {
-        set_step_mmio_window()
+    fn windows(&self) -> &[crate::page_walk::MmioWindow] {
+        self.windows
+    }
+
+    fn split_gate(&self) -> Option<&dyn SplitLockGate> {
+        self.gate
     }
 
     fn dispatch(
@@ -557,13 +814,14 @@ impl SetStepMmio for MachineBusSetStepIo<'_> {
             _ => return Err(Backend(format!("unsupported MMIO width {width}"))),
         };
         let len = u64::from(width.bytes());
-        let (window_base, window_size) = set_step_mmio_window();
-        if address.get() < window_base
-            || u128::from(address.get()) + u128::from(len)
-                > u128::from(window_base) + u128::from(window_size)
-        {
+        let served = self.windows.iter().any(|&(base, size)| {
+            address.get() >= base
+                && u128::from(address.get()) + u128::from(len)
+                    <= u128::from(base) + u128::from(size)
+        });
+        if !served {
             return Err(Backend(format!(
-                "MMIO address {address:?} is outside the ECAM window the set loop serves"
+                "MMIO address {address:?} is outside the windows the set loop serves"
             )));
         }
         let (binding, _) = self
@@ -583,28 +841,27 @@ impl SetStepMmio for MachineBusSetStepIo<'_> {
             offset: address.get() - binding.region_start.get(),
             width,
         };
-        let mut devices = self
-            .devices
-            .try_borrow_mut()
-            .map_err(|_| Backend("the device table is already borrowed".to_owned()))?;
-        let device = &mut devices[binding.device_index];
+        let vcpu = self.vcpu;
+        let device_index = binding.device_index;
         match operation {
-            RamAccessOperation::Read { .. } => device
-                .read(access)
+            RamAccessOperation::Read { .. } => self
+                .devices
+                .with(|devices| devices[device_index].read_from_cpu(vcpu, access))
+                .map_err(|_| Backend("the device table is already borrowed".to_owned()))?
                 .map(|value| value & width.mask())
                 .map_err(|error| {
-                    Backend(format!(
-                        "MMIO device {} read failed: {error:?}",
-                        binding.device_index
-                    ))
+                    Backend(format!("MMIO device {device_index} read failed: {error:?}"))
                 }),
-            RamAccessOperation::Write { value, .. } => device
-                .write(access, value & width.mask())
+            RamAccessOperation::Write { value, .. } => self
+                .devices
+                .with(|devices| {
+                    devices[device_index].write_from_cpu(vcpu, access, value & width.mask())
+                })
+                .map_err(|_| Backend("the device table is already borrowed".to_owned()))?
                 .map(|()| 0)
                 .map_err(|error| {
                     Backend(format!(
-                        "MMIO device {} write failed: {error:?}",
-                        binding.device_index
+                        "MMIO device {device_index} write failed: {error:?}"
                     ))
                 }),
             RamAccessOperation::Fetch => Err(Backend(
@@ -613,21 +870,24 @@ impl SetStepMmio for MachineBusSetStepIo<'_> {
             RamAccessOperation::ReadPseudoDescriptor => {
                 Err(Backend("pseudo-descriptor reads are RAM-only".to_owned()))
             }
+            // S6-31: a locked operand is never served by a device; the walker refuses an MMIO
+            // operand before it reaches this dispatch.
+            RamAccessOperation::AtomicTarget { .. } => {
+                Err(Backend("locked operations are RAM-only".to_owned()))
+            }
         }
     }
 }
 
-impl<'a, 'b> SetStepPortIo<'a, 'b> {
-    fn devices(
+impl SetStepPortIo<'_, '_> {
+    fn with_devices<R>(
         &self,
-    ) -> Result<std::cell::RefMut<'b, &'a mut [Box<dyn BusDevice>]>, BusAccessError> {
-        self.0
-            .devices
-            .try_borrow_mut()
-            .map_err(|_| BusAccessError::Device {
-                device_index: usize::MAX,
-                source: DeviceError::Busy,
-            })
+        f: impl FnOnce(&mut [Box<dyn BusDevice>]) -> Result<R, BusAccessError>,
+    ) -> Result<R, BusAccessError> {
+        self.0.devices.with(f).map_err(|_| BusAccessError::Device {
+            device_index: usize::MAX,
+            source: DeviceError::Busy,
+        })?
     }
 }
 
@@ -635,101 +895,156 @@ impl PortIo for SetStepPortIo<'_, '_> {
     type Error = BusAccessError;
 
     fn read_u8(&mut self, port: u16) -> Result<u8, Self::Error> {
-        let mut devices = self.devices()?;
-        read_port_from(
-            &mut devices,
-            self.0.ports,
-            PortAddress::new(port),
-            AccessWidth::Byte,
-        )
+        let ports = self.0.ports;
+        self.with_devices(|devices| {
+            read_port_from(devices, ports, PortAddress::new(port), AccessWidth::Byte)
+        })
         .map(|value| value as u8)
     }
 
     fn write_u8(&mut self, port: u16, value: u8) -> Result<(), Self::Error> {
-        let mut devices = self.devices()?;
-        write_port_to(
-            &mut devices,
-            self.0.ports,
-            PortAddress::new(port),
-            AccessWidth::Byte,
-            u32::from(value),
-        )
+        let ports = self.0.ports;
+        self.with_devices(|devices| {
+            write_port_to(
+                devices,
+                ports,
+                PortAddress::new(port),
+                AccessWidth::Byte,
+                u32::from(value),
+            )
+        })
     }
 
     fn read_u16(&mut self, port: u16) -> Result<u16, Self::Error> {
-        let mut devices = self.devices()?;
-        read_port_from(
-            &mut devices,
-            self.0.ports,
-            PortAddress::new(port),
-            AccessWidth::Word,
-        )
+        let ports = self.0.ports;
+        self.with_devices(|devices| {
+            read_port_from(devices, ports, PortAddress::new(port), AccessWidth::Word)
+        })
         .map(|value| value as u16)
     }
 
     fn write_u16(&mut self, port: u16, value: u16) -> Result<(), Self::Error> {
-        let mut devices = self.devices()?;
-        write_port_to(
-            &mut devices,
-            self.0.ports,
-            PortAddress::new(port),
-            AccessWidth::Word,
-            u32::from(value),
-        )
+        let ports = self.0.ports;
+        self.with_devices(|devices| {
+            write_port_to(
+                devices,
+                ports,
+                PortAddress::new(port),
+                AccessWidth::Word,
+                u32::from(value),
+            )
+        })
     }
 
     fn read_u32(&mut self, port: u16) -> Result<u32, Self::Error> {
-        let mut devices = self.devices()?;
-        read_port_from(
-            &mut devices,
-            self.0.ports,
-            PortAddress::new(port),
-            AccessWidth::Dword,
-        )
+        let ports = self.0.ports;
+        self.with_devices(|devices| {
+            read_port_from(devices, ports, PortAddress::new(port), AccessWidth::Dword)
+        })
     }
 
     fn write_u32(&mut self, port: u16, value: u32) -> Result<(), Self::Error> {
-        let mut devices = self.devices()?;
-        write_port_to(
-            &mut devices,
-            self.0.ports,
-            PortAddress::new(port),
-            AccessWidth::Dword,
-            value,
-        )
+        let ports = self.0.ports;
+        self.with_devices(|devices| {
+            write_port_to(
+                devices,
+                ports,
+                PortAddress::new(port),
+                AccessWidth::Dword,
+                value,
+            )
+        })
     }
 }
 
 impl MachineBus {
     /// Memory, ports and MMIO of one set-loop instruction (S4-38L9s); the cell inside the
     /// returned value lets the port view and the MMIO dispatch share the device table.
-    pub(crate) fn split_for_set_step(&mut self) -> (&mut PhysicalMemory, MachineBusSetStepIo<'_>) {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn split_for_set_step(&mut self) -> (&PhysicalMemory, MachineBusSetStepIo<'_>) {
+        self.split_for_set_step_of_vcpu(crate::vcpu::BOOT_VCPU_INDEX)
+    }
+
+    /// [`MachineBus::split_for_set_step`] for the set loop of vCPU `vcpu` (S6-16a): the MMIO
+    /// dispatch of the returned value serves a Local APIC access as that processor's.
+    pub(crate) fn split_for_set_step_of_vcpu(
+        &mut self,
+        vcpu: usize,
+    ) -> (&PhysicalMemory, MachineBusSetStepIo<'_>) {
         let Self {
             memory,
             devices,
             mmio,
             mmio_lens,
+            apic_mmio_windows,
             ports,
         } = self;
         (
             memory,
             MachineBusSetStepIo {
-                devices: RefCell::new(devices.as_mut_slice()),
+                devices: DeviceTable::Exclusive(RefCell::new(
+                    exclusive_devices(devices).as_mut_slice(),
+                )),
+                gate: None,
                 ports,
                 mmio,
                 mmio_lens,
+                windows: if *apic_mmio_windows {
+                    &SET_STEP_APIC_WINDOWS
+                } else {
+                    &SET_STEP_WINDOWS
+                },
+                vcpu,
             },
         )
     }
 
-    pub(crate) fn split_for_pio_step(&mut self) -> (&mut PhysicalMemory, MachineBusPortIo<'_>) {
+    /// [`Self::split_for_set_step_of_vcpu`] for a vCPU thread that holds only `&MachineBus`
+    /// (S6-34): the memory is the shared reference, and the MMIO dispatch and the port view of the
+    /// returned value take the one device lock for each access and release it before they
+    /// return. Nothing else of the bus is mutated.
+    pub(crate) fn split_for_set_step_shared(
+        &self,
+        vcpu: usize,
+    ) -> (&PhysicalMemory, MachineBusSetStepIo<'_>) {
+        (
+            &self.memory,
+            MachineBusSetStepIo {
+                devices: DeviceTable::Shared(&self.devices),
+                gate: None,
+                ports: &self.ports,
+                mmio: &self.mmio,
+                mmio_lens: &self.mmio_lens,
+                windows: if self.apic_mmio_windows {
+                    &SET_STEP_APIC_WINDOWS
+                } else {
+                    &SET_STEP_WINDOWS
+                },
+                vcpu,
+            },
+        )
+    }
+
+    /// S4-38L8d: let the set loop reach the Local APIC and IOAPIC windows (off by default). Only the
+    /// APIC profile of the Linux board turns it on.
+    pub(crate) fn enable_apic_mmio_windows(&mut self) {
+        self.apic_mmio_windows = true;
+    }
+
+    pub(crate) fn split_for_pio_step(&mut self) -> (&PhysicalMemory, MachineBusPortIo<'_>) {
         let Self {
             memory,
             devices,
             ports,
             ..
         } = self;
-        (memory, MachineBusPortIo { devices, ports })
+        (
+            memory,
+            MachineBusPortIo {
+                devices: exclusive_devices(devices),
+                ports,
+            },
+        )
     }
 
     /// A tracked access by vCPU `vcpu`: an MMIO operand reaches the device as that vCPU's access.
@@ -746,6 +1061,7 @@ impl MachineBus {
             mmio,
             ..
         } = self;
+        let devices = exclusive_devices(devices);
         let regions = memory.region_specs().collect::<Vec<_>>();
         crate::page_walk::access_long64_4k_with_mmio(
             memory,
@@ -818,6 +1134,12 @@ impl MachineBus {
                             "pseudo-descriptor reads are RAM-only".to_owned(),
                         ))
                     }
+                    // S6-31: refused by the walker before the dispatch.
+                    RamAccessOperation::AtomicTarget { .. } => {
+                        Err(crate::page_walk::MmioDispatchError::Backend(
+                            "locked operations are RAM-only".to_owned(),
+                        ))
+                    }
                 }
             },
         )
@@ -851,6 +1173,23 @@ impl MachineBus {
         crate::page_walk::probe_long64_4k(&self.memory, paging, address, access, context)
     }
 
+    /// S6-32: sets the execution mode of the machine memory (the one switch; see
+    /// [`crate::ExecutionMode`]). `&mut self`: only while nothing shares the memory.
+    pub fn set_execution_mode(&mut self, mode: crate::ExecutionMode) {
+        self.memory.set_execution_mode(mode);
+    }
+
+    /// S6-32: the execution mode of the machine memory.
+    pub fn execution_mode(&self) -> crate::ExecutionMode {
+        self.memory.execution_mode()
+    }
+
+    /// The physical memory the locked operations of an adapter run on (S6-31): a shared reference,
+    /// like the `Ram` forms of the adapter hold.
+    pub(crate) fn physical_memory(&self) -> &PhysicalMemory {
+        &self.memory
+    }
+
     pub(crate) fn tracked_physical_range_is_ram(&self, range: GuestPhysicalRange) -> bool {
         self.memory
             .locate_region_kind(range.start(), range.len())
@@ -868,6 +1207,22 @@ impl MachineBus {
             paging,
             request,
             committed_write,
+        )
+    }
+
+    pub(crate) fn read_tracked_bounded_ram_read_with_fault_trace(
+        &mut self,
+        paging: &Long64ProbeConfig,
+        request: TrackedAccessRequest,
+        committed_write: impl FnMut(GuestPhysicalRange),
+        fault_trace: &mut Option<crate::WalkTrace>,
+    ) -> Result<u64, crate::TrackedAccessError> {
+        crate::page_walk::read_long64_4k_bounded_ram_read_with_fault_trace(
+            &mut self.memory,
+            paging,
+            request,
+            committed_write,
+            fault_trace,
         )
     }
 
@@ -1057,11 +1412,116 @@ impl MachineBus {
         let memory = PhysicalMemory::new(&map, ram_limits).map_err(BusBuildError::Memory)?;
         Ok(Self {
             memory,
-            devices,
+            devices: Mutex::new(devices),
             mmio,
             mmio_lens,
+            apic_mmio_windows: false,
             ports,
         })
+    }
+
+    /// The device and the device-relative access of an MMIO operand: the region that wholly holds
+    /// `width` bytes at `address`, and the device bound to it.
+    fn mmio_target(
+        &self,
+        address: GuestPhysicalAddress,
+        width: AccessWidth,
+    ) -> Result<(usize, DeviceAccess), BusAccessError> {
+        let len = u64::from(width.bytes());
+        let region = self
+            .memory
+            .region_specs()
+            .find(|region| {
+                region.kind == MemoryRegionKind::Mmio
+                    && region.range.start() <= address
+                    && u128::from(address.get()) + u128::from(len) <= region.range.end_exclusive()
+            })
+            .ok_or(BusAccessError::CrossesRegion)?;
+        let device_index = self
+            .mmio
+            .iter()
+            .find(|binding| binding.region_start == region.range.start())
+            .ok_or(BusAccessError::UnmappedPhysical(address))?
+            .device_index;
+        Ok((
+            device_index,
+            DeviceAccess {
+                space: IoSpace::Mmio,
+                offset: address.get() - region.range.start().get(),
+                width,
+            },
+        ))
+    }
+
+    /// S6-33: the one device lock. Every access of a thread that holds only `&MachineBus` takes
+    /// it, so device accesses of different vCPU threads are serialized; RAM is not behind it
+    /// ([`MachineBus::physical_memory`] needs no lock). The device lock is the first lock of the
+    /// order in MACHINE_CONTRACT.md: a device reached through it takes its own lock (a Local APIC
+    /// the APIC lock) and never calls back into the bus. A panic in a device does not poison it
+    /// for good: the table is used as the panicking thread left it, as for every device lock.
+    pub(crate) fn lock_devices(&self) -> MutexGuard<'_, Vec<Box<dyn BusDevice>>> {
+        self.devices.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Port read by a thread that holds only `&MachineBus` (takes the device lock).
+    pub fn read_port_shared(
+        &self,
+        port: PortAddress,
+        width: AccessWidth,
+    ) -> Result<u32, BusAccessError> {
+        read_port_from(&mut self.lock_devices(), &self.ports, port, width)
+    }
+
+    /// Port write by a thread that holds only `&MachineBus` (takes the device lock).
+    pub fn write_port_shared(
+        &self,
+        port: PortAddress,
+        width: AccessWidth,
+        value: u32,
+    ) -> Result<(), BusAccessError> {
+        write_port_to(&mut self.lock_devices(), &self.ports, port, width, value)
+    }
+
+    /// MMIO read of vCPU `vcpu` by a thread that holds only `&MachineBus` (takes the device
+    /// lock); a Local APIC access is that processor's.
+    ///
+    /// Only addresses inside an MMIO region are served: an address of RAM or outside every MMIO
+    /// region gives `CrossesRegion` here, where `read_physical` would return the RAM bytes or
+    /// `UnmappedPhysical`. This shared path does not consult `apic_mmio_windows` (S6-34 must route
+    /// the Local APIC window of the executing vCPU itself).
+    pub fn read_mmio_shared(
+        &self,
+        vcpu: usize,
+        address: GuestPhysicalAddress,
+        width: AccessWidth,
+    ) -> Result<u64, BusAccessError> {
+        let (device_index, access) = self.mmio_target(address, width)?;
+        self.lock_devices()[device_index]
+            .read_from_cpu(vcpu, access)
+            .map(|v| v & width.mask())
+            .map_err(|source| BusAccessError::Device {
+                device_index,
+                source,
+            })
+    }
+
+    /// MMIO write of vCPU `vcpu` by a thread that holds only `&MachineBus`; see
+    /// [`MachineBus::read_mmio_shared`] (same `CrossesRegion` result for RAM or non-MMIO
+    /// addresses, same absence of `apic_mmio_windows` routing).
+    pub fn write_mmio_shared(
+        &self,
+        vcpu: usize,
+        address: GuestPhysicalAddress,
+        width: AccessWidth,
+        value: u64,
+    ) -> Result<(), BusAccessError> {
+        let (device_index, access) = self.mmio_target(address, width)?;
+        self.lock_devices()[device_index]
+            .write_from_cpu(vcpu, access, value & width.mask())
+            .map_err(|source| BusAccessError::Device {
+                device_index,
+                source,
+            })
     }
 
     pub fn read_physical(
@@ -1079,28 +1539,8 @@ impl MachineBus {
                 read_ram(&self.memory, address, width).map_err(BusAccessError::Memory)
             }
             MemoryRegionKind::Mmio => {
-                let region = self
-                    .memory
-                    .region_specs()
-                    .find(|region| {
-                        region.kind == MemoryRegionKind::Mmio
-                            && region.range.start() <= address
-                            && u128::from(address.get()) + u128::from(len)
-                                <= region.range.end_exclusive()
-                    })
-                    .ok_or(BusAccessError::CrossesRegion)?;
-                let device_index = self
-                    .mmio
-                    .iter()
-                    .find(|binding| binding.region_start == region.range.start())
-                    .ok_or(BusAccessError::UnmappedPhysical(address))?
-                    .device_index;
-                let access = DeviceAccess {
-                    space: IoSpace::Mmio,
-                    offset: address.get() - region.range.start().get(),
-                    width,
-                };
-                self.devices[device_index]
+                let (device_index, access) = self.mmio_target(address, width)?;
+                exclusive_devices(&mut self.devices)[device_index]
                     .read(access)
                     .map(|v| v & width.mask())
                     .map_err(|source| BusAccessError::Device {
@@ -1138,28 +1578,8 @@ impl MachineBus {
                     .map_err(BusAccessError::Memory)
             }
             MemoryRegionKind::Mmio => {
-                let region = self
-                    .memory
-                    .region_specs()
-                    .find(|region| {
-                        region.kind == MemoryRegionKind::Mmio
-                            && region.range.start() <= address
-                            && u128::from(address.get()) + u128::from(len)
-                                <= region.range.end_exclusive()
-                    })
-                    .ok_or(BusAccessError::CrossesRegion)?;
-                let device_index = self
-                    .mmio
-                    .iter()
-                    .find(|binding| binding.region_start == region.range.start())
-                    .ok_or(BusAccessError::UnmappedPhysical(address))?
-                    .device_index;
-                let access = DeviceAccess {
-                    space: IoSpace::Mmio,
-                    offset: address.get() - region.range.start().get(),
-                    width,
-                };
-                self.devices[device_index]
+                let (device_index, access) = self.mmio_target(address, width)?;
+                exclusive_devices(&mut self.devices)[device_index]
                     .write(access, value & width.mask())
                     .map_err(|source| BusAccessError::Device {
                         device_index,
@@ -1185,7 +1605,12 @@ impl MachineBus {
         port: PortAddress,
         width: AccessWidth,
     ) -> Result<u32, BusAccessError> {
-        read_port_from(&mut self.devices, &self.ports, port, width)
+        read_port_from(
+            exclusive_devices(&mut self.devices),
+            &self.ports,
+            port,
+            width,
+        )
     }
 
     pub fn write_port(
@@ -1194,7 +1619,13 @@ impl MachineBus {
         width: AccessWidth,
         value: u32,
     ) -> Result<(), BusAccessError> {
-        write_port_to(&mut self.devices, &self.ports, port, width, value)
+        write_port_to(
+            exclusive_devices(&mut self.devices),
+            &self.ports,
+            port,
+            width,
+            value,
+        )
     }
 
     pub(crate) fn read_flat_bytes(
@@ -1210,7 +1641,7 @@ impl MachineBus {
         match kind {
             MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer | MemoryRegionKind::Rom => self
                 .memory
-                .read_bytes(address, output)
+                .load_bytes(address, output)
                 .map_err(BusAccessError::Memory),
             MemoryRegionKind::Mmio => {
                 let width = access_width(output.len()).ok_or(BusAccessError::UnsupportedWidth)?;
@@ -1250,12 +1681,12 @@ impl MachineBus {
         match kind {
             MemoryRegionKind::Ram => self
                 .memory
-                .write_bytes(address, input, committed_write)
+                .store_bytes(address, input, committed_write)
                 .map_err(BusAccessError::Memory),
-            // `PhysicalMemory::write_bytes` skips the callback for Framebuffer.
+            // `PhysicalMemory::store_bytes` skips the callback for Framebuffer.
             MemoryRegionKind::Framebuffer => self
                 .memory
-                .write_bytes(address, input, committed_write)
+                .store_bytes(address, input, committed_write)
                 .map_err(BusAccessError::Memory),
             MemoryRegionKind::Mmio => {
                 let width = access_width(input.len()).ok_or(BusAccessError::UnsupportedWidth)?;
@@ -1331,6 +1762,12 @@ impl PortIo for MachineBusPortIo<'_> {
             value,
         )
     }
+}
+
+/// The device table of a bus owned exclusively: `&mut` proves no other thread holds the lock, so
+/// no lock is taken (the interleaved paths pay nothing for the device lock of S6-33).
+fn exclusive_devices(devices: &mut Mutex<Vec<Box<dyn BusDevice>>>) -> &mut Vec<Box<dyn BusDevice>> {
+    devices.get_mut().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn read_port_from(
@@ -1430,24 +1867,24 @@ fn read_ram(
     width: AccessWidth,
 ) -> Result<u64, MemoryAccessError> {
     Ok(match width {
-        AccessWidth::Byte => u64::from(memory.read_u8(address)?),
-        AccessWidth::Word => u64::from(memory.read_u16(address)?),
-        AccessWidth::Dword => u64::from(memory.read_u32(address)?),
-        AccessWidth::Qword => memory.read_u64(address)?,
+        AccessWidth::Byte => u64::from(memory.load_u8(address)?),
+        AccessWidth::Word => u64::from(memory.load_u16(address)?),
+        AccessWidth::Dword => u64::from(memory.load_u32(address)?),
+        AccessWidth::Qword => memory.load_u64(address)?,
     })
 }
 fn write_ram(
-    memory: &mut PhysicalMemory,
+    memory: &PhysicalMemory,
     address: GuestPhysicalAddress,
     width: AccessWidth,
     value: u64,
     callback: impl FnMut(GuestPhysicalRange),
 ) -> Result<(), MemoryAccessError> {
     match width {
-        AccessWidth::Byte => memory.write_u8(address, value as u8, callback),
-        AccessWidth::Word => memory.write_u16(address, value as u16, callback),
-        AccessWidth::Dword => memory.write_u32(address, value as u32, callback),
-        AccessWidth::Qword => memory.write_u64(address, value, callback),
+        AccessWidth::Byte => memory.store_u8(address, value as u8, callback),
+        AccessWidth::Word => memory.store_u16(address, value as u16, callback),
+        AccessWidth::Dword => memory.store_u32(address, value as u32, callback),
+        AccessWidth::Qword => memory.store_u64(address, value, callback),
     }
 }
 
@@ -1526,6 +1963,260 @@ mod tests {
         )
         .unwrap();
         (bus, state)
+    }
+
+    fn diagnostic_page_bus(map_second_page: bool) -> (MachineBus, Long64ProbeConfig) {
+        let map = MachineMemoryMap::new(
+            36,
+            vec![crate::MemoryRegionSpec::new(
+                range(0, 0x10_000),
+                MemoryRegionKind::Ram,
+            )],
+        )
+        .unwrap();
+        let mut bus =
+            MachineBus::new(map, RamLimits::new(0x10_000), vec![], vec![], vec![]).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3000, 0x4007),
+            (0x4020, 0x7007),
+            (0x4028, if map_second_page { 0x9007 } else { 0 }),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x7ff8), &[0x11; 8])
+            .unwrap();
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x8000), &[0x22; 8])
+            .unwrap();
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x9000), &[0x33; 8])
+            .unwrap();
+        let paging = Long64ProbeConfig::new(
+            0x8001_0033,
+            0x1000,
+            1 << 5,
+            (1 << 8) | (1 << 10) | (1 << 11),
+        )
+        .unwrap();
+        (bus, paging)
+    }
+
+    #[test]
+    fn diagnostic_ram_read_translates_each_virtual_page_fragment() {
+        let (mut bus, paging) = diagnostic_page_bus(true);
+        let pte_before = bus
+            .read_physical(GuestPhysicalAddress::new(0x4020), AccessWidth::Qword)
+            .unwrap();
+        let next_pte_before = bus
+            .read_physical(GuestPhysicalAddress::new(0x4028), AccessWidth::Qword)
+            .unwrap();
+        let mut output = [0; 16];
+        bus.read_virtual_ram_diagnostic(
+            &paging,
+            0x1234,
+            GuestLinearAddress::new(0x4ff8),
+            AccessContext::default(),
+            &mut output,
+        )
+        .unwrap();
+        assert_eq!(
+            output,
+            [0x11; 8].into_iter().chain([0x33; 8]).collect::<Vec<_>>()[..]
+        );
+        assert_ne!(&output[8..], &[0x22; 8]);
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(0x4020), AccessWidth::Qword)
+                .unwrap(),
+            pte_before
+        );
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(0x4028), AccessWidth::Qword)
+                .unwrap(),
+            next_pte_before
+        );
+    }
+
+    #[test]
+    fn diagnostic_ram_read_refuses_unmapped_second_virtual_page() {
+        let (mut bus, paging) = diagnostic_page_bus(false);
+        let mut output = [0xaa; 16];
+        let error = bus
+            .read_virtual_ram_diagnostic(
+                &paging,
+                0x1234,
+                GuestLinearAddress::new(0x4ff8),
+                AccessContext::default(),
+                &mut output,
+            )
+            .unwrap_err();
+        assert!(error.contains("read-only translation failed"));
+        assert_eq!(&output[8..], &[0xaa; 8]);
+    }
+
+    #[test]
+    fn tracked_code_snapshot_two_pages_captures_each_page_with_its_own_generation() {
+        let ram = range(0, 0x9000);
+        let map = MachineMemoryMap::new(
+            36,
+            vec![crate::MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)],
+        )
+        .unwrap();
+        let mut bus = MachineBus::new(map, RamLimits::new(0x9000), vec![], vec![], vec![]).unwrap();
+        // Linear page 0x4000 -> physical 0x7000, linear 0x5000 -> physical
+        // 0x5000 (not adjacent), linear 0x6000 -> not present.
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3000, 0x4007),
+            (0x4020, 0x7007),
+            (0x4028, 0x5007),
+            (0x4030, 0x6006),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let code = [0x48, 0xb8, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x7ffd), &code[..3])
+            .unwrap();
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x5000), &code[3..])
+            .unwrap();
+        let paging = Long64ProbeConfig::new(
+            0x8001_0033,
+            0x1000,
+            1 << 5,
+            (1 << 8) | (1 << 10) | (1 << 11),
+        )
+        .unwrap();
+        let context = AccessContext::default();
+        let mut writes = Vec::new();
+        let snapshot = bus
+            .tracked_code_snapshot_two_pages_with_callback(&paging, 0x4ffd, 10, context, |range| {
+                writes.push(range)
+            })
+            .unwrap();
+        assert_eq!(snapshot.linear_base, 0x4ffd);
+        assert_eq!(snapshot.bytes(), code);
+        assert_eq!(snapshot.first.linear_base, 0x4ffd);
+        assert_eq!(
+            snapshot.first.physical_base,
+            GuestPhysicalAddress::new(0x7000)
+        );
+        assert_eq!(snapshot.first.bytes, code[..3]);
+        let second = snapshot.second.as_ref().unwrap();
+        assert_eq!(second.linear_base, 0x5000);
+        assert_eq!(second.physical_base, GuestPhysicalAddress::new(0x5000));
+        assert_eq!(second.bytes, code[3..]);
+        // A bits of PML4/PDPT/PD/PT[4] for the first walk, PT[5] for the second.
+        assert_eq!(writes.len(), 5);
+        assert_eq!(writes[4].start().get(), 0x4028);
+        let first_generation = snapshot.first.backing_generation;
+        let second_generation = second.backing_generation;
+
+        // Generations are per 4 KiB page: a write to the second page leaves the
+        // first generation unchanged and vice versa.
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x5001), &[0xff])
+            .unwrap();
+        let after_second = bus
+            .tracked_code_snapshot_two_pages_with_callback(&paging, 0x4ffd, 10, context, |_| {})
+            .unwrap();
+        assert_eq!(after_second.first.backing_generation, first_generation);
+        assert!(after_second.second.as_ref().unwrap().backing_generation > second_generation);
+        assert_eq!(after_second.bytes()[4], 0xff);
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x7ffe), &[0xee])
+            .unwrap();
+        let after_first = bus
+            .tracked_code_snapshot_two_pages_with_callback(&paging, 0x4ffd, 10, context, |_| {})
+            .unwrap();
+        assert!(after_first.first.backing_generation > first_generation);
+        assert_eq!(
+            after_first.second.as_ref().unwrap().backing_generation,
+            after_second.second.as_ref().unwrap().backing_generation
+        );
+
+        // A range inside the first page has no second part and matches the
+        // single-page capture.
+        let single = bus
+            .tracked_code_snapshot_two_pages_with_callback(&paging, 0x4ffd, 3, context, |_| {})
+            .unwrap();
+        assert!(single.second.is_none());
+        assert_eq!(
+            single.first,
+            bus.tracked_code_snapshot(&paging, 0x4ffd, 3, context)
+                .unwrap()
+        );
+
+        // At most two pages: 3 + 4096 bytes fit, one more does not; neither
+        // does an empty range. The single-page API keeps its one-page limit.
+        assert!(
+            bus.tracked_code_snapshot_two_pages_with_callback(
+                &paging,
+                0x4ffd,
+                0x1003,
+                context,
+                |_| {}
+            )
+            .is_ok()
+        );
+        for length in [0x1004, 0] {
+            assert_eq!(
+                bus.tracked_code_snapshot_two_pages_with_callback(
+                    &paging,
+                    0x4ffd,
+                    length,
+                    context,
+                    |_| panic!("no walk")
+                ),
+                Err(TrackedCodeSnapshotError::InvalidLength)
+            );
+        }
+        assert_eq!(
+            bus.tracked_code_snapshot(&paging, 0x4ffd, 10, context),
+            Err(TrackedCodeSnapshotError::InvalidLength)
+        );
+        let descriptor_origin = AccessContext {
+            origin: AccessOrigin::DescriptorTable,
+            ..context
+        };
+        assert_eq!(
+            bus.tracked_code_snapshot_two_pages_with_callback(
+                &paging,
+                0x4ffd,
+                10,
+                descriptor_origin,
+                |_| {}
+            ),
+            Err(TrackedCodeSnapshotError::InvalidAccessContext)
+        );
+
+        // Second page not present: the fault is the second page's walk (CR2 =
+        // the boundary address, saved RIP = the instruction start) and the
+        // first walk's effects are not rolled back (here the A bits were already set).
+        let mut fault_writes = Vec::new();
+        let error = bus
+            .tracked_code_snapshot_two_pages_with_callback(&paging, 0x5ffd, 10, context, |range| {
+                fault_writes.push(range)
+            })
+            .unwrap_err();
+        // The Accessed bits were already set by the earlier walks.
+        assert!(fault_writes.is_empty());
+        match error {
+            TrackedCodeSnapshotError::Access(TrackedAccessError::PageFault { record, .. }) => {
+                assert_eq!(record.saved_rip(), 0x5ffd);
+                assert_eq!(record.cr2_value(), 0x6000);
+            }
+            other => panic!("expected a second-page fault, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2063,3 +2754,6 @@ mod tests {
         assert_eq!(final_port.end(), 65_536);
     }
 }
+
+#[cfg(test)]
+mod shared_tests;

@@ -1,0 +1,99 @@
+# S5-07 fault-time register-context diagnostic pair, 2026-11-15
+
+Purpose: inspect the fault-time state of the additional page fault previously
+seen at `rep_movs_alternative+0x11`. These are two independent counted
+single-run diagnostics with the schema-v2 execution-observations sidecar. They
+are not an automatic series; no comparator was run and they do not accept
+S5-07.
+
+## Source, host and inputs
+
+- Worktree/branch: `codex`, source commit `f546de7c048f745fce357538990f900eaa3ba544`,
+  clean before both runs.
+- Host: Darwin arm64. Release `od-runner` SHA-256:
+  `b71aaf4d8e4b52534e4df82b8af6c33be367da557289512011db4b51d3f92640`.
+- Kernel SHA-256:
+  `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`.
+- Initramfs SHA-256:
+  `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`.
+- ACPI blob SHA-256:
+  `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`;
+  manifest hash `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`.
+- Matching `vmlinux-debug-7.0.0-38-generic` SHA-256:
+  `7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f`.
+- Extracted kernel config SHA-256:
+  `6cb18717c6914d4947489eedf8cb69ac23db3faa8ef9b9f563ff02c346dcd32d`; it
+  contains `CONFIG_FRAME_POINTER=y`.
+- Both runs: 128 MiB, counted `stage4a`, release build, budget
+  `3,000,000,000`, `--set-cpl0 --user-mode`, expected stop `budget_exhausted`.
+
+## Results
+
+Both reports say `status=loaded`, `acceptance=counted`, `guest_started=true`,
+and exact nonce marker present. Both stopped at `retired=2,999,999,998` with
+`budget_exhausted`, `cpl3_retired=873`, and one delivered `#GP(0)`. Schema-v2
+sidecars captured all 34 successfully delivered #PF events in each run with
+zero omitted records.
+
+| Run | Nonce | RDTSC reads | #PF | IRQ0 edges / delivered | Quanta | Halt idle ns | Virtual ns |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `i` | `od5ctx20261115i` | 34,431,640 | 34 | 34,787 / 34,792 | 34,558,323 | 1,090,791 | 37,449,633,789 |
+| `j` | `od5ctx20261115j` | 34,461,714 | 34 | 34,817 / 34,822 | 34,587,372 | 1,130,225 | 37,479,747,223 |
+
+In both runs, event index 30 is the same kernel byte-store instruction and
+fault shape:
+
+| Field | Run `i` | Run `j` |
+|---|---|---|
+| RIP | `0xffffffff8271a9c1` | `0xffffffff8271a9c1` |
+| Symbol/instruction | `rep_movs_alternative+0x11`, `MOVB AL,(RDI)` | same |
+| Access / CPL / error | Write / 0 / `0x00000002` | same |
+| CR2 = RDI | `0x7fff67cbc909` | `0x7fff160bdeb9` |
+| RCX | `0x7` | `0x7` |
+| RSI | `0xffffffff82fdeb8f` | `0xffffffff82fdeb8f` |
+| Kernel RSP / RBP | `0xffffc9000000fc80` / `0xffffc9000000fc88` | same |
+| CR3 | `0x6474000` | `0x64b0000` |
+
+The next recorded #PF in both sidecars is the CPL3 instruction-fetch fault at
+`RIP=CR2=0x4000b0`; its user RSP is `0x7fff67cbc750` in `i` and
+`0x7fff160bdd00` in `j`. In both runs, the faulting destination is exactly
+`0x1b9` bytes above that later user RSP. The captured fault is one byte store;
+`RCX=7` and the matching copy-loop disassembly are consistent with seven
+remaining bytes being copied to an address near the later user stack. Since
+the sidecar records #PF events rather than a complete instruction trace, it
+does not establish how much execution occurs between these two faults. The
+kernel and user CR3 values differ by `0x1000` in each run.
+
+The faulting source address `RSI` resolves inside `.rodata` of the matching
+debug kernel. Reading the ELF section bytes there yields
+`x86_64\0i386\0r14\0r13...`; `RCX=7` is consistent with copying the seven
+bytes of `x86_64` plus its terminating NUL. This is consistent with a
+startup-stack platform-string copy, but the bytes alone do not prove the
+higher-level caller or its purpose. Error code `0x2` records a supervisor
+write to a not-present page. A demand/first-touch explanation is plausible:
+the event is successfully delivered, the guest reaches CPL3 in both runs, and
+the exact relative destination offset matches. The pair does not capture the
+PTE before/after delivery, so it does not prove why the page was absent. The
+previous schema-v1 pair had 33 faults in `g` and 34 in `h`, so event occurrence
+still varies across the broader run set.
+
+The CPL0 RDTSC totals differ by 30,074 between `i` and `j`; IRQ0 edges and
+quanta also differ. No comparator ran for these single reports, no difference
+is classified benign, no normalization changed, and S5-07 remains
+blocked/unaccepted. The register snapshot narrows the #PF operation but does
+not explain its run-to-run occurrence or the remaining timing/UART variation.
+
+## Reproduction and artifact hashes
+
+Use the same command as the preceding
+[execution-observations pair](s5-07-execution-observations-pair-20261115.log),
+with nonce `od5ctx20261115i` or `od5ctx20261115j` and output directories
+`work/stage5/stage5-s5-07-fault-context-20261115-{i,j}/`. Each invocation used
+`--execution-observations-out` and the input hashes listed above.
+
+- Run `i` report / sidecar:
+  `8d6760624e5879b8384dd9c371331d4595c93eda4312b7c6ff57efaddead1907` /
+  `68758be6867c1b11fc940c7887cc653b82a153ea6378a5249df8dd1f283b3bd6`.
+- Run `j` report / sidecar:
+  `e9d1bcb0ff5ddbc9cd2d6a1861a99b12284279e9ca9318e33c1667f986ae3e1f` /
+  `af87c1e3ff316653a6204724494b133103bf2997ab6f25f9c174741034675383`.

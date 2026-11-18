@@ -23,11 +23,12 @@
 //! then also says `path: cpl0_set`, the set members, the set's own final exit (`set_exit_detail`)
 //! and how many CR3 changes happened
 //! (`cr3_changes`, `last_cr3_change`; a `MOV CR3` that ended the run in an integration error is
-//! counted and `cr3` is its CR3). Since S4-38L5c a guest `#PF` is delivered through the guest IDT
-//! when one is loaded; `exceptions_delivered` counts these (a delivery is not a retired
-//! instruction), and a `#PF` that could not be delivered is still the `fault` stop, with the reason
-//! in `set_exit_detail`. The `paged_probe` path carries the same fields with empty
-//! values; `schema_version` stays 1 (the fields are additive).
+//! counted and `cr3` is its CR3). Since S4-38L5c / S4-38L9v a guest `#PF` or `#GP(0)` is delivered
+//! through the guest IDT when one is loaded; `exceptions_delivered` counts both and the
+//! per-vector fields report their breakdown (a delivery is not a retired instruction). An
+//! exception that could not be delivered is still the `fault` stop, with the reason in
+//! `set_exit_detail`. The `paged_probe` path carries zero counts; `schema_version` stays 1 (the
+//! fields are additive).
 //!
 //! `--diagnostic-past-c7` (S4-38L7, only with `--run --set-cpl0`) is an opt-in DIAGNOSTIC mode:
 //! the `cpuid_divergence` boundary is off, `CPUID` leaf 1 and 0x8000_0001 execute with the
@@ -68,9 +69,11 @@
 
 use od_isa::cpuid::CpuidProfile;
 use od_machine::{
-    LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput, LinuxStopRecord,
-    MachineStopReason, load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
-    run_linux_direct_board_set_user_mode,
+    LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput,
+    LinuxExecutionObservations, LinuxStopRecord, MachineStopReason, load_linux_direct_board,
+    run_linux_direct_board, run_linux_direct_board_set_observed,
+    run_linux_direct_board_set_user_mode_with_execution_observations,
+    run_linux_direct_board_set_user_mode_with_post_iret_index,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -78,11 +81,15 @@ use std::fs::File;
 use std::io::Read;
 use std::process::ExitCode;
 
+#[cfg(test)]
+use od_machine::run_linux_direct_board_set;
+
+mod checkpoints;
 pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a] [--user-mode]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-post-iret-index <n>]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -115,12 +122,21 @@ struct Options {
     set_cpl0: bool,
     /// `--diagnostic-past-c7` (S4-38L7): CPUID boundary off, result diagnostic and not counted.
     diagnostic_past_c7: bool,
-    /// `--cpuid-profile diagnostic|stage4a` (S4-38L9a, only with `--set-cpl0`): the CPUID profile
-    /// of the set; `diagnostic` (DiagnosticV1, with the C7 boundary) when absent.
+    /// `--cpuid-profile diagnostic|stage4a|stage4a-apic` (S4-38L9a, S4-38L8d: the APIC variant; only with
+    /// `--set-cpl0`): the CPUID profile of the set; `diagnostic` (DiagnosticV1, with the C7 boundary) when absent.
     cpuid_profile: CpuidProfile,
-    /// `--user-mode` (S4-39c, only with `--set-cpl0 --cpuid-profile stage4a`): a committed `IRETQ`
+    /// `--user-mode` (S4-39c, only with `--set-cpl0 --cpuid-profile stage4a|stage4a-apic`, S4-38L9-um): a committed `IRETQ`
     /// to CPL3 continues with the CPL3 entry instead of stopping at `user_entry`.
     user_mode: bool,
+    /// `--checkpoint-table <s4-38l2-oracle.json>` (S4-38L4i, only with `--run --set-cpl0`): record
+    /// the checkpoints C0..C17 (observation only) and add the `checkpoints` key.
+    checkpoint_table: Option<String>,
+    /// Separate, opt-in sidecar for bounded console-output stack context; single run only.
+    stack_context_out: Option<String>,
+    /// Separate, opt-in sidecar for CPL0 RDTSC sites and delivered #PF events; single user-mode run only.
+    execution_observations_out: Option<String>,
+    /// Zero-based delivered-#PF ordinal for the opt-in post-IRET page-walk snapshot.
+    execution_observations_post_iret_index: Option<u64>,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -140,7 +156,34 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(3);
         }
     };
-    let (value, code) = evaluate(&options);
+    let (mut value, code) = evaluate(&options);
+    let skip_report_write = value
+        .get("_skip_report_write")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if let Some(object) = value.as_object_mut() {
+        object.remove("_skip_report_write");
+    }
+    if skip_report_write {
+        println!("{value}");
+        return ExitCode::from(code);
+    }
+    let sidecar_collides_with_report = options
+        .stack_context_out
+        .as_ref()
+        .into_iter()
+        .chain(options.execution_observations_out.as_ref())
+        .any(|sidecar| match_existing_file_identity(sidecar, &options.out).unwrap_or(true));
+    if sidecar_collides_with_report {
+        let value = refusal(
+            "invalid_input",
+            "stack_context_sidecar",
+            "the sidecar and primary report resolve to the same filesystem object".into(),
+            json!({"retired": 0, "guest_started": false}),
+        );
+        println!("{value}");
+        return ExitCode::from(3);
+    }
     let text = format!("{value:#}\n");
     if let Err(error) = std::fs::write(&options.out, &text) {
         let value = refusal(
@@ -160,6 +203,33 @@ pub fn run(args: &[String]) -> ExitCode {
 /// 3 unreadable input). Without `--run` the guest is not started; with `--run` it runs until the
 /// budget or its first stop, after the load has succeeded.
 fn evaluate(options: &Options) -> (Value, u8) {
+    evaluate_with_env(options, &DiagnosticEnv::from_process())
+}
+
+/// The environment variables of the diagnostic runs, read once (S4-13, S4-13b); a test gives its
+/// own instead of touching the environment shared by the parallel tests.
+#[derive(Default)]
+struct DiagnosticEnv {
+    no_fetch_cache: Option<std::ffi::OsString>,
+    fetch_cache_stats: Option<std::ffi::OsString>,
+    /// S4-13c: shadow caches, only together with `OD_FETCH_CACHE_STATS`.
+    fetch_cache_sweep: Option<std::ffi::OsString>,
+    /// S4-13d: `2m` makes one fetch cache entry per 2 MiB leaf (default: per 4 KiB page).
+    fetch_cache_tag: Option<std::ffi::OsString>,
+}
+
+impl DiagnosticEnv {
+    fn from_process() -> Self {
+        Self {
+            no_fetch_cache: std::env::var_os(NO_FETCH_CACHE_ENV),
+            fetch_cache_stats: std::env::var_os(FETCH_CACHE_STATS_ENV),
+            fetch_cache_sweep: std::env::var_os(FETCH_CACHE_SWEEP_ENV),
+            fetch_cache_tag: std::env::var_os(FETCH_CACHE_TAG_ENV),
+        }
+    }
+}
+
+fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
     let mut evidence = json!({
         "retired": 0,
         "guest_started": false,
@@ -242,6 +312,29 @@ fn evaluate(options: &Options) -> (Value, u8) {
         );
     }
 
+    // S4-38L4i: the oracle table of the checkpoints, checked against the kernel that runs, before
+    // anything is loaded or started.
+    let checkpoint_setup = match options.checkpoint_table.as_deref() {
+        Some(path) => match checkpoints::load(path, &vmlinuz_sha, &initramfs) {
+            Ok(setup) => Some(setup),
+            Err(checkpoints::TableError::Invalid(detail)) => {
+                return io_failure(evidence, "checkpoint_table", detail);
+            }
+            Err(checkpoints::TableError::VmlinuzMismatch(detail)) => {
+                return (
+                    refusal(
+                        "checkpoint_table_vmlinuz_mismatch",
+                        "checkpoint_table",
+                        detail,
+                        evidence,
+                    ),
+                    4,
+                );
+            }
+        },
+        None => None,
+    };
+
     let acpi_blob = match read_capped(&options.acpi_blob, 1 << 20) {
         Ok(bytes) => bytes,
         Err(detail) => return io_failure(evidence, "acpi_blob_file", detail),
@@ -270,46 +363,355 @@ fn evaluate(options: &Options) -> (Value, u8) {
         Ok(mut boot) => {
             describe(&mut evidence, &boot, &cmdline, &vmlinuz, &initramfs_sha);
             if let Some(budget) = options.budget {
-                let run_set = if options.user_mode {
-                    run_linux_direct_board_set_user_mode
-                } else {
-                    run_linux_direct_board_set
+                let mut sidecar_file = None;
+                let mut execution_observations_file = None;
+                if let Some(path) = &options.stack_context_out {
+                    let file = match std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(path)
+                    {
+                        Ok(file) => file,
+                        Err(error) => {
+                            let mut value = refusal(
+                                "diagnostic_sidecar_reservation_failed",
+                                "stack_context_sidecar",
+                                format!("{path}: {error}"),
+                                evidence,
+                            );
+                            // Existing files, including dangling symlinks, are preserved when
+                            // destination identity cannot be established.
+                            value["_skip_report_write"] = json!(true);
+                            return (value, 4);
+                        }
+                    };
+                    match file_matches_existing_path(&file, path, &options.out) {
+                        Ok(false) => sidecar_file = Some(file),
+                        Ok(true) => {
+                            let cleanup = discard_sidecar_reservation(path, file);
+                            let mut value = refusal(
+                                "diagnostic_sidecar_path_collision",
+                                "stack_context_sidecar",
+                                "--out resolves to the reserved sidecar file".into(),
+                                evidence,
+                            );
+                            if cleanup.is_err() {
+                                value["_skip_report_write"] = json!(true);
+                            }
+                            return (value, 4);
+                        }
+                        Err(detail) => {
+                            let cleanup = discard_sidecar_reservation(path, file);
+                            let mut value = refusal(
+                                "diagnostic_sidecar_identity_failed",
+                                "stack_context_sidecar",
+                                detail,
+                                evidence,
+                            );
+                            // If identity could not be established, avoid writing through an
+                            // output alias that might refer to the reservation.
+                            value["_skip_report_write"] = json!(true);
+                            let _ = cleanup;
+                            return (value, 4);
+                        }
+                    }
+                    boot.board.enable_console_output_context_diagnostic();
+                }
+                if let Some(path) = &options.execution_observations_out {
+                    let file = match std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(path)
+                    {
+                        Ok(file) => file,
+                        Err(error) => {
+                            let cleanup = cleanup_sidecar_reservation(
+                                options.stack_context_out.as_deref(),
+                                &mut sidecar_file,
+                            );
+                            let mut value = refusal(
+                                "diagnostic_sidecar_reservation_failed",
+                                "execution_observations_sidecar",
+                                format!("{path}: {error}"),
+                                evidence,
+                            );
+                            value["_skip_report_write"] = json!(true);
+                            let _ = cleanup;
+                            return (value, 4);
+                        }
+                    };
+                    match file_matches_existing_path(&file, path, &options.out) {
+                        Ok(false) => execution_observations_file = Some(file),
+                        Ok(true) => {
+                            let cleanup = discard_sidecar_reservation(path, file);
+                            let prior_cleanup = cleanup_sidecar_reservation(
+                                options.stack_context_out.as_deref(),
+                                &mut sidecar_file,
+                            );
+                            let mut value = refusal(
+                                "diagnostic_sidecar_path_collision",
+                                "execution_observations_sidecar",
+                                "--out resolves to the reserved sidecar file".into(),
+                                evidence,
+                            );
+                            if cleanup.is_err() || prior_cleanup.is_err() {
+                                value["_skip_report_write"] = json!(true);
+                            }
+                            return (value, 4);
+                        }
+                        Err(detail) => {
+                            let cleanup = discard_sidecar_reservation(path, file);
+                            let prior_cleanup = cleanup_sidecar_reservation(
+                                options.stack_context_out.as_deref(),
+                                &mut sidecar_file,
+                            );
+                            let mut value = refusal(
+                                "diagnostic_sidecar_identity_failed",
+                                "execution_observations_sidecar",
+                                detail,
+                                evidence,
+                            );
+                            value["_skip_report_write"] = json!(true);
+                            let _ = cleanup;
+                            let _ = prior_cleanup;
+                            return (value, 4);
+                        }
+                    }
+                }
+                // S4-13b: the opt-in sidecar of the fetch cache counters. Reserved before the run
+                // like the other sidecars; the default run (no `OD_FETCH_CACHE_STATS`) does none
+                // of this and its report is the one it always was.
+                let fetch_stats_path = match fetch_cache_stats_path(env.fetch_cache_stats.clone()) {
+                    Ok(path) => path,
+                    Err(detail) => {
+                        let cleanup = cleanup_sidecar_reservation(
+                            options.stack_context_out.as_deref(),
+                            &mut sidecar_file,
+                        );
+                        let mut value = refusal(
+                            "diagnostic_sidecar_reservation_failed",
+                            "fetch_cache_stats_sidecar",
+                            detail,
+                            evidence,
+                        );
+                        value["_skip_report_write"] = json!(true);
+                        let _ = cleanup;
+                        return (value, 4);
+                    }
                 };
-                let result = if options.set_cpl0 {
-                    run_set(
+                let mut fetch_stats_file = None;
+                if let Some(path) = &fetch_stats_path {
+                    let reserved = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(path)
+                        .map_err(|error| format!("{path}: {error}"))
+                        .and_then(|file| {
+                            // `--out` is written later; it must not be the same file.
+                            match file_matches_existing_path(&file, path, &options.out) {
+                                Ok(false) => Ok(file),
+                                Ok(true) => {
+                                    let _ = discard_sidecar_reservation(path, file);
+                                    Err("--out resolves to the reserved sidecar file".to_string())
+                                }
+                                Err(detail) => {
+                                    let _ = discard_sidecar_reservation(path, file);
+                                    Err(detail)
+                                }
+                            }
+                        });
+                    match reserved {
+                        Ok(file) => fetch_stats_file = Some(file),
+                        Err(detail) => {
+                            let stack_cleanup = cleanup_sidecar_reservation(
+                                options.stack_context_out.as_deref(),
+                                &mut sidecar_file,
+                            );
+                            let observations_cleanup = execution_observations_file
+                                .take()
+                                .zip(options.execution_observations_out.as_deref())
+                                .map(|(file, path)| discard_sidecar_reservation(path, file));
+                            let mut value = refusal(
+                                "diagnostic_sidecar_reservation_failed",
+                                "fetch_cache_stats_sidecar",
+                                detail,
+                                evidence,
+                            );
+                            value["_skip_report_write"] = json!(true);
+                            let _ = (stack_cleanup, observations_cleanup);
+                            return (value, 4);
+                        }
+                    }
+                    boot.board.enable_fetch_cache_report();
+                    // S4-13c: the shadow caches ride on the sidecar and add one key to it.
+                    if fetch_cache_sweep_enabled(env.fetch_cache_sweep.as_deref()) {
+                        boot.board
+                            .enable_fetch_cache_sweep(od_machine::SweepConfig::full_grid());
+                    }
+                }
+                // S4-13d: the 2 MiB leaf tag of the real cache, only with `OD_FETCH_CACHE_TAG=2m`
+                // and, like the sweep, only together with the sidecar (`OD_FETCH_CACHE_STATS`);
+                // without it the request is ignored and said so on stderr.
+                let (apply_tag, tag_warning) = fetch_cache_leaf_2m_tag_decision(
+                    env.fetch_cache_tag.as_deref(),
+                    fetch_stats_path.is_some(),
+                );
+                if let Some(warning) = tag_warning {
+                    eprintln!("{warning}");
+                }
+                if apply_tag {
+                    boot.board.enable_fetch_cache_leaf_2m_tag();
+                }
+                let members = LinuxCpl0SetMembers {
+                    // S4-13 diagnostics: `OD_NO_FETCH_CACHE=1` runs without the fetch
+                    // translation cache (same results, more page walks); the sidecar of
+                    // `OD_FETCH_CACHE_STATS` says which way the run went.
+                    fetch_cache: fetch_cache_enabled(env.no_fetch_cache.as_deref()),
+                    diagnostic_past_c7: options.diagnostic_past_c7,
+                    cpuid_profile: options.cpuid_profile,
+                    // S4-38L9c: with the TSC-only subset the kernel's `tdx_init` reads
+                    // MSR 0x87 (MKTME KeyID partitioning); the member answers 0:0. Off for
+                    // the DiagnosticV1 default, whose run does not get there.
+                    msr_tdx_keyid_partitioning_read: options.cpuid_profile.is_stage4a_family(),
+                    // S4-38L9d: with the subset that declares FPU and FXSR the kernel's
+                    // `fpu__init_system` runs `FNINIT` and `FXSAVE`; the FP member
+                    // implements them. Off for the DiagnosticV1 default.
+                    fp_state: options.cpuid_profile.is_stage4a_family(),
+                    // S4-38L9e: the kernel's `int3_selftest` executes `INT3` and waits for
+                    // `#BP` through the IDT; the INT3 member delivers it. Off for the
+                    // DiagnosticV1 default (its member list stays as it was).
+                    int3: options.cpuid_profile.is_stage4a_family(),
+                    ..LinuxCpl0SetMembers::linux_default()
+                };
+                let run_started = std::time::Instant::now();
+                let result = if let Some(index) = options.execution_observations_post_iret_index {
+                    run_linux_direct_board_set_user_mode_with_post_iret_index(
                         &mut boot,
                         &machine_input,
                         budget,
-                        LinuxCpl0SetMembers {
-                            // S4-13 diagnostics: `OD_NO_FETCH_CACHE=1` runs without the fetch
-                            // translation cache (same results, more page walks).
-                            fetch_cache: std::env::var_os("OD_NO_FETCH_CACHE").is_none(),
-                            diagnostic_past_c7: options.diagnostic_past_c7,
-                            cpuid_profile: options.cpuid_profile,
-                            // S4-38L9c: with the TSC-only subset the kernel's `tdx_init` reads
-                            // MSR 0x87 (MKTME KeyID partitioning); the member answers 0:0. Off for
-                            // the DiagnosticV1 default, whose run does not get there.
-                            msr_tdx_keyid_partitioning_read: options.cpuid_profile
-                                == CpuidProfile::X8664V1Stage4A,
-                            // S4-38L9d: with the subset that declares FPU and FXSR the kernel's
-                            // `fpu__init_system` runs `FNINIT` and `FXSAVE`; the FP member
-                            // implements them. Off for the DiagnosticV1 default.
-                            fp_state: options.cpuid_profile == CpuidProfile::X8664V1Stage4A,
-                            // S4-38L9e: the kernel's `int3_selftest` executes `INT3` and waits for
-                            // `#BP` through the IDT; the INT3 member delivers it. Off for the
-                            // DiagnosticV1 default (its member list stays as it was).
-                            int3: options.cpuid_profile == CpuidProfile::X8664V1Stage4A,
-                            ..LinuxCpl0SetMembers::linux_default()
-                        },
+                        members,
+                        index,
+                    )
+                } else if options.execution_observations_out.is_some() {
+                    run_linux_direct_board_set_user_mode_with_execution_observations(
+                        &mut boot,
+                        &machine_input,
+                        budget,
+                        members,
+                    )
+                } else if options.set_cpl0 {
+                    run_linux_direct_board_set_observed(
+                        &mut boot,
+                        &machine_input,
+                        budget,
+                        members,
+                        options.user_mode,
+                        checkpoint_setup.as_ref().map(|setup| setup.table.clone()),
                     )
                 } else {
                     run_linux_direct_board(&mut boot, &machine_input, budget)
                 };
+                let run_wall_seconds = run_started.elapsed().as_secs_f64();
+                if let Some(path) = &fetch_stats_path {
+                    let sweep_report = boot.board.take_fetch_cache_sweep();
+                    let final_ram_sha256 = boot.board.ram_sha256();
+                    let write_error = match (
+                        boot.board.take_fetch_cache_report(),
+                        fetch_stats_file.as_mut(),
+                    ) {
+                        (Some(report), Some(file)) => write_fetch_cache_stats_sidecar(
+                            file,
+                            path,
+                            &report,
+                            sweep_report.as_ref(),
+                            result.is_ok(),
+                            run_wall_seconds,
+                            final_ram_sha256,
+                        )
+                        .err(),
+                        // Only the CPL0 set loop (`--set-cpl0`) builds the report; the empty
+                        // reservation is removed rather than left looking like a result.
+                        (None, _) => {
+                            let cleanup = fetch_stats_file
+                                .take()
+                                .and_then(|file| discard_sidecar_reservation(path, file).err());
+                            Some(match cleanup {
+                                None => "the run left no fetch cache report (needs --set-cpl0)"
+                                    .to_string(),
+                                Some(error) => format!(
+                                    "the run left no fetch cache report (needs --set-cpl0); {error}"
+                                ),
+                            })
+                        }
+                        (_, None) => Some("sidecar reservation is missing".into()),
+                    };
+                    evidence["fetch_cache_stats_sidecar"] = json!({
+                        "path": path,
+                        "write_error": write_error,
+                    });
+                }
+                if let Some(path) = &options.stack_context_out {
+                    let snapshots = boot.board.take_console_output_context_diagnostic();
+                    let uart_diagnostic = boot.board.take_uart_output_context_diagnostic();
+                    let write_error = match sidecar_file.as_mut() {
+                        Some(file) => write_stack_context_sidecar(
+                            file,
+                            path,
+                            &snapshots,
+                            uart_diagnostic.as_ref(),
+                        )
+                        .err(),
+                        None => Some("sidecar reservation is missing".into()),
+                    };
+                    evidence["stack_context_sidecar"] = json!({
+                        "path": path,
+                        "capture_scope": "console-output and bounded UART byte context",
+                        "unwind_context": false,
+                        "snapshots": snapshots.len(),
+                        "uart_provenance_samples": uart_diagnostic.as_ref().map_or(0, |capture| capture.samples.len()),
+                        "uart_provenance_end": uart_diagnostic.as_ref().map(|capture| uart_context_end_name(capture.end)),
+                        "write_error": write_error,
+                    });
+                }
+                if let Some(path) = &options.execution_observations_out {
+                    let write_error = if result.is_err() {
+                        let cleanup_error = execution_observations_file
+                            .take()
+                            .and_then(|file| discard_sidecar_reservation(path, file).err());
+                        Some(cleanup_error.unwrap_or_else(|| {
+                            "run failed before observations were complete".into()
+                        }))
+                    } else {
+                        match (result.as_ref().ok(), execution_observations_file.as_mut()) {
+                            (Some(record), Some(file)) => {
+                                match record.execution_observations.as_ref() {
+                                    Some(observations) => write_execution_observations_sidecar(
+                                        file,
+                                        path,
+                                        observations,
+                                    )
+                                    .err(),
+                                    None => Some("run returned no execution observations".into()),
+                                }
+                            }
+                            (_, None) => Some("sidecar reservation is missing".into()),
+                            (None, _) => Some("run result is unavailable".into()),
+                        }
+                    };
+                    evidence["execution_observations_sidecar"] = json!({
+                        "path": path,
+                        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events",
+                        "write_error": write_error,
+                    });
+                }
                 match result {
                     Ok(record) => {
                         evidence["guest_started"] = json!(true);
                         evidence["retired"] = json!(record.retired);
                         evidence["stop"] = describe_stop(&record, budget);
+                        if let Some(setup) = &checkpoint_setup {
+                            evidence["checkpoints"] = checkpoints::evidence(setup, &record);
+                        }
                     }
                     Err(error) => return (run_failure(&error, evidence), 4),
                 }
@@ -343,7 +745,10 @@ fn evaluate(options: &Options) -> (Value, u8) {
 fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool, cpuid_profile: CpuidProfile) {
     let subset = cpuid_profile != CpuidProfile::DiagnosticV1;
     evidence["diagnostic_past_c7"] = json!(diagnostic_past_c7);
-    evidence["acceptance"] = json!(if diagnostic_past_c7 {
+    // S4-38L8d: the APIC profile is never counted (only the checkpoint L8d is its status; the PASS
+    // of S4-39j stays with `stage4a`).
+    let apic = cpuid_profile == CpuidProfile::X8664V1Stage4AApic;
+    evidence["acceptance"] = json!(if diagnostic_past_c7 || apic {
         "diagnostic_not_counted"
     } else {
         "counted"
@@ -353,7 +758,13 @@ fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool, cpuid_profile
     }
     // With both flags the note carries both explanations (subset and C7).
     let mut parts = Vec::new();
-    if subset {
+    if apic {
+        parts.push(
+            "CPUID profile X8664V1Stage4AApic declares a subset of the target (TSC, FPU, FXSR and \
+             APIC; checkpoint C7 boundary off by the profile; PIT -> IOAPIC INTIN2 -> Local APIC \
+             timer line and the clock owner on)",
+        );
+    } else if subset {
         parts.push(
             "CPUID profile X8664V1Stage4A declares a subset of the target (TSC, FPU and FXSR; \
              checkpoint C7 boundary off by the profile)",
@@ -369,7 +780,9 @@ fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool, cpuid_profile
         });
     }
     if !parts.is_empty() {
-        let verdict = if diagnostic_past_c7 {
+        let verdict = if apic {
+            "the result is NOT counted (a checkpoint L8d record only; the S4-39j PASS stays with stage4a)"
+        } else if diagnostic_past_c7 {
             "the result is NOT counted"
         } else {
             "the result is counted (stage4a is the counted profile)"
@@ -639,6 +1052,14 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
         },
     });
     stop["machine_stop_reason"] = machine_stop_reason_json(record.stop_reason);
+    stop["pm_timer_reads"] = json!(record.pm_timer_reads);
+    stop["rdtsc_reads"] = json!(record.rdtsc_reads);
+    stop["rdtsc_reads_by_cpl"] = json!(record.rdtsc_reads_by_cpl);
+    stop["pit_port_b_reads"] = json!(record.pit_port_b_reads);
+    stop["pit_counter_port_reads"] = json!(record.pit_counter_port_reads);
+    // Keep the vector breakdown outside the large literal to stay under `json!`'s recursion limit.
+    stop["page_faults_delivered"] = json!(record.page_faults_delivered);
+    stop["general_protection_faults_delivered"] = json!(record.general_protection_faults_delivered);
     // S4-38L9I: the validated frame of the `IRETQ` the run stopped at (`exit_kind`
     // `user_entry`). The key exists only then, so the stop record of every other run (the base
     // DiagnosticV1 run included) is unchanged. The IRETQ did not retire: `rip` is on it. Set
@@ -739,6 +1160,10 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut user_mode = false;
     let mut budget = None;
     let mut cpuid_profile_text: Option<String> = None;
+    let mut checkpoint_table: Option<String> = None;
+    let mut stack_context_out = None;
+    let mut execution_observations_out = None;
+    let mut execution_observations_post_iret_index = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -790,6 +1215,26 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--out" => &mut out,
             "--budget" => &mut budget,
             "--cpuid-profile" => &mut cpuid_profile_text,
+            "--checkpoint-table" => &mut checkpoint_table,
+            "--stack-context-out" => &mut stack_context_out,
+            "--execution-observations-out" => &mut execution_observations_out,
+            "--execution-observations-post-iret-index" => {
+                let parsed = value
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|_| !value.starts_with('+'))
+                    .ok_or_else(|| {
+                        format!("invalid --execution-observations-post-iret-index '{value}'")
+                    })?;
+                if execution_observations_post_iret_index
+                    .replace(parsed)
+                    .is_some()
+                {
+                    return Err(format!("duplicate option {name}; usage: {USAGE}"));
+                }
+                index += 2;
+                continue;
+            }
             other => {
                 return Err(format!("unexpected option {other}; usage: {USAGE}"));
             }
@@ -827,21 +1272,59 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--cpuid-profile needs --run and --set-cpl0; usage: {USAGE}"
         ));
     }
+    if checkpoint_table.is_some() && !set_cpl0 {
+        return Err(format!(
+            "--checkpoint-table needs --run and --set-cpl0; usage: {USAGE}"
+        ));
+    }
     let cpuid_profile = match cpuid_profile_text.as_deref() {
         None | Some("diagnostic") => CpuidProfile::DiagnosticV1,
         Some("stage4a") => CpuidProfile::X8664V1Stage4A,
+        // S4-38L8d: stage4a plus the APIC bit; the board gets the IOAPIC timer line.
+        Some("stage4a-apic") => CpuidProfile::X8664V1Stage4AApic,
         Some(other) => {
             return Err(format!(
-                "invalid --cpuid-profile '{other}': diagnostic or stage4a; usage: {USAGE}"
+                "invalid --cpuid-profile '{other}': diagnostic, stage4a or stage4a-apic; usage: {USAGE}"
             ));
         }
     };
     // S4-39c: the user mode needs the CPUID subset the kernel boots with; `linux_default` (the
     // `diagnostic` profile) never turns it on.
-    if user_mode && cpuid_profile != CpuidProfile::X8664V1Stage4A {
+    if user_mode && !cpuid_profile.is_stage4a_family() {
+        // S4-38L9-um: `stage4a-apic` has the user mode too (ISSUE-090 for the APIC profile: the
+        // CPL3 interrupt goes through the Local APIC IRR and the IDT); its result stays
+        // `diagnostic_not_counted`. The diagnostic profile has none.
         return Err(format!(
-            "--user-mode needs --run, --set-cpl0 and --cpuid-profile stage4a; usage: {USAGE}"
+            "--user-mode needs --run, --set-cpl0 and --cpuid-profile stage4a or stage4a-apic; usage: {USAGE}"
         ));
+    }
+    if stack_context_out.is_some() && !(run && set_cpl0) {
+        return Err(format!(
+            "--stack-context-out needs --run and --set-cpl0; usage: {USAGE}"
+        ));
+    }
+    if execution_observations_out.is_some() && !(run && set_cpl0 && user_mode) {
+        return Err(format!(
+            "--execution-observations-out needs --run, --set-cpl0 and --user-mode; usage: {USAGE}"
+        ));
+    }
+    if execution_observations_post_iret_index.is_some() && execution_observations_out.is_none() {
+        return Err(format!(
+            "--execution-observations-post-iret-index needs --execution-observations-out; usage: {USAGE}"
+        ));
+    }
+    // The board loop accepts both observers, but the public execution-observation runs of
+    // od-machine do not take a checkpoint table and the pair is untested (ISSUE-108); refuse it
+    // explicitly rather than drop one of the two.
+    if execution_observations_out.is_some() && checkpoint_table.is_some() {
+        return Err(format!(
+            "--execution-observations-out cannot be combined with --checkpoint-table; usage: {USAGE}"
+        ));
+    }
+    if stack_context_out.is_some()
+        && stack_context_out.as_ref() == execution_observations_out.as_ref()
+    {
+        return Err("diagnostic sidecar paths must be distinct".into());
     }
     let nonce = required(nonce, "--nonce")?;
     if nonce.is_empty()
@@ -891,7 +1374,551 @@ fn parse(args: &[String]) -> Result<Options, String> {
         diagnostic_past_c7,
         cpuid_profile,
         user_mode,
+        checkpoint_table,
+        stack_context_out,
+        execution_observations_out,
+        execution_observations_post_iret_index,
     })
+}
+
+fn match_existing_file_identity(first: &str, second: &str) -> Result<bool, String> {
+    let first_metadata = match std::fs::metadata(first) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("could not inspect {first}: {error}")),
+    };
+    let second_metadata = match std::fs::metadata(second) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("could not inspect {second}: {error}")),
+    };
+    metadata_is_same_file(&first_metadata, &second_metadata, first, second)
+}
+
+fn file_matches_existing_path(
+    file: &File,
+    reservation_path: &str,
+    path: &str,
+) -> Result<bool, String> {
+    let reserved_metadata = file.metadata().map_err(|error| {
+        format!("could not inspect reserved sidecar {reservation_path}: {error}")
+    })?;
+    let reservation_path_metadata = std::fs::metadata(reservation_path).map_err(|error| {
+        format!("could not inspect reserved sidecar path {reservation_path}: {error}")
+    })?;
+    if !metadata_is_same_file(
+        &reserved_metadata,
+        &reservation_path_metadata,
+        reservation_path,
+        reservation_path,
+    )? {
+        return Err("sidecar reservation path changed after it was opened".into());
+    }
+    match_existing_file_identity(reservation_path, path)
+}
+
+#[cfg(unix)]
+fn metadata_is_same_file(
+    first: &std::fs::Metadata,
+    second: &std::fs::Metadata,
+    _first_path: &str,
+    _second_path: &str,
+) -> Result<bool, String> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(first.dev() == second.dev() && first.ino() == second.ino())
+}
+
+#[cfg(not(unix))]
+fn metadata_is_same_file(
+    _first: &std::fs::Metadata,
+    _second: &std::fs::Metadata,
+    first_path: &str,
+    second_path: &str,
+) -> Result<bool, String> {
+    let first = std::fs::canonicalize(first_path)
+        .map_err(|error| format!("could not resolve {first_path}: {error}"))?;
+    let second = std::fs::canonicalize(second_path)
+        .map_err(|error| format!("could not resolve {second_path}: {error}"))?;
+    Ok(first == second)
+}
+
+fn discard_sidecar_reservation(path: &str, file: File) -> Result<(), String> {
+    if !file_matches_existing_path(&file, path, path)? {
+        return Err("sidecar reservation path identity changed".into());
+    }
+    drop(file);
+    std::fs::remove_file(path).map_err(|error| format!("could not remove {path}: {error}"))
+}
+
+fn cleanup_sidecar_reservation(path: Option<&str>, file: &mut Option<File>) -> Result<(), String> {
+    let Some(reserved_file) = file.take() else {
+        return Ok(());
+    };
+    let path = path.ok_or_else(|| "sidecar reservation has no path".to_string())?;
+    discard_sidecar_reservation(path, reserved_file)
+}
+
+fn write_stack_context_sidecar(
+    file: &mut File,
+    path: &str,
+    snapshots: &[od_machine::ConsoleOutputContextSnapshot],
+    uart_diagnostic: Option<&od_machine::UartOutputContextDiagnostic>,
+) -> Result<(), String> {
+    let value = json!({
+        "schema_version": 2,
+        "capture_scope": "console-output and bounded UART byte context",
+        "unwind_context": false,
+        "limits": {
+            "snapshots": 4,
+            "line_bytes": 192,
+            "frame_links": 32,
+            "stack_window_bytes": 4096
+        },
+        "snapshots": snapshots.iter().map(|snapshot| json!({
+            "trigger": match snapshot.trigger {
+                od_machine::ConsoleContextTrigger::CallTraceLine => "call_trace_line",
+                od_machine::ConsoleContextTrigger::OptionalFrameLine => "optional_frame_line",
+            },
+            "rip": hex64(snapshot.rip),
+            "rbp": hex64(snapshot.rbp),
+            "cr3": hex64(snapshot.cr3),
+            "frames": snapshot.frames.iter().map(|frame| json!({
+                "frame_pointer": hex64(frame.frame_pointer),
+                "return_address": hex64(frame.return_address),
+            })).collect::<Vec<_>>(),
+            "ended": frame_chain_end_name(snapshot.ended),
+        })).collect::<Vec<_>>(),
+        "uart_provenance": uart_diagnostic.map(|capture| json!({
+            "trigger": "first_OD_NONCE_equals",
+            "marker_offset": capture.marker_offset,
+            "marker_prefix_before_trigger_unobserved": capture.marker_prefix_before_trigger_unobserved,
+            "end": uart_context_end_name(capture.end),
+            "byte_limit": od_machine::MAX_UART_PROVENANCE_BYTES,
+            "samples": capture.samples.iter().map(|sample| json!({
+                "offset": sample.offset,
+                "byte": sample.byte,
+                "retired": sample.retired,
+                "rip_phase": "post_out_instruction_boundary",
+                "rip": hex64(sample.rip),
+                "rsp": hex64(sample.rsp),
+                "rbp": hex64(sample.rbp),
+                "cr3": hex64(sample.cr3),
+                "cs_selector": sample.cs_selector.map(|selector| format!("0x{selector:04x}")),
+                "cpl": sample.cs_selector.map(|selector| selector & 3),
+                "frames": sample.frames.iter().map(|frame| json!({
+                    "frame_pointer": hex64(frame.frame_pointer),
+                    "return_address": hex64(frame.return_address),
+                })).collect::<Vec<_>>(),
+                "ended": frame_chain_end_name(sample.ended),
+            })).collect::<Vec<_>>(),
+        })),
+    });
+    file_matches_existing_path(file, path, path)?;
+    let bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
+    use std::io::Write;
+    if let Err(error) = file.write_all(&bytes).and_then(|()| file.write_all(b"\n")) {
+        let cleanup = match file_matches_existing_path(file, path, path) {
+            Ok(true) => {
+                std::fs::remove_file(path).map_err(|cleanup_error| cleanup_error.to_string())
+            }
+            Ok(false) => Err("reservation path identity changed".into()),
+            Err(cleanup_error) => Err(cleanup_error),
+        };
+        return Err(match cleanup {
+            Ok(()) => format!("{path}: {error}"),
+            Err(cleanup_error) => {
+                format!("{path}: {error}; partial sidecar cleanup failed: {cleanup_error}")
+            }
+        });
+    }
+    Ok(())
+}
+
+/// Environment variable that turns the fetch cache off for a diagnostic run (S4-13).
+const NO_FETCH_CACHE_ENV: &str = "OD_NO_FETCH_CACHE";
+/// Environment variable with the path of the opt-in fetch cache sidecar (S4-13b).
+const FETCH_CACHE_STATS_ENV: &str = "OD_FETCH_CACHE_STATS";
+/// Environment variable that adds the shadow cache sweep (S4-13c) to the fetch cache sidecar.
+const FETCH_CACHE_SWEEP_ENV: &str = "OD_FETCH_CACHE_SWEEP";
+/// Environment variable that gives the real fetch cache the 2 MiB leaf tag (S4-13d); only `2m`
+/// does, unset, empty and any other value keep the 4 KiB tag.
+const FETCH_CACHE_TAG_ENV: &str = "OD_FETCH_CACHE_TAG";
+
+/// Whether the 2 MiB leaf tag is requested: the value is exactly `2m`.
+fn fetch_cache_leaf_2m_tag_enabled(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| value == "2m")
+}
+
+/// What a run does with `OD_FETCH_CACHE_TAG`: whether the 2 MiB tag is applied and the warning
+/// to print. Like `OD_FETCH_CACHE_SWEEP` the tag is a diagnostic that rides on the sidecar: with
+/// `2m` but without `OD_FETCH_CACHE_STATS` it is NOT applied (the default 4 KiB tag stays) and
+/// the warning says so.
+fn fetch_cache_leaf_2m_tag_decision(
+    tag: Option<&std::ffi::OsStr>,
+    sidecar_requested: bool,
+) -> (bool, Option<String>) {
+    if !fetch_cache_leaf_2m_tag_enabled(tag) {
+        return (false, None);
+    }
+    if sidecar_requested {
+        return (true, None);
+    }
+    (
+        false,
+        Some(format!(
+            "warning: {FETCH_CACHE_TAG_ENV}=2m is ignored without {FETCH_CACHE_STATS_ENV} \
+             (the 2 MiB tag is a diagnostic that needs the sidecar); the 4 KiB tag stays"
+        )),
+    )
+}
+
+/// Whether the sweep is requested: set, not empty and not `0`.
+fn fetch_cache_sweep_enabled(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| !value.is_empty() && value != "0")
+}
+
+/// Whether the run keeps the fetch translation cache, from the value of `OD_NO_FETCH_CACHE`
+/// (S4-13b). Unset, empty or `0` keep it (the default); any other value turns it off. Before
+/// S4-13b any value, an empty one and `0` included, turned it off.
+fn fetch_cache_enabled(no_fetch_cache: Option<&std::ffi::OsStr>) -> bool {
+    match no_fetch_cache {
+        None => true,
+        Some(value) => value.is_empty() || value == "0",
+    }
+}
+
+/// The sidecar path from the value of `OD_FETCH_CACHE_STATS`: unset or empty is no sidecar; a
+/// value that is not UTF-8 is refused (the report paths are strings).
+fn fetch_cache_stats_path(value: Option<std::ffi::OsString>) -> Result<Option<String>, String> {
+    match value {
+        None => Ok(None),
+        Some(value) if value.is_empty() => Ok(None),
+        Some(value) => value
+            .into_string()
+            .map(Some)
+            .map_err(|_| format!("{FETCH_CACHE_STATS_ENV} is not valid UTF-8")),
+    }
+}
+
+fn per_instruction(count: u64, retired: u64) -> Value {
+    if retired == 0 {
+        Value::Null
+    } else {
+        json!(count as f64 / retired as f64)
+    }
+}
+
+fn fetch_cache_phase_json(phase: &od_machine::LinuxFetchCachePhase) -> Value {
+    let (walks, cache) = (&phase.walks, &phase.cache);
+    let lookups = cache.hits + cache.misses;
+    json!({
+        "calls": phase.calls,
+        "retired": phase.retired,
+        "walks": {
+            "fetch": walks.fetch,
+            "data_read": walks.data_read,
+            "data_write": walks.data_write,
+        },
+        "walks_per_instruction": {
+            "fetch": per_instruction(walks.fetch, phase.retired),
+            "data_read": per_instruction(walks.data_read, phase.retired),
+            "data_write": per_instruction(walks.data_write, phase.retired),
+        },
+        "cache": {
+            "hits": cache.hits,
+            "misses": cache.misses,
+            "inserts": cache.inserts,
+            "write_flushes": cache.write_flushes,
+            "context_flushes": cache.context_flushes,
+            "host_flushes": cache.host_flushes,
+            "invlpg_flushes": cache.invlpg_flushes,
+            "control_flushes": cache.control_flushes,
+            "fault_flushes": cache.fault_flushes,
+            "ignored_table_writes": cache.ignored_table_writes,
+            "lookups_per_instruction": per_instruction(lookups, phase.retired),
+            "hit_rate": if lookups == 0 { Value::Null } else { json!(cache.hits as f64 / lookups as f64) },
+        },
+    })
+}
+
+/// The content of the `OD_FETCH_CACHE_STATS` sidecar (S4-13b). `run_completed` is false when the
+/// run ended in `run_failed`: the counters are then what was counted up to the failure.
+fn fetch_cache_stats_json(
+    report: &od_machine::LinuxFetchCacheReport,
+    sweep: Option<&od_machine::FetchSweepReport>,
+    run_completed: bool,
+    run_wall_seconds: f64,
+) -> Value {
+    let mut value = json!({
+        "schema_version": 1,
+        "capture_scope": "fetch translation cache counters and tracked page walks of the CPL0 set loop, summed over its calls; measurement only",
+        "fetch_cache_enabled": report.cache_enabled,
+        "fetch_cache_tag": if report.leaf_2m_tag { "2m" } else { "4k" },
+        "run_completed": run_completed,
+        "run_wall_seconds": run_wall_seconds,
+        "phase_rule": report.phase_rule,
+        "c5_reached": report.c5_reached,
+        "notes": [
+            "walks: tracked walks of the instruction adapter only (fetch bytes not served by the cache, data reads, data writes); the read-only peeks and the cache fill walk are not counted; exception delivery (#PF, #GP: IDT, GDT, TSS and frame accesses) is counted as data reads and writes; external interrupt delivery is not counted",
+            "cache: counters of one cache per call (quantum), summed; its lookups include the peeks of the loop",
+            "phase 1 is before the boundary at which checkpoint C5 is recorded, phase 2 from it on; without the checkpoint recorder nothing is split",
+        ],
+        "total": fetch_cache_phase_json(&report.total),
+        "before_c5": fetch_cache_phase_json(&report.before_c5),
+        "after_c5": fetch_cache_phase_json(&report.after_c5),
+    });
+    // S4-13c: present only when the sweep was asked for.
+    if let Some(sweep) = sweep {
+        value["fetch_cache_sweep"] = fetch_cache_sweep_json(sweep, report);
+    }
+    value
+}
+
+/// The counters of one cache (real or shadow) in a phase.
+fn sweep_counters_json(stats: &od_machine::FetchCacheStats) -> Value {
+    let lookups = stats.hits + stats.misses;
+    json!({
+        "hits": stats.hits,
+        "misses": stats.misses,
+        "inserts": stats.inserts,
+        "write_flushes": stats.write_flushes,
+        "context_flushes": stats.context_flushes,
+        "host_flushes": stats.host_flushes,
+        "invlpg_flushes": stats.invlpg_flushes,
+        "control_flushes": stats.control_flushes,
+        "fault_flushes": stats.fault_flushes,
+        "ignored_table_writes": stats.ignored_table_writes,
+        "hit_rate": if lookups == 0 { Value::Null } else { json!(stats.hits as f64 / lookups as f64) },
+    })
+}
+
+/// The `fetch_cache_sweep` key of the sidecar (S4-13c): every shadow's counters by phase, and the
+/// check that the reference shadow counted exactly like the real cache of the run.
+fn fetch_cache_sweep_json(
+    sweep: &od_machine::FetchSweepReport,
+    report: &od_machine::LinuxFetchCacheReport,
+) -> Value {
+    use od_machine::{SweepInvalidation, SweepLifecycle, SweepReplacement, SweepTag};
+    let configs: serde_json::Map<String, Value> = sweep
+        .configs
+        .iter()
+        .map(|entry| {
+            let config = &entry.config;
+            (
+                entry.label.clone(),
+                json!({
+                    "capacity": config.capacity,
+                    "replacement": match config.replacement {
+                        SweepReplacement::Fifo => "fifo",
+                        SweepReplacement::Lru => "lru",
+                    },
+                    "tag": match config.tag {
+                        SweepTag::Page4K => "4k_page",
+                        SweepTag::Leaf2M => "2m_leaf",
+                    },
+                    "lifecycle": match config.lifecycle {
+                        SweepLifecycle::PerCall => "per_call",
+                        SweepLifecycle::Persistent => "persistent",
+                    },
+                    "invalidation": match config.invalidation {
+                        SweepInvalidation::WriteWatch => "write_watch",
+                        SweepInvalidation::GuestOnly => "guest_only",
+                    },
+                    "phase1_before_c5": sweep_counters_json(&entry.before_c5),
+                    "phase2_after_c5": sweep_counters_json(&entry.after_c5),
+                    "total": sweep_counters_json(&entry.total),
+                }),
+            )
+        })
+        .collect();
+    let reference = sweep.find(od_machine::SweepConfig::REFERENCE);
+    let self_check = match reference {
+        Some(reference) => json!({
+            "reference": reference.label,
+            "total_equals_real": reference.total == report.total.cache,
+            "phase1_equals_real": reference.before_c5 == report.before_c5.cache,
+            "phase2_equals_real": reference.after_c5 == report.after_c5.cache,
+            "all_ten_counters_compared": true,
+        }),
+        None => Value::Null,
+    };
+    json!({
+        "schema_version": 1,
+        "capture_scope": "shadow fetch caches fed with the event stream of the real cache; diagnostics only, their output is not part of any board report",
+        "c5_reached": sweep.c5_reached,
+        "notes": [
+            "each shadow counts the ten counters of the real cache; phase 1 is before the boundary of checkpoint C5, phase 2 from it on",
+            "per_call: emptied at the start of every call (quantum), like the real cache of the board; persistent: kept across calls with the S4-14i rules (a changed translation context, or a write to a watched table frame outside the loop, flushes it)",
+            "4k_page: one entry tags one 4 KiB page (the real cache); 2m_leaf: a walk that ended at a 2 MiB leaf is one entry for the 2 MiB page",
+            "write_watch: a committed write to a table frame of an entry drops every entry (the real cache); guest_only: such a write is only counted, INVLPG, a delivered #PF and a change of CR0/CR4 flush. guest_only is a hypothesis: a shadow keeps serving translations the run itself would not trust, and the writes of the host between calls are seen only through the page generations",
+            "INVLPG for the guest_only shadows is detected by a read-only peek at RIP that bypasses the real cache",
+            "a real GuestOnly cache finds INVLPG by a peek through the cache (the Peek lookup is added to its hits/misses); a guest_only shadow under a WriteWatch run bypasses the cache, so the hits/misses of a guest_only shadow on the board can differ from those of a real GuestOnly cache; the set of flushing events (INVLPG, #PF, CR0/CR4, MOV CR3) is the same",
+            "the shadows receive the lookup trace of the run and the walk result of the real cache; this equals an independent cache only for a WriteWatch run; on a fetch miss each shadow decides hit or miss itself and takes the insert only if it missed",
+        ],
+        "events": {
+            "calls": sweep.events.calls,
+            "lookups": sweep.events.lookups,
+            "bulk_lookups": sweep.events.bulk_lookups,
+            "inserts": sweep.events.inserts,
+            "writes": sweep.events.writes,
+            "writes_checked_against_shadows": sweep.events.writes_checked,
+        },
+        "watched_table_pages": sweep.watched_table_pages,
+        "distinct_translation_contexts": sweep.distinct_contexts,
+        "self_check": self_check,
+        "configs": configs,
+    })
+}
+
+fn write_fetch_cache_stats_sidecar(
+    file: &mut File,
+    path: &str,
+    report: &od_machine::LinuxFetchCacheReport,
+    sweep: Option<&od_machine::FetchSweepReport>,
+    run_completed: bool,
+    run_wall_seconds: f64,
+    final_ram_sha256: Result<[u8; 32], String>,
+) -> Result<(), String> {
+    let mut value = fetch_cache_stats_json(report, sweep, run_completed, run_wall_seconds);
+    // S4-13d: the end state of guest RAM, to compare two runs of the same guest.
+    // A hash that could not be computed is `null` with the reason, never a hash of part of RAM.
+    match &final_ram_sha256 {
+        Ok(hash) => value["final_ram_sha256"] = json!(hex(hash)),
+        Err(reason) => {
+            value["final_ram_sha256"] = Value::Null;
+            value["final_ram_sha256_error"] = json!(reason);
+        }
+    }
+    file_matches_existing_path(file, path, path)?;
+    let bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
+    use std::io::Write;
+    file.write_all(&bytes)
+        .and_then(|()| file.write_all(b"\n"))
+        .map_err(|error| format!("{path}: {error}"))
+}
+
+fn write_execution_observations_sidecar(
+    file: &mut File,
+    path: &str,
+    observations: &LinuxExecutionObservations,
+) -> Result<(), String> {
+    let value = json!({
+        "schema_version": 5,
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, and an optional selected post-IRET page-walk snapshot",
+        "limits": {
+            "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
+            "page_fault_events": od_machine::LINUX_PAGE_FAULT_EVENT_CAPACITY,
+            "frame_links_per_page_fault": od_machine::LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY,
+            "page_walk_entries_per_fault": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
+            "post_iret_page_walk_entries": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
+        },
+        "rdtsc_cpl0_sites": observations.rdtsc_cpl0_sites.iter().map(|site| json!({
+            "rip": hex64(site.rip),
+            "reads": site.reads,
+        })).collect::<Vec<_>>(),
+        "rdtsc_cpl0_unattributed_reads": observations.rdtsc_cpl0_unattributed_reads,
+        "rdtsc_cpl0_site_overflow_reads": observations.rdtsc_cpl0_site_overflow_reads,
+        "page_faults_delivered": observations.page_faults_delivered,
+        "page_fault_events": observations.page_fault_events.iter().map(|event| json!({
+            "rip": hex64(event.rip),
+            "cr2": hex64(event.cr2),
+            "error_code": format!("0x{:08x}", event.error_code),
+            "access": event.access,
+            "cpl": event.cpl,
+            "faulting_context": {
+                "cr3": hex64(event.faulting_context.cr3),
+                "rsp": hex64(event.faulting_context.rsp),
+                "rbp": hex64(event.faulting_context.rbp),
+                "rcx": hex64(event.faulting_context.rcx),
+                "rsi": hex64(event.faulting_context.rsi),
+                "rdi": hex64(event.faulting_context.rdi),
+                "cs_selector": event.faulting_context.cs_selector.map(|selector| format!("0x{selector:04x}")),
+                "frame_chain": event.faulting_context.frame_chain.iter().map(|frame| json!({
+                    "frame_pointer": hex64(frame.frame_pointer),
+                    "return_address": hex64(frame.return_address),
+                })).collect::<Vec<_>>(),
+                "frame_chain_end": format!("{:?}", event.faulting_context.frame_chain_end),
+                "page_walk": event.faulting_context.page_walk.as_ref().map(|walk| json!({
+                    "source": "original_faulting_guest_access",
+                    "entry_values": "raw_before_accessed_dirty_updates",
+                    "reason": format!("{:?}", walk.reason),
+                    "entries": walk.entries.iter().map(|entry| json!({
+                        "level": format!("{:?}", entry.level),
+                        "index": entry.index,
+                        "entry_address": hex64(entry.entry_address.get()),
+                        "entry_value": hex64(entry.entry_value),
+                    })).collect::<Vec<_>>(),
+                })),
+            },
+        })).collect::<Vec<_>>(),
+        "page_fault_events_omitted": observations.page_fault_events_omitted,
+        "post_iret_selected_ordinal": observations.post_iret_selected_ordinal,
+        "post_iret_page_walk_status": observations.post_iret_page_walk_status,
+        "post_iret_page_walk": observations.post_iret_page_walk.as_ref().map(|snapshot| json!({
+            "event_ordinal": snapshot.event_ordinal,
+            "fault_rip": hex64(snapshot.fault_rip),
+            "fault_cr2": hex64(snapshot.fault_cr2),
+            "fault_access": snapshot.fault_access,
+            "fault_cpl": snapshot.fault_cpl,
+            "post_iret_context": {
+                "rip": hex64(snapshot.post_iret_rip),
+                "cs": snapshot.post_iret_cs.map(|selector| format!("0x{selector:04x}")),
+                "cpl": snapshot.post_iret_cpl,
+                "rsp": hex64(snapshot.post_iret_rsp),
+                "cr3": hex64(snapshot.post_iret_cr3),
+            },
+            "translation_status": snapshot.translation_status,
+            "translated_physical": snapshot.translated_physical.map(hex64),
+            "translation_error": snapshot.translation_error,
+            "entries": snapshot.entries.iter().map(|entry| json!({
+                "level": format!("{:?}", entry.level),
+                "index": entry.index,
+                "entry_address": hex64(entry.entry_address.get()),
+                "entry_value": hex64(entry.entry_value),
+            })).collect::<Vec<_>>(),
+        })),
+    });
+    file_matches_existing_path(file, path, path)?;
+    let bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
+    use std::io::Write;
+    if let Err(error) = file.write_all(&bytes).and_then(|()| file.write_all(b"\n")) {
+        let cleanup = match file_matches_existing_path(file, path, path) {
+            Ok(true) => {
+                std::fs::remove_file(path).map_err(|cleanup_error| cleanup_error.to_string())
+            }
+            Ok(false) => Err("reservation path identity changed".into()),
+            Err(cleanup_error) => Err(cleanup_error),
+        };
+        return Err(match cleanup {
+            Ok(()) => format!("{path}: {error}"),
+            Err(cleanup_error) => {
+                format!("{path}: {error}; partial sidecar cleanup failed: {cleanup_error}")
+            }
+        });
+    }
+    Ok(())
+}
+
+fn uart_context_end_name(end: od_machine::UartOutputContextEnd) -> &'static str {
+    match end {
+        od_machine::UartOutputContextEnd::MarkerNotFound => "marker_not_found",
+        od_machine::UartOutputContextEnd::RunEnded => "run_end",
+        od_machine::UartOutputContextEnd::ByteLimit => "byte_limit",
+    }
+}
+
+fn frame_chain_end_name(end: od_machine::FrameChainEnd) -> &'static str {
+    match end {
+        od_machine::FrameChainEnd::NullFramePointer => "null_frame_pointer",
+        od_machine::FrameChainEnd::NonCanonicalFramePointer => "non_canonical_frame_pointer",
+        od_machine::FrameChainEnd::UnalignedFramePointer => "unaligned_frame_pointer",
+        od_machine::FrameChainEnd::OutsideStackWindow => "outside_stack_window",
+        od_machine::FrameChainEnd::RepeatedFramePointer => "repeated_frame_pointer",
+        od_machine::FrameChainEnd::NonMonotonicFramePointer => "non_monotonic_frame_pointer",
+        od_machine::FrameChainEnd::ReadFailed => "read_failed",
+        od_machine::FrameChainEnd::NonCanonicalReturnAddress => "non_canonical_return_address",
+        od_machine::FrameChainEnd::FrameLimit => "frame_limit",
+    }
 }
 
 /// A lowercase 64-digit hex string.
@@ -1015,6 +2042,10 @@ mod tests {
                 diagnostic_past_c7: false,
                 cpuid_profile: CpuidProfile::DiagnosticV1,
                 user_mode: false,
+                checkpoint_table: None,
+                stack_context_out: None,
+                execution_observations_out: None,
+                execution_observations_post_iret_index: None,
             };
             Self { dir, options }
         }
@@ -1546,6 +2577,33 @@ mod tests {
         assert_eq!(value["stop"]["com1_text"], "X");
         assert_eq!(value["stop"]["com1_hex"], "58");
         assert_eq!(value["retired"], 4);
+    }
+
+    #[test]
+    fn stop_json_reports_per_run_virtual_time_source_reads() {
+        let code = [
+            0x66, 0xba, 0x61, 0x00, 0xb0, 0x01, 0xee, 0x66, 0xba, 0x43, 0x00, 0xb0, 0xa0, 0xee,
+            0x66, 0xba, 0x42, 0x00, 0xb0, 0x10, 0xee, 0x0f, 0x31, 0x66, 0xba, 0x61, 0x00, 0xec,
+            0x66, 0xba, 0x42, 0x00, 0xec, 0x66, 0xba, 0x08, 0x06, 0xec, 0xf4,
+        ];
+        let mut case = Case::new(
+            "run-virtual-time-source-reads",
+            &bzimage_with_entry(&code),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(64);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        assert_eq!(value["status"], "loaded");
+        assert_eq!(value["stop"]["exit_kind"], "unsupported", "{value:#}");
+        assert_eq!(value["stop"]["unsupported_opcode"], "0xf4");
+        assert_eq!(value["stop"]["pm_timer_reads"], 1);
+        assert_eq!(value["stop"]["rdtsc_reads"], 1);
+        assert_eq!(value["stop"]["rdtsc_reads_by_cpl"], json!([1, 0, 0, 0]));
+        assert_eq!(value["stop"]["pit_port_b_reads"], 1);
+        assert_eq!(value["stop"]["pit_counter_port_reads"], 1);
     }
 
     #[test]
@@ -2104,6 +3162,44 @@ mod tests {
         );
     }
 
+    /// S4-38L9-um: the same program under `stage4a-apic --user-mode` reaches CPL3 (no refusal
+    /// before the board is changed), carries the APIC members and the IRQ source, and the result
+    /// stays `diagnostic_not_counted`.
+    #[test]
+    fn user_mode_under_the_apic_profile_runs_into_cpl3_and_is_not_counted() {
+        let mut case = Case::new(
+            "set-user-mode-apic",
+            &bzimage_with_entry(&iretq_to_cpl3_program()),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(64);
+        case.options.set_cpl0 = true;
+        case.options.cpuid_profile = CpuidProfile::X8664V1Stage4AApic;
+        case.options.user_mode = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        assert_eq!(value["acceptance"], "diagnostic_not_counted", "{value:#}");
+        assert_eq!(value["cpuid_profile"], "X8664V1Stage4AApic");
+        let stop = &value["stop"];
+        assert_eq!(stop["exit_kind"], "user_mode_fault", "{value:#}");
+        assert_eq!(stop["cpl"], 3);
+        assert_eq!(stop["user_mode"], true);
+        let members = stop["set_members"].as_array().unwrap();
+        for name in [
+            "cpuid:X8664V1Stage4AApic",
+            "halt",
+            "irq",
+            "clock_owner",
+            "user_mode",
+        ] {
+            assert!(
+                members.iter().any(|member| member == name),
+                "{name}: {members:?}"
+            );
+        }
+    }
+
     fn cpuid_leaf_case(name: &str, leaf: u8, diagnostic: bool) -> (Value, u8) {
         // CLI; MOV EAX, leaf; CPUID; HLT.
         let code = [0xFA, 0xB8, leaf, 0x00, 0x00, 0x00, 0x0F, 0xA2, 0xF4];
@@ -2355,6 +3451,951 @@ mod tests {
     }
 
     #[test]
+    fn stack_context_sidecar_is_single_cpl0_run_only() {
+        let run = ["--run", "--budget", "1", "--set-cpl0"];
+        let accepted =
+            parse_base(&[&run[..], &["--stack-context-out", "context.json"]].concat()).unwrap();
+        assert_eq!(accepted.stack_context_out.as_deref(), Some("context.json"));
+        assert!(parse_base(&["--stack-context-out", "context.json"]).is_err());
+        assert_eq!(
+            parse_base(&[&run[..], &["--stack-context-out", "o"]].concat())
+                .unwrap()
+                .stack_context_out
+                .as_deref(),
+            Some("o")
+        );
+        assert!(
+            parse_base(&[
+                "--run",
+                "--budget",
+                "1",
+                "--stack-context-out",
+                "context.json"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn execution_observations_with_checkpoint_table_is_refused() {
+        let error = parse_base(&[
+            "--run",
+            "--budget",
+            "1",
+            "--set-cpl0",
+            "--cpuid-profile",
+            "stage4a",
+            "--user-mode",
+            "--execution-observations-out",
+            "observations.json",
+            "--checkpoint-table",
+            "oracle.json",
+        ])
+        .unwrap_err();
+        assert!(
+            error.contains("cannot be combined with --checkpoint-table"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn execution_observations_sidecar_is_restricted_to_one_user_mode_run() {
+        let run = [
+            "--run",
+            "--budget",
+            "1",
+            "--set-cpl0",
+            "--cpuid-profile",
+            "stage4a",
+            "--user-mode",
+        ];
+        let accepted = parse_base(
+            &[
+                &run[..],
+                &["--execution-observations-out", "observations.json"],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(
+            accepted.execution_observations_out.as_deref(),
+            Some("observations.json")
+        );
+        let selected = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-post-iret-index",
+                    "30",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(selected.execution_observations_post_iret_index, Some(30));
+        assert!(parse_base(&["--execution-observations-post-iret-index", "30"]).is_err());
+        assert!(
+            parse_base(
+                &[
+                    &run[..],
+                    &[
+                        "--execution-observations-out",
+                        "observations.json",
+                        "--execution-observations-post-iret-index",
+                        "-1",
+                    ],
+                ]
+                .concat(),
+            )
+            .is_err()
+        );
+        assert!(
+            parse_base(
+                &[
+                    &run[..],
+                    &[
+                        "--execution-observations-out",
+                        "observations.json",
+                        "--execution-observations-post-iret-index",
+                        "30",
+                        "--execution-observations-post-iret-index",
+                        "31",
+                    ],
+                ]
+                .concat(),
+            )
+            .is_err()
+        );
+        assert!(parse_base(&["--execution-observations-out", "observations.json"]).is_err());
+        assert!(parse_base(&[&run[..6], &["--execution-observations-out", "o"]].concat()).is_err());
+        assert!(parse_base(&[&run[..4], &["--execution-observations-out", "o"]].concat()).is_err());
+        assert!(
+            parse_base(
+                &[
+                    &run[..],
+                    &[
+                        "--execution-observations-out",
+                        "o",
+                        "--execution-observations-out",
+                        "o2"
+                    ]
+                ]
+                .concat()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_base(
+                &[
+                    &run[..],
+                    &[
+                        "--stack-context-out",
+                        "same",
+                        "--execution-observations-out",
+                        "same"
+                    ]
+                ]
+                .concat()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn sidecar_collision_guard_uses_filesystem_identity_for_aliases() {
+        let root = std::env::temp_dir().join(format!(
+            "od-runner-stack-context-paths-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let sub = root.join("sub");
+        let real = root.join("real");
+        let alias = root.join("alias");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(&real).unwrap();
+        let ordinary = root.join("out.json");
+        let dotdot = sub.join("../out.json");
+        let ordinary_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&ordinary)
+            .unwrap();
+        assert!(
+            file_matches_existing_path(
+                &ordinary_file,
+                ordinary.to_str().unwrap(),
+                dotdot.to_str().unwrap()
+            )
+            .unwrap()
+        );
+
+        let case_alias = root.join("OUT.JSON");
+        let same_case_alias = file_matches_existing_path(
+            &ordinary_file,
+            ordinary.to_str().unwrap(),
+            case_alias.to_str().unwrap(),
+        )
+        .unwrap();
+        if same_case_alias {
+            assert!(std::fs::metadata(&case_alias).is_ok());
+        } else {
+            // On a case-sensitive volume this is a distinct future destination.
+            let _case_file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&case_alias)
+                .unwrap();
+            assert!(
+                !file_matches_existing_path(
+                    &ordinary_file,
+                    ordinary.to_str().unwrap(),
+                    case_alias.to_str().unwrap()
+                )
+                .unwrap()
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            let dangling = root.join("dangling.json");
+            std::os::unix::fs::symlink(root.join("missing-target.json"), &dangling).unwrap();
+            assert!(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&dangling)
+                    .is_err()
+            );
+
+            std::os::unix::fs::symlink(&real, &alias).unwrap();
+            let sidecar_path = real.join("sidecar.json");
+            let sidecar_file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&sidecar_path)
+                .unwrap();
+            assert!(
+                file_matches_existing_path(
+                    &sidecar_file,
+                    sidecar_path.to_str().unwrap(),
+                    alias.join("sidecar.json").to_str().unwrap()
+                )
+                .unwrap()
+            );
+        }
+        drop(ordinary_file);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cleanup_sidecar_reservation_removes_only_the_reserved_file() {
+        let root =
+            std::env::temp_dir().join(format!("od-runner-sidecar-cleanup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let owned_path = root.join("owned.json");
+        let mut owned = Some(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&owned_path)
+                .unwrap(),
+        );
+        cleanup_sidecar_reservation(Some(owned_path.to_str().unwrap()), &mut owned).unwrap();
+        assert!(owned.is_none());
+        assert!(!owned_path.exists());
+
+        let replaced_path = root.join("replaced.json");
+        let mut replaced = Some(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&replaced_path)
+                .unwrap(),
+        );
+        std::fs::remove_file(&replaced_path).unwrap();
+        std::fs::write(&replaced_path, b"replacement").unwrap();
+        assert!(
+            cleanup_sidecar_reservation(Some(replaced_path.to_str().unwrap()), &mut replaced)
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&replaced_path).unwrap(), b"replacement");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stack_context_sidecar_serializes_as_separate_console_context_evidence() {
+        let path = std::env::temp_dir().join(format!(
+            "od-runner-stack-context-{}-{}.json",
+            std::process::id(),
+            1
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        write_stack_context_sidecar(&mut file, path.to_str().unwrap(), &[], None).unwrap();
+        let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            value["capture_scope"],
+            "console-output and bounded UART byte context"
+        );
+        assert_eq!(value["unwind_context"], false);
+        assert_eq!(value["snapshots"].as_array().unwrap().len(), 0);
+        assert!(value["uart_provenance"].is_null());
+        assert!(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .is_err()
+        );
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    // ---- S4-13b: the fetch cache switch and the opt-in sidecar ----
+
+    #[test]
+    fn od_no_fetch_cache_unset_empty_and_zero_keep_the_cache_anything_else_turns_it_off() {
+        use std::ffi::OsStr;
+        assert!(fetch_cache_enabled(None));
+        assert!(fetch_cache_enabled(Some(OsStr::new(""))));
+        assert!(fetch_cache_enabled(Some(OsStr::new("0"))));
+        assert!(!fetch_cache_enabled(Some(OsStr::new("1"))));
+        assert!(!fetch_cache_enabled(Some(OsStr::new("true"))));
+        assert!(!fetch_cache_enabled(Some(OsStr::new("00"))));
+    }
+
+    #[test]
+    fn fetch_cache_stats_path_is_the_opt_in() {
+        use std::ffi::OsString;
+        assert_eq!(fetch_cache_stats_path(None), Ok(None));
+        assert_eq!(fetch_cache_stats_path(Some(OsString::new())), Ok(None));
+        assert_eq!(
+            fetch_cache_stats_path(Some(OsString::from("/tmp/stats.json"))),
+            Ok(Some("/tmp/stats.json".to_string()))
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            assert!(fetch_cache_stats_path(Some(OsString::from_vec(vec![0xff, 0xfe]))).is_err());
+        }
+    }
+
+    #[test]
+    fn fetch_cache_stats_sidecar_names_the_cache_state_the_rule_and_the_rates() {
+        let cache = od_machine::FetchCacheStats {
+            hits: 90,
+            misses: 10,
+            inserts: 4,
+            write_flushes: 1,
+            context_flushes: 2,
+            host_flushes: 3,
+            ..Default::default()
+        };
+        let phase = od_machine::LinuxFetchCachePhase {
+            calls: 5,
+            retired: 20,
+            walks: od_machine::LinuxWalkCounts {
+                fetch: 10,
+                data_read: 40,
+                data_write: 5,
+            },
+            cache,
+        };
+        let report = od_machine::LinuxFetchCacheReport {
+            cache_enabled: false,
+            leaf_2m_tag: false,
+            phase_rule: od_machine::FETCH_CACHE_PHASE_RULE_C5,
+            c5_reached: true,
+            total: phase,
+            before_c5: phase,
+            after_c5: od_machine::LinuxFetchCachePhase::default(),
+        };
+        let value = fetch_cache_stats_json(&report, None, true, 1.5);
+        // A run without the cache is told apart from the ordinary one.
+        assert_eq!(value["fetch_cache_enabled"], false);
+        assert_eq!(value["run_completed"], true);
+        assert_eq!(value["phase_rule"], "c5_first_fetch_at_e_entry");
+        assert_eq!(value["c5_reached"], true);
+        let total = &value["total"];
+        assert_eq!(total["calls"], 5);
+        assert_eq!(total["retired"], 20);
+        assert_eq!(total["walks"]["fetch"], 10);
+        assert_eq!(total["walks"]["data_read"], 40);
+        assert_eq!(total["walks"]["data_write"], 5);
+        assert_eq!(total["walks_per_instruction"]["fetch"], 0.5);
+        assert_eq!(total["walks_per_instruction"]["data_read"], 2.0);
+        assert_eq!(total["cache"]["hits"], 90);
+        assert_eq!(total["cache"]["misses"], 10);
+        assert_eq!(total["cache"]["hit_rate"], 0.9);
+        assert_eq!(total["cache"]["lookups_per_instruction"], 5.0);
+        // An empty phase has no rates, not a division by zero.
+        let after = &value["after_c5"];
+        assert_eq!(after["retired"], 0);
+        assert_eq!(after["walks_per_instruction"]["fetch"], Value::Null);
+        assert_eq!(after["cache"]["hit_rate"], Value::Null);
+    }
+
+    fn run_case_with_env(name: &str, code: &[u8], budget: u64, env: &DiagnosticEnv) -> Value {
+        let mut case = Case::new(name, &bzimage_with_entry(code), &[0xAB; 4688], BLOB);
+        case.options.budget = Some(budget);
+        // The report is built by the CPL0 set loop only.
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate_with_env(&case.options, env);
+        assert_eq!(exit, 0, "{value:#}");
+        value
+    }
+
+    /// The opt-in adds the sidecar (and its entry in the evidence) and changes nothing else: the
+    /// evidence of a run with `OD_FETCH_CACHE_STATS` equals the default one but for that entry,
+    /// with the cache on and off. Without the variable there is no trace of the sidecar.
+    #[test]
+    fn fetch_cache_stats_opt_in_adds_only_its_sidecar() {
+        // 20 CLI, then an HLT the default set does not run: the run stops there, after 20
+        // instructions and enough bytes for the cache to hit.
+        let mut code = vec![0xFA; 20];
+        code.push(0xF4);
+        for no_fetch_cache in [None, Some("1")] {
+            let name = format!("fetch-stats-{}", no_fetch_cache.unwrap_or("on"));
+            let plain_env = DiagnosticEnv {
+                no_fetch_cache: no_fetch_cache.map(Into::into),
+                fetch_cache_stats: None,
+                fetch_cache_sweep: None,
+                fetch_cache_tag: None,
+            };
+            let plain = run_case_with_env(&format!("{name}-plain"), &code, 100, &plain_env);
+            assert!(
+                plain.get("fetch_cache_stats_sidecar").is_none(),
+                "{plain:#}"
+            );
+            assert_eq!(plain["stop"]["exit_kind"], "unsupported");
+            assert_eq!(plain["retired"], 20);
+
+            let dir = std::env::temp_dir().join(format!(
+                "od-runner-fetch-stats-{}-{name}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let sidecar = dir.join("stats.json");
+            let env = DiagnosticEnv {
+                no_fetch_cache: plain_env.no_fetch_cache.clone(),
+                fetch_cache_stats: Some(sidecar.clone().into_os_string()),
+                fetch_cache_sweep: None,
+                fetch_cache_tag: None,
+            };
+            let mut observed = run_case_with_env(&format!("{name}-stats"), &code, 100, &env);
+            let entry = observed
+                .as_object_mut()
+                .unwrap()
+                .remove("fetch_cache_stats_sidecar")
+                .expect("the opt-in leaves its entry");
+            assert_eq!(entry["write_error"], Value::Null, "{entry:#}");
+            let differing: Vec<&String> = observed
+                .as_object()
+                .unwrap()
+                .iter()
+                // `inputs` holds the paths of the case's own input files.
+                .filter(|(key, value)| {
+                    key.as_str() != "inputs" && plain.get(key.as_str()) != Some(*value)
+                })
+                .map(|(key, _)| key)
+                .collect();
+            assert_eq!(differing, Vec::<&String>::new());
+            assert_eq!(
+                observed.as_object().unwrap().len(),
+                plain.as_object().unwrap().len()
+            );
+
+            let written: Value = serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+            assert_eq!(written["fetch_cache_enabled"], no_fetch_cache.is_none());
+            assert_eq!(written["run_completed"], true);
+            assert_eq!(written["phase_rule"], "none_checkpoints_disabled");
+            assert_eq!(written["c5_reached"], false);
+            assert_eq!(written["total"]["retired"], 20);
+            assert_eq!(written["before_c5"]["retired"], 20);
+            assert!(written["total"]["walks"]["fetch"].as_u64().unwrap() > 0);
+            let hits = written["total"]["cache"]["hits"].as_u64().unwrap();
+            assert_eq!(hits > 0, no_fetch_cache.is_none(), "{written:#}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn od_fetch_cache_tag_is_exactly_2m_or_the_4k_default() {
+        use std::ffi::OsStr;
+        assert!(!fetch_cache_leaf_2m_tag_enabled(None));
+        for value in ["", "0", "1", "4k", "2M", "2m "] {
+            assert!(
+                !fetch_cache_leaf_2m_tag_enabled(Some(OsStr::new(value))),
+                "{value:?}"
+            );
+        }
+        assert!(fetch_cache_leaf_2m_tag_enabled(Some(OsStr::new("2m"))));
+    }
+
+    /// S4-13d: like the sweep, the tag needs the sidecar: `2m` without `OD_FETCH_CACHE_STATS` is
+    /// not applied and warns; with the sidecar it is applied silently; anything but `2m` is the
+    /// 4 KiB default without a warning.
+    #[test]
+    fn od_fetch_cache_tag_2m_without_the_sidecar_is_ignored_with_a_warning() {
+        use std::ffi::OsStr;
+        let two_m = Some(OsStr::new("2m"));
+        let (apply, warning) = fetch_cache_leaf_2m_tag_decision(two_m, false);
+        assert!(!apply);
+        let warning = warning.expect("a warning");
+        assert!(
+            warning.contains("OD_FETCH_CACHE_TAG=2m")
+                && warning.contains("OD_FETCH_CACHE_STATS")
+                && warning.contains("4 KiB"),
+            "{warning}"
+        );
+        assert_eq!(fetch_cache_leaf_2m_tag_decision(two_m, true), (true, None));
+        for sidecar in [false, true] {
+            for value in [None, Some(OsStr::new("")), Some(OsStr::new("4k"))] {
+                assert_eq!(
+                    fetch_cache_leaf_2m_tag_decision(value, sidecar),
+                    (false, None)
+                );
+            }
+        }
+    }
+
+    /// S4-13d: `OD_FETCH_CACHE_TAG=2m` gives the real cache the 2 MiB leaf tag and changes nothing
+    /// in the evidence of the run (it equals the 4 KiB run but for `inputs` and the sidecar
+    /// entry, whose path differs); the sidecar names the tag and carries the end state hash of
+    /// guest RAM, equal for the 4 KiB and the 2 MiB tag and for a run without the cache.
+    #[test]
+    fn fetch_cache_tag_2m_changes_no_evidence_and_the_sidecar_names_it() {
+        let mut code = vec![0xFA; 20];
+        code.push(0xF4);
+        let dir = std::env::temp_dir().join(format!("od-runner-fetch-tag-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut runs = Vec::new();
+        for (name, no_cache, tag) in [
+            ("tag4k", None, None),
+            ("tag2m", None, Some("2m")),
+            ("nocache", Some("1"), None),
+        ] {
+            let sidecar = dir.join(format!("{name}.json"));
+            let env = DiagnosticEnv {
+                no_fetch_cache: no_cache.map(Into::into),
+                fetch_cache_stats: Some(sidecar.clone().into_os_string()),
+                fetch_cache_sweep: None,
+                fetch_cache_tag: tag.map(Into::into),
+            };
+            let mut evidence = run_case_with_env(name, &code, 100, &env);
+            let object = evidence.as_object_mut().unwrap();
+            object.remove("fetch_cache_stats_sidecar");
+            object.remove("inputs");
+            let written: Value = serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+            runs.push((evidence, written));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(runs[0].1["fetch_cache_tag"], "4k");
+        assert_eq!(runs[1].1["fetch_cache_tag"], "2m");
+        assert_eq!(runs[2].1["fetch_cache_tag"], "4k");
+        for run in &runs[1..] {
+            assert_eq!(run.0, runs[0].0);
+            assert_eq!(run.1["final_ram_sha256"], runs[0].1["final_ram_sha256"]);
+        }
+        let hash = runs[0].1["final_ram_sha256"].as_str().unwrap();
+        assert_eq!(hash.len(), 64, "{hash}");
+    }
+
+    #[test]
+    fn od_fetch_cache_sweep_is_an_opt_in_flag() {
+        use std::ffi::OsStr;
+        assert!(!fetch_cache_sweep_enabled(None));
+        assert!(!fetch_cache_sweep_enabled(Some(OsStr::new(""))));
+        assert!(!fetch_cache_sweep_enabled(Some(OsStr::new("0"))));
+        assert!(fetch_cache_sweep_enabled(Some(OsStr::new("1"))));
+    }
+
+    /// S4-13c: with `OD_FETCH_CACHE_SWEEP` the stats sidecar gains one key, the sweep, whose
+    /// reference shadow equals the real cache; the evidence of the run is the one of the run with
+    /// the stats sidecar alone. Without the flag the sidecar has no such key, and the flag alone
+    /// (no sidecar) does nothing.
+    #[test]
+    fn fetch_cache_sweep_adds_only_its_key_to_the_stats_sidecar() {
+        let mut code = vec![0xFA; 20];
+        code.push(0xF4);
+        let dir =
+            std::env::temp_dir().join(format!("od-runner-fetch-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |name: &str, stats: bool, sweep: bool| {
+            let sidecar = dir.join(format!("{name}.json"));
+            let env = DiagnosticEnv {
+                no_fetch_cache: None,
+                fetch_cache_stats: stats.then(|| sidecar.clone().into_os_string()),
+                fetch_cache_sweep: sweep.then(|| "1".into()),
+                fetch_cache_tag: None,
+            };
+            let mut evidence = run_case_with_env(name, &code, 100, &env);
+            if let Some(object) = evidence.as_object_mut() {
+                object.remove("fetch_cache_stats_sidecar");
+                object.remove("inputs");
+            }
+            let written = std::fs::read(&sidecar)
+                .ok()
+                .map(|bytes| serde_json::from_slice::<Value>(&bytes).unwrap());
+            (evidence, written)
+        };
+        let (plain, none) = run("plain", false, false);
+        assert!(none.is_none());
+        let (flag_only, none) = run("flag-only", false, true);
+        assert_eq!(flag_only, plain);
+        assert!(none.is_none(), "the flag alone writes nothing");
+        let (stats_only, stats_only_written) = run("stats", true, false);
+        assert_eq!(stats_only, plain);
+        let stats_only_written = stats_only_written.unwrap();
+        assert!(stats_only_written.get("fetch_cache_sweep").is_none());
+        let (swept, written) = run("sweep", true, true);
+        assert_eq!(swept, plain, "the sweep changes nothing in the evidence");
+        let mut written = written.unwrap();
+        let sweep = written
+            .as_object_mut()
+            .unwrap()
+            .remove("fetch_cache_sweep")
+            .expect("the flag adds the key");
+        // The rest of the sidecar is the one without the flag (the wall clock differs).
+        let mut expected = stats_only_written;
+        for value in [&mut written, &mut expected] {
+            value.as_object_mut().unwrap().remove("run_wall_seconds");
+        }
+        assert_eq!(written, expected);
+        assert_eq!(sweep["configs"].as_object().unwrap().len(), 112);
+        let check = &sweep["self_check"];
+        assert_eq!(check["reference"], "cap4-fifo-4k-per_call-write_watch");
+        assert_eq!(check["total_equals_real"], true, "{sweep:#}");
+        assert_eq!(check["phase1_equals_real"], true);
+        assert_eq!(check["phase2_equals_real"], true);
+        let reference = &sweep["configs"]["cap4-fifo-4k-per_call-write_watch"];
+        assert_eq!(
+            reference["total"]["hits"],
+            written["total"]["cache"]["hits"]
+        );
+        assert!(reference["total"]["hits"].as_u64().unwrap() > 0);
+        assert_eq!(
+            sweep["configs"]["cap64-lru-2m-persistent-guest_only"]["capacity"],
+            64
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Without `--set-cpl0` there is no report: the evidence says so and no empty sidecar stays.
+    #[test]
+    fn fetch_cache_stats_without_the_set_loop_leaves_no_empty_sidecar() {
+        let dir =
+            std::env::temp_dir().join(format!("od-runner-fetch-stats-base-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sidecar = dir.join("stats.json");
+        let mut case = Case::new(
+            "fetch-stats-base",
+            &bzimage_with_entry(&[0xF4]),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(10);
+        let env = DiagnosticEnv {
+            no_fetch_cache: None,
+            fetch_cache_stats: Some(sidecar.clone().into_os_string()),
+            fetch_cache_sweep: None,
+            fetch_cache_tag: None,
+        };
+        let (value, exit) = evaluate_with_env(&case.options, &env);
+        assert_eq!(exit, 0, "{value:#}");
+        let error = value["fetch_cache_stats_sidecar"]["write_error"]
+            .as_str()
+            .expect("the evidence says why there is no sidecar");
+        assert!(error.contains("--set-cpl0"), "{error}");
+        assert!(!sidecar.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An existing file at the sidecar path is refused before the guest starts, and never
+    /// overwritten.
+    #[test]
+    fn fetch_cache_stats_sidecar_refuses_an_existing_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "od-runner-fetch-stats-existing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sidecar = dir.join("stats.json");
+        std::fs::write(&sidecar, b"keep").unwrap();
+        let mut case = Case::new(
+            "fetch-stats-existing",
+            &bzimage_with_entry(&[0xF4]),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(10);
+        let env = DiagnosticEnv {
+            no_fetch_cache: None,
+            fetch_cache_stats: Some(sidecar.clone().into_os_string()),
+            fetch_cache_sweep: None,
+            fetch_cache_tag: None,
+        };
+        let (value, exit) = evaluate_with_env(&case.options, &env);
+        assert_eq!(exit, 4, "{value:#}");
+        assert_eq!(value["guest_started"], false);
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"keep");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn execution_observations_sidecar_serializes_bounded_counts_and_pf_metadata() {
+        let path = std::env::temp_dir().join(format!(
+            "od-runner-execution-observations-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let observations = LinuxExecutionObservations {
+            rdtsc_cpl0_sites: vec![od_machine::RdtscSiteCount {
+                rip: 0xffff_ffff_8100_1234,
+                reads: 19,
+            }],
+            rdtsc_cpl0_unattributed_reads: 2,
+            rdtsc_cpl0_site_overflow_reads: 3,
+            page_faults_delivered: 5,
+            page_fault_events: vec![od_machine::DeliveredPageFaultObservation {
+                rip: 0xffff_ffff_8100_5678,
+                cr2: 0x0000_0000_0040_2000,
+                error_code: 7,
+                access: "Write".into(),
+                cpl: 3,
+                faulting_context: od_machine::FaultingPageFaultContext {
+                    cr3: 0x1000,
+                    rsp: 0x2000,
+                    rbp: 0x3000,
+                    rcx: 0x4000,
+                    rsi: 0x5000,
+                    rdi: 0x6000,
+                    cs_selector: Some(0x23),
+                    frame_chain: vec![od_machine::ConsoleContextFrame {
+                        frame_pointer: 0x7000,
+                        return_address: 0xffff_ffff_8100_7000,
+                    }],
+                    frame_chain_end: od_machine::FrameChainEnd::NullFramePointer,
+                    page_walk: Some(od_machine::FaultingPageWalkContext {
+                        entries: vec![od_machine::WalkEntry {
+                            level: od_machine::PageTableLevel::Pd,
+                            index: 4,
+                            entry_address: od_machine::GuestPhysicalAddress::new(0x3020),
+                            entry_value: 0x4007,
+                        }],
+                        reason: od_machine::PageFaultReason::NotPresent {
+                            level: od_machine::PageTableLevel::Pt,
+                        },
+                    }),
+                },
+            }],
+            page_fault_events_omitted: 4,
+            post_iret_selected_ordinal: Some(3),
+            post_iret_page_walk_status: Some("captured"),
+            post_iret_page_walk: Some(od_machine::PostIretPageWalkSnapshot {
+                event_ordinal: 3,
+                fault_rip: 0xffff_ffff_8100_5678,
+                fault_cr2: 0x0000_0000_0040_2000,
+                fault_access: "Write".into(),
+                fault_cpl: 3,
+                post_iret_rip: 0xffff_ffff_8100_5678,
+                post_iret_cs: Some(0x23),
+                post_iret_cpl: 3,
+                post_iret_rsp: 0x2000,
+                post_iret_cr3: 0x1000,
+                entries: vec![od_machine::WalkEntry {
+                    level: od_machine::PageTableLevel::Pd,
+                    index: 4,
+                    entry_address: od_machine::GuestPhysicalAddress::new(0x3020),
+                    entry_value: 0x4007,
+                }],
+                translation_status: "translated",
+                translated_physical: Some(0x4_2000),
+                translation_error: None,
+            }),
+        };
+        write_execution_observations_sidecar(&mut file, path.to_str().unwrap(), &observations)
+            .unwrap();
+        let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["schema_version"], 5);
+        assert_eq!(value["post_iret_selected_ordinal"], 3);
+        assert_eq!(value["post_iret_page_walk_status"], "captured");
+        assert_eq!(
+            value["post_iret_page_walk"]["translation_status"],
+            "translated"
+        );
+        assert_eq!(
+            value["post_iret_page_walk"]["entries"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            value["limits"]["rdtsc_cpl0_sites"],
+            od_machine::LINUX_RDTSC_SITE_CAPACITY
+        );
+        assert_eq!(
+            value["limits"]["page_fault_events"],
+            od_machine::LINUX_PAGE_FAULT_EVENT_CAPACITY
+        );
+        assert_eq!(
+            value["limits"]["frame_links_per_page_fault"],
+            od_machine::LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY
+        );
+        assert_eq!(
+            value["limits"]["page_walk_entries_per_fault"],
+            od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY
+        );
+        assert_eq!(value["rdtsc_cpl0_sites"][0]["rip"], "0xffffffff81001234");
+        assert_eq!(value["rdtsc_cpl0_sites"][0]["reads"], 19);
+        assert_eq!(value["rdtsc_cpl0_site_overflow_reads"], 3);
+        assert_eq!(value["page_faults_delivered"], 5);
+        assert_eq!(value["page_fault_events"][0]["rip"], "0xffffffff81005678");
+        assert_eq!(value["page_fault_events"][0]["cr2"], "0x402000");
+        assert_eq!(value["page_fault_events"][0]["error_code"], "0x00000007");
+        assert_eq!(value["page_fault_events"][0]["access"], "Write");
+        assert_eq!(value["page_fault_events"][0]["cpl"], 3);
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["cr3"],
+            "0x1000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["rsp"],
+            "0x2000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["rbp"],
+            "0x3000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["rcx"],
+            "0x4000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["rsi"],
+            "0x5000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["rdi"],
+            "0x6000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["frame_chain"][0]["frame_pointer"],
+            "0x7000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["frame_chain"][0]["return_address"],
+            "0xffffffff81007000"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["frame_chain_end"],
+            "NullFramePointer"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["page_walk"]["source"],
+            "original_faulting_guest_access"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["page_walk"]["entry_values"],
+            "raw_before_accessed_dirty_updates"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["page_walk"]["reason"],
+            "NotPresent { level: Pt }"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["page_walk"]["entries"][0]["level"],
+            "Pd"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["page_walk"]["entries"][0]["entry_address"],
+            "0x3020"
+        );
+        assert_eq!(
+            value["page_fault_events"][0]["faulting_context"]["page_walk"]["entries"][0]["entry_value"],
+            "0x4007"
+        );
+        assert_eq!(value["page_fault_events_omitted"], 4);
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn stack_context_sidecar_serializes_bounded_uart_byte_provenance() {
+        let path = std::env::temp_dir().join(format!(
+            "od-runner-uart-context-{}-{}.json",
+            std::process::id(),
+            1
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let capture = od_machine::UartOutputContextDiagnostic {
+            marker_offset: Some(10),
+            marker_prefix_before_trigger_unobserved: true,
+            end: od_machine::UartOutputContextEnd::RunEnded,
+            samples: vec![od_machine::UartOutputByteContextSnapshot {
+                offset: 18,
+                byte: b'=',
+                retired: 99,
+                rip: 0x1234,
+                rsp: 0x8000,
+                rbp: 0x8100,
+                cr3: 0x6000,
+                cs_selector: Some(0x1b),
+                frames: vec![od_machine::ConsoleContextFrame {
+                    frame_pointer: 0x8100,
+                    return_address: 0xffff_ffff_8100_1234,
+                }],
+                ended: od_machine::FrameChainEnd::NullFramePointer,
+            }],
+        };
+        write_stack_context_sidecar(&mut file, path.to_str().unwrap(), &[], Some(&capture))
+            .unwrap();
+        let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["schema_version"], 2);
+        let provenance = &value["uart_provenance"];
+        assert_eq!(provenance["marker_offset"], 10);
+        assert_eq!(provenance["marker_prefix_before_trigger_unobserved"], true);
+        assert_eq!(provenance["end"], "run_end");
+        assert_eq!(provenance["samples"][0]["offset"], 18);
+        assert_eq!(
+            provenance["samples"][0]["rip_phase"],
+            "post_out_instruction_boundary"
+        );
+        assert_eq!(provenance["samples"][0]["byte"], b'=' as u64);
+        assert_eq!(provenance["samples"][0]["cpl"], 3);
+        assert_eq!(
+            provenance["samples"][0]["frames"].as_array().unwrap().len(),
+            1
+        );
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn stage4a_runs_leaf_1_without_the_c7_stop_and_marks_the_result_counted() {
         // CLI; MOV EAX, 1; CPUID; HLT, no --diagnostic-past-c7.
         let code = [0xFA, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x0F, 0xA2, 0xF4];
@@ -2412,6 +4453,110 @@ mod tests {
                 "pci_config",
                 "irq"
             ])
+        );
+    }
+
+    /// S4-38L8d: `--cpuid-profile stage4a-apic` is a profile of its own. S4-38L9-um: the user mode
+    /// is accepted for it (and for `stage4a`), and still refused for the diagnostic profile.
+    #[test]
+    fn stage4a_apic_is_accepted_and_has_the_user_mode() {
+        let with = |extra: &[&str]| {
+            let mut args = vec!["--run", "--budget", "1", "--set-cpl0"];
+            args.extend_from_slice(extra);
+            parse_base(&args)
+        };
+        assert_eq!(
+            with(&["--cpuid-profile", "stage4a-apic"])
+                .unwrap()
+                .cpuid_profile,
+            CpuidProfile::X8664V1Stage4AApic
+        );
+        assert!(with(&["--cpuid-profile", "stage4a-apic", "--diagnostic-past-c7"]).is_ok());
+        let user = with(&["--cpuid-profile", "stage4a-apic", "--user-mode"]).unwrap();
+        assert!(user.user_mode);
+        assert_eq!(user.cpuid_profile, CpuidProfile::X8664V1Stage4AApic);
+        assert!(
+            !with(&["--cpuid-profile", "stage4a-apic"])
+                .unwrap()
+                .user_mode
+        );
+        // Only the stage4a family has it: the diagnostic profile and the default are refused.
+        for bad in [
+            vec!["--cpuid-profile", "diagnostic", "--user-mode"],
+            vec!["--user-mode"],
+            vec![
+                "--cpuid-profile",
+                "stage4a-apic",
+                "--user-mode",
+                "--user-mode",
+            ],
+        ] {
+            let error = with(&bad).unwrap_err();
+            assert!(
+                error.contains("--user-mode needs") || error.contains("duplicate"),
+                "{error}"
+            );
+        }
+        let error = with(&["--cpuid-profile", "diagnostic", "--user-mode"]).unwrap_err();
+        assert!(error.contains("stage4a or stage4a-apic"), "{error}");
+        // Needs --run and --set-cpl0 like the other profiles.
+        assert!(parse_base(&["--cpuid-profile", "stage4a-apic"]).is_err());
+    }
+
+    #[test]
+    fn stage4a_apic_evidence_names_the_profile_declares_apic_and_turns_on_irq_and_clock_owner() {
+        // CLI; MOV EAX, 1; CPUID; HLT.
+        let code = [0xFA, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x0F, 0xA2, 0xF4];
+        let run = |profile: CpuidProfile| {
+            let mut case = Case::new(
+                "stage4a-apic",
+                &bzimage_with_entry(&code),
+                &[0xAB; 4688],
+                BLOB,
+            );
+            case.options.budget = Some(64);
+            case.options.set_cpl0 = true;
+            case.options.cpuid_profile = profile;
+            let (value, exit) = evaluate(&case.options);
+            assert_eq!(exit, 0, "{value:#}");
+            value
+        };
+        let value = run(CpuidProfile::X8664V1Stage4AApic);
+        let stop = &value["stop"];
+        assert_eq!(value["cpuid_profile"], "X8664V1Stage4AApic");
+        // Oracle by hand: FPU (bit 0) | TSC (bit 4) | APIC (bit 9) | FXSR (bit 24).
+        assert_eq!(stop["gpr"]["rdx"], "0x1000211", "{value:#}");
+        assert_eq!(stop["gpr"]["rcx"], "0x0");
+        assert_eq!(stop["exit_kind"], "halted", "{value:#}");
+        let members = stop["set_members"].as_array().unwrap();
+        let has = |name: &str| members.iter().any(|member| member == name);
+        for name in [
+            "cpuid:X8664V1Stage4AApic",
+            "halt",
+            "irq",
+            "clock_owner",
+            "fp_state",
+            "int3",
+        ] {
+            assert!(has(name), "{name}: {members:?}");
+        }
+        assert!(!has("user_mode"));
+        // Not the counted profile of S4-39j: the PASS stays with stage4a.
+        assert_eq!(value["acceptance"], "diagnostic_not_counted");
+        let note = value["diagnostic_note"].as_str().unwrap();
+        assert!(note.contains("X8664V1Stage4AApic"), "{note}");
+        assert!(!note.contains("stage4a is the counted profile"), "{note}");
+        // The same program under stage4a: no clock owner, no halt (HLT is outside its set), and
+        // the unchanged evidence lines.
+        let base = run(CpuidProfile::X8664V1Stage4A);
+        assert_eq!(base["cpuid_profile"], "X8664V1Stage4A");
+        assert_eq!(base["stop"]["gpr"]["rdx"], "0x1000011");
+        assert_eq!(base["acceptance"], "counted");
+        let base_members = base["stop"]["set_members"].as_array().unwrap();
+        assert!(
+            !base_members
+                .iter()
+                .any(|m| m == "clock_owner" || m == "halt")
         );
     }
 
@@ -2597,6 +4742,38 @@ mod tests {
         assert_eq!(note(false, CpuidProfile::DiagnosticV1), None);
     }
 
+    /// S4-38L8d: the notes of the accepted evidence stay byte for byte (the APIC profile has its
+    /// own verdict). The strings are the `diagnostic_note` of the saved reports
+    /// `s4-39g-pic-pit-hlt-stage4a-run.json` (stage4a + `--diagnostic-past-c7`),
+    /// `s4-39j-gate-counted-cold1-stage4a-run.json` (stage4a alone); the diagnostic + flag note is the
+    /// one of `main` (42dc902), the S4-38L7 report predates the `; ` joint.
+    #[test]
+    fn the_notes_of_the_accepted_evidence_are_unchanged() {
+        let note = |past_c7: bool, profile: CpuidProfile| {
+            let mut evidence = json!({});
+            mark_acceptance(&mut evidence, past_c7, profile);
+            evidence["diagnostic_note"].as_str().unwrap().to_string()
+        };
+        assert_eq!(
+            note(true, CpuidProfile::X8664V1Stage4A),
+            "CPUID profile X8664V1Stage4A declares a subset of the target (TSC, FPU and FXSR; \
+             checkpoint C7 boundary off by the profile); --diagnostic-past-c7 also turns the \
+             checkpoint C7 boundary off by itself, so this run does not show that the profile \
+             alone avoids it; the result is NOT counted"
+        );
+        assert_eq!(
+            note(true, CpuidProfile::DiagnosticV1),
+            "DiagnosticV1 answers CPUID leaf 1 and 0x80000001 (checkpoint C7 boundary off); not a \
+             profile of the target CPU; the result is NOT counted"
+        );
+        assert_eq!(
+            note(false, CpuidProfile::X8664V1Stage4A),
+            "CPUID profile X8664V1Stage4A declares a subset of the target (TSC, FPU and FXSR; \
+             checkpoint C7 boundary off by the profile); the result is counted (stage4a is the \
+             counted profile)"
+        );
+    }
+
     #[test]
     fn acceptance_is_counted_for_both_profiles_without_the_flag_and_not_with_it() {
         let acceptance = |past_c7: bool, profile: CpuidProfile| {
@@ -2649,6 +4826,10 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
+            checkpoint_table: None,
+            stack_context_out: None,
+            execution_observations_out: None,
+            execution_observations_post_iret_index: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -2692,6 +4873,10 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
+            checkpoint_table: None,
+            stack_context_out: None,
+            execution_observations_out: None,
+            execution_observations_post_iret_index: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -2709,6 +4894,75 @@ mod tests {
         );
         assert_eq!(value["retired"], 0);
         assert_eq!(value["guest_started"], true);
+    }
+
+    /// S4-38L8d checkpoint, real kernel under `--cpuid-profile stage4a-apic` (release build:
+    /// `cargo test -p od-runner --release --offline -- --ignored stage4a_apic_reaches_check_timer`,
+    /// about ten minutes). The kernel enumerates the IOAPIC, `check_timer` takes the pin 2 path
+    /// without a fallback message, and the board delivers the timer IRQs. The stop after it is NOT
+    /// asserted: it moves with the next slices (today the SCI on IOAPIC pin 9, L8e). Evidence file
+    /// of the slice: `docs/reports/data/stage4/s4-38l8d-apic-check-timer.json` (from the CLI).
+    #[test]
+    #[ignore = "needs work/stage4 artifacts; release build, minutes"]
+    fn real_artifacts_stage4a_apic_reaches_check_timer() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let path = |p: &str| root.join(p).to_string_lossy().into_owned();
+        let options = Options {
+            vmlinuz: path("work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic"),
+            initramfs: path("work/stage4/initramfs/initramfs.cpio"),
+            acpi_blob: path("tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin"),
+            nonce: "s4-38l4a".to_string(),
+            expected_vmlinuz_sha256:
+                "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e".to_string(),
+            expected_acpi_manifest_hash: board_manifest_hash(),
+            expected_initramfs_sha256:
+                "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588".to_string(),
+            ram_mib: 128,
+            out: String::new(),
+            budget: Some(2_600_000_000),
+            set_cpl0: true,
+            diagnostic_past_c7: false,
+            cpuid_profile: CpuidProfile::X8664V1Stage4AApic,
+            user_mode: false,
+            checkpoint_table: Some(path("docs/reports/data/stage4/s4-38l2-oracle.json")),
+            stack_context_out: None,
+            execution_observations_out: None,
+            execution_observations_post_iret_index: None,
+        };
+        let (value, exit) = evaluate(&options);
+        assert_eq!(exit, 0, "{value:#}");
+        assert_eq!(value["cpuid_profile"], "X8664V1Stage4AApic");
+        assert_eq!(value["acceptance"], "diagnostic_not_counted");
+        let stop = &value["stop"];
+        let com1 = stop["com1_text"].as_str().unwrap();
+        let ioapic = com1
+            .find("IOAPIC[0]: apic_id 1, version 32, address 0xfec00000, GSI 0-23")
+            .unwrap_or_else(|| panic!("no IOAPIC line: {stop:#}"));
+        let timer = com1
+            .find("..TIMER: vector=0x30 apic1=0 pin1=2 apic2=-1 pin2=-1")
+            .unwrap_or_else(|| panic!("no ..TIMER line: {stop:#}"));
+        assert!(ioapic < timer, "the IOAPIC line comes first");
+        for bad in [
+            "MP-BIOS bug",
+            "trying to set up timer",
+            "IO-APIC + timer doesn't work",
+            "No local APIC present",
+        ] {
+            assert!(!com1[timer..].contains(bad), "{bad}");
+        }
+        assert!(
+            stop["irqs_delivered"].as_u64().unwrap() >= 5,
+            "{}",
+            stop["irqs_delivered"]
+        );
+        assert!(stop["irq0_edges"].as_u64().unwrap() >= 5);
+        let c13 = value["checkpoints"]["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["id"] == "C13")
+            .expect("C13");
+        assert_eq!(c13["status"], "reached", "{c13:#}");
     }
 
     /// Real kernel through the CPL0 set (S4-38L3): the null segment loads (S2-46) and the dword
@@ -2742,6 +4996,10 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
+            checkpoint_table: None,
+            stack_context_out: None,
+            execution_observations_out: None,
+            execution_observations_post_iret_index: None,
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");
@@ -3182,5 +5440,250 @@ mod tests {
         assert_eq!(sliced[1].rflags, whole[0].rflags);
         assert_eq!(sliced[1].com1, b"X");
         assert_eq!(sliced[1].com1, whole[0].com1);
+    }
+
+    // ---- S4-38L4i: --checkpoint-table ----
+
+    /// `CLI; MOV EAX, 0; CPUID; MOV EAX, 1; CPUID`: DiagnosticV1 answers leaf 0 (C6) and stops
+    /// before leaf 1 (C7) at `ENTRY + 13`.
+    const CPUID_PROGRAM: [u8; 15] = [
+        0xFA, 0xB8, 0, 0, 0, 0, 0x0F, 0xA2, 0xB8, 1, 0, 0, 0, 0x0F, 0xA2,
+    ];
+    const ORACLE_ENTRY: u64 = 0x0100_0200;
+
+    /// A synthetic oracle with the keys the runner reads: the vmlinuz hash, the relocated copy and
+    /// the rows. `cpuid1` is at `cpuid1_pa` (the rest are addresses the program never reaches).
+    fn synthetic_oracle(vmlinuz_sha: &str, cpuid1_pa: u64) -> Value {
+        let row = |name: &str, pa: u64, bytes_16: &str| json!({"name": name, "va": 0xffff_ffff_8000_0000u64 + pa, "pa": pa, "bytes_16": bytes_16});
+        let mut rows = vec![
+            row("e_entry", 0x3f2_53e0, "4989f7488d255eebadffb9010100c031"),
+            row("cpuid1", cpuid1_pa, "0fa2"),
+        ];
+        for (index, name) in [
+            "x86_64_start_kernel",
+            "start_kernel",
+            "setup_arch",
+            "tsc_init",
+            "apic_intr_mode_init",
+            "check_timer",
+            "populate_rootfs",
+            "run_init_process",
+            "kernel_execve",
+        ]
+        .iter()
+        .enumerate()
+        {
+            rows.push(row(name, 0x200_0000 + 0x1000 * index as u64, "00"));
+        }
+        json!({
+            "inputs": {"vmlinuz": {"sha256": vmlinuz_sha}},
+            "relocated_copy": {"relocated_rip_first_fetch": 0x541_b9c0},
+            "checkpoints": {"rows": rows},
+        })
+    }
+
+    fn write_oracle(case: &Case, oracle: &Value) -> String {
+        let path = case.dir.join("oracle.json");
+        std::fs::write(&path, serde_json::to_vec(oracle).unwrap()).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    fn checkpoint_case(name: &str) -> Case {
+        let mut case = Case::new(
+            name,
+            &bzimage_with_entry(&CPUID_PROGRAM),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(64);
+        case.options.set_cpl0 = true;
+        case
+    }
+
+    fn checkpoint<'a>(value: &'a Value, id: &str) -> &'a Value {
+        value["checkpoints"]["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["id"] == id)
+            .unwrap_or_else(|| panic!("no {id} in {value:#}"))
+    }
+
+    #[test]
+    fn without_the_flag_the_report_has_no_checkpoints_key() {
+        let case = checkpoint_case("cp-none");
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        assert!(value.get("checkpoints").is_none(), "{value:#}");
+        assert!(value["stop"].get("checkpoints").is_none());
+    }
+
+    #[test]
+    fn the_flag_records_the_checkpoints_and_changes_nothing_else() {
+        let mut case = checkpoint_case("cp-table");
+        let (plain, _) = evaluate(&case.options);
+        let sha = case.options.expected_vmlinuz_sha256.clone();
+        let oracle = synthetic_oracle(&sha, ORACLE_ENTRY + 13);
+        case.options.checkpoint_table = Some(write_oracle(&case, &oracle));
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        assert_eq!(value["stop"]["exit_kind"], "cpuid_divergence");
+        let c0 = checkpoint(&value, "C0");
+        assert_eq!(
+            (&c0["status"], &c0["retired"], &c0["rip"]),
+            (&json!("reached"), &json!(0), &json!("0x1000200"))
+        );
+        let c6 = checkpoint(&value, "C6");
+        assert_eq!(
+            (&c6["status"], &c6["retired"]),
+            (&json!("reached"), &json!(2))
+        );
+        assert_eq!(c6["rip"], "0x1000206");
+        let c7 = checkpoint(&value, "C7");
+        assert_eq!(c7["status"], "reached");
+        assert_eq!(c7["rip"], "0x100020d");
+        // The boundary of the stop: the counters are the ones of the stop record.
+        assert_eq!(c7["retired"], value["stop"]["retired"]);
+        assert_eq!(c7["quanta"], value["stop"]["quanta"]);
+        assert_eq!(c7["gpa"], "0x100020d");
+        assert_eq!(c7["bytes_match_oracle"], true);
+        // The others are listed, with a reason.
+        for id in ["C1", "C2", "C3", "C4", "C5", "C8", "C13", "C15"] {
+            let record = checkpoint(&value, id);
+            assert_eq!(record["status"], "not_reached", "{id}");
+            assert!(
+                record["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("cpuid_divergence")
+            );
+        }
+        let c16 = checkpoint(&value, "C16");
+        assert!(
+            c16["reason"].as_str().unwrap().contains("after C15"),
+            "{c16}"
+        );
+        let c17 = checkpoint(&value, "C17");
+        assert!(c17["reason"].as_str().unwrap().contains("/init"), "{c17}");
+        assert_eq!(
+            value["checkpoints"]["records"].as_array().unwrap().len(),
+            18
+        );
+        assert_eq!(value["checkpoints"]["table"]["vmlinuz_sha256"], sha);
+        assert_eq!(
+            value["checkpoints"]["table"]["vmlinuz_sha256_matches_the_run"],
+            true
+        );
+        // Observation only: without the key the report is the report of the run without the flag
+        // (the table path is the only other thing that differs: it is not in the report).
+        let mut stripped = value.clone();
+        stripped.as_object_mut().unwrap().remove("checkpoints");
+        assert_eq!(stripped, plain);
+    }
+
+    #[test]
+    fn a_shifted_address_is_not_reached() {
+        let mut case = checkpoint_case("cp-shifted");
+        let sha = case.options.expected_vmlinuz_sha256.clone();
+        let oracle = synthetic_oracle(&sha, ORACLE_ENTRY + 13 + 1);
+        case.options.checkpoint_table = Some(write_oracle(&case, &oracle));
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        assert_eq!(checkpoint(&value, "C7")["status"], "not_reached");
+        assert_eq!(checkpoint(&value, "C6")["status"], "reached");
+    }
+
+    #[test]
+    fn an_oracle_of_another_kernel_is_refused_before_the_guest_starts() {
+        let mut case = checkpoint_case("cp-foreign");
+        let oracle = synthetic_oracle(&"0".repeat(64), ORACLE_ENTRY + 13);
+        case.options.checkpoint_table = Some(write_oracle(&case, &oracle));
+        let (value, exit) = evaluate(&case.options);
+        assert_refused(
+            &value,
+            exit,
+            "checkpoint_table_vmlinuz_mismatch",
+            "checkpoint_table",
+        );
+    }
+
+    #[test]
+    fn an_unreadable_or_incomplete_table_is_invalid_input() {
+        let mut case = checkpoint_case("cp-invalid");
+        case.options.checkpoint_table = Some("/nonexistent/oracle.json".to_string());
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 3, "{value:#}");
+        assert_eq!(code_of(&value), ("invalid_input", "checkpoint_table"));
+        let sha = case.options.expected_vmlinuz_sha256.clone();
+        let mut oracle = synthetic_oracle(&sha, ORACLE_ENTRY + 13);
+        oracle["checkpoints"]["rows"] = json!([]);
+        case.options.checkpoint_table = Some(write_oracle(&case, &oracle));
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 3, "{value:#}");
+        assert_eq!(code_of(&value), ("invalid_input", "checkpoint_table"));
+    }
+
+    #[test]
+    fn the_flag_needs_run_and_set_cpl0() {
+        let base = |extra: &[&str]| -> Vec<String> {
+            let mut args: Vec<String> = [
+                "--vmlinuz",
+                "k",
+                "--initramfs",
+                "i",
+                "--acpi-blob",
+                "b",
+                "--nonce",
+                "n",
+                "--expected-vmlinuz-sha256",
+                &"a".repeat(64),
+                "--expected-acpi-manifest-hash",
+                &"b".repeat(64),
+                "--expected-initramfs-sha256",
+                &"c".repeat(64),
+                "--ram-mib",
+                "128",
+                "--out",
+                "o",
+            ]
+            .iter()
+            .map(|a| a.to_string())
+            .collect();
+            args.extend(extra.iter().map(|a| a.to_string()));
+            args
+        };
+        let ok = parse(&base(&[
+            "--run",
+            "--budget",
+            "1",
+            "--set-cpl0",
+            "--checkpoint-table",
+            "t.json",
+        ]))
+        .unwrap();
+        assert_eq!(ok.checkpoint_table.as_deref(), Some("t.json"));
+        assert_eq!(
+            parse(&base(&["--run", "--budget", "1", "--set-cpl0"]))
+                .unwrap()
+                .checkpoint_table,
+            None
+        );
+        for bad in [
+            vec!["--checkpoint-table", "t.json"],
+            vec!["--run", "--budget", "1", "--checkpoint-table", "t.json"],
+            vec![
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--checkpoint-table",
+                "a",
+                "--checkpoint-table",
+                "b",
+            ],
+            vec!["--run", "--budget", "1", "--set-cpl0", "--checkpoint-table"],
+        ] {
+            assert!(parse(&base(&bad)).is_err(), "{bad:?}");
+        }
     }
 }

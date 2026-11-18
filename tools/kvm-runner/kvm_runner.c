@@ -19,6 +19,10 @@
  * Build: gcc -O2 -Wall -Wextra -Werror -std=c11 -o kvm_runner kvm_runner.c
  * Usage: kvm_runner <image.bin> [--real-mode CS:IP] [--capture-final-state]
  *        [--result-block GPA:SIZE] [--inject-after-hlt VECTOR] [--budget N] [--deadline-ms MS]
+ *        [--cpuid-profile od-x86-64-v1-neutral]
+ * --cpuid-profile (S6-14o) replaces the guest CPUID table by exactly the leaves 0, 1, 0x80000000,
+ * 0x80000001, 0x80000008 of the OdX8664V1Neutral profile (crates/od-isa/src/cpuid.rs). Without it
+ * the behaviour and the output are byte for byte those of the earlier modes.
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -625,6 +629,7 @@ int main(int argc, char **argv)
     struct final_state final;
     uint32_t cpuid_signature = 0;
     int cpuid_leaf1_found = 0;
+    int cpuid_profile_neutral = 0;
     int io_pending = 0;
     int final_state_valid = 0;
     int snapshot_safe = 1;
@@ -664,6 +669,13 @@ int main(int argc, char **argv)
             inject_after_hlt_requested = 1;
             capture_final_state = 1;
         }
+        else if (strcmp(argv[i], "--cpuid-profile") == 0 && i + 1 < argc) {
+            if (cpuid_profile_neutral || strcmp(argv[++i], "od-x86-64-v1-neutral") != 0) {
+                fprintf(stderr, "invalid --cpuid-profile (only od-x86-64-v1-neutral is known)\n");
+                return 2;
+            }
+            cpuid_profile_neutral = 1;
+        }
         else if (strcmp(argv[i], "--real-mode") == 0 && i + 1 < argc) {
             if (real_mode || parse_cs_ip(argv[++i], &real_cs, &real_ip) != 0) {
                 fprintf(stderr, "invalid --real-mode CS:IP (expected 16-bit selector:offset)\n");
@@ -674,12 +686,12 @@ int main(int argc, char **argv)
         else if (!image_path)
             image_path = argv[i];
         else {
-            fprintf(stderr, "usage: %s <image.bin> [--real-mode CS:IP] [--capture-final-state] [--result-block GPA:SIZE] [--inject-after-hlt VECTOR] [--budget N] [--deadline-ms MS]\n", argv[0]);
+            fprintf(stderr, "usage: %s <image.bin> [--real-mode CS:IP] [--capture-final-state] [--result-block GPA:SIZE] [--inject-after-hlt VECTOR] [--budget N] [--deadline-ms MS] [--cpuid-profile od-x86-64-v1-neutral]\n", argv[0]);
             return 2;
         }
     }
     if (!image_path) {
-        fprintf(stderr, "usage: %s <image.bin> [--real-mode CS:IP] [--capture-final-state] [--result-block GPA:SIZE] [--inject-after-hlt VECTOR] [--budget N] [--deadline-ms MS]\n", argv[0]);
+        fprintf(stderr, "usage: %s <image.bin> [--real-mode CS:IP] [--capture-final-state] [--result-block GPA:SIZE] [--inject-after-hlt VECTOR] [--budget N] [--deadline-ms MS] [--cpuid-profile od-x86-64-v1-neutral]\n", argv[0]);
         return 2;
     }
     if (result_block_requested &&
@@ -829,6 +841,29 @@ int main(int argc, char **argv)
                 fail("internal", "KVM_GET_SUPPORTED_CPUID", NULL, api, 0);
                 return 2;
             }
+        }
+        if (cpuid_profile_neutral) {
+            /* S6-14o: the CPUID table of the model target (OdX8664V1Neutral of
+             * crates/od-isa/src/cpuid.rs) replaces the host-supported set: exactly the leaves
+             * 0, 1, 0x80000000, 0x80000001 and 0x80000008, nothing else. */
+            static const struct kvm_cpuid_entry2 neutral[] = {
+                /* function, index, flags, eax, ebx, ecx, edx */
+                {0, 0, 0, 1, 0x6E65704Fu /* "Open" */, 0x20706F74u /* "top " */,
+                 0x6B736544u /* "Desk" */, {0, 0, 0}},
+                {1, 0, 0, 0x600, 0x100, 0, 0x0781A379u, {0, 0, 0}},
+                {0x80000000u, 0, 0, 0x80000008u, 0, 0, 0, {0, 0, 0}},
+                {0x80000001u, 0, 0, 0, 0, 0, 0x20100800u, {0, 0, 0}},
+                {0x80000008u, 0, 0, 0x3024, 0, 0, 0, {0, 0, 0}},
+            };
+            unsigned n = (unsigned)(sizeof(neutral) / sizeof(neutral[0]));
+            memset(cpuid->entries, 0, nent * sizeof(cpuid->entries[0]));
+            memcpy(cpuid->entries, neutral, sizeof(neutral));
+            cpuid->nent = n;
+            guest_cpuid_count = n;
+            memset(guest_cpuid, 0, sizeof(guest_cpuid));
+            memcpy(guest_cpuid, neutral, sizeof(neutral));
+            cpuid_signature = neutral[1].eax;
+            cpuid_leaf1_found = 1;
         }
         if (ioctl(vcpu, KVM_SET_CPUID2, cpuid) < 0) {
             fail("internal", "KVM_SET_CPUID2", NULL, api, 0);

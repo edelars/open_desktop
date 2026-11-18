@@ -326,6 +326,12 @@ fn admission_rejects_before_any_fetch_and_without_mutation() {
             Cpl0ProfileSetInputError::NotRunning,
         ),
         (
+            // S6-13: an AP waiting for SIPI is never selected for execution.
+            "wait for sipi",
+            |s| s.activity = Some(CpuActivity::WaitForSipi),
+            Cpl0ProfileSetInputError::NotRunning,
+        ),
+        (
             "shadow missing",
             |s| s.sti_shadow = None,
             Cpl0ProfileSetInputError::StiShadowMissing,
@@ -8079,9 +8085,9 @@ fn gp_delivery_from_cpl3_refuses_without_a_write() {
 }
 
 #[test]
-fn external_interrupt_from_cpl3_stays_refused() {
-    // S4-39h: the external interrupt delivery of the set does not start from CPL3 yet.
-    let (mut state, mut memory) = u3_state();
+fn external_interrupt_from_cpl3_uses_tss_rsp0_and_enters_the_handler() {
+    let (mut state, mut memory) = u3_ext_state();
+    state.rflags |= (1 << 8) | (1 << 14) | (1 << 18);
     let before = state.clone();
     let delivered = od_isa::deliver_external_interrupt_cpl0_set(
         &mut state,
@@ -8089,13 +8095,100 @@ fn external_interrupt_from_cpl3_stays_refused() {
         0x20,
         context(PrivilegeLevel::Ring3),
     );
+    let frame = U3_RSP0 & !15;
     assert_eq!(
         delivered,
-        od_isa::Cpl0ExternalInterruptDelivery::Refused(
-            od_isa::Cpl0ExternalInterruptRefusal::NotRing0Long64
-        )
+        od_isa::Cpl0ExternalInterruptDelivery::Delivered {
+            target_rip: EXT_HANDLER,
+            new_rsp: frame - 40,
+        }
     );
-    assert_eq!((state, memory.writes), (before, 0));
+    assert_eq!(pf_qword(&memory, frame - 8), u64::from(U3_USER_SS));
+    assert_eq!(pf_qword(&memory, frame - 16), U3_USER_RSP);
+    assert_eq!(
+        pf_qword(&memory, frame - 24),
+        (before.rflags & !(1 << 16)) | 2
+    );
+    assert_eq!(pf_qword(&memory, frame - 32), u64::from(U3_USER_CS));
+    assert_eq!(pf_qword(&memory, frame - 40), before.rip);
+    assert_eq!(memory.writes, 5);
+    assert!(
+        memory
+            .write_privileges
+            .iter()
+            .all(|p| *p == PrivilegeLevel::Ring0)
+    );
+    assert!(
+        memory
+            .read_privileges
+            .iter()
+            .all(|p| *p == PrivilegeLevel::Ring0)
+    );
+    assert_eq!(
+        memory.reads.last(),
+        Some(&(U3_TSS + 4, 8, AccessOrigin::DescriptorTable))
+    );
+    assert_eq!(state.cs_selector, Some(0x10));
+    assert_eq!((state.ss_selector, state.ss_unusable), (Some(0), true));
+    assert_eq!(state.ss_cache, before.ss_cache);
+    assert_eq!(state.gpr[Register::Rsp as usize], frame - 40);
+    assert_eq!(state.rip, EXT_HANDLER);
+    assert_eq!(
+        state.rflags,
+        (before.rflags & !(1 << 9 | 1 << 8 | 1 << 14 | 1 << 16)) | 2
+    );
+}
+
+#[test]
+fn external_interrupt_from_cpl3_checks_tss_before_writing_the_frame() {
+    use od_isa::Cpl0ExternalInterruptDelivery as D;
+    use od_isa::Cpl0ExternalInterruptRefusal as R;
+    let cases: [(fn(&mut LongModeState, &mut LretqMemory), R); 3] = [
+        (|state, _| state.tr = None, R::MissingTaskRegister),
+        (
+            |state, _| state.tr.as_mut().unwrap().limit = 10,
+            R::TssRsp0BeyondLimit,
+        ),
+        (
+            |_, memory| memory.put(U3_TSS + 4, 0x0000_8000_0000_0000),
+            R::NonCanonicalRsp0,
+        ),
+    ];
+    for (index, (tweak, expected)) in cases.into_iter().enumerate() {
+        let (mut state, mut memory) = u3_ext_state();
+        tweak(&mut state, &mut memory);
+        let before = state.clone();
+        assert_eq!(
+            od_isa::deliver_external_interrupt_cpl0_set(
+                &mut state,
+                &mut memory,
+                0x20,
+                context(PrivilegeLevel::Ring3),
+            ),
+            D::Refused(expected),
+            "case {index}"
+        );
+        assert_eq!(state, before, "case {index}");
+        assert_eq!(memory.writes, 0, "case {index}");
+    }
+
+    let (mut state, mut memory) = u3_ext_state();
+    memory.fault_pages = vec![U3_TSS & !0xfff];
+    let before = state.clone();
+    assert!(matches!(
+        od_isa::deliver_external_interrupt_cpl0_set(
+            &mut state,
+            &mut memory,
+            0x20,
+            context(PrivilegeLevel::Ring3),
+        ),
+        D::Aborted {
+            phase: od_isa::Cpl0ExternalInterruptPhase::TssRsp0Read,
+            ..
+        }
+    ));
+    assert_eq!(state, before);
+    assert_eq!(memory.writes, 0);
 }
 
 #[test]
@@ -8215,6 +8308,17 @@ fn ext_state() -> (LongModeState, LretqMemory) {
     code.resize((EXT_HANDLER - RIP) as usize, 0x90);
     code.extend_from_slice(&IRETQ);
     memory.code = code;
+    ext_put_gate(
+        &mut memory,
+        EXT_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 0, 0x8e),
+    );
+    state.idtr.as_mut().unwrap().limit = EXT_IDT_LIMIT;
+    (state, memory)
+}
+
+fn u3_ext_state() -> (LongModeState, LretqMemory) {
+    let (mut state, mut memory) = u3_state();
     ext_put_gate(
         &mut memory,
         EXT_VECTOR,
@@ -14389,8 +14493,12 @@ fn lock_cmpxchg_dword_forms_outside_the_slice_are_refused_with_opcode_0xb1_witho
 }
 
 #[test]
-fn lock_cmpxchg_dword_stays_unsupported_outside_the_set() {
-    // No control policy (legacy state, bare `run`): the LOCK dword form is refused without mutation.
+fn lock_cmpxchg_dword_is_executed_outside_the_set_since_s6_20() {
+    // No control policy (legacy state, bare `run`). Until S6-20 the LOCK dword form was refused
+    // (`Unsupported { opcode: 0xb1 }`); the S6-05 litmus corpus needs it, so S6-20 admits it in the
+    // bare run through the single atomic API. The expectation is changed on purpose. The memory
+    // double implements no atomic override, so the default read -> write sequence is observed:
+    // one read and one write (a CMPXCHG writes on both branches).
     let mut state = legacy_state();
     state.gpr[Register::Rbx as usize] = 0x20_0000;
     let before = state.clone();
@@ -14401,10 +14509,11 @@ fn lock_cmpxchg_dword_stays_unsupported_outside_the_set() {
         config(PrivilegeLevel::Ring0, 1),
         || false,
     );
-    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xb1 });
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(state, before);
-    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_ne!(state, before);
+    assert_eq!(memory.reads.len(), 1);
+    assert_eq!(memory.writes.len(), 1);
 }
 
 #[test]
@@ -14749,9 +14858,27 @@ fn plain_inc_memory_without_lock_keeps_its_existing_arithmetic_path_in_the_set()
 }
 
 #[test]
-fn lock_inc_stays_unsupported_outside_the_set() {
-    // No control policy (legacy state, bare `run`): the LOCK form is refused without mutation.
-    for code in [&LOCK_INCL_RBX_58[..], &LOCK_INCQ_RBX_58[..]] {
+fn lock_inc_dword_is_executed_and_qword_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`). S6-20 admits the dword form (the S6-05 litmus
+    // corpus uses it) through the single atomic API: expectation changed on purpose, it used to
+    // be refused. The qword form is not in the corpus and stays refused without mutation.
+    let mut state = legacy_state();
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    let before = state.clone();
+    let mut memory = CasMemory::new(&LOCK_INCL_RBX_58, 5);
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_ne!(state, before);
+    assert_eq!(memory.cell, 6);
+    assert_eq!(memory.reads.len(), 1);
+    assert_eq!(memory.writes.len(), 1);
+    for code in [&LOCK_INCQ_RBX_58[..]] {
         let mut state = legacy_state();
         state.gpr[Register::Rbx as usize] = 0x20_0000;
         let before = state.clone();
@@ -15592,6 +15719,10 @@ struct BitsMemory {
     write_fault_range: Option<std::ops::Range<u64>>,
     /// When set, every data read fails with this fault (a not-present page).
     read_fault: Option<ArchitecturalFault>,
+    /// S6-32: the kind of every `fence` call, in order.
+    fences: Vec<od_isa::FenceKind>,
+    /// S6-32: when set, `fence` fails with a backend error (after recording the call).
+    fence_error: bool,
 }
 
 impl BitsMemory {
@@ -15604,6 +15735,8 @@ impl BitsMemory {
             write_fault: None,
             write_fault_range: None,
             read_fault: None,
+            fences: Vec::new(),
+            fence_error: false,
         }
     }
 
@@ -15703,6 +15836,14 @@ impl GuestMemory for BitsMemory {
 
     fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
         unreachable!()
+    }
+
+    fn fence(&mut self, kind: od_isa::FenceKind) -> Result<(), MemoryError> {
+        self.fences.push(kind);
+        if self.fence_error {
+            return Err(MemoryError::Backend("fence refused".into()));
+        }
+        Ok(())
     }
 }
 
@@ -32443,8 +32584,9 @@ fn bare_register_xadd_keeps_executing_in_the_set() {
     assert!(memory.reads.is_empty() && memory.writes.is_empty());
 }
 
-/// A flat memory for the outside-the-set tests: it implements the atomic fetch-add (the S2-21f
-/// path) and records the calls; ordinary reads and writes are errors.
+/// A flat memory for the outside-the-set tests: it implements the single atomic read-modify-write
+/// (`atomic_rmw_integer`, S6-20; the S2-21f fetch-add is expressed through it) and records the
+/// calls with the addend derived from the update; ordinary reads and writes are errors.
 struct XaddOutsideMemory {
     code: Vec<u8>,
     cell: u64,
@@ -32484,14 +32626,25 @@ impl GuestMemory for XaddOutsideMemory {
 
     fn atomic_fetch_add_integer(
         &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!("S6-20: the qword paths call atomic_rmw_integer directly")
+    }
+
+    fn atomic_rmw_integer(
+        &mut self,
         address: u64,
         _: AccessContext,
         size: OperandSize,
-        addend: u64,
+        update: &mut dyn FnMut(u64) -> u64,
     ) -> Result<u64, MemoryError> {
-        self.fetch_adds.push((address, size, addend));
         let old = self.cell;
-        self.cell = old.wrapping_add(addend);
+        let new = update(old);
+        self.fetch_adds.push((address, size, new.wrapping_sub(old)));
+        self.cell = new;
         Ok(old)
     }
 
@@ -32512,9 +32665,11 @@ impl GuestMemory for XaddOutsideMemory {
 }
 
 #[test]
-fn lock_and_bare_qword_memory_xadd_outside_the_set_keep_the_atomic_fetch_add_path() {
+fn lock_and_bare_qword_memory_xadd_outside_the_set_use_one_atomic_rmw_call() {
     // No control policy (legacy state, bare `run`): the S2-21f LOCK form and the S2-21d bare form
-    // still perform exactly one `atomic_fetch_add_integer` call and no ordinary read or write.
+    // perform exactly one `atomic_rmw_integer` call (S6-20: the qword path no longer calls
+    // `atomic_fetch_add_integer` directly, so one backend gives dword and qword the same
+    // atomicity) and no ordinary read or write. The recorded addend is derived from the update.
     for code in [
         &LOCK_XADD_RAX_RBX_3D[..],
         &[0x48, 0x0f, 0xc1, 0x43, 0x3d][..],
@@ -32542,7 +32697,11 @@ fn lock_and_bare_qword_memory_xadd_outside_the_set_keep_the_atomic_fetch_add_pat
 }
 
 #[test]
-fn lock_dword_xadd_stays_unsupported_outside_the_set() {
+fn lock_dword_xadd_is_executed_outside_the_set_since_s6_20() {
+    // Until S6-20 the dword LOCK XADD was refused outside the CPL0 set (only the qword form
+    // existed); the S6-05 litmus corpus needs it, so S6-20 admits it in the bare run through the
+    // single atomic API. The expectation is changed on purpose. One read and one write: the
+    // default read -> write sequence of the memory double.
     for code in [
         &LOCK_XADDL_EAX_RBX_3D[..],
         &[0xf0, 0x44, 0x0f, 0xc1, 0x43, 0x3d][..],
@@ -32559,18 +32718,21 @@ fn lock_dword_xadd_stays_unsupported_outside_the_set() {
         );
         assert_eq!(
             result.exit,
-            RunExit::Unsupported { opcode: 0xc1 },
+            RunExit::InstructionBudgetExhausted,
             "{code:02x?}"
         );
-        assert_eq!(result.instructions_executed, 0);
-        assert_eq!(state, before);
-        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        assert_eq!(result.instructions_executed, 1);
+        assert_ne!(state, before);
+        assert_eq!(memory.reads.len(), 1, "{code:02x?}");
+        assert_eq!(memory.writes.len(), 1, "{code:02x?}");
     }
 }
 
 #[test]
-fn lock_dword_xadd_is_refused_by_the_bare_step_entry_point() {
+fn lock_dword_xadd_is_executed_by_the_bare_step_entry_point_since_s6_20() {
+    // Used to be `Unsupported { opcode: 0xc1 }`; admitted by S6-20 (see the `run` twin above).
     let mut state = legacy_state();
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
     let before = state.clone();
     let mut memory = CasMemory::new(&LOCK_XADDL_EAX_RBX_3D, 5);
     let result = od_isa::execute::step(
@@ -32581,12 +32743,10 @@ fn lock_dword_xadd_is_refused_by_the_bare_step_entry_point() {
             ..AccessContext::default()
         },
     );
-    assert_eq!(
-        result,
-        Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0xc1 })
-    );
-    assert_eq!(state, before);
-    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    assert_eq!(result, Ok(od_isa::execute::StepOutcome::Advanced));
+    assert_ne!(state, before);
+    assert_eq!(memory.reads.len(), 1);
+    assert_eq!(memory.writes.len(), 1);
 }
 
 #[test]
@@ -42143,6 +42303,94 @@ fn rdmsr_tdx_keyid_partitioning_at_cpl3_is_not_answered() {
     assert_eq!(state, before);
 }
 
+// ---- S4-38L8g: RDMSR/WRMSR of IA32_APIC_BASE (0x1B) ----
+//
+// Oracle (hand-written, Intel SDM 10.4.4 from memory): the BSP with the Local APIC enabled at the
+// default base reads base 0xFEE00000 | BSP (bit 8) | EN (bit 11) = 0xFEE00900.
+
+const APIC_BASE_MSR: u64 = 0x1b;
+
+#[test]
+fn rdmsr_apic_base_returns_base_bsp_en_and_changes_only_rip_rax_rdx() {
+    let set = base().with_msr_apic_base();
+    let (state, before, result) = run_star(
+        &set,
+        &RDMSR,
+        (APIC_BASE_MSR, 0xffff_ffff_dead_beef, 0xffff_ffff_8000_0001),
+        1,
+    );
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    let mut expected = before.clone();
+    expected.rip += 2;
+    expected.gpr[0] = 0xfee0_0900;
+    expected.gpr[2] = 0;
+    assert_eq!(state, expected, "only RIP, RAX and RDX change");
+}
+
+#[test]
+fn wrmsr_apic_base_accepts_only_the_matching_value() {
+    let set = base().with_msr_apic_base();
+    let (state, before, result) = run_star(&set, &WRMSR, (APIC_BASE_MSR, 0xfee0_0900, 0), 1);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    let mut expected = before.clone();
+    expected.rip += 2;
+    assert_eq!(state, expected, "only RIP changes");
+    // Another base, EN or BSP clear, a reserved bit, an upper half: refused, no change.
+    for (eax, edx) in [
+        (0xfee0_1900u64, 0u64),
+        (0xfee0_0800, 0),
+        (0xfee0_0100, 0),
+        (0xfee0_0000, 0),
+        (0xfee0_0901, 0),
+        (0xfee0_0d00, 0),
+        (0xfee0_0900, 1),
+        (0, 0),
+    ] {
+        let (state, before, result) = run_star(&set, &WRMSR, (APIC_BASE_MSR, eax, edx), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x30 },
+            "{eax:#x}:{edx:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn apic_base_without_the_member_keeps_the_previous_answer() {
+    // No member: RDMSR is the refusal of the set (0x32), WRMSR is Unsupported (0x30).
+    let set = base();
+    let (state, before, result) = run_star(&set, &RDMSR, (APIC_BASE_MSR, 5, 6), 1);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x32 });
+    assert_eq!(state, before);
+    let (state, before, result) = run_star(&set, &WRMSR, (APIC_BASE_MSR, 0xfee0_0900, 0), 1);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x30 });
+    assert_eq!(state, before);
+}
+
+#[test]
+fn apic_base_with_prefixes_is_unsupported_without_mutation() {
+    let set = base().with_msr_apic_base();
+    for code in [
+        &[0x66u8, 0x0f, 0x32][..],
+        &[0x48, 0x0f, 0x32],
+        &[0xf3, 0x0f, 0x32],
+        &[0x66, 0x0f, 0x30],
+        &[0x48, 0x0f, 0x30],
+    ] {
+        let (state, before, result) = run_star(&set, code, (APIC_BASE_MSR, 0xfee0_0900, 0), 1);
+        assert!(
+            matches!(exit(&result), RunExit::Unsupported { .. }),
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
 // ---- S4-38L9d: FP state (FNINIT, plain FXSAVE) and MOV CR0, RDI in the set ----
 //
 // Oracles (written by hand from the Intel SDM, from memory, and from the kernel source, not from
@@ -49116,7 +49364,8 @@ fn segment_80_family_is_not_reachable_from_cpl3() {
 // order memory operations; with one vCPU and no buffers visible to another processor they
 // change nothing but RIP and the retired count. Only the bare register encodings are admitted;
 // the memory forms of `0F AE` are other instructions (FXSAVE, LDMXCSR, ...). The test memories
-// fail on any data read/write and on any backend `mfence` call. ----
+// fail on any data read/write and on any backend `mfence` call (S6-32: the set's fences call the
+// memory's `fence` instead, a provided no-op, and nothing else). ----
 
 const FENCE_FORMS: [(&str, [u8; 3]); 3] = [
     ("lfence", [0x0f, 0xae, 0xe8]),
@@ -49202,6 +49451,90 @@ fn every_fence_then_nop_retires_both() {
         let result = run_fence_set(&mut state, &mut memory, 2).unwrap();
         assert_eq!(result.instructions_executed, 2, "{name}");
         assert_eq!(state, expected, "{name}");
+    }
+}
+
+// ---- S6-32: the CPL0 set's fences call the memory's `fence` with the kind of the instruction
+// (MFENCE Full, SFENCE Store, LFENCE Load), once per retired fence; the state is the same as
+// without the call (the default `fence` is a no-op). ----
+
+#[test]
+fn each_fence_calls_the_memory_fence_once_with_its_kind() {
+    for (name, code, kind) in [
+        ("lfence", [0x0f, 0xae, 0xe8], od_isa::FenceKind::Load),
+        ("mfence", [0x0f, 0xae, 0xf0], od_isa::FenceKind::Full),
+        ("sfence", [0x0f, 0xae, 0xf8], od_isa::FenceKind::Store),
+    ] {
+        let mut state = endbr_state();
+        let mut expected = state.clone();
+        expected.rip += 3;
+        let mut memory = BitsMemory::new(&code);
+        let result = run_fence_set(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{name}");
+        assert_eq!(memory.fences, vec![kind], "{name}");
+        // The call changes no state and touches no data.
+        assert_eq!(state, expected, "{name}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{name}"
+        );
+        assert!(memory.data.is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn a_sequence_of_fences_calls_the_memory_fence_in_program_order() {
+    let code = [
+        0x0f, 0xae, 0xf0, // mfence
+        0x0f, 0xae, 0xf8, // sfence
+        0x90, // nop (no call)
+        0x0f, 0xae, 0xe8, // lfence
+        0x0f, 0xae, 0xf0, // mfence
+    ];
+    let mut state = endbr_state();
+    let mut expected = state.clone();
+    expected.rip += 13;
+    let mut memory = BitsMemory::new(&code);
+    let result = run_fence_set(&mut state, &mut memory, 5).unwrap();
+    assert_eq!(result.instructions_executed, 5);
+    assert_eq!(
+        memory.fences,
+        vec![
+            od_isa::FenceKind::Full,
+            od_isa::FenceKind::Store,
+            od_isa::FenceKind::Load,
+            od_isa::FenceKind::Full
+        ]
+    );
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn the_fences_never_reach_the_s2_21g_completion_hook() {
+    // `BitsMemory::mfence` is `unreachable!()`: the set's MFENCE must use `fence`, not `mfence`.
+    let mut state = endbr_state();
+    let mut memory = BitsMemory::new(&[0x0f, 0xae, 0xf0]);
+    run_fence_set(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(memory.fences, vec![od_isa::FenceKind::Full]);
+}
+
+#[test]
+fn a_failing_memory_fence_is_reported_and_the_fence_is_not_retired() {
+    for (name, code) in FENCE_FORMS {
+        let mut state = endbr_state();
+        let before = state.clone();
+        let mut memory = BitsMemory::new(&code);
+        memory.fence_error = true;
+        let result = run_fence_set(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(memory.fences.len(), 1, "{name}");
+        // The one actual outcome: the run ends with the memory error, nothing retired.
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert!(
+            matches!(exit(&result), RunExit::MemoryError(MemoryError::Backend(message)) if message == "fence refused"),
+            "{name}: {:?}",
+            exit(&result)
+        );
+        assert_eq!(state, before, "{name}");
     }
 }
 
@@ -49777,7 +50110,10 @@ fn xchg_dword_with_a_truncated_modrm_sib_or_displacement_is_refused_without_muta
 }
 
 #[test]
-fn xchg_dword_stays_unsupported_outside_the_set_by_run_and_by_step() {
+fn xchg_dword_is_executed_outside_the_set_by_run_and_by_step_since_s6_20() {
+    // Until S6-20 the dword XCHG with memory was refused outside the CPL0 set (opcode 0x87); the
+    // S6-05 litmus corpus needs it (XCHG with memory is implicitly locked), so S6-20 admits it in
+    // the bare run through the single atomic API. The expectation is changed on purpose.
     for code in [
         &XCHGL_EAX_R12_18[..],
         &[0xf0, 0x87, 0x03][..],
@@ -49796,22 +50132,24 @@ fn xchg_dword_stays_unsupported_outside_the_set_by_run_and_by_step() {
         );
         assert_eq!(
             result.exit,
-            RunExit::Unsupported { opcode: 0x87 },
+            RunExit::InstructionBudgetExhausted,
             "{code:02x?}"
         );
-        assert_eq!(result.instructions_executed, 0);
-        assert_eq!(state, before, "{code:02x?}");
-        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        assert_eq!(result.instructions_executed, 1);
+        assert_ne!(state, before, "{code:02x?}");
+        assert_eq!(memory.reads.len(), 1, "{code:02x?}");
+        assert_eq!(memory.writes.len(), 1, "{code:02x?}");
 
+        let mut state = before.clone();
+        let mut memory = BitsMemory::new(code);
         let outcome =
             od_isa::execute::step(&mut state, &mut memory, context(PrivilegeLevel::Ring0));
         assert_eq!(
             outcome,
-            Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0x87 }),
+            Ok(od_isa::execute::StepOutcome::Advanced),
             "{code:02x?}"
         );
-        assert_eq!(state, before, "{code:02x?}");
-        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        assert_ne!(state, before, "{code:02x?}");
     }
 }
 
@@ -54586,4 +54924,571 @@ fn segment_push_is_not_reachable_from_cpl3() {
     assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
     assert_eq!(state, before);
     assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+// ---- S6-12b: NMI delivery through vector 2 and NMI blocking until IRETQ ------
+
+const NMI_GATE_VECTOR: u8 = 2;
+
+/// `ext_state` with IDT gate 2 an interrupt gate to `EXT_HANDLER` (the handler is `IRETQ`).
+fn nmi_state() -> (LongModeState, LretqMemory) {
+    let (state, mut memory) = ext_state();
+    ext_put_gate(
+        &mut memory,
+        NMI_GATE_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 0, 0x8e),
+    );
+    (state, memory)
+}
+
+fn nmi_deliver(
+    state: &mut LongModeState,
+    memory: &mut LretqMemory,
+) -> od_isa::Cpl0ExternalInterruptDelivery {
+    od_isa::deliver_nmi_cpl0_set(state, memory, context(PrivilegeLevel::Ring0))
+}
+
+#[test]
+fn nmi_uses_vector_two_ignores_if_writes_the_frame_and_sets_blocking() {
+    assert_eq!(od_isa::NMI_VECTOR, 2);
+    // IF = 0: a maskable interrupt is refused, the NMI is delivered.
+    let (mut state, mut memory) = nmi_state();
+    state.rflags = 0x4_0243 & !IF;
+    let before = state.clone();
+    assert!(!before.nmi_blocked);
+    let delivered = nmi_deliver(&mut state, &mut memory);
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0ExternalInterruptDelivery::Delivered {
+            target_rip: EXT_HANDLER,
+            new_rsp: PF_RSP - 40,
+        }
+    );
+    // The frame is the one of an external interrupt: SS, old RSP, RFLAGS (no IF here), CS, RIP.
+    assert_eq!(pf_qword(&memory, PF_RSP - 8), 0x18);
+    assert_eq!(pf_qword(&memory, PF_RSP - 16), PF_RSP);
+    assert_eq!(pf_qword(&memory, PF_RSP - 24), 0x4_0043);
+    assert_eq!(pf_qword(&memory, PF_RSP - 32), 0x10);
+    assert_eq!(pf_qword(&memory, PF_RSP - 40), before.rip);
+    assert_eq!(memory.writes, 5);
+    assert_eq!(
+        memory.reads[0],
+        (PF_IDT + 2 * 16, 8, AccessOrigin::DescriptorTable),
+        "the gate of vector 2 is read"
+    );
+    assert_eq!(state.rip, EXT_HANDLER);
+    assert_eq!(state.gpr[Register::Rsp as usize], PF_RSP - 40);
+    assert!(state.nmi_blocked);
+    // The same state refuses a maskable interrupt.
+    let (mut masked, mut masked_memory) = nmi_state();
+    masked.rflags &= !IF;
+    assert_eq!(
+        ext_deliver(&mut masked, &mut masked_memory),
+        od_isa::Cpl0ExternalInterruptDelivery::Refused(
+            od_isa::Cpl0ExternalInterruptRefusal::InterruptsMasked
+        )
+    );
+    // With IF = 1 the NMI is delivered as well, IF is cleared by the interrupt gate.
+    let (mut state, mut memory) = nmi_state();
+    assert!(matches!(
+        nmi_deliver(&mut state, &mut memory),
+        od_isa::Cpl0ExternalInterruptDelivery::Delivered { .. }
+    ));
+    assert_eq!(state.rflags & IF, 0);
+    assert_ne!(pf_qword(&memory, PF_RSP - 24) & IF, 0);
+}
+
+#[test]
+fn a_second_nmi_is_refused_while_blocked_and_delivered_after_iretq() {
+    use od_isa::Cpl0ExternalInterruptDelivery as D;
+    use od_isa::Cpl0ExternalInterruptRefusal as R;
+    let (mut state, mut memory) = nmi_state();
+    state.rflags = 0x4_0243;
+    let start = state.clone();
+    assert!(matches!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Delivered { .. }
+    ));
+    assert!(state.nmi_blocked);
+    // Handler running (RIP = the IRETQ): the next NMI is refused before any write and nothing,
+    // the flag included, changes.
+    let during = state.clone();
+    let writes = memory.writes;
+    let ram = memory.ram.clone();
+    assert_eq!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Refused(R::NmiBlocked)
+    );
+    assert_eq!(
+        (state.clone(), memory.writes, memory.ram.clone()),
+        (during, writes, ram)
+    );
+    // A maskable interrupt is not gated by NMI blocking (IF is clear here: refused for IF).
+    assert_eq!(
+        ext_deliver(&mut state, &mut memory),
+        D::Refused(R::InterruptsMasked)
+    );
+    // The handler's IRETQ retires: blocking ends, the CPU is back at the interrupted RIP.
+    let result = run_lretq(&mut state, &mut memory);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert!(!state.nmi_blocked);
+    assert_eq!(state, start);
+    // The NMI that waited is delivered now, with the same frame as the first.
+    assert_eq!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Delivered {
+            target_rip: EXT_HANDLER,
+            new_rsp: PF_RSP - 40,
+        }
+    );
+    assert!(state.nmi_blocked);
+}
+
+#[test]
+fn a_refused_or_aborted_nmi_does_not_set_blocking() {
+    use od_isa::Cpl0ExternalInterruptDelivery as D;
+    use od_isa::Cpl0ExternalInterruptRefusal as R;
+    // The one-instruction STI shadow holds the NMI back (conservative), as does an unknown one.
+    for shadow in [Some(StiShadow::Blocking), None] {
+        let (mut state, mut memory) = nmi_state();
+        state.sti_shadow = shadow;
+        let before = state.clone();
+        assert_eq!(
+            nmi_deliver(&mut state, &mut memory),
+            D::Refused(R::StiShadowActive)
+        );
+        assert_eq!((state, memory.writes), (before, 0));
+    }
+    // IST != 0 in the gate without a task register (S6-12c: IST is read from the TSS).
+    let (mut state, mut memory) = nmi_state();
+    ext_put_gate(
+        &mut memory,
+        NMI_GATE_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 2, 0x8e),
+    );
+    let before = state.clone();
+    assert_eq!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Refused(R::MissingTaskRegister)
+    );
+    assert_eq!((state, memory.writes), (before, 0));
+    // No gate (P = 0).
+    let (mut state, mut memory) = nmi_state();
+    ext_put_gate(&mut memory, NMI_GATE_VECTOR, [0; 16]);
+    let before = state.clone();
+    assert_eq!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Refused(R::GateNotPresent)
+    );
+    assert_eq!(state, before);
+    // The first frame store fails: the CPU is unchanged and NMI delivery is not blocked.
+    let (mut state, mut memory) = nmi_state();
+    memory.fail_write_number = Some(1);
+    let before = state.clone();
+    assert!(matches!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Aborted {
+            phase: od_isa::Cpl0ExternalInterruptPhase::StackWrite { .. },
+            ..
+        }
+    ));
+    assert_eq!(state, before);
+    assert!(!state.nmi_blocked);
+}
+
+#[test]
+fn nmi_wakes_a_halted_cpu_and_leaves_other_activities_untouched() {
+    use od_isa::Cpl0ExternalInterruptDelivery as D;
+    use od_isa::Cpl0ExternalInterruptRefusal as R;
+    let (mut state, mut memory) = nmi_state();
+    state.activity = Some(CpuActivity::Halted);
+    // IF is irrelevant to the wake-up: a halted CPU with IF = 0 takes the NMI.
+    state.rflags &= !IF;
+    assert!(matches!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Delivered { .. }
+    ));
+    assert_eq!(state.activity, Some(CpuActivity::Running));
+    assert!(state.nmi_blocked);
+    assert_eq!(state.rip, EXT_HANDLER);
+    // A halted CPU that is NMI-blocked stays halted and nothing is delivered.
+    let (mut state, mut memory) = nmi_state();
+    state.activity = Some(CpuActivity::Halted);
+    state.nmi_blocked = true;
+    let before = state.clone();
+    assert_eq!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Refused(R::NmiBlocked)
+    );
+    assert_eq!((state, memory.writes), (before, 0));
+    // Shutdown, WaitForSipi and an unknown activity are outside the profile.
+    for activity in [
+        Some(CpuActivity::Shutdown),
+        Some(CpuActivity::WaitForSipi),
+        None,
+    ] {
+        let (mut state, mut memory) = nmi_state();
+        state.activity = activity;
+        let before = state.clone();
+        assert_eq!(
+            nmi_deliver(&mut state, &mut memory),
+            D::Refused(R::ActivityOutsideProfile),
+            "{activity:?}"
+        );
+        assert_eq!((state, memory.writes), (before, 0), "{activity:?}");
+    }
+}
+
+#[test]
+fn nmi_from_cpl3_uses_tss_rsp0_and_blocks() {
+    let (mut state, mut memory) = u3_ext_state();
+    ext_put_gate(
+        &mut memory,
+        NMI_GATE_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 0, 0x8e),
+    );
+    let delivered =
+        od_isa::deliver_nmi_cpl0_set(&mut state, &mut memory, context(PrivilegeLevel::Ring3));
+    let frame = U3_RSP0 & !15;
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0ExternalInterruptDelivery::Delivered {
+            target_rip: EXT_HANDLER,
+            new_rsp: frame - 40,
+        }
+    );
+    assert_eq!(pf_qword(&memory, frame - 16), U3_USER_RSP);
+    assert!(state.nmi_blocked);
+}
+
+// ---- S6-12c: IST of the NMI gate (the stack comes from TSS.IST[n]) -----------
+
+/// The IST stack top of the NMI tests, deliberately not 16-aligned; the frame lies below
+/// `NMI_IST_STACK & !15`, clear of `PF_RSP` and `U3_RSP0`.
+const NMI_IST_STACK: u64 = STACK + 0x608;
+/// Offset of `IST1` in the 64-bit TSS; `ISTn` is at `TSS_IST1 + 8 * (n - 1)`.
+const TSS_IST1: u64 = 0x24;
+
+fn tss_ist_address(ist: u8) -> u64 {
+    U3_TSS + TSS_IST1 + 8 * (u64::from(ist) - 1)
+}
+
+/// `nmi_state` (CPL0, `RSP = PF_RSP`) with a task register over the TSS at `U3_TSS`, IDT gate 2 an
+/// interrupt gate with IST = `ist` and `NMI_IST_STACK` in `TSS.IST[ist]`; every other IST slot and
+/// `RSP0` hold stacks that must not be used.
+fn nmi_ist_state(ist: u8) -> (LongModeState, LretqMemory) {
+    let (mut state, mut memory) = nmi_state();
+    state.tr = Some(od_isa::TaskRegisterCache {
+        selector: 0x40,
+        base: U3_TSS,
+        limit: 0x67,
+        access: 0x8b,
+        flags: 0,
+    });
+    memory.put(U3_TSS + 4, STACK + 0xa08);
+    for other in 1..=7 {
+        memory.put(tss_ist_address(other), STACK + 0xb08);
+    }
+    memory.put(tss_ist_address(ist), NMI_IST_STACK);
+    ext_put_gate(
+        &mut memory,
+        NMI_GATE_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, ist, 0x8e),
+    );
+    (state, memory)
+}
+
+#[test]
+fn nmi_through_an_ist_gate_stores_the_frame_on_the_tss_ist_stack() {
+    let (mut state, mut memory) = nmi_ist_state(2);
+    state.rflags = 0x4_0243;
+    let before = state.clone();
+    let top = NMI_IST_STACK & !15;
+    assert_eq!(
+        nmi_deliver(&mut state, &mut memory),
+        od_isa::Cpl0ExternalInterruptDelivery::Delivered {
+            target_rip: EXT_HANDLER,
+            new_rsp: top - 40,
+        }
+    );
+    // The frame is on the IST2 stack with the interrupted SS and RSP; the old stack is untouched.
+    assert_eq!(pf_qword(&memory, top - 8), 0x18);
+    assert_eq!(pf_qword(&memory, top - 16), PF_RSP);
+    assert_eq!(pf_qword(&memory, top - 24), 0x4_0243);
+    assert_eq!(pf_qword(&memory, top - 32), 0x10);
+    assert_eq!(pf_qword(&memory, top - 40), before.rip);
+    assert_eq!(pf_qword(&memory, PF_RSP - 8), 0);
+    assert_eq!(memory.writes, 5);
+    assert!(
+        memory
+            .write_log
+            .iter()
+            .all(|(address, bytes, _)| bytes.len() == 8 && (top - 40..top).contains(address))
+    );
+    // IST2 is the qword at TSS + 0x2c, read as a descriptor-table access; RSP0 is not read.
+    assert!(
+        memory
+            .reads
+            .contains(&(U3_TSS + 0x2c, 8, AccessOrigin::DescriptorTable))
+    );
+    assert!(
+        !memory
+            .reads
+            .iter()
+            .any(|(address, _, _)| *address == U3_TSS + 4)
+    );
+    // SS is not reloaded at CPL0; RSP is the IST frame; the NMI is blocked until IRETQ.
+    assert_eq!(state.ss_selector, before.ss_selector);
+    assert_eq!(state.ss_unusable, before.ss_unusable);
+    assert_eq!(state.gpr[Register::Rsp as usize], top - 40);
+    assert_eq!(state.rip, EXT_HANDLER);
+    assert!(state.nmi_blocked);
+    assert_eq!(state.rflags & IF, 0);
+}
+
+#[test]
+fn every_ist_entry_of_the_tss_is_read_at_its_own_offset() {
+    for ist in 1..=7_u8 {
+        let (mut state, mut memory) = nmi_ist_state(ist);
+        // IST7 ends at TSS byte 0x5b, inside the limit 0x67.
+        let top = NMI_IST_STACK & !15;
+        assert_eq!(
+            nmi_deliver(&mut state, &mut memory),
+            od_isa::Cpl0ExternalInterruptDelivery::Delivered {
+                target_rip: EXT_HANDLER,
+                new_rsp: top - 40,
+            },
+            "IST {ist}"
+        );
+    }
+    assert_eq!(tss_ist_address(7), U3_TSS + 0x54);
+}
+
+#[test]
+fn nmi_with_ist_zero_ignores_the_tss_at_cpl0() {
+    let (mut state, mut memory) = nmi_ist_state(2);
+    ext_put_gate(
+        &mut memory,
+        NMI_GATE_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 0, 0x8e),
+    );
+    assert_eq!(
+        nmi_deliver(&mut state, &mut memory),
+        od_isa::Cpl0ExternalInterruptDelivery::Delivered {
+            target_rip: EXT_HANDLER,
+            new_rsp: PF_RSP - 40,
+        }
+    );
+    assert!(
+        !memory
+            .reads
+            .iter()
+            .any(|(address, _, _)| (U3_TSS..U3_TSS + 0x68).contains(address))
+    );
+}
+
+#[test]
+fn nmi_through_an_ist_gate_refuses_a_missing_or_bad_tss_without_any_write() {
+    use od_isa::Cpl0ExternalInterruptDelivery as D;
+    use od_isa::Cpl0ExternalInterruptRefusal as R;
+    let cases: Vec<(&str, fn(&mut LongModeState, &mut LretqMemory), R)> = vec![
+        ("no TR", |state, _| state.tr = None, R::MissingTaskRegister),
+        (
+            "limit below the end of IST2",
+            |state, _| state.tr.as_mut().unwrap().limit = 0x32,
+            R::TssIstBeyondLimit,
+        ),
+        (
+            "limit 0",
+            |state, _| state.tr.as_mut().unwrap().limit = 0,
+            R::TssIstBeyondLimit,
+        ),
+        (
+            "non-canonical IST2",
+            |_, memory| memory.put(tss_ist_address(2), 0x0000_8000_0000_0000),
+            R::NonCanonicalIst,
+        ),
+        (
+            "TSS span overflows",
+            |state, _| state.tr.as_mut().unwrap().base = u64::MAX - 8,
+            R::NonCanonicalIst,
+        ),
+        (
+            "non-canonical TSS base",
+            |state, _| state.tr.as_mut().unwrap().base = 0x0000_8000_0000_0000,
+            R::NonCanonicalIst,
+        ),
+        (
+            "IST2 below the frame size",
+            |_, memory| memory.put(tss_ist_address(2), 0x2f),
+            R::StackAddressOverflow,
+        ),
+    ];
+    for (name, change, refusal) in cases {
+        let (mut state, mut memory) = nmi_ist_state(2);
+        change(&mut state, &mut memory);
+        let before = state.clone();
+        assert_eq!(
+            nmi_deliver(&mut state, &mut memory),
+            D::Refused(refusal),
+            "{name}"
+        );
+        assert_eq!(state, before, "{name}");
+        assert!(!state.nmi_blocked, "{name}");
+        assert_eq!(memory.writes, 0, "{name}");
+    }
+    // The limit of exactly 0x33 covers IST2 (bytes 0x2c..=0x33).
+    let (mut state, mut memory) = nmi_ist_state(2);
+    state.tr.as_mut().unwrap().limit = 0x33;
+    assert!(matches!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Delivered { .. }
+    ));
+}
+
+#[test]
+fn nmi_through_an_ist_gate_aborts_on_a_failed_tss_read_and_changes_nothing() {
+    let (mut state, mut memory) = nmi_ist_state(2);
+    memory.fault_pages = vec![U3_TSS & !0xfff];
+    let before = state.clone();
+    assert!(matches!(
+        nmi_deliver(&mut state, &mut memory),
+        od_isa::Cpl0ExternalInterruptDelivery::Aborted {
+            phase: od_isa::Cpl0ExternalInterruptPhase::TssIstRead,
+            ..
+        }
+    ));
+    assert_eq!(state, before);
+    assert!(!state.nmi_blocked);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn nmi_from_cpl3_through_an_ist_gate_uses_the_ist_stack_not_rsp0() {
+    let (mut state, mut memory) = u3_ext_state();
+    memory.put(tss_ist_address(2), NMI_IST_STACK);
+    ext_put_gate(
+        &mut memory,
+        NMI_GATE_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 2, 0x8e),
+    );
+    let delivered =
+        od_isa::deliver_nmi_cpl0_set(&mut state, &mut memory, context(PrivilegeLevel::Ring3));
+    let top = NMI_IST_STACK & !15;
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0ExternalInterruptDelivery::Delivered {
+            target_rip: EXT_HANDLER,
+            new_rsp: top - 40,
+        }
+    );
+    assert_eq!(pf_qword(&memory, top - 8), u64::from(U3_USER_SS));
+    assert_eq!(pf_qword(&memory, top - 16), U3_USER_RSP);
+    assert_eq!(pf_qword(&memory, top - 32), u64::from(U3_USER_CS));
+    // The privilege change still applies: null SS, frame stored at CPL0, RSP0 not read.
+    assert_eq!(state.ss_selector, Some(0));
+    assert!(state.ss_unusable);
+    assert!(
+        memory
+            .write_privileges
+            .iter()
+            .all(|privilege| *privilege == PrivilegeLevel::Ring0)
+    );
+    assert!(
+        !memory
+            .reads
+            .iter()
+            .any(|(address, _, _)| *address == U3_TSS + 4)
+    );
+    assert!(state.nmi_blocked);
+}
+
+#[test]
+fn nmi_from_cpl3_with_an_unreadable_ist_does_not_fall_back_to_rsp0() {
+    use od_isa::Cpl0ExternalInterruptDelivery as D;
+    let (mut state, mut memory) = u3_ext_state();
+    // RSP0 is valid (`U3_RSP0`) and IST2 is in the TSS, but the limit 0x32 ends before IST2
+    // (bytes 0x2c..=0x33): the delivery is refused, not redirected to RSP0.
+    memory.put(tss_ist_address(2), NMI_IST_STACK);
+    state.tr.as_mut().unwrap().limit = 0x32;
+    ext_put_gate(
+        &mut memory,
+        NMI_GATE_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 2, 0x8e),
+    );
+    let before = state.clone();
+    assert_eq!(
+        od_isa::deliver_nmi_cpl0_set(&mut state, &mut memory, context(PrivilegeLevel::Ring3)),
+        D::Refused(od_isa::Cpl0ExternalInterruptRefusal::TssIstBeyondLimit)
+    );
+    assert_eq!(state, before);
+    assert!(!state.nmi_blocked);
+    assert_eq!(memory.writes, 0);
+    assert!(
+        !memory
+            .reads
+            .iter()
+            .any(|(address, _, _)| *address == U3_TSS + 4)
+    );
+}
+
+#[test]
+fn ist7_limit_boundary_is_0x5b() {
+    use od_isa::Cpl0ExternalInterruptDelivery as D;
+    // IST7 occupies TSS bytes 0x54..=0x5b: the limit 0x5a is one byte short, 0x5b covers it.
+    let (mut state, mut memory) = nmi_ist_state(7);
+    state.tr.as_mut().unwrap().limit = 0x5a;
+    let before = state.clone();
+    assert_eq!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Refused(od_isa::Cpl0ExternalInterruptRefusal::TssIstBeyondLimit)
+    );
+    assert_eq!(state, before);
+    assert_eq!(memory.writes, 0);
+    let (mut state, mut memory) = nmi_ist_state(7);
+    state.tr.as_mut().unwrap().limit = 0x5b;
+    assert!(matches!(
+        nmi_deliver(&mut state, &mut memory),
+        D::Delivered { .. }
+    ));
+}
+
+#[test]
+fn nmi_through_a_trap_gate_with_ist_reports_the_trap_gate() {
+    // IST is allowed for the NMI, a trap gate for the NMI is not modelled.
+    let (mut state, mut memory) = nmi_ist_state(2);
+    ext_put_gate(
+        &mut memory,
+        NMI_GATE_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 2, 0x8f),
+    );
+    let before = state.clone();
+    assert_eq!(
+        nmi_deliver(&mut state, &mut memory),
+        od_isa::Cpl0ExternalInterruptDelivery::Refused(
+            od_isa::Cpl0ExternalInterruptRefusal::TrapGateNotSupported
+        )
+    );
+    assert_eq!((state, memory.writes), (before, 0));
+}
+
+#[test]
+fn ist_is_only_supported_for_the_nmi_delivery() {
+    // An external interrupt (and, by the existing tests, #PF, #GP and INT3) through a gate with
+    // IST != 0 stays refused, also over a TSS with an IST entry.
+    let (mut state, mut memory) = nmi_ist_state(2);
+    ext_put_gate(
+        &mut memory,
+        EXT_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 2, 0x8e),
+    );
+    let before = state.clone();
+    assert_eq!(
+        ext_deliver(&mut state, &mut memory),
+        od_isa::Cpl0ExternalInterruptDelivery::Refused(
+            od_isa::Cpl0ExternalInterruptRefusal::UnsupportedIst(2)
+        )
+    );
+    assert_eq!((state, memory.writes), (before, 0));
 }

@@ -315,6 +315,8 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-25 | Eviction, retirement и освобождение | S3-18, S3-24 |
 | [partial] | S3-25a | One-vCPU synchronous cache/arena handle lifetime and safe-point checks | Inactive entries only; active-code retirement, SMP, deferred queue not included |
 | [partial] | S3-25b | Capacity-two arena lifetime for one V3 artifact and one cached prefix | V3 slot survives cache clear/invalidation; stale source rejected; full retirement/SMP/deferred queue remain open |
+| [x] | S3-25c | Normative one-vCPU block lifecycle (four states, safe point, per-transition function and test, production `PagedFetchedLoadSession` declared normative) | One vCPU, current block profile, no linking; rule for future links recorded; SMP, writers outside the session and S3-24 stay open. См. [report](../reports/STAGE_3_S3-25cd_2026-11-18.md) |
+| [x] | S3-25d | One deterministic small-capacity (1 and 2 slots) lifecycle stress against the interpreter | Fixture arena only; one vCPU; checkbox S3-25 stays open until the gate is closed by the coordinator. См. [report](../reports/STAGE_3_S3-25cd_2026-11-18.md) |
 | [ ] | S3-26 | Порядок side effects и memory classes | S3-19, S3-24 |
 | [ ] | S3-27 | Точные fault exits и восстановление state | S3-12, S3-21, S3-26 |
 | [ ] | S3-28 | STOP/events и безопасные точки | S3-15, S3-16, S3-27 |
@@ -2519,6 +2521,23 @@ resident mapping. Результат: [S3-25a report](../reports/STAGE_3_S3-25a_
 4. После освобождения никакая entry/PC-map/link reference не должна вести в повторно используемую память прежнего блока.
 
 **Готово:** стресс с малыми capacity не вызывает use-after-free, утечки retired blocks или исполнения освобождённого кода. Доказательства относятся к одному vCPU; SMP остаётся будущей работой.
+
+#### S3-25c/S3-25d. Нормативный жизненный цикл и сводный стресс (один vCPU)
+
+S3-25c записывает в [JIT_CONTRACT](../specs/JIT_CONTRACT.md) нормативный раздел
+«S3-25c: block lifecycle for one vCPU»: четыре состояния (недоступен для новых
+входов, активное исполнение, ссылки, физическое освобождение), переходы только на
+safe point «после возврата и проверки результата, до следующего lookup»
+(уничтожение последнего handle возможно и раньше, но тогда освобождение лишь
+записывается; возврат слота происходит при следующем изменяющем доступе к арене),
+сопоставление fixture (`MultiEntryBlockCache` + `PublishedArenaBackend`) и
+production (`PagedFetchedLoadSession`, объявлен нормативным) с функцией и тестом
+для каждого перехода, правило для будущих связей блоков (проверка поколения,
+иначе задержка обнаружения не ограничена) и ограничения. S3-25d добавляет один
+детерминированный стресс-тест на ёмкости 1 и 2
+(`s3_25d_small_capacity_lifecycle_stress_matches_interpreter_and_frees_everything`).
+Чекбокс S3-25 остаётся `[ ]` до закрытия gate отдельным шагом координатора.
+Отчёт: [S3-25c/d report](../reports/STAGE_3_S3-25cd_2026-11-18.md).
 
 ### S3-26. Сохранить порядок side effects
 

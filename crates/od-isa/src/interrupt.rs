@@ -524,8 +524,9 @@ pub enum Cpl0PageFaultDelivery {
     Refused(Cpl0PageFaultRefusal),
     /// A memory access of the delivery failed (a `#PF` here would be a double fault, which is
     /// not modeled; the caller stops). The CPU state is unchanged, but frame words already
-    /// stored stay in memory: they lie below the old RSP (dead stack). With the frame inside
-    /// one page the first store decides, so nothing is stored then.
+    /// stored stay in memory below the stack selected for this delivery (the old RSP for CPL0,
+    /// `TSS.RSP0` for CPL3); that partial frame is dead. With the frame inside one page the first
+    /// store decides, so nothing is stored then.
     Aborted {
         phase: Cpl0PageFaultDeliveryPhase,
         cause: MemoryError,
@@ -593,10 +594,17 @@ struct ResolvedGate {
     trap_gate: bool,
     /// The gate DPL (attribute byte bits 5..=6), checked only by the software `INT n` family.
     dpl: u8,
-    /// S4-39d: `Some(TSS.RSP0)` for a delivery from CPL3 (the new stack and the CPL0 privilege of
-    /// the frame stores), `None` for a CPL0 to CPL0 delivery. Set by the wrapper after
-    /// [`read_tss_rsp0`], before the commit.
-    kernel_rsp: Option<u64>,
+    /// S4-39d: the delivery is from CPL3 (CPL0 privilege of the frame stores, null SS at the
+    /// commit). Set by [`resolve_cpl0_gate`] from its `from_cpl3` argument.
+    privilege_change: bool,
+    /// The stack the frame is stored on: `Some(TSS.RSP0)` for a delivery from CPL3 (S4-39d, set by
+    /// the wrapper after [`read_tss_rsp0`]), `Some(TSS.IST[n])` for a gate with IST = n (S6-12c, set
+    /// by the NMI wrapper after [`read_tss_ist`]; it wins over `RSP0`), `None` for a CPL0 to CPL0
+    /// delivery without IST (the current RSP). Set before the commit.
+    new_stack: Option<u64>,
+    /// IST field of the gate (byte 4 bits 2..0): 0 or 1..=7. Non-zero only when the caller allowed
+    /// IST in [`resolve_cpl0_gate`].
+    ist: u8,
 }
 
 /// S4-39d: why the read of `TSS.RSP0` failed; the pair of [`GateFailure`] for the one step only a
@@ -642,17 +650,76 @@ fn read_tss_rsp0(
     Ok(rsp0)
 }
 
+/// S6-12c: why the read of `TSS.IST[n]` failed; read-only, nothing was written.
+enum TssIstFailure {
+    MissingTaskRegister,
+    TssIstBeyondLimit,
+    NonCanonicalIst,
+    Aborted(MemoryError),
+}
+
+/// S6-12c: `ISTn` (n = 1..=7) of the 64-bit TSS at `TR.base + 0x24 + 8 * (n - 1)` (the same as
+/// `TR.base + 28 + 8 * n`), read like `RSP0`: a descriptor-table access, with the same limit,
+/// address and value checks. The caller passes the IST field of a gate that is not 0; `ist` 0 or
+/// above 7 is refused as beyond the limit (it names no entry).
+///
+/// Intel SDM Vol. 3A, 7.7 (64-bit TSS format: `RSP0` at offset 4, `IST1..IST7` at offsets
+/// 0x24..=0x5B) and 6.14.5 (interrupt stack table; IST is bits 2:0 of byte 4 of the gate): from
+/// memory, the SDM text is not available in the repository.
+fn read_tss_ist(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    ist: u8,
+) -> Result<u64, TssIstFailure> {
+    let Some(tr) = state.tr else {
+        return Err(TssIstFailure::MissingTaskRegister);
+    };
+    if !(1..=7).contains(&ist) {
+        // unreachable: callers pass a non-zero 3-bit IST field
+        return Err(TssIstFailure::TssIstBeyondLimit);
+    }
+    let offset = 0x24 + 8 * (u64::from(ist) - 1);
+    // ISTn occupies bytes offset..=offset + 7 of the TSS; the limit is the last valid byte offset.
+    if u64::from(tr.limit) < offset + 7 {
+        return Err(TssIstFailure::TssIstBeyondLimit);
+    }
+    let (Some(address), Some(last)) =
+        (tr.base.checked_add(offset), tr.base.checked_add(offset + 7))
+    else {
+        return Err(TssIstFailure::NonCanonicalIst);
+    };
+    if !canonical(address) || !canonical(last) {
+        return Err(TssIstFailure::NonCanonicalIst);
+    }
+    let stack = memory
+        .read_integer(
+            address,
+            context.descriptor_table(),
+            crate::OperandSize::Qword,
+        )
+        .map_err(TssIstFailure::Aborted)?;
+    if !canonical(stack) {
+        return Err(TssIstFailure::NonCanonicalIst);
+    }
+    Ok(stack)
+}
+
 /// Read and check the gate of `vector` and its target code descriptor: no write, no change of
 /// the CPU state. The wrapper has already checked the entry conditions of its own event.
 ///
 /// `from_cpl3` (S4-39d, only the `#PF` and `#GP` wrappers pass it) asks for a CPL3 state in place
 /// of a CPL0 one: CS RPL 3 over a 64-bit code cache with DPL 3, SS selector and cache loaded.
+///
+/// `allow_ist` (S6-12c, only the NMI wrapper passes it) accepts a gate with IST 1..=7 and returns
+/// it in `ResolvedGate::ist`; without it such a gate is `Refused(UnsupportedIst)`.
 fn resolve_cpl0_gate(
     state: &LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
     vector: u8,
     from_cpl3: bool,
+    allow_ist: bool,
 ) -> Result<ResolvedGate, GateFailure> {
     use GateRefusal as Refusal;
     let refuse = GateRefused;
@@ -717,8 +784,9 @@ fn resolve_cpl0_gate(
     if attributes & 0x10 != 0 || (gate_type != 0x0e && gate_type != 0x0f) {
         return Err(refuse(Refusal::InvalidGateType(attributes)));
     }
-    if gate[4] & 7 != 0 {
-        return Err(refuse(Refusal::UnsupportedIst(gate[4] & 7)));
+    let ist = gate[4] & 7;
+    if ist != 0 && !allow_ist {
+        return Err(refuse(Refusal::UnsupportedIst(ist)));
     }
     if gate[4] & 0xf8 != 0 || gate[12..16] != [0, 0, 0, 0] {
         return Err(refuse(Refusal::GateReservedBitsSet));
@@ -774,7 +842,9 @@ fn resolve_cpl0_gate(
         descriptor_address,
         trap_gate,
         dpl: (attributes >> 5) & 3,
-        kernel_rsp: None,
+        privilege_change: from_cpl3,
+        new_stack: None,
+        ist,
     })
 }
 
@@ -783,11 +853,17 @@ fn resolve_cpl0_gate(
 /// present, `error_code` (stored in this order downwards from the 16-byte aligned RSP). A
 /// failure leaves the CPU state unchanged. Returns `(target_rip, new_rsp)`.
 ///
-/// S4-39d: with `gate.kernel_rsp = Some(rsp0)` (a delivery from CPL3) the frame is stored
-/// downwards from `rsp0` aligned down to 16 in place of the old RSP, with the CPL0 privilege of the
-/// new level for the page checks of the stores; the old SS:RSP of the frame are the user ones. The
-/// commit then also loads SS with the null selector (64-bit mode, privilege change): selector 0, the
-/// cache kept and marked unusable (the S2-46 convention). The rest is the CPL0 to CPL0 delivery.
+/// S4-39d: with `gate.privilege_change` (a delivery from CPL3) and `gate.new_stack = Some(rsp0)` the
+/// frame is stored downwards from `rsp0` aligned down to 16 in place of the old RSP, with the CPL0
+/// privilege of the new level for the page checks of the stores; the old SS:RSP of the frame are
+/// the user ones. The commit then also loads SS with the null selector (64-bit mode, privilege
+/// change): selector 0, the cache kept and marked unusable (the S2-46 convention). The rest is the
+/// CPL0 to CPL0 delivery.
+///
+/// S6-12c: `gate.new_stack = Some(TSS.IST[n])` for a gate with IST = n replaces the stack in the
+/// same way for a CPL0 to CPL0 delivery too: the frame (SS, old RSP, ...) is stored from the IST
+/// stack aligned down to 16, SS is not reloaded without a privilege change (by memory of the SDM,
+/// 6.14.5).
 fn commit_cpl0_gate(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -799,7 +875,7 @@ fn commit_cpl0_gate(
 ) -> Result<(u64, u64), GateFailure> {
     let table = context.descriptor_table();
     let old_rsp = state.gpr[crate::Register::Rsp as usize];
-    let aligned_rsp = gate.kernel_rsp.unwrap_or(old_rsp) & !15;
+    let aligned_rsp = gate.new_stack.unwrap_or(old_rsp) & !15;
     let words = 5 + u64::from(error_code.is_some());
     let Some(new_rsp) = aligned_rsp.checked_sub(8 * words) else {
         return Err(GateRefused(GateRefusal::StackAddressOverflow));
@@ -818,7 +894,7 @@ fn commit_cpl0_gate(
     // The frame is stored at the new privilege level: CPL0 after a delivery from CPL3.
     let stack_context = AccessContext {
         origin: AccessOrigin::ImplicitStack,
-        privilege: if gate.kernel_rsp.is_some() {
+        privilege: if gate.privilege_change {
             PrivilegeLevel::Ring0
         } else {
             context.privilege
@@ -856,7 +932,7 @@ fn commit_cpl0_gate(
         flags,
     });
     state.gpr[crate::Register::Rsp as usize] = new_rsp;
-    if gate.kernel_rsp.is_some() {
+    if gate.privilege_change {
         state.ss_selector = Some(0);
         state.ss_unusable = true;
     }
@@ -959,13 +1035,13 @@ pub fn deliver_page_fault_cpl0_set(
     if state.sti_shadow != Some(crate::StiShadow::Clear) {
         return refuse(Refusal::StiShadowActive);
     }
-    let mut gate = match resolve_cpl0_gate(state, memory, context, 14, from_cpl3) {
+    let mut gate = match resolve_cpl0_gate(state, memory, context, 14, from_cpl3, false) {
         Ok(gate) => gate,
         Err(failure) => return pf_gate_failure(failure),
     };
     if from_cpl3 {
         match read_tss_rsp0(state, memory, context) {
-            Ok(rsp0) => gate.kernel_rsp = Some(rsp0),
+            Ok(rsp0) => gate.new_stack = Some(rsp0),
             Err(failure) => return pf_tss_failure(failure),
         }
     }
@@ -1126,8 +1202,9 @@ pub enum Cpl0GeneralProtectionDelivery {
     Refused(Cpl0GeneralProtectionRefusal),
     /// A memory access of the delivery failed (a fault here would be a double fault, which is
     /// not modeled; the caller stops). The CPU state is unchanged, but frame words already
-    /// stored stay in memory: they lie below the old RSP (dead stack). With the frame inside
-    /// one page the first store decides, so nothing is stored then.
+    /// stored stay in memory below the stack selected for this delivery (the old RSP for CPL0,
+    /// `TSS.RSP0` for CPL3); that partial frame is dead. With the frame inside one page the first
+    /// store decides, so nothing is stored then.
     Aborted {
         phase: Cpl0GeneralProtectionPhase,
         cause: MemoryError,
@@ -1181,13 +1258,13 @@ pub fn deliver_general_protection_cpl0_set(
     if state.sti_shadow != Some(crate::StiShadow::Clear) {
         return refuse(Refusal::StiShadowActive);
     }
-    let mut gate = match resolve_cpl0_gate(state, memory, context, 13, from_cpl3) {
+    let mut gate = match resolve_cpl0_gate(state, memory, context, 13, from_cpl3, false) {
         Ok(gate) => gate,
         Err(failure) => return gp_gate_failure(failure),
     };
     if from_cpl3 {
         match read_tss_rsp0(state, memory, context) {
-            Ok(rsp0) => gate.kernel_rsp = Some(rsp0),
+            Ok(rsp0) => gate.new_stack = Some(rsp0),
             Err(failure) => return gp_tss_failure(failure),
         }
     }
@@ -1269,6 +1346,9 @@ pub enum Cpl0ExternalInterruptRefusal {
     ActivityOutsideProfile,
     /// RFLAGS.IF = 0: a maskable external interrupt is not accepted.
     InterruptsMasked,
+    /// [`deliver_nmi_cpl0_set`] only: NMI delivery is blocked until the running NMI handler
+    /// executes `IRETQ` (`LongModeState::nmi_blocked`, S6-12b).
+    NmiBlocked,
     /// The one-instruction interrupt shadow after `STI` is active (or unknown).
     StiShadowActive,
     MissingCurrentSelectors,
@@ -1287,7 +1367,9 @@ pub enum Cpl0ExternalInterruptRefusal {
     /// A trap gate (0xF): it would leave IF set, which an external interrupt does not use;
     /// not modeled.
     TrapGateNotSupported,
-    /// The gate asks for an interrupt stack table entry (IST 1..=7); not modeled.
+    /// The gate asks for an interrupt stack table entry (IST 1..=7) in a delivery that does not
+    /// support it. Only [`deliver_nmi_cpl0_set`] does (S6-12c); an external interrupt gate with
+    /// IST != 0 is refused with this.
     UnsupportedIst(u8),
     GateReservedBitsSet,
     InvalidTargetSelector,
@@ -1297,6 +1379,19 @@ pub enum Cpl0ExternalInterruptRefusal {
     NonCanonicalTargetRip,
     StackAddressOverflow,
     NonCanonicalStackSpan,
+    /// A delivery from CPL3, or an NMI through a gate with IST != 0: no task register is
+    /// modeled, so `TSS.RSP0` (or `TSS.IST[n]`) is unknown.
+    MissingTaskRegister,
+    /// A delivery from CPL3 only: `TSS.RSP0` lies beyond the task register limit.
+    TssRsp0BeyondLimit,
+    /// A delivery from CPL3 only: the TSS.RSP0 address or value is not canonical.
+    NonCanonicalRsp0,
+    /// [`deliver_nmi_cpl0_set`] through a gate with IST != 0 (S6-12c): `TSS.IST[n]` (8 bytes at
+    /// `0x24 + 8 * (n - 1)`) lies beyond the task register limit.
+    TssIstBeyondLimit,
+    /// [`deliver_nmi_cpl0_set`] through a gate with IST != 0 (S6-12c): the address of
+    /// `TSS.IST[n]` or the value read from it is not canonical.
+    NonCanonicalIst,
 }
 
 /// Where [`deliver_external_interrupt_cpl0_set`] failed on a memory access.
@@ -1304,7 +1399,13 @@ pub enum Cpl0ExternalInterruptRefusal {
 pub enum Cpl0ExternalInterruptPhase {
     IdtGateRead,
     TargetCodeDescriptorRead,
-    StackWrite { slot: InterruptFrameSlot },
+    /// A delivery from CPL3 only: the read of `TSS.RSP0`.
+    TssRsp0Read,
+    /// [`deliver_nmi_cpl0_set`] through a gate with IST != 0 (S6-12c): the read of `TSS.IST[n]`.
+    TssIstRead,
+    StackWrite {
+        slot: InterruptFrameSlot,
+    },
     TargetCodeDescriptorAccessedWrite,
 }
 
@@ -1318,8 +1419,9 @@ pub enum Cpl0ExternalInterruptDelivery {
     Refused(Cpl0ExternalInterruptRefusal),
     /// A memory access of the delivery failed (a `#PF` here would be a double fault, which is
     /// not modeled; the caller stops). The CPU state is unchanged, but frame words already
-    /// stored stay in memory: they lie below the old RSP (dead stack). With the frame inside
-    /// one page the first store decides, so nothing is stored then.
+    /// stored stay in memory below the stack selected for this delivery (the old RSP for CPL0,
+    /// `TSS.RSP0` for CPL3); that partial frame is dead. With the frame inside one page the first
+    /// store decides, so nothing is stored then.
     Aborted {
         phase: Cpl0ExternalInterruptPhase,
         cause: MemoryError,
@@ -1327,60 +1429,135 @@ pub enum Cpl0ExternalInterruptDelivery {
 }
 
 /// Deliver an external hardware interrupt `vector` of the Long64 CPL0 profile set through its
-/// IDT gate (S4-38L8a): CPL0 to CPL0, interrupt gate (type 0xE) only, IST 0. The caller calls
-/// it on an instruction boundary (nothing is being executed); `state.rip` is the address of the
-/// next instruction to run and is saved in the frame.
+/// IDT gate (S4-38L8a/S4-39h): CPL0 to CPL0, or CPL3 through `TSS.RSP0` to CPL0; interrupt gate
+/// (type 0xE) only, IST 0. The caller calls it on an instruction boundary (nothing is being
+/// executed); `state.rip` is the address of the next instruction to run and is saved in the frame.
 ///
 /// Refused before any write when RFLAGS.IF = 0 (`InterruptsMasked`), the STI shadow is not
-/// `Clear`, the CPU is not `Running`, the context is not Long64 CPL0, a trap gate (0xF), a
-/// not-present gate or another gate type, IST != 0, and the same descriptor, selector and
-/// stack conditions as [`deliver_page_fault_cpl0_set`] (the gate DPL is not checked: it
-/// applies to software `INT n` only).
+/// `Clear`, the CPU is not `Running`, the context/state do not describe CPL0 or CPL3 Long64, a
+/// trap gate (0xF), a not-present gate or another gate type, IST != 0, and the same descriptor,
+/// selector and stack conditions as [`deliver_page_fault_cpl0_set`] (the gate DPL is not
+/// checked: it applies to software `INT n` only). A CPL3 delivery also reads `TSS.RSP0` before
+/// any frame write.
 ///
 /// Frame, the same IA-32e layout as the `#PF` one but without an error code: RSP is aligned
-/// down to 16, then eight-byte words are stored downwards: SS, old RSP, RFLAGS, CS, RIP. RFLAGS
+/// down to 16 (from `TSS.RSP0` on a CPL3 transition), then eight-byte words are stored downwards:
+/// SS, old RSP, RFLAGS, CS, RIP. RFLAGS
 /// in the frame is the live RFLAGS with RF cleared and bit 1 set (IF stays 1: IF = 1 is a
 /// delivery condition, and `IRETQ` restores it). After the entry: CS = the gate selector, RIP =
-/// the gate offset, RSP = the frame (old RSP aligned down minus 40), SS unchanged, live RFLAGS
-/// with IF, TF, NT, RF and VM cleared (AC kept). CR2 and the retire counters are not touched.
+/// the gate offset, RSP = the frame (old RSP aligned down minus 40 for CPL0, or `TSS.RSP0`
+/// aligned down minus 40 for CPL3), SS unchanged for CPL0 or null with its cache marked unusable
+/// for CPL3, live RFLAGS with IF, TF, NT, RF and VM cleared (AC kept). CR2 and the retire counters
+/// are not touched.
 ///
-/// SDM, from memory, not checked against the text: the RF = 0 in the saved image of an
-/// external interrupt (a fault saves RF = 1, an interrupt does not set it); the frame order and
-/// the alignment; that a hardware interrupt does not check the gate DPL.
+/// Intel SDM, combined Volumes 1, 2A-2D, 3A-3D and 4, revision 090, §§7.14.2 and 7.14.4:
+/// eight-byte stack-frame entries, 16-byte alignment before the push sequence, and the TSS stack switch
+/// with null SS on a CPL change. RF clearing and external-interrupt gate-DPL behavior follow the
+/// interrupt delivery rules; software `INT n` has a separate DPL check.
 pub fn deliver_external_interrupt_cpl0_set(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     vector: u8,
     context: AccessContext,
 ) -> Cpl0ExternalInterruptDelivery {
+    deliver_interrupt_through_gate(state, memory, vector, context, false)
+}
+
+/// The vector of a non-maskable interrupt (Intel SDM Vol. 3A 6.3, from memory: source not
+/// available in the repository).
+pub const NMI_VECTOR: u8 = 2;
+
+/// Deliver a non-maskable interrupt (S6-12b, SMP_CONTRACT.md 7) to the vector [`NMI_VECTOR`]
+/// through its IDT gate, with the frame and the gate rules of
+/// [`deliver_external_interrupt_cpl0_set`], and these differences:
+/// - RFLAGS.IF is not a delivery condition: an NMI is taken with IF = 0 or 1.
+/// - `state.nmi_blocked` is a delivery condition: while it is set (an NMI handler has not yet
+///   executed `IRETQ`) the delivery is `Refused(NmiBlocked)` before any write, and the caller
+///   keeps the request pending. A `Delivered` NMI sets `nmi_blocked`; `IRETQ` clears it.
+/// - A `Halted` CPU is woken: it is `Running` after a `Delivered` NMI (SMP_CONTRACT.md 3). A CPU in
+///   `Shutdown` or `WaitForSipi` is `Refused(ActivityOutsideProfile)`.
+///
+/// - IST (S6-12c): a gate with IST = n (1..=7; Linux uses IST 2 for the NMI gate) takes the new
+///   stack from `TSS.IST[n]` (8 bytes at `TR.base + 0x24 + 8 * (n - 1)`) instead of the current RSP
+///   (CPL0) or `TSS.RSP0` (CPL3), aligned down to 16; the frame is the same five words with the
+///   old SS and RSP, and SS is not reloaded at CPL0 (null SS from CPL3, as without IST). The read
+///   has the rules of `TSS.RSP0`: no task register, an entry beyond the TR limit, or a
+///   non-canonical address or value is a `Refused` before any write; a failed read is
+///   `Aborted(TssIstRead)`. IST 0 is the delivery as before. This is the only delivery with IST:
+///   `#PF`, `#GP`, `INT3` and an external interrupt through a gate with IST != 0 are still
+///   `Refused(UnsupportedIst)`.
+///
+/// Intel SDM Vol. 3A, 7.7 (IST1..IST7 at TSS offsets 0x24..=0x5B) and 6.14.5 (IST is bits 2:0 of
+/// byte 4 of the gate): from memory, the SDM text is not available in the repository.
+///
+/// Holding the NMI under the one-instruction STI/MOV SS shadow is conservative (the NMI waits one
+/// instruction; whether an NMI is held there is by memory, not checked against the SDM).
+pub fn deliver_nmi_cpl0_set(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+) -> Cpl0ExternalInterruptDelivery {
+    deliver_interrupt_through_gate(state, memory, NMI_VECTOR, context, true)
+}
+
+fn deliver_interrupt_through_gate(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    vector: u8,
+    context: AccessContext,
+    nmi: bool,
+) -> Cpl0ExternalInterruptDelivery {
     use Cpl0ExternalInterruptRefusal as Refusal;
     let refuse = Cpl0ExternalInterruptDelivery::Refused;
-    if context.mode != InstructionMode::Long64 || context.privilege != PrivilegeLevel::Ring0 {
+    let Some(from_cpl3) = delivery_source(state, context) else {
         return refuse(Refusal::NotRing0Long64);
-    }
-    if state.activity != Some(crate::CpuActivity::Running) {
+    };
+    let was_halted = state.activity == Some(crate::CpuActivity::Halted);
+    if state.activity != Some(crate::CpuActivity::Running) && !(nmi && was_halted) {
         return refuse(Refusal::ActivityOutsideProfile);
     }
-    if state.rflags & (1 << 9) == 0 {
+    if nmi {
+        if state.nmi_blocked {
+            return refuse(Refusal::NmiBlocked);
+        }
+    } else if state.rflags & (1 << 9) == 0 {
         return refuse(Refusal::InterruptsMasked);
     }
     if state.sti_shadow != Some(crate::StiShadow::Clear) {
         return refuse(Refusal::StiShadowActive);
     }
-    let gate = match resolve_cpl0_gate(state, memory, context, vector, false) {
+    let mut gate = match resolve_cpl0_gate(state, memory, context, vector, from_cpl3, nmi) {
         Ok(gate) => gate,
         Err(failure) => return external_gate_failure(failure),
     };
     if gate.trap_gate {
         return refuse(Refusal::TrapGateNotSupported);
     }
+    if gate.ist != 0 {
+        // S6-12c: IST wins over RSP0 (also from CPL3); only the NMI wrapper allows it.
+        match read_tss_ist(state, memory, context, gate.ist) {
+            Ok(stack) => gate.new_stack = Some(stack),
+            Err(failure) => return external_tss_ist_failure(failure),
+        }
+    } else if from_cpl3 {
+        match read_tss_rsp0(state, memory, context) {
+            Ok(rsp0) => gate.new_stack = Some(rsp0),
+            Err(failure) => return external_tss_failure(failure),
+        }
+    }
     let saved_rflags = (state.rflags & !(1 << 16)) | (1 << 1);
     let saved_rip = state.rip;
     match commit_cpl0_gate(state, memory, context, &gate, saved_rflags, saved_rip, None) {
-        Ok((target_rip, new_rsp)) => Cpl0ExternalInterruptDelivery::Delivered {
-            target_rip,
-            new_rsp,
-        },
+        Ok((target_rip, new_rsp)) => {
+            if nmi {
+                state.nmi_blocked = true;
+                state.activity = Some(crate::CpuActivity::Running);
+            }
+            Cpl0ExternalInterruptDelivery::Delivered {
+                target_rip,
+                new_rsp,
+            }
+        }
         Err(failure) => external_gate_failure(failure),
     }
 }
@@ -1410,6 +1587,42 @@ fn external_gate_failure(failure: GateFailure) -> Cpl0ExternalInterruptDelivery 
             };
             Cpl0ExternalInterruptDelivery::Aborted { phase, cause }
         }
+    }
+}
+
+fn external_tss_ist_failure(failure: TssIstFailure) -> Cpl0ExternalInterruptDelivery {
+    match failure {
+        TssIstFailure::MissingTaskRegister => Cpl0ExternalInterruptDelivery::Refused(
+            Cpl0ExternalInterruptRefusal::MissingTaskRegister,
+        ),
+        TssIstFailure::TssIstBeyondLimit => {
+            Cpl0ExternalInterruptDelivery::Refused(Cpl0ExternalInterruptRefusal::TssIstBeyondLimit)
+        }
+        TssIstFailure::NonCanonicalIst => {
+            Cpl0ExternalInterruptDelivery::Refused(Cpl0ExternalInterruptRefusal::NonCanonicalIst)
+        }
+        TssIstFailure::Aborted(cause) => Cpl0ExternalInterruptDelivery::Aborted {
+            phase: Cpl0ExternalInterruptPhase::TssIstRead,
+            cause,
+        },
+    }
+}
+
+fn external_tss_failure(failure: TssFailure) -> Cpl0ExternalInterruptDelivery {
+    match failure {
+        TssFailure::MissingTaskRegister => Cpl0ExternalInterruptDelivery::Refused(
+            Cpl0ExternalInterruptRefusal::MissingTaskRegister,
+        ),
+        TssFailure::TssRsp0BeyondLimit => {
+            Cpl0ExternalInterruptDelivery::Refused(Cpl0ExternalInterruptRefusal::TssRsp0BeyondLimit)
+        }
+        TssFailure::NonCanonicalRsp0 => {
+            Cpl0ExternalInterruptDelivery::Refused(Cpl0ExternalInterruptRefusal::NonCanonicalRsp0)
+        }
+        TssFailure::Aborted(cause) => Cpl0ExternalInterruptDelivery::Aborted {
+            phase: Cpl0ExternalInterruptPhase::TssRsp0Read,
+            cause,
+        },
     }
 }
 
@@ -1533,7 +1746,7 @@ pub fn deliver_int3_cpl0_set(
     if state.sti_shadow != Some(crate::StiShadow::Clear) {
         return refuse(Refusal::StiShadowActive);
     }
-    let gate = match resolve_cpl0_gate(state, memory, context, 3, false) {
+    let gate = match resolve_cpl0_gate(state, memory, context, 3, false, false) {
         Ok(gate) => gate,
         Err(failure) => return int3_gate_failure(failure),
     };

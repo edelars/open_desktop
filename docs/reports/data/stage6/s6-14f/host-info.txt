@@ -1,0 +1,17 @@
+S6-14f KVM real-mode oracle evidence
+Date: 2026-11-16
+Host: mini (senya@192.168.1.39), Linux mini 7.0.0-42-generic #42-Ubuntu SMP PREEMPT_DYNAMIC Thu Oct 15 08:06:44 UTC 2026 x86_64 GNU/Linux
+model name	: Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz
+gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+Host work dir: /tmp/od-s6-14f (kvm_runner rebuilt there from tools/kvm-runner/kvm_runner.c)
+Build: gcc -O2 -Wall -Wextra -Werror -std=c11 kvm_runner.c -o kvm_runner
+Run: see run-oracle.sh (from the repo root); each run adds --result-block GPA:SIZE for the stack words
+SHA-256 (host, /tmp/od-s6-14f):
+969ce3a20af037bb8849d05482b31f881320e9420ee9630701728fd0da4ce7f0  kvm_runner.c
+5f6a2aac6f4a49fc92c1ab611daeecc0e7474fe1ae6c2551647464ea10bf11b7  kvm_runner
+57de98e479e02c2a51a36bd34429e6f5a6c788b6e9244e1b8bba9f77a9ec3da4  a-call-success-tail-0000-1000.bin
+7d2263c03bae8c89303a46fb9d29b6d72fcd1b8252a78ab2b725ce901019553c  b-call-failure-tail-cf1-9f00-1000.bin
+522f7286bc33e2e92b14c35d6cc730b94ac59bd997cccc74bf557f979497bbd0  c-nested-call-push-imm8-popf-0000-1000.bin
+d017b65a2097c35b56d031baf2e116e7d0b16f30060753822c4c8b3bd95b6fd4  d-sp-wrap-call-ret-0000-1000.bin
+b027858c600409c3d4f3016fecdbde07c2807e00ea6c3b56a8b9c002ba09bd71  e-sp-wrap-stop-in-callee-0000-1000.bin
+SHA-256 of kvm_runner.c in the repo (local): 969ce3a20af037bb8849d05482b31f881320e9420ee9630701728fd0da4ce7f0

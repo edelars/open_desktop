@@ -1,0 +1,29 @@
+# features check (2026-11-18T05:19:08Z)
+## grep Cargo.toml (all) for the two features
+crates/od-machine/Cargo.toml:18:weak-host-ordering = []
+crates/od-machine/Cargo.toml:22:nonatomic-lock-test = []
+## grep Cargo.toml for 'features =' enabling od-machine features anywhere
+Cargo.toml:6:    "crates/od-machine",
+tools/bench/Cargo.toml:11:od-machine = { path = "../../crates/od-machine", features = ["experimental-translation-probe-cache"] }
+tools/runner/Cargo.toml:15:od-machine = { path = "../../crates/od-machine" }
+crates/od-host/Cargo.toml:14:od-machine = { path = "../od-machine" }
+crates/od-machine/Cargo.toml:2:name = "od-machine"
+## cargo metadata: od-machine features and default
+features: {"experimental-translation-probe-cache": [], "nonatomic-lock-test": [], "weak-host-ordering": []}
+default: (no default feature)
+od-host -> od-machine: features [] default-features True
+od-runner -> od-machine: features [] default-features True
+od-bench -> od-machine: features ['experimental-translation-probe-cache'] default-features True
+## cargo tree -p od-runner -e features (od-machine lines)
+9:│       ├── od-machine feature "default"
+10:│       │   └── od-machine v0.1.0 (/Users/senya/projects/open_desktop/crates/od-machine)
+33:├── od-machine feature "default" (*)
+## cargo tree -p od-machine -e features --charset ascii (own features)
+od-machine v0.1.0 (/Users/senya/projects/open_desktop/crates/od-machine)
+├── od-isa feature "default"
+│   └── od-isa v0.1.0 (/Users/senya/projects/open_desktop/crates/od-isa)
+├── od-jit feature "default"
+│   └── od-jit v0.1.0 (/Users/senya/projects/open_desktop/crates/od-jit)
+│       └── od-isa feature "default" (*)
+└── serde_json feature "default"
+    ├── serde_json v1.0.151

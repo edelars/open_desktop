@@ -21,7 +21,10 @@ pub mod storage_policy;
 use std::ptr::NonNull;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExecutableMemoryError {
@@ -103,6 +106,22 @@ pub type ExecutableMemory = PublishedCode;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 static MAP_JIT_REGION_LIVE: AtomicBool = AtomicBool::new(false);
+
+/// S4-15f: whether the process's single MAP_JIT region is currently owned by a
+/// [`PublishedCode`] or a [`PublishedArenaBackend`]. It is `true` from a
+/// successful publication until the owning value (and, for an arena, every
+/// handle) has dropped, so it shows when a JIT session has released its region.
+/// Always `false` where MAP_JIT is unsupported.
+pub fn map_jit_region_live() -> bool {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        MAP_JIT_REGION_LIVE.load(Ordering::Acquire)
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        false
+    }
+}
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 struct MapJitLease;
@@ -1017,29 +1036,7 @@ impl PublishedCode {
         >,
         PagedMemoryLoadV2Error,
     > {
-        use od_isa::memory::{InstructionMode, PrivilegeLevel};
-
-        if access_context.mode != InstructionMode::Long64 {
-            return Err(PagedMemoryLoadV2Error::UnsupportedMode);
-        }
-        if !matches!(
-            access_context.privilege,
-            PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3
-        ) {
-            return Err(PagedMemoryLoadV2Error::UnsupportedPrivilege(
-                access_context.privilege,
-            ));
-        }
-        if let Some(activity) = state.activity
-            && activity != od_isa::state::CpuActivity::Running
-        {
-            return Err(PagedMemoryLoadV2Error::UnsupportedCpuActivity(activity));
-        }
-        if let Some(shadow) = state.sti_shadow
-            && shadow != od_isa::state::StiShadow::Clear
-        {
-            return Err(PagedMemoryLoadV2Error::UnsupportedInterruptShadow(shadow));
-        }
+        check_paged_load_v2_context(state, access_context)?;
         let metadata = self
             .memory_operation_metadata_v2
             .as_ref()
@@ -1097,6 +1094,266 @@ impl PublishedCode {
                 self.execute_memory_load_v2(state, memory, access_context, 1, None, &stop_requested)
             },
         ))
+    }
+
+    /// S4-15e: execute exactly one admitted load form of
+    /// [`PagedFetchedForm`] other than the S4-15b `48 8B 03` (the dword
+    /// `8B 03` and the qword `[RBX+disp8]`, `[RBX+disp32]` and `[RIP+disp32]`
+    /// loads) through the tracked RAM-only adapter. `code` is the exact
+    /// instruction bytes the block was compiled from; every property of the
+    /// published block's metadata is checked against `form` and `code` before
+    /// anything is walked. The effective address is computed here from the CPU
+    /// state of this call, and an operand that would cross a 4 KiB page is
+    /// refused before any walk.
+    pub(crate) fn execute_paged_checked_load_v2(
+        &self,
+        form: PagedFetchedForm,
+        code: &[u8],
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+    ) -> Result<
+        od_machine::PagedMovMemoryScope<
+            Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
+        >,
+        PagedMemoryLoadV2Error,
+    > {
+        check_paged_load_v2_context(state, access_context)?;
+        let dword = match form {
+            PagedFetchedForm::DwordLoadRbx => true,
+            PagedFetchedForm::QwordLoadRbxDisp8
+            | PagedFetchedForm::QwordLoadRbxDisp32
+            | PagedFetchedForm::QwordLoadRipRel32 => false,
+            PagedFetchedForm::QwordLoadRbx | PagedFetchedForm::QwordStoreRbx => {
+                return Err(PagedMemoryLoadV2Error::UnsupportedBlock);
+            }
+        };
+        let (ir, flavor, operand_size) = if dword {
+            (
+                self.checked_dword_load_ir_metadata_v2.as_ref(),
+                od_jit::translation::CompileFlavor::S3_26cIrDwordMemoryLoadV2,
+                od_isa::OperandSize::Dword,
+            )
+        } else {
+            (
+                self.checked_load_ir_metadata_v2.as_ref(),
+                od_jit::translation::CompileFlavor::S3_26aIrMemoryLoadV2,
+                od_isa::OperandSize::Qword,
+            )
+        };
+        let ir = ir.ok_or(PagedMemoryLoadV2Error::UnsupportedBlock)?;
+        let site = ir.site;
+        let operand = site.operand();
+        let (base, displacement) = form.expected_operand(code);
+        if ir.compile_flavor != flavor
+            || usize::from(ir.source_len) != code.len()
+            || ir.source_bytes[..code.len()] != *code
+            || !site.matches_source_bytes(code, od_jit::runtime::MemorySiteOperationV2::Load)
+            || site.operation() != od_jit::runtime::MemorySiteOperationV2::Load
+            || site.instruction_index() != 0
+            || site.guest_rip() != ir.entry_rip
+            || ir.entry_rip.checked_add(code.len() as u64) != Some(site.next_rip())
+            || !site.has_supported_profile()
+            || site.destination() != Some(od_isa::Register::Rax as u8)
+            || site.source().is_some()
+            || operand.base != base
+            || operand.index.is_some()
+            || operand.scale != 1
+            || operand.displacement != displacement
+            || operand.address_size != od_isa::OperandSize::Qword
+            || operand.size != operand_size
+        {
+            return Err(PagedMemoryLoadV2Error::UnsupportedBlock);
+        }
+        if state.rip != ir.entry_rip {
+            return Err(PagedMemoryLoadV2Error::EntryRipMismatch {
+                expected: ir.entry_rip,
+                actual: state.rip,
+            });
+        }
+        if let Some(value) = state.cr3 {
+            return Err(PagedMemoryLoadV2Error::UnsupportedCpuCr3 { value });
+        }
+        let operand_address = operand.effective_address(state, site.next_rip());
+        if operand_address != form.effective_address(state, code) {
+            return Err(PagedMemoryLoadV2Error::UnsupportedBlock);
+        }
+        let length = form.operand_bytes();
+        if (operand_address & 0xfff) + u64::from(length) > 4096 {
+            return Err(PagedMemoryLoadV2Error::UnsupportedOperandRange {
+                address: operand_address,
+                length,
+            });
+        }
+        let paging = od_machine::Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+            .map_err(PagedMemoryLoadV2Error::Paging)?;
+        let stop_requested = AtomicU8::new(0);
+        Ok(if dword {
+            od_machine::with_paged_mov_dword_memory(bus, paging, state.rip, |memory| {
+                self.execute_ir_memory_dword_load_v2(
+                    state,
+                    memory,
+                    access_context,
+                    1,
+                    None,
+                    &stop_requested,
+                )
+            })
+        } else {
+            od_machine::with_paged_mov_memory(bus, paging, state.rip, |memory| {
+                self.execute_ir_memory_load_v2(
+                    state,
+                    memory,
+                    access_context,
+                    1,
+                    None,
+                    &stop_requested,
+                )
+            })
+        })
+    }
+
+    /// S4-15d: execute exactly one V2 `MOV [RBX],RAX` (`48 89 03`) through the
+    /// tracked machine RAM store adapter. The temporary `GuestMemory` borrow is
+    /// confined to this synchronous call and is not retained by the published
+    /// mapping.
+    ///
+    /// Crate-private: its only caller is [`PagedFetchedLoadSession`], which
+    /// derives `active_code_page` from the tracked fetch snapshot. The helper
+    /// trusts that argument for the code-invalidation report only; memory
+    /// safety does not depend on it (see the SAFETY comment below).
+    ///
+    /// `active_code_page` is the guest physical page the block's bytes were
+    /// fetched from. Before anything is walked or written the adapter refuses a
+    /// store whose operand is not wholly ordinary RAM (see
+    /// [`od_machine::with_paged_mov_store_memory`]); the refusal is reported in
+    /// `PagedMovStoreScope::refusal` and the helper leaves the CPU state
+    /// unchanged. A guest `#PF` is reported before the operand bytes were
+    /// written (Accessed bits of the walk stay committed).
+    ///
+    /// S4-16i: a store onto `active_code_page` is not refused. It commits by
+    /// the ordinary rules (walk, rights, Dirty bit, bytes) and the instruction
+    /// retires with RAX/RIP exactly as any other store. Because the block is
+    /// this single store, the block ends right after it, so the architectural
+    /// observation point is the end of the store and no later instruction is
+    /// run from the old bytes. The helper then turns the exit `Complete` into
+    /// [`MemoryOperationExecutionExitV2::CodeInvalidated`] when any committed
+    /// write range intersects the active page, so the caller must treat the
+    /// block as stale. The compiled block stays owned by the caller while this
+    /// borrowed call runs; it is not released here.
+    pub(crate) fn execute_paged_mov_rbx_rax_store_v2(
+        &self,
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+        active_code_page: od_machine::GuestPhysicalAddress,
+    ) -> Result<
+        od_machine::PagedMovStoreScope<
+            Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
+        >,
+        PagedMemoryLoadV2Error,
+    > {
+        check_paged_load_v2_context(state, access_context)?;
+        let metadata = self
+            .memory_operation_metadata_v2
+            .as_ref()
+            .ok_or(PagedMemoryLoadV2Error::UnsupportedBlock)?;
+        let source_len = usize::from(metadata.source_len);
+        let site = metadata.site;
+        let operand = site.operand();
+        if metadata.compile_flavor != od_jit::translation::CompileFlavor::S3_20bMemoryStoreV2
+            || source_len != 3
+            || metadata.source_bytes[..source_len] != PAGED_FETCHED_STORE_V2_BYTES
+            || !site.matches_source_bytes(
+                &metadata.source_bytes[..source_len],
+                od_jit::runtime::MemorySiteOperationV2::Store,
+            )
+            || site.operation() != od_jit::runtime::MemorySiteOperationV2::Store
+            || site.instruction_index() != 0
+            || site.guest_rip() != metadata.entry_rip
+            || metadata.entry_rip.checked_add(source_len as u64) != Some(site.next_rip())
+            || !site.has_supported_profile()
+            || site.source() != Some(od_isa::Register::Rax as u8)
+            || site.destination().is_some()
+            || operand.base != od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+            || operand.index.is_some()
+            || operand.scale != 1
+            || operand.displacement != 0
+            || operand.address_size != od_isa::OperandSize::Qword
+            || operand.size != od_isa::OperandSize::Qword
+        {
+            return Err(PagedMemoryLoadV2Error::UnsupportedBlock);
+        }
+        if state.rip != metadata.entry_rip {
+            return Err(PagedMemoryLoadV2Error::EntryRipMismatch {
+                expected: metadata.entry_rip,
+                actual: state.rip,
+            });
+        }
+        if let Some(value) = state.cr3 {
+            return Err(PagedMemoryLoadV2Error::UnsupportedCpuCr3 { value });
+        }
+        let operand_address = state.gpr[od_isa::Register::Rbx as usize];
+        if (operand_address & 0xfff) + 8 > 4096 {
+            return Err(PagedMemoryLoadV2Error::UnsupportedOperandRange {
+                address: operand_address,
+                length: 8,
+            });
+        }
+        let paging = od_machine::Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+            .map_err(PagedMemoryLoadV2Error::Paging)?;
+        let stop_requested = AtomicU8::new(0);
+        let mut scope = od_machine::with_paged_mov_store_memory(bus, paging, state.rip, |memory| {
+            // SAFETY: `execute_memory_store_v2` requires private synchronous
+            // ordinary RAM with no shared aliases, devices or re-entry.
+            // - The adapter writes only after a read-only probe proved the
+            //   operand wholly ordinary RAM (never MMIO, ROM or
+            //   framebuffer) and the tracked RAM walker (`access_tracked_ram`)
+            //   never dispatches a device.
+            // - `bus` is an exclusive `&mut` for the whole call, so no other
+            //   vCPU, DMA engine or host writer runs concurrently; effects
+            //   are synchronous and immediate.
+            // - `PhysicalMemory::write_bytes` validates the whole 8-byte
+            //   range before committing, so a failed write leaves RAM
+            //   unchanged.
+            // - The compiled block lives in the host MAP_JIT mapping and guest
+            //   RAM is a separate heap allocation, so a guest store can
+            //   never overwrite executable host code whatever
+            //   `active_code_page` holds: that argument does not take part
+            //   in memory safety. It only decides the `CodeInvalidated`
+            //   report (S4-16i) for a store on the page the block's source
+            //   bytes were fetched from. Writes to any other code page are
+            //   allowed too: the session re-keys on bytes and page
+            //   generation before every entry.
+            // - The adapter only pushes to local Vecs: it never calls back
+            //   into this runtime and does not unwind through the block.
+            unsafe {
+                self.execute_memory_store_v2(
+                    state,
+                    memory,
+                    access_context,
+                    1,
+                    None,
+                    &stop_requested,
+                )
+            }
+        });
+        let page_start = active_code_page.get() & !0xfff;
+        let page_end = u128::from(page_start) + 0x1000;
+        if let Ok(result) = &mut scope.memory.callback_result
+            && result.exit == MemoryOperationExecutionExitV2::Complete
+            && scope.memory.committed_writes.iter().any(|range| {
+                u128::from(range.start().get()) < page_end
+                    && range.end_exclusive() > u128::from(page_start)
+            })
+        {
+            result.exit = MemoryOperationExecutionExitV2::CodeInvalidated;
+        }
+        Ok(scope)
     }
 
     /// Execute a verified V2 MOV store using only a backend whose ownership
@@ -1801,6 +2058,906 @@ pub enum PagedMemoryLoadV2Error {
     EntryRipMismatch { expected: u64, actual: u64 },
     UnsupportedCpuCr3 { value: u64 },
     Paging(od_machine::ProbeConfigError),
+}
+
+/// The only instruction form S4-15b admits from guest RAM: `MOV RAX,[RBX]`.
+pub const PAGED_FETCHED_LOAD_V2_BYTES: [u8; 3] = [0x48, 0x8b, 0x03];
+
+/// The one store form S4-15d adds next to the load: `MOV [RBX],RAX`.
+pub const PAGED_FETCHED_STORE_V2_BYTES: [u8; 3] = [0x48, 0x89, 0x03];
+
+/// Whether a call executed a block admitted by an earlier call or admitted a
+/// fresh one from the bytes it had just fetched.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PagedFetchAdmission {
+    Admitted,
+    Reused,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedFetchedLoadErrorKind {
+    /// Refused before the instruction fetch: CPU context, CR3 ownership,
+    /// operand range or paging controls. No page walk happened.
+    Load(PagedMemoryLoadV2Error),
+    /// Tracked instruction fetch failed (execute rights, NX, U/S, missing
+    /// translation, non-RAM or cross-page code). Nothing was executed.
+    Fetch(od_machine::TrackedCodeSnapshotError),
+    /// The fetched bytes are not an admitted form: exactly `48 8B 03`, or also
+    /// `48 89 03` on the entries that admit the store (S4-15d). Any previously
+    /// admitted block was dropped and nothing was executed.
+    UnsupportedForm {
+        bytes: Vec<u8>,
+    },
+    Compile(od_jit::memory_load_v2::MemoryLoadCompileErrorV2),
+    Publish(ExecutableMemoryError),
+}
+
+/// Refusal plus every page-walk write the instruction fetch had already
+/// committed (Accessed bits are an effect even when the fetch later faults).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedFetchedLoadError {
+    pub kind: PagedFetchedLoadErrorKind,
+    pub fetch_committed_writes: Vec<od_machine::GuestPhysicalRange>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedFetchedLoadReport {
+    pub fetched_linear_base: u64,
+    pub fetched_physical_page: od_machine::GuestPhysicalAddress,
+    pub fetched_generation: u64,
+    pub fetched_bytes: [u8; 3],
+    pub fetch_committed_writes: Vec<od_machine::GuestPhysicalRange>,
+    pub admission: PagedFetchAdmission,
+    pub execution: od_machine::PagedMovMemoryScope<
+        Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
+    >,
+    /// S4-15d: set when the store adapter refused the operand before any walk
+    /// or write (non-RAM target or an operand the probe cannot translate).
+    /// Always `None` for the load form. A store onto the block's own code page
+    /// is not a refusal since S4-16i: it commits and reports the exit
+    /// `CodeInvalidated` in `execution`.
+    pub store_refusal: Option<od_machine::PagedStoreRefusal>,
+}
+
+struct AdmittedFetchedLoad {
+    linear_base: u64,
+    physical_page: od_machine::GuestPhysicalAddress,
+    generation: u64,
+    bytes: Vec<u8>,
+    form: PagedFetchedForm,
+    /// S4-16i: set once the block's own store reported `CodeInvalidated`. A
+    /// retired block is never reused, whatever the key says: the next entry
+    /// drops it and admits the form again from the new bytes. Its executable
+    /// memory stays owned until then (or until reset or drop).
+    retired: bool,
+    published: PublishedCode,
+}
+
+/// S4-15b: a JIT session whose block is compiled from bytes read out of guest
+/// RAM. Every call performs a tracked instruction fetch of the code bytes at
+/// RIP (execute/NX/U/S checked for the caller's CPL, code Accessed bits
+/// committed), so rights are re-checked on each execution. A block admitted
+/// earlier is reused only while the fetched bytes, the physical code page and
+/// that page's write generation are all unchanged; otherwise the block is
+/// dropped and the form is admitted again from the new bytes.
+///
+/// The session owns at most one published block (the host has one MAP_JIT
+/// region). The data operand runs through `execute_paged_mov_rax_rbx_v2`, so
+/// it reaches RAM only via the scoped tracked adapter.
+#[derive(Default)]
+pub struct PagedFetchedLoadSession {
+    admitted: Option<AdmittedFetchedLoad>,
+    admissions: u64,
+    resets: u64,
+}
+
+impl PagedFetchedLoadSession {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of blocks compiled and published from fetched bytes so far.
+    pub fn admissions(&self) -> u64 {
+        self.admissions
+    }
+
+    pub fn has_admitted_block(&self) -> bool {
+        self.admitted.is_some()
+    }
+
+    /// Number of resets that released an admitted block (S4-15f).
+    pub fn resets(&self) -> u64 {
+        self.resets
+    }
+
+    /// S4-15f: session reset. Drops the admitted block, which releases its
+    /// MAP_JIT region (munmap and the process-wide lease), so the next entry
+    /// admits the form again (`Admitted`, never `Reused`). Returns whether a
+    /// block was released; a reset with nothing admitted does nothing, so it
+    /// is idempotent and can never release a region twice.
+    ///
+    /// A reset takes `&mut self`, as do all execution entries: the borrow
+    /// checker makes it a safe point between calls and rules out a reset from
+    /// inside an executing block. The block of a call is therefore alive until
+    /// that call returns and is released only here, on invalidation (the next
+    /// call dropping a stale block before it compiles), or when the session
+    /// drops. `admissions` is cumulative and survives a reset. The guest CPU
+    /// state and RAM are not touched. Single vCPU, synchronous only: deferred
+    /// retirement for other vCPUs is not part of this contract.
+    pub fn reset(&mut self) -> bool {
+        let released = self.admitted.take().is_some();
+        if released {
+            self.resets += 1;
+        }
+        released
+    }
+
+    /// S4-16i: marks the admitted block retired when its own store reported
+    /// `CodeInvalidated`. Called after the execution call has returned, so the
+    /// block was borrowed (hence alive) for the whole native call; nothing is
+    /// released here. Release happens at the next admission, reset or drop.
+    fn retire_after_code_invalidation(
+        &mut self,
+        execution: &od_machine::PagedMovMemoryScope<
+            Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
+        >,
+    ) {
+        if let Ok(result) = &execution.callback_result
+            && result.exit == MemoryOperationExecutionExitV2::CodeInvalidated
+            && let Some(admitted) = self.admitted.as_mut()
+        {
+            admitted.retired = true;
+        }
+    }
+
+    /// S4-15b entry: admits only the load `48 8B 03`. Any other bytes
+    /// (including the store `48 89 03`) are `UnsupportedForm`. This also holds
+    /// when the same session already holds a store block admitted through
+    /// [`Self::execute_with_store`] for the same bytes: that block is not run
+    /// through this entry (the refusal has no effect beyond the fetch's
+    /// Accessed bits and leaves the block admitted).
+    pub fn execute(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+    ) -> Result<PagedFetchedLoadReport, PagedFetchedLoadError> {
+        self.execute_form(state, bus, cr3, efer, access_context, false)
+    }
+
+    /// S4-15d entry: like [`Self::execute`] but also admits the store
+    /// `48 89 03` (`MOV [RBX],RAX`) from the same tracked fetch snapshot. The
+    /// store runs through the tracked store adapter
+    /// ([`od_machine::with_paged_mov_store_memory`]): page walk checks (Present,
+    /// Write, User), Accessed bits, then the Dirty bit and the operand bytes. It
+    /// is refused before any walk or write when the operand is not wholly
+    /// ordinary RAM (`PagedFetchedLoadReport::store_refusal`). A store onto the
+    /// block's own code page (S4-16i) commits and ends in the exit
+    /// `CodeInvalidated`: the admitted block is retired, so the next entry
+    /// admits the form again from the new bytes and the old block never runs
+    /// again. The retired block's executable memory stays owned by the session
+    /// until the next admission, [`Self::reset`] or drop.
+    pub fn execute_with_store(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+    ) -> Result<PagedFetchedLoadReport, PagedFetchedLoadError> {
+        self.execute_form(state, bus, cr3, efer, access_context, true)
+    }
+
+    fn execute_form(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+        admit_store: bool,
+    ) -> Result<PagedFetchedLoadReport, PagedFetchedLoadError> {
+        let refuse = |kind| PagedFetchedLoadError {
+            kind,
+            fetch_committed_writes: Vec::new(),
+        };
+        let load = |error| refuse(PagedFetchedLoadErrorKind::Load(error));
+        check_paged_load_v2_context(state, access_context).map_err(load)?;
+        if let Some(value) = state.cr3 {
+            return Err(load(PagedMemoryLoadV2Error::UnsupportedCpuCr3 { value }));
+        }
+        let operand_address = state.gpr[od_isa::Register::Rbx as usize];
+        if (operand_address & 0xfff) + 8 > 4096 {
+            return Err(load(PagedMemoryLoadV2Error::UnsupportedOperandRange {
+                address: operand_address,
+                length: 8,
+            }));
+        }
+        let paging = od_machine::Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+            .map_err(|error| load(PagedMemoryLoadV2Error::Paging(error)))?;
+
+        let rip = state.rip;
+        let mut fetch_committed_writes = Vec::new();
+        let snapshot = bus
+            .tracked_code_snapshot_with_callback(
+                &paging,
+                rip,
+                PAGED_FETCHED_LOAD_V2_BYTES.len(),
+                access_context,
+                |range| fetch_committed_writes.push(range),
+            )
+            .map_err(|error| PagedFetchedLoadError {
+                kind: PagedFetchedLoadErrorKind::Fetch(error),
+                fetch_committed_writes: fetch_committed_writes.clone(),
+            })?;
+        let fail = |kind, writes: &Vec<_>| PagedFetchedLoadError {
+            kind,
+            fetch_committed_writes: writes.clone(),
+        };
+        let fetched_bytes: [u8; 3] = snapshot.bytes.as_slice().try_into().map_err(|_| {
+            fail(
+                PagedFetchedLoadErrorKind::UnsupportedForm {
+                    bytes: snapshot.bytes.clone(),
+                },
+                &fetch_committed_writes,
+            )
+        })?;
+
+        let reusable = self.admitted.as_ref().is_some_and(|admitted| {
+            !admitted.retired
+                && admitted.linear_base == snapshot.linear_base
+                && admitted.physical_page == snapshot.physical_base
+                && admitted.generation == snapshot.backing_generation
+                && admitted.bytes == fetched_bytes
+        });
+        let admission = if reusable {
+            // The reuse key does not know which entry admitted the block. A
+            // store block admitted through `execute_with_store` must not run
+            // through the load-only entry: refuse it as an unsupported form,
+            // before anything executes (the block stays admitted for the
+            // store entry; only the fetch's Accessed bits were committed).
+            if !admit_store && fetched_bytes == PAGED_FETCHED_STORE_V2_BYTES {
+                return Err(fail(
+                    PagedFetchedLoadErrorKind::UnsupportedForm {
+                        bytes: fetched_bytes.to_vec(),
+                    },
+                    &fetch_committed_writes,
+                ));
+            }
+            PagedFetchAdmission::Reused
+        } else {
+            // Drop the stale block first: the host has one executable region
+            // and an old block must never run against new bytes.
+            self.admitted = None;
+            let is_store = fetched_bytes == PAGED_FETCHED_STORE_V2_BYTES;
+            if fetched_bytes != PAGED_FETCHED_LOAD_V2_BYTES && !(admit_store && is_store) {
+                return Err(fail(
+                    PagedFetchedLoadErrorKind::UnsupportedForm {
+                        bytes: fetched_bytes.to_vec(),
+                    },
+                    &fetch_committed_writes,
+                ));
+            }
+            let view = od_jit::block::CodeView::new(rip, &fetched_bytes).map_err(|_| {
+                fail(
+                    PagedFetchedLoadErrorKind::UnsupportedForm {
+                        bytes: fetched_bytes.to_vec(),
+                    },
+                    &fetch_committed_writes,
+                )
+            })?;
+            let compile_error = |error| {
+                fail(
+                    PagedFetchedLoadErrorKind::Compile(error),
+                    &fetch_committed_writes,
+                )
+            };
+            let publish_error = |error| {
+                fail(
+                    PagedFetchedLoadErrorKind::Publish(error),
+                    &fetch_committed_writes,
+                )
+            };
+            let published = if is_store {
+                let block = od_jit::memory_load_v2::compile_memory_store_block_v2(view, rip)
+                    .map_err(compile_error)?;
+                PublishedCode::publish_memory_store_v2(&block).map_err(publish_error)?
+            } else {
+                let block = od_jit::memory_load_v2::compile_memory_load_block_v2(view, rip)
+                    .map_err(compile_error)?;
+                PublishedCode::publish_memory_load_v2(&block).map_err(publish_error)?
+            };
+            self.admitted = Some(AdmittedFetchedLoad {
+                linear_base: snapshot.linear_base,
+                physical_page: snapshot.physical_base,
+                generation: snapshot.backing_generation,
+                bytes: fetched_bytes.to_vec(),
+                form: if is_store {
+                    PagedFetchedForm::QwordStoreRbx
+                } else {
+                    PagedFetchedForm::QwordLoadRbx
+                },
+                retired: false,
+                published,
+            });
+            self.admissions += 1;
+            PagedFetchAdmission::Admitted
+        };
+        let admitted = self
+            .admitted
+            .as_ref()
+            .expect("admitted block is present after admission or reuse");
+        let load_error = |error| {
+            fail(
+                PagedFetchedLoadErrorKind::Load(error),
+                &fetch_committed_writes,
+            )
+        };
+        let (execution, store_refusal) = if admitted.bytes == PAGED_FETCHED_STORE_V2_BYTES {
+            let scope = admitted
+                .published
+                .execute_paged_mov_rbx_rax_store_v2(
+                    state,
+                    bus,
+                    cr3,
+                    efer,
+                    access_context,
+                    snapshot.physical_base,
+                )
+                .map_err(load_error)?;
+            (scope.memory, scope.refusal)
+        } else {
+            let scope = admitted
+                .published
+                .execute_paged_mov_rax_rbx_v2(state, bus, cr3, efer, access_context)
+                .map_err(load_error)?;
+            (scope, None)
+        };
+        self.retire_after_code_invalidation(&execution);
+        Ok(PagedFetchedLoadReport {
+            fetched_linear_base: snapshot.linear_base,
+            fetched_physical_page: snapshot.physical_base,
+            fetched_generation: snapshot.backing_generation,
+            fetched_bytes,
+            fetch_committed_writes,
+            admission,
+            execution,
+            store_refusal,
+        })
+    }
+}
+
+/// S4-15e: the instruction forms [`PagedFetchedLoadSession::execute_forms`]
+/// admits from guest RAM. Everything else is `UnsupportedForm`.
+///
+/// | form | bytes | operand |
+/// |------|-------|---------|
+/// | `QwordLoadRbx` | `48 8B 03` | qword `[RBX]` into RAX |
+/// | `QwordStoreRbx` | `48 89 03` | qword RAX into `[RBX]` |
+/// | `DwordLoadRbx` | `8B 03` | dword `[RBX]` into EAX (zero-extended into RAX) |
+/// | `QwordLoadRbxDisp8` | `48 8B 43 ib` | qword `[RBX+disp8]` into RAX |
+/// | `QwordLoadRbxDisp32` | `48 8B 83 id` | qword `[RBX+disp32]` into RAX |
+/// | `QwordLoadRipRel32` | `48 8B 05 id` | qword `[RIP+disp32]` into RAX, RIP of the next instruction |
+///
+/// The displacement is sign-extended and added to the full 64-bit base. The
+/// interpreter's paged allowlist (`step_paged_mov`, `step_paged_mov_dword_read`)
+/// has no displacement, RIP-relative or `67`-prefixed form, so the displacement
+/// forms and every store with a displacement or `67` prefix are admitted (loads)
+/// or refused (stores, `67`) here on the JIT's own authority only; see the S4-15e
+/// report for what the tests compare them with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PagedFetchedForm {
+    QwordLoadRbx,
+    QwordStoreRbx,
+    DwordLoadRbx,
+    QwordLoadRbxDisp8,
+    QwordLoadRbxDisp32,
+    QwordLoadRipRel32,
+}
+
+enum FormProbe {
+    Complete(PagedFetchedForm),
+    NeedBytes(usize),
+    Unsupported,
+}
+
+impl PagedFetchedForm {
+    /// Classifies the bytes fetched so far. `bytes` is always the exact prefix
+    /// of the instruction fetched at RIP (2, 3, 4 or 7 bytes).
+    fn probe(bytes: &[u8]) -> FormProbe {
+        match bytes {
+            [0x8b, 0x03] => FormProbe::Complete(Self::DwordLoadRbx),
+            [_, _] => FormProbe::NeedBytes(3),
+            [0x48, 0x8b, 0x03] => FormProbe::Complete(Self::QwordLoadRbx),
+            [0x48, 0x89, 0x03] => FormProbe::Complete(Self::QwordStoreRbx),
+            [0x48, 0x8b, 0x43] => FormProbe::NeedBytes(4),
+            [0x48, 0x8b, 0x43, _] => FormProbe::Complete(Self::QwordLoadRbxDisp8),
+            [0x48, 0x8b, 0x83 | 0x05] => FormProbe::NeedBytes(7),
+            [0x48, 0x8b, 0x83, _, _, _, _] => FormProbe::Complete(Self::QwordLoadRbxDisp32),
+            [0x48, 0x8b, 0x05, _, _, _, _] => FormProbe::Complete(Self::QwordLoadRipRel32),
+            _ => FormProbe::Unsupported,
+        }
+    }
+
+    /// Operand width in bytes.
+    pub fn operand_bytes(self) -> u8 {
+        match self {
+            Self::DwordLoadRbx => 4,
+            _ => 8,
+        }
+    }
+
+    /// Expected decoded operand shape for the instruction bytes `code`.
+    fn expected_operand(self, code: &[u8]) -> (od_isa::long_decode::AddressBase, i64) {
+        use od_isa::long_decode::AddressBase;
+        let rbx = AddressBase::Register(od_isa::Register::Rbx);
+        let disp32 = || i64::from(i32::from_le_bytes([code[3], code[4], code[5], code[6]]));
+        match self {
+            Self::QwordLoadRbx | Self::QwordStoreRbx | Self::DwordLoadRbx => (rbx, 0),
+            Self::QwordLoadRbxDisp8 => (rbx, i64::from(code[3] as i8)),
+            Self::QwordLoadRbxDisp32 => (rbx, disp32()),
+            Self::QwordLoadRipRel32 => (AddressBase::NextRip, disp32()),
+        }
+    }
+
+    /// The effective address from the CPU state of this call: base register
+    /// (or the RIP after the whole instruction) plus the sign-extended
+    /// displacement. Computed per call, never cached in the block.
+    fn effective_address(self, state: &od_isa::LongModeState, code: &[u8]) -> u64 {
+        let (base, displacement) = self.expected_operand(code);
+        let base = match base {
+            od_isa::long_decode::AddressBase::Register(register) => state.gpr[register as usize],
+            od_isa::long_decode::AddressBase::NextRip => state.rip.wrapping_add(code.len() as u64),
+            od_isa::long_decode::AddressBase::None => 0,
+        };
+        base.wrapping_add_signed(displacement)
+    }
+}
+
+/// Report of one [`PagedFetchedLoadSession::execute_forms`] call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedFetchedFormReport {
+    pub form: PagedFetchedForm,
+    pub fetched_linear_base: u64,
+    pub fetched_physical_page: od_machine::GuestPhysicalAddress,
+    pub fetched_generation: u64,
+    /// Exactly the instruction bytes (2 to 7) the block was compiled from.
+    pub fetched_code: Vec<u8>,
+    pub fetch_committed_writes: Vec<od_machine::GuestPhysicalRange>,
+    pub admission: PagedFetchAdmission,
+    pub execution: od_machine::PagedMovMemoryScope<
+        Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
+    >,
+    /// Set when the store adapter refused the operand before any walk or write.
+    /// Always `None` for a load form. A store onto the block's own page is not
+    /// a refusal (S4-16i): see `execution` for `CodeInvalidated`.
+    pub store_refusal: Option<od_machine::PagedStoreRefusal>,
+}
+
+impl PagedFetchedLoadSession {
+    /// S4-15e entry: admits the forms of [`PagedFetchedForm`] from the tracked
+    /// instruction fetch. The legacy entries ([`Self::execute`],
+    /// [`Self::execute_with_store`], [`Self::execute_or_interpret`]) are
+    /// unchanged and still admit only `48 8B 03` / `48 89 03`.
+    ///
+    /// Differences from the legacy entries:
+    /// - the instruction length is not fixed: 2 bytes are fetched first, then
+    ///   one more or up to the full length the opcode bytes need, each through
+    ///   the tracked fetch (execute/NX/U/S, code Accessed bits). Code that does
+    ///   not fit in the 4 KiB page of RIP is refused as a fetch error, not
+    ///   faulted;
+    /// - the operand range is checked after the fetch, from the effective
+    ///   address of the fetched form (`UnsupportedOperandRange`, the fetch's
+    ///   Accessed bits stay committed and are reported in the error);
+    /// - there is no interpreter fallback: the interpreter has no displacement or
+    ///   RIP-relative form, so a refusal ends the step without executing it.
+    ///
+    /// The block is reused only while RIP, the physical code page, its write
+    /// generation and every fetched byte are unchanged. The effective address
+    /// is computed from RIP and the registers on every call, so a reused block
+    /// never carries an address of an earlier call.
+    pub fn execute_forms(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+    ) -> Result<PagedFetchedFormReport, PagedFetchedLoadError> {
+        let refuse = |kind| PagedFetchedLoadError {
+            kind,
+            fetch_committed_writes: Vec::new(),
+        };
+        let load = |error| refuse(PagedFetchedLoadErrorKind::Load(error));
+        check_paged_load_v2_context(state, access_context).map_err(load)?;
+        if let Some(value) = state.cr3 {
+            return Err(load(PagedMemoryLoadV2Error::UnsupportedCpuCr3 { value }));
+        }
+        let paging = od_machine::Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+            .map_err(|error| load(PagedMemoryLoadV2Error::Paging(error)))?;
+
+        let rip = state.rip;
+        let mut fetch_committed_writes = Vec::new();
+        let mut wanted = 2usize;
+        let (snapshot, form) = loop {
+            let snapshot = bus
+                .tracked_code_snapshot_with_callback(
+                    &paging,
+                    rip,
+                    wanted,
+                    access_context,
+                    |range| fetch_committed_writes.push(range),
+                )
+                .map_err(|error| PagedFetchedLoadError {
+                    kind: PagedFetchedLoadErrorKind::Fetch(error),
+                    fetch_committed_writes: fetch_committed_writes.clone(),
+                })?;
+            match PagedFetchedForm::probe(&snapshot.bytes) {
+                FormProbe::Complete(form) => break (snapshot, form),
+                FormProbe::NeedBytes(more) => wanted = more,
+                FormProbe::Unsupported => {
+                    // Nothing runs, and no earlier block may run against these
+                    // bytes later: drop it as the legacy entry does.
+                    self.admitted = None;
+                    return Err(PagedFetchedLoadError {
+                        kind: PagedFetchedLoadErrorKind::UnsupportedForm {
+                            bytes: snapshot.bytes,
+                        },
+                        fetch_committed_writes,
+                    });
+                }
+            }
+        };
+        let fail = |kind, writes: &Vec<_>| PagedFetchedLoadError {
+            kind,
+            fetch_committed_writes: writes.clone(),
+        };
+
+        let operand_address = form.effective_address(state, &snapshot.bytes);
+        let operand_len = form.operand_bytes();
+        if (operand_address & 0xfff) + u64::from(operand_len) > 4096 {
+            return Err(fail(
+                PagedFetchedLoadErrorKind::Load(PagedMemoryLoadV2Error::UnsupportedOperandRange {
+                    address: operand_address,
+                    length: operand_len,
+                }),
+                &fetch_committed_writes,
+            ));
+        }
+
+        let reusable = self.admitted.as_ref().is_some_and(|admitted| {
+            !admitted.retired
+                && admitted.linear_base == snapshot.linear_base
+                && admitted.physical_page == snapshot.physical_base
+                && admitted.generation == snapshot.backing_generation
+                && admitted.bytes == snapshot.bytes
+        });
+        let admission = if reusable {
+            PagedFetchAdmission::Reused
+        } else {
+            // Drop the stale block first: one MAP_JIT region, and an old block
+            // must never run against new bytes.
+            self.admitted = None;
+            let view = od_jit::block::CodeView::new(rip, &snapshot.bytes).map_err(|_| {
+                fail(
+                    PagedFetchedLoadErrorKind::UnsupportedForm {
+                        bytes: snapshot.bytes.clone(),
+                    },
+                    &fetch_committed_writes,
+                )
+            })?;
+            let compile_error = |error| {
+                fail(
+                    PagedFetchedLoadErrorKind::Compile(error),
+                    &fetch_committed_writes,
+                )
+            };
+            let publish_error = |error| {
+                fail(
+                    PagedFetchedLoadErrorKind::Publish(error),
+                    &fetch_committed_writes,
+                )
+            };
+            let published = match form {
+                PagedFetchedForm::QwordStoreRbx => {
+                    let block = od_jit::memory_load_v2::compile_memory_store_block_v2(view, rip)
+                        .map_err(compile_error)?;
+                    PublishedCode::publish_memory_store_v2(&block).map_err(publish_error)?
+                }
+                PagedFetchedForm::QwordLoadRbx => {
+                    let block = od_jit::memory_load_v2::compile_memory_load_block_v2(view, rip)
+                        .map_err(compile_error)?;
+                    PublishedCode::publish_memory_load_v2(&block).map_err(publish_error)?
+                }
+                PagedFetchedForm::DwordLoadRbx => {
+                    let block =
+                        od_jit::memory_load_v2::compile_ir_memory_dword_load_block_v2(view, rip)
+                            .map_err(compile_error)?;
+                    PublishedCode::publish_ir_memory_dword_load_v2(&block).map_err(publish_error)?
+                }
+                PagedFetchedForm::QwordLoadRbxDisp8
+                | PagedFetchedForm::QwordLoadRbxDisp32
+                | PagedFetchedForm::QwordLoadRipRel32 => {
+                    let block = od_jit::memory_load_v2::compile_ir_memory_load_block_v2(view, rip)
+                        .map_err(compile_error)?;
+                    PublishedCode::publish_ir_memory_load_v2(&block).map_err(publish_error)?
+                }
+            };
+            self.admitted = Some(AdmittedFetchedLoad {
+                linear_base: snapshot.linear_base,
+                physical_page: snapshot.physical_base,
+                generation: snapshot.backing_generation,
+                bytes: snapshot.bytes.clone(),
+                form,
+                retired: false,
+                published,
+            });
+            self.admissions += 1;
+            PagedFetchAdmission::Admitted
+        };
+        let admitted = self
+            .admitted
+            .as_ref()
+            .expect("admitted block is present after admission or reuse");
+        debug_assert_eq!(admitted.form, form);
+        let load_error = |error| {
+            fail(
+                PagedFetchedLoadErrorKind::Load(error),
+                &fetch_committed_writes,
+            )
+        };
+        let (execution, store_refusal) = match form {
+            PagedFetchedForm::QwordStoreRbx => {
+                let scope = admitted
+                    .published
+                    .execute_paged_mov_rbx_rax_store_v2(
+                        state,
+                        bus,
+                        cr3,
+                        efer,
+                        access_context,
+                        snapshot.physical_base,
+                    )
+                    .map_err(load_error)?;
+                (scope.memory, scope.refusal)
+            }
+            PagedFetchedForm::QwordLoadRbx => (
+                admitted
+                    .published
+                    .execute_paged_mov_rax_rbx_v2(state, bus, cr3, efer, access_context)
+                    .map_err(load_error)?,
+                None,
+            ),
+            _ => (
+                admitted
+                    .published
+                    .execute_paged_checked_load_v2(
+                        form,
+                        &admitted.bytes,
+                        state,
+                        bus,
+                        cr3,
+                        efer,
+                        access_context,
+                    )
+                    .map_err(load_error)?,
+                None,
+            ),
+        };
+        self.retire_after_code_invalidation(&execution);
+        Ok(PagedFetchedFormReport {
+            form,
+            fetched_linear_base: snapshot.linear_base,
+            fetched_physical_page: snapshot.physical_base,
+            fetched_generation: snapshot.backing_generation,
+            fetched_code: snapshot.bytes,
+            fetch_committed_writes,
+            admission,
+            execution,
+            store_refusal,
+        })
+    }
+}
+
+/// Which engine executed the step of [`PagedFetchedLoadSession::execute_or_interpret`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PagedStepPath {
+    Jit,
+    Interpreter,
+}
+
+/// Why the JIT path did not execute the step. Every variant means the
+/// instruction itself was not executed: RAX, RIP, RFLAGS and guest data are
+/// untouched and no device was reached. Page-walk Accessed bits may already be
+/// committed; they are idempotent and are kept in the merged write list.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedStepFallbackReason {
+    /// Refused before running: CPU context, CR3 ownership, operand range,
+    /// paging controls, instruction fetch (including a fetch #PF), an
+    /// unsupported form, compile or publish.
+    Refused(PagedFetchedLoadErrorKind),
+    /// The JIT ran its checked helper and the RAM-only adapter refused the data
+    /// operand (MMIO or another non-RAM target). The helper left the CPU state
+    /// unchanged and never reached a device.
+    OperandMemoryError(MemoryOperationMemoryErrorV2),
+    /// S4-15d: the store adapter refused the operand before any page walk or
+    /// write (non-RAM target or an operand the probe cannot translate, e.g. a
+    /// 2 MiB leaf). No RAM byte, Accessed or
+    /// Dirty bit of the data walk changed; the CPU state is unchanged. The
+    /// interpreter then runs once as for any refusal; its allowlist has
+    /// `48 89 0B` but not `48 89 03`, so it reports `Unsupported` and retires
+    /// nothing: such a store is not executed at all (it was not before S4-15d
+    /// either).
+    StoreTargetRefused(od_machine::PagedStoreRefusal),
+}
+
+/// A JIT result that must not be repeated by the interpreter.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedStepError {
+    /// The interpreter refused its inputs (paging controls or RFLAGS
+    /// definedness) before it executed anything.
+    Interpreter(od_machine::PagedMovStepError),
+    /// The JIT helper boundary failed in a way that does not prove the CPU
+    /// state is unchanged. The step is not retried.
+    JitHostFailure(MemoryOperationExecutionErrorV2),
+}
+
+/// Result of one dispatched step.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedStepOutcome {
+    /// The JIT executed the instruction (completed or delivered a guest #PF).
+    Jit(PagedFetchedLoadReport),
+    /// The interpreter executed the step exactly once after a JIT refusal that
+    /// had no instruction effects. `committed_writes` is the full ordered list of
+    /// page-walk writes: the refused JIT attempt first, then the interpreter's.
+    /// It equals the list a pure interpreter step reports on identical RAM.
+    Interpreter {
+        reason: PagedStepFallbackReason,
+        report: od_machine::PagedMovStepReport,
+        committed_writes: Vec<od_machine::GuestPhysicalRange>,
+    },
+}
+
+impl PagedStepOutcome {
+    pub fn path(&self) -> PagedStepPath {
+        match self {
+            Self::Jit(_) => PagedStepPath::Jit,
+            Self::Interpreter { .. } => PagedStepPath::Interpreter,
+        }
+    }
+}
+
+impl PagedFetchedLoadSession {
+    /// S4-15c: one step with an interpreter fallback.
+    ///
+    /// The JIT path of [`Self::execute_with_store`] (the load of S4-15b and, since
+    /// S4-15d, the store `48 89 03`) runs first. If it executed the
+    /// instruction (success or a guest #PF with its committed Accessed bits)
+    /// that result is final and the interpreter is never invoked. If it refused
+    /// without executing the instruction, `od_machine::step_paged_mov` runs
+    /// exactly once on the same state and bus.
+    ///
+    /// A refusal has no instruction effects by construction: the only effects a
+    /// refused attempt can have are page-walk Accessed-bit commits (instruction
+    /// fetch, or for a load the data walk before the RAM-only adapter refused a
+    /// non-RAM operand). A refused store commits no data-walk bit at all: the
+    /// store adapter decides (non-RAM, untranslatable operand)
+    /// from a read-only probe before it walks, so only the fetch writes remain,
+    /// as in a pure interpreter step. Re-walking is idempotent for the bits
+    /// that were committed, so the interpreter commits nothing twice, and the
+    /// attempt's writes are prepended to the reported list. A JIT helper failure that does not prove the state is
+    /// unchanged is returned as an error and never retried.
+    pub fn execute_or_interpret(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+        rflags_defined: u64,
+    ) -> Result<PagedStepOutcome, PagedStepError> {
+        // Validate the interpreter's input before the JIT attempt so a bad
+        // argument can never surface after fetch effects were committed.
+        if rflags_defined & !od_isa::INTEGER_FLAGS != 0 {
+            return Err(PagedStepError::Interpreter(
+                od_machine::PagedMovStepError::CpuInput(
+                    od_isa::execute::RunInputError::InvalidRflagsDefined {
+                        value: rflags_defined,
+                    },
+                ),
+            ));
+        }
+        let (reason, mut attempt_writes) =
+            match self.execute_with_store(state, bus, cr3, efer, access_context) {
+                Ok(report) => match &report.execution.callback_result {
+                    Err(MemoryOperationExecutionErrorV2::MemoryError(error)) => {
+                        let reason = match report.store_refusal {
+                            Some(refusal) => PagedStepFallbackReason::StoreTargetRefused(refusal),
+                            None => PagedStepFallbackReason::OperandMemoryError(*error),
+                        };
+                        let mut writes = report.fetch_committed_writes.clone();
+                        writes.extend(report.execution.committed_writes.iter().copied());
+                        (reason, writes)
+                    }
+                    Err(error) => return Err(PagedStepError::JitHostFailure(error.clone())),
+                    Ok(result) => match result.exit {
+                        // `CodeInvalidated` (S4-16i): the store retired and
+                        // wrote into its own code page. A final JIT result:
+                        // the instruction ran and must not be repeated.
+                        MemoryOperationExecutionExitV2::Complete
+                        | MemoryOperationExecutionExitV2::CodeInvalidated
+                        | MemoryOperationExecutionExitV2::GuestFault(_) => {
+                            return Ok(PagedStepOutcome::Jit(report));
+                        }
+                        // A single-instruction block never ends in any other
+                        // way. If it does, the instruction may have run: report
+                        // it, never retry it on the interpreter.
+                        MemoryOperationExecutionExitV2::BudgetExhausted
+                        | MemoryOperationExecutionExitV2::StopRequested
+                        | MemoryOperationExecutionExitV2::StopAddress => {
+                            return Err(PagedStepError::JitHostFailure(
+                                MemoryOperationExecutionErrorV2::InvalidOutcome,
+                            ));
+                        }
+                    },
+                },
+                Err(error) => (
+                    PagedStepFallbackReason::Refused(error.kind),
+                    error.fetch_committed_writes,
+                ),
+            };
+        let mut interpreter_writes = Vec::new();
+        let report = od_machine::step_paged_mov(
+            state,
+            bus,
+            cr3,
+            efer,
+            access_context,
+            rflags_defined,
+            |range| interpreter_writes.push(range),
+        )
+        .map_err(PagedStepError::Interpreter)?;
+        attempt_writes.extend(interpreter_writes);
+        Ok(PagedStepOutcome::Interpreter {
+            reason,
+            report,
+            committed_writes: attempt_writes,
+        })
+    }
+}
+
+/// CPU-context gate shared by every paged V2 load entry. It runs before any
+/// page walk or commit, so an unsupported context leaves guest memory untouched.
+fn check_paged_load_v2_context(
+    state: &od_isa::LongModeState,
+    access_context: od_isa::memory::AccessContext,
+) -> Result<(), PagedMemoryLoadV2Error> {
+    use od_isa::memory::{InstructionMode, PrivilegeLevel};
+
+    if access_context.mode != InstructionMode::Long64 {
+        return Err(PagedMemoryLoadV2Error::UnsupportedMode);
+    }
+    if !matches!(
+        access_context.privilege,
+        PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3
+    ) {
+        return Err(PagedMemoryLoadV2Error::UnsupportedPrivilege(
+            access_context.privilege,
+        ));
+    }
+    if let Some(activity) = state.activity
+        && activity != od_isa::state::CpuActivity::Running
+    {
+        return Err(PagedMemoryLoadV2Error::UnsupportedCpuActivity(activity));
+    }
+    if let Some(shadow) = state.sti_shadow
+        && shadow != od_isa::state::StiShadow::Clear
+    {
+        return Err(PagedMemoryLoadV2Error::UnsupportedInterruptShadow(shadow));
+    }
+    Ok(())
 }
 
 fn reject_cpu_owned_cr3(
@@ -2566,6 +3723,11 @@ pub enum PublishedArenaError {
 
 struct ArenaSlot {
     generation: u64,
+    /// S4-15f: generation of a handle that dropped while the arena was borrowed
+    /// (for example from inside an owner callback during a native call), or 0.
+    /// The release is applied at the next mutable access; until then the slot is
+    /// counted as available but its metadata stays intact.
+    pending_release: Cell<u64>,
     metadata: Option<BlockMetadata>,
     memory_operation_metadata_v2: Option<MemoryOperationMetadataV2>,
     direct_memory_metadata_v2: Option<DirectMemoryMetadataV2>,
@@ -2577,6 +3739,52 @@ struct ArenaInner {
     mapping_bytes: usize,
     slots: Vec<ArenaSlot>,
     free_slots: Vec<usize>,
+}
+
+impl ArenaInner {
+    /// Frees `slot_index` if it still holds the artifact of `generation`.
+    /// Releasing an already free slot or a stale generation is a no-op, so a
+    /// slot can never be pushed onto the free stack twice.
+    fn release_slot(&mut self, slot_index: usize, generation: u64) -> bool {
+        let Some(slot) = self.slots.get_mut(slot_index) else {
+            return false;
+        };
+        if slot.generation != generation {
+            return false;
+        }
+        let block_metadata = slot.metadata.take();
+        let memory_metadata = slot.memory_operation_metadata_v2.take();
+        let direct_memory_metadata = slot.direct_memory_metadata_v2.take();
+        let active_code_metadata = slot.active_code_metadata_v3.take();
+        let occupied = block_metadata.is_some()
+            || memory_metadata.is_some()
+            || direct_memory_metadata.is_some()
+            || active_code_metadata.is_some();
+        if !occupied {
+            return false;
+        }
+        // The stack was preallocated to the fixed slot count and each live
+        // handle returns at most one slot.
+        self.free_slots.push(slot_index);
+        true
+    }
+
+    /// Applies releases deferred by handles that dropped under a borrow.
+    fn drain_pending_releases(&mut self) {
+        for slot_index in 0..self.slots.len() {
+            let generation = self.slots[slot_index].pending_release.replace(0);
+            if generation != 0 {
+                self.release_slot(slot_index, generation);
+            }
+        }
+    }
+
+    fn pending_release_count(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|slot| slot.pending_release.get() != 0)
+            .count()
+    }
 }
 
 /// Single MAP_JIT region divided into fixed, bounded block slots. The backend
@@ -2627,6 +3835,7 @@ impl PublishedArenaBackend {
             let mut slots = Vec::with_capacity(max_blocks);
             slots.resize_with(max_blocks, || ArenaSlot {
                 generation: 0,
+                pending_release: Cell::new(0),
                 metadata: None,
                 memory_operation_metadata_v2: None,
                 direct_memory_metadata_v2: None,
@@ -2665,15 +3874,20 @@ impl PublishedArenaBackend {
             .slots
             .iter()
             .filter(|slot| {
-                slot.memory_operation_metadata_v2.is_some()
-                    || slot.active_code_metadata_v3.is_some()
+                slot.pending_release.get() == 0
+                    && (slot.memory_operation_metadata_v2.is_some()
+                        || slot.active_code_metadata_v3.is_some())
             })
             .count();
         arena.slots.len().saturating_sub(reserved)
     }
 
+    /// Free slots, counting releases deferred by handles that dropped while the
+    /// arena was borrowed (S4-15f): those slots are reused by the next
+    /// publication.
     pub fn available_slots(&self) -> usize {
-        self.arena.borrow().free_slots.len()
+        let arena = self.arena.borrow();
+        arena.free_slots.len() + arena.pending_release_count()
     }
 
     /// Actual page-rounded MAP_JIT reservation size for benchmark reporting.
@@ -2684,27 +3898,26 @@ impl PublishedArenaBackend {
 
 impl Drop for PublishedArenaBlock {
     fn drop(&mut self) {
-        let Ok(mut arena) = self.arena.try_borrow_mut() else {
-            return;
-        };
-        let Some(slot) = arena.slots.get_mut(self.slot_index) else {
-            return;
-        };
-        if slot.generation == self.generation {
-            let block_metadata = slot.metadata.take();
-            let memory_metadata = slot.memory_operation_metadata_v2.take();
-            let direct_memory_metadata = slot.direct_memory_metadata_v2.take();
-            let active_code_metadata = slot.active_code_metadata_v3.take();
-            let occupied = block_metadata.is_some()
-                || memory_metadata.is_some()
-                || direct_memory_metadata.is_some()
-                || active_code_metadata.is_some();
-            if !occupied {
-                return;
+        match self.arena.try_borrow_mut() {
+            Ok(mut arena) => {
+                arena.release_slot(self.slot_index, self.generation);
+                arena.drain_pending_releases();
             }
-            // The stack was preallocated to the fixed slot count and each
-            // live handle returns at most one slot.
-            arena.free_slots.push(self.slot_index);
+            Err(_) => {
+                // S4-15f: the arena is borrowed, e.g. this handle dropped from
+                // an owner callback while a native call of another handle holds
+                // the shared borrow. Never free the slot under that borrow and
+                // never leak it: record the release in the slot's `Cell`, which
+                // needs only a shared borrow, and let the next mutable access
+                // apply it. Only a concurrent mutable borrow would still fail
+                // here; the arena holds no mutable borrow across any callback.
+                if let Ok(arena) = self.arena.try_borrow()
+                    && let Some(slot) = arena.slots.get(self.slot_index)
+                    && slot.generation == self.generation
+                {
+                    slot.pending_release.set(self.generation);
+                }
+            }
         }
     }
 }
@@ -3277,6 +4490,7 @@ impl PublishedArenaBackend {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let mut arena = self.arena.borrow_mut();
+            arena.drain_pending_releases();
             let slot_index = *arena
                 .free_slots
                 .last()
@@ -3365,6 +4579,7 @@ impl PublishedArenaBackend {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let mut arena = self.arena.borrow_mut();
+            arena.drain_pending_releases();
             let slot_index = *arena
                 .free_slots
                 .last()
@@ -3446,6 +4661,7 @@ impl od_jit::dispatch::CachedBlockBackend for PublishedArenaBackend {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let mut arena = self.arena.borrow_mut();
+            arena.drain_pending_releases();
             let slot_index = *arena
                 .free_slots
                 .last()
@@ -3570,11 +4786,123 @@ pub struct PagedCodeSession<'a> {
     paging: od_machine::Long64ProbeConfig,
     access_context: od_isa::memory::AccessContext,
     backing_page: Option<od_machine::GuestPhysicalAddress>,
+    /// Physical page of the part of a cross-page block that lies on the next
+    /// 4 KiB guest page (S4-16g). `None` for a block inside one page.
+    second_backing_page: Option<od_machine::GuestPhysicalAddress>,
     code_page_offset: Option<usize>,
     code_length: Option<usize>,
     aliases: [Option<u64>; 2],
     caches: [od_jit::dispatch::SingleEntryBlockCache<PublishedArenaBlock>; 2],
     backend: PublishedArenaBackend,
+    /// Current translation context key (S4-16f), derived from `paging` and the
+    /// access privilege. Every admitted entry belongs to this key.
+    context: PagedCodeTranslationContext,
+    /// Context each cache slot was admitted under.
+    alias_contexts: [Option<PagedCodeTranslationContext>; 2],
+    /// Monotonic execution-context generation handed to the dispatch caches
+    /// (they require a strictly advancing `ExecutionContextId`). Advances on
+    /// every key change, never on resets that keep the key.
+    context_generation: u64,
+    /// Number of full session resets caused by context events (key change,
+    /// retired MOV CR3, delivered #PF); retired INVLPG resets are counted too.
+    context_resets: u64,
+}
+
+/// Translation-relevant part of the controls that decide what a guest linear
+/// alias means (S4-16f). Two admissions with equal keys see the same page-walk
+/// semantics; any differing component gives a distinct address-space id and a
+/// full session reset (see `PagedCodeSession::observe_controls`).
+///
+/// Components: CR3 page-table root (bits 35:12; PWT/PCD low bits do not affect
+/// translation and CR4.PCIDE is not admitted by `Long64ProbeConfig`, so there
+/// is no PCID), CR0.WP, CR4.PSE, CR4.PGE, EFER.NXE and the access privilege
+/// (CPL). CR0.PG/PE, CR4.PAE and EFER.LME/LMA are required constants of the
+/// admitted Long64 snapshot and therefore cannot differ. Other CR0/CR4/EFER
+/// bits (TS, EM, MP, NE, AM, OSFXSR, OSXMMEXCPT, SCE) are not in the key.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PagedCodeTranslationContext {
+    cr3_root: u64,
+    wp: bool,
+    pse: bool,
+    pge: bool,
+    nxe: bool,
+    cpl: u8,
+}
+
+impl PagedCodeTranslationContext {
+    const ROOT_MASK: u64 = ((1u64 << 36) - 1) & !0xfff;
+
+    fn new(
+        paging: &od_machine::Long64ProbeConfig,
+        privilege: od_isa::memory::PrivilegeLevel,
+    ) -> Self {
+        use od_isa::memory::PrivilegeLevel;
+        Self {
+            cr3_root: paging.cr3() & Self::ROOT_MASK,
+            wp: paging.cr0() & (1 << 16) != 0,
+            pse: paging.cr4() & (1 << 4) != 0,
+            pge: paging.cr4() & (1 << 7) != 0,
+            nxe: paging.efer() & (1 << 11) != 0,
+            cpl: match privilege {
+                PrivilegeLevel::Ring0 => 0,
+                PrivilegeLevel::Ring1 => 1,
+                PrivilegeLevel::Ring2 => 2,
+                PrivilegeLevel::Ring3 => 3,
+            },
+        }
+    }
+
+    /// Injective, nonzero packing of the key: 24 bits of root page number,
+    /// four flag bits and two CPL bits, plus one.
+    pub fn id(&self) -> u64 {
+        let flags = u64::from(self.wp)
+            | u64::from(self.pse) << 1
+            | u64::from(self.pge) << 2
+            | u64::from(self.nxe) << 3;
+        ((self.cr3_root >> 12) | flags << 24 | u64::from(self.cpl) << 28) + 1
+    }
+
+    pub fn cr3_root(&self) -> u64 {
+        self.cr3_root
+    }
+
+    pub fn write_protect(&self) -> bool {
+        self.wp
+    }
+
+    pub fn cpl(&self) -> u8 {
+        self.cpl
+    }
+}
+
+/// Outcome of one interpreted `MOV CR3,RAX` executed between native calls.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedCodeMovCr3Result {
+    pub step: od_machine::PagedMovCr3StepReport,
+    /// Physical RAM writes committed by the instruction fetch walk.
+    pub committed_writes: Vec<od_machine::GuestPhysicalRange>,
+    /// True when the retired CR3 write (including a same-value write) cleared
+    /// both idle caches and released the backing/alias admission.
+    pub session_reset: bool,
+}
+
+/// Outcome of one interpreted `MOV CR0,RAX` executed between native calls.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedCodeMovCr0Result {
+    pub step: od_machine::PagedMovCr0StepReport,
+    /// Physical RAM writes committed by the instruction fetch walk.
+    pub committed_writes: Vec<od_machine::GuestPhysicalRange>,
+    /// True when the retired CR0 write changed a context-key component (WP).
+    pub session_reset: bool,
+}
+
+/// Outcome of one interpreted guest store under either CR0.WP state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedCodeWpStoreResult {
+    pub step: od_machine::PagedCr0WpMovStepReport,
+    /// Physical RAM writes committed by the page walker, including A/D updates.
+    pub committed_writes: Vec<od_machine::GuestPhysicalRange>,
+    pub code_invalidated: bool,
 }
 
 /// Outcome of one interpreted guest store issued between native code calls.
@@ -3623,9 +4951,26 @@ pub enum PagedCodeSessionError {
     Dispatch(od_jit::dispatch::DispatchError<PublishedArenaError>),
     Patch(od_machine::MemoryAccessError),
     TrackedPatch(od_machine::TrackedCodePatchError),
+    /// Controls are missing from the CPU state, the instruction mode is not
+    /// Long64, or the observed controls are not a valid Long64 snapshot. A
+    /// valid change of a context-key component is not an error: it resets the
+    /// session (S4-16f).
     PagingControlsMismatch,
     StoreStep(od_machine::PagedMovStepError),
     InvlpgStep(od_machine::PagedInvlpgStepError),
+    /// A configuration or context input was rejected. `ContextRejected` does
+    /// not reset the session when the rejection happens before any effect is
+    /// applied (`set_efer` with an invalid EFER, the pre-step CPL check against
+    /// the CS selector of the state, a failed pre-step `MOV CR0` configuration
+    /// in `execute_mov_cr0`); only the branches that reject an already retired
+    /// control-register write (`execute_mov_cr3` / `execute_mov_cr0` after the
+    /// step) reset the session, which must then be re-synchronized.
+    ContextRejected(od_machine::ProbeConfigError),
+    /// The retired CR0/CR3 effect disagrees with the session snapshot or the
+    /// CPU state; the session was reset.
+    ContextEffectMismatch,
+    Cr3Step(od_machine::PagedMovCr3StepError),
+    WpStoreStep(od_machine::PagedExceptionDeliveryError),
 }
 
 impl<'a> PagedCodeSession<'a> {
@@ -3645,17 +4990,152 @@ impl<'a> PagedCodeSession<'a> {
             od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
         )
         .map_err(PagedCodeSessionError::Cache)?;
+        let context = PagedCodeTranslationContext::new(&paging, access_context.privilege);
         Ok(Self {
             bus,
             paging,
             access_context,
             backing_page: None,
+            second_backing_page: None,
             code_page_offset: None,
             code_length: None,
             aliases: [None, None],
             caches: [cache0, cache1],
             backend,
+            context,
+            alias_contexts: [None, None],
+            context_generation: 1,
+            context_resets: 0,
         })
+    }
+
+    /// Translation context key under which new admissions are made.
+    pub fn translation_context(&self) -> PagedCodeTranslationContext {
+        self.context
+    }
+
+    /// Number of full session resets caused by context events so far.
+    pub fn context_resets(&self) -> u64 {
+        self.context_resets
+    }
+
+    /// Clear both idle caches and release the backing/range/alias binding.
+    /// Conservative reset used by every context event (S4-16f rule).
+    fn reset_session(&mut self) {
+        for cache in &mut self.caches {
+            cache.clear();
+        }
+        self.backing_page = None;
+        self.second_backing_page = None;
+        self.code_page_offset = None;
+        self.code_length = None;
+        self.aliases = [None, None];
+        self.alias_contexts = [None, None];
+        self.context_resets += 1;
+    }
+
+    /// Adopt `candidate` as the session snapshot. Only a change of a key
+    /// component resets the session; other control bits are adopted silently.
+    fn adopt_paging(
+        &mut self,
+        candidate: od_machine::Long64ProbeConfig,
+        privilege: od_isa::memory::PrivilegeLevel,
+    ) -> bool {
+        let context = PagedCodeTranslationContext::new(&candidate, privilege);
+        self.paging = candidate;
+        self.access_context.privilege = privilege;
+        if context == self.context {
+            return false;
+        }
+        self.context = context;
+        self.context_generation += 1;
+        self.reset_session();
+        true
+    }
+
+    /// Compare CPU-owned controls with the session snapshot (S4-16f). Replaces
+    /// the former fixed-fixture equality check: a changed key component (CR3
+    /// root, CR0.WP, CR4.PSE/PGE) resets the session and re-keys it; changed
+    /// non-key bits are adopted without reset; an invalid snapshot is
+    /// `PagingControlsMismatch`. Returns true when the session was reset.
+    fn observe_controls(
+        &mut self,
+        cr0: u64,
+        cr3: u64,
+        cr4: u64,
+    ) -> Result<bool, PagedCodeSessionError> {
+        if (cr0, cr3, cr4) == (self.paging.cr0(), self.paging.cr3(), self.paging.cr4()) {
+            return Ok(false);
+        }
+        let candidate = od_machine::Long64ProbeConfig::new(cr0, cr3, cr4, self.paging.efer())
+            .map_err(|_| PagedCodeSessionError::PagingControlsMismatch)?;
+        Ok(self.adopt_paging(candidate, self.access_context.privilege))
+    }
+
+    /// S4-16f: the CPL of the context key is updated only through
+    /// `set_privilege`. When the state carries a CS selector, its RPL must
+    /// equal the key CPL; otherwise nothing is applied (no reset, no change of
+    /// the state) and `ContextRejected(CplMismatch)` is returned. A state
+    /// without a CS selector (`None`) keeps the session's CPL; that is a
+    /// documented limitation (the host must call `set_privilege`).
+    fn check_state_cpl(&self, state: &od_isa::LongModeState) -> Result<(), PagedCodeSessionError> {
+        if let Some(selector) = state.cs_selector {
+            let key_cpl = self.context.cpl();
+            if (selector & 3) as u8 != key_cpl {
+                return Err(PagedCodeSessionError::ContextRejected(
+                    od_machine::ProbeConfigError::CplMismatch {
+                        cs_selector: selector,
+                        key_cpl,
+                    },
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Strict variant for interpreted steps: all three controls and Long64
+    /// mode are required. Also checks the CS-selector CPL (see
+    /// `check_state_cpl`).
+    fn observe_state_controls(
+        &mut self,
+        state: &od_isa::LongModeState,
+    ) -> Result<bool, PagedCodeSessionError> {
+        self.check_state_cpl(state)?;
+        let (Some(cr0), Some(cr3), Some(cr4)) = (state.cr0, state.cr3, state.cr4) else {
+            return Err(PagedCodeSessionError::PagingControlsMismatch);
+        };
+        if self.access_context.mode != od_isa::memory::InstructionMode::Long64 {
+            return Err(PagedCodeSessionError::PagingControlsMismatch);
+        }
+        self.observe_controls(cr0, cr3, cr4)
+    }
+
+    /// Host-visible CPL change (for example after a CPL3 entry). A different
+    /// privilege is a different key component: the session is reset.
+    /// Returns true when it was reset.
+    pub fn set_privilege(&mut self, privilege: od_isa::memory::PrivilegeLevel) -> bool {
+        self.adopt_paging(self.paging, privilege)
+    }
+
+    /// Host-visible EFER change (for example WRMSR). EFER.NXE is a key
+    /// component; the snapshot must remain a valid Long64 configuration.
+    /// Returns true when the session was reset.
+    pub fn set_efer(&mut self, efer: u64) -> Result<bool, PagedCodeSessionError> {
+        let candidate = od_machine::Long64ProbeConfig::new(
+            self.paging.cr0(),
+            self.paging.cr3(),
+            self.paging.cr4(),
+            efer,
+        )
+        .map_err(PagedCodeSessionError::ContextRejected)?;
+        Ok(self.adopt_paging(candidate, self.access_context.privilege))
+    }
+
+    /// Notify the session that a `#PF` was delivered to the guest. Conservative
+    /// S4-14h rule: any delivered page fault clears the aliases. A fault that
+    /// an interpreted step merely reports is not a delivery.
+    pub fn note_delivered_page_fault(&mut self) {
+        self.reset_session();
     }
 
     pub fn resident_entries(&self) -> usize {
@@ -3672,14 +5152,29 @@ impl<'a> PagedCodeSession<'a> {
         state: &mut od_isa::LongModeState,
         budget: u64,
     ) -> Result<od_jit::dispatch::FallbackDispatchResult, PagedCodeSessionError> {
+        // S4-16f: a CS-selector CPL that disagrees with the key CPL (host
+        // skipped `set_privilege`) is rejected before any lookup or effect.
+        self.check_state_cpl(state)?;
         if state.rip != linear_start {
             return Err(PagedCodeSessionError::UnsupportedAlias);
         }
-        if state.cr3 != Some(self.paging.cr3()) {
+        let Some(cr3) = state.cr3 else {
             return Err(PagedCodeSessionError::UnsupportedAlias);
-        }
+        };
+        // S4-16f: the CPU-owned controls define the translation context. A
+        // changed key component resets the session before the lookup; CR0/CR4
+        // that the caller does not carry keep the session's values.
+        self.observe_controls(
+            state.cr0.unwrap_or(self.paging.cr0()),
+            cr3,
+            state.cr4.unwrap_or(self.paging.cr4()),
+        )?;
         let mut committed_writes = Vec::new();
-        let snapshot = self.bus.tracked_code_snapshot_with_callback(
+        // S4-16g: the block may continue onto the next 4 KiB page. Each page
+        // is walked separately and carries its own physical base and
+        // generation. A block that fits neither one nor two pages is
+        // `InvalidLength` before any walk.
+        let snapshot = self.bus.tracked_code_snapshot_two_pages_with_callback(
             &self.paging,
             linear_start,
             code_length,
@@ -3688,10 +5183,15 @@ impl<'a> PagedCodeSession<'a> {
         );
         self.reconcile_code_writes(&committed_writes)?;
         let snapshot = snapshot.map_err(PagedCodeSessionError::Snapshot)?;
+        let code_bytes = snapshot.bytes();
+        let first_page = &snapshot.first;
+        let second_page = snapshot.second.as_ref();
+        let second_physical = second_page.map(|page| page.physical_base);
         let code_page_offset = (linear_start & 0xfff) as usize;
         if self
             .backing_page
-            .is_some_and(|physical| physical != snapshot.physical_base)
+            .is_some_and(|physical| physical != first_page.physical_base)
+            || (self.backing_page.is_some() && self.second_backing_page != second_physical)
             || self
                 .code_page_offset
                 .is_some_and(|offset| offset != code_page_offset)
@@ -3715,43 +5215,85 @@ impl<'a> PagedCodeSession<'a> {
         use std::num::NonZeroU64;
         let nz =
             |value: u64| NonZeroU64::new(value).ok_or(PagedCodeSessionError::UnsupportedIdentity);
-        let backing_number = snapshot.physical_base.get() / 0x1000 + 1;
+        let backing_number = first_page.physical_base.get() / 0x1000 + 1;
         let mapping_number = (linear_start & !0xfff) / 0x1000 + 1;
-        let version = od_jit::translation::BackingVersion::new(nz(snapshot.backing_generation)?);
+        let version = od_jit::translation::BackingVersion::new(nz(first_page.backing_generation)?);
         let backing = od_jit::translation::BackingId::new(nz(backing_number)?);
         let mapping = od_jit::translation::MappingId::new(nz(mapping_number)?);
-        let view = od_jit::block::CodeView::new(linear_start, &snapshot.bytes)
+        let view = od_jit::block::CodeView::new(linear_start, &code_bytes)
             .map_err(|_| PagedCodeSessionError::UnsupportedAlias)?;
         let admission = od_jit::block::NativeRegisterV1Admission::from_code(view)
             .map_err(PagedCodeSessionError::Admission)?;
         // Bind the session only after the complete code range has passed
         // NativeRegisterV1 admission. A rejected candidate must not reserve
         // this session's backing, range, or alias slot.
-        self.backing_page = Some(snapshot.physical_base);
+        self.backing_page = Some(first_page.physical_base);
+        self.second_backing_page = second_physical;
         self.code_page_offset = Some(code_page_offset);
         self.code_length = Some(code_length);
         self.aliases[cache_index] = Some(alias_base);
+        let context_id = self.context.id();
+        // Revalidate: an entry admitted under another key must not be reused
+        // (reset on key change already clears it; this guards that invariant).
+        if self.alias_contexts[cache_index].is_some_and(|admitted| admitted != self.context) {
+            self.caches[cache_index].clear();
+        }
+        self.alias_contexts[cache_index] = Some(self.context);
         let identity = od_jit::translation::CodeIdentity {
-            address_space: od_jit::translation::AddressSpaceId::new(nz(1)?),
+            address_space: od_jit::translation::AddressSpaceId::new(nz(context_id)?),
             mapping,
             mapping_version: od_jit::translation::MappingVersion::new(nz(1)?),
             backing,
             backing_version: version,
             executable: true,
         };
-        let dependencies = [od_jit::translation::CodeDependencySpan {
-            start_rip: view.base_rip(),
-            end_rip: view.code_end(),
-            identity,
-        }];
-        self.caches[cache_index].invalidate(
-            od_jit::dispatch::CodeInvalidation::BackingContentChanged {
-                backing,
-                current_version: version,
-            },
-        );
+        // One dependency span per 4 KiB page the block bytes occupy (S4-16g):
+        // the first covers RIP..page end with the first backing/generation,
+        // the second covers the rest with the second backing/generation and
+        // its own mapping id. A cross-page block therefore depends on both.
+        let mut dependencies = Vec::with_capacity(2);
+        let mut backing_versions = vec![(backing, version)];
+        if let Some(second) = second_page {
+            let boundary = linear_start - (linear_start & 0xfff) + 0x1000;
+            let second_backing =
+                od_jit::translation::BackingId::new(nz(second.physical_base.get() / 0x1000 + 1)?);
+            let second_version =
+                od_jit::translation::BackingVersion::new(nz(second.backing_generation)?);
+            let second_mapping = od_jit::translation::MappingId::new(nz(mapping_number + 1)?);
+            dependencies.push(od_jit::translation::CodeDependencySpan {
+                start_rip: view.base_rip(),
+                end_rip: boundary,
+                identity,
+            });
+            dependencies.push(od_jit::translation::CodeDependencySpan {
+                start_rip: boundary,
+                end_rip: view.code_end(),
+                identity: od_jit::translation::CodeIdentity {
+                    mapping: second_mapping,
+                    backing: second_backing,
+                    backing_version: second_version,
+                    ..identity
+                },
+            });
+            backing_versions.push((second_backing, second_version));
+        } else {
+            dependencies.push(od_jit::translation::CodeDependencySpan {
+                start_rip: view.base_rip(),
+                end_rip: view.code_end(),
+                identity,
+            });
+        }
+        for (backing, current_version) in backing_versions {
+            self.caches[cache_index].invalidate(
+                od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                    backing,
+                    current_version,
+                },
+            );
+        }
         let context = od_jit::translation::ExecutionContextSnapshot::native_register_v1_fixture(
-            od_jit::translation::ExecutionContextId::from_u64(1).unwrap(),
+            od_jit::translation::ExecutionContextId::from_u64(self.context_generation)
+                .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
         );
         let stop = AtomicU8::new(0);
         let control = od_jit::dispatch::DispatchControl {
@@ -3844,39 +5386,50 @@ impl<'a> PagedCodeSession<'a> {
         &mut self,
         committed_writes: &[od_machine::GuestPhysicalRange],
     ) -> Result<bool, PagedCodeSessionError> {
-        let Some(code_page) = self.backing_page else {
+        let Some(first_page) = self.backing_page else {
             return Ok(false);
         };
-        let code_page_start = u128::from(code_page.get());
-        let code_page_end = code_page_start + 0x1000;
-        let code_page_written = committed_writes.iter().any(|range| {
-            let write_start = u128::from(range.start().get());
-            let write_end = range.end_exclusive();
-            write_start < code_page_end && code_page_start < write_end
-        });
-        if !code_page_written {
-            return Ok(false);
-        }
-
-        let current_generation = self
-            .bus
-            .code_page_generation(code_page)
-            .map_err(PagedCodeSessionError::Patch)?;
-        let backing = od_jit::translation::BackingId::new(
-            std::num::NonZeroU64::new(code_page.get() / 0x1000 + 1)
-                .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
-        );
-        let current_version = od_jit::translation::BackingVersion::new(
-            std::num::NonZeroU64::new(current_generation)
-                .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
-        );
-        for cache in &mut self.caches {
-            cache.invalidate(od_jit::dispatch::CodeInvalidation::BackingContentChanged {
-                backing,
-                current_version,
+        // S4-16g: a cross-page block depends on both 4 KiB backing pages. A
+        // committed write to either one reconciles that page's generation; a
+        // write to any other page (even inside the same 16 KiB host page) does
+        // not.
+        let mut invalidated = false;
+        for code_page in [Some(first_page), self.second_backing_page]
+            .into_iter()
+            .flatten()
+        {
+            let code_page_start = u128::from(code_page.get());
+            let code_page_end = code_page_start + 0x1000;
+            let code_page_written = committed_writes.iter().any(|range| {
+                let write_start = u128::from(range.start().get());
+                let write_end = range.end_exclusive();
+                write_start < code_page_end && code_page_start < write_end
             });
+            if !code_page_written {
+                continue;
+            }
+
+            let current_generation = self
+                .bus
+                .code_page_generation(code_page)
+                .map_err(PagedCodeSessionError::Patch)?;
+            let backing = od_jit::translation::BackingId::new(
+                std::num::NonZeroU64::new(code_page.get() / 0x1000 + 1)
+                    .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
+            );
+            let current_version = od_jit::translation::BackingVersion::new(
+                std::num::NonZeroU64::new(current_generation)
+                    .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
+            );
+            for cache in &mut self.caches {
+                cache.invalidate(od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                    backing,
+                    current_version,
+                });
+            }
+            invalidated = true;
         }
-        Ok(true)
+        Ok(invalidated)
     }
 
     /// Interpret exactly one admitted paged MOV load/store while native blocks
@@ -3892,13 +5445,9 @@ impl<'a> PagedCodeSession<'a> {
         let Some(_) = self.backing_page else {
             return Err(PagedCodeSessionError::UnsupportedAlias);
         };
-        if state.cr0 != Some(self.paging.cr0())
-            || state.cr3 != Some(self.paging.cr3())
-            || state.cr4 != Some(self.paging.cr4())
-            || self.access_context.mode != od_isa::memory::InstructionMode::Long64
-        {
-            return Err(PagedCodeSessionError::PagingControlsMismatch);
-        }
+        // S4-16f: a changed key component resets the session (and releases
+        // the binding), so the store is interpreted without a bound backing.
+        self.observe_state_controls(state)?;
         let mut committed_writes = Vec::new();
         // The machine profile receives CR3 as a separate paging input and
         // rejects a populated state.cr3. Keep the caller's paging controls
@@ -3944,13 +5493,7 @@ impl<'a> PagedCodeSession<'a> {
         state: &mut od_isa::LongModeState,
         rflags_defined: u64,
     ) -> Result<PagedCodeInvlpgResult, PagedCodeSessionError> {
-        if state.cr0 != Some(self.paging.cr0())
-            || state.cr3 != Some(self.paging.cr3())
-            || state.cr4 != Some(self.paging.cr4())
-            || self.access_context.mode != od_isa::memory::InstructionMode::Long64
-        {
-            return Err(PagedCodeSessionError::PagingControlsMismatch);
-        }
+        self.observe_state_controls(state)?;
         let mut committed_writes = Vec::new();
         let mut execution_state = state.clone();
         let step = od_machine::step_paged_invlpg(
@@ -3971,16 +5514,196 @@ impl<'a> PagedCodeSession<'a> {
                 od_isa::execute::InvlpgExit::TranslationInvalidation(_)
             );
         if session_reset {
-            for cache in &mut self.caches {
-                cache.clear();
-            }
-            self.backing_page = None;
-            self.code_page_offset = None;
-            self.code_length = None;
-            self.aliases = [None, None];
+            self.reset_session();
         }
         *state = execution_state;
         Ok(PagedCodeInvlpgResult {
+            step,
+            committed_writes,
+            session_reset,
+        })
+    }
+
+    /// Interpret exactly one guest qword store at CPL0 under either CR0.WP
+    /// state (S4-16f; `step_guest_mov` only admits WP=1). Committed physical
+    /// writes, including A/D, are reconciled with the code page before return,
+    /// exactly as in `step_guest_mov`.
+    pub fn step_guest_mov_wp(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        rflags_defined: u64,
+    ) -> Result<PagedCodeWpStoreResult, PagedCodeSessionError> {
+        self.observe_state_controls(state)?;
+        let mut committed_writes = Vec::new();
+        let step = od_machine::step_paged_cr0_wp_mov(
+            state,
+            self.bus,
+            self.paging.cr3(),
+            self.paging.efer(),
+            self.access_context,
+            rflags_defined,
+            |range| committed_writes.push(range),
+        );
+        let code_invalidated = self.reconcile_code_writes(&committed_writes)?;
+        let step = step.map_err(PagedCodeSessionError::WpStoreStep)?;
+        Ok(PagedCodeWpStoreResult {
+            step,
+            committed_writes,
+            code_invalidated,
+        })
+    }
+
+    /// Interpret exactly one `MOV CR3,RAX` between native calls (S4-16f). Every
+    /// retired CR3 write, including a same-value write (S4-14d/h rule), adopts
+    /// the new snapshot and conservatively clears both idle caches and the
+    /// backing/alias binding; an old-context block is never reused after a
+    /// return to the previous CR3 without a fresh admission. Faults and
+    /// rejected inputs do not reset.
+    pub fn execute_mov_cr3(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        rflags_defined: u64,
+    ) -> Result<PagedCodeMovCr3Result, PagedCodeSessionError> {
+        self.observe_state_controls(state)?;
+        let old_cr3 = self.paging.cr3();
+        let mut committed_writes = Vec::new();
+        let step = od_machine::step_paged_mov_cr3_wp(
+            state,
+            self.bus,
+            old_cr3,
+            self.paging.efer(),
+            self.access_context,
+            rflags_defined,
+            |range| committed_writes.push(range),
+        );
+        let reconcile = self.reconcile_code_writes(&committed_writes);
+        let step = step.map_err(PagedCodeSessionError::Cr3Step)?;
+
+        let mut session_reset = false;
+        if let od_isa::MovCr3Exit::TranslationContextChange(effect) = &step.cpu.exit {
+            let od_isa::TranslationContextChange::Cr3Write {
+                old_cr3: effect_old,
+                new_cr3,
+            } = *effect
+            else {
+                // `state` is already modified (CR3 written, RIP advanced);
+                // this branch is unreachable with the od-isa profiles. If such
+                // a path appears, the caller must treat `state` as corrupted.
+                self.reset_session();
+                return Err(PagedCodeSessionError::ContextEffectMismatch);
+            };
+            if effect_old != old_cr3 || state.cr3 != Some(new_cr3) {
+                // `state` is already modified (CR3 written, RIP advanced);
+                // this branch is unreachable with the od-isa profiles. If such
+                // a path appears, the caller must treat `state` as corrupted.
+                self.reset_session();
+                return Err(PagedCodeSessionError::ContextEffectMismatch);
+            }
+            match od_machine::Long64ProbeConfig::from_cpu_state(state, new_cr3, self.paging.efer())
+            {
+                Ok(candidate) => {
+                    if !self.adopt_paging(candidate, self.access_context.privilege) {
+                        self.reset_session();
+                    }
+                    session_reset = true;
+                }
+                Err(error) => {
+                    // `state` is already modified (CR3 written, RIP advanced);
+                    // this branch is unreachable with the od-isa profiles. If
+                    // such a path appears, the caller must treat `state` as
+                    // corrupted.
+                    self.reset_session();
+                    return Err(PagedCodeSessionError::ContextRejected(error));
+                }
+            }
+        }
+        reconcile?;
+        Ok(PagedCodeMovCr3Result {
+            step,
+            committed_writes,
+            session_reset,
+        })
+    }
+
+    /// Interpret exactly one `MOV CR0,RAX` WP toggle between native calls
+    /// (S4-16f). A retired write adopts the new snapshot; the session is reset
+    /// only when a key component changed (WP). A same-value write and writes of
+    /// bits outside the key do not reset.
+    pub fn execute_mov_cr0(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        rflags_defined: u64,
+    ) -> Result<PagedCodeMovCr0Result, PagedCodeSessionError> {
+        self.observe_state_controls(state)?;
+        let old_cr0 = self.paging.cr0();
+        let mut committed_writes = Vec::new();
+        let step = od_machine::step_paged_mov_cr0_wp(
+            state,
+            self.bus,
+            self.paging.cr3(),
+            self.paging.efer(),
+            self.access_context,
+            rflags_defined,
+            |range| committed_writes.push(range),
+        );
+        let reconcile = self.reconcile_code_writes(&committed_writes);
+        // A configuration error of the pre-step snapshot is rejected before
+        // any effect is applied: `ContextRejected` here does not reset the
+        // session.
+        let step = step.map_err(PagedCodeSessionError::ContextRejected)?;
+
+        let mut session_reset = false;
+        match &step.cpu.exit {
+            od_isa::PagedProbeExit::TranslationContextChange(effect) => {
+                let od_isa::TranslationContextChange::Cr0Write {
+                    old_cr0: effect_old,
+                    new_cr0,
+                } = *effect
+                else {
+                    // `state` is already modified (CR0 written, RIP advanced);
+                    // this branch is unreachable with the od-isa profiles. If
+                    // such a path appears, the caller must treat `state` as
+                    // corrupted.
+                    self.reset_session();
+                    return Err(PagedCodeSessionError::ContextEffectMismatch);
+                };
+                if effect_old != old_cr0 || state.cr0 != Some(new_cr0) {
+                    // `state` is already modified (CR0 written, RIP advanced);
+                    // this branch is unreachable with the od-isa profiles. If
+                    // such a path appears, the caller must treat `state` as
+                    // corrupted.
+                    self.reset_session();
+                    return Err(PagedCodeSessionError::ContextEffectMismatch);
+                }
+                match od_machine::Long64ProbeConfig::from_cpu_state(
+                    state,
+                    self.paging.cr3(),
+                    self.paging.efer(),
+                ) {
+                    Ok(candidate) => {
+                        session_reset = self.adopt_paging(candidate, self.access_context.privilege);
+                    }
+                    Err(error) => {
+                        // `state` is already modified (CR0 written, RIP
+                        // advanced); this branch is unreachable with the
+                        // od-isa profiles. If such a path appears, the caller
+                        // must treat `state` as corrupted.
+                        self.reset_session();
+                        return Err(PagedCodeSessionError::ContextRejected(error));
+                    }
+                }
+            }
+            od_isa::PagedProbeExit::Retired => {
+                // `state` is already modified (RIP advanced); this branch is
+                // unreachable with the od-isa profiles. If such a path
+                // appears, the caller must treat `state` as corrupted.
+                self.reset_session();
+                return Err(PagedCodeSessionError::ContextEffectMismatch);
+            }
+            _ => {}
+        }
+        reconcile?;
+        Ok(PagedCodeMovCr0Result {
             step,
             committed_writes,
             session_reset,
@@ -4592,6 +6315,9 @@ pub(crate) mod tests {
         request_stop_on_write: bool,
         stop_byte: Option<std::sync::Arc<AtomicU8>>,
         dirty_output: Option<*mut u32>,
+        /// S4-15f: run once at the start of the next preflight, i.e. while the
+        /// native call of the executing handle holds the arena borrow.
+        drop_in_preflight: Option<Box<dyn FnOnce()>>,
     }
 
     impl TrackedCodeFixture {
@@ -4698,6 +6424,7 @@ pub(crate) mod tests {
                 request_stop_on_write: false,
                 stop_byte: None,
                 dirty_output: None,
+                drop_in_preflight: None,
             }
         }
 
@@ -5331,6 +7058,9 @@ pub(crate) mod tests {
             _: AccessContext,
         ) {
             self.preflight_calls += 1;
+            if let Some(hook) = self.drop_in_preflight.take() {
+                hook();
+            }
             self.pending = None;
             self.preflight_rejection = None;
             self.write_attempted = false;
@@ -70017,6 +71747,712 @@ pub(crate) mod tests {
         }
     }
 
+    /// S3-25d: one deterministic one-vCPU lifecycle stress at arena capacity 1
+    /// and 2. Per round: publish/execute/churn through `MultiEntryBlockCache`,
+    /// STOP and EventPending before entry, publish a V3 active-code artifact,
+    /// injected helper fault, committed STOP, active-block invalidation, stale
+    /// handle probes, handle dropped under the arena borrow, cache clear, drop
+    /// of the backend with live handles and reopen. Every execution is
+    /// compared with the interpreter; the end state must be fully free.
+    #[test]
+    fn s3_25d_small_capacity_lifecycle_stress_matches_interpreter_and_frees_everything() {
+        use od_isa::LongModeState;
+        use od_isa::execute::StepOutcome;
+        use od_isa::memory::ArchitecturalFault;
+
+        let _guard = jit_test_lock();
+        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            return;
+        }
+
+        const ENTRY: u64 = 0x1000;
+        const SENTINEL: u64 = 0xCAFE_BABE_1234_5678;
+        const OLD_RCX: u64 = 0xA5A5_5A5A_F0F0_0F0F;
+        const ROUNDS: usize = 8;
+        type Cache = od_jit::dispatch::MultiEntryBlockCache<PublishedArenaBlock>;
+
+        #[derive(Default)]
+        struct Stats {
+            steps: usize,
+            native_executions: usize,
+            interpreter_comparisons: usize,
+            live_generation_checks: usize,
+            stale_attempts: usize,
+            stale_rejections: usize,
+            invalidated_entries: usize,
+            deferred_releases: usize,
+            faults: usize,
+            stops: usize,
+            events: usize,
+            reopens: usize,
+            publications: usize,
+        }
+
+        fn next(seed: &mut u64) -> u64 {
+            *seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            *seed >> 11
+        }
+        fn program(imm: u64) -> Vec<u8> {
+            let mut bytes = vec![0x48, 0xBA];
+            bytes.extend_from_slice(&imm.to_le_bytes());
+            bytes.extend_from_slice(&[0x48, 0x89, 0x03]);
+            bytes.extend_from_slice(&[0x48, 0xB9]);
+            bytes.extend_from_slice(&SENTINEL.to_le_bytes());
+            bytes
+        }
+        fn make_owner(program: &[u8]) -> TrackedCodeFixture {
+            let mut owner =
+                TrackedCodeFixture::new(&program[10..13], &[0x48, 0xB8, 1], &[0x48, 0xB8, 9]);
+            owner.backings[0].bytes[..program.len()].copy_from_slice(program);
+            owner.active_source_rip = ENTRY + 10;
+            owner.active_source = (0, 10, 3);
+            owner
+        }
+        fn v3_state(rax: u64, rbx: u64) -> LongModeState {
+            let mut state = LongModeState {
+                cr3: None,
+                rip: ENTRY,
+                rflags: 0xA55,
+                ..LongModeState::default()
+            };
+            state.gpr[0] = rax;
+            state.gpr[1] = OLD_RCX;
+            state.gpr[3] = rbx;
+            state
+        }
+        fn forge(handle: &PublishedArenaActiveCodeV3) -> PublishedArenaActiveCodeV3 {
+            PublishedArenaActiveCodeV3 {
+                _block: PublishedArenaBlock {
+                    arena: handle._block.arena.clone(),
+                    owner_id: handle._block.owner_id.clone(),
+                    slot_index: handle._block.slot_index,
+                    generation: handle._block.generation,
+                },
+            }
+        }
+        fn advance(state: &mut LongModeState, owner: &mut TrackedCodeFixture) {
+            assert_eq!(
+                od_isa::execute::step(state, owner, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+        }
+        fn store_step(state: &mut LongModeState, owner: &mut TrackedCodeFixture) {
+            owner.begin_interpreter_write_scope(ENTRY + 10, 3);
+            advance(state, owner);
+            let _ = owner.finish_guest_write();
+            owner.end_interpreter_write_scope();
+        }
+        fn pool(arena: &PublishedArenaBackend, cache: &Cache) {
+            assert_eq!(
+                arena.available_slots() + cache.resident_entries(),
+                arena.capacity()
+            );
+            assert_eq!(arena.arena.borrow().pending_release_count(), 0);
+        }
+        fn assert_live(arena: &PublishedArenaBackend, handle: &PublishedArenaActiveCodeV3) {
+            let inner = arena.arena.borrow();
+            let slot = &inner.slots[handle._block.slot_index];
+            assert_eq!(slot.generation, handle._block.generation);
+            assert!(slot.active_code_metadata_v3.is_some());
+            assert_eq!(slot.pending_release.get(), 0);
+        }
+        fn cached_run(
+            owner: &mut TrackedCodeFixture,
+            rip: u64,
+            state: LongModeState,
+            cache: &mut Cache,
+            arena: &mut PublishedArenaBackend,
+            stats: &mut Stats,
+        ) -> LongModeState {
+            let (result, native) =
+                run_tracked_code_block_with_state(owner, rip, state.clone(), cache, arena);
+            assert_eq!(result.retired_instructions, 1);
+            let mut expected = state;
+            advance(&mut expected, owner);
+            assert_eq!(native, expected, "cached native run matches interpreter");
+            stats.native_executions += 1;
+            stats.interpreter_comparisons += 1;
+            native
+        }
+        fn run_v3(
+            active: &PublishedArenaActiveCodeV3,
+            arena: &PublishedArenaBackend,
+            state: &mut LongModeState,
+            owner: &mut TrackedCodeFixture,
+            budget: u64,
+            stop: &AtomicU8,
+            cache: &mut Cache,
+            stats: &mut Stats,
+        ) -> ActiveCodeExecutionResultV3 {
+            assert_live(arena, active);
+            stats.live_generation_checks += 1;
+            let mut invalidated = 0;
+            let result = active
+                .execute_tracked_v3(
+                    state,
+                    owner,
+                    AccessContext::default(),
+                    budget,
+                    None,
+                    stop,
+                    |change| invalidated += cache.invalidate(change),
+                )
+                .unwrap();
+            stats.native_executions += 1;
+            stats.invalidated_entries += invalidated;
+            // The notification count is reported through the cache itself.
+            result
+        }
+        fn new_cache(entries: usize) -> Cache {
+            od_jit::dispatch::MultiEntryBlockCache::new(
+                entries,
+                od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+                od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+            )
+            .unwrap()
+        }
+        fn publish_v3(
+            arena: &mut PublishedArenaBackend,
+            owner: &TrackedCodeFixture,
+            stats: &mut Stats,
+        ) -> PublishedArenaActiveCodeV3 {
+            let bytes = owner.view(ENTRY, 23).0.to_vec();
+            let compiled = od_jit::memory_load_v2::compile_active_code_block_v3(
+                CodeView::new(ENTRY, &bytes).unwrap(),
+                ENTRY,
+            )
+            .unwrap();
+            let handle = arena.publish_active_code_block_v3(&compiled).unwrap();
+            stats.publications += 1;
+            handle
+        }
+
+        let mut stats = Stats::default();
+        let mut seed = 0x5EED_3025_D00D_u64;
+        let mut expected_deferred = 0;
+
+        for capacity in [1_usize, 2] {
+            for round in 0..ROUNDS {
+                // Open (or reopen after the previous round's backend drop).
+                let mut arena = PublishedArenaBackend::new(capacity).unwrap();
+                stats.steps += 1;
+                if round != 0 || capacity != 1 {
+                    stats.reopens += 1;
+                }
+                assert_eq!(arena.capacity(), capacity);
+                assert_eq!(arena.available_slots(), capacity);
+                assert_eq!(arena.arena.borrow().pending_release_count(), 0);
+                let program_bytes = program(next(&mut seed));
+                let mut owner = make_owner(&program_bytes);
+                let mut reference = make_owner(&program_bytes);
+
+                // Phase 1: cached-block churn, invalidation of inactive entries,
+                // STOP and EventPending before entry.
+                let mut cache = new_cache(capacity);
+                for step in 0..8 {
+                    let pick = if step == 0 { 2 } else { next(&mut seed) % 5 };
+                    match pick {
+                        0..=2 => {
+                            let rip = [0x2000_u64, 0x3000, 0x4000][pick as usize];
+                            let state = LongModeState {
+                                rip,
+                                ..LongModeState::default()
+                            };
+                            cached_run(&mut owner, rip, state, &mut cache, &mut arena, &mut stats);
+                        }
+                        3 => {
+                            // Guest write into the aliased backing: resident
+                            // aliases are released at once after return.
+                            let value = next(&mut seed);
+                            let (_, removed) = owner
+                                .control_write(0x2002, &value.to_le_bytes(), &mut cache)
+                                .unwrap();
+                            stats.invalidated_entries += removed;
+                        }
+                        _ => {
+                            let rip = 0x4000;
+                            let (bytes, _) = owner.view(rip, 10);
+                            let code = CodeView::new(rip, bytes).unwrap();
+                            let decoded = od_isa::decode(bytes).unwrap();
+                            let admission =
+                                AdmittedInstructionBoundaries::from_fixture_decode(code, &decoded)
+                                    .unwrap();
+                            let dependencies = owner.dependencies(rip, bytes.len());
+                            let mut state = LongModeState {
+                                rip,
+                                ..LongModeState::default()
+                            };
+                            let before = state.clone();
+                            let counters = cache.counters();
+                            let resident = cache.resident_entries();
+                            let event = AtomicBool::new(true);
+                            let pending = od_jit::dispatch::run_multi_cached_controlled(
+                                code,
+                                &admission,
+                                cached_test_context(),
+                                &dependencies,
+                                &mut state,
+                                1,
+                                od_jit::dispatch::DispatchControl {
+                                    stop_rip: None,
+                                    stop_requested: &AtomicU8::new(0),
+                                    event_requested: Some(&event),
+                                },
+                                &mut cache,
+                                &mut arena,
+                            )
+                            .unwrap();
+                            assert_eq!(pending.exit, od_jit::dispatch::DispatchExit::EventPending);
+                            stats.events += 1;
+                            let stopped = od_jit::dispatch::run_multi_cached_controlled(
+                                code,
+                                &admission,
+                                cached_test_context(),
+                                &dependencies,
+                                &mut state,
+                                1,
+                                od_jit::dispatch::DispatchControl {
+                                    stop_rip: None,
+                                    stop_requested: &AtomicU8::new(1),
+                                    event_requested: None,
+                                },
+                                &mut cache,
+                                &mut arena,
+                            )
+                            .unwrap();
+                            assert_eq!(
+                                stopped.exit,
+                                od_jit::dispatch::DispatchExit::Runtime(
+                                    RuntimeExitTag::StopRequested
+                                )
+                            );
+                            stats.stops += 1;
+                            assert_eq!(state, before);
+                            assert_eq!(cache.counters(), counters);
+                            assert_eq!(cache.resident_entries(), resident);
+                        }
+                    }
+                    stats.steps += 1;
+                    pool(&arena, &cache);
+                }
+                cache.clear();
+                stats.steps += 1;
+                assert_eq!(arena.available_slots(), capacity);
+                assert_eq!(arena.arena.borrow().pending_release_count(), 0);
+                drop(cache);
+
+                // Phase 2: active-code (V3) lifecycle next to a cached prefix.
+                // Phase 1 guest writes hit only `owner`, so offset its count.
+                let write_skew = owner.write_count - reference.write_count;
+                let mut v3_cache = new_cache(1);
+                for sub in 0..3 {
+                    let variant = (round * 3 + sub) % 4;
+                    let mut active = Some(publish_v3(&mut arena, &owner, &mut stats));
+                    stats.steps += 1;
+                    let forged = forge(active.as_ref().unwrap());
+                    assert_eq!(arena.available_slots(), capacity - 1);
+
+                    if variant == 3 {
+                        // Unrelated destination: the whole artifact completes.
+                        // At capacity 2 a neighbour handle is dropped while the
+                        // native call holds the arena borrow (S4-15f).
+                        let observed = Rc::new(Cell::new(None));
+                        let victim = if capacity == 2 {
+                            let victim = Rc::new(RefCell::new(Some(
+                                arena
+                                    .publish_memory_store_v2(&s4_15f_store_block())
+                                    .unwrap(),
+                            )));
+                            assert_eq!(arena.available_slots(), 0);
+                            let hook_victim = victim.clone();
+                            let inner = arena.arena.clone();
+                            let hook_observed = observed.clone();
+                            owner.drop_in_preflight = Some(Box::new(move || {
+                                let slot_index =
+                                    hook_victim.borrow().as_ref().unwrap()._block.slot_index;
+                                let dropped = hook_victim.borrow_mut().take();
+                                drop(dropped);
+                                let state = inner.borrow();
+                                hook_observed.set(Some((
+                                    state.free_slots.len(),
+                                    state.pending_release_count(),
+                                    state.slots[slot_index].direct_memory_metadata_v2.is_some(),
+                                )));
+                            }));
+                            Some(victim)
+                        } else {
+                            None
+                        };
+                        for run in 0..2 {
+                            let rax = next(&mut seed);
+                            let mut state = v3_state(rax, 0x4000);
+                            let mut expected = state.clone();
+                            advance(&mut expected, &mut reference);
+                            store_step(&mut expected, &mut reference);
+                            advance(&mut expected, &mut reference);
+                            let result = run_v3(
+                                active.as_ref().unwrap(),
+                                &arena,
+                                &mut state,
+                                &mut owner,
+                                3,
+                                &AtomicU8::new(0),
+                                &mut v3_cache,
+                                &mut stats,
+                            );
+                            stats.interpreter_comparisons += 1;
+                            assert_eq!(result.exit, ActiveCodeExecutionExitV3::Complete);
+                            assert_eq!(result.remaining_budget, 0);
+                            assert_eq!(result.retired_instructions, 3);
+                            assert_eq!(state, expected);
+                            assert_eq!(state.rip, ENTRY + 23);
+                            assert_eq!(owner.write_count, reference.write_count + write_skew);
+                            assert_eq!(owner.backings[0], reference.backings[0]);
+                            assert_eq!(owner.backings[2], reference.backings[2]);
+                            stats.steps += 1;
+                            if run == 0
+                                && let Some(victim) = &victim
+                            {
+                                assert!(victim.borrow().is_none());
+                                assert_eq!(
+                                    observed.get(),
+                                    Some((0, 1, true)),
+                                    "victim slot intact until the native call returns"
+                                );
+                                assert_eq!(arena.available_slots(), 1, "released after return");
+                                assert_eq!(arena.arena.borrow().pending_release_count(), 1);
+                                stats.deferred_releases += 1;
+                                expected_deferred += 1;
+                            }
+                        }
+                        if capacity == 2 {
+                            // The next publication applies the deferred release.
+                            let state = LongModeState {
+                                rip: ENTRY,
+                                ..LongModeState::default()
+                            };
+                            cached_run(
+                                &mut owner,
+                                ENTRY,
+                                state,
+                                &mut v3_cache,
+                                &mut arena,
+                                &mut stats,
+                            );
+                            stats.steps += 1;
+                            assert_eq!(arena.arena.borrow().pending_release_count(), 0);
+                            assert_eq!(arena.available_slots(), 0);
+                        }
+                    } else {
+                        if capacity == 2 {
+                            let state = LongModeState {
+                                rip: ENTRY,
+                                ..LongModeState::default()
+                            };
+                            cached_run(
+                                &mut owner,
+                                ENTRY,
+                                state,
+                                &mut v3_cache,
+                                &mut arena,
+                                &mut stats,
+                            );
+                            stats.steps += 1;
+                            assert_eq!(arena.available_slots(), 0);
+                        }
+                        if variant == 2 {
+                            // Helper fault after the committed prefix.
+                            let fault = ArchitecturalFault {
+                                vector: 14,
+                                error_code: Some(7),
+                                linear_address: Some(0x2000),
+                            };
+                            owner.architectural_write_fault = Some(fault.clone());
+                            reference.architectural_write_fault = Some(fault.clone());
+                            let mut state = v3_state(next(&mut seed), 0x2000);
+                            let mut expected = state.clone();
+                            advance(&mut expected, &mut reference);
+                            assert_eq!(
+                                od_isa::execute::step(
+                                    &mut expected,
+                                    &mut reference,
+                                    AccessContext::default()
+                                ),
+                                Ok(StepOutcome::Fault(fault.clone()))
+                            );
+                            let _ = reference.finish_guest_write();
+                            let resident = v3_cache.resident_entries();
+                            let result = run_v3(
+                                active.as_ref().unwrap(),
+                                &arena,
+                                &mut state,
+                                &mut owner,
+                                3,
+                                &AtomicU8::new(0),
+                                &mut v3_cache,
+                                &mut stats,
+                            );
+                            stats.interpreter_comparisons += 1;
+                            stats.faults += 1;
+                            stats.steps += 1;
+                            assert_eq!(result.exit, ActiveCodeExecutionExitV3::GuestFault(fault));
+                            assert_eq!(result.remaining_budget, 2);
+                            assert_eq!(result.retired_instructions, 1);
+                            assert_eq!(state, expected);
+                            assert_eq!(state.rip, ENTRY + 10);
+                            assert_eq!(owner.write_count, reference.write_count + write_skew);
+                            assert_eq!(owner.backings[0], reference.backings[0]);
+                            assert_eq!(v3_cache.resident_entries(), resident, "no invalidation");
+                            assert_eq!(arena.available_slots(), capacity - 1 - resident);
+                        }
+
+                        if variant == 1 {
+                            // STOP raised by the helper during a committed store
+                            // to an unrelated page: observed after return, the
+                            // tail stays unexecuted and the artifact stays valid.
+                            let stop = Arc::new(AtomicU8::new(0));
+                            owner.request_stop_on_write = true;
+                            owner.stop_byte = Some(stop.clone());
+                            let rax = next(&mut seed);
+                            let mut state = v3_state(rax, 0x2000);
+                            let mut expected = state.clone();
+                            advance(&mut expected, &mut reference);
+                            store_step(&mut expected, &mut reference);
+                            let resident = v3_cache.resident_entries();
+                            let result = run_v3(
+                                active.as_ref().unwrap(),
+                                &arena,
+                                &mut state,
+                                &mut owner,
+                                3,
+                                &stop,
+                                &mut v3_cache,
+                                &mut stats,
+                            );
+                            stats.interpreter_comparisons += 1;
+                            stats.stops += 1;
+                            stats.steps += 1;
+                            owner.request_stop_on_write = false;
+                            owner.stop_byte = None;
+                            assert_eq!(result.exit, ActiveCodeExecutionExitV3::StopRequested);
+                            assert_eq!(result.remaining_budget, 1);
+                            assert_eq!(result.retired_instructions, 2);
+                            assert_eq!(state, expected);
+                            assert_eq!(state.rip, ENTRY + 13);
+                            assert_eq!(state.gpr[1], OLD_RCX, "tail not executed");
+                            assert_eq!(owner.write_count, reference.write_count + write_skew);
+                            assert_eq!(owner.backings[0], reference.backings[0]);
+                            assert_eq!(
+                                owner.backings[1].bytes[..8],
+                                reference.backings[1].bytes[..8]
+                            );
+                            assert_eq!(owner.backings[1].bytes[..8], rax.to_le_bytes());
+                            assert_eq!(v3_cache.resident_entries(), resident);
+                            assert_eq!(arena.available_slots(), capacity - 1 - resident);
+                            stop.store(0, Ordering::Release);
+                        }
+
+                        // Active-block invalidation: the store rewrites the
+                        // completed prefix of the running artifact.
+                        let rax = next(&mut seed);
+                        let mut state = v3_state(rax, ENTRY + 2);
+                        let mut expected = state.clone();
+                        advance(&mut expected, &mut reference);
+                        store_step(&mut expected, &mut reference);
+                        let resident = v3_cache.resident_entries();
+                        let invalidated_before = stats.invalidated_entries;
+                        let result = run_v3(
+                            active.as_ref().unwrap(),
+                            &arena,
+                            &mut state,
+                            &mut owner,
+                            3,
+                            &AtomicU8::new(0),
+                            &mut v3_cache,
+                            &mut stats,
+                        );
+                        stats.interpreter_comparisons += 1;
+                        stats.steps += 1;
+                        assert_eq!(result.exit, ActiveCodeExecutionExitV3::CodeInvalidated);
+                        assert_eq!(result.remaining_budget, 1);
+                        assert_eq!(result.retired_instructions, 2);
+                        assert_eq!(state, expected);
+                        assert_eq!(state.rip, ENTRY + 13);
+                        assert_eq!(state.gpr[1], OLD_RCX, "tail not executed");
+                        assert_eq!(owner.write_count, reference.write_count + write_skew);
+                        assert_eq!(owner.backings[0], reference.backings[0]);
+                        assert_eq!(&owner.backings[0].bytes[2..10], &rax.to_le_bytes());
+                        assert_eq!(stats.invalidated_entries - invalidated_before, resident);
+                        assert_eq!(v3_cache.resident_entries(), 0);
+                        assert_eq!(arena.available_slots(), capacity - 1);
+
+                        // Stale artifact: rejected before any CPU/RAM effect.
+                        let mut probe = state.clone();
+                        probe.rip = ENTRY;
+                        let probe_before = probe.clone();
+                        let backings_before = owner.backings.clone();
+                        let writes_before = owner.write_count;
+                        stats.stale_attempts += 1;
+                        assert_eq!(
+                            active.as_ref().unwrap().execute_tracked_v3(
+                                &mut probe,
+                                &mut owner,
+                                AccessContext::default(),
+                                3,
+                                None,
+                                &AtomicU8::new(0),
+                                |_| panic!("stale artifact cannot notify"),
+                            ),
+                            Err(ActiveCodeExecutionErrorV3::Preflight(
+                                TrackedCodeStorePreflightError::ActiveSourceMismatch
+                            ))
+                        );
+                        stats.stale_rejections += 1;
+                        assert_eq!(probe, probe_before);
+                        assert_eq!(owner.backings, backings_before);
+                        assert_eq!(owner.write_count, writes_before);
+                        stats.steps += 1;
+
+                        // Fresh tail from current bytes, without replaying the store.
+                        if capacity == 1 {
+                            drop(active.take());
+                            assert_eq!(arena.available_slots(), 1);
+                        }
+                        let tail = cached_run(
+                            &mut owner,
+                            ENTRY + 13,
+                            state.clone(),
+                            &mut v3_cache,
+                            &mut arena,
+                            &mut stats,
+                        );
+                        stats.steps += 1;
+                        assert_eq!(tail.gpr[1], SENTINEL);
+                        assert_eq!(tail.rip, ENTRY + 23);
+                        assert_eq!(owner.write_count, reference.write_count + write_skew);
+                    }
+
+                    // Release the artifact, then probe the forged old handle.
+                    drop(active.take());
+                    stats.steps += 1;
+                    assert_eq!(
+                        arena.available_slots(),
+                        capacity - v3_cache.resident_entries()
+                    );
+                    let slot_reused = {
+                        let inner = arena.arena.borrow();
+                        inner.slots[forged._block.slot_index].generation != forged._block.generation
+                    };
+                    let mut probe = v3_state(0, ENTRY + 2);
+                    let probe_before = probe.clone();
+                    let writes_before = owner.write_count;
+                    stats.stale_attempts += 1;
+                    let pc_map = forged.pc_map();
+                    let executed = forged.execute_tracked_v3(
+                        &mut probe,
+                        &mut owner,
+                        AccessContext::default(),
+                        3,
+                        None,
+                        &AtomicU8::new(0),
+                        |_| panic!("released artifact cannot notify"),
+                    );
+                    if slot_reused {
+                        assert_eq!(pc_map, Err(ActiveCodeExecutionErrorV3::InvalidHandle));
+                        assert_eq!(executed, Err(ActiveCodeExecutionErrorV3::InvalidHandle));
+                    } else {
+                        assert_eq!(pc_map, Err(ActiveCodeExecutionErrorV3::InvalidMetadata));
+                        assert_eq!(executed, Err(ActiveCodeExecutionErrorV3::InvalidMetadata));
+                    }
+                    stats.stale_rejections += 1;
+                    assert_eq!(probe, probe_before);
+                    assert_eq!(owner.write_count, writes_before);
+                    let available = arena.available_slots();
+                    drop(forged);
+                    assert_eq!(arena.available_slots(), available, "stale drop is a no-op");
+
+                    v3_cache.clear();
+                    stats.steps += 1;
+                    assert_eq!(arena.available_slots(), capacity);
+                    assert_eq!(arena.arena.borrow().pending_release_count(), 0);
+                }
+
+                // Phase 3: drop the backend while handles are live, then reopen.
+                let live = publish_v3(&mut arena, &owner, &mut stats);
+                if capacity == 2 {
+                    let state = LongModeState {
+                        rip: ENTRY,
+                        ..LongModeState::default()
+                    };
+                    cached_run(
+                        &mut owner,
+                        ENTRY,
+                        state,
+                        &mut v3_cache,
+                        &mut arena,
+                        &mut stats,
+                    );
+                }
+                drop(arena);
+                stats.steps += 1;
+                assert_eq!(
+                    PublishedArenaBackend::new(capacity).err(),
+                    Some(PublishedArenaError::MappingAlreadyLive)
+                );
+                drop(v3_cache);
+                if capacity == 2 {
+                    assert_eq!(
+                        PublishedArenaBackend::new(capacity).err(),
+                        Some(PublishedArenaError::MappingAlreadyLive),
+                        "the live V3 handle keeps the mapping"
+                    );
+                }
+                drop(live);
+                stats.steps += 1;
+                let reopened = PublishedArenaBackend::new(capacity).unwrap();
+                assert_eq!(reopened.available_slots(), capacity);
+                assert_eq!(reopened.arena.borrow().pending_release_count(), 0);
+                drop(reopened);
+                stats.steps += 1;
+            }
+        }
+
+        eprintln!(
+            "s3_25d: steps={} native={} compared={} live_checks={} stale={}/{} invalidated={} \
+             deferred={} faults={} stops={} events={} reopens={} publications={}",
+            stats.steps,
+            stats.native_executions,
+            stats.interpreter_comparisons,
+            stats.live_generation_checks,
+            stats.stale_rejections,
+            stats.stale_attempts,
+            stats.invalidated_entries,
+            stats.deferred_releases,
+            stats.faults,
+            stats.stops,
+            stats.events,
+            stats.reopens,
+            stats.publications,
+        );
+        assert!(stats.steps >= 300, "several hundred steps: {}", stats.steps);
+        assert_eq!(stats.native_executions, stats.interpreter_comparisons);
+        assert_eq!(stats.stale_attempts, stats.stale_rejections);
+        assert!(stats.stale_rejections > 0);
+        assert_eq!(stats.deferred_releases, expected_deferred);
+        assert!(stats.deferred_releases > 0);
+        assert!(stats.faults > 0 && stats.stops > 0 && stats.events > 0);
+        assert!(stats.invalidated_entries > 0);
+        assert_eq!(stats.reopens, 2 * ROUNDS - 1);
+
+        // Final: every mapping and slot is free again after the last drop.
+        let last = PublishedArenaBackend::new(2).unwrap();
+        assert_eq!(last.available_slots(), 2);
+        assert_eq!(last.arena.borrow().pending_release_count(), 0);
+        assert_eq!(last.arena.borrow().free_slots.len(), 2);
+    }
+
     #[test]
     fn tracked_v2_store_invalidates_alias_after_return_and_preserves_late_stop_commit() {
         let _guard = jit_test_lock();
@@ -72302,6 +74738,180 @@ pub(crate) mod tests {
         let replacement_handle = arena.publish_memory_store_v2(&replacement).unwrap();
         assert_eq!(replacement_handle.pc_map().unwrap(), expected_store_map);
         assert_eq!(stale.pc_map(), Err(PublishedArenaError::StaleHandle));
+    }
+
+    fn s4_15f_store_block() -> od_jit::memory_load_v2::MemoryStoreBlockV2 {
+        let view = CodeView::new(0x1000, &[0x48, 0x89, 0x18]).unwrap();
+        od_jit::memory_load_v2::compile_memory_store_block_v2(view, 0x1000).unwrap()
+    }
+
+    #[test]
+    fn s4_15f_arena_release_is_exact_and_a_duplicate_release_is_a_no_op() {
+        let _guard = jit_test_lock();
+        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            return;
+        }
+        let store = s4_15f_store_block();
+        let mut arena = PublishedArenaBackend::new(2).unwrap();
+        assert_eq!(arena.available_slots(), 2);
+        let handle = arena.publish_memory_store_v2(&store).unwrap();
+        assert_eq!(arena.available_slots(), 1);
+
+        // A forged second owner of the same slot and generation models a
+        // double release: only the first drop may return the slot.
+        let duplicate = PublishedArenaBlock {
+            arena: handle._block.arena.clone(),
+            owner_id: handle._block.owner_id.clone(),
+            slot_index: handle._block.slot_index,
+            generation: handle._block.generation,
+        };
+        drop(handle);
+        assert_eq!(arena.available_slots(), 2);
+        drop(duplicate);
+        assert_eq!(arena.available_slots(), 2, "second release must be a no-op");
+        assert_eq!(arena.arena.borrow().free_slots.len(), 2);
+
+        // Releasing a free slot directly (no handle) is also a no-op.
+        assert!(!arena.arena.borrow_mut().release_slot(0, 1));
+        assert_eq!(arena.available_slots(), 2);
+
+        // Churn: every publish gets a fresh generation and nothing leaks.
+        let mut last_generation = 0;
+        for _ in 0..40 {
+            let handle = arena.publish_memory_store_v2(&store).unwrap();
+            assert!(handle._block.generation > last_generation);
+            last_generation = handle._block.generation;
+            assert_eq!(arena.available_slots(), 1);
+            drop(handle);
+            assert_eq!(arena.available_slots(), 2);
+        }
+        assert!(
+            last_generation >= 20,
+            "slots are reused with new generations"
+        );
+    }
+
+    #[test]
+    fn s4_15f_handle_dropped_under_a_borrow_is_deferred_not_leaked() {
+        let _guard = jit_test_lock();
+        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            return;
+        }
+        let store = s4_15f_store_block();
+        let mut arena = PublishedArenaBackend::new(2).unwrap();
+        let first = arena.publish_memory_store_v2(&store).unwrap();
+        let second = arena.publish_memory_store_v2(&store).unwrap();
+        assert_eq!(arena.available_slots(), 0);
+        let first_slot = first._block.slot_index;
+
+        {
+            let held = arena.arena.borrow();
+            assert!(held.slots[first_slot].direct_memory_metadata_v2.is_some());
+            drop(first);
+            // The slot is not freed under the borrow: its metadata is intact
+            // and nothing was pushed to the free stack, but it is accounted
+            // as available for the next publication.
+            assert!(held.slots[first_slot].direct_memory_metadata_v2.is_some());
+            assert!(held.free_slots.is_empty());
+            assert_eq!(held.pending_release_count(), 1);
+        }
+        assert_eq!(arena.available_slots(), 1);
+        assert_eq!(
+            arena.cached_block_capacity(),
+            1,
+            "pending slot is not reserved"
+        );
+
+        // The next publication applies the deferred release instead of
+        // reporting CapacityFull.
+        let third = arena.publish_memory_store_v2(&store).unwrap();
+        assert_eq!(arena.available_slots(), 0);
+        assert_eq!(arena.arena.borrow().pending_release_count(), 0);
+        drop(second);
+        drop(third);
+        assert_eq!(arena.available_slots(), 2);
+        assert_eq!(arena.arena.borrow().free_slots.len(), 2);
+    }
+
+    #[test]
+    fn s4_15f_handle_dropped_by_the_owner_during_a_native_call_is_freed_after_return() {
+        let _guard = jit_test_lock();
+        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            return;
+        }
+        let store_source = [0x48, 0x89, 0x18]; // MOV [RAX], RBX
+        let mut owner = TrackedCodeFixture::new(
+            &store_source,
+            &[0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0],
+            &[0x48, 0xB8, 9, 0, 0, 0, 0, 0, 0, 0],
+        );
+        let store = s4_15f_store_block();
+        let mut arena = PublishedArenaBackend::new(2).unwrap();
+        let executing = arena.publish_memory_store_v2(&store).unwrap();
+        let victim = Rc::new(RefCell::new(Some(
+            arena.publish_memory_store_v2(&store).unwrap(),
+        )));
+        assert_eq!(arena.available_slots(), 0);
+
+        // (free slots, deferred slots, victim metadata still present) as seen
+        // from inside the preflight callback, i.e. during the native call.
+        let observed = Rc::new(Cell::new(None));
+        {
+            let victim = victim.clone();
+            let inner = arena.arena.clone();
+            let observed = observed.clone();
+            owner.drop_in_preflight = Some(Box::new(move || {
+                let slot_index = victim.borrow().as_ref().unwrap()._block.slot_index;
+                let dropped = victim.borrow_mut().take();
+                drop(dropped);
+                let state = inner.borrow();
+                observed.set(Some((
+                    state.free_slots.len(),
+                    state.pending_release_count(),
+                    state.slots[slot_index].direct_memory_metadata_v2.is_some(),
+                )));
+            }));
+        }
+        let mut state = od_isa::LongModeState {
+            cr3: None,
+            rip: 0x1000,
+            rflags: 0xA55,
+            ..od_isa::LongModeState::default()
+        };
+        state.gpr[0] = 0x4000; // RAX: destination inside the unrelated backing
+        state.gpr[3] = 0x1122_3344_5566_7788;
+        let result = executing
+            .execute_tracked_code_store_v2(
+                &mut state,
+                &mut owner,
+                AccessContext::default(),
+                1,
+                None,
+                &AtomicU8::new(0),
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(result.exit, MemoryOperationExecutionExitV2::Complete);
+        assert_eq!(result.retired_instructions, 1);
+        assert_eq!(owner.write_count, 1);
+        assert_eq!(
+            observed.get(),
+            Some((0, 1, true)),
+            "the dropped handle's slot stays intact until the call returns"
+        );
+        assert_eq!(
+            arena.available_slots(),
+            1,
+            "released after return, not leaked"
+        );
+
+        let reuse = arena
+            .publish_memory_store_v2(&store)
+            .expect("deferred slot is reusable, not CapacityFull");
+        assert_eq!(arena.available_slots(), 0);
+        drop(reuse);
+        drop(executing);
+        assert_eq!(arena.available_slots(), 2);
     }
 
     #[test]
@@ -114326,6 +116936,627 @@ pub(crate) mod tests {
         );
     }
 
+    // ---- S4-16g: code across a 4 KiB page boundary --------------------------------
+
+    const S4_16G_CR0: u64 = 0x8001_0033;
+    const S4_16G_CR3: u64 = 0x1000;
+    const S4_16G_CR4: u64 = 1 << 5;
+    const S4_16G_EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
+    const S4_16G_RAM_BYTES: u64 = 0x9000;
+    /// `MOV RAX,imm64` at page offset 0xffd: `48 b8 11` on the first page and
+    /// `22 33 44 55 66 77 88` on the next.
+    const S4_16G_ALIAS_A: u64 = 0x0040_1ffd;
+    const S4_16G_ALIAS_B: u64 = 0x0060_1ffd;
+    const S4_16G_FIRST_PAGE: u64 = 0x7000;
+    const S4_16G_SECOND_PAGE: u64 = 0x5000;
+    const S4_16G_CODE: [u8; 10] = [0x48, 0xb8, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+    const S4_16G_IMMEDIATE: u64 = 0x8877_6655_4433_2211;
+
+    /// Two linear aliases (PD[2], PD[3]) of the same page table: linear page 1
+    /// maps the first code page 0x7000 and linear page 2 maps the second code
+    /// page 0x5000 (not adjacent), through the supplied leaf entry.
+    fn s4_16g_bus(second_leaf: u64) -> od_machine::MachineBus {
+        s4_16h_bus_with(second_leaf, S4_16G_RAM_BYTES, vec![], vec![], vec![])
+    }
+
+    /// The S4-16g page-table layout and code bytes on a bus with `ram_bytes` of
+    /// RAM plus extra regions and devices (S4-16h writer fixtures).
+    fn s4_16h_bus_with(
+        second_leaf: u64,
+        ram_bytes: u64,
+        extra_regions: Vec<od_machine::MemoryRegionSpec>,
+        devices: Vec<Box<dyn od_machine::BusDevice>>,
+        bindings: Vec<od_machine::MmioBinding>,
+    ) -> od_machine::MachineBus {
+        use od_machine::{
+            AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
+            MemoryRegionKind, MemoryRegionSpec, RamLimits,
+        };
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), ram_bytes).unwrap();
+        let mut regions = vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)];
+        regions.extend(extra_regions);
+        let map = MachineMemoryMap::new(36, regions).unwrap();
+        let mut bus =
+            MachineBus::new(map, RamLimits::new(ram_bytes), devices, bindings, vec![]).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3010, 0x4007),
+            (0x3018, 0x4007),
+            (0x4008, S4_16G_FIRST_PAGE | 7),
+            (0x4010, second_leaf),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(S4_16G_FIRST_PAGE + 0xffd),
+            &S4_16G_CODE[..3],
+        )
+        .unwrap();
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(S4_16G_SECOND_PAGE),
+            &S4_16G_CODE[3..],
+        )
+        .unwrap();
+        bus
+    }
+
+    fn s4_16g_paging() -> od_machine::Long64ProbeConfig {
+        od_machine::Long64ProbeConfig::new(S4_16G_CR0, S4_16G_CR3, S4_16G_CR4, S4_16G_EFER).unwrap()
+    }
+
+    fn s4_16g_state(rip: u64) -> od_isa::LongModeState {
+        od_isa::LongModeState {
+            cr3: Some(S4_16G_CR3),
+            rip,
+            ..Default::default()
+        }
+    }
+
+    /// Every RAM byte, to compare complete physical effects of two buses.
+    fn s4_16g_ram(bus: &mut od_machine::MachineBus) -> Vec<u8> {
+        use od_machine::{AccessWidth, GuestPhysicalAddress};
+        let mut bytes = Vec::new();
+        for address in (0..S4_16G_RAM_BYTES).step_by(8) {
+            bytes.extend_from_slice(
+                &bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                    .unwrap()
+                    .to_le_bytes(),
+            );
+        }
+        bytes
+    }
+
+    fn s4_16g_publications(session: &PagedCodeSession<'_>) -> u64 {
+        session
+            .backend
+            .arena
+            .borrow()
+            .slots
+            .iter()
+            .map(|slot| slot.generation)
+            .sum()
+    }
+
+    /// Run the cross-page block at `rip` with a zeroed RAX and one retired
+    /// instruction of budget.
+    fn s4_16g_run(
+        session: &mut PagedCodeSession<'_>,
+        rip: u64,
+        length: usize,
+    ) -> (
+        Result<od_jit::dispatch::FallbackDispatchResult, PagedCodeSessionError>,
+        od_isa::LongModeState,
+    ) {
+        let mut state = s4_16g_state(rip);
+        let result = session.execute_alias(rip, length, &mut state, 1);
+        (result, state)
+    }
+
+    const RAX: usize = od_isa::Register::Rax as usize;
+
+    /// The interpreter oracle for the fetch of one cross-page instruction: the
+    /// paged MOV profile fetches byte by byte through the page walker.
+    fn s4_16g_oracle(
+        bus: &mut od_machine::MachineBus,
+        context: AccessContext,
+    ) -> (
+        od_machine::PagedMovStepReport,
+        od_isa::LongModeState,
+        Vec<od_machine::GuestPhysicalRange>,
+    ) {
+        let mut state = s4_16g_state(S4_16G_ALIAS_A);
+        state.cr0 = Some(S4_16G_CR0);
+        state.cr4 = Some(S4_16G_CR4);
+        state.cr3 = None;
+        let mut writes = Vec::new();
+        let report = od_machine::step_paged_mov(
+            &mut state,
+            bus,
+            S4_16G_CR3,
+            S4_16G_EFER,
+            context,
+            0,
+            |range| writes.push(range),
+        )
+        .unwrap();
+        (report, state, writes)
+    }
+
+    #[test]
+    fn s4_16g_cross_page_block_is_admitted_with_two_backings_and_matches_oracle() {
+        use od_machine::GuestPhysicalAddress;
+
+        // Oracle: the interpreter fetches the same instruction through both
+        // pages (its MOV profile reports `MOV RAX,imm64` as unsupported but
+        // only after the complete fetch), so its page-walk effects are the
+        // reference for the physical memory the native path must leave.
+        let mut oracle_bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        let (oracle, oracle_state, oracle_writes) =
+            s4_16g_oracle(&mut oracle_bus, AccessContext::default());
+        assert!(oracle.page_fault.is_none());
+        assert_eq!(oracle_state.rip, S4_16G_ALIAS_A);
+        let oracle_ram = s4_16g_ram(&mut oracle_bus);
+        // PML4, PDPT, PD, PT[1] for the first page; PT[2] for the second.
+        assert_eq!(oracle_writes.len(), 5);
+
+        // Control: the same instruction wholly inside one page.
+        let mut control_bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        control_bus
+            .patch_physical_ram(
+                GuestPhysicalAddress::new(S4_16G_FIRST_PAGE + 0x100),
+                &S4_16G_CODE,
+            )
+            .unwrap();
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        let _guard = jit_test_lock();
+        let (control_result, control_state) = {
+            let mut control_session =
+                PagedCodeSession::new(&mut control_bus, s4_16g_paging(), AccessContext::default())
+                    .unwrap();
+            s4_16g_run(&mut control_session, 0x0040_1100, 10)
+        };
+        let control_result = control_result.unwrap();
+        assert_eq!(control_state.gpr[RAX], S4_16G_IMMEDIATE);
+
+        let paging = s4_16g_paging();
+        let snapshot = bus
+            .tracked_code_snapshot_two_pages_with_callback(
+                &paging,
+                S4_16G_ALIAS_A,
+                10,
+                AccessContext::default(),
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(snapshot.bytes(), S4_16G_CODE);
+        assert_eq!(snapshot.first.bytes, S4_16G_CODE[..3]);
+        assert_eq!(snapshot.second.as_ref().unwrap().bytes, S4_16G_CODE[3..]);
+        assert_eq!(snapshot.first.physical_base.get(), S4_16G_FIRST_PAGE);
+        assert_eq!(
+            snapshot.second.as_ref().unwrap().physical_base.get(),
+            S4_16G_SECOND_PAGE
+        );
+
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        let result = result.unwrap();
+        assert_eq!(result, control_result);
+        assert_eq!(result.retired_native, 1);
+        assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE);
+        assert_eq!(state.rip, S4_16G_ALIAS_A + 10);
+        assert_eq!(state.cr3, Some(S4_16G_CR3));
+        assert_eq!(session.resident_entries(), 1);
+        assert_eq!(s4_16g_publications(&session), 1);
+        assert_eq!(
+            session.backing_page,
+            Some(GuestPhysicalAddress::new(S4_16G_FIRST_PAGE))
+        );
+        assert_eq!(
+            session.second_backing_page,
+            Some(GuestPhysicalAddress::new(S4_16G_SECOND_PAGE))
+        );
+        assert_eq!(s4_16g_ram(session.bus), oracle_ram);
+
+        // Re-entry through the same alias reuses the entry (no new publication);
+        // the second alias has its own cache slot and mapping ids.
+        let (again, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        again.unwrap();
+        assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE);
+        assert_eq!(s4_16g_publications(&session), 1);
+        let (alias_b, state) = s4_16g_run(&mut session, S4_16G_ALIAS_B, 10);
+        alias_b.unwrap();
+        assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE);
+        assert_eq!(session.resident_entries(), 2);
+        assert_eq!(s4_16g_publications(&session), 2);
+    }
+
+    /// Warm both aliases of the cross-page block.
+    fn s4_16g_warm(session: &mut PagedCodeSession<'_>) {
+        for rip in [S4_16G_ALIAS_A, S4_16G_ALIAS_B] {
+            let (result, state) = s4_16g_run(session, rip, 10);
+            result.unwrap();
+            assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE);
+        }
+        assert_eq!(session.resident_entries(), 2);
+        assert_eq!(s4_16g_publications(session), 2);
+    }
+
+    #[test]
+    fn s4_16g_write_to_first_page_invalidates_the_block() {
+        use od_machine::GuestPhysicalAddress;
+
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        let _guard = jit_test_lock();
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+        s4_16g_warm(&mut session);
+
+        let first = GuestPhysicalAddress::new(S4_16G_FIRST_PAGE);
+        let second = GuestPhysicalAddress::new(S4_16G_SECOND_PAGE);
+        let first_generation = session.bus.code_page_generation(first).unwrap();
+        let second_generation = session.bus.code_page_generation(second).unwrap();
+
+        // Tracked patch of the last byte on the first page (guest 0x401fff)
+        // through the first alias: the immediate's low byte 0x11 becomes 0x99.
+        session.patch_alias_byte(S4_16G_ALIAS_A + 2, 0x99).unwrap();
+        assert!(session.bus.code_page_generation(first).unwrap() > first_generation);
+        assert_eq!(
+            session.bus.code_page_generation(second).unwrap(),
+            second_generation,
+            "the second page was not written"
+        );
+        assert_eq!(session.resident_entries(), 0);
+
+        let patched = S4_16G_IMMEDIATE & !0xff | 0x99;
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_B, 10);
+        result.unwrap();
+        assert_eq!(state.gpr[RAX], patched, "stale bytes were not executed");
+        assert_eq!(s4_16g_publications(&session), 3);
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        result.unwrap();
+        assert_eq!(state.gpr[RAX], patched);
+        assert_eq!(s4_16g_publications(&session), 4);
+
+        // A physical write to the first page through the session API.
+        let write = session
+            .write_physical_ram(
+                GuestPhysicalAddress::new(S4_16G_FIRST_PAGE + 0xfff),
+                &[0x77],
+            )
+            .unwrap();
+        assert!(write.code_invalidated);
+        assert_eq!(session.resident_entries(), 0);
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        result.unwrap();
+        assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE & !0xff | 0x77);
+    }
+
+    #[test]
+    fn s4_16g_write_to_second_page_invalidates_the_block() {
+        use od_machine::GuestPhysicalAddress;
+
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        // Store code `MOV [RBX],RCX` on its own page, linear 0x403100.
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x8100), &[0x48, 0x89, 0x0b])
+            .unwrap();
+        bus.write_physical(
+            GuestPhysicalAddress::new(0x4018),
+            od_machine::AccessWidth::Qword,
+            0x8007,
+            |_| {},
+        )
+        .unwrap();
+        let _guard = jit_test_lock();
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+        s4_16g_warm(&mut session);
+
+        let first = GuestPhysicalAddress::new(S4_16G_FIRST_PAGE);
+        let second = GuestPhysicalAddress::new(S4_16G_SECOND_PAGE);
+        let first_generation = session.bus.code_page_generation(first).unwrap();
+        let second_generation = session.bus.code_page_generation(second).unwrap();
+
+        // Physical loader write into the second page only.
+        let write = session
+            .write_physical_ram(GuestPhysicalAddress::new(S4_16G_SECOND_PAGE + 6), &[0xee])
+            .unwrap();
+        assert!(write.code_invalidated);
+        assert_eq!(
+            session.bus.code_page_generation(first).unwrap(),
+            first_generation,
+            "the first page was not written"
+        );
+        assert!(session.bus.code_page_generation(second).unwrap() > second_generation);
+        assert_eq!(session.resident_entries(), 0);
+        let patched = S4_16G_IMMEDIATE & !(0xff << 56) | 0xee << 56;
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        result.unwrap();
+        assert_eq!(state.gpr[RAX], patched, "stale bytes were not executed");
+        assert_eq!(s4_16g_publications(&session), 3);
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_B, 10);
+        result.unwrap();
+        assert_eq!(state.gpr[RAX], patched);
+        assert_eq!(session.resident_entries(), 2);
+
+        // One interpreted guest qword store through the second page's linear
+        // alias (0x402002 -> physical 0x5002) rewrites immediate bytes 3..7.
+        let replacement = 0x0102_0304_0506_0708u64;
+        let mut store = od_isa::LongModeState {
+            rip: 0x0040_3100,
+            cr0: Some(S4_16G_CR0),
+            cr3: Some(S4_16G_CR3),
+            cr4: Some(S4_16G_CR4),
+            ..Default::default()
+        };
+        store.gpr[od_isa::Register::Rbx as usize] = 0x0040_2002;
+        store.gpr[od_isa::Register::Rcx as usize] = replacement;
+        let stored = session.step_guest_mov(&mut store, 0).unwrap();
+        assert_eq!(stored.step.cpu.instructions_executed, 1);
+        assert!(stored.code_invalidated);
+        assert_eq!(session.resident_entries(), 0);
+        let mut bytes = S4_16G_CODE;
+        bytes[9] = 0xee;
+        bytes[5..10].copy_from_slice(&replacement.to_le_bytes()[..5]);
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        result.unwrap();
+        assert_eq!(
+            state.gpr[RAX],
+            u64::from_le_bytes(bytes[2..10].try_into().unwrap())
+        );
+        assert_eq!(s4_16g_publications(&session), 5);
+    }
+
+    #[test]
+    fn s4_16g_write_to_unrelated_page_keeps_the_block_at_4k_granularity() {
+        use od_machine::GuestPhysicalAddress;
+
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        let _guard = jit_test_lock();
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+        s4_16g_warm(&mut session);
+
+        let first = GuestPhysicalAddress::new(S4_16G_FIRST_PAGE);
+        let second = GuestPhysicalAddress::new(S4_16G_SECOND_PAGE);
+        let first_generation = session.bus.code_page_generation(first).unwrap();
+        let second_generation = session.bus.code_page_generation(second).unwrap();
+
+        // 0x6000 lies inside the same aligned 16 KiB host page
+        // (0x4000..0x8000) as both code pages and between them; 0x8000 is in
+        // the next 16 KiB page. Neither is a dependency of the block.
+        for unrelated in [0x6000u64, 0x4800, 0x8000] {
+            let page = GuestPhysicalAddress::new(unrelated & !0xfff);
+            let generation = session.bus.code_page_generation(page).unwrap();
+            let write = session
+                .write_physical_ram(GuestPhysicalAddress::new(unrelated), &[0x5a])
+                .unwrap();
+            assert!(!write.code_invalidated, "write at {unrelated:#x}");
+            assert!(session.bus.code_page_generation(page).unwrap() > generation);
+            assert_eq!(
+                session.bus.code_page_generation(first).unwrap(),
+                first_generation
+            );
+            assert_eq!(
+                session.bus.code_page_generation(second).unwrap(),
+                second_generation
+            );
+            assert_eq!(session.resident_entries(), 2);
+            let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+            result.unwrap();
+            assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE);
+            assert_eq!(s4_16g_publications(&session), 2, "entry was reused");
+        }
+
+        // Dependencies are tracked per backing page, not per byte range: a
+        // write elsewhere on the first code page (outside the three block
+        // bytes) still invalidates, as in S4-16c.
+        let write = session
+            .write_physical_ram(GuestPhysicalAddress::new(S4_16G_FIRST_PAGE + 0x10), &[1])
+            .unwrap();
+        assert!(write.code_invalidated);
+        assert_eq!(session.resident_entries(), 0);
+    }
+
+    #[test]
+    fn s4_16g_second_page_fetch_fault_is_exact_and_falls_back_to_the_interpreter() {
+        use od_machine::{GuestPhysicalAddress, TrackedAccessError, TrackedCodeSnapshotError};
+
+        let nx = 1u64 << 63;
+        for (label, leaf, pfec) in [
+            ("not present", S4_16G_SECOND_PAGE | 6, 0x14u32),
+            ("no-execute", S4_16G_SECOND_PAGE | 7 | nx, 0x15),
+            ("supervisor-only", S4_16G_SECOND_PAGE | 3, 0x15),
+        ] {
+            let mut oracle_bus = s4_16g_bus(leaf);
+            let (oracle, oracle_state, _) =
+                s4_16g_oracle(&mut oracle_bus, AccessContext::default());
+            let oracle_record = oracle.page_fault.clone().expect(label);
+            assert_eq!(oracle_record.saved_rip(), S4_16G_ALIAS_A, "{label}");
+            assert_eq!(oracle_record.cr2_value(), 0x0040_2000, "{label}");
+            assert_eq!(oracle_record.fault().error_code, Some(pfec), "{label}");
+            assert_eq!(oracle_state.rip, S4_16G_ALIAS_A, "{label}");
+            assert_eq!(oracle_state.gpr[RAX], 0, "{label}");
+            let oracle_ram = s4_16g_ram(&mut oracle_bus);
+
+            let mut bus = s4_16g_bus(leaf);
+            let _guard = jit_test_lock();
+            let mut session =
+                PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+            let before = s4_16g_state(S4_16G_ALIAS_A);
+            let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+            let Err(PagedCodeSessionError::Snapshot(TrackedCodeSnapshotError::Access(
+                TrackedAccessError::PageFault { record, .. },
+            ))) = result
+            else {
+                panic!("{label}: expected a second-page fetch fault, got {result:?}");
+            };
+            assert_eq!(record, oracle_record, "{label}");
+            assert_eq!(state, before, "{label}: RIP/RAX/state unchanged");
+            assert_eq!(session.resident_entries(), 0, "{label}");
+            assert_eq!(s4_16g_publications(&session), 0, "{label}: not compiled");
+            assert_eq!(session.backing_page, None, "{label}: nothing bound");
+            assert_eq!(session.second_backing_page, None, "{label}");
+            // The first-page walk and the faulting second walk commit exactly
+            // the A bits the interpreter's byte-wise fetch commits.
+            assert_eq!(s4_16g_ram(session.bus), oracle_ram, "{label}");
+
+            // S4-15c rule: the JIT refused before executing anything, so the
+            // interpreter runs the step once on the same state and bus and
+            // reports the identical fault and the identical memory.
+            let mut fallback = before.clone();
+            fallback.cr0 = Some(S4_16G_CR0);
+            fallback.cr4 = Some(S4_16G_CR4);
+            fallback.cr3 = None;
+            let report = od_machine::step_paged_mov(
+                &mut fallback,
+                session.bus,
+                S4_16G_CR3,
+                S4_16G_EFER,
+                AccessContext::default(),
+                0,
+                |_| {},
+            )
+            .unwrap();
+            assert_eq!(report, oracle, "{label}");
+            assert_eq!(fallback, oracle_state, "{label}");
+            assert_eq!(s4_16g_ram(session.bus), oracle_ram, "{label}");
+            drop(session);
+        }
+
+        // A block that was resident while the second page was valid is not run
+        // once the second page faults: the fetch walk precedes the lookup.
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        let _guard = jit_test_lock();
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+        s4_16g_warm(&mut session);
+        let publications = s4_16g_publications(&session);
+        session
+            .write_physical_ram(
+                GuestPhysicalAddress::new(0x4010),
+                &(S4_16G_SECOND_PAGE | 6).to_le_bytes(),
+            )
+            .unwrap();
+        for rip in [S4_16G_ALIAS_A, S4_16G_ALIAS_B] {
+            let before = s4_16g_state(rip);
+            let (result, state) = s4_16g_run(&mut session, rip, 10);
+            assert!(
+                matches!(
+                    result,
+                    Err(PagedCodeSessionError::Snapshot(
+                        TrackedCodeSnapshotError::Access(TrackedAccessError::PageFault { .. })
+                    ))
+                ),
+                "{result:?}"
+            );
+            assert_eq!(state, before);
+            assert_eq!(state.gpr[RAX], 0, "the resident block did not run");
+        }
+        assert_eq!(s4_16g_publications(&session), publications);
+    }
+
+    #[test]
+    fn s4_16g_block_that_does_not_fit_two_pages_is_rejected_without_state_change() {
+        use od_machine::TrackedCodeSnapshotError;
+
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        let ram_before = s4_16g_ram(&mut bus);
+        let _guard = jit_test_lock();
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+
+        // Offset 0xffd leaves 3 bytes on the first page and 4096 on the next:
+        // 0x1003 is the largest range; one byte more spans three pages and is
+        // refused before any page walk, as is an empty range.
+        for length in [0x1004usize, 0x2000, 0] {
+            let before = s4_16g_state(S4_16G_ALIAS_A);
+            let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, length);
+            assert!(
+                matches!(
+                    result,
+                    Err(PagedCodeSessionError::Snapshot(
+                        TrackedCodeSnapshotError::InvalidLength
+                    ))
+                ),
+                "length {length:#x}: {result:?}"
+            );
+            assert_eq!(state, before);
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(session.backing_page, None);
+            assert_eq!(session.second_backing_page, None);
+            assert_eq!(s4_16g_publications(&session), 0);
+            assert_eq!(s4_16g_ram(session.bus), ram_before, "no page walk ran");
+        }
+
+        // Two pages that fit but are not register-only past the first
+        // instruction (zero bytes decode as a memory ADD) are rejected by
+        // admission without binding the session.
+        let before = s4_16g_state(S4_16G_ALIAS_A);
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 0x1003);
+        assert!(
+            matches!(result, Err(PagedCodeSessionError::Admission(_))),
+            "{result:?}"
+        );
+        assert_eq!(state, before);
+        assert_eq!(session.backing_page, None);
+        assert_eq!(session.second_backing_page, None);
+        assert_eq!(session.resident_entries(), 0);
+        assert_eq!(s4_16g_publications(&session), 0);
+
+        // The session is intact: the valid block still runs afterwards.
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        result.unwrap();
+        assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE);
+        assert_eq!(s4_16g_publications(&session), 1);
+    }
+
+    #[test]
+    fn s4_16g_second_walk_ad_write_into_first_code_page_keeps_versions_consistent() {
+        use od_machine::{AccessWidth, GuestPhysicalAddress};
+
+        // The page table itself lives in the first code page: PT = 0x7000 with
+        // PT[1] -> 0x7000 and PT[2] -> 0x5000. The first walk's Accessed write
+        // lands before the first-page bytes are read; the second walk's lands
+        // after, so the first generation must be refreshed.
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        for (address, value) in [
+            (0x3010, 0x7007u64),
+            (0x3018, 0x7007),
+            (0x7008, S4_16G_FIRST_PAGE | 7),
+            (0x7010, S4_16G_SECOND_PAGE | 7),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let _guard = jit_test_lock();
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        result.unwrap();
+        assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE);
+        assert_eq!(s4_16g_publications(&session), 1);
+        // No further walk writes remain, so the snapshot generations are stable
+        // and the entry built from the refreshed first generation is reused.
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        result.unwrap();
+        assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE);
+        assert_eq!(s4_16g_publications(&session), 1);
+        assert_eq!(session.resident_entries(), 1);
+    }
+
     #[test]
     fn s4_16e_retired_invlpg_resets_alias_session_after_remap() {
         use od_machine::{
@@ -114578,6 +117809,660 @@ pub(crate) mod tests {
         assert_eq!(session.aliases, [Some(ALIAS_C & !0xfff), None]);
     }
 
+    /// S4-16f: translation context (CR3 root, CR0.WP, CR4.PSE/PGE, EFER.NXE,
+    /// CPL) is part of the alias admission key. Two roots map the same linear
+    /// alias to different code pages; a second identical bus is the oracle.
+    mod s4_16f {
+        use super::*;
+        use od_isa::memory::{AccessOrigin, InstructionMode, PrivilegeLevel};
+        use od_machine::{
+            AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
+            MemoryRegionKind, MemoryRegionSpec, RamLimits,
+        };
+
+        const ALIAS: u64 = 0x0040_1100;
+        const DATA_RO: u64 = 0x0040_2000;
+        const SYS: u64 = 0x0040_3000;
+        const ALIAS_S: u64 = 0x0040_4100;
+        const DATA_W: u64 = 0x0040_5000;
+        const CR3_RIP: u64 = SYS + 0x100;
+        const CR0_RIP: u64 = SYS + 0x200;
+        const STORE_RIP: u64 = SYS + 0x300;
+        const LOAD_RIP: u64 = SYS + 0x400;
+        const ROOT_A: u64 = 0x1000;
+        const ROOT_B: u64 = 0x5000;
+        const CR0_WP1: u64 = 0x8001_0033;
+        const CR0_WP0: u64 = 0x8000_0033;
+        const CR4: u64 = 1 << 5;
+        const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
+        const IMM_A: u64 = 0x1111_2222_3333_4444;
+        const IMM_B: u64 = 0xa1b2_c3d4_e5f6_0718;
+        const IMM_S: u64 = 0x0102_0304_0506_0708;
+        const RAX: usize = od_isa::Register::Rax as usize;
+        const RBX: usize = od_isa::Register::Rbx as usize;
+        const RCX: usize = od_isa::Register::Rcx as usize;
+
+        fn ctx(privilege: PrivilegeLevel) -> AccessContext {
+            AccessContext {
+                mode: InstructionMode::Long64,
+                privilege,
+                origin: AccessOrigin::Explicit,
+            }
+        }
+
+        fn make_bus() -> MachineBus {
+            const RAM_BYTES: u64 = 0x10000;
+            let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_BYTES).unwrap();
+            let map =
+                MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                    .unwrap();
+            let mut bus =
+                MachineBus::new(map, RamLimits::new(RAM_BYTES), vec![], vec![], vec![]).unwrap();
+            // Root A (CR3 0x1000) and root B (CR3 0x5000): same linear layout,
+            // different code page behind ALIAS. PT leaf flags: 0x7 user RW,
+            // 0x1 supervisor read-only, 0x3 supervisor RW.
+            let mut entries = vec![
+                (0x1000u64, 0x2007u64),
+                (0x2000, 0x3007),
+                (0x3010, 0x4007),
+                (0x4008, 0xa007),
+                (0x5000, 0x6007),
+                (0x6000, 0x7007),
+                (0x7010, 0x8007),
+                (0x8008, 0xb007),
+            ];
+            for pt in [0x4000u64, 0x8000] {
+                entries.extend([
+                    (pt + 0x10, 0xc001),
+                    (pt + 0x18, 0xd007),
+                    (pt + 0x20, 0xe003),
+                    (pt + 0x28, 0xf007),
+                ]);
+            }
+            for (address, value) in entries {
+                bus.write_physical(
+                    GuestPhysicalAddress::new(address),
+                    AccessWidth::Qword,
+                    value,
+                    |_| {},
+                )
+                .unwrap();
+            }
+            let mov = |value: u64| {
+                let mut bytes = vec![0x48, 0xb8];
+                bytes.extend_from_slice(&value.to_le_bytes());
+                bytes
+            };
+            for (address, bytes) in [
+                (0xa100u64, mov(IMM_A)),
+                (0xb100, mov(IMM_B)),
+                (0xe100, mov(IMM_S)),
+                (0xd100, vec![0x0f, 0x22, 0xd8]),
+                (0xd200, vec![0x0f, 0x22, 0xc0]),
+                (0xd300, vec![0x48, 0x89, 0x0b]),
+                (0xd400, vec![0x48, 0x8b, 0x03]),
+            ] {
+                bus.patch_physical_ram(GuestPhysicalAddress::new(address), &bytes)
+                    .unwrap();
+            }
+            bus
+        }
+
+        fn alias_state(cr3: u64, rip: u64) -> od_isa::LongModeState {
+            od_isa::LongModeState {
+                cr3: Some(cr3),
+                rip,
+                ..Default::default()
+            }
+        }
+
+        fn sys_state(rip: u64, cr0: u64, cr3: u64) -> od_isa::LongModeState {
+            od_isa::LongModeState {
+                rip,
+                cr0: Some(cr0),
+                cr3: Some(cr3),
+                cr4: Some(CR4),
+                activity: Some(od_isa::state::CpuActivity::Running),
+                sti_shadow: Some(od_isa::state::StiShadow::Clear),
+                ..Default::default()
+            }
+        }
+
+        fn mem_state(rip: u64, cr0: u64, cr3: Option<u64>) -> od_isa::LongModeState {
+            od_isa::LongModeState {
+                rip,
+                cr0: Some(cr0),
+                cr3,
+                cr4: Some(CR4),
+                ..Default::default()
+            }
+        }
+
+        /// Oracle: interpret `MOV RAX,[RBX]` on the oracle bus. Returns
+        /// (retired, faulted, loaded value).
+        fn oracle_load(
+            bus: &mut MachineBus,
+            cr3: u64,
+            cr0: u64,
+            privilege: PrivilegeLevel,
+            address: u64,
+        ) -> (u64, bool, u64) {
+            let mut state = mem_state(LOAD_RIP, cr0, None);
+            state.gpr[RBX] = address;
+            let report =
+                od_machine::step_paged_mov(&mut state, bus, cr3, EFER, ctx(privilege), 0, |_| {})
+                    .unwrap();
+            (
+                report.cpu.instructions_executed,
+                report.page_fault.is_some(),
+                state.gpr[RAX],
+            )
+        }
+
+        fn run_alias(
+            session: &mut PagedCodeSession<'_>,
+            cr3: u64,
+            alias: u64,
+        ) -> Result<u64, PagedCodeSessionError> {
+            let mut state = alias_state(cr3, alias);
+            session.execute_alias(alias, 10, &mut state, 1)?;
+            Ok(state.gpr[RAX])
+        }
+
+        #[test]
+        fn mov_cr3_a_b_a_rekeys_and_never_reuses_old_block() {
+            let _guard = jit_test_lock();
+            let mut bus = make_bus();
+            let mut oracle = make_bus();
+            let paging = od_machine::Long64ProbeConfig::new(CR0_WP1, ROOT_A, CR4, EFER).unwrap();
+            let mut session =
+                PagedCodeSession::new(&mut bus, paging, ctx(PrivilegeLevel::Ring0)).unwrap();
+            let context_a = session.translation_context();
+
+            let rax = run_alias(&mut session, ROOT_A, ALIAS).unwrap();
+            assert_eq!(rax, IMM_A);
+            assert_eq!(
+                oracle_load(
+                    &mut oracle,
+                    ROOT_A,
+                    CR0_WP1,
+                    PrivilegeLevel::Ring0,
+                    ALIAS + 2
+                )
+                .2,
+                IMM_A
+            );
+            assert_eq!(session.resident_entries(), 1);
+            assert_eq!(session.alias_contexts[0], Some(context_a));
+
+            // Guest MOV CR3 A -> B; the oracle runs the same instruction.
+            let mut sys = sys_state(CR3_RIP, CR0_WP1, ROOT_A);
+            sys.gpr[RAX] = ROOT_B;
+            let mut oracle_sys = sys.clone();
+            let moved = session
+                .execute_mov_cr3(&mut sys, od_isa::INTEGER_FLAGS)
+                .unwrap();
+            let oracle_moved = od_machine::step_paged_mov_cr3_wp(
+                &mut oracle_sys,
+                &mut oracle,
+                ROOT_A,
+                EFER,
+                ctx(PrivilegeLevel::Ring0),
+                od_isa::INTEGER_FLAGS,
+                |_| {},
+            )
+            .unwrap();
+            assert_eq!(moved.step, oracle_moved);
+            assert_eq!(sys, oracle_sys);
+            assert_eq!(moved.step.cpu.instructions_executed, 1);
+            assert_eq!(sys.cr3, Some(ROOT_B));
+            assert!(moved.session_reset);
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(session.backing_page, None);
+            assert_eq!(session.aliases, [None, None]);
+            assert_eq!(session.alias_contexts, [None, None]);
+            let context_b = session.translation_context();
+            assert_ne!(context_a, context_b);
+            assert_ne!(context_a.id(), context_b.id());
+            assert_eq!(context_b.cr3_root(), ROOT_B);
+
+            // The same linear alias now means root B's code page.
+            let rax = run_alias(&mut session, ROOT_B, ALIAS).unwrap();
+            assert_eq!(rax, IMM_B);
+            assert_eq!(
+                oracle_load(
+                    &mut oracle,
+                    ROOT_B,
+                    CR0_WP1,
+                    PrivilegeLevel::Ring0,
+                    ALIAS + 2
+                )
+                .2,
+                IMM_B
+            );
+            assert_eq!(
+                session.backing_page,
+                Some(GuestPhysicalAddress::new(0xb000))
+            );
+            assert_eq!(session.alias_contexts[0], Some(context_b));
+            assert_eq!(session.resident_entries(), 1);
+
+            // B -> A: the context-A block admitted earlier is gone and the
+            // alias is admitted afresh under the original key.
+            sys.rip = CR3_RIP;
+            sys.gpr[RAX] = ROOT_A;
+            let back = session
+                .execute_mov_cr3(&mut sys, od_isa::INTEGER_FLAGS)
+                .unwrap();
+            assert!(back.session_reset);
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(session.backing_page, None);
+            let rax = run_alias(&mut session, ROOT_A, ALIAS).unwrap();
+            assert_eq!(rax, IMM_A);
+            assert_eq!(
+                session.backing_page,
+                Some(GuestPhysicalAddress::new(0xa000))
+            );
+            assert_eq!(session.translation_context(), context_a);
+            assert_eq!(session.alias_contexts[0], Some(context_a));
+            assert_eq!(session.resident_entries(), 1);
+
+            // CR3 observed on the CPU state without an interpreted MOV CR3
+            // (host-side switch) is also a key change: no stale IMM_A.
+            let resets = session.context_resets();
+            let rax = run_alias(&mut session, ROOT_B, ALIAS).unwrap();
+            assert_eq!(rax, IMM_B);
+            assert_eq!(session.context_resets(), resets + 1);
+            assert_eq!(session.translation_context(), context_b);
+            assert_eq!(
+                session.backing_page,
+                Some(GuestPhysicalAddress::new(0xb000))
+            );
+            assert_eq!(session.resident_entries(), 1);
+        }
+
+        #[test]
+        fn mov_cr3_same_value_resets_session() {
+            let _guard = jit_test_lock();
+            let mut bus = make_bus();
+            let paging = od_machine::Long64ProbeConfig::new(CR0_WP1, ROOT_A, CR4, EFER).unwrap();
+            let mut session =
+                PagedCodeSession::new(&mut bus, paging, ctx(PrivilegeLevel::Ring0)).unwrap();
+            let context = session.translation_context();
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+            assert_eq!(session.resident_entries(), 1);
+            let resets = session.context_resets();
+
+            let mut sys = sys_state(CR3_RIP, CR0_WP1, ROOT_A);
+            sys.gpr[RAX] = ROOT_A;
+            let result = session
+                .execute_mov_cr3(&mut sys, od_isa::INTEGER_FLAGS)
+                .unwrap();
+            assert_eq!(result.step.cpu.instructions_executed, 1);
+            assert!(result.session_reset);
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(session.backing_page, None);
+            assert_eq!(session.context_resets(), resets + 1);
+            assert_eq!(session.translation_context(), context);
+
+            // A rejected (non-retiring) MOV CR3 does not reset.
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+            let resets = session.context_resets();
+            let mut bad = sys_state(CR3_RIP, CR0_WP1, ROOT_A);
+            bad.gpr[RAX] = ROOT_B;
+            let rejected = session.execute_mov_cr3(&mut bad, 1 << 63);
+            assert!(matches!(rejected, Err(PagedCodeSessionError::Cr3Step(_))));
+            assert_eq!(session.context_resets(), resets);
+            assert_eq!(session.resident_entries(), 1);
+        }
+
+        #[test]
+        fn cpl_change_gives_distinct_entries_and_user_supervisor_check() {
+            let _guard = jit_test_lock();
+            let mut bus = make_bus();
+            let mut oracle = make_bus();
+            let paging = od_machine::Long64ProbeConfig::new(CR0_WP1, ROOT_A, CR4, EFER).unwrap();
+            let mut session =
+                PagedCodeSession::new(&mut bus, paging, ctx(PrivilegeLevel::Ring0)).unwrap();
+            let context0 = session.translation_context();
+            assert_eq!(context0.cpl(), 0);
+
+            // CPL0 admits the supervisor-only alias.
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS_S).unwrap(), IMM_S);
+            assert_eq!(session.resident_entries(), 1);
+            assert_eq!(session.alias_contexts[0], Some(context0));
+            assert_eq!(
+                oracle_load(
+                    &mut oracle,
+                    ROOT_A,
+                    CR0_WP1,
+                    PrivilegeLevel::Ring0,
+                    ALIAS_S + 2
+                ),
+                (1, false, IMM_S)
+            );
+
+            // CPL0 -> CPL3 is a key change: entries are dropped, the id differs.
+            assert!(session.set_privilege(PrivilegeLevel::Ring3));
+            let context3 = session.translation_context();
+            assert_eq!(context3.cpl(), 3);
+            assert_ne!(context0, context3);
+            assert_ne!(context0.id(), context3.id());
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(session.backing_page, None);
+            // Same privilege again is not a change.
+            assert!(!session.set_privilege(PrivilegeLevel::Ring3));
+
+            // U/S: the supervisor-only page is not fetchable at CPL3 and
+            // nothing is bound or cached; the oracle load faults the same way.
+            assert!(matches!(
+                run_alias(&mut session, ROOT_A, ALIAS_S),
+                Err(PagedCodeSessionError::Snapshot(_))
+            ));
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(session.backing_page, None);
+            let (retired, faulted, _) = oracle_load(
+                &mut oracle,
+                ROOT_A,
+                CR0_WP1,
+                PrivilegeLevel::Ring3,
+                ALIAS_S + 2,
+            );
+            assert_eq!((retired, faulted), (0, true));
+            // The user-accessible alias admits under the CPL3 key.
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+            assert_eq!(session.alias_contexts[0], Some(context3));
+            assert_eq!(
+                oracle_load(
+                    &mut oracle,
+                    ROOT_A,
+                    CR0_WP1,
+                    PrivilegeLevel::Ring3,
+                    ALIAS + 2
+                ),
+                (1, false, IMM_A)
+            );
+
+            // Back to CPL0: fresh admission under the CPL0 key again.
+            assert!(session.set_privilege(PrivilegeLevel::Ring0));
+            assert_eq!(session.translation_context(), context0);
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS_S).unwrap(), IMM_S);
+            assert_eq!(session.alias_contexts[0], Some(context0));
+        }
+
+        #[test]
+        fn cs_selector_cpl_mismatch_is_rejected_without_effect() {
+            let _guard = jit_test_lock();
+            let mut bus = make_bus();
+            let paging = od_machine::Long64ProbeConfig::new(CR0_WP1, ROOT_A, CR4, EFER).unwrap();
+            let mut session =
+                PagedCodeSession::new(&mut bus, paging, ctx(PrivilegeLevel::Ring0)).unwrap();
+            assert_eq!(session.translation_context().cpl(), 0);
+            let resets = session.context_resets();
+
+            // The host skipped `set_privilege`: the state is at CPL3 (CS RPL 3)
+            // while the key says CPL0. The supervisor-only alias must not be
+            // admitted with Ring0 rights.
+            let mut state = alias_state(ROOT_A, ALIAS_S);
+            state.cs_selector = Some(0x1b);
+            assert_eq!(state.cs_selector.unwrap() & 3, 3);
+            let before = state.clone();
+            let result = session.execute_alias(ALIAS_S, 10, &mut state, 1);
+            assert!(matches!(
+                result,
+                Err(PagedCodeSessionError::ContextRejected(
+                    od_machine::ProbeConfigError::CplMismatch {
+                        cs_selector: 0x1b,
+                        key_cpl: 0
+                    }
+                ))
+            ));
+            assert_eq!(state, before);
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(session.backing_page, None);
+            assert_eq!(session.context_resets(), resets);
+
+            // Interpreted steps reject the same mismatch without touching the
+            // state or the session.
+            let mut sys = sys_state(CR3_RIP, CR0_WP1, ROOT_A);
+            sys.cs_selector = Some(0x1b);
+            sys.gpr[RAX] = ROOT_B;
+            let sys_before = sys.clone();
+            assert!(matches!(
+                session.execute_mov_cr3(&mut sys, od_isa::INTEGER_FLAGS),
+                Err(PagedCodeSessionError::ContextRejected(
+                    od_machine::ProbeConfigError::CplMismatch { .. }
+                ))
+            ));
+            assert_eq!(sys, sys_before);
+            assert_eq!(session.context_resets(), resets);
+
+            // A matching selector (CPL0) behaves as before: the supervisor
+            // alias is admitted. Without a CS selector the session CPL is used.
+            let mut ok = alias_state(ROOT_A, ALIAS_S);
+            ok.cs_selector = Some(0x08);
+            session.execute_alias(ALIAS_S, 10, &mut ok, 1).unwrap();
+            assert_eq!(ok.gpr[RAX], IMM_S);
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS_S).unwrap(), IMM_S);
+
+            // After `set_privilege(Ring3)` the CPL3 selector matches and the
+            // supervisor-only alias is refused by the U/S check, not by CPL.
+            assert!(session.set_privilege(PrivilegeLevel::Ring3));
+            let mut user = alias_state(ROOT_A, ALIAS_S);
+            user.cs_selector = Some(0x1b);
+            assert!(matches!(
+                session.execute_alias(ALIAS_S, 10, &mut user, 1),
+                Err(PagedCodeSessionError::Snapshot(_))
+            ));
+        }
+
+        #[test]
+        fn cr0_wp_change_gives_distinct_entries_and_store_result() {
+            let _guard = jit_test_lock();
+            let mut bus = make_bus();
+            let mut oracle = make_bus();
+            let paging = od_machine::Long64ProbeConfig::new(CR0_WP1, ROOT_A, CR4, EFER).unwrap();
+            let mut session =
+                PagedCodeSession::new(&mut bus, paging, ctx(PrivilegeLevel::Ring0)).unwrap();
+            let context_wp1 = session.translation_context();
+            assert!(context_wp1.write_protect());
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+            assert_eq!(session.resident_entries(), 1);
+
+            let value = 0x5555_6666_7777_8888u64;
+            let store = |session: &mut PagedCodeSession<'_>, cr0: u64| {
+                let mut state = sys_state(STORE_RIP, cr0, ROOT_A);
+                state.gpr[RBX] = DATA_RO;
+                state.gpr[RCX] = value;
+                let result = session.step_guest_mov_wp(&mut state, 0).unwrap();
+                (
+                    result.step.cpu.instructions_executed,
+                    result.step.page_fault.is_some(),
+                )
+            };
+            let oracle_store = |oracle: &mut MachineBus, cr0: u64| {
+                let mut state = sys_state(STORE_RIP, cr0, ROOT_A);
+                state.gpr[RBX] = DATA_RO;
+                state.gpr[RCX] = value;
+                let report = od_machine::step_paged_cr0_wp_mov(
+                    &mut state,
+                    oracle,
+                    ROOT_A,
+                    EFER,
+                    ctx(PrivilegeLevel::Ring0),
+                    0,
+                    |_| {},
+                )
+                .unwrap();
+                (
+                    report.cpu.instructions_executed,
+                    report.page_fault.is_some(),
+                )
+            };
+            let read_data = |bus: &mut MachineBus| {
+                bus.read_physical(GuestPhysicalAddress::new(0xc000), AccessWidth::Qword)
+                    .unwrap()
+            };
+
+            // WP=1: the supervisor write to a read-only page faults.
+            assert_eq!(store(&mut session, CR0_WP1), (0, true));
+            assert_eq!(oracle_store(&mut oracle, CR0_WP1), (0, true));
+            assert_eq!(read_data(&mut *session.bus), 0);
+            assert_eq!(read_data(&mut oracle), 0);
+            assert_eq!(session.resident_entries(), 1);
+
+            // Guest MOV CR0 clears WP: key change, session reset.
+            let mut sys = sys_state(CR0_RIP, CR0_WP1, ROOT_A);
+            sys.gpr[RAX] = CR0_WP0;
+            let toggled = session
+                .execute_mov_cr0(&mut sys, od_isa::INTEGER_FLAGS)
+                .unwrap();
+            assert_eq!(toggled.step.cpu.instructions_executed, 1);
+            assert_eq!(sys.cr0, Some(CR0_WP0));
+            assert!(toggled.session_reset);
+            let context_wp0 = session.translation_context();
+            assert!(!context_wp0.write_protect());
+            assert_ne!(context_wp0.id(), context_wp1.id());
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(session.backing_page, None);
+
+            // WP=0: the same store now commits (same result as the oracle).
+            assert_eq!(store(&mut session, CR0_WP0), (1, false));
+            assert_eq!(oracle_store(&mut oracle, CR0_WP0), (1, false));
+            assert_eq!(read_data(&mut *session.bus), value);
+            assert_eq!(read_data(&mut oracle), value);
+
+            // Admission under WP=0; a same-value MOV CR0 and a non-key CR0
+            // bit (TS) do not reset it.
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+            assert_eq!(session.alias_contexts[0], Some(context_wp0));
+            let resets = session.context_resets();
+            sys.rip = CR0_RIP;
+            sys.gpr[RAX] = CR0_WP0;
+            let same = session
+                .execute_mov_cr0(&mut sys, od_isa::INTEGER_FLAGS)
+                .unwrap();
+            assert_eq!(same.step.cpu.instructions_executed, 1);
+            assert!(!same.session_reset);
+            assert_eq!(session.context_resets(), resets);
+            assert_eq!(session.resident_entries(), 1);
+            let mut with_ts = alias_state(ROOT_A, ALIAS);
+            with_ts.cr0 = Some(CR0_WP0 | (1 << 3));
+            with_ts.cr4 = Some(CR4 | (1 << 9));
+            session.execute_alias(ALIAS, 10, &mut with_ts, 1).unwrap();
+            assert_eq!(with_ts.gpr[RAX], IMM_A);
+            assert_eq!(session.context_resets(), resets);
+            assert_eq!(session.translation_context(), context_wp0);
+            assert_eq!(session.resident_entries(), 1);
+
+            // WP=1 again: reset, then a fresh admission under the WP=1 key.
+            sys.rip = CR0_RIP;
+            sys.gpr[RAX] = CR0_WP1;
+            let restored = session
+                .execute_mov_cr0(&mut sys, od_isa::INTEGER_FLAGS)
+                .unwrap();
+            assert!(restored.session_reset);
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+            assert_eq!(session.translation_context(), context_wp1);
+        }
+
+        #[test]
+        fn routine_control_changes_are_not_paging_controls_mismatch() {
+            let _guard = jit_test_lock();
+            let mut bus = make_bus();
+            let paging = od_machine::Long64ProbeConfig::new(CR0_WP1, ROOT_A, CR4, EFER).unwrap();
+            let mut session =
+                PagedCodeSession::new(&mut bus, paging, ctx(PrivilegeLevel::Ring0)).unwrap();
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+            assert_eq!(session.resident_entries(), 1);
+            let resets = session.context_resets();
+
+            // CR3 changed under the session: previously PagingControlsMismatch,
+            // now a key change that resets it; the store still executes.
+            let mut store = mem_state(STORE_RIP, CR0_WP1, Some(ROOT_B));
+            store.gpr[RBX] = DATA_W;
+            store.gpr[RCX] = 0x42;
+            let result = session.step_guest_mov(&mut store, 0).unwrap();
+            assert_eq!(result.step.cpu.instructions_executed, 1);
+            assert_eq!(session.context_resets(), resets + 1);
+            assert_eq!(session.translation_context().cr3_root(), ROOT_B);
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(
+                session
+                    .bus
+                    .read_physical(GuestPhysicalAddress::new(0xf000), AccessWidth::Qword)
+                    .unwrap(),
+                0x42
+            );
+
+            // Non-key bits (CR0.TS, CR4.OSFXSR) change nothing in the key.
+            assert_eq!(run_alias(&mut session, ROOT_B, ALIAS).unwrap(), IMM_B);
+            let resets = session.context_resets();
+            let mut store = mem_state(STORE_RIP, CR0_WP1 | (1 << 3), Some(ROOT_B));
+            store.cr4 = Some(CR4 | (1 << 9));
+            store.gpr[RBX] = DATA_W;
+            store.gpr[RCX] = 0x43;
+            session.step_guest_mov(&mut store, 0).unwrap();
+            assert_eq!(session.context_resets(), resets);
+            assert_eq!(session.resident_entries(), 1);
+
+            // Genuinely invalid or missing controls stay a mismatch and
+            // leave the session untouched.
+            let mut no_pg = mem_state(STORE_RIP, CR0_WP1 & !(1 << 31), Some(ROOT_B));
+            no_pg.gpr[RBX] = DATA_W;
+            assert!(matches!(
+                session.step_guest_mov(&mut no_pg, 0),
+                Err(PagedCodeSessionError::PagingControlsMismatch)
+            ));
+            let mut no_cr4 = mem_state(STORE_RIP, CR0_WP1, Some(ROOT_B));
+            no_cr4.cr4 = None;
+            assert!(matches!(
+                session.step_guest_mov(&mut no_cr4, 0),
+                Err(PagedCodeSessionError::PagingControlsMismatch)
+            ));
+            assert_eq!(session.context_resets(), resets);
+            assert_eq!(session.resident_entries(), 1);
+        }
+
+        #[test]
+        fn efer_nxe_and_delivered_page_fault_reset_session() {
+            let _guard = jit_test_lock();
+            let mut bus = make_bus();
+            let paging = od_machine::Long64ProbeConfig::new(CR0_WP1, ROOT_A, CR4, EFER).unwrap();
+            let mut session =
+                PagedCodeSession::new(&mut bus, paging, ctx(PrivilegeLevel::Ring0)).unwrap();
+            let context = session.translation_context();
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+
+            // EFER.NXE is a key component; SCE is not; an invalid EFER is refused.
+            assert!(!session.set_efer(EFER | 1).unwrap());
+            assert_eq!(session.resident_entries(), 1);
+            assert!(matches!(
+                session.set_efer(1 << 11),
+                Err(PagedCodeSessionError::ContextRejected(_))
+            ));
+            assert_eq!(session.resident_entries(), 1);
+            assert!(session.set_efer(EFER & !(1 << 11)).unwrap());
+            assert_ne!(session.translation_context().id(), context.id());
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+            assert!(session.set_efer(EFER).unwrap());
+            assert_eq!(session.translation_context(), context);
+
+            // Conservative S4-14h rule: a delivered #PF clears the aliases.
+            assert_eq!(run_alias(&mut session, ROOT_A, ALIAS).unwrap(), IMM_A);
+            assert_eq!(session.resident_entries(), 1);
+            let resets = session.context_resets();
+            session.note_delivered_page_fault();
+            assert_eq!(session.resident_entries(), 0);
+            assert_eq!(session.backing_page, None);
+            assert_eq!(session.context_resets(), resets + 1);
+            assert_eq!(session.translation_context(), context);
+        }
+    }
+
     #[test]
     fn s4_16b_fault_after_code_backing_ad_write_invalidates_without_operand_commit() {
         use od_machine::{
@@ -114820,5 +118705,847 @@ pub(crate) mod tests {
             .execute_alias(ALIAS_A, original.len(), &mut first, 1)
             .unwrap();
         assert_eq!(first.gpr[0], 0x8877_6655_4433_22aa);
+    }
+
+    // ---- S4-16h: coverage of the writers that bypass the session ------------
+    //
+    // `PhysicalMemory::write_bytes` advances the generation of every written
+    // 4 KiB page for ANY writer, but only the session's own methods hand the
+    // committed ranges to `reconcile_code_writes`. These tests run each other
+    // writer class against `session.bus` while both aliases of the cross-page
+    // block are resident: the writer does not tell the session, and the next
+    // entry must still run the new bytes (the generation check of the lookup),
+    // never the stale block. The fresh-bus oracle is a second session on a bus
+    // that holds the new bytes from the start.
+
+    /// `MOV RAX,imm64` with the third code byte (last byte of the first page)
+    /// and the seven tail bytes (start of the second page) replaced.
+    fn s4_16h_code(third: u8, tail: [u8; 7]) -> [u8; 10] {
+        let mut code = S4_16G_CODE;
+        code[2] = third;
+        code[3..].copy_from_slice(&tail);
+        code
+    }
+
+    fn s4_16h_immediate(code: &[u8; 10]) -> u64 {
+        u64::from_le_bytes(code[2..10].try_into().unwrap())
+    }
+
+    /// Fresh bus with `code` installed from the start, entered once through
+    /// alias A in its own session.
+    fn s4_16h_oracle(
+        code: [u8; 10],
+    ) -> (
+        od_jit::dispatch::FallbackDispatchResult,
+        od_isa::LongModeState,
+    ) {
+        use od_machine::GuestPhysicalAddress;
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(S4_16G_FIRST_PAGE + 0xffd),
+            &code[..3],
+        )
+        .unwrap();
+        bus.patch_physical_ram(GuestPhysicalAddress::new(S4_16G_SECOND_PAGE), &code[3..])
+            .unwrap();
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+        let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        (result.unwrap(), state)
+    }
+
+    /// Generations of the first and the second code page.
+    fn s4_16h_generations(session: &PagedCodeSession<'_>) -> (u64, u64) {
+        use od_machine::GuestPhysicalAddress;
+        (
+            session
+                .bus
+                .code_page_generation(GuestPhysicalAddress::new(S4_16G_FIRST_PAGE))
+                .unwrap(),
+            session
+                .bus
+                .code_page_generation(GuestPhysicalAddress::new(S4_16G_SECOND_PAGE))
+                .unwrap(),
+        )
+    }
+
+    /// Warm both aliases, run `write` against the bus behind the session and
+    /// assert that the next entries through both aliases execute `new_code`
+    /// exactly like the oracle. With `reconcile == false` the writer's
+    /// committed ranges are NOT given to the session (the `|_| {}` classes);
+    /// with `true` they are handed to `reconcile_code_writes` like a
+    /// notifying writer would. Returns the page generations before and after.
+    fn s4_16h_case<C>(
+        new_code: [u8; 10],
+        reconcile: bool,
+        make: impl FnOnce() -> (od_machine::MachineBus, C),
+        write: impl FnOnce(
+            &mut od_machine::MachineBus,
+            C,
+            &mut dyn FnMut(od_machine::GuestPhysicalRange),
+        ),
+    ) -> ((u64, u64), (u64, u64)) {
+        let _guard = jit_test_lock();
+        let (oracle_result, oracle_state) = s4_16h_oracle(new_code);
+        assert_eq!(oracle_state.gpr[RAX], s4_16h_immediate(&new_code));
+        assert_ne!(oracle_state.gpr[RAX], S4_16G_IMMEDIATE);
+
+        let (mut bus, context) = make();
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+        s4_16g_warm(&mut session);
+        let before = s4_16h_generations(&session);
+
+        let mut committed = Vec::new();
+        {
+            let mut sink = |range: od_machine::GuestPhysicalRange| {
+                if reconcile {
+                    committed.push(range);
+                }
+            };
+            write(&mut *session.bus, context, &mut sink);
+        }
+        let after = s4_16h_generations(&session);
+        assert!(
+            after != before,
+            "the writer advanced no code page generation"
+        );
+
+        if reconcile {
+            assert!(!committed.is_empty(), "the writer reported no range");
+            assert!(session.reconcile_code_writes(&committed).unwrap());
+            assert_eq!(session.resident_entries(), 0);
+        } else {
+            assert!(committed.is_empty());
+            assert_eq!(
+                session.resident_entries(),
+                2,
+                "a silent writer does not reach the session"
+            );
+        }
+        for rip in [S4_16G_ALIAS_A, S4_16G_ALIAS_B] {
+            let (result, state) = s4_16g_run(&mut session, rip, 10);
+            assert_eq!(
+                result.unwrap(),
+                oracle_result,
+                "stale bytes were executed through {rip:#x}"
+            );
+            assert_eq!(state.gpr, oracle_state.gpr, "alias {rip:#x}");
+            assert_eq!(state.rip, rip + 10);
+            assert_eq!(state.gpr[RAX], s4_16h_immediate(&new_code));
+        }
+        // Both stale entries were replaced: two more publications.
+        assert_eq!(s4_16g_publications(&session), 4);
+        assert_eq!(session.resident_entries(), 2);
+        // A further entry reuses them (nothing is lost to churn).
+        let (again, _) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+        again.unwrap();
+        assert_eq!(s4_16g_publications(&session), 4);
+        (before, after)
+    }
+
+    // -- (1) NVMe DMA: `BusDma::write` -> `write_flat_bytes` ------------------
+
+    const S4_16H_NVME_RAM: u64 = 0x2_0000;
+    const S4_16H_NVME_ASQ: u64 = 0x1_0000;
+    const S4_16H_NVME_ACQ: u64 = 0x1_1000;
+    const S4_16H_NVME_IO_SQ: u64 = 0x1_2000;
+    const S4_16H_NVME_IO_CQ: u64 = 0x1_3000;
+
+    /// A bus with the S4-16g code layout, an NVMe controller on it and one
+    /// queued `Read` (the doorbell is rung, the command is NOT serviced). The
+    /// disk holds `disk` from sector 0 on; the read fetches `sectors` sectors
+    /// from LBA 0 into `prp1`/`prp2`.
+    fn s4_16h_nvme_bus(
+        disk: &[u8],
+        sectors: u16,
+        prp1: u64,
+        prp2: u64,
+    ) -> (od_machine::MachineBus, od_machine::NvmeHandle) {
+        use od_machine::{
+            AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, InMemoryBackend, MachineBus,
+            MemoryRegionKind, MemoryRegionSpec, MmioBinding, NVME_MMIO_BASE, NVME_MMIO_BYTES,
+            NvmeBackend, NvmeConfig, NvmeDevice,
+        };
+        let (device, nvme) = NvmeDevice::new_with_handle(NvmeConfig {
+            namespace_sectors: 8,
+            ..NvmeConfig::default()
+        })
+        .unwrap();
+        let mut backend = InMemoryBackend::new(8).unwrap();
+        backend.write_sectors(0, disk).unwrap();
+        nvme.attach_backend(Box::new(backend)).unwrap();
+        let window =
+            GuestPhysicalRange::new(GuestPhysicalAddress::new(NVME_MMIO_BASE), NVME_MMIO_BYTES)
+                .unwrap();
+        let mut bus = s4_16h_bus_with(
+            S4_16G_SECOND_PAGE | 7,
+            S4_16H_NVME_RAM,
+            vec![MemoryRegionSpec::new(window, MemoryRegionKind::Mmio)],
+            vec![Box::new(device)],
+            vec![MmioBinding {
+                region_start: GuestPhysicalAddress::new(NVME_MMIO_BASE),
+                device_index: 0,
+            }],
+        );
+        fn mmio(bus: &mut MachineBus, offset: u64, width: AccessWidth, value: u64) {
+            bus.write_physical(
+                GuestPhysicalAddress::new(NVME_MMIO_BASE + offset),
+                width,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        // NVMe submission queue entry: opcode, command id, NSID, PRP1/PRP2,
+        // CDW10..CDW12.
+        let sqe = |opcode: u8, cid: u16, prp: (u64, u64), cdw: (u32, u32, u32)| {
+            let mut raw = [0u8; 64];
+            raw[0..4].copy_from_slice(&(u32::from(opcode) | u32::from(cid) << 16).to_le_bytes());
+            raw[4..8].copy_from_slice(&u32::from(opcode == 0x02).to_le_bytes());
+            raw[24..32].copy_from_slice(&prp.0.to_le_bytes());
+            raw[32..40].copy_from_slice(&prp.1.to_le_bytes());
+            raw[40..44].copy_from_slice(&cdw.0.to_le_bytes());
+            raw[44..48].copy_from_slice(&cdw.1.to_le_bytes());
+            raw[48..52].copy_from_slice(&cdw.2.to_le_bytes());
+            raw
+        };
+        let put = |bus: &mut MachineBus, address: u64, bytes: &[u8]| {
+            bus.patch_physical_ram(GuestPhysicalAddress::new(address), bytes)
+                .unwrap();
+        };
+        mmio(&mut bus, 0x24, AccessWidth::Dword, 15 | 15 << 16);
+        mmio(&mut bus, 0x28, AccessWidth::Qword, S4_16H_NVME_ASQ);
+        mmio(&mut bus, 0x30, AccessWidth::Qword, S4_16H_NVME_ACQ);
+        mmio(&mut bus, 0x14, AccessWidth::Dword, 1 | 6 << 16 | 4 << 20);
+        // Admin Create I/O CQ 1 (4 entries) and Create I/O SQ 1 -> CQ 1.
+        put(
+            &mut bus,
+            S4_16H_NVME_ASQ,
+            &sqe(0x05, 1, (S4_16H_NVME_IO_CQ, 0), (1 | 3 << 16, 1, 0)),
+        );
+        mmio(&mut bus, 0x1000, AccessWidth::Dword, 1);
+        nvme.service(&mut bus, |_| {});
+        put(
+            &mut bus,
+            S4_16H_NVME_ASQ + 64,
+            &sqe(
+                0x01,
+                2,
+                (S4_16H_NVME_IO_SQ, 0),
+                (1 | 3 << 16, 1 | 1 << 16, 0),
+            ),
+        );
+        mmio(&mut bus, 0x1000, AccessWidth::Dword, 2);
+        nvme.service(&mut bus, |_| {});
+        // Read `sectors` sectors from LBA 0.
+        put(
+            &mut bus,
+            S4_16H_NVME_IO_SQ,
+            &sqe(0x02, 3, (prp1, prp2), (0, 0, u32::from(sectors) - 1)),
+        );
+        mmio(&mut bus, 0x1008, AccessWidth::Dword, 1);
+        assert!(nvme.doorbell_pending());
+        (bus, nvme)
+    }
+
+    /// Service the queued read like the machine owner does
+    /// (`nvme.service(bus, committed_write)`) and check it completed.
+    fn s4_16h_nvme_service(
+        bus: &mut od_machine::MachineBus,
+        nvme: od_machine::NvmeHandle,
+        committed: &mut dyn FnMut(od_machine::GuestPhysicalRange),
+    ) {
+        use od_machine::GuestPhysicalAddress;
+        let report = nvme.service(bus, |range| committed(range));
+        assert_eq!(report.commands, 1);
+        assert_eq!(report.completions, 1);
+        let dword3 = bus
+            .read_physical(
+                GuestPhysicalAddress::new(S4_16H_NVME_IO_CQ + 12),
+                od_machine::AccessWidth::Dword,
+            )
+            .unwrap();
+        assert_eq!(dword3 >> 17, 0, "the read completed with an error status");
+    }
+
+    #[test]
+    fn s4_16h_nvme_dma_into_first_code_page_is_not_stale() {
+        let code = s4_16h_code(0xaa, S4_16G_CODE[3..].try_into().unwrap());
+        let mut disk = [0u8; 512];
+        disk[0x1fd..].copy_from_slice(&code[..3]);
+        let (before, after) = s4_16h_case(
+            code,
+            false,
+            || s4_16h_nvme_bus(&disk, 1, S4_16G_FIRST_PAGE + 0xe00, 0),
+            |bus, nvme, committed| s4_16h_nvme_service(bus, nvme, committed),
+        );
+        assert!(after.0 > before.0, "DMA wrote the first page");
+        assert_eq!(after.1, before.1, "the second page was not written");
+    }
+
+    #[test]
+    fn s4_16h_nvme_dma_into_second_code_page_is_not_stale() {
+        let code = s4_16h_code(0x11, [0x99, 0x98, 0x97, 0x96, 0x95, 0x94, 0x93]);
+        let mut disk = [0u8; 512];
+        disk[..7].copy_from_slice(&code[3..]);
+        let (before, after) = s4_16h_case(
+            code,
+            false,
+            || s4_16h_nvme_bus(&disk, 1, S4_16G_SECOND_PAGE, 0),
+            |bus, nvme, committed| s4_16h_nvme_service(bus, nvme, committed),
+        );
+        assert_eq!(after.0, before.0, "the first page was not written");
+        assert!(after.1 > before.1, "DMA wrote the second page");
+    }
+
+    #[test]
+    fn s4_16h_nvme_dma_across_both_pages_reports_both_ranges() {
+        // Two sectors: PRP1 = end of the first code page, PRP2 = the second
+        // code page. The committed ranges the DMA reports reach the session
+        // when the owner forwards them (`reconcile == true`).
+        let code = s4_16h_code(0xaa, [0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97]);
+        let mut disk = [0u8; 1024];
+        disk[0x1fd..0x200].copy_from_slice(&code[..3]);
+        disk[0x200..0x207].copy_from_slice(&code[3..]);
+        let ranges = std::cell::RefCell::new(Vec::new());
+        let (before, after) = s4_16h_case(
+            code,
+            true,
+            || s4_16h_nvme_bus(&disk, 2, S4_16G_FIRST_PAGE + 0xe00, S4_16G_SECOND_PAGE),
+            |bus, nvme, committed| {
+                s4_16h_nvme_service(bus, nvme, &mut |range| {
+                    ranges.borrow_mut().push(range);
+                    committed(range);
+                })
+            },
+        );
+        assert!(after.0 > before.0 && after.1 > before.1);
+        let ranges = ranges.into_inner();
+        let covers = |page: u64| {
+            ranges.iter().any(|range| {
+                range.start().get() < page + 0x1000 && page < range.end_exclusive() as u64
+            })
+        };
+        assert!(covers(S4_16G_FIRST_PAGE), "{ranges:?}");
+        assert!(covers(S4_16G_SECOND_PAGE), "{ranges:?}");
+    }
+
+    // -- (2) Linux loader: `write_flat_bytes(.., |_| {})` ----------------------
+
+    #[test]
+    fn s4_16h_loader_flat_writes_are_not_stale() {
+        use od_machine::GuestPhysicalAddress;
+        // The loader's `write` helper is `board.bus_mut().write_flat_bytes(address,
+        // bytes, |_| {})` (crate-private in od-machine), one call per zone. For
+        // RAM it ends in the same `PhysicalMemory::write_bytes` as the public
+        // `patch_physical_ram_with_callback` used here, one call per
+        // non-adjacent zone.
+        let code = s4_16h_code(0xcd, [0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87]);
+        let (before, after) = s4_16h_case(
+            code,
+            false,
+            || (s4_16g_bus(S4_16G_SECOND_PAGE | 7), ()),
+            |bus, (), _committed| {
+                bus.patch_physical_ram_with_callback(
+                    GuestPhysicalAddress::new(S4_16G_FIRST_PAGE + 0xffd),
+                    &code[..3],
+                    |_| {},
+                )
+                .unwrap();
+                bus.patch_physical_ram_with_callback(
+                    GuestPhysicalAddress::new(S4_16G_SECOND_PAGE),
+                    &code[3..],
+                    |_| {},
+                )
+                .unwrap();
+            },
+        );
+        assert!(after.0 > before.0 && after.1 > before.1);
+    }
+
+    #[test]
+    fn s4_16h_loader_write_to_one_page_leaves_the_other_dependency_valid() {
+        use od_machine::GuestPhysicalAddress;
+        // Only the second zone is (re)loaded: the stale first-page span stays
+        // valid, the second-page span is replaced.
+        let code = s4_16h_code(0x11, [0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77]);
+        let (before, after) = s4_16h_case(
+            code,
+            false,
+            || (s4_16g_bus(S4_16G_SECOND_PAGE | 7), ()),
+            |bus, (), _committed| {
+                bus.patch_physical_ram_with_callback(
+                    GuestPhysicalAddress::new(S4_16G_SECOND_PAGE),
+                    &code[3..],
+                    |_| {},
+                )
+                .unwrap();
+            },
+        );
+        assert_eq!(after.0, before.0);
+        assert!(after.1 > before.1);
+    }
+
+    // -- (3) Host display: framebuffer and register stores ----------------------
+
+    #[test]
+    fn s4_16h_display_writes_never_touch_code_pages_and_cannot_become_code() {
+        use od_machine::{
+            AccessWidth, DISPLAY_FORMAT_BGRX8888, DISPLAY_FRAMEBUFFER_BASE,
+            DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES,
+            DisplayDevice, GuestPhysicalAddress, GuestPhysicalRange, MemoryRegionKind,
+            MemoryRegionSpec, MmioBinding,
+        };
+        let (device, _display) = DisplayDevice::new_with_handle();
+        let range = |start, len| GuestPhysicalRange::new(GuestPhysicalAddress::new(start), len);
+        let mut bus = s4_16h_bus_with(
+            S4_16G_SECOND_PAGE | 7,
+            S4_16G_RAM_BYTES,
+            vec![
+                MemoryRegionSpec::new(
+                    range(DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES).unwrap(),
+                    MemoryRegionKind::Framebuffer,
+                ),
+                MemoryRegionSpec::new(
+                    range(DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES).unwrap(),
+                    MemoryRegionKind::Mmio,
+                ),
+            ],
+            vec![Box::new(device)],
+            vec![MmioBinding {
+                region_start: GuestPhysicalAddress::new(DISPLAY_REGISTERS_BASE),
+                device_index: 0,
+            }],
+        );
+        // A page table entry that maps linear 0x403000 to the framebuffer.
+        bus.write_physical(
+            GuestPhysicalAddress::new(0x4018),
+            AccessWidth::Qword,
+            DISPLAY_FRAMEBUFFER_BASE | 7,
+            |_| {},
+        )
+        .unwrap();
+        let _guard = jit_test_lock();
+        let mut session =
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+        s4_16g_warm(&mut session);
+        let pages = |session: &PagedCodeSession<'_>| -> Vec<u64> {
+            (0..S4_16G_RAM_BYTES / 0x1000)
+                .map(|page| {
+                    session
+                        .bus
+                        .code_page_generation(GuestPhysicalAddress::new(page * 0x1000))
+                        .unwrap()
+                })
+                .collect()
+        };
+        let generations = pages(&session);
+
+        // What `program_test_pattern` does: mode registers, pixels, doorbell,
+        // all as `write_physical(.., |_| {})`.
+        let register = |offset: u64| GuestPhysicalAddress::new(DISPLAY_REGISTERS_BASE + offset);
+        for (offset, value) in [
+            (0x040, 16),
+            (0x044, 4),
+            (0x048, DISPLAY_FORMAT_BGRX8888),
+            (0x04c, 1),
+        ] {
+            session
+                .bus
+                .write_physical(
+                    register(offset),
+                    AccessWidth::Dword,
+                    u64::from(value),
+                    |_| {},
+                )
+                .unwrap();
+        }
+        for pixel in 0..64u64 {
+            session
+                .bus
+                .write_physical(
+                    GuestPhysicalAddress::new(DISPLAY_FRAMEBUFFER_BASE + pixel * 4),
+                    AccessWidth::Dword,
+                    0x00ff_0000 | pixel,
+                    |_| {},
+                )
+                .unwrap();
+        }
+        session
+            .bus
+            .write_physical(register(0x080), AccessWidth::Dword, 1, |_| {})
+            .unwrap();
+
+        assert_eq!(
+            pages(&session),
+            generations,
+            "display stores change no RAM page generation"
+        );
+        // Nothing was invalidated and nothing is rebuilt.
+        assert_eq!(session.resident_entries(), 2);
+        for rip in [S4_16G_ALIAS_A, S4_16G_ALIAS_B] {
+            let (result, state) = s4_16g_run(&mut session, rip, 10);
+            result.unwrap();
+            assert_eq!(state.gpr[RAX], S4_16G_IMMEDIATE);
+        }
+        assert_eq!(s4_16g_publications(&session), 2);
+
+        // Display-owned memory is never admitted as code: the fetch from the
+        // framebuffer alias is refused before any block exists.
+        let (result, _) = s4_16g_run(&mut session, 0x0040_3100, 10);
+        assert!(
+            matches!(result, Err(PagedCodeSessionError::Snapshot(_))),
+            "{result:?}"
+        );
+        assert_eq!(s4_16g_publications(&session), 2);
+        assert_eq!(session.resident_entries(), 2);
+    }
+
+    // -- (4) exception/interrupt delivery: IDT reads and stack frame writes ----
+
+    /// The state of a CPL0 interrupt delivery whose stack frame covers the
+    /// code bytes: RSP = 0x402020, so the frame is linear 0x401ff8..0x402020
+    /// (RIP, CS, RFLAGS, old RSP, SS from the lowest slot up). The saved RIP
+    /// repeats the opcode bytes `48 b8 11` of the block in its upper three
+    /// bytes; the saved CS selector (8) becomes the next immediate bytes.
+    fn s4_16h_delivery_state() -> od_isa::LongModeState {
+        let mut state = od_isa::LongModeState {
+            rip: 0x11b8_4800_0000_0000,
+            rflags: 0x202,
+            cr0: Some(S4_16G_CR0),
+            cr3: Some(S4_16G_CR3),
+            cr4: Some(S4_16G_CR4),
+            cs_selector: Some(0x08),
+            cs_cache: Some(od_isa::state::CodeSegmentDescriptorCache {
+                base: 0,
+                limit: u32::MAX,
+                access: 0x9b,
+                flags: 0xa,
+            }),
+            ss_selector: Some(0x10),
+            gdtr: Some(od_isa::state::Gdtr {
+                base: 0x0040_3800,
+                limit: 0x17,
+            }),
+            idtr: Some(od_isa::state::Idtr {
+                base: 0x0040_3000,
+                limit: 0xfff,
+            }),
+            ..Default::default()
+        };
+        state.gpr[od_isa::Register::Rsp as usize] = 0x0040_2020;
+        state
+    }
+
+    /// S4-16g bus plus PT[3] -> 0x8000 holding a GDT (linear 0x403800) with a
+    /// 64-bit code descriptor at selector 8 and an IDT (linear 0x403000) whose
+    /// vector 0x30 is an interrupt gate to 0x405000 through selector 8.
+    fn s4_16h_delivery_bus() -> od_machine::MachineBus {
+        use od_machine::{AccessWidth, GuestPhysicalAddress};
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        bus.write_physical(
+            GuestPhysicalAddress::new(0x4018),
+            AccessWidth::Qword,
+            0x8007,
+            |_| {},
+        )
+        .unwrap();
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(0x8808),
+            &[0xff, 0xff, 0, 0, 0, 0x9b, 0xaf, 0],
+        )
+        .unwrap();
+        let mut gate = [0u8; 16];
+        gate[0..2].copy_from_slice(&0x5000u16.to_le_bytes());
+        gate[2..4].copy_from_slice(&0x08u16.to_le_bytes());
+        gate[5] = 0x8e;
+        gate[6..8].copy_from_slice(&0x0040u16.to_le_bytes());
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x8300), &gate)
+            .unwrap();
+        bus
+    }
+
+    fn s4_16h_deliver(
+        bus: &mut od_machine::MachineBus,
+        mut state: od_isa::LongModeState,
+        committed: &mut dyn FnMut(od_machine::GuestPhysicalRange),
+    ) {
+        let report = od_machine::deliver_paged_external_interrupt(
+            &mut state,
+            bus,
+            S4_16G_CR3,
+            S4_16G_EFER,
+            AccessContext {
+                mode: od_isa::memory::InstructionMode::Long64,
+                privilege: od_isa::memory::PrivilegeLevel::Ring0,
+                origin: od_isa::memory::AccessOrigin::Explicit,
+            },
+            0,
+            0x30,
+            |range| committed(range),
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                report.delivery,
+                od_isa::interrupt::InterruptDeliveryResult::Delivered { .. }
+            ),
+            "{report:?}"
+        );
+        assert_eq!(state.rip, 0x0040_5000);
+        // The report lists the committed stack writes even when the callback
+        // ignores them: both code pages are among them.
+        let covers = |page: u64| {
+            report.committed_writes.iter().any(|range| {
+                range.start().get() < page + 0x1000 && page < range.end_exclusive() as u64
+            })
+        };
+        assert!(covers(S4_16G_FIRST_PAGE) && covers(S4_16G_SECOND_PAGE));
+    }
+
+    #[test]
+    fn s4_16h_exception_frame_written_over_code_is_not_stale() {
+        // Immediate becomes 0x811: byte 0 is the opcode-tail byte the frame
+        // rewrites with the same value, bytes 1.. come from the saved CS.
+        let code = s4_16h_code(0x11, [0x08, 0, 0, 0, 0, 0, 0]);
+        let (before, after) = s4_16h_case(
+            code,
+            false,
+            || (s4_16h_delivery_bus(), s4_16h_delivery_state()),
+            |bus, state, committed| s4_16h_deliver(bus, state, committed),
+        );
+        assert!(after.0 > before.0 && after.1 > before.1);
+    }
+
+    #[test]
+    fn s4_16h_exception_frame_ranges_reconcile_when_forwarded() {
+        let code = s4_16h_code(0x11, [0x08, 0, 0, 0, 0, 0, 0]);
+        s4_16h_case(
+            code,
+            true,
+            || (s4_16h_delivery_bus(), s4_16h_delivery_state()),
+            |bus, state, committed| s4_16h_deliver(bus, state, committed),
+        );
+    }
+
+    // -- (5) JIT store (`PagedFetchedLoadSession::execute_with_store`) ----------
+
+    const S4_16H_LOAD_RIP: u64 = 0x0040_1100;
+    const S4_16H_STORE_RIP: u64 = 0x0040_3100;
+    const S4_16H_DATA: u64 = 0x0040_2100;
+
+    /// Load code `MOV RAX,[RBX]` at linear 0x401100 (physical 0x7100), store
+    /// code `MOV [RBX],RAX` at linear 0x403100 (physical 0x8100) and a data
+    /// qword at linear 0x402100 (physical 0x5100).
+    fn s4_16h_fetch_bus() -> od_machine::MachineBus {
+        use od_machine::{AccessWidth, GuestPhysicalAddress};
+        let mut bus = s4_16g_bus(S4_16G_SECOND_PAGE | 7);
+        bus.write_physical(
+            GuestPhysicalAddress::new(0x4018),
+            AccessWidth::Qword,
+            0x8007,
+            |_| {},
+        )
+        .unwrap();
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(0x7100),
+            &PAGED_FETCHED_LOAD_V2_BYTES,
+        )
+        .unwrap();
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(0x8100),
+            &PAGED_FETCHED_STORE_V2_BYTES,
+        )
+        .unwrap();
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(0x5100),
+            &0x1234_5678_9abc_def0u64.to_le_bytes(),
+        )
+        .unwrap();
+        bus
+    }
+
+    fn s4_16h_fetch_state(rip: u64, rbx: u64, rax: u64) -> od_isa::LongModeState {
+        let mut state = od_isa::LongModeState {
+            rip,
+            cr0: Some(S4_16G_CR0),
+            cr4: Some(S4_16G_CR4),
+            ..Default::default()
+        };
+        state.gpr[od_isa::Register::Rbx as usize] = rbx;
+        state.gpr[RAX] = rax;
+        state
+    }
+
+    #[test]
+    fn s4_16h_jit_store_into_a_fetched_block_page_is_not_stale() {
+        use od_machine::GuestPhysicalAddress;
+
+        let mut bus = s4_16h_fetch_bus();
+        let _guard = jit_test_lock();
+        let mut fetched = PagedFetchedLoadSession::new();
+        let run = |fetched: &mut PagedFetchedLoadSession,
+                   bus: &mut od_machine::MachineBus,
+                   state: &mut od_isa::LongModeState,
+                   store: bool| {
+            if store {
+                fetched.execute_with_store(
+                    state,
+                    bus,
+                    S4_16G_CR3,
+                    S4_16G_EFER,
+                    AccessContext::default(),
+                )
+            } else {
+                fetched.execute(
+                    state,
+                    bus,
+                    S4_16G_CR3,
+                    S4_16G_EFER,
+                    AccessContext::default(),
+                )
+            }
+        };
+
+        let mut state = s4_16h_fetch_state(S4_16H_LOAD_RIP, S4_16H_DATA, 0);
+        let report = run(&mut fetched, &mut bus, &mut state, false).unwrap();
+        assert_eq!(report.admission, PagedFetchAdmission::Admitted);
+        assert_eq!(state.gpr[RAX], 0x1234_5678_9abc_def0);
+        let mut state = s4_16h_fetch_state(S4_16H_LOAD_RIP, S4_16H_DATA, 0);
+        let report = run(&mut fetched, &mut bus, &mut state, false).unwrap();
+        assert_eq!(report.admission, PagedFetchAdmission::Reused);
+
+        // Any other writer to the page (here a loader-style patch of an
+        // unrelated byte) advances the generation: the reuse key rejects the
+        // block and the form is admitted again from the fetched bytes.
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x7200), &[1])
+            .unwrap();
+        let mut state = s4_16h_fetch_state(S4_16H_LOAD_RIP, S4_16H_DATA, 0);
+        let report = run(&mut fetched, &mut bus, &mut state, false).unwrap();
+        assert_eq!(report.admission, PagedFetchAdmission::Admitted);
+        assert_eq!(fetched.admissions(), 2);
+
+        // JIT store from another code page over the load instruction itself:
+        // eight NOPs. The store reports its committed write in the report.
+        let nops = 0x9090_9090_9090_9090u64;
+        let mut store = s4_16h_fetch_state(S4_16H_STORE_RIP, S4_16H_LOAD_RIP, nops);
+        let report = run(&mut fetched, &mut bus, &mut store, true).unwrap();
+        assert_eq!(report.admission, PagedFetchAdmission::Admitted);
+        assert!(report.store_refusal.is_none());
+        assert!(
+            report
+                .execution
+                .committed_writes
+                .iter()
+                .any(|range| range.start().get() == 0x7100 && range.end_exclusive() == 0x7108),
+            "{:?}",
+            report.execution.committed_writes
+        );
+        let stored = bus
+            .read_physical(
+                GuestPhysicalAddress::new(0x7100),
+                od_machine::AccessWidth::Qword,
+            )
+            .unwrap();
+        assert_eq!(stored, nops);
+
+        // The old load block must not run against the new bytes: the fetched
+        // NOPs are an unsupported form, nothing is executed, RAX is untouched
+        // (a stale load would have replaced it with the data qword).
+        let mut state = s4_16h_fetch_state(S4_16H_LOAD_RIP, S4_16H_DATA, nops);
+        let error = run(&mut fetched, &mut bus, &mut state, false).unwrap_err();
+        assert!(
+            matches!(
+                &error.kind,
+                PagedFetchedLoadErrorKind::UnsupportedForm { bytes } if bytes == &[0x90; 3]
+            ),
+            "{error:?}"
+        );
+        assert_eq!(state.gpr[RAX], nops);
+        assert!(!fetched.has_admitted_block());
+    }
+
+    #[test]
+    fn s4_16h_jit_store_and_a_code_session_never_hold_blocks_together() {
+        use od_machine::GuestPhysicalAddress;
+
+        // The process has one MAP_JIT region. A fetched-block session that
+        // holds a block excludes a PagedCodeSession (and the other way
+        // round), so a JIT store can never run while a cached alias block
+        // exists: the stale-block hazard of this class does not arise, and a
+        // session created after the store reads the stored bytes.
+        let code = s4_16h_code(0x11, [0x99, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
+        let store_value = u64::from_le_bytes([0x99, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0]);
+        let _guard = jit_test_lock();
+        let (oracle_result, oracle_state) = s4_16h_oracle(code);
+        let mut bus = s4_16h_fetch_bus();
+
+        // Fetched session first: its block holds the region.
+        let mut fetched = PagedFetchedLoadSession::new();
+        let mut store = s4_16h_fetch_state(S4_16H_STORE_RIP, 0x0040_2000, store_value);
+        let report = fetched
+            .execute_with_store(
+                &mut store,
+                &mut bus,
+                S4_16G_CR3,
+                S4_16G_EFER,
+                AccessContext::default(),
+            )
+            .unwrap();
+        assert!(report.store_refusal.is_none());
+        assert!(fetched.has_admitted_block());
+        assert!(matches!(
+            PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()),
+            Err(PagedCodeSessionError::Backend(
+                PublishedArenaError::MappingAlreadyLive
+                    | PublishedArenaError::Mapping(ExecutableMemoryError::MappingAlreadyLive)
+            ))
+        ));
+        assert!(fetched.reset());
+
+        // The code session created afterwards sees the stored bytes.
+        {
+            let mut session =
+                PagedCodeSession::new(&mut bus, s4_16g_paging(), AccessContext::default()).unwrap();
+            let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+            assert_eq!(result.unwrap(), oracle_result);
+            assert_eq!(state.gpr, oracle_state.gpr);
+            assert_eq!(state.gpr[RAX], s4_16h_immediate(&code));
+
+            // Code session first: a JIT store cannot even be admitted, so it
+            // writes nothing and the resident block stays valid.
+            let generations = s4_16h_generations(&session);
+            let mut again = s4_16h_fetch_state(S4_16H_STORE_RIP, 0x0040_2000, 0);
+            let mut second = PagedFetchedLoadSession::new();
+            let error = second
+                .execute_with_store(
+                    &mut again,
+                    &mut *session.bus,
+                    S4_16G_CR3,
+                    S4_16G_EFER,
+                    AccessContext::default(),
+                )
+                .unwrap_err();
+            assert!(
+                matches!(&error.kind, PagedFetchedLoadErrorKind::Publish(_)),
+                "{error:?}"
+            );
+            assert_eq!(s4_16h_generations(&session), generations);
+            assert_eq!(
+                session
+                    .bus
+                    .read_physical(
+                        GuestPhysicalAddress::new(S4_16G_SECOND_PAGE),
+                        od_machine::AccessWidth::Byte
+                    )
+                    .unwrap(),
+                0x99
+            );
+            let (result, state) = s4_16g_run(&mut session, S4_16G_ALIAS_A, 10);
+            result.unwrap();
+            assert_eq!(state.gpr[RAX], s4_16h_immediate(&code));
+            assert_eq!(s4_16g_publications(&session), 1);
+        }
     }
 }

@@ -179,21 +179,21 @@ fn build_memory(pages: usize) -> Result<PhysicalMemory, Box<dyn std::error::Erro
         36,
         vec![MemoryRegionSpec::new(range, MemoryRegionKind::Ram)],
     )?;
-    let mut memory = PhysicalMemory::new(&map, RamLimits::new(RAM_BYTES))?;
-    memory.write_u64(GuestPhysicalAddress::new(ROOT), PDPT | 7, |_| {})?;
-    memory.write_u64(GuestPhysicalAddress::new(PDPT), PD_BASE | 7, |_| {})?;
+    let memory = PhysicalMemory::new(&map, RamLimits::new(RAM_BYTES))?;
+    memory.store_u64(GuestPhysicalAddress::new(ROOT), PDPT | 7, |_| {})?;
+    memory.store_u64(GuestPhysicalAddress::new(PDPT), PD_BASE | 7, |_| {})?;
     for page in 0..pages {
         let group = page / 512;
         let pt = PT_BASE + (group as u64) * 0x1000;
         let pd_index = 2 + group as u64;
-        memory.write_u64(
+        memory.store_u64(
             GuestPhysicalAddress::new(PD_BASE + pd_index * 8),
             pt | 7,
             |_| {},
         )?;
         let pt_index = page % 512;
         let leaf = PHYSICAL_BASE + (page as u64) * 0x1000;
-        memory.write_u64(
+        memory.store_u64(
             GuestPhysicalAddress::new(pt + (pt_index as u64) * 8),
             leaf | 7,
             |_| {},
@@ -771,7 +771,7 @@ fn nanos(duration: Duration) -> u64 {
 
 fn hash_memory(memory: &PhysicalMemory) -> Result<String, Box<dyn std::error::Error>> {
     let mut bytes = vec![0; RAM_BYTES as usize];
-    memory.read_bytes(GuestPhysicalAddress::new(0), &mut bytes)?;
+    memory.load_bytes(GuestPhysicalAddress::new(0), &mut bytes)?;
     Ok(sha256(&bytes))
 }
 

@@ -1,0 +1,18 @@
+S6-14j KVM real-mode oracle evidence
+Date: 2026-11-16
+Host: mini (senya@192.168.1.39), Linux mini 7.0.0-42-generic #42-Ubuntu SMP PREEMPT_DYNAMIC Thu Oct 15 08:06:44 UTC 2026 x86_64 GNU/Linux
+model name	: Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz
+gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+Host work dir: /tmp/od-s6-14j (kvm_runner rebuilt there from tools/kvm-runner/kvm_runner.c)
+Build: gcc -O2 -Wall -Wextra -Werror -std=c11 kvm_runner.c -o kvm_runner
+Run: see run-oracle.sh (from the repo root); each run adds --result-block 0x30:64 (GDT pointer and GDT)
+SHA-256 (host, /tmp/od-s6-14j):
+969ce3a20af037bb8849d05482b31f881320e9420ee9630701728fd0da4ce7f0  kvm_runner.c
+5f6a2aac6f4a49fc92c1ab611daeecc0e7474fe1ae6c2551647464ea10bf11b7  kvm_runner
+3c2edf081695dc32df771d34528744ebcdc32a85ac5a3250cbafe605050e263d  a-flat-code-accessed-clear-0000-0000.bin
+f5164ea0b5f449da1be559e6ce8276f72fe222690c49b8a7f953fd240dd3b567  b-flat-code-accessed-set-0000-0000.bin
+f2a8b7e6129cbfc88da15510a32b9147564d434fd5510ed8b8c904b2671bd2ef  c-small-16bit-code-base-1000-0000-0000.bin
+0b42ec4720f77a4f9e96f2304f325c001854253deb596f83c96210cee74049fc  d-page-granular-d1-base-1000-0000-0000.bin
+0f28af392650e7605329a40dc5decde69e119cac2e0a582e2166ee2ef08cdc1b  e-conforming-rpl2-0000-0000.bin
+93de95d78c6f3d9fcefc37a8533a6c1d9bb69d6bb831e5f1d3dc62e1c33969b4  f-avl-g-d-base-8000-limit-0fffffff-0000-0000.bin
+SHA-256 of kvm_runner.c in the repo (local): 969ce3a20af037bb8849d05482b31f881320e9420ee9630701728fd0da4ce7f0

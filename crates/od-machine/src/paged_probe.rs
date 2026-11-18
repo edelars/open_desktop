@@ -771,7 +771,7 @@ fn report(
 }
 
 struct PagedProbeMemory<'a> {
-    memory: &'a mut crate::PhysicalMemory,
+    memory: &'a crate::PhysicalMemory,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
     large_ram_profile: bool,

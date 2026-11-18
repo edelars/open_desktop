@@ -54,6 +54,9 @@ pub enum DiagnosticTerminalExit {
         phase: IretqReadPhase,
         cause: MemoryError,
     },
+    /// An exit that the session's own configuration rules out (a defect of the integration,
+    /// not a guest behavior).
+    Integration(&'static str),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -657,6 +660,12 @@ impl DiagnosticVcpuSession {
                 self.terminal(DiagnosticTerminalExit::BackendError(error))
             }
             RunExit::StopAddress => self.terminal(DiagnosticTerminalExit::StopAddress),
+            // S6-20: the diagnostic vCPU is never `WaitForSipi` and stops at `Shutdown`, so this
+            // branch is unreachable; if it ever fires it is an integration error (nothing was
+            // decoded, so there is no opcode to report), not an unsupported instruction.
+            RunExit::NotRunning => self.terminal(DiagnosticTerminalExit::Integration(
+                "the diagnostic run returned NotRunning, an activity the session never has",
+            )),
         };
 
         DiagnosticRunResult {

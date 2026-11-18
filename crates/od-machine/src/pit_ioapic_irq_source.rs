@@ -51,6 +51,16 @@
 //! the edge (counted in `edges_refused`); the probe keeps such an event, here a kept event would
 //! stay in the past forever and cut every quantum to one instruction.
 //!
+//! # Wake of a halted CPU (S4-38L8f)
+//!
+//! [`BoardIrqSource::wake_ns`] is the time at which a halted CPU with IF = 1 can next be woken:
+//! now when a vector is deliverable now, else the next OUT0 edge when that edge would be
+//! deliverable (entry 2 unmasked and routed to this Local APIC, the Local APIC enabled, the class
+//! of the vector above the processor priority), else `None`. A masked entry or a vector blocked by
+//! TPR or ISR therefore never wakes the CPU (it would pass its `HLT` with no interrupt, as in
+//! ISSUE-070). The Local APIC timer is not part of this answer: its deadline belongs to the clock
+//! owner (S4-23j).
+//!
 //! The semantics of the IOAPIC and the Local APIC that the repository does not hold are SDM and
 //! datasheet facts from memory (see the section of `CPU_CONTRACT.md`).
 
@@ -60,8 +70,7 @@ use crate::{
     EventQueue, IoApicHandle, LocalApicHandle, Pit8254Handle, PitMode, PitRun, VirtualClockHandle,
     pit_ticks,
 };
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Capacity of the queue: one chain of events per generation holds one event.
 const QUEUE_CAPACITY: usize = 4;
@@ -190,9 +199,15 @@ impl Inner {
 /// Cloning gives a second handle on the same source (the board owns one, a test or a later host
 /// keeps another to read the counters).
 #[derive(Clone)]
-pub(crate) struct PitIoapicIrqSource(Rc<RefCell<Inner>>);
+pub(crate) struct PitIoapicIrqSource(Arc<Mutex<Inner>>);
 
 impl PitIoapicIrqSource {
+    /// The source state. Its lock is taken before every device lock it reaches (PIT, PIC, APIC,
+    /// clock; MACHINE_CONTRACT.md, S6-33 lock order) and no device ever takes it.
+    fn inner(&self) -> MutexGuard<'_, Inner> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// A source on the handles of one board; `clock` is the clock of the PIT.
     pub(crate) fn new(
         pit: Pit8254Handle,
@@ -201,7 +216,7 @@ impl PitIoapicIrqSource {
         clock: VirtualClockHandle,
     ) -> Self {
         let now = clock.snapshot().now_ns();
-        Self(Rc::new(RefCell::new(Inner {
+        Self(Arc::new(Mutex::new(Inner {
             pit,
             io_apic,
             lapic,
@@ -218,31 +233,31 @@ impl PitIoapicIrqSource {
     /// Counters for evidence; read by tests only until a host reports them.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn stats(&self) -> PitIoapicStats {
-        self.0.borrow().stats
+        self.inner().stats
     }
 
     /// The count in progress of PIT channel 0 (what the next edge is computed from); tests only.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn channel0_run(&self) -> Option<PitRun> {
-        self.0.borrow().pit.snapshot().channel0.run
+        self.inner().pit.snapshot().channel0.run
     }
 
     /// Events in the queue, as of the last catch-up; tests only.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn queued(&self) -> usize {
-        self.0.borrow().queue.len()
+        self.inner().queue.len()
     }
 }
 
 impl BoardIrqSource for PitIoapicIrqSource {
     fn pending_vector(&self) -> Option<u8> {
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.inner();
         inner.catch_up();
         inner.lapic.eligible()
     }
 
     fn acknowledge(&mut self, vector: u8) {
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.inner();
         if inner.lapic.acknowledge_vector(vector, || {}) {
             inner.stats.acknowledged += 1;
         } else {
@@ -251,7 +266,7 @@ impl BoardIrqSource for PitIoapicIrqSource {
     }
 
     fn next_deadline_ns(&self) -> Option<u64> {
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.inner();
         inner.catch_up();
         // After a queue fault (never expected) the source has stopped: a leftover event may be
         // in the past, so no deadline is given. The filter holds the guarantee in the code, not
@@ -271,7 +286,34 @@ impl BoardIrqSource for PitIoapicIrqSource {
     }
 
     fn irq0_edges(&self) -> u64 {
-        self.0.borrow().stats.edges
+        self.inner().stats.edges
+    }
+
+    /// S4-38L8f: the time a halted CPU with IF = 1 can next be woken, as for the 8259 source: now
+    /// when a vector is deliverable now; else the time of the next OUT0 edge when that edge would
+    /// be deliverable (entry 2 unmasked, routed to this Local APIC, and the vector's class above
+    /// the processor priority); else `None`. A masked entry, a vector blocked by TPR or ISR (no
+    /// EOI yet) or a disabled Local APIC give no wake: the edge would be lost or stay in IRR, and
+    /// the CPU would pass its `HLT` with no interrupt.
+    fn wake_ns(&self) -> Option<u64> {
+        let mut inner = self.inner();
+        inner.catch_up();
+        if inner.lapic.eligible().is_some() {
+            return Some(inner.clock.snapshot().now_ns());
+        }
+        let (cpu, vector) = inner.io_apic.intin2_route()?;
+        if cpu != inner.lapic.cpu_index() || !inner.lapic.would_accept(vector) {
+            return None;
+        }
+        // After a queue fault (never expected) the source has stopped: no wake time.
+        if inner.stats.queue_faults != 0 {
+            return None;
+        }
+        let now = inner.clock.snapshot().now_ns();
+        inner
+            .queue
+            .next_deadline()
+            .filter(|deadline| *deadline > now)
     }
 }
 
@@ -498,6 +540,49 @@ mod tests {
         assert_eq!(rig.source.pending_vector(), Some(VECTOR));
     }
 
+    /// S4-38L8f: an unprogrammed channel has no wake; a programmed one wakes at its next edge;
+    /// a due vector wakes now; the wake asks nothing of the state beyond the catch-up.
+    #[test]
+    fn wake_ns_is_the_next_edge_and_now_when_a_vector_is_deliverable() {
+        let mut rig = Rig::new();
+        assert_eq!(rig.source.wake_ns(), None, "no count loaded");
+        rig.program(0x34, 10);
+        assert_eq!(rig.source.wake_ns(), Some(8381));
+        assert_eq!(rig.source.wake_ns(), Some(8381), "a question, idempotent");
+        // The edge came and nothing took the vector: deliverable now, at the clock.
+        rig.advance_to(9000);
+        assert_eq!(rig.source.wake_ns(), Some(9000));
+        // In service (acknowledged, no EOI): the next edge cannot wake the CPU.
+        rig.source.clone().acknowledge(VECTOR);
+        assert_eq!(rig.source.wake_ns(), None);
+        // The EOI gives the next edge back.
+        rig.eoi();
+        assert_eq!(rig.source.wake_ns(), Some(16762));
+    }
+
+    /// S4-38L8f: a masked entry 2 gives no wake time (the edge would be lost), and unmasking
+    /// gives it back; a vector blocked by TPR gives none either (ISSUE-070 form of the check).
+    #[test]
+    fn wake_ns_is_none_for_a_masked_entry_or_a_vector_blocked_by_the_priority() {
+        let mut rig = Rig::new();
+        rig.entry2(MASKED | u64::from(VECTOR));
+        rig.program(0x34, 10);
+        assert_eq!(rig.source.wake_ns(), None, "masked");
+        rig.entry2(u64::from(VECTOR));
+        assert_eq!(rig.source.wake_ns(), Some(8381), "unmasked");
+        rig.lapic_write(0x80, 0x30);
+        assert_eq!(
+            rig.source.wake_ns(),
+            None,
+            "class 3 is not above TPR class 3"
+        );
+        rig.lapic_write(0x80, 0x20);
+        assert_eq!(rig.source.wake_ns(), Some(8381));
+        // The Local APIC disabled by the software enable bit: nothing is accepted.
+        rig.lapic_write(0xf0, 0xff);
+        assert_eq!(rig.source.wake_ns(), None, "SVR software enable is off");
+    }
+
     #[test]
     fn a_masked_entry_loses_the_edge_and_an_unmask_does_not_replay_it() {
         let mut rig = Rig::new();
@@ -706,11 +791,7 @@ mod tests {
         assert_eq!(rig.source.next_deadline_ns(), Some(8381));
         // An artificial fault: the generation counter is exhausted, so the next reprogram cannot
         // drop the old generation.
-        rig.source
-            .0
-            .borrow_mut()
-            .queue
-            .exhaust_generation_for_test();
+        rig.source.inner().queue.exhaust_generation_for_test();
         // The old edge (8381 ns) is past by now; the reprogram is the fault.
         rig.advance_to(20_000);
         rig.program(0x34, 20);

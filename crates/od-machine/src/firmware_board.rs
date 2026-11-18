@@ -6,16 +6,37 @@
 //! builds the temporary 4 KiB identity page tables and the handoff block, and
 //! hands over a `LongModeState`. It is not a reset vector and not real mode.
 
+use crate::clock_owner::{ClockOwner, ClockOwnerError, IdleOutcome};
+use crate::console_output_context::{
+    ConsoleContextTrigger, ConsoleLineTrigger, ConsoleOutputContextSnapshot, MAX_CAPTURE_COUNT,
+    UartOutputByteContextSnapshot, UartOutputContextCapture, UartOutputContextDiagnostic,
+    capture_frame_chain,
+};
+use crate::execution_observations::{
+    LinuxExecutionObservationCollector, LinuxExecutionObservations,
+};
+use crate::fetch_cache_report::{CallObservation, FetchCacheAccumulator, LinuxFetchCacheReport};
+use crate::fetch_cache_sweep::{FetchCacheSweep, FetchSweepReport, SweepConfig};
+use crate::fetch_translation_cache::{FetchCacheInvalidation, FetchCacheTag};
+use crate::idle_arbiter::{SchedActivity, WakeView};
 use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters, NoIrqSource};
+use crate::linux_checkpoints::{
+    CheckpointRecorder, LinuxCheckpointRecord, LinuxCheckpointTable, LinuxCheckpointTableError,
+};
 use crate::page_walk::translate_long64_2m_ram_read_only;
+use crate::paged_memory_adapter::deliver_nmi_at_boundary;
 use crate::paged_memory_adapter::{
-    IrqDeliveryFailure, PagedCpl0SetExit, run_cpl0_set_paged_2m_ram_with_cpuid_boundary,
+    IrqDeliveryFailure, PagedCpl0SetExit, run_cpl0_set_paged_2m_ram_observed_with_sweep,
 };
 use crate::paged_probe::run_paged_probe_2m_ram;
 use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
 use crate::pit_pic_irq_source::PitPicIrqSource;
+use crate::uart_ioapic_irq_source::UartIoapicIrqSource;
 use crate::uart_pic_irq_source::UartPicIrqSource;
-use crate::vcpu::{BOOT_VCPU_INDEX, MAX_VCPUS, Vcpu, vcpu_set};
+use crate::vcpu::{
+    BOOT_VCPU_INDEX, LINUX_AP_CPUID_PROFILE, MAX_VCPUS, NmiBoundary, StartupApplied, Vcpu,
+    VcpuCpuid, vcpu_set,
+};
 use crate::{
     ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AbsentPortRegion, AbsentPorts,
     AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError, DISPLAY_FRAMEBUFFER_BASE,
@@ -34,6 +55,7 @@ use crate::{
     TrackedAccessError, Uart16550Handle, Uart16550PollingTx, VirtualClock, VirtualClockError,
     VirtualClockHandle, run_paged_probe, run_paged_probe_with_rdtsc,
 };
+use od_isa::cpuid::CpuidProfile;
 use od_isa::execute::{Cpl0ProfileSet, GuestFpState, RunExit, TranslationContextChange};
 use od_isa::memory::{
     AccessContext, AccessKind, AccessOrigin, InstructionMode, PageFaultRecord, PrivilegeLevel,
@@ -43,6 +65,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+pub(crate) mod vcpu_quantum;
 
 /// Image size, fixed by the contract (FIRMWARE_BOOT.md 3.2).
 pub const FIRMWARE_IMAGE_BYTES: usize = 0x0040_0000;
@@ -271,6 +295,29 @@ pub enum FirmwareBoardError {
     BusBuild(BusBuildError),
     Bus(BusAccessError),
     Clock(VirtualClockError),
+    /// An external interrupt could not be delivered during a Linux run. Keep the original
+    /// typed failure's Debug form and the guest execution point for the host evidence record.
+    ExternalInterruptDelivery {
+        vector: u8,
+        failure: String,
+        rip: u64,
+        cs_selector: Option<u16>,
+    },
+    /// An application processor in legacy mode (the trampoline between SIPI and its 64-bit jump,
+    /// S6-16c) stopped on an instruction or a state the real-mode, protected-mode or long-mode
+    /// entry models do not admit. The vCPU keeps its state (the refusal changes nothing).
+    ApLegacyRefused {
+        cpu: usize,
+        refusal: crate::ap_legacy_exec::ApLegacyRefusal,
+    },
+    /// The long-mode quantum of a vCPU ([`LoadedFirmwareBoard::run_vcpu_set_quantum`], S6-16d)
+    /// ended on something other than a budget, a stop request, a `HLT` or a partial `REP`: a
+    /// fault, a page fault, an unsupported instruction, a refused configuration. `detail` is the
+    /// `Debug` text of the set exit; the vCPU keeps the state the failing call left.
+    VcpuQuantum {
+        cpu: usize,
+        detail: String,
+    },
 }
 
 impl fmt::Display for FirmwareBoardError {
@@ -856,6 +903,16 @@ pub(crate) struct LinuxRunFailure {
     pub(crate) retired: u64,
 }
 
+/// The clock owner's error as the board's (S4-23j).
+fn owner_error(error: ClockOwnerError) -> FirmwareBoardError {
+    match error {
+        ClockOwnerError::Clock(error) => FirmwareBoardError::Clock(error),
+        ClockOwnerError::Dispatch { .. } => {
+            FirmwareBoardError::Config("clock owner: a Local APIC timer dispatch failed")
+        }
+    }
+}
+
 /// Result of [`LoadedFirmwareBoard::run_linux_boot_cpl0_set`] (S4-38L3).
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct LinuxSetRunReport {
@@ -880,9 +937,15 @@ pub(crate) struct LinuxSetRunReport {
     /// The system calls of this call (S4-39f, `with_user_mode`): `SYSCALL` entries and `SYSRETQ`
     /// returns, as a ring of the last entries. Empty for a set without the member.
     pub(crate) syscall_journal: crate::linux_direct::SyscallJournal,
-    /// `#PF` exceptions delivered to the guest through its IDT in this call (S4-38L5c); a
+    /// `#PF` and `#GP(0)` exceptions delivered to the guest through its IDT in this call; a
     /// delivery is not a retired instruction.
     pub(crate) exceptions_delivered: u64,
+    /// Successfully delivered guest `#PF` exceptions in this call.
+    pub(crate) page_faults_delivered: u64,
+    /// Successfully delivered guest `#GP(0)` exceptions in this call.
+    pub(crate) general_protection_faults_delivered: u64,
+    /// Present only for a one-shot opt-in execution-observation run.
+    pub(crate) execution_observations: Option<LinuxExecutionObservations>,
     /// What the interrupt hook counted in this call (S4-38L8b); all zero without a source or
     /// without the hook.
     pub(crate) irq: IrqCounters,
@@ -944,9 +1007,34 @@ fn resumes_deadline_cut(
 /// ([`resumes_set_exit`]); it reaches this function only when the run ends on it anyway (a stop
 /// the guest asked for, or no budget left) and is then expressed like the quantum stop
 /// (`Stopped`), which the loop turns into `BudgetExhausted` once the budget is spent.
+#[derive(Debug, Eq, PartialEq)]
+enum SetExitMappingError {
+    Integration(&'static str),
+    ExternalInterrupt {
+        vector: u8,
+        failure: IrqDeliveryFailure,
+    },
+}
+
+impl SetExitMappingError {
+    fn into_board_error(self, state: &LongModeState) -> FirmwareBoardError {
+        match self {
+            Self::Integration(detail) => FirmwareBoardError::Config(detail),
+            Self::ExternalInterrupt { vector, failure } => {
+                FirmwareBoardError::ExternalInterruptDelivery {
+                    vector,
+                    failure: format!("{failure:?}"),
+                    rip: state.rip,
+                    cs_selector: state.cs_selector,
+                }
+            }
+        }
+    }
+}
+
 fn set_exit_to_probe_exit(
     exit: PagedCpl0SetExit,
-) -> Result<(PagedProbeExit, String), &'static str> {
+) -> Result<(PagedProbeExit, String), SetExitMappingError> {
     let detail = format!("{exit:?}");
     let mapped = match exit {
         PagedCpl0SetExit::Run(run) => match run {
@@ -959,7 +1047,16 @@ fn set_exit_to_probe_exit(
             RunExit::Unsupported { opcode } => PagedProbeExit::Unsupported { opcode },
             RunExit::MemoryError(error) => PagedProbeExit::Backend(error),
             RunExit::StopAddress => {
-                return Err("the CPL0 set returned an exit the board never asks for");
+                return Err(SetExitMappingError::Integration(
+                    "the CPL0 set returned an exit the board never asks for",
+                ));
+            }
+            // S6-20: the CPL0 set refuses a non-Running activity at its own entry; the board runs
+            // vCPU 0 only, which is Running.
+            RunExit::NotRunning => {
+                return Err(SetExitMappingError::Integration(
+                    "the CPL0 set returned NotRunning, an activity the board never runs",
+                ));
             }
         },
         PagedCpl0SetExit::Rejected(error) => {
@@ -1001,20 +1098,15 @@ fn set_exit_to_probe_exit(
         // report's `user_entry` frame.
         PagedCpl0SetExit::UserEntry(_) => PagedProbeExit::Stopped,
         PagedCpl0SetExit::UnknownSetExit => {
-            return Err("the CPL0 set returned an exit variant the board does not know");
+            return Err(SetExitMappingError::Integration(
+                "the CPL0 set returned an exit variant the board does not know",
+            ));
         }
         // S4-38L8b: an interrupt of the board source that could not be delivered is an error of
         // the run, never a quiet stop; the vector and the reason are in the `Debug` text of the
         // set exit.
-        PagedCpl0SetExit::IrqDeliveryFailed { failure, .. } => {
-            return Err(match failure {
-                IrqDeliveryFailure::Refused(_) => {
-                    "an external interrupt of the board source was refused by the CPU delivery"
-                }
-                IrqDeliveryFailure::Aborted { .. } => {
-                    "an external interrupt of the board source aborted on a memory access"
-                }
-            });
+        PagedCpl0SetExit::IrqDeliveryFailed { vector, failure } => {
+            return Err(SetExitMappingError::ExternalInterrupt { vector, failure });
         }
     };
     Ok((mapped, detail))
@@ -1032,9 +1124,27 @@ pub struct FirmwareRunReport {
     pub com1: Vec<u8>,
     pub virtual_ns: u64,
     pub tsc_hz: u64,
+    /// Successful guest RDTSC reads in this call; `None` without the Linux-profile source.
+    pub rdtsc_reads: Option<u64>,
+    /// Successful guest RDTSC reads by CPL ring 0..3; `None` without the Linux-profile source.
+    pub rdtsc_reads_by_cpl: Option<[u64; 4]>,
+    /// Successful guest reads of PIT port B (`0x61`) during this call; `None` without a PIT.
+    pub pit_port_b_reads: Option<u64>,
+    /// Successful guest reads of PIT channel 2 (`0x42`) during this call; `None` without a PIT.
+    pub pit_counter_port_reads: Option<u64>,
     /// Set when the guest asked the PM block to stop the machine (S5 or reset,
     /// S7-14a); `exit` is then `Stopped`. Always `None` without `acpi_pm`.
     pub stop_reason: Option<MachineStopReason>,
+}
+
+/// Who advances the clock of the CPL0-set loop (S4-23j).
+#[derive(Debug)]
+enum BoardClock {
+    /// The board advances its clock itself (`VirtualClockHandle::advance_standalone`).
+    Standalone,
+    /// The single [`ClockOwner`] holds the clock's advancer for good; every move of time of the
+    /// loop goes through it, and a standalone advance fails with `ClockAlreadyOwned`.
+    Owned(ClockOwner),
 }
 
 /// A loaded firmware board: machine, direct-entry CPU state and handoff block.
@@ -1051,7 +1161,8 @@ pub struct LoadedFirmwareBoard {
     /// Owner/host handle of the LAPIC (the S4-38 pump becomes its owner); it has
     /// a timer on the board clock only under the Linux profile (S4-37a4).
     lapic: LocalApicHandle,
-    /// Shared with the PM timer; this board is the only advancer.
+    /// Shared with the PM timer; this board advances it itself (`Standalone`) unless
+    /// [`Self::enable_clock_owner`] hands the advancer to a [`ClockOwner`].
     clock: VirtualClockHandle,
     handoff: Vec<u8>,
     page_table_bytes: u64,
@@ -1063,6 +1174,11 @@ pub struct LoadedFirmwareBoard {
     pci_config_address: u32,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
+    /// Disabled by default. Diagnostic snapshots are sampled only at completed COM1 lines.
+    console_context_parser: Option<ConsoleLineTrigger>,
+    console_context_snapshots: Vec<ConsoleOutputContextSnapshot>,
+    /// Disabled by default. Captures a bounded window after the first nonce marker.
+    uart_output_context: Option<UartOutputContextCapture>,
     /// Pending-tick flag of the guest `RDTSC` (S4-37a6b); `Some` only under
     /// `linux_profile`, where `run` hands the CPU a time source. The source sets
     /// it, the `run_boot` stop predicate reads it and `run_boot` clears it.
@@ -1078,6 +1194,36 @@ pub struct LoadedFirmwareBoard {
     pit_pic_source: Option<PitPicIrqSource>,
     /// The UART THRE -> 8259 IR4 source once [`Self::enable_uart_irq4`] installed it (S4-39i).
     uart_irq_source: Option<UartPicIrqSource>,
+    /// The UART interrupt output -> IOAPIC INTIN4 source (wrapping the PIT -> INTIN2 source) once
+    /// [`Self::enable_uart_ioapic_irq4`] installed it; exclusive with `uart_irq_source` (it needs the
+    /// IOAPIC PIT source, which excludes the 8259 one).
+    uart_ioapic_source: Option<UartIoapicIrqSource>,
+    /// The PIT OUT0 -> IOAPIC INTIN2 -> Local APIC source once [`Self::enable_pit_ioapic_irq`]
+    /// installed it (S4-38L8d); exclusive with `pit_pic_source`.
+    pit_ioapic_source: Option<PitIoapicIrqSource>,
+    /// Who moves the board clock inside the CPL0-set loop (S4-23j): the board itself (default,
+    /// byte-for-byte the S4-37/38 behaviour) or a [`ClockOwner`] that [`Self::enable_clock_owner`]
+    /// installed. Never `Owned` unless that call succeeded.
+    clock_driver: BoardClock,
+    /// The opt-in checkpoint recorder of the CPL0-set loop (S4-38L4i, observation only). `None`
+    /// until [`Self::enable_checkpoints`]; then the loop shows it every instruction boundary.
+    checkpoints: Option<CheckpointRecorder>,
+    /// S4-13b: the opt-in report of the fetch cache and the page walks of the CPL0-set loop
+    /// (measurement only). `fetch_cache_report_enabled` is set by
+    /// [`Self::enable_fetch_cache_report`]; the loop leaves the report of its last run in
+    /// `fetch_cache_report`.
+    fetch_cache_report_enabled: bool,
+    fetch_cache_report: Option<LinuxFetchCacheReport>,
+    /// S4-13c: the shadow caches requested for the next runs (diagnostics only) and the result the
+    /// last run left.
+    fetch_cache_sweep_configs: Option<Vec<SweepConfig>>,
+    /// S4-13d: what one entry of the CPL0-set loop's fetch cache covers; 4 KiB unless asked.
+    fetch_cache_tag: FetchCacheTag,
+    fetch_cache_sweep_report: Option<FetchSweepReport>,
+    /// True when the assembly was given a PIT or LAPIC-timer clock other than the board clock
+    /// (a test injection of S4-37a1/a4): their deadlines are in another time domain, so the
+    /// clock owner is refused.
+    foreign_timer_clock: bool,
     /// Test injection (S4-37a2): `run_boot` drops the queued PM timer ticks
     /// instead of applying them. Never set in production code.
     #[cfg(test)]
@@ -1087,7 +1233,165 @@ pub struct LoadedFirmwareBoard {
     suppress_rdtsc_tick: bool,
 }
 
+/// The NMI half of a vCPU boundary (see [`LoadedFirmwareBoard::deliver_pending_nmi`]) on what it
+/// needs: the vCPU's Local APIC, the vCPU itself, the RAM and the board's page-table root.
+/// A vCPU thread of the parallel mode (S6-34) calls it with the shared reference to the RAM.
+pub(crate) fn deliver_pending_nmi_of(
+    apic: &LocalApicHandle,
+    vcpu: &mut Vcpu,
+    memory: &crate::PhysicalMemory,
+    page_table_root: u64,
+) -> Result<NmiBoundary, FirmwareBoardError> {
+    use od_isa::Cpl0ExternalInterruptDelivery as Delivery;
+    use od_isa::Cpl0ExternalInterruptRefusal as Refusal;
+    if !apic.pending_nmi() {
+        return Ok(NmiBoundary::NoPending);
+    }
+    // Holds first, only for what the architecture itself holds back: NMI blocking, and an
+    // activity that takes no NMI (`Shutdown`, `WaitForSipi`; an application processor that
+    // waits for SIPI has no paging to deliver through and must not be an error). A state the
+    // board does not model (activity `None`) is not a hold but an error, before any change.
+    if vcpu.state.nmi_blocked {
+        return Ok(NmiBoundary::Held);
+    }
+    match vcpu.state.activity {
+        Some(CpuActivity::Running | CpuActivity::Halted) => {}
+        Some(CpuActivity::Shutdown | CpuActivity::WaitForSipi) => {
+            return Ok(NmiBoundary::Held);
+        }
+        None => {
+            return Err(FirmwareBoardError::Config(
+                "deliver_pending_nmi: vCPU activity not modelled",
+            ));
+        }
+    }
+    // A started application processor (or one reset by INIT) holds its state in `legacy`
+    // until it enters long mode; the long-mode `state` is not rewritten from it, so delivering
+    // through the long-mode IDT would be wrong. NMI delivery in real and protected mode is not
+    // modelled (item 6(d) of S6-16: an error).
+    if vcpu.legacy.is_some() {
+        return Err(FirmwareBoardError::Config(
+            "deliver_pending_nmi: NMI in real mode not modelled",
+        ));
+    }
+    match vcpu.state.sti_shadow {
+        Some(od_isa::StiShadow::Clear) => {}
+        Some(od_isa::StiShadow::Blocking) => return Ok(NmiBoundary::Held),
+        None => {
+            return Err(FirmwareBoardError::Config(
+                "deliver_pending_nmi: STI shadow not modelled",
+            ));
+        }
+    }
+    // The walker's EFER is the vCPU's own guest EFER (the guest may change only `SCE`).
+    // The walk is built on the vCPU's own CR3 (as the S6-16d quantum does); a vCPU without a
+    // modelled CR3 uses the board's `page_table_root`.
+    let paging_root = vcpu.state.cr3.unwrap_or(page_table_root);
+    let paging = Long64ProbeConfig::from_cpu_state(&vcpu.state, paging_root, vcpu.guest_efer)
+        .map_err(|_| FirmwareBoardError::Config("deliver_pending_nmi: no paging for the vCPU"))?;
+    let context = AccessContext {
+        mode: InstructionMode::Long64,
+        privilege: if vcpu.state.cs_selector.is_some_and(|cs| cs & 3 == 3) {
+            PrivilegeLevel::Ring3
+        } else {
+            PrivilegeLevel::Ring0
+        },
+        origin: AccessOrigin::Explicit,
+    };
+    let failure = |vcpu: &Vcpu, failure: String| FirmwareBoardError::ExternalInterruptDelivery {
+        vector: od_isa::NMI_VECTOR,
+        failure,
+        rip: vcpu.state.rip,
+        cs_selector: vcpu.state.cs_selector,
+    };
+    match deliver_nmi_at_boundary(&mut vcpu.state, memory, &paging, context) {
+        Delivery::Delivered { .. } => {
+            apic.take_nmi();
+            Ok(NmiBoundary::Delivered)
+        }
+        // The holds above already decided these; kept as holds, never as drops.
+        Delivery::Refused(Refusal::NmiBlocked | Refusal::StiShadowActive) => Ok(NmiBoundary::Held),
+        other => Err(failure(vcpu, format!("{other:?}"))),
+    }
+}
+
+/// What the vCPU threads of the parallel mode need of a board (S6-34), split off its fields by
+/// [`LoadedFirmwareBoard::thread_parts`]: the bus by shared reference (RAM and the one device lock),
+/// every vCPU by exclusive reference (each thread owns one), the Local APICs, the devices the
+/// quantum polls, the interrupt source of the board (the boot processor's), the clock owner and the
+/// COM1 log.
+pub(crate) struct ThreadParts<'a> {
+    pub(crate) bus: &'a MachineBus,
+    pub(crate) vcpus: &'a mut [Vcpu],
+    pub(crate) lapic: LocalApicHandle,
+    pub(crate) uart: Uart16550Handle,
+    pub(crate) acpi_pm: Option<AcpiPmHandle>,
+    pub(crate) pit: Option<Pit8254Handle>,
+    pub(crate) uart_irq_source: Option<&'a UartPicIrqSource>,
+    pub(crate) uart_ioapic_source: Option<&'a UartIoapicIrqSource>,
+    pub(crate) irq_source: &'a mut dyn BoardIrqSource,
+    pub(crate) owner: &'a mut ClockOwner,
+    pub(crate) com1: &'a mut Vec<u8>,
+    /// The board's page-table root (the walk root of a vCPU that has no CR3 of its own).
+    pub(crate) page_table_root: u64,
+}
+
 impl LoadedFirmwareBoard {
+    /// S6-32: the one execution-mode switch of the machine (see [`crate::ExecutionMode`]); it is
+    /// stored in the board's physical memory and the interpreter does not know it. The default is
+    /// [`crate::ExecutionMode::Interleaved`], which is what every run uses today; the parallel
+    /// mode starts vCPU threads only in S6-34, so selecting it now changes the host memory order
+    /// of ordinary RAM accesses and the host fence of the guest fences, never the result of a
+    /// single-threaded run.
+    pub fn set_execution_mode(&mut self, mode: crate::ExecutionMode) {
+        self.bus.set_execution_mode(mode);
+    }
+
+    /// S6-32: the execution mode of the board.
+    pub fn execution_mode(&self) -> crate::ExecutionMode {
+        self.bus.execution_mode()
+    }
+
+    /// S6-34: split the board for the vCPU threads of the parallel mode. Refused (`Config`) when
+    /// the board is not in [`crate::ExecutionMode::Parallel`], has no clock owner, or has one of the
+    /// diagnostic hooks that read the COM1 stream inside the pump (`console_context_parser`,
+    /// `uart_output_context`: they sample per byte on one thread). Everything but the vCPUs, the
+    /// clock owner, the interrupt source and the log is shared.
+    pub(crate) fn thread_parts(&mut self) -> Result<ThreadParts<'_>, FirmwareBoardError> {
+        if self.bus.execution_mode() != crate::ExecutionMode::Parallel {
+            return Err(FirmwareBoardError::Config(
+                "thread_parts: the board is not in the parallel execution mode",
+            ));
+        }
+        if self.console_context_parser.is_some() || self.uart_output_context.is_some() {
+            return Err(FirmwareBoardError::Config(
+                "thread_parts: the console context hooks are single-thread diagnostics",
+            ));
+        }
+        let owner = match &mut self.clock_driver {
+            BoardClock::Owned(owner) => owner,
+            BoardClock::Standalone => {
+                return Err(FirmwareBoardError::Config(
+                    "thread_parts: the board has no clock owner (enable_clock_owner)",
+                ));
+            }
+        };
+        Ok(ThreadParts {
+            bus: &self.bus,
+            vcpus: &mut self.vcpus,
+            lapic: self.lapic.clone(),
+            uart: self.uart.clone(),
+            acpi_pm: self.acpi_pm.clone(),
+            pit: self.pit.clone(),
+            uart_irq_source: self.uart_irq_source.as_ref(),
+            uart_ioapic_source: self.uart_ioapic_source.as_ref(),
+            irq_source: &mut *self.irq_source,
+            owner,
+            com1: &mut self.com1_log,
+            page_table_root: self.page_table_root,
+        })
+    }
+
     pub fn state(&self) -> &LongModeState {
         &self.vcpus[BOOT_VCPU_INDEX].state
     }
@@ -1113,14 +1417,303 @@ impl LoadedFirmwareBoard {
         self.lapic.for_cpu(index)
     }
 
+    /// The state of vCPU `index`, `None` when the board has no such vCPU.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn vcpu(&self, index: usize) -> Option<&Vcpu> {
+        self.vcpus.get(index)
+    }
+
+    /// The state of vCPU `index` for the scheduler of S6-15 (it sets a woken vCPU `Running`),
+    /// `None` when the board has no such vCPU.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn vcpu_mut(&mut self, index: usize) -> Option<&mut Vcpu> {
+        self.vcpus.get_mut(index)
+    }
+
+    /// The CPUID profile of the legacy models of the board's vCPUs and of the EDX after INIT
+    /// (S6-18a), read from `vcpus[0].cpuid.profile`: it is set on every vCPU (`LINUX_AP_CPUID_PROFILE`
+    /// on the `linux-direct` board). It is NOT the CPUID of the BSP in long mode: that one is the
+    /// `members.cpuid_profile` of `linux_direct.rs`. `DiagnosticV1` until
+    /// [`Self::set_cpuid_profile`] changes it.
+    pub fn cpuid_profile(&self) -> CpuidProfile {
+        self.vcpus[BOOT_VCPU_INDEX].cpuid.profile
+    }
+
+    /// Choose the CPUID profile of every vCPU (S6-18a). Each keeps its APIC ID (its index) and
+    /// the board's vCPU count. A legacy model that is still in its INIT or power-on state takes
+    /// the profile now (its `CPUID` source and EDX); one that has been started keeps what it has,
+    /// so the call is made before the guest runs. The Linux boards pick
+    /// `OdX8664V1Neutral` (`vcpu::LINUX_AP_CPUID_PROFILE`) for their application processors: the `verify_cpu`
+    /// of the kernel's trampoline returns 0 only on it.
+    pub fn set_cpuid_profile(&mut self, profile: CpuidProfile) {
+        let count = self.vcpus.len();
+        for vcpu in &mut self.vcpus {
+            let cpuid = VcpuCpuid::new(profile, vcpu.index, count);
+            vcpu.set_cpuid(cpuid);
+        }
+    }
+
+    /// The single clock owner, once [`Self::enable_clock_owner`] installed it. The scheduler of
+    /// S6-15 moves time through it; the board does not create a second one.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn clock_owner_mut(&mut self) -> Option<&mut ClockOwner> {
+        match &mut self.clock_driver {
+            BoardClock::Owned(owner) => Some(owner),
+            BoardClock::Standalone => None,
+        }
+    }
+
+    /// The reset of the CPU complex of the board (S6-24; what S6-13 left open): every vCPU goes
+    /// back to its power-on state and every Local APIC and the IOAPIC route to theirs.
+    ///
+    /// - The boot processor gets `bsp_state` and `bsp_guest_efer` (the handoff state the loader
+    ///   gave it: the board does not keep it), `Running`, no legacy model, the guest cells at their
+    ///   initial values (SMP_CONTRACT.md 3, row "Power-on, index 0").
+    /// - Every application processor is `WaitForSipi` with the real-mode reset state, whatever it
+    ///   did before (Running, Halted, in long mode, shut down): [`Vcpu::new_ap`]. The CPUID
+    ///   configuration of every vCPU is kept.
+    /// - Every Local APIC, not only the boot processor's, drops its pending INIT, SIPI, NMI, its
+    ///   IRR/ISR/TMR and its armed timer, and the route drops its Remote IRR
+    ///   ([`LocalApicHandle::reset_all`]); an earlier INIT that the owner's decision left the
+    ///   Remote IRR of cannot veto it.
+    ///
+    /// Not touched: guest RAM, the devices of the board (UART, PIT, PIC, PM timer, NVMe, display),
+    /// the interrupt source and the clock: virtual time does not move. Resetting the devices is the
+    /// machine reset of `S9`. On an error nothing has changed.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn reset_cpu_complex(
+        &mut self,
+        bsp_state: LongModeState,
+        bsp_guest_efer: u64,
+    ) -> Result<(), FirmwareBoardError> {
+        self.lapic.reset_all().map_err(|_| {
+            FirmwareBoardError::Config("reset_cpu_complex: the Local APIC reset failed")
+        })?;
+        for (index, vcpu) in self.vcpus.iter_mut().enumerate() {
+            let cpuid = vcpu.cpuid;
+            *vcpu = if index == BOOT_VCPU_INDEX {
+                let mut boot = Vcpu::new(BOOT_VCPU_INDEX, bsp_state.clone());
+                boot.guest_efer = bsp_guest_efer;
+                boot
+            } else {
+                Vcpu::new_ap(index)
+            };
+            vcpu.set_cpuid(cpuid);
+        }
+        Ok(())
+    }
+
+    /// The vCPU `index` applies the INIT and SIPI waiting in its own Local APIC (S6-13), on its
+    /// own boundary: the LAPIC hands them over and the vCPU changes its state
+    /// ([`Vcpu::apply_startup`]). The scheduler of S6-15 calls it on the boundary of every vCPU
+    /// before it picks one (`BoardSmpHost::boundary`); the run loop of the board does not. No such vCPU, or a LAPIC that
+    /// cannot reset its timer for an INIT, is an error and nothing is applied.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn apply_pending_startup(
+        &mut self,
+        index: usize,
+    ) -> Result<StartupApplied, FirmwareBoardError> {
+        const NO_VCPU: FirmwareBoardError =
+            FirmwareBoardError::Config("apply_pending_startup: no such vCPU");
+        let apic = self.lapic.for_cpu(index).ok_or(NO_VCPU)?;
+        let vcpu = self.vcpus.get_mut(index).ok_or(NO_VCPU)?;
+        let pending = apic
+            .take_startup()
+            .map_err(|_| FirmwareBoardError::Config("apply_pending_startup: INIT reset failed"))?;
+        Ok(vcpu.apply_startup(pending))
+    }
+
+    /// The vCPU `index` delivers the NMI waiting in its own Local APIC through vector 2 on its own
+    /// boundary (S6-12b), if it can: nothing waits (`NoPending`); the vCPU holds the NMI back, so
+    /// the latch stays set (`Held`, only for architectural holds: NMI blocked until the running
+    /// handler executes `IRETQ`, an STI shadow in force (`Some(Blocking)`), or an activity that
+    /// takes no NMI: `Shutdown`, `WaitForSipi`); or the frame is on the guest stack and the vCPU
+    /// is in the handler (`Delivered`: the latch is taken, `nmi_blocked` is set, a `Halted` vCPU
+    /// is `Running`). The scheduler of S6-15 calls it on the boundary of every vCPU, after
+    /// [`Self::apply_pending_startup`] and before it picks one (`BoardSmpHost::boundary`); the run
+    /// loop of the board does not. A gate that cannot deliver (not present, a failed frame store
+    /// or a failed read of the TSS `IST[n]` slot; IST ≠ 0 is supported only for NMI delivery,
+    /// S6-12c) and a state the board cannot deliver through are errors, not holds: a state that is not
+    /// modelled (activity or STI shadow `None`), a vCPU on a legacy-mode model (`legacy` is
+    /// `Some`, the trampoline of S6-16c is still running: NMI in real or protected mode is not
+    /// modelled; the error text says "real mode"), paging the walker rejects (the EFER is
+    /// the vCPU's own `guest_efer`, the root is the vCPU's own CR3, S6-16f). On an error the vCPU is unchanged and the NMI stays pending,
+    /// never silently dropped.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn deliver_pending_nmi(
+        &mut self,
+        index: usize,
+    ) -> Result<NmiBoundary, FirmwareBoardError> {
+        const NO_VCPU: FirmwareBoardError =
+            FirmwareBoardError::Config("deliver_pending_nmi: no such vCPU");
+        let apic = self.lapic.for_cpu(index).ok_or(NO_VCPU)?;
+        let vcpu = self.vcpus.get_mut(index).ok_or(NO_VCPU)?;
+        deliver_pending_nmi_of(
+            &apic,
+            vcpu,
+            self.bus.physical_memory(),
+            self.page_table_root,
+        )
+    }
+
     pub fn bus_mut(&mut self) -> &mut MachineBus {
         &mut self.bus
+    }
+
+    /// S4-13d diagnostics: SHA-256 over the bytes of every plain-RAM region in address order,
+    /// read-only (the end state of a run, to tell two runs of the same guest apart or equal).
+    /// It copies all of RAM into one buffer first (a peak of two to three times the RAM size);
+    /// a streaming hash is a separate task. A region that cannot be read is an error naming it,
+    /// never a hash over the rest.
+    pub fn ram_sha256(&mut self) -> Result<[u8; 32], String> {
+        let (memory, _) = self.bus.split_for_pio_step();
+        let regions: Vec<_> = memory
+            .region_specs()
+            .filter(|spec| spec.kind == MemoryRegionKind::Ram)
+            .collect();
+        let mut data = Vec::new();
+        for spec in regions {
+            let mut bytes = vec![0u8; spec.range.len() as usize];
+            memory
+                .load_bytes(spec.range.start(), &mut bytes)
+                .map_err(|error| {
+                    format!(
+                        "RAM region at {:#x} (len {:#x}) is unreadable: {error:?}",
+                        spec.range.start().get(),
+                        spec.range.len()
+                    )
+                })?;
+            data.extend_from_slice(&bytes);
+        }
+        Ok(crate::acpi_blob::sha256(&data))
     }
 
     /// COM1 bytes recorded by the latest `run_boot`, including those of a run
     /// that returned an error (so the runner never loses transcript bytes).
     pub fn com1_transcript(&self) -> &[u8] {
         &self.com1_log
+    }
+
+    /// Enables bounded diagnostic sampling at selected completed console-output lines.
+    /// Sampling reads CPU state and RAM only; the result describes console-output context,
+    /// not the unwind state of a previously printed trace.
+    pub fn enable_console_output_context_diagnostic(&mut self) {
+        self.console_context_parser = Some(ConsoleLineTrigger::default());
+        self.console_context_snapshots.clear();
+        self.uart_output_context = Some(UartOutputContextCapture::default());
+    }
+
+    /// Takes the snapshots produced by the last run, if the diagnostic was enabled.
+    pub fn take_console_output_context_diagnostic(&mut self) -> Vec<ConsoleOutputContextSnapshot> {
+        std::mem::take(&mut self.console_context_snapshots)
+    }
+
+    /// Takes bounded byte-level COM1 provenance, if the diagnostic was enabled.
+    pub fn take_uart_output_context_diagnostic(&mut self) -> Option<UartOutputContextDiagnostic> {
+        self.uart_output_context
+            .take()
+            .map(UartOutputContextCapture::finish)
+    }
+
+    fn sample_console_output_context(&mut self, byte: u8) {
+        if self.console_context_snapshots.len() >= MAX_CAPTURE_COUNT {
+            self.console_context_parser = None;
+            return;
+        }
+        let trigger = self
+            .console_context_parser
+            .as_mut()
+            .and_then(|parser| parser.push(byte));
+        if let Some(trigger) = trigger {
+            self.capture_console_output_context(trigger);
+            if self.console_context_snapshots.len() >= MAX_CAPTURE_COUNT {
+                self.console_context_parser = None;
+            }
+        }
+    }
+
+    fn sample_uart_output_context(&mut self, byte: u8, offset: u64, retired: u64) {
+        let should_capture = self
+            .uart_output_context
+            .as_mut()
+            .is_some_and(|capture| capture.observe_byte(byte, offset));
+        if !should_capture {
+            return;
+        }
+
+        let rip = self.state().rip;
+        let rbp = self.state().gpr[Register::Rbp as usize];
+        let rsp = self.state().gpr[Register::Rsp as usize];
+        let cr3 = self.page_table_root;
+        let (frames, ended) = self.capture_console_frame_chain(rip, rbp, cr3);
+        let snapshot = UartOutputByteContextSnapshot {
+            offset,
+            byte,
+            retired,
+            rip,
+            rsp,
+            rbp,
+            cr3,
+            cs_selector: self.state().cs_selector,
+            frames,
+            ended,
+        };
+        if let Some(capture) = self.uart_output_context.as_mut() {
+            capture.push_snapshot(snapshot);
+        }
+    }
+
+    fn capture_console_output_context(&mut self, trigger: ConsoleContextTrigger) {
+        let rip = self.state().rip;
+        let rbp = self.state().gpr[Register::Rbp as usize];
+        let cr3 = self.page_table_root;
+        let (frames, ended) = self.capture_console_frame_chain(rip, rbp, cr3);
+        self.console_context_snapshots
+            .push(ConsoleOutputContextSnapshot {
+                trigger,
+                rip,
+                rbp,
+                cr3,
+                frames,
+                ended,
+            });
+    }
+
+    fn capture_console_frame_chain(
+        &mut self,
+        rip: u64,
+        rbp: u64,
+        cr3: u64,
+    ) -> (Vec<crate::ConsoleContextFrame>, crate::FrameChainEnd) {
+        const CR0_LONG_PAGING: u64 = (1 << 31) | (1 << 16) | (1 << 4) | 1;
+        const CR4_PAE: u64 = 1 << 5;
+        let paging = Long64ProbeConfig::new(
+            self.state().cr0.unwrap_or(CR0_LONG_PAGING),
+            cr3,
+            self.state().cr4.unwrap_or(CR4_PAE),
+            FIRMWARE_EFER,
+        );
+        let (frames, ended) = match paging {
+            Ok(paging) => capture_frame_chain(rbp, |frame_pointer| {
+                let mut bytes = [0; 16];
+                self.bus
+                    .read_virtual_ram_diagnostic(
+                        &paging,
+                        rip,
+                        GuestLinearAddress::new(frame_pointer),
+                        AccessContext {
+                            mode: InstructionMode::Long64,
+                            privilege: PrivilegeLevel::Ring0,
+                            origin: AccessOrigin::Explicit,
+                        },
+                        &mut bytes,
+                    )
+                    .map(|()| bytes)
+                    .map_err(|_| ())
+            }),
+            Err(_) => (Vec::new(), crate::FrameChainEnd::ReadFailed),
+        };
+        (frames, ended)
     }
 
     pub fn uart(&self) -> Uart16550Handle {
@@ -1147,12 +1740,11 @@ impl LoadedFirmwareBoard {
     /// A source of the PIT channel 0 line through the IOAPIC INTIN2 and the Local APIC of this
     /// board (S4-38L8c), on the board clock; `None` without the Linux profile (no PIT). It is not
     /// installed: the caller gives it to [`Self::set_irq_source`] (a clone of it stays a handle
-    /// for the counters). The board does this for no run today: the Linux board has no APIC in
-    /// CPUID, and a synthetic guest or a test installs the source itself.
+    /// for the counters). The `X8664V1Stage4AApic` run installs it through
+    /// [`Self::enable_pit_ioapic_irq`] (S4-38L8d); a test may install a source itself.
     ///
     /// The IOAPIC handle is made from the Local APIC handle the way `assemble_board` makes the
     /// IOAPIC device: both views share one pair state.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn pit_ioapic_irq_source(&self) -> Option<PitIoapicIrqSource> {
         let pit = self.pit.clone()?;
         let io_apic = IoApic::new(self.lapic.clone()).handle();
@@ -1172,6 +1764,10 @@ impl LoadedFirmwareBoard {
         if self.pit_pic_source.is_some() {
             return true;
         }
+        // S4-38L8d: the 8259 and the IOAPIC sources are exclusive (one board interrupt source).
+        if self.pit_ioapic_source.is_some() {
+            return false;
+        }
         let (Some(pit), Some(pic)) = (self.pit.clone(), self.pic_master.clone()) else {
             return false;
         };
@@ -1181,6 +1777,44 @@ impl LoadedFirmwareBoard {
         self.irq_source = Box::new(source.clone());
         self.pit_pic_source = Some(source);
         true
+    }
+
+    /// S4-38L8d: whether [`Self::enable_pit_ioapic_irq`] would succeed (a pure check): the
+    /// Linux-profile PIT exists and the 8259 source is not installed.
+    pub(crate) fn pit_ioapic_irq_available(&self) -> bool {
+        self.pit_ioapic_source.is_some() || (self.pit.is_some() && self.pit_pic_source.is_none())
+    }
+
+    /// S4-38L8d: install the PIT channel 0 -> IOAPIC INTIN2 -> Local APIC source (ISA IRQ 0 is
+    /// overridden to GSI 2 by the MADT) as the board's interrupt source (once; a second call keeps
+    /// the installed one). It also arms the PIT software strobe, like the 8259 variant, and opens the
+    /// Local APIC and IOAPIC MMIO windows of the set loop (the guest's register accesses). `false`
+    /// and nothing installed without the Linux-profile PIT, or when the 8259 source
+    /// ([`Self::enable_pit_pic_irq`]) is already installed: the two are exclusive. Called by the
+    /// `X8664V1Stage4AApic` run of the Linux board only.
+    pub(crate) fn enable_pit_ioapic_irq(&mut self) -> bool {
+        if self.pit_ioapic_source.is_some() {
+            return true;
+        }
+        if self.pit_pic_source.is_some() {
+            return false;
+        }
+        let Some(source) = self.pit_ioapic_irq_source() else {
+            return false;
+        };
+        if let Some(pit) = &self.pit {
+            pit.enable_software_strobe();
+        }
+        self.bus.enable_apic_mmio_windows();
+        self.irq_source = Box::new(source.clone());
+        self.pit_ioapic_source = Some(source);
+        true
+    }
+
+    /// The installed PIT -> IOAPIC source (a second handle on it), if any.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn pit_ioapic_source(&self) -> Option<PitIoapicIrqSource> {
+        self.pit_ioapic_source.clone()
     }
 
     /// S4-39i: wrap the installed PIT -> IR0 source with the UART interrupt output -> 8259 master
@@ -1201,10 +1835,305 @@ impl LoadedFirmwareBoard {
         true
     }
 
+    /// S4-38 (UART -> INTIN4): wrap the installed PIT -> IOAPIC INTIN2 source with the UART
+    /// interrupt output -> IOAPIC INTIN4 (once; a second call keeps the installed one). `false` and
+    /// nothing changed unless [`Self::enable_pit_ioapic_irq`] installed the PIT source first (so the
+    /// IOAPIC and the Local APIC windows are open). The 8259 variant ([`Self::enable_uart_irq4`])
+    /// cannot coexist: it needs the 8259 PIT source, which excludes the IOAPIC one. Called by the
+    /// `X8664V1Stage4AApic` run of the Linux board only.
+    pub(crate) fn enable_uart_ioapic_irq4(&mut self) -> bool {
+        if self.uart_ioapic_source.is_some() {
+            return true;
+        }
+        let Some(pit_ioapic) = self.pit_ioapic_source.clone() else {
+            return false;
+        };
+        let io_apic = IoApic::new(self.lapic.clone()).handle();
+        let source = UartIoapicIrqSource::new(pit_ioapic, self.uart.clone(), io_apic);
+        self.irq_source = Box::new(source.clone());
+        self.uart_ioapic_source = Some(source);
+        true
+    }
+
+    /// The installed UART -> INTIN4 source (a second handle on it), if any.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn uart_ioapic_source(&self) -> Option<UartIoapicIrqSource> {
+        self.uart_ioapic_source.clone()
+    }
+
     /// The installed UART -> IR4 source (a second handle on it), if any.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn uart_irq_source(&self) -> Option<UartPicIrqSource> {
         self.uart_irq_source.clone()
+    }
+
+    /// S4-38L4i: install the checkpoint recorder of the CPL0-set loop (replaces a previous one).
+    /// It only observes: the run with it retires the same instructions in the same quanta as the
+    /// run without it. Off by default.
+    /// A table that [`LinuxCheckpointTable::validate`] refuses leaves the board as it was.
+    pub(crate) fn enable_checkpoints(
+        &mut self,
+        table: LinuxCheckpointTable,
+    ) -> Result<(), LinuxCheckpointTableError> {
+        self.checkpoints = Some(CheckpointRecorder::new(table)?);
+        Ok(())
+    }
+
+    /// S4-38L4i: the checkpoints recorded so far (in id order) and the recorder removed; `None`
+    /// when none was enabled.
+    pub(crate) fn take_checkpoints(&mut self) -> Option<Vec<LinuxCheckpointRecord>> {
+        self.checkpoints.take().map(|recorder| recorder.records())
+    }
+
+    /// S4-13b: ask the CPL0-set loop for the fetch cache report of its next runs (page walks by
+    /// purpose, the cache counters summed over the calls, the phases around C5). It only
+    /// observes. Off by default.
+    pub fn enable_fetch_cache_report(&mut self) {
+        self.fetch_cache_report_enabled = true;
+    }
+
+    /// S4-13b: the report the last run left (also after a failed run, with what was counted up to
+    /// the failure) and the request removed; `None` when it was not enabled.
+    pub fn take_fetch_cache_report(&mut self) -> Option<LinuxFetchCacheReport> {
+        self.fetch_cache_report_enabled = false;
+        self.fetch_cache_report.take()
+    }
+
+    /// S4-13c: ask the CPL0-set loop for shadow caches (the grid of capacity, replacement, tag
+    /// granularity, lifecycle and invalidation) over the events of the fetch cache of its next
+    /// runs. They only observe; the run, its report and the real cache's counters are unchanged.
+    /// Needs the fetch cache on (without it there are no events); the phases around C5 need the
+    /// checkpoint recorder. Off by default.
+    pub fn enable_fetch_cache_sweep(&mut self, configs: Vec<SweepConfig>) {
+        self.fetch_cache_sweep_configs = Some(configs);
+    }
+
+    /// S4-13d: let the fetch cache of the CPL0-set loop's next runs tag a walk that ended at a
+    /// 2 MiB leaf (plain RAM) with the whole leaf instead of the 4 KiB page. The answers do not
+    /// change (permissions, accessed/dirty bits, faults and flushes are those of the 4 KiB tag);
+    /// only the number of page walks does. Off by default (4 KiB tag); needs the fetch cache on.
+    pub fn enable_fetch_cache_leaf_2m_tag(&mut self) {
+        self.fetch_cache_tag = FetchCacheTag::Leaf2M;
+    }
+
+    /// S4-13c: the result of the last run (also after a failed run) and the request removed;
+    /// `None` when it was not enabled or the run used no fetch cache.
+    pub fn take_fetch_cache_sweep(&mut self) -> Option<FetchSweepReport> {
+        self.fetch_cache_sweep_configs = None;
+        self.fetch_cache_sweep_report.take()
+    }
+
+    /// S4-23j: opt in to the single clock owner for the CPL0-set loop. The owner claims the board
+    /// clock's advancer for good and takes the LAPICs of all vCPUs in index order; from then on
+    /// every move of time of [`Self::run_linux_boot_cpl0_set`] (retired instructions, the PM, PIT
+    /// and RDTSC ticks, the idle jump of a halted CPU) goes through it, the quantum is cut with
+    /// [`ClockOwner::step_budget`], and `advance_time_ns` (the standalone advance) fails with
+    /// `ClockAlreadyOwned`. A second call keeps the owner and succeeds. Refused (nothing
+    /// changed) when the PIT or the LAPIC timer was assembled on a clock other than the board
+    /// clock (their deadlines would be in another time domain) or when somebody else already
+    /// owns the clock. Without this call the board is exactly as before and never claims the
+    /// clock.
+    ///
+    /// After the call `run_boot`, `run_boot_with` and `run` fail wherever they advance time
+    /// (`advance_time_ns` gives `ClockAlreadyOwned`). This is expected: the Linux paths that use
+    /// the owner call only `run_linux_boot_cpl0_set`, which goes through the owner.
+    ///
+    /// Idle: when the wake time of the board source is not after `now` the jump is 0 and the
+    /// arbiter is not asked, so a Local APIC vector is not checked (`Woken` refusal) in that
+    /// case; the CPU wakes for the board source exactly as in `Standalone`.
+    pub(crate) fn enable_clock_owner(&mut self) -> Result<(), FirmwareBoardError> {
+        if matches!(self.clock_driver, BoardClock::Owned(_)) {
+            return Ok(());
+        }
+        if self.foreign_timer_clock {
+            return Err(FirmwareBoardError::Config(
+                "clock owner: a timer runs on a clock other than the board clock",
+            ));
+        }
+        let apics: Option<Vec<LocalApicHandle>> = (0..self.vcpus.len())
+            .map(|index| self.lapic.for_cpu(index))
+            .collect();
+        let apics = apics.ok_or(FirmwareBoardError::Config(
+            "clock owner: a vCPU has no Local APIC",
+        ))?;
+        let owner = ClockOwner::new(&self.clock, apics).map_err(FirmwareBoardError::Clock)?;
+        self.clock_driver = BoardClock::Owned(owner);
+        Ok(())
+    }
+
+    /// Whether the clock owner drives the clock of the CPL0-set loop (S4-23j).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn clock_owner_enabled(&self) -> bool {
+        matches!(self.clock_driver, BoardClock::Owned(_))
+    }
+
+    /// Move the board clock of the CPL0-set loop by `ns` of device time (the PM, PIT and RDTSC
+    /// ticks): through the board itself, or through the owner (which also dispatches the LAPIC
+    /// timers) once [`Self::enable_clock_owner`] installed it.
+    fn charge_ns(&mut self, ns: u64) -> Result<(), FirmwareBoardError> {
+        match &mut self.clock_driver {
+            BoardClock::Standalone => self.advance_time_ns(ns),
+            BoardClock::Owned(owner) => owner.account_device_ns(ns).map(drop).map_err(owner_error),
+        }
+    }
+
+    /// The idle skip of a halted CPU (IF = 1) to the wake time `wake` (of the board source, or the
+    /// earlier Local APIC timer under the IOAPIC source, `idle_wake_ns`): returns
+    /// the nanoseconds skipped. Standalone: the board advances by `wake - now` (0 when the time
+    /// has come), exactly as before. Owned (S4-23j): a wake time that is not after `now` skips
+    /// nothing; otherwise the arbiter decides through [`ClockOwner::idle_step`] (every vCPU with its own
+    /// [`Vcpu::activity`] and IF; S6-15) and the clock jumps to `wake`;
+    /// it ends in `NoProgress` with the skip above 0, because the deadline of the board is then
+    /// due and the loop consumes it itself. A Local APIC timer due earlier is dispatched on the
+    /// way. A Local APIC vector that would wake the CPU is refused (`Config`), except under the
+    /// IOAPIC source (S4-38L8i): its `pending_vector` is the highest eligible Local APIC vector,
+    /// so the loop delivers a Local APIC timer vector through the IDT. There `idle_to` returns, the
+    /// CPU is `Running` again and the next boundary delivers the vector. Under any other source the
+    /// loop delivers the board source only, so the guest would pass its `HLT` with no interrupt.
+    fn idle_to(&mut self, wake: u64) -> Result<u64, FirmwareBoardError> {
+        let delivers_lapic_vectors = self.pit_ioapic_source.is_some();
+        let BoardClock::Owned(owner) = &mut self.clock_driver else {
+            let idle = wake.saturating_sub(self.clock.snapshot().now_ns());
+            self.advance_time_ns(idle)?;
+            return Ok(idle);
+        };
+        let mut idle = 0u64;
+        loop {
+            if wake <= owner.now_ns() {
+                // Nothing to skip: the wake time has come (first iteration: no jump at all).
+                return Ok(idle);
+            }
+            // S6-15: every vCPU shows its own activity ([`Vcpu::activity`]) and IF; before, the
+            // boot CPU was assumed halted and every other vCPU assumed waiting for SIPI. The
+            // caller halts the boot CPU with IF = 1 before it asks to skip idle time.
+            let views = self
+                .vcpus
+                .iter()
+                .enumerate()
+                .map(|(index, vcpu)| {
+                    Ok(WakeView {
+                        activity: SchedActivity::from(vcpu.activity()),
+                        if_set: vcpu.interrupts_enabled(),
+                        apic: self.lapic.for_cpu(index).ok_or(FirmwareBoardError::Config(
+                            "clock owner: a vCPU has no Local APIC",
+                        ))?,
+                    })
+                })
+                .collect::<Result<Vec<_>, FirmwareBoardError>>()?;
+            let step = owner
+                .idle_step(false, &views, &[wake])
+                .map_err(owner_error)?;
+            idle += step.idle_ns;
+            match step.outcome {
+                IdleOutcome::NoProgress if step.idle_ns > 0 => return Ok(idle),
+                IdleOutcome::Advanced(_) if step.idle_ns > 0 => {}
+                IdleOutcome::Woken(_) if delivers_lapic_vectors => return Ok(idle),
+                IdleOutcome::Woken(_) => {
+                    return Err(FirmwareBoardError::Config(
+                        "clock owner: a Local APIC vector would wake the CPU, but the loop \
+                         delivers the board source only",
+                    ));
+                }
+                _ => {
+                    return Err(FirmwareBoardError::Config(
+                        "clock owner: the idle step did not reach the wake time",
+                    ));
+                }
+            }
+        }
+    }
+
+    /// S4-38L8i: the virtual time at which the Local APIC timer of the boot CPU can wake a halted
+    /// CPU with IF = 1 under the APIC profile: now when a Local APIC vector is deliverable now,
+    /// else the deadline of the armed timer when its LVT is unmasked and its vector would be
+    /// accepted (Local APIC enabled, class above the processor priority), else `None`. Only with
+    /// the clock owner (it dispatches the timers; S4-23j) and the IOAPIC source (it delivers the
+    /// Local APIC's vectors); otherwise `None`, as before.
+    fn lapic_timer_wake_ns(&self) -> Option<u64> {
+        if self.pit_ioapic_source.is_none() || !matches!(self.clock_driver, BoardClock::Owned(_)) {
+            return None;
+        }
+        let lapic = self.lapic.for_cpu(BOOT_VCPU_INDEX)?;
+        let now = self.clock.snapshot().now_ns();
+        if lapic.eligible().is_some() {
+            return Some(now);
+        }
+        let deadline = lapic.next_timer_deadline()?;
+        let vector = lapic.timer_vector()?;
+        (lapic.would_accept(vector) && deadline > now).then_some(deadline)
+    }
+
+    /// The wake time of a halted CPU: the earlier of the board source's and the Local APIC timer's.
+    /// The `min` is not observable on its own: `idle_to` hands the time to the arbiter, which jumps
+    /// to the earliest of its Local APIC timer deadlines and this time either way; what this
+    /// function adds is the wake time when the source has none (`None`).
+    fn idle_wake_ns(&self) -> Option<u64> {
+        match (self.irq_source.wake_ns(), self.lapic_timer_wake_ns()) {
+            (Some(source), Some(timer)) => Some(source.min(timer)),
+            (source, timer) => source.or(timer),
+        }
+    }
+
+    /// The COM1 transmit path between two calls of a set loop (S4-39i): a THR write clears the THRE
+    /// condition and the pump below raises it again before the next instruction boundary; the
+    /// interrupt sources sample the level on both sides so that the fall and the rise are both seen
+    /// (one edge on IR4 per byte). Every byte that completes goes to `com1_log` (and to the opt-in
+    /// console contexts; `retired` is the count the UART output context records). Shared by the
+    /// Linux loop and the vCPU quantum of S6-16d.
+    fn pump_uart_transmit(&mut self, retired: u64) {
+        let uart = self.uart.clone();
+        if let Some(source) = &self.uart_irq_source {
+            source.sample();
+        }
+        if let Some(source) = &self.uart_ioapic_source {
+            source.sample();
+        }
+        while uart.transfer_holding_to_shift() {
+            if let Some(byte) = uart.complete_transmission() {
+                self.com1_log.push(byte);
+                if self.console_context_parser.is_some() {
+                    self.sample_console_output_context(byte);
+                }
+                if self.uart_output_context.is_some() {
+                    self.sample_uart_output_context(byte, self.com1_log.len() as u64 - 1, retired);
+                }
+            }
+        }
+        if let Some(source) = &self.uart_irq_source {
+            source.sample();
+        }
+        if let Some(source) = &self.uart_ioapic_source {
+            source.sample();
+        }
+    }
+
+    /// The nearest edge of the board's interrupt source ([`BoardIrqSource::next_deadline_ns`]):
+    /// `None` for [`NoIrqSource`]. The deadline the scheduler of S6-15 gives to every quantum
+    /// ([`crate::smp_scheduler::SmpHost::board_deadline`], S6-16d).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn irq_deadline_ns(&self) -> Option<u64> {
+        self.irq_source.next_deadline_ns()
+    }
+
+    /// The time at which the board's interrupt source can next wake a halted boot processor
+    /// ([`BoardIrqSource::wake_ns`]): not after the clock when a vector is deliverable now, `None`
+    /// when nothing can wake it (the line is masked or in service, no edge). The scheduler of
+    /// S6-15 asks it for the boot processor only ([`crate::smp_scheduler::SmpHost::board_wakes`],
+    /// S6-21 step 1).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn irq_wake_ns(&self) -> Option<u64> {
+        self.irq_source.wake_ns()
+    }
+
+    /// Charge `retired` instructions to the clock of the CPL0-set loop (one ns each, D7).
+    fn charge_retired(&mut self, retired: u64) -> Result<(), FirmwareBoardError> {
+        match &mut self.clock_driver {
+            BoardClock::Standalone => self.advance_time_ns(retired),
+            BoardClock::Owned(owner) => owner
+                .account_retired(retired)
+                .map(drop)
+                .map_err(owner_error),
+        }
     }
 
     /// Handle of the 8259 master chip (S4-39g); `None` without the Linux profile.
@@ -1377,8 +2306,9 @@ impl LoadedFirmwareBoard {
         self.acpi_pm.clone()
     }
 
-    /// The virtual clock as of now (a snapshot; time moves only through
-    /// [`Self::advance_time_ns`]).
+    /// The virtual clock as of now (a snapshot). Time moves only when somebody advances it: in
+    /// `Standalone` through [`Self::advance_time_ns`], once [`Self::enable_clock_owner`] took
+    /// the clock through the [`ClockOwner`] (`charge_ns`, `charge_retired`, `idle_to`).
     pub fn clock(&self) -> VirtualClock {
         self.clock.snapshot()
     }
@@ -1519,7 +2449,7 @@ impl LoadedFirmwareBoard {
             if offset == 0 {
                 first = Some(physical.get());
             }
-            match memory.read_u8(physical) {
+            match memory.load_u8(physical) {
                 Ok(byte) => bytes.push(byte),
                 Err(error) => return (first, bytes, Some(format!("{error:?}"))),
             }
@@ -1607,6 +2537,46 @@ impl LoadedFirmwareBoard {
         fetch_cache: bool,
         irq_hook: bool,
     ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
+        self.run_linux_boot_cpl0_set_with_observations(
+            instruction_budget,
+            set,
+            cpuid_boundary,
+            fetch_cache,
+            irq_hook,
+            false,
+        )
+    }
+
+    pub(crate) fn run_linux_boot_cpl0_set_with_observations(
+        &mut self,
+        instruction_budget: u64,
+        set: &Cpl0ProfileSet<'_>,
+        cpuid_boundary: bool,
+        fetch_cache: bool,
+        irq_hook: bool,
+        capture_execution_observations: bool,
+    ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
+        self.run_linux_boot_cpl0_set_with_post_iret_index(
+            instruction_budget,
+            set,
+            cpuid_boundary,
+            fetch_cache,
+            irq_hook,
+            capture_execution_observations,
+            None,
+        )
+    }
+
+    pub(crate) fn run_linux_boot_cpl0_set_with_post_iret_index(
+        &mut self,
+        instruction_budget: u64,
+        set: &Cpl0ProfileSet<'_>,
+        cpuid_boundary: bool,
+        fetch_cache: bool,
+        irq_hook: bool,
+        capture_execution_observations: bool,
+        selected_post_iret_ordinal: Option<u64>,
+    ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
         let context = AccessContext {
             mode: InstructionMode::Long64,
             privilege: PrivilegeLevel::Ring0,
@@ -1617,13 +2587,29 @@ impl LoadedFirmwareBoard {
         let mut quanta = 0u64;
         let mut changes: Vec<TranslationContextChange> = Vec::new();
         let mut exceptions_delivered = 0u64;
+        let mut page_faults_delivered = 0u64;
+        let mut general_protection_faults_delivered = 0u64;
+        let mut execution_observations = capture_execution_observations.then(|| {
+            LinuxExecutionObservationCollector::with_post_iret_ordinal(selected_post_iret_ordinal)
+        });
         let mut cpl3_retired = 0u64;
         let mut syscall_journal = crate::linux_direct::SyscallJournal::default();
         self.com1_log.clear();
+        self.console_context_snapshots.clear();
+        if self.console_context_parser.is_some() {
+            self.console_context_parser = Some(ConsoleLineTrigger::default());
+        }
+        if self.uart_output_context.is_some() {
+            self.uart_output_context = Some(UartOutputContextCapture::default());
+        }
         let nvme = self.nvme.clone();
         let acpi_pm = self.acpi_pm.clone();
         let pit = self.pit.clone();
         let rdtsc_tick = self.rdtsc_tick.clone();
+        let pit_port_b_reads_before = pit.as_ref().map(Pit8254Handle::port_b_reads);
+        let pit_counter_port_reads_before = pit.as_ref().map(Pit8254Handle::counter_port_reads);
+        let mut rdtsc_reads = 0u64;
+        let mut rdtsc_reads_by_cpl = [0u64; 4];
         if let Some(pm) = &acpi_pm {
             pm.take_timer_tick_ns();
         }
@@ -1638,6 +2624,16 @@ impl LoadedFirmwareBoard {
         }
         self.vcpus[BOOT_VCPU_INDEX].state.cr3 = Some(self.page_table_root);
         let mut irq_counters = IrqCounters::default();
+        let mut fetch_report = self
+            .fetch_cache_report_enabled
+            .then(|| FetchCacheAccumulator::new(fetch_cache, self.checkpoints.is_some()));
+        self.fetch_cache_report = None;
+        self.fetch_cache_sweep_report = None;
+        let fetch_sweep = self
+            .fetch_cache_sweep_configs
+            .as_deref()
+            .filter(|_| fetch_cache)
+            .map(|configs| std::rc::Rc::new(FetchCacheSweep::new(configs)));
         // The next call resumes a partial REP: its first boundary is inside the REP.
         let mut partial_rep = false;
         // S4-38L5a/c: the set models CR2 for `MOV RAX, CR2`, and a delivered `#PF` writes it
@@ -1681,7 +2677,27 @@ impl LoadedFirmwareBoard {
             // after the quantum (one instruction is one ns), so the limit is the time left.
             let mut quantum_budget = remaining;
             let mut cut_by_deadline = false;
-            if irq_hook && let Some(deadline) = self.irq_source.next_deadline_ns() {
+            if let BoardClock::Owned(owner) = &self.clock_driver {
+                // S4-23j: the owner cuts the quantum at the earliest of its LAPIC timers and the
+                // source's deadline (the source is asked only under the hook, once per quantum,
+                // as before, also with nothing left). An empty budget is never handed to the
+                // owner (it would give one) and stays empty.
+                let deadline = if irq_hook {
+                    self.irq_source.next_deadline_ns()
+                } else {
+                    None
+                };
+                if remaining > 0 {
+                    quantum_budget = owner.step_budget(remaining, deadline);
+                    debug_assert!(quantum_budget >= 1 && quantum_budget <= remaining);
+                    if quantum_budget < remaining {
+                        cut_by_deadline = true;
+                        if irq_hook {
+                            irq_counters.quantum_cut_by_deadline += 1;
+                        }
+                    }
+                }
+            } else if irq_hook && let Some(deadline) = self.irq_source.next_deadline_ns() {
                 let limit = deadline
                     .saturating_sub(self.clock.snapshot().now_ns())
                     .max(1);
@@ -1691,7 +2707,14 @@ impl LoadedFirmwareBoard {
                     irq_counters.quantum_cut_by_deadline += 1;
                 }
             }
-            let report = run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
+            // S4-38L4i: the recorder (opt-in, observation only) learns where the quantum starts.
+            if self.checkpoints.is_some() {
+                let ns_at_start = self.clock.snapshot().now_ns();
+                if let Some(recorder) = self.checkpoints.as_mut() {
+                    recorder.begin_call(retired, quanta + 1, ns_at_start);
+                }
+            }
+            let report = run_cpl0_set_paged_2m_ram_observed_with_sweep(
                 &mut self.vcpus[BOOT_VCPU_INDEX].state,
                 &mut self.bus,
                 self.page_table_root,
@@ -1706,12 +2729,16 @@ impl LoadedFirmwareBoard {
                 stop,
                 |_| {},
                 cpuid_boundary,
-                fetch_cache,
+                fetch_cache.then_some(FetchCacheInvalidation::WriteWatch),
                 irq_hook.then(|| IrqBoundaryHook {
                     source: &mut *self.irq_source,
                     counters: &mut irq_counters,
                     skip_first_boundary: partial_rep,
                 }),
+                self.checkpoints.as_mut(),
+                execution_observations.as_mut(),
+                fetch_sweep.as_ref(),
+                self.fetch_cache_tag,
             );
             quanta += 1;
             partial_rep = matches!(
@@ -1722,6 +2749,8 @@ impl LoadedFirmwareBoard {
             self.page_table_root = report.cr3;
             changes.extend(report.translation_context_changes.iter().copied());
             exceptions_delivered += report.delivered_exceptions;
+            page_faults_delivered += report.delivered_page_faults;
+            general_protection_faults_delivered += report.delivered_general_protection_faults;
             cpl3_retired += report.cpl3_retired;
             for event in &report.syscall_events {
                 syscall_journal.record(*event);
@@ -1731,44 +2760,51 @@ impl LoadedFirmwareBoard {
             }
             retired += report.instructions_executed;
             remaining = remaining.saturating_sub(report.instructions_executed);
-            // S4-39i: a THR write clears the THRE condition and the pump below raises it again
-            // before the next instruction boundary; the source samples the level on both sides
-            // so that the fall and the rise are both seen (one edge on IR4 per byte).
-            if let Some(source) = &self.uart_irq_source {
-                source.sample();
+            if let Some(accumulator) = fetch_report.as_mut() {
+                accumulator.add_call(&CallObservation {
+                    retired: report.instructions_executed,
+                    walks: report.walk_counts,
+                    cache: report.fetch_cache_stats,
+                    c5_at_start: report.c5_at_call_start,
+                    c5_split: report.c5_split,
+                });
             }
-            while uart.transfer_holding_to_shift() {
-                if let Some(byte) = uart.complete_transmission() {
-                    self.com1_log.push(byte);
-                }
-            }
-            if let Some(source) = &self.uart_irq_source {
-                source.sample();
-            }
+            self.pump_uart_transmit(retired);
             let failure = |error| LinuxRunFailure { error, retired };
-            if let Err(error) = self.advance_time_ns(report.instructions_executed) {
+            if let Err(error) = self.charge_retired(report.instructions_executed) {
                 break Err(failure(error));
             }
             if let Some(pm) = &acpi_pm {
                 let tick_ns = pm.take_timer_tick_ns();
                 #[cfg(test)]
                 let tick_ns = if self.suppress_pm_tick { 0 } else { tick_ns };
-                if let Err(error) = self.advance_time_ns(tick_ns) {
+                if let Err(error) = self.charge_ns(tick_ns) {
                     break Err(failure(error));
                 }
             }
             if let Some(pit) = &pit
-                && let Err(error) = self.advance_time_ns(pit.take_port_tick_ns())
+                && let Err(error) = self.charge_ns(pit.take_port_tick_ns())
             {
                 break Err(failure(error));
             }
             if let Some(flag) = &rdtsc_tick
                 && flag.swap(false, Ordering::Relaxed)
             {
+                rdtsc_reads = rdtsc_reads.saturating_add(1);
+                let cpl = self
+                    .state()
+                    .cs_selector
+                    .map_or(0, |selector| (selector & 3) as usize);
+                rdtsc_reads_by_cpl[cpl] = rdtsc_reads_by_cpl[cpl].saturating_add(1);
+                if cpl == 0
+                    && let Some(observations) = execution_observations.as_mut()
+                {
+                    observations.record_cpl0_rdtsc(report.last_instruction_rip);
+                }
                 let tick_ns = RDTSC_TICK_NS;
                 #[cfg(test)]
                 let tick_ns = if self.suppress_rdtsc_tick { 0 } else { tick_ns };
-                if let Err(error) = self.advance_time_ns(tick_ns) {
+                if let Err(error) = self.charge_ns(tick_ns) {
                     break Err(failure(error));
                 }
             }
@@ -1785,12 +2821,12 @@ impl LoadedFirmwareBoard {
                 && remaining > 0
                 && matches!(report.exit, PagedCpl0SetExit::Run(RunExit::Halted))
                 && self.vcpus[BOOT_VCPU_INDEX].state.rflags & (1 << 9) != 0
-                && let Some(wake) = self.irq_source.wake_ns()
+                && let Some(wake) = self.idle_wake_ns()
             {
-                let idle = wake.saturating_sub(self.clock.snapshot().now_ns());
-                if let Err(error) = self.advance_time_ns(idle) {
-                    break Err(failure(error));
-                }
+                let idle = match self.idle_to(wake) {
+                    Ok(idle) => idle,
+                    Err(error) => break Err(failure(error)),
+                };
                 irq_counters.halt_wakes += 1;
                 irq_counters.halt_idle_ns += idle;
                 self.vcpus[BOOT_VCPU_INDEX].state.activity = Some(CpuActivity::Running);
@@ -1826,7 +2862,7 @@ impl LoadedFirmwareBoard {
             }
             let (exit, set_exit_detail) = match set_exit_to_probe_exit(report.exit) {
                 Ok(exit) => exit,
-                Err(detail) => break Err(failure(FirmwareBoardError::Config(detail))),
+                Err(error) => break Err(failure(error.into_board_error(self.state()))),
             };
             let exit = match exit {
                 PagedProbeExit::Stopped
@@ -1848,6 +2884,14 @@ impl LoadedFirmwareBoard {
                 com1: self.com1_log.clone(),
                 virtual_ns: self.clock().now_ns(),
                 tsc_hz: self.clock().tsc_hz(),
+                rdtsc_reads: rdtsc_tick.as_ref().map(|_| rdtsc_reads),
+                rdtsc_reads_by_cpl: rdtsc_tick.as_ref().map(|_| rdtsc_reads_by_cpl),
+                pit_port_b_reads: pit_port_b_reads_before
+                    .zip(pit.as_ref().map(Pit8254Handle::port_b_reads))
+                    .map(|(before, after)| after.saturating_sub(before)),
+                pit_counter_port_reads: pit_counter_port_reads_before
+                    .zip(pit.as_ref().map(Pit8254Handle::counter_port_reads))
+                    .map(|(before, after)| after.saturating_sub(before)),
                 stop_reason,
             })
             .map(|run| (run, set_exit_detail, cpuid_divergence_leaf, user_entry));
@@ -1858,6 +2902,13 @@ impl LoadedFirmwareBoard {
         // back what it had.
         self.vcpus[BOOT_VCPU_INDEX].guest_cr2 = self.vcpus[BOOT_VCPU_INDEX].state.cr2;
         self.vcpus[BOOT_VCPU_INDEX].state.cr2 = prior_cr2;
+        let leaf_2m_tag = fetch_cache && self.fetch_cache_tag == FetchCacheTag::Leaf2M;
+        self.fetch_cache_report = fetch_report.map(|accumulator| {
+            let mut report = accumulator.finish();
+            report.leaf_2m_tag = leaf_2m_tag;
+            report
+        });
+        self.fetch_cache_sweep_report = fetch_sweep.map(|sweep| sweep.report());
         let (run, set_exit_detail, cpuid_divergence_leaf, user_entry) = result?;
         irq_counters.irq0_edges = self.irq_source.irq0_edges();
         Ok(LinuxSetRunReport {
@@ -1869,6 +2920,10 @@ impl LoadedFirmwareBoard {
             cpl3_retired,
             syscall_journal,
             exceptions_delivered,
+            page_faults_delivered,
+            general_protection_faults_delivered,
+            execution_observations: execution_observations
+                .map(LinuxExecutionObservationCollector::finish),
             irq: irq_counters,
         })
     }
@@ -1886,6 +2941,10 @@ impl LoadedFirmwareBoard {
         let acpi_pm = self.acpi_pm.clone();
         let pit = self.pit.clone();
         let rdtsc_tick = self.rdtsc_tick.clone();
+        let pit_port_b_reads_before = pit.as_ref().map(Pit8254Handle::port_b_reads);
+        let pit_counter_port_reads_before = pit.as_ref().map(Pit8254Handle::counter_port_reads);
+        let mut rdtsc_reads = 0u64;
+        let mut rdtsc_reads_by_cpl = [0u64; 4];
         // Ticks queued before this run came from the host, not from the guest.
         if let Some(pm) = &acpi_pm {
             pm.take_timer_tick_ns();
@@ -1952,6 +3011,12 @@ impl LoadedFirmwareBoard {
             if let Some(flag) = &rdtsc_tick
                 && flag.swap(false, Ordering::Relaxed)
             {
+                rdtsc_reads = rdtsc_reads.saturating_add(1);
+                let cpl = self
+                    .state()
+                    .cs_selector
+                    .map_or(0, |selector| (selector & 3) as usize);
+                rdtsc_reads_by_cpl[cpl] = rdtsc_reads_by_cpl[cpl].saturating_add(1);
                 let tick_ns = RDTSC_TICK_NS;
                 #[cfg(test)]
                 let tick_ns = if self.suppress_rdtsc_tick { 0 } else { tick_ns };
@@ -1976,6 +3041,14 @@ impl LoadedFirmwareBoard {
                 com1: self.com1_log.clone(),
                 virtual_ns: self.clock().now_ns(),
                 tsc_hz: self.clock().tsc_hz(),
+                rdtsc_reads: rdtsc_tick.as_ref().map(|_| rdtsc_reads),
+                rdtsc_reads_by_cpl: rdtsc_tick.as_ref().map(|_| rdtsc_reads_by_cpl),
+                pit_port_b_reads: pit_port_b_reads_before
+                    .zip(pit.as_ref().map(Pit8254Handle::port_b_reads))
+                    .map(|(before, after)| after.saturating_sub(before)),
+                pit_counter_port_reads: pit_counter_port_reads_before
+                    .zip(pit.as_ref().map(Pit8254Handle::counter_port_reads))
+                    .map(|(before, after)| after.saturating_sub(before)),
                 stop_reason,
             });
         }
@@ -2016,6 +3089,8 @@ pub(crate) struct AssembledBoard {
     pic_master: Option<Pic8259Handle>,
     lapic: LocalApicHandle,
     clock: VirtualClockHandle,
+    /// See `LoadedFirmwareBoard::foreign_timer_clock`.
+    foreign_timer_clock: bool,
     /// Handoff block bytes, to be written at [`FIRMWARE_HANDOFF_GPA`].
     handoff: Vec<u8>,
     /// Temporary identity tables, to be written at `page_table_root`.
@@ -2042,6 +3117,7 @@ pub(crate) fn assemble_board(
 ) -> Result<AssembledBoard, FirmwareBoardError> {
     let devices = configured_board_devices(config);
     validate_config(config)?;
+    let foreign_timer_clock = pit_clock.is_some() || apic_timer_clock.is_some();
 
     let map = board_map(config, &devices)?;
     let table_pages = boot_page_table_count(&map);
@@ -2071,7 +3147,8 @@ pub(crate) fn assemble_board(
 
     let (uart_device, uart) = Uart16550PollingTx::new_with_handle();
     // One clock for the whole board: the PM timer, the PIT and (Linux profile) the
-    // LAPIC timer observe it; the board stays its only advancer.
+    // LAPIC timer observe it; the board advances it itself unless a `ClockOwner` takes it over
+    // (`enable_clock_owner`, S4-23j), in which case the owner is the only advancer.
     let clock = VirtualClockHandle::new(config.tsc_hz).map_err(FirmwareBoardError::Clock)?;
     // Under `linux_profile` the LAPIC has a timer on the board clock (S4-37a4). The
     // timer only reads the clock; delivery of its IRQ is S4-38.
@@ -2154,7 +3231,7 @@ pub(crate) fn assemble_board(
             device_index,
         });
     }
-    // The PM timer reads the board's clock; the board stays its only advancer.
+    // The PM timer reads the board's clock; the board advances it unless a `ClockOwner` took it.
     let mut acpi_pm = None;
     let mut pit_handle = None;
     let mut pic_master_handle = None;
@@ -2228,6 +3305,7 @@ pub(crate) fn assemble_board(
         pic_master: pic_master_handle,
         lapic: lapic_handle,
         clock,
+        foreign_timer_clock,
         handoff,
         tables,
         page_table_bytes,
@@ -2271,6 +3349,7 @@ impl AssembledBoard {
             pic_master,
             lapic,
             clock,
+            foreign_timer_clock,
             handoff,
             tables,
             page_table_bytes,
@@ -2328,11 +3407,24 @@ impl AssembledBoard {
             page_table_root,
             pci_config_address: 0,
             com1_log: Vec::new(),
+            console_context_parser: None,
+            console_context_snapshots: Vec::new(),
+            uart_output_context: None,
             rdtsc_tick,
             irq_source: Box::new(NoIrqSource),
             pic_master,
             pit_pic_source: None,
             uart_irq_source: None,
+            uart_ioapic_source: None,
+            pit_ioapic_source: None,
+            clock_driver: BoardClock::Standalone,
+            checkpoints: None,
+            fetch_cache_report_enabled: false,
+            fetch_cache_report: None,
+            fetch_cache_sweep_configs: None,
+            fetch_cache_tag: FetchCacheTag::Page4K,
+            fetch_cache_sweep_report: None,
+            foreign_timer_clock,
             #[cfg(test)]
             suppress_pm_tick: false,
             #[cfg(test)]
@@ -2367,11 +3459,12 @@ impl AssembledBoard {
             pic_master,
             lapic,
             clock,
+            foreign_timer_clock,
             rdtsc_tick,
             ..
         } = self;
         configure_com1(&mut bus)?;
-        Ok(LoadedFirmwareBoard {
+        let mut board = LoadedFirmwareBoard {
             bus,
             vcpus: vcpu_set(LongModeState::default(), lapic.cpu_count()),
             uart,
@@ -2386,16 +3479,33 @@ impl AssembledBoard {
             page_table_root,
             pci_config_address: 0,
             com1_log: Vec::new(),
+            console_context_parser: None,
+            console_context_snapshots: Vec::new(),
+            uart_output_context: None,
             rdtsc_tick,
             irq_source: Box::new(NoIrqSource),
             pic_master,
             pit_pic_source: None,
             uart_irq_source: None,
+            uart_ioapic_source: None,
+            pit_ioapic_source: None,
+            clock_driver: BoardClock::Standalone,
+            checkpoints: None,
+            fetch_cache_report_enabled: false,
+            fetch_cache_report: None,
+            fetch_cache_sweep_configs: None,
+            fetch_cache_tag: FetchCacheTag::Page4K,
+            fetch_cache_sweep_report: None,
+            foreign_timer_clock,
             #[cfg(test)]
             suppress_pm_tick: false,
             #[cfg(test)]
             suppress_rdtsc_tick: false,
-        })
+        };
+        // S6-18a: the application processors of a Linux board read the CPUID of the target
+        // profile in their legacy models (the kernel's `verify_cpu` needs it); one vCPU has none.
+        board.set_cpuid_profile(LINUX_AP_CPUID_PROFILE);
+        Ok(board)
     }
 }
 
@@ -2533,6 +3643,26 @@ mod tests {
         }
         assert_eq!(state.activity, Some(CpuActivity::Running));
         assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+    }
+
+    /// S6-32: one execution-mode switch, on the board; the board starts interleaved and the
+    /// switch reaches the memory the vCPU adapters share.
+    #[test]
+    fn the_board_has_one_execution_mode_switch_and_starts_interleaved() {
+        let mut board = load(&hlt_image());
+        assert_eq!(board.execution_mode(), crate::ExecutionMode::Interleaved);
+        assert_eq!(
+            board.bus.physical_memory().execution_mode(),
+            crate::ExecutionMode::Interleaved
+        );
+        board.set_execution_mode(crate::ExecutionMode::Parallel);
+        assert_eq!(board.execution_mode(), crate::ExecutionMode::Parallel);
+        assert_eq!(
+            board.bus.physical_memory().execution_mode(),
+            crate::ExecutionMode::Parallel
+        );
+        board.set_execution_mode(crate::ExecutionMode::Interleaved);
+        assert_eq!(board.execution_mode(), crate::ExecutionMode::Interleaved);
     }
 
     #[test]
@@ -4647,6 +5777,9 @@ mod tests {
         assert_eq!(report.retired, 5, "MOV, 3 x IN, HLT");
         assert_eq!(board.pit.as_ref().unwrap().counter_port_reads(), 3);
         assert_eq!(board.pit.as_ref().unwrap().port_b_reads(), 0);
+        assert_eq!(report.rdtsc_reads, Some(0));
+        assert_eq!(report.pit_port_b_reads, Some(0));
+        assert_eq!(report.pit_counter_port_reads, Some(3));
         assert_eq!(report.virtual_ns, 5 + 3 * 1_000);
         assert_eq!(board.clock().now_ns(), report.virtual_ns);
     }
@@ -4662,6 +5795,9 @@ mod tests {
         assert_eq!(report.retired, 8, "2 x MOV, 5 x IN, HLT");
         assert_eq!(board.pit.as_ref().unwrap().port_b_reads(), 2);
         assert_eq!(board.pit.as_ref().unwrap().counter_port_reads(), 3);
+        assert_eq!(report.rdtsc_reads, Some(0));
+        assert_eq!(report.pit_port_b_reads, Some(2));
+        assert_eq!(report.pit_counter_port_reads, Some(3));
         assert_eq!(report.virtual_ns, 8 + 5 * 1_000);
     }
 
@@ -4797,6 +5933,10 @@ mod tests {
         let report = board.run_boot(1_000).unwrap();
         assert_eq!(report.exit, PagedProbeExit::Halted);
         assert_eq!(report.retired, 101);
+        assert_eq!(report.rdtsc_reads, Some(100));
+        assert_eq!(report.rdtsc_reads_by_cpl, Some([100, 0, 0, 0]));
+        assert_eq!(report.pit_port_b_reads, Some(0));
+        assert_eq!(report.pit_counter_port_reads, Some(0));
         assert_eq!(report.virtual_ns, 100 * 1_000 + 101);
         // The 100th RDTSC saw 99 earlier (1 ns + 1 us) steps; tsc_hz is 1 GHz.
         assert_eq!(edx_eax(&board), 99 * 1_001);
@@ -4821,6 +5961,10 @@ mod tests {
         assert_eq!(report.exit, PagedProbeExit::Unsupported { opcode: 0x31 });
         assert_eq!(report.retired, 0, "Unsupported on the first instruction");
         assert_eq!(report.virtual_ns, 0, "no tick without the profile");
+        assert_eq!(report.rdtsc_reads, None);
+        assert_eq!(report.rdtsc_reads_by_cpl, None);
+        assert_eq!(report.pit_port_b_reads, None);
+        assert_eq!(report.pit_counter_port_reads, None);
     }
 
     #[test]
@@ -5110,6 +6254,88 @@ mod tests {
     }
 
     #[test]
+    fn opt_in_refuses_foreign_timer_clock() {
+        // S4-23j: a PIT or LAPIC timer on a clock of its own would have deadlines in another time
+        // domain than the owner's quantum cut; the owner is refused and the board stays as it was.
+        for (pit_clock, apic_clock) in [
+            (Some(VirtualClockHandle::new(1_000_000_000).unwrap()), None),
+            (None, Some(VirtualClockHandle::new(1_000_000_000).unwrap())),
+        ] {
+            let mut board = load_firmware_image_inner(
+                &minor2_image(&[0xf4]),
+                &linux_config(),
+                PciEcam::new(),
+                pit_clock,
+                apic_clock,
+            )
+            .unwrap();
+            assert!(matches!(
+                board.enable_clock_owner(),
+                Err(FirmwareBoardError::Config(text)) if text.contains("other than the board clock")
+            ));
+            assert!(!board.clock_owner_enabled());
+            // The clock was not claimed: the standalone advance still works.
+            board.advance_time_ns(7).unwrap();
+            assert_eq!(board.clock().now_ns(), 7);
+        }
+    }
+
+    #[test]
+    fn opt_in_takes_the_clock_once_and_refuses_when_somebody_owns_it() {
+        let mut board = linux_board();
+        board.enable_clock_owner().unwrap();
+        assert!(board.clock_owner_enabled());
+        // A second call keeps the owner; the clock is claimed and only the owner moves it.
+        board.enable_clock_owner().unwrap();
+        assert_eq!(
+            board.advance_time_ns(1),
+            Err(FirmwareBoardError::Clock(
+                VirtualClockError::ClockAlreadyOwned
+            ))
+        );
+        // A clock somebody else already claimed is refused, nothing changes.
+        let mut other = linux_board();
+        let _foreign_owner = other.clock.claim_advancer().unwrap();
+        assert_eq!(
+            other.enable_clock_owner(),
+            Err(FirmwareBoardError::Clock(
+                VirtualClockError::ClockAlreadyOwned
+            ))
+        );
+        assert!(!other.clock_owner_enabled());
+    }
+
+    #[test]
+    fn idle_to_shows_every_vcpu_with_its_own_activity() {
+        // S6-15: it used to show every application processor as waiting for SIPI.
+        let config = FirmwareBoardConfig {
+            vcpu_count: 2,
+            ..linux_config()
+        };
+        let mut board = load_firmware_image(&minor2_image(&[0xf4]), &config).unwrap();
+        board.enable_clock_owner().unwrap();
+        // The boot CPU halted with IF = 1, the application processor waits for SIPI: the clock
+        // skips to the wake time.
+        board.vcpus[BOOT_VCPU_INDEX].state.activity = Some(CpuActivity::Halted);
+        board.vcpus[BOOT_VCPU_INDEX].state.rflags |= 1 << 9;
+        assert_eq!(board.idle_to(1000), Ok(1000));
+        assert_eq!(board.clock().now_ns(), 1000);
+        // An application processor that runs is not idle time: nothing may be skipped.
+        board.vcpus[1].state.activity = Some(CpuActivity::Running);
+        assert_eq!(
+            board.idle_to(2000),
+            Err(FirmwareBoardError::Config(
+                "clock owner: the idle step did not reach the wake time"
+            ))
+        );
+        assert_eq!(board.clock().now_ns(), 1000);
+        // The same processor halted with IF = 0 and no timer does not hold the skip back.
+        board.vcpus[1].state.activity = Some(CpuActivity::Halted);
+        assert_eq!(board.idle_to(2000), Ok(1000));
+        assert_eq!(board.clock().now_ns(), 2000);
+    }
+
+    #[test]
     fn a_guest_cannot_read_lapic_mmio_through_the_paged_probe_yet() {
         // Observation: the memory path of the paged probe is RAM only (and only
         // the qword MOV RAX,[RBX]); a guest read of TMCCT stops at the MMIO
@@ -5257,12 +6483,31 @@ mod tests {
     fn irq_delivery_failure_is_an_error_of_the_run_and_a_deadline_cut_resumes() {
         use crate::paged_memory_adapter::IrqDeliveryFailure;
         use od_isa::Cpl0ExternalInterruptRefusal;
-        assert!(
-            set_exit_to_probe_exit(PagedCpl0SetExit::IrqDeliveryFailed {
+        let mapping_error = set_exit_to_probe_exit(PagedCpl0SetExit::IrqDeliveryFailed {
+            vector: 0x30,
+            failure: IrqDeliveryFailure::Refused(Cpl0ExternalInterruptRefusal::GateNotPresent),
+        })
+        .expect_err("a refused external IRQ remains a run error");
+        assert_eq!(
+            mapping_error,
+            SetExitMappingError::ExternalInterrupt {
                 vector: 0x30,
-                failure: IrqDeliveryFailure::Refused(Cpl0ExternalInterruptRefusal::GateNotPresent),
-            })
-            .is_err()
+                failure: IrqDeliveryFailure::Refused(Cpl0ExternalInterruptRefusal::GateNotPresent,),
+            }
+        );
+        let state = LongModeState {
+            rip: 0xffff_ffff_8159_1b14,
+            cs_selector: Some(0x33),
+            ..LongModeState::default()
+        };
+        assert_eq!(
+            mapping_error.into_board_error(&state),
+            FirmwareBoardError::ExternalInterruptDelivery {
+                vector: 0x30,
+                failure: "Refused(GateNotPresent)".to_string(),
+                rip: 0xffff_ffff_8159_1b14,
+                cs_selector: Some(0x33),
+            }
         );
         let budget = PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted);
         assert!(resumes_deadline_cut(&budget, true, false, 5, 3));
@@ -5287,12 +6532,16 @@ mod tests {
     fn set_exit_without_a_probe_counterpart_is_an_integration_error_of_the_board() {
         assert_eq!(
             set_exit_to_probe_exit(PagedCpl0SetExit::UnknownSetExit),
-            Err("the CPL0 set returned an exit variant the board does not know")
+            Err(SetExitMappingError::Integration(
+                "the CPL0 set returned an exit variant the board does not know",
+            ))
         );
         // The loop passes no stop address.
         assert_eq!(
             set_exit_to_probe_exit(PagedCpl0SetExit::Run(RunExit::StopAddress)),
-            Err("the CPL0 set returned an exit the board never asks for")
+            Err(SetExitMappingError::Integration(
+                "the CPL0 set returned an exit the board never asks for",
+            ))
         );
     }
 
@@ -5392,5 +6641,271 @@ mod tests {
                     .to_string()
             ))
         );
+    }
+
+    // ---- S6-16a: the set loop of a vCPU reaches its own Local APIC ----
+
+    mod vcpu_mmio {
+        use super::*;
+        use crate::lapic_irq_source::LapicIrqSource;
+        use crate::paged_memory_adapter::{
+            PagedCpl0SetReport, run_cpl0_set_paged_2m_ram_with_cache,
+        };
+        use od_isa::execute::{ControlRegisterPolicy, MovCr3Long64V1};
+        use od_isa::{CliProfile, HaltProfile, StiProfile};
+
+        const IDT_AT: u64 = 0x0030_1000;
+        const GDT_AT: u64 = 0x0030_2000;
+        const HANDLER_AT: u64 = 0x0030_0000;
+        const VECTOR: u8 = 0x30;
+        /// SDM, ICR: Self shorthand (bits 19:18 = 01), Level = assert (bit 14), edge trigger,
+        /// Fixed delivery mode, vector 0x30.
+        const SELF_IPI: u32 = 0x0004_4000 | VECTOR as u32;
+
+        fn mov_ebx_lapic_base() -> Vec<u8> {
+            let mut code = vec![0xBB];
+            code.extend_from_slice(&(LOCAL_APIC_MMIO_BASE as u32).to_le_bytes());
+            code
+        }
+
+        fn mov_eax(value: u32) -> Vec<u8> {
+            let mut code = vec![0xB8];
+            code.extend_from_slice(&value.to_le_bytes());
+            code
+        }
+
+        /// `MOV [RBX+offset], EAX` (`89 83 disp32`).
+        fn store_eax(offset: u32) -> Vec<u8> {
+            let mut code = vec![0x89, 0x83];
+            code.extend_from_slice(&offset.to_le_bytes());
+            code
+        }
+
+        /// The guest of 6 instructions: `MOV EBX, LAPIC base; MOV ECX, [RBX+0x20]` (APIC ID);
+        /// `MOV EAX, 0x1FF; MOV [RBX+0xF0], EAX` (SVR: software enable);
+        /// `MOV EAX, SELF_IPI; MOV [RBX+0x300], EAX` (ICR_LOW).
+        fn guest() -> Vec<u8> {
+            let mut code = mov_ebx_lapic_base();
+            code.extend([0x8B, 0x4B, 0x20]);
+            code.extend(mov_eax(0x1FF));
+            code.extend(store_eax(0xF0));
+            code.extend(mov_eax(SELF_IPI));
+            code.extend(store_eax(0x300));
+            code
+        }
+
+        /// A two-vCPU Linux-profile board whose set loop serves the Local APIC window, running
+        /// `code` at the entry, with the handler (`MOV EAX, 0; MOV [RBX+0xB0], EAX; IRETQ`) and the
+        /// IDT gate of `VECTOR` in guest RAM. Returns the board and a state of IF = 1 that can run
+        /// on any vCPU (a copy of the boot state).
+        fn board_and_state(code: &[u8]) -> (LoadedFirmwareBoard, LongModeState) {
+            let config = FirmwareBoardConfig {
+                vcpu_count: 2,
+                ..linux_config()
+            };
+            let mut board = load_firmware_image(&minor2_image(code), &config).unwrap();
+            board.bus_mut().enable_apic_mmio_windows();
+            let mut handler = mov_eax(0);
+            handler.extend(store_eax(0xB0));
+            handler.extend([0x48, 0xCF]); // IRETQ
+            let mut gate = [0u8; 16];
+            gate[0..2].copy_from_slice(&(HANDLER_AT as u16).to_le_bytes());
+            gate[2..4].copy_from_slice(&0x08u16.to_le_bytes());
+            gate[5] = 0x8E; // present, DPL 0, 64-bit interrupt gate
+            gate[6..8].copy_from_slice(&((HANDLER_AT >> 16) as u16).to_le_bytes());
+            let bus = board.bus_mut();
+            bus.patch_physical_ram(GuestPhysicalAddress::new(HANDLER_AT), &handler)
+                .unwrap();
+            bus.patch_physical_ram(
+                GuestPhysicalAddress::new(IDT_AT + u64::from(VECTOR) * 16),
+                &gate,
+            )
+            .unwrap();
+            // GDT: null, 64-bit ring-0 code (0x08), ring-0 data (0x10).
+            let mut gdt = [0u8; 24];
+            gdt[8..16].copy_from_slice(&0x00AF_9B00_0000_FFFFu64.to_le_bytes());
+            gdt[16..24].copy_from_slice(&0x00CF_9300_0000_FFFFu64.to_le_bytes());
+            board
+                .bus_mut()
+                .patch_physical_ram(GuestPhysicalAddress::new(GDT_AT), &gdt)
+                .unwrap();
+            let mut state = board.state().clone();
+            state.cr3 = Some(board.cr3());
+            state.cs_selector = Some(0x08);
+            state.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+                base: 0,
+                limit: u32::MAX,
+                access: 0x9B,
+                flags: 2,
+            });
+            state.ss_selector = Some(0x10);
+            state.ss_cache = Some(od_isa::StackSegmentDescriptorCache {
+                base: 0,
+                limit: u32::MAX,
+                access: 0x93,
+                flags: 0,
+            });
+            state.gdtr = Some(od_isa::state::Gdtr {
+                base: GDT_AT,
+                limit: 0x17,
+            });
+            state.idtr = Some(od_isa::state::Idtr {
+                base: IDT_AT,
+                limit: 0xFFF,
+            });
+            state.rflags = 2 | (1 << 9);
+            state.sti_shadow = Some(StiShadow::Clear);
+            state.activity = Some(CpuActivity::Running);
+            (board, state)
+        }
+
+        /// One call of the set loop of vCPU `vcpu`, with `source` as its interrupt source.
+        fn run(
+            board: &mut LoadedFirmwareBoard,
+            vcpu: usize,
+            state: &mut LongModeState,
+            budget: u64,
+            source: &mut dyn BoardIrqSource,
+            counters: &mut IrqCounters,
+        ) -> PagedCpl0SetReport {
+            let (cli, sti, halt) = (
+                CliProfile::NonPviLong64V1,
+                StiProfile::NonPviLong64V1,
+                HaltProfile::Long64V1,
+            );
+            let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+                .with_cli(&cli)
+                .with_cpu_owned_cr3(MovCr3Long64V1)
+                .with_pio_u8()
+                .with_halt(&halt)
+                .with_sti(&sti);
+            let cr3 = board.cr3();
+            run_cpl0_set_paged_2m_ram_with_cache(
+                state,
+                board.bus_mut(),
+                vcpu,
+                cr3,
+                FIRMWARE_EFER,
+                AccessContext {
+                    mode: InstructionMode::Long64,
+                    privilege: PrivilegeLevel::Ring0,
+                    origin: AccessOrigin::Explicit,
+                },
+                budget,
+                INTEGER_FLAGS,
+                &set,
+                None,
+                || false,
+                |_| {},
+                false,
+                None,
+                Some(IrqBoundaryHook {
+                    source,
+                    counters,
+                    skip_first_boundary: false,
+                }),
+                None,
+                None,
+            )
+        }
+
+        fn irr_isr(board: &LoadedFirmwareBoard, vcpu: usize) -> (bool, bool) {
+            board.local_apic_of(vcpu).unwrap().vector_state(VECTOR)
+        }
+
+        #[test]
+        fn a_set_loop_of_vcpu_1_reads_its_own_apic_id_and_its_self_ipi_lands_in_its_own_irr() {
+            let (mut board, mut state) = board_and_state(&guest());
+            let (mut source, mut counters) = (NoIrqSource, IrqCounters::default());
+            // 6 instructions retire; the pending vector (IRR of vCPU 1) is not offered to this
+            // call's source, which is the empty one.
+            let report = run(&mut board, 1, &mut state, 6, &mut source, &mut counters);
+            assert_eq!(report.instructions_executed, 6, "{report:?}");
+            assert_eq!(report.memory_error, None, "{report:?}");
+            // The APIC ID register reads the index of the vCPU in bits 31:24 (SDM).
+            assert_eq!(state.gpr[Register::Rcx as usize], 1 << 24);
+            // The self-IPI is in the IRR of vCPU 1 and of no other LAPIC.
+            assert_eq!(irr_isr(&board, 1), (true, false));
+            assert_eq!(irr_isr(&board, 0), (false, false));
+            // The SVR write enabled vCPU 1's LAPIC only.
+            assert_eq!(
+                board.local_apic_of(1).unwrap().spurious_vector(),
+                Some(0xFF)
+            );
+            assert_eq!(
+                board.local_apic_of(0).unwrap().eligible(),
+                None,
+                "vCPU 0's LAPIC is untouched"
+            );
+        }
+
+        #[test]
+        fn the_same_guest_on_vcpu_0_is_the_old_path() {
+            let (mut board, mut state) = board_and_state(&guest());
+            let (mut source, mut counters) = (NoIrqSource, IrqCounters::default());
+            let report = run(&mut board, 0, &mut state, 6, &mut source, &mut counters);
+            assert_eq!(report.instructions_executed, 6, "{report:?}");
+            assert_eq!(state.gpr[Register::Rcx as usize], 0);
+            assert_eq!(irr_isr(&board, 0), (true, false));
+            assert_eq!(irr_isr(&board, 1), (false, false));
+        }
+
+        #[test]
+        fn lapic_irq_source_of_vcpu_1_delivers_through_the_idt_and_the_eoi_clears_isr_of_vcpu_1() {
+            let (mut board, mut state) = board_and_state(&guest());
+            let lapic1 = board.local_apic_of(1).unwrap();
+            let mut source = LapicIrqSource::new(lapic1);
+            let mut counters = IrqCounters::default();
+            let rsp = state.gpr[Register::Rsp as usize];
+            // 6 guest instructions, the delivery at the boundary after the ICR write (retires
+            // nothing), then the handler's first instruction.
+            let report = run(&mut board, 1, &mut state, 7, &mut source, &mut counters);
+            assert_eq!(report.instructions_executed, 7, "{report:?}");
+            assert_eq!(counters.irqs_delivered, 1);
+            assert_eq!(
+                state.rip,
+                HANDLER_AT + 5,
+                "inside the handler of the IDT gate"
+            );
+            assert_eq!(state.rflags & (1 << 9), 0, "an interrupt gate clears IF");
+            assert_eq!(state.gpr[Register::Rsp as usize], (rsp & !15) - 40);
+            // Acknowledged in vCPU 1's LAPIC (IRR -> ISR) and in no other.
+            assert_eq!(irr_isr(&board, 1), (false, true));
+            assert_eq!(irr_isr(&board, 0), (false, false));
+            // The handler's EOI (written as vCPU 1) clears the ISR of vCPU 1; the IRETQ returns.
+            let report = run(&mut board, 1, &mut state, 2, &mut source, &mut counters);
+            assert_eq!(report.instructions_executed, 2, "{report:?}");
+            assert_eq!(counters.irqs_delivered, 1);
+            assert_eq!(irr_isr(&board, 1), (false, false));
+            assert_eq!(irr_isr(&board, 0), (false, false));
+            assert_eq!(state.rflags & (1 << 9), 1 << 9, "IRETQ restores IF");
+        }
+
+        #[test]
+        fn an_eoi_of_vcpu_1_does_not_touch_the_isr_of_vcpu_0() {
+            // The same vector is in service on both processors; vCPU 1's handler writes EOI.
+            let (mut board, mut state) = board_and_state(&guest());
+            let lapic0 = board.local_apic_of(0).unwrap();
+            let lapic1 = board.local_apic_of(1).unwrap();
+            let (mut source0, mut source1) = (
+                LapicIrqSource::new(lapic0.clone()),
+                LapicIrqSource::new(lapic1),
+            );
+            let mut counters = IrqCounters::default();
+            // vCPU 0 runs the guest to the delivery of its own self-IPI: ISR of vCPU 0 holds it.
+            let mut state0 = state.clone();
+            run(&mut board, 0, &mut state0, 7, &mut source0, &mut counters);
+            assert_eq!(irr_isr(&board, 0), (false, true));
+            // vCPU 1 does the same and then runs its handler to the EOI and the IRETQ.
+            run(&mut board, 1, &mut state, 7, &mut source1, &mut counters);
+            assert_eq!(irr_isr(&board, 1), (false, true));
+            run(&mut board, 1, &mut state, 2, &mut source1, &mut counters);
+            assert_eq!(irr_isr(&board, 1), (false, false));
+            assert_eq!(
+                irr_isr(&board, 0),
+                (false, true),
+                "vCPU 0 is still in service"
+            );
+        }
     }
 }

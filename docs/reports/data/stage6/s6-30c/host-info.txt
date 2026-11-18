@@ -1,0 +1,12 @@
+date: 2026-11-17T18:08:39Z
+ProductName:		macOS
+ProductVersion:		26.7.1
+BuildVersion:		25G241
+Apple M3 Max
+14
+38654705664
+rustc 1.99.0 (b940084d7 2026-09-28)
+Darwin 192.168.1.100 25.6.0 Darwin Kernel Version 25.6.0: Tue Aug 18 17:51:35 PDT 2026; root:xnu-12377.161.15.700.19~2/RELEASE_ARM64_T6031 arm64
+before: worktree of f1ac849 (S6-30b commit) (release, --locked --offline); after: working tree on top of f1ac849 (S6-30c)
+load average at runs: see linux-control/log.txt and page-walk-log.txt (another session's od-runner and graphify processes (1 core each) ran on the host during the measurements)
+od-bench stderr on every process: 'host metadata git status unavailable: git timed out after 2000 ms' (metadata only; working_tree_dirty is null in the JSON)

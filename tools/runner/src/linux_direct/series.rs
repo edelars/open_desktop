@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-const SERIES_SCHEMA_VERSION: u32 = 1;
+const SERIES_SCHEMA_VERSION: u32 = 2;
 const RUN_PROFILE: &str = "smoke_not_acceptance";
 const COM1_CAPTURE_SCOPE: &str = "linux_direct_run_boot_com1";
 
@@ -83,6 +83,8 @@ pub(crate) struct HostEvidence {
     pub arch: String,
     pub runner_version: String,
     pub source_revision: Option<String>,
+    #[serde(default)]
+    pub source_dirty: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -308,7 +310,8 @@ pub(super) fn run(args: &[String]) -> ExitCode {
                 os: std::env::consts::OS.to_string(),
                 arch: std::env::consts::ARCH.to_string(),
                 runner_version: env!("CARGO_PKG_VERSION").to_string(),
-                source_revision: option_env!("OD_SOURCE_REVISION").map(str::to_string),
+                source_revision: build_source_revision(),
+                source_dirty: build_source_dirty(),
             },
             configuration: configuration_from_runner(&runner_value),
             artifact_hashes: artifact_hashes(&runner_value),
@@ -360,12 +363,75 @@ pub(super) fn run(args: &[String]) -> ExitCode {
     if let Err(error) = write_new(&out, &manifest_bytes) {
         return invalid_input(&format!("could not save series manifest: {error}"));
     }
+    let comparison_matches = if cli.requested_runs > 1 {
+        match compare_series_runs(&out) {
+            Ok(comparison) => {
+                let comparison_path = series_dir.join("comparison.json");
+                let comparison_bytes = match serde_json::to_vec_pretty(&comparison) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        return invalid_input(&format!(
+                            "could not serialize series comparison: {error}"
+                        ));
+                    }
+                };
+                if let Err(error) = write_new(&comparison_path, &comparison_bytes) {
+                    return invalid_input(&format!("could not save series comparison: {error}"));
+                }
+                eprintln!(
+                    "within-series comparison: matches={} explained={} unexplained={} path={}",
+                    comparison.matches,
+                    comparison.explained_differences.len(),
+                    comparison.unexplained_differences.len(),
+                    comparison_path.display()
+                );
+                if !comparison.matches {
+                    eprintln!(
+                        "unexplained differences: {:?}",
+                        comparison.unexplained_differences
+                    );
+                }
+                comparison.matches
+            }
+            Err(error) => return invalid_input(&format!("could not compare series runs: {error}")),
+        }
+    } else {
+        eprintln!("within-series comparison skipped: requires at least two runs");
+        true
+    };
     println!("{}", String::from_utf8_lossy(&manifest_bytes));
-    match outcome {
-        ScenarioStatus::Passed => ExitCode::SUCCESS,
-        ScenarioStatus::Failed => ExitCode::from(1),
-        ScenarioStatus::NotRun | ScenarioStatus::Blocked => ExitCode::from(78),
+    match (outcome, comparison_matches) {
+        (ScenarioStatus::Passed, true) => ExitCode::SUCCESS,
+        (ScenarioStatus::Passed, false) => ExitCode::from(1),
+        (ScenarioStatus::Failed, _) => ExitCode::from(1),
+        (ScenarioStatus::NotRun | ScenarioStatus::Blocked, _) => ExitCode::from(78),
     }
+}
+
+fn build_source_revision() -> Option<String> {
+    source_revision_from_env(option_env!("OD_SOURCE_REVISION"))
+}
+
+fn build_source_dirty() -> Option<bool> {
+    source_dirty_from_env(option_env!("OD_SOURCE_DIRTY"))
+}
+
+fn source_revision_from_env(value: Option<&str>) -> Option<String> {
+    value
+        .filter(|revision| *revision != "unknown")
+        .map(str::to_string)
+}
+
+fn source_dirty_from_env(value: Option<&str>) -> Option<bool> {
+    match value {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        _ => None,
+    }
+}
+
+fn supported_schema_version(version: u32) -> bool {
+    matches!(version, 1 | SERIES_SCHEMA_VERSION)
 }
 
 fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
@@ -379,7 +445,20 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
-        if matches!(name, "--run" | "--set-cpl0" | "--diagnostic-past-c7") {
+        if matches!(
+            name,
+            "--stack-context-out"
+                | "--execution-observations-out"
+                | "--execution-observations-post-iret-index"
+        ) {
+            return Err(format!(
+                "{name} is available only for a single linux-direct run"
+            ));
+        }
+        if matches!(
+            name,
+            "--run" | "--set-cpl0" | "--diagnostic-past-c7" | "--user-mode"
+        ) {
             forwarded.push(name.to_string());
             index += 1;
             continue;
@@ -537,6 +616,19 @@ fn valid_nonce(nonce: &str) -> bool {
 }
 
 fn validate_markers(bytes: &[u8], nonce: &str, expected_s5: &[String]) -> MarkerCheck {
+    validate_markers_with_crlf(bytes, nonce, expected_s5, true)
+}
+
+fn validate_markers_legacy(bytes: &[u8], nonce: &str, expected_s5: &[String]) -> MarkerCheck {
+    validate_markers_with_crlf(bytes, nonce, expected_s5, false)
+}
+
+fn validate_markers_with_crlf(
+    bytes: &[u8],
+    nonce: &str,
+    expected_s5: &[String],
+    normalize_crlf: bool,
+) -> MarkerCheck {
     let mut errors = Vec::new();
     let mut stage4_nonce_line = None;
     let mut s5_keys = Vec::new();
@@ -552,7 +644,12 @@ fn validate_markers(bytes: &[u8], nonce: &str, expected_s5: &[String]) -> Marker
     };
     for raw in text.split_inclusive('\n') {
         let terminated = raw.ends_with('\n');
-        let line = raw.strip_suffix('\n').unwrap_or(raw);
+        let raw_line = raw.strip_suffix('\n').unwrap_or(raw);
+        let line = if normalize_crlf {
+            raw_line.strip_suffix('\r').unwrap_or(raw_line)
+        } else {
+            raw_line
+        };
         if !line.starts_with("OD_NONCE=") && !line.starts_with("OD_S5_") {
             continue;
         }
@@ -752,7 +849,7 @@ fn fresh_manifest(path: &Path) -> Result<SeriesManifest, String> {
         fs::read(path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
     let manifest: SeriesManifest = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid Stage 5 series JSON: {error}"))?;
-    if manifest.schema_version != SERIES_SCHEMA_VERSION
+    if !supported_schema_version(manifest.schema_version)
         || manifest.requested_runs == 0
         || manifest.runs.len() != manifest.requested_runs
         || manifest.series_id.is_empty()
@@ -805,12 +902,49 @@ pub(crate) fn compare_series_paths(
             right_path,
             &left_run,
             &right_run,
+            &mut explained,
             &mut unexplained,
         )?;
     }
     Ok(Stage5Comparison {
         schema_version: SERIES_SCHEMA_VERSION,
         comparison: "linux_stage5".into(),
+        matches: unexplained.is_empty(),
+        explained_differences: explained,
+        unexplained_differences: unexplained,
+    })
+}
+
+fn compare_series_runs(series_path: &Path) -> Result<Stage5Comparison, String> {
+    let series = fresh_manifest(series_path)?;
+    let runs = load_series_runs(series_path, &series)?;
+    compare_run_sequence(series_path, &runs)
+}
+
+fn compare_run_sequence(
+    series_path: &Path,
+    runs: &[RunManifest],
+) -> Result<Stage5Comparison, String> {
+    if runs.len() < 2 {
+        return Err("within-series comparison requires at least two runs".into());
+    }
+    let mut unexplained = Vec::new();
+    let mut explained = Vec::new();
+    explained.push("run identity, nonce, raw runner JSON hash, UART hash/path, and wall time are run-specific metadata".into());
+    for (index, run) in runs.iter().enumerate().skip(1) {
+        compare_run(
+            index,
+            series_path,
+            series_path,
+            &runs[0],
+            run,
+            &mut explained,
+            &mut unexplained,
+        )?;
+    }
+    Ok(Stage5Comparison {
+        schema_version: SERIES_SCHEMA_VERSION,
+        comparison: "linux_stage5_within_series".into(),
         matches: unexplained.is_empty(),
         explained_differences: explained,
         unexplained_differences: unexplained,
@@ -872,7 +1006,7 @@ fn load_run_manifest(series_path: &Path, reference: &RunReference) -> Result<Run
     }
     let manifest: RunManifest = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid run manifest JSON: {error}"))?;
-    if manifest.schema_version != SERIES_SCHEMA_VERSION || manifest.run_id != reference.run_id {
+    if !supported_schema_version(manifest.schema_version) || manifest.run_id != reference.run_id {
         return Err("run manifest identity or schema mismatch".into());
     }
     if !valid_nonce(&manifest.nonce) {
@@ -922,14 +1056,24 @@ fn load_run_manifest(series_path: &Path, reference: &RunReference) -> Result<Run
     if uart != raw_com1 {
         return Err("saved UART bytes do not match runner stop record".into());
     }
-    let checked = validate_markers(
+    let canonical = validate_markers(
         &uart,
         &manifest.nonce,
         &manifest.guest_markers.expected_s5_marker_keys,
     );
-    if checked.evidence != manifest.guest_markers {
-        return Err("recorded guest marker validation does not match UART bytes".into());
-    }
+    let checked = if canonical.evidence == manifest.guest_markers {
+        canonical
+    } else {
+        let legacy = validate_markers_legacy(
+            &uart,
+            &manifest.nonce,
+            &manifest.guest_markers.expected_s5_marker_keys,
+        );
+        if legacy.evidence != manifest.guest_markers {
+            return Err("recorded guest marker validation does not match UART bytes".into());
+        }
+        legacy
+    };
     let derived_status = scenario_status(
         &manifest.scenario_id,
         &manifest.hardware_status,
@@ -985,6 +1129,7 @@ fn compare_run(
     right_series_path: &Path,
     left: &RunManifest,
     right: &RunManifest,
+    explained: &mut Vec<String>,
     unexplained: &mut Vec<String>,
 ) -> Result<(), String> {
     let prefix = format!("run[{index}]");
@@ -1038,6 +1183,20 @@ fn compare_run(
     if left_config != right_config {
         unexplained.push(format!("{prefix}.configuration differs"));
     }
+    let left_uart_path = safe_relative(
+        left_series_path
+            .parent()
+            .ok_or("left series has no parent")?,
+        &left.uart.path,
+    )?;
+    let right_uart_path = safe_relative(
+        right_series_path
+            .parent()
+            .ok_or("right series has no parent")?,
+        &right.uart.path,
+    )?;
+    let left_uart = fs::read(left_uart_path).map_err(|error| error.to_string())?;
+    let right_uart = fs::read(right_uart_path).map_err(|error| error.to_string())?;
     let left_stop = normalize_nonce(
         &without_uart_and_stop_reason(left.runner.stop.as_ref()),
         &left.nonce,
@@ -1046,8 +1205,27 @@ fn compare_run(
         &without_uart_and_stop_reason(right.runner.stop.as_ref()),
         &right.nonce,
     );
-    if left_stop != right_stop {
+    let stage4_nonce_scenario = stage4_nonce_variation_eligible(left, &left_uart)
+        && stage4_nonce_variation_eligible(right, &right_uart)
+        && left.host == right.host
+        && left.run_profile == right.run_profile
+        && left_config == right_config;
+    let comparable_left_stop = if stage4_nonce_scenario {
+        without_stage4_nonce_volatile_observations(&left_stop)
+    } else {
+        left_stop.clone()
+    };
+    let comparable_right_stop = if stage4_nonce_scenario {
+        without_stage4_nonce_volatile_observations(&right_stop)
+    } else {
+        right_stop.clone()
+    };
+    if comparable_left_stop != comparable_right_stop {
         unexplained.push(format!("{prefix}.machine_observations differs"));
+    } else if stage4_nonce_scenario && left_stop != right_stop {
+        explained.push(format!(
+            "{prefix}.stage4-init-nonce terminal CPU snapshot, timing, IRQ, or quantum observations differ"
+        ));
     }
     let left_lines = left
         .guest_markers
@@ -1064,23 +1242,25 @@ fn compare_run(
     if left_lines != right_lines {
         unexplained.push(format!("{prefix}.ordered_marker_payloads differs"));
     }
-    let left_uart_path = safe_relative(
-        left_series_path
-            .parent()
-            .ok_or("left series has no parent")?,
-        &left.uart.path,
-    )?;
-    let right_uart_path = safe_relative(
-        right_series_path
-            .parent()
-            .ok_or("right series has no parent")?,
-        &right.uart.path,
-    )?;
-    let left_uart = fs::read(left_uart_path).map_err(|error| error.to_string())?;
-    let right_uart = fs::read(right_uart_path).map_err(|error| error.to_string())?;
-    if normalize_uart(&left_uart, &left.nonce) != normalize_uart(&right_uart, &right.nonce) {
+    let left_comparable_uart = if stage4_nonce_scenario {
+        normalize_stage4_init_nonce_uart(&left_uart, &left.nonce)
+    } else {
+        normalize_uart(&left_uart, &left.nonce)
+    };
+    let right_comparable_uart = if stage4_nonce_scenario {
+        normalize_stage4_init_nonce_uart(&right_uart, &right.nonce)
+    } else {
+        normalize_uart(&right_uart, &right.nonce)
+    };
+    if left_comparable_uart != right_comparable_uart {
         unexplained.push(format!(
             "{prefix}.ordered_uart_bytes differs after nonce normalization"
+        ));
+    } else if stage4_nonce_scenario
+        && normalize_uart(&left_uart, &left.nonce) != normalize_uart(&right_uart, &right.nonce)
+    {
+        explained.push(format!(
+            "{prefix}.stage4-init-nonce UART timestamps, memory availability, sched_clock calibration, init/nonce console order, audit initialization timestamp, or terminal panic snapshot differ"
         ));
     }
     if left.runner.guest_started != right.runner.guest_started
@@ -1090,6 +1270,65 @@ fn compare_run(
         unexplained.push(format!("{prefix}.runner_execution differs"));
     }
     Ok(())
+}
+
+fn stage4_nonce_variation_eligible(run: &RunManifest, uart: &[u8]) -> bool {
+    let Some(stop) = run.runner.stop.as_ref() else {
+        return false;
+    };
+    let nonce_line = format!("OD_NONCE={}", run.nonce);
+    let profile = stop["cpu_profile"].as_str().unwrap_or_default();
+    run.scenario_id == "stage4-init-nonce"
+        && run.hardware_status == "loaded"
+        && run.scenario_status == ScenarioStatus::Passed
+        && run.runner.guest_started
+        && run.expected_stop_kind == "budget_exhausted"
+        && stop["exit_kind"] == "budget_exhausted"
+        && stop["user_mode"] == true
+        && stop["path"] == "cpl0_set"
+        && profile.starts_with("Cpl0ProfileSet (S2-45)")
+        && run.configuration["cpu_path"] == "cpl0_set"
+        && run.configuration["cpu_profile"] == profile
+        && run.configuration["acceptance"] == "counted"
+        && run.configuration["diagnostic_past_c7"] == false
+        && run.configuration["budget"] == 3_000_000_000u64
+        && run.guest_markers.valid
+        && run.guest_markers.stage4_nonce_line.as_deref() == Some(nonce_line.as_str())
+        && run.guest_markers.expected_s5_marker_keys.is_empty()
+        && run.guest_markers.ordered_s5_marker_keys.is_empty()
+        && run.guest_markers.errors.is_empty()
+        && has_expected_stage4_nonce_terminal_panic(uart, &run.nonce)
+        && has_s4_39j_syscall_journal(stop)
+}
+
+fn has_s4_39j_syscall_journal(stop: &Value) -> bool {
+    const EXPECTED_SYSCALLS: [u64; 9] = [83, 165, 257, 0, 3, 1, 39, 35, 60];
+    let Some(journal) = stop.get("syscall_journal") else {
+        return false;
+    };
+    let Some(entries) = journal.get("entries").and_then(Value::as_array) else {
+        return false;
+    };
+    journal["entered"] == 9
+        && journal["returned"] == 8
+        && entries.len() == EXPECTED_SYSCALLS.len()
+        && entries
+            .iter()
+            .zip(EXPECTED_SYSCALLS)
+            .all(|(entry, expected)| entry["nr"] == expected)
+        && entries[8].get("rax_return").is_some_and(Value::is_null)
+}
+
+fn has_expected_stage4_nonce_terminal_panic(bytes: &[u8], nonce: &str) -> bool {
+    let normalized = normalize_uart(bytes, nonce);
+    let Ok(text) = String::from_utf8(normalized) else {
+        return false;
+    };
+    let lines = text
+        .split_inclusive('\n')
+        .map(normalize_stage4_init_nonce_uart_line)
+        .collect::<Vec<_>>();
+    terminal_stage4_panic_snapshot(&lines).is_some()
 }
 
 fn without_uart_and_stop_reason(stop: Option<&Value>) -> Value {
@@ -1159,6 +1398,369 @@ fn normalize_uart(bytes: &[u8], nonce: &str) -> Vec<u8> {
     normalized
 }
 
+fn without_stage4_nonce_volatile_observations(stop: &Value) -> Value {
+    let mut value = stop.clone();
+    if let Some(object) = value.as_object_mut() {
+        for field in [
+            "cr3",
+            "last_cr3_change",
+            "gpr",
+            "rflags",
+            "rip",
+            "rip_bytes",
+            "rip_gpa",
+            "halt_idle_ns",
+            "virtual_ns",
+            "irq0_edges",
+            "irq_refused_masked",
+            "irq_refused_shadow",
+            "irqs_delivered",
+            "quanta",
+            "quantum_cut_by_deadline",
+        ] {
+            object.remove(field);
+        }
+    }
+    value
+}
+
+fn normalize_stage4_init_nonce_uart(bytes: &[u8], nonce: &str) -> Vec<u8> {
+    let nonce_normalized = normalize_uart(bytes, nonce);
+    let Ok(text) = String::from_utf8(nonce_normalized.clone()) else {
+        return nonce_normalized;
+    };
+    let mut lines = text
+        .split_inclusive('\n')
+        .map(normalize_stage4_init_nonce_uart_line)
+        .collect::<Vec<_>>();
+    normalize_stage4_init_nonce_marker_order(&mut lines);
+    if let Some((start, end)) = terminal_stage4_panic_snapshot(&lines)
+        && let Some(normalized) = normalize_stage4_panic_snapshot(&lines[start..=end])
+    {
+        lines.splice(start..end + 1, normalized);
+    }
+    lines.concat().into_bytes()
+}
+
+fn normalize_stage4_init_nonce_marker_order(lines: &mut [String]) {
+    const NONCE_MARKER: &str = "OD_NONCE=<nonce>";
+    const INIT_LOG: &str = "Run /init as init process";
+    let marker = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| (uart_line_message(line) == NONCE_MARKER).then_some(index))
+        .collect::<Vec<_>>();
+    let init_log = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| (uart_line_message(line) == INIT_LOG).then_some(index))
+        .collect::<Vec<_>>();
+    let ([marker], [init_log]) = (marker.as_slice(), init_log.as_slice()) else {
+        return;
+    };
+    // Linux may defer a printk console write while another context holds the console lock.
+    // Normalize only this unique adjacent pair; the guest nonce and all other line ordering
+    // remain part of the strict comparison.
+    if marker.abs_diff(*init_log) == 1 && marker < init_log {
+        lines.swap(*marker, *init_log);
+    }
+}
+
+fn terminal_stage4_panic_snapshot(lines: &[String]) -> Option<(usize, usize)> {
+    const PANIC_START: &str =
+        "Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000";
+    const PANIC_END: &str =
+        "---[ end Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000 ]---";
+    let starts = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| (uart_line_message(line) == PANIC_START).then_some(index))
+        .collect::<Vec<_>>();
+    let ends = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| (uart_line_message(line) == PANIC_END).then_some(index))
+        .collect::<Vec<_>>();
+    let ([start], [end]) = (starts.as_slice(), ends.as_slice()) else {
+        return None;
+    };
+    (*start < *end
+        && *end + 1 == lines.len()
+        && *end - *start < 64
+        && lines[*start..=*end].iter().map(String::len).sum::<usize>() <= 8192
+        && normalize_stage4_panic_snapshot(&lines[*start..=*end]).is_some())
+    .then_some((*start, *end))
+}
+
+fn normalize_stage4_init_nonce_uart_line(line: &str) -> String {
+    let (body, ending) = if let Some(body) = line.strip_suffix("\r\n") {
+        (body, "\r\n")
+    } else if let Some(body) = line.strip_suffix('\n') {
+        (body, "\n")
+    } else {
+        (line, "")
+    };
+    let (prefix, message) = if let Some(message) = kernel_timestamp_message(body) {
+        ("[<kernel-time>] ", message)
+    } else {
+        ("", body)
+    };
+    let message = normalize_memory_available(message);
+    let message = normalize_sched_clock_calibration(&message);
+    let message = normalize_stage4_audit_init_timestamp(&message);
+    format!("{prefix}{message}{ending}")
+}
+
+fn normalize_stage4_audit_init_timestamp(line: &str) -> String {
+    const PREFIX: &str = "audit: type=2000 audit(";
+    const SUFFIX: &str = "): state=initialized audit_enabled=0 res=1";
+    let Some(timestamp) = line
+        .strip_prefix(PREFIX)
+        .and_then(|value| value.strip_suffix(SUFFIX))
+    else {
+        return line.to_string();
+    };
+    let Some((time, serial)) = timestamp.split_once(':') else {
+        return line.to_string();
+    };
+    let Some((seconds, fraction)) = time.split_once('.') else {
+        return line.to_string();
+    };
+    if serial != "1"
+        || seconds.is_empty()
+        || fraction.is_empty()
+        || !seconds.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return line.to_string();
+    }
+    format!("{PREFIX}<event-time>:1{SUFFIX}")
+}
+
+fn kernel_timestamp_message(line: &str) -> Option<&str> {
+    let close = line.strip_prefix('[')?.find("] ")? + 1;
+    let timestamp = line.get(1..close)?;
+    let (seconds, fraction) = timestamp.trim().split_once('.')?;
+    if seconds.is_empty()
+        || fraction.is_empty()
+        || !seconds.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    line.get(close + 2..)
+}
+
+fn normalize_memory_available(line: &str) -> String {
+    let Some(memory) = line.strip_prefix("Memory: ") else {
+        return line.to_string();
+    };
+    let Some(k_slash) = memory.find("K/") else {
+        return line.to_string();
+    };
+    let count = &memory[..k_slash];
+    if count.is_empty() || !count.bytes().all(|byte| byte.is_ascii_digit()) {
+        return line.to_string();
+    }
+    format!("Memory: <available>K/{}", &memory[k_slash + 2..])
+}
+
+fn normalize_sched_clock_calibration(line: &str) -> String {
+    const PREFIX: &str = "sched_clock: Marking stable (";
+    let Some(calibration) = line.strip_prefix(PREFIX) else {
+        return line.to_string();
+    };
+    let Some(calibration) = calibration.strip_suffix(')') else {
+        return line.to_string();
+    };
+    let Some((first, second)) = calibration.split_once(")->(") else {
+        return line.to_string();
+    };
+    if !is_integer_pair(first) || !is_integer_pair(second) {
+        return line.to_string();
+    }
+    format!("{PREFIX}<calibration>)")
+}
+
+fn is_integer_pair(pair: &str) -> bool {
+    let Some((first, second)) = pair.split_once(", ") else {
+        return false;
+    };
+    fn integer(value: &str) -> bool {
+        let digits = value.strip_prefix('-').unwrap_or(value);
+        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+    }
+    integer(first) && integer(second) && !second.contains(", ")
+}
+
+fn normalize_stage4_panic_snapshot(lines: &[String]) -> Option<Vec<String>> {
+    const PANIC_START: &str =
+        "Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000";
+    const PANIC_END: &str =
+        "---[ end Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000 ]---";
+    if lines.len() < 2
+        || uart_line_message(lines.first()?) != PANIC_START
+        || uart_line_message(lines.last()?) != PANIC_END
+    {
+        return None;
+    }
+    let mut normalized = Vec::new();
+    for line in lines {
+        let message = uart_line_message(line);
+        if let Some((symbol, true)) = panic_frame(message) {
+            if optional_panic_frame(symbol) {
+                continue;
+            }
+            return None;
+        }
+        if !panic_snapshot_line_allowed(message) {
+            return None;
+        }
+        if let Some(value) = normalize_panic_rsp(message) {
+            normalized.push(line.replace(message, &value));
+        } else {
+            normalized.push(line.clone());
+        }
+    }
+    Some(normalized)
+}
+
+fn panic_snapshot_line_allowed(line: &str) -> bool {
+    const PANIC_START: &str =
+        "Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000";
+    const PANIC_END: &str =
+        "---[ end Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000 ]---";
+    const SHARED_FRAMES: &[&str] = &[
+        "show_stack",
+        "dump_stack_lvl",
+        "dump_stack",
+        "vpanic",
+        "panic",
+        "do_exit.cold",
+        "__x64_sys_exit",
+        "x64_sys_call",
+        "do_syscall_64",
+        "entry_SYSCALL_64_after_hwframe",
+    ];
+    let content = line.strip_prefix(' ').unwrap_or(line);
+    if matches!(
+        content,
+        PANIC_START | PANIC_END | "Call Trace:" | "<TASK>" | "</TASK>" | "Kernel Offset: disabled"
+    ) {
+        return true;
+    }
+    if content.starts_with(
+        "CPU: 0 UID: 0 PID: 1 Comm: init Not tainted 7.0.0-38-generic #38-Ubuntu PREEMPT(lazy)",
+    ) {
+        return true;
+    }
+    if let Some((symbol, optional)) = panic_frame(line) {
+        return if optional {
+            optional_panic_frame(symbol)
+        } else {
+            SHARED_FRAMES.contains(&symbol)
+        };
+    }
+    if let Some(address) = content.strip_prefix("RIP: 0033:0x") {
+        return is_hex_digits(address);
+    }
+    if let Some(code) = content.strip_prefix("Code: ") {
+        return !code.is_empty()
+            && code
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() || matches!(byte, b' ' | b'<' | b'>'));
+    }
+    if normalize_panic_rsp(content).is_some() {
+        return true;
+    }
+    valid_panic_register_line(content)
+}
+
+fn panic_frame(line: &str) -> Option<(&str, bool)> {
+    let line = line.strip_prefix(' ')?;
+    if line.starts_with(' ') {
+        return None;
+    }
+    let (optional, frame) = if let Some(frame) = line.strip_prefix("? ") {
+        (true, frame)
+    } else {
+        (false, line)
+    };
+    let (symbol, offsets) = frame.split_once('+')?;
+    let (instruction, function) = offsets.split_once('/')?;
+    let valid_offset = |value: &str| value.strip_prefix("0x").is_some_and(is_hex_digits);
+    if symbol.is_empty() || !valid_offset(instruction) || !valid_offset(function) {
+        return None;
+    }
+    Some((symbol, optional))
+}
+
+fn optional_panic_frame(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        "__task_pid_nr_ns"
+            | "acct_update_integrals"
+            | "ksys_write"
+            | "arch_exit_to_user_mode_prepare.isra.0"
+            | "do_syscall_64"
+            | "exc_page_fault"
+            | "handle_pte_fault"
+            | "__pmd_alloc"
+            | "__handle_mm_fault"
+            | "count_memcg_events"
+            | "handle_mm_fault"
+            | "irqentry_exit"
+    )
+}
+
+fn normalize_panic_rsp(line: &str) -> Option<String> {
+    let fields = line.split_whitespace().collect::<Vec<_>>();
+    if fields.len() != 6
+        || fields[0] != "RSP:"
+        || !fields[1].starts_with("002b:")
+        || !is_hex_digits(fields[1].strip_prefix("002b:")?)
+        || fields[2] != "EFLAGS:"
+        || !is_hex_digits(fields[3])
+        || fields[4] != "ORIG_RAX:"
+        || !is_hex_digits(fields[5])
+    {
+        return None;
+    }
+    Some(format!(
+        "RSP: 002b:<stack> EFLAGS: {} ORIG_RAX: {}",
+        fields[3], fields[5]
+    ))
+}
+
+fn valid_panic_register_line(line: &str) -> bool {
+    const REGISTERS: &[&[&str]] = &[
+        &["RAX:", "RBX:", "RCX:"],
+        &["RDX:", "RSI:", "RDI:"],
+        &["RBP:", "R08:", "R09:"],
+        &["R10:", "R11:", "R12:"],
+        &["R13:", "R14:", "R15:"],
+    ];
+    let fields = line.split_whitespace().collect::<Vec<_>>();
+    REGISTERS.iter().any(|registers| {
+        fields.len() == registers.len() * 2
+            && registers.iter().enumerate().all(|(index, register)| {
+                fields[index * 2] == *register && is_hex_digits(fields[index * 2 + 1])
+            })
+    })
+}
+
+fn is_hex_digits(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn uart_line_message(line: &str) -> &str {
+    let body = line
+        .strip_suffix("\r\n")
+        .or_else(|| line.strip_suffix('\n'))
+        .unwrap_or(line);
+    body.strip_prefix("[<kernel-time>] ").unwrap_or(body)
+}
+
 pub(crate) fn compare_stage5_cli(args: &[String]) -> ExitCode {
     if args
         .iter()
@@ -1211,6 +1813,122 @@ mod tests {
     use super::*;
 
     #[test]
+    fn build_source_revision_is_a_git_hash_when_available() {
+        if let Some(revision) = build_source_revision() {
+            assert!(matches!(revision.len(), 40 | 64));
+            assert!(revision.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        }
+    }
+
+    #[test]
+    fn build_source_metadata_parser_preserves_available_and_unavailable_values() {
+        let revision = "0123456789012345678901234567890123456789";
+        assert_eq!(
+            source_revision_from_env(Some(revision)).as_deref(),
+            Some(revision)
+        );
+        assert_eq!(source_revision_from_env(Some("unknown")), None);
+        assert_eq!(source_revision_from_env(None), None);
+        assert_eq!(source_dirty_from_env(Some("true")), Some(true));
+        assert_eq!(source_dirty_from_env(Some("false")), Some(false));
+        assert_eq!(source_dirty_from_env(Some("unknown")), None);
+        assert_eq!(source_dirty_from_env(None), None);
+    }
+
+    #[test]
+    fn legacy_v1_host_metadata_defaults_dirty_state_to_unobserved() {
+        let host: HostEvidence = serde_json::from_value(json!({
+            "os":"linux",
+            "arch":"x86_64",
+            "runner_version":"0.1.0",
+            "source_revision":"0123456789012345678901234567890123456789"
+        }))
+        .unwrap();
+        assert_eq!(host.source_dirty, None);
+        assert!(supported_schema_version(1));
+        assert!(supported_schema_version(SERIES_SCHEMA_VERSION));
+        assert!(!supported_schema_version(0));
+    }
+
+    #[test]
+    fn legacy_v1_series_and_run_manifests_remain_readable() {
+        let temp = std::env::temp_dir().join(format!(
+            "od-runner-stage5-v1-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let series_path = write_test_series(&temp, "series-v1", "nonceLegacyV10001", "PASS");
+        let mut series: Value = serde_json::from_slice(&fs::read(&series_path).unwrap()).unwrap();
+        series["schema_version"] = json!(1);
+
+        let reference = series["runs"][0].clone();
+        let run_path = series_path
+            .parent()
+            .unwrap()
+            .join(reference["manifest"].as_str().unwrap());
+        let mut run: Value = serde_json::from_slice(&fs::read(&run_path).unwrap()).unwrap();
+        run["schema_version"] = json!(1);
+        run["host"].as_object_mut().unwrap().remove("source_dirty");
+        let run_bytes = serde_json::to_vec_pretty(&run).unwrap();
+        fs::write(&run_path, &run_bytes).unwrap();
+        series["runs"][0]["manifest_sha256"] = json!(od_testkit::sha256_hex(&run_bytes));
+        fs::write(&series_path, serde_json::to_vec_pretty(&series).unwrap()).unwrap();
+
+        let manifest = fresh_manifest(&series_path).unwrap();
+        let run = load_run_manifest(&series_path, &manifest.runs[0]).unwrap();
+        assert_eq!(manifest.schema_version, 1);
+        assert_eq!(run.schema_version, 1);
+        assert_eq!(run.host.source_dirty, None);
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn crlf_marker_manifests_load_with_legacy_v1_v2_and_canonical_v2_evidence() {
+        let temp = std::env::temp_dir().join(format!(
+            "od-runner-stage5-crlf-compat-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        for (series_id, legacy_marker_evidence, schema_version) in [
+            ("crlf-legacy-v1", true, 1),
+            ("crlf-legacy-v2", true, SERIES_SCHEMA_VERSION),
+            ("crlf-canonical-v2", false, SERIES_SCHEMA_VERSION),
+        ] {
+            let series_path =
+                write_crlf_test_series(&temp, series_id, legacy_marker_evidence, schema_version);
+            let series = fresh_manifest(&series_path).unwrap();
+            let loaded = load_run_manifest(&series_path, &series.runs[0]).unwrap();
+            let root = series_path.parent().unwrap();
+            let uart_path = root.join(&loaded.uart.path);
+            let uart = fs::read(uart_path).unwrap();
+            let expected = if legacy_marker_evidence {
+                validate_markers_legacy(
+                    &uart,
+                    &loaded.nonce,
+                    &loaded.guest_markers.expected_s5_marker_keys,
+                )
+            } else {
+                validate_markers(
+                    &uart,
+                    &loaded.nonce,
+                    &loaded.guest_markers.expected_s5_marker_keys,
+                )
+            };
+            assert_eq!(loaded.schema_version, schema_version);
+            assert_eq!(loaded.guest_markers, expected.evidence);
+        }
+
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
     fn marker_validator_requires_exact_nonce_order_and_no_duplicates() {
         let expected = vec!["A_FILE".to_string(), "A_PASS".to_string()];
         let good = b"kernel: boot\nOD_NONCE=runNonce001\nOD_S5_A_FILE nonce=runNonce001 path=/tmp/a sha256=abc\nOD_S5_A_PASS nonce=runNonce001 result=ok\n";
@@ -1223,9 +1941,34 @@ mod tests {
             b"OD_NONCE=runNonce001\nOD_S5_A_FILE nonce=wrong path=/tmp/a sha256=abc\nOD_S5_A_PASS nonce=runNonce001 result=ok\n".as_slice(),
             b"OD_NONCE=runNonce001\nOD_S5_A_FILE nonce=runNonce001 path=/tmp/a sha256=abc\nOD_S5_A_FILE nonce=runNonce001 path=/tmp/a sha256=abc\nOD_S5_A_PASS nonce=runNonce001 result=ok\n".as_slice(),
             b"OD_NONCE=wrongNonce001\nOD_S5_A_FILE nonce=runNonce001 path=/tmp/a sha256=abc\nOD_S5_A_PASS nonce=runNonce001 result=ok\n".as_slice(),
+            b"OD_NONCE=runNonce001\r\r\nOD_S5_A_FILE nonce=runNonce001 path=/tmp/a sha256=abc\nOD_S5_A_PASS nonce=runNonce001 result=ok\n".as_slice(),
             b"OD_NONCE=runNonce001\nOD_S5_A_PASS nonce=runNonce001 result=ok\nOD_S5_A_FILE nonce=runNonce001 path=/tmp/a sha256=abc\n".as_slice(),
         ] {
             assert!(!validate_markers(bad, "runNonce001", &expected).evidence.valid);
+        }
+    }
+
+    #[test]
+    fn marker_validator_accepts_crlf_nonce_line_without_relaxing_exact_value() {
+        let nonce = "runNonce001";
+        let crlf = format!("OD_NONCE={nonce}\r\n");
+        let check = validate_markers(crlf.as_bytes(), nonce, &[]);
+        assert!(check.evidence.valid, "{:?}", check.evidence.errors);
+        assert_eq!(
+            check.evidence.stage4_nonce_line.as_deref(),
+            Some("OD_NONCE=runNonce001")
+        );
+
+        for malformed in [
+            format!("OD_NONCE={nonce}x\r\n"),
+            format!("OD_NONCE={nonce}\r\r\n"),
+        ] {
+            assert!(
+                !validate_markers(malformed.as_bytes(), nonce, &[])
+                    .evidence
+                    .valid,
+                "accepted malformed marker {malformed:?}"
+            );
         }
     }
 
@@ -1304,6 +2047,26 @@ mod tests {
         assert_eq!(parsed.requested_runs, 2);
         assert_eq!(parsed.expected_s5_marker_keys, ["A_FILE", "A_PASS"]);
         assert!(parse_series_args(&base[2..]).is_err());
+        let mut diagnostic = base.clone();
+        diagnostic.extend(["--stack-context-out".into(), "context.json".into()]);
+        assert!(parse_series_args(&diagnostic).is_err());
+        let mut execution_observations = base.clone();
+        execution_observations.extend([
+            "--execution-observations-out".into(),
+            "observations.json".into(),
+        ]);
+        let error = parse_series_args(&execution_observations).unwrap_err();
+        assert!(error.contains("--execution-observations-out"), "{error}");
+        let mut post_iret = base.clone();
+        post_iret.extend([
+            "--execution-observations-post-iret-index".into(),
+            "30".into(),
+        ]);
+        let error = parse_series_args(&post_iret).unwrap_err();
+        assert!(
+            error.contains("--execution-observations-post-iret-index"),
+            "{error}"
+        );
 
         let mut wrong_scenario = base.clone();
         let marker = wrong_scenario
@@ -1312,6 +2075,43 @@ mod tests {
             .unwrap();
         wrong_scenario[marker] = "B_FILE".into();
         assert!(parse_series_args(&wrong_scenario).is_err());
+    }
+
+    #[test]
+    fn series_cli_forwards_user_mode_as_a_flag_without_consuming_the_next_option() {
+        let args = vec![
+            "--test-runs".into(),
+            "1".into(),
+            "--series-id".into(),
+            "user-mode01".into(),
+            "--scenario-id".into(),
+            "stage4-init-nonce".into(),
+            "--expected-stop-kind".into(),
+            "budget_exhausted".into(),
+            "--out".into(),
+            "work/stage5/user-mode01/series.json".into(),
+            "--run".into(),
+            "--set-cpl0".into(),
+            "--user-mode".into(),
+            "--cpuid-profile".into(),
+            "stage4a".into(),
+            "--budget".into(),
+            "3000000000".into(),
+        ];
+
+        let parsed = parse_series_args(&args).unwrap();
+        assert!(
+            parsed
+                .forwarded
+                .iter()
+                .any(|argument| argument == "--user-mode")
+        );
+        assert!(
+            parsed
+                .forwarded
+                .windows(2)
+                .any(|pair| pair == ["--cpuid-profile", "stage4a"])
+        );
     }
 
     #[test]
@@ -1409,6 +2209,7 @@ mod tests {
                 arch: "test-arch".into(),
                 runner_version: "0.1.0".into(),
                 source_revision: None,
+                source_dirty: None,
             },
             configuration: configuration_from_runner(&raw_value),
             artifact_hashes: artifact_hashes(&raw_value),
@@ -1445,6 +2246,269 @@ mod tests {
             runs: vec![reference],
         };
         let series_path = series_dir.join("series.json");
+        fs::write(&series_path, serde_json::to_vec_pretty(&series).unwrap()).unwrap();
+        series_path
+    }
+
+    fn stage4_nonce_comparison_run(
+        mut run: RunManifest,
+        series_root: &Path,
+        nonce: &str,
+        variant: &str,
+    ) -> RunManifest {
+        let dynamic = matches!(
+            variant,
+            "timing" | "failed" | "no-panic" | "optional-pid-frame" | "nonce-order"
+        );
+        let marker_nonce = if matches!(variant, "marker" | "failed") {
+            "wrongMarkerNonce"
+        } else {
+            nonce
+        };
+        let time = if dynamic { "2.273117" } else { "2.273241" };
+        let optional_frame = if variant == "optional-pid-frame" {
+            "? __task_pid_nr_ns+0x6c/0x120"
+        } else if dynamic {
+            "? handle_pte_fault+0x1cb/0x1f0"
+        } else {
+            "? ksys_write+0x71/0xf0"
+        };
+        let mut lines = vec![
+            format!(
+                "[{time}] Memory: {}K/130360K available (stable)",
+                if dynamic { 61632 } else { 62064 }
+            ),
+            format!(
+                "[{time}] audit: type=2000 audit({}): state=initialized audit_enabled=0 res=1",
+                if dynamic { "0.141:1" } else { "0.140:1" }
+            ),
+            format!(
+                "[{time}] sched_clock: Marking stable ({}, {})->({}, {})",
+                if dynamic { 727401607 } else { 727600823 },
+                if dynamic { 1447693312 } else { 1447617526 },
+                if dynamic { "2175508456" } else { "2175432185" },
+                if dynamic { "-413537" } else { "-213836" }
+            ),
+            format!("OD_NONCE={marker_nonce}"),
+            format!("[{time}] Run /init as init process"),
+            format!(
+                "[{time}] Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000"
+            ),
+            format!(
+                "[{time}] CPU: 0 UID: 0 PID: 1 Comm: init Not tainted 7.0.0-38-generic #38-Ubuntu PREEMPT(lazy)"
+            ),
+            format!("[{time}] Call Trace:"),
+        ];
+        if variant != "nonce-order" {
+            lines.swap(3, 4);
+        }
+        if variant == "warning" {
+            lines.push(format!(
+                "[{time}] WARNING: unexpected condition in panic trace"
+            ));
+        }
+        if variant == "unknown-frame" {
+            lines.push(format!("[{time}]  ? unexpected_symbol+0x1/0x2"));
+        }
+        if variant != "no-panic" {
+            lines.extend([
+            format!("[{time}]  <TASK>"),
+            format!("[{time}]  show_stack+0x49/0x60"),
+            format!("[{time}]  dump_stack_lvl+0x5f/0x90"),
+            format!("[{time}]  dump_stack+0x10/0x18"),
+            format!("[{time}]  vpanic+0x262/0x4b0"),
+            format!("[{time}]  panic+0x67/0x70"),
+            format!("[{time}]  ? acct_update_integrals+0x5e/0xa0"),
+            format!("[{time}]  do_exit.cold+0x15/0x15"),
+            format!("[{time}]  __x64_sys_exit+0x1b/0x20"),
+            format!("[{time}]  x64_sys_call+0x2384/0x2390"),
+            format!("[{time}]  do_syscall_64+0x105/0x5a0"),
+            format!("[{time}]  {optional_frame}"),
+            format!("[{time}]  entry_SYSCALL_64_after_hwframe+0x76/0x7e"),
+            format!("[{time}] RIP: 0033:0x40024d"),
+            format!("[{time}] Code: 00 00 b8 01 00 00 00 0f 05 <eb> fe"),
+            format!(
+                "[{time}] RSP: 002b:{} EFLAGS: 00000246 ORIG_RAX: 000000000000003c",
+                if dynamic { "00007fff745f12d0" } else { "00007fff22bec9f0" }
+            ),
+            format!("[{time}] RAX: ffffffffffffffda RBX: 0000000000000040 RCX: 000000000040024d"),
+            format!("[{time}] RDX: 000000000000002d RSI: 0000000000000000 RDI: 0000000000000000"),
+            format!("[{time}] RBP: 0000000000000000 R08: 0000000000401049 R09: 0000000000000023"),
+            format!("[{time}] R10: 0000000000000000 R11: 0000000000000246 R12: 0000000000000003"),
+            format!("[{time}] R13: 0000000000000075 R14: 0000000000401000 R15: 0000000000000000"),
+            format!("[{time}]  </TASK>"),
+            format!("[{time}] Kernel Offset: disabled"),
+            format!("[{time}] ---[ end Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000 ]---"),
+            ]);
+        }
+        let uart = lines
+            .into_iter()
+            .map(|line| format!("{line}\r\n"))
+            .collect::<String>()
+            .into_bytes();
+        let uart_relative = format!("runs/{nonce}/uart.bin");
+        let uart_path = series_root.join(&uart_relative);
+        fs::create_dir_all(uart_path.parent().unwrap()).unwrap();
+        fs::write(&uart_path, &uart).unwrap();
+
+        let exit_kind = if variant == "stop" {
+            "halted"
+        } else {
+            "budget_exhausted"
+        };
+        let stop = json!({
+            "exit_kind":exit_kind,
+            "budget":3000000000u64,
+            "retired":2999999998u64,
+            "path":"cpl0_set",
+            "cpu_profile":"Cpl0ProfileSet (S2-45) of od-isa under Cpl0BaseLong64V1, 2 MiB walk rebuilt on MOV CR3; members in set_members",
+            "user_mode":true,
+            "syscall_journal":{
+                "entered":9,
+                "returned":8,
+            "entries":[
+                {"nr":83},
+                {"nr":165},
+                {"nr":257},
+                {"nr":0},
+                {"nr":3},
+                {"nr":1},
+                {"nr":39},
+                {"nr":35},
+                {"nr":if variant == "journal" {61} else {60},"rax_return":null}
+            ]
+            },
+            "cr3":if dynamic {"0x649c000"} else {"0x64a6000"},
+            "last_cr3_change":if dynamic {"0x649c000"} else {"0x64a6000"},
+            "gpr":if dynamic {json!({"rax":"0x8b8e1fcdb"})} else {json!({"rax":"0x8b98444fc"})},
+            "rflags":if dynamic {"0x287"} else {"0x246"},
+            "rip":if dynamic {"0xffffffff8271b32c"} else {"0xffffffff8271b34d"},
+            "rip_bytes":if dynamic {"65 ff 0d fd 1c d0 01"} else {"0f 31 0f 1f 00"},
+            "rip_gpa":if dynamic {"0x271b32c"} else {"0x271b34d"},
+            "halt_idle_ns":if dynamic {1139468} else {1187773},
+            "virtual_ns":if dynamic {37461557466u64} else {37472192771u64},
+            "irq0_edges":if dynamic {34803} else {34814},
+            "irq_refused_masked":if dynamic {1150205} else {954633},
+            "irqs_delivered":if dynamic {34808} else {34819},
+            "quanta":if dynamic {34569643} else {34579979},
+            "quantum_cut_by_deadline":if dynamic {33170411} else {33180705},
+            "machine_stop_reason":null
+        });
+        run.scenario_id = "stage4-init-nonce".into();
+        run.nonce = nonce.into();
+        run.expected_stop_kind = "budget_exhausted".into();
+        run.configuration = json!({
+            "cmdline":format!("od.nonce={nonce}"),
+            "ram_mib":128,
+            "budget":3000000000u64,
+            "cpu_path":"cpl0_set",
+            "cpu_profile":"Cpl0ProfileSet (S2-45) of od-isa under Cpl0BaseLong64V1, 2 MiB walk rebuilt on MOV CR3; members in set_members",
+            "acceptance":"counted",
+            "diagnostic_past_c7":false
+        });
+        run.artifact_hashes.insert(
+            "vmlinuz".into(),
+            if variant == "artifact" {
+                "vmlinuz-changed"
+            } else {
+                "vmlinuz-stable"
+            }
+            .into(),
+        );
+        run.guest_markers = validate_markers(&uart, nonce, &[]).evidence;
+        run.runner.stop = Some(stop.clone());
+        run.runner.retired = Some(2999999998);
+        run.uart.path = uart_relative;
+        run.uart.sha256 = od_testkit::sha256_hex(&uart);
+        run.uart.byte_count = uart.len();
+        run.scenario_status = scenario_status(
+            &run.scenario_id,
+            &run.hardware_status,
+            run.runner.guest_started,
+            &run.guest_markers,
+            Some(&stop),
+            &run.expected_stop_kind,
+        );
+        run.reason = scenario_reason(
+            &run.scenario_id,
+            &run.hardware_status,
+            run.runner.guest_started,
+            &run.guest_markers,
+            Some(&stop),
+            &run.expected_stop_kind,
+        );
+        run
+    }
+
+    fn write_crlf_test_series(
+        root: &Path,
+        series_id: &str,
+        legacy_marker_evidence: bool,
+        schema_version: u32,
+    ) -> PathBuf {
+        let nonce = "nonceCompatibility0001";
+        let series_path = write_test_series(root, series_id, nonce, "PASS");
+        let series_dir = series_path.parent().unwrap();
+        let mut series: Value = serde_json::from_slice(&fs::read(&series_path).unwrap()).unwrap();
+        let run_path = series_dir.join(series["runs"][0]["manifest"].as_str().unwrap());
+        let mut run: RunManifest = serde_json::from_slice(&fs::read(&run_path).unwrap()).unwrap();
+        let uart_path = series_dir.join(&run.uart.path);
+        let uart = String::from_utf8(fs::read(&uart_path).unwrap())
+            .unwrap()
+            .replace('\n', "\r\n")
+            .into_bytes();
+        fs::write(&uart_path, &uart).unwrap();
+
+        let raw_path = series_dir.join(&run.runner.raw_json);
+        let mut raw: Value = serde_json::from_slice(&fs::read(&raw_path).unwrap()).unwrap();
+        let com1_hex = uart
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        raw["stop"]["com1_hex"] = json!(com1_hex);
+        raw["stop"]["com1_text"] = json!(String::from_utf8_lossy(&uart).into_owned());
+        let raw_bytes = serde_json::to_vec(&raw).unwrap();
+        fs::write(&raw_path, &raw_bytes).unwrap();
+
+        run.runner.raw_json_sha256 = od_testkit::sha256_hex(&raw_bytes);
+        run.runner.stop = raw.get("stop").cloned();
+        run.uart.sha256 = od_testkit::sha256_hex(&uart);
+        run.uart.byte_count = uart.len();
+        let checked = if legacy_marker_evidence {
+            validate_markers_legacy(&uart, nonce, &run.guest_markers.expected_s5_marker_keys)
+        } else {
+            validate_markers(&uart, nonce, &run.guest_markers.expected_s5_marker_keys)
+        };
+        run.guest_markers = checked.evidence;
+        run.scenario_status = scenario_status(
+            &run.scenario_id,
+            &run.hardware_status,
+            run.runner.guest_started,
+            &run.guest_markers,
+            run.runner.stop.as_ref(),
+            &run.expected_stop_kind,
+        );
+        run.reason = scenario_reason(
+            &run.scenario_id,
+            &run.hardware_status,
+            run.runner.guest_started,
+            &run.guest_markers,
+            run.runner.stop.as_ref(),
+            &run.expected_stop_kind,
+        );
+        let mut run_value = serde_json::to_value(&run).unwrap();
+        run_value["schema_version"] = json!(schema_version);
+        series["schema_version"] = json!(schema_version);
+        if schema_version == 1 {
+            run_value["host"]
+                .as_object_mut()
+                .unwrap()
+                .remove("source_dirty");
+        }
+        let run_bytes = serde_json::to_vec_pretty(&run_value).unwrap();
+        fs::write(&run_path, &run_bytes).unwrap();
+        series["runs"][0]["manifest_sha256"] = json!(od_testkit::sha256_hex(&run_bytes));
+        series["outcome"] = serde_json::to_value(run.scenario_status).unwrap();
         fs::write(&series_path, serde_json::to_vec_pretty(&series).unwrap()).unwrap();
         series_path
     }
@@ -1651,6 +2715,293 @@ mod tests {
                 .any(|value| value.contains("host_environment"))
         );
         let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn within_series_comparator_compares_each_run_to_the_first() {
+        let temp = std::env::temp_dir().join(format!(
+            "od-runner-stage5-within-series-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let seed = write_test_series(&temp.join("seed"), "seed", "nonceStage5Seed0001", "PASS");
+        let manifest = fresh_manifest(&seed).unwrap();
+        let base = load_run_manifest(&seed, &manifest.runs[0]).unwrap();
+        let series_root = temp.join("within");
+        fs::create_dir_all(&series_root).unwrap();
+        let series_path = series_root.join("series.json");
+        let first = stage4_nonce_comparison_run(
+            base.clone(),
+            &series_root,
+            "nonceStage5First0001",
+            "baseline",
+        );
+        let second =
+            stage4_nonce_comparison_run(base, &series_root, "nonceStage5Second01", "timing");
+        let third = stage4_nonce_comparison_run(
+            load_run_manifest(&seed, &manifest.runs[0]).unwrap(),
+            &series_root,
+            "nonceStage5Third0001",
+            "artifact",
+        );
+
+        let pair = compare_run_sequence(&series_path, &[first.clone(), second.clone()]).unwrap();
+        assert!(pair.matches, "{:?}", pair.unexplained_differences);
+        let comparison =
+            compare_run_sequence(&series_path, &[first.clone(), second, third.clone()]).unwrap();
+        assert!(!comparison.matches);
+        assert!(
+            comparison
+                .unexplained_differences
+                .iter()
+                .any(|item| { item.contains("run[2].artifact_hashes") })
+        );
+        assert_eq!(comparison.comparison, "linux_stage5_within_series");
+        assert!(!comparison.explained_differences.is_empty());
+        assert!(compare_run_sequence(&series_path, &[first]).is_err());
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn stage4_nonce_comparator_explains_only_observed_run_variation() {
+        let temp = std::env::temp_dir().join(format!(
+            "od-runner-stage4-nonce-compare-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let seed = write_test_series(&temp.join("seed"), "seed", "nonceStage4Seed0001", "PASS");
+        let manifest = fresh_manifest(&seed).unwrap();
+        let base = load_run_manifest(&seed, &manifest.runs[0]).unwrap();
+        let left_root = temp.join("left");
+        let right_root = temp.join("right");
+        fs::create_dir_all(&left_root).unwrap();
+        fs::create_dir_all(&right_root).unwrap();
+        let left_path = left_root.join("series.json");
+        let right_path = right_root.join("series.json");
+        let left = stage4_nonce_comparison_run(
+            base.clone(),
+            &left_root,
+            "nonceStage4Left0001",
+            "baseline",
+        );
+        let timing =
+            stage4_nonce_comparison_run(base.clone(), &right_root, "nonceStage4Timing01", "timing");
+        let mut explained = Vec::new();
+        let mut unexplained = Vec::new();
+        compare_run(
+            0,
+            &left_path,
+            &right_path,
+            &left,
+            &timing,
+            &mut explained,
+            &mut unexplained,
+        )
+        .unwrap();
+        assert!(unexplained.is_empty(), "{unexplained:?}");
+        assert!(
+            explained
+                .iter()
+                .any(|item| item.contains("terminal CPU snapshot"))
+        );
+        assert!(
+            explained
+                .iter()
+                .any(|item| item.contains("UART timestamps"))
+        );
+        assert!(
+            explained
+                .iter()
+                .any(|item| item.contains("audit initialization timestamp"))
+        );
+
+        let optional_pid_frame = stage4_nonce_comparison_run(
+            base.clone(),
+            &right_root,
+            "nonceStage4OptionalPid01",
+            "optional-pid-frame",
+        );
+        let mut explained = Vec::new();
+        let mut unexplained = Vec::new();
+        compare_run(
+            0,
+            &left_path,
+            &right_path,
+            &left,
+            &optional_pid_frame,
+            &mut explained,
+            &mut unexplained,
+        )
+        .unwrap();
+        assert!(unexplained.is_empty(), "{unexplained:?}");
+        assert!(
+            explained
+                .iter()
+                .any(|item| item.contains("terminal CPU snapshot"))
+        );
+        assert!(
+            explained
+                .iter()
+                .any(|item| item.contains("UART timestamps"))
+        );
+        assert!(
+            explained
+                .iter()
+                .any(|item| item.contains("audit initialization timestamp"))
+        );
+
+        let nonce_order = stage4_nonce_comparison_run(
+            base.clone(),
+            &right_root,
+            "nonceStage4Order01",
+            "nonce-order",
+        );
+        let mut explained = Vec::new();
+        let mut unexplained = Vec::new();
+        compare_run(
+            0,
+            &left_path,
+            &right_path,
+            &left,
+            &nonce_order,
+            &mut explained,
+            &mut unexplained,
+        )
+        .unwrap();
+        assert!(unexplained.is_empty(), "{unexplained:?}");
+        assert!(
+            explained
+                .iter()
+                .any(|item| item.contains("UART timestamps"))
+        );
+        assert!(
+            explained
+                .iter()
+                .any(|item| item.contains("init/nonce console order"))
+        );
+
+        for (variant, expected) in [
+            ("artifact", "artifact_hashes"),
+            ("marker", "marker_validation"),
+            ("stop", "machine_observations"),
+            ("journal", "machine_observations"),
+            ("warning", "ordered_uart_bytes"),
+            ("unknown-frame", "ordered_uart_bytes"),
+            ("no-panic", "machine_observations"),
+        ] {
+            let right = stage4_nonce_comparison_run(
+                base.clone(),
+                &right_root,
+                &format!("nonceStage4{}0001", variant),
+                variant,
+            );
+            let mut explained = Vec::new();
+            let mut unexplained = Vec::new();
+            compare_run(
+                0,
+                &left_path,
+                &right_path,
+                &left,
+                &right,
+                &mut explained,
+                &mut unexplained,
+            )
+            .unwrap();
+            assert!(
+                unexplained.iter().any(|item| item.contains(expected)),
+                "{variant}: {unexplained:?}"
+            );
+        }
+
+        let failed = stage4_nonce_comparison_run(
+            base.clone(),
+            &right_root,
+            "nonceStage4Failed0001",
+            "failed",
+        );
+        let mut explained = Vec::new();
+        let mut unexplained = Vec::new();
+        compare_run(
+            0,
+            &left_path,
+            &right_path,
+            &left,
+            &failed,
+            &mut explained,
+            &mut unexplained,
+        )
+        .unwrap();
+        assert!(
+            unexplained
+                .iter()
+                .any(|item| item.contains("machine_observations")),
+            "failed scenario must retain strict stop comparison: {unexplained:?}"
+        );
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn sched_clock_normalization_requires_four_integer_values() {
+        assert_eq!(
+            normalize_sched_clock_calibration("sched_clock: Marking stable (1, 2)->(3, -4)"),
+            "sched_clock: Marking stable (<calibration>)"
+        );
+        let malformed = "sched_clock: Marking stable (1)->(3)";
+        assert_eq!(normalize_sched_clock_calibration(malformed), malformed);
+    }
+
+    #[test]
+    fn stage4_nonce_normalizes_only_the_exact_audit_init_event_time() {
+        assert_eq!(
+            normalize_stage4_init_nonce_uart_line(
+                "[    1.588849] audit: type=2000 audit(0.140:1): state=initialized audit_enabled=0 res=1\r\n"
+            ),
+            "[<kernel-time>] audit: type=2000 audit(<event-time>:1): state=initialized audit_enabled=0 res=1\r\n"
+        );
+        let unrelated = "audit: type=1300 audit(0.140:1): op=USER_LOGIN";
+        assert_eq!(normalize_stage4_audit_init_timestamp(unrelated), unrelated);
+        let malformed = "audit: type=2000 audit(0.140:2): state=initialized audit_enabled=0 res=1";
+        assert_eq!(normalize_stage4_audit_init_timestamp(malformed), malformed);
+    }
+
+    #[test]
+    fn stage4_nonce_reorders_only_a_unique_adjacent_init_marker_pair() {
+        let mut adjacent = vec![
+            "OD_NONCE=<nonce>\r\n".to_string(),
+            "[<kernel-time>] Run /init as init process\r\n".to_string(),
+        ];
+        normalize_stage4_init_nonce_marker_order(&mut adjacent);
+        assert_eq!(
+            adjacent,
+            [
+                "[<kernel-time>] Run /init as init process\r\n",
+                "OD_NONCE=<nonce>\r\n"
+            ]
+        );
+
+        let mut separated = vec![
+            "OD_NONCE=<nonce>\r\n".to_string(),
+            "unrelated output\r\n".to_string(),
+            "[<kernel-time>] Run /init as init process\r\n".to_string(),
+        ];
+        let original = separated.clone();
+        normalize_stage4_init_nonce_marker_order(&mut separated);
+        assert_eq!(separated, original);
+
+        let mut duplicate = vec![
+            "OD_NONCE=<nonce>\r\n".to_string(),
+            "[<kernel-time>] Run /init as init process\r\n".to_string(),
+            "OD_NONCE=<nonce>\r\n".to_string(),
+        ];
+        let original = duplicate.clone();
+        normalize_stage4_init_nonce_marker_order(&mut duplicate);
+        assert_eq!(duplicate, original);
     }
 
     #[test]

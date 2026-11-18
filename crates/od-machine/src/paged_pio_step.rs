@@ -59,7 +59,7 @@ pub fn step_paged_pio_u8(
 }
 
 struct PagedPioFetchAdapter<'a> {
-    memory: &'a mut crate::PhysicalMemory,
+    memory: &'a crate::PhysicalMemory,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),

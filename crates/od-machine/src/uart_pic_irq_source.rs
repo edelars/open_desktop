@@ -26,8 +26,7 @@
 use crate::irq_source::BoardIrqSource;
 use crate::pit_pic_irq_source::PitPicIrqSource;
 use crate::{Pic8259Handle, Uart16550Handle};
-use std::cell::Cell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// The 8259 master input line the UART interrupt output is wired to (ISA IRQ 4, COM1).
 pub(crate) const UART_IRQ_LINE: u8 = 4;
@@ -36,44 +35,56 @@ struct Inner {
     pit_pic: PitPicIrqSource,
     uart: Uart16550Handle,
     pic: Pic8259Handle,
+    /// The sample state. Its lock is taken before the UART and PIC locks (MACHINE_CONTRACT.md,
+    /// S6-33 lock order) and is held across the sample, so two threads never present one rise
+    /// twice.
+    line: Mutex<Line>,
+}
+
+#[derive(Default)]
+struct Line {
     /// The UART interrupt level at the last sample.
-    level: Cell<bool>,
+    level: bool,
     /// Rising edges presented to IR4 (a masked one included).
-    edges: Cell<u64>,
+    edges: u64,
 }
 
 /// The board source with the PIT on IR0 and the UART on IR4. Cloning gives a second handle on the
 /// same source (the board owns one, a test keeps another to read the counter).
 #[derive(Clone)]
-pub(crate) struct UartPicIrqSource(Rc<Inner>);
+pub(crate) struct UartPicIrqSource(Arc<Inner>);
 
 impl UartPicIrqSource {
     /// Wraps the PIT -> IR0 source; `uart` and `pic` are the handles of the same board.
     pub(crate) fn new(pit_pic: PitPicIrqSource, uart: Uart16550Handle, pic: Pic8259Handle) -> Self {
-        Self(Rc::new(Inner {
+        Self(Arc::new(Inner {
             pit_pic,
             uart,
             pic,
-            level: Cell::new(false),
-            edges: Cell::new(0),
+            line: Mutex::new(Line::default()),
         }))
+    }
+
+    fn line(&self) -> MutexGuard<'_, Line> {
+        self.0.line.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Rising edges of the UART line presented to IR4 so far.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn uart_edges(&self) -> u64 {
-        self.0.edges.get()
+        self.line().edges
     }
 
     /// Samples the UART interrupt output; a rising level is an edge on IR4.
     pub(crate) fn sample(&self) {
         let inner = &*self.0;
+        let mut line = self.line();
         let level = inner.uart.interrupt_line();
-        if level && !inner.level.get() {
+        if level && !line.level {
             inner.pic.raise_irq(UART_IRQ_LINE);
-            inner.edges.set(inner.edges.get() + 1);
+            line.edges += 1;
         }
-        inner.level.set(level);
+        line.level = level;
     }
 }
 

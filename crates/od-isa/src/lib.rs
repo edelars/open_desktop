@@ -15,12 +15,17 @@ pub mod hlt;
 pub mod integer_flags;
 pub mod interrupt;
 pub mod iretq;
+pub mod legacy_mode;
 pub mod long_decode;
+pub mod long_mode_entry;
 pub mod lretq;
 pub mod memory;
 pub mod msr;
+pub mod paging;
 pub mod port_io;
+pub mod protected_exec;
 mod rational_rounding;
+pub mod real_mode_exec;
 pub mod sep;
 pub mod state;
 pub mod sti;
@@ -47,11 +52,12 @@ pub use interrupt::{
     Cpl0GeneralProtectionDelivery, Cpl0GeneralProtectionPhase, Cpl0GeneralProtectionRefusal,
     Cpl0Int3Delivery, Cpl0Int3Phase, Cpl0Int3Refusal, Cpl0PageFaultDelivery,
     Cpl0PageFaultDeliveryPhase, Cpl0PageFaultRefusal, InterruptDeliveryPhase,
-    InterruptDeliveryResult, InterruptFrameSlot, InterruptOutsideProfile,
+    InterruptDeliveryResult, InterruptFrameSlot, InterruptOutsideProfile, NMI_VECTOR,
     PageFaultDeliveryOutsideProfile, PageFaultDeliveryPhase, PageFaultDeliveryResult,
     PageFaultFrameSlot, deliver_double_fault, deliver_external_interrupt_cpl0_set,
     deliver_general_protection_cpl0_set, deliver_int3_cpl0_set, deliver_maskable_interrupt,
-    deliver_page_fault, deliver_page_fault_cpl0_set, deliver_paged_maskable_interrupt,
+    deliver_nmi_cpl0_set, deliver_page_fault, deliver_page_fault_cpl0_set,
+    deliver_paged_maskable_interrupt,
 };
 pub use iretq::{
     IretqProfile, IretqReadPhase, IretqResult, IretqRunExit, IretqRunResult,
@@ -62,8 +68,9 @@ pub use lretq::{
     run_with_lretq_profile, step_with_lretq_profile,
 };
 pub use memory::{
-    AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, DoubleFaultRecord, GuestMemory,
-    InstructionMode, MemoryError, PageFaultRecord, PrivilegeLevel, page_fault_error_code,
+    AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, DoubleFaultRecord, FenceKind,
+    GuestMemory, InstructionMode, MemoryError, PageFaultRecord, PrivilegeLevel,
+    page_fault_error_code,
 };
 pub use port_io::PortIo;
 pub use state::{

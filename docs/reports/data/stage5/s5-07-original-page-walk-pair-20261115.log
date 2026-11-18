@@ -1,0 +1,60 @@
+# S5-07 original faulting page-walk diagnostic pair — 2026-11-15
+
+## Scope and provenance
+
+Two independent, counted single runs used the schema-v4 execution-observations sidecar. These are diagnostics, not the automatic acceptance N=2 series and not a comparator result. Both used `linux-direct --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode --execution-observations-out`, 128 MiB guest RAM, and distinct nonces (`od5walk20261115m`, `od5walk20261115n`). Both loaded the guest and reached the instruction-budget stop at `retired=2,999,999,998`; both emitted their exact nonce.
+
+Source revision: `3b34ff3fc10abb8816e3bdfff1fe0c89330530fe`.
+
+Release runner SHA-256: `d596831210b6206acfd64117272f4c6757e8861631636fb4ff356322d18a619a`.
+
+Identical inputs:
+
+- kernel: `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`
+- initramfs: `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`
+- ACPI blob: `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`
+- ACPI manifest: `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`
+- matching debug ELF: `7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f`
+
+Run artifacts are in ignored `work/stage5/stage5-s5-07-page-walk-20261115-m/` and `...-n/`.
+
+## Observed pair
+
+| Metric | m | n |
+|---|---:|---:|
+| Delivered #PF / omitted | 34 / 0 | 34 / 0 |
+| Delivered #GP(0) | 1 | 1 |
+| CPL0 RDTSC reads | 34,468,860 | 34,437,845 |
+| IRQ0 edges / delivered IRQs | 34,829 / 34,834 | 34,798 / 34,803 |
+| Quanta | 34,594,848 | 34,564,185 |
+| Virtual ns | 37,486,827,182 | 37,455,915,041 |
+| Halt idle ns | 1,064,184 | 1,167,043 |
+| CPL3 retired | 884 | 884 |
+
+Event 30 is the same CPL0 write in both runs: RIP `0xffffffff8271a9c1` (`rep_movs_alternative+0x11`), error code `0x2`, `RCX=7`, `RSI=0xffffffff82fdeb8f` (kernel `.rodata` bytes at this address begin `x86_64\0`), `RDI=CR2`, `RSP=0xffffc9000000fc80`, and `RBP=0xffffc9000000fc88`. The 10 captured return addresses resolve through `create_elf_tables`, `load_elf_binary`, inline `search_binary_handler` within `exec_binprm`, `bprm_execve`, `kernel_execve`, `run_init_process`, and `kernel_init`, consistent with the ELF initial-stack setup path. The bounded chain ends at `UnalignedFramePointer` and is not a complete unwind.
+
+The original guest walks recorded before delivery were:
+
+- **m**, CR3 `0x64b4000`: PML4 index 255, address `0x64b47f8`, value `0x644f067`; PDPT index 502, address `0x644ffb0`, value `0x6454067`; PD index 242, address `0x6454790`, value `0x6455067`; PT index 159, address `0x64554f8`, value `0x0`.
+- **n**, CR3 `0x6470000`: PML4 index 255, address `0x64707f8`, value `0x644a067`; PDPT index 506, address `0x644afd0`, value `0x6473067`; PD index 433, address `0x6473d88`, value `0x6474067`; PT index 392, address `0x6474c40`, value `0x0`.
+
+Both sidecars classify the original access as `NotPresent { level: Pt }`. These are raw entries read by the failed guest access before its A/D updates; the diagnostic records do not re-walk the tables. The observed virtual target is `0x1b9` above the later CPL3 user RSP in each run. All 34 fault signatures (RIP, error code, access type and CPL) match between these two runs; addresses differ with relocation.
+
+RDTSC differs by 31,015 reads. The `delay_tsc+0x4d` site accounts for 30,853 (34,076,691 vs 34,045,838); the net difference across seven other changed sites is 162. IRQ0 edge/delivery counts differ by 31 and quanta by 30,663. No automatic comparator ran, no differences are classified benign, and no normalization changed.
+
+## Interpretation and limits
+
+The original trace establishes that the extra startup-path store in these two runs encountered a present walk through the PD and a zero leaf PTE. Together with the captured caller chain, this supports—but does not prove—the hypothesis that Linux is copying startup-stack string data into a not-yet-present user page and then handling the fault. The sidecar is pre-delivery only: it does **not** record the handler's PTE update or prove that the fault was repaired by mapping that leaf. Across the earlier v1–v4 diagnostic singles, only 6 of 8 runs contained this event, so its occurrence is not yet repeatable across the wider set. The reason `delay_tsc+0x4d` iteration counts vary is also unknown.
+
+The pair does not satisfy S5-07 acceptance: it is not an automatic counted N=2 series, and it has no strict comparator result. Next work is to determine why two earlier runs lacked the event, capture or otherwise establish the post-handler mapping transition without weakening correctness, explain the timing variation, and then obtain a strict-clean automatic N=2 result. Preserve the failed series and existing raw evidence.
+
+## Artifact hashes
+
+| Artifact | SHA-256 |
+|---|---|
+| m `run.json` | `6a2ac147a3328ce6124ded13d873fe7a669049301c66829cab39e17b3eea5dfe` |
+| m `execution-observations.json` | `689cefddb8c3c6767c195af29521f8413d1411bd5d055830e6cfc2a0026eaa0d` |
+| m `stdout.json` | `4fddad54f62704590618d68ce42a63a2776dde73a159e7f3333ab4a5782f5b5b` |
+| n `run.json` | `d4bdb86faf9071480ed8d09e7ee61a0337aea7354677f6a10ea7866e5aab61cc` |
+| n `execution-observations.json` | `197d9b7d70f624d55f8068cd56a0d592b8cfc526e6ee53e2d742c2aced628cd2` |
+| n `stdout.json` | `743956637eea1f86caaadc17af65e3d9e1e9de596c571966344b90d882daeaa2` |

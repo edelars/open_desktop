@@ -1,8 +1,20 @@
 //! Opt-in one-instruction Long64 bridge through the uncached RAM walker.
 
-use crate::fetch_translation_cache::{FetchCacheStats, FetchTranslationCache};
+use crate::console_output_context::capture_frame_chain;
+use crate::execution_observations::{
+    DeliveredPageFaultObservation, FaultingPageFaultContext, FaultingPageWalkContext,
+    LinuxExecutionObservationCollector, PendingPostIretObservation, PostIretPageWalkSnapshot,
+};
+use crate::fetch_cache_report::{C5Split, LinuxWalkCounts, WalkCounter};
+use crate::fetch_cache_sweep::FetchCacheSweep;
+use crate::fetch_translation_cache::{
+    FetchCacheInvalidation, FetchCacheStats, FetchCacheTag, FetchTranslationCache, TranslationKey,
+};
 use crate::irq_source::IrqBoundaryHook;
-use crate::page_walk::translate_long64_2m_ram_read_only_with_tables;
+use crate::linux_checkpoints::{BoundaryView, CheckpointRecorder};
+use crate::page_walk::{
+    translate_long64_2m_ram_read_only_with_tables, translate_long64_2m_ram_read_only_with_trace,
+};
 use crate::{
     GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, Long64ProbeConfig, MachineBus,
     MemoryRegionKind, RamAccessOperation, TrackedAccessError, TrackedAccessOutcome,
@@ -21,16 +33,18 @@ use od_isa::execute::{
     step_paged_mov_word_read_cross_page_fetch as cpu_step_paged_mov_word_read_cross_page_fetch,
 };
 use od_isa::memory::{
-    AccessContext, ArchitecturalFault, GuestMemory, MemoryError, PageFaultRecord,
+    AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, GuestMemory, InstructionMode,
+    MemoryError, PageFaultRecord, PrivilegeLevel,
 };
 use od_isa::{
     Cpl0ExternalInterruptDelivery, Cpl0ExternalInterruptPhase, Cpl0ExternalInterruptRefusal,
     Cpl0GeneralProtectionDelivery, Cpl0GeneralProtectionPhase, Cpl0GeneralProtectionRefusal,
     Cpl0PageFaultDelivery, Cpl0PageFaultDeliveryPhase, Cpl0PageFaultRefusal,
-    deliver_external_interrupt_cpl0_set, deliver_general_protection_cpl0_set,
+    deliver_external_interrupt_cpl0_set, deliver_general_protection_cpl0_set, deliver_nmi_cpl0_set,
     deliver_page_fault_cpl0_set,
 };
 use od_isa::{IretqUserEntry, LongModeState};
+use std::rc::Rc;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PagedMovStepError {
@@ -84,6 +98,8 @@ pub fn step_paged_invlpg(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: None,
         committed_writes: None,
         capture_effects: false,
@@ -102,6 +118,7 @@ pub fn step_paged_invlpg(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = cpu_step_invlpg(
         InvlpgLong64V1,
@@ -120,6 +137,134 @@ pub fn step_paged_invlpg(
     };
     debug_assert!(matches!(report.cpu.exit, InvlpgExit::Fault(_)) || report.page_fault.is_none());
     Ok(report)
+}
+
+/// Fetch-only adapter used by the exact control-register steps below (S4-16f):
+/// tracked RAM instruction fetch, committed A/D callbacks, no operand access.
+fn fetch_only_adapter<'a>(
+    bus: &'a mut MachineBus,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
+) -> PagedMovMemoryAdapter<'a> {
+    PagedMovMemoryAdapter {
+        bus: bus.into(),
+        paging,
+        instruction_rip,
+        committed_write,
+        page_fault: None,
+        memory_error: None,
+        access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
+        committed_ad_updates: None,
+        committed_writes: None,
+        capture_effects: false,
+        dword_read_profile: false,
+        word_read_profile: false,
+        ram_only: true,
+        reject_crossing_qword: false,
+        read_only_qword: false,
+        large_ram_profile: false,
+        dword_write_profile: false,
+        cpl0_set_dword_read: false,
+        cpl0_set_byte_read: false,
+        cpl0_set_word_read: false,
+        cpl0_set_narrow_write: false,
+        cpl0_set_cross_page_fetch: false,
+        cpl0_set_cross_page_store: false,
+        cpl0_set_cross_page_read: false,
+        fetch_cache: None,
+        walks: None,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedMovCr3StepReport {
+    pub cpu: od_isa::MovCr3Result,
+    /// Retains the walker's precise saved RIP, linear address, and PFEC.
+    pub page_fault: Option<PageFaultRecord>,
+    /// Retains the original tracked-walker classification, including faults.
+    pub access_error: Option<TrackedAccessError>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedMovCr3StepError {
+    Configuration(crate::ProbeConfigError),
+    CpuInput(od_isa::MovCr3InputError),
+}
+
+/// Execute exactly one bare `MOV CR3,RAX` (CR0.WP = 0 or 1) through tracked
+/// physical RAM fetches (S4-16f). The CPU profile owns decode, validation and
+/// the retired `Cr3Write` effect; the adapter supplies the pre-write paging
+/// snapshot and forwards committed walker A/D writes. A new snapshot for the
+/// written CR3 is the caller's decision.
+pub fn step_paged_mov_cr3_wp(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedMovCr3StepReport, PagedMovCr3StepError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+        .map_err(PagedMovCr3StepError::Configuration)?;
+    let instruction_rip = state.rip;
+    let mut memory = fetch_only_adapter(bus, paging, instruction_rip, &mut committed_write);
+    let cpu = od_isa::step_mov_cr3_wp(
+        od_isa::MovCr3WpLong64V1,
+        state,
+        &mut memory,
+        context,
+        efer,
+        rflags_defined,
+    )
+    .map_err(PagedMovCr3StepError::CpuInput)?;
+    Ok(PagedMovCr3StepReport {
+        cpu,
+        page_fault: memory.page_fault,
+        access_error: memory.access_error,
+    })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedMovCr0StepReport {
+    pub cpu: od_isa::PagedProbeResult<std::convert::Infallible>,
+    /// Retains the walker's precise saved RIP, linear address, and PFEC.
+    pub page_fault: Option<PageFaultRecord>,
+    /// Retains the original tracked-walker classification, including faults.
+    pub access_error: Option<TrackedAccessError>,
+}
+
+/// Execute exactly one bare `MOV CR0,RAX` WP toggle through tracked physical
+/// RAM fetches (S4-16f). The CPU profile commits CR0 and reports a retired
+/// `Cr0Write` effect; adopting the new snapshot is the caller's decision.
+pub fn step_paged_mov_cr0_wp(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedMovCr0StepReport, crate::ProbeConfigError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)?;
+    let instruction_rip = state.rip;
+    let mut memory = fetch_only_adapter(bus, paging, instruction_rip, &mut committed_write);
+    let cpu = od_isa::step_mov_cr0_wp(
+        od_isa::MovCr0WpLong64V1,
+        state,
+        &mut memory,
+        context,
+        efer,
+        rflags_defined,
+    );
+    Ok(PagedMovCr0StepReport {
+        cpu,
+        page_fault: memory.page_fault,
+        access_error: memory.access_error,
+    })
 }
 
 /// Report of one exact paged one-byte state step (`STI` or `HLT`, S4-27i4a).
@@ -207,6 +352,8 @@ fn step_paged_state_op(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: None,
         committed_writes: None,
         capture_effects: false,
@@ -225,6 +372,7 @@ fn step_paged_state_op(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = match op {
         StateOp::Sti => od_isa::step_paged_sti(
@@ -270,6 +418,32 @@ pub fn with_paged_mov_memory<R>(
     instruction_rip: u64,
     callback: impl FnOnce(&mut dyn GuestMemory) -> R,
 ) -> PagedMovMemoryScope<R> {
+    with_paged_mov_read_memory(bus, paging, instruction_rip, false, callback)
+}
+
+/// S4-15e: the same RAM-only, read-only, same-page adapter as
+/// [`with_paged_mov_memory`] for a four-byte operand read (`MOV EAX,[RBX]`).
+/// Four-byte reads go through the ordinary tracked walker exactly like the
+/// qword reads (Accessed bits recorded in `committed_writes`); a qword read is
+/// (the operand width is enforced by the host: `execute_paged_checked_load_v2` admits only
+/// dword operands); this adapter itself does not refuse an eight-byte read.
+/// An operand that would cross a 4 KiB page is refused before any walk.
+pub fn with_paged_mov_dword_memory<R>(
+    bus: &mut MachineBus,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    callback: impl FnOnce(&mut dyn GuestMemory) -> R,
+) -> PagedMovMemoryScope<R> {
+    with_paged_mov_read_memory(bus, paging, instruction_rip, true, callback)
+}
+
+fn with_paged_mov_read_memory<R>(
+    bus: &mut MachineBus,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    dword: bool,
+    callback: impl FnOnce(&mut dyn GuestMemory) -> R,
+) -> PagedMovMemoryScope<R> {
     let mut ignore_write = |_| {};
     let mut memory = PagedMovMemoryAdapter {
         bus: bus.into(),
@@ -279,6 +453,8 @@ pub fn with_paged_mov_memory<R>(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: Some(Vec::new()),
         committed_writes: Some(Vec::new()),
         capture_effects: true,
@@ -289,7 +465,9 @@ pub fn with_paged_mov_memory<R>(
         read_only_qword: true,
         large_ram_profile: false,
         dword_write_profile: false,
-        cpl0_set_dword_read: false,
+        // The dword read width is the only thing this flag changes without
+        // `large_ram_profile`: the read stays an ordinary tracked access.
+        cpl0_set_dword_read: dword,
         cpl0_set_byte_read: false,
         cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
@@ -297,6 +475,7 @@ pub fn with_paged_mov_memory<R>(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let callback_result = callback(&mut memory);
     PagedMovMemoryScope {
@@ -305,6 +484,241 @@ pub fn with_paged_mov_memory<R>(
         access_error: memory.access_error,
         committed_ad_updates: memory.committed_ad_updates.unwrap_or_default(),
         committed_writes: memory.committed_writes.unwrap_or_default(),
+    }
+}
+
+/// Why the S4-15d store adapter refused a store before it walked or wrote
+/// anything. A refusal is not an architectural result: no RAM byte, Accessed or
+/// Dirty bit changed, and no device was reached.
+///
+/// S4-16i: a store onto the physical page the executing block was fetched from
+/// is no longer a refusal. It is walked, checked and committed like any other
+/// store; the host reports the resulting code invalidation (see
+/// `MemoryOperationExecutionExitV2::CodeInvalidated`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PagedStoreRefusal {
+    /// The translated operand is not wholly ordinary RAM (MMIO, ROM,
+    /// framebuffer or unmapped). The interpreter owns every such store.
+    NonRamTarget { physical: GuestPhysicalAddress },
+    /// The read-only probe could not translate the operand at all (a
+    /// non-canonical address, a 2 MiB or 1 GiB leaf that the 4 KiB walker does
+    /// not serve, or an unreadable table entry). The JIT does not own such a
+    /// store: nothing is walked or committed, so the interpreter sees the
+    /// untouched page tables.
+    ProbeUnsupported,
+}
+
+/// Result of [`with_paged_mov_store_memory`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedMovStoreScope<R> {
+    pub memory: PagedMovMemoryScope<R>,
+    /// Set when the adapter refused the store before any walk or write.
+    pub refusal: Option<PagedStoreRefusal>,
+}
+
+/// Run a synchronous callback with a temporary store-only adapter for one
+/// same-page qword store (S4-15d).
+///
+/// The adapter serves exactly one operation, `write` of 8 bytes inside one
+/// 4 KiB page, through the tracked RAM walker (`access_tracked_ram`: the page
+/// walk checks Present, Write (WP at CPL0), User (CPL3) and reserved bits,
+/// never dispatches a device, and sets the Accessed bits and then the leaf
+/// Dirty bit before the operand bytes are written). Everything else (fetch,
+/// read, atomics, other widths, a page-crossing operand) is a typed backend
+/// error. Before the walk that commits anything, a read-only probe translates
+/// the operand; if it translates to anything other than whole ordinary RAM, the
+/// store is refused with no effect at all. A store onto the page the executing
+/// block was fetched from (S4-16i) is committed like any other: the adapter has
+/// no notion of an active page, and the caller derives the code invalidation
+/// from the committed write ranges. A probe
+/// that cannot translate the operand (any probe error: unsupported page size,
+/// non-canonical address, unreadable table) is refused the same way
+/// ([`PagedStoreRefusal::ProbeUnsupported`]), so the tracked walk never commits
+/// an Accessed bit for a store that nobody would execute. A probe that finds a
+/// fault is not a refusal: the tracked access then reports the precise `#PF`
+/// with its Accessed-bit effects, exactly like the interpreter.
+///
+/// A failed RAM write does not partially commit its operand
+/// (`PhysicalMemory::store_bytes` validates the whole range first). The
+/// callback cannot retain the adapter beyond this call.
+pub fn with_paged_mov_store_memory<R>(
+    bus: &mut MachineBus,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    callback: impl FnOnce(&mut dyn GuestMemory) -> R,
+) -> PagedMovStoreScope<R> {
+    let mut memory = PagedMovStoreMemory {
+        bus,
+        paging,
+        instruction_rip,
+        page_fault: None,
+        access_error: None,
+        refusal: None,
+        committed_ad_updates: Vec::new(),
+        committed_writes: Vec::new(),
+    };
+    let callback_result = callback(&mut memory);
+    PagedMovStoreScope {
+        memory: PagedMovMemoryScope {
+            callback_result,
+            page_fault: memory.page_fault,
+            access_error: memory.access_error,
+            committed_ad_updates: memory.committed_ad_updates,
+            committed_writes: memory.committed_writes,
+        },
+        refusal: memory.refusal,
+    }
+}
+
+struct PagedMovStoreMemory<'a> {
+    bus: &'a mut MachineBus,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    page_fault: Option<PageFaultRecord>,
+    access_error: Option<TrackedAccessError>,
+    refusal: Option<PagedStoreRefusal>,
+    committed_ad_updates: Vec<crate::AdUpdate>,
+    committed_writes: Vec<GuestPhysicalRange>,
+}
+
+impl PagedMovStoreMemory<'_> {
+    fn unsupported(operation: &'static str) -> MemoryError {
+        MemoryError::Backend(format!(
+            "paged MOV store profile does not support {operation}"
+        ))
+    }
+
+    fn refuse(&mut self, refusal: PagedStoreRefusal) -> MemoryError {
+        self.refusal = Some(refusal);
+        MemoryError::Backend(format!("paged MOV store refused: {refusal:?}"))
+    }
+}
+
+impl GuestMemory for PagedMovStoreMemory<'_> {
+    fn fetch(&mut self, _address: u64, _context: AccessContext) -> Result<u8, MemoryError> {
+        Err(Self::unsupported("instruction fetch"))
+    }
+
+    fn read(
+        &mut self,
+        _address: u64,
+        _context: AccessContext,
+        _destination: &mut [u8],
+    ) -> Result<(), MemoryError> {
+        Err(Self::unsupported("read"))
+    }
+
+    fn write(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        source: &[u8],
+    ) -> Result<(), MemoryError> {
+        let Ok(bytes) = <[u8; 8]>::try_from(source) else {
+            return Err(Self::unsupported("non-qword writes"));
+        };
+        if (address & 0xfff) + 8 > 4096 {
+            return Err(Self::unsupported("cross-page qword store"));
+        }
+        // Same normalization as the shared adapter: explicit origin, the
+        // CPL of the access as the page privilege.
+        let context = AccessContext {
+            origin: AccessOrigin::Explicit,
+            privilege: context.page_privilege(),
+            ..context
+        };
+        let probe = self.bus.probe_tracked_ram_access(
+            &self.paging,
+            GuestLinearAddress::new(address),
+            AccessKind::Write,
+            context,
+        );
+        match probe.outcome {
+            Ok(crate::ProbeOutcome::Translated(translation)) => {
+                let physical = translation.physical;
+                let is_ram = GuestPhysicalRange::new(physical, 8)
+                    .is_ok_and(|range| self.bus.tracked_physical_range_is_ram(range));
+                if !is_ram {
+                    return Err(self.refuse(PagedStoreRefusal::NonRamTarget { physical }));
+                }
+            }
+            // A probe fault is not decided here: the tracked access below
+            // reports the precise #PF with its Accessed-bit effects.
+            Ok(crate::ProbeOutcome::PageFault(_)) => {}
+            // Any probe error means the operand is not served by this adapter:
+            // refuse before the commit walk (no Accessed or Dirty bit, no data).
+            Err(_) => return Err(self.refuse(PagedStoreRefusal::ProbeUnsupported)),
+        }
+        let request = TrackedAccessRequest {
+            instruction_rip: self.instruction_rip,
+            address: GuestLinearAddress::new(address),
+            context,
+            operation: RamAccessOperation::Write {
+                width: crate::AccessWidth::Qword,
+                value: u64::from_le_bytes(bytes),
+            },
+        };
+        let mut writes = Vec::new();
+        let report = self
+            .bus
+            .access_tracked_ram(&self.paging, request, |range| writes.push(range));
+        self.committed_writes.extend(writes);
+        self.committed_ad_updates.extend(
+            report.ad_updates[..report.ad_update_count]
+                .iter()
+                .flatten()
+                .copied(),
+        );
+        match report.outcome {
+            Ok(TrackedAccessOutcome::Written) => Ok(()),
+            Ok(_) => Err(Self::unsupported("non-write result")),
+            Err(TrackedAccessError::PageFault { record, reason }) => {
+                let fault = record.fault().clone();
+                self.page_fault = Some(record.clone());
+                self.access_error = Some(TrackedAccessError::PageFault { record, reason });
+                Err(MemoryError::Architectural(fault))
+            }
+            Err(error) => {
+                let message = format!("tracked Long64 RAM store failed: {error:?}");
+                self.access_error = Some(error);
+                Err(MemoryError::Backend(message))
+            }
+        }
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        _address: u64,
+        _context: AccessContext,
+        _size: od_isa::OperandSize,
+        _replacement: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(Self::unsupported("atomic exchange"))
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        _address: u64,
+        _context: AccessContext,
+        _size: od_isa::OperandSize,
+        _addend: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(Self::unsupported("atomic fetch-add"))
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        _address: u64,
+        _context: AccessContext,
+        _size: od_isa::OperandSize,
+        _expected: u64,
+        _replacement: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(Self::unsupported("atomic compare-exchange"))
+    }
+
+    fn mfence(&mut self, _context: AccessContext) -> Result<(), MemoryError> {
+        Err(Self::unsupported("MFENCE"))
     }
 }
 
@@ -338,6 +752,8 @@ pub fn step_paged_mov(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: None,
         committed_writes: None,
         capture_effects: false,
@@ -356,6 +772,7 @@ pub fn step_paged_mov(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -396,6 +813,8 @@ pub fn step_paged_mov_2m_ram(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: None,
         committed_writes: None,
         capture_effects: false,
@@ -414,6 +833,7 @@ pub fn step_paged_mov_2m_ram(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -474,11 +894,10 @@ pub(crate) enum PagedCpl0SetExit {
     /// An external interrupt of the board source (S4-38L8b) could not be delivered, although the
     /// loop had checked IF and the STI shadow first: a refusal other than
     /// `InterruptsMasked`/`StiShadowActive` (a broken gate, a missing IDT, and also
-    /// `ActivityOutsideProfile`: the CPU activity is checked by
-    /// `deliver_external_interrupt_cpl0_set`, not by the loop, so with IF = 1, a `Clear` shadow
-    /// and an activity other than `Running` the refusal ends here) or a failed memory access of
-    /// the delivery. The run stops with an error (`run_failed` on the board), never as a quiet
-    /// skip; nothing was acknowledged. RIP is on the instruction that was about to run.
+    /// `ActivityOutsideProfile`, an unsupported privilege/context, or a failed memory access of
+    /// the delivery. CPL3 delivery switches through `TSS.RSP0` to CPL0. The run stops with an
+    /// error (`run_failed` on the board), never as a quiet skip; nothing was acknowledged. RIP
+    /// is on the instruction that was about to run.
     IrqDeliveryFailed {
         vector: u8,
         failure: IrqDeliveryFailure,
@@ -555,13 +974,12 @@ const fn is_cpuid_peek_prefix(byte: u8) -> bool {
 /// but RAM is read.
 fn cpuid_leaf_at_rip(
     state: &LongModeState,
-    bus: &mut MachineBus,
+    memory: &crate::PhysicalMemory,
     paging: &Long64ProbeConfig,
     context: AccessContext,
     cache: Option<&FetchTranslationCache>,
 ) -> Option<u32> {
-    let (memory, _) = bus.split_for_pio_step();
-    let mut byte_at = |offset: u64| -> Option<u8> {
+    let byte_at = |offset: u64| -> Option<u8> {
         let linear = state.rip.wrapping_add(offset);
         if let Some(byte) = cache
             .and_then(|cache| cache.lookup(linear, paging, context))
@@ -578,7 +996,7 @@ fn cpuid_leaf_at_rip(
             od_isa::memory::AccessKind::Fetch,
         )
         .ok()?;
-        memory.read_u8(physical).ok()
+        memory.load_u8(physical).ok()
     };
     // Most instructions neither start with a prefix nor with `0F`: one walk decides that.
     let first = byte_at(0)?;
@@ -597,19 +1015,51 @@ fn cpuid_leaf_at_rip(
     }
 }
 
+/// The fetch translation of RIP for the checkpoint recorder (S4-38L4i): the physical address and
+/// up to 16 bytes there, each translated like an instruction fetch through the read-only walk
+/// (no accessed/dirty bit), RAM only. Shorter bytes when one does not translate.
+fn observed_fetch_view(
+    rip: u64,
+    memory: &crate::PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+) -> (Option<u64>, Vec<u8>) {
+    let mut first = None;
+    let mut bytes = Vec::with_capacity(16);
+    for offset in 0..16u64 {
+        let Ok(physical) = crate::page_walk::translate_long64_2m_ram_read_only(
+            memory,
+            paging,
+            rip,
+            GuestLinearAddress::new(rip.wrapping_add(offset)),
+            context,
+            od_isa::memory::AccessKind::Fetch,
+        ) else {
+            break;
+        };
+        if offset == 0 {
+            first = Some(physical.get());
+        }
+        let Ok(byte) = memory.load_u8(physical) else {
+            break;
+        };
+        bytes.push(byte);
+    }
+    (first, bytes)
+}
+
 /// Whether the instruction at RIP is exactly `IRETQ` (`48 CF`). Same read-only walk as
 /// [`cpuid_leaf_at_rip`] (no accessed/dirty bit, RAM only); an untranslatable byte is `false`.
 /// Used for the RF rule of S4-38L5c: `IRETQ` loads RF from its own frame, so the board must not
 /// clear it afterwards.
 fn iretq_at_rip(
     state: &LongModeState,
-    bus: &mut MachineBus,
+    memory: &crate::PhysicalMemory,
     paging: &Long64ProbeConfig,
     context: AccessContext,
     cache: Option<&FetchTranslationCache>,
 ) -> bool {
-    let (memory, _) = bus.split_for_pio_step();
-    let mut byte_at = |offset: u64| -> Option<u8> {
+    let byte_at = |offset: u64| -> Option<u8> {
         let linear = state.rip.wrapping_add(offset);
         if let Some(byte) = cache
             .and_then(|cache| cache.lookup(linear, paging, context))
@@ -626,9 +1076,58 @@ fn iretq_at_rip(
             od_isa::memory::AccessKind::Fetch,
         )
         .ok()?;
-        memory.read_u8(physical).ok()
+        memory.load_u8(physical).ok()
     };
     byte_at(0) == Some(0x48) && byte_at(1) == Some(0xCF)
+}
+
+/// S4-14h: whether the instruction at RIP has the shape of `INVLPG m`: an optional `FS`/`GS`
+/// override (`64`/`65`), an optional REX byte without W (`40`-`47`), `0F 01`, and a ModRM with
+/// `reg = 7` and `mod != 3` (the register forms of `0F 01 /7` are `SWAPGS` and `RDTSCP`). Same
+/// read-only walk as [`iretq_at_rip`] (no accessed/dirty bit, RAM only); an untranslatable byte is
+/// `false`. It only decides whether the cache is flushed after the instruction retires; the
+/// instruction itself is decoded and executed by the set, so a shape the set does not accept
+/// retires nothing and flushes nothing.
+pub(crate) fn invlpg_at_rip(
+    state: &LongModeState,
+    memory: &crate::PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+    cache: Option<&FetchTranslationCache>,
+) -> bool {
+    let byte_at = |offset: u64| -> Option<u8> {
+        let linear = state.rip.wrapping_add(offset);
+        if let Some(byte) = cache
+            .and_then(|cache| cache.lookup(linear, paging, context))
+            .and_then(|frame| memory.read_ram_frame_u8(frame, linear))
+        {
+            return Some(byte);
+        }
+        let physical = crate::page_walk::translate_long64_2m_ram_read_only(
+            memory,
+            paging,
+            state.rip,
+            GuestLinearAddress::new(state.rip.wrapping_add(offset)),
+            context,
+            od_isa::memory::AccessKind::Fetch,
+        )
+        .ok()?;
+        memory.load_u8(physical).ok()
+    };
+    let mut offset = 0u64;
+    let mut first = byte_at(offset);
+    if matches!(first, Some(0x64 | 0x65)) {
+        offset += 1;
+        first = byte_at(offset);
+    }
+    if matches!(first, Some(0x40..=0x47)) {
+        offset += 1;
+        first = byte_at(offset);
+    }
+    if first != Some(0x0F) || byte_at(offset + 1) != Some(0x01) {
+        return false;
+    }
+    byte_at(offset + 2).is_some_and(|modrm| (modrm >> 3) & 7 == 7 && modrm >> 6 != 3)
 }
 
 /// S4-39f: whether the instruction at `rip` is exactly `SYSRETQ` (`48 0F 07`). The same read-only
@@ -637,13 +1136,12 @@ fn iretq_at_rip(
 /// SYSRET of a system call from an `IRETQ`.
 fn sysretq_at(
     rip: u64,
-    bus: &mut MachineBus,
+    memory: &crate::PhysicalMemory,
     paging: &Long64ProbeConfig,
     context: AccessContext,
     cache: Option<&FetchTranslationCache>,
 ) -> bool {
-    let (memory, _) = bus.split_for_pio_step();
-    let mut byte_at = |offset: u64| -> Option<u8> {
+    let byte_at = |offset: u64| -> Option<u8> {
         let linear = rip.wrapping_add(offset);
         if let Some(byte) = cache
             .and_then(|cache| cache.lookup(linear, paging, context))
@@ -660,7 +1158,7 @@ fn sysretq_at(
             od_isa::memory::AccessKind::Fetch,
         )
         .ok()?;
-        memory.read_u8(physical).ok()
+        memory.load_u8(physical).ok()
     };
     byte_at(0) == Some(0x48) && byte_at(1) == Some(0x0F) && byte_at(2) == Some(0x07)
 }
@@ -691,9 +1189,13 @@ pub(crate) struct PagedCpl0SetReport {
     /// `Cr3EffectMismatch` and `Cr3SnapshotRejected` the instruction retired, so this is
     /// already the new CR3 although the walker was not rebuilt for it.
     pub(crate) cr3: u64,
-    /// `#PF` exceptions the loop delivered through the guest IDT (S4-38L5c). A delivery is not
+    /// `#PF` and `#GP(0)` exceptions the loop delivered through the guest IDT. A delivery is not
     /// a retired instruction: `instructions_executed` does not count it.
     pub(crate) delivered_exceptions: u64,
+    /// Successfully delivered guest `#PF` exceptions in this call.
+    pub(crate) delivered_page_faults: u64,
+    /// Successfully delivered guest `#GP(0)` exceptions in this call.
+    pub(crate) delivered_general_protection_faults: u64,
     /// S4-13: the counters of the call's fetch translation cache (`None` without one).
     pub(crate) fetch_cache_stats: Option<FetchCacheStats>,
     /// S4-39c: instructions retired through the CPL3 entry (`run_with_cpl3_profile_set`) in this
@@ -701,6 +1203,15 @@ pub(crate) struct PagedCpl0SetReport {
     pub(crate) cpl3_retired: u64,
     /// S4-39f: the `SYSCALL` / `SYSRETQ` pairs of this call, in order (only with `with_user_mode`).
     pub(crate) syscall_events: Vec<SyscallEvent>,
+    /// Last instruction boundary reached when opt-in execution observations were enabled.
+    pub(crate) last_instruction_rip: Option<u64>,
+    /// S4-13b: the tracked page walks of the instruction adapter in this call (measurement only,
+    /// see `fetch_cache_report`). They differ with and without the fetch cache by design.
+    pub(crate) walk_counts: LinuxWalkCounts,
+    /// S4-13b: checkpoint C5 was already recorded when this call started.
+    pub(crate) c5_at_call_start: bool,
+    /// S4-13b: the counters at the boundary where this call recorded checkpoint C5.
+    pub(crate) c5_split: Option<C5Split>,
 }
 
 /// Run the CPL0 profile set through the RAM-only 4 KiB/2 MiB tracked walker,
@@ -765,9 +1276,306 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
 /// [`deliver_pending_irq`]. Without it, or with a source that never has a vector, the loop is
 /// what it was.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
     state: &mut LongModeState,
     bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    cpuid_boundary: bool,
+    fetch_cache: bool,
+    irq: Option<IrqBoundaryHook<'_>>,
+) -> PagedCpl0SetReport {
+    run_cpl0_set_paged_2m_ram_with_policy(
+        state,
+        bus,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        set,
+        rdtsc,
+        stop,
+        committed_write,
+        cpuid_boundary,
+        fetch_cache.then_some(FetchCacheInvalidation::WriteWatch),
+        irq,
+    )
+}
+
+/// [`run_cpl0_set_paged_2m_ram_with_cpuid_boundary`] with the invalidation policy of the fetch
+/// cache chosen by the caller (S4-14h): `None` is no cache, `Some(WriteWatch)` is the S4-13 cache.
+/// With `Some(GuestOnly)` a write to a page table drops nothing; the loop flushes the cache after
+/// a retired `INVLPG` (peeked before the step like `IRETQ`, read-only), after a retired
+/// `MOV CR3` (as in every policy), when CR0 or CR4 differ after the step, and at every `#PF`
+/// delivered to the guest IDT. A step that retires nothing and delivers no `#PF` (a fault that
+/// stops the run, a rejection, a `#GP` delivery) keeps the cache. The cache still lives in this
+/// call only.
+#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+pub(crate) fn run_cpl0_set_paged_2m_ram_with_policy(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    cpuid_boundary: bool,
+    fetch_cache: Option<FetchCacheInvalidation>,
+    irq: Option<IrqBoundaryHook<'_>>,
+) -> PagedCpl0SetReport {
+    run_cpl0_set_paged_2m_ram_observed(
+        state,
+        bus,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        set,
+        rdtsc,
+        stop,
+        committed_write,
+        cpuid_boundary,
+        fetch_cache,
+        irq,
+        None,
+        None,
+    )
+}
+
+/// [`run_cpl0_set_paged_2m_ram_with_policy`] with the opt-in checkpoint recorder of S4-38L4i.
+/// With `checkpoints` each instruction boundary (after the stop, budget and interrupt checks,
+/// before the CPUID boundary and the step) is shown to the recorder, which only observes: it gets
+/// the RIP, the CPL, the CR3 and the IDTR of the boundary and the EAX of a `CPUID` at RIP, and
+/// is told of a retired `MOV CR3` and of a delivered `#PF`. The CPUID peek is shared with the
+/// CPUID boundary (made once per boundary when either is on). The peek reads no accessed/dirty
+/// bit and writes nothing to the guest, but with the fetch cache it calls
+/// `FetchTranslationCache::lookup`, which moves the cache's `recent` entry and its hit/miss
+/// statistics. They are visible only in `PagedCpl0SetReport::fetch_cache_stats` (read by tests
+/// of this module, not by the board), so `LinuxSetRunReport` and the run do not change (the
+/// cache only speeds up translations that give the same answer). With `None` the
+/// loop is the one of [`run_cpl0_set_paged_2m_ram_with_policy`], instruction for instruction.
+///
+/// With `execution_observations` (S5-07, opt-in diagnostics of the stage 5 line) the loop also
+/// feeds the collector with delivered and faulting `#PF` contexts, page walks, fault-time frame
+/// chains and the selected post-`IRETQ` boundary; the collector only observes. Checkpoints and
+/// execution observations are independent: either, both or none may be given.
+///
+/// The fetch cache (if any) is created here and lives in this call only; the loop itself is
+/// [`run_cpl0_set_paged_2m_ram_with_cache`].
+#[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    cpuid_boundary: bool,
+    fetch_cache: Option<FetchCacheInvalidation>,
+    irq: Option<IrqBoundaryHook<'_>>,
+    checkpoints: Option<&mut CheckpointRecorder>,
+    execution_observations: Option<&mut LinuxExecutionObservationCollector>,
+) -> PagedCpl0SetReport {
+    run_cpl0_set_paged_2m_ram_observed_with_sweep(
+        state,
+        bus,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        set,
+        rdtsc,
+        stop,
+        committed_write,
+        cpuid_boundary,
+        fetch_cache,
+        irq,
+        checkpoints,
+        execution_observations,
+        None,
+        FetchCacheTag::Page4K,
+    )
+}
+
+/// [`run_cpl0_set_paged_2m_ram_observed`] with the opt-in shadow caches of S4-13c (diagnostics
+/// only). With `sweep` and a cache (`fetch_cache` is `Some`) the call's cache forwards every event
+/// to the shadows, and the loop tells them of the guest invalidations a `WriteWatch` cache does not
+/// act on: a retired `INVLPG` (peeked through the read-only walk WITHOUT the cache, so the counters
+/// of the cache do not move), a `#PF` delivered to the guest and a change of CR0/CR4. Nothing the
+/// loop reads comes back from the shadows: the run is the one of
+/// [`run_cpl0_set_paged_2m_ram_observed`]. Without a cache `sweep` is ignored. `tag` is what one
+/// entry of the call's cache covers (S4-13d): `Page4K` is the default of every other caller.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    cpuid_boundary: bool,
+    fetch_cache: Option<FetchCacheInvalidation>,
+    irq: Option<IrqBoundaryHook<'_>>,
+    checkpoints: Option<&mut CheckpointRecorder>,
+    execution_observations: Option<&mut LinuxExecutionObservationCollector>,
+    sweep: Option<&Rc<FetchCacheSweep>>,
+    tag: FetchCacheTag,
+) -> PagedCpl0SetReport {
+    // S4-13: the translation cache of the instruction fetch lives in this call only.
+    let cache = fetch_cache.map(|invalidation| {
+        let cache = FetchTranslationCache::with_invalidation(invalidation).with_tag(tag);
+        match sweep {
+            Some(sweep) => cache.with_sweep(Rc::clone(sweep)),
+            None => cache,
+        }
+    });
+    run_cpl0_set_paged_2m_ram_with_cache(
+        state,
+        bus,
+        crate::vcpu::BOOT_VCPU_INDEX,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        set,
+        rdtsc,
+        stop,
+        committed_write,
+        cpuid_boundary,
+        cache.as_ref(),
+        irq,
+        checkpoints,
+        execution_observations,
+    )
+}
+
+/// The set loop of [`run_cpl0_set_paged_2m_ram_observed`] over a fetch cache owned by the caller
+/// (S4-14i). `None` is no cache. A cache built with [`FetchTranslationCache::with_invalidation`]
+/// and dropped after the call is what `_observed` does. A cache the caller passes again to the next
+/// call of the same machine session (typically one built with [`FetchTranslationCache::persistent`])
+/// keeps its entries, flushed only by the events of its policy, which happen inside the loop
+/// (`MOV CR3`, and for `GuestOnly` also `INVLPG`, CR0/CR4 changes and a delivered `#PF`; for
+/// `WriteWatch` a write to a watched table frame), and by the host events. Every cache handed to
+/// this function is sealed when the call ends and checked when it starts, whatever its
+/// constructor: the check drops every entry (`host_flushes`) when the translation context handed
+/// over (CR0/CR3/CR4/EFER, mode, privilege) differs from the one the seal holds, or when the page
+/// generation of a table frame it watches differs (a host or device write between calls);
+/// `flush_for_host_event` and `reset` are the explicit forms. For a cache used by one call only
+/// the check has nothing to compare. `PagedCpl0SetReport::fetch_cache_stats` of a cache that
+/// serves several calls are cumulative over all of them.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    vcpu: usize,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    cpuid_boundary: bool,
+    cache: Option<&FetchTranslationCache>,
+    irq: Option<IrqBoundaryHook<'_>>,
+    checkpoints: Option<&mut CheckpointRecorder>,
+    execution_observations: Option<&mut LinuxExecutionObservationCollector>,
+) -> PagedCpl0SetReport {
+    run_cpl0_set_loop(
+        state,
+        LoopBus::Exclusive(bus),
+        None,
+        vcpu,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        set,
+        rdtsc,
+        stop,
+        committed_write,
+        cpuid_boundary,
+        cache,
+        irq,
+        checkpoints,
+        execution_observations,
+    )
+}
+
+/// What the set loop reaches the machine through (S6-34). `Exclusive`: the caller owns the bus
+/// (`&mut MachineBus`, every interleaved path): the device table is taken without a lock.
+/// `Shared`: a vCPU thread holds only `&MachineBus`: RAM is the shared reference and every device
+/// access takes the one device lock of the bus for that access alone.
+pub(crate) enum LoopBus<'a> {
+    Exclusive(&'a mut MachineBus),
+    Shared(&'a MachineBus),
+}
+
+impl LoopBus<'_> {
+    fn ram(&self) -> &crate::PhysicalMemory {
+        match self {
+            Self::Exclusive(bus) => bus.physical_memory(),
+            Self::Shared(bus) => bus.physical_memory(),
+        }
+    }
+
+    fn split_for_set_step_of_vcpu<'b>(
+        &'b mut self,
+        vcpu: usize,
+        gate: Option<&'b dyn crate::bus::SplitLockGate>,
+    ) -> (
+        &'b crate::PhysicalMemory,
+        crate::bus::MachineBusSetStepIo<'b>,
+    ) {
+        let (ram, io) = match self {
+            Self::Exclusive(bus) => bus.split_for_set_step_of_vcpu(vcpu),
+            Self::Shared(bus) => bus.split_for_set_step_shared(vcpu),
+        };
+        (ram, io.with_split_gate(gate))
+    }
+}
+
+/// The set loop of one vCPU over a [`LoopBus`]: the body of
+/// [`run_cpl0_set_paged_2m_ram_with_cache`] (see its documentation) with the machine given as
+/// an enum and, for a vCPU thread of the parallel mode, the gate of the split `LOCK`
+/// (`split_gate`, S6-34 step 8; `None` keeps the refusal of S6-31/S6-32).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_cpl0_set_loop(
+    state: &mut LongModeState,
+    mut bus: LoopBus<'_>,
+    split_gate: Option<&dyn crate::bus::SplitLockGate>,
+    vcpu: usize,
     cr3: u64,
     efer: u64,
     context: AccessContext,
@@ -778,19 +1586,30 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
     mut stop: impl FnMut() -> bool,
     mut committed_write: impl FnMut(GuestPhysicalRange),
     cpuid_boundary: bool,
-    fetch_cache: bool,
+    cache: Option<&FetchTranslationCache>,
     mut irq: Option<IrqBoundaryHook<'_>>,
+    mut checkpoints: Option<&mut CheckpointRecorder>,
+    mut execution_observations: Option<&mut LinuxExecutionObservationCollector>,
 ) -> PagedCpl0SetReport {
     let context = AccessContext {
         origin: od_isa::memory::AccessOrigin::Explicit,
         ..context
     };
-    // S4-13: the translation cache of the instruction fetch lives in this call only. Every
-    // committed RAM write of the loop (guest stores, walker A/D commits, exception frames) passes
-    // through `watch`, which lets the cache drop entries whose tables were written.
-    let cache = fetch_cache.then(FetchTranslationCache::new);
+    // S4-14i: any cache first learns of a changed translation context and of writes made outside
+    // the loop since its last call (one-shot caches have no seal yet, so nothing changes for them).
+    if let Some(cache) = cache {
+        cache.revalidate(continuation_key(state, cr3, efer, context), &|page| {
+            bus.ram()
+                .code_page_generation(GuestPhysicalAddress::new(page << 12))
+                .ok()
+        });
+    }
+    // Every committed RAM write of the loop (guest stores, walker A/D commits, exception frames)
+    // passes through `watch`, which lets the cache drop entries whose tables were written.
+    let guest_only =
+        cache.is_some_and(|cache| cache.invalidation() == FetchCacheInvalidation::GuestOnly);
     let mut watch = |range: GuestPhysicalRange| {
-        if let Some(cache) = &cache {
+        if let Some(cache) = cache {
             cache.note_write(range);
         }
         committed_write(range);
@@ -807,12 +1626,24 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                 translation_context_changes: Vec::new(),
                 cr3,
                 delivered_exceptions: 0,
+                delivered_page_faults: 0,
+                delivered_general_protection_faults: 0,
                 fetch_cache_stats: None,
                 cpl3_retired: 0,
                 syscall_events: Vec::new(),
+                last_instruction_rip: None,
+                walk_counts: LinuxWalkCounts::default(),
+                c5_at_call_start: false,
+                c5_split: None,
             };
         }
     };
+    // S4-13b: measurement only; the loop never reads these counters back.
+    let walks = WalkCounter::default();
+    let c5_at_call_start = checkpoints
+        .as_deref()
+        .is_some_and(|recorder| recorder.is_recorded(C5_CHECKPOINT));
+    let mut c5_split: Option<C5Split> = None;
     let mut syscall_events = std::collections::VecDeque::new();
     let mut instructions_executed = 0u64;
     let mut cpl3_retired = 0u64;
@@ -825,8 +1656,11 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
     // whether the walker could be rebuilt for it.
     let mut reported_cr3 = cr3;
     let mut delivered_exceptions = 0u64;
+    let mut delivered_page_faults = 0u64;
+    let mut delivered_general_protection_faults = 0u64;
     // Deliveries since the last retired instruction (see `MAX_DELIVERIES_WITHOUT_RETIREMENT`).
     let mut deliveries_without_retirement = 0u64;
+    let mut last_instruction_rip = None;
     // S4-38L8b: a retired guest write to a PIT port ends the quantum (only when the source
     // depends on the PIT), so that the board asks the source for its deadline again.
     let pit_write_ends_quantum = irq
@@ -854,11 +1688,11 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         // the CPL3 entry under `with_user_mode`; without it a CS with RPL 3 is refused before
         // anything runs, so user code never executes through the CPL0 entry (review S4-39b, 3).
         // Everything below (IRQ delivery, peeks, fault delivery) uses the privilege of the entry.
-        // S4-39d: a `#PF` or `#GP(0)` from CPL3 is delivered through `TSS.RSP0` and leaves a CPL0
+        // S4-39d/S4-39h: a supported `#PF`, `#GP(0)`, or external IRQ from CPL3 is delivered
+        // through `TSS.RSP0` and leaves a CPL0
         // state (CS from the gate, RPL 0); the `continue` after a delivery returns here, so the CPL
         // is computed again from the new CS and the next instruction runs through the CPL0 entry
-        // (review S4-39c, 1). An external interrupt from CPL3 is still the set's refusal
-        // (`NotRing0Long64`, `IrqDeliveryFailed`): S4-39h.
+        // (review S4-39c, 1).
         let cpl3 = state.cs_selector.is_some_and(|selector| selector & 3 == 3);
         if cpl3 && !user_mode {
             break (
@@ -875,46 +1709,101 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         } else {
             context
         };
-        if let Some(hook) = irq.as_mut()
-            && let Some(failed) = deliver_pending_irq(
-                hook,
-                state,
-                bus,
-                &paging,
-                context,
-                &mut watch,
-                cache.as_ref(),
-            )
-        {
-            break failed;
+        if let Some(hook) = irq.as_mut() {
+            match deliver_pending_irq(hook, state, bus.ram(), &paging, context, &mut watch, cache) {
+                IrqBoundaryOutcome::None => {}
+                IrqBoundaryOutcome::Delivered => {
+                    if let Some(observations) = execution_observations.as_deref_mut() {
+                        observations.note_nested_delivery();
+                    }
+                    continue;
+                }
+                IrqBoundaryOutcome::Failed(failure) => break failure,
+            }
+        }
+        // S4-38L4i: one peek serves the CPUID boundary and the recorder (no guest state is
+        // written; the cache statistics move, see the doc of this function).
+        let cpuid_leaf = if cpuid_boundary || checkpoints.is_some() {
+            cpuid_leaf_at_rip(state, bus.ram(), &paging, context, cache)
+        } else {
+            None
+        };
+        if let Some(recorder) = checkpoints.as_deref_mut() {
+            let view = BoundaryView {
+                rip: state.rip,
+                cpl: state.cs_selector.map_or(0, |selector| (selector & 3) as u8),
+                cr3: reported_cr3,
+                call_retired: instructions_executed,
+                idtr: state.idtr.map(|idtr| (idtr.base, idtr.limit)),
+                cpuid_leaf,
+            };
+            recorder.boundary(&view, &mut || {
+                observed_fetch_view(state.rip, bus.ram(), &paging, context)
+            });
+            // S4-13b: the boundary at which C5 is recorded splits the phases of the report.
+            if !c5_at_call_start && c5_split.is_none() && recorder.is_recorded(C5_CHECKPOINT) {
+                c5_split = Some(C5Split {
+                    retired: instructions_executed,
+                    walks: walks.snapshot(),
+                    cache: cache.map(FetchTranslationCache::stats),
+                });
+                if let Some(cache) = cache {
+                    cache.sweep_mark_c5();
+                }
+            }
         }
         if cpuid_boundary
-            && let Some(leaf) = cpuid_leaf_at_rip(state, bus, &paging, context, cache.as_ref())
+            && let Some(leaf) = cpuid_leaf
             && is_cpuid_divergence_leaf(leaf)
         {
             break (PagedCpl0SetExit::CpuidDivergence { leaf }, None, None);
         }
         let instruction_rip = state.rip;
+        if execution_observations.is_some() {
+            last_instruction_rip = Some(instruction_rip);
+        }
         // S4-38L5c: RF set before the instruction (a restarted instruction after a `#PF`
         // frame came back through `IRETQ`) is cleared once the instruction retires, except
         // when that instruction is itself an `IRETQ`: it loads RF from its own frame (SDM, from
         // memory) and the loaded value stays.
         let resume_flag_before = state.rflags & RFLAGS_RF != 0;
-        let clear_resume_flag =
-            resume_flag_before && !iretq_at_rip(state, bus, &paging, context, cache.as_ref());
-        let (ram, io) = bus.split_for_set_step();
+        let pending_post_iret = execution_observations
+            .as_deref()
+            .and_then(LinuxExecutionObservationCollector::pending_post_iret);
+        let resume_flag_is_iretq =
+            resume_flag_before && iretq_at_rip(state, bus.ram(), &paging, context, cache);
+        // The selected diagnostic uses the same opcode check but bypasses the fetch cache so it
+        // does not perturb cache hit/miss counters while waiting for the selected return.
+        let selected_return_is_iretq =
+            pending_post_iret.is_some() && iretq_at_rip(state, bus.ram(), &paging, context, None);
+        let iretq_detected = resume_flag_is_iretq || selected_return_is_iretq;
+        let clear_resume_flag = resume_flag_before && !resume_flag_is_iretq;
+        // S4-14h: under `GuestOnly` the guest's own invalidations flush the cache. `INVLPG` is
+        // peeked before the step (read-only, through the cache like the fetch itself); CR0/CR4
+        // are compared around it.
+        let invlpg_pending = guest_only && invlpg_at_rip(state, bus.ram(), &paging, context, cache);
+        // S4-13c: the shadows of a `WriteWatch` cache learn of a retired `INVLPG` too. The peek
+        // bypasses the cache (read-only walk), so neither the counters nor the order of the cache
+        // move; a `GuestOnly` cache tells them itself.
+        let sweep_invlpg_pending = !guest_only
+            && cache.is_some_and(FetchTranslationCache::sweep_active)
+            && invlpg_at_rip(state, bus.ram(), &paging, context, None);
+        let control_before = (state.cr0, state.cr4);
+        let (ram, io) = bus.split_for_set_step_of_vcpu(vcpu, split_gate);
         let mut port = PitWriteWatch {
             inner: io.port_io(),
             pit_written: false,
         };
         let mut memory = set_loop_adapter(
             ram,
-            Some(&io),
+            Some((&io, vcpu)),
             paging,
             instruction_rip,
             &mut watch,
-            cache.as_ref(),
+            cache,
+            Some(&walks),
         );
+        memory.capture_page_fault_trace = execution_observations.is_some();
         let run_config = RunConfig {
             instruction_budget: 1,
             stop_rip: None,
@@ -960,6 +1849,21 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
             pit_write_pending = true;
         }
         if let Ok(done) = &result {
+            if iretq_detected && done.instructions_executed == 1 {
+                if let Some(pending) = pending_post_iret.as_ref() {
+                    let restored_context_matches = post_iret_context_matches(pending, state);
+                    if let Some(observations) = execution_observations.as_deref_mut() {
+                        if observations.accept_post_iret_return(restored_context_matches) {
+                            let snapshot = memory.capture_post_iret_page_walk(
+                                pending.clone(),
+                                state,
+                                reported_cr3,
+                            );
+                            observations.record_post_iret_page_walk(snapshot);
+                        }
+                    }
+                }
+            }
             if done.instructions_executed > 0 {
                 deliveries_without_retirement = 0;
                 if clear_resume_flag {
@@ -972,6 +1876,23 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                 && fault.vector == 14
                 && state.idtr.is_some()
             {
+                let faulting_context = execution_observations.as_ref().map(|_| {
+                    let rbp = state.gpr[od_isa::Register::Rbp as usize];
+                    let (frame_chain, frame_chain_end) =
+                        memory.capture_fault_frame_chain(instruction_rip, rbp);
+                    FaultingPageFaultContext {
+                        cr3: reported_cr3,
+                        rsp: state.gpr[od_isa::Register::Rsp as usize],
+                        rbp,
+                        rcx: state.gpr[od_isa::Register::Rcx as usize],
+                        rsi: state.gpr[od_isa::Register::Rsi as usize],
+                        rdi: state.gpr[od_isa::Register::Rdi as usize],
+                        cs_selector: state.cs_selector,
+                        frame_chain,
+                        frame_chain_end,
+                        page_walk: memory.page_fault_trace.clone(),
+                    }
+                });
                 let fault = fault.clone();
                 let original_record = memory.page_fault.clone();
                 let failure = if deliveries_without_retirement >= MAX_DELIVERIES_WITHOUT_RETIREMENT
@@ -995,8 +1916,48 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                 };
                 match failure {
                     None => {
+                        // S4-14h: a delivered `#PF` invalidates the translations of its linear
+                        // address (SDM Vol. 3A, "Invalidation of TLBs and Paging-Structure Caches",
+                        // cited from memory, not checked against the primary source). Under
+                        // `GuestOnly` the whole cache is dropped, which is always allowed; the
+                        // handler may repair the page tables without `INVLPG`.
+                        if let Some(cache) = cache {
+                            if guest_only {
+                                cache.flush_after_page_fault();
+                            } else {
+                                cache.sweep_guest_page_fault();
+                            }
+                        }
                         delivered_exceptions += 1;
+                        delivered_page_faults += 1;
+                        if let Some((observations, faulting_context)) =
+                            execution_observations.as_deref_mut().zip(faulting_context)
+                        {
+                            if pending_post_iret.is_some() {
+                                observations.note_nested_delivery();
+                            }
+                            observations.record_page_fault(DeliveredPageFaultObservation {
+                                rip: original_record
+                                    .as_ref()
+                                    .map_or(instruction_rip, |record| record.saved_rip()),
+                                cr2: original_record
+                                    .as_ref()
+                                    .map_or(fault.linear_address.unwrap_or(0), |record| {
+                                        record.cr2_value()
+                                    }),
+                                error_code: fault.error_code.unwrap_or_default(),
+                                access: original_record.as_ref().map_or_else(
+                                    || "unknown".to_string(),
+                                    |record| format!("{:?}", record.access()),
+                                ),
+                                cpl: u8::from(cpl3) * 3,
+                                faulting_context,
+                            });
+                        }
                         deliveries_without_retirement += 1;
+                        if let Some(recorder) = checkpoints.as_deref_mut() {
+                            recorder.note_page_fault_delivered();
+                        }
                         continue;
                     }
                     Some(failure) => {
@@ -1043,6 +2004,12 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                 match failure {
                     None => {
                         delivered_exceptions += 1;
+                        delivered_general_protection_faults += 1;
+                        if pending_post_iret.is_some()
+                            && let Some(observations) = execution_observations.as_deref_mut()
+                        {
+                            observations.note_nested_delivery();
+                        }
                         deliveries_without_retirement += 1;
                         continue;
                     }
@@ -1075,7 +2042,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                         rip: state.gpr[od_isa::Register::Rcx as usize],
                     })
             } else if matches!(result.exit, Cpl0ProfileSetExit::UserModeEntered(_))
-                && sysretq_at(instruction_rip, bus, &paging, context, cache.as_ref())
+                && sysretq_at(instruction_rip, bus.ram(), &paging, context, cache)
             {
                 Some(SyscallEvent::Exit {
                     rax: state.gpr[od_isa::Register::Rax as usize],
@@ -1098,9 +2065,33 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         // S4-13: a retired `MOV CR3` (or any other translation context change) invalidates
         // every cached fetch translation.
         if matches!(result.exit, Cpl0ProfileSetExit::TranslationContextChange(_))
-            && let Some(cache) = &cache
+            && let Some(cache) = cache
         {
             cache.flush();
+        }
+        if matches!(
+            result.exit,
+            Cpl0ProfileSetExit::TranslationContextChange(TranslationContextChange::Cr3Write { .. })
+        ) && let Some(recorder) = checkpoints.as_deref_mut()
+        {
+            recorder.note_cr3_write();
+        }
+        // S4-14h: a retired `INVLPG` and a change of CR0/CR4 flush the whole cache (`GuestOnly`).
+        if guest_only && let Some(cache) = cache {
+            if invlpg_pending && result.instructions_executed > 0 {
+                cache.flush_after_invlpg();
+            }
+            if control_before != (state.cr0, state.cr4) {
+                cache.flush_after_control_change();
+            }
+        } else if let Some(cache) = cache {
+            // S4-13c: observation only, for the shadows.
+            if sweep_invlpg_pending && result.instructions_executed > 0 {
+                cache.sweep_guest_invlpg();
+            }
+            if cache.sweep_active() && control_before != (state.cr0, state.cr4) {
+                cache.sweep_guest_control_change();
+            }
         }
         if let Some(exit) = handle_set_exit(
             result.exit,
@@ -1114,6 +2105,18 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
             break (exit, page_fault, memory_error);
         }
     };
+    // S4-14i: the end of the call seals the cache with the context a continuing call is handed;
+    // a change of it or a write by anyone before the next call starts is caught by the check there.
+    if let Some(cache) = cache {
+        cache.seal(
+            continuation_key(state, reported_cr3, efer, context),
+            &|page| {
+                bus.ram()
+                    .code_page_generation(GuestPhysicalAddress::new(page << 12))
+                    .ok()
+            },
+        );
+    }
     PagedCpl0SetReport {
         exit,
         instructions_executed,
@@ -1123,25 +2126,56 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         translation_context_changes: changes,
         cr3: reported_cr3,
         delivered_exceptions,
-        fetch_cache_stats: cache.as_ref().map(FetchTranslationCache::stats),
+        delivered_page_faults,
+        delivered_general_protection_faults,
+        fetch_cache_stats: cache.map(FetchTranslationCache::stats),
         cpl3_retired,
         syscall_events: syscall_events.into_iter().collect(),
+        last_instruction_rip,
+        walk_counts: walks.snapshot(),
+        c5_at_call_start,
+        c5_split,
     }
+}
+
+/// The translation context a call that continues this one is handed (S4-14i): the paging snapshot
+/// of `cr3` and the state, and the access context of the loop for the CPL of the state. The same
+/// function computes the seal of the end of a call and the check of the start of the next.
+fn continuation_key(
+    state: &LongModeState,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+) -> Option<TranslationKey> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer).ok()?;
+    let privilege = if state.cs_selector.is_some_and(|selector| selector & 3 == 3) {
+        od_isa::memory::PrivilegeLevel::Ring3
+    } else {
+        context.privilege
+    };
+    Some(TranslationKey::new(
+        paging,
+        AccessContext {
+            privilege,
+            ..context
+        },
+    ))
 }
 
 /// The adapter of the set loop for one instruction or one interrupt delivery: RAM only, the
 /// whole CPL0 set read and write widths, the optional fetch cache.
 fn set_loop_adapter<'a>(
-    ram: &'a mut crate::PhysicalMemory,
-    mmio: Option<&'a dyn crate::bus::SetStepMmio>,
+    ram: &'a crate::PhysicalMemory,
+    mmio: Option<(&'a dyn crate::bus::SetStepMmio, usize)>,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
     fetch_cache: Option<&'a FetchTranslationCache>,
+    walks: Option<&'a WalkCounter>,
 ) -> PagedMovMemoryAdapter<'a> {
     PagedMovMemoryAdapter {
         bus: match mmio {
-            Some(mmio) => AdapterBus::RamMmio(ram, mmio),
+            Some((mmio, vcpu)) => AdapterBus::RamMmio(ram, mmio, vcpu),
             None => AdapterBus::Ram(ram),
         },
         paging,
@@ -1150,6 +2184,8 @@ fn set_loop_adapter<'a>(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: None,
         committed_writes: None,
         capture_effects: false,
@@ -1168,6 +2204,7 @@ fn set_loop_adapter<'a>(
         cpl0_set_cross_page_store: true,
         cpl0_set_cross_page_read: true,
         fetch_cache,
+        walks,
     }
 }
 
@@ -1220,6 +2257,9 @@ impl<P: od_isa::PortIo> od_isa::PortIo for PitWriteWatch<P> {
     }
 }
 
+/// Checkpoint C5 (the first fetch at `e_entry`), the split of the phases of the fetch cache report.
+const C5_CHECKPOINT: u8 = 5;
+
 /// RFLAGS.IF, bit 9.
 const RFLAGS_IF: u64 = 1 << 9;
 
@@ -1233,59 +2273,95 @@ const RFLAGS_IF: u64 = 1 << 9;
 /// read); 4) otherwise `deliver_external_interrupt_cpl0_set`: `Delivered` acknowledges the
 /// vector and counts `irqs_delivered`; a refusal of IF or shadow (not expected after 3) counts
 /// like 3; any other refusal, and `Aborted`, end the run as `IrqDeliveryFailed`, never silently.
+enum IrqBoundaryOutcome {
+    None,
+    Delivered,
+    Failed(
+        (
+            PagedCpl0SetExit,
+            Option<PageFaultRecord>,
+            Option<TrackedAccessError>,
+        ),
+    ),
+}
+
 fn deliver_pending_irq(
     hook: &mut IrqBoundaryHook<'_>,
     state: &mut LongModeState,
-    bus: &mut MachineBus,
+    memory: &crate::PhysicalMemory,
     paging: &Long64ProbeConfig,
     context: AccessContext,
     watch: &mut dyn FnMut(GuestPhysicalRange),
     cache: Option<&FetchTranslationCache>,
-) -> Option<(
-    PagedCpl0SetExit,
-    Option<PageFaultRecord>,
-    Option<TrackedAccessError>,
-)> {
+) -> IrqBoundaryOutcome {
     if hook.skip_first_boundary {
         hook.skip_first_boundary = false;
-        return None;
+        return IrqBoundaryOutcome::None;
     }
-    let vector = hook.source.pending_vector()?;
+    let Some(vector) = hook.source.pending_vector() else {
+        return IrqBoundaryOutcome::None;
+    };
     if state.rflags & RFLAGS_IF == 0 {
         hook.counters.irq_refused_masked += 1;
-        return None;
+        return IrqBoundaryOutcome::None;
     }
     if state.sti_shadow != Some(od_isa::StiShadow::Clear) {
         hook.counters.irq_refused_shadow += 1;
-        return None;
+        return IrqBoundaryOutcome::None;
     }
-    let (ram, _port) = bus.split_for_pio_step();
-    let mut memory = set_loop_adapter(ram, None, *paging, state.rip, watch, cache);
+    let ram = memory;
+    let mut memory = set_loop_adapter(ram, None, *paging, state.rip, watch, cache, None);
     let delivery = deliver_external_interrupt_cpl0_set(state, &mut memory, vector, context);
     let failure = match delivery {
         Cpl0ExternalInterruptDelivery::Delivered { .. } => {
             hook.source.acknowledge(vector);
             hook.counters.irqs_delivered += 1;
-            return None;
+            return IrqBoundaryOutcome::Delivered;
         }
         Cpl0ExternalInterruptDelivery::Refused(Cpl0ExternalInterruptRefusal::InterruptsMasked) => {
             hook.counters.irq_refused_masked += 1;
-            return None;
+            return IrqBoundaryOutcome::None;
         }
         Cpl0ExternalInterruptDelivery::Refused(Cpl0ExternalInterruptRefusal::StiShadowActive) => {
             hook.counters.irq_refused_shadow += 1;
-            return None;
+            return IrqBoundaryOutcome::None;
         }
         Cpl0ExternalInterruptDelivery::Refused(reason) => IrqDeliveryFailure::Refused(reason),
         Cpl0ExternalInterruptDelivery::Aborted { phase, cause } => {
             IrqDeliveryFailure::Aborted { phase, cause }
         }
     };
-    Some((
+    IrqBoundaryOutcome::Failed((
         PagedCpl0SetExit::IrqDeliveryFailed { vector, failure },
         memory.page_fault,
         memory.memory_error,
     ))
+}
+
+/// Deliver a non-maskable interrupt through vector 2 at an instruction boundary outside a run of
+/// the set loop (S6-12b), through the same RAM-only paged adapter as [`deliver_pending_irq`]: the
+/// frame goes onto the guest stack, `state` enters the handler of the IDT gate of vector 2 and
+/// `state.nmi_blocked` is set until the handler's `IRETQ`. Nothing is retired. The result is the
+/// one of [`deliver_nmi_cpl0_set`]: a refusal (blocked, STI shadow, activity) is the caller's to
+/// hold the NMI pending for, and every refusal and abort leaves `state` unchanged.
+pub(crate) fn deliver_nmi_at_boundary(
+    state: &mut LongModeState,
+    memory: &crate::PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+) -> Cpl0ExternalInterruptDelivery {
+    let ram = memory;
+    let mut committed_write = |_: GuestPhysicalRange| {};
+    let mut memory = set_loop_adapter(
+        ram,
+        None,
+        *paging,
+        state.rip,
+        &mut committed_write,
+        None,
+        None,
+    );
+    deliver_nmi_cpl0_set(state, &mut memory, context)
 }
 
 /// What the set loop does with the exit of one set call: `None` continues with the next
@@ -1376,6 +2452,8 @@ pub fn step_paged_mov_word_read(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: None,
         committed_writes: None,
         capture_effects: false,
@@ -1394,6 +2472,7 @@ pub fn step_paged_mov_word_read(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = cpu_step_paged_mov_word_read(
         PagedMovCrossPageWordReadLong64V1,
@@ -1454,6 +2533,8 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: None,
         committed_writes: None,
         capture_effects: false,
@@ -1472,6 +2553,7 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = cpu_step_paged_mov_word_read_cross_page_fetch(
         PagedMovCrossPageWordFetchLong64V1,
@@ -1514,6 +2596,8 @@ pub fn step_paged_mov_dword_read(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: None,
         committed_writes: None,
         capture_effects: false,
@@ -1532,6 +2616,7 @@ pub fn step_paged_mov_dword_read(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = cpu_step_paged_mov_dword_read(
         PagedMovCrossPageDwordReadLong64V1,
@@ -1583,6 +2668,8 @@ pub fn step_paged_mov_dword_store(
         page_fault: None,
         memory_error: None,
         access_error: None,
+        page_fault_trace: None,
+        capture_page_fault_trace: false,
         committed_ad_updates: None,
         committed_writes: None,
         capture_effects: false,
@@ -1601,6 +2688,7 @@ pub fn step_paged_mov_dword_store(
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
+        walks: None,
     };
     let cpu = od_isa::step_paged_mov_dword_store(
         od_isa::PagedMovDwordStoreLong64V1,
@@ -1622,12 +2710,14 @@ pub fn step_paged_mov_dword_store(
 /// bus can serve `IN`/`OUT` in the same instruction (large-RAM profile only, S4-38L3).
 enum AdapterBus<'a> {
     Machine(&'a mut MachineBus, usize),
-    Ram(&'a mut crate::PhysicalMemory),
+    Ram(&'a crate::PhysicalMemory),
     /// `Ram` plus the MMIO dispatch of the set loop (S4-38L9s): an operand in an MMIO region
     /// goes to the board's device, as on the `Machine` form; the rest is the large-RAM walk.
+    /// The last member is the index of the vCPU whose set loop it is (S6-16a).
     RamMmio(
-        &'a mut crate::PhysicalMemory,
+        &'a crate::PhysicalMemory,
         &'a dyn crate::bus::SetStepMmio,
+        usize,
     ),
 }
 
@@ -1637,14 +2727,29 @@ impl<'a> From<&'a mut MachineBus> for AdapterBus<'a> {
     }
 }
 
+impl<'a> AdapterBus<'a> {
+    /// The gate of the split `LOCK` of the vCPU thread this adapter belongs to (S6-34 step 8):
+    /// only the set loop's form (`RamMmio`) can carry one.
+    fn split_gate(&self) -> Option<&'a dyn crate::bus::SplitLockGate> {
+        match self {
+            Self::RamMmio(_, mmio, _) => {
+                let mmio: &'a dyn crate::bus::SetStepMmio = *mmio;
+                mmio.split_gate()
+            }
+            Self::Machine(..) | Self::Ram(_) => None,
+        }
+    }
+}
+
 impl AdapterBus<'_> {
     /// Index of the vCPU that owns this adapter: its MMIO accesses reach the per-processor
     /// devices (the Local APIC window, S6-11) as that vCPU's. Only the `Machine` form carries
-    /// one; the RAM-only forms serve the boot processor's set loop.
+    /// one, and so does the `RamMmio` form of the set loop (S6-16a); the `Ram` form serves the
+    /// boot processor's set loop.
     fn vcpu(&self) -> usize {
         match self {
-            Self::Machine(_, vcpu) => *vcpu,
-            Self::Ram(_) | Self::RamMmio(..) => crate::vcpu::BOOT_VCPU_INDEX,
+            Self::Machine(_, vcpu) | Self::RamMmio(_, _, vcpu) => *vcpu,
+            Self::Ram(_) => crate::vcpu::BOOT_VCPU_INDEX,
         }
     }
 
@@ -1673,33 +2778,80 @@ impl AdapterBus<'_> {
             }
             // A split access never reaches a device (S4-38L9s): it is the RAM walk, whose MMIO
             // operand is the typed error it always was.
-            Self::RamMmio(memory, _) if !mmio_allowed => {
+            Self::RamMmio(memory, _, _) if !mmio_allowed => {
                 crate::page_walk::access_long64_2m_ram(memory, paging, request, committed_write)
             }
-            Self::RamMmio(memory, mmio) => crate::page_walk::access_long64_2m_with_mmio(
+            Self::RamMmio(memory, mmio, _) => crate::page_walk::access_long64_2m_with_mmio(
                 memory,
                 paging,
                 request,
                 committed_write,
-                mmio.window(),
+                mmio.windows(),
                 |address, width, operation| mmio.dispatch(address, width, operation),
             ),
         }
     }
 
-    /// The physical memory of the `Ram` forms.
-    fn ram_mut(&mut self) -> Option<&mut crate::PhysicalMemory> {
+    /// The physical memory a locked operation runs on (S6-31), for every form of the bus.
+    fn locked_memory(&self) -> &crate::PhysicalMemory {
         match self {
-            Self::Ram(memory) | Self::RamMmio(memory, _) => Some(memory),
+            Self::Machine(bus, _) => bus.physical_memory(),
+            Self::Ram(memory) | Self::RamMmio(memory, _, _) => memory,
+        }
+    }
+
+    /// The physical memory of the `Ram` forms: a shared reference (S6-30c), so the adapters of
+    /// several vCPUs hold the same memory at once.
+    fn ram_ref(&self) -> Option<&crate::PhysicalMemory> {
+        match self {
+            Self::Ram(memory) | Self::RamMmio(memory, _, _) => Some(memory),
             Self::Machine(..) => None,
         }
     }
 
-    fn ram_ref(&self) -> Option<&crate::PhysicalMemory> {
-        match self {
-            Self::Ram(memory) | Self::RamMmio(memory, _) => Some(memory),
-            Self::Machine(..) => None,
+    fn read_virtual_ram_diagnostic(
+        &mut self,
+        paging: &Long64ProbeConfig,
+        rip: u64,
+        linear: GuestLinearAddress,
+        context: AccessContext,
+        output: &mut [u8],
+    ) -> Result<(), ()> {
+        if let Self::Machine(bus, _) = self {
+            return bus
+                .read_virtual_ram_diagnostic(paging, rip, linear, context, output)
+                .map_err(|_| ());
         }
+        let memory = self.ram_ref().ok_or(())?;
+        let mut offset = 0usize;
+        while offset < output.len() {
+            let linear_address = linear
+                .get()
+                .checked_add(u64::try_from(offset).map_err(|_| ())?)
+                .ok_or(())?;
+            let bytes_to_page_end = 4096 - (linear_address as usize & 0xfff);
+            let fragment_len = bytes_to_page_end.min(output.len() - offset);
+            let physical = crate::page_walk::translate_long64_2m_ram_read_only(
+                memory,
+                paging,
+                rip,
+                GuestLinearAddress::new(linear_address),
+                context,
+                AccessKind::Read,
+            )
+            .map_err(|_| ())?;
+            if !memory
+                .locate_region_kind(physical, fragment_len as u64)
+                .is_ok_and(|kind| kind == MemoryRegionKind::Ram)
+            {
+                return Err(());
+            }
+            memory
+                .load_bytes(physical, &mut output[offset..offset + fragment_len])
+                .map_err(|_| ())?;
+            offset += fragment_len;
+        }
+        Ok(())
     }
 }
 
@@ -1723,6 +2875,8 @@ pub struct PagedMovMemoryAdapter<'a> {
     page_fault: Option<PageFaultRecord>,
     memory_error: Option<TrackedAccessError>,
     access_error: Option<TrackedAccessError>,
+    page_fault_trace: Option<FaultingPageWalkContext>,
+    capture_page_fault_trace: bool,
     committed_ad_updates: Option<Vec<crate::AdUpdate>>,
     committed_writes: Option<Vec<GuestPhysicalRange>>,
     capture_effects: bool,
@@ -1793,9 +2947,137 @@ pub struct PagedMovMemoryAdapter<'a> {
     /// `fetch_translation_cache`). Used by `fetch` only, and only with the set's cross-page
     /// fetch; `None` everywhere else, which keeps the byte-per-walk behaviour.
     fetch_cache: Option<&'a FetchTranslationCache>,
+    /// S4-13b: counts the tracked walks of this adapter (measurement only); `None` outside the
+    /// set loop's instruction adapter.
+    walks: Option<&'a WalkCounter>,
 }
 
-impl PagedMovMemoryAdapter<'_> {
+fn faulting_page_walk_context(
+    error: &TrackedAccessError,
+    trace: crate::WalkTrace,
+) -> Option<FaultingPageWalkContext> {
+    let TrackedAccessError::PageFault { reason, .. } = error else {
+        return None;
+    };
+    let entries = trace
+        .entries()
+        .iter()
+        .take(trace.len().min(crate::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY))
+        .flatten()
+        .copied()
+        .collect();
+    Some(FaultingPageWalkContext {
+        entries,
+        reason: *reason,
+    })
+}
+
+fn post_iret_context_matches(pending: &PendingPostIretObservation, state: &LongModeState) -> bool {
+    let cpl = state.cs_selector.map_or(0, |selector| (selector & 3) as u8);
+    state.rip == pending.fault_rip
+        && state.cs_selector == pending.fault_cs
+        && cpl == pending.fault_cpl
+        && state.gpr[od_isa::Register::Rsp as usize] == pending.fault_rsp
+}
+
+impl<'a> PagedMovMemoryAdapter<'a> {
+    fn capture_post_iret_page_walk(
+        &mut self,
+        pending: PendingPostIretObservation,
+        state: &LongModeState,
+        cr3: u64,
+    ) -> PostIretPageWalkSnapshot {
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: if pending.fault_cpl == 3 {
+                PrivilegeLevel::Ring3
+            } else {
+                PrivilegeLevel::Ring0
+            },
+            origin: AccessOrigin::Explicit,
+        };
+        let access = match pending.fault_access.as_str() {
+            "Read" => AccessKind::Read,
+            "Write" => AccessKind::Write,
+            "Fetch" => AccessKind::Fetch,
+            _ => AccessKind::Read,
+        };
+        let (translation, trace) = match &mut self.bus {
+            AdapterBus::Ram(memory) | AdapterBus::RamMmio(memory, _, _) => {
+                translate_long64_2m_ram_read_only_with_trace(
+                    memory,
+                    &self.paging,
+                    pending.fault_rip,
+                    GuestLinearAddress::new(pending.fault_cr2),
+                    context,
+                    access,
+                )
+            }
+            AdapterBus::Machine(bus, _) => {
+                let (memory, _) = bus.split_for_pio_step();
+                translate_long64_2m_ram_read_only_with_trace(
+                    memory,
+                    &self.paging,
+                    pending.fault_rip,
+                    GuestLinearAddress::new(pending.fault_cr2),
+                    context,
+                    access,
+                )
+            }
+        };
+        let entries = trace.entries().iter().flatten().copied().collect();
+        let (translation_status, translated_physical, translation_error) = match translation {
+            Ok((physical, _)) => ("translated", Some(physical.get()), None),
+            Err(TrackedAccessError::PageFault { record, reason }) => (
+                "page_fault",
+                None,
+                Some(format!("record={record:?}; reason={reason:?}")),
+            ),
+            Err(error) => ("error", None, Some(format!("{error:?}"))),
+        };
+        PostIretPageWalkSnapshot {
+            event_ordinal: pending.event_ordinal,
+            fault_rip: pending.fault_rip,
+            fault_cr2: pending.fault_cr2,
+            fault_access: pending.fault_access,
+            fault_cpl: pending.fault_cpl,
+            post_iret_rip: state.rip,
+            post_iret_cs: state.cs_selector,
+            post_iret_cpl: state.cs_selector.map_or(0, |selector| (selector & 3) as u8),
+            post_iret_rsp: state.gpr[od_isa::Register::Rsp as usize],
+            post_iret_cr3: cr3,
+            entries,
+            translation_status,
+            translated_physical,
+            translation_error,
+        }
+    }
+
+    fn capture_fault_frame_chain(
+        &mut self,
+        rip: u64,
+        rbp: u64,
+    ) -> (Vec<crate::ConsoleContextFrame>, crate::FrameChainEnd) {
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring0,
+            origin: AccessOrigin::Explicit,
+        };
+        let paging = self.paging;
+        capture_frame_chain(rbp, |frame_pointer| {
+            let mut bytes = [0; 16];
+            self.bus
+                .read_virtual_ram_diagnostic(
+                    &paging,
+                    rip,
+                    GuestLinearAddress::new(frame_pointer),
+                    context,
+                    &mut bytes,
+                )
+                .map(|()| bytes)
+        })
+    }
+
     fn access(
         &mut self,
         address: u64,
@@ -1823,6 +3105,9 @@ impl PagedMovMemoryAdapter<'_> {
         operation: RamAccessOperation,
         mmio_allowed: bool,
     ) -> Result<TrackedAccessOutcome, MemoryError> {
+        if self.capture_page_fault_trace {
+            self.page_fault_trace = None;
+        }
         // S4-39d: the walker takes the CPL of the context; the origin is normalized to `Explicit`
         // as before, but a descriptor-table access (IDT, GDT, TSS) keeps its supervisor page
         // privilege: at CPL3 it is made with CPL0 page rights (also under PTI, where these tables
@@ -1839,6 +3124,20 @@ impl PagedMovMemoryAdapter<'_> {
             context,
             operation,
         };
+        if let Some(walks) = self.walks {
+            match operation {
+                RamAccessOperation::Fetch => walks.note_fetch(),
+                RamAccessOperation::Read { .. } | RamAccessOperation::ReadPseudoDescriptor => {
+                    walks.note_read()
+                }
+                RamAccessOperation::Write { .. } => walks.note_write(),
+                // S6-31: the two walks of the serial read-then-write pair, counted as before.
+                RamAccessOperation::AtomicTarget { .. } => {
+                    walks.note_read();
+                    walks.note_write();
+                }
+            }
+        }
         let vcpu = self.bus.vcpu();
         let report = if self.capture_effects {
             let mut writes = Vec::new();
@@ -1893,6 +3192,13 @@ impl PagedMovMemoryAdapter<'_> {
                 &mut *self.committed_write,
             )
         };
+        if self.capture_page_fault_trace {
+            self.page_fault_trace = report
+                .outcome
+                .as_ref()
+                .err()
+                .and_then(|error| faulting_page_walk_context(error, report.trace));
+        }
         match report.outcome {
             Ok(outcome) => Ok(outcome),
             Err(error) => {
@@ -1917,7 +3223,7 @@ impl PagedMovMemoryAdapter<'_> {
             origin: od_isa::memory::AccessOrigin::Explicit,
             ..context
         };
-        if let Some(frame) = cache.lookup(address, &self.paging, context)
+        if let Some(frame) = cache.lookup_fetch(address, &self.paging, context)
             && let Some(memory) = self.bus.ram_ref()
             && let Some(byte) = memory.read_ram_frame_u8(frame, address)
         {
@@ -1927,8 +3233,30 @@ impl PagedMovMemoryAdapter<'_> {
             TrackedAccessOutcome::Fetched(value) => value,
             _ => return Err(Self::unsupported("non-fetch result")),
         };
-        if let Some(memory) = self.bus.ram_mut()
-            && let Ok((physical, tables)) = translate_long64_2m_ram_read_only_with_tables(
+        self.remember_fetch_translation(cache, address, context);
+        Ok(byte)
+    }
+
+    /// S4-13 / S6-34 step 9: remember the translation of a fetch that just succeeded. For the
+    /// cache of a vCPU thread of the parallel mode (`FetchTranslationCache::is_strict`) three
+    /// steps, in this order, so that the generation of every table frame is read BEFORE the walk
+    /// whose bytes make the entry (the reader's rule of S6-30b): (1) a read-only walk names the
+    /// table frames; (2) the page generation of each is read; (3) a second read-only walk makes the
+    /// entry, and the entry is kept only if it walked the same frames. A write to a table frame by
+    /// another vCPU after (2) leaves the stored generation older than the page, and the next
+    /// `seal`/`revalidate` drops the entry. Any other cache takes the one walk of (3) and reads the
+    /// generations at the seal. The walks write nothing.
+    fn remember_fetch_translation(
+        &self,
+        cache: &FetchTranslationCache,
+        address: u64,
+        context: AccessContext,
+    ) {
+        let Some(memory) = self.bus.ram_ref() else {
+            return;
+        };
+        let walk = |memory: &crate::PhysicalMemory| {
+            translate_long64_2m_ram_read_only_with_tables(
                 memory,
                 &self.paging,
                 self.instruction_rip,
@@ -1936,24 +3264,57 @@ impl PagedMovMemoryAdapter<'_> {
                 context,
                 od_isa::memory::AccessKind::Fetch,
             )
-        {
-            // Only plain RAM is cached: a write to it always notifies the cache, and the byte of
-            // the frame reads exactly as the walk's fetch read it.
-            let is_ram = |base: u64| {
-                matches!(
-                    memory.locate_region_kind(GuestPhysicalAddress::new(base), 0x1000),
-                    Ok(MemoryRegionKind::Ram)
-                )
+        };
+        // A cache that is not strict reads the generations at the seal and needs the one walk of
+        // (3): the order of the interleaved mode, as before S6-34.
+        let strict = cache.is_strict();
+        let (first_tables, generations) = if strict {
+            let Ok((_, first_tables)) = walk(memory) else {
+                return;
             };
-            let tables = tables.map(|table| table.map(GuestPhysicalAddress::get));
-            if let Some(frame) =
-                memory.ram_frame(GuestPhysicalAddress::new(physical.get() & !0xfff))
-                && tables.iter().flatten().all(|table| is_ram(*table & !0xfff))
-            {
-                cache.insert(address, &self.paging, context, frame, tables);
-            }
+            let generations = first_tables
+                .map(|table| table.and_then(|base| memory.code_page_generation(base).ok()));
+            (first_tables, generations)
+        } else {
+            ([None; 4], [None; 4])
+        };
+        let Ok((physical, tables)) = walk(memory) else {
+            return;
+        };
+        if strict && tables != first_tables {
+            return;
         }
-        Ok(byte)
+        // Only plain RAM is cached: a write to it always notifies the cache, and the byte of
+        // the frame reads exactly as the walk's fetch read it.
+        let is_ram = |base: u64| {
+            matches!(
+                memory.locate_region_kind(GuestPhysicalAddress::new(base), 0x1000),
+                Ok(MemoryRegionKind::Ram)
+            )
+        };
+        let tables = tables.map(|table| table.map(GuestPhysicalAddress::get));
+        // S4-13d: with the 2 MiB tag a walk that ended at a 2 MiB leaf (three tables) whose
+        // whole 2 MiB span is plain RAM is remembered for the whole leaf; the span's base is
+        // the physical address minus the offset of the request inside the leaf. Anything else
+        // (a 4 KiB leaf, a span that is not wholly RAM, a base that is not 2 MiB aligned)
+        // stays a 4 KiB entry, as without the tag.
+        let leaf_frame =
+            (cache.tag() == FetchCacheTag::Leaf2M && tables[2].is_some() && tables[3].is_none())
+                .then(|| physical.get().wrapping_sub(address & 0x1f_ffff))
+                .and_then(|base| memory.ram_leaf_2m(GuestPhysicalAddress::new(base)));
+        if let Some(frame) = leaf_frame
+            .or_else(|| memory.ram_frame(GuestPhysicalAddress::new(physical.get() & !0xfff)))
+            && tables.iter().flatten().all(|table| is_ram(*table & !0xfff))
+        {
+            cache.insert_with_generations(
+                address,
+                &self.paging,
+                context,
+                frame,
+                tables,
+                generations,
+            );
+        }
     }
 
     fn access_cross_page_read(
@@ -1962,18 +3323,39 @@ impl PagedMovMemoryAdapter<'_> {
         context: AccessContext,
         width: crate::AccessWidth,
     ) -> Result<u64, MemoryError> {
+        if self.capture_page_fault_trace {
+            self.page_fault_trace = None;
+        }
         let context = AccessContext {
             origin: od_isa::memory::AccessOrigin::Explicit,
             ..context
         };
+        let request = TrackedAccessRequest {
+            instruction_rip: self.instruction_rip,
+            address: GuestLinearAddress::new(address),
+            context,
+            operation: RamAccessOperation::Read { width },
+        };
+        if self.capture_page_fault_trace {
+            self.page_fault_trace = None;
+            let mut trace = None;
+            let result = self
+                .bus
+                .machine()?
+                .read_tracked_bounded_ram_read_with_fault_trace(
+                    &self.paging,
+                    request,
+                    &mut *self.committed_write,
+                    &mut trace,
+                );
+            if let (Some(trace), Err(error)) = (trace, &result) {
+                self.page_fault_trace = faulting_page_walk_context(error, trace);
+            }
+            return result.map_err(|error| self.map_access_error(error));
+        }
         let result = self.bus.machine()?.read_tracked_bounded_ram_read(
             &self.paging,
-            TrackedAccessRequest {
-                instruction_rip: self.instruction_rip,
-                address: GuestLinearAddress::new(address),
-                context,
-                operation: RamAccessOperation::Read { width },
-            },
+            request,
             &mut *self.committed_write,
         );
         result.map_err(|error| self.map_access_error(error))
@@ -1989,26 +3371,45 @@ impl PagedMovMemoryAdapter<'_> {
         context: AccessContext,
         source: &[u8],
     ) -> Result<(), MemoryError> {
+        if self.capture_page_fault_trace {
+            self.page_fault_trace = None;
+        }
         let context = AccessContext {
             origin: od_isa::memory::AccessOrigin::Explicit,
             ..context
         };
         let second_page = (address & !0xfff).wrapping_add(0x1000);
         for check_address in [address, second_page] {
+            let mut trace = None;
             let result = match &mut self.bus {
-                AdapterBus::Ram(memory) | AdapterBus::RamMmio(memory, _) => {
-                    crate::page_walk::translate_long64_2m_ram_write_check(
-                        memory,
-                        &self.paging,
-                        self.instruction_rip,
-                        GuestLinearAddress::new(check_address),
-                        context,
-                        &mut *self.committed_write,
-                    )
+                AdapterBus::Ram(memory) | AdapterBus::RamMmio(memory, _, _) => {
+                    if self.capture_page_fault_trace {
+                        crate::page_walk::translate_long64_2m_ram_write_check_with_fault_trace(
+                            memory,
+                            &self.paging,
+                            self.instruction_rip,
+                            GuestLinearAddress::new(check_address),
+                            context,
+                            &mut *self.committed_write,
+                            Some(&mut trace),
+                        )
+                    } else {
+                        crate::page_walk::translate_long64_2m_ram_write_check(
+                            memory,
+                            &self.paging,
+                            self.instruction_rip,
+                            GuestLinearAddress::new(check_address),
+                            context,
+                            &mut *self.committed_write,
+                        )
+                    }
                 }
                 AdapterBus::Machine(..) => return Err(Self::unsupported("cross-page write")),
             };
             if let Err(error) = result {
+                if let Some(trace) = trace {
+                    self.page_fault_trace = faulting_page_walk_context(&error, trace);
+                }
                 self.access_error = Some(error.clone());
                 return Err(self.map_access_error(error));
             }
@@ -2027,6 +3428,180 @@ impl PagedMovMemoryAdapter<'_> {
             }
         }
         Ok(())
+    }
+
+    /// S6-31: the width of a locked operation of `size` under this adapter's profile: the widths
+    /// the ordinary read and the ordinary write of the same adapter admit (a locked operation
+    /// replaces that pair), no other.
+    fn locked_width(&self, size: od_isa::OperandSize) -> Result<crate::AccessWidth, MemoryError> {
+        use crate::AccessWidth;
+        // The ordinary read admits (as in `read`): byte with the set's byte read, word with a word
+        // profile, dword with a dword profile, qword only without the narrow-read profiles.
+        // The ordinary write admits (as in `write`): only a dword with the dword-store profile;
+        // 1, 2, 4 and 8 bytes with the narrow-store set; only 8 bytes otherwise.
+        let (width, readable, writable) = match size {
+            od_isa::OperandSize::Byte => (
+                AccessWidth::Byte,
+                self.cpl0_set_byte_read,
+                self.cpl0_set_narrow_write && !self.dword_write_profile,
+            ),
+            od_isa::OperandSize::Word => (
+                AccessWidth::Word,
+                self.word_read_profile || self.cpl0_set_word_read,
+                self.cpl0_set_narrow_write && !self.dword_write_profile,
+            ),
+            od_isa::OperandSize::Dword => (
+                AccessWidth::Dword,
+                self.dword_read_profile || self.cpl0_set_dword_read,
+                self.dword_write_profile || self.cpl0_set_narrow_write,
+            ),
+            od_isa::OperandSize::Qword => (
+                AccessWidth::Qword,
+                !self.dword_read_profile && !self.word_read_profile,
+                !self.dword_write_profile,
+            ),
+        };
+        if self.read_only_qword {
+            return Err(Self::unsupported("locked operation"));
+        }
+        if !readable {
+            return Err(Self::unsupported("read width"));
+        }
+        if !writable {
+            return Err(Self::unsupported("write width"));
+        }
+        Ok(width)
+    }
+
+    /// S6-31: the translation half of a locked operation. A naturally aligned operand: walk like
+    /// the serial read and write pair did and return the physical address of the operand (RAM or
+    /// framebuffer; MMIO, ROM and holes are refused); the host atomic operation follows in
+    /// [`Self::locked_finish`]. A misaligned operand (S6-32, the return condition of S6-31): in
+    /// the interleaving mode it is [`LockedTarget::Serial`], and the caller runs the S6-20 pair
+    /// (ordinary read, ordinary write: nothing else runs between them, the scheduler switches only
+    /// on instruction boundaries), no counter; in the parallel mode it is refused and counted
+    /// before any walk (no accessed or dirty bit set), until the stop-all of S6-34 step 8.
+    fn locked_target(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        size: od_isa::OperandSize,
+    ) -> Result<LockedTarget<'a>, MemoryError> {
+        let width = self.locked_width(size)?;
+        if address % u64::from(width.bytes()) != 0 {
+            if self.bus.locked_memory().execution_mode() == crate::ExecutionMode::Interleaved {
+                return Ok(LockedTarget::Serial);
+            }
+            // S6-34 step 8: a vCPU thread of the parallel mode carries the gate that stops every
+            // other vCPU around the operation; without one the refusal of S6-31 stays.
+            if let Some(gate) = self.bus.split_gate() {
+                return Ok(LockedTarget::Stopped(gate));
+            }
+            self.bus.locked_memory().count_split_lock_refusal();
+            return Err(MemoryError::Backend(format!(
+                "locked operation of {} bytes at {address:#x} is not naturally aligned: a split \
+                 lock is refused in the parallel mode without the stop-all gate of the vCPU \
+                 threads (S6-31: no 16-byte primitive; S6-34 step 8)",
+                width.bytes()
+            )));
+        }
+        match self.access(address, context, RamAccessOperation::AtomicTarget { width })? {
+            TrackedAccessOutcome::Located(physical) => Ok(LockedTarget::Host { width, physical }),
+            _ => Err(Self::unsupported("non-locate result")),
+        }
+    }
+
+    /// S6-34 step 8: the split `LOCK` of the parallel mode. [`SplitLockGate::acquire`] returns
+    /// when every other vCPU is quiet and no visible effect of this instruction has happened yet;
+    /// the serial pair of S6-32 then runs with nobody else touching RAM; the gate is released
+    /// when the operation is over, whatever its result. If the gate cannot be had in time the
+    /// instruction fails before any effect (a typed backend error, never a half operation).
+    fn locked_stopped(
+        &mut self,
+        gate: &dyn crate::bus::SplitLockGate,
+        address: u64,
+        context: AccessContext,
+        size: od_isa::OperandSize,
+        update: &mut dyn FnMut(u64) -> u64,
+    ) -> Result<u64, MemoryError> {
+        struct Release<'g>(&'g dyn crate::bus::SplitLockGate);
+        impl Drop for Release<'_> {
+            fn drop(&mut self) {
+                self.0.release();
+            }
+        }
+        gate.acquire()
+            .map_err(|error| MemoryError::Backend(format!("split lock gate: {error}")))?;
+        let _release = Release(gate);
+        self.locked_serial(address, context, size, update)
+    }
+
+    /// The operation of a locked operand that no host atomic covers: the serial pair of the
+    /// interleaving mode, or the same pair under the gate of the parallel mode.
+    fn locked_split(
+        &mut self,
+        target: LockedTarget<'_>,
+        address: u64,
+        context: AccessContext,
+        size: od_isa::OperandSize,
+        update: &mut dyn FnMut(u64) -> u64,
+    ) -> Result<u64, MemoryError> {
+        match target {
+            LockedTarget::Stopped(gate) => {
+                self.locked_stopped(gate, address, context, size, update)
+            }
+            LockedTarget::Serial | LockedTarget::Host { .. } => {
+                self.locked_serial(address, context, size, update)
+            }
+        }
+    }
+
+    /// S6-32: the serial split `LOCK` of the interleaving mode: the body of the default
+    /// [`GuestMemory::atomic_rmw_integer`] (an ordinary read, `update`, an ordinary write; the
+    /// write is always performed, also when the value is unchanged), through this adapter's own
+    /// read and write, so a misaligned or page-crossing operand takes the same walks, accessed and
+    /// dirty bits and notifications as before S6-31.
+    fn locked_serial(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        size: od_isa::OperandSize,
+        update: &mut dyn FnMut(u64) -> u64,
+    ) -> Result<u64, MemoryError> {
+        let old = self.read_integer(address, context, size)?;
+        let new = update(old);
+        self.write_integer(address, context, size, new)?;
+        Ok(old)
+    }
+
+    /// S6-31: runs the host atomic operation of a locked access on the physical address from
+    /// [`Self::locked_target`]. The committed-write notification of the operation goes where the
+    /// walk's own go (the capture list or the callback of this adapter), after the data and the
+    /// generations; a memory error is the typed operand error of the tracked access.
+    fn locked_finish<R>(
+        &mut self,
+        physical: GuestPhysicalAddress,
+        operation: impl FnOnce(
+            &crate::PhysicalMemory,
+            &mut dyn FnMut(GuestPhysicalRange),
+        ) -> Result<R, crate::MemoryAccessError>,
+    ) -> Result<R, MemoryError> {
+        let mut written = None;
+        let result = operation(self.bus.locked_memory(), &mut |range| written = Some(range));
+        if let Some(range) = written {
+            match self.committed_writes.as_mut() {
+                Some(collector) if self.capture_effects => collector.push(range),
+                _ => (self.committed_write)(range),
+            }
+        }
+        result.map_err(|source| {
+            let error = TrackedAccessError::OperandPhysical {
+                address: physical,
+                source,
+            };
+            self.access_error = Some(error.clone());
+            self.map_access_error(error)
+        })
     }
 
     fn map_access_error(&mut self, error: TrackedAccessError) -> MemoryError {
@@ -2053,7 +3628,22 @@ impl PagedMovMemoryAdapter<'_> {
     }
 }
 
-impl GuestMemory for PagedMovMemoryAdapter<'_> {
+/// S6-32: what [`PagedMovMemoryAdapter::locked_target`] decided for a locked operand.
+#[derive(Clone, Copy)]
+enum LockedTarget<'g> {
+    /// Naturally aligned: one host atomic operation on the cell at `physical`.
+    Host {
+        width: crate::AccessWidth,
+        physical: GuestPhysicalAddress,
+    },
+    /// Misaligned in the interleaving mode: the serial read-update-write pair.
+    Serial,
+    /// Misaligned in the parallel mode on a vCPU thread: the serial pair under the gate that
+    /// stops every other vCPU (S6-34 step 8).
+    Stopped(&'g dyn crate::bus::SplitLockGate),
+}
+
+impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
     fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
         if self.read_only_qword {
             return Err(Self::unsupported("instruction fetch"));
@@ -2104,8 +3694,8 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
             _ => return Err(Self::unsupported("read width")),
         };
         if self.reject_crossing_qword
-            && width == crate::AccessWidth::Qword
-            && (address & 0xfff) + 8 > 4096
+            && matches!(width, crate::AccessWidth::Qword | crate::AccessWidth::Dword)
+            && (address & 0xfff) + u64::from(width.bytes()) > 4096
         {
             return Err(Self::unsupported("cross-page qword read"));
         }
@@ -2219,39 +3809,99 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         }
     }
 
+    // S6-31: the locked operations run on the host atomics of the RAM (`PhysicalMemory::atomic_*`,
+    // `SeqCst`; `CASAL`/`SWPAL`/`LDADDAL` on aarch64 with LSE). The tracked walk (`AtomicTarget`)
+    // does what the read and write of the serial S6-20 default did to the page tables and returns
+    // the physical address; then ONE host operation on the aligned cell. A misaligned operand
+    // (including a page-crossing one): in the interleaving mode the serial S6-20 pair (S6-32, no
+    // counter), in the parallel mode refused and counted, never run as two host accesses; an
+    // MMIO, ROM or hole operand is refused. `atomic_rmw_integer` is a compare-exchange loop over the
+    // pure `update`; the three specializations are the single host operations (S6-06).
+
     fn atomic_exchange_integer(
         &mut self,
-        _address: u64,
-        _context: AccessContext,
-        _size: od_isa::OperandSize,
-        _replacement: u64,
+        address: u64,
+        context: AccessContext,
+        size: od_isa::OperandSize,
+        replacement: u64,
     ) -> Result<u64, MemoryError> {
-        Err(Self::unsupported("atomic exchange"))
+        let target = self.locked_target(address, context, size)?;
+        let LockedTarget::Host { width, physical } = target else {
+            return self.locked_split(target, address, context, size, &mut |_| replacement);
+        };
+        self.locked_finish(physical, |memory, committed| {
+            memory.atomic_swap(physical, width, replacement, committed)
+        })
     }
 
     fn atomic_fetch_add_integer(
         &mut self,
-        _address: u64,
-        _context: AccessContext,
-        _size: od_isa::OperandSize,
-        _addend: u64,
+        address: u64,
+        context: AccessContext,
+        size: od_isa::OperandSize,
+        addend: u64,
     ) -> Result<u64, MemoryError> {
-        Err(Self::unsupported("atomic fetch-add"))
+        let target = self.locked_target(address, context, size)?;
+        let LockedTarget::Host { width, physical } = target else {
+            return self.locked_split(target, address, context, size, &mut |old| {
+                old.wrapping_add(addend) & size.mask()
+            });
+        };
+        self.locked_finish(physical, |memory, committed| {
+            memory.atomic_fetch_add(physical, width, addend, committed)
+        })
     }
 
     fn atomic_compare_exchange_integer(
         &mut self,
-        _address: u64,
-        _context: AccessContext,
-        _size: od_isa::OperandSize,
-        _expected: u64,
-        _replacement: u64,
+        address: u64,
+        context: AccessContext,
+        size: od_isa::OperandSize,
+        expected: u64,
+        replacement: u64,
     ) -> Result<u64, MemoryError> {
-        Err(Self::unsupported("atomic compare-exchange"))
+        let target = self.locked_target(address, context, size)?;
+        let LockedTarget::Host { width, physical } = target else {
+            let expected = expected & size.mask();
+            return self.locked_split(target, address, context, size, &mut |old| {
+                if old == expected {
+                    replacement & size.mask()
+                } else {
+                    old
+                }
+            });
+        };
+        self.locked_finish(physical, |memory, committed| {
+            memory.atomic_compare_exchange(physical, width, expected, replacement, committed)
+        })
+    }
+
+    fn atomic_rmw_integer(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        size: od_isa::OperandSize,
+        update: &mut dyn FnMut(u64) -> u64,
+    ) -> Result<u64, MemoryError> {
+        let target = self.locked_target(address, context, size)?;
+        let LockedTarget::Host { width, physical } = target else {
+            return self.locked_split(target, address, context, size, update);
+        };
+        self.locked_finish(physical, |memory, committed| {
+            memory.atomic_rmw(physical, width, update, committed)
+        })
     }
 
     fn mfence(&mut self, _context: AccessContext) -> Result<(), MemoryError> {
         Err(Self::unsupported("MFENCE"))
+    }
+
+    /// S6-32: the CPL0 set's fences end here: the memory places the host fence of its execution
+    /// mode (a host fence in the parallel mode, nothing in the interleaving mode); guest RAM is
+    /// not touched.
+    fn fence(&mut self, kind: od_isa::FenceKind) -> Result<(), MemoryError> {
+        self.bus.locked_memory().fence(kind);
+        Ok(())
     }
 }
 
@@ -2331,6 +3981,8 @@ mod tests {
             page_fault: None,
             memory_error: None,
             access_error: None,
+            page_fault_trace: None,
+            capture_page_fault_trace: false,
             committed_ad_updates: None,
             committed_writes: None,
             capture_effects: false,
@@ -2349,7 +4001,567 @@ mod tests {
             cpl0_set_cross_page_store: false,
             cpl0_set_cross_page_read: false,
             fetch_cache: None,
+            walks: None,
         }
+    }
+
+    fn pending_post_iret(access: &str, cpl: u8) -> PendingPostIretObservation {
+        PendingPostIretObservation {
+            event_ordinal: 2,
+            fault_rip: 0x0040_0000,
+            fault_cr2: DATA_LINEAR + 0x456,
+            fault_access: access.into(),
+            fault_cpl: cpl,
+            fault_rsp: 0x7000,
+            fault_cs: Some(if cpl == 3 { 0x23 } else { 0x08 }),
+        }
+    }
+
+    #[test]
+    fn post_iret_snapshot_observes_handler_repaired_missing_leaf_without_a_d_updates() {
+        let mut bus = bus(0);
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let (original_fault, original_trace) = {
+            let (memory, _) = bus.split_for_pio_step();
+            translate_long64_2m_ram_read_only_with_trace(
+                memory,
+                &paging,
+                0x0040_0000,
+                GuestLinearAddress::new(DATA_LINEAR + 0x456),
+                context(),
+                AccessKind::Write,
+            )
+        };
+        assert!(matches!(
+            original_fault,
+            Err(TrackedAccessError::PageFault { .. })
+        ));
+        assert_eq!(original_trace.len(), 4);
+
+        // Model the handler repair between delivery and IRET.
+        put(&mut bus, 0x5000, 0x9007);
+        let before = [0x1000, 0x2000, 0x3010, 0x3020, 0x5000].map(|address| {
+            bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap()
+        });
+        let mut writes = Vec::new();
+        let mut callback = |range| writes.push(range);
+        let mut memory = adapter(&mut bus, &mut callback);
+        let pending = pending_post_iret("Write", 3);
+        let mut state = LongModeState::default();
+        state.rip = pending.fault_rip;
+        state.cs_selector = pending.fault_cs;
+        state.gpr[od_isa::Register::Rsp as usize] = pending.fault_rsp;
+        let snapshot = memory.capture_post_iret_page_walk(pending, &state, 0x1000);
+        assert_eq!(snapshot.translation_status, "translated");
+        assert_eq!(snapshot.translated_physical, Some(0x9456));
+        assert_eq!(snapshot.entries.len(), 4);
+        drop(memory);
+        drop(callback);
+        let after = [0x1000, 0x2000, 0x3010, 0x3020, 0x5000].map(|address| {
+            bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap()
+        });
+        assert_eq!(before, after);
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn post_iret_snapshot_uses_the_shared_two_mib_leaf_walk() {
+        let mut bus = bus(0);
+        put(&mut bus, 0x3020, 0x87);
+        let mut writes = |_| {};
+        let mut memory = adapter(&mut bus, &mut writes);
+        let pending = pending_post_iret("Read", 3);
+        let mut state = LongModeState::default();
+        state.rip = pending.fault_rip;
+        state.cs_selector = pending.fault_cs;
+        state.gpr[od_isa::Register::Rsp as usize] = pending.fault_rsp;
+        let snapshot = memory.capture_post_iret_page_walk(pending, &state, ROOT);
+        assert_eq!(snapshot.translation_status, "translated");
+        assert_eq!(snapshot.translated_physical, Some(0x456));
+        assert_eq!(snapshot.entries.len(), 3);
+        assert_eq!(snapshot.entries[2].entry_value, 0x87);
+    }
+
+    #[test]
+    fn nested_interrupt_return_context_cannot_complete_the_selected_page_fault() {
+        let mut collector = LinuxExecutionObservationCollector::with_post_iret_ordinal(Some(0));
+        let event = DeliveredPageFaultObservation {
+            rip: 0x0040_0000,
+            cr2: DATA_LINEAR,
+            error_code: 7,
+            access: "Write".into(),
+            cpl: 3,
+            faulting_context: FaultingPageFaultContext {
+                cr3: ROOT,
+                rsp: 0x7000,
+                rbp: 0,
+                rcx: 0,
+                rsi: 0,
+                rdi: 0,
+                cs_selector: Some(0x23),
+                frame_chain: Vec::new(),
+                frame_chain_end: crate::FrameChainEnd::NullFramePointer,
+                page_walk: None,
+            },
+        };
+        collector.record_page_fault(event);
+        let pending = collector.pending_post_iret().unwrap();
+        let mut nested_irq_return = LongModeState::default();
+        nested_irq_return.rip = 0xffff_ffff_8100_1000;
+        nested_irq_return.cs_selector = Some(0x08);
+        nested_irq_return.gpr[od_isa::Register::Rsp as usize] = 0x9000;
+        assert!(!post_iret_context_matches(&pending, &nested_irq_return));
+        collector.note_nested_delivery();
+        assert!(!collector.accept_post_iret_return(false));
+        assert_eq!(collector.pending_post_iret(), Some(pending.clone()));
+
+        let mut selected_fault_return = LongModeState::default();
+        selected_fault_return.rip = pending.fault_rip;
+        selected_fault_return.cs_selector = pending.fault_cs;
+        selected_fault_return.gpr[od_isa::Register::Rsp as usize] = pending.fault_rsp;
+        assert!(post_iret_context_matches(&pending, &selected_fault_return));
+        assert!(collector.accept_post_iret_return(true));
+        collector.record_post_iret_page_walk(PostIretPageWalkSnapshot {
+            event_ordinal: pending.event_ordinal,
+            fault_rip: pending.fault_rip,
+            fault_cr2: pending.fault_cr2,
+            fault_access: pending.fault_access,
+            fault_cpl: pending.fault_cpl,
+            post_iret_rip: selected_fault_return.rip,
+            post_iret_cs: selected_fault_return.cs_selector,
+            post_iret_cpl: 3,
+            post_iret_rsp: pending.fault_rsp,
+            post_iret_cr3: ROOT,
+            entries: Vec::new(),
+            translation_status: "translated",
+            translated_physical: Some(0x9000),
+            translation_error: None,
+        });
+        let observations = collector.finish();
+        assert_eq!(observations.post_iret_page_walk_status, Some("captured"));
+        assert_eq!(
+            observations.post_iret_page_walk.unwrap().event_ordinal,
+            pending.event_ordinal
+        );
+    }
+
+    #[test]
+    fn post_iret_snapshot_reports_permission_fault_and_preserves_page_tables() {
+        let mut bus = bus(0x9005);
+        let before = [0x1000, 0x2000, 0x3010, 0x3020, 0x5000].map(|address| {
+            bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap()
+        });
+        let mut writes = |_| {};
+        let mut memory = adapter(&mut bus, &mut writes);
+        let pending = pending_post_iret("Write", 3);
+        let mut state = LongModeState::default();
+        state.rip = pending.fault_rip;
+        state.cs_selector = pending.fault_cs;
+        state.gpr[od_isa::Register::Rsp as usize] = pending.fault_rsp;
+        let snapshot = memory.capture_post_iret_page_walk(pending, &state, ROOT);
+        assert_eq!(snapshot.translation_status, "page_fault");
+        assert_eq!(snapshot.entries.len(), 4);
+        assert!(
+            snapshot
+                .translation_error
+                .as_deref()
+                .is_some_and(|error| error.contains("write_denied: true"))
+        );
+        drop(memory);
+        let after = [0x1000, 0x2000, 0x3010, 0x3020, 0x5000].map(|address| {
+            bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap()
+        });
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn adapter_diagnostic_frame_read_refuses_mapped_rom() {
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), 0x9000).unwrap();
+        let rom = GuestPhysicalRange::new(GuestPhysicalAddress::new(0x9000), 0x1000).unwrap();
+        let map = MachineMemoryMap::new(
+            36,
+            vec![
+                MemoryRegionSpec::new(ram, MemoryRegionKind::Ram),
+                MemoryRegionSpec::new(rom, MemoryRegionKind::Rom),
+            ],
+        )
+        .unwrap();
+        let mut memory = crate::PhysicalMemory::new(&map, RamLimits::new(0x9000)).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3020, 0x5007),
+            (0x5000, 0x9007),
+        ] {
+            memory
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+        }
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let mut bus = AdapterBus::Ram(&mut memory);
+        let mut bytes = [0xaa; 16];
+        assert_eq!(
+            bus.read_virtual_ram_diagnostic(
+                &paging,
+                0x0040_0000,
+                GuestLinearAddress::new(DATA_LINEAR),
+                context(),
+                &mut bytes,
+            ),
+            Err(())
+        );
+        assert_eq!(bytes, [0xaa; 16]);
+    }
+
+    #[test]
+    fn cross_page_read_keeps_the_failed_second_page_walk_when_opted_in() {
+        let mut bus = bus(0x7007);
+        let mut committed = |_| {};
+        let mut memory = adapter(&mut bus, &mut committed);
+        memory.capture_page_fault_trace = true;
+        let error = memory
+            .access_cross_page_read(DATA_LINEAR + 0xffc, context(), AccessWidth::Qword)
+            .unwrap_err();
+        assert!(matches!(error, MemoryError::Architectural(_)));
+        let walk = memory.page_fault_trace.as_ref().unwrap();
+        assert_eq!(
+            walk.reason,
+            crate::PageFaultReason::NotPresent {
+                level: crate::PageTableLevel::Pt,
+            }
+        );
+        assert_eq!(walk.entries.len(), 4);
+        assert_eq!(walk.entries[3].entry_address.get(), 0x5008);
+        assert_eq!(walk.entries[3].entry_value, 0);
+        memory.capture_page_fault_trace = false;
+        memory.page_fault_trace = None;
+        assert!(
+            memory
+                .access_cross_page_read(DATA_LINEAR + 0xffc, context(), AccessWidth::Qword,)
+                .is_err()
+        );
+        assert!(memory.page_fault_trace.is_none(), "capture is opt-in");
+        drop(memory);
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(0x5000), AccessWidth::Qword)
+                .unwrap()
+                & 0x60,
+            0x20
+        );
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(0x5008), AccessWidth::Qword)
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn cross_page_write_preflight_keeps_failed_walk_without_dirty_or_operand_write() {
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_LEN).unwrap();
+        let map =
+            MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                .unwrap();
+        let mut physical = crate::PhysicalMemory::new(&map, RamLimits::new(RAM_LEN)).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3020, 0x5007),
+            (0x5000, 0x7007),
+        ] {
+            physical
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+        }
+        physical
+            .store_bytes(GuestPhysicalAddress::new(0x7ffc), &[0x11; 4], |_| {})
+            .unwrap();
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let mut committed = |_| {};
+        let mut memory = set_loop_adapter(
+            &mut physical,
+            None,
+            paging,
+            0x0040_0000,
+            &mut committed,
+            None,
+            None,
+        );
+        memory.capture_page_fault_trace = true;
+        let error = memory
+            .write_crossing_page(DATA_LINEAR + 0xffc, context(), &[0x22; 8])
+            .unwrap_err();
+        assert!(matches!(error, MemoryError::Architectural(_)));
+        let walk = memory.page_fault_trace.as_ref().unwrap();
+        assert_eq!(
+            walk.reason,
+            crate::PageFaultReason::NotPresent {
+                level: crate::PageTableLevel::Pt,
+            }
+        );
+        assert_eq!(walk.entries.len(), 4);
+        assert_eq!(walk.entries[3].entry_address.get(), 0x5008);
+        assert_eq!(walk.entries[3].entry_value, 0);
+        memory.capture_page_fault_trace = false;
+        memory.page_fault_trace = None;
+        assert!(
+            memory
+                .write_crossing_page(DATA_LINEAR + 0xffc, context(), &[0x33; 8])
+                .is_err()
+        );
+        assert!(memory.page_fault_trace.is_none(), "capture is opt-in");
+        drop(memory);
+        assert_eq!(
+            physical
+                .load_u64(GuestPhysicalAddress::new(0x5000))
+                .unwrap()
+                & 0x60,
+            0x20,
+            "the successful preflight sets A but not D"
+        );
+        assert_eq!(
+            physical
+                .load_u64(GuestPhysicalAddress::new(0x5008))
+                .unwrap(),
+            0
+        );
+        let mut operand = [0; 4];
+        physical
+            .load_bytes(GuestPhysicalAddress::new(0x7ffc), &mut operand)
+            .unwrap();
+        assert_eq!(
+            operand, [0x11; 4],
+            "failed preflight stores no operand bytes"
+        );
+    }
+
+    /// S6-30c: the adapter of a vCPU holds a shared reference to the RAM, so the adapters of
+    /// several vCPUs exist at once on one memory. A store through one is seen through the other,
+    /// each adapter reports only its own committed writes, and adapters built on separate host
+    /// threads, one per thread, share the same memory. Tables have A and D set already, so no
+    /// table write takes part in the comparison.
+    #[test]
+    fn adapters_of_two_vcpus_share_one_ram() {
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_LEN).unwrap();
+        let map =
+            MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                .unwrap();
+        let mut physical = crate::PhysicalMemory::new(&map, RamLimits::new(RAM_LEN)).unwrap();
+        physical.set_execution_mode(crate::ExecutionMode::Parallel);
+        for (address, value) in [
+            (0x1000, 0x2027),
+            (0x2000, 0x3027),
+            (0x3020, 0x5027),
+            (0x5000, 0x7067),
+        ] {
+            physical
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+        }
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let operand = |address: u64, len: u64| {
+            GuestPhysicalRange::new(GuestPhysicalAddress::new(address), len).unwrap()
+        };
+
+        let mut log_a = Vec::new();
+        let mut log_b = Vec::new();
+        {
+            let mut note_a = |written| log_a.push(written);
+            let mut note_b = |written| log_b.push(written);
+            let mut a = set_loop_adapter(
+                &physical,
+                None,
+                paging,
+                0x0040_0000,
+                &mut note_a,
+                None,
+                None,
+            );
+            let mut b = set_loop_adapter(
+                &physical,
+                None,
+                paging,
+                0x0040_0000,
+                &mut note_b,
+                None,
+                None,
+            );
+            a.write(DATA_LINEAR + 0x10, context(), &[1, 2, 3, 4, 5, 6, 7, 8])
+                .unwrap();
+            let mut seen = [0u8; 8];
+            b.read(DATA_LINEAR + 0x10, context(), &mut seen).unwrap();
+            assert_eq!(seen, [1, 2, 3, 4, 5, 6, 7, 8], "B sees the store of A");
+            b.write(DATA_LINEAR + 0x14, context(), &[9, 9, 9, 9])
+                .unwrap();
+            a.read(DATA_LINEAR + 0x10, context(), &mut seen).unwrap();
+            assert_eq!(seen, [1, 2, 3, 4, 9, 9, 9, 9], "A sees the store of B");
+        }
+        assert_eq!(log_a, vec![operand(0x7010, 8)]);
+        assert_eq!(log_b, vec![operand(0x7014, 4)]);
+        let mut bytes = [0u8; 8];
+        physical
+            .load_bytes(GuestPhysicalAddress::new(0x7010), &mut bytes)
+            .unwrap();
+        assert_eq!(bytes, [1, 2, 3, 4, 9, 9, 9, 9]);
+
+        // One adapter per host thread, all on the same memory (no `&mut` is possible here).
+        const THREADS: u64 = 4;
+        std::thread::scope(|scope| {
+            for thread in 0..THREADS {
+                let physical = &physical;
+                scope.spawn(move || {
+                    let mut committed = |_| {};
+                    let mut adapter = set_loop_adapter(
+                        physical,
+                        None,
+                        paging,
+                        0x0040_0000,
+                        &mut committed,
+                        None,
+                        None,
+                    );
+                    let at = DATA_LINEAR + 0x100 + thread * 8;
+                    for round in 0..200u64 {
+                        let value = (thread << 32 | round).to_le_bytes();
+                        adapter.write(at, context(), &value).unwrap();
+                        let mut back = [0u8; 8];
+                        adapter.read(at, context(), &mut back).unwrap();
+                        assert_eq!(back, value);
+                    }
+                });
+            }
+        });
+        for thread in 0..THREADS {
+            assert_eq!(
+                physical.load_u64(GuestPhysicalAddress::new(0x7100 + thread * 8)),
+                Ok(thread << 32 | 199)
+            );
+        }
+    }
+
+    /// S6-34 step 9, with a real second thread (not a `join` after the fact): one thread rewrites
+    /// the PTE of the code page again and again (each version maps another frame, whose bytes name
+    /// the version) while the reader runs the loop's own sequence on a cache with the `WriteWatch`
+    /// policy: `revalidate` at the start of a call, a fetch through the cache (a hit, or a walk and
+    /// an insert), `seal` at the end. The reader reads the number of the last write that has
+    /// completed BEFORE it starts the call; the byte it fetches must come from that version or a
+    /// later one. A stale entry (the bytes of an older version) that survived the write would be
+    /// the failure of the order "bytes, then generation": the entry was made from the old PTE, the
+    /// write came after, and the generation taken at the seal already counted it. The cache takes
+    /// the generation before the bytes of the walk (`insert_with_generations`), so the write is
+    /// always seen as newer than the entry.
+    #[test]
+    fn a_pte_rewritten_by_another_thread_is_never_served_stale_from_the_fetch_cache() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        const FRAMES: u64 = 256;
+        const WRITES: u64 = 20_000;
+        const LEN: u64 = 0x1_0000 + FRAMES * 0x1000;
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), LEN).unwrap();
+        let map =
+            MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                .unwrap();
+        let mut physical = crate::PhysicalMemory::new(&map, RamLimits::new(LEN)).unwrap();
+        physical.set_execution_mode(crate::ExecutionMode::Parallel);
+        let pte = |version: u64| 0x1_0000 + (version % FRAMES) * 0x1000 + 0x67;
+        for (address, value) in [
+            (0x1000, 0x2027),
+            (0x2000, 0x3027),
+            (0x3020, 0x5027),
+            (0x5000, pte(0)),
+        ] {
+            physical
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+        }
+        for frame in 0..FRAMES {
+            // The byte at offset 0 of the frame names the version it belongs to.
+            physical
+                .store_u8(
+                    GuestPhysicalAddress::new(0x1_0000 + frame * 0x1000),
+                    frame as u8,
+                    |_| {},
+                )
+                .unwrap();
+        }
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let key = Some(crate::fetch_translation_cache::TranslationKey::new(
+            paging,
+            context(),
+        ));
+        let generation_of = |page: u64| {
+            physical
+                .code_page_generation(GuestPhysicalAddress::new(page << 12))
+                .ok()
+        };
+        let published = AtomicU64::new(0);
+        let cache = FetchTranslationCache::with_invalidation(FetchCacheInvalidation::WriteWatch)
+            .with_insert_generations();
+        let mut stale = 0u64;
+        let mut hits_after_write = 0u64;
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for version in 1..=WRITES {
+                    physical
+                        .store_u64(GuestPhysicalAddress::new(0x5000), pte(version), |_| {})
+                        .unwrap();
+                    published.store(version, Ordering::Release);
+                    // Let the reader run a call between most writes.
+                    std::thread::yield_now();
+                    for _ in 0..(version % 7) * 20 {
+                        std::hint::spin_loop();
+                    }
+                }
+            });
+            loop {
+                let seen = published.load(Ordering::Acquire);
+                cache.revalidate(key, &generation_of);
+                let mut committed = |_| {};
+                let mut adapter = set_loop_adapter(
+                    &physical,
+                    None,
+                    paging,
+                    DATA_LINEAR,
+                    &mut committed,
+                    Some(&cache),
+                    None,
+                );
+                // Twice: the second is a hit unless the first walk was refused.
+                for _ in 0..2 {
+                    let byte = u64::from(adapter.fetch(DATA_LINEAR, context()).unwrap());
+                    let after = published.load(Ordering::Acquire);
+                    // The byte names a version modulo the frames; it must be one in the window
+                    // `seen..=after + 1` (the writes that completed before the call, the ones that
+                    // came during it, and the one whose store is done but not yet published: the
+                    // writer is preempted between the two). A window as wide as the ring cannot
+                    // tell: not judged.
+                    if after + 1 - seen < FRAMES {
+                        let in_window = (seen..=after + 1).any(|version| version % FRAMES == byte);
+                        if !in_window {
+                            stale += 1;
+                        }
+                    }
+                }
+                drop(adapter);
+                cache.seal(key, &generation_of);
+                if seen >= WRITES {
+                    break;
+                }
+            }
+        });
+        hits_after_write += cache.stats().hits;
+        assert_eq!(
+            stale, 0,
+            "a fetch was served from a PTE older than a completed write"
+        );
+        assert!(
+            hits_after_write > 0,
+            "the cache served nothing: the test did not use it"
+        );
+        assert!(cache.stats().inserts > WRITES / 20, "{:?}", cache.stats());
+        eprintln!("fetch cache stress: {:?}", cache.stats());
     }
 
     fn invlpg_state(target: u64) -> LongModeState {
@@ -3535,6 +5747,933 @@ mod tests {
         assert_eq!(
             (pair.cpus[0].local.tpr, pair.cpus[1].local.tpr),
             (0x40, 0x30)
+        );
+    }
+
+    // ---- S6-31: locked operations on the host atomics of the shared RAM ----
+
+    const LOCK_ROM: u64 = 0x2_0000;
+    const LOCK_MMIO: u64 = 0x2_1000;
+    /// Accessed and dirty bits of a table entry.
+    const AD: u64 = 0x60;
+
+    /// RAM 0..0x20000 with ROM and MMIO frames behind it, the tables of `bus()` (code at linear
+    /// 0x400000 and data at `DATA_LINEAR` both reach frame 0x7000 unless `data_pte` says otherwise)
+    /// with `ad` in every table entry, and `data_pte` as the leaf of `DATA_LINEAR`.
+    fn lock_memory(ad: u64, data_pte: u64) -> crate::PhysicalMemory {
+        let map = MachineMemoryMap::new(
+            36,
+            vec![
+                MemoryRegionSpec::new(
+                    GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_LEN).unwrap(),
+                    MemoryRegionKind::Ram,
+                ),
+                MemoryRegionSpec::new(
+                    GuestPhysicalRange::new(GuestPhysicalAddress::new(LOCK_ROM), 0x1000).unwrap(),
+                    MemoryRegionKind::Rom,
+                ),
+                MemoryRegionSpec::new(
+                    GuestPhysicalRange::new(GuestPhysicalAddress::new(LOCK_MMIO), 0x1000).unwrap(),
+                    MemoryRegionKind::Mmio,
+                ),
+            ],
+        )
+        .unwrap();
+        let memory = crate::PhysicalMemory::new(&map, RamLimits::new(RAM_LEN + 0x1000)).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007 | ad),
+            (0x2000, 0x3007 | ad),
+            (0x3010, 0x4007 | ad),
+            (0x3020, 0x5007 | ad),
+            (0x4000, 0x7007 | ad),
+            (0x5000, data_pte),
+        ] {
+            memory
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+        }
+        memory
+    }
+
+    fn table_entries(memory: &crate::PhysicalMemory) -> Vec<u64> {
+        [0x1000u64, 0x2000, 0x3010, 0x3020, 0x4000, 0x5000]
+            .map(|address| memory.load_u64(GuestPhysicalAddress::new(address)).unwrap())
+            .to_vec()
+    }
+
+    fn data_frame(memory: &crate::PhysicalMemory) -> Vec<u8> {
+        let mut bytes = vec![0u8; 0x1000];
+        memory
+            .load_bytes(GuestPhysicalAddress::new(0x7000), &mut bytes)
+            .unwrap();
+        bytes
+    }
+
+    fn lock_adapter<'a>(
+        memory: &'a crate::PhysicalMemory,
+        committed: &'a mut dyn FnMut(GuestPhysicalRange),
+    ) -> PagedMovMemoryAdapter<'a> {
+        set_loop_adapter(
+            memory,
+            None,
+            Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+            0x0040_0000,
+            committed,
+            None,
+            None,
+        )
+    }
+
+    /// The serial S6-20 sequence a locked operation replaced: an ordinary read of the operand,
+    /// the update, an ordinary write of the result.
+    fn serial_rmw(
+        adapter: &mut PagedMovMemoryAdapter<'_>,
+        address: u64,
+        size: od_isa::OperandSize,
+        update: &mut dyn FnMut(u64) -> u64,
+    ) -> Result<u64, MemoryError> {
+        let old = adapter.read_integer(address, context(), size)?;
+        let new = update(old);
+        adapter.write_integer(address, context(), size, new)?;
+        Ok(old)
+    }
+
+    /// S6-31: the translation half of a locked operation does to the page tables, the callbacks
+    /// and the error state exactly what the serial read and write did: the same accessed and dirty
+    /// bits (also on a fault, where the accessed bits of the read walk stay), the same fault, the
+    /// same committed-write sequence, the same data; only the data access is one host operation.
+    /// Cases: tables with and without accessed/dirty bits, a leaf without dirty, a read-only page
+    /// (the fault of the write), a not-present page (the fault of the read).
+    #[test]
+    fn a_locked_operation_leaves_what_the_serial_read_and_write_left() {
+        use od_isa::OperandSize::{Byte, Dword, Qword, Word};
+        let sizes = [Byte, Word, Dword, Qword];
+        for ad in [0, AD] {
+            for data_pte in [0x7007u64, 0x7027, 0x7067, 0x7005, 0x7006, 0x0] {
+                for size in sizes {
+                    for kind in 0..5u64 {
+                        let operand = 0x1122_3344_5566_7788u64 ^ (kind << 8);
+                        let address = DATA_LINEAR + 0x40 + size.bytes() as u64 * 2;
+                        let fill = |memory: &crate::PhysicalMemory| {
+                            memory
+                                .store_u64(
+                                    GuestPhysicalAddress::new(0x7000 + (address & 0xfff & !7)),
+                                    0x0807_0605_0403_0201,
+                                    |_| {},
+                                )
+                                .unwrap();
+                        };
+                        let (memory_a, memory_b) =
+                            (lock_memory(ad, data_pte), lock_memory(ad, data_pte));
+                        fill(&memory_a);
+                        fill(&memory_b);
+                        let (mut log_a, mut log_b) = (Vec::new(), Vec::new());
+                        let (result_a, result_b, fault_a, fault_b, errors_a, errors_b);
+                        {
+                            let mut note_a = |r| log_a.push(r);
+                            let mut note_b = |r| log_b.push(r);
+                            let mut a = lock_adapter(&memory_a, &mut note_a);
+                            let mut b = lock_adapter(&memory_b, &mut note_b);
+                            let mask = size.mask();
+                            (result_a, result_b) = match kind {
+                                0 => (
+                                    a.atomic_exchange_integer(address, context(), size, operand),
+                                    serial_rmw(&mut b, address, size, &mut |_| operand & mask),
+                                ),
+                                1 => (
+                                    a.atomic_fetch_add_integer(address, context(), size, operand),
+                                    serial_rmw(&mut b, address, size, &mut |old| {
+                                        old.wrapping_add(operand) & mask
+                                    }),
+                                ),
+                                2 => (
+                                    // matches: the bytes are the fill
+                                    a.atomic_compare_exchange_integer(
+                                        address,
+                                        context(),
+                                        size,
+                                        0x0807_0605_0403_0201 >> (8 * (address & 7)),
+                                        operand,
+                                    ),
+                                    serial_rmw(&mut b, address, size, &mut |old| {
+                                        if old
+                                            == (0x0807_0605_0403_0201u64 >> (8 * (address & 7)))
+                                                & mask
+                                        {
+                                            operand & mask
+                                        } else {
+                                            old
+                                        }
+                                    }),
+                                ),
+                                3 => (
+                                    a.atomic_compare_exchange_integer(
+                                        address,
+                                        context(),
+                                        size,
+                                        !0x0807_0605_0403_0201u64,
+                                        operand,
+                                    ),
+                                    serial_rmw(&mut b, address, size, &mut |old| old),
+                                ),
+                                _ => (
+                                    a.atomic_rmw_integer(address, context(), size, &mut |old| {
+                                        (old ^ operand) & mask
+                                    }),
+                                    serial_rmw(&mut b, address, size, &mut |old| {
+                                        (old ^ operand) & mask
+                                    }),
+                                ),
+                            };
+                            fault_a = format!("{:?}", a.page_fault);
+                            fault_b = format!("{:?}", b.page_fault);
+                            errors_a = format!("{:?} {:?}", a.access_error, a.memory_error);
+                            errors_b = format!("{:?} {:?}", b.access_error, b.memory_error);
+                        }
+                        let label = format!(
+                            "ad {ad:#x} pte {data_pte:#x} size {} kind {kind}",
+                            size.bytes()
+                        );
+                        assert_eq!(
+                            format!("{result_a:?}"),
+                            format!("{result_b:?}"),
+                            "result, {label}"
+                        );
+                        assert_eq!(fault_a, fault_b, "page fault record, {label}");
+                        assert_eq!(errors_a, errors_b, "error state, {label}");
+                        assert_eq!(
+                            table_entries(&memory_a),
+                            table_entries(&memory_b),
+                            "tables, {label}"
+                        );
+                        assert_eq!(
+                            data_frame(&memory_a),
+                            data_frame(&memory_b),
+                            "data, {label}"
+                        );
+                        assert_eq!(log_a, log_b, "committed writes, {label}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// S6-31: what a locked operation refuses it refuses before it sets any accessed or dirty bit
+    /// (a misaligned or page-crossing operand in the PARALLEL mode: counted, never run as two
+    /// accesses; S6-32: in the interleaving mode it is the serial pair, see
+    /// `a_misaligned_locked_operation_in_the_interleaving_mode_is_the_serial_pair`) or before the
+    /// dirty bit and the device (MMIO), and ROM is the error of a write; nothing is written and
+    /// nothing is notified except the accessed bits the read half already set for ROM and MMIO.
+    #[test]
+    fn a_locked_operation_refuses_a_split_or_a_device_operand_and_counts_the_split() {
+        use od_isa::OperandSize::{Dword, Qword, Word};
+        let mut memory = lock_memory(0, 0x7007);
+        memory.set_execution_mode(crate::ExecutionMode::Parallel);
+        let before = (table_entries(&memory), data_frame(&memory));
+        let mut notes = Vec::new();
+        let mut refused = 0;
+        {
+            let mut note = |r| notes.push(r);
+            let mut adapter = lock_adapter(&memory, &mut note);
+            for (size, offsets) in [
+                (Word, vec![1u64, 0x3, 0x7, 0xfff]),
+                (Dword, vec![1, 2, 3, 0xffd, 0xffe, 0xfff]),
+                (Qword, vec![1, 4, 7, 0xff9, 0xffc, 0xfff]),
+            ] {
+                for offset in offsets {
+                    let address = DATA_LINEAR + offset;
+                    for call in 0..4 {
+                        let result = match call {
+                            0 => adapter.atomic_exchange_integer(address, context(), size, 1),
+                            1 => adapter.atomic_fetch_add_integer(address, context(), size, 1),
+                            2 => adapter.atomic_compare_exchange_integer(
+                                address,
+                                context(),
+                                size,
+                                0,
+                                1,
+                            ),
+                            _ => adapter.atomic_rmw_integer(address, context(), size, &mut |v| v),
+                        };
+                        let Err(MemoryError::Backend(message)) = result else {
+                            panic!("{size:?} at +{offset:#x} call {call}: {result:?}");
+                        };
+                        assert!(message.contains("not naturally aligned"), "{message}");
+                        refused += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(memory.split_lock_refusals(), refused);
+        assert!(notes.is_empty(), "no notification: {notes:?}");
+        assert_eq!(
+            (table_entries(&memory), data_frame(&memory)),
+            before,
+            "no accessed bit, no dirty bit, no data"
+        );
+
+        // MMIO and ROM operands: refused; the dirty bit is not set and no byte moves.
+        for (frame, rom) in [(LOCK_MMIO, false), (LOCK_ROM, true)] {
+            let memory = lock_memory(0, frame | 7);
+            let mut note = |_| {};
+            let mut adapter = lock_adapter(&memory, &mut note);
+            let result = adapter.atomic_fetch_add_integer(DATA_LINEAR + 8, context(), Dword, 1);
+            assert!(
+                matches!(result, Err(MemoryError::Backend(_))),
+                "frame {frame:#x}: {result:?}"
+            );
+            drop(adapter);
+            let leaf = table_entries(&memory)[5];
+            assert_eq!(
+                leaf & 0x40,
+                0,
+                "no dirty bit for a refused operand (rom {rom})"
+            );
+            assert_eq!(memory.split_lock_refusals(), 0, "not a split lock");
+        }
+    }
+
+    /// The byte at linear data offset `offset` (0..0x2000): page 0 is frame 0x7000, page 1 is
+    /// frame 0x8000 (set by `split_memory`).
+    fn data_byte(memory: &crate::PhysicalMemory, offset: u64) -> u8 {
+        memory
+            .load_u8(GuestPhysicalAddress::new(
+                0x7000 + (offset >> 12) * 0x1000 + (offset & 0xfff),
+            ))
+            .unwrap()
+    }
+
+    /// `lock_memory` with a second data page (frame 0x8000, leaf `pte1`) behind `DATA_LINEAR`,
+    /// both data frames filled with a byte pattern, in the given mode.
+    fn split_memory(
+        ad: u64,
+        pte0: u64,
+        pte1: u64,
+        mode: crate::ExecutionMode,
+    ) -> crate::PhysicalMemory {
+        let mut memory = lock_memory(ad, pte0);
+        memory.set_execution_mode(mode);
+        memory
+            .store_u64(GuestPhysicalAddress::new(0x5008), pte1, |_| {})
+            .unwrap();
+        for offset in 0..0x2000u64 {
+            memory
+                .store_u8(
+                    GuestPhysicalAddress::new(0x7000 + (offset >> 12) * 0x1000 + (offset & 0xfff)),
+                    (offset * 7 + 3) as u8,
+                    |_| {},
+                )
+                .unwrap();
+        }
+        memory
+    }
+
+    fn split_state(memory: &crate::PhysicalMemory) -> (Vec<u64>, u64, Vec<u8>) {
+        (
+            table_entries(memory),
+            memory.load_u64(GuestPhysicalAddress::new(0x5008)).unwrap(),
+            (0..0x2000)
+                .map(|offset| data_byte(memory, offset))
+                .collect(),
+        )
+    }
+
+    /// S6-32 (the return condition of S6-31): in the interleaving mode a misaligned locked operand
+    /// (inside a cache line, across a line, across a page) runs as the serial S6-20 pair, no
+    /// counter. Compared with the pair itself (result, fault, error state, tables of both pages,
+    /// both data frames, committed-write log: equal), and with the table of the aligned
+    /// equivalent (the old value is the little-endian bytes at the address, the new value is what
+    /// the operation defines), also on a read-only page (the fault of the write, no change) and a
+    /// not-present one.
+    #[test]
+    fn a_misaligned_locked_operation_in_the_interleaving_mode_is_the_serial_pair() {
+        use od_isa::OperandSize::{Dword, Qword, Word};
+        let operand = 0x1122_3344_5566_7788u64;
+        let apply = |kind: u64, old: u64, expected_old: u64, size: od_isa::OperandSize| {
+            let mask = size.mask();
+            match kind {
+                0 => operand & mask,
+                1 => old.wrapping_add(operand) & mask,
+                2 | 3 => {
+                    let expected = if kind == 2 {
+                        expected_old
+                    } else {
+                        !expected_old
+                    } & mask;
+                    if old == expected { operand & mask } else { old }
+                }
+                _ => (old ^ operand) & mask,
+            }
+        };
+        let mut executed = 0;
+        for ad in [0, AD] {
+            for (pte0, pte1) in [
+                (0x7007u64, 0x8007u64),
+                (0x7067, 0x8067),
+                (0x7005, 0x8007),
+                (0x7007, 0x0),
+            ] {
+                for (size, offsets) in [
+                    (Word, vec![1u64, 0x3f, 0xfff]),
+                    (Dword, vec![1, 0x3e, 0xffd, 0xfff]),
+                    (Qword, vec![3, 0x3d, 0xff9, 0xffc]),
+                ] {
+                    for offset in offsets {
+                        for kind in 0..5u64 {
+                            let address = DATA_LINEAR + offset;
+                            let mode = crate::ExecutionMode::Interleaved;
+                            let memory_a = split_memory(ad, pte0, pte1, mode);
+                            let memory_b = split_memory(ad, pte0, pte1, mode);
+                            let initial = {
+                                let mut bytes = [0u8; 8];
+                                for (index, byte) in bytes[..size.bytes()].iter_mut().enumerate() {
+                                    *byte = data_byte(&memory_a, offset + index as u64);
+                                }
+                                u64::from_le_bytes(bytes)
+                            };
+                            let (mut log_a, mut log_b) = (Vec::new(), Vec::new());
+                            let (result_a, result_b, fault_a, fault_b, errors_a, errors_b);
+                            {
+                                let mut note_a = |r| log_a.push(r);
+                                let mut note_b = |r| log_b.push(r);
+                                let mut a = lock_adapter(&memory_a, &mut note_a);
+                                let mut b = lock_adapter(&memory_b, &mut note_b);
+                                result_a = match kind {
+                                    0 => {
+                                        a.atomic_exchange_integer(address, context(), size, operand)
+                                    }
+                                    1 => a.atomic_fetch_add_integer(
+                                        address,
+                                        context(),
+                                        size,
+                                        operand,
+                                    ),
+                                    2 => a.atomic_compare_exchange_integer(
+                                        address,
+                                        context(),
+                                        size,
+                                        initial,
+                                        operand,
+                                    ),
+                                    3 => a.atomic_compare_exchange_integer(
+                                        address,
+                                        context(),
+                                        size,
+                                        !initial,
+                                        operand,
+                                    ),
+                                    _ => {
+                                        a.atomic_rmw_integer(address, context(), size, &mut |old| {
+                                            (old ^ operand) & size.mask()
+                                        })
+                                    }
+                                };
+                                result_b = serial_rmw(&mut b, address, size, &mut |old| {
+                                    apply(kind, old, initial, size)
+                                });
+                                fault_a = format!("{:?}", a.page_fault);
+                                fault_b = format!("{:?}", b.page_fault);
+                                errors_a = format!("{:?} {:?}", a.access_error, a.memory_error);
+                                errors_b = format!("{:?} {:?}", b.access_error, b.memory_error);
+                            }
+                            let label = format!(
+                                "ad {ad:#x} ptes {pte0:#x}/{pte1:#x} {} bytes at +{offset:#x} kind {kind}",
+                                size.bytes()
+                            );
+                            assert_eq!(
+                                format!("{result_a:?}"),
+                                format!("{result_b:?}"),
+                                "result, {label}"
+                            );
+                            assert_eq!(fault_a, fault_b, "page fault record, {label}");
+                            assert_eq!(errors_a, errors_b, "error state, {label}");
+                            assert_eq!(
+                                split_state(&memory_a),
+                                split_state(&memory_b),
+                                "state, {label}"
+                            );
+                            assert_eq!(log_a, log_b, "committed writes, {label}");
+                            assert_eq!(
+                                memory_a.split_lock_refusals(),
+                                0,
+                                "no refusal in the interleaving mode, {label}"
+                            );
+                            if let Ok(old) = result_a {
+                                // The table of the aligned equivalent: old value is the bytes at
+                                // the address; the stored value is the operation's result.
+                                assert_eq!(old, initial, "old value, {label}");
+                                let new = apply(kind, initial, initial, size);
+                                for index in 0..size.bytes() as u64 {
+                                    assert_eq!(
+                                        data_byte(&memory_a, offset + index),
+                                        (new >> (8 * index)) as u8,
+                                        "byte {index}, {label}"
+                                    );
+                                }
+                                executed += 1;
+                            } else {
+                                // A refusal by fault: no byte moved.
+                                assert_eq!(
+                                    split_state(&memory_a).2,
+                                    split_state(&split_memory(ad, pte0, pte1, mode)).2,
+                                    "data unchanged on error, {label}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(executed > 100, "the successful cases ran: {executed}");
+    }
+
+    /// S6-32: a failed `CMPXCHG` of the serial split path still writes the destination (the S6-20
+    /// contract: the instruction form has a read-modify-write destination, so a read-only page
+    /// faults, and the dirty bit is set): the same value is written back, the committed-write
+    /// log has one entry, the data is unchanged; on a read-only page a mismatch faults and
+    /// writes nothing.
+    #[test]
+    fn a_failed_split_compare_exchange_writes_the_destination_like_s6_20() {
+        use od_isa::OperandSize::Dword;
+        for (offset, name) in [
+            (0x3eu64, "inside the line pair"),
+            (0xffe, "across the page"),
+        ] {
+            let address = DATA_LINEAR + offset;
+            let memory = split_memory(0, 0x7027, 0x8027, crate::ExecutionMode::Interleaved);
+            let before = split_state(&memory);
+            let mut log = Vec::new();
+            {
+                let mut note = |r| log.push(r);
+                let mut adapter = lock_adapter(&memory, &mut note);
+                let old = adapter
+                    .atomic_compare_exchange_integer(address, context(), Dword, 0xdead_beef, 0x55)
+                    .unwrap();
+                assert_ne!(old, 0xdead_beef, "a mismatch");
+            }
+            let after = split_state(&memory);
+            assert_eq!(after.2, before.2, "{name}: the data is unchanged");
+            assert_eq!(
+                after.0[5] & 0x40,
+                0x40,
+                "{name}: dirty bit of the first page"
+            );
+            if offset == 0xffe {
+                assert_eq!(after.1 & 0x40, 0x40, "{name}: dirty bit of the second page");
+            }
+            assert!(
+                !log.is_empty(),
+                "{name}: the write was committed (same value)"
+            );
+            assert_eq!(memory.split_lock_refusals(), 0);
+        }
+        // Read-only page: the fault of the write, nothing stored, nothing notified.
+        let memory = split_memory(0, 0x7005, 0x8005, crate::ExecutionMode::Interleaved);
+        let before = split_state(&memory);
+        let mut log = Vec::new();
+        let result = {
+            let mut note = |r| log.push(r);
+            let mut adapter = lock_adapter(&memory, &mut note);
+            adapter.atomic_compare_exchange_integer(
+                DATA_LINEAR + 0x3e,
+                context(),
+                Dword,
+                0xdead_beef,
+                0x55,
+            )
+        };
+        assert!(
+            matches!(result, Err(MemoryError::Architectural(_))),
+            "{result:?}"
+        );
+        assert_eq!(split_state(&memory).2, before.2);
+        // The accessed-bit writes of the read walk may be notified; no data frame is.
+        assert!(
+            log.iter().all(|range| range.start().get() < 0x7000),
+            "no notification of a data frame: {log:?}"
+        );
+    }
+
+    /// S6-32: the same misaligned operand in the parallel mode is the refusal with the counter
+    /// (until the stop-all of S6-34 step 8): nothing is written, no accessed or dirty bit, no
+    /// notification, and the counter counts each refused call.
+    #[test]
+    fn a_misaligned_locked_operation_in_the_parallel_mode_is_refused_and_counted() {
+        use od_isa::OperandSize::Dword;
+        let memory = split_memory(0, 0x7007, 0x8007, crate::ExecutionMode::Parallel);
+        let before = split_state(&memory);
+        let mut log = Vec::new();
+        {
+            let mut note = |r| log.push(r);
+            let mut adapter = lock_adapter(&memory, &mut note);
+            for offset in [1u64, 0x3e, 0xffe] {
+                let result =
+                    adapter.atomic_fetch_add_integer(DATA_LINEAR + offset, context(), Dword, 1);
+                assert!(
+                    matches!(&result, Err(MemoryError::Backend(m)) if m.contains("not naturally aligned")),
+                    "+{offset:#x}: {result:?}"
+                );
+            }
+        }
+        assert_eq!(memory.split_lock_refusals(), 3);
+        assert_eq!(split_state(&memory), before);
+        assert!(log.is_empty());
+        // The aligned operand of the same memory still runs on the host atomic.
+        let mut note = |_| {};
+        let mut adapter = lock_adapter(&memory, &mut note);
+        adapter
+            .atomic_fetch_add_integer(DATA_LINEAR + 0x40, context(), Dword, 1)
+            .unwrap();
+        assert_eq!(memory.split_lock_refusals(), 3);
+    }
+
+    /// S6-31: four host threads, each with its own adapter on one shared memory, run the four
+    /// locked entry points at every width on tables whose accessed and dirty bits are all clear:
+    /// the first walks race to set the bits with compare-and-replace and lose none; every sum and
+    /// every counter protected by an `XCHG`-style lock is exact.
+    #[test]
+    fn locked_operations_of_four_adapters_on_one_ram_are_indivisible() {
+        use od_isa::OperandSize::{Byte, Dword, Qword, Word};
+        const THREADS: u64 = 4;
+        const ROUNDS: u64 = 1_500;
+        let mut memory = lock_memory(0, 0x7007);
+        memory.set_execution_mode(crate::ExecutionMode::Parallel);
+        for (index, size) in [Byte, Word, Dword, Qword].into_iter().enumerate() {
+            let line = |slot: u64| DATA_LINEAR + 0x100 + index as u64 * 0x100 + slot * 0x40;
+            let (sum, rmw, lock, data) = (line(0), line(1), line(2), line(3));
+            let start = std::sync::Barrier::new(THREADS as usize);
+            std::thread::scope(|scope| {
+                for _ in 0..THREADS {
+                    let (memory, start) = (&memory, &start);
+                    scope.spawn(move || {
+                        let mut note = |_| {};
+                        let mut adapter = lock_adapter(memory, &mut note);
+                        start.wait();
+                        for _ in 0..ROUNDS {
+                            adapter
+                                .atomic_fetch_add_integer(sum, context(), size, 1)
+                                .unwrap();
+                            adapter
+                                .atomic_rmw_integer(rmw, context(), size, &mut |old| old + 1)
+                                .unwrap();
+                            // Lock by compare-exchange, critical section of ordinary accesses,
+                            // release by exchange.
+                            while adapter
+                                .atomic_compare_exchange_integer(lock, context(), size, 0, 1)
+                                .unwrap()
+                                != 0
+                            {
+                                std::hint::spin_loop();
+                            }
+                            let value = adapter.read_integer(data, context(), size).unwrap();
+                            std::hint::spin_loop();
+                            adapter
+                                .write_integer(data, context(), size, value + 1)
+                                .unwrap();
+                            adapter
+                                .atomic_exchange_integer(lock, context(), size, 0)
+                                .unwrap();
+                        }
+                    });
+                }
+            });
+            let total = (THREADS * ROUNDS) & size.mask();
+            let mut note = |_| {};
+            let mut adapter = lock_adapter(&memory, &mut note);
+            for (name, address) in [("sum", sum), ("rmw", rmw), ("data", data), ("lock", lock)] {
+                let expected = if name == "lock" { 0 } else { total };
+                assert_eq!(
+                    adapter.read_integer(address, context(), size).unwrap(),
+                    expected,
+                    "{name} at width {}",
+                    size.bytes()
+                );
+            }
+        }
+        // The racing walks set every accessed bit and the leaf's dirty bit, once, and kept the
+        // rest of the entries.
+        assert_eq!(
+            table_entries(&memory),
+            vec![
+                0x2007 | 0x20,
+                0x3007 | 0x20,
+                0x4007,
+                0x5007 | 0x20,
+                0x7007,
+                0x7007 | 0x60
+            ]
+        );
+        assert_eq!(memory.split_lock_refusals(), 0);
+    }
+
+    /// S6-31, the instruction level: four host threads, each interpreting real `LOCK` and `XCHG`
+    /// instructions through its own adapter on one memory. A `lock cmpxchg` retry loop, a
+    /// `lock xadd`, a `lock inc` and an `xchg` spin lock guarding an ordinary load-increment-store:
+    /// no update is lost. The bytes are the forms of the S6-05 corpus (S6-20).
+    #[test]
+    fn locked_instructions_of_four_threads_lose_no_update() {
+        use od_isa::Register;
+        use od_isa::execute::{RunExit, run};
+        const THREADS: usize = 4;
+        const ROUNDS: u64 = 3_000;
+        const CODE: u64 = 0x0040_0800;
+        let counter = (DATA_LINEAR + 0x100) as u32;
+        let (cell, inc_cell, xadd_cell, lock_cell, guarded) = (
+            counter,
+            counter + 0x40,
+            counter + 0x80,
+            counter + 0xc0,
+            counter + 0x100,
+        );
+        let abs = |value: u32| value.to_le_bytes();
+        let mut program = Vec::new();
+        // outer:
+        let outer = program.len();
+        // mov eax, [cell]
+        program.extend([0x8b, 0x04, 0x25]);
+        program.extend(abs(cell));
+        let retry = program.len();
+        // lea ecx, [rax+1]
+        program.extend([0x8d, 0x48, 0x01]);
+        // lock cmpxchg [cell], ecx
+        program.extend([0xf0, 0x0f, 0xb1, 0x0c, 0x25]);
+        program.extend(abs(cell));
+        // jnz retry
+        let jnz = program.len() + 2;
+        program.extend([0x75, (retry as i64 - jnz as i64) as i8 as u8]);
+        // lock inc dword [inc_cell]
+        program.extend([0xf0, 0xff, 0x04, 0x25]);
+        program.extend(abs(inc_cell));
+        // mov edx, 3 ; lock xadd [xadd_cell], edx
+        program.extend([0xba, 3, 0, 0, 0]);
+        program.extend([0xf0, 0x0f, 0xc1, 0x14, 0x25]);
+        program.extend(abs(xadd_cell));
+        // acquire: mov ebx, 1 ; xchg [lock_cell], ebx ; test ebx, ebx ; jnz acquire
+        let acquire = program.len();
+        program.extend([0xbb, 1, 0, 0, 0]);
+        program.extend([0x87, 0x1c, 0x25]);
+        program.extend(abs(lock_cell));
+        program.extend([0x85, 0xdb]);
+        let jnz = program.len() + 2;
+        program.extend([0x75, (acquire as i64 - jnz as i64) as i8 as u8]);
+        // mov edi, [guarded] ; inc edi ; mov [guarded], edi
+        program.extend([0x8b, 0x3c, 0x25]);
+        program.extend(abs(guarded));
+        program.extend([0xff, 0xc7]);
+        program.extend([0x89, 0x3c, 0x25]);
+        program.extend(abs(guarded));
+        // release: xchg [lock_cell], ebx with ebx = 0 (ebx is zero here: the acquire loop
+        // exits only when the exchanged-out value was 0 and nothing below touches ebx);
+        // an atomic write, so the test does not depend on the order of ordinary accesses.
+        // Future litmus (S6-36): the variant with a release by an ordinary
+        // `mov dword [lock_cell], 0` = [0xc7, 0x04, 0x25, abs(lock_cell), 0u32 LE] in the parallel
+        // mode. The order of ordinary accesses is set by S6-32 (SeqCst in the parallel mode); this
+        // test keeps the atomic release, so it does not depend on it.
+        program.extend([0x87, 0x1c, 0x25]);
+        program.extend(abs(lock_cell));
+        // dec esi ; jnz outer
+        program.extend([0xff, 0xce]);
+        let jnz = program.len() + 2;
+        program.extend([0x75, (outer as i64 - jnz as i64) as i8 as u8]);
+        let end = CODE + program.len() as u64;
+
+        let mut memory = lock_memory(AD, 0x7067);
+        memory.set_execution_mode(crate::ExecutionMode::Parallel);
+        for (offset, byte) in program.iter().enumerate() {
+            memory
+                .store_u8(
+                    GuestPhysicalAddress::new(0x7800 + offset as u64),
+                    *byte,
+                    |_| {},
+                )
+                .unwrap();
+        }
+        let start = std::sync::Barrier::new(THREADS);
+        std::thread::scope(|scope| {
+            for _ in 0..THREADS {
+                let (memory, start) = (&memory, &start);
+                scope.spawn(move || {
+                    let mut note = |_| {};
+                    let mut adapter = lock_adapter(memory, &mut note);
+                    start.wait();
+                    let mut state = LongModeState {
+                        rip: CODE,
+                        rflags: 0x2,
+                        ..LongModeState::default()
+                    };
+                    state.gpr[Register::Rsi as usize] = ROUNDS;
+                    let result = run(
+                        &mut state,
+                        &mut adapter,
+                        od_isa::execute::RunConfig {
+                            instruction_budget: 1_000_000,
+                            stop_rip: Some(end),
+                            context: context(),
+                        },
+                        || false,
+                    );
+                    assert_eq!(
+                        result.exit,
+                        RunExit::StopAddress,
+                        "{:?}",
+                        adapter.memory_error
+                    );
+                    assert_eq!(state.rip, end);
+                });
+            }
+        });
+        let load = |address: u32| {
+            memory
+                .load_u32(GuestPhysicalAddress::new(
+                    0x7000 + u64::from(address & 0xfff),
+                ))
+                .unwrap()
+        };
+        let total = (THREADS as u32) * (ROUNDS as u32);
+        assert_eq!(load(cell), total, "cmpxchg retry loop");
+        assert_eq!(load(inc_cell), total, "lock inc");
+        assert_eq!(load(xadd_cell), 3 * total, "lock xadd");
+        assert_eq!(
+            load(guarded),
+            total,
+            "xchg spin lock around an ordinary increment"
+        );
+        assert_eq!(load(lock_cell), 0, "lock released");
+    }
+
+    /// S6-32: the adapter's `fence` reaches the memory's host fence, which exists only in the
+    /// parallel mode; no byte and no generation changes in either mode.
+    #[test]
+    fn the_adapter_fence_places_the_host_fence_of_the_mode_only() {
+        use od_isa::FenceKind;
+        for (mode, issued) in [
+            (crate::ExecutionMode::Interleaved, 0u64),
+            (crate::ExecutionMode::Parallel, 3),
+        ] {
+            let mut memory = lock_memory(AD, 0x7067);
+            memory.set_execution_mode(mode);
+            let before: Vec<u64> = (0..0x8000u64)
+                .step_by(8)
+                .map(|at| memory.load_u64(GuestPhysicalAddress::new(at)).unwrap())
+                .collect();
+            let generation = memory.code_page_generation(GuestPhysicalAddress::new(0x7000));
+            let mut note = |_| panic!("a fence notifies no write");
+            let mut adapter = lock_adapter(&memory, &mut note);
+            for kind in [FenceKind::Full, FenceKind::Store, FenceKind::Load] {
+                adapter.fence(kind).unwrap();
+            }
+            drop(adapter);
+            assert_eq!(memory.host_fences_issued(), issued, "{mode:?}");
+            let after: Vec<u64> = (0..0x8000u64)
+                .step_by(8)
+                .map(|at| memory.load_u64(GuestPhysicalAddress::new(at)).unwrap())
+                .collect();
+            assert_eq!(after, before, "{mode:?}: RAM unchanged");
+            assert_eq!(
+                memory.code_page_generation(GuestPhysicalAddress::new(0x7000)),
+                generation,
+                "{mode:?}"
+            );
+        }
+    }
+
+    /// S6-32, the instruction level: the interpreter's CPL0 set runs real `MFENCE`, `SFENCE`
+    /// and `LFENCE` bytes (and an ordinary store and load around them) through the adapter. The
+    /// final state, the retired count and every byte of RAM are the same in both modes; the
+    /// parallel mode issued exactly three host fences, the interleaving mode none.
+    #[test]
+    fn the_cpl0_set_fences_give_the_same_result_in_both_modes() {
+        use od_isa::execute::{
+            ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, RunConfig,
+            run_with_cpl0_profile_set,
+        };
+        use od_isa::{CpuActivity, Register, StiShadow};
+        const CODE: u64 = 0x0040_0800;
+        let data = DATA_LINEAR + 0x300;
+        let abs = |value: u64| (value as u32).to_le_bytes();
+        let mut program = Vec::new();
+        // mov dword [data], 0x11223344 ; mfence ; sfence ; mov eax, [data] ; lfence ; mfence
+        program.extend([0xc7, 0x04, 0x25]);
+        program.extend(abs(data));
+        program.extend(0x1122_3344u32.to_le_bytes());
+        program.extend([0x0f, 0xae, 0xf0, 0x0f, 0xae, 0xf8]);
+        program.extend([0x8b, 0x04, 0x25]);
+        program.extend(abs(data));
+        program.extend([0x0f, 0xae, 0xe8, 0x0f, 0xae, 0xf0]);
+        let instructions = 6;
+        let mut results = Vec::new();
+        for (mode, issued) in [
+            (crate::ExecutionMode::Interleaved, 0u64),
+            (crate::ExecutionMode::Parallel, 4),
+        ] {
+            let mut memory = lock_memory(AD, 0x7067);
+            memory.set_execution_mode(mode);
+            for (offset, byte) in program.iter().enumerate() {
+                memory
+                    .store_u8(
+                        GuestPhysicalAddress::new(0x7800 + offset as u64),
+                        *byte,
+                        |_| {},
+                    )
+                    .unwrap();
+            }
+            let mut log = Vec::new();
+            let mut note = |range| log.push(range);
+            let mut adapter = lock_adapter(&memory, &mut note);
+            let mut state = LongModeState {
+                rip: CODE,
+                rflags: 0x2,
+                cr0: Some(CR0),
+                cr4: Some(CR4),
+                activity: Some(CpuActivity::Running),
+                sti_shadow: Some(StiShadow::Clear),
+                ..LongModeState::default()
+            };
+            let result = run_with_cpl0_profile_set(
+                &mut state,
+                &mut adapter,
+                RunConfig {
+                    instruction_budget: instructions,
+                    stop_rip: None,
+                    context: context(),
+                },
+                od_isa::INTEGER_FLAGS,
+                &Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1),
+                None,
+                || false,
+            )
+            .unwrap();
+            drop(adapter);
+            assert_eq!(result.instructions_executed, instructions, "{mode:?}");
+            assert!(
+                matches!(
+                    result.exit,
+                    Cpl0ProfileSetExit::Run(od_isa::execute::RunExit::InstructionBudgetExhausted)
+                ),
+                "{mode:?}: {:?}",
+                result.exit
+            );
+            assert_eq!(state.gpr[Register::Rax as usize], 0x1122_3344, "{mode:?}");
+            assert_eq!(memory.host_fences_issued(), issued, "{mode:?}");
+            let ram: Vec<u64> = (0..0x8000u64)
+                .step_by(8)
+                .map(|at| memory.load_u64(GuestPhysicalAddress::new(at)).unwrap())
+                .collect();
+            let generations: Vec<_> = (0..8u64)
+                .map(|page| memory.code_page_generation(GuestPhysicalAddress::new(page * 0x1000)))
+                .collect();
+            assert!(!log.is_empty(), "{mode:?}: the store was notified");
+            results.push((
+                format!("{state:?}"),
+                result.instructions_executed,
+                ram,
+                format!("{log:?}"),
+                format!("{generations:?}"),
+            ));
+        }
+        assert_eq!(
+            results[0], results[1],
+            "both modes: state, count and every RAM byte"
         );
     }
 }

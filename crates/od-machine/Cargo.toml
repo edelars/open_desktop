@@ -8,9 +8,18 @@ publish.workspace = true
 [dependencies]
 od-isa = { path = "../od-isa" }
 od-jit = { path = "../od-jit" }
+serde_json = "=1.0.151"
 
 [features]
 experimental-translation-probe-cache = []
+# S6-36, sensitivity part 1 (SMP.md 5.1): the host memory order of the parallel mode is weakened
+# (ordinary RAM accesses Relaxed, host fences removed). FOR TESTS AND MEASUREMENTS ONLY; never in
+# `default`, never in a product profile.
+weak-host-ordering = []
+# S6-36, sensitivity part 2 (SMP.md 5.1): guest `LOCK` is made non-atomic (a load and a store).
+# FOR TESTS AND MEASUREMENTS ONLY; never in `default`, never in a product profile. A different
+# feature from the one above.
+nonatomic-lock-test = []
 
 [lints]
 workspace = true

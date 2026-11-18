@@ -1,0 +1,101 @@
+# S5-07 UART byte provenance and fresh automatic N=2, 2026-11-15
+
+Purpose: exercise the committed schema v2 COM1 byte-context window on live
+Linux runs, then independently retry the strict N=2 series without diagnostic
+sidecars. This log preserves diagnostic observations; it does not accept S5-07.
+
+## Environment and inputs
+
+- Worktree: `codex`; code revision `fd53f78` (`feat: capture bounded UART byte provenance`), clean source when the release runner was built.
+- Host: macOS/aarch64; release `od-runner` 0.1.0.
+- Kernel: Linux `7.0.0-38-generic`; SHA-256 `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`.
+- Initramfs SHA-256: `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`.
+- ACPI blob SHA-256: `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`.
+- Expected ACPI manifest SHA-256: `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`.
+- Profile: `stage4a`, `--set-cpl0 --user-mode`, 128 MiB, budget `3,000,000,000`, expected stop `budget_exhausted`.
+
+## Separate diagnostic single runs
+
+Each used `linux-direct --run --set-cpl0 --cpuid-profile stage4a --user-mode`
+with the inputs and budget above, plus `--stack-context-out <run>/uart-context.json`.
+They were separate invocations with distinct run IDs/nonces, not a counted series.
+
+| Run | Nonce | Retired | Trigger offset | Samples | End | Report SHA-256 | Sidecar SHA-256 |
+|---|---|---:|---:|---:|---|---|---|
+| A | `OD5c01a7d9-20261115-a` | 2,999,999,998 | 21,499 (`OD_NONCE=`) / 21,507 (`=` sample) | 512 | `byte_limit` | `9d8c6e50853563ab07aec8f139746c9610185d3f4e0d603622acd30400ab8e24` | `a0cdf84b604f71fb6f2bb32ce995e13f91052d74ee2cac2d39383e3bee253538` |
+| B | `OD5c01a7d9-20261115-b` | 2,999,999,998 | 21,499 (`OD_NONCE=`) / 21,507 (`=` sample) | 512 | `byte_limit` | `2448908e3e7101fd147dfffcccad3b5d191edc685e467ba943f7f7cee78ea784` | `0de0b2290eec189e326e28de76f3a8567af69f82fb987eb1bca9488c19fc7b90` |
+
+Both sidecars are schema 2, triggered by the first exact `OD_NONCE=` and mark
+the eight preceding marker bytes as unobserved. In each run, the captured 512
+bytes match the same absolute-offset slice of the raw COM1 transcript. The
+nonce and following `Run /init as init process` output are separate complete
+lines; the previously observed fused line was not reproduced in these two
+diagnostic runs.
+
+Across both windows, nonce bytes resolve to the `serial8250_tx_chars` /
+`serial8250_handle_irq_locked` path; the following printk resolves to
+`serial8250_console_wait_putchar` / `uart_console_write` /
+`univ8250_console_write_thread`. Panic output uses
+`univ8250_console_write_atomic`. Attribution used nearest symbols in the
+matching Linux debug ELF; these observations show distinct output paths sharing
+COM1. They do not prove which path caused the earlier fused output or explain
+the fresh series variation. No wall-time overhead measurement was made.
+
+## Fresh automatic N=2 series
+
+Full invocation:
+
+```sh
+target/release/od-runner linux-direct --test-runs 2 \
+  --series-id stage5-s5-07-stage4a-auto-compare-20261115-c \
+  --scenario-id stage4-init-nonce \
+  --expected-stop-kind budget_exhausted \
+  --out work/stage5/stage5-s5-07-stage4a-auto-compare-20261115-c/series.json \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs /Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --run --budget 3000000000 --set-cpl0 \
+  --cpuid-profile stage4a --user-mode
+```
+
+Both scenarios passed: guest started, exact per-run nonce marker validated,
+and both stopped at budget after `2,999,999,998` retired instructions. The
+within-series strict comparator returned `matches=false`; runner exit code was
+1. It reported unexplained differences in `machine_observations` and
+`ordered_uart_bytes` after nonce normalization.
+
+| Run | #PF | #GP(0) | IRQ0 edges | Delivered IRQs | Quanta | Halt wakes | Virtual ns |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 0001 | 34 | 1 | 34,794 | 34,799 | 34,560,550 | 2 | 37,452,005,648 |
+| 0002 | 34 | 1 | 34,824 | 34,829 | 34,589,454 | 2 | 37,481,982,345 |
+
+Terminal snapshots differ, including CR3 `0x64aa000` / `0x648e000` and RIP
+`0xffffffff8271b359` / `0xffffffff8271b32c`, plus GPRs and flags. After nonce
+normalization the output still differs in ordering: run 0001 prints its nonce
+line before `[2.271319] Run /init as init process`; run 0002 prints
+`[2.270216] Run /init as init process` before its nonce line. Both streams
+contain `audit(0.141:1)`. Both nonce markers are intact. No UART-order or machine
+observation normalization was added.
+
+Interpretation: the strict N=2 failure repeats with valid markers and clean
+scenario outcomes. Sidecar samples localize the observed strings to distinct
+serial writer paths, but do not identify the scheduler/IRQ timing cause or
+establish that changed terminal machine state and line order are benign. S5-07
+remains blocked/unaccepted; the fused-line root cause remains open.
+
+## Evidence hashes and raw artifact locations
+
+Diagnostic singles are under ignored
+`work/stage5/stage5-s5-07-uart-provenance-20261115-{a,b}/`.
+
+N=2 series raw artifacts are under ignored
+`work/stage5/stage5-s5-07-stage4a-auto-compare-20261115-c/`.
+
+- `comparison.json`: `989064d1f1ec9b4732e55fb44c4f28eb73dd41a9422163b0b14af4c5d558654e`.
+- `series.json`: `4ed30284162d2af22f8ed220d8e86e09c49631bcf5aa94aa71f505778290b1f2`.
+- Run 0001 manifest / runner JSON: `e4091e9c8feae75bb606c274535933e1248e26253d7418d06f70e236bb206004` / `9830f60eb03a8d7c898fdf7c1702decef820ed8f1cf88ac59d136e5732cbab4f`.
+- Run 0002 manifest / runner JSON: `b79f0ac8c8df493e34118b6635d9e9fd8888fd596bab274227d42810c414f6ea` / `237b6b414db3b2ccf5259a5261d6ea12dfc6a08db2af6cce8f3c9c0d99f6e90d`.
+

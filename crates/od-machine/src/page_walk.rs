@@ -185,6 +185,12 @@ pub enum ProbeConfigError {
         value: u64,
         offending_bits: u64,
     },
+    /// The CPL requested by the CS selector RPL of the CPU state disagrees
+    /// with the CPL of the translation-context key (S4-16f).
+    CplMismatch {
+        cs_selector: u16,
+        key_cpl: u8,
+    },
 }
 
 impl fmt::Display for ProbeConfigError {
@@ -249,6 +255,11 @@ impl WalkTrace {
     fn push(&mut self, entry: WalkEntry) {
         self.entries[self.len] = Some(entry);
         self.len += 1;
+    }
+    /// S6-25: the walk re-read the entry of the level it is on (a concurrent writer changed it
+    /// under the accessed-bit replace), so the trace keeps the value of the last read.
+    fn replace_last(&mut self, entry: WalkEntry) {
+        self.entries[self.len - 1] = Some(entry);
     }
     pub fn entries(&self) -> &[Option<WalkEntry>; 4] {
         &self.entries
@@ -550,6 +561,16 @@ pub enum RamAccessOperation {
         width: AccessWidth,
         value: u64,
     },
+    /// S6-31: the translation half of a locked read-modify-write (`LOCK` forms and `XCHG` with
+    /// memory). It does what the serial read-then-write of S6-20 did to the page tables and
+    /// nothing to the data: a read walk (accessed bits, the faults of a read), then a write walk
+    /// (the faults of a write, accessed and dirty bits), then the physical region of the operand
+    /// is checked; the outcome is [`TrackedAccessOutcome::Located`], the physical address, on
+    /// which the caller runs the host atomic operation. No byte of the operand is read or
+    /// written here, and an MMIO operand is refused before any device or dirty bit is touched.
+    AtomicTarget {
+        width: AccessWidth,
+    },
 }
 
 impl RamAccessOperation {
@@ -557,14 +578,16 @@ impl RamAccessOperation {
         match self {
             Self::Fetch => AccessKind::Fetch,
             Self::Read { .. } | Self::ReadPseudoDescriptor => AccessKind::Read,
-            Self::Write { .. } => AccessKind::Write,
+            Self::Write { .. } | Self::AtomicTarget { .. } => AccessKind::Write,
         }
     }
 
     const fn width(self) -> u8 {
         match self {
             Self::Fetch => 1,
-            Self::Read { width } | Self::Write { width, .. } => width.bytes(),
+            Self::Read { width } | Self::Write { width, .. } | Self::AtomicTarget { width } => {
+                width.bytes()
+            }
             Self::ReadPseudoDescriptor => 10,
         }
     }
@@ -599,6 +622,9 @@ pub enum TrackedAccessOutcome {
     Read(u64),
     ReadPseudoDescriptor([u8; 10]),
     Written,
+    /// S6-31: the physical address of a locked operand after both walks
+    /// ([`RamAccessOperation::AtomicTarget`]).
+    Located(GuestPhysicalAddress),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -631,6 +657,17 @@ pub enum TrackedAccessError {
     OperandPhysical {
         address: GuestPhysicalAddress,
         source: MemoryAccessError,
+    },
+    /// S6-25: a table entry changed under the compare-and-replace of its accessed/dirty update in
+    /// a way the update cannot absorb: more than [`TABLE_REPLACE_RETRY_LIMIT`] failed replaces in
+    /// a row, or (dirty bit) a bit that takes part in the translation changed after the walk
+    /// validated it. No operand effect has happened; this is a bounded-profile rejection like
+    /// `LtrTransactionError::TranslationChanged`, not a guest fault.
+    TableEntryChanged {
+        level: PageTableLevel,
+        entry_address: GuestPhysicalAddress,
+        bit: AdBit,
+        observed: u64,
     },
     /// The RAM-only tracked path does not dispatch physical MMIO accesses.
     DeviceUnavailable {
@@ -682,25 +719,128 @@ struct WalkResult {
     ad_update_count: usize,
 }
 
+/// Result of one compare-and-replace of a table entry (S6-25).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TableReplace {
+    /// The entry held `expected` and now holds the replacement.
+    Replaced,
+    /// The entry no longer held `expected`; it holds this value and nothing was written.
+    Changed(u64),
+}
+
+/// How many failed replaces in a row one accessed/dirty update tolerates before it gives up with
+/// [`TrackedAccessError::TableEntryChanged`]. With the interleaving scheduler a replace never
+/// fails (an instruction is indivisible); the bound only keeps a misbehaving backend from
+/// looping forever.
+pub(crate) const TABLE_REPLACE_RETRY_LIMIT: u32 = 16;
+
+/// The table-entry writer seam: `(memory, entry address, expected old value, replacement,
+/// committed-write callback)`. It is the compare-and-replace of S6-25.
 type TrackedTableWriter<'a> = dyn FnMut(
-        &mut PhysicalMemory,
+        &PhysicalMemory,
         GuestPhysicalAddress,
         u64,
+        u64,
         &mut dyn FnMut(GuestPhysicalRange),
-    ) -> Result<(), MemoryAccessError>
+    ) -> Result<TableReplace, MemoryAccessError>
     + 'a;
 
-fn write_tracked_table_entry(
-    memory: &mut PhysicalMemory,
+/// The single place that writes a page-table entry during a walk or a dirty update (S6-25):
+/// every accessed and dirty bit goes through it, as one compare-and-replace of the 8-byte entry
+/// ([`PhysicalMemory::compare_replace_u64`]), which since S6-31 is one host compare-exchange on
+/// the cell; no caller changed.
+fn compare_replace_table_entry(
+    memory: &PhysicalMemory,
     address: GuestPhysicalAddress,
-    value: u64,
+    expected: u64,
+    replacement: u64,
     committed_write: &mut dyn FnMut(GuestPhysicalRange),
-) -> Result<(), MemoryAccessError> {
-    memory.write_u64(address, value, committed_write)
+) -> Result<TableReplace, MemoryAccessError> {
+    memory
+        .compare_replace_u64(address, expected, replacement, committed_write)
+        .map(|outcome| match outcome {
+            Ok(()) => TableReplace::Replaced,
+            Err(observed) => TableReplace::Changed(observed),
+        })
+}
+
+/// The single place that commits the D (dirty) bit of a leaf entry (S4-09e). Both the tracked
+/// access (`access_long64_4k_internal_windowed`) and the LTR descriptor transaction
+/// (`commit_paged_ltr_descriptor_with_writer`) go through it, and the write itself goes through
+/// the `table_writer` seam like every other table-entry write. Returns `Ok(None)` when D is already
+/// set (nothing is written, no callback), `Ok(Some(update))` after the write was committed, and the
+/// typed `TableWrite` error with `bit: Dirty` when the write fails (nothing is recorded as committed).
+///
+/// S6-25: the write is a compare-and-replace of the entry the walk read. When it fails because a
+/// concurrent writer changed only the A/D bits (or set D itself), the update is recomputed from
+/// the observed value, so the other writer's bits are kept and not lost; when a bit that takes
+/// part in the translation changed, nothing is written and `TableEntryChanged` is returned.
+fn commit_leaf_dirty(
+    memory: &PhysicalMemory,
+    table_writer: &mut TrackedTableWriter<'_>,
+    committed_write: &mut dyn FnMut(GuestPhysicalRange),
+    level: PageTableLevel,
+    entry_address: GuestPhysicalAddress,
+    entry_value: u64,
+) -> Result<Option<AdUpdate>, TrackedAccessError> {
+    const AD: u64 = (1 << 5) | (1 << 6);
+    // S6-31: bits the translation ignores (the profile has no protection keys): 9..=11 and
+    // 52..=62. A concurrent change of only these (the soft-dirty and similar bits of a kernel)
+    // and of A/D does not change the translation the walk validated, so the update is recomputed
+    // from the observed value (the replace is retried over it) instead of being refused.
+    // Cross-reference: bits 59..=62 are ignored only because CR4.PKE is not allowed
+    // (`CR4_ALLOWED`, line ~34); if PKE is ever allowed, revise `IGNORED`.
+    const IGNORED: u64 = (0b111 << 9) | (0x7ff << 52);
+    const CR4_PKE: u64 = 1 << 22;
+    const _: () = assert!(
+        CR4_ALLOWED & CR4_PKE == 0,
+        "CR4.PKE allowed: revise IGNORED"
+    );
+    let mut expected = entry_value;
+    let mut failed_replaces = 0;
+    loop {
+        if expected & AD == AD {
+            return Ok(None);
+        }
+        let after = expected | AD;
+        match table_writer(memory, entry_address, expected, after, committed_write) {
+            Ok(TableReplace::Replaced) => {
+                return Ok(Some(AdUpdate {
+                    level,
+                    address: entry_address,
+                    before: expected,
+                    after,
+                    bit: AdBit::Dirty,
+                }));
+            }
+            Ok(TableReplace::Changed(observed)) => {
+                failed_replaces += 1;
+                if observed & !(AD | IGNORED) != entry_value & !(AD | IGNORED)
+                    || failed_replaces > TABLE_REPLACE_RETRY_LIMIT
+                {
+                    return Err(TrackedAccessError::TableEntryChanged {
+                        level,
+                        entry_address,
+                        bit: AdBit::Dirty,
+                        observed,
+                    });
+                }
+                expected = observed;
+            }
+            Err(source) => {
+                return Err(TrackedAccessError::TableWrite {
+                    level,
+                    entry_address,
+                    bit: AdBit::Dirty,
+                    source,
+                });
+            }
+        }
+    }
 }
 
 fn walk_long64_4k(
-    memory: &mut PhysicalMemory,
+    memory: &PhysicalMemory,
     paging: &Long64ProbeConfig,
     instruction_rip: u64,
     address: GuestLinearAddress,
@@ -716,13 +856,13 @@ fn walk_long64_4k(
         context,
         access,
         committed_write,
-        &mut write_tracked_table_entry,
+        &mut compare_replace_table_entry,
         false,
     )
 }
 
 fn walk_long64_4k_with_writer(
-    memory: &mut PhysicalMemory,
+    memory: &PhysicalMemory,
     paging: &Long64ProbeConfig,
     instruction_rip: u64,
     address: GuestLinearAddress,
@@ -769,116 +909,155 @@ fn walk_long64_4k_with_writer(
         table_pages[table_index] = Some(GuestPhysicalAddress::new(table_base));
         let index = ((address.0 >> level.index_shift()) & 0x1ff) as u16;
         let entry_address = GuestPhysicalAddress::new(table_base + u64::from(index) * 8);
-        let entry_value = match read_table_entry(memory, entry_address) {
-            Ok(value) => value,
-            Err(source) => {
+        // S6-25: the accessed bit is a compare-and-replace of the entry just read; when the
+        // replace fails the entry changed under the walk, and the walk repeats from this level
+        // (re-read, every check again) so a concurrent writer's bits are never overwritten.
+        let mut failed_replaces = 0;
+        let (entry_value, is_large_leaf) = loop {
+            let entry_value = match read_table_entry(memory, entry_address) {
+                Ok(value) => value,
+                Err(source) => {
+                    return fail(
+                        TrackedAccessError::TableRead {
+                            level,
+                            entry_address,
+                            source,
+                        },
+                        trace,
+                        ad_updates,
+                        ad_update_count,
+                    );
+                }
+            };
+            let walked = WalkEntry {
+                level,
+                index,
+                entry_address,
+                entry_value,
+            };
+            if failed_replaces == 0 {
+                trace.push(walked);
+            } else {
+                trace.replace_last(walked);
+            }
+            if entry_value & ENTRY_PRESENT == 0 {
+                let reason = PageFaultReason::NotPresent { level };
+                let record = PageFaultRecord::new(
+                    instruction_rip,
+                    access,
+                    context,
+                    page_fault_error_code(access, context, false, false, paging.nxe()),
+                    address.0,
+                );
                 return fail(
-                    TrackedAccessError::TableRead {
+                    TrackedAccessError::PageFault { record, reason },
+                    trace,
+                    ad_updates,
+                    ad_update_count,
+                );
+            }
+            let mut offending = entry_value & ENTRY_ADDRESS_RESERVED;
+            if !paging.nxe() {
+                offending |= entry_value & ENTRY_NX;
+            }
+            // S4-10c: PS=1 in a PDPTE is reserved in the declared profile (no
+            // 1 GiB pages), exactly like PML4E bit 7 from S4-10a.
+            if matches!(level, PageTableLevel::Pml4 | PageTableLevel::Pdpt)
+                && entry_value & ENTRY_PS_OR_PAT != 0
+            {
+                offending |= ENTRY_PS_OR_PAT;
+            }
+            let is_large_leaf =
+                allow_2m && level == PageTableLevel::Pd && entry_value & ENTRY_PS_OR_PAT != 0;
+            if is_large_leaf {
+                // Bits 20:13 of a 2 MiB PDE are reserved (address bits below 2 MiB).
+                offending |= entry_value & ENTRY_2M_RESERVED;
+            }
+            if level == PageTableLevel::Pd && entry_value & ENTRY_PS_OR_PAT != 0 && !is_large_leaf {
+                return fail(
+                    TrackedAccessError::UnsupportedPageSize {
                         level,
                         entry_address,
-                        source,
+                        entry_value,
                     },
                     trace,
                     ad_updates,
                     ad_update_count,
                 );
             }
-        };
-        trace.push(WalkEntry {
-            level,
-            index,
-            entry_address,
-            entry_value,
-        });
-        if entry_value & ENTRY_PRESENT == 0 {
-            let reason = PageFaultReason::NotPresent { level };
-            let record = PageFaultRecord::new(
-                instruction_rip,
-                access,
-                context,
-                page_fault_error_code(access, context, false, false, paging.nxe()),
-                address.0,
-            );
-            return fail(
-                TrackedAccessError::PageFault { record, reason },
-                trace,
-                ad_updates,
-                ad_update_count,
-            );
-        }
-        let mut offending = entry_value & ENTRY_ADDRESS_RESERVED;
-        if !paging.nxe() {
-            offending |= entry_value & ENTRY_NX;
-        }
-        // S4-10c: PS=1 in a PDPTE is reserved in the declared profile (no
-        // 1 GiB pages), exactly like PML4E bit 7 from S4-10a.
-        if matches!(level, PageTableLevel::Pml4 | PageTableLevel::Pdpt)
-            && entry_value & ENTRY_PS_OR_PAT != 0
-        {
-            offending |= ENTRY_PS_OR_PAT;
-        }
-        let is_large_leaf =
-            allow_2m && level == PageTableLevel::Pd && entry_value & ENTRY_PS_OR_PAT != 0;
-        if is_large_leaf {
-            // Bits 20:13 of a 2 MiB PDE are reserved (address bits below 2 MiB).
-            offending |= entry_value & ENTRY_2M_RESERVED;
-        }
-        if level == PageTableLevel::Pd && entry_value & ENTRY_PS_OR_PAT != 0 && !is_large_leaf {
-            return fail(
-                TrackedAccessError::UnsupportedPageSize {
+            if offending != 0 {
+                let reason = PageFaultReason::ReservedBits {
                     level,
+                    offending_bits: offending,
+                };
+                let record = PageFaultRecord::new(
+                    instruction_rip,
+                    access,
+                    context,
+                    page_fault_error_code(access, context, true, true, paging.nxe()),
+                    address.0,
+                );
+                return fail(
+                    TrackedAccessError::PageFault { record, reason },
+                    trace,
+                    ad_updates,
+                    ad_update_count,
+                );
+            }
+
+            if entry_value & (1 << 5) == 0 {
+                let after = entry_value | (1 << 5);
+                match table_writer(
+                    memory,
                     entry_address,
                     entry_value,
-                },
-                trace,
-                ad_updates,
-                ad_update_count,
-            );
-        }
-        if offending != 0 {
-            let reason = PageFaultReason::ReservedBits {
-                level,
-                offending_bits: offending,
-            };
-            let record = PageFaultRecord::new(
-                instruction_rip,
-                access,
-                context,
-                page_fault_error_code(access, context, true, true, paging.nxe()),
-                address.0,
-            );
-            return fail(
-                TrackedAccessError::PageFault { record, reason },
-                trace,
-                ad_updates,
-                ad_update_count,
-            );
-        }
-
-        if entry_value & (1 << 5) == 0 {
-            let after = entry_value | (1 << 5);
-            if let Err(source) = table_writer(memory, entry_address, after, &mut *committed_write) {
-                return fail(
-                    TrackedAccessError::TableWrite {
-                        level,
-                        entry_address,
-                        bit: AdBit::Accessed,
-                        source,
-                    },
-                    trace,
-                    ad_updates,
-                    ad_update_count,
-                );
+                    after,
+                    &mut *committed_write,
+                ) {
+                    Ok(TableReplace::Replaced) => {
+                        ad_updates[ad_update_count] = Some(AdUpdate {
+                            level,
+                            address: entry_address,
+                            before: entry_value,
+                            after,
+                            bit: AdBit::Accessed,
+                        });
+                        ad_update_count += 1;
+                    }
+                    Ok(TableReplace::Changed(observed)) => {
+                        failed_replaces += 1;
+                        if failed_replaces > TABLE_REPLACE_RETRY_LIMIT {
+                            return fail(
+                                TrackedAccessError::TableEntryChanged {
+                                    level,
+                                    entry_address,
+                                    bit: AdBit::Accessed,
+                                    observed,
+                                },
+                                trace,
+                                ad_updates,
+                                ad_update_count,
+                            );
+                        }
+                        continue;
+                    }
+                    Err(source) => {
+                        return fail(
+                            TrackedAccessError::TableWrite {
+                                level,
+                                entry_address,
+                                bit: AdBit::Accessed,
+                                source,
+                            },
+                            trace,
+                            ad_updates,
+                            ad_update_count,
+                        );
+                    }
+                }
             }
-            ad_updates[ad_update_count] = Some(AdUpdate {
-                level,
-                address: entry_address,
-                before: entry_value,
-                after,
-                bit: AdBit::Accessed,
-            });
-            ad_update_count += 1;
-        }
+            break (entry_value, is_large_leaf);
+        };
         effective.user &= entry_value & ENTRY_USER != 0;
         effective.writable &= entry_value & ENTRY_WRITABLE != 0;
         effective.execute_disabled |= entry_value & ENTRY_NX_BIT != 0;
@@ -943,10 +1122,11 @@ fn walk_long64_4k_with_writer(
 /// A request crossing a 4 KiB boundary is rejected before table or operand
 /// access. Separate calls commit independently; this API does not split or
 /// transact a multi-page operation.
-/// A/D updates commit immediately through `PhysicalMemory::write_u64`; those
+/// A/D updates commit immediately, each as one compare-and-replace of the entry
+/// (`PhysicalMemory::compare_replace_u64`, S6-25); those
 /// effects remain committed if a later walk or operand access fails.
 pub fn access_long64_4k_ram(
-    memory: &mut PhysicalMemory,
+    memory: &PhysicalMemory,
     paging: &Long64ProbeConfig,
     request: TrackedAccessRequest,
     committed_write: impl FnMut(GuestPhysicalRange),
@@ -969,7 +1149,7 @@ pub fn access_long64_4k_ram(
 /// 2 MiB leaf instead of `UnsupportedPageSize`. The 4 KiB operand-crossing
 /// rule is unchanged: a request crossing a 4 KiB boundary is still rejected.
 pub fn access_long64_2m_ram(
-    memory: &mut PhysicalMemory,
+    memory: &PhysicalMemory,
     paging: &Long64ProbeConfig,
     request: TrackedAccessRequest,
     committed_write: impl FnMut(GuestPhysicalRange),
@@ -991,7 +1171,7 @@ pub fn access_long64_2m_ram(
 /// [`access_long64_2m_ram`] (S4-38L1: the stop record reads the bytes at RIP with the walk the
 /// guest itself fetched with, and must not alter the page tables it reports on).
 pub(crate) fn translate_long64_2m_ram_read_only(
-    memory: &mut PhysicalMemory,
+    memory: &PhysicalMemory,
     paging: &Long64ProbeConfig,
     instruction_rip: u64,
     address: GuestLinearAddress,
@@ -1013,18 +1193,45 @@ pub(crate) fn translate_long64_2m_ram_read_only(
 /// walk visited (PML4 first; `None` past a 2 MiB leaf). S4-13: the fetch translation cache
 /// watches exactly those frames for guest writes.
 pub(crate) fn translate_long64_2m_ram_read_only_with_tables(
-    memory: &mut PhysicalMemory,
+    memory: &PhysicalMemory,
     paging: &Long64ProbeConfig,
     instruction_rip: u64,
     address: GuestLinearAddress,
     context: AccessContext,
     access: AccessKind,
 ) -> Result<(GuestPhysicalAddress, [Option<GuestPhysicalAddress>; 4]), TrackedAccessError> {
-    let mut no_op_writer = |_: &mut PhysicalMemory,
-                            _: GuestPhysicalAddress,
-                            _: u64,
-                            _: &mut dyn FnMut(GuestPhysicalRange)| Ok(());
-    walk_long64_4k_with_writer(
+    translate_long64_2m_ram_read_only_with_trace(
+        memory,
+        paging,
+        instruction_rip,
+        address,
+        context,
+        access,
+    )
+    .0
+}
+
+/// Read-only 4 KiB / 2 MiB translation with the entries observed by the same walk, including
+/// entries visited before a translation fault or other walk error. The writer is a no-op, so
+/// this diagnostic does not commit accessed or dirty bits.
+pub(crate) fn translate_long64_2m_ram_read_only_with_trace(
+    memory: &PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    address: GuestLinearAddress,
+    context: AccessContext,
+    access: AccessKind,
+) -> (
+    Result<(GuestPhysicalAddress, [Option<GuestPhysicalAddress>; 4]), TrackedAccessError>,
+    WalkTrace,
+) {
+    let mut no_op_writer =
+        |_: &PhysicalMemory,
+         _: GuestPhysicalAddress,
+         _: u64,
+         _: u64,
+         _: &mut dyn FnMut(GuestPhysicalRange)| Ok(TableReplace::Replaced);
+    let walk = walk_long64_4k_with_writer(
         memory,
         paging,
         instruction_rip,
@@ -1034,9 +1241,12 @@ pub(crate) fn translate_long64_2m_ram_read_only_with_tables(
         &mut |_| {},
         &mut no_op_writer,
         true,
+    );
+    (
+        walk.translation
+            .map(|translation| (translation.physical, translation.table_pages)),
+        walk.trace,
     )
-    .translation
-    .map(|translation| (translation.physical, translation.table_pages))
 }
 
 /// S4-38L4h: the translation half of a data write through the 4 KiB / 2 MiB tracked walk, with no
@@ -1048,12 +1258,32 @@ pub(crate) fn translate_long64_2m_ram_read_only_with_tables(
 /// target must be plain RAM (a write to MMIO or a read-only region is a typed error, never
 /// started on the first page and abandoned on the second).
 pub(crate) fn translate_long64_2m_ram_write_check(
-    memory: &mut PhysicalMemory,
+    memory: &PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    address: GuestLinearAddress,
+    context: AccessContext,
+    committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<(), TrackedAccessError> {
+    translate_long64_2m_ram_write_check_with_fault_trace(
+        memory,
+        paging,
+        instruction_rip,
+        address,
+        context,
+        committed_write,
+        None,
+    )
+}
+
+pub(crate) fn translate_long64_2m_ram_write_check_with_fault_trace(
+    memory: &PhysicalMemory,
     paging: &Long64ProbeConfig,
     instruction_rip: u64,
     address: GuestLinearAddress,
     context: AccessContext,
     mut committed_write: impl FnMut(GuestPhysicalRange),
+    fault_trace: Option<&mut Option<WalkTrace>>,
 ) -> Result<(), TrackedAccessError> {
     let walk = walk_long64_4k_with_writer(
         memory,
@@ -1063,10 +1293,17 @@ pub(crate) fn translate_long64_2m_ram_write_check(
         context,
         AccessKind::Write,
         &mut committed_write,
-        &mut write_tracked_table_entry,
+        &mut compare_replace_table_entry,
         true,
     );
-    let physical = walk.translation?.physical;
+    let translation = match walk.translation {
+        Ok(translation) => translation,
+        Err(error) => {
+            retain_page_fault_trace(fault_trace, &error, walk.trace);
+            return Err(error);
+        }
+    };
+    let physical = translation.physical;
     match memory.locate_region_kind(physical, 1) {
         Ok(MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer) => Ok(()),
         Ok(MemoryRegionKind::Mmio) => {
@@ -1083,8 +1320,20 @@ pub(crate) fn translate_long64_2m_ram_write_check(
     }
 }
 
+fn retain_page_fault_trace(
+    fault_trace: Option<&mut Option<WalkTrace>>,
+    error: &TrackedAccessError,
+    trace: WalkTrace,
+) {
+    if matches!(error, TrackedAccessError::PageFault { .. })
+        && let Some(fault_trace) = fault_trace
+    {
+        *fault_trace = Some(trace);
+    }
+}
+
 pub(crate) fn access_long64_4k_with_mmio(
-    memory: &mut PhysicalMemory,
+    memory: &PhysicalMemory,
     paging: &Long64ProbeConfig,
     request: TrackedAccessRequest,
     committed_write: impl FnMut(GuestPhysicalRange),
@@ -1107,11 +1356,11 @@ pub(crate) fn access_long64_4k_with_mmio(
 /// 2 MiB RAM walk; only an operand landing in an MMIO region is dispatched, with the dirty bit set
 /// first like [`access_long64_4k_with_mmio`].
 pub(crate) fn access_long64_2m_with_mmio(
-    memory: &mut PhysicalMemory,
+    memory: &PhysicalMemory,
     paging: &Long64ProbeConfig,
     request: TrackedAccessRequest,
     committed_write: impl FnMut(GuestPhysicalRange),
-    window: MmioWindow,
+    windows: &[MmioWindow],
     mut mmio: impl FnMut(GuestPhysicalAddress, u8, RamAccessOperation) -> Result<u64, MmioDispatchError>,
 ) -> TrackedAccessReport {
     access_long64_4k_internal(
@@ -1122,19 +1371,19 @@ pub(crate) fn access_long64_2m_with_mmio(
         true,
         Some(&mut mmio),
         true,
-        Some(window),
+        Some(windows),
     )
 }
 
 fn access_long64_4k_internal(
-    memory: &mut PhysicalMemory,
+    memory: &PhysicalMemory,
     paging: &Long64ProbeConfig,
     request: TrackedAccessRequest,
     mut committed_write: impl FnMut(GuestPhysicalRange),
     set_mmio_dirty_before_dispatch: bool,
     mmio: Option<&mut MmioDispatch<'_>>,
     allow_2m: bool,
-    mmio_window: Option<MmioWindow>,
+    mmio_windows: Option<&[MmioWindow]>,
 ) -> TrackedAccessReport {
     access_long64_4k_internal_windowed(
         memory,
@@ -1143,14 +1392,14 @@ fn access_long64_4k_internal(
         &mut committed_write,
         set_mmio_dirty_before_dispatch,
         mmio,
-        &mut write_tracked_table_entry,
+        &mut compare_replace_table_entry,
         allow_2m,
-        mmio_window,
+        mmio_windows,
     )
 }
 
 fn access_long64_4k_internal_with_writer(
-    memory: &mut PhysicalMemory,
+    memory: &PhysicalMemory,
     paging: &Long64ProbeConfig,
     request: TrackedAccessRequest,
     committed_write: &mut dyn FnMut(GuestPhysicalRange),
@@ -1172,11 +1421,134 @@ fn access_long64_4k_internal_with_writer(
     )
 }
 
-/// The tracked access. `mmio_window`, when set, limits the MMIO the dispatch serves to the
-/// physical range `(base, size)`: an operand in any other MMIO region takes the same typed error
-/// as without a dispatch, before the dirty bit or the device is touched (S4-38L9s).
+/// S6-31: the translation half of a locked read-modify-write ([`RamAccessOperation::AtomicTarget`]).
+/// The page-table effects are exactly those of the serial S6-20 sequence it replaces (an ordinary
+/// read of the operand, then an ordinary write): a read walk first (accessed bits; a missing or
+/// forbidden page is a read fault, error code without W), then a write walk (write rights, accessed
+/// bits, a write fault), then the physical region check of a write, then the dirty bit of the leaf.
+/// Only the data access is left out: the caller performs the host atomic operation on the returned
+/// physical address. Order of refusals: MMIO is refused before the dirty bit and before any
+/// device is reached (`DeviceUnavailable`); ROM and holes are the `ReadOnlyRegion` of a write; a
+/// Framebuffer operand is plain memory.
+fn locate_atomic_target(
+    memory: &PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    request: TrackedAccessRequest,
+    width: AccessWidth,
+    committed_write: &mut dyn FnMut(GuestPhysicalRange),
+    table_writer: &mut TrackedTableWriter<'_>,
+    allow_2m: bool,
+) -> TrackedAccessReport {
+    let mut ad_updates = [None; 5];
+    let mut ad_update_count = 0;
+    let mut trace = WalkTrace::new();
+    let mut translation = None;
+    for access in [AccessKind::Read, AccessKind::Write] {
+        let walk = walk_long64_4k_with_writer(
+            memory,
+            paging,
+            request.instruction_rip,
+            request.address,
+            request.context,
+            access,
+            committed_write,
+            table_writer,
+            allow_2m,
+        );
+        trace = walk.trace;
+        for update in walk.ad_updates[..walk.ad_update_count].iter().flatten() {
+            // At most four accessed updates and one dirty update in a serial run. Under
+            // concurrent clearing of accessed bits between the two walks the report could need
+            // more; the writes themselves were committed, only the extra records are dropped.
+            if ad_update_count < ad_updates.len() {
+                ad_updates[ad_update_count] = Some(*update);
+                ad_update_count += 1;
+            }
+        }
+        match walk.translation {
+            Ok(found) => translation = Some(found),
+            Err(error) => {
+                return TrackedAccessReport {
+                    outcome: Err(error),
+                    trace,
+                    ad_updates,
+                    ad_update_count,
+                };
+            }
+        }
+    }
+    let translation = translation.expect("the write walk succeeded");
+    let physical = translation.physical;
+    let fail = |error, trace, ad_updates, ad_update_count| TrackedAccessReport {
+        outcome: Err(error),
+        trace,
+        ad_updates,
+        ad_update_count,
+    };
+    match memory.locate_region_kind(physical, u64::from(width.bytes())) {
+        Ok(MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer) => {}
+        Ok(MemoryRegionKind::Mmio) => {
+            return fail(
+                TrackedAccessError::DeviceUnavailable { address: physical },
+                trace,
+                ad_updates,
+                ad_update_count,
+            );
+        }
+        Ok(kind) => {
+            return fail(
+                TrackedAccessError::OperandPhysical {
+                    address: physical,
+                    source: MemoryAccessError::ReadOnlyRegion(kind),
+                },
+                trace,
+                ad_updates,
+                ad_update_count,
+            );
+        }
+        Err(source) => {
+            return fail(
+                TrackedAccessError::OperandPhysical {
+                    address: physical,
+                    source,
+                },
+                trace,
+                ad_updates,
+                ad_update_count,
+            );
+        }
+    }
+    match commit_leaf_dirty(
+        memory,
+        table_writer,
+        committed_write,
+        translation.leaf_level,
+        translation.leaf_address,
+        translation.leaf_value,
+    ) {
+        Ok(Some(update)) => {
+            if ad_update_count < ad_updates.len() {
+                ad_updates[ad_update_count] = Some(update);
+                ad_update_count += 1;
+            }
+        }
+        Ok(None) => {}
+        Err(error) => return fail(error, trace, ad_updates, ad_update_count),
+    }
+    TrackedAccessReport {
+        outcome: Ok(TrackedAccessOutcome::Located(physical)),
+        trace,
+        ad_updates,
+        ad_update_count,
+    }
+}
+
+/// The tracked access. `mmio_windows`, when set, limits the MMIO the dispatch serves to the
+/// physical ranges `(base, size)` it lists: an operand in any other MMIO region takes the same typed
+/// error as without a dispatch, before the dirty bit or the device is touched (S4-38L9s; several
+/// windows since S4-38L8d).
 fn access_long64_4k_internal_windowed(
-    memory: &mut PhysicalMemory,
+    memory: &PhysicalMemory,
     paging: &Long64ProbeConfig,
     request: TrackedAccessRequest,
     committed_write: &mut dyn FnMut(GuestPhysicalRange),
@@ -1184,7 +1556,7 @@ fn access_long64_4k_internal_windowed(
     mut mmio: Option<&mut MmioDispatch<'_>>,
     table_writer: &mut TrackedTableWriter<'_>,
     allow_2m: bool,
-    mmio_window: Option<MmioWindow>,
+    mmio_windows: Option<&[MmioWindow]>,
 ) -> TrackedAccessReport {
     let mut trace = WalkTrace::new();
     let mut ad_updates = [None; 5];
@@ -1205,6 +1577,17 @@ fn access_long64_4k_internal_windowed(
             trace,
             ad_updates,
             ad_update_count,
+        );
+    }
+    if let RamAccessOperation::AtomicTarget { width } = request.operation {
+        return locate_atomic_target(
+            memory,
+            paging,
+            request,
+            width,
+            committed_write,
+            table_writer,
+            allow_2m,
         );
     }
     let walk = walk_long64_4k_with_writer(
@@ -1278,9 +1661,12 @@ fn access_long64_4k_internal_windowed(
     };
     let _ = range;
 
-    let served = mmio_window.is_none_or(|(base, size)| {
-        physical.get() >= base
-            && u128::from(physical.get()) + u128::from(width) <= u128::from(base) + u128::from(size)
+    let served = mmio_windows.is_none_or(|windows| {
+        windows.iter().any(|&(base, size)| {
+            physical.get() >= base
+                && u128::from(physical.get()) + u128::from(width)
+                    <= u128::from(base) + u128::from(size)
+        })
     });
     if is_mmio && (mmio.is_none() || !served) {
         let error = if access == AccessKind::Write {
@@ -1296,29 +1682,20 @@ fn access_long64_4k_internal_windowed(
 
     if let RamAccessOperation::Write { width, value } = request.operation {
         if !is_mmio || set_mmio_dirty_before_dispatch {
-            if leaf.1 & (1 << 6) == 0 {
-                let after = leaf.1 | (1 << 6);
-                if let Err(source) = table_writer(memory, leaf.0, after, committed_write) {
-                    return fail(
-                        TrackedAccessError::TableWrite {
-                            level: translation.leaf_level,
-                            entry_address: leaf.0,
-                            bit: AdBit::Dirty,
-                            source,
-                        },
-                        trace,
-                        ad_updates,
-                        ad_update_count,
-                    );
+            match commit_leaf_dirty(
+                memory,
+                table_writer,
+                committed_write,
+                translation.leaf_level,
+                leaf.0,
+                leaf.1,
+            ) {
+                Ok(Some(update)) => {
+                    ad_updates[ad_update_count] = Some(update);
+                    ad_update_count += 1;
                 }
-                ad_updates[ad_update_count] = Some(AdUpdate {
-                    level: translation.leaf_level,
-                    address: leaf.0,
-                    before: leaf.1,
-                    after,
-                    bit: AdBit::Dirty,
-                });
-                ad_update_count += 1;
+                Ok(None) => {}
+                Err(error) => return fail(error, trace, ad_updates, ad_update_count),
             }
         }
         if is_mmio {
@@ -1345,7 +1722,7 @@ fn access_long64_4k_internal_windowed(
             };
         }
         let bytes = value.to_le_bytes();
-        if let Err(source) = memory.write_bytes(
+        if let Err(source) = memory.store_bytes(
             physical,
             &bytes[..usize::from(width.bytes())],
             &mut *committed_write,
@@ -1391,7 +1768,7 @@ fn access_long64_4k_internal_windowed(
         };
     }
     if request.operation == RamAccessOperation::Fetch {
-        return match memory.read_u8(physical) {
+        return match memory.load_u8(physical) {
             Ok(value) => TrackedAccessReport {
                 outcome: Ok(TrackedAccessOutcome::Fetched(value)),
                 trace,
@@ -1411,7 +1788,7 @@ fn access_long64_4k_internal_windowed(
     }
     if request.operation == RamAccessOperation::ReadPseudoDescriptor {
         let mut bytes = [0u8; 10];
-        return match memory.read_bytes(physical, &mut bytes) {
+        return match memory.load_bytes(physical, &mut bytes) {
             Ok(()) => TrackedAccessReport {
                 outcome: Ok(TrackedAccessOutcome::ReadPseudoDescriptor(bytes)),
                 trace,
@@ -1431,7 +1808,7 @@ fn access_long64_4k_internal_windowed(
     }
     let mut bytes = [0u8; 8];
     let len = usize::from(width);
-    match memory.read_bytes(physical, &mut bytes[..len]) {
+    match memory.load_bytes(physical, &mut bytes[..len]) {
         Ok(()) => {
             let mut value_bytes = [0u8; 8];
             value_bytes[..len].copy_from_slice(&bytes[..len]);
@@ -1495,12 +1872,35 @@ fn descriptor_ram_error(
 /// committed when a later check fails. The caller must exclude DMA, other
 /// vCPUs and host writers for the duration of the call.
 pub(crate) fn commit_paged_ltr_descriptor(
-    memory: &mut PhysicalMemory,
+    memory: &PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    state: &od_isa::LongModeState,
+    preparation: &od_isa::execute::PagedLtrPreparation,
+    context: AccessContext,
+    committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<od_isa::execute::PreparedPagedLtrCommit, LtrTransactionError> {
+    commit_paged_ltr_descriptor_with_writer(
+        memory,
+        paging,
+        state,
+        preparation,
+        context,
+        committed_write,
+        &mut compare_replace_table_entry,
+    )
+}
+
+/// The LTR transaction with the table-entry writer as an explicit seam (S4-09e): the accessed
+/// bits of both walks and the leaf D bit are written through `table_writer`, like the tracked
+/// access does; the descriptor image is a plain RAM write.
+fn commit_paged_ltr_descriptor_with_writer(
+    memory: &PhysicalMemory,
     paging: &Long64ProbeConfig,
     state: &od_isa::LongModeState,
     preparation: &od_isa::execute::PagedLtrPreparation,
     context: AccessContext,
     mut committed_write: impl FnMut(GuestPhysicalRange),
+    table_writer: &mut TrackedTableWriter<'_>,
 ) -> Result<od_isa::execute::PreparedPagedLtrCommit, LtrTransactionError> {
     let od_isa::execute::PagedLtrPreparation::Ready {
         descriptor_address, ..
@@ -1515,7 +1915,7 @@ pub(crate) fn commit_paged_ltr_descriptor(
             TrackedAccessError::CrossesPage { address, width: 16 },
         ));
     }
-    let read = walk_long64_4k(
+    let read = walk_long64_4k_with_writer(
         memory,
         paging,
         state.rip,
@@ -1523,6 +1923,8 @@ pub(crate) fn commit_paged_ltr_descriptor(
         context,
         AccessKind::Read,
         &mut committed_write,
+        &mut *table_writer,
+        false,
     )
     .translation
     .map_err(LtrTransactionError::Access)?;
@@ -1533,7 +1935,7 @@ pub(crate) fn commit_paged_ltr_descriptor(
     descriptor_ram_error(memory, read.physical, false).map_err(LtrTransactionError::Access)?;
     let mut snapshot = [0u8; 16];
     memory
-        .read_bytes(read.physical, &mut snapshot)
+        .load_bytes(read.physical, &mut snapshot)
         .map_err(|source| {
             LtrTransactionError::Access(TrackedAccessError::OperandPhysical {
                 address: read.physical,
@@ -1550,7 +1952,7 @@ pub(crate) fn commit_paged_ltr_descriptor(
     .expect("ready preparation");
 
     // Write-permission walk: sets A bits but not D, and never writes the operand.
-    let write = walk_long64_4k(
+    let write = walk_long64_4k_with_writer(
         memory,
         paging,
         state.rip,
@@ -1558,6 +1960,8 @@ pub(crate) fn commit_paged_ltr_descriptor(
         context,
         AccessKind::Write,
         &mut committed_write,
+        &mut *table_writer,
+        false,
     )
     .translation
     .map_err(LtrTransactionError::Access)?;
@@ -1573,21 +1977,17 @@ pub(crate) fn commit_paged_ltr_descriptor(
     }
     descriptor_ram_error(memory, write.physical, true).map_err(LtrTransactionError::Access)?;
 
-    if write.leaf_value & (1 << 6) == 0 {
-        let after = write.leaf_value | (1 << 6);
-        memory
-            .write_u64(write.leaf_address, after, &mut committed_write)
-            .map_err(|source| {
-                LtrTransactionError::Access(TrackedAccessError::TableWrite {
-                    level: write.leaf_level,
-                    entry_address: write.leaf_address,
-                    bit: AdBit::Dirty,
-                    source,
-                })
-            })?;
-    }
+    commit_leaf_dirty(
+        memory,
+        &mut *table_writer,
+        &mut committed_write,
+        write.leaf_level,
+        write.leaf_address,
+        write.leaf_value,
+    )
+    .map_err(LtrTransactionError::Access)?;
     memory
-        .write_bytes(
+        .store_bytes(
             write.physical,
             prepared.busy_descriptor(),
             &mut committed_write,
@@ -1602,11 +2002,40 @@ pub(crate) fn commit_paged_ltr_descriptor(
 }
 
 pub(crate) fn read_long64_4k_bounded_ram_read(
-    memory: &mut PhysicalMemory,
+    memory: &PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    request: TrackedAccessRequest,
+    committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<u64, TrackedAccessError> {
+    read_long64_4k_bounded_ram_read_inner(memory, paging, request, committed_write, None)
+}
+
+pub(crate) fn read_long64_4k_bounded_ram_read_with_fault_trace(
+    memory: &PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    request: TrackedAccessRequest,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    fault_trace: &mut Option<WalkTrace>,
+) -> Result<u64, TrackedAccessError> {
+    read_long64_4k_bounded_ram_read_inner(
+        memory,
+        paging,
+        request,
+        committed_write,
+        Some(fault_trace),
+    )
+}
+
+fn read_long64_4k_bounded_ram_read_inner(
+    memory: &PhysicalMemory,
     paging: &Long64ProbeConfig,
     request: TrackedAccessRequest,
     mut committed_write: impl FnMut(GuestPhysicalRange),
+    mut fault_trace: Option<&mut Option<WalkTrace>>,
 ) -> Result<u64, TrackedAccessError> {
+    if let Some(fault_trace) = fault_trace.as_deref_mut() {
+        *fault_trace = None;
+    }
     let (width, access) = match request.operation {
         RamAccessOperation::Read {
             width: width @ (AccessWidth::Word | AccessWidth::Dword | AccessWidth::Qword),
@@ -1627,7 +2056,7 @@ pub(crate) fn read_long64_4k_bounded_ram_read(
     let offset = request.address.0 & 0xfff;
     let first_len = (4096 - offset).min(u64::from(width)) as u8;
     let crosses_page = first_len < width;
-    let first = walk_long64_4k(
+    let first_walk = walk_long64_4k(
         memory,
         paging,
         request.instruction_rip,
@@ -1635,8 +2064,14 @@ pub(crate) fn read_long64_4k_bounded_ram_read(
         request.context,
         access,
         &mut committed_write,
-    )
-    .translation?;
+    );
+    let first = match first_walk.translation {
+        Ok(translation) => translation,
+        Err(error) => {
+            retain_page_fault_trace(fault_trace.as_deref_mut(), &error, first_walk.trace);
+            return Err(error);
+        }
+    };
     let second = if crosses_page {
         let second_linear = request.address.0.checked_add(u64::from(first_len)).ok_or(
             TrackedAccessError::CrossesPage {
@@ -1644,18 +2079,22 @@ pub(crate) fn read_long64_4k_bounded_ram_read(
                 width,
             },
         )?;
-        Some(
-            walk_long64_4k(
-                memory,
-                paging,
-                request.instruction_rip,
-                GuestLinearAddress::new(second_linear),
-                request.context,
-                access,
-                &mut committed_write,
-            )
-            .translation?,
-        )
+        let second_walk = walk_long64_4k(
+            memory,
+            paging,
+            request.instruction_rip,
+            GuestLinearAddress::new(second_linear),
+            request.context,
+            access,
+            &mut committed_write,
+        );
+        match second_walk.translation {
+            Ok(translation) => Some(translation),
+            Err(error) => {
+                retain_page_fault_trace(fault_trace.as_deref_mut(), &error, second_walk.trace);
+                return Err(error);
+            }
+        }
     } else {
         None
     };
@@ -1679,14 +2118,14 @@ pub(crate) fn read_long64_4k_bounded_ram_read(
 
     let mut bytes = [0; 8];
     memory
-        .read_bytes(first.physical, &mut bytes[..usize::from(first_len)])
+        .load_bytes(first.physical, &mut bytes[..usize::from(first_len)])
         .map_err(|source| TrackedAccessError::OperandPhysical {
             address: first.physical,
             source,
         })?;
     if let Some(second) = second {
         memory
-            .read_bytes(
+            .load_bytes(
                 second.physical,
                 &mut bytes[usize::from(first_len)..usize::from(width)],
             )
@@ -1718,10 +2157,10 @@ mod tracked_access_tests {
             vec![MemoryRegionSpec::new(range, MemoryRegionKind::Ram)],
         )
         .unwrap();
-        let mut memory = PhysicalMemory::new(&map, RamLimits::new(size)).unwrap();
+        let memory = PhysicalMemory::new(&map, RamLimits::new(size)).unwrap();
         for (address, value) in [0x1008, 0x2010, 0x3018, 0x4020].into_iter().zip(entries) {
             memory
-                .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
                 .unwrap();
         }
         let paging =
@@ -1783,7 +2222,7 @@ mod tracked_access_tests {
 
     fn entries(memory: &PhysicalMemory) -> [u64; 4] {
         [0x1008, 0x2010, 0x3018, 0x4020]
-            .map(|address| memory.read_u64(GuestPhysicalAddress::new(address)).unwrap())
+            .map(|address| memory.load_u64(GuestPhysicalAddress::new(address)).unwrap())
     }
 
     fn logged(log: &[GuestPhysicalRange]) -> Vec<(u64, u64)> {
@@ -1871,7 +2310,7 @@ mod tracked_access_tests {
     fn ram_snapshot(memory: &PhysicalMemory, start: u64, len: usize) -> Vec<u8> {
         let mut bytes = vec![0; len];
         memory
-            .read_bytes(GuestPhysicalAddress::new(start), &mut bytes)
+            .load_bytes(GuestPhysicalAddress::new(start), &mut bytes)
             .unwrap();
         bytes
     }
@@ -1953,7 +2392,7 @@ mod tracked_access_tests {
         };
         let (mut memory, _) = setup_entries(initial_entries, 0x6000);
         memory
-            .write_u8(GuestPhysicalAddress::new(0x4abc), 0x5a, |_| {})
+            .store_u8(GuestPhysicalAddress::new(0x4abc), 0x5a, |_| {})
             .unwrap();
         let operand_before = ram_snapshot(&memory, 0x4abc, 8);
         let mut callbacks = Vec::new();
@@ -2013,7 +2452,7 @@ mod tracked_access_tests {
     ) {
         let (mut memory, _) = setup_entries(initial_entries, 0x6000);
         memory
-            .write_u8(GuestPhysicalAddress::new(0x4abc), 0x5a, |_| {})
+            .store_u8(GuestPhysicalAddress::new(0x4abc), 0x5a, |_| {})
             .unwrap();
         let mut callbacks = Vec::new();
         let report = access_long64_4k_ram(
@@ -2076,7 +2515,58 @@ mod tracked_access_tests {
                         initial_entries[3] | (1 << 5) | (1 << 6),
                     ]
                 );
-                assert_eq!(memory.read_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0xa5));
+                assert_eq!(memory.load_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0xa5));
+            }
+        }
+    }
+
+    /// S6-32 step 4: the walk reads each table entry as ONE 8-byte access (never byte by byte),
+    /// in both execution modes, for a read, a write (A/D set by compare-and-replace) and a fetch.
+    /// The host access log of the storage (`ram_storage::traced`) is the counter: every host
+    /// access that lands inside a table entry is one access of width 8 at the entry's address.
+    #[test]
+    fn the_walk_reads_each_table_entry_with_one_eight_byte_access_in_both_modes() {
+        use crate::ExecutionMode;
+        use crate::ram_storage::traced;
+        const ENTRIES: [usize; 4] = [0x1008, 0x2010, 0x3018, 0x4020];
+        for mode in [ExecutionMode::Interleaved, ExecutionMode::Parallel] {
+            for access in [AccessKind::Read, AccessKind::Write, AccessKind::Fetch] {
+                let (mut memory, paging) = setup(0x4007, 0x6000);
+                memory.set_execution_mode(mode);
+                let (report, log) = traced(|| {
+                    access_long64_4k_ram(&memory, &paging, request(operation(access)), |_| {})
+                });
+                assert!(
+                    report.outcome.is_ok(),
+                    "{mode:?} {access:?}: {:?}",
+                    report.outcome
+                );
+                for entry in ENTRIES {
+                    let inside: Vec<_> = log
+                        .iter()
+                        .filter(|(at, width)| *at < entry + 8 && at + width > entry)
+                        .collect();
+                    assert!(
+                        !inside.is_empty(),
+                        "{mode:?} {access:?}: entry {entry:#x} read"
+                    );
+                    assert!(
+                        inside.iter().all(|&&(at, width)| at == entry && width == 8),
+                        "{mode:?} {access:?}: entry {entry:#x} is only touched by 8-byte accesses \
+                         at its address: {inside:?}"
+                    );
+                    // One load of the entry, plus at most one compare-and-replace per A and per D
+                    // bit (the leaf of a write): never a byte access.
+                    assert!(
+                        inside.len() <= 3,
+                        "{mode:?} {access:?}: {entry:#x}: {inside:?}"
+                    );
+                }
+                // The operand itself is one byte, outside every entry.
+                assert!(
+                    log.iter().any(|&(at, width)| at == 0x4abc && width == 1),
+                    "{mode:?} {access:?}: {log:?}"
+                );
             }
         }
     }
@@ -2243,7 +2733,7 @@ mod tracked_access_tests {
         let paging = paging_config(true, true);
         let context = privilege(PrivilegeLevel::Ring0);
         memory
-            .write_u8(GuestPhysicalAddress::new(0x4abc), 0x5a, |_| {})
+            .store_u8(GuestPhysicalAddress::new(0x4abc), 0x5a, |_| {})
             .unwrap();
 
         let mut read_callbacks = Vec::new();
@@ -2418,7 +2908,7 @@ mod tracked_access_tests {
         assert_eq!(report.ad_updates, [None; 5]);
         assert_eq!(entries(&memory), entries_before);
         assert_eq!(logged(&callbacks), [(0x4abc, 1)]);
-        assert_eq!(memory.read_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0xa5));
+        assert_eq!(memory.load_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0xa5));
     }
 
     #[test]
@@ -2426,11 +2916,11 @@ mod tracked_access_tests {
         for offset in [0, 0x10000, 0x1fffff] {
             let (mut memory, paging) = setup(0, 0x400000);
             memory
-                .write_u64(GuestPhysicalAddress::new(0x3018), 0x201087, |_| {})
+                .store_u64(GuestPhysicalAddress::new(0x3018), 0x201087, |_| {})
                 .unwrap();
             let physical = 0x200000 + offset;
             memory
-                .write_u8(GuestPhysicalAddress::new(physical), 0x5a, |_| {})
+                .store_u8(GuestPhysicalAddress::new(physical), 0x5a, |_| {})
                 .unwrap();
             let mut req = request(RamAccessOperation::Read {
                 width: AccessWidth::Byte,
@@ -2464,7 +2954,7 @@ mod tracked_access_tests {
     fn large_leaf_reserved_bits_fault_keeps_ancestor_accessed_prefix() {
         let (mut memory, paging) = setup(0, 0x400000);
         memory
-            .write_u64(GuestPhysicalAddress::new(0x3018), 0x202087, |_| {})
+            .store_u64(GuestPhysicalAddress::new(0x3018), 0x202087, |_| {})
             .unwrap();
         let mut log = Vec::new();
         let report = access_long64_2m_ram(
@@ -2500,7 +2990,7 @@ mod tracked_access_tests {
         ] {
             let (mut memory, _) = setup(0, 0x400000);
             memory
-                .write_u64(GuestPhysicalAddress::new(0x3018), pde, |_| {})
+                .store_u64(GuestPhysicalAddress::new(0x3018), pde, |_| {})
                 .unwrap();
             let paging = Long64ProbeConfig::new(
                 0x8000_0033 | if wp { CR0_WP } else { 0 },
@@ -2550,18 +3040,19 @@ mod tracked_access_tests {
         ] {
             let (mut memory, paging) = setup(0, 0x400000);
             let pde_address = GuestPhysicalAddress::new(0x3018);
-            memory.write_u64(pde_address, pde, |_| {}).unwrap();
+            memory.store_u64(pde_address, pde, |_| {}).unwrap();
             let mut log = Vec::new();
             let mut callback = |range| log.push(range);
             let mut writer =
-                |memory: &mut PhysicalMemory,
+                |memory: &PhysicalMemory,
                  address: GuestPhysicalAddress,
+                 expected: u64,
                  value: u64,
                  callback: &mut dyn FnMut(GuestPhysicalRange)| {
                     if address == pde_address {
                         Err(MemoryAccessError::Unmapped(address))
                     } else {
-                        write_tracked_table_entry(memory, address, value, callback)
+                        compare_replace_table_entry(memory, address, expected, value, callback)
                     }
                 };
             let report = access_long64_4k_internal_with_writer(
@@ -2641,7 +3132,7 @@ mod tracked_access_tests {
     fn large_leaf_reserved_mask_covers_bit_20_and_write_pfec() {
         let (mut memory, paging) = setup(0, 0x400000);
         memory
-            .write_u64(GuestPhysicalAddress::new(0x3018), 0x300087, |_| {})
+            .store_u64(GuestPhysicalAddress::new(0x3018), 0x300087, |_| {})
             .unwrap();
         let report = access_long64_2m_ram(
             &mut memory,
@@ -2670,7 +3161,7 @@ mod tracked_access_tests {
     fn first_write_through_fresh_large_leaf_sets_a_then_d_before_operand() {
         let (mut memory, paging) = setup(0, 0x400000);
         memory
-            .write_u64(GuestPhysicalAddress::new(0x3018), 0x200087, |_| {})
+            .store_u64(GuestPhysicalAddress::new(0x3018), 0x200087, |_| {})
             .unwrap();
         let mut log = Vec::new();
         let report = access_long64_2m_ram(
@@ -2748,7 +3239,7 @@ mod tracked_access_tests {
         // operand-physical error, never a device dispatch.
         let (mut memory, paging) = setup(0, 0x400000);
         memory
-            .write_u64(GuestPhysicalAddress::new(0x3018), 0x4000_0087, |_| {})
+            .store_u64(GuestPhysicalAddress::new(0x3018), 0x4000_0087, |_| {})
             .unwrap();
         let report = access_long64_2m_ram(
             &mut memory,
@@ -2790,11 +3281,11 @@ mod tracked_access_tests {
             (0x4028, (fb_start + 0x1000) | 7),
         ] {
             memory
-                .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
                 .unwrap();
         }
         memory
-            .write_bytes(
+            .store_bytes(
                 GuestPhysicalAddress::new(fb_start + 0xffe),
                 &[1, 2, 3, 4],
                 |_| panic!("framebuffer writes never notify"),
@@ -2851,7 +3342,7 @@ mod tracked_access_tests {
         ] {
             let (mut memory, paging) = setup(0x4007, 0x6000);
             memory
-                .write_u32(GuestPhysicalAddress::new(0x4abc), 0x7856_3412, |_| {})
+                .store_u32(GuestPhysicalAddress::new(0x4abc), 0x7856_3412, |_| {})
                 .unwrap();
             let mut log = Vec::new();
             let report = access_long64_4k_ram(&mut memory, &paging, request(operation), |range| {
@@ -2888,15 +3379,16 @@ mod tracked_access_tests {
             let mut attempts = Vec::new();
             let mut callbacks = Vec::new();
             let mut writes =
-                |memory: &mut PhysicalMemory,
+                |memory: &PhysicalMemory,
                  address: GuestPhysicalAddress,
+                 expected: u64,
                  value: u64,
                  callback: &mut dyn FnMut(GuestPhysicalRange)| {
                     attempts.push(address);
                     if address == failed_address {
                         Err(MemoryAccessError::Unmapped(address))
                     } else {
-                        write_tracked_table_entry(memory, address, value, callback)
+                        compare_replace_table_entry(memory, address, expected, value, callback)
                     }
                 };
             let mut callback = |range| callbacks.push(range);
@@ -2948,8 +3440,8 @@ mod tracked_access_tests {
                     original[index] | if index < failed_index { 1 << 5 } else { 0 }
                 })
             );
-            assert_eq!(memory.read_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0));
-            assert_eq!(memory.read_u64(failed_address), Ok(original[failed_index]));
+            assert_eq!(memory.load_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0));
+            assert_eq!(memory.load_u64(failed_address), Ok(original[failed_index]));
         }
     }
 
@@ -2970,15 +3462,16 @@ mod tracked_access_tests {
             let mut callbacks = Vec::new();
             let mut attempts = Vec::new();
             let mut writer =
-                |memory: &mut PhysicalMemory,
+                |memory: &PhysicalMemory,
                  address: GuestPhysicalAddress,
+                 expected: u64,
                  value: u64,
                  callback: &mut dyn FnMut(GuestPhysicalRange)| {
                     attempts.push(address);
                     if address == failed_address {
                         Err(MemoryAccessError::Unmapped(address))
                     } else {
-                        write_tracked_table_entry(memory, address, value, callback)
+                        compare_replace_table_entry(memory, address, expected, value, callback)
                     }
                 };
             let mut callback = |range| callbacks.push(range);
@@ -3018,7 +3511,7 @@ mod tracked_access_tests {
                     |index| original[index] | if index < failed_index { 1 << 5 } else { 0 }
                 )
             );
-            assert_eq!(memory.read_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0));
+            assert_eq!(memory.load_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0));
         }
     }
 
@@ -3029,8 +3522,9 @@ mod tracked_access_tests {
         let mut attempts = Vec::new();
         let mut callbacks = Vec::new();
         let mut pt_writes = 0;
-        let mut writes = |memory: &mut PhysicalMemory,
+        let mut writes = |memory: &PhysicalMemory,
                           address: GuestPhysicalAddress,
+                          expected: u64,
                           value: u64,
                           callback: &mut dyn FnMut(GuestPhysicalRange)| {
             attempts.push(address);
@@ -3040,7 +3534,7 @@ mod tracked_access_tests {
                     return Err(MemoryAccessError::Unmapped(address));
                 }
             }
-            write_tracked_table_entry(memory, address, value, callback)
+            compare_replace_table_entry(memory, address, expected, value, callback)
         };
         let mut callback = |range| callbacks.push(range);
         let report = access_long64_4k_internal_with_writer(
@@ -3077,7 +3571,608 @@ mod tracked_access_tests {
             [(0x1008, 8), (0x2010, 8), (0x3018, 8), (0x4020, 8)]
         );
         assert_eq!(entries(&memory), [0x2027, 0x3027, 0x4027, 0x4027]);
-        assert_eq!(memory.read_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0));
+        assert_eq!(memory.load_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0));
+    }
+
+    // ---- S6-25: accessed/dirty updates are compare-and-replace of the entry the walk read ----
+
+    const LEAF: GuestPhysicalAddress = GuestPhysicalAddress::new(0x4020);
+
+    /// Runs one tracked access with the given table-entry writer (the seam).
+    fn run_with_writer(
+        memory: &PhysicalMemory,
+        paging: &Long64ProbeConfig,
+        access: AccessKind,
+        callbacks: &mut Vec<GuestPhysicalRange>,
+        writer: &mut TrackedTableWriter<'_>,
+    ) -> TrackedAccessReport {
+        let mut callback = |range| callbacks.push(range);
+        access_long64_4k_internal_with_writer(
+            memory,
+            paging,
+            request(operation(access)),
+            &mut callback,
+            false,
+            None,
+            writer,
+            false,
+        )
+    }
+
+    /// The accessed-bit replace of the leaf fails because another vCPU set D in the entry between
+    /// the walk's read and its replace: the walk repeats from that level, reads the new value and
+    /// sets A on top of it; the other vCPU's D bit is not lost.
+    #[test]
+    fn accessed_replace_that_fails_repeats_the_level_and_keeps_the_other_bit() {
+        let (mut memory, paging) = setup(0x4007, 0x6000);
+        let mut attempts = Vec::new();
+        let mut injected = false;
+        let mut writer = |memory: &PhysicalMemory,
+                          address: GuestPhysicalAddress,
+                          expected: u64,
+                          value: u64,
+                          callback: &mut dyn FnMut(GuestPhysicalRange)| {
+            attempts.push((address.get(), expected, value));
+            if address == LEAF && !injected {
+                injected = true;
+                memory.store_u64(LEAF, 0x4047, |_| {}).unwrap();
+            }
+            compare_replace_table_entry(memory, address, expected, value, callback)
+        };
+        let mut callbacks = Vec::new();
+        let report = run_with_writer(
+            &mut memory,
+            &paging,
+            AccessKind::Read,
+            &mut callbacks,
+            &mut writer,
+        );
+        assert_eq!(
+            report.outcome,
+            Ok(TrackedAccessOutcome::Read(0)),
+            "the access completes after the repeat"
+        );
+        assert_eq!(
+            attempts,
+            [
+                (0x1008, 0x2007, 0x2027),
+                (0x2010, 0x3007, 0x3027),
+                (0x3018, 0x4007, 0x4027),
+                (0x4020, 0x4007, 0x4027),
+                (0x4020, 0x4047, 0x4067),
+            ]
+        );
+        assert_eq!(entries(&memory), [0x2027, 0x3027, 0x4027, 0x4067]);
+        assert_eq!(report.ad_update_count, 4);
+        assert_eq!(
+            report.ad_updates[3],
+            Some(AdUpdate {
+                level: PageTableLevel::Pt,
+                address: LEAF,
+                before: 0x4047,
+                after: 0x4067,
+                bit: AdBit::Accessed,
+            })
+        );
+        assert_eq!(
+            report.trace.entries()[3].map(|e| e.entry_value),
+            Some(0x4047),
+            "the trace holds the value of the last read of the level"
+        );
+        assert_eq!(
+            logged(&callbacks),
+            [(0x1008, 8), (0x2010, 8), (0x3018, 8), (0x4020, 8)],
+            "only the committed replaces notify"
+        );
+    }
+
+    /// Dirty bit: another vCPU cleared A (aging) between the walk and the dirty replace. The
+    /// update is recomputed from the observed entry and sets A and D together.
+    #[test]
+    fn dirty_replace_that_fails_is_recomputed_from_the_observed_entry() {
+        let (mut memory, paging) = setup(0x4007, 0x6000);
+        let mut attempts = Vec::new();
+        let mut leaf_replaces = 0;
+        let mut writer = |memory: &PhysicalMemory,
+                          address: GuestPhysicalAddress,
+                          expected: u64,
+                          value: u64,
+                          callback: &mut dyn FnMut(GuestPhysicalRange)| {
+            if address == LEAF {
+                leaf_replaces += 1;
+                attempts.push((expected, value));
+                if leaf_replaces == 2 {
+                    memory.store_u64(LEAF, 0x4007, |_| {}).unwrap();
+                }
+            }
+            compare_replace_table_entry(memory, address, expected, value, callback)
+        };
+        let mut callbacks = Vec::new();
+        let report = run_with_writer(
+            &mut memory,
+            &paging,
+            AccessKind::Write,
+            &mut callbacks,
+            &mut writer,
+        );
+        assert_eq!(report.outcome, Ok(TrackedAccessOutcome::Written));
+        assert_eq!(
+            attempts,
+            [(0x4007, 0x4027), (0x4027, 0x4067), (0x4007, 0x4067)]
+        );
+        assert_eq!(entries(&memory)[3], 0x4067);
+        assert_eq!(report.ad_update_count, 5);
+        assert_eq!(
+            report.ad_updates[4],
+            Some(AdUpdate {
+                level: PageTableLevel::Pt,
+                address: LEAF,
+                before: 0x4007,
+                after: 0x4067,
+                bit: AdBit::Dirty,
+            })
+        );
+        assert_eq!(memory.load_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0xa5));
+    }
+
+    /// S6-31: a concurrent change of only the bits the translation ignores (the software bits 9..=11
+    /// and 52..=62: soft-dirty and the like) does not change what the walk validated; the dirty
+    /// update is recomputed over the observed entry (the other writer's bits kept) and retried, not
+    /// refused as in S6-25. A change of a translation bit is still refused (the test above).
+    #[test]
+    fn dirty_replace_absorbs_a_change_of_the_software_bits() {
+        let software = (1u64 << 9) | (1 << 11) | (1 << 52) | (1 << 62);
+        let (mut memory, paging) = setup(0x4007, 0x6000);
+        let mut attempts = Vec::new();
+        let mut leaf_replaces = 0;
+        let mut writer = |memory: &PhysicalMemory,
+                          address: GuestPhysicalAddress,
+                          expected: u64,
+                          value: u64,
+                          callback: &mut dyn FnMut(GuestPhysicalRange)| {
+            if address == LEAF {
+                leaf_replaces += 1;
+                attempts.push((expected, value));
+                if leaf_replaces == 2 {
+                    memory.store_u64(LEAF, 0x4027 | software, |_| {}).unwrap();
+                }
+            }
+            compare_replace_table_entry(memory, address, expected, value, callback)
+        };
+        let mut callbacks = Vec::new();
+        let report = run_with_writer(
+            &mut memory,
+            &paging,
+            AccessKind::Write,
+            &mut callbacks,
+            &mut writer,
+        );
+        assert_eq!(report.outcome, Ok(TrackedAccessOutcome::Written));
+        assert_eq!(
+            attempts,
+            [
+                (0x4007, 0x4027),
+                (0x4027, 0x4067),
+                (0x4027 | software, 0x4067 | software)
+            ]
+        );
+        assert_eq!(entries(&memory)[3], 0x4067 | software);
+        assert_eq!(memory.load_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0xa5));
+    }
+
+    /// Dirty bit: another vCPU already set A and D; there is nothing to replace.
+    #[test]
+    fn dirty_replace_that_fails_on_another_vcpus_dirty_bit_writes_nothing_more() {
+        let (mut memory, paging) = setup(0x4007, 0x6000);
+        let mut leaf_replaces = 0;
+        let mut writer = |memory: &PhysicalMemory,
+                          address: GuestPhysicalAddress,
+                          expected: u64,
+                          value: u64,
+                          callback: &mut dyn FnMut(GuestPhysicalRange)| {
+            if address == LEAF {
+                leaf_replaces += 1;
+                if leaf_replaces == 2 {
+                    memory.store_u64(LEAF, 0x4067, |_| {}).unwrap();
+                }
+            }
+            compare_replace_table_entry(memory, address, expected, value, callback)
+        };
+        let mut callbacks = Vec::new();
+        let report = run_with_writer(
+            &mut memory,
+            &paging,
+            AccessKind::Write,
+            &mut callbacks,
+            &mut writer,
+        );
+        assert_eq!(report.outcome, Ok(TrackedAccessOutcome::Written));
+        assert_eq!(report.ad_update_count, 4, "no dirty update of ours");
+        assert_eq!(entries(&memory)[3], 0x4067);
+        assert_eq!(memory.load_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0xa5));
+    }
+
+    /// Dirty bit: a bit that takes part in the translation changed after the walk validated it:
+    /// nothing is written (the entry keeps the other writer's value) and the access is refused
+    /// without an operand effect.
+    #[test]
+    fn dirty_replace_refuses_when_a_translation_bit_changed() {
+        let (mut memory, paging) = setup(0x4007, 0x6000);
+        let mut leaf_replaces = 0;
+        let mut writer = |memory: &PhysicalMemory,
+                          address: GuestPhysicalAddress,
+                          expected: u64,
+                          value: u64,
+                          callback: &mut dyn FnMut(GuestPhysicalRange)| {
+            if address == LEAF {
+                leaf_replaces += 1;
+                if leaf_replaces == 2 {
+                    memory.store_u64(LEAF, 0x5027, |_| {}).unwrap();
+                }
+            }
+            compare_replace_table_entry(memory, address, expected, value, callback)
+        };
+        let mut callbacks = Vec::new();
+        let report = run_with_writer(
+            &mut memory,
+            &paging,
+            AccessKind::Write,
+            &mut callbacks,
+            &mut writer,
+        );
+        assert_eq!(
+            report.outcome,
+            Err(TrackedAccessError::TableEntryChanged {
+                level: PageTableLevel::Pt,
+                entry_address: LEAF,
+                bit: AdBit::Dirty,
+                observed: 0x5027,
+            })
+        );
+        assert_eq!(report.ad_update_count, 4);
+        assert_eq!(entries(&memory)[3], 0x5027);
+        assert_eq!(memory.load_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0));
+        assert_eq!(memory.load_u8(GuestPhysicalAddress::new(0x5abc)), Ok(0));
+    }
+
+    /// A backend whose replace keeps failing does not loop forever.
+    #[test]
+    fn accessed_replace_that_always_fails_stops_at_the_retry_limit() {
+        let (mut memory, paging) = setup(0x4007, 0x6000);
+        let mut leaf_attempts = 0;
+        let mut writer = |memory: &PhysicalMemory,
+                          address: GuestPhysicalAddress,
+                          expected: u64,
+                          value: u64,
+                          callback: &mut dyn FnMut(GuestPhysicalRange)| {
+            if address == LEAF {
+                leaf_attempts += 1;
+                return Ok(TableReplace::Changed(0x4007));
+            }
+            compare_replace_table_entry(memory, address, expected, value, callback)
+        };
+        let mut callbacks = Vec::new();
+        let report = run_with_writer(
+            &mut memory,
+            &paging,
+            AccessKind::Read,
+            &mut callbacks,
+            &mut writer,
+        );
+        assert_eq!(
+            report.outcome,
+            Err(TrackedAccessError::TableEntryChanged {
+                level: PageTableLevel::Pt,
+                entry_address: LEAF,
+                bit: AdBit::Accessed,
+                observed: 0x4007,
+            })
+        );
+        assert_eq!(leaf_attempts, TABLE_REPLACE_RETRY_LIMIT + 1);
+        assert_eq!(report.ad_update_count, 3);
+        assert_eq!(entries(&memory), [0x2027, 0x3027, 0x4027, 0x4007]);
+    }
+
+    /// Two vCPUs update A/D of the same table entries. vCPU Y runs a whole access at every point
+    /// between the seam calls (read, replace) of vCPU X's walk, and after X. The final memory is
+    /// the one of a serial execution (X then Y and Y then X agree: the bits only accumulate), so
+    /// no update is lost, for every access kind of both vCPUs. The same enumeration over the old
+    /// behaviour, a blind write of the stale value, does lose an update.
+    #[test]
+    fn two_vcpus_updating_the_same_entries_lose_no_accessed_or_dirty_bit() {
+        fn image(memory: &PhysicalMemory) -> ([u64; 4], u8) {
+            (
+                entries(memory),
+                memory.load_u8(GuestPhysicalAddress::new(0x4abc)).unwrap(),
+            )
+        }
+        fn blind_write(
+            memory: &PhysicalMemory,
+            address: GuestPhysicalAddress,
+            _expected: u64,
+            value: u64,
+            callback: &mut dyn FnMut(GuestPhysicalRange),
+        ) -> Result<TableReplace, MemoryAccessError> {
+            memory.store_u64(address, value, callback)?;
+            Ok(TableReplace::Replaced)
+        }
+        let accesses = [AccessKind::Read, AccessKind::Write];
+        let mut lost_by_blind_write = 0;
+        let mut cases = 0;
+        for x in accesses {
+            for y in accesses {
+                let serial = |first: AccessKind, second: AccessKind| {
+                    let (mut memory, paging) = setup(0x4007, 0x6000);
+                    for access in [first, second] {
+                        let report = access_long64_4k_ram(
+                            &mut memory,
+                            &paging,
+                            request(operation(access)),
+                            |_| {},
+                        );
+                        assert!(report.outcome.is_ok());
+                    }
+                    image(&memory)
+                };
+                let expected = serial(x, y);
+                assert_eq!(expected, serial(y, x), "serial orders agree: {x:?}/{y:?}");
+                for blind in [false, true] {
+                    // Seam-call indexes 0..8: X reading has 4 seam calls (distinct intrusions: 5,
+                    // the four points plus "Y after X"), X writing has 5 (distinct: 6); indexes
+                    // past the last call repeat "Y after X" and are counted as repeats.
+                    for inject_at in 0..8usize {
+                        let (mut memory, paging) = setup(0x4007, 0x6000);
+                        let mut calls = 0usize;
+                        let mut injected = false;
+                        let mut writer = |memory: &PhysicalMemory,
+                                          address: GuestPhysicalAddress,
+                                          expected: u64,
+                                          value: u64,
+                                          callback: &mut dyn FnMut(GuestPhysicalRange)| {
+                            if calls == inject_at && !injected {
+                                injected = true;
+                                let other = access_long64_4k_ram(
+                                    memory,
+                                    &paging,
+                                    request(operation(y)),
+                                    |_| {},
+                                );
+                                assert!(other.outcome.is_ok());
+                            }
+                            calls += 1;
+                            if blind {
+                                blind_write(memory, address, expected, value, callback)
+                            } else {
+                                compare_replace_table_entry(
+                                    memory, address, expected, value, callback,
+                                )
+                            }
+                        };
+                        let mut callbacks = Vec::new();
+                        let report =
+                            run_with_writer(&mut memory, &paging, x, &mut callbacks, &mut writer);
+                        assert!(report.outcome.is_ok(), "{x:?}/{y:?} at {inject_at}");
+                        if !injected {
+                            // Y after X: the serial order X then Y.
+                            let other = access_long64_4k_ram(
+                                &mut memory,
+                                &paging,
+                                request(operation(y)),
+                                |_| {},
+                            );
+                            assert!(other.outcome.is_ok());
+                        }
+                        cases += 1;
+                        if blind {
+                            lost_by_blind_write += usize::from(image(&memory) != expected);
+                        } else {
+                            assert_eq!(
+                                image(&memory),
+                                expected,
+                                "{x:?} with {y:?} injected at seam call {inject_at}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 4 * 2 * 8);
+        assert!(
+            lost_by_blind_write > 0,
+            "the enumeration must be able to see a lost update"
+        );
+    }
+
+    const LTR_DESCRIPTOR: [u8; 16] = [
+        0x67, 0x45, 0x78, 0x56, 0x34, 0x89, 0x91, 0x12, 0x00, 0x80, 0xff, 0xff, 0, 0, 0, 0,
+    ];
+    const LTR_PHYSICAL: u64 = 0x5abc;
+
+    /// A ready `LTR AX` (selector 8) whose descriptor sits at `LINEAR` -> physical 0x5abc, in the
+    /// frame 0x5000 that no table page shares; the leaf PTE (0x4020) is `leaf`.
+    fn ltr_setup(
+        leaf: u64,
+    ) -> (
+        PhysicalMemory,
+        Long64ProbeConfig,
+        od_isa::LongModeState,
+        od_isa::execute::PagedLtrPreparation,
+    ) {
+        let (memory, paging) = setup(leaf, 0x6000);
+        memory
+            .store_bytes(
+                GuestPhysicalAddress::new(LTR_PHYSICAL),
+                &LTR_DESCRIPTOR,
+                |_| {},
+            )
+            .unwrap();
+        let state = od_isa::LongModeState {
+            rip: RIP,
+            gdtr: Some(od_isa::state::Gdtr {
+                base: LINEAR - 8,
+                limit: 0x1f,
+            }),
+            ..od_isa::LongModeState::default()
+        };
+        let preparation = od_isa::execute::PagedLtrPreparation::Ready {
+            selector: 8,
+            descriptor_address: LINEAR,
+            next_rip: RIP + 3,
+        };
+        (memory, paging, state, preparation)
+    }
+
+    fn descriptor_bytes(memory: &PhysicalMemory) -> [u8; 16] {
+        let mut bytes = [0u8; 16];
+        memory
+            .load_bytes(GuestPhysicalAddress::new(LTR_PHYSICAL), &mut bytes)
+            .unwrap();
+        bytes
+    }
+
+    /// S4-09e: a failing D write in the LTR transaction goes through the same table-writer seam as
+    /// the tracked access, returns the typed `TableWrite { bit: Dirty }` error, and leaves no
+    /// partial effect: no D bit, no busy descriptor image, no callback for them; the accessed
+    /// prefix of the read walk stays committed. A mutation that writes D around the seam (the
+    /// pre-S4-09e direct `write_u64`) would not see the failing writer: the transaction would
+    /// succeed and this test would fail on the error and on the busy image.
+    #[test]
+    fn ltr_dirty_write_failure_commits_no_d_and_no_descriptor_image() {
+        let (mut memory, paging, state, preparation) = ltr_setup(0x5007);
+        let leaf_address = GuestPhysicalAddress::new(0x4020);
+        let mut attempts = Vec::new();
+        let mut callbacks = Vec::new();
+        let mut writer = |memory: &PhysicalMemory,
+                          address: GuestPhysicalAddress,
+                          expected: u64,
+                          value: u64,
+                          callback: &mut dyn FnMut(GuestPhysicalRange)| {
+            attempts.push((address, value));
+            if address == leaf_address && value & (1 << 6) != 0 {
+                Err(MemoryAccessError::Unmapped(address))
+            } else {
+                compare_replace_table_entry(memory, address, expected, value, callback)
+            }
+        };
+        let result = commit_paged_ltr_descriptor_with_writer(
+            &mut memory,
+            &paging,
+            &state,
+            &preparation,
+            privilege(PrivilegeLevel::Ring0),
+            |range| callbacks.push(range),
+            &mut writer,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(LtrTransactionError::Access(TrackedAccessError::TableWrite {
+                    level: PageTableLevel::Pt,
+                    entry_address,
+                    bit: AdBit::Dirty,
+                    source: MemoryAccessError::Unmapped(source_address),
+                })) if entry_address == leaf_address && source_address == leaf_address
+            ),
+            "{result:?}"
+        );
+        assert_eq!(
+            attempts,
+            [
+                (0x1008, 0x2027),
+                (0x2010, 0x3027),
+                (0x3018, 0x4027),
+                (0x4020, 0x5027),
+                (0x4020, 0x5067),
+            ]
+            .map(|(address, value)| (GuestPhysicalAddress::new(address), value))
+        );
+        assert_eq!(
+            logged(&callbacks),
+            [(0x1008, 8), (0x2010, 8), (0x3018, 8), (0x4020, 8)]
+        );
+        // A stays committed on all four levels; D is not set on the leaf.
+        assert_eq!(entries(&memory), [0x2027, 0x3027, 0x4027, 0x5027]);
+        assert_eq!(descriptor_bytes(&memory), LTR_DESCRIPTOR);
+    }
+
+    /// S4-09e: on the LTR path every table-entry write (the accessed bits of the walks and the
+    /// leaf D) reaches the table writer, in order, followed only by the descriptor image; an
+    /// already-dirty leaf is not written again.
+    #[test]
+    fn ltr_table_entry_writes_go_through_the_writer_seam() {
+        for (leaf, expect_dirty_write) in [(0x5007, true), (0x5047, false)] {
+            let (mut memory, paging, state, preparation) = ltr_setup(leaf);
+            let mut attempts = Vec::new();
+            let mut callbacks = Vec::new();
+            let mut writer =
+                |memory: &PhysicalMemory,
+                 address: GuestPhysicalAddress,
+                 expected: u64,
+                 value: u64,
+                 callback: &mut dyn FnMut(GuestPhysicalRange)| {
+                    attempts.push((address.get(), value));
+                    compare_replace_table_entry(memory, address, expected, value, callback)
+                };
+            let prepared = commit_paged_ltr_descriptor_with_writer(
+                &mut memory,
+                &paging,
+                &state,
+                &preparation,
+                privilege(PrivilegeLevel::Ring0),
+                |range| callbacks.push(range),
+                &mut writer,
+            )
+            .unwrap();
+            let mut expected_attempts = vec![
+                (0x1008, 0x2027),
+                (0x2010, 0x3027),
+                (0x3018, 0x4027),
+                (0x4020, leaf | 0x20),
+            ];
+            let mut expected_log = vec![(0x1008, 8), (0x2010, 8), (0x3018, 8), (0x4020, 8)];
+            if expect_dirty_write {
+                expected_attempts.push((0x4020, leaf | 0x60));
+                expected_log.push((0x4020, 8));
+            }
+            expected_log.push((LTR_PHYSICAL, 16));
+            assert_eq!(attempts, expected_attempts, "leaf {leaf:#x}");
+            assert_eq!(logged(&callbacks), expected_log, "leaf {leaf:#x}");
+            assert_eq!(entries(&memory)[3], leaf | 0x60);
+            let mut busy = LTR_DESCRIPTOR;
+            busy[5] |= 2;
+            assert_eq!(descriptor_bytes(&memory), busy);
+            assert_eq!(prepared.busy_descriptor(), &busy);
+        }
+    }
+
+    /// S4-09e: the production part of this file commits D in exactly one place. Outside
+    /// `commit_leaf_dirty` there is no D-bit mask and no `AdBit::Dirty`, and there is no direct
+    /// table-entry `store_u64`: the default writer `compare_replace_table_entry` is the one
+    /// compare-and-replace (S6-25).
+    #[test]
+    fn leaf_dirty_is_committed_only_by_the_helper() {
+        let source = include_str!("page_walk.rs");
+        let production = &source[..source
+            .find("#[cfg(test)]\nmod tracked_access_tests")
+            .expect("tracked_access_tests marker")];
+        let helper_start = production
+            .find("fn commit_leaf_dirty(")
+            .expect("helper present");
+        let helper_end = production
+            .find("fn walk_long64_4k(")
+            .expect("walk follows helper");
+        let outside = format!(
+            "{}{}",
+            &production[..helper_start],
+            &production[helper_end..]
+        );
+        assert!(!outside.contains("AdBit::Dirty"));
+        assert!(!outside.contains("| (1 << 6)"));
+        // S6-25: no ordinary table-entry write is left; the only memory operation on an entry
+        // is the one compare-and-replace of `compare_replace_table_entry`.
+        assert_eq!(outside.matches(".store_u64(").count(), 0);
+        assert_eq!(production.matches(".compare_replace_u64(").count(), 1);
+        assert!(production[helper_start..helper_end].contains("table_writer("));
     }
 
     #[test]
@@ -3096,7 +4191,7 @@ mod tracked_access_tests {
         assert_eq!(report.outcome, Ok(TrackedAccessOutcome::Written));
         assert_eq!(entries(&memory), [0x2027, 0x3027, 0x4027, 0x4067]);
         assert_eq!(
-            memory.read_u16(GuestPhysicalAddress::new(0x4abc)).unwrap(),
+            memory.load_u16(GuestPhysicalAddress::new(0x4abc)).unwrap(),
             0xbeef
         );
         assert_eq!(report.ad_update_count, 5);
@@ -3158,7 +4253,7 @@ mod tracked_access_tests {
         let (mut memory, paging) = setup(0x4067, 0x6000);
         for (address, value) in [(0x1008, 0x2027), (0x2010, 0x3027), (0x3018, 0x4027)] {
             memory
-                .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
                 .unwrap();
         }
         let mut log = Vec::new();
@@ -3181,7 +4276,7 @@ mod tracked_access_tests {
     fn nonpresent_reserved_and_protection_faults_keep_prior_accessed_prefix() {
         let (mut memory, paging) = setup(0x4007, 0x6000);
         memory
-            .write_u64(GuestPhysicalAddress::new(0x3018), 0, |_| {})
+            .store_u64(GuestPhysicalAddress::new(0x3018), 0, |_| {})
             .unwrap();
         let mut log = Vec::new();
         let report = access_long64_4k_ram(
@@ -3269,10 +4364,10 @@ mod tracked_access_tests {
         .unwrap();
         let mut short = PhysicalMemory::new(&map, RamLimits::new(0x3000)).unwrap();
         short
-            .write_u64(GuestPhysicalAddress::new(0x1008), 0x2007, |_| {})
+            .store_u64(GuestPhysicalAddress::new(0x1008), 0x2007, |_| {})
             .unwrap();
         short
-            .write_u64(GuestPhysicalAddress::new(0x2010), 0x3007, |_| {})
+            .store_u64(GuestPhysicalAddress::new(0x2010), 0x3007, |_| {})
             .unwrap();
         let paging =
             Long64ProbeConfig::new(0x8000_0033, 0x1000, CR4_PAE, EFER_LME | EFER_LMA | EFER_NXE)
@@ -3334,7 +4429,7 @@ mod tracked_access_tests {
                 (0x4020, 0x9007),
             ] {
                 memory
-                    .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                    .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
                     .unwrap();
             }
             let paging = Long64ProbeConfig::new(
@@ -3411,7 +4506,7 @@ mod tracked_access_tests {
             (0x4020, 0x9007),
         ] {
             memory
-                .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
                 .unwrap();
         }
         let paging =
@@ -3489,11 +4584,11 @@ mod tracked_access_tests {
             let source = [0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87];
             let written = [0xa0, 0xb1, 0xc2, 0xd3, 0xe4, 0xf5, 0x16, 0x27];
             memory
-                .write_u8(GuestPhysicalAddress::new(physical.get() - 1), 0x5a, |_| {})
+                .store_u8(GuestPhysicalAddress::new(physical.get() - 1), 0x5a, |_| {})
                 .unwrap();
-            memory.write_bytes(physical, &source, |_| {}).unwrap();
+            memory.store_bytes(physical, &source, |_| {}).unwrap();
             memory
-                .write_u8(GuestPhysicalAddress::new(physical.get() + 8), 0xa5, |_| {})
+                .store_u8(GuestPhysicalAddress::new(physical.get() + 8), 0xa5, |_| {})
                 .unwrap();
             let mut read_request = request(RamAccessOperation::Read { width });
             read_request.address = address;
@@ -3510,15 +4605,15 @@ mod tracked_access_tests {
             assert_eq!(write.ad_update_count, 1);
             assert_eq!(write.trace.len(), 4);
             let mut after = [0; 8];
-            memory.read_bytes(physical, &mut after).unwrap();
+            memory.load_bytes(physical, &mut after).unwrap();
             assert_eq!(&after[..usize::from(bytes)], &written[..usize::from(bytes)]);
             assert_eq!(&after[usize::from(bytes)..], &source[usize::from(bytes)..]);
             assert_eq!(
-                memory.read_u8(GuestPhysicalAddress::new(physical.get() - 1)),
+                memory.load_u8(GuestPhysicalAddress::new(physical.get() - 1)),
                 Ok(0x5a)
             );
             assert_eq!(
-                memory.read_u8(GuestPhysicalAddress::new(physical.get() + 8)),
+                memory.load_u8(GuestPhysicalAddress::new(physical.get() + 8)),
                 Ok(0xa5)
             );
         }
@@ -3531,7 +4626,7 @@ mod tracked_access_tests {
         request.address = GuestLinearAddress::new((LINEAR & !0xfff) | 0xfff);
         let report = access_long64_4k_ram(&mut memory, &paging, request, |_| {});
         assert_eq!(report.outcome, Ok(TrackedAccessOutcome::Written));
-        assert_eq!(memory.read_u8(GuestPhysicalAddress::new(0x4fff)), Ok(0xa5));
+        assert_eq!(memory.load_u8(GuestPhysicalAddress::new(0x4fff)), Ok(0xa5));
     }
 
     #[test]
@@ -3651,15 +4746,15 @@ mod tracked_access_tests {
                 (0x4028, 0x9007),
             ] {
                 memory
-                    .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                    .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
                     .unwrap();
             }
             memory
-                .write_u8(GuestPhysicalAddress::new(0x5fff), 0x6d, |_| {})
+                .store_u8(GuestPhysicalAddress::new(0x5fff), 0x6d, |_| {})
                 .unwrap();
             if destination == Some(MemoryRegionKind::Ram) {
                 memory
-                    .write_bytes(GuestPhysicalAddress::new(0x9000), &[0xc7; 0x1000], |_| {})
+                    .store_bytes(GuestPhysicalAddress::new(0x9000), &[0xc7; 0x1000], |_| {})
                     .unwrap();
             }
             // The tracked RAM-only API has no BusDevice input; the MMIO case
@@ -3677,12 +4772,12 @@ mod tracked_access_tests {
             let inaccessible_second_page = match destination {
                 Some(MemoryRegionKind::Mmio) => Some(
                     memory
-                        .read_u8(GuestPhysicalAddress::new(0x9000))
+                        .load_u8(GuestPhysicalAddress::new(0x9000))
                         .unwrap_err(),
                 ),
                 None => Some(
                     memory
-                        .read_u8(GuestPhysicalAddress::new(0x9000))
+                        .load_u8(GuestPhysicalAddress::new(0x9000))
                         .unwrap_err(),
                 ),
                 _ => None,
@@ -3707,13 +4802,13 @@ mod tracked_access_tests {
             assert_eq!(report.ad_update_count, 0);
             assert!(callbacks.is_empty());
             assert_eq!(ram_snapshot(&memory, 0, 0x6000), before);
-            assert_eq!(memory.read_u8(GuestPhysicalAddress::new(0x5fff)), Ok(0x6d));
+            assert_eq!(memory.load_u8(GuestPhysicalAddress::new(0x5fff)), Ok(0x6d));
             if let Some(expected) = extra_ram_before {
                 assert_eq!(ram_snapshot(&memory, 0x9000, 0x1000), expected);
             }
             if let Some(expected_error) = inaccessible_second_page {
                 assert_eq!(
-                    memory.read_u8(GuestPhysicalAddress::new(0x9000)),
+                    memory.load_u8(GuestPhysicalAddress::new(0x9000)),
                     Err(expected_error)
                 );
             }
@@ -3734,7 +4829,7 @@ mod tracked_access_tests {
         assert_eq!(first_report.outcome, Ok(TrackedAccessOutcome::Written));
         assert_eq!(first_report.ad_update_count, 5);
         assert_eq!(
-            memory.read_u16(GuestPhysicalAddress::new(0x4ffd)),
+            memory.load_u16(GuestPhysicalAddress::new(0x4ffd)),
             Ok(0x1234)
         );
         let after_first = ram_snapshot(&memory, 0, 0x6000);
@@ -3926,7 +5021,7 @@ mod tracked_access_tests {
         ] {
             let (mut memory, paging) = setup(0x4007, 0x6000);
             memory
-                .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
                 .unwrap();
             let before = entries(&memory);
             let expected_trace_len = expected_trace.len();
@@ -4054,7 +5149,7 @@ mod tracked_access_tests {
                 "walk descended to the PT or touched operand"
             );
             assert_eq!(
-                memory.read_u8(GuestPhysicalAddress::new(0x4abc)).unwrap(),
+                memory.load_u8(GuestPhysicalAddress::new(0x4abc)).unwrap(),
                 0
             );
         }
@@ -4101,7 +5196,7 @@ mod tracked_access_tests {
             ] {
                 let (mut memory, paging) = setup(0x4007, 0x6000);
                 memory
-                    .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                    .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
                     .unwrap();
                 let before = entries(&memory);
                 let pure = probe_long64_4k(
@@ -4218,7 +5313,7 @@ mod tracked_access_tests {
                     }
                 );
                 assert_eq!(
-                    memory.read_u8(GuestPhysicalAddress::new(0x4abc)).unwrap(),
+                    memory.load_u8(GuestPhysicalAddress::new(0x4abc)).unwrap(),
                     0
                 );
             }
@@ -4229,16 +5324,16 @@ mod tracked_access_tests {
     fn present_ps_after_preset_ancestor_accessed_bit_has_no_duplicate_callback() {
         let (mut memory, paging) = setup(0x4007, 0x6000);
         memory
-            .write_u64(GuestPhysicalAddress::new(0x1008), 0x2027, |_| {})
+            .store_u64(GuestPhysicalAddress::new(0x1008), 0x2027, |_| {})
             .unwrap();
         memory
-            .write_u64(
+            .store_u64(
                 GuestPhysicalAddress::new(0x2010),
                 0x4007 | ENTRY_PS_OR_PAT,
                 |_| {},
             )
             .unwrap();
-        let rejected_before = memory.read_u64(GuestPhysicalAddress::new(0x2010)).unwrap();
+        let rejected_before = memory.load_u64(GuestPhysicalAddress::new(0x2010)).unwrap();
         let mut callbacks = Vec::new();
         let report = access_long64_4k_ram(
             &mut memory,
@@ -4266,11 +5361,11 @@ mod tracked_access_tests {
         assert_eq!(report.ad_update_count, 0);
         assert!(callbacks.is_empty());
         assert_eq!(
-            memory.read_u64(GuestPhysicalAddress::new(0x2010)).unwrap(),
+            memory.load_u64(GuestPhysicalAddress::new(0x2010)).unwrap(),
             rejected_before
         );
         assert_eq!(
-            memory.read_u8(GuestPhysicalAddress::new(0x4abc)).unwrap(),
+            memory.load_u8(GuestPhysicalAddress::new(0x4abc)).unwrap(),
             0
         );
     }
@@ -4284,7 +5379,7 @@ mod tracked_access_tests {
                 let value = 0x4007 | ENTRY_PS_OR_PAT | extra;
                 let (mut memory, _) = setup(0x4007, 0x6000);
                 memory
-                    .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                    .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
                     .unwrap();
                 let pure = probe_long64_4k(
                     &memory,
@@ -4341,7 +5436,7 @@ mod tracked_access_tests {
                     )
                 );
                 assert_eq!(
-                    memory.read_u64(GuestPhysicalAddress::new(address)).unwrap(),
+                    memory.load_u64(GuestPhysicalAddress::new(address)).unwrap(),
                     value
                 );
                 assert_eq!(
@@ -4374,12 +5469,12 @@ mod tracked_access_tests {
             let mut memory = PhysicalMemory::new(&map, RamLimits::new(ram_end)).unwrap();
             for (table_address, entry) in prefix {
                 memory
-                    .write_u64(GuestPhysicalAddress::new(table_address), entry, |_| {})
+                    .store_u64(GuestPhysicalAddress::new(table_address), entry, |_| {})
                     .unwrap();
             }
             let value = 0x4007 | ENTRY_PS_OR_PAT;
             memory
-                .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
                 .unwrap();
             let paging = Long64ProbeConfig::new(
                 0x8000_0033,
@@ -4389,13 +5484,13 @@ mod tracked_access_tests {
             )
             .unwrap();
             assert_eq!(
-                memory.read_u64(GuestPhysicalAddress::new(0x4000)),
+                memory.load_u64(GuestPhysicalAddress::new(0x4000)),
                 Err(MemoryAccessError::Unmapped(GuestPhysicalAddress::new(
                     0x4000
                 )))
             );
             assert_eq!(
-                memory.read_u8(GuestPhysicalAddress::new(0x4abc)),
+                memory.load_u8(GuestPhysicalAddress::new(0x4abc)),
                 Err(MemoryAccessError::Unmapped(GuestPhysicalAddress::new(
                     0x4abc
                 )))
@@ -4459,10 +5554,10 @@ mod tracked_access_tests {
         let (mut memory, paging) = setup(0x4007, 0x6000);
         let rejected_value = 0x4007 | ENTRY_PS_OR_PAT | (1 << 5) | (1 << 6);
         memory
-            .write_u64(GuestPhysicalAddress::new(0x1008), 0x2027, |_| {})
+            .store_u64(GuestPhysicalAddress::new(0x1008), 0x2027, |_| {})
             .unwrap();
         memory
-            .write_u64(GuestPhysicalAddress::new(0x2010), rejected_value, |_| {})
+            .store_u64(GuestPhysicalAddress::new(0x2010), rejected_value, |_| {})
             .unwrap();
         let mut callbacks = Vec::new();
         let report = access_long64_4k_ram(
@@ -4493,15 +5588,15 @@ mod tracked_access_tests {
         assert_eq!(report.ad_updates, [None; 5]);
         assert!(callbacks.is_empty());
         assert_eq!(
-            memory.read_u64(GuestPhysicalAddress::new(0x1008)).unwrap(),
+            memory.load_u64(GuestPhysicalAddress::new(0x1008)).unwrap(),
             0x2027
         );
         assert_eq!(
-            memory.read_u64(GuestPhysicalAddress::new(0x2010)).unwrap(),
+            memory.load_u64(GuestPhysicalAddress::new(0x2010)).unwrap(),
             rejected_value
         );
         assert_eq!(
-            memory.read_u8(GuestPhysicalAddress::new(0x4abc)).unwrap(),
+            memory.load_u8(GuestPhysicalAddress::new(0x4abc)).unwrap(),
             0
         );
     }
@@ -4510,7 +5605,7 @@ mod tracked_access_tests {
     fn nonpresent_ps_is_a_page_fault_and_pml4_pt_bit_seven_keep_their_roles() {
         let (mut memory, paging) = setup(0x4007, 0x6000);
         memory
-            .write_u64(GuestPhysicalAddress::new(0x2010), ENTRY_PS_OR_PAT, |_| {})
+            .store_u64(GuestPhysicalAddress::new(0x2010), ENTRY_PS_OR_PAT, |_| {})
             .unwrap();
         let pure = probe_long64_4k(
             &memory,
@@ -4571,17 +5666,17 @@ mod tracked_access_tests {
         );
         assert_eq!(logged(&callbacks), [(0x1008, 8)]);
         assert_eq!(
-            memory.read_u64(GuestPhysicalAddress::new(0x1008)).unwrap(),
+            memory.load_u64(GuestPhysicalAddress::new(0x1008)).unwrap(),
             0x2027
         );
         assert_eq!(
-            memory.read_u64(GuestPhysicalAddress::new(0x2010)).unwrap(),
+            memory.load_u64(GuestPhysicalAddress::new(0x2010)).unwrap(),
             ENTRY_PS_OR_PAT
         );
 
-        let mut pml4_ps = setup(0x4007, 0x6000).0;
+        let pml4_ps = setup(0x4007, 0x6000).0;
         pml4_ps
-            .write_u64(
+            .store_u64(
                 GuestPhysicalAddress::new(0x1008),
                 0x2007 | ENTRY_PS_OR_PAT,
                 |_| {},
@@ -4632,7 +5727,7 @@ mod tracked_access_tests {
 
         let (mut pt_pat, paging) = setup(0x4007 | ENTRY_PS_OR_PAT, 0x6000);
         pt_pat
-            .write_u8(GuestPhysicalAddress::new(0x4abc), 0x5a, |_| {})
+            .store_u8(GuestPhysicalAddress::new(0x4abc), 0x5a, |_| {})
             .unwrap();
         let pt = probe_long64_4k(
             &pt_pat,
@@ -4794,7 +5889,7 @@ fn read_table_entry(
             MemoryRegionKind::Framebuffer,
         ));
     }
-    memory.read_u64(entry_address)
+    memory.load_u64(entry_address)
 }
 
 fn is_canonical_48(address: u64) -> bool {
@@ -4829,7 +5924,7 @@ mod tests {
         .unwrap();
         PhysicalMemory::new(&map, RamLimits::new(size)).unwrap()
     }
-    fn tables(mut mem: PhysicalMemory, entry: u64) -> PhysicalMemory {
+    fn tables(mem: PhysicalMemory, entry: u64) -> PhysicalMemory {
         // Literal table addresses and indices are intentionally independent of production index helpers.
         for (addr, value) in [
             (0x1008, 0x2007),
@@ -4837,7 +5932,7 @@ mod tests {
             (0x3018, 0x4007),
             (0x4020, entry),
         ] {
-            mem.write_u64(GuestPhysicalAddress::new(addr), value, |_| {})
+            mem.store_u64(GuestPhysicalAddress::new(addr), value, |_| {})
                 .unwrap();
         }
         mem
@@ -5012,14 +6107,14 @@ mod tests {
         assert_eq!(second.cr4(), CR4_PAE | CR4_OSFXSR);
         assert_eq!(second.cr3(), 0x5000);
 
-        let mut mem = tables(memory(0xa000), 0x5007);
+        let mem = tables(memory(0xa000), 0x5007);
         for (address, value) in [
             (0x5008, 0x6007),
             (0x6010, 0x7007),
             (0x7018, 0x8007),
             (0x8020, 0x9007),
         ] {
-            mem.write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+            mem.store_u64(GuestPhysicalAddress::new(address), value, |_| {})
                 .unwrap();
         }
         let first_translation = result(probe_long64_4k(
@@ -5080,7 +6175,7 @@ mod tests {
             translated.physical.get()
         );
         // Canonical high-half linear address, with all four levels independently indexed at zero.
-        let mut high_mem = memory(0x5000);
+        let high_mem = memory(0x5000);
         for (addr, value) in [
             (0x1800, 0x2007),
             (0x2000, 0x3007),
@@ -5088,7 +6183,7 @@ mod tests {
             (0x4000, 0x8007),
         ] {
             high_mem
-                .write_u64(GuestPhysicalAddress::new(addr), value, |_| {})
+                .store_u64(GuestPhysicalAddress::new(addr), value, |_| {})
                 .unwrap();
         }
         let high = result(probe_long64_4k(
@@ -5125,8 +6220,8 @@ mod tests {
             (0x3018, PageTableLevel::Pd),
             (0x4020, PageTableLevel::Pt),
         ] {
-            let mut mem = tables(memory(0x5000), 0x4007);
-            mem.write_u64(GuestPhysicalAddress::new(address), 0, |_| {})
+            let mem = tables(memory(0x5000), 0x4007);
+            mem.store_u64(GuestPhysicalAddress::new(address), 0, |_| {})
                 .unwrap();
             let report = probe_long64_4k(
                 &mem,
@@ -5164,8 +6259,8 @@ mod tests {
             context(PrivilegeLevel::Ring0),
         ));
         assert_eq!(fault.error_code, 0x09);
-        let mut mem = tables(memory(0x5000), 0x4007);
-        mem.write_u64(GuestPhysicalAddress::new(0x4020), 0, |_| {})
+        let mem = tables(memory(0x5000), 0x4007);
+        mem.store_u64(GuestPhysicalAddress::new(0x4020), 0, |_| {})
             .unwrap();
         let fault = pf(probe_long64_4k(
             &mem,
@@ -5175,8 +6270,8 @@ mod tests {
             context(PrivilegeLevel::Ring3),
         ));
         assert_eq!(fault.error_code, 0x14);
-        let mut mem = tables(memory(0x5000), 0x4007);
-        mem.write_u64(
+        let mem = tables(memory(0x5000), 0x4007);
+        mem.store_u64(
             GuestPhysicalAddress::new(0x3018),
             0x4007 | ENTRY_PS_OR_PAT,
             |_| {},
@@ -5271,9 +6366,9 @@ mod tests {
         ));
         assert_eq!(fault.error_code, 0x11);
 
-        let mut upper_user_denied = tables(memory(0x5000), 0x4007);
+        let upper_user_denied = tables(memory(0x5000), 0x4007);
         upper_user_denied
-            .write_u64(GuestPhysicalAddress::new(0x1008), 0x2003, |_| {})
+            .store_u64(GuestPhysicalAddress::new(0x1008), 0x2003, |_| {})
             .unwrap();
         let fault = pf(probe_long64_4k(
             &upper_user_denied,
@@ -5283,9 +6378,9 @@ mod tests {
             user,
         ));
         assert_eq!(fault.error_code, 0x05);
-        let mut upper_write_denied = tables(memory(0x5000), 0x4007);
+        let upper_write_denied = tables(memory(0x5000), 0x4007);
         upper_write_denied
-            .write_u64(GuestPhysicalAddress::new(0x1008), 0x2005, |_| {})
+            .store_u64(GuestPhysicalAddress::new(0x1008), 0x2005, |_| {})
             .unwrap();
         let fault = pf(probe_long64_4k(
             &upper_write_denied,
@@ -5327,8 +6422,8 @@ mod tests {
             ProbeOutcome::Translated(_)
         ));
         let config = cfg(false, false);
-        let mut mem = memory(0x2000);
-        mem.write_u64(GuestPhysicalAddress::new(0x1008), 0x2007, |_| {})
+        let mem = memory(0x2000);
+        mem.store_u64(GuestPhysicalAddress::new(0x1008), 0x2007, |_| {})
             .unwrap();
         let report = probe_long64_4k(
             &mem,
@@ -5347,10 +6442,10 @@ mod tests {
     fn page_table_mutation_is_seen_next_call_and_a_d_bits_are_unchanged() {
         let mem = tables(memory(0x5000), 0x4007 | (1 << 5) | (1 << 6));
         let before = [
-            mem.read_u64(GuestPhysicalAddress::new(0x1008)).unwrap(),
-            mem.read_u64(GuestPhysicalAddress::new(0x2010)).unwrap(),
-            mem.read_u64(GuestPhysicalAddress::new(0x3018)).unwrap(),
-            mem.read_u64(GuestPhysicalAddress::new(0x4020)).unwrap(),
+            mem.load_u64(GuestPhysicalAddress::new(0x1008)).unwrap(),
+            mem.load_u64(GuestPhysicalAddress::new(0x2010)).unwrap(),
+            mem.load_u64(GuestPhysicalAddress::new(0x3018)).unwrap(),
+            mem.load_u64(GuestPhysicalAddress::new(0x4020)).unwrap(),
         ];
         assert!(matches!(
             result(probe_long64_4k(
@@ -5364,13 +6459,13 @@ mod tests {
         ));
         assert_eq!(before[3], 0x4007 | (1 << 5) | (1 << 6));
         let after = [
-            mem.read_u64(GuestPhysicalAddress::new(0x1008)).unwrap(),
-            mem.read_u64(GuestPhysicalAddress::new(0x2010)).unwrap(),
-            mem.read_u64(GuestPhysicalAddress::new(0x3018)).unwrap(),
-            mem.read_u64(GuestPhysicalAddress::new(0x4020)).unwrap(),
+            mem.load_u64(GuestPhysicalAddress::new(0x1008)).unwrap(),
+            mem.load_u64(GuestPhysicalAddress::new(0x2010)).unwrap(),
+            mem.load_u64(GuestPhysicalAddress::new(0x3018)).unwrap(),
+            mem.load_u64(GuestPhysicalAddress::new(0x4020)).unwrap(),
         ];
         assert_eq!(after, before);
-        let mut changed = tables(memory(0x5000), 0x5007);
+        let changed = tables(memory(0x5000), 0x5007);
         let first = result(probe_long64_4k(
             &changed,
             &cfg(false, false),
@@ -5380,7 +6475,7 @@ mod tests {
         ));
         assert!(matches!(first, ProbeOutcome::Translated(t) if t.page_base.get() == 0x5000));
         changed
-            .write_u64(GuestPhysicalAddress::new(0x4020), 0x6007, |_| {})
+            .store_u64(GuestPhysicalAddress::new(0x4020), 0x6007, |_| {})
             .unwrap();
         let second = result(probe_long64_4k(
             &changed,
@@ -5406,7 +6501,7 @@ mod tests {
         };
         let mem = tables(memory(0x5000), 0x4003 | (1 << 5) | (1 << 6) | ENTRY_NX_BIT);
         let before = [0x1008, 0x2010, 0x3018, 0x4020]
-            .map(|address| mem.read_u64(GuestPhysicalAddress::new(address)).unwrap());
+            .map(|address| mem.load_u64(GuestPhysicalAddress::new(address)).unwrap());
         let report = probe_instruction_access(
             &mem,
             &paging,
@@ -5437,7 +6532,7 @@ mod tests {
             other => panic!("expected page-fault record, got {other:?}"),
         }
         let after = [0x1008, 0x2010, 0x3018, 0x4020]
-            .map(|address| mem.read_u64(GuestPhysicalAddress::new(address)).unwrap());
+            .map(|address| mem.load_u64(GuestPhysicalAddress::new(address)).unwrap());
         assert_eq!(after, before);
 
         let translated = probe_instruction_access(
@@ -5472,9 +6567,9 @@ mod tests {
             Err(ProbeError::NonCanonical(_))
         ));
 
-        let mut large_page = tables(memory(0x5000), 0x4007);
+        let large_page = tables(memory(0x5000), 0x4007);
         large_page
-            .write_u64(
+            .store_u64(
                 GuestPhysicalAddress::new(0x3018),
                 0x4007 | ENTRY_PS_OR_PAT,
                 |_| {},
@@ -5493,9 +6588,9 @@ mod tests {
             Err(ProbeError::UnsupportedPageSize { .. })
         ));
 
-        let mut short_memory = memory(0x2000);
+        let short_memory = memory(0x2000);
         short_memory
-            .write_u64(GuestPhysicalAddress::new(0x1008), 0x2007, |_| {})
+            .store_u64(GuestPhysicalAddress::new(0x1008), 0x2007, |_| {})
             .unwrap();
         let table_read = probe_instruction_access(
             &short_memory,

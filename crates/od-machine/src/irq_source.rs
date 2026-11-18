@@ -8,9 +8,12 @@
 
 /// A source of maskable external interrupts on the board.
 ///
+/// `Send` (S6-33): a source moves to the thread of the vCPU that asks it. Its own state sits behind
+/// a lock that is taken before any device lock it reaches (MACHINE_CONTRACT.md, lock order).
+///
 /// The three questions are cheap and allocation-free: `pending_vector` is asked once on every
 /// instruction boundary of the set loop.
-pub(crate) trait BoardIrqSource {
+pub(crate) trait BoardIrqSource: Send {
     /// The vector of the interrupt to deliver now: the line is active and not masked at the
     /// source. `None` when nothing is pending. The source is not changed by the question.
     fn pending_vector(&self) -> Option<u8>;
@@ -22,7 +25,9 @@ pub(crate) trait BoardIrqSource {
 
     /// Absolute virtual time (ns, the board clock) of the next edge of the source, or `None` when
     /// nothing limits the quantum. A quantum never executes more instructions than are left until
-    /// this time (at least one), because the clock advances only after a quantum.
+    /// this time (at least one), because the clock advances only after a quantum. Invariant: after
+    /// the source has caught up with the clock (it applies every due edge when asked), it never
+    /// returns a moment at or before now.
     fn next_deadline_ns(&self) -> Option<u64>;
 
     /// Whether a guest write to the PIT ports `0x40..=0x43` ends the quantum, so that the next

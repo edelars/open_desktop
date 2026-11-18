@@ -278,6 +278,12 @@ pub struct LongModeState {
     pub sti_shadow: Option<StiShadow>,
     /// CPU activity carried by profiles that model execution activity.
     pub activity: Option<CpuActivity>,
+    /// NMI blocking (S6-12b, SMP_CONTRACT.md 7; Intel SDM Vol. 3A 6.7.1, from memory: source not
+    /// available in the repository). Set when an NMI is delivered
+    /// ([`crate::deliver_nmi_cpl0_set`]); while set no further NMI is delivered. Cleared by a
+    /// retired `IRETQ` (both `IRETQ` implementations: the CPL0 set's and the local profile's).
+    /// `false` by default.
+    pub nmi_blocked: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -285,6 +291,12 @@ pub enum CpuActivity {
     Running,
     Halted,
     Shutdown,
+    /// An application processor after power-on or INIT: it executes nothing until a start-up
+    /// IPI (SMP_CONTRACT.md 3). Since S6-20 every public entry point of `od_isa::execute`
+    /// refuses it (and `Shutdown`) at entry without a state change: `RunExit::NotRunning`,
+    /// `StepOutcome::NotRunning`, or the `NotRunning` variant of the entry's input-error type;
+    /// the CPL0 profile set keeps `Cpl0ProfileSetInputError::NotRunning`.
+    WaitForSipi,
 }
 
 /// One-instruction interrupt inhibition after STI; `Clear` records a modeled
@@ -454,6 +466,7 @@ impl Default for LongModeState {
             sse: None,
             sti_shadow: None,
             activity: None,
+            nmi_blocked: false,
         }
     }
 }
@@ -770,6 +783,21 @@ mod tests {
     }
 
     #[test]
+    fn nmi_blocking_is_off_by_default_and_is_preserved_by_state_clone() {
+        let mut state = LongModeState::default();
+        assert!(!state.nmi_blocked);
+        state.nmi_blocked = true;
+        assert!(state.clone().nmi_blocked);
+        // Struct update syntax keeps every other field of the default state.
+        let other = LongModeState {
+            nmi_blocked: true,
+            ..LongModeState::default()
+        };
+        assert_eq!(other.rip, 0);
+        assert_eq!(other.rflags, 2);
+    }
+
+    #[test]
     fn fragment_adapter_rejects_sse_even_when_integer_state_fits() {
         let mut state = LongModeState::default();
         state.sse = Some(SseState {
@@ -800,7 +828,11 @@ mod tests {
 
     #[test]
     fn fragment_adapter_rejects_any_modeled_cpu_activity() {
-        for activity in [CpuActivity::Running, CpuActivity::Halted] {
+        for activity in [
+            CpuActivity::Running,
+            CpuActivity::Halted,
+            CpuActivity::WaitForSipi,
+        ] {
             let state = LongModeState {
                 cr3: None,
                 cr4: None,
@@ -903,6 +935,7 @@ mod tests {
                         es_cache: None,
 
                         activity: None,
+                        nmi_blocked: false,
                     };
                     let before = state.clone();
                     let view = RegisterView::low(register, size);

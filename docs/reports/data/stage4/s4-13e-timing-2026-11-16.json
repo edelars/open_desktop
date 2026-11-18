@@ -1,0 +1,469 @@
+{
+ "slice": "S4-13e",
+ "binary": "release od-runner built from main 1a63de3 (copy: scratchpad s13e/od-runner-13e, sha256 421d8ca23e3fab6e09c70ccac15f317e4dfe51d628bbdc81d8233d150883c2e1)",
+ "command": "linux-direct ... --nonce s4-38l4a --ram-mib 128 --run --budget 2330000000 --set-cpl0 --cpuid-profile stage4a-apic --checkpoint-table docs/reports/data/stage4/s4-38l2-oracle.json; modes: 4k (default), 2m (OD_FETCH_CACHE_TAG=2m), nocache (OD_NO_FETCH_CACHE=1); OD_FETCH_CACHE_STATS sidecar in all runs (needed by the 2m tag; same overhead in all modes); /usr/bin/time -l",
+ "host": "macOS arm64, 14 cores; runs sequential, one at a time, round-robin 4k/2m/nocache x3 then 2m r4 and nocache r4 to get 3 clean runs per mode",
+ "contamination_rule": "run is contaminated if the 1-minute load average sampled every 30 s during the run exceeded 12 (14 cores - 2) at any sample, or exit != 0; contaminated runs are kept and excluded from the medians",
+ "decision_rule_predefined": "change the default to 2m only if median wall(2m) < median wall(4k) by more than max-min of both 4k and 2m clean repeats AND relative gain >= 5 %; otherwise 'gain not proven', keep 4 KiB",
+ "runs": [
+  {
+   "mode": "4k",
+   "rep": 1,
+   "wall_s": 1010.39,
+   "user_s": 1002.06,
+   "sys_s": 3.85,
+   "max_rss_bytes": 638156800,
+   "stripped_report_sha256": "7687f27f32691e849c400eadeaff3b488089585f1ca0719e083f50eb396597a6",
+   "final_ram_sha256": "aa5da8bb2063bf82fd8d11361174482d6b73b6a493b252f5a29d19fcda4681f3",
+   "retired": 2321128949,
+   "stop": "user_entry",
+   "start": "2026-11-16T03:52:42-0300",
+   "end": "2026-11-16T04:09:32-0300",
+   "load_before": [
+    "3.84",
+    "3.60",
+    "3.61"
+   ],
+   "load_after": [
+    "3.29",
+    "3.15",
+    "3.22"
+   ],
+   "load1_max_sampled_30s": 6.36,
+   "load1_mean_sampled_30s": 3.04,
+   "samples": 34,
+   "foreign_cpu_pct_mean_ps": 95.0,
+   "fetch_walks": 12023110,
+   "cache_misses": 38503227,
+   "contaminated": false,
+   "contamination_reason": null
+  },
+  {
+   "mode": "4k",
+   "rep": 2,
+   "wall_s": 1017.27,
+   "user_s": 1008.16,
+   "sys_s": 3.53,
+   "max_rss_bytes": 577372160,
+   "stripped_report_sha256": "7687f27f32691e849c400eadeaff3b488089585f1ca0719e083f50eb396597a6",
+   "final_ram_sha256": "aa5da8bb2063bf82fd8d11361174482d6b73b6a493b252f5a29d19fcda4681f3",
+   "retired": 2321128949,
+   "stop": "user_entry",
+   "start": "2026-11-16T04:58:59-0300",
+   "end": "2026-11-16T05:15:56-0300",
+   "load_before": [
+    "3.50",
+    "3.41",
+    "3.60"
+   ],
+   "load_after": [
+    "2.33",
+    "2.75",
+    "3.15"
+   ],
+   "load1_max_sampled_30s": 5.99,
+   "load1_mean_sampled_30s": 3.12,
+   "samples": 34,
+   "foreign_cpu_pct_mean_ps": 100.0,
+   "fetch_walks": 12023110,
+   "cache_misses": 38503227,
+   "contaminated": false,
+   "contamination_reason": null
+  },
+  {
+   "mode": "4k",
+   "rep": 3,
+   "wall_s": 1029.1,
+   "user_s": 1015.94,
+   "sys_s": 3.78,
+   "max_rss_bytes": 581107712,
+   "stripped_report_sha256": "7687f27f32691e849c400eadeaff3b488089585f1ca0719e083f50eb396597a6",
+   "final_ram_sha256": "aa5da8bb2063bf82fd8d11361174482d6b73b6a493b252f5a29d19fcda4681f3",
+   "retired": 2321128949,
+   "stop": "user_entry",
+   "start": "2026-11-16T06:06:27-0300",
+   "end": "2026-11-16T06:23:36-0300",
+   "load_before": [
+    "2.18",
+    "3.13",
+    "3.38"
+   ],
+   "load_after": [
+    "3.21",
+    "4.15",
+    "3.91"
+   ],
+   "load1_max_sampled_30s": 7.57,
+   "load1_mean_sampled_30s": 3.95,
+   "samples": 35,
+   "foreign_cpu_pct_mean_ps": 171.4,
+   "fetch_walks": 12023110,
+   "cache_misses": 38503227,
+   "contaminated": false,
+   "contamination_reason": null
+  },
+  {
+   "mode": "2m",
+   "rep": 1,
+   "wall_s": 1023.02,
+   "user_s": 1015.15,
+   "sys_s": 3.01,
+   "max_rss_bytes": 581091328,
+   "stripped_report_sha256": "7687f27f32691e849c400eadeaff3b488089585f1ca0719e083f50eb396597a6",
+   "final_ram_sha256": "aa5da8bb2063bf82fd8d11361174482d6b73b6a493b252f5a29d19fcda4681f3",
+   "retired": 2321128949,
+   "stop": "user_entry",
+   "start": "2026-11-16T04:09:32-0300",
+   "end": "2026-11-16T04:26:35-0300",
+   "load_before": [
+    "3.29",
+    "3.15",
+    "3.22"
+   ],
+   "load_after": [
+    "10.62",
+    "5.43",
+    "4.39"
+   ],
+   "load1_max_sampled_30s": 12.13,
+   "load1_mean_sampled_30s": 4.47,
+   "samples": 35,
+   "foreign_cpu_pct_mean_ps": 157.3,
+   "fetch_walks": 2711448,
+   "cache_misses": 7673778,
+   "contaminated": true,
+   "contamination_reason": "sampled load1 max 12.13 > 12"
+  },
+  {
+   "mode": "2m",
+   "rep": 2,
+   "wall_s": 1014.74,
+   "user_s": 1008.31,
+   "sys_s": 2.95,
+   "max_rss_bytes": 581648384,
+   "stripped_report_sha256": "7687f27f32691e849c400eadeaff3b488089585f1ca0719e083f50eb396597a6",
+   "final_ram_sha256": "aa5da8bb2063bf82fd8d11361174482d6b73b6a493b252f5a29d19fcda4681f3",
+   "retired": 2321128949,
+   "stop": "user_entry",
+   "start": "2026-11-16T05:15:56-0300",
+   "end": "2026-11-16T05:32:51-0300",
+   "load_before": [
+    "2.33",
+    "2.75",
+    "3.15"
+   ],
+   "load_after": [
+    "2.97",
+    "3.33",
+    "3.19"
+   ],
+   "load1_max_sampled_30s": 5.01,
+   "load1_mean_sampled_30s": 3.14,
+   "samples": 34,
+   "foreign_cpu_pct_mean_ps": 128.5,
+   "fetch_walks": 2711448,
+   "cache_misses": 7673778,
+   "contaminated": false,
+   "contamination_reason": null
+  },
+  {
+   "mode": "2m",
+   "rep": 3,
+   "wall_s": 1033.33,
+   "user_s": 1019.37,
+   "sys_s": 6.02,
+   "max_rss_bytes": 577306624,
+   "stripped_report_sha256": "7687f27f32691e849c400eadeaff3b488089585f1ca0719e083f50eb396597a6",
+   "final_ram_sha256": "aa5da8bb2063bf82fd8d11361174482d6b73b6a493b252f5a29d19fcda4681f3",
+   "retired": 2321128949,
+   "stop": "user_entry",
+   "start": "2026-11-16T06:23:36-0300",
+   "end": "2026-11-16T06:40:49-0300",
+   "load_before": [
+    "3.21",
+    "4.15",
+    "3.91"
+   ],
+   "load_after": [
+    "4.89",
+    "4.87",
+    "4.31"
+   ],
+   "load1_max_sampled_30s": 6.63,
+   "load1_mean_sampled_30s": 4.11,
+   "samples": 35,
+   "foreign_cpu_pct_mean_ps": 205.8,
+   "fetch_walks": 2711448,
+   "cache_misses": 7673778,
+   "contaminated": false,
+   "contamination_reason": null
+  },
+  {
+   "mode": "2m",
+   "rep": 4,
+   "wall_s": 1036.79,
+   "user_s": 1020.33,
+   "sys_s": 10.08,
+   "max_rss_bytes": 638877696,
+   "stripped_report_sha256": "7687f27f32691e849c400eadeaff3b488089585f1ca0719e083f50eb396597a6",
+   "final_ram_sha256": "aa5da8bb2063bf82fd8d11361174482d6b73b6a493b252f5a29d19fcda4681f3",
+   "retired": 2321128949,
+   "stop": "user_entry",
+   "start": "2026-11-16T07:14:43-0300",
+   "end": "2026-11-16T07:32:00-0300",
+   "load_before": [
+    "4.34",
+    "4.48",
+    "4.66"
+   ],
+   "load_after": [
+    "4.60",
+    "4.25",
+    "4.31"
+   ],
+   "load1_max_sampled_30s": 5.88,
+   "load1_mean_sampled_30s": 4.12,
+   "samples": 35,
+   "foreign_cpu_pct_mean_ps": 201.9,
+   "fetch_walks": 2711448,
+   "cache_misses": 7673778,
+   "contaminated": false,
+   "contamination_reason": null
+  },
+  {
+   "mode": "nocache",
+   "rep": 1,
+   "wall_s": 1943.44,
+   "user_s": 1930.01,
+   "sys_s": 5.71,
+   "max_rss_bytes": 577191936,
+   "stripped_report_sha256": "7687f27f32691e849c400eadeaff3b488089585f1ca0719e083f50eb396597a6",
+   "final_ram_sha256": "aa5da8bb2063bf82fd8d11361174482d6b73b6a493b252f5a29d19fcda4681f3",
+   "retired": 2321128949,
+   "stop": "user_entry",
+   "start": "2026-11-16T04:26:35-0300",
+   "end": "2026-11-16T04:58:59-0300",
+   "load_before": [
+    "10.62",
+    "5.43",
+    "4.39"
+   ],
+   "load_after": [
+    "3.50",
+    "3.41",
+    "3.60"
+   ],
+   "load1_max_sampled_30s": 10.62,
+   "load1_mean_sampled_30s": 3.98,
+   "samples": 65,
+   "foreign_cpu_pct_mean_ps": 189.5,
+   "fetch_walks": 8927242593,
+   "cache_misses": 0,
+   "contaminated": false,
+   "contamination_reason": null
+  },
+  {
+   "mode": "nocache",
+   "rep": 2,
+   "wall_s": 2015.18,
+   "user_s": 1995.32,
+   "sys_s": 6.29,
+   "max_rss_bytes": 637845504,
+   "stripped_report_sha256": "7687f27f32691e849c400eadeaff3b488089585f1ca0719e083f50eb396597a6",
+   "final_ram_sha256": "aa5da8bb2063bf82fd8d11361174482d6b73b6a493b252f5a29d19fcda4681f3",
+   "retired": 2321128949,
+   "stop": "user_entry",
+   "start": "2026-11-16T05:32:51-0300",
+   "end": "2026-11-16T06:06:27-0300",
+   "load_before": [
+    "2.97",
+    "3.33",
+    "3.19"
+   ],
+   "load_after": [
+    "2.18",
+    "3.13",
+    "3.38"
+   ],
+   "load1_max_sampled_30s": 6.97,
+   "load1_mean_sampled_30s": 3.59,
+   "samples": 68,
+   "foreign_cpu_pct_mean_ps": 150.2,
+   "fetch_walks": 8927242593,
+   "cache_misses": 0,
+   "contaminated": false,
+   "contamination_reason": null
+  },
+  {
+   "mode": "nocache",
+   "rep": 3,
+   "wall_s": 1893.37,
+   "user_s": 1848.23,
+   "sys_s": 17.82,
+   "max_rss_bytes": 577339392,
+   "stripped_report_sha256": "7687f27f32691e849c400eadeaff3b488089585f1ca0719e083f50eb396597a6",
+   "final_ram_sha256": "aa5da8bb2063bf82fd8d11361174482d6b73b6a493b252f5a29d19fcda4681f3",
+   "retired": 2321128949,
+   "stop": "user_entry",
+   "start": "2026-11-16T06:40:49-0300",
+   "end": "2026-11-16T07:12:23-0300",
+   "load_before": [
+    "4.89",
+    "4.87",
+    "4.31"
+   ],
+   "load_after": [
+    "4.02",
+    "4.08",
+    "4.55"
+   ],
+   "load1_max_sampled_30s": 24.11,
+   "load1_mean_sampled_30s": 5.17,
+   "samples": 64,
+   "foreign_cpu_pct_mean_ps": 199.0,
+   "fetch_walks": 8927242593,
+   "cache_misses": 0,
+   "contaminated": true,
+   "contamination_reason": "sampled load1 max 24.11 > 12"
+  },
+  {
+   "mode": "nocache",
+   "rep": 4,
+   "wall_s": 1899.37,
+   "user_s": 1861.45,
+   "sys_s": 23.73,
+   "max_rss_bytes": 582156288,
+   "stripped_report_sha256": "7687f27f32691e849c400eadeaff3b488089585f1ca0719e083f50eb396597a6",
+   "final_ram_sha256": "aa5da8bb2063bf82fd8d11361174482d6b73b6a493b252f5a29d19fcda4681f3",
+   "retired": 2321128949,
+   "stop": "user_entry",
+   "start": "2026-11-16T07:32:00-0300",
+   "end": "2026-11-16T08:03:40-0300",
+   "load_before": [
+    "4.60",
+    "4.25",
+    "4.31"
+   ],
+   "load_after": [
+    "3.92",
+    "4.48",
+    "4.27"
+   ],
+   "load1_max_sampled_30s": 9.26,
+   "load1_mean_sampled_30s": 4.14,
+   "samples": 64,
+   "foreign_cpu_pct_mean_ps": 175.2,
+   "fetch_walks": 8927242593,
+   "cache_misses": 0,
+   "contaminated": false,
+   "contamination_reason": null
+  }
+ ],
+ "clean_stats": {
+  "4k": {
+   "n": 3,
+   "wall_s": [
+    1010.39,
+    1017.27,
+    1029.1
+   ],
+   "wall_median": 1017.27,
+   "wall_spread_max_minus_min": 18.71,
+   "user_median": 1008.16,
+   "user_spread": 13.88
+  },
+  "2m": {
+   "n": 3,
+   "wall_s": [
+    1014.74,
+    1033.33,
+    1036.79
+   ],
+   "wall_median": 1033.33,
+   "wall_spread_max_minus_min": 22.05,
+   "user_median": 1019.37,
+   "user_spread": 12.02
+  },
+  "nocache": {
+   "n": 3,
+   "wall_s": [
+    1943.44,
+    2015.18,
+    1899.37
+   ],
+   "wall_median": 1943.44,
+   "wall_spread_max_minus_min": 115.81,
+   "user_median": 1930.01,
+   "user_spread": 133.87
+  }
+ },
+ "all_runs_stats": {
+  "4k": {
+   "n": 3,
+   "wall_s": [
+    1010.39,
+    1017.27,
+    1029.1
+   ],
+   "wall_median": 1017.27,
+   "wall_spread_max_minus_min": 18.71,
+   "user_median": 1008.16,
+   "user_spread": 13.88
+  },
+  "2m": {
+   "n": 4,
+   "wall_s": [
+    1023.02,
+    1014.74,
+    1033.33,
+    1036.79
+   ],
+   "wall_median": 1028.175,
+   "wall_spread_max_minus_min": 22.05,
+   "user_median": 1017.26,
+   "user_spread": 12.02
+  },
+  "nocache": {
+   "n": 4,
+   "wall_s": [
+    1943.44,
+    2015.18,
+    1893.37,
+    1899.37
+   ],
+   "wall_median": 1921.405,
+   "wall_spread_max_minus_min": 121.81,
+   "user_median": 1895.73,
+   "user_spread": 147.09
+  }
+ },
+ "rule_application": {
+  "diff_median_4k_minus_2m_s": -16.06,
+  "relative_gain_pct": -1.58,
+  "spread_4k": 18.71,
+  "spread_2m": 22.05,
+  "exceeds_both_spreads": false,
+  "gain_ge_5pct": false,
+  "verdict": "gain not proven; keep the 4 KiB default (2m median is 1.6 % slower, within noise)"
+ },
+ "nocache_vs_4k_wall_ratio": 1.91,
+ "equality": {
+  "stripped_report_sha256": [
+   "7687f27f32691e849c400eadeaff3b488089585f1ca0719e083f50eb396597a6"
+  ],
+  "final_ram_sha256": [
+   "aa5da8bb2063bf82fd8d11361174482d6b73b6a493b252f5a29d19fcda4681f3"
+  ],
+  "retired": [
+   2321128949
+  ],
+  "stop": [
+   "user_entry"
+  ],
+  "note": "identical across all 11 runs and equal to S4-13d (7687f27f..., aa5da8bb...)"
+ },
+ "notes": [
+  "sha256 of the stripped report: JSON without keys fetch_cache_stats_sidecar and inputs, json.dumps(sort_keys=True), as in S4-13d",
+  "foreign_cpu_pct_mean_ps is the sum of ps %cpu of all processes other than od-runner at 30 s samples: indicative only"
+ ]
+}
