@@ -1,7 +1,8 @@
 # ADR-0009: размещение vTPM, криптографические зависимости, профиль команд, CRB и состояние
 
 - **Дата:** 7 ноября 2026 года.
-- **Статус:** **предложен, ждёт архитектурного ревью** (S7-20). Размещение процессора команд (D8) и семейство криптобиблиотек (D9) — решения владельца от 2026-11-07 ([план этапа 7, §1.1](../plans/STAGE_7.md#11-решения-владельца-проекта-2026-11-07)); ADR их не выбирает заново, а записывает с альтернативами и последствиями. Версии, features, профиль команд, раскладка CRB и границы состояния — предложение архитектора, ждущее ревью.
+- **Статус:** **принят после архитектурного ревью 2026-11-18; замечаний нет** (S7-20). Размещение процессора команд (D8) и семейство криптобиблиотек (D9) — решения владельца от 2026-11-07 ([план этапа 7, §1.1](../plans/STAGE_7.md#11-решения-владельца-проекта-2026-11-07)); ADR фиксирует их с альтернативами и последствиями. Ревью охватило ADR целиком, включая стабильную цель `rsa =0.10.0` и feature sets; переход текущей реализации с RC на стабильный release остаётся работой S7-23.
+- **Запись ревью:** 2026-11-18 — независимое архитектурное повторное ревью одобрило полный scope ADR без замечаний. S7-20 принят; implementation-level проверки `rsa` migration остаются в S7-23 и S7-24.
 - **Номер:** `ADR-0007` и `ADR-0008` зарезервированы планом этапа 11 (транспорт агента S11-20, сетевой backend; см. [карту проекта](../PROJECT_LAYOUT.md)), поэтому первый свободный номер — `0009`.
 - **Связанные документы:** [план этапа 7](../plans/STAGE_7.md) (S7-20…S7-26, S7-30, S7-33, §3, §4.3), [отчёт этапа 7](../reports/STAGE_7_REPORT.md), [виртуальная плата](../specs/VIRTUAL_BOARD.md) (строка «TPM / Secure Boot state», карта адресов), [контракт входа в прошивку](../specs/FIRMWARE_BOOT.md) (окно CRB, поле 6 handoff block), [контракт vTPM](../specs/VTPM.md), [архитектура](../ARCHITECTURE.md) (разделы 3, 7, 9), [карта проекта](../PROJECT_LAYOUT.md), [политика зависимостей](../policies/DEPENDENCIES.md), [ADR-0001](ADR-0001-dependencies-and-boundaries.md), [ADR-0002](ADR-0002-general-purpose-libraries.md), [firmware/AGENTS.md](../../firmware/AGENTS.md), [состояние VM](../specs/VM_STATE.md), [формат хранения](../specs/STORAGE_FORMAT.md), [реестр проблем](../KNOWN_ISSUES.md).
 
@@ -19,14 +20,14 @@
 - Контракты плана §4.3: команды вне профиля → `TPM_RC_COMMAND_CODE`, не `TPM_RC_SUCCESS` с нулями; PCR расширяются ровно тем, что записано в event log; seeds и persistent keys не логируются.
 - Факт на 2026-11-07 (HEAD `426c98a`): кода TPM нет ни в одном crate ([VM_STATE.md](../specs/VM_STATE.md) §2.4); внешние зависимости workspace — `serde`, `serde_json`, `sha2 =0.10.9` (`od-testkit`), `libc`; `BusDevice` в `crates/od-machine/src/bus.rs` требует проверить операцию целиком до синхронного эффекта.
 
-### Источники проверки зависимостей (2026-11-07) и что они не доказывают
+### Источники проверки зависимостей (2026-11-07; advisory/release update 2026-11-18) и что они не доказывают
 
 | Утверждение | Источник | Статус |
 |---|---|---|
 | Версии, даты выпуска, MSRV, заявленная лицензия, features и прямые зависимости | crates.io API (`/api/v1/crates/<name>/<version>`, `/dependencies`) | Проверено для каждого crate таблицы ниже |
 | `no_std` и обязательность `alloc` | `src/lib.rs` скачанных `.crate` (атрибут `#![no_std]`, `extern crate alloc` без `cfg`) | Проверено чтением исходника; **сборка под `x86_64-unknown-none` не выполнялась** |
 | Транзитивный граф и лицензии транзитивных пакетов | `cargo generate-lockfile` + `cargo tree -e normal` в двух временных проектах вне репозитория (host-набор и firmware-набор с `--target x86_64-unknown-none`); `cargo metadata` для лицензий | Проверено разрешение графа; компиляция не выполнялась |
-| Статус RUSTSEC-2023-0071 | `rustsec/advisory-db`, файл `crates/rsa/RUSTSEC-2023-0071.md` (прочитан 2026-11-07): `patched = []`, «still affected as of 2026-09-12: rsa 0.9.10 … and rsa 0.10.0-rc.18» | Проверено; для `0.10.0-rc.22` (выпущен 2026-11-07) статус в advisory не указан, патч не заявлен |
+| Статус RUSTSEC-2023-0071 | [RustSec advisory](https://rustsec.org/advisories/RUSTSEC-2023-0071.html), проверен 2026-11-18 (modified 2026-11-08): `Patched >=0.10.0`; [RustCrypto RSA v0.10.0 release notes](https://github.com/RustCrypto/RSA/releases/tag/v0.10.0), 2026-11-08 | Upstream сообщает исправление в стабильной версии: `crypto-bigint` для constant-time modular exponentiation, hardening private-key operations и constant-time validation harness. Это не подтверждает интеграцию или проверку текущего кода проекта. |
 | Отсутствие пригодного общего DRBG в семействе | исходник `rfc6979-0.6.0/src/lib.rs`: `mod hmac_drbg;` без `pub`, используется только `KGenerator` для nonce ECDSA | Проверено: HMAC_DRBG внутри `rfc6979` не экспортируется |
 | Context7 по RustCrypto | не использовался: crates.io и исходники crate дают первоисточник для перечисленных фактов | — |
 
@@ -67,7 +68,7 @@
 
 ### Перечень crate'ов
 
-Все проверки — 2026-11-07, источники в таблице выше. «no_std» — атрибут в исходнике; «alloc» — требуется ли аллокатор. Колонка «прошивка» — кандидат для S7-22/S7-24, не утверждение о сборке.
+Метаданные первоначального набора crate'ов проверены 2026-11-07; исключение — статус RUSTSEC-2023-0071 и выпуск стабильной `rsa =0.10.0`, дополнительно проверенные 2026-11-18 по источникам в таблице «Источники проверки зависимостей». «no_std» — атрибут в исходнике; «alloc» — требуется ли аллокатор. Колонка «прошивка» — кандидат для S7-22/S7-24, не утверждение о сборке. Интеграция стабильного `rsa =0.10.0` пока не собрана.
 
 | Crate | Версия | Назначение | Цели | no_std / alloc | Лицензия | Features host (`od-tpm`) | Features прошивки |
 |---|---|---|---|---|---|---|---|
@@ -76,7 +77,7 @@
 | `hmac` | `=0.13.0` | HMAC для сессий, KDFa, HMAC-DRBG | host; прошивка — только транзитивно через `rsa` | да / нет | MIT OR Apache-2.0 | `zeroize` | — |
 | `aes` | `=0.9.4` | AES-128/256: шифрование параметров, симметричные объекты | host | да / нет | MIT OR Apache-2.0 | по умолчанию (features `hazmat` не нужен) | — |
 | `cfb-mode` | `=0.9.1` | режим CFB для AES (Part 1, шифрование параметров) | host | да / нет | MIT OR Apache-2.0 | `default-features = false`, `zeroize` | — |
-| `rsa` | `=0.10.0-rc.22` (**pre-release**) | RSA-2048: host — PKCS#1 v1.5, OAEP, PSS по профилю; прошивка — проверка PKCS#1 v1.5/SHA-256 | host (S7-23), прошивка (S7-24) | да / **да** (`extern crate alloc` безусловно) | MIT OR Apache-2.0 | `default-features = false`, `pkcs1v15`; без `getrandom` (энтропия — DRBG `od-tpm`) | `default-features = false`, `pkcs1v15`; `encoding` — только если S7-24 разбирает ключ через `pkcs1` |
+| `rsa` | **Selected stable pin: `=0.10.0`. Current S7-23 implementation remains `=0.10.0-rc.22` until its code/API migration and compatibility review.** | RSA-2048: host — PKCS#1 v1.5, OAEP, PSS по профилю; прошивка — проверка PKCS#1 v1.5/SHA-256 | host (S7-23), прошивка (S7-24) | да / **да** (`extern crate alloc` безусловно) | MIT OR Apache-2.0 | `default-features = false`, features `pkcs1v15`, `hazmat`; без `getrandom` (энтропия — DRBG `od-tpm`) | `default-features = false`, features `pkcs1v15`, `encoding` (для разбора RSA public key в PKCS#1 при проверке сертификата) |
 | `p256` | `=0.14.0` | ECC NIST P-256: ECDSA, ECDH (`ECDH_ZGen`, KDFe) | host (S7-23) | да / нет (`alloc` опционален) | Apache-2.0 OR MIT | `default-features = false`, `arithmetic`, `ecdsa`, `ecdh` | — |
 | `ecdsa` | `=0.17.0` | общий ECDSA (подключается через `p256/ecdsa`; прямая зависимость — только если S7-23 нужна напрямую) | host | да / нет | Apache-2.0 OR MIT | `default-features = false`, `digest` | — |
 | `der` | `=0.8.3` | DER/ASN.1: разбор PKCS#7, X.509, `EFI_SIGNATURE_LIST` с X.509 | прошивка (S7-24); host — если понадобится | да / нет (`alloc` опционален; в firmware-наборе включён) | Apache-2.0 OR MIT | — | `default-features = false`, `alloc`, `oid` |
@@ -87,19 +88,21 @@ MSRV наибольший у `aes` (1.89) и `sha2` (1.88); локальный t
 
 **Транзитивные зависимости** (разрешены `cargo tree -e normal`, компиляция не выполнялась). Объединённый набор всех 11 crate'ов таблицы (временный проект на host-target с запасом features: `rsa` с `std`, `pkcs1v15`, `encoding`; `p256` с `alloc`, `ecdsa`, `ecdh`; плюс явный `zeroize`) разрешается в 52 пакета (11 прямых и 41 транзитивный); транзитивные: `digest 0.11.3`, `block-buffer 0.12.1`, `crypto-common 0.2.2`, `cipher 0.5.2`, `inout 0.2.6`, `cpufeatures 0.3.1`, `cpubits 0.1.1`, `cfg-if 1.0.5`, `libc 0.2.191` (через `cpufeatures` на host), `crypto-bigint 0.7.10`, `crypto-primes 0.7.2`, `ctutils 0.4.8`, `cmov 0.5.4`, `hybrid-array 0.4.15`, `typenum 1.20.1`, `subtle 2.6.1`, `zeroize 1.9.1`, `rand_core 0.10.1`, `signature 3.0.0`, `const-oid 0.10.2`, `elliptic-curve 0.14.3`, `primeorder 0.14.0`, `primefield 0.14.0`, `ff 0.14.0`, `group 0.14.0`, `wnaf 0.14.1`, `sec1 0.8.1`, `rfc6979 0.6.0`, `hkdf 0.13.0`, `pkcs1 0.8.0`, `pkcs8 0.11.0`, `base16ct 1.0.0`, `base64ct 1.8.3`, `pem-rfc7468 1.0.0`, `flagset 0.4.7`, `num-traits 0.2.19`, `der_derive 0.8.0` и proc-macro `syn 2.0.119`, `quote 1.0.47`, `proc-macro2 1.0.107`, `unicode-ident 1.0.27` (только при сборке). Firmware-набор (`sha1`, `sha2`, `rsa[pkcs1v15]`, `der`, `x509-cert`, `spki`, `--target x86_64-unknown-none`) разрешается в 30 пакетов вместе с прямыми — подмножество объединённого набора (`hmac`, `crypto-bigint`, `crypto-primes`, `signature`, `rand_core`, `zeroize`, `const-oid`, `flagset`, `der_derive` и proc-macro). Ни один пакет не является реализацией TPM, UEFI или эмулятора: все — примитивы, большие числа, кодирование, константное время, обнуление памяти, служебные макросы (проверено по именам и назначению crate'ов).
 
-**Лицензии транзитивных пакетов**, отличные от «MIT OR Apache-2.0»: `subtle` — BSD-3-Clause; `flagset` — Apache-2.0; `ff`, `group` — «MIT/Apache-2.0»; `unicode-ident` — «(MIT OR Apache-2.0) AND Unicode-3.0» (proc-macro, в runtime не входит). Все разрешительные; D9 называет MIT/Apache-2.0 для прямых crate'ов, отличия транзитивных записаны для ревью.
+**Лицензии транзитивных пакетов**, отличные от «MIT OR Apache-2.0»: `subtle` — BSD-3-Clause; `flagset` — Apache-2.0; `ff`, `group` — «MIT/Apache-2.0»; `unicode-ident` — «(MIT OR Apache-2.0) AND Unicode-3.0» (proc-macro, в runtime не входит). Политика [DEPENDENCIES.md](../policies/DEPENDENCIES.md) разрешает BSD-3-Clause и Apache-2.0; D9-лицензионный вопрос 5 закрыт 2026-11-18.
 
 ### Условие D9 о constant-time `rsa`
 
-**Версии `rsa` с подтверждённой constant-time арифметикой на 2026-11-07 нет.** Последняя стабильная — `0.9.10`, предрелиз — `0.10.0-rc.22`; advisory RUSTSEC-2023-0071 имеет `patched = []` и прямо называет затронутыми `0.9.10` и `0.10.0-rc.18`. README `0.10.0-rc.22` советует переходить на 0.10 «to avoid the discovered side channels» и ссылается на продолжающуюся работу по constant-time hardening.
+По состоянию на 2026-11-18 RustSec RUSTSEC-2023-0071 указывает `Patched >=0.10.0` (advisory modified 2026-11-08). RustCrypto RSA v0.10.0 release notes от 2026-11-08 сообщают переход на `crypto-bigint` для constant-time modular exponentiation, hardening private-key operations по опубликованному guidance и constant-time validation harness. Это upstream evidence, а не подтверждение поведения текущей интеграции проекта.
 
-По D9 это записывается как **принятый риск и открытая проблема** — [ISSUE-064](../KNOWN_ISSUES.md#issue-064-s7-rsa-private-ops-not-constant-time). Выбор `0.10.0-rc.22`, а не `0.9.10`:
+Выбранная версия — стабильная `rsa =0.10.0`. Host features: `default-features = false`, `pkcs1v15`, `hazmat` (текущие `od-tpm` команды требуют PKCS#1 v1.5 и raw RSA; OAEP не требует отдельного feature; энтропию предоставляет TPM DRBG). Firmware features: `default-features = false`, `pkcs1v15`, `encoding` (подпись и разбор RSA public key из PKCS#1). `getrandom` и `std` не включаются. Текущая реализация S7-23 по-прежнему использует `=0.10.0-rc.22`; миграция на выбранную стабильную версию и проверка API/feature compatibility ещё не выполнены. [ISSUE-064](../KNOWN_ISSUES.md#issue-064-s7-rsa-private-ops-not-constant-time) остаётся открытой до миграции и проверки совместимости. S7-23 отвечает за внедрение этого уже выбранного решения и проверку существующих операций TPM, а не за выбор версии/features. До выполнения этого условия не считать RSA migration или закрытие ISSUE-064 состоявшимися.
+
+Основание первоначального выбора `0.10.0-rc.22`, а не `0.9.10`:
 
 1. `0.9` принадлежит прежнему поколению трейтов (`digest 0.10`, `pkcs1 0.7`, `spki 0.7`, `signature <2.3`) и потребовал бы второй набор семейства рядом с `sha2 0.11`/`der 0.8`/`x509-cert 0.3` (DRY, лишний транзитивный объём).
 2. `0.10` построен на `crypto-bigint`, сопровождающие рекомендуют его, а PKCS#1 v1.5 там включается явным feature `pkcs1v15`.
-3. Цена: предрелизный API может меняться между `rc`; фиксация `=0.10.0-rc.22` и обновление только отдельным решением с ревью.
+3. На момент выбора стабильной ветки 0.10 ещё не было; текущий pin был временным для реализации S7-23. Выход стабильной 0.10.0 снимает это ограничение и требует миграции в рамках S7-23.
 
-Границы риска: в прошивке выполняются только операции с открытым ключом (проверка подписи), Marvin их не касается. Риск относится к приватным операциям `od-tpm` на host (`Sign`, `RSA_Decrypt`, salted `StartAuthSession`, `ActivateCredential`, `Import`), где наблюдателем времени может быть гостевой код. Меры и условие закрытия — в ISSUE-064.
+Границы риска до миграции: в прошивке выполняются только операции с открытым ключом (проверка подписи). Оставшаяся неопределённость относится к приватным операциям текущей интеграции `od-tpm` на host (`Sign`, `RSA_Decrypt`, salted `StartAuthSession`, `ActivateCredential`, `Import`), где наблюдателем времени может быть гостевой код. Условие закрытия — в ISSUE-064.
 
 ### Требования к секретам (открыты для S7-23/S7-24)
 
@@ -176,20 +179,21 @@ MSRV наибольший у `aes` (1.89) и `sha2` (1.88); локальный t
 - Срез B S7-23 (2026-11-07) подключил `rsa =0.10.0-rc.22` (`default-features = false`, `pkcs1v15`) и `p256 =0.14.0` (`default-features = false`, `ecdsa`; `ecdh` включит срез C для `ECDH_ZGen`; **срез C1 его не включил** — `ECDH_ZGen` возвращает точку, а не только `x`, и считается умножением `p256` (`arithmetic`), а к `rsa` добавлен feature `hazmat` для «сырого» RSA, см. [DEPENDENCIES.md](../policies/DEPENDENCIES.md)); `ecdsa 0.17.0` и `der 0.8.3` пришли транзитивно, `der`/`spki` как прямые зависимости host-стороны не нужны. `aes =0.9.4` и `cfb-mode =0.9.1` (`default-features = false`, `zeroize`) срез B подключил после ревью: шифрование `outPrivate` и симметричных объектов — AES-128-CFB (подробно в [VTPM.md](../specs/VTPM.md#фаза-b-срез-b-объекты-и-ключи-s7-23)).
 - Прошивка получает криптографию в два шага: `sha1`/`sha2` в S7-22, `rsa`/`der`/`x509-cert`/`spki` в S7-24 — каждый с проверкой сборки по условию выше. Оставлять криптографию прошивки «на потом» нельзя: перечень зафиксирован здесь.
 - Связь с задачами: S7-21 и S7-23 — `od-tpm`; S7-22 — CRB, ACPI TPM2, TCG2, measured boot (PCR0–5) поверх этого профиля; S7-24 — Secure Boot и PCR7 поверх firmware-набора; S7-26 — persistent state переживает сброс, volatile сбрасывается; S7-33 передаёт формат этапу 9; S9-27 — защита ключей и хранение байтов в bundle. Строку «vTPM persistent state» в [STORAGE_FORMAT.md](../specs/STORAGE_FORMAT.md) («state — `od-machine`») уточняет S7-33: процессор и формат — `od-tpm`, выдача — `od-machine`.
-- **Риски:** (1) приватные RSA-операции не constant-time ([ISSUE-064](../KNOWN_ISSUES.md#issue-064-s7-rsa-private-ops-not-constant-time)); (2) предрелизный `rsa` — дрейф API между `rc`; (3) сборка SIMD-backend'ов под soft-float target не проверена; (4) профиль может оказаться недостаточным для Windows до S7-30 (провижининг TPM, BitLocker); (5) секреты в выдаваемых байтах state не защищены до S9-27; (6) буфер CRB 3968 байт может оказаться меньше требуемого.
+- **Риски на момент подготовки ADR:** (1) приватные RSA-операции текущей реализации не подтверждены как constant-time; stable `>=0.10.0` upstream fix exists, but the current `rc.22` project integration must migrate and be checked in S7-23 ([ISSUE-064](../KNOWN_ISSUES.md#issue-064-s7-rsa-private-ops-not-constant-time)); (2) предрелизный `rsa` — дрейф API между `rc`; (3) сборка SIMD-backend'ов под soft-float target не проверена; (4) профиль может оказаться недостаточным для Windows до S7-30 (провижининг TPM, BitLocker); (5) секреты в выдаваемых байтах state не защищены до S9-27; (6) буфер CRB 3968 байт может оказаться меньше требуемого.
 
 ## Открытые вопросы (для S7-21…S7-24)
 
 1. **S7-21:** сверить с Library v185 допустимость HMAC_DRBG и редакцию SP 800-90A; точные сигнатуры API `od-tpm`; поддержка `Shutdown(STATE)`/`Startup(STATE)` и `PCR_Allocate`; `TPM_PT_MAX_COMMAND_SIZE`/`MAX_RESPONSE_SIZE` ≤ 3968; таблица атрибутов PCR.
 2. **S7-22:** сверить раскладку регистров CRB, `TPM_CRB_INTF_ID` и минимальный размер буфера с PTP 1.07 Errata 1.1; синхронный или отложенный вызов процессора; поведение страниц localities 1–4; сборка `sha1`/`sha2` под `x86_64-unknown-none` и выбор backend.
 3. **S7-23:** разделение persistent/volatile для auth и флагов иерархий по Part 1; перечень команд по S7-30; выполнение и проверка требований к секретам (обнуление, сравнение за постоянное время); какой библиотекой проверять подпись в тесте «создать ключ → подписать → проверить» (тот же `rsa` не является независимой проверкой — выбрать и записать).
-4. **S7-24:** сборка `rsa`/`der`/`x509-cert`/`spki` в прошивке; нужен ли `rsa/encoding` (`pkcs1`) или разбор `RSAPublicKey` собственный поверх `der`; политика SHA-1 подписей (план S7-24 п. 2).
-5. **Ревью:** принять ли транзитивные лицензии BSD-3-Clause (`subtle`) и Apache-2.0-only (`flagset`) при формулировке D9 «MIT/Apache-2.0».
+4. **S7-24:** сборка `rsa`/`der`/`x509-cert`/`spki` в прошивке и политика SHA-1 подписей (план S7-24 п. 2). `rsa/encoding` выбран в таблице выше для разбора RSA public key в PKCS#1; S7-24 проверяет интеграцию на firmware target.
 6. **S7-30 и S7-21:** сужение профиля — `PCR_SetAuthPolicy` и `PCR_SetAuthValue` не поддерживаются, PCR-политика не входит в persistent state v1 (решение 5). Это предложение архитектора, не требование плана: S7-30 подтверждает, что Windows (провижининг TPM, BitLocker) обходится без этих команд, S7-21 записывает итог в `VTPM.md` и в `GetCapability(TPM_CAP_COMMANDS)`; при необходимости профиль и persistent state расширяются.
+
+Вопрос 5 закрыт 2026-11-18: политика [DEPENDENCIES.md](../policies/DEPENDENCIES.md) разрешает BSD-3-Clause и Apache-2.0; лицензии `subtle` и `flagset` допустимы.
 
 ## Условие пересмотра
 
-- Выходит версия `rsa` с constant-time приватными операциями (advisory RUSTSEC-2023-0071 получает `patched`) или стабильный `0.10.0` — обновить версию и закрыть ISSUE-064.
+- S7-23 должен перейти на выбранную стабильную `rsa =0.10.0` с features выше, проверить API/feature compatibility и существующие вызовы, а затем закрыть ISSUE-064 после ревью и проверок. Upstream advisory и release notes дают основание для миграции, но сами по себе не закрывают issue.
 - S7-30 требует алгоритмов или команд вне профиля v1 (RSA-3072, P-384, иной буфер CRB) — дополнить ADR и зависимости.
 - S9-27 требует изоляции секретов на уровне процесса — пересмотреть альтернативу 2 решения 1.
 - Сборка firmware-набора под `x86_64-unknown-none` невозможна ни с одним backend — пересмотреть firmware-часть решения 2 новым решением владельца.
