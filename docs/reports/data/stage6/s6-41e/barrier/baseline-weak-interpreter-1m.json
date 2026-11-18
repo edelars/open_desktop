@@ -1,0 +1,184 @@
+{
+  "runs": [
+    {
+      "forbidden": [],
+      "histogram": [
+        {
+          "in_x86_tso": true,
+          "rounds": 243524,
+          "values": [
+            0,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "in_x86_tso": true,
+          "rounds": 243913,
+          "values": [
+            1,
+            0,
+            1,
+            1
+          ]
+        },
+        {
+          "in_x86_tso": true,
+          "rounds": 512563,
+          "values": [
+            1,
+            1,
+            1,
+            1
+          ]
+        }
+      ],
+      "id": "SB",
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y"
+      ],
+      "rounds": 1000000,
+      "vcpus": 2,
+      "weak_build": true
+    },
+    {
+      "forbidden": [],
+      "histogram": [
+        {
+          "in_x86_tso": true,
+          "rounds": 232925,
+          "values": [
+            0,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "in_x86_tso": true,
+          "rounds": 152322,
+          "values": [
+            1,
+            0,
+            1,
+            1
+          ]
+        },
+        {
+          "in_x86_tso": true,
+          "rounds": 614753,
+          "values": [
+            1,
+            1,
+            1,
+            1
+          ]
+        }
+      ],
+      "id": "SB",
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y"
+      ],
+      "rounds": 1000000,
+      "vcpus": 4,
+      "weak_build": true
+    },
+    {
+      "forbidden": [],
+      "histogram": [
+        {
+          "in_x86_tso": true,
+          "rounds": 68956,
+          "values": [
+            0,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "in_x86_tso": true,
+          "rounds": 69294,
+          "values": [
+            1,
+            0,
+            1,
+            1
+          ]
+        },
+        {
+          "in_x86_tso": true,
+          "rounds": 861750,
+          "values": [
+            1,
+            1,
+            1,
+            1
+          ]
+        }
+      ],
+      "id": "SB-MFENCE",
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y"
+      ],
+      "rounds": 1000000,
+      "vcpus": 2,
+      "weak_build": true
+    },
+    {
+      "forbidden": [],
+      "histogram": [
+        {
+          "in_x86_tso": true,
+          "rounds": 116817,
+          "values": [
+            0,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "in_x86_tso": true,
+          "rounds": 64179,
+          "values": [
+            1,
+            0,
+            1,
+            1
+          ]
+        },
+        {
+          "in_x86_tso": true,
+          "rounds": 819004,
+          "values": [
+            1,
+            1,
+            1,
+            1
+          ]
+        }
+      ],
+      "id": "SB-MFENCE",
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y"
+      ],
+      "rounds": 1000000,
+      "vcpus": 4,
+      "weak_build": true
+    }
+  ]
+}

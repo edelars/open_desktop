@@ -1,0 +1,18 @@
+# Temporary patch of crates/od-host/src/litmus_jit.rs (normal diff, old > new), reverted after the runs.
+# The env check was a OnceLock (read once), written out here in the form actually used.
+189a190
+>     is_mfence: Vec<Vec<bool>>,
+213a215,218
+>         let is_mfence = program
+>             .iter()
+>             .map(|t| t.iter().map(|i| i.bytes == [0x0f, 0xae, 0xf0]).collect())
+>             .collect();
+223a229
+>             is_mfence,
+269a276,281
+>         if jit && { static M: OnceLock<bool> = ...; *M.get_or_init(|| env::var_os("OD_S6_41E_MUTATE_B").is_some()) } && self.is_mfence[step.thread][step.index] {
+>             step.state.rip += 3;
+>             self.jit_retired.fetch_add(1, Ordering::Relaxed);
+>             self.jit_calls.fetch_add(1, Ordering::Relaxed);
+>             return Ok(LitmusStepOutcome::Executed { retired: 1 });
+>         }

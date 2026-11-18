@@ -7,6 +7,7 @@
 //! * `OD_S6_41E_OUT` path of the JSON result (default: none, the log only);
 //! * `OD_S6_41E_MODES` `parallel`, `interleaved` or `both` (default `both`);
 //! * `OD_S6_41E_VCPUS` `2`, `4` or `all` (default `all`): the parallel configurations;
+//! * `OD_S6_41E_IDS` comma-separated fixture ids to run (default: all);
 //! * `OD_S6_41E_PROCESS` a label for this process, copied into the JSON.
 //!
 //! Exit: the test fails when any run has a forbidden outcome, an interleaved run that is not equal
@@ -247,7 +248,16 @@ fn s6_41e_the_corpus_with_the_jit_in_both_modes() {
     let mut via_jit = Vec::new();
     let mut not_via_jit = Vec::new();
     let started = Instant::now();
+    // `OD_S6_41E_IDS`: comma-separated fixture ids to run (default: all); for the sensitivity runs.
+    let id_filter: Option<Vec<String>> = std::env::var("OD_S6_41E_IDS")
+        .ok()
+        .map(|list| list.split(',').map(|id| id.trim().to_string()).collect());
     for case in &cases {
+        if let Some(ids) = &id_filter {
+            if !ids.iter().any(|id| id == case.id()) {
+                continue;
+            }
+        }
         let classification = jit_classification(case);
         let has_jit = classification.iter().any(|i| i.form == JitForm::Jit);
         let label = format!("{} ({} threads)", case.id(), case.vcpus());
@@ -301,4 +311,59 @@ fn s6_41e_the_corpus_with_the_jit_in_both_modes() {
         std::fs::write(&path, serde_json::to_string_pretty(&document).unwrap()).unwrap();
     }
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// S6-41e barrier check: does this build ever show the weak outcome (0,0) of SB on the interpreter
+/// path (no hook, ordinary `MOV` store and load only)? The question is whether any litmus stand of
+/// this machine can see a store-load reordering at all: if not, a dropped `MFENCE` cannot be caught
+/// by it. Run in the weakened build too (`--features od-machine/weak-host-ordering`). Environment:
+/// `OD_S6_41E_ROUNDS`, `OD_S6_41E_OUT` (JSON), `OD_S6_41E_IDS` (default `SB,SB-MFENCE`).
+#[test]
+#[ignore = "barrier baseline: release, minutes (OD_S6_41E_ROUNDS)"]
+fn s6_41e_barrier_sb_on_the_interpreter_path_baseline() {
+    let rounds = env_u64("OD_S6_41E_ROUNDS", 20_000);
+    let ids = std::env::var("OD_S6_41E_IDS").unwrap_or_else(|_| "SB,SB-MFENCE".into());
+    let mut runs = Vec::new();
+    for id in ids.split(',') {
+        let file = corpus().join(format!("{}.json", id.trim().to_lowercase()));
+        let case = LitmusCase::from_fixture_file(&file).unwrap();
+        for vcpus in [2usize, 4] {
+            let started = Instant::now();
+            let report = od_machine::run_litmus_parallel(&case, vcpus, rounds)
+                .unwrap_or_else(|error| panic!("{id} on {vcpus} vCPUs: {error:?}"));
+            let weak = report
+                .histogram
+                .iter()
+                .find(|o| o.values.iter().take(2).all(|v| *v == 0))
+                .map_or(0, |o| o.rounds);
+            eprintln!(
+                "baseline {:<12} vcpus {vcpus} rounds {rounds} {:>6.1}s outcomes {} weak(0,0) {weak} forbidden {} weak_build {}  {:?}",
+                report.id,
+                started.elapsed().as_secs_f64(),
+                report.histogram.len(),
+                report.forbidden.len(),
+                od_machine::BUILD_WEAK_HOST_ORDERING,
+                report
+                    .histogram
+                    .iter()
+                    .map(|o| (o.values.clone(), o.rounds))
+                    .collect::<Vec<_>>(),
+            );
+            runs.push(json!({
+                "id": report.id, "vcpus": vcpus, "rounds": report.rounds,
+                "weak_build": od_machine::BUILD_WEAK_HOST_ORDERING,
+                "forbidden": report.forbidden, "observe": report.observe,
+                "histogram": report.histogram.iter().map(|o| json!({
+                    "values": o.values, "rounds": o.rounds, "in_x86_tso": o.in_x86_tso,
+                })).collect::<Vec<_>>(),
+            }));
+        }
+    }
+    if let Ok(path) = std::env::var("OD_S6_41E_OUT") {
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&json!({ "runs": runs })).unwrap(),
+        )
+        .unwrap();
+    }
 }
