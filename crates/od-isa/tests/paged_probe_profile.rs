@@ -51186,6 +51186,7 @@ fn firmware_boot_call_fetch_stack_and_noncanonical_faults_are_atomic() {
 #[test]
 fn firmware_boot_forms_remain_rejected_by_legacy_profile() {
     for (bytes, opcode) in [
+        (&[0x49, 0x83, 0xc3, 0x28][..], 0x83),
         (&[0x48, 0x89, 0x3c, 0x24][..], 0x89),
         (&[0x4c, 0x8d, 0x1c, 0x30][..], 0x8d),
         (&[0x0f, 0x1f, 0x44, 0, 0][..], 0x1f),
@@ -51214,6 +51215,115 @@ fn firmware_boot_forms_remain_rejected_by_legacy_profile() {
         assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode });
         assert_eq!(cpu, before);
         assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_register_arithmetic_uses_the_decoded_width_and_flags() {
+    const ARITHMETIC_FLAGS: u64 = 0x8d5;
+    let r11 = Register::R11 as usize;
+    let rsi = Register::Rsi as usize;
+    let rax = Register::Rax as usize;
+    let rcx = Register::Rcx as usize;
+    let rbx = Register::Rbx as usize;
+    for (code, destination, input, expected_output, arithmetic_flags) in [
+        (
+            &[0x49, 0x83, 0xc3, 0x28][..],
+            r11,
+            u64::MAX - 0x27,
+            0,
+            0x055,
+        ),
+        (
+            &[0x83, 0xc6, 0xff][..],
+            rsi,
+            0xdead_beef_0000_0001,
+            0,
+            0x055,
+        ),
+        (
+            &[0x48, 0x29, 0xc8][..],
+            rax,
+            0x8000_0000_0000_0000,
+            0x7fff_ffff_ffff_ffff,
+            0x814,
+        ),
+        (&[0x48, 0x39, 0xce][..], rsi, 1, 1, 0x044),
+        (
+            &[0x83, 0xfb, 5][..],
+            rbx,
+            0xdead_beef_0000_0005,
+            0xdead_beef_0000_0005,
+            0x044,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[destination] = input;
+        cpu.gpr[rcx] = 1;
+        cpu.rflags = 0x602 | ARITHMETIC_FLAGS;
+        let mut expected = cpu.clone();
+        expected.gpr[destination] = expected_output;
+        expected.rflags = 0x602 | arithmetic_flags;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+        let initial_defined = DEFINED & !ARITHMETIC_FLAGS;
+
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            initial_defined,
+        );
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, initial_defined | ARITHMETIC_FLAGS);
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_register_xor_clears_the_definedness_of_af() {
+    const AF: u64 = 1 << 4;
+    for (code, destination, expected_output, rflags) in [
+        (&[0x31, 0xdb][..], Register::Rbx, 0, 0x654),
+        (
+            &[0x4d, 0x31, 0xd8][..],
+            Register::R8,
+            0x8000_0000_0000_0000,
+            0x694,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[destination as usize] = u64::MAX;
+        cpu.gpr[Register::R11 as usize] = 0x7fff_ffff_ffff_ffff;
+        cpu.rflags = 0xe13;
+        let mut expected = cpu.clone();
+        expected.gpr[destination as usize] = expected_output;
+        expected.rflags = rflags | 2;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED | AF,
+        );
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
     }
 }
 
@@ -51839,6 +51949,10 @@ fn firmware_boot_jcc_checks_canonicality_only_for_taken_branch() {
 #[test]
 fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
     for (bytes, opcode) in [
+        (&[0x49, 0x83, 0xd3, 0x28][..], 0x83),       // ADC R11,0x28
+        (&[0x48, 0x83, 0x03, 0x28][..], 0x83),       // ADD qword [RBX],0x28
+        (&[0x48, 0x03, 0x13][..], 0x03),             // ADD RDX,[RBX]
+        (&[0x66, 0x83, 0xc6, 0xff][..], 0x83),       // ADD SI,-1
         (&[0x3e, 0x48, 0x89, 0x3c, 0x24][..], 0x89), // segment override
         (&[0x89, 0x3c, 0x24][..], 0x89),             // dword store
         (&[0x67, 0x48, 0x89, 0x3c, 0x24][..], 0x89), // address32 store
@@ -51867,7 +51981,6 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x66, 0x41, 0x83, 0xfb, 5][..], 0x83), // CMP R11W,imm8
         (&[0x66, 0x67, 0x83, 0xfb, 5][..], 0x83), // address override
         (&[0x66, 0x81, 0xfb, 5, 0][..], 0x81),    // CMP BX,imm16
-        (&[0x83, 0xfb, 5][..], 0x83),             // CMP EBX,imm8
         (&[0x46, 0x33, 0x24, 0x85, 0xe0, 0x27, 0x20, 0][..], 0x33), // R8 index
         (&[0x46, 0x33, 0x0c, 0x75, 0xe0, 0x27, 0x20, 0][..], 0x33), // scale two
     ] {

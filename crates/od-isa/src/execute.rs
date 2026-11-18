@@ -20039,6 +20039,60 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         return reject(PagedProbeRejection::WrongPrivilege);
     }
     match instruction.operation {
+        // S7-04: ordinary register arithmetic in the firmware parser uses
+        // the decoder's operand width and sign-extended immediate.
+        operation @ (Operation::Arithmetic {
+            kind: ArithmeticKind::Add | ArithmeticKind::Sub | ArithmeticKind::Cmp,
+            dst: Operand::Register(destination),
+            src: source @ (Operand::Register(_) | Operand::Immediate(_)),
+        }
+        | Operation::Logic {
+            kind: LogicKind::Xor,
+            dst: Operand::Register(destination),
+            src: source @ Operand::Register(_),
+        }) if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && matches!(
+                instruction.operand_size,
+                OperandSize::Dword | OperandSize::Qword
+            )
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            let rhs = match source {
+                Operand::Register(register) => state.read(register),
+                Operand::Immediate(value) => value,
+                Operand::Memory(_) => {
+                    unreachable!("firmware register arithmetic has no memory operand")
+                }
+            };
+            let lhs = state.read(destination);
+            let size = instruction.operand_size;
+            let (value, flags, write_destination) = match operation {
+                Operation::Arithmetic { kind, .. } => {
+                    let (value, flags) = arithmetic_result(size, kind, lhs, rhs, state.rflags);
+                    (value, flags, kind != ArithmeticKind::Cmp)
+                }
+                Operation::Logic { kind, .. } => {
+                    let (value, flags) = logic_result(size, kind, lhs, rhs, state.rflags);
+                    (value, flags, true)
+                }
+                _ => unreachable!("matched a firmware ALU operation"),
+            };
+            if write_destination {
+                state.write(destination, value);
+            }
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
         // S7-04: use the shared transfers for compiler-selected qword
         // register stores and LEAs in the firmware profile.
         operation @ (Operation::Mov {
