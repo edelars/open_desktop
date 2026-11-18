@@ -791,3 +791,89 @@ fn unordered_roots_that_agree_are_partial_and_never_complete() {
         "a partial salvage without --accept-partial creates no target"
     );
 }
+
+/// A fault backend that declares fewer guarantees than it has: no file
+/// durability, or read-only (which also drops resize, lock and durability).
+/// Everything else is delegated.
+struct Weakened {
+    inner: FaultBackend,
+    durable: bool,
+    writable: bool,
+}
+
+impl crate::io::StorageBackend for Weakened {
+    fn capabilities(&self) -> crate::io::StorageCapabilities {
+        let mut caps = self.inner.capabilities();
+        caps.file_durability = self.durable && self.writable;
+        caps.namespace_durability = false;
+        if !self.writable {
+            caps.writable = false;
+            caps.resize = false;
+            caps.exclusive_lock = false;
+        }
+        caps
+    }
+    fn size(&self) -> Result<u64, crate::io::BackendError> {
+        self.inner.size()
+    }
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, crate::io::BackendError> {
+        self.inner.read_at(offset, buf)
+    }
+    fn write_at(&mut self, offset: u64, buf: &[u8]) -> Result<usize, crate::io::BackendError> {
+        self.inner.write_at(offset, buf)
+    }
+    fn set_len(&mut self, len: u64) -> Result<(), crate::io::BackendError> {
+        self.inner.set_len(len)
+    }
+    fn flush_file_durable(&mut self) -> Result<(), crate::io::BackendError> {
+        self.inner.flush_file_durable()
+    }
+}
+
+#[test]
+fn a_target_that_cannot_be_durable_is_refused_before_any_write() {
+    let b = base(12);
+    let run = |dst: &FaultHandle, durable: bool, writable: bool| {
+        salvage_to_copy(
+            st(&b.h),
+            &mut NoParents,
+            &SalvageOptions {
+                selection: StateSelection::Head,
+                publish_partial: false,
+            },
+            5,
+            || {
+                Ok(CheckedStorage::new(Weakened {
+                    inner: dst.open(),
+                    durable,
+                    writable,
+                })
+                .expect("capabilities are consistent"))
+            },
+        )
+        .expect("analysis")
+    };
+    let dst = FaultHandle::new(&[], 60);
+    let out = run(&dst, false, true);
+    assert_eq!(
+        out.report.copy,
+        CopyStatus::Failed("durability_unavailable")
+    );
+    assert!(out.copy.is_none());
+    assert_eq!(out.report.recoverability, Recoverability::Complete);
+    assert_eq!(dst.next_ordinal(), 0, "the target was written to");
+    assert!(
+        dst.volatile_bytes().is_empty(),
+        "a building target was left"
+    );
+
+    let dst = FaultHandle::new(&[], 61);
+    let out = run(&dst, true, false);
+    assert_eq!(out.report.copy, CopyStatus::Failed("target_unsuitable"));
+    assert_eq!(dst.next_ordinal(), 0);
+
+    // The same target with its real guarantees gets the copy.
+    let dst = FaultHandle::new(&[], 62);
+    let out = run(&dst, true, true);
+    assert_eq!(out.report.copy, CopyStatus::Published);
+}

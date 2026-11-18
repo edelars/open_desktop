@@ -57,7 +57,10 @@
 //!   unrecoverable source; 3 for an unsupported format; 5 when the copy or
 //!   report could not be written. An unrecoverable source gets no `<new.img>`
 //!   at all, and a partial one gets none unless `--accept-partial` is given.
-//!   A copy that failed midway is a *building* image that does not open.
+//!   A copy that failed midway is a *building* image that does not open. A
+//!   host without file durability is refused before anything is written
+//!   (exit 5, `copy=failed:durability_unavailable`); the empty `<new.img>`
+//!   created exclusively is left in place, so a rerun reports `target_exists`.
 
 use od_host::storage_io::{HostFileStorage, LeaseOpenError, ReadLease, WriterOpenError};
 use od_host::storage_policy::{

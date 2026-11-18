@@ -961,11 +961,15 @@ fn build_copy<T: StorageBackend>(
 /// when [`SalvageOptions::publish_partial`] is set), and must return a new,
 /// empty storage (an existing path is the host's refusal, reported as
 /// [`CopyStatus::Failed`]`("target_exists")`; nothing existing is touched).
+/// A target that is not writable and resizable (`"target_unsuitable"`) or
+/// cannot make its file contents durable (`"durability_unavailable"`) is
+/// refused before anything is written to it.
 /// `new_uid` is the identity of the copy; it must differ from the source's.
 ///
 /// The returned report is always complete for what was found, including for
 /// an unrecoverable source and for a failed copy. A failed copy leaves at most
-/// a *building* target that does not open.
+/// a *building* target that does not open; a target refused for its
+/// capabilities is left exactly as `make_target` returned it.
 pub fn salvage_to_copy<S, R, T>(
     source: CheckedStorage<S>,
     resolver: &mut R,
@@ -1015,6 +1019,18 @@ where
             return Ok(SalvageOutcome { report, copy: None });
         }
     };
+    // Refused before any write, as in export: the copy is published by a
+    // durable commit, so a target that cannot be written, resized or made
+    // durable would otherwise be left as a building image.
+    let caps = target.capabilities();
+    if !caps.writable || !caps.resize {
+        report.copy = CopyStatus::Failed("target_unsuitable");
+        return Ok(SalvageOutcome { report, copy: None });
+    }
+    if !caps.file_durability {
+        report.copy = CopyStatus::Failed("durability_unavailable");
+        return Ok(SalvageOutcome { report, copy: None });
+    }
     match target.size() {
         Ok(0) => {}
         Ok(_) => {
