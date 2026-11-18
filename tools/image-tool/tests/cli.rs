@@ -109,7 +109,10 @@ fn create_raw_refuses_an_existing_file_without_changing_it() {
     assert_eq!(code, i32::from(Exit::Io.code()), "{out}{err}");
     assert!(out.is_empty());
     assert_eq!(err, "create_failed=status_3\n");
-    assert_eq!(std::fs::read(&path).expect("read original after refusal"), before);
+    assert_eq!(
+        std::fs::read(&path).expect("read original after refusal"),
+        before
+    );
 }
 
 #[cfg(target_os = "macos")]

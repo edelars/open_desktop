@@ -2173,14 +2173,14 @@ mod tests {
     }
 
     #[test]
-    fn cld_outside_the_allowlist_is_the_unsupported_stop_before_retirement() {
+    fn cld_retires_before_unsupported_cli() {
         // The first instruction of the real kernel (`startup_64`): CLD; CLI; XOR EAX,EAX.
         let record = run_entry(&[0xFC, 0xFA, 0x31, 0xC0], 64);
-        assert_eq!(record.exit, PagedProbeExit::Unsupported { opcode: 0xFC });
+        assert_eq!(record.exit, PagedProbeExit::Unsupported { opcode: 0xFA });
         assert_eq!(record.exit_kind, "unsupported");
-        assert_eq!(record.unsupported_opcode, Some(0xFC));
-        assert_eq!((record.retired, record.rip), (0, 0x0100_0200));
-        assert_eq!(&record.rip_bytes[..4], &[0xFC, 0xFA, 0x31, 0xC0]);
+        assert_eq!(record.unsupported_opcode, Some(0xFA));
+        assert_eq!((record.retired, record.rip), (1, 0x0100_0201));
+        assert_eq!(&record.rip_bytes[..3], &[0xFA, 0x31, 0xC0]);
         assert_eq!(record.rip_bytes.len(), LINUX_STOP_RIP_BYTES);
     }
 
@@ -3260,14 +3260,14 @@ mod tests {
             "no MOV CR3 retired: the board CR3 before the run"
         );
         assert_eq!(boot.board.state().cr3, None, "the CPU state keeps no CR3");
-        // The same board run through the base profile is the L1 control: CLD is the stop.
+        // The base profile retires CLD but stops at CLI, which requires the set.
         let (mut boot, file) = boot_with_entry(&PROLOGUE);
         let base = run_linux_direct_board(&mut boot, &input(&file, &[], BLOB, board_hash()), 64)
             .expect("runs");
-        assert_eq!(base.exit, PagedProbeExit::Unsupported { opcode: 0xFC });
+        assert_eq!(base.exit, PagedProbeExit::Unsupported { opcode: 0xFA });
         assert_eq!(
             (base.retired, base.path, base.cr3_changes),
-            (0, "paged_probe", 0)
+            (1, "paged_probe", 0)
         );
         assert!(base.set_members.is_empty() && base.set_exit_detail.is_none());
     }

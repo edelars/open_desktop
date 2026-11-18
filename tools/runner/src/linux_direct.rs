@@ -3613,23 +3613,18 @@ mod tests {
 
     #[test]
     fn run_reports_the_stop_record_of_each_exit() {
-        // CLD: outside the base profile, stops before retirement.
+        // CLD retires in the base profile; CLI is the unsupported boundary.
         let value = run_case("run-cld", &[0xFC, 0xFA, 0x31, 0xC0], 100);
         assert_eq!(value["guest_started"], true);
-        assert_eq!(value["retired"], 0);
+        assert_eq!(value["retired"], 1);
         let stop = &value["stop"];
         assert_eq!(stop["exit_kind"], "unsupported");
         assert_eq!(stop["machine_stop_reason"], Value::Null);
-        assert_eq!(stop["unsupported_opcode"], "0xfc");
-        assert_eq!(stop["rip"], "0x1000200");
-        assert_eq!(stop["rip_gpa"], "0x1000200");
-        assert!(
-            stop["rip_bytes"]
-                .as_str()
-                .unwrap()
-                .starts_with("fc fa 31 c0")
-        );
-        assert_eq!(stop["retired"], 0);
+        assert_eq!(stop["unsupported_opcode"], "0xfa");
+        assert_eq!(stop["rip"], "0x1000201");
+        assert_eq!(stop["rip_gpa"], "0x1000201");
+        assert!(stop["rip_bytes"].as_str().unwrap().starts_with("fa 31 c0"));
+        assert_eq!(stop["retired"], 1);
         assert_eq!(stop["budget"], 100);
         assert_eq!(
             (stop["mode"].as_str(), stop["cpl"].as_u64()),
@@ -3764,7 +3759,7 @@ mod tests {
 
     #[test]
     fn set_cpl0_runs_the_set_and_reports_its_path_and_members() {
-        // CLD; CLI; XOR EAX,EAX; MOV DS,AX: with the set the stop moves from CLD past MOV DS.
+        // CLD; CLI; XOR EAX,EAX; MOV DS,AX: the set moves the stop past MOV DS.
         let code = [0xFC, 0xFA, 0x31, 0xC0, 0x8E, 0xD8];
         let mut case = Case::new("set-cpl0", &bzimage_with_entry(&code), &[0xAB; 4688], BLOB);
         case.options.budget = Some(64);
@@ -3821,10 +3816,11 @@ mod tests {
         assert_eq!(stop["rip"], "0x1000206");
         assert_eq!(stop["cr3_changes"], 0);
         assert_eq!(stop["last_cr3_change"], Value::Null);
-        // The same bytes through the default path stop at CLD, with the old schema values.
+        // The default path retires CLD and stops at CLI.
         let value = run_case("set-cpl0-control", &code, 64);
         assert_eq!(value["stop"]["path"], "paged_probe");
-        assert_eq!(value["stop"]["unsupported_opcode"], "0xfc");
+        assert_eq!(value["stop"]["unsupported_opcode"], "0xfa");
+        assert_eq!(value["stop"]["retired"], 1);
         assert_eq!(value["stop"]["set_members"], json!([]));
     }
 
