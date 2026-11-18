@@ -265,8 +265,8 @@
 
 ### S7-02. Описать контракт входа в прошивку и handoff block
 
-- [ ] Принято после архитектурного ревью.
-- **Текущий статус (2026-11-07):** выполнено исполнителем в `feat/s9-stage`: создан [FIRMWARE_BOOT.md](../specs/FIRMWARE_BOOT.md), обновлены `VIRTUAL_BOARD.md` и `MACHINE_CONTRACT.md`; четыре решения п. 4 записаны (shadow в RAM; состояние §2.3.4; polling TSC; отдельный PE32+ RT-образ), факты — в [STAGE_7_REPORT.md](../reports/STAGE_7_REPORT.md); ожидает ревью, коммита на момент записи нет.
+- [x] Принято после архитектурного ревью (2026-11-18): full-scope review одобрило контракт без оставшихся замечаний. Совместимость с UEFI §2.3.4, включая FCW/MXCSR, остаётся непроверенной и передана S7-05; гостевое чтение ROM через paged translation вне профиля v1; handoff reservations остаются backing RAM subranges по причине отсутствия backing у `Reserved`.
+- **Текущий статус (2026-11-18):** принято после архитектурного ревью; контракт и границы зафиксированы в [FIRMWARE_BOOT.md](../specs/FIRMWARE_BOOT.md), история решений и доказательств — в [STAGE_7_REPORT.md](../reports/STAGE_7_REPORT.md).
 - **Где:** `docs/specs/FIRMWARE_BOOT.md` (новый); `docs/specs/VIRTUAL_BOARD.md` (окна ROM и NVRAM в карте, строка «Boot path»); ссылка из `MACHINE_CONTRACT.md` раздела «Адреса и карта».
 - **Сделать:**
   1. Зафиксировать окна: ROM прошивки внутри `0xFF00_0000–0xFFFF_FFFF` (размер образа, например 4 MiB с верхней границей `0xFFFF_FFFF`; записать точные адреса), окно NVRAM (отдельный диапазон вне RAM, размер store, например 256 KiB; адрес — вне окон дисплея/APIC/CRB), адрес handoff block (фиксированный GPA в нижней RAM, зарезервированный в карте как `Reserved`).
