@@ -26325,30 +26325,34 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.write(destination, state.read(source));
             state.rip = next_rip;
         }
-        // S7-04: the helper initializes one byte with exact
-        // `42 C6 44 04 08 01` (MOV byte ptr [RSP+R8+8],1). REX.X selects R8
-        // as the SIB index; retain the exact byte width/address/immediate and
-        // commit RIP only after the tracked store succeeds.
+        // S7-04: initialize parser bytes through tracked memory. The base
+        // probe also accepts its exact `42 C6 44 04 08 01` stack form.
         Operation::MovImmediate {
             dst: Operand::Memory(destination),
             value,
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0xc6
-            && instruction.length == 6
             && instruction.operand_size == OperandSize::Byte
-            && instruction.prefixes
-                == (Prefixes {
-                    rex: Some(0x42),
-                    ..Prefixes::default()
-                })
             && destination.size == OperandSize::Byte
             && destination.address_size == OperandSize::Qword
-            && destination.base == AddressBase::Register(Register::Rsp)
-            && destination.index == Some(Register::R8)
-            && destination.scale == 1
-            && destination.displacement == 8
-            && value == 1 =>
+            && ((firmware_boot_profile
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: instruction.prefixes.rex,
+                        ..Prefixes::default()
+                    }))
+                || (instruction.length == 6
+                    && instruction.prefixes
+                        == (Prefixes {
+                            rex: Some(0x42),
+                            ..Prefixes::default()
+                        })
+                    && destination.base == AddressBase::Register(Register::Rsp)
+                    && destination.index == Some(Register::R8)
+                    && destination.scale == 1
+                    && destination.displacement == 8
+                    && value == 1)) =>
         {
             if let Err(error) = write_operand(
                 state,
@@ -26653,38 +26657,48 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
-        // S7-04: exact `42 80 7C 04 08 01` compares byte [RSP+R8+8] with 1.
-        // Exact unindexed forms compare bytes at [RSP+9] and [RSP+0xf] with 0
-        // and bytes at [RSP+0xa] through [RSP+0xe] with 1.
-        // Read through the memory adapter before committing flags and RIP.
+        // S7-04: compare a parser byte with the decoded immediate. The base
+        // probe retains its exact indexed and unindexed stack forms.
         Operation::Arithmetic {
             kind: ArithmeticKind::Cmp,
             dst: Operand::Memory(destination),
-            src: Operand::Immediate(immediate @ (0 | 1)),
+            src: Operand::Immediate(immediate),
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x80
             && instruction.operand_size == OperandSize::Byte
-            && destination.base == AddressBase::Register(Register::Rsp)
-            && destination.scale == 1
             && destination.address_size == OperandSize::Qword
             && destination.size == OperandSize::Byte
-            && ((instruction.length == 6
+            && ((firmware_boot_profile
                 && instruction.prefixes
                     == (Prefixes {
-                        rex: Some(0x42),
+                        rex: instruction.prefixes.rex,
                         ..Prefixes::default()
-                    })
-                && destination.index == Some(Register::R8)
-                && destination.displacement == 8
-                && immediate == 1)
-                || (instruction.length == 5
-                    && instruction.prefixes == Prefixes::default()
-                    && destination.index.is_none()
-                    && matches!(
-                        (destination.displacement, immediate),
-                        (9, 0) | (0xa, 1) | (0xb, 1) | (0xc, 1) | (0xd, 1) | (0xe, 1) | (0xf, 0)
-                    ))) =>
+                    }))
+                || (destination.base == AddressBase::Register(Register::Rsp)
+                    && destination.scale == 1
+                    && ((instruction.length == 6
+                        && instruction.prefixes
+                            == (Prefixes {
+                                rex: Some(0x42),
+                                ..Prefixes::default()
+                            })
+                        && destination.index == Some(Register::R8)
+                        && destination.displacement == 8
+                        && immediate == 1)
+                        || (instruction.length == 5
+                            && instruction.prefixes == Prefixes::default()
+                            && destination.index.is_none()
+                            && matches!(
+                                (destination.displacement, immediate),
+                                (9, 0)
+                                    | (0xa, 1)
+                                    | (0xb, 1)
+                                    | (0xc, 1)
+                                    | (0xd, 1)
+                                    | (0xe, 1)
+                                    | (0xf, 0)
+                            ))))) =>
         {
             let lhs = match read_operand(
                 state,
