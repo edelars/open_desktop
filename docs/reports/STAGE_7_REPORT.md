@@ -280,7 +280,7 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 
 ### S7-30. Аудит требований Windows boot path
 
-Статус `in_progress`: выполнено исполнителем, ожидает архитектурного ревью; коммита нет. Изменены: [WINDOWS_PLATFORM_REQUIREMENTS.md](../specs/WINDOWS_PLATFORM_REQUIREMENTS.md) (новый, статус «аудит, не принят»), [GUEST_REQUIREMENTS.md](../specs/GUEST_REQUIREMENTS.md) (только ссылка), строка статуса S7-30 в плане, этот отчёт. Кода нет; `PROJECT_LAYOUT.md` не менялся (документ уже указан в списке документов этапа 7).
+Статус `in_progress`: аудит и manifest подготовлены, но статический GUID scan не выполнен, поэтому приёмка ожидает доступного media source, повторной проверки и архитектурного ревью. Новые/обновлённые артефакты: [WINDOWS_PLATFORM_REQUIREMENTS.md](../specs/WINDOWS_PLATFORM_REQUIREMENTS.md), [GUEST_REQUIREMENTS.md](../specs/GUEST_REQUIREMENTS.md) (ссылка), [windows_media_manifest.json](../../tests/fixtures/firmware/windows_media_manifest.json), ссылки на audit IDs в задачах S7-13/14/23/24, этот отчёт и ISSUE-508. Коммита S7-30 нет; ISO и Windows boot binaries отсутствуют в текущем workspace. Manifest сохраняет прежние metadata с `available=false`/`reverified=false`; эти значения не являются новым проверенным экспериментом. `PROJECT_LAYOUT.md` не менялся: документ и fixture-путь уже предусмотрены картой.
 
 Записано: 113 пунктов с источником, статусом и задачей плана — подтверждено 19, по документации Microsoft 62, гипотеза — не проверено 18, источник не найден 14 (подсчёт по первому статусу строки). Трасса реального загрузчика не снята (прошивки нет): все фактические обращения `bootmgfw.efi`/`winload.efi` к протоколам, переменным и TPM — гипотеза до S7-32; список команд TPM (K-01…K-11) — гипотеза, кроме опубликованного требования `TPM2_HMAC`.
 
@@ -294,7 +294,7 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 
 Проверено: `python3 tools/check_layout.py` — 45 ошибок (не выросло); `git diff --check` чист; относительные ссылки изменённых файлов ведут на существующие файлы. ISO читался только листингом `7zz l` и потоками `7zz e -so` в память (заголовки PE/WIM/FAT, boot catalog, SHA-256), без извлечения на диск и без запуска.
 
-Не проверено: тексты UEFI 2.11 и ACPI 6.6 (uefi.org — HTTP 403), тексты TCG (открыты только страницы ресурсов), страница Microsoft «Secure MOR implementation» (HTTP 404), документ WHCP; поиск GUID протоколов в бинарях не выполнялся; `tests/fixtures/firmware/windows_media_manifest.json` не создавался (каталог создаёт S7-08); списки задач S7-13/14/23/24 в плане ссылками на пункты аудита не обновлены.
+Не проверено: тексты UEFI 2.11 и ACPI 6.6 (uefi.org — HTTP 403), тексты TCG (открыты только страницы ресурсов), страница Microsoft «Secure MOR implementation» (HTTP 404), документ WHCP; статический поиск известных GUID протоколов в `bootx64.efi`/`bootmgfw.efi`/`winload.efi` не выполнен, так как эти бинарные файлы и выбранный ISO отсутствуют в текущем workspace. Fixture [manifest](../../tests/fixtures/firmware/windows_media_manifest.json) создан из metadata, уже записанных в `SUPPORT_MATRIX.md` и audit item A7; полный ISO SHA-256 и PE binary hash для данного среза не пересчитывались. Связи задач S7-13/14/23/24 к соответствующим audit IDs добавлены в план.
 
 Решение для владельца и ревью плана (план не правился, §6, строка S7-32; правится только отчёт):
 

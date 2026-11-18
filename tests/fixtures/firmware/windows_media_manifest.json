@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "audit_id": "S7-30",
+  "manifest_created_at": "2026-11-18",
+  "audit_document": "docs/specs/WINDOWS_PLATFORM_REQUIREMENTS.md",
+  "media": {
+    "filename": "Windows11_Client_x64_en-us_26300_9457.iso",
+    "relative_path": "iso/Windows11_Client_x64_en-us_26300_9457.iso",
+    "product": "Windows 11 Pro x64, en-US",
+    "base_build": "26300.9457",
+    "size_bytes": 9047330816,
+    "sha256": "bd4307df32bc8af33b39ccecb1174aeb345386630f89a2b86c7a4e36b55ea650",
+    "metadata_source": "docs/specs/SUPPORT_MATRIX.md",
+    "metadata_recorded_at": "2026-11-07",
+    "provenance": {
+      "status": "owner_attested_not_independently_verified",
+      "claim": "The owner reported that the ISO came from an official Microsoft channel.",
+      "download_url": null,
+      "download_date": null
+    },
+    "availability": {
+      "in_current_workspace": false,
+      "sha256_reverified_for_this_manifest": false,
+      "reason": "The ISO is not present in the current workspace; the recorded size and hash are copied from the prior project support matrix and were not recomputed."
+    }
+  },
+  "boot_artifacts": [
+    {
+      "path_in_media": "efi/boot/bootx64.efi",
+      "same_bytes_as": "bootmgfw.efi",
+      "size_bytes": 3087400,
+      "sha256": "4bb32c300df0815d8b6c54a0d3793ae1d78fcdc07f8e2b9f831289b2eb109092",
+      "metadata_source": "docs/specs/WINDOWS_PLATFORM_REQUIREMENTS.md, audit item A7",
+      "available_for_analysis": false
+    },
+    {
+      "path_in_media": "bootmgfw.efi",
+      "size_bytes": 3087400,
+      "sha256": "4bb32c300df0815d8b6c54a0d3793ae1d78fcdc07f8e2b9f831289b2eb109092",
+      "metadata_source": "docs/specs/WINDOWS_PLATFORM_REQUIREMENTS.md, audit item A7",
+      "available_for_analysis": false
+    },
+    {
+      "container_path_in_media": "sources/boot.wim",
+      "path_inside_container": null,
+      "availability_status": "not_located_or_extracted",
+      "sha256": null,
+      "metadata_source": "docs/specs/WINDOWS_PLATFORM_REQUIREMENTS.md, audit items A10-A11",
+      "note": "The prior audit found no winload.efi entry in the ISO UDF listing and only hypothesized that it is inside boot.wim; the WIM contents were not listed."
+    }
+  ],
+  "static_known_guid_search": {
+    "status": "not_performed",
+    "method": "Search known UEFI protocol GUID byte sequences in the boot binaries only; do not disassemble or infer runtime protocol use.",
+    "targets": [
+      "efi/boot/bootx64.efi",
+      "bootmgfw.efi",
+      "winload.efi"
+    ],
+    "reason": "No selected Windows ISO or extracted Windows boot binaries are available in the current workspace. Prior audit item A8 explicitly records that GUID search was not performed.",
+    "results": [],
+    "runtime_use_inferred": false
+  }
+}
