@@ -326,6 +326,7 @@ impl Driver<'_> {
             gate,
             budget,
             stop,
+            ..
         } = call;
         let round = self.next_round[cpu].fetch_add(1, SEQ);
         if round >= self.rounds || self.abort.load(SEQ) {

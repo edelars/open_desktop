@@ -14,7 +14,7 @@ use od_machine::{
     ExecutionMode, HostParallelConfig, HostParallelFinish, host_install_vcpu, host_parallel_board,
     run_host_threads_with_nmi_paging,
 };
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Barrier, Mutex};
 use std::time::{Duration, Instant};
 
@@ -355,6 +355,58 @@ fn data_qword(control: &od_machine::HostParallelControl<'_, '_>) -> u64 {
         .atomic_inline_memory()
         .load_u64(GuestPhysicalAddress::new(DATA_QWORD))
         .unwrap()
+}
+
+#[test]
+fn s6_42d_stop_all_reaches_native_after_the_quantums_last_poll() {
+    let _guard = jit_guard();
+    for cpl0_set in [false, true] {
+        let region = SharedJitRegion::new(1, 2).unwrap();
+        let quantum = JitHostQuantum::new(
+            vec![Some(region.take_part().unwrap())],
+            vec![config()],
+            RFLAGS_DEFINED,
+        );
+        let quantum = if cpl0_set {
+            quantum.with_cpl0_set()
+        } else {
+            quantum
+        };
+        let mut board = host_parallel_board(1).unwrap();
+        populate_tables(board.bus_mut(), &A_PROGRAM);
+        let mut state = loop_state();
+        state.gpr[Register::Rax as usize] = MARKER;
+        assert!(host_install_vcpu(&mut board, 0, state));
+        let at_poll = AtomicBool::new(false);
+
+        let (report, ()) = run_host_threads_with_nmi_paging(
+            &mut board,
+            HostParallelConfig {
+                quantum: 16,
+                budget: 16,
+                end_when_idle: true,
+            },
+            &quantum.nmi_paging(),
+            &|call| run_after_stop_is_posted(&quantum, call, &at_poll, WAIT),
+            &|_| quantum.thread_exit(),
+            |control| {
+                assert!(control.wait_until(WAIT, || at_poll.load(Ordering::SeqCst)));
+                let proof = control.stop_all(WAIT).expect("the thread acknowledges");
+                assert_eq!(proof.acknowledged, 1);
+                assert_eq!(control.retired(), [0]);
+                assert_eq!(data_qword(control), INITIAL_DATA);
+                assert_eq!(quantum.stats(0).native_stop_exits, 1);
+                assert_eq!(control.with_state(0, |state| state.rip), Some(CODE_RIP));
+                control.resume();
+                assert!(control.wait_finished(WAIT), "store and HLT must finish");
+                assert_eq!(control.retired(), [2]);
+                assert_eq!(data_qword(control), MARKER);
+            },
+        )
+        .unwrap();
+        assert_eq!(report.finished, HostParallelFinish::AllIdle);
+        assert_eq!(quantum.stats(0).retired_jit, 1);
+    }
 }
 
 /// The pure interpreter at the same retired count: B's loop is private (its own data cell, its own

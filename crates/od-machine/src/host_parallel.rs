@@ -37,7 +37,7 @@
 //! profile of [`crate::run_paged_probe_shared`] stays what it was (it has no `LOCK`, no `IRETQ`).
 //! Not here (S6-42d): the interrupt source of the board for the boot processor (PIC, PIT), the
 //! COM1 transmit pump and the device ticks of the interpreter quantum, the NVMe doorbell and the PM
-//! stop request, the STOP byte of native blocks.
+//! stop request.
 
 use crate::bus::SplitLockGate;
 use crate::firmware_board::{FirmwareBoardError, set_exit_to_probe_exit};
@@ -58,6 +58,7 @@ use crate::{
 use od_isa::execute::{Cpl0ProfileSet, RunExit};
 use od_isa::memory::AccessContext;
 use od_isa::{CpuActivity, LongModeState};
+use std::sync::atomic::AtomicU8;
 use std::time::Duration;
 
 /// The inputs of a host thread run.
@@ -116,8 +117,11 @@ pub struct HostQuantumCall<'a> {
     /// At most this many instructions (the shared budget and the timer deadline cut it).
     pub budget: u64,
     /// The run's stop poll: the end of the run, a `stop_all` request or another vCPU's split
-    /// `LOCK`. Only atomics. The quantum polls it between instructions and returns when it is true.
+    /// `LOCK` or a kick. The quantum polls it between instructions and returns when it is true.
     pub stop: &'a mut dyn FnMut() -> bool,
+    /// The target vCPU's STOP byte, borrowed for the call. Clear it before polling
+    /// `stop` and pass it to the native entry together with the addressed guest state.
+    pub native_stop: Option<&'a AtomicU8>,
     /// The Local APIC of this vCPU (S6-42c): the source of the vectors the quantum delivers.
     pub lapic: &'a LocalApicHandle,
     /// The gate of the split `LOCK` of this vCPU's thread (S6-42c).
@@ -362,6 +366,7 @@ fn run_host_threads_inner<R>(
             bus: call.env.bus,
             budget: call.budget,
             stop: call.stop,
+            native_stop: call.native_stop,
             lapic: call.lapic,
             gate: HostSplitGate(Some(call.gate)),
         })

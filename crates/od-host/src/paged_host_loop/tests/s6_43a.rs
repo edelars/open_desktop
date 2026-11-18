@@ -279,6 +279,7 @@ impl Stepper for Quantum<'_, '_> {
                 bus: self.call.bus,
                 budget: 1,
                 stop: &mut *self.call.stop,
+                native_stop: self.call.native_stop,
                 lapic: self.call.lapic,
                 gate: self.call.gate,
             })

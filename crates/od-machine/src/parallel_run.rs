@@ -206,6 +206,7 @@ pub(crate) enum ParallelStopError {
 /// One kick cell: the flag the sleeping thread watches and the thread to unpark.
 struct KickCell {
     flag: AtomicBool,
+    native_stop: Option<AtomicU8>,
     thread: OnceLock<Thread>,
 }
 
@@ -216,22 +217,26 @@ struct Kicks {
 }
 
 impl Kicks {
-    fn new(count: usize) -> Self {
+    fn new(count: usize, native_stop: bool) -> Self {
         Self {
             cells: (0..count)
                 .map(|_| KickCell {
                     flag: AtomicBool::new(false),
+                    native_stop: native_stop.then(|| AtomicU8::new(0)),
                     thread: OnceLock::new(),
                 })
                 .collect(),
         }
     }
 
-    /// Kick vCPU `cpu`: set its flag, then unpark its thread. Called under the APIC lock by the
-    /// wake sink: takes no lock.
+    /// Kick vCPU `cpu`: publish the event flag, then the native STOP byte, then unpark.
+    /// Called under the APIC lock by the wake sink: takes no lock.
     fn kick(&self, cpu: usize) {
         let cell = &self.cells[cpu];
         cell.flag.store(true, SEQ);
+        if let Some(byte) = &cell.native_stop {
+            byte.store(1, SEQ);
+        }
         if let Some(thread) = cell.thread.get() {
             thread.unpark();
         }
@@ -347,6 +352,7 @@ pub(crate) struct QuantumCall<'a, 'b> {
     pub(crate) gate: &'a dyn SplitLockGate,
     pub(crate) budget: u64,
     pub(crate) stop: &'a mut dyn FnMut() -> bool,
+    pub(crate) native_stop: Option<&'a AtomicU8>,
 }
 
 /// One quantum of a vCPU: the caller builds its CPL0 set and calls
@@ -405,12 +411,13 @@ impl SharedState<'_> {
         owner != NO_OWNER && owner != cpu
     }
 
-    /// The interpreter's stop poll for the call of `cpu`: the end of the run, a stop-all request,
-    /// or another vCPU's split `LOCK`. Only atomics.
+    /// Poll the run's requests. For a host quantum, a kick also returns to the worker so it
+    /// can inspect startup and NMI before the next call.
     fn call_must_end(&self, cpu: usize) -> bool {
-        self.finish.load(Ordering::Acquire)
-            || self.stop_all.load(Ordering::Acquire)
+        self.finish.load(SEQ)
+            || self.stop_all.load(SEQ)
             || self.other_split(cpu)
+            || (self.source_free && self.kicks.flag(cpu))
     }
 
     /// The interrupt source of the board is not in a Local APIC, so nothing posts to the boot
@@ -988,6 +995,7 @@ impl Worker<'_, '_, '_, '_> {
                 gate,
                 budget,
                 stop,
+                native_stop: self.shared.kicks.cells[cpu].native_stop.as_ref(),
             })
         };
         if vcpu.legacy.is_none() {
@@ -1106,6 +1114,9 @@ impl ParallelControl<'_, '_> {
             return Err(ParallelStopError::Finished);
         }
         sh.stop_all.store(true, SEQ);
+        if sh.source_free {
+            sh.kicks.kick_all();
+        }
         let deadline = Instant::now() + timeout;
         loop {
             let unacked: Vec<usize> = (0..sh.count)
@@ -1279,7 +1290,7 @@ fn run_threads_inner<R>(
             ))
         })
         .collect::<Result<_, _>>()?;
-    let kicks = Arc::new(Kicks::new(count));
+    let kicks = Arc::new(Kicks::new(count, source_free));
     let com1 = Mutex::new(com1);
     let env = ThreadQuantumEnv {
         bus,

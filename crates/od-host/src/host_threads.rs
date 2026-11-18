@@ -5,17 +5,13 @@
 //! `ParallelControl`). Each thread owns its session and its part of the process `MAP_JIT` region
 //! (S6-42, A1: nothing of the session, the block or the handle crosses a thread; the session is
 //! created on the vCPU's own thread from the part the owner handed out and dropped there, so a slot
-//! is released by its owner). Every call runs [`run_paged_host_loop_shared`]: the JIT path and the
+//! is released by its owner). Each call runs the shared host loop: the JIT path and the
 //! interpreter fallback over `&MachineBus` (RAM through the shared reference, the device lock for one
 //! port access at a time, A7 of S6-40), with the run's stop poll next to the loop's own flags.
 //!
-//! The stop of `ParallelControl::stop_all` reaches the loop as the poll at the top of every
-//! iteration: a block is one instruction, so a native call is never longer than one instruction and
-//! the thread acknowledges on the safe point after its quantum returned, never inside a native call.
-//! The STOP byte that native code polls (`RuntimeContextV1::stop_requested`) is not raised by this
-//! binding: it is needed only for blocks of several instructions (S3-24); the blocks of this loop
-//! are one instruction, so the poll between iterations is the same boundary (open for S3-24
-//! blocks, S6-42d).
+//! The worker supplies its STOP byte and request poll. The loop clears the byte,
+//! reads the requests, then gives the same byte to native code. A stop or a kick
+//! returns to the worker on a safe point after native execution and accounting.
 //!
 //! S6-42c: [`JitHostQuantum::with_cpl0_set`] switches the quantum to the guest side of the
 //! boundary (`run_paged_host_loop_shared_set`): a vector waiting in the vCPU's own Local APIC is
@@ -39,8 +35,8 @@ use od_machine::{
 use crate::PagedFetchedLoadSession;
 use crate::jit_region::{JitPartStats, JitRegionPart};
 use crate::paged_host_loop::{
-    PagedHostLoopConfig, PagedHostLoopControl, PagedHostLoopExit, PagedHostSetEnv,
-    run_paged_host_loop_shared, run_paged_host_loop_shared_set,
+    LoopBusRef, PagedHostLoopConfig, PagedHostLoopControl, PagedHostLoopExit, PagedHostSetEnv,
+    run_paged_host_loop_core,
 };
 
 /// What one vCPU's JIT host loop did, summed over its calls (published after every call, read by
@@ -49,6 +45,7 @@ use crate::paged_host_loop::{
 pub struct HostJitVcpuStats {
     pub calls: u64,
     pub retired_jit: u64,
+    pub native_stop_exits: u64,
     pub retired_interpreter: u64,
     pub steps_jit: u64,
     pub steps_interpreter: u64,
@@ -277,24 +274,21 @@ impl JitHostQuantum {
                     logged.push((range.start().get(), range.len()));
                 }
             };
-            let report = if self.cpl0_set {
+            let (cli, sti, halt) = (
+                CliProfile::NonPviLong64V1,
+                StiProfile::NonPviLong64V1,
+                HaltProfile::Long64V1,
+            );
+            let set;
+            let bus = if self.cpl0_set {
                 // The set the interpreter step runs: the Linux board's CPL0 profile without the
                 // members that need the board (CR3 is the configuration's, not the set's).
-                let (cli, sti, halt) = (
-                    CliProfile::NonPviLong64V1,
-                    StiProfile::NonPviLong64V1,
-                    HaltProfile::Long64V1,
-                );
-                let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+                set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
                     .with_cli(&cli)
                     .with_sti(&sti)
                     .with_halt(&halt)
                     .with_pio_u8();
-                run_paged_host_loop_shared_set(
-                    &mut thread.session,
-                    &thread.control,
-                    config,
-                    call.state,
+                LoopBusRef::SharedSet(
                     call.bus,
                     cpu,
                     PagedHostSetEnv {
@@ -303,25 +297,23 @@ impl JitHostQuantum {
                         set: &set,
                         skip_first_boundary: &mut thread.skip_first_boundary,
                     },
-                    &mut thread.rflags_defined,
-                    call.budget,
-                    &mut record,
-                    &mut *call.stop,
                 )
             } else {
-                run_paged_host_loop_shared(
-                    &mut thread.session,
-                    &thread.control,
-                    config,
-                    call.state,
-                    call.bus,
-                    cpu,
-                    &mut thread.rflags_defined,
-                    call.budget,
-                    &mut record,
-                    &mut *call.stop,
-                )
+                LoopBusRef::Shared(call.bus, cpu)
             };
+            let report = run_paged_host_loop_core(
+                &mut thread.session,
+                &thread.control,
+                config,
+                call.state,
+                bus,
+                &mut thread.rflags_defined,
+                call.budget,
+                &mut record,
+                |_, _| {},
+                &mut *call.stop,
+                call.native_stop,
+            );
             if let Some(log) = &self.write_log {
                 log[cpu]
                     .lock()
@@ -334,6 +326,7 @@ impl JitHostQuantum {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 stats.calls += 1;
                 stats.retired_jit += report.retired_jit;
+                stats.native_stop_exits += report.native_stop_exits;
                 stats.retired_interpreter += report.retired_interpreter;
                 stats.steps_jit += report.steps_jit;
                 stats.steps_interpreter += report.steps_interpreter;

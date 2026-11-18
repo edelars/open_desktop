@@ -725,6 +725,59 @@ fn s6_42c_an_nmi_is_delivered_through_the_root_named_for_the_vcpu() {
 }
 
 #[test]
+fn s6_42d_a_native_stop_for_an_nmi_returns_to_the_worker_boundary() {
+    let _guard = jit_guard();
+    let region = SharedJitRegion::new(2, 4).unwrap();
+    let quantum = quantum_of(&region, 2);
+    let mut board = board(2);
+    put(&mut board, CODE_0, &[0x48, 0x89, 0x03, 0xf4]); // mov [rbx], rax; hlt
+    let mut bsp = state(CODE_0, STACK_TOP_0);
+    bsp.gpr[Register::Rbx as usize] = DATA;
+    assert!(host_install_vcpu(&mut board, 0, bsp));
+    let at_poll = AtomicBool::new(false);
+
+    let (report, ()) = run_host_threads_with_nmi_paging(
+        &mut board,
+        host_config(false),
+        &quantum.nmi_paging(),
+        &|call| {
+            let first = !at_poll.load(Ordering::SeqCst);
+            let result = run_after_stop_is_posted(&quantum, call, &at_poll, WAIT)?;
+            if first && at_poll.load(Ordering::SeqCst) {
+                assert_eq!(result.retired, 0, "STOP must precede the guest store");
+            }
+            Ok(result)
+        },
+        &|_| quantum.thread_exit(),
+        |control| {
+            assert!(control.wait_until(WAIT, || at_poll.load(Ordering::SeqCst)));
+            // Use vCPU 1's ICR to enqueue an NMI for vCPU 0 during the delayed poll.
+            for (offset, value) in [(0x310, 0), (0x300, 0x400)] {
+                control
+                    .bus()
+                    .write_mmio_shared(
+                        1,
+                        GuestPhysicalAddress::new(LOCAL_APIC + offset),
+                        AccessWidth::Dword,
+                        value,
+                    )
+                    .unwrap();
+            }
+            assert!(control.wait_until(WAIT, || {
+                quantum.stats(0).retired_jit == 1
+                    && cell(control, COUNTER_NMI) == 1
+                    && cell(control, DATA) == 0
+            }));
+        },
+    )
+    .unwrap();
+    assert_eq!(report.finished, HostParallelFinish::Stopped, "{report:?}");
+    assert_eq!(report.nmi_delivered, [1, 0]);
+    assert_eq!(quantum.stats(0).native_stop_exits, 1);
+    assert_eq!(quantum.stats(0).retired_jit, 1);
+}
+
+#[test]
 fn s6_42d_an_nmi_uses_the_host_quantums_efer_for_the_idt_walk() {
     let _guard = jit_guard();
     let region = SharedJitRegion::new(2, 4).unwrap();

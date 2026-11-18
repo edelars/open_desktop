@@ -446,6 +446,7 @@ pub(crate) fn run_paged_host_loop_with_hook(
         committed_write,
         before_step,
         || false,
+        None,
     )
 }
 
@@ -516,6 +517,7 @@ pub fn run_paged_host_loop_shared(
         committed_write,
         |_, _| {},
         stop,
+        None,
     )
 }
 
@@ -547,10 +549,11 @@ pub fn run_paged_host_loop_shared_set(
         committed_write,
         |_, _| {},
         stop,
+        None,
     )
 }
 
-fn run_paged_host_loop_core(
+pub(crate) fn run_paged_host_loop_core(
     session: &mut PagedFetchedLoadSession,
     control: &PagedHostLoopControl,
     config: PagedHostLoopConfig,
@@ -561,6 +564,7 @@ fn run_paged_host_loop_core(
     mut committed_write: impl FnMut(od_machine::GuestPhysicalRange),
     mut before_step: impl FnMut(&PagedHostLoopControl, u64),
     mut external_stop: impl FnMut() -> bool,
+    native_stop: Option<&AtomicU8>,
 ) -> PagedHostLoopReport {
     let mut report = PagedHostLoopReport::new(incoming_budget);
     if *rflags_defined & !od_isa::INTEGER_FLAGS != 0 {
@@ -569,13 +573,18 @@ fn run_paged_host_loop_core(
         };
         return report;
     }
+    let stop_byte = native_stop.unwrap_or_else(|| control.stop_byte());
     let mut steps_started = 0u64;
     loop {
         // Safe point (S3-25c): nothing is executing, no lookup has started. The
         // session applies the slot releases it deferred (A4).
         session.safe_point();
+        // Clear the worker's native byte before its request poll. A request posted
+        // after the poll then leaves this same byte raised for native execution.
+        let worker_byte_was_set =
+            native_stop.is_some_and(|byte| byte.swap(0, Ordering::SeqCst) != 0);
         let (byte_was_set, requests) = control.take_byte_and_reread_flags();
-        if byte_was_set {
+        if worker_byte_was_set || byte_was_set {
             report.stop_byte_observations += 1;
             report.retired_at_stop_byte = Some(report.retired_total());
         }
@@ -630,7 +639,7 @@ fn run_paged_host_loop_core(
             config.cr3,
             config.efer,
             config.access_context,
-            control.stop_byte(),
+            stop_byte,
         );
         match attempt {
             Ok(jit) => {
@@ -1951,6 +1960,39 @@ mod tests {
         assert_eq!(run.report.steps_jit, 0);
         assert_eq!(run.report.steps_interpreter, 40);
         assert_eq!(observe(&state, &mut bus, false), reference_run.observation);
+    }
+
+    /// Hold the first false poll until another thread posts the native byte.
+    /// The host loop must act on the new request through native execution.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn run_after_stop_is_posted(
+        quantum: &crate::host_threads::JitHostQuantum,
+        call: od_machine::HostQuantumCall<'_>,
+        at_poll: &AtomicBool,
+        timeout: std::time::Duration,
+    ) -> Result<od_machine::HostQuantumResult, &'static str> {
+        let byte = call
+            .native_stop
+            .expect("the worker supplies a native STOP byte");
+        let poll = &mut *call.stop;
+        let mut delay_first_poll = || {
+            let requested = poll();
+            if !requested && !at_poll.swap(true, Ordering::SeqCst) {
+                let until = std::time::Instant::now() + timeout;
+                while byte.load(Ordering::SeqCst) == 0 {
+                    assert!(
+                        std::time::Instant::now() < until,
+                        "native STOP was not posted"
+                    );
+                    std::thread::yield_now();
+                }
+            }
+            requested
+        };
+        quantum.run(od_machine::HostQuantumCall {
+            stop: &mut delay_first_poll,
+            ..call
+        })
     }
 
     /// S6-42: tests of several vCPU threads over the slot backend and the
