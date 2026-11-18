@@ -5758,7 +5758,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-471 — S7-04: exact JNZ rel8 +0x41 frontier (`75 41`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-470.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201430`.
-- **Статус:** открыта. Следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base firmware CPU profile stops on exact `75 41` (JNZ rel8 +0x41).
+- **Статус:** решена для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** exact unprefixed `75 41` branches on ZF=0 to next RIP plus signed rel8. A taken target must be canonical. Flags and definedness are preserved.
 - **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 117 }` at RIP `0x201430` after 10,313 retired instructions. COM1 is empty. Bytes at the link-base shadow are `75 41`.
-- **Следующий шаг:** admit the exact short branch and cover the ZF condition, target canonicality, fault atomicity and profile isolation.
+- **Результат:** the runner retires 10,314 instructions and stops at RIP `0x201432` on `B8 06 00 00 00` (MOV EAX,6, ISSUE-472). It reports `Unsupported { opcode: 184 }` with empty COM1.
+- **Проверка:** focused tests cover ZF, both RIP outcomes, flag definedness, taken-target canonicality, the displacement fetch fault, neighboring encodings and the CPL3 MOV probe. Short JZ and other CPL0 probe regressions pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-472 — S7-04: exact MOV EAX,6 frontier (`B8 06 00 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-471.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201432`.
+- **Статус:** открыта. Следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base firmware CPU profile stops on exact `B8 06 00 00 00` (MOV EAX,6).
+- **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 184 }` at RIP `0x201432` after 10,314 retired instructions. COM1 is empty. Bytes at the link-base shadow are `B8 06 00 00 00`.
+- **Следующий шаг:** admit the exact dword immediate write and cover zero extension, flag preservation, fetch faults and profile isolation.
