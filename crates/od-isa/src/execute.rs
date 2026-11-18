@@ -27554,22 +27554,29 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
-        // S7-04: EDX carries the fixed handoff size. Firmware boot also passes
-        // its supported handoff version in ECX. Both writes zero-extend.
+        // S7-04: the firmware compiler selects dword constants for any GPR.
+        // The base probe still admits the original fixed handoff size in EDX.
         Operation::MovImmediate {
             dst: Operand::Register(destination),
             value,
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
-            && instruction.length == 5
+            && matches!(instruction.opcode.byte, 0xb8..=0xbf)
             && instruction.operand_size == OperandSize::Dword
-            && instruction.prefixes == Prefixes::default()
-            && ((instruction.opcode.byte == 0xba
-                && destination == RegisterView::low(Register::Rdx, OperandSize::Dword)
-                && value == 0x0001_0000)
+            && ((instruction.length == 5
+                && instruction.prefixes == Prefixes::default()
+                && (firmware_boot_profile
+                    || (instruction.opcode.byte == 0xba
+                        && destination
+                            == RegisterView::low(Register::Rdx, OperandSize::Dword)
+                        && value == 0x0001_0000)))
                 || (firmware_boot_profile
-                    && instruction.opcode.byte == 0xb9
-                    && destination == RegisterView::low(Register::Rcx, OperandSize::Dword))) =>
+                    && instruction.length == 6
+                    && instruction.prefixes
+                        == (Prefixes {
+                            rex: Some(0x41),
+                            ..Prefixes::default()
+                        }))) =>
         {
             state.write(destination, value);
             state.rip = next_rip;
