@@ -1,0 +1,12 @@
+test paged_host_loop::tests::s6_43a::s6_43a_long_parallel_run ... ignored, long: release run of the S6-43a probe
+test paged_host_loop::tests::s6_43a::s6_43a_the_interpreter_runs_the_old_code_before_and_the_new_code_after_the_signal ... ok
+test paged_host_loop::tests::s6_43a::s6_43a_a_run_without_native_execution_of_the_changed_code_is_not_counted ... ok
+S6-43a interleaved / guest-wait+serialize: 600 cycles, B native 2400 interpreter 600 (fallback 20.0% of B's steps: 600 serializing, X native 1800 of 1800), wait steps 600 (max 1), admissions 1201, A native 1200 interpreter 0, stale 0, wrong 0, 0.08s
+S6-43a interleaved / guest-wait: 600 cycles, B native 2400 interpreter 0 (fallback 0.0% of B's steps: 0 serializing, X native 1800 of 1800), wait steps 600 (max 1), admissions 1201, A native 1200 interpreter 0, stale 0, wrong 0, 0.06s
+S6-43a interleaved / host-wait (block kept): 600 cycles, B native 1800 interpreter 0 (fallback 0.0% of B's steps: 0 serializing, X native 1800 of 1800), wait steps 600 (max 1), admissions 601, A native 1200 interpreter 0, stale 0, wrong 0, 0.05s
+test paged_host_loop::tests::s6_43a::s6_43a_interleaved_b_runs_only_the_new_bytes_after_the_signal_and_equals_the_interpreter ... ok
+S6-43a parallel / guest-wait+serialize: 2000 cycles, B native 26705 interpreter 2000 (fallback 7.0% of B's steps: 2000 serializing, X native 6000 of 6000), wait steps 20705 (max 609), admissions 5375, A native 4000 interpreter 0, stale 0, wrong 0, 0.77s
+S6-43a parallel / guest-wait: 2000 cycles, B native 34268 interpreter 0 (fallback 0.0% of B's steps: 0 serializing, X native 6000 of 6000), wait steps 28268 (max 2860), admissions 5236, A native 4000 interpreter 0, stale 0, wrong 0, 1.07s
+S6-43a parallel / host-wait (block kept): 2000 cycles, B native 6000 interpreter 0 (fallback 0.0% of B's steps: 0 serializing, X native 6000 of 6000), wait steps 2000 (max 1), admissions 2001, A native 4000 interpreter 0, stale 0, wrong 0, 0.53s
+test paged_host_loop::tests::s6_43a::s6_43a_parallel_b_runs_only_the_new_bytes_after_the_signal_and_equals_the_interpreter ... ok
+test result: ok. 4 passed; 0 failed; 1 ignored; 0 measured; 451 filtered out; finished in 3.88s

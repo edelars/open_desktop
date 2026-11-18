@@ -77,6 +77,9 @@ pub struct JitHostQuantum {
     configs: Vec<PagedHostLoopConfig>,
     rflags_defined: u64,
     stats: Vec<Mutex<HostJitVcpuStats>>,
+    /// S6-43a: when enabled, the ranges every vCPU's calls reported as committed (page-walk
+    /// Accessed/Dirty bits and data stores), in the order of that vCPU's program.
+    write_log: Option<Vec<Mutex<Vec<(u64, u64)>>>>,
 }
 
 impl JitHostQuantum {
@@ -103,7 +106,34 @@ impl JitHostQuantum {
             configs,
             rflags_defined,
             stats,
+            write_log: None,
         }
+    }
+
+    /// S6-43a: keep, per vCPU, the committed write ranges `(start, length)` of every call
+    /// ([`Self::committed_writes`]). Off by default: the hot path then collects nothing.
+    #[must_use]
+    pub fn with_write_log(mut self) -> Self {
+        self.write_log = Some(
+            (0..self.configs.len())
+                .map(|_| Mutex::new(Vec::new()))
+                .collect(),
+        );
+        self
+    }
+
+    /// The committed write ranges of vCPU `cpu` in program order (empty unless
+    /// [`Self::with_write_log`] was used).
+    pub fn committed_writes(&self, cpu: usize) -> Vec<(u64, u64)> {
+        self.write_log
+            .as_ref()
+            .map(|log| {
+                log[cpu]
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+            })
+            .unwrap_or_default()
     }
 
     /// The thread's exit hook: pass `&|_| quantum.thread_exit()` as `on_thread_exit` of
@@ -168,6 +198,8 @@ impl JitHostQuantum {
                 });
             }
             let thread = slot.as_mut().expect("the thread's vCPU was just set");
+            let logging = self.write_log.is_some();
+            let mut logged = Vec::new();
             let report = run_paged_host_loop_shared(
                 &mut thread.session,
                 &thread.control,
@@ -177,9 +209,19 @@ impl JitHostQuantum {
                 cpu,
                 &mut thread.rflags_defined,
                 call.budget,
-                |_| {},
+                |range| {
+                    if logging {
+                        logged.push((range.start().get(), range.len()));
+                    }
+                },
                 &mut *call.stop,
             );
+            if let Some(log) = &self.write_log {
+                log[cpu]
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .extend(logged);
+            }
             {
                 let mut stats = self.stats[cpu]
                     .lock()

@@ -1,0 +1,5 @@
+S6-43a parallel / guest-wait+serialize: 200000 cycles, B native 894659 interpreter 200000 (fallback 18.3% of B's steps: 200000 serializing, X native 600000 of 600000), wait steps 294659 (max 239), admissions 463895, A native 400000 interpreter 0, stale 0, wrong 0, 2.21s
+S6-43a parallel / guest-wait: 200000 cycles, B native 989248 interpreter 0 (fallback 0.0% of B's steps: 0 serializing, X native 600000 of 600000), wait steps 389248 (max 67), admissions 559284, A native 400000 interpreter 0, stale 0, wrong 0, 2.26s
+S6-43a parallel / host-wait (block kept): 200000 cycles, B native 600000 interpreter 0 (fallback 0.0% of B's steps: 0 serializing, X native 600000 of 600000), wait steps 200000 (max 1), admissions 200001, A native 400000 interpreter 0, stale 0, wrong 0, 1.94s
+test paged_host_loop::tests::s6_43a::s6_43a_parallel_b_runs_only_the_new_bytes_after_the_signal_and_equals_the_interpreter ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 455 filtered out; finished in 7.66s

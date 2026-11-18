@@ -4588,3 +4588,7 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 ## S6-41e — расширение API: хук исполнения litmus (`LitmusStepHook`)
 
 Дата: 2026-11-18. Не меняет модель памяти, порядок замков и нормативный текст S6-30…S6-36. `od-machine` отдаёт хосту точку подключения исполнителя инструкций litmus: трейт `LitmusStepHook` (`LitmusStep`, `LitmusStepOutcome`), `run_litmus_parallel_hooked` (параллельный драйвер S6-36 с хуком; без хука `run_litmus_parallel` идёт тем же кодом) и `run_litmus_interleaved_hooked` (перебор S6-19 на шине платы, `LitmusInterleavedReport`), а также `LitmusCase::program()` (инструкции fixture). Драйвер S6-36 пересекает стартовый барьер до хука, как до интерпретатора; `LitmusParallelReport` получил `hooked_retired`/`interpreted_retired`. В прогонах с хуком первые 2 МиБ отображены страницами 4 КиБ (JIT обходит только их). Подробности и результаты — [JIT_CONTRACT.md, S6-41e](JIT_CONTRACT.md#s6-41e-litmus-s6-19s6-36-с-jit-в-обоих-режимах).
+
+## S6-43a — probe cross-modifying code на двух vCPU (без изменений API `od-machine`)
+
+Дата: 2026-11-18. API `od-machine`, порядок замков и нормативный текст S6-30…S6-36 не меняются: probe использует `run_host_threads` (S6-42b), `run_paged_probe` (эталон) и общую `&MachineBus` как есть. Сценарий, протокол G-XMC, результаты и ограничения — [JIT_CONTRACT.md, S6-43a](JIT_CONTRACT.md#s6-43a-probe-cross-modifying-code-на-двух-vcpu-с-включённым-jit).

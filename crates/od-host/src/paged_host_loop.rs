@@ -1800,4 +1800,6 @@ mod tests {
     mod s6_42;
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     mod s6_42b;
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    mod s6_43a;
 }
