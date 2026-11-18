@@ -20042,7 +20042,8 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         // S7-04: ordinary register arithmetic in the firmware parser uses
         // the decoder's operand width and sign-extended immediate.
         operation @ (Operation::Arithmetic {
-            kind: ArithmeticKind::Add | ArithmeticKind::Sub | ArithmeticKind::Cmp,
+            kind:
+                ArithmeticKind::Add | ArithmeticKind::Sub | ArithmeticKind::Cmp | ArithmeticKind::Inc,
             dst: Operand::Register(destination),
             src: source @ (Operand::Register(_) | Operand::Immediate(_)),
         }
@@ -20050,12 +20051,32 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             kind: LogicKind::Xor,
             dst: Operand::Register(destination),
             src: source @ Operand::Register(_),
+        }
+        | Operation::Logic {
+            kind: LogicKind::Test,
+            dst: Operand::Register(destination),
+            src: source @ Operand::Immediate(_),
         }) if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Primary
-            && matches!(
-                instruction.operand_size,
-                OperandSize::Dword | OperandSize::Qword
-            )
+            && match operation {
+                Operation::Arithmetic {
+                    kind: ArithmeticKind::Inc,
+                    ..
+                } => {
+                    instruction.opcode.byte == 0xff
+                        && instruction.operand_size == OperandSize::Qword
+                }
+                Operation::Logic {
+                    kind: LogicKind::Test,
+                    ..
+                } => {
+                    instruction.opcode.byte == 0xf6 && instruction.operand_size == OperandSize::Byte
+                }
+                _ => matches!(
+                    instruction.operand_size,
+                    OperandSize::Dword | OperandSize::Qword
+                ),
+            }
             && instruction.prefixes
                 == (Prefixes {
                     rex: instruction.prefixes.rex,
@@ -20078,7 +20099,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 }
                 Operation::Logic { kind, .. } => {
                     let (value, flags) = logic_result(size, kind, lhs, rhs, state.rflags);
-                    (value, flags, true)
+                    (value, flags, kind != LogicKind::Test)
                 }
                 _ => unreachable!("matched a firmware ALU operation"),
             };

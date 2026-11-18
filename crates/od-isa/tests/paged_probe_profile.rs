@@ -51226,6 +51226,8 @@ fn firmware_boot_call_fetch_stack_and_noncanonical_faults_are_atomic() {
 #[test]
 fn firmware_boot_forms_remain_rejected_by_legacy_profile() {
     for (bytes, opcode) in [
+        (&[0x41, 0xf6, 0xc2, 2][..], 0xf6),
+        (&[0x48, 0xff, 0xc0][..], 0xff),
         (&[0x80, 0x7c, 0x2c, 8, 1][..], 0x80),
         (&[0x80, 0x7c, 0x06, 0x60, 0][..], 0x80),
         (&[0xc6, 0x44, 0x2c, 8, 0x80][..], 0xc6),
@@ -51493,6 +51495,106 @@ fn firmware_boot_register_arithmetic_uses_the_decoded_width_and_flags() {
         assert_eq!(result.exit, PagedProbeExit::Retired);
         assert_eq!(result.instructions_executed, 1);
         assert_eq!(result.rflags_defined, initial_defined | ARITHMETIC_FLAGS);
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_test_byte_immediate_reads_the_decoded_register_alias() {
+    const AF: u64 = 1 << 4;
+    for (code, reg, input, flags) in [
+        (
+            &[0x41, 0xf6, 0xc2, 2][..],
+            Register::R10,
+            0xeedd_ccbb_7766_5502,
+            0x612,
+        ),
+        (
+            &[0xf6, 0xc4, 0x80][..],
+            Register::Rax,
+            0x0000_0000_0000_8000,
+            0x692,
+        ),
+        (
+            &[0x40, 0xf6, 0xc4, 0x80][..],
+            Register::Rsp,
+            0x0000_0000_0000_807f,
+            0x656,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[reg as usize] = input;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.rflags = flags;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED | AF,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED & !AF);
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_inc_qword_preserves_cf_and_its_definedness() {
+    const ARITHMETIC_FLAGS: u64 = 0x8d5;
+    const CF: u64 = 1;
+    for (code, reg, input, result, old_cf, old_cf_defined, flags) in [
+        (
+            &[0x48, 0xff, 0xc0][..],
+            Register::Rax,
+            u64::MAX,
+            0,
+            0,
+            CF,
+            0x054,
+        ),
+        (
+            &[0x49, 0xff, 0xc3][..],
+            Register::R11,
+            0x7fff_ffff_ffff_ffff,
+            0x8000_0000_0000_0000,
+            CF,
+            0,
+            0x894,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[reg as usize] = input;
+        cpu.rflags = 0x602 | (ARITHMETIC_FLAGS & !CF) | old_cf;
+        let mut expected = cpu.clone();
+        expected.gpr[reg as usize] = result;
+        expected.rflags = 0x602 | flags | old_cf;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+        let initial_defined = (DEFINED & !ARITHMETIC_FLAGS) | old_cf_defined;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            initial_defined,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(
+            result.rflags_defined,
+            initial_defined | (ARITHMETIC_FLAGS & !CF)
+        );
         assert_eq!(cpu, expected, "{code:02x?}");
         assert_eq!((memory.reads, memory.writes), (0, 0));
     }
@@ -52170,6 +52272,12 @@ fn firmware_boot_jcc_checks_canonicality_only_for_taken_branch() {
 #[test]
 fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
     for (bytes, opcode) in [
+        (&[0xf6, 0x06, 0x33][..], 0xf6),             // TEST byte [RSI],imm8
+        (&[0x67, 0x41, 0xf6, 0xc2, 2][..], 0xf6),    // address override on TEST
+        (&[0xf7, 0xc2, 2, 0, 0, 0][..], 0xf7),       // TEST EDX,imm32
+        (&[0x48, 0xff, 0x03][..], 0xff),             // INC qword [RBX]
+        (&[0xff, 0xc3][..], 0xff),                   // INC EBX
+        (&[0x49, 0xff, 0xc9][..], 0xff),             // DEC R9
         (&[0x67, 0x80, 0x7c, 0x2c, 8, 1][..], 0x80), // address32 CMP
         (&[0x67, 0xc6, 0x44, 0x2c, 8, 0x80][..], 0xc6), // address32 store
         (&[0x49, 0x83, 0xd3, 0x28][..], 0x83),       // ADC R11,0x28
