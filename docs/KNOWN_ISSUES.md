@@ -5893,7 +5893,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-486 — S7-04: exact MOV EAX,dword ptr [RSI+0x1c] frontier (`8B 46 1C`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-485.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2018d0`.
-- **Статус:** открыта. Следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base firmware CPU profile stops on exact `8B 46 1C` (MOV EAX,dword ptr [RSI+0x1c]).
+- **Статус:** решена для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** exact unprefixed `8B 46 1C` reads four bytes at RSI+0x1c, writes EAX, zero-extends RAX and advances RIP. Flags and definedness are preserved.
 - **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 139 }` at RIP `0x2018d0` after 10,339 retired instructions. COM1 is empty. Bytes at the link-base shadow are `8B 46 1C`.
-- **Следующий шаг:** admit the exact dword load and cover addressing, read width, zero extension, data and fetch faults and profile isolation.
+- **Результат:** the runner advances to `0x2018d3` and stops after 10,340 retired instructions on `83 F8 01` (CMP EAX,1, ISSUE-487). It reports `Unsupported { opcode: 131 }` with empty COM1.
+- **Проверка:** focused tests cover 64-bit addressing, the four-byte read, dword zero extension, flag preservation, noncanonical ranges, data and displacement-fetch faults, neighboring encodings and profile isolation. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-487 — S7-04: exact CMP EAX,1 frontier (`83 F8 01`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-486.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2018d3`.
+- **Статус:** открыта. Следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base firmware CPU profile stops on exact `83 F8 01` (CMP EAX,1).
+- **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 131 }` at RIP `0x2018d3` after 10,340 retired instructions. COM1 is empty. Bytes at the link-base shadow are `83 F8 01`.
+- **Следующий шаг:** admit the exact dword CMP and cover arithmetic flags, the immediate fetch fault and profile isolation.

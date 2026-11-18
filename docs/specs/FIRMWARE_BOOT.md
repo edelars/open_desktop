@@ -2810,3 +2810,13 @@ pushes return RIP `0x201023` and branches to `0x2018d0`. With budget
 Unsupported opcode 139 with empty COM1. Image SHA-256 is
 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-486 runner frontier
+
+Exact base-profile `8B 46 1C` (MOV EAX,dword ptr [RSI+0x1c]) reads four bytes,
+zero-extends the value into RAX and advances RIP. With budget 20000 the
+runner reaches `83 F8 01` (CMP EAX,1, ISSUE-487) at RIP `0x2018d3` after
+10,340 retired instructions. It reports Unsupported opcode 131 with empty
+COM1. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

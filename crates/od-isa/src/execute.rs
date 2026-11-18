@@ -25344,7 +25344,8 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         }
         // S7-04: the Rust helper reads exact handoff fields with MOVZX Word at
         // +8/+0xA, `8B 4E 0C`/`8B 4E 10` (MOV ECX,dword ptr [RSI+0xC/+0x10]),
-        // `8B 7E 14`/`8B 7E 38` (MOV EDI,dword ptr [RSI+0x14/+0x38]), exact
+        // `8B 7E 14`/`8B 7E 38` (MOV EDI,dword ptr [RSI+0x14/+0x38]),
+        // `8B 46 1C` (MOV EAX,dword ptr [RSI+0x1c]), and exact
         // `44 8B 7E 30` (MOV R15D,dword ptr [RSI+0x30]) and the existing
         // `44 8B 76 34` (MOV R14D,dword ptr [RSI+0x34]), and exact
         // `44 8B 6E 3C` (MOV R13D,dword ptr [RSI+0x3c]), `44 8B 66 40`
@@ -25494,7 +25495,11 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 && ((destination == RegisterView::low(Register::Rcx, OperandSize::Dword)
                     && matches!(source.displacement, 0x0c | 0x10))
                     || (destination == RegisterView::low(Register::Rdi, OperandSize::Dword)
-                        && matches!(source.displacement, 0x14 | 0x38))))
+                        && matches!(source.displacement, 0x14 | 0x38))
+                    || (destination == RegisterView::low(Register::Rax, OperandSize::Dword)
+                        && source.base == AddressBase::Register(Register::Rsi)
+                        && source.index.is_none()
+                        && source.displacement == 0x1c)))
                 || (instruction.prefixes
                     == (Prefixes {
                         rex: Some(0x44),

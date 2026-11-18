@@ -3051,3 +3051,14 @@ after 10,339 retired instructions on `8B 46 1C`
 (MOV EAX,dword ptr [RSI+0x1c], ISSUE-486). It reports Unsupported opcode
 139 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-486 — exact MOV EAX,dword ptr [RSI+0x1c] (`8B 46 1C`)
+
+Base `PagedCpl0ProbeV1` admits the exact unprefixed dword load. It reads four
+bytes at the 64-bit address RSI+0x1c, zero-extends the value into RAX and
+advances RIP. Flags and definedness are preserved. Tests cover addressing,
+zero extension, noncanonical address ranges, data and fetch faults,
+neighboring encodings and profile isolation. With budget 20000 the runner
+retires 10,340 instructions and stops at RIP `0x2018d3` on `83 F8 01`
+(CMP EAX,1, ISSUE-487). It reports Unsupported opcode 131 with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

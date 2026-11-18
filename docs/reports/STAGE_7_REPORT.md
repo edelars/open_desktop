@@ -4880,3 +4880,34 @@ all-targets offline check passes with existing warnings. Scoped rustfmt and
 diff checks pass.
 
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-486 — exact MOV EAX,dword ptr [RSI+0x1c]
+
+Six focused tests cover the exact EAX and existing EDI dword loads from
+RSI+disp8. They check 64-bit addressing, one four-byte read, zero extension,
+flag preservation, noncanonical data ranges, data-read and final-disp8 fetch
+page faults, neighboring encodings and CPL3 MOV probe isolation. The other
+CPL0 probe matrix passes 1/1.
+
+The runner command
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue486.com1 --budget 20000` uses image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+
+| Budget and retired | RIP | Instruction at RIP |
+| ---: | --- | --- |
+| 10,339 | `0x2018d0` | `8B 46 1C`, MOV EAX,dword ptr [RSI+0x1c] |
+| 10,340 | `0x2018d3` | `83 F8 01`, CMP EAX,1 (ISSUE-487) |
+
+Both boundary runs report BudgetExhausted and empty COM1. With budget
+20000 the runner attempts the CMP and exits 5 with 10,340 retired and
+empty COM1. Unsupported opcode 131 is the decimal value of the CMP opcode
+byte `0x83` at the new stop. The previous stop reported 139 for `0x8b`.
+
+The full offline `od-isa` suite passes (2,322/1,591/126/29/6/1,559/7/15 and
+zero doctests). The paged machine quantum suite passes 110/110. The workspace
+all-targets offline check passes with existing warnings. Scoped rustfmt and
+diff checks pass.
+
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

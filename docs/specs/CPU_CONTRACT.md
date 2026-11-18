@@ -30062,3 +30062,15 @@ fault or a displacement fetch fault commits no architectural CPU state
 or retirement. The other CPL0 probes and the paged CPL3 MOV probe refuse
 this encoding.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-486 — bounded MOV EAX,dword ptr [RSI+0x1c]
+
+The base paged CPL0 profile admits exact unprefixed `8B 46 1C` in Long64.
+It forms the 64-bit address RSI plus sign-extended disp8 0x1c and reads
+four bytes through the tracked memory path. A successful dword write
+zero-extends RAX and advances RIP by three bytes. The instruction preserves
+other GPRs, RFLAGS and flag definedness. A noncanonical data range raises
+#GP(0) before the read. A data-read page fault or final displacement fetch
+fault commits no architectural CPU state or retirement. The other CPL0
+probes and the paged CPL3 MOV probe refuse this encoding.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
