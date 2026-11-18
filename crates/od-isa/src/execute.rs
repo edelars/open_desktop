@@ -20055,7 +20055,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         | Operation::Logic {
             kind: LogicKind::Test,
             dst: Operand::Register(destination),
-            src: source @ Operand::Immediate(_),
+            src: source @ (Operand::Register(_) | Operand::Immediate(_)),
         }) if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && match operation {
@@ -20070,7 +20070,10 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     kind: LogicKind::Test,
                     ..
                 } => {
-                    instruction.opcode.byte == 0xf6 && instruction.operand_size == OperandSize::Byte
+                    matches!(
+                        (instruction.opcode.byte, instruction.operand_size),
+                        (0xf6, OperandSize::Byte) | (0x85, OperandSize::Dword | OperandSize::Qword)
+                    )
                 }
                 _ => matches!(
                     instruction.operand_size,
@@ -20107,6 +20110,34 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 state.write(destination, value);
             }
             state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
+        // S7-04: register BT indexes within the decoded operand width.
+        Operation::Bit {
+            kind: BitKind::Test,
+            dst: Operand::Register(destination),
+            offset: BitOffset::Register(index),
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0xa3
+            && matches!(
+                instruction.operand_size,
+                OperandSize::Dword | OperandSize::Qword
+            )
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            let bit = state.read(index) & (u64::from(operand_width(destination.size())) - 1);
+            let cf = u64::from(state.read(destination) & (1 << bit) != 0);
+            state.rflags = (state.rflags & !crate::CF) | cf;
             state.rip = next_rip;
             return PagedProbeResult {
                 exit: PagedProbeExit::Retired,

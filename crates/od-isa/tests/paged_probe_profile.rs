@@ -51226,6 +51226,8 @@ fn firmware_boot_call_fetch_stack_and_noncanonical_faults_are_atomic() {
 #[test]
 fn firmware_boot_forms_remain_rejected_by_legacy_profile() {
     for (bytes, opcode) in [
+        (&[0x41, 0x0f, 0xa3, 0xec][..], 0xa3),
+        (&[0x85, 0xc0][..], 0x85),
         (&[0x41, 0xf6, 0xc2, 2][..], 0xf6),
         (&[0x48, 0xff, 0xc0][..], 0xff),
         (&[0x80, 0x7c, 0x2c, 8, 1][..], 0x80),
@@ -51595,6 +51597,103 @@ fn firmware_boot_inc_qword_preserves_cf_and_its_definedness() {
             result.rflags_defined,
             initial_defined | (ARITHMETIC_FLAGS & !CF)
         );
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_test_wide_registers_updates_flags_without_writing_operands() {
+    const AF: u64 = 1 << 4;
+    for (code, reg, input, flags) in [
+        (
+            &[0x85, 0xc0][..],
+            Register::Rax,
+            0xaffe_cafe_0000_0000,
+            0x656,
+        ),
+        (
+            &[0x48, 0x85, 0xf6][..],
+            Register::Rsi,
+            0x8000_0000_0000_0000,
+            0x696,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[reg as usize] = input;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.rflags = flags;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED | AF,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_bt_wraps_the_index_within_the_register_width() {
+    const CF: u64 = 1;
+    const AF: u64 = 1 << 4;
+    const BT_UNDEFINED: u64 = 0x894; // OF, SF, AF, PF
+    for (code, destination, index, base, offset, cf) in [
+        (
+            &[0x41, 0x0f, 0xa3, 0xec][..],
+            Register::R12,
+            Register::Rbp,
+            1 << 5,
+            37,
+            CF,
+        ),
+        (
+            &[0x41, 0x0f, 0xa3, 0xec][..],
+            Register::R12,
+            Register::Rbp,
+            1 << 5,
+            u64::MAX,
+            0,
+        ),
+        (
+            &[0x4d, 0x0f, 0xa3, 0xd9][..],
+            Register::R9,
+            Register::R11,
+            1 << 63,
+            127,
+            CF,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[destination as usize] = base;
+        cpu.gpr[index as usize] = offset;
+        cpu.rflags = 0xed6 | (cf ^ CF);
+        let mut expected = cpu.clone();
+        expected.rflags = 0xed6 | cf;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            (DEFINED | AF) & !CF,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED & !BT_UNDEFINED);
         assert_eq!(cpu, expected, "{code:02x?}");
         assert_eq!((memory.reads, memory.writes), (0, 0));
     }
@@ -52272,31 +52371,35 @@ fn firmware_boot_jcc_checks_canonicality_only_for_taken_branch() {
 #[test]
 fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
     for (bytes, opcode) in [
-        (&[0xf6, 0x06, 0x33][..], 0xf6),             // TEST byte [RSI],imm8
-        (&[0x67, 0x41, 0xf6, 0xc2, 2][..], 0xf6),    // address override on TEST
-        (&[0xf7, 0xc2, 2, 0, 0, 0][..], 0xf7),       // TEST EDX,imm32
-        (&[0x48, 0xff, 0x03][..], 0xff),             // INC qword [RBX]
-        (&[0xff, 0xc3][..], 0xff),                   // INC EBX
-        (&[0x49, 0xff, 0xc9][..], 0xff),             // DEC R9
-        (&[0x67, 0x80, 0x7c, 0x2c, 8, 1][..], 0x80), // address32 CMP
-        (&[0x67, 0xc6, 0x44, 0x2c, 8, 0x80][..], 0xc6), // address32 store
-        (&[0x49, 0x83, 0xd3, 0x28][..], 0x83),       // ADC R11,0x28
-        (&[0x48, 0x83, 0x03, 0x28][..], 0x83),       // ADD qword [RBX],0x28
-        (&[0x48, 0x03, 0x13][..], 0x03),             // ADD RDX,[RBX]
-        (&[0x66, 0x83, 0xc6, 0xff][..], 0x83),       // ADD SI,-1
-        (&[0x3e, 0x48, 0x89, 0x3c, 0x24][..], 0x89), // segment override
-        (&[0x89, 0x3c, 0x24][..], 0x89),             // dword store
-        (&[0x67, 0x48, 0x89, 0x3c, 0x24][..], 0x89), // address32 store
-        (&[0x8a, 0x3c, 0x24][..], 0x8a),             // byte load
-        (&[0x67, 0x4c, 0x8d, 0x1c, 0x30][..], 0x8d), // address32 LEA
-        (&[0x66, 0x0f, 0x1f, 0x44, 0, 0][..], 0x1f), // prefixed NOP
-        (&[0x0f, 0x18, 0x00][..], 0x18),             // PREFETCHNTA
-        (&[0x48, 0x8b, 0xc1][..], 0x8b),             // reverse MOV opcode
+        (&[0x66, 0x0f, 0xa3, 0xd9][..], 0xa3),             // BT CX,BX
+        (&[0x0f, 0xab, 0xd9][..], 0xab),                   // BTS ECX,EBX
+        (&[0x0f, 0xa3, 0x13][..], 0xa3),                   // BT [RBX],EDX
+        (&[0x67, 0x85, 0xc0][..], 0x85),                   // address override on TEST
+        (&[0xf6, 0x06, 0x33][..], 0xf6),                   // TEST byte [RSI],imm8
+        (&[0x67, 0x41, 0xf6, 0xc2, 2][..], 0xf6),          // address override on TEST
+        (&[0xf7, 0xc2, 2, 0, 0, 0][..], 0xf7),             // TEST EDX,imm32
+        (&[0x48, 0xff, 0x03][..], 0xff),                   // INC qword [RBX]
+        (&[0xff, 0xc3][..], 0xff),                         // INC EBX
+        (&[0x49, 0xff, 0xc9][..], 0xff),                   // DEC R9
+        (&[0x67, 0x80, 0x7c, 0x2c, 8, 1][..], 0x80),       // address32 CMP
+        (&[0x67, 0xc6, 0x44, 0x2c, 8, 0x80][..], 0xc6),    // address32 store
+        (&[0x49, 0x83, 0xd3, 0x28][..], 0x83),             // ADC R11,0x28
+        (&[0x48, 0x83, 0x03, 0x28][..], 0x83),             // ADD qword [RBX],0x28
+        (&[0x48, 0x03, 0x13][..], 0x03),                   // ADD RDX,[RBX]
+        (&[0x66, 0x83, 0xc6, 0xff][..], 0x83),             // ADD SI,-1
+        (&[0x3e, 0x48, 0x89, 0x3c, 0x24][..], 0x89),       // segment override
+        (&[0x89, 0x3c, 0x24][..], 0x89),                   // dword store
+        (&[0x67, 0x48, 0x89, 0x3c, 0x24][..], 0x89),       // address32 store
+        (&[0x8a, 0x3c, 0x24][..], 0x8a),                   // byte load
+        (&[0x67, 0x4c, 0x8d, 0x1c, 0x30][..], 0x8d),       // address32 LEA
+        (&[0x66, 0x0f, 0x1f, 0x44, 0, 0][..], 0x1f),       // prefixed NOP
+        (&[0x0f, 0x18, 0x00][..], 0x18),                   // PREFETCHNTA
+        (&[0x48, 0x8b, 0xc1][..], 0x8b),                   // reverse MOV opcode
         (&[0xc7, 0x44, 0x24, 0x0f, 1, 0, 0, 0][..], 0xc7), // nonzero dword
         (&[0xc7, 0x44, 0x24, 0x10, 0, 0, 0, 0][..], 0xc7), // different displacement
-        (&[0x89, 0xc0][..], 0x89),                   // MOV EAX,EAX
-        (&[0x48, 0x89, 0xc9][..], 0x89),             // MOV RCX,RCX
-        (&[0xff, 0xe1][..], 0xff),                   // JMP RCX
+        (&[0x89, 0xc0][..], 0x89),                         // MOV EAX,EAX
+        (&[0x48, 0x89, 0xc9][..], 0x89),                   // MOV RCX,RCX
+        (&[0xff, 0xe1][..], 0xff),                         // JMP RCX
         (&[0xff, 0x24, 0xc5, 0xb8, 0x26, 0x20, 0][..], 0xff), // RAX index
         (&[0xff, 0x24, 0x8d, 0xb8, 0x26, 0x20, 0][..], 0xff), // scale four
         (&[0xff, 0xa4, 0xc8, 0xb8, 0x26, 0x20, 0][..], 0xff), // RAX base
