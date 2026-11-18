@@ -23,6 +23,7 @@ use crate::smp_scheduler::{
 use crate::vm_snapshot::{SnapshotError, VmSnapshot};
 use crate::{AccessWidth, FirmwareBoardError, GuestPhysicalAddress, LOCAL_APIC_MMIO_BASE};
 use crate::{LoadedFirmwareBoard, parallel_run::StopProof};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// One count of the LAPIC timer is 10 ns (100 MHz, divider 1).
@@ -165,6 +166,8 @@ fn round(seed: u64) -> Round {
         split_timeout: Duration::from_secs(20),
         end_when_idle: true,
         pre_sleep: None,
+        barrier_window: None,
+        standing_window: None,
     };
     let (report, (snapshot, stopped)) =
         run_threads(&mut board, config, &parallel_quantum, |control| {
@@ -373,6 +376,8 @@ fn a_kick_of_the_stopped_sleeping_ap_does_not_spoil_the_snapshot() {
         split_timeout: Duration::from_secs(20),
         end_when_idle: true,
         pre_sleep: None,
+        barrier_window: None,
+        standing_window: None,
     };
     let (report, taken) = run_threads(&mut board, config, &parallel_quantum, |control| {
         assert!(control.wait_until(WAIT, || control.activity(1)
@@ -402,6 +407,224 @@ fn a_kick_of_the_stopped_sleeping_ap_does_not_spoil_the_snapshot() {
     assert_eq!(dword(&mut board, COUNTER_1), 300);
 }
 
+// The state of the injection of the test below (a plain `fn` hook cannot capture).
+static HOLD_IN_WINDOW: AtomicBool = AtomicBool::new(false);
+static HELD_IN_WINDOW: AtomicBool = AtomicBool::new(false);
+static RELEASE_WINDOW: AtomicBool = AtomicBool::new(false);
+static WINDOW_INJECTION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn hold_vcpu_1_in_the_barrier_window(cpu: usize) {
+    if cpu == 1 && HOLD_IN_WINDOW.load(Ordering::SeqCst) {
+        HELD_IN_WINDOW.store(true, Ordering::SeqCst);
+        while !RELEASE_WINDOW.load(Ordering::SeqCst) {
+            std::hint::spin_loop();
+        }
+        HELD_IN_WINDOW.store(false, Ordering::SeqCst);
+    }
+}
+
+/// S6-36, conditions 1 and 2 (the window of the barrier, S6-34 review m2). The AP sleeps in `HLT`
+/// and the machine is stopped, so its `safe` flag is up. An IPI posted to it kicks its thread out
+/// of the sleep and to the barrier. The injection of the barrier (between the lowering of `safe`
+/// and its raising again) holds the thread there if it ever gets there: with the old barrier it
+/// does, `safe` stays down while it is held, and `take_parallel` cannot read the vCPU (stale safe
+/// point); with the barrier of S6-36 the thread finds `safe` up and the stop in force, lowers
+/// nothing, never reaches the injection, and the snapshot is taken at once, whole and right.
+/// Twenty rounds, each bounded; the mutation that restores the old order fails the first one.
+#[test]
+fn a_kick_of_the_stopped_ap_never_lowers_safe_in_the_barrier_and_the_snapshot_is_taken() {
+    let _injection = WINDOW_INJECTION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut board = board_without_timers();
+    let lapic = board.local_apic();
+    let sender = board.local_apic_of(0).unwrap();
+    let scheduler = SmpScheduler::new(2, QuantumPolicy::Fixed(16), StopRequest::new()).unwrap();
+    let config = ParallelConfig {
+        quantum: 8,
+        budget: u64::MAX,
+        split_timeout: Duration::from_secs(20),
+        end_when_idle: true,
+        pre_sleep: None,
+        barrier_window: Some(hold_vcpu_1_in_the_barrier_window),
+        standing_window: None,
+    };
+    HOLD_IN_WINDOW.store(false, Ordering::SeqCst);
+    RELEASE_WINDOW.store(false, Ordering::SeqCst);
+    HELD_IN_WINDOW.store(false, Ordering::SeqCst);
+    let (report, held_rounds) = run_threads(&mut board, config, &parallel_quantum, |control| {
+        assert!(control.wait_until(WAIT, || control.activity(1)
+            == crate::idle_arbiter::SchedActivity::Halted));
+        let mut held_rounds = Vec::new();
+        for round in 1..=20u32 {
+            let proof = control.stop_all(Duration::from_secs(10)).expect("stop");
+            RELEASE_WINDOW.store(false, Ordering::SeqCst);
+            HELD_IN_WINDOW.store(false, Ordering::SeqCst);
+            HOLD_IN_WINDOW.store(true, Ordering::SeqCst);
+            sender.write_icr(0, 1, FIXED | u32::from(TO_AP)).unwrap();
+            // Give the thread the time to come to the barrier: the old one is held in its window.
+            let until = std::time::Instant::now() + Duration::from_millis(100);
+            while !HELD_IN_WINDOW.load(Ordering::SeqCst) && std::time::Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let held = HELD_IN_WINDOW.load(Ordering::SeqCst);
+            let taken = VmSnapshot::take_parallel(control, &lapic, &proof, &scheduler);
+            // Let the thread go before anything is asserted, so that the run can end.
+            HOLD_IN_WINDOW.store(false, Ordering::SeqCst);
+            RELEASE_WINDOW.store(true, Ordering::SeqCst);
+            if held {
+                held_rounds.push((round, taken.is_ok()));
+            } else {
+                let snapshot = taken.unwrap_or_else(|error| panic!("round {round}: {error:?}"));
+                assert_eq!(
+                    snapshot.apic().cpus[1].local.irr[1] >> 16 & 1,
+                    1,
+                    "round {round}"
+                );
+                assert_eq!(cell(control, COUNTER_1), round - 1, "round {round}");
+            }
+            control.resume();
+            assert!(
+                control.wait_until(WAIT, || cell(control, COUNTER_1) >= round),
+                "round {round}: the IPI was lost"
+            );
+            assert!(
+                control.wait_until(WAIT, || control.activity(1)
+                    == crate::idle_arbiter::SchedActivity::Halted),
+                "round {round}: the AP does not go back to sleep"
+            );
+        }
+        held_rounds
+    })
+    .expect("the board splits");
+    HOLD_IN_WINDOW.store(false, Ordering::SeqCst);
+    RELEASE_WINDOW.store(true, Ordering::SeqCst);
+    assert_eq!(report.threads_started, report.threads_exited);
+    assert!(
+        held_rounds.is_empty(),
+        "the thread of a stopped, sleeping AP lowered `safe` in its barrier in rounds {held_rounds:?} (round, snapshot taken)"
+    );
+    assert_eq!(dword(&mut board, COUNTER_1), 20);
+}
+
+// The state of the first injection (before the lowering of `safe`) of the test below.
+static HOLD_BEFORE_LOWERING: AtomicBool = AtomicBool::new(false);
+static HELD_BEFORE_LOWERING: AtomicBool = AtomicBool::new(false);
+static RELEASE_BEFORE_LOWERING: AtomicBool = AtomicBool::new(false);
+
+fn hold_vcpu_1_before_it_lowers_safe(cpu: usize) {
+    if cpu == 1 && HOLD_BEFORE_LOWERING.load(Ordering::SeqCst) {
+        HELD_BEFORE_LOWERING.store(true, Ordering::SeqCst);
+        while !RELEASE_BEFORE_LOWERING.load(Ordering::SeqCst) {
+            std::hint::spin_loop();
+        }
+        HELD_BEFORE_LOWERING.store(false, Ordering::SeqCst);
+    }
+}
+
+fn wait_flag(flag: &AtomicBool, what: &str) {
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while !flag.load(Ordering::SeqCst) {
+        assert!(std::time::Instant::now() < until, "{what}");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// S6-36 review, M-1: the residual window of the barrier. A thread woken by the kick of a resume
+/// reads "not standing" (the stop is not set yet) and is held there; the controller sets the stop
+/// and gets its proof (the thread's `safe` is still up from the earlier stop); the thread is let
+/// go, lowers `safe`, and is held again before it reads the stop and raises `safe`. The reader
+/// finds `safe` of the vCPU down under a stop whose proof was given: with a short bound it gets
+/// `SafeFlagTimeout` (neither `StaleSafePoint` nor `NotStopped`, and the stop stays in force);
+/// with the default wait it waits until the thread is let go and takes the snapshot, whole and
+/// right. Without the wait (the code of the first version of S6-36) the second call gives a
+/// false refusal.
+#[test]
+fn a_thread_between_its_two_stores_in_the_barrier_is_waited_for_and_not_refused() {
+    let _injection = WINDOW_INJECTION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut board = board_without_timers();
+    let lapic = board.local_apic();
+    let scheduler = SmpScheduler::new(2, QuantumPolicy::Fixed(16), StopRequest::new()).unwrap();
+    let config = ParallelConfig {
+        quantum: 8,
+        budget: u64::MAX,
+        split_timeout: Duration::from_secs(20),
+        end_when_idle: true,
+        pre_sleep: None,
+        barrier_window: Some(hold_vcpu_1_in_the_barrier_window),
+        standing_window: Some(hold_vcpu_1_before_it_lowers_safe),
+    };
+    for flag in [
+        &HOLD_IN_WINDOW,
+        &HELD_IN_WINDOW,
+        &RELEASE_WINDOW,
+        &HOLD_BEFORE_LOWERING,
+        &HELD_BEFORE_LOWERING,
+        &RELEASE_BEFORE_LOWERING,
+    ] {
+        flag.store(false, Ordering::SeqCst);
+    }
+    let (report, outcome) = run_threads(&mut board, config, &parallel_quantum, |control| {
+        assert!(control.wait_until(WAIT, || control.activity(1)
+            == crate::idle_arbiter::SchedActivity::Halted));
+        // An earlier stop, so that `safe` of the AP is up when the resume comes.
+        control
+            .stop_all(Duration::from_secs(10))
+            .expect("first stop");
+        HOLD_BEFORE_LOWERING.store(true, Ordering::SeqCst);
+        control.resume();
+        wait_flag(&HELD_BEFORE_LOWERING, "the AP did not come to the barrier");
+        // The thread of the AP has read "not standing" and holds. The stop is set and its proof
+        // given on the `safe` of the earlier stop.
+        let proof = control
+            .stop_all(Duration::from_secs(10))
+            .expect("second stop");
+        // Let it lower `safe`; it is held again between the lowering and the raising.
+        HOLD_IN_WINDOW.store(true, Ordering::SeqCst);
+        HOLD_BEFORE_LOWERING.store(false, Ordering::SeqCst);
+        RELEASE_BEFORE_LOWERING.store(true, Ordering::SeqCst);
+        wait_flag(
+            &HELD_IN_WINDOW,
+            "the AP did not come to the second injection",
+        );
+        let short = VmSnapshot::take_parallel_within(
+            control,
+            &lapic,
+            &proof,
+            &scheduler,
+            Duration::from_millis(100),
+        );
+        let still_stopped = control.stopped();
+        // Release the thread from a helper after a pause; the default wait must outlast it.
+        let taken = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(150));
+                HOLD_IN_WINDOW.store(false, Ordering::SeqCst);
+                RELEASE_WINDOW.store(true, Ordering::SeqCst);
+            });
+            VmSnapshot::take_parallel(control, &lapic, &proof, &scheduler)
+        });
+        HOLD_IN_WINDOW.store(false, Ordering::SeqCst);
+        RELEASE_WINDOW.store(true, Ordering::SeqCst);
+        control.resume();
+        (short, still_stopped, taken)
+    })
+    .expect("the board splits");
+    for flag in [&HOLD_IN_WINDOW, &HOLD_BEFORE_LOWERING] {
+        flag.store(false, Ordering::SeqCst);
+    }
+    RELEASE_WINDOW.store(true, Ordering::SeqCst);
+    RELEASE_BEFORE_LOWERING.store(true, Ordering::SeqCst);
+    assert_eq!(report.threads_started, report.threads_exited);
+    let (short, still_stopped, taken) = outcome;
+    assert_eq!(short, Err(SnapshotError::SafeFlagTimeout { cpu: 1 }));
+    assert!(still_stopped, "the timeout must leave the stop in force");
+    let snapshot = taken.expect("the wait outlasts the window: the snapshot is taken");
+    assert_eq!(snapshot.vcpus().len(), 2);
+}
+
 /// A proof with another number of acknowledgements than the run has threads is refused as a stale
 /// safe point, before any vCPU is looked at: one more must not index past the vCPUs (review of
 /// S6-35, m-1), one less is not a whole snapshot. Nothing changes in the machine, and the true
@@ -417,6 +640,8 @@ fn a_proof_with_another_number_of_acknowledgements_is_stale_and_changes_nothing(
         split_timeout: Duration::from_secs(20),
         end_when_idle: true,
         pre_sleep: None,
+        barrier_window: None,
+        standing_window: None,
     };
     let (report, taken) = run_threads(&mut board, config, &parallel_quantum, |control| {
         assert!(control.wait_until(WAIT, || control.activity(1)

@@ -16,6 +16,12 @@ macro_rules! by_mode {
     ($mode:expr, $order:ident => $body:expr) => {
         match $mode {
             ExecutionMode::Parallel => {
+                // S6-36, `weak-host-ordering` (tests and measurements only, never in `default`):
+                // the parallel mode with NO barrier, to show that the host test of SMP.md 5.1 can
+                // see the weakening (or, on a host that does not reorder these, that it cannot).
+                #[cfg(feature = "weak-host-ordering")]
+                let $order = Ordering::Relaxed;
+                #[cfg(not(feature = "weak-host-ordering"))]
                 let $order = Ordering::SeqCst;
                 $body
             }
@@ -487,7 +493,9 @@ impl PhysicalMemory {
     /// contract names them and no barrier is removed because a test passes). Interleaving: no
     /// operation. Changes no guest RAM.
     pub fn fence(&self, kind: od_isa::FenceKind) {
-        if self.mode == ExecutionMode::Parallel {
+        // `weak-host-ordering` (S6-36, tests and measurements only): the guest fences place no
+        // host fence either.
+        if self.mode == ExecutionMode::Parallel && !cfg!(feature = "weak-host-ordering") {
             #[cfg(test)]
             self.counters.host_fences.fetch_add(1, Ordering::Relaxed);
             fence(match kind {
@@ -618,8 +626,14 @@ impl PhysicalMemory {
             return Ok(result);
         }
         // Publish: a reader that `Acquire`-loads the raised value sees the data written above.
+        // `weak-host-ordering` (S6-36, tests and measurements only) removes this barrier too: a
+        // `Release` read-modify-write after every store orders the stores of one vCPU in practice.
+        #[cfg(feature = "weak-host-ordering")]
+        let publish = Ordering::Relaxed;
+        #[cfg(not(feature = "weak-host-ordering"))]
+        let publish = Ordering::Release;
         for generation in generations {
-            let previous = generation.fetch_add(1, Ordering::Release);
+            let previous = generation.fetch_add(1, publish);
             debug_assert_ne!(previous, u64::MAX, "page generation wrapped to 0");
         }
         let committed = GuestPhysicalRange {
@@ -769,11 +783,23 @@ impl PhysicalMemory {
             address,
             width,
             |storage, offset| {
-                let old =
-                    match storage.atomic_compare_exchange(offset, bytes, expected, replacement) {
-                        Ok(old) | Err(old) => old,
-                    };
-                (old, true)
+                #[cfg(feature = "nonatomic-lock-test")]
+                {
+                    let old = nonatomic::load(storage, offset, bytes);
+                    if old == expected & nonatomic::mask(bytes) {
+                        nonatomic::store(storage, offset, bytes, replacement);
+                    }
+                    return (old, true);
+                }
+                #[cfg(not(feature = "nonatomic-lock-test"))]
+                {
+                    let old =
+                        match storage.atomic_compare_exchange(offset, bytes, expected, replacement)
+                        {
+                            Ok(old) | Err(old) => old,
+                        };
+                    (old, true)
+                }
             },
             committed_write,
         )
@@ -792,7 +818,16 @@ impl PhysicalMemory {
         self.locked_operation(
             address,
             width,
-            |storage, offset| (storage.atomic_swap(offset, bytes, value), true),
+            |storage, offset| {
+                #[cfg(feature = "nonatomic-lock-test")]
+                {
+                    let old = nonatomic::load(storage, offset, bytes);
+                    nonatomic::store(storage, offset, bytes, value);
+                    return (old, true);
+                }
+                #[cfg(not(feature = "nonatomic-lock-test"))]
+                (storage.atomic_swap(offset, bytes, value), true)
+            },
             committed_write,
         )
     }
@@ -811,7 +846,16 @@ impl PhysicalMemory {
         self.locked_operation(
             address,
             width,
-            |storage, offset| (storage.atomic_fetch_add(offset, bytes, addend), true),
+            |storage, offset| {
+                #[cfg(feature = "nonatomic-lock-test")]
+                {
+                    let old = nonatomic::load(storage, offset, bytes);
+                    nonatomic::store(storage, offset, bytes, old.wrapping_add(addend));
+                    return (old, true);
+                }
+                #[cfg(not(feature = "nonatomic-lock-test"))]
+                (storage.atomic_fetch_add(offset, bytes, addend), true)
+            },
             committed_write,
         )
     }
@@ -842,12 +886,23 @@ impl PhysicalMemory {
             address,
             width,
             |storage, offset| {
+                // `nonatomic-lock-test` (S6-36, tests and measurements only): the locked
+                // read-modify-write is a plain load, the update, and a plain store.
+                #[cfg(feature = "nonatomic-lock-test")]
+                {
+                    let old = nonatomic::load(storage, offset, bytes);
+                    let new = update(old) & mask;
+                    nonatomic::store(storage, offset, bytes, new);
+                    return (old, true);
+                }
+                #[cfg(not(feature = "nonatomic-lock-test"))]
                 let mut old = match bytes {
                     1 => u64::from(storage.load_u8(offset, Ordering::SeqCst)),
                     2 => u64::from(storage.load_u16(offset, Ordering::SeqCst)),
                     4 => u64::from(storage.load_u32(offset, Ordering::SeqCst)),
                     _ => storage.load_u64(offset, Ordering::SeqCst),
                 };
+                #[cfg(not(feature = "nonatomic-lock-test"))]
                 loop {
                     let new = update(old) & mask;
                     match storage.atomic_compare_exchange(offset, bytes, old, new) {
@@ -1102,6 +1157,41 @@ impl PhysicalMemory {
             |storage, offset| storage.store_u64(offset, value, order),
             committed_write,
         ))
+    }
+}
+
+/// `nonatomic-lock-test` (S6-36): the locked operations as a plain load and a plain store of the
+/// width, so that two vCPUs can both read the old value and one update is lost. Tests and
+/// measurements only: the feature is never in `default`.
+#[cfg(feature = "nonatomic-lock-test")]
+mod nonatomic {
+    use crate::ram_storage::RamStorage;
+    use std::sync::atomic::Ordering;
+
+    pub(super) fn mask(bytes: usize) -> u64 {
+        if bytes == 8 {
+            u64::MAX
+        } else {
+            (1u64 << (8 * bytes)) - 1
+        }
+    }
+
+    pub(super) fn load(storage: &RamStorage, offset: usize, bytes: usize) -> u64 {
+        match bytes {
+            1 => u64::from(storage.load_u8(offset, Ordering::SeqCst)),
+            2 => u64::from(storage.load_u16(offset, Ordering::SeqCst)),
+            4 => u64::from(storage.load_u32(offset, Ordering::SeqCst)),
+            _ => storage.load_u64(offset, Ordering::SeqCst),
+        }
+    }
+
+    pub(super) fn store(storage: &RamStorage, offset: usize, bytes: usize, value: u64) {
+        match bytes {
+            1 => storage.store_u8(offset, value as u8, Ordering::SeqCst),
+            2 => storage.store_u16(offset, value as u16, Ordering::SeqCst),
+            4 => storage.store_u32(offset, value as u32, Ordering::SeqCst),
+            _ => storage.store_u64(offset, value, Ordering::SeqCst),
+        }
     }
 }
 

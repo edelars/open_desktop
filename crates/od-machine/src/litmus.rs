@@ -67,7 +67,16 @@ impl LitmusCase {
         &self.0.id
     }
 
+    pub(crate) fn case(&self) -> &Case {
+        &self.0
+    }
+
     pub fn vcpus(&self) -> usize {
+        self.0.threads.len()
+    }
+
+    /// Threads that must run concurrently (S6-36: a case is not reported for fewer vCPUs).
+    pub fn concurrent_threads(&self) -> usize {
         self.0.threads.len()
     }
 

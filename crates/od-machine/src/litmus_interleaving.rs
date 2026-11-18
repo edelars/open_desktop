@@ -108,6 +108,10 @@ pub(crate) struct Case {
     pub(crate) sc: BTreeSet<Outcome>,
     pub(crate) x86_tso: BTreeSet<Outcome>,
     pub(crate) interesting: BTreeSet<Outcome>,
+    /// The set a parallel run (S6-36) is compared with: `x86_tso` of a fixture, the x86-TSO
+    /// formula of a counter (the field `x86_tso` above stays empty for a formula case, as in
+    /// S6-19). Never used by the interleaving driver.
+    pub(crate) reference_tso: BTreeSet<Outcome>,
 }
 
 #[cfg(test)]
@@ -289,6 +293,7 @@ impl Case {
             sc: set("sc")?,
             x86_tso: set("x86_tso")?,
             interesting: outcome_set(member(&doc, "interesting")?)?,
+            reference_tso: set("x86_tso")?,
         };
         case.validate()?;
         Ok(case)
@@ -399,10 +404,6 @@ impl Case {
             .collect();
         let observe_names = vec!["mem.x".to_string()];
         let observe = observe_fields(&observe_names, &cells)?;
-        let oracle = member(
-            member(case, "formula_oracle")?,
-            "interleaving_instruction_atomic",
-        )?;
         let evaluate = |expression: &str| -> Loaded<u64> {
             match expression {
                 "N*K" => n.checked_mul(k).ok_or_else(|| "N*K overflows".to_string()),
@@ -410,19 +411,25 @@ impl Case {
                 other => Err(format!("formula {other} is not known to the driver")),
             }
         };
-        let expression = |key: &str| -> Loaded<u64> { evaluate(text(member(oracle, key)?, key)?) };
-        let expected: BTreeSet<Outcome> = match text(member(oracle, "kind")?, "kind")? {
-            "exact_singleton" => BTreeSet::from([vec![expression("value")?]]),
-            "exact_integer_range" => {
-                if member(oracle, "step")? != 1 {
-                    return Err("only step 1 ranges are known".to_string());
+        let formula_set = |model: &str| -> Loaded<BTreeSet<Outcome>> {
+            let oracle = member(member(case, "formula_oracle")?, model)?;
+            let expression =
+                |key: &str| -> Loaded<u64> { evaluate(text(member(oracle, key)?, key)?) };
+            Ok(match text(member(oracle, "kind")?, "kind")? {
+                "exact_singleton" => BTreeSet::from([vec![expression("value")?]]),
+                "exact_integer_range" => {
+                    if member(oracle, "step")? != 1 {
+                        return Err("only step 1 ranges are known".to_string());
+                    }
+                    (expression("minimum")?..=expression("maximum")?)
+                        .map(|v| vec![v])
+                        .collect()
                 }
-                (expression("minimum")?..=expression("maximum")?)
-                    .map(|v| vec![v])
-                    .collect()
-            }
-            other => return Err(format!("formula kind {other}")),
+                other => return Err(format!("formula kind {other}")),
+            })
         };
+        let expected = formula_set("interleaving_instruction_atomic")?;
+        let reference_tso = formula_set("x86_tso")?;
         let case = Self {
             id: format!("{id}(N={n},K={k})"),
             cells,
@@ -433,6 +440,7 @@ impl Case {
             sc: BTreeSet::new(),
             x86_tso: BTreeSet::new(),
             interesting: BTreeSet::new(),
+            reference_tso,
         };
         case.validate()?;
         Ok(case)
@@ -1190,6 +1198,7 @@ fn rep_case(count: u64, first: u64, second: u64) -> Case {
         sc: BTreeSet::new(),
         x86_tso: BTreeSet::new(),
         interesting: BTreeSet::new(),
+        reference_tso: BTreeSet::new(),
     }
 }
 

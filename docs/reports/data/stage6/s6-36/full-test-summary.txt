@@ -1,0 +1,66 @@
+     Running unittests src/lib.rs (target/debug/deps/od_machine-b822f127858a0c95)
+test result: ok. 1626 passed; 0 failed; 13 ignored; 0 measured; 0 filtered out; finished in 554.33s
+     Running tests/diagnostic_vcpu_api.rs (target/debug/deps/diagnostic_vcpu_api-7f87b5b818f6d008)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/display_device.rs (target/debug/deps/display_device-f747f1c26b4ffc76)
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s
+     Running tests/event_queue_api.rs (target/debug/deps/event_queue_api-0d511653ba30415d)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/interrupt_pump_flat.rs (target/debug/deps/interrupt_pump_flat-daebf1bbd4348eff)
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/interrupt_pump_paged.rs (target/debug/deps/interrupt_pump_paged-56d070d162335b48)
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/interrupt_queue_pump.rs (target/debug/deps/interrupt_queue_pump-3794ab81bcad0dd2)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/interrupt_timer_pump.rs (target/debug/deps/interrupt_timer_pump-f257770dc0c07554)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/paged_ltr_step.rs (target/debug/deps/paged_ltr_step-51d1bfeb764f236f)
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/paged_mov_step.rs (target/debug/deps/paged_mov_step-f76d7e73be7b79fd)
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+     Running tests/paged_pio_u8_step.rs (target/debug/deps/paged_pio_u8_step-1fbf64b59a807dcf)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/paged_probe_quantum.rs (target/debug/deps/paged_probe_quantum-d4e1f33d0a764693)
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+     Running tests/paged_segment_mov_step.rs (target/debug/deps/paged_segment_mov_step-650cdd3cf86599c8)
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+     Running tests/paged_sti_hlt_wake.rs (target/debug/deps/paged_sti_hlt_wake-ea6f3ef280cfc520)
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/pio_u8_step.rs (target/debug/deps/pio_u8_step-b599399383971d04)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/pit_irq0_pump.rs (target/debug/deps/pit_irq0_pump-844ae2b0ce49b26a)
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+     Running tests/stage4_alias_probe.rs (target/debug/deps/stage4_alias_probe-876d9e2f69806992)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/stage4_cpl3_syscall_probe.rs (target/debug/deps/stage4_cpl3_syscall_probe-5ef7a9742a320d61)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/stage4_cr3_mixed_probe.rs (target/debug/deps/stage4_cr3_mixed_probe-2f7b2a95f9e87da7)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+     Running tests/stage4_cross_page_probe.rs (target/debug/deps/stage4_cross_page_probe-81d8fd584b3cd9d1)
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/stage4_flat_probe_load.rs (target/debug/deps/stage4_flat_probe_load-3e3611ee223dfc2f)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/stage4_huge_pages_probe.rs (target/debug/deps/stage4_huge_pages_probe-67b9630cf13019a4)
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s
+     Running tests/stage4_paged_irq_probe.rs (target/debug/deps/stage4_paged_irq_probe-9e6dcf6b7683414f)
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/stage4_pf_repair_probe.rs (target/debug/deps/stage4_pf_repair_probe-019a1d35ace0e85c)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/stage4_pit_calibrate_probe.rs (target/debug/deps/stage4_pit_calibrate_probe-56dc36c7d53e8d26)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.97s
+     Running tests/stage4_stack_probe.rs (target/debug/deps/stage4_stack_probe-c4a904b8d376e408)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/stage4_store_load_probe.rs (target/debug/deps/stage4_store_load_probe-55a84aefd8338863)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/stage4_uart_irq_probe.rs (target/debug/deps/stage4_uart_irq_probe-18d9162fcbc7240f)
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/stage6_smp_probe.rs (target/debug/deps/stage6_smp_probe-fbb690d05361fecb)
+test result: ok. 32 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 258.00s
+     Running tests/uart16550_polling.rs (target/debug/deps/uart16550_polling-c5a1dd97aa617681)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/uart_rx_events.rs (target/debug/deps/uart_rx_events-c253e897d16f1747)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests od_machine
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+EXIT=0

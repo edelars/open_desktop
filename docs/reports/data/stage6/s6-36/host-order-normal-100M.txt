@@ -1,0 +1,7 @@
+# normal build, release, 2026-11-18T05:21:07Z, rounds=100000000 (each pattern), jitter default 4 spins
+running 1 test
+host order litmus [normal build]: 100000000 rounds each, 46.5 s
+  MP    (r(y), r(x)) counts [[48362306, 15494010, 0], [0, 36143684, 0], [0, 0, 0]]; forbidden (1,0): 0
+  2+2W  final (x, y) counts [[0, 0, 0], [0, 269814, 0], [0, 15706227, 84023959]]; forbidden (1,2): 0
+test host_order_litmus::with_the_barriers_long_no_forbidden_outcome_appears ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1637 filtered out; finished in 46.49s

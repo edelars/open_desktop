@@ -103,6 +103,19 @@ pub(crate) struct ParallelConfig {
     /// tests hold the thread there and post an event, which is the window of the lost wake-up.
     #[cfg(test)]
     pub(crate) pre_sleep: Option<fn(usize)>,
+    /// Test injection (S6-36, the window of the barrier of S6-34 review m2): called by a thread
+    /// in the barrier right after it has lowered its `safe` and `quiet` flags and before it reads
+    /// the requests and raises them again. A thread that finds `safe` up and the stop in force
+    /// does not lower anything and never gets here (the point of the test).
+    #[cfg(test)]
+    pub(crate) barrier_window: Option<fn(usize)>,
+    /// Test injection (S6-36 review, M-1): called by a thread in the barrier that has read
+    /// "not standing" (`safe` and the stop not both up) and has not yet lowered its flags. The
+    /// tests hold the thread there, let a stop-all be given its proof (the thread's `safe` is
+    /// still up from before), and then release it: it lowers `safe` and raises it again, which
+    /// is the residual window that `take_parallel` waits out.
+    #[cfg(test)]
+    pub(crate) standing_window: Option<fn(usize)>,
 }
 
 impl Default for ParallelConfig {
@@ -114,6 +127,10 @@ impl Default for ParallelConfig {
             end_when_idle: true,
             #[cfg(test)]
             pre_sleep: None,
+            #[cfg(test)]
+            barrier_window: None,
+            #[cfg(test)]
+            standing_window: None,
         }
     }
 }
@@ -460,16 +477,45 @@ impl SharedState<'_> {
     /// stop, `quiet` for both). Leaving it clears the flags FIRST and reads the requests AFTER
     /// (`SeqCst` both ways): a requester that read a stale `safe`/`quiet` has set its request
     /// before the thread's clear, so the thread's read sees the request.
+    ///
+    /// S6-36 (the window of S6-34 review m2, narrowed): a thread that comes to the barrier with
+    /// `safe` already up (it went to sleep, or stood here before) and the stop still in force does
+    /// not lower anything: it stands where it stood, with its flags as they were, so a controller
+    /// that reads the vCPU of a stopped machine does not find `safe` down for the long moment of
+    /// the old barrier. Nothing but this barrier lowers `safe`, and it lowers it only when it has
+    /// not read both flags as up; otherwise the old order, clear first and read after, decides.
+    ///
+    /// A window remains (S6-36 review, M-1; the earlier claim "no thread lowers `safe` between the
+    /// proof and `resume`" was false): a thread woken before the stop reads `standing = false`
+    /// (the stop is not yet set), the controller then sets the stop and gets its proof (this
+    /// thread's `safe` is still up from an earlier stop), and the thread goes on: it lowers `safe`,
+    /// reads the stop (now set) and raises `safe` again. That is a few instructions; the thread
+    /// holds no vCPU lock and changes nothing of the vCPU in them, so the state is not spoiled, but
+    /// a reader that looks at `safe` in that moment finds it down. `VmSnapshot::take_parallel`
+    /// waits for the flag within a bound (`READ_WAIT`) and fails with its own error after it
+    /// (`SafeFlagTimeout`), not with a false `StaleSafePoint`.
     fn barrier(&self, cpu: usize) -> bool {
         let cell = &self.cells[cpu];
         loop {
             if self.finish.load(SEQ) {
                 return true;
             }
-            cell.safe.store(false, SEQ);
-            cell.quiet.store(false, SEQ);
-            let stopping = self.stop_all.load(SEQ);
-            let other_split = self.other_split(cpu);
+            let standing = cell.safe.load(SEQ) && self.stop_all.load(SEQ);
+            let (stopping, other_split) = if standing {
+                (true, self.other_split(cpu))
+            } else {
+                #[cfg(test)]
+                if let Some(hook) = self.config.standing_window {
+                    hook(cpu);
+                }
+                cell.safe.store(false, SEQ);
+                cell.quiet.store(false, SEQ);
+                #[cfg(test)]
+                if let Some(hook) = self.config.barrier_window {
+                    hook(cpu);
+                }
+                (self.stop_all.load(SEQ), self.other_split(cpu))
+            };
             if !stopping && !other_split {
                 return false;
             }
@@ -1265,6 +1311,8 @@ mod tests {
             split_timeout: Duration::from_secs(20),
             end_when_idle: true,
             pre_sleep: None,
+            barrier_window: None,
+            standing_window: None,
         }
     }
 
@@ -1651,6 +1699,15 @@ mod tests {
                     control.wait_until(Duration::from_secs(20), || cell(control, COUNTER_1) >= 1),
                     "the IPI posted during the stop was lost"
                 );
+                // The handler counts first and writes its EOI after (S6-36 review, m-1): wait for
+                // the EOI and for the sleep, or the run may end with the vector still in service.
+                assert!(
+                    control.wait_until(Duration::from_secs(20), || {
+                        lapic.vector_state(TO_AP) == (false, false)
+                            && control.activity(1) == SchedActivity::Halted
+                    }),
+                    "the handler does not end"
+                );
             });
             assert_joined(&report, 2);
             assert_eq!(dword(&mut board, COUNTER_1), 1);
@@ -2011,6 +2068,60 @@ mod tests {
         assert_eq!(done_value(&mut board, pages), vcpus as u32);
         assert_eq!(board.execution_mode(), ExecutionMode::Interleaved);
         report
+    }
+
+    /// S6-36, sensitivity part 2 (SMP.md 5.1): a guest counter of `LOCK INC` on 2 and 4 vCPUs. In
+    /// the normal build the count is exact. In the build with the test-only feature
+    /// `nonatomic-lock-test` (the locked read-modify-write of RAM is a plain load and a plain
+    /// store) the update of one vCPU is lost now and then, so the count is BELOW the exact number:
+    /// the test fails if the weakened build still counts exactly (the check would then not see a
+    /// non-atomic `LOCK`). The rounds are repeated until a loss is seen (at most `ATTEMPTS`).
+    #[test]
+    fn the_lock_inc_counter_is_exact_and_loses_updates_in_the_nonatomic_lock_build() {
+        const ATTEMPTS: usize = 20;
+        let repeat = 20_000u32;
+        for vcpus in [2usize, 4] {
+            let exact = vcpus as u32 * repeat;
+            let mut lost = Vec::new();
+            for _ in 0..ATTEMPTS {
+                let mut board = counter_board(vcpus, 0x40_0F00, repeat, false);
+                let (report, ()) = run(&mut board, config(64, u64::MAX), |control| {
+                    assert!(control.wait_finished(WAIT), "the counters do not finish");
+                });
+                assert_eq!(report.finished, ParallelFinish::AllIdle, "{report:?}");
+                assert_joined(&report, vcpus);
+                let value = operand_value(&mut board, 0x40_0F00, false);
+                assert_eq!(done_value(&mut board, false), vcpus as u32);
+                assert!(value <= exact, "{vcpus} vCPUs: {value} above {exact}");
+                lost.push(exact - value);
+                if cfg!(feature = "nonatomic-lock-test") && value < exact {
+                    break;
+                }
+                if !cfg!(feature = "nonatomic-lock-test") {
+                    assert_eq!(
+                        value, exact,
+                        "{vcpus} vCPUs: the LOCK INC counter lost an update"
+                    );
+                    if lost.len() == 3 {
+                        break;
+                    }
+                }
+            }
+            eprintln!(
+                "LOCK INC counter, {vcpus} vCPUs x {repeat}, exact {exact}, lost per attempt {lost:?} [{}]",
+                if cfg!(feature = "nonatomic-lock-test") {
+                    "nonatomic-lock-test"
+                } else {
+                    "normal build"
+                }
+            );
+            if cfg!(feature = "nonatomic-lock-test") {
+                assert!(
+                    lost.iter().any(|lost| *lost > 0),
+                    "{vcpus} vCPUs: no update was lost in {ATTEMPTS} attempts with a non-atomic LOCK"
+                );
+            }
+        }
     }
 
     #[test]

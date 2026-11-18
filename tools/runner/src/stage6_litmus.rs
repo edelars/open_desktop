@@ -16,15 +16,29 @@
 //! the seeds `--seeds` (default `0..=9999`) as random orders of steps; `--quantum Q` and
 //! `--schedule` are one run each (one case only).
 //!
-//! One JSON object on stdout, the same arguments give the same bytes. Exit codes: 0 every case is
+//! `--parallel` (S6-36) runs the cases in the PARALLEL mode instead (one host thread per vCPU, the
+//! real interpreter and RAM path; see `od_machine::run_litmus_parallel`):
+//!
+//! ```text
+//! od-runner --stage6-litmus (--fixture FILE | --corpus DIR | --formula FILE --counter ID --threads N --rounds K)
+//!           --parallel --vcpus 2|3|4 --iterations ROUNDS
+//! ```
+//!
+//! A case that needs more concurrent threads than `--vcpus` is `not_applicable` (IRIW on 2 vCPUs),
+//! never run on fewer. The observed set must be a subset of the x86-TSO set of the fixture; the
+//! parallel mode is not deterministic, so the output carries the elapsed time and is not
+//! byte-repeatable. Exit 5 on a `forbidden` outcome.
+//!
+//! One JSON object on stdout, the same arguments give the same bytes (not with `--parallel`). Exit codes: 0 every case is
 //! `equal`, or `unsupported` (a form the interpreter does not run: the verdict says so, it is not
 //! `equal`), or `not_covered` in a seed or single run; 3 invalid arguments (or an exhaustive run
 //! above the budget); 4 a fixture could not be loaded; 5 a `forbidden` outcome, an `incomplete`
 //! run, `not_covered` in an exhaustive run (the sets must be equal) or an error of the guest.
 
 use od_machine::{
-    LITMUS_EXHAUSTIVE_THRESHOLD, LitmusCase, LitmusError, LitmusPolicy, LitmusReport,
-    LitmusVerdict, LitmusWitness, run_litmus,
+    BUILD_NONATOMIC_LOCK_TEST, BUILD_WEAK_HOST_ORDERING, LITMUS_EXHAUSTIVE_THRESHOLD, LitmusCase,
+    LitmusError, LitmusParallelReport, LitmusParallelVerdict, LitmusPolicy, LitmusReport,
+    LitmusVerdict, LitmusWitness, run_litmus, run_litmus_parallel,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -53,10 +67,17 @@ enum Source {
 
 #[derive(Clone)]
 enum Mode {
-    Exhaustive { budget: u128 },
+    Exhaustive {
+        budget: u128,
+    },
     Seeds(RangeInclusive<u64>),
     Fixed(u64),
     Schedule(Vec<usize>),
+    /// S6-36: the parallel mode, `vcpus` vCPUs, `iterations` rounds per case.
+    Parallel {
+        vcpus: usize,
+        iterations: u64,
+    },
 }
 
 struct Options {
@@ -127,6 +148,20 @@ fn once<T>(slot: &mut Option<T>, option: &str, value: T) -> Result<(), String> {
 }
 
 fn parse_args(args: &[String]) -> Result<Options, String> {
+    let parallel = args.iter().any(|argument| argument == "--parallel");
+    let filtered: Vec<String>;
+    let args = if parallel {
+        filtered = args
+            .iter()
+            .filter(|argument| *argument != "--parallel")
+            .cloned()
+            .collect();
+        &filtered[..]
+    } else {
+        args
+    };
+    let mut vcpus = None;
+    let mut iterations = None;
     let mut fixture = None;
     let mut corpus = None;
     let mut formula = None;
@@ -173,6 +208,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                 once(&mut quantum, option, steps)?;
             }
             "--schedule" => once(&mut schedule, option, parse_schedule(value)?)?,
+            "--vcpus" => once(&mut vcpus, option, parse_number(value)?)?,
+            "--iterations" => once(&mut iterations, option, parse_number(value)?)?,
             other => return Err(format!("unexpected option '{other}'")),
         }
         index += 2;
@@ -199,6 +236,32 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     };
     if counter.is_some() || threads.is_some() || rounds.is_some() {
         return Err("--counter, --threads and --rounds go with --formula only".into());
+    }
+    if !parallel && (vcpus.is_some() || iterations.is_some()) {
+        return Err("--vcpus and --iterations go with --parallel only".into());
+    }
+    if parallel {
+        if mode.is_some()
+            || seeds.is_some()
+            || budget.is_some()
+            || quantum.is_some()
+            || schedule.is_some()
+        {
+            return Err(
+                "--parallel takes --vcpus and --iterations only (no --mode, --seeds, --budget, --quantum, --schedule)"
+                    .into(),
+            );
+        }
+        let vcpus = vcpus.ok_or("--parallel needs --vcpus")?;
+        let iterations = iterations.ok_or("--parallel needs --iterations")?;
+        if iterations == 0 {
+            return Err("--iterations must be at least 1".into());
+        }
+        let vcpus = usize::try_from(vcpus).map_err(|_| "--vcpus out of range".to_string())?;
+        return Ok(Options {
+            source,
+            mode: Mode::Parallel { vcpus, iterations },
+        });
     }
     let single = quantum.is_some() || schedule.is_some();
     if usize::from(quantum.is_some())
@@ -248,6 +311,7 @@ fn policy(mode: &Mode) -> LitmusPolicy {
         Mode::Seeds(seeds) => LitmusPolicy::Seeds(seeds.clone()),
         Mode::Fixed(steps) => LitmusPolicy::Fixed(*steps),
         Mode::Schedule(list) => LitmusPolicy::Schedule(list.clone()),
+        Mode::Parallel { .. } => unreachable!("the parallel mode has no exploration policy"),
     }
 }
 
@@ -263,6 +327,9 @@ fn mode_json(mode: &Mode) -> Value {
         }),
         Mode::Fixed(steps) => json!({"mode": "fixed_quantum", "quantum": steps}),
         Mode::Schedule(list) => json!({"mode": "schedule", "steps": list.len()}),
+        Mode::Parallel { vcpus, iterations } => {
+            json!({"mode": "parallel", "vcpus": vcpus, "iterations_per_case": iterations})
+        }
     }
 }
 
@@ -419,6 +486,9 @@ fn run_inner(args: &[String]) -> Result<(Value, u8), (Value, u8)> {
     };
     let options = parse_args(args).map_err(invalid)?;
     let cases = load_cases(&options.source)?;
+    if let Mode::Parallel { vcpus, iterations } = options.mode {
+        return run_parallel(&cases, vcpus, iterations);
+    }
     let exhaustive = matches!(options.mode, Mode::Exhaustive { .. });
     let mut records = Vec::new();
     let mut counts = [0u64; 5];
@@ -469,6 +539,126 @@ fn run_inner(args: &[String]) -> Result<(Value, u8), (Value, u8)> {
         "cases": records,
     });
     if failed {
+        Err((result, EXIT_FAILED))
+    } else {
+        Ok((result, 0))
+    }
+}
+
+fn parallel_case_json(source: &str, fixture_sha256: &str, report: &LitmusParallelReport) -> Value {
+    let rounds = report.rounds.max(1) as f64;
+    let histogram: Vec<Value> = report
+        .histogram
+        .iter()
+        .map(|entry| {
+            json!({
+                "outcome": entry.values,
+                "rounds": entry.rounds,
+                "frequency": entry.rounds as f64 / rounds,
+                "in_x86_tso_set": entry.in_x86_tso,
+                "first_round": entry.first_round,
+                "first_placement_thread_to_vcpu": entry.first_placement,
+            })
+        })
+        .collect();
+    let seconds = report.elapsed_ns as f64 / 1e9;
+    json!({
+        "id": report.id,
+        "source": source,
+        "fixture_sha256": fixture_sha256,
+        "status": "run",
+        "concurrent_threads": report.threads,
+        "vcpus": report.vcpus,
+        "placements": report.placements,
+        "rounds": report.rounds,
+        "observe": report.observe,
+        "histogram": histogram,
+        "x86_tso_set": report.x86_tso,
+        "sc_set": report.sc,
+        "interesting_outcomes": report.interesting,
+        "forbidden_outcomes": report.forbidden,
+        "outside_sc": report.outside_sc,
+        "x86_tso_outcomes_not_observed": report.not_observed,
+        "late_barrier_rounds": report.late_barrier_rounds,
+        "retired_per_vcpu": report.retired,
+        "elapsed_s": seconds,
+        "rounds_per_s": report.rounds as f64 / seconds.max(1e-9),
+        "verdict": report.verdict.name(),
+    })
+}
+
+/// S6-36: the parallel mode (see the module documentation).
+fn run_parallel(
+    cases: &[LoadedCase],
+    vcpus: usize,
+    iterations: u64,
+) -> Result<(Value, u8), (Value, u8)> {
+    let invalid = |detail: String| {
+        (
+            failure("invalid_input", "arguments", detail),
+            EXIT_INVALID_INPUT,
+        )
+    };
+    let mut records = Vec::new();
+    let (mut allowed, mut forbidden, mut not_applicable) = (0u64, 0u64, 0u64);
+    for (source, sha256, case) in cases {
+        if case.concurrent_threads() > vcpus {
+            not_applicable += 1;
+            records.push(json!({
+                "id": case.id(),
+                "source": source,
+                "fixture_sha256": sha256,
+                "status": "not_applicable",
+                "concurrent_threads": case.concurrent_threads(),
+                "vcpus": vcpus,
+                "reason": format!(
+                    "the case needs {} concurrent threads, at least {} vCPUs: it is not reported for {} vCPUs",
+                    case.concurrent_threads(),
+                    case.concurrent_threads(),
+                    vcpus
+                ),
+            }));
+            continue;
+        }
+        let report = match run_litmus_parallel(case, vcpus, iterations) {
+            Ok(report) => report,
+            Err(error @ LitmusError::Policy(_)) => {
+                return Err(invalid(format!("{}: {error}", case.id())));
+            }
+            Err(error @ LitmusError::Load(_)) => return Err(load_error(error)),
+            Err(error) => {
+                return Err((
+                    failure("guest_error", "guest", format!("{}: {error}", case.id())),
+                    EXIT_FAILED,
+                ));
+            }
+        };
+        match report.verdict {
+            LitmusParallelVerdict::Allowed => allowed += 1,
+            LitmusParallelVerdict::Forbidden => forbidden += 1,
+        }
+        records.push(parallel_case_json(source, sha256, &report));
+    }
+    let result = json!({
+        "schema": "od.stage6-litmus-parallel-run.v1",
+        "status": if forbidden > 0 { "failed" } else { "ok" },
+        "harness": "one host thread per vCPU (S6-34), the real interpreter and RAM path, one identity 2 MiB table set, vCPUs created directly in long mode (SMP_CONTRACT 4.4, litmus only); a round is one quantum call per thread, the start barrier is crossed in the first poll of the stop test, thread-to-vCPU placement cycles through all injective maps",
+        "reference": "x86-TSO set of the fixture (formula for the counters), read from the fixture file; the observed set must be a subset",
+        "memory_order": "parallel mode: ordinary accesses SeqCst, LOCK as host atomics, host fences for guest fences",
+        "build": {
+            "weak_host_ordering": BUILD_WEAK_HOST_ORDERING,
+            "nonatomic_lock_test": BUILD_NONATOMIC_LOCK_TEST,
+        },
+        "exploration": mode_json(&Mode::Parallel { vcpus, iterations }),
+        "summary": {
+            "cases": records.len(),
+            "allowed_only": allowed,
+            "forbidden": forbidden,
+            "not_applicable": not_applicable,
+        },
+        "cases": records,
+    });
+    if forbidden > 0 {
         Err((result, EXIT_FAILED))
     } else {
         Ok((result, 0))

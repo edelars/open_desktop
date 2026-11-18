@@ -1,0 +1,8 @@
+# mutation of the barrier (condition 1 removed: 'let standing = false && ...'), test of condition 2, debug, 2026-11-18T05:28:55Z
+test parallel_snapshot_tests::a_kick_of_the_stopped_ap_never_lowers_safe_in_the_barrier_and_the_snapshot_is_taken ... FAILED
+thread 'parallel_snapshot_tests::a_kick_of_the_stopped_ap_never_lowers_safe_in_the_barrier_and_the_snapshot_is_taken' (48833786) panicked at crates/od-machine/src/parallel_snapshot_tests.rs:500:5:
+the thread of a stopped, sleeping AP lowered `safe` in its barrier in rounds [(1, false), (2, false), (3, false), (4, false), (5, false), (6, false), (7, false), (8, false), (9, false), (10, false), (11, false), (12, false), (13, false), (14, false), (15, false), (16, false), (17, false), (18, false), (19, false), (20, false)] (round, snapshot taken)
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1638 filtered out; finished in 0.33s
+# the same test on the real barrier, 2026-11-18T05:28:59Z
+test parallel_snapshot_tests::a_kick_of_the_stopped_ap_never_lowers_safe_in_the_barrier_and_the_snapshot_is_taken ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1638 filtered out; finished in 2.32s

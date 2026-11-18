@@ -36,7 +36,10 @@ use crate::{LoadedFirmwareBoard, LocalApicHandle};
 use std::time::{Duration, Instant};
 
 /// How long [`VmSnapshot::take_parallel`] waits for the acknowledgement flag of one vCPU that is
-/// between two of its stores (see there); the flag comes back within microseconds.
+/// between two of its stores in the barrier (S6-36 review, M-1): the thread lowers `safe`, reads
+/// the stop and raises it again within a few instructions, so the flag comes back in microseconds;
+/// two seconds cover a thread that the host has descheduled in that moment, and a flag that stays
+/// down longer is a thread that does not come back, reported as [`SnapshotError::SafeFlagTimeout`].
 const READ_WAIT: Duration = Duration::from_secs(2);
 
 /// What the stopped complex of vCPUs, Local APICs and the scheduler looked like.
@@ -56,6 +59,11 @@ pub(crate) enum SnapshotError {
     /// The safe point is not the machine's: another number of vCPUs, a clock that moved since,
     /// or a vCPU whose activity is not the one it acknowledged.
     StaleSafePoint,
+    /// The proof and the stop are the machine's, but the acknowledgement flag of a vCPU stayed
+    /// down for longer than the bounded wait of [`VmSnapshot::take_parallel`] (the thread of the
+    /// vCPU, between two stores in its barrier, did not come back). Not a stale proof: the stop
+    /// is in force and may be tried again.
+    SafeFlagTimeout { cpu: usize },
     /// The snapshot is of a machine with another number of vCPUs.
     VcpuCount { snapshot: usize, machine: usize },
     /// The clock of the machine is not where it stood at the snapshot.
@@ -123,7 +131,8 @@ impl VmSnapshot {
     /// machine (taken before the run: the board is lent to the threads). Nothing is changed in the
     /// machine. Refused ([`SnapshotError::NotStopped`]) when no stop is in force, and
     /// ([`SnapshotError::StaleSafePoint`]) when the proof is not of the stop that is in force: the
-    /// clock moved, a vCPU is not as it acknowledged, a vCPU cannot be read. Every vCPU has
+    /// clock moved, a vCPU is not as it acknowledged; a flag that stays down past the bounded wait
+    /// is [`SnapshotError::SafeFlagTimeout`] (S6-36 review, M-1). Every vCPU has
     /// acknowledged, so no instruction is half done, nothing writes to a Local APIC but the
     /// controller itself, and what is read here is the state at one safe point, ordered after the
     /// acknowledgement of every vCPU (MACHINE_CONTRACT S6-34, rule 5).
@@ -141,6 +150,18 @@ impl VmSnapshot {
         proof: &StopProof,
         scheduler: &SmpScheduler,
     ) -> Result<Self, SnapshotError> {
+        Self::take_parallel_within(control, lapic, proof, scheduler, READ_WAIT)
+    }
+
+    /// [`Self::take_parallel`] with the bound of the wait for an acknowledgement flag given (the
+    /// tests of the timeout use a short one).
+    pub(crate) fn take_parallel_within(
+        control: &ParallelControl<'_, '_>,
+        lapic: &LocalApicHandle,
+        proof: &StopProof,
+        scheduler: &SmpScheduler,
+        wait: Duration,
+    ) -> Result<Self, SnapshotError> {
         if !control.stopped() {
             return Err(SnapshotError::NotStopped);
         }
@@ -155,11 +176,13 @@ impl VmSnapshot {
         }
         let mut vcpus = Vec::with_capacity(count);
         for (cpu, ack) in proof.acks.iter().enumerate() {
-            // A sleeping vCPU that a request woke while the stop is in force goes through the
-            // barrier of its thread again and lowers its `safe` flag for a moment (review of
-            // S6-34, m2: the barrier is not changed by S6-35). It touches nothing in that moment,
-            // so the reader waits for the flag instead of failing, within a bound.
-            let deadline = Instant::now() + READ_WAIT;
+            // A thread of the run may be, for a few instructions, between lowering its `safe` flag
+            // and raising it again in its barrier even under a stop whose proof was given (S6-36
+            // review, M-1: it read "not standing" before the stop was set). It holds no vCPU lock
+            // and changes nothing in that moment, so the reader waits for the flag within `wait`
+            // instead of failing; the flag that stays down gives `SafeFlagTimeout`, never a
+            // `StaleSafePoint` (the proof is not stale, the thread is slow).
+            let deadline = Instant::now() + wait;
             let vcpu = loop {
                 if let Some(vcpu) = control.with_vcpu(cpu, |vcpu| vcpu.clone()) {
                     break vcpu;
@@ -168,7 +191,7 @@ impl VmSnapshot {
                     return Err(SnapshotError::NotStopped);
                 }
                 if Instant::now() >= deadline {
-                    return Err(SnapshotError::StaleSafePoint);
+                    return Err(SnapshotError::SafeFlagTimeout { cpu });
                 }
                 std::thread::yield_now();
             };

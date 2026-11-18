@@ -1,0 +1,7 @@
+# weak-host-ordering build, release, run 1, 2026-11-18T05:22:34Z, rounds=100000000 (each pattern), jitter default 4 spins
+running 1 test
+host order litmus [weak-host-ordering]: 100000000 rounds each, 45.6 s
+  MP    (r(y), r(x)) counts [[51725113, 13894957, 0], [334, 34379596, 0], [0, 0, 0]]; forbidden (1,0): 334
+  2+2W  final (x, y) counts [[0, 0, 0], [0, 938632, 0], [0, 11920991, 87140377]]; forbidden (1,2): 0
+test host_order_litmus::the_weakened_build_reports_what_this_host_shows ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1636 filtered out; finished in 45.56s

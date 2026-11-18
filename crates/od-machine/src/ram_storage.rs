@@ -212,6 +212,8 @@ macro_rules! cell_rmw {
     };
 }
 
+// `nonatomic-lock-test` (S6-36) leaves the host read-modify-write cells unused.
+#[cfg_attr(feature = "nonatomic-lock-test", allow(dead_code))]
 impl RamStorage {
     /// A zeroed store of `len` bytes for a region whose guest start address is congruent to
     /// `lead` modulo 8. `Err` on size overflow or allocation failure.

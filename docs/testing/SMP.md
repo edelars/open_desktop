@@ -163,7 +163,7 @@ Run each fixture on the smallest configurations that can host all concurrent tes
 
 ### Runtime estimate and calibration
 
-Native physical timing is now calibrated as recorded above. Parallel-mode timing remains **planning-only**: using the earlier 500,000 rounds/s assumption, the candidate `30,000,000 × Σ(applicable configurations per fixture)` can be estimated only after S6-36 defines its applicable corpus/configuration matrix. The 500,000 rounds/s assumption does not apply to the Intel S6-08 runner and is not a performance claim.
+Native physical timing is now calibrated as recorded above. Parallel-mode timing was measured by S6-36 (section "S6-36" below; 66-140 thousand rounds/s on 2 vCPU and 46-66 thousand on 4 vCPU on the Apple M3 Max stand: the mean of three processes per test, from the data in `docs/reports/data/stage6/s6-36/litmus-parallel/`) and the gate is locked at 1,000,000 rounds/test/process in three fresh processes per applicable configuration, instead of the candidate `30,000,000` per configuration. The 500,000 rounds/s assumption does not apply to the Intel S6-08 runner and is not a performance claim.
 
 ### Numeric gates still pending
 
@@ -171,7 +171,7 @@ The following test budgets are deliberately not invented before their harnesses 
 
 | Task | Quantity still to calibrate | Task cannot pass until |
 |---|---|---|
-| S6-36 | Parallel-mode rounds/test/configuration and runtime (candidate values above) | S6-36 records rates on both applicable vCPU configurations and locks the numeric gate before parallel corpus acceptance. |
+| S6-36 | Parallel-mode rounds/test/configuration and runtime (candidate values above) | Recorded in S6-36 (implemented, awaiting review): 1,000,000 rounds/test/process x 3 fresh processes per applicable configuration (3,000,000/test/configuration), rates and the matrix in "S6-36" below. |
 | S6-34 | Repeated STOP/kick/HLT races, participant timeout, and bounded completion time | Recorded in S6-34 (implemented, awaiting review): repetitions, timeouts and race-window coverage are in the table of "S6-34 — параллельный режим" below and in the S6-34 report. |
 | S6-35 | Save/restore cycles, pending-event variants, and failure-injection repetitions | Recorded in S6-35 (steps 1–3 implemented, awaiting review): the matrix and the expected runtime are in "S6-35 — состояние на остановленной параллельной машине" below. The part with a snapshot format is blocked until S9-24, S9-25. |
 | S6-37 | Linux boot repetitions, workload duration, and soak duration | S6-37 records counts/duration from a measured run budget; a short run cannot stand in for soak. |
@@ -307,6 +307,56 @@ OD_S6_SNAP_TIMER_RUNS=50 cargo test --release -p od-machine --offline --lib -- -
 | снимок без остановки, по `proof` снятой остановки, по `proof` более ранней остановки | в каждом раунде фикстуры | `NotStopped`, `NotStopped`, `StaleSafePoint` |
 | kick остановленного спящего AP во время снимка (m2 ревью S6-34) | 300 остановок | окно m2 не воспроизводится; точный тест — S6-36. Снимок взят каждый раз, IPI не потерян |
 
+### S6-36 — litmus в параллельном режиме и чувствительность
+
+Контракт: [MACHINE_CONTRACT.md](../specs/MACHINE_CONTRACT.md#s6-36--litmus-в-параллельном-режиме-и-чувствительность). Данные: [`docs/reports/data/stage6/s6-36/`](../reports/data/stage6/s6-36/). Параллельный режим недетерминирован: проверяется, что наблюдаемое множество — подмножество x86-TSO fixture, а не побайтное равенство. Прогон без проверки чувствительности доказательством не считается (разделы 5.1 и ниже).
+
+**Числовой gate (записан здесь, строка таблицы «Numeric gates» закрыта).** Темп измерен на этом host (Apple M3 Max, 14 ядер, release): 2 vCPU 66–140 тыс. раундов/с, 4 vCPU 46–66 тыс. раундов/с (среднее трёх процессов на тест, по тестам — `litmus-parallel/summary.md`; отдельные процессы по JSON: 59–163 тыс. на 2 vCPU и 11–76 тыс. на 4 vCPU, нижние значения — при занятом хосте). Кандидат 10 000 000 раундов на тест на процесс дал бы около 70–220 с на тест на процесс, то есть свыше двух часов на конфигурацию на каждый процесс; число снижено: **1 000 000 раундов на тест на процесс, три свежих процесса на конфигурацию = 3 000 000 раундов на тест на конфигурацию**; фактическое время одного процесса — 2 vCPU около 3 мин, 4 vCPU около 5–6 мин, счётчики около 2 мин, три процесса вместе около 28 мин. Для host-теста MP и 2+2W — 100 000 000 раундов каждого шаблона на сборку (около 46 с). Гость с `LOCK INC` — 20 000 инкрементов на vCPU, 2 и 4 vCPU.
+
+**Матрица конфигураций.** Тест до двух потоков (14 fixture: `2+2W`, `LB`, `LOCK-CMPXCHG-MUTEX`, `LOCK-XADD`, `MP`, `SB-LOCK-LOCAL`, `SB-LOCK-XADD`, `SB-LOCK`, `SB-MFENCE`, `SB-XCHG`, `SB`, `STORE-FORWARDING`, `UNLOCKED-INC`, `XCHG-MUTEX`; счётчики `LOCK-INC`, `UNLOCKED-INC`, `THREE-INSN-COUNTER` при N = 2, K = 2) — на **2 и 4 vCPU**; `IRIW` (четыре потока) — **только 4 vCPU** (на 2 vCPU — `not_applicable`, результата нет); счётчики N = 4, K = 2 (`LOCK-INC`, `UNLOCKED-INC`) — 4 vCPU. Потоки litmus размещаются на vCPU всеми инъективными отображениями по кругу (раунд `r` берёт размещение `r mod P`).
+
+```
+cargo build --release -p od-runner --locked --offline
+# три свежих процесса на конфигурацию (--vcpus 2 и 4); для IRIW на 2 vCPU результат not_applicable
+target/release/od-runner --stage6-litmus --corpus tests/fixtures/guest/stage6/litmus --parallel --vcpus 2 --iterations 1000000
+target/release/od-runner --stage6-litmus --corpus tests/fixtures/guest/stage6/litmus --parallel --vcpus 4 --iterations 1000000
+target/release/od-runner --stage6-litmus --formula tests/fixtures/guest/stage6/litmus/counters-formula.json --counter LOCK-INC --threads 2 --rounds 2 --parallel --vcpus 2 --iterations 1000000
+cargo test -p od-runner --offline --test stage6_litmus_parallel_cli
+cargo test -p od-machine --offline --lib -- litmus_parallel
+```
+
+Выход 5 при запрещённом исходе; вывод несёт `build` (`weak_host_ordering`, `nonatomic_lock_test` — оба `false` в штатной сборке), число размещений, гистограмму с первым раундом и размещением каждого исхода, исходы x86-TSO, которых не было, `late_barrier_rounds` (раунды, где стартовый барьер не прошёл до первой инструкции: 0), время и скорость.
+
+**Чувствительность, часть 1 (host).** Штатная сборка: ни одного запрещённого исхода. Сборка с `weak-host-ordering`: MP наблюдается; 2+2W не наблюдался: какой порядок нарушен, тест не различает; 2+2W, которому нужна перестановка записей, не наблюдался.
+
+**Что именно ослаблено в сборке `weak-host-ordering` (ревью S6-36, условие (в)).** Чувствительность показана для порядка пути записи ЦЕЛИКОМ: обычные доступы `SeqCst` -> `Relaxed`, host-fence на гостевые fences не ставятся, а `Release`-подъём поколения страницы (`physical_memory.rs`, `fetch_add`) тоже `Relaxed`. То есть показано, что сломанный путь в сумме виден, а не что каждое из трёх звеньев по отдельности нужно. Кеш кода в такой сборке НЕ гарантирует публикацию записи (читатель, увидевший новое поколение, не обязан видеть данные): допустимо только для тестовой сборки. Предварительный прогон с `Release`-поколением (ослаблены только обычные доступы и fence) не сохранён: решение ослабить и поколение принято по результатам прогона, который не сохранён; данных о нём в `docs/reports/data/stage6/s6-36/` нет, и они здесь не восстанавливаются.
+
+Значения по умолчанию host-теста: `#[ignore]`-прогоны `host_order_litmus` берут 20 000 000 раундов каждого шаблона (`OD_S6_HOST_ORDER_ROUNDS`), а число gate 100 000 000 задаётся этой переменной окружения при запуске; быстрая форма без `--ignored` — 200 000 раундов. Вывод `--parallel` несёт информационное поле `outside_sc` (наблюдённые исходы вне SC-множества fixture, но внутри x86-TSO; пусто для счётчиков, не отказ).
+
+**Статистическая сила gate (ограничение, ревью S6-36, условие (а)).** При 0 запрещённых исходов из 3 000 000 раундов (правило трёх) верхняя граница 95% на раунд — около 1·10^-6 на тест и конфигурацию; при кандидате 30 000 000 — около 1·10^-7. Это не вероятностная гарантия: раунды не независимы (барьеры, цикл размещений, один host), другой host (Intel, другое поколение ARM) не проверялся. Гостевой корпус не измерил чувствительность к перестановкам host: он ловит неатомарный `LOCK` (на 200 000 раундов), но в сборке `weak-host-ordering` не прогонялся; чувствительность к перестановкам показана только host-тестом (MP, 334 и 462 из 100 000 000, то есть около (3–5)·10^-6 на раунд). Основание достаточности барьеров — источники S6-04 (`MEMORY_MODEL.md`) и S6-06 (замер host-примитивов), а не этот gate. Открыто (не обязательно): прогнать корпус в `weak-host-ordering` на тех же 1 000 000 раундов на процесс и записать, видит ли он перестановку.
+
+```
+OD_S6_HOST_ORDER_ROUNDS=100000000 cargo test --release -p od-machine --offline --lib -- --ignored host_order_litmus --nocapture
+OD_S6_HOST_ORDER_ROUNDS=100000000 cargo test --release -p od-machine --offline --lib --features weak-host-ordering -- --ignored host_order_litmus --nocapture
+cargo test -p od-machine --offline --lib -- host_order_litmus         # быстрая форма: 200 000 раундов, штатная сборка
+```
+
+Задержка после барьера регулируется `OD_S6_HOST_ORDER_JITTER` (по умолчанию 4 `spin_loop`; при 64 и более MP почти не наблюдался: за 50 000 000 раундов 1, при 256 — 0). Результат записан в контракте и `host-order-*.txt`.
+
+**Чувствительность, часть 2 (гость).**
+
+```
+cargo test -p od-machine --offline --lib -- parallel_run::tests::the_lock_inc_counter --nocapture                                # штатная: точный счёт
+cargo test -p od-machine --offline --lib --features nonatomic-lock-test -- parallel_run::tests::the_lock_inc_counter --nocapture   # счёт ниже точного
+CARGO_TARGET_DIR=/private/tmp/s636/target_nonatomic cargo build --release --offline -p od-runner --features od-machine/nonatomic-lock-test
+```
+
+Ослабляющие сборки гоняют только для проверки чувствительности: в них тесты с точным счётом и порядком `SeqCst` падают, так и задумано. Штатный профиль их не включает (`cargo metadata`, `features-check.txt`).
+
+**Условия 1–3 (барьер потока, `READ_WAIT`).** `cargo test -p od-machine --offline --lib -- parallel_snapshot_tests vm_snapshot parallel_run`. Ревью S6-36, M-1: окно барьера сужено, не устранено (поток, разбуженный ДО остановки, на несколько инструкций опускает `safe` под остановкой с доказательством); `READ_WAIT` (2 с) возвращён в `take_parallel`, по истечении — `SnapshotError::SafeFlagTimeout`, не `StaleSafePoint`; тест `a_thread_between_its_two_stores_in_the_barrier_is_waited_for_and_not_refused` (вторая `#[cfg(test)]`-зацепка `standing_window`). Мутация (условие 1 убрано) валит тест окна в 20 раундах из 20, `mutation-barrier-window.txt`.
+
+**Результат корпуса (2026-11-18).** 30 прогонов (3 свежих процесса x (2 vCPU и 4 vCPU) x (корпус, 3 счётчика N = 2, K = 2) + счётчики N = 4 на 4 vCPU), все exit 0: **111 000 000 раундов, запрещённых исходов нет**, `late_barrier_rounds` 0; на 2 vCPU 14 fixture + 3 счётчика, IRIW `not_applicable`; на 4 vCPU 15 fixture + 3 счётчика + 2 счётчика N = 4. Наблюдены все исходы множества x86-TSO, кроме `00` у `SB` и `SB-LOCK-LOCAL` (3 из 4): при `SeqCst` он недостижим, это допустимо; IRIW — 15 из 15. Таблица по тестам: [`litmus-parallel/summary.md`](../reports/data/stage6/s6-36/litmus-parallel/summary.md), сырые JSON рядом.
+
 ### S6-19 — litmus в режиме чередования
 
 Реализовано (S6-19; **после S6-20 интерпретатор исполняет и формы `LOCK`/`XCHG` корпуса, все 15 конечных fixture и счётчик LOCK-INC — `equal`**, абзац «S6-20» ниже): `crates/od-machine/src/litmus_interleaving.rs` (драйвер; публичный API поверх него — S6-19b; планировщик S6-15 в крейте `pub(crate)`), тесты там же, данные [`s6-19-litmus-interleaving.json`](../reports/data/stage6/s6-19-litmus-interleaving.json). Контракт: [MACHINE_CONTRACT.md](../specs/MACHINE_CONTRACT.md#s6-19--litmus-в-режиме-чередования). Чекбокс S6-19 не отмечен: S6-19 готов к закрытию (литмусы `equal`), закрывается после ревью S6-20. Флаг `od-runner --stage6-litmus`, публичный API и CLI-тест — S6-19b.
@@ -382,4 +432,4 @@ Every run records: fixture and corpus SHA-256; test ID; source revision; runner 
 
 On a forbidden outcome, set/status mismatch, crash, or timeout: stop the gate, retain the raw output and exact input, and report the smallest reproducible fixture. Do not turn a forbidden result into noise, average it away, update expected outcomes from the run, or claim a pass after a later clean retry. A retry is additional evidence and must keep the first result.
 
-The expected litmus corpus and its own TSO/SC enumerator are S6-05. S6-08's runner implementation, Linux regression tests, and full-corpus calibration are complete. The calibrated full physical run is S6-09; parallel-mode sensitivity is S6-36.
+The expected litmus corpus and its own TSO/SC enumerator are S6-05. S6-08's runner implementation, Linux regression tests, and full-corpus calibration are complete. The calibrated full physical run is S6-09; parallel-mode sensitivity is S6-36 (implemented, awaiting review; see "S6-36" above).

@@ -1,0 +1,15 @@
+date: 2026-11-18T05:37:20Z
+ProductName:		macOS
+ProductVersion:		26.7.1
+BuildVersion:		25G241
+Apple M3 Max
+14
+38654705664
+rustc 1.99.0 (b940084d7 2026-09-28)
+Darwin 192.168.1.100 25.6.0 Darwin Kernel Version 25.6.0: Tue Aug 18 17:51:35 PDT 2026; root:xnu-12377.161.15.700.19~2/RELEASE_ARM64_T6031 arm64
+base commit: 1ee677f730b6c337c6bb899fe73540144ee85f13 (working tree with the S6-36 changes, not committed)
+litmus-parallel runner binary (release, built before two clippy-only edits of litmus_parallel.rs; logic identical): /private/tmp/s636/od-runner-after sha256 a8c635e9cf932cbbdfe3ba713d5fb7d6596dfa6088ba18dfa03ccb24f82857aa
+final runner (release, --locked --offline, used as 'after' of the Linux control): sha256 6d3b0411b30263f7945274f0d140f214d40a67389ef31efdfc78d4aaf77f5cf2
+before runner (worktree 1ee677f, release, --locked --offline): sha256 fa4809d3fff52d69195e3913e1b918a9218bf76aab90667d051760c6d98e739d
+nonatomic-lock-test runner (release, features od-machine/nonatomic-lock-test, CARGO_TARGET_DIR=/private/tmp/s636/target_nonatomic): 6d6bf780d581703740f284b1a0157965280d651ebc1f9e930bac1c0ff82832ad
+load during the runs: other processes were active: the full od-machine test run (single-threaded), the Linux control (one process) and the cargo test runs of this slice ran in parallel with the litmus corpus runs; rates in summary.md are therefore not a performance claim.
