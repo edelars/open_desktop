@@ -392,9 +392,14 @@ fn startup_flushes_sequences_and_resets_pcr() {
 fn shutdown_state_then_startup_state_resumes_saved_pcr() {
     let mut t = started();
     ok(&extend(&mut t, 0, &[1; 32]));
+    let counter = pcr_counter(&mut t);
     ok(&extend(&mut t, 16, &[2; 32]));
     let pcr0 = read_pcr(&mut t, 0);
-    let counter = pcr_counter(&mut t);
+    assert_eq!(
+        pcr_counter(&mut t),
+        counter,
+        "PCR 16 does not increment the counter"
+    );
     ok(&run(&mut t, plain(cc::SHUTDOWN, &[], &[0, 1])));
     t.init();
     ok(&run(&mut t, plain(cc::STARTUP, &[], &[0, 1])));
@@ -402,8 +407,12 @@ fn shutdown_state_then_startup_state_resumes_saved_pcr() {
     assert_eq!(read_pcr(&mut t, 0), pcr0);
     assert_eq!(read_pcr(&mut t, 16), vec![0u8; 32]);
     assert_eq!(read_pcr(&mut t, 17), vec![0xFFu8; 32]);
-    assert_eq!(pcr_counter(&mut t), counter);
-    // Resume increments restartCount only.
+    assert_eq!(
+        pcr_counter(&mut t),
+        counter + 1,
+        "Resume initializes counted PCR 17–20"
+    );
+    // Resume increments restartCount and leaves resetCount alone.
     let c = clock(&mut t, 0).clock_info;
     assert_eq!((c.reset_count, c.restart_count), (1, 1));
     // The saved state is consumed: Startup(STATE) cannot be repeated after another _TPM_Init.
@@ -415,10 +424,16 @@ fn shutdown_state_then_startup_state_resumes_saved_pcr() {
 fn shutdown_state_then_startup_clear_is_restart() {
     let mut t = started();
     ok(&extend(&mut t, 0, &[1; 32]));
+    let counter = pcr_counter(&mut t);
     ok(&run(&mut t, plain(cc::SHUTDOWN, &[], &[0, 1])));
     t.init();
     ok(&run(&mut t, plain(cc::STARTUP, &[], &[0, 0])));
     assert_eq!(read_pcr(&mut t, 0), vec![0u8; 32]);
+    assert_eq!(
+        pcr_counter(&mut t),
+        counter + 1,
+        "Restart retains the saved base counter"
+    );
     let c = clock(&mut t, 0).clock_info;
     assert_eq!((c.reset_count, c.restart_count), (1, 1));
 }
@@ -426,10 +441,13 @@ fn shutdown_state_then_startup_clear_is_restart() {
 #[test]
 fn shutdown_clear_then_startup_clear_is_reset_and_state_is_refused() {
     let mut t = started();
+    ok(&extend(&mut t, 0, &[1; 32]));
+    assert_ne!(pcr_counter(&mut t), 0);
     ok(&run(&mut t, plain(cc::SHUTDOWN, &[], &[0, 0])));
     t.init();
     err(&run(&mut t, plain(cc::STARTUP, &[], &[0, 1])), Rc(0x1C4));
     ok(&run(&mut t, plain(cc::STARTUP, &[], &[0, 0])));
+    assert_eq!(pcr_counter(&mut t), 0);
     let c = clock(&mut t, 0).clock_info;
     assert_eq!((c.reset_count, c.restart_count), (2, 0));
 }

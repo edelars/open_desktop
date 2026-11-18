@@ -6313,10 +6313,9 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 
 ### ISSUE-518 — S7-23: PCR Update Counter обнуляется при TPM Restart
 
-- **Дата и компонент.** 2026-11-18, `od-tpm`, обработка TPM Restart и сохранение policy-контекста. Статус открыт.
-- **Основание.** Ветка Restart в `crates/od-tpm/src/startup.rs` создаёт `Pcrs::new()` с нулевым счётчиком и сохраняет контексты сессий. TPM Library v185 Part 3 §9.3.1 сохраняет PCR Update Counter при Restart. [TPM Library v185 Part 3](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf)
-- **Последствие.** Счётчик после Restart расходится с нормативным значением. Влияние на последующую авторизацию политики остаётся непроверенным.
-- **Следующий шаг.** Сохранять счётчик в ветке Restart и проверить отдельно Reset, Restart и Resume.
+- **Дата и компонент.** 2026-11-18, `od-tpm`, обработка TPM Restart и сохранение policy-контекста. Закрыто.
+- **Основание.** Ветка Restart создавала `Pcrs::new()` с нулевым счётчиком и сохраняла контексты сессий. Примечание §9.3.1 сохраняет основу PCR Update Counter. §22.1 включает `TPM2_Startup` в команды, при которых сброс учитываемых PCR увеличивает счётчик. [TPM Library v185 Part 3, §§9.3.1 и 22.1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=192).
+- **Исправление и проверка.** Restart и Resume начинают с сохранённого счётчика. Одна успешная `Startup` добавляет единицу, если она инициализирует учитываемые PCR. При Reset сохраняется начало отсчёта с нуля. Проверки через `PCR_Read` сверяют значения и счётчики всех трёх путей. При загрузке сохранённой policy-сессии счётчик защищает от использования PCR assertion предыдущего поколения. [Контракт TPM](specs/VTPM.md#pcr), [отчёт S7-23](reports/STAGE_7_REPORT.md#s7-23--реализация-и-проверки-фазы-b).
 
 <a id="issue-519"></a>
 

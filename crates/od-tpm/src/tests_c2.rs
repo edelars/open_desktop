@@ -1976,6 +1976,32 @@ fn a_context_dies_with_its_hierarchy_seed_a_reset_and_a_disabled_hierarchy() {
 }
 
 #[test]
+fn saved_pcr_assertions_are_stale_after_counted_startup_resets() {
+    for startup_type in [su::CLEAR, su::STATE] {
+        let mut t = started();
+        ok(&extend(&mut t, 0, &[1u8; 32]));
+        let policy = policy_session(&mut t, se::POLICY);
+        ok(&pol_pcr(&mut t, &policy, &[], &sel04()));
+        let previous_digest = digest(&mut t, &policy);
+        let context = params(&save(&mut t, policy.handle), 0).to_vec();
+        shutdown(&mut t, su::STATE);
+        t.init();
+        startup(&mut t, startup_type);
+        assert_eq!(loaded(&load_ctx(&mut t, &context)), policy.handle);
+        assert_eq!(digest(&mut t, &policy), previous_digest);
+
+        err(&pol_pcr(&mut t, &policy, &[], &sel04()), Rc::PCR_CHANGED);
+        let slot = t.sessions.slot_of(policy.handle).unwrap();
+        assert_eq!(
+            t.policy_use_check(slot, cc::SIGN, &[0; 32], &previous_digest, false, 1),
+            Err(Rc::PCR_CHANGED)
+        );
+        ok(&pol(&mut t, cc::POLICY_RESTART, &policy, &[]));
+        ok(&pol_pcr(&mut t, &policy, &[], &sel04()));
+    }
+}
+
+#[test]
 fn session_contexts_save_once_and_load_once() {
     let mut t = started();
     let mut p = policy_session(&mut t, se::POLICY);

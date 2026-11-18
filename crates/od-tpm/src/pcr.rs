@@ -163,15 +163,24 @@ impl Pcrs {
         }
     }
 
-    /// TPM Resume: restores the saved PCR, all others take their initial value.
-    pub(crate) fn restore(&mut self, saved: &SavedPcrs) {
-        self.set_initial();
+    /// Restart and Resume start from the counter saved by Shutdown(STATE).
+    /// Resume restores the state-save PCRs. Reinitializing counted PCRs adds
+    /// one generation for this Startup command (Part 3 v185, clauses 9.3 and 22.1).
+    pub(crate) fn startup_from_saved(&mut self, saved: &SavedPcrs, resume: bool) {
+        let mut counted_reset = false;
         for (i, v) in self.values.iter_mut().enumerate() {
-            if pcr_attr(i).save {
+            let attr = pcr_attr(i);
+            if resume && attr.save {
                 *v = saved.values[i];
+            } else {
+                *v = [attr.initial; 32];
+                counted_reset |= !attr.no_increment;
             }
         }
         self.update_counter = saved.update_counter;
+        if counted_reset {
+            self.increment_update_counter();
+        }
     }
 }
 

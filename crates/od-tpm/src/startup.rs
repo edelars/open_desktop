@@ -91,17 +91,17 @@ impl Tpm {
         match (startup_type, saved) {
             (su::STATE, Some(s)) => {
                 // TPM Resume.
-                self.pcrs.restore(&s.pcrs);
+                self.pcrs.startup_from_saved(&s.pcrs, true);
                 self.hv = HierarchyVolatile::after_resume(s.hier);
                 self.context = s.ctx;
                 self.persistent.restart_count = self.persistent.restart_count.wrapping_add(1);
             }
             (_, saved) => {
-                self.pcrs = Pcrs::new();
                 self.persistent.nv.startup_clear();
                 match (saved, null_seed) {
                     (Some(s), _) => {
                         // TPM Restart.
+                        self.pcrs.startup_from_saved(&s.pcrs, false);
                         self.hv = HierarchyVolatile::after_restart(s.hier);
                         self.context = s.ctx;
                         self.context.restart();
@@ -110,6 +110,7 @@ impl Tpm {
                     }
                     (None, seed) => {
                         // TPM Reset.
+                        self.pcrs = Pcrs::new();
                         self.hv = HierarchyVolatile::after_reset(seed.unwrap_or_default());
                         self.context = ContextState::default();
                         self.persistent.reset_count = self.persistent.reset_count.wrapping_add(1);

@@ -6,8 +6,8 @@
 Срезы фазы B входят в текущую ветку. Коммиты и результаты проверок сведены
 в [отчёте этапа 7](../reports/STAGE_7_REPORT.md#s7-23--реализация-и-проверки-фазы-b).
 Для завершения S7-23 требуется решение по редакции TCG EK Credential Profile
-и источнику сертификата EK (T-04). Открытые результаты ревью C1–C3 и TPM Restart
-записаны в реестре [ISSUE-514](../KNOWN_ISSUES.md#issue-514)–[ISSUE-518](../KNOWN_ISSUES.md#issue-518).
+и источнику сертификата EK (T-04). В реестре остаются открытые замечания к
+HMAC и защите контекстов. [ISSUE-515](../KNOWN_ISSUES.md#issue-515), [ISSUE-516](../KNOWN_ISSUES.md#issue-516).
 Реализация CRB, таблицы TPM2, TCG2,
 measured boot и журнала событий относится к S7-22. Границы TPM/PTP для
 фазы A перечислены в [ISSUE-510](../KNOWN_ISSUES.md#issue-510-s7-21-phase-a-acceptance-scope).
@@ -88,7 +88,7 @@ Crate не знает про шину, потоки, файлы, ОС-часы �
 Один банк — **SHA-256**, **24 PCR (0–23)**, `TPM_PT_PCR_SELECT_MIN` = `PCR_SELECT_MAX` = 3 октета (бит PCR *n* — бит *n* mod 8 октета *n* / 8, Part 1, 15.5). SHA-1 не реализуется (PTP 1.07, Table 3: `N`, «Made Not Allowed as of PTP 1.07»); SHA-384 и SHA-512 **не реализуются в фазе A** (PTP 1.07 помечает их `M`, план S7-21 — «опционально»): отклонение записано ниже. Сброс по `Startup`, `PCR_Reset`, расширение:
 
 - **Расширение:** `PCR.new = SHA-256(PCR.old ‖ digest)` (Part 3, 22.2.1). Проверено на векторе, вычисленном независимо (Python `hashlib`): для `digest = SHA-256("abc")` PCR 0 из нулей даёт `589f9ffe…faee8d`, повторное — `bdeb6c6d…58a926`, PCR 17 из `0xFF…` — `ded4cee9…063efb`. PCR расширяются ровно переданным дайджестом (контракт плана §4.3).
-- **`pcrUpdateCounter`:** растёт на успешное расширение/сброс, кроме PCR с `TPM_PT_PCR_NO_INCREMENT` (16, 21, 22, 23); обнуляется на `Startup(CLEAR)` (в том числе Restart — **NOT VERIFIED**: Part 3, 9.3.1 называет обнуление только для Reset), при `Startup(STATE)` восстанавливается.
+- **`pcrUpdateCounter`.** Успешное расширение или сброс учитываемого PCR изменяет счётчик. `TPM_PT_PCR_NO_INCREMENT` исключает PCR 16, 21, 22 и 23. TPM Reset начинает с нуля. Restart и Resume используют сохранённый счётчик и добавляют за `Startup` единицу, если инициализированы учитываемые PCR. При Resume PCR 0–15 восстанавливаются с прежними значениями, а PCR 17–20 инициализируются и учитываются при обновлении счётчика. [TPM Library v185 Part 3, §9.3.1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=44), [§22.1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=192), [ISSUE-518](../KNOWN_ISSUES.md#issue-518).
 - **Таблица атрибутов** (PTP 1.07, Table 14; колонки по localities 4, 3, 2, 1, 0 — Y/N; код реализует только колонку locality 0, остальные записаны для S7-22/DRTM и **не реализованы**):
 
 | PCR | Alias | SAVE | NO_INCREMENT | Reset командой L4,L3,L2,L1,L0 | Extend L4,L3,L2,L1,L0 | Значение после `Startup(CLEAR)` на L0 |
@@ -320,7 +320,7 @@ Crate не знает про шину, потоки, файлы, ОС-часы �
 5. Порядок проверки `TPM_RC_INITIALIZE` относительно `TPM_RC_COMMAND_CODE` (неизвестная команда до `Startup` отвечает `COMMAND_CODE`).
 6. Ответ `TPM_CAP_TPM_PROPERTIES` для `property` вне групп 1 и 2 (пустой список); `TPM_CAP_HANDLES` для постоянных handle иерархий (в фазе A — пустой список, в срезе A S7-23 — список, см. п. 19); `TPM_PT_MANUFACTURER` = `ODTP` (не зарегистрирован в TCG), версия firmware 1.0.
 7. `TPM_RC_MODE` с номером handle для sequence не того вида.
-8. Обнуление `pcrUpdateCounter` на Restart; пустой `outData` у `GetTestResult`; отсутствие `TPM_RC_TESTING`.
+8. Пустой `outData` у `GetTestResult` и отсутствие `TPM_RC_TESTING`.
 9. Построение HMAC_DRBG по SP 800-90A: текст SP 800-90A не читался. Реализация сверена с независимой реализацией на Python (`hmac`, `hashlib`), не с векторами NIST CAVP; Part 1 (DRBG Protected Capability) рекомендует SP 800-90A для не-FIPS TPM, HMAC_DRBG — такой механизм (закрывает часть открытого вопроса 1 ADR-0009; FIPS не заявляется).
 10. `validation` в `TPM2_Hash`/`SequenceComplete` — всегда NULL-ticket (`TPM_ST_HASHCHECK`, `TPM_RH_NULL`, пустой digest). Настоящий ticket — HMAC над `proof` иерархии (фаза B); для ключей restricted-signing в фазе A такой дайджест не подписать.
 11. `TPM_ST_SESSIONS` с `authorizationSize = 0` (и вообще `authorizationSize` < 9): команда без авторизуемых handle (например, `GetRandom`) обслуживается; **NOT VERIFIED against TPM 2.0 Library v185/v184: TPM_RC_AUTHSIZE при authorizationSize < 9 для SESSIONS.** Поведение сохранено; комментарии в `command.rs` (`parse_auth_area`) и `dispatch.rs`.
