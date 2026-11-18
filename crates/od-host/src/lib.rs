@@ -13,6 +13,8 @@ pub mod jit_region {
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod atomic_inline;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod host_threads;
 pub mod paged_host_loop;
 #[cfg(unix)]
 pub mod persistent_nvme;
@@ -1083,7 +1085,7 @@ impl PublishedCode {
     pub fn execute_paged_mov_rax_rbx_v2(
         &self,
         state: &mut od_isa::LongModeState,
-        bus: &mut od_machine::MachineBus,
+        bus: &od_machine::MachineBus,
         cr3: u64,
         efer: u64,
         access_context: od_isa::memory::AccessContext,
@@ -1110,7 +1112,7 @@ impl PublishedCode {
     pub(crate) fn execute_paged_mov_rax_rbx_v2_with_stop(
         &self,
         state: &mut od_isa::LongModeState,
-        bus: &mut od_machine::MachineBus,
+        bus: &od_machine::MachineBus,
         cr3: u64,
         efer: u64,
         access_context: od_isa::memory::AccessContext,
@@ -1195,7 +1197,7 @@ impl PublishedCode {
         form: PagedFetchedForm,
         code: &[u8],
         state: &mut od_isa::LongModeState,
-        bus: &mut od_machine::MachineBus,
+        bus: &od_machine::MachineBus,
         cr3: u64,
         efer: u64,
         access_context: od_isa::memory::AccessContext,
@@ -1331,7 +1333,7 @@ impl PublishedCode {
     pub(crate) fn execute_paged_mov_rbx_rax_store_v2(
         &self,
         state: &mut od_isa::LongModeState,
-        bus: &mut od_machine::MachineBus,
+        bus: &od_machine::MachineBus,
         cr3: u64,
         efer: u64,
         access_context: od_isa::memory::AccessContext,
@@ -1358,7 +1360,7 @@ impl PublishedCode {
     pub(crate) fn execute_paged_mov_rbx_rax_store_v2_with_stop(
         &self,
         state: &mut od_isa::LongModeState,
-        bus: &mut od_machine::MachineBus,
+        bus: &od_machine::MachineBus,
         cr3: u64,
         efer: u64,
         access_context: od_isa::memory::AccessContext,
@@ -1420,16 +1422,25 @@ impl PublishedCode {
         let paging = od_machine::Long64ProbeConfig::from_cpu_state(state, cr3, efer)
             .map_err(PagedMemoryLoadV2Error::Paging)?;
         let mut scope = od_machine::with_paged_mov_store_memory(bus, paging, state.rip, |memory| {
-            // SAFETY: `execute_memory_store_v2` requires private synchronous
-            // ordinary RAM with no shared aliases, devices or re-entry.
+            // SAFETY: `execute_memory_store_v2` requires synchronous ordinary
+            // RAM, every access to which is atomic per access (shared RAM of
+            // the parallel mode is allowed), with no devices or re-entry.
             // - The adapter writes only after a read-only probe proved the
             //   operand wholly ordinary RAM (never MMIO, ROM or
             //   framebuffer) and the tracked RAM walker (`access_tracked_ram`)
             //   never dispatches a device.
-            // - `bus` is an exclusive `&mut` for the whole call, so no other
-            //   vCPU, DMA engine or host writer runs concurrently; effects
-            //   are synchronous and immediate.
-            // - `PhysicalMemory::write_bytes` validates the whole 8-byte
+            // - S6-42b: `bus` is a shared reference (the vCPU threads of the
+            //   parallel mode hold only that). The generated block never touches
+            //   guest RAM itself: its one RAM effect is the helper call into this
+            //   adapter, whose write is `PhysicalMemory::store_bytes` (`&self`,
+            //   one host atomic access per aligned operand, `SeqCst` in the
+            //   parallel mode, the page generation raised with `Release` after
+            //   the data). Another vCPU's concurrent access to the same bytes is
+            //   therefore a race of atomic accesses, which the machine memory
+            //   defines (MEMORY_MODEL.md), not a data race on the adapter. The
+            //   adapter itself is private to this call (local Vecs, no device
+            //   reached); effects are synchronous and immediate for this vCPU.
+            // - `PhysicalMemory::store_bytes` validates the whole 8-byte
             //   range before committing, so a failed write leaves RAM
             //   unchanged.
             // - The compiled block lives in the host MAP_JIT mapping and guest
@@ -1465,11 +1476,17 @@ impl PublishedCode {
     /// and write semantics satisfy the private synchronous RAM contract.
     ///
     /// # Safety
-    /// The supplied backend must be private synchronous ordinary RAM. Its
-    /// `GuestMemory::write` implementation must complete the full 8-byte write
-    /// or leave RAM unchanged on error. The backing must have no MMIO, DMA,
-    /// concurrent readers/writers, shared aliases, or delayed/asynchronous
-    /// effects. It must never be executable memory or alias the cached guest
+    /// The supplied backend must be synchronous ordinary RAM whose every
+    /// access is atomic per access. Shared RAM is allowed: in the parallel
+    /// mode other vCPU threads read and write the same RAM, and the contract
+    /// holds when each of those accesses is one atomic host access
+    /// (`PhysicalMemory::store_bytes(&self)`), so concurrent readers/writers
+    /// and shared aliases of the RAM are races of atomic accesses, never data
+    /// races. Its `GuestMemory::write` implementation must complete the full
+    /// 8-byte write or leave RAM unchanged on error: that guarantee is about
+    /// this vCPU's own write, not about another vCPU's accesses in between.
+    /// The backing must have no MMIO, DMA or delayed/asynchronous effects.
+    /// It must never be executable memory or alias the cached guest
     /// source/code backing while this compiled block exists, and no transition
     /// to executable state may occur until the published code is dropped.
     /// The backend must not call back into this runtime or unwind through the
@@ -2440,7 +2457,7 @@ impl PagedFetchedLoadSession {
     pub fn execute(
         &mut self,
         state: &mut od_isa::LongModeState,
-        bus: &mut od_machine::MachineBus,
+        bus: &od_machine::MachineBus,
         cr3: u64,
         efer: u64,
         access_context: od_isa::memory::AccessContext,
@@ -2463,7 +2480,7 @@ impl PagedFetchedLoadSession {
     pub fn execute_with_store(
         &mut self,
         state: &mut od_isa::LongModeState,
-        bus: &mut od_machine::MachineBus,
+        bus: &od_machine::MachineBus,
         cr3: u64,
         efer: u64,
         access_context: od_isa::memory::AccessContext,
@@ -2474,7 +2491,7 @@ impl PagedFetchedLoadSession {
     fn execute_form(
         &mut self,
         state: &mut od_isa::LongModeState,
-        bus: &mut od_machine::MachineBus,
+        bus: &od_machine::MachineBus,
         cr3: u64,
         efer: u64,
         access_context: od_isa::memory::AccessContext,
@@ -2786,7 +2803,7 @@ impl PagedFetchedLoadSession {
     pub fn execute_forms(
         &mut self,
         state: &mut od_isa::LongModeState,
-        bus: &mut od_machine::MachineBus,
+        bus: &od_machine::MachineBus,
         cr3: u64,
         efer: u64,
         access_context: od_isa::memory::AccessContext,
@@ -2804,7 +2821,7 @@ impl PagedFetchedLoadSession {
     pub(crate) fn execute_forms_with_stop(
         &mut self,
         state: &mut od_isa::LongModeState,
-        bus: &mut od_machine::MachineBus,
+        bus: &od_machine::MachineBus,
         cr3: u64,
         efer: u64,
         access_context: od_isa::memory::AccessContext,
@@ -3180,7 +3197,7 @@ impl PagedFetchedLoadSession {
     pub fn execute_atomic(
         &mut self,
         state: &mut od_isa::LongModeState,
-        bus: &mut od_machine::MachineBus,
+        bus: &od_machine::MachineBus,
         cr3: u64,
         efer: u64,
         access_context: od_isa::memory::AccessContext,
@@ -3205,7 +3222,7 @@ impl PagedFetchedLoadSession {
     pub(crate) fn execute_atomic_with_stop(
         &mut self,
         state: &mut od_isa::LongModeState,
-        bus: &mut od_machine::MachineBus,
+        bus: &od_machine::MachineBus,
         cr3: u64,
         efer: u64,
         access_context: od_isa::memory::AccessContext,

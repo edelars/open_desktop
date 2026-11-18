@@ -355,10 +355,19 @@ pub(crate) struct QuantumCall<'a, 'b> {
 pub(crate) type QuantumFn<'f> =
     dyn Fn(QuantumCall<'_, '_>) -> Result<Executed, FirmwareBoardError> + Sync + 'f;
 
+/// What a vCPU thread runs on its own thread after its last quantum, before it is counted as
+/// exited (the argument is the vCPU index): per-thread state that must be released by its owner
+/// thread (and not by a `thread_local!` destructor, which `thread::scope` does not wait for).
+pub(crate) type ThreadExitFn<'f> = dyn Fn(usize) + Sync + 'f;
+
 /// State shared by the threads and the controller.
 struct SharedState<'a> {
     count: usize,
     config: ParallelConfig,
+    /// S6-42b (A7 of S6-40): the quantum does not use the board's interrupt source (a host quantum
+    /// such as the JIT loop of `od-host`), so the boot processor's thread takes the source's lock
+    /// only to compute its budget and not across the call.
+    source_free: bool,
     kicks: Arc<Kicks>,
     cells: Vec<Cell>,
     /// The controller asks every vCPU to stand still.
@@ -894,7 +903,18 @@ impl Worker<'_, '_, '_, '_> {
         let gate = WorkerGate { shared: sh, cpu };
         let mut stop = || sh.call_must_end(cpu);
         let mut inert = NoIrqSource;
-        let executed = if cpu == BOOT_VCPU_INDEX {
+        let executed = if cpu == BOOT_VCPU_INDEX && sh.source_free {
+            // The lock of the board's source and the clock owner's lock are held for the budget
+            // only: the call itself runs under none of them.
+            let budget = {
+                let source = lock(&sh.irq);
+                let owner = lock(&sh.owner);
+                let now = owner.now_ns();
+                let deadline = source.next_deadline_ns().filter(|deadline| *deadline > now);
+                owner.step_budget(left, deadline)
+            };
+            self.dispatch(vcpu, apic, &mut inert, &gate, budget, &mut stop)?
+        } else if cpu == BOOT_VCPU_INDEX {
             let mut source = lock(&sh.irq);
             let budget = {
                 let owner = lock(&sh.owner);
@@ -1149,12 +1169,25 @@ pub(crate) fn run_threads<R>(
     run: &QuantumFn<'_>,
     controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
 ) -> Result<(ParallelReport, R), FirmwareBoardError> {
+    run_threads_with(board, config, false, run, None, controller)
+}
+
+/// [`run_threads`] with `source_free`: the quantum does not use the board's interrupt source (a
+/// host quantum, S6-42b), so no thread holds that source's lock across a call (A7 of S6-40).
+pub(crate) fn run_threads_with<R>(
+    board: &mut LoadedFirmwareBoard,
+    config: ParallelConfig,
+    source_free: bool,
+    run: &QuantumFn<'_>,
+    on_thread_exit: Option<&ThreadExitFn<'_>>,
+    controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
+) -> Result<(ParallelReport, R), FirmwareBoardError> {
     if config.quantum == 0 {
         return Err(FirmwareBoardError::Config("parallel run: quantum 0"));
     }
     let previous_mode = board.execution_mode();
     board.set_execution_mode(ExecutionMode::Parallel);
-    let outcome = run_threads_inner(board, config, run, controller);
+    let outcome = run_threads_inner(board, config, source_free, run, on_thread_exit, controller);
     board.set_execution_mode(previous_mode);
     outcome
 }
@@ -1162,7 +1195,9 @@ pub(crate) fn run_threads<R>(
 fn run_threads_inner<R>(
     board: &mut LoadedFirmwareBoard,
     config: ParallelConfig,
+    source_free: bool,
     run: &QuantumFn<'_>,
+    on_thread_exit: Option<&ThreadExitFn<'_>>,
     controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
 ) -> Result<(ParallelReport, R), FirmwareBoardError> {
     let parts = board.thread_parts()?;
@@ -1202,6 +1237,7 @@ fn run_threads_inner<R>(
     let shared = SharedState {
         count,
         config,
+        source_free,
         kicks: Arc::clone(&kicks),
         cells: (0..count).map(|_| Cell::new()).collect(),
         stop_all: AtomicBool::new(false),
@@ -1247,6 +1283,10 @@ fn run_threads_inner<R>(
                         cell.quiet.store(true, SEQ);
                         cell.busy.store(false, SEQ);
                         shared.wake_controller();
+                    }
+                    // The thread's own state is released here, on the thread (M1 of S6-42b).
+                    if let Some(on_exit) = on_thread_exit {
+                        let _ = catch_unwind(AssertUnwindSafe(|| on_exit(cpu)));
                     }
                     shared.exited.fetch_add(1, SEQ);
                 })
@@ -2304,5 +2344,64 @@ mod tests {
         assert!(result.is_err(), "{result:?}");
         assert_eq!(board.bus_mut().physical_memory().split_lock_refusals(), 1);
         let _ = LOCAL_APIC_MMIO_BASE;
+    }
+    /// S6-42b, A7 of S6-40: a run whose quantum does not use the board's interrupt source
+    /// (`source_free`, the host quantum of the JIT loop) holds no lock of the board across the call
+    /// of the quantum: not the source's lock and not the clock owner's. The ordinary run keeps the
+    /// source's lock across the boot processor's call (the control run proves the probe can see it).
+    #[test]
+    fn a_source_free_run_holds_no_board_lock_across_the_quantum_call() {
+        use std::sync::atomic::AtomicBool;
+        for source_free in [false, true] {
+            let mut board = board(1);
+            system(&mut board, false);
+            install(
+                &mut board,
+                0,
+                long_state(CODE_0, STACK_0, 0x1000, false),
+                0xD01,
+            );
+            let inside = AtomicBool::new(false);
+            let release = AtomicBool::new(false);
+            let quantum = |call: QuantumCall<'_, '_>| -> Result<Executed, FirmwareBoardError> {
+                inside.store(true, SEQ);
+                while !release.load(SEQ) && !(call.stop)() {
+                    std::hint::spin_loop();
+                }
+                Ok(Executed {
+                    retired: 1,
+                    partial_rep: false,
+                    device_ns: 0,
+                })
+            };
+            let (report, (irq_free, owner_free)) = run_threads_with(
+                &mut board,
+                open_config(64),
+                source_free,
+                &quantum,
+                None,
+                |control| {
+                    assert!(
+                        control.wait_until(WAIT, || inside.load(SEQ)),
+                        "the quantum is not entered"
+                    );
+                    let irq_free = control.shared.irq.try_lock().is_ok();
+                    let owner_free = control.shared.owner.try_lock().is_ok();
+                    release.store(true, SEQ);
+                    control.finish();
+                    (irq_free, owner_free)
+                },
+            )
+            .unwrap();
+            assert_joined(&report, 1);
+            assert!(
+                owner_free,
+                "the clock owner's lock is free (source_free {source_free})"
+            );
+            assert_eq!(
+                irq_free, source_free,
+                "the source's lock is free across the call exactly when the run is source free"
+            );
+        }
     }
 }

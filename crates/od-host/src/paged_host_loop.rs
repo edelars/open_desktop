@@ -190,9 +190,13 @@ impl PagedHostLoopControl {
 /// [`PagedHostLoopControl::stop_pending`] is false, call
 /// [`PagedHostLoopControl::withdraw_safe`], and call the loop again.
 ///
-/// This type is not the `ParallelControl` of `od-machine` (that one is
-/// crate-private and drives interpreter quanta); it is the same protocol for the
-/// host JIT loop, and the binding of the two is open (S6-42 report).
+/// This type is not the `ParallelControl` of `od-machine`; it is the same
+/// protocol for loops that run in threads of the caller's own. S6-42b binds the
+/// loop to the real `ParallelControl` instead: `crate::host_threads::JitHostQuantum`
+/// is the quantum of the vCPU threads of `od_machine::run_host_threads`, where
+/// `stop_all` of the run reaches the loop as the `stop` poll of
+/// [`run_paged_host_loop_shared`]. This group stays for tests of the protocol and
+/// for hosts that own their threads.
 pub struct PagedVcpuGroup<'a> {
     controls: Vec<&'a PagedHostLoopControl>,
 }
@@ -393,8 +397,87 @@ pub(crate) fn run_paged_host_loop_with_hook(
     bus: &mut od_machine::MachineBus,
     rflags_defined: &mut u64,
     incoming_budget: u64,
+    committed_write: impl FnMut(od_machine::GuestPhysicalRange),
+    before_step: impl FnMut(&PagedHostLoopControl, u64),
+) -> PagedHostLoopReport {
+    run_paged_host_loop_core(
+        session,
+        control,
+        config,
+        state,
+        LoopBusRef::Exclusive(bus),
+        rflags_defined,
+        incoming_budget,
+        committed_write,
+        before_step,
+        || false,
+    )
+}
+
+/// What the loop reaches the machine through (S6-42b). `Exclusive`: the caller owns the bus
+/// (`&mut MachineBus`, the single-vCPU paths of S3-38o and S6-42). `Shared`: the loop runs on a vCPU
+/// thread of the parallel mode and holds only `&MachineBus` (A7 of S6-40): the JIT session, the
+/// tracked fetch and the data operand reach RAM through the shared reference
+/// (`PhysicalMemory` by `&self`), and the interpreter fallback takes the device lock for one port
+/// access at a time. The loop itself holds no lock of the bus between two steps.
+pub(crate) enum LoopBusRef<'a> {
+    Exclusive(&'a mut od_machine::MachineBus),
+    Shared(&'a od_machine::MachineBus, usize),
+}
+
+impl LoopBusRef<'_> {
+    fn machine(&self) -> &od_machine::MachineBus {
+        match self {
+            Self::Exclusive(bus) => bus,
+            Self::Shared(bus, _) => bus,
+        }
+    }
+}
+
+/// [`run_paged_host_loop`] for a vCPU thread of the parallel mode (S6-42b): the same loop over
+/// `&MachineBus` of vCPU `vcpu`, with `stop` polled on every iteration next to the flags of
+/// `control` (the run's stop poll of `od_machine::HostQuantumCall::stop`: end of the run, a
+/// `stop_all` request, another vCPU's split `LOCK`). A true `stop` ends the call like a raised STOP
+/// flag: `StopRequested`, no step ran after it, on the safe point. The caller owns the thread's
+/// session; the loop takes no lock of the bus (the device lock is taken by the interpreter fallback
+/// for one port access at a time).
+pub fn run_paged_host_loop_shared(
+    session: &mut PagedFetchedLoadSession,
+    control: &PagedHostLoopControl,
+    config: PagedHostLoopConfig,
+    state: &mut od_isa::LongModeState,
+    bus: &od_machine::MachineBus,
+    vcpu: usize,
+    rflags_defined: &mut u64,
+    incoming_budget: u64,
+    committed_write: impl FnMut(od_machine::GuestPhysicalRange),
+    stop: impl FnMut() -> bool,
+) -> PagedHostLoopReport {
+    run_paged_host_loop_core(
+        session,
+        control,
+        config,
+        state,
+        LoopBusRef::Shared(bus, vcpu),
+        rflags_defined,
+        incoming_budget,
+        committed_write,
+        |_, _| {},
+        stop,
+    )
+}
+
+fn run_paged_host_loop_core(
+    session: &mut PagedFetchedLoadSession,
+    control: &PagedHostLoopControl,
+    config: PagedHostLoopConfig,
+    state: &mut od_isa::LongModeState,
+    mut bus: LoopBusRef<'_>,
+    rflags_defined: &mut u64,
+    incoming_budget: u64,
     mut committed_write: impl FnMut(od_machine::GuestPhysicalRange),
     mut before_step: impl FnMut(&PagedHostLoopControl, u64),
+    mut external_stop: impl FnMut() -> bool,
 ) -> PagedHostLoopReport {
     let mut report = PagedHostLoopReport::new(incoming_budget);
     if *rflags_defined & !od_isa::INTEGER_FLAGS != 0 {
@@ -413,7 +496,7 @@ pub(crate) fn run_paged_host_loop_with_hook(
             report.stop_byte_observations += 1;
             report.retired_at_stop_byte = Some(report.retired_total());
         }
-        if requests.stop {
+        if requests.stop || external_stop() {
             report.exit = PagedHostLoopExit::StopRequested;
             return report;
         }
@@ -435,7 +518,7 @@ pub(crate) fn run_paged_host_loop_with_hook(
         // JIT path for the admitted forms; a native block gets the caller's byte.
         let attempt = session.execute_forms_with_stop(
             state,
-            bus,
+            bus.machine(),
             config.cr3,
             config.efer,
             config.access_context,
@@ -509,17 +592,31 @@ pub(crate) fn run_paged_host_loop_with_hook(
 
         // Exactly one step of the shared interpreter.
         report.jit_refusals += 1;
-        let quantum = od_machine::run_paged_probe(
-            state,
-            bus,
-            config.cr3,
-            config.efer,
-            config.access_context,
-            1,
-            *rflags_defined,
-            || false,
-            &mut committed_write,
-        );
+        let quantum = match &mut bus {
+            LoopBusRef::Exclusive(bus) => od_machine::run_paged_probe(
+                state,
+                bus,
+                config.cr3,
+                config.efer,
+                config.access_context,
+                1,
+                *rflags_defined,
+                || false,
+                &mut committed_write,
+            ),
+            LoopBusRef::Shared(bus, vcpu) => od_machine::run_paged_probe_shared(
+                state,
+                bus,
+                *vcpu,
+                config.cr3,
+                config.efer,
+                config.access_context,
+                1,
+                *rflags_defined,
+                || false,
+                &mut committed_write,
+            ),
+        };
         *rflags_defined = quantum.rflags_defined;
         let retired = quantum.instructions_executed;
         if retired > 1 || retired > report.remaining_budget {
@@ -616,6 +713,13 @@ mod tests {
                 .unwrap();
         let mut bus =
             MachineBus::new(map, RamLimits::new(RAM_BYTES), vec![], vec![], vec![]).unwrap();
+        populate_tables(&mut bus, code);
+        bus
+    }
+
+    /// The page tables, the code page and the data qword of [`make_bus`], written into any
+    /// bus whose RAM covers `0..RAM_BYTES` (S6-42b: also the RAM of a board).
+    pub(crate) fn populate_tables(bus: &mut MachineBus, code: &[u8]) {
         for (address, value) in [
             (0x1000, 0x2007),
             (0x2000, 0x4007),
@@ -626,12 +730,11 @@ mod tests {
             (0x5000, 0x7007),
             (0x7000, DATA_PHYSICAL | 0x7),
         ] {
-            put_qword(&mut bus, address, value);
+            put_qword(bus, address, value);
         }
         bus.patch_physical_ram(GuestPhysicalAddress::new(CODE_PHYSICAL), code)
             .unwrap();
-        put_qword(&mut bus, DATA_QWORD, INITIAL_DATA);
-        bus
+        put_qword(bus, DATA_QWORD, INITIAL_DATA);
     }
 
     fn make_state(rax: u64, rbx: u64, rcx: u64) -> LongModeState {
@@ -1695,4 +1798,6 @@ mod tests {
     /// cross-vCPU invalidation (child module: it uses the helpers above).
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     mod s6_42;
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    mod s6_42b;
 }

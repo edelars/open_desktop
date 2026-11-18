@@ -413,7 +413,7 @@ pub struct PagedMovMemoryScope<R> {
 /// Run a synchronous callback with a temporary RAM-only, same-page qword MOV
 /// memory adapter. The callback cannot retain the adapter beyond this call.
 pub fn with_paged_mov_memory<R>(
-    bus: &mut MachineBus,
+    bus: &MachineBus,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
     callback: impl FnOnce(&mut dyn GuestMemory) -> R,
@@ -429,7 +429,7 @@ pub fn with_paged_mov_memory<R>(
 /// dword operands); this adapter itself does not refuse an eight-byte read.
 /// An operand that would cross a 4 KiB page is refused before any walk.
 pub fn with_paged_mov_dword_memory<R>(
-    bus: &mut MachineBus,
+    bus: &MachineBus,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
     callback: impl FnOnce(&mut dyn GuestMemory) -> R,
@@ -438,7 +438,7 @@ pub fn with_paged_mov_dword_memory<R>(
 }
 
 fn with_paged_mov_read_memory<R>(
-    bus: &mut MachineBus,
+    bus: &MachineBus,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
     dword: bool,
@@ -542,7 +542,7 @@ pub struct PagedMovStoreScope<R> {
 /// (`PhysicalMemory::store_bytes` validates the whole range first). The
 /// callback cannot retain the adapter beyond this call.
 pub fn with_paged_mov_store_memory<R>(
-    bus: &mut MachineBus,
+    bus: &MachineBus,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
     callback: impl FnOnce(&mut dyn GuestMemory) -> R,
@@ -571,7 +571,7 @@ pub fn with_paged_mov_store_memory<R>(
 }
 
 struct PagedMovStoreMemory<'a> {
-    bus: &'a mut MachineBus,
+    bus: &'a MachineBus,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
     page_fault: Option<PageFaultRecord>,
@@ -2804,6 +2804,11 @@ pub fn step_paged_mov_dword_store(
 /// bus can serve `IN`/`OUT` in the same instruction (large-RAM profile only, S4-38L3).
 enum AdapterBus<'a> {
     Machine(&'a mut MachineBus, usize),
+    /// S6-42b: the whole bus by shared reference, for the RAM-only adapters of the JIT path of a vCPU
+    /// thread (`ram_only` profiles never reach a device, so the exclusive device table is not needed).
+    /// It serves what `Machine` serves of those adapters, with `&MachineBus`; a path that needs the
+    /// device table (`access_tracked`) is a typed error here.
+    Shared(&'a MachineBus, usize),
     Ram(&'a crate::PhysicalMemory),
     /// `Ram` plus the MMIO dispatch of the set loop (S4-38L9s): an operand in an MMIO region
     /// goes to the board's device, as on the `Machine` form; the rest is the large-RAM walk.
@@ -2821,6 +2826,16 @@ impl<'a> From<&'a mut MachineBus> for AdapterBus<'a> {
     }
 }
 
+impl<'a> From<&'a MachineBus> for AdapterBus<'a> {
+    /// The index is the boot processor's by default: it only decides which vCPU's per-processor
+    /// devices (the Local APIC window) an MMIO access reaches (`AdapterBus::vcpu`). The shared
+    /// RAM path of the JIT store helper never reaches MMIO (the probe refuses it first), so the
+    /// default is harmless there; a caller that needs another vCPU builds `Shared(bus, cpu)`.
+    fn from(bus: &'a MachineBus) -> Self {
+        Self::Shared(bus, crate::vcpu::BOOT_VCPU_INDEX)
+    }
+}
+
 impl<'a> AdapterBus<'a> {
     /// The gate of the split `LOCK` of the vCPU thread this adapter belongs to (S6-34 step 8):
     /// only the set loop's form (`RamMmio`) can carry one.
@@ -2830,7 +2845,7 @@ impl<'a> AdapterBus<'a> {
                 let mmio: &'a dyn crate::bus::SetStepMmio = *mmio;
                 mmio.split_gate()
             }
-            Self::Machine(..) | Self::Ram(_) => None,
+            Self::Machine(..) | Self::Shared(..) | Self::Ram(_) => None,
         }
     }
 }
@@ -2842,7 +2857,7 @@ impl AdapterBus<'_> {
     /// boot processor's set loop.
     fn vcpu(&self) -> usize {
         match self {
-            Self::Machine(_, vcpu) | Self::RamMmio(_, _, vcpu) => *vcpu,
+            Self::Machine(_, vcpu) | Self::Shared(_, vcpu) | Self::RamMmio(_, _, vcpu) => *vcpu,
             Self::Ram(_) => crate::vcpu::BOOT_VCPU_INDEX,
         }
     }
@@ -2852,6 +2867,18 @@ impl AdapterBus<'_> {
     fn machine(&mut self) -> Result<&mut MachineBus, MemoryError> {
         match self {
             Self::Machine(bus, _) => Ok(bus),
+            Self::Ram(_) | Self::RamMmio(..) | Self::Shared(..) => Err(MemoryError::Backend(
+                "the RAM-only adapter bus serves the large-RAM walk only".to_string(),
+            )),
+        }
+    }
+
+    /// The whole bus by shared reference (S6-42b): what the RAM-only tracked accesses need
+    /// (`access_tracked_ram`, the bounded read), for the exclusive and the shared form alike.
+    fn machine_ref(&self) -> Result<&MachineBus, MemoryError> {
+        match self {
+            Self::Machine(bus, _) => Ok(bus),
+            Self::Shared(bus, _) => Ok(bus),
             Self::Ram(_) | Self::RamMmio(..) => Err(MemoryError::Backend(
                 "the RAM-only adapter bus serves the large-RAM walk only".to_string(),
             )),
@@ -2867,6 +2894,7 @@ impl AdapterBus<'_> {
     ) -> crate::TrackedAccessReport {
         match self {
             Self::Machine(bus, _) => bus.access_tracked_2m_ram(paging, request, committed_write),
+            Self::Shared(bus, _) => bus.access_tracked_2m_ram(paging, request, committed_write),
             Self::Ram(memory) => {
                 crate::page_walk::access_long64_2m_ram(memory, paging, request, committed_write)
             }
@@ -2890,6 +2918,7 @@ impl AdapterBus<'_> {
     fn locked_memory(&self) -> &crate::PhysicalMemory {
         match self {
             Self::Machine(bus, _) => bus.physical_memory(),
+            Self::Shared(bus, _) => bus.physical_memory(),
             Self::Ram(memory) | Self::RamMmio(memory, _, _) => memory,
         }
     }
@@ -2899,7 +2928,7 @@ impl AdapterBus<'_> {
     fn ram_ref(&self) -> Option<&crate::PhysicalMemory> {
         match self {
             Self::Ram(memory) | Self::RamMmio(memory, _, _) => Some(memory),
-            Self::Machine(..) => None,
+            Self::Machine(..) | Self::Shared(..) => None,
         }
     }
 
@@ -2912,6 +2941,11 @@ impl AdapterBus<'_> {
         output: &mut [u8],
     ) -> Result<(), ()> {
         if let Self::Machine(bus, _) = self {
+            return bus
+                .read_virtual_ram_diagnostic(paging, rip, linear, context, output)
+                .map_err(|_| ());
+        }
+        if let Self::Shared(bus, _) = self {
             return bus
                 .read_virtual_ram_diagnostic(paging, rip, linear, context, output)
                 .map_err(|_| ());
@@ -3107,6 +3141,14 @@ impl<'a> PagedMovMemoryAdapter<'a> {
                     access,
                 )
             }
+            AdapterBus::Shared(bus, _) => translate_long64_2m_ram_read_only_with_trace(
+                bus.physical_memory(),
+                &self.paging,
+                pending.fault_rip,
+                GuestLinearAddress::new(pending.fault_cr2),
+                context,
+                access,
+            ),
             AdapterBus::Machine(bus, _) => {
                 let (memory, _) = bus.split_for_pio_step();
                 translate_long64_2m_ram_read_only_with_trace(
@@ -3244,7 +3286,7 @@ impl<'a> PagedMovMemoryAdapter<'a> {
                 )
             } else if self.ram_only {
                 self.bus
-                    .machine()?
+                    .machine_ref()?
                     .access_tracked_ram(&self.paging, request, |range| writes.push(range))
             } else {
                 self.bus
@@ -3273,7 +3315,7 @@ impl<'a> PagedMovMemoryAdapter<'a> {
                 mmio_allowed,
             )
         } else if self.ram_only {
-            self.bus.machine()?.access_tracked_ram(
+            self.bus.machine_ref()?.access_tracked_ram(
                 &self.paging,
                 request,
                 &mut *self.committed_write,
@@ -3435,7 +3477,7 @@ impl<'a> PagedMovMemoryAdapter<'a> {
             let mut trace = None;
             let result = self
                 .bus
-                .machine()?
+                .machine_ref()?
                 .read_tracked_bounded_ram_read_with_fault_trace(
                     &self.paging,
                     request,
@@ -3447,7 +3489,7 @@ impl<'a> PagedMovMemoryAdapter<'a> {
             }
             return result.map_err(|error| self.map_access_error(error));
         }
-        let result = self.bus.machine()?.read_tracked_bounded_ram_read(
+        let result = self.bus.machine_ref()?.read_tracked_bounded_ram_read(
             &self.paging,
             request,
             &mut *self.committed_write,
@@ -3498,7 +3540,9 @@ impl<'a> PagedMovMemoryAdapter<'a> {
                         )
                     }
                 }
-                AdapterBus::Machine(..) => return Err(Self::unsupported("cross-page write")),
+                AdapterBus::Machine(..) | AdapterBus::Shared(..) => {
+                    return Err(Self::unsupported("cross-page write"));
+                }
             };
             if let Err(error) = result {
                 if let Some(trace) = trace {

@@ -19,6 +19,7 @@ mod fetch_translation_cache;
 mod firmware_board;
 #[cfg(test)]
 mod host_order_litmus;
+mod host_parallel;
 mod identity_memory_adapter;
 mod idle_arbiter;
 #[cfg(test)]
@@ -230,6 +231,11 @@ pub use page_walk::{
     access_long64_4k_ram, probe_instruction_access, probe_long64_4k,
 };
 
+pub use host_parallel::{
+    HostParallelConfig, HostParallelControl, HostParallelFinish, HostParallelReport,
+    HostQuantumCall, HostQuantumExit, HostQuantumFn, HostQuantumResult, HostStopError,
+    HostStopProof, HostThreadExitFn, host_install_vcpu, host_parallel_board, run_host_threads,
+};
 pub use paged_apic_entry::{PagedApicEntryReport, PagedApicEntryResult, poll_paged_apic_entry};
 pub use paged_descriptor::{
     PagedLgdtError, PagedLgdtReport, PagedLidtError, PagedLidtReport, PagedLtrError,
@@ -262,7 +268,7 @@ pub use paged_pio_step::{PagedPioU8StepReport, step_paged_pio_u8};
 pub use paged_probe::{
     PagedProbeExit, PagedProbeIntegrationError, PagedProbeQuantumReport, PagedProbeRejection,
     run_paged_cr0_wp_probe, run_paged_cr3_probe, run_paged_cr3_probe_2m_ram, run_paged_probe,
-    run_paged_probe_with_rdtsc, run_paged_stack_probe,
+    run_paged_probe_shared, run_paged_probe_with_rdtsc, run_paged_stack_probe,
 };
 pub use paged_vcpu_session::{
     PagedProbeProfile, PagedVcpuError, PagedVcpuHostState, PagedVcpuSession,

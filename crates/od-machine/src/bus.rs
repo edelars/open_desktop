@@ -324,7 +324,7 @@ impl MachineBus {
     /// Diagnostic-only read of one guest virtual range. The page walk uses a no-op A/D writer,
     /// and the final physical access is admitted only when its entire range is backed by RAM.
     pub(crate) fn read_virtual_ram_diagnostic(
-        &mut self,
+        &self,
         paging: &Long64ProbeConfig,
         rip: u64,
         linear: GuestLinearAddress,
@@ -340,7 +340,7 @@ impl MachineBus {
             let bytes_to_page_end = 4096 - (linear_address as usize & 0xfff);
             let fragment_len = bytes_to_page_end.min(output.len() - offset);
             let physical = crate::page_walk::translate_long64_2m_ram_read_only(
-                &mut self.memory,
+                &self.memory,
                 paging,
                 rip,
                 GuestLinearAddress::new(linear_address),
@@ -376,7 +376,7 @@ impl MachineBus {
     /// page. The first byte is translated as an instruction fetch; the page
     /// walker enforces execute permissions and commits its A-bit effects.
     pub fn tracked_code_snapshot(
-        &mut self,
+        &self,
         paging: &Long64ProbeConfig,
         linear_start: u64,
         length: usize,
@@ -388,7 +388,7 @@ impl MachineBus {
     /// Capture one executable byte range and report each committed page-walk
     /// write in the order it occurs.
     pub fn tracked_code_snapshot_with_callback(
-        &mut self,
+        &self,
         paging: &Long64ProbeConfig,
         linear_start: u64,
         length: usize,
@@ -425,7 +425,7 @@ impl MachineBus {
     /// failure keeps the first-page walk effects (reported through the
     /// callback) and returns no snapshot.
     pub fn tracked_code_snapshot_two_pages_with_callback(
-        &mut self,
+        &self,
         paging: &Long64ProbeConfig,
         linear_start: u64,
         length: usize,
@@ -492,7 +492,7 @@ impl MachineBus {
     /// `instruction_rip` and read `length` bytes from its page. The caller
     /// guarantees that the range lies within the page of `fetch_linear`.
     fn capture_code_page(
-        &mut self,
+        &self,
         paging: &Long64ProbeConfig,
         instruction_rip: u64,
         linear_start: u64,
@@ -1146,21 +1146,21 @@ impl MachineBus {
     }
 
     pub(crate) fn access_tracked_ram(
-        &mut self,
+        &self,
         paging: &Long64ProbeConfig,
         request: TrackedAccessRequest,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> TrackedAccessReport {
-        crate::page_walk::access_long64_4k_ram(&mut self.memory, paging, request, committed_write)
+        crate::page_walk::access_long64_4k_ram(&self.memory, paging, request, committed_write)
     }
 
     pub(crate) fn access_tracked_2m_ram(
-        &mut self,
+        &self,
         paging: &Long64ProbeConfig,
         request: TrackedAccessRequest,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> TrackedAccessReport {
-        crate::page_walk::access_long64_2m_ram(&mut self.memory, paging, request, committed_write)
+        crate::page_walk::access_long64_2m_ram(&self.memory, paging, request, committed_write)
     }
 
     pub(crate) fn probe_tracked_ram_access(
@@ -1207,13 +1207,13 @@ impl MachineBus {
     }
 
     pub(crate) fn read_tracked_bounded_ram_read(
-        &mut self,
+        &self,
         paging: &Long64ProbeConfig,
         request: TrackedAccessRequest,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<u64, crate::TrackedAccessError> {
         crate::page_walk::read_long64_4k_bounded_ram_read(
-            &mut self.memory,
+            &self.memory,
             paging,
             request,
             committed_write,
@@ -1221,14 +1221,14 @@ impl MachineBus {
     }
 
     pub(crate) fn read_tracked_bounded_ram_read_with_fault_trace(
-        &mut self,
+        &self,
         paging: &Long64ProbeConfig,
         request: TrackedAccessRequest,
         committed_write: impl FnMut(GuestPhysicalRange),
         fault_trace: &mut Option<crate::WalkTrace>,
     ) -> Result<u64, crate::TrackedAccessError> {
         crate::page_walk::read_long64_4k_bounded_ram_read_with_fault_trace(
-            &mut self.memory,
+            &self.memory,
             paging,
             request,
             committed_write,

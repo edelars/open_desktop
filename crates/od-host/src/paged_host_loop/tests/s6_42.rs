@@ -2,8 +2,10 @@
 //! process `MAP_JIT` region (JIT_CONTRACT S6-40: A1 to A4, D1, M1 to M6, S1, S3).
 //!
 //! The vCPU threads share one `MachineBus` behind a `Mutex`: the paged JIT path
-//! and the shared interpreter take `&mut MachineBus`, and a shared-reference
-//! variant of them does not exist yet (open, S6-42 report). A thread holds the
+//! and the shared interpreter took `&mut MachineBus` when this slice was written
+//! (S6-42b added the shared-reference variants and tests without the lock:
+//! `s6_42b.rs`; these tests keep the `Mutex` and stay as the interleaved-with-lock
+//! baseline). A thread holds the
 //! lock for one call of the loop (or one step), so steps of different vCPUs
 //! interleave, and the RAM (with the page generations of `commit_write`) is one
 //! object that every thread reads and writes. What runs truly in parallel is the

@@ -112,7 +112,7 @@ pub fn run_paged_probe(
         false,
         false,
         state,
-        bus,
+        ProbeBus::Exclusive(bus),
         cr3,
         efer,
         context,
@@ -145,7 +145,7 @@ pub fn run_paged_probe_with_rdtsc(
         false,
         false,
         state,
-        bus,
+        ProbeBus::Exclusive(bus),
         cr3,
         efer,
         context,
@@ -177,7 +177,7 @@ pub fn run_paged_stack_probe(
         false,
         false,
         state,
-        bus,
+        ProbeBus::Exclusive(bus),
         cr3,
         efer,
         context,
@@ -209,7 +209,7 @@ pub fn run_paged_cr3_probe(
         false,
         false,
         state,
-        bus,
+        ProbeBus::Exclusive(bus),
         0,
         efer,
         context,
@@ -245,7 +245,7 @@ pub fn run_paged_cr3_probe_2m_ram(
         false,
         true,
         state,
-        bus,
+        ProbeBus::Exclusive(bus),
         0,
         efer,
         context,
@@ -281,7 +281,7 @@ pub(crate) fn run_paged_probe_2m_ram(
         false,
         true,
         state,
-        bus,
+        ProbeBus::Exclusive(bus),
         cr3,
         efer,
         context,
@@ -312,8 +312,52 @@ pub fn run_paged_cr0_wp_probe(
         true,
         false,
         state,
-        bus,
+        ProbeBus::Exclusive(bus),
         0,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        stop,
+        committed_write,
+        None,
+    )
+}
+
+/// What the probe loop reaches the machine through (S6-42b). `Exclusive`: the caller owns the bus
+/// (`&mut MachineBus`: the device table is taken without a lock). `Shared`: a vCPU thread holds
+/// only `&MachineBus`: RAM is the shared reference and every port access takes the one device lock
+/// of the bus for that access alone (`split_for_set_step_shared`), never across an instruction.
+pub(crate) enum ProbeBus<'a> {
+    Exclusive(&'a mut MachineBus),
+    Shared(&'a MachineBus, usize),
+}
+
+/// The base quantum of [`run_paged_probe`] for a vCPU thread that holds only `&MachineBus`
+/// (S6-42b, A7 of S6-40): the same loop and the same CPU profile, RAM through the shared
+/// reference (the generations of `commit_write` are the machine's), the device lock taken for one
+/// port access at a time. `vcpu` is the index of the calling vCPU. No lock of the bus is held
+/// between two instructions.
+pub fn run_paged_probe_shared(
+    state: &mut LongModeState,
+    bus: &MachineBus,
+    vcpu: usize,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+) -> PagedProbeQuantumReport {
+    run_paged_probe_inner(
+        false,
+        false,
+        false,
+        false,
+        state,
+        ProbeBus::Shared(bus, vcpu),
+        cr3,
         efer,
         context,
         instruction_budget,
@@ -330,7 +374,7 @@ fn run_paged_probe_inner(
     cpu_cr0_wp_profile: bool,
     large_ram_profile: bool,
     state: &mut LongModeState,
-    bus: &mut MachineBus,
+    mut bus: ProbeBus<'_>,
     cr3: u64,
     efer: u64,
     context: AccessContext,
@@ -496,85 +540,45 @@ fn run_paged_probe_inner(
             }
         };
         let instruction_rip = state.rip;
-        let (memory, mut pio) = bus.split_for_pio_step();
-        let mut memory = PagedProbeMemory {
-            memory,
+        let step = ProbeStep {
+            stack_profile,
+            cpu_cr3_profile,
+            cpu_cr0_wp_profile,
+            large_ram_profile,
             paging,
             instruction_rip,
-            large_ram_profile,
-            committed_write: &mut committed_write,
-            page_fault: None,
-            memory_error: None,
+            context,
+            efer,
+            rflags_defined: current_rflags_defined,
         };
-        // One selected CPU entry owns decode and instruction choice. The
-        // machine never peeks at guest opcodes or retries another entry.
-        let cpu = if cpu_cr0_wp_profile {
-            step_paged_cr0_wp_probe(
-                PagedCpl0Cr0WpProbeV1,
-                state,
-                &mut memory,
-                &mut pio,
-                AccessContext {
-                    origin: AccessOrigin::Explicit,
-                    ..context
-                },
-                efer,
-                current_rflags_defined,
-            )
-        } else if cpu_cr3_profile {
-            step_paged_cr3_probe(
-                PagedCpl0Cr3ProbeV1,
-                state,
-                &mut memory,
-                &mut pio,
-                AccessContext {
-                    origin: AccessOrigin::Explicit,
-                    ..context
-                },
-                efer,
-                current_rflags_defined,
-            )
-        } else if stack_profile {
-            step_paged_stack_probe(
-                PagedCpl0StackProbeV1,
-                state,
-                &mut memory,
-                &mut pio,
-                AccessContext {
-                    origin: AccessOrigin::Explicit,
-                    ..context
-                },
-                current_rflags_defined,
-            )
-        } else if let Some(source) = rdtsc.as_mut() {
-            step_paged_probe_with_rdtsc(
-                PagedCpl0ProbeV1,
-                state,
-                &mut memory,
-                &mut pio,
-                AccessContext {
-                    origin: AccessOrigin::Explicit,
-                    ..context
-                },
-                current_rflags_defined,
-                &mut **source,
-            )
-        } else {
-            step_paged_probe(
-                PagedCpl0ProbeV1,
-                state,
-                &mut memory,
-                &mut pio,
-                AccessContext {
-                    origin: AccessOrigin::Explicit,
-                    ..context
-                },
-                current_rflags_defined,
-            )
+        let (cpu, page_fault, memory_error) = match &mut bus {
+            ProbeBus::Exclusive(bus) => {
+                let (memory, mut pio) = bus.split_for_pio_step();
+                step.run(
+                    state,
+                    memory,
+                    &mut pio,
+                    &mut committed_write,
+                    rdtsc
+                        .as_mut()
+                        .map(|source| &mut **source as &mut dyn FnMut() -> u64),
+                )
+            }
+            ProbeBus::Shared(bus, vcpu) => {
+                let (memory, io) = bus.split_for_set_step_shared(*vcpu);
+                let mut pio = io.port_io();
+                step.run(
+                    state,
+                    memory,
+                    &mut pio,
+                    &mut committed_write,
+                    rdtsc
+                        .as_mut()
+                        .map(|source| &mut **source as &mut dyn FnMut() -> u64),
+                )
+            }
         };
         current_rflags_defined = cpu.rflags_defined;
-        let page_fault = memory.page_fault;
-        let memory_error = memory.memory_error;
         instructions_executed += cpu.instructions_executed;
 
         match cpu.exit {
@@ -749,6 +753,101 @@ fn run_paged_probe_inner(
                 translation_context_changes.push(effect);
             }
         }
+    }
+}
+
+/// One CPU step of the probe loop with its profile flags (the body that was inline in the loop,
+/// now generic over the port view so the exclusive and the shared bus run the same code).
+struct ProbeStep {
+    stack_profile: bool,
+    cpu_cr3_profile: bool,
+    cpu_cr0_wp_profile: bool,
+    large_ram_profile: bool,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    context: AccessContext,
+    efer: u64,
+    rflags_defined: u64,
+}
+
+impl ProbeStep {
+    fn run<P: od_isa::PortIo>(
+        &self,
+        state: &mut LongModeState,
+        memory: &crate::PhysicalMemory,
+        pio: &mut P,
+        committed_write: &mut dyn FnMut(GuestPhysicalRange),
+        rdtsc: Option<&mut dyn FnMut() -> u64>,
+    ) -> (
+        od_isa::PagedProbeResult<P::Error>,
+        Option<PageFaultRecord>,
+        Option<TrackedAccessError>,
+    ) {
+        let mut memory = PagedProbeMemory {
+            memory,
+            paging: self.paging,
+            instruction_rip: self.instruction_rip,
+            large_ram_profile: self.large_ram_profile,
+            committed_write,
+            page_fault: None,
+            memory_error: None,
+        };
+        let context = AccessContext {
+            origin: AccessOrigin::Explicit,
+            ..self.context
+        };
+        // One selected CPU entry owns decode and instruction choice. The
+        // machine never peeks at guest opcodes or retries another entry.
+        let cpu = if self.cpu_cr0_wp_profile {
+            step_paged_cr0_wp_probe(
+                PagedCpl0Cr0WpProbeV1,
+                state,
+                &mut memory,
+                pio,
+                context,
+                self.efer,
+                self.rflags_defined,
+            )
+        } else if self.cpu_cr3_profile {
+            step_paged_cr3_probe(
+                PagedCpl0Cr3ProbeV1,
+                state,
+                &mut memory,
+                pio,
+                context,
+                self.efer,
+                self.rflags_defined,
+            )
+        } else if self.stack_profile {
+            step_paged_stack_probe(
+                PagedCpl0StackProbeV1,
+                state,
+                &mut memory,
+                pio,
+                context,
+                self.rflags_defined,
+            )
+        } else if let Some(source) = rdtsc {
+            step_paged_probe_with_rdtsc(
+                PagedCpl0ProbeV1,
+                state,
+                &mut memory,
+                pio,
+                context,
+                self.rflags_defined,
+                source,
+            )
+        } else {
+            step_paged_probe(
+                PagedCpl0ProbeV1,
+                state,
+                &mut memory,
+                pio,
+                context,
+                self.rflags_defined,
+            )
+        };
+        (cpu, memory.page_fault, memory.memory_error)
     }
 }
 

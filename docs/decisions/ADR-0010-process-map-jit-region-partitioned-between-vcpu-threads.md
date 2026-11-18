@@ -1,7 +1,7 @@
 # ADR-0010: Process MAP_JIT region partitioned between vCPU threads
 
 - **Date:** 2026-11-18.
-- **Status:** proposed; accepted with the S6-42 gate review. Records the S6-40 contract decision (accepted 2026-11-18) and what S6-42 implemented; written by the S6-42 executor, to be confirmed or replaced by the coordinator.
+- **Status:** proposed (S6-42b: the bus consequence below is updated, the decision itself is unchanged); accepted with the S6-42 gate review. Records the S6-40 contract decision (accepted 2026-11-18) and what S6-42 implemented; written by the S6-42 executor, to be confirmed or replaced by the coordinator.
 - **Related documents:** [JIT contract, S6-40 section](../specs/JIT_CONTRACT.md#s6-40-кэш-кода-при-нескольких-vcpu-контракт) (rules A1 to A7, M1 to M6, S1 to S6), [JIT contract, S6-42 section](../specs/JIT_CONTRACT.md#s6-42-межпроцессорная-инвалидация-и-безопасное-освобождение-блоков), [ADR-0004](ADR-0004-capacity-one-memory-cache.md), [ADR-0005](ADR-0005-persistent-same-code-session.md), [ISSUE-038](../KNOWN_ISSUES.md), [Stage 6 plan](../plans/STAGE_6.md).
 
 ## Question
@@ -32,7 +32,7 @@ Apple allows a process with Hardened Runtime and the allow-jit entitlement one `
 - The same code is compiled once per vCPU that runs it, and the region is N times bigger; the cost is measured in S6-37 and S6-38, and option 1 is reconsidered only on those numbers, with a new ADR.
 - Fixture backends (`PublishedArenaBackend`, `MultiEntryBlockCache`) are not moved to slots; they stay single-thread and keep their own region (A5).
 - Multi-instruction blocks with stores in parallel mode need S3-24; links between blocks need D1 to D3 of the contract (S3-31).
-- The shared interpreter and the paged JIT path still take `&mut MachineBus`, so the slice runs vCPU threads over one bus behind a lock; a shared-reference variant is open (S6-42 report, limits).
+- S6-42 ran vCPU threads over one bus behind a lock because the shared interpreter and the paged JIT path took `&mut MachineBus`. S6-42b removed that: the JIT session, its adapters and the interpreter fallback take `&MachineBus` (RAM through `PhysicalMemory` by `&self`, devices through the one device lock per access), and the JIT loop runs on the threads of `ParallelControl` (`od_machine::run_host_threads`, `od_host::host_threads::JitHostQuantum`). The decision (one region per process, one part per vCPU thread, a private `!Send` arena) is unchanged; only the bus handling of the S6-42 slice is replaced. Still open (S6-42c): interrupt and fault delivery in the host quantum, the STOP byte for native code (blocks of several instructions), the atomic blocks in the loop, the fixture backends.
 - Sources marked "from memory" in the S6-40 contract (Intel SDM 9.1.3, Arm ARM cache maintenance, Apple rule on `pthread_jit_write_protect_np`) are still to be verified before the acceptance of S6-42.
 
 ## Revisit when
