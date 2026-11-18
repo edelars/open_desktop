@@ -459,6 +459,18 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         return Err(Rc::AUTHSIZE);
     }
     let mut uses = classify_sessions(tpm, spec.code, &sessions)?;
+    let mut binding_slots = [None; 2];
+    for (s, usage) in sessions.iter().zip(&uses).skip(1) {
+        let SessionUse::Hmac { slot, .. } = *usage else {
+            continue;
+        };
+        if s.attributes & session_attr::DECRYPT != 0 {
+            // One session can do both. Include its nonce once, in the decrypt position.
+            binding_slots[0] = Some(slot);
+        } else if s.attributes & session_attr::ENCRYPT != 0 {
+            binding_slots[1] = Some(slot);
+        }
+    }
     let params_start = command.len() - r.remaining();
     let parameters = &command[params_start..];
 
@@ -492,6 +504,15 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                 }
             }
             SessionUse::Hmac { slot, used_auth } => {
+                // A password in the first slot does not move this binding to a later HMAC.
+                let parameter_nonces = if i == 0 {
+                    binding_slots.map(|slot| {
+                        slot.and_then(|slot| tpm.sessions.get(slot))
+                            .map_or(&[][..], |session| session.nonce_tpm.as_slice())
+                    })
+                } else {
+                    [&[][..]; 2]
+                };
                 let cp = *cp_hash
                     .get_or_insert_with(|| command_parameter_hash(tpm, spec, &handles, parameters));
                 if let Some(pslot) = policy_slot {
@@ -517,6 +538,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                                 &key,
                                 &cp,
                                 &s.nonce,
+                                parameter_nonces,
                                 s.attributes,
                                 &s.hmac,
                             )
@@ -532,6 +554,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                             session.key.as_slice(),
                             &cp,
                             &s.nonce,
+                            parameter_nonces,
                             s.attributes,
                             &s.hmac,
                         ) {
@@ -543,7 +566,15 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                     tpm.da_check(class)?;
                     let session = tpm.sessions.get(*slot).ok_or(Rc::reference_session(i))?;
                     let (key, with_auth) = authorization_key(session, handles[i], &auth);
-                    if !verify_command_hmac(session, &key, &cp, &s.nonce, s.attributes, &s.hmac) {
+                    if !verify_command_hmac(
+                        session,
+                        &key,
+                        &cp,
+                        &s.nonce,
+                        parameter_nonces,
+                        s.attributes,
+                        &s.hmac,
+                    ) {
                         return Err(tpm.da_auth_failed(class, n));
                     }
                     *used_auth = with_auth;

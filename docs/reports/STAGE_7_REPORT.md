@@ -248,7 +248,7 @@ Evidence: `cargo test -p od-tpm` passed **264/264 tests**, including determinist
 | B | `454f351` | Объекты RSA/ECC, создание ключей, подпись и проверка. Ревью завершено без новых дефектов в объёме среза. |
 | C1 | `46f0300` | RSA/ECDH, защита от перебора (DA), snapshot v2. Закрыт [ISSUE-517](../KNOWN_ISSUES.md#issue-517). |
 | C2 | `2da9887` | Политики, контексты, HMAC, Quote и Certify. Закрыты [ISSUE-514](../KNOWN_ISSUES.md#issue-514), [ISSUE-516](../KNOWN_ISSUES.md#issue-516), [ISSUE-518](../KNOWN_ISSUES.md#issue-518) и [ISSUE-520](../KNOWN_ISSUES.md#issue-520). |
-| C3 | `9c7f46c` | NV counter/bits/extend, GetTime, шифрование параметров, snapshot v3. Открыт [ISSUE-515](../KNOWN_ISSUES.md#issue-515). |
+| C3 | `9c7f46c` | NV counter/bits/extend, GetTime, шифрование параметров, snapshot v3. Закрыт [ISSUE-515](../KNOWN_ISSUES.md#issue-515). |
 
 
 На `312546d` команда `cargo test -p od-tpm --offline` прошла 264 теста.
@@ -280,6 +280,10 @@ RSA, состоянии policy-сессий, защите контекстов �
 Шифрование TPM-контекстов теперь выводит ключ и IV из proof иерархии и `resetValue`. Тест повторно создаёт тот же primary key после Reset и проверяет изменение шифротекста при совпадающих заголовках и sensitive body. Исходный контекст загружается после Restart и Resume. После Reset его загрузка отклоняется, а новый контекст загружается. [ISSUE-516](../KNOWN_ISSUES.md#issue-516).
 
 Полный `cargo test -p od-tpm --offline` прошёл с 269 успешными тестами. Workspace check, форматирование и `git diff --check` прошли. Graphify обновлён. Независимое ревью `gpt-6.1-sol` с уровнем рассуждения `high` одобрило срез и повторило семь тестов контекстов.
+
+Первая HMAC-авторизация команды теперь включает прежние TPM nonce других сессий `decrypt`/`encrypt`. Тест через `Certify` проверяет отдельные и совмещённые роли, первый пароль, policy-сессии, отказы при отсутствующем и повторённом nonce, HMAC над шифротекстом ответа и проверку подписи после расшифровки. [ISSUE-515](../KNOWN_ISSUES.md#issue-515).
+
+Полный `cargo test -p od-tpm --offline` прошёл с 270 успешными тестами. Workspace check, форматирование и `git diff --check` прошли. Graphify обновлён. Независимое ревью `gpt-6.1-sol` с уровнем рассуждения `high` одобрило срез.
 
 Далее приведены результаты и ограничения, зафиксированные при исходной
 реализации срезов A–C3 7 ноября 2026 года. Актуальные итоги независимых

@@ -211,12 +211,15 @@ pub(crate) fn authorization_key(
     (key, !bound_here)
 }
 
-/// Checks the HMAC of a command authorization (Equation 17). An empty key accepts an empty HMAC.
+/// Checks command authorization (Part 1 v185, Equation 17). `parameter_nonces` holds the
+/// other decrypt and encrypt sessions' old TPM nonces, in that order, for the first slot.
+/// An empty key accepts an empty HMAC.
 pub(crate) fn verify_command_hmac(
     session: &Session,
     key: &[u8],
     cp_hash: &[u8; DIGEST],
     nonce_caller: &[u8],
+    parameter_nonces: [&[u8]; 2],
     attributes: u8,
     hmac: &[u8],
 ) -> bool {
@@ -225,7 +228,14 @@ pub(crate) fn verify_command_hmac(
     }
     hmac_sha256_verify(
         key,
-        &[cp_hash, nonce_caller, &session.nonce_tpm, &[attributes]],
+        &[
+            cp_hash,
+            nonce_caller,
+            &session.nonce_tpm,
+            parameter_nonces[0],
+            parameter_nonces[1],
+            &[attributes],
+        ],
         hmac,
     )
 }

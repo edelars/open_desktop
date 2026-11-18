@@ -12,9 +12,9 @@
 use sha2::{Digest, Sha256};
 
 use super::tests_b::{
-    Hc, Hs, define, define_raw, hc, hmac_command, kdfa_256, name_of, nv_attributes, nv_public,
-    nv_read, nv_read_data, nv_read_public, nv_write, pw_cmd, run_hmac, set_auth, shutdown,
-    split_response, start_cmd, start_params, startup, trimmed,
+    Hc, Hs, check_hmac_ack, define, define_raw, hc, hmac_auth_entry, hmac_command, kdfa_256,
+    name_of, nv_attributes, nv_public, nv_read, nv_read_data, nv_read_public, nv_write, pw_cmd,
+    run_hmac, set_auth, shutdown, split_response, start_cmd, start_params, startup, trimmed,
 };
 use super::tests_c2::{
     FIRMWARE, attest_bytes, ecdsa_parts, h256, hexs, make_child, parse_attestation, qualified,
@@ -1494,6 +1494,209 @@ fn only_one_session_of_a_command_may_decrypt_and_only_one_encrypt() {
     // test frame is garbage: authorization fails afterwards, with the first session's code).
     let r = run(&mut t, two(session_attr::DECRYPT, session_attr::ENCRYPT));
     assert_ne!(rc(&r), Rc::ATTRIBUTES.in_session(2).0);
+}
+
+#[test]
+fn first_certify_hmac_binds_other_parameter_encryption_sessions() {
+    use session_attr::{CONTINUE_SESSION, DECRYPT, ENCRYPT};
+
+    #[derive(Clone, Copy)]
+    enum FirstAuth {
+        Hmac,
+        Password,
+        PolicyHmac,
+        PolicyEmpty,
+    }
+    const OBJECT_PASSWORD: &[u8] = b"objectpw";
+    const SIGNER_PASSWORD: &[u8] = b"signerpw";
+    const QUALIFYING: &[u8] = b"bound-certify";
+
+    for (first_flags, second_flags, first_auth) in [
+        (0, DECRYPT, FirstAuth::Hmac),
+        (0, ENCRYPT, FirstAuth::Hmac),
+        (0, DECRYPT | ENCRYPT, FirstAuth::Hmac),
+        (DECRYPT, ENCRYPT, FirstAuth::Hmac),
+        (ENCRYPT, DECRYPT, FirstAuth::Hmac),
+        (DECRYPT | ENCRYPT, 0, FirstAuth::Hmac),
+        (0, ENCRYPT, FirstAuth::Password),
+        (0, ENCRYPT, FirstAuth::PolicyHmac),
+        (0, ENCRYPT, FirstAuth::PolicyEmpty),
+    ] {
+        let mut t = started();
+        let with_policy = matches!(first_auth, FirstAuth::PolicyHmac | FirstAuth::PolicyEmpty);
+        let first_kind = if with_policy { se::POLICY } else { se::HMAC };
+        let mut first = start_sym_kind(&mut t, NULL, b"", &AES_SYM, first_kind);
+        let mut second = start_sym(&mut t, NULL, b"", &XOR_SYM);
+        let mut object_template = ecc_sign();
+        if with_policy {
+            if matches!(first_auth, FirstAuth::PolicyHmac) {
+                ok(&run(
+                    &mut t,
+                    plain(cc::POLICY_AUTH_VALUE, &[first.handle], &[]),
+                ));
+            }
+            ok(&run(
+                &mut t,
+                plain(cc::POLICY_COMMAND_CODE, &[first.handle], &u32b(cc::CERTIFY)),
+            ));
+            let response = run(&mut t, plain(cc::POLICY_GET_DIGEST, &[first.handle], &[]));
+            object_template.auth_policy = Reader::new(params(&response, 0))
+                .tpm2b(32)
+                .unwrap()
+                .to_vec();
+        }
+        let object = parse_primary(&create_primary(
+            &mut t,
+            PLATFORM,
+            OBJECT_PASSWORD,
+            &object_template,
+        ));
+        let key = parse_primary(&create_primary(
+            &mut t,
+            PLATFORM,
+            SIGNER_PASSWORD,
+            &ecc_sign(),
+        ));
+        let handles = [object.handle, key.handle];
+        let mut first_command = hc(
+            cc::CERTIFY,
+            &handles,
+            Vec::new(),
+            (object.handle, OBJECT_PASSWORD),
+        );
+        let mut second_command = hc(
+            cc::CERTIFY,
+            &handles,
+            Vec::new(),
+            (key.handle, SIGNER_PASSWORD),
+        );
+        first_command.attrs = CONTINUE_SESSION | first_flags;
+        second_command.attrs = CONTINUE_SESSION | second_flags;
+        second_command.nonce_caller.fill(0x25);
+        let names = vec![object.name, key.name];
+        let qualifying = if first_flags & DECRYPT != 0 {
+            crypt(
+                &AES_SYM,
+                &first,
+                OBJECT_PASSWORD,
+                &first_command.nonce_caller,
+                &first.nonce_tpm,
+                QUALIFYING,
+                true,
+            )
+        } else if second_flags & DECRYPT != 0 {
+            crypt(
+                &XOR_SYM,
+                &second,
+                SIGNER_PASSWORD,
+                &second_command.nonce_caller,
+                &second.nonce_tpm,
+                QUALIFYING,
+                true,
+            )
+        } else {
+            QUALIFYING.to_vec()
+        };
+        let wire = cat(&[&tpm2b(&qualifying), &u16b(alg::NULL)]);
+        first_command.names = names.clone();
+        second_command.names = names;
+        first_command.params = wire.clone();
+        second_command.params = wire.clone();
+
+        let frame_with_binding = |binding: &[&[u8]]| {
+            let mut area = match first_auth {
+                FirstAuth::Password => cat(&[
+                    &u32b(handle::RS_PW),
+                    &tpm2b(&[]),
+                    &[0],
+                    &tpm2b(OBJECT_PASSWORD),
+                ]),
+                _ => hmac_auth_entry(
+                    &first,
+                    &first_command,
+                    binding,
+                    matches!(first_auth, FirstAuth::PolicyEmpty),
+                    false,
+                ),
+            };
+            area.extend_from_slice(&hmac_auth_entry(
+                &second,
+                &second_command,
+                &[],
+                false,
+                false,
+            ));
+            let area_size = u32b(area.len() as u32);
+            frame(
+                st::SESSIONS,
+                cc::CERTIFY,
+                &handles,
+                &cat(&[&area_size, &area]),
+                &wire,
+            )
+        };
+        let mut binding = Vec::new();
+        if second_flags != 0 && matches!(first_auth, FirstAuth::Hmac | FirstAuth::PolicyHmac) {
+            err(
+                &run(&mut t, frame_with_binding(&[])),
+                Rc::BAD_AUTH.in_session(1),
+            );
+            if second_flags == DECRYPT | ENCRYPT {
+                let duplicated = [second.nonce_tpm.as_slice(); 2];
+                err(
+                    &run(&mut t, frame_with_binding(&duplicated)),
+                    Rc::BAD_AUTH.in_session(1),
+                );
+            }
+            binding.push(second.nonce_tpm.as_slice());
+        }
+        let reply = run(&mut t, frame_with_binding(&binding));
+        let (wire_params, ack) = split_response(&reply, 0);
+        assert_eq!(ack.len(), 2);
+        if matches!(first_auth, FirstAuth::Hmac | FirstAuth::PolicyHmac) {
+            check_hmac_ack(&mut first, &first_command, &wire_params, &ack[0]);
+        } else {
+            assert!(ack[0].2.is_empty());
+        }
+        check_hmac_ack(&mut second, &second_command, &wire_params, &ack[1]);
+        let mut reader = Reader::new(&wire_params);
+        let parameter = reader.tpm2b(1024).unwrap();
+        let attestation = if first_flags & ENCRYPT != 0 {
+            crypt(
+                &AES_SYM,
+                &first,
+                OBJECT_PASSWORD,
+                &first.nonce_tpm,
+                &first_command.nonce_caller,
+                parameter,
+                false,
+            )
+        } else if second_flags & ENCRYPT != 0 {
+            crypt(
+                &XOR_SYM,
+                &second,
+                SIGNER_PASSWORD,
+                &second.nonce_tpm,
+                &second_command.nonce_caller,
+                parameter,
+                false,
+            )
+        } else {
+            parameter.to_vec()
+        };
+        assert!(
+            attestation
+                .windows(QUALIFYING.len())
+                .any(|window| window == QUALIFYING)
+        );
+        let signature = reader.bytes(reader.remaining()).unwrap();
+        ok(&verify(
+            &mut t,
+            key.handle,
+            &h256(&[&attestation]),
+            signature,
+        ));
+    }
 }
 
 #[test]

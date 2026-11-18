@@ -6287,10 +6287,9 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 
 ### ISSUE-515 — S7-23: HMAC первой авторизации с шифрованием в отдельной сессии
 
-- **Дата и компонент.** 2026-11-18, `od-tpm`, HMAC и шифрование параметров в срезе C3. Статус открыт.
-- **Основание.** `verify_command_hmac` в `crates/od-tpm/src/session.rs` проверяет cpHash, nonce вызывающего, собственный nonce TPM и атрибуты. Для команды с двумя сессиями и проверяемым HMAC первой авторизации в расчёт не входят nonce TPM отдельной encrypt/decrypt-сессии. Правило для этого случая приведено в TPM Library v184 Part 1 §17.6.5. [TPM Library v184 Part 1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_1_Version_184_pub_0d89c60386.pdf)
-- **Последствие.** HMAC корректного клиента может быть отклонён при выборе отдельной сессии для шифрования параметров. Тесты атрибутов в `tests_c3.rs` используют подставной HMAC и эту комбинацию не подтверждают.
-- **Следующий шаг.** Передавать nonce TPM выбранных crypto-сессий при проверке первой авторизации и сверить допустимые сочетания по независимому вектору.
+- **Дата и компонент.** 2026-11-18, `od-tpm`, HMAC и шифрование параметров в срезе C3. Закрыто.
+- **Основание.** HMAC первой авторизации не учитывал TPM nonce другой encrypt/decrypt-сессии, и корректные команды отклонялись. [TPM Library v185 Part 1, §16.6.5, Equation 17](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-1-Architecture_Version-185_pub.pdf#page=119).
+- **Исправление и проверка.** Первый HMAC команды учитывает прежние TPM nonce других сессий в порядке decrypt, encrypt, по одному на сессию. Тест `Certify` покрывает обе роли, общую сессию на две роли, первый пароль, обычный и policy HMAC, пустой policy HMAC и отказы при пропуске или повторе nonce. Проверяются HMAC ответа, расшифрованные параметры и подпись. [Отчёт S7-23](reports/STAGE_7_REPORT.md#s7-23--реализация-и-проверки-фазы-b).
 
 <a id="issue-516"></a>
 

@@ -176,7 +176,13 @@ pub(super) struct Hc {
     pub(super) entity_after: Vec<u8>,
 }
 
-pub(super) fn hmac_command(s: &Hs, c: &Hc, empty_hmac: bool, corrupt: bool) -> Vec<u8> {
+pub(super) fn hmac_auth_entry(
+    s: &Hs,
+    c: &Hc,
+    parameter_nonces: &[&[u8]],
+    empty_hmac: bool,
+    corrupt: bool,
+) -> Vec<u8> {
     let mut cp = Sha256::new();
     cp.update(c.code.to_be_bytes());
     for n in &c.names {
@@ -196,6 +202,9 @@ pub(super) fn hmac_command(s: &Hs, c: &Hc, empty_hmac: bool, corrupt: bool) -> V
     let mut data = cp.to_vec();
     data.extend_from_slice(&c.nonce_caller);
     data.extend_from_slice(&s.nonce_tpm);
+    for nonce in parameter_nonces {
+        data.extend_from_slice(nonce);
+    }
     data.push(c.attrs);
     let mut mac = crate::crypto::hmac_sha256(&key, &[&data]).to_vec();
     if corrupt {
@@ -209,6 +218,11 @@ pub(super) fn hmac_command(s: &Hs, c: &Hc, empty_hmac: bool, corrupt: bool) -> V
     area.extend_from_slice(&tpm2b(&c.nonce_caller));
     area.push(c.attrs);
     area.extend_from_slice(&tpm2b(&mac));
+    area
+}
+
+pub(super) fn hmac_command(s: &Hs, c: &Hc, empty_hmac: bool, corrupt: bool) -> Vec<u8> {
+    let area = hmac_auth_entry(s, c, &[], empty_hmac, corrupt);
     let mut auth_area = (area.len() as u32).to_be_bytes().to_vec();
     auth_area.extend_from_slice(&area);
     frame(st::SESSIONS, c.code, &c.handles, &auth_area, &c.params)
@@ -243,14 +257,19 @@ pub(super) fn run_hmac(t: &mut Tpm, s: &mut Hs, c: &Hc) -> Vec<u8> {
     }
     let (params, acks) = split_response(&resp, 0);
     assert_eq!(acks.len(), 1);
-    let (nonce, attrs, hmac) = &acks[0];
+    check_hmac_ack(s, c, &params, &acks[0]);
+    resp
+}
+
+pub(super) fn check_hmac_ack(s: &mut Hs, c: &Hc, params: &[u8], ack: &Ack) {
+    let (nonce, attrs, hmac) = ack;
     assert_eq!(nonce.len(), s.nonce_tpm.len());
     assert_ne!(nonce, &s.nonce_tpm, "the TPM rolls its nonce");
     assert_eq!(*attrs, c.attrs);
     let mut rp = Sha256::new();
     rp.update(0u32.to_be_bytes());
     rp.update(c.code.to_be_bytes());
-    rp.update(&params);
+    rp.update(params);
     let mut data = rp.finalize().to_vec();
     data.extend_from_slice(nonce);
     data.extend_from_slice(&c.nonce_caller);
@@ -270,7 +289,6 @@ pub(super) fn run_hmac(t: &mut Tpm, s: &mut Hs, c: &Hc) -> Vec<u8> {
         "response HMAC"
     );
     s.nonce_tpm = nonce.clone();
-    resp
 }
 
 pub(super) fn hc(code: u32, handles: &[u32], params: Vec<u8>, entity: (u32, &[u8])) -> Hc {
