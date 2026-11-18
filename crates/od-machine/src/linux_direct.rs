@@ -47,7 +47,7 @@ use crate::linux_boot_params::{LINUX_E820_MAX_ENTRIES, LinuxBootParamsError};
 use crate::linux_checkpoints::{LinuxCheckpointRecord, LinuxCheckpointTable};
 use crate::linux_load::{LinuxLoadError, LinuxLoadInput, load_linux_direct};
 use crate::linux_placement::LinuxPlacementError;
-use crate::{GuestPhysicalAddress, LinuxExecutionObservations, MachineStopReason};
+use crate::{GuestPhysicalAddress, LinuxExecutionObservations, MachineStopReason, NvmeConfig};
 use od_isa::cpuid::CpuidProfile;
 use od_isa::execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, MovCr3Long64V1, TranslationContextChange,
@@ -290,11 +290,30 @@ fn load_error(error: LinuxLoadError) -> LinuxDirectError {
 pub fn load_linux_direct_board(
     input: &LinuxDirectInput<'_>,
 ) -> Result<LinuxDirectBoot, LinuxDirectError> {
+    load_linux_direct_board_inner(input, None)
+}
+
+/// As the diskless loader, with a PCI NVMe endpoint and its own ACPI manifest.
+/// Attach the namespace backend through the returned board's NVMe handle before running it.
+/// Interrupt delivery uses the APIC Linux execution profile.
+pub fn load_linux_direct_board_with_nvme(
+    input: &LinuxDirectInput<'_>,
+    nvme: NvmeConfig,
+) -> Result<LinuxDirectBoot, LinuxDirectError> {
+    load_linux_direct_board_inner(input, Some(nvme))
+}
+
+fn load_linux_direct_board_inner(
+    input: &LinuxDirectInput<'_>,
+    nvme: Option<NvmeConfig>,
+) -> Result<LinuxDirectBoot, LinuxDirectError> {
     // 1. Header first: a truncated or foreign kernel is refused before anything else is looked at.
     parse_linux_bzimage_header(input.bzimage).map_err(header_error)?;
     // 2. The board this module assembles, and its own manifest hash.
     let config = FirmwareBoardConfig {
         ram_bytes: input.ram_bytes,
+        nvme_pci: nvme.is_some(),
+        nvme,
         acpi_pm: true,
         acpi_tables: true,
         pci_ecam: true,
@@ -687,6 +706,7 @@ pub fn run_linux_direct_board(
     input: &LinuxDirectInput<'_>,
     instruction_budget: u64,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
+    check_nvme_interrupt_profile(boot, false)?;
     let pm_timer_reads_before = boot.board.acpi_pm().map(|pm| pm.timer_reads());
     let report = boot
         .board
@@ -720,6 +740,27 @@ pub fn run_linux_direct_board(
             checkpoints: None,
         },
     ))
+}
+
+fn check_nvme_interrupt_profile(
+    boot: &LinuxDirectBoot,
+    apic: bool,
+) -> Result<(), LinuxDirectError> {
+    if !apic
+        && boot
+            .board
+            .nvme()
+            .is_some_and(|nvme| nvme.has_pci_transport())
+    {
+        let mut error = LinuxDirectError::text(
+            "run_failed",
+            "run",
+            "PCI NVMe requires the X8664V1Stage4AApic execution profile".into(),
+        );
+        error.retired = Some(0);
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// What the set path adds to a stop record.
@@ -1390,6 +1431,10 @@ fn run_linux_direct_board_set_with_post_iret_index(
     selected_elf_stack_copy: bool,
     selected_delay_tsc_call_summary: bool,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
+    check_nvme_interrupt_profile(
+        boot,
+        members.cpuid_profile == CpuidProfile::X8664V1Stage4AApic,
+    )?;
     let pm_timer_reads_before = boot.board.acpi_pm().map(|pm| pm.timer_reads());
     // S4-39g: only the user-mode run of a board with the Linux-profile PIT and 8259 gets the
     // timer line: the PIT -> 8259 IR0 source becomes the board source, and the set carries `halt`

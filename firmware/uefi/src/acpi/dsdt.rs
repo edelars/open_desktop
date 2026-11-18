@@ -18,11 +18,13 @@
 use super::aml::AmlError;
 use super::aml::builder::AmlBuilder;
 use super::aml::names::{AmlName, NameSeg};
-use super::aml::resource::{AddressRange, InterruptFlags, ResourceTemplate, SpaceFlags};
+use super::aml::resource::{
+    AddressRange, InterruptFlags, MemoryFlags, ResourceTemplate, SpaceFlags,
+};
 use super::aml::validate::validate_definition_block;
 use super::bytes::{head_mut, sub, tail_mut, tri};
 use super::manifest::{
-    BoardManifest, DeviceEntry, GSI_NONE, IRQ_ACTIVE_LOW, IRQ_LEVEL, device_type,
+    BoardManifest, DeviceEntry, GSI_NONE, IRQ_ACTIVE_LOW, IRQ_LEVEL, PciNvmeRoute, device_type,
 };
 use super::mcfg::{ECAM_BYTES_PER_BUS, EcamWindow, McfgError};
 use super::table::{SDT_HEADER_LEN, TableError, finish_checksum, validate_table, write_header};
@@ -111,7 +113,7 @@ const fn build_dsdt_inner(
         Some(ecam) if ecam.is_present() => {
             let window = tri!(EcamWindow::from_entry(ecam), DsdtError::Ecam);
             (
-                Some(tri!(PciRoot::from_window(&window))),
+                Some(tri!(PciRoot::from_window(&window, manifest.pci_nvme()))),
                 Some(tri!(EcamReservation::from_window(&window))),
             )
         }
@@ -192,22 +194,19 @@ pub const fn validate_dsdt(table: &[u8]) -> Result<(), DsdtError> {
     Ok(())
 }
 
-/// PCIe root bridge `\_SB.PCI0` from the checked ECAM window (FIRMWARE_BOOT.md 6.3, type 7):
-/// segment, `start_bus`, `end_bus`.
-///
-/// The manifest v1.0 has no I/O or MMIO window fields for the root bridge and no interrupt
-/// routes, so `_CRS` carries the bus number range and the conf1 ports `0xCF8..=0xCFF` (S4-31b;
-/// the ports are board facts of S4-30c, not manifest fields) and `_PRT` is empty. There are no
-/// bridge apertures: this is a gap of the contract, recorded in `docs/KNOWN_ISSUES.md`; nothing
-/// is invented here.
+/// PCIe root bridge `\_SB.PCI0` from the ECAM window and optional NVMe PCI aperture and route.
 struct PciRoot {
     segment: u16,
     start_bus: u16,
     crs: ResourceTemplate,
+    nvme: Option<PciNvmeRoute>,
 }
 
 impl PciRoot {
-    const fn from_window(window: &EcamWindow) -> Result<Self, DsdtError> {
+    const fn from_window(
+        window: &EcamWindow,
+        nvme: Option<PciNvmeRoute>,
+    ) -> Result<Self, DsdtError> {
         let segment = window.segment;
         let start_bus = window.start_bus as u16;
         let end_bus = window.end_bus as u16;
@@ -229,11 +228,31 @@ impl PciRoot {
             template.io(true, CONF1_PORT_BASE, CONF1_PORT_BASE, 1, CONF1_PORT_LEN),
             DsdtError::Aml
         );
+        if let Some(route) = nvme {
+            tri!(
+                template.dword_memory(
+                    SpaceFlags::FIXED,
+                    MemoryFlags {
+                        cacheability: 0,
+                        read_write: true,
+                    },
+                    AddressRange {
+                        granularity: 0,
+                        min: route.min,
+                        max: route.max,
+                        translation: 0,
+                        length: route.length,
+                    },
+                ),
+                DsdtError::Aml
+            );
+        }
         let crs = tri!(template.finish(), DsdtError::Aml);
         Ok(PciRoot {
             segment,
             start_bus,
             crs,
+            nvme,
         })
     }
 
@@ -245,10 +264,17 @@ impl PciRoot {
         tri!(b.name_integer("_SEG", self.segment as u64));
         tri!(b.name_integer("_BBN", self.start_bus as u64));
         tri!(b.name_resource_template("_CRS", &self.crs));
-        // Empty: the manifest has no PCI interrupt routes (ACPI 6.2.13 допускает пустой _PRT,
-        // маршрутов нет; текст 6.2.13 не сверен). No `_ADR`: a device has `_HID` or `_ADR`.
         tri!(b.begin_name("_PRT"));
         let prt = tri!(b.begin_package());
+        if let Some(route) = self.nvme {
+            // ACPI 6.6 §6.2.14: any function, INTA, hardwired GSI.
+            let entry = tri!(b.begin_package());
+            tri!(b.integer(((route.slot as u64) << 16) | 0xFFFF));
+            tri!(b.integer(0));
+            tri!(b.integer(0));
+            tri!(b.integer(route.gsi as u64));
+            tri!(b.end_package(entry));
+        }
         tri!(b.end_package(prt));
         b.end(device)
     }

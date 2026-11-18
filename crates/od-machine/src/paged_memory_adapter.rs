@@ -2,11 +2,12 @@
 
 use crate::console_output_context::capture_frame_chain;
 use crate::execution_observations::{
-    DeliveredPageFaultObservation, ElfMmuGatherPageWalk, ElfMmuGatherRaw, ElfStackCopyProbe,
-    ElfStackCopySnapshot, ElfStackCopyStatus, ElfStackCopyTargetCr3Capture,
+    DeliveredPageFaultObservation, ElfMmuGatherPageWalk, ElfMmuGatherRaw, ElfStackAlignmentPoint,
+    ElfStackCopyProbe, ElfStackCopySnapshot, ElfStackCopyStatus, ElfStackCopyTargetCr3Capture,
     ElfStackCopyTargetCr3ChainStatus, ElfStackCopyTargetCr3Frame, FaultingPageFaultContext,
     FaultingPageWalkContext, InstructionPathControlFlow, InstructionPathRegisterValue,
-    InstructionPathTraceRecord, LINUX_ELF_STACK_COPY_PROBE_CAPACITY, LINUX_ELF_STACK_COPY_RIP,
+    InstructionPathTraceRecord, LINUX_ELF_STACK_ALIGN_AFTER_RIP, LINUX_ELF_STACK_ALIGN_BEFORE_RIP,
+    LINUX_ELF_STACK_COPY_PROBE_CAPACITY, LINUX_ELF_STACK_COPY_RIP,
     LINUX_ELF_STACK_COPY_WALK_ENTRY_CAPACITY, LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP,
     LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP, LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
     LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP, LinuxExecutionObservationCollector,
@@ -1747,7 +1748,7 @@ fn capture_elf_stack_copy_snapshot(
     context: AccessContext,
     cr3: u64,
 ) -> ElfStackCopySnapshot {
-    use od_isa::Register::{R13, R15, Rdi, Rdx, Rsi};
+    use od_isa::Register::{R13, R15, Rbp, Rdi, Rdx, Rsi, Rsp};
 
     let mut snapshot = ElfStackCopySnapshot::empty(ElfStackCopyStatus::GateMismatch);
     let r15 = state.gpr[R15 as usize];
@@ -1761,6 +1762,8 @@ fn capture_elf_stack_copy_snapshot(
     snapshot.cs_selector = state.cs_selector;
     snapshot.cpl = cpl;
     snapshot.r15 = Some(r15);
+    snapshot.rbp = Some(state.gpr[Rbp as usize]);
+    snapshot.rsp = Some(state.gpr[Rsp as usize]);
     snapshot.r13 = Some(r13);
     snapshot.rdi = Some(rdi);
     snapshot.rsi = Some(rsi);
@@ -1918,6 +1921,42 @@ fn capture_elf_stack_copy_snapshot(
     }
     snapshot.status = ElfStackCopyStatus::Captured;
     snapshot
+}
+
+fn capture_elf_stack_alignment_point(
+    state: &LongModeState,
+    bus: &mut MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+    cr3: u64,
+    before_call: bool,
+) -> ElfStackAlignmentPoint {
+    use od_isa::Register::{R15, Rax, Rbp, Rdi, Rsp};
+
+    let mut bytes = [0u8; 5];
+    let (instruction_bytes, error) = match bus.read_virtual_ram_diagnostic(
+        paging,
+        state.rip,
+        GuestLinearAddress::new(state.rip),
+        context,
+        &mut bytes,
+    ) {
+        Ok(()) => (Some(bytes.to_vec()), None),
+        Err(error) => (None, Some(format!("instruction bytes: {error:?}"))),
+    };
+    ElfStackAlignmentPoint {
+        rip: state.rip,
+        retired_instructions_before_current: 0,
+        cr3,
+        cs_selector: state.cs_selector,
+        cpl: state.cs_selector.map(|selector| (selector & 3) as u8),
+        r15: state.gpr[R15 as usize],
+        rbp: state.gpr[Rbp as usize],
+        rsp: state.gpr[Rsp as usize],
+        pointer: state.gpr[(if before_call { Rdi } else { Rax }) as usize],
+        instruction_bytes,
+        error,
+    }
 }
 
 /// Whether the instruction at RIP is exactly `IRETQ` (`48 CF`). Same read-only walk as
@@ -2669,6 +2708,20 @@ fn run_cpl0_set_paged_2m_ram_with_cache_impl<
         if let Some(observations) = execution_observations.as_deref_mut() {
             last_instruction_rip = Some(instruction_rip);
             if ELF_COPY_ENABLED {
+                if instruction_rip == LINUX_ELF_STACK_ALIGN_BEFORE_RIP
+                    || instruction_rip == LINUX_ELF_STACK_ALIGN_AFTER_RIP
+                {
+                    let before_call = instruction_rip == LINUX_ELF_STACK_ALIGN_BEFORE_RIP;
+                    let point = capture_elf_stack_alignment_point(
+                        state,
+                        bus,
+                        &paging,
+                        context,
+                        reported_cr3,
+                        before_call,
+                    );
+                    observations.record_elf_stack_alignment_point(point, before_call);
+                }
                 capture_elf_mmu_gather_boundary(
                     instruction_rip,
                     state,

@@ -10,6 +10,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const SERIES_SCHEMA_VERSION: u32 = 2;
 const RUN_PROFILE: &str = "smoke_not_acceptance";
+const S5_08_RUN_PROFILE: &str = "stage5_functional";
 const COM1_CAPTURE_SCOPE: &str = "linux_direct_run_boot_com1";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -181,6 +182,11 @@ pub(super) fn run(args: &[String]) -> ExitCode {
         ));
     }
     let series_dir = expected_out.parent().expect("fixed series path");
+    let run_profile = if cli.scenario_id == S5_08_SCENARIO {
+        S5_08_RUN_PROFILE
+    } else {
+        RUN_PROFILE
+    };
     let preflight_nonce = "S5PreflightNonce001".to_string();
     let mut preflight_args = cli.forwarded.clone();
     preflight_args.extend([
@@ -294,7 +300,13 @@ pub(super) fn run(args: &[String]) -> ExitCode {
                 "could not save runner-recorded UART bytes: {error}"
             ));
         }
-        let marker_check = validate_markers(&uart_bytes, &nonce, &cli.expected_s5_marker_keys);
+        let marker_check = validate_scenario_markers(
+            &cli.scenario_id,
+            &uart_bytes,
+            &nonce,
+            &cli.expected_s5_marker_keys,
+            true,
+        );
         let hardware_status = runner_value["status"]
             .as_str()
             .unwrap_or("invalid_runner_json")
@@ -334,7 +346,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
             series_id: cli.series_id.clone(),
             run_id: run_id.clone(),
             scenario_id: cli.scenario_id.clone(),
-            run_profile: RUN_PROFILE.to_string(),
+            run_profile: run_profile.to_string(),
             nonce: nonce.clone(),
             hardware_status,
             scenario_status,
@@ -392,7 +404,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
         schema_version: SERIES_SCHEMA_VERSION,
         series_id: cli.series_id,
         scenario_id: cli.scenario_id,
-        run_profile: RUN_PROFILE.to_string(),
+        run_profile: run_profile.to_string(),
         requested_runs: cli.requested_runs,
         outcome,
         runs: references,
@@ -575,6 +587,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
                 | "--set-cpl0"
                 | "--diagnostic-past-c7"
                 | "--user-mode"
+                | "--nonce-bootconfig"
                 | "--linux-norandmaps"
                 | "--linux-no-randomize-kstack-offset"
         ) {
@@ -766,6 +779,16 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
     {
         return Err("only *_FILE marker keys may be expected more than once".into());
     }
+    if scenario_id == S5_08_SCENARIO {
+        if expected_stop_kind != "stopped" || requested_runs < 2 {
+            return Err("s5-08 requires --expected-stop-kind stopped and at least two runs".into());
+        }
+        if expected_s5_marker_keys.is_empty() {
+            expected_s5_marker_keys.push(S5_08_SHUTDOWN_MARKER.into());
+        } else if expected_s5_marker_keys != [S5_08_SHUTDOWN_MARKER] {
+            return Err("s5-08 expects only A_SHUTDOWN_REQUEST".into());
+        }
+    }
     if let Some(letter) = s5_scenario_letter(&scenario_id) {
         if expected_s5_marker_keys.is_empty()
             || expected_s5_marker_keys
@@ -953,6 +976,49 @@ fn validate_markers_with_crlf(
     }
 }
 
+const S5_08_SCENARIO: &str = "s5-08";
+const S5_08_SHUTDOWN_MARKER: &str = "A_SHUTDOWN_REQUEST";
+
+fn validate_scenario_markers(
+    scenario: &str,
+    bytes: &[u8],
+    nonce: &str,
+    expected_s5: &[String],
+    normalize_crlf: bool,
+) -> MarkerCheck {
+    let mut checked = if normalize_crlf {
+        validate_markers(bytes, nonce, expected_s5)
+    } else {
+        validate_markers_legacy(bytes, nonce, expected_s5)
+    };
+    if scenario == S5_08_SCENARIO {
+        let evidence = &mut checked.evidence;
+        let expected_line = format!("OD_S5_{S5_08_SHUTDOWN_MARKER} nonce={nonce} method=poweroff");
+        if evidence.ordered_s5_marker_lines != [expected_line] {
+            evidence
+                .errors
+                .push("S5-08 requires one exact poweroff request marker".into());
+        }
+        if bytes
+            .windows(b"Kernel panic - not syncing:".len())
+            .any(|window| window == b"Kernel panic - not syncing:")
+        {
+            evidence
+                .errors
+                .push("kernel panic cannot pass S5-08".into());
+        }
+        evidence.valid = evidence.errors.is_empty();
+    }
+    checked
+}
+
+fn s5_08_shutdown_matches(stop: Option<&Value>, expected_stop_kind: &str) -> bool {
+    expected_stop_kind == "stopped"
+        && stop.is_some_and(|stop| {
+            stop["exit_kind"] == "stopped" && stop["machine_stop_reason"] == "shutdown"
+        })
+}
+
 fn scenario_status(
     scenario_id: &str,
     hardware_status: &str,
@@ -970,6 +1036,13 @@ fn scenario_status(
     }
     if hardware_status != "loaded" {
         return ScenarioStatus::Failed;
+    }
+    if scenario_id == S5_08_SCENARIO {
+        return if markers.valid && s5_08_shutdown_matches(stop, expected_stop_kind) {
+            ScenarioStatus::Passed
+        } else {
+            ScenarioStatus::Failed
+        };
     }
     if scenario_id.to_ascii_lowercase().starts_with("s5-") {
         if !markers.ordered_s5_marker_keys.is_empty() && !markers.valid {
@@ -1007,6 +1080,9 @@ fn scenario_reason(
     ) {
         ScenarioStatus::Passed => None,
         ScenarioStatus::Failed if !markers.errors.is_empty() => Some(markers.errors.join("; ")),
+        ScenarioStatus::Failed if scenario_id == S5_08_SCENARIO && hardware_status == "loaded" => {
+            Some("expected an ACPI shutdown stop after the S5-08 markers".into())
+        }
         ScenarioStatus::Failed => Some("runner execution failed after guest start".into()),
         ScenarioStatus::Blocked => Some("linux-direct refused before guest start".into()),
         ScenarioStatus::NotRun if !guest_started => Some("guest was not started".into()),
@@ -1023,7 +1099,7 @@ fn scenario_reason(
 }
 
 fn configuration_from_runner(runner: &Value) -> Value {
-    json!({
+    let mut configuration = json!({
         "cmdline": runner["cmdline"],
         "ram_mib": runner["ram_mib"],
         "budget": runner["stop"]["budget"],
@@ -1033,7 +1109,14 @@ fn configuration_from_runner(runner: &Value) -> Value {
         "linux_norandmaps": runner["linux_norandmaps"],
         "linux_no_randomize_kstack_offset": runner["linux_no_randomize_kstack_offset"],
         "acceptance": runner["acceptance"],
-    })
+    });
+    if runner["inputs"]["initramfs"]
+        .get("nonce_bootconfig")
+        .is_some()
+    {
+        configuration["nonce_transport"] = json!("bootconfig");
+    }
+    configuration
 }
 
 fn configuration_matches_runner(configuration: &Value, runner: &Value) -> bool {
@@ -1082,6 +1165,50 @@ fn aggregate_status(statuses: &[ScenarioStatus]) -> ScenarioStatus {
     } else {
         ScenarioStatus::NotRun
     }
+}
+
+const NONCE_INITRD_STOP_HASH_FIELDS: [&str; 2] = ["initramfs_sha256", "initramfs_sha256_in_memory"];
+
+fn validate_nonce_bootconfig(runner: &Value, nonce: &str) -> Result<(), String> {
+    let initramfs = &runner["inputs"]["initramfs"];
+    let Some(bootconfig) = initramfs.get("nonce_bootconfig") else {
+        if runner["cmdline"] == super::nonce_bootconfig_cmdline() {
+            return Err("nonce bootconfig evidence is missing".into());
+        }
+        return Ok(());
+    };
+    let base_bytes = initramfs["bytes"]
+        .as_u64()
+        .ok_or("nonce bootconfig base initramfs size is missing")?;
+    let trailer = super::nonce_bootconfig_trailer(nonce, base_bytes);
+    let loaded_bytes = base_bytes
+        .checked_add(trailer.len() as u64)
+        .ok_or("nonce bootconfig loaded initrd size overflows")?;
+    let loaded_hash = &bootconfig["loaded_sha256"];
+    let is_sha256 = |value: &Value| {
+        value.as_str().is_some_and(|digest| {
+            digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())
+        })
+    };
+    if runner["cmdline"] != super::nonce_bootconfig_cmdline()
+        || !is_sha256(&initramfs["sha256"])
+        || initramfs["expected_sha256"] != initramfs["sha256"]
+        || bootconfig["trailer_sha256"] != od_testkit::sha256_hex(&trailer)
+        || bootconfig["loaded_bytes"].as_u64() != Some(loaded_bytes)
+        || !is_sha256(loaded_hash)
+        || (runner["status"] == "loaded"
+            && (runner["cmdline_in_memory_matches"] != true
+                || runner["cmdline_in_memory"] != runner["cmdline"]
+                || runner["memory_sha256"]["initrd"] != *loaded_hash
+                || runner["memory_sha256"]["initrd_matches_file"] != true))
+        || (runner["stop"].is_object()
+            && NONCE_INITRD_STOP_HASH_FIELDS
+                .iter()
+                .any(|field| runner["stop"]["inputs"][*field] != *loaded_hash))
+    {
+        return Err("nonce bootconfig does not match its run input or memory evidence".into());
+    }
+    Ok(())
 }
 
 fn artifact_hashes(runner: &Value) -> BTreeMap<String, String> {
@@ -1923,11 +2050,16 @@ fn validate_execution_observations_sidecar(
                                     snapshot.get("copy_destination"),
                                 ))
                     });
+                let alignment_valid = schema_version < 21
+                    || snapshot.get("alignment").is_some_and(|alignment| {
+                        valid_elf_stack_alignment_capture(alignment, snapshot, runner)
+                    });
                 let status_data_valid = match status {
                     Some("captured") => {
                         snapshot_has_complete_capture
                             && invocation_valid
                             && pre_copy_cr3_ledger_valid
+                            && alignment_valid
                             && elf_stack_copy_gate_matches(snapshot)
                             && mismatch_reasons.is_some_and(Vec::is_empty)
                             && error.is_some_and(Value::is_null)
@@ -1949,17 +2081,20 @@ fn validate_execution_observations_sidecar(
                             });
                         mismatch_reasons.is_some_and(|reasons| !reasons.is_empty())
                             && pre_copy_cr3_ledger_valid
+                            && alignment_valid
                             && (!elf_stack_copy_gate_matches(snapshot) || invocation_gate_mismatch)
                             && probes.is_some_and(Vec::is_empty)
                             && error.is_some_and(Value::is_null)
                     }
                     Some("read_error") => {
                         pre_copy_cr3_ledger_valid
+                            && alignment_valid
                             && error.is_some_and(Value::is_string)
                             && probes.is_some_and(Vec::is_empty)
                     }
                     Some("run_ended_before_target") => {
                         pre_copy_cr3_ledger_valid
+                            && alignment_valid
                             && probes.is_some_and(Vec::is_empty)
                             && mismatch_reasons.is_some_and(Vec::is_empty)
                             && error.is_some_and(Value::is_null)
@@ -1988,8 +2123,242 @@ fn validate_execution_observations_sidecar(
     Ok(())
 }
 
+fn valid_elf_stack_alignment_capture(
+    capture: &Value,
+    copy: &serde_json::Map<String, Value>,
+    runner: &Value,
+) -> bool {
+    let Some(capture) = capture.as_object() else {
+        return false;
+    };
+    if capture.len() != 6 {
+        return false;
+    }
+    let Some(status) = capture.get("status").and_then(Value::as_str) else {
+        return false;
+    };
+    let before = capture.get("before_call");
+    let after = capture.get("after_return");
+    let (Some(before_omitted), Some(after_omitted), Some(matched)) = (
+        capture.get("before_omitted").and_then(Value::as_u64),
+        capture.get("after_omitted").and_then(Value::as_u64),
+        capture.get("matched_copy"),
+    ) else {
+        return false;
+    };
+    if !(matched.is_null() || matched.is_boolean()) {
+        return false;
+    }
+    let validate_point = |value: Option<&Value>, expected_rip: u64| {
+        let Some(point) = value.and_then(Value::as_object) else {
+            return value.is_some_and(Value::is_null);
+        };
+        let hex = |key: &str| {
+            point
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|value| canonical_hex64(value))
+                .and_then(|value| u64::from_str_radix(value.trim_start_matches("0x"), 16).ok())
+        };
+        let selector_cpl_coherent = match (point.get("cs_selector"), point.get("cpl")) {
+            (Some(Value::Null), Some(Value::Null)) => true,
+            (Some(Value::String(selector)), Some(cpl)) => {
+                selector.len() == 6
+                    && selector.starts_with("0x")
+                    && u16::from_str_radix(&selector[2..], 16).is_ok_and(|selector_value| {
+                        format!("0x{selector_value:04x}") == *selector
+                            && cpl.as_u64() == Some((selector_value & 3) as u64)
+                    })
+            }
+            _ => false,
+        };
+        point.len() == 11
+            && hex("rip") == Some(expected_rip)
+            && point
+                .get("retired_instructions_before_current")
+                .is_some_and(Value::is_u64)
+            && hex("cr3").is_some()
+            && selector_cpl_coherent
+            && point
+                .get("cpl")
+                .is_some_and(|value| value.is_null() || value.as_u64().is_some_and(|cpl| cpl <= 3))
+            && hex("r15").is_some()
+            && hex("rbp").is_some()
+            && hex("rsp").is_some()
+            && hex("pointer").is_some()
+            && point.get("instruction_bytes").is_some_and(|value| {
+                value.is_null()
+                    || value.as_str().is_some_and(|bytes| {
+                        bytes.len() == 10
+                            && bytes.bytes().all(|byte| byte.is_ascii_hexdigit())
+                            && bytes == bytes.to_ascii_lowercase()
+                    })
+            })
+            && point
+                .get("error")
+                .is_some_and(|value| value.is_null() || value.is_string())
+    };
+    if !validate_point(before, od_machine::LINUX_ELF_STACK_ALIGN_BEFORE_RIP)
+        || !validate_point(after, od_machine::LINUX_ELF_STACK_ALIGN_AFTER_RIP)
+    {
+        return false;
+    }
+    let point_hex = |value: Option<&Value>, key: &str| {
+        value
+            .and_then(Value::as_object)
+            .and_then(|point| point.get(key))
+            .and_then(Value::as_str)
+            .and_then(|hex| u64::from_str_radix(hex.trim_start_matches("0x"), 16).ok())
+    };
+    let point_selector = |value: Option<&Value>| {
+        value
+            .and_then(|point| point.get("cs_selector"))
+            .and_then(Value::as_str)
+            .and_then(|selector| u16::from_str_radix(selector.trim_start_matches("0x"), 16).ok())
+    };
+    let point_cpl = |value: Option<&Value>| {
+        value
+            .and_then(|point| point.get("cpl"))
+            .and_then(Value::as_u64)
+    };
+    let before_present = before.is_some_and(Value::is_object);
+    let after_present = after.is_some_and(Value::is_object);
+    let both_present = before_present && after_present;
+    let same_frame = both_present
+        && point_hex(before, "cr3") == point_hex(after, "cr3")
+        && before.and_then(|point| point.get("cs_selector"))
+            == after.and_then(|point| point.get("cs_selector"))
+        && before.and_then(|point| point.get("cpl")) == Some(&json!(0))
+        && after.and_then(|point| point.get("cpl")) == Some(&json!(0))
+        && point_selector(before).is_some_and(|selector| selector & 3 == 0)
+        && point_selector(before) == point_selector(after)
+        && point_cpl(before) == point_selector(before).map(|selector| (selector & 3) as u64)
+        && point_cpl(after) == point_selector(after).map(|selector| (selector & 3) as u64)
+        && ["r15", "rbp", "rsp"]
+            .iter()
+            .all(|key| point_hex(before, key) == point_hex(after, key))
+        && after
+            .and_then(|point| point.get("retired_instructions_before_current"))
+            .and_then(Value::as_u64)
+            > before
+                .and_then(|point| point.get("retired_instructions_before_current"))
+                .and_then(Value::as_u64);
+    let registers = copy.get("registers").and_then(Value::as_object);
+    let copy_status = copy.get("status").and_then(Value::as_str);
+    let target_seen = copy_status != Some("run_ended_before_target");
+    let copy_registers_canonical = registers.is_some_and(|registers| {
+        ["r15", "rbp", "rsp", "r13"].iter().all(|key| {
+            registers.get(*key).is_some_and(|value| {
+                if target_seen {
+                    value.as_str().is_some_and(canonical_hex64)
+                } else {
+                    value.is_null()
+                }
+            })
+        })
+    });
+    let copy_selector_cpl_coherent = match (copy.get("cs_selector"), copy.get("cpl")) {
+        (Some(Value::Null), Some(Value::Null)) => true,
+        (Some(Value::String(selector)), Some(cpl)) if target_seen => {
+            selector.len() == 6
+                && selector.starts_with("0x")
+                && u16::from_str_radix(&selector[2..], 16).is_ok_and(|selector_value| {
+                    format!("0x{selector_value:04x}") == *selector
+                        && cpl.as_u64() == Some((selector_value & 3) as u64)
+                })
+        }
+        _ => false,
+    };
+    if !copy_registers_canonical || !copy_selector_cpl_coherent {
+        return false;
+    }
+    let copy_selector = copy
+        .get("cs_selector")
+        .and_then(Value::as_str)
+        .and_then(|selector| u16::from_str_radix(selector.trim_start_matches("0x"), 16).ok());
+    let copy_matches = copy_status == Some("captured")
+        && copy.get("platform_string_matches") == Some(&json!(true))
+        && copy_registers_canonical
+        && copy_selector.is_some_and(|selector| selector & 3 == 0)
+        && point_selector(before) == copy_selector
+        && both_present
+        && ["r15", "rbp", "rsp"].iter().all(|key| {
+            point_hex(before, key)
+                == registers
+                    .and_then(|registers| registers.get(*key))
+                    .and_then(Value::as_str)
+                    .and_then(|hex| u64::from_str_radix(hex.trim_start_matches("0x"), 16).ok())
+        })
+        && point_hex(before, "cr3")
+            == copy
+                .get("cr3")
+                .and_then(Value::as_str)
+                .and_then(|hex| u64::from_str_radix(hex.trim_start_matches("0x"), 16).ok())
+        && point_hex(before, "pointer")
+            == copy
+                .get("bprm_p")
+                .and_then(Value::as_str)
+                .and_then(|hex| u64::from_str_radix(hex.trim_start_matches("0x"), 16).ok())
+        && point_hex(after, "pointer")
+            == registers
+                .and_then(|registers| registers.get("r13"))
+                .and_then(Value::as_str)
+                .and_then(|hex| u64::from_str_radix(hex.trim_start_matches("0x"), 16).ok());
+    let after_retired = after
+        .and_then(|point| point.get("retired_instructions_before_current"))
+        .and_then(Value::as_u64);
+    let copy_entry_retired = copy
+        .get("invocation")
+        .and_then(|invocation| invocation.get("entry"))
+        .and_then(|entry| entry.get("retired_instructions_through_current"))
+        .and_then(Value::as_u64);
+    let stop_retired = runner
+        .get("stop")
+        .and_then(|stop| stop.get("retired"))
+        .and_then(Value::as_u64);
+    let retired_precedes_copy = after_retired
+        .zip(copy_entry_retired)
+        .zip(stop_retired)
+        .is_some_and(|((after, copy), stop)| after < copy && copy <= stop);
+    let expected_bytes = before.and_then(|point| point.get("instruction_bytes"))
+        == Some(&json!("e8f69aa1ff"))
+        && after.and_then(|point| point.get("instruction_bytes")) == Some(&json!("ba07000000"));
+    let has_read_error = [before, after]
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .any(|point| point.get("error").is_some_and(Value::is_string));
+    let expected_status = if before_omitted > 0 || after_omitted > 0 {
+        "ambiguous"
+    } else if !both_present {
+        if target_seen {
+            "incomplete"
+        } else {
+            "run_ended_before_target"
+        }
+    } else if has_read_error {
+        "read_error"
+    } else if !expected_bytes {
+        "anchor_mismatch"
+    } else if !same_frame || (target_seen && (!copy_matches || !retired_precedes_copy)) {
+        "invocation_mismatch"
+    } else if !target_seen {
+        "copy_target_not_seen"
+    } else {
+        "captured"
+    };
+    let expected_matched = if expected_status == "captured" {
+        json!(true)
+    } else if expected_status == "invocation_mismatch" && target_seen {
+        json!(false)
+    } else {
+        Value::Null
+    };
+    status == expected_status && matched == &expected_matched
+}
+
 fn supported_execution_observations_schema_version(version: u64) -> bool {
-    (1..=20).contains(&version)
+    (1..=21).contains(&version)
 }
 
 fn valid_elf_mmu_gather_capture(
@@ -4129,6 +4498,9 @@ fn load_series_runs(
     series_path: &Path,
     series: &SeriesManifest,
 ) -> Result<Vec<RunManifest>, String> {
+    if series.scenario_id == S5_08_SCENARIO && series.run_profile != S5_08_RUN_PROFILE {
+        return Err("s5-08 requires the stage5_functional run profile".into());
+    }
     let mut runs = Vec::new();
     runs.try_reserve(series.runs.len())
         .map_err(|error| format!("series run count cannot be reserved: {error}"))?;
@@ -4195,6 +4567,7 @@ fn load_run_manifest(series_path: &Path, reference: &RunReference) -> Result<Run
     let raw_value: Value = serde_json::from_slice(&raw)
         .map_err(|error| format!("invalid raw runner JSON: {error}"))?;
     validate_execution_observations_sidecar(root, &manifest.run_id, &raw_value)?;
+    validate_nonce_bootconfig(&raw_value, &manifest.nonce)?;
     if raw_value["status"].as_str() != Some(manifest.hardware_status.as_str())
         || raw_value["nonce"].as_str() != Some(manifest.nonce.as_str())
         || raw_value["guest_started"].as_bool() != Some(manifest.runner.guest_started)
@@ -4232,19 +4605,20 @@ fn load_run_manifest(series_path: &Path, reference: &RunReference) -> Result<Run
     if uart != raw_com1 {
         return Err("saved UART bytes do not match runner stop record".into());
     }
-    let canonical = validate_markers(
-        &uart,
-        &manifest.nonce,
-        &manifest.guest_markers.expected_s5_marker_keys,
-    );
-    let checked = if canonical.evidence == manifest.guest_markers {
-        canonical
-    } else {
-        let legacy = validate_markers_legacy(
+    let check = |normalize_crlf| {
+        validate_scenario_markers(
+            &manifest.scenario_id,
             &uart,
             &manifest.nonce,
             &manifest.guest_markers.expected_s5_marker_keys,
-        );
+            normalize_crlf,
+        )
+    };
+    let canonical = check(true);
+    let checked = if canonical.evidence == manifest.guest_markers {
+        canonical
+    } else {
+        let legacy = check(false);
         if legacy.evidence != manifest.guest_markers {
             return Err("recorded guest marker validation does not match UART bytes".into());
         }
@@ -4375,15 +4749,17 @@ fn compare_run(
     )?;
     let left_uart = fs::read(left_uart_path).map_err(|error| error.to_string())?;
     let right_uart = fs::read(right_uart_path).map_err(|error| error.to_string())?;
-    let left_stop = normalize_nonce(
-        &without_uart_and_stop_reason(left.runner.stop.as_ref()),
-        &left.nonce,
-    );
-    let right_stop = normalize_nonce(
-        &without_uart_and_stop_reason(right.runner.stop.as_ref()),
-        &right.nonce,
-    );
-    let stage4_nonce_scenario = stage4_nonce_variation_eligible(left, &left_uart)
+    let bootconfig_pair = left_config["nonce_transport"] == "bootconfig"
+        && right_config["nonce_transport"] == "bootconfig";
+    let left_stop = comparable_stop(left, bootconfig_pair);
+    let right_stop = comparable_stop(right, bootconfig_pair);
+    if bootconfig_pair && left.nonce != right.nonce {
+        explained.push(format!(
+            "{prefix}.initrd bootconfig trailer carries the per-run nonce"
+        ));
+    }
+    let stage4_nonce_scenario = left_config["nonce_transport"].is_null()
+        && stage4_nonce_variation_eligible(left, &left_uart)
         && stage4_nonce_variation_eligible(right, &right_uart)
         && left.host == right.host
         && left.run_profile == right.run_profile
@@ -4509,14 +4885,23 @@ fn has_expected_stage4_nonce_terminal_panic(bytes: &[u8], nonce: &str) -> bool {
     terminal_stage4_panic_snapshot(&lines).is_some()
 }
 
-fn without_uart_and_stop_reason(stop: Option<&Value>) -> Value {
-    let mut value = stop.cloned().unwrap_or(Value::Null);
+fn comparable_stop(run: &RunManifest, bootconfig_pair: bool) -> Value {
+    let mut value = run.runner.stop.clone().unwrap_or(Value::Null);
     if let Some(object) = value.as_object_mut() {
         object.remove("com1_hex");
         object.remove("com1_text");
         object.remove("machine_stop_reason");
+        // The loader has verified these duplicate, nonce-bearing initrd digests against
+        // the raw bootconfig evidence. The original initramfs hash is compared separately.
+        if bootconfig_pair {
+            if let Some(inputs) = object.get_mut("inputs").and_then(Value::as_object_mut) {
+                for field in NONCE_INITRD_STOP_HASH_FIELDS {
+                    inputs.remove(field);
+                }
+            }
+        }
     }
-    value
+    normalize_nonce(&value, &run.nonce)
 }
 
 fn machine_stop_reason_from_stop(
@@ -4971,18 +5356,24 @@ pub(crate) fn compare_stage5_cli(args: &[String]) -> ExitCode {
             argument.starts_with("--") && !matches!(argument.as_str(), "--linux-stage5" | "--json")
         })
     {
-        eprintln!("invalid input: --compare-results A.json B.json --linux-stage5 --json");
+        eprintln!("invalid input: --compare-results A.json [B.json] --linux-stage5 --json");
         return ExitCode::from(3);
     }
     let paths = args
         .iter()
         .filter(|argument| !argument.starts_with("--"))
         .collect::<Vec<_>>();
-    if paths.len() != 2 {
-        eprintln!("invalid input: --linux-stage5 comparison requires two series.json paths");
-        return ExitCode::from(3);
-    }
-    let report = match compare_series_paths(Path::new(paths[0]), Path::new(paths[1])) {
+    let report = match paths.as_slice() {
+        [series] => compare_series_runs(Path::new(series)),
+        [left, right] => compare_series_paths(Path::new(left), Path::new(right)),
+        _ => {
+            eprintln!(
+                "invalid input: --linux-stage5 comparison requires one or two series.json paths"
+            );
+            return ExitCode::from(3);
+        }
+    };
+    let report = match report {
         Ok(value) => value,
         Err(error) => {
             eprintln!("invalid Stage 5 series comparison input: {error}");
@@ -5191,7 +5582,7 @@ mod tests {
             byte_count,
             sha256,
         );
-        assert_eq!(raw["schema_version"], 20);
+        assert_eq!(raw["schema_version"], 21);
         assert_eq!(
             raw["delay_tsc_call_summary"]["entries"][0]["frame_chain_end"],
             "read_failed"
@@ -5322,6 +5713,53 @@ mod tests {
     }
 
     #[test]
+    fn nonce_bootconfig_verifies_the_exact_nonce_and_the_loaded_initrd() {
+        let base = [0u8; 3];
+        let nonce = "Nonce-1";
+        let trailer = super::super::nonce_bootconfig_trailer(nonce, base.len() as u64);
+        let loaded = [base.as_slice(), trailer.as_slice()].concat();
+        let base_hash = od_testkit::sha256_hex(&base);
+        let loaded_hash = od_testkit::sha256_hex(&loaded);
+        let cmdline = super::super::nonce_bootconfig_cmdline();
+        let raw = json!({
+            "status": "loaded",
+            "cmdline": cmdline,
+            "cmdline_in_memory": cmdline,
+            "cmdline_in_memory_matches": true,
+            "memory_sha256": {"initrd": loaded_hash, "initrd_matches_file": true},
+            "stop": {"inputs": {
+                "initramfs_sha256": loaded_hash,
+                "initramfs_sha256_in_memory": loaded_hash,
+            }},
+            "inputs": {"initramfs": {
+                "bytes": base.len(),
+                "sha256": base_hash,
+                "expected_sha256": base_hash,
+                "nonce_bootconfig": {
+                    "loaded_bytes": loaded.len(),
+                    "loaded_sha256": loaded_hash,
+                    "trailer_sha256": od_testkit::sha256_hex(&trailer),
+                },
+            }},
+        });
+        assert!(validate_nonce_bootconfig(&raw, nonce).is_ok());
+        assert!(validate_nonce_bootconfig(&raw, "Nonce-2").is_err());
+        for field in NONCE_INITRD_STOP_HASH_FIELDS {
+            let mut bad = raw.clone();
+            bad["stop"]["inputs"][field] = json!(base_hash);
+            assert!(validate_nonce_bootconfig(&bad, nonce).is_err());
+        }
+        for (key, value) in [
+            ("initrd", json!(base_hash)),
+            ("initrd_matches_file", json!(false)),
+        ] {
+            let mut bad = raw.clone();
+            bad["memory_sha256"][key] = value;
+            assert!(validate_nonce_bootconfig(&bad, nonce).is_err());
+        }
+    }
+
+    #[test]
     fn automatic_series_configuration_records_linux_boot_diagnostics() {
         let configuration = configuration_from_runner(&json!({
             "cmdline": "nokaslr norandmaps randomize_kstack_offset=off",
@@ -5424,6 +5862,7 @@ mod tests {
         assert!(supported_execution_observations_schema_version(18));
         assert!(supported_execution_observations_schema_version(19));
         assert!(supported_execution_observations_schema_version(20));
+        assert!(supported_execution_observations_schema_version(21));
         assert!(!supported_execution_observations_schema_version(u64::MAX));
     }
 
@@ -6614,17 +7053,20 @@ mod tests {
 
     fn captured_elf_stack_copy_observations() -> od_machine::LinuxExecutionObservations {
         use od_machine::{
-            ElfStackCopyBoundaryMarker, ElfStackCopyCounterSnapshot, ElfStackCopyCr3Event,
-            ElfStackCopyCr3LedgerStatus, ElfStackCopyInvocation, ElfStackCopyInvocationStatus,
-            ElfStackCopyPageFaultEvent, ElfStackCopyPreCopyCr3Ledger, ElfStackCopyProbe,
-            ElfStackCopyRdtscSiteCount, ElfStackCopySnapshot, ElfStackCopyStatus,
-            GuestPhysicalAddress, PageTableLevel, WalkEntry,
+            ElfStackAlignmentCapture, ElfStackAlignmentPoint, ElfStackCopyBoundaryMarker,
+            ElfStackCopyCounterSnapshot, ElfStackCopyCr3Event, ElfStackCopyCr3LedgerStatus,
+            ElfStackCopyInvocation, ElfStackCopyInvocationStatus, ElfStackCopyPageFaultEvent,
+            ElfStackCopyPreCopyCr3Ledger, ElfStackCopyProbe, ElfStackCopyRdtscSiteCount,
+            ElfStackCopySnapshot, ElfStackCopyStatus, GuestPhysicalAddress, PageTableLevel,
+            WalkEntry,
         };
         let r13 = 0xffff_ffff_83ff_0000;
         let r15 = r13 + 0x40;
         let rdi = r13 - 7;
         let rsi = 0xffff_ffff_82fd_eb8f;
         let bprm_p = r13 + 0x100;
+        let rbp = 0xffff_ffff_8000_7000;
+        let rsp = 0xffff_ffff_8000_6000;
         let entry = WalkEntry {
             level: PageTableLevel::Pml4,
             index: 511,
@@ -6650,6 +7092,8 @@ mod tests {
             cs_selector: Some(0x8),
             cpl: Some(0),
             r15: Some(r15),
+            rbp: Some(rbp),
+            rsp: Some(rsp),
             r13: Some(r13),
             rdi: Some(rdi),
             rsi: Some(rsi),
@@ -6669,6 +7113,38 @@ mod tests {
             error: None,
             return_rip: Some(od_machine::LINUX_ELF_STACK_COPY_RIP + 5),
             platform_string_matches: Some(true),
+            alignment: ElfStackAlignmentCapture {
+                status: "captured",
+                before_call: Some(ElfStackAlignmentPoint {
+                    rip: od_machine::LINUX_ELF_STACK_ALIGN_BEFORE_RIP,
+                    retired_instructions_before_current: 80,
+                    cr3: 0x1000,
+                    cs_selector: Some(8),
+                    cpl: Some(0),
+                    r15,
+                    rbp,
+                    rsp,
+                    pointer: bprm_p,
+                    instruction_bytes: Some(vec![0xe8, 0xf6, 0x9a, 0xa1, 0xff]),
+                    error: None,
+                }),
+                after_return: Some(ElfStackAlignmentPoint {
+                    rip: od_machine::LINUX_ELF_STACK_ALIGN_AFTER_RIP,
+                    retired_instructions_before_current: 81,
+                    cr3: 0x1000,
+                    cs_selector: Some(8),
+                    cpl: Some(0),
+                    r15,
+                    rbp,
+                    rsp,
+                    pointer: r13,
+                    instruction_bytes: Some(vec![0xba, 0x07, 0x00, 0x00, 0x00]),
+                    error: None,
+                }),
+                before_omitted: 0,
+                after_omitted: 0,
+                matched_copy: Some(true),
+            },
             pre_copy_cr3_ledger: Some(ElfStackCopyPreCopyCr3Ledger {
                 status: ElfStackCopyCr3LedgerStatus::Complete,
                 event_count: 0,
@@ -6746,7 +7222,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v20_captured_elf_stack_copy_serializes_and_loads_with_strict_validation() {
+    fn schema_v21_captured_elf_stack_copy_serializes_and_loads_with_strict_validation() {
         let temp = std::env::temp_dir().join(format!(
             "od-runner-stage5-elf-stack-copy-{}-{}",
             std::process::id(),
@@ -6782,7 +7258,7 @@ mod tests {
         );
         let original_bytes = fs::read(&sidecar_path).unwrap();
         let written: Value = serde_json::from_slice(&original_bytes).unwrap();
-        assert_eq!(written["schema_version"], 20);
+        assert_eq!(written["schema_version"], 21);
         assert_eq!(written["elf_stack_copy"]["status"], "captured");
         assert_eq!(
             written["elf_stack_copy"]["registers"]["r13"],
@@ -6845,6 +7321,95 @@ mod tests {
         update_metadata(base_metadata.clone(), &original_bytes);
         let loaded = fresh_manifest(&series_path).unwrap();
         load_run_manifest(&series_path, &loaded.runs[0]).unwrap();
+
+        let mut legacy_v20 = written.clone();
+        legacy_v20["schema_version"] = json!(20);
+        legacy_v20["elf_stack_copy"]
+            .as_object_mut()
+            .unwrap()
+            .remove("alignment");
+        let legacy_registers = legacy_v20["elf_stack_copy"]["registers"]
+            .as_object_mut()
+            .unwrap();
+        legacy_registers.remove("rbp");
+        legacy_registers.remove("rsp");
+        let legacy_v20_bytes = serde_json::to_vec_pretty(&legacy_v20).unwrap();
+        fs::write(&sidecar_path, &legacy_v20_bytes).unwrap();
+        update_metadata(base_metadata.clone(), &legacy_v20_bytes);
+        let loaded = fresh_manifest(&series_path).unwrap();
+        load_run_manifest(&series_path, &loaded.runs[0]).unwrap();
+
+        let mut incomplete_alignment = written.clone();
+        incomplete_alignment["elf_stack_copy"]["alignment"]["status"] = json!("incomplete");
+        incomplete_alignment["elf_stack_copy"]["alignment"]["before_call"] = Value::Null;
+        incomplete_alignment["elf_stack_copy"]["alignment"]["after_return"] = Value::Null;
+        incomplete_alignment["elf_stack_copy"]["alignment"]["matched_copy"] = Value::Null;
+        let incomplete_bytes = serde_json::to_vec_pretty(&incomplete_alignment).unwrap();
+        fs::write(&sidecar_path, &incomplete_bytes).unwrap();
+        update_metadata(base_metadata.clone(), &incomplete_bytes);
+        let loaded = fresh_manifest(&series_path).unwrap();
+        load_run_manifest(&series_path, &loaded.runs[0]).unwrap();
+
+        let mut wrong_alignment_copy = written.clone();
+        wrong_alignment_copy["elf_stack_copy"]["alignment"]["after_return"]["pointer"] =
+            json!("0xffffffff83ff0008");
+        assert_rejected(
+            wrong_alignment_copy,
+            "execution-observations ELF stack copy snapshot is invalid",
+        );
+
+        let mut late_alignment = written.clone();
+        late_alignment["elf_stack_copy"]["alignment"]["after_return"]["retired_instructions_before_current"] =
+            json!(100);
+        assert_rejected(
+            late_alignment,
+            "execution-observations ELF stack copy snapshot is invalid",
+        );
+
+        let mut wrong_selector = written.clone();
+        wrong_selector["elf_stack_copy"]["alignment"]["before_call"]["cs_selector"] =
+            json!("0x0013");
+        assert_rejected(
+            wrong_selector,
+            "execution-observations ELF stack copy snapshot is invalid",
+        );
+
+        let mut noncanonical_frame = written.clone();
+        noncanonical_frame["elf_stack_copy"]["registers"]["rbp"] = json!("0x0ffffc900000fd10");
+        assert_rejected(
+            noncanonical_frame,
+            "execution-observations ELF stack copy snapshot is invalid",
+        );
+
+        let mut noncanonical_mismatch_frame = written.clone();
+        noncanonical_mismatch_frame["elf_stack_copy"]["registers"]["rbp"] =
+            json!("0x0ffffc900000fd10");
+        noncanonical_mismatch_frame["elf_stack_copy"]["alignment"]["status"] =
+            json!("invocation_mismatch");
+        noncanonical_mismatch_frame["elf_stack_copy"]["alignment"]["matched_copy"] = json!(false);
+        assert_rejected(
+            noncanonical_mismatch_frame,
+            "execution-observations ELF stack copy snapshot is invalid",
+        );
+
+        let mut incoherent_selector_mismatch = written.clone();
+        incoherent_selector_mismatch["elf_stack_copy"]["alignment"]["before_call"]["cs_selector"] =
+            json!("0x0013");
+        incoherent_selector_mismatch["elf_stack_copy"]["alignment"]["status"] =
+            json!("invocation_mismatch");
+        incoherent_selector_mismatch["elf_stack_copy"]["alignment"]["matched_copy"] = json!(false);
+        assert_rejected(
+            incoherent_selector_mismatch,
+            "execution-observations ELF stack copy snapshot is invalid",
+        );
+
+        let mut false_no_target = written.clone();
+        false_no_target["elf_stack_copy"]["alignment"]["status"] = json!("copy_target_not_seen");
+        false_no_target["elf_stack_copy"]["alignment"]["matched_copy"] = Value::Null;
+        assert_rejected(
+            false_no_target,
+            "execution-observations ELF stack copy snapshot is invalid",
+        );
 
         let mut terminal_outcomes = written.clone();
         let gather = &mut terminal_outcomes["elf_stack_copy"]["pre_copy_cr3_ledger"]["mmu_gather"];
@@ -7239,6 +7804,8 @@ mod tests {
         gate_mismatch["elf_stack_copy"]["mismatch_reasons"] =
             json!(["platform_call_gate_incomplete"]);
         gate_mismatch["elf_stack_copy"]["probes"] = json!([]);
+        gate_mismatch["elf_stack_copy"]["alignment"]["status"] = json!("invocation_mismatch");
+        gate_mismatch["elf_stack_copy"]["alignment"]["matched_copy"] = json!(false);
         gate_mismatch["elf_stack_copy"]
             .as_object_mut()
             .unwrap()
@@ -7734,6 +8301,47 @@ mod tests {
             ),
             ScenarioStatus::NotRun
         );
+    }
+
+    #[test]
+    fn s5_08_requires_ordered_exact_markers_and_a_typed_shutdown() {
+        let nonce = "runNonce001";
+        let expected = [S5_08_SHUTDOWN_MARKER.to_owned()];
+        let check = |uart: &str, stop: &Value, kind: &str| {
+            let markers =
+                validate_scenario_markers(S5_08_SCENARIO, uart.as_bytes(), nonce, &expected, true);
+            scenario_status(
+                S5_08_SCENARIO,
+                "loaded",
+                true,
+                &markers.evidence,
+                Some(stop),
+                kind,
+            )
+        };
+        let marker = format!("OD_S5_A_SHUTDOWN_REQUEST nonce={nonce} method=poweroff");
+        let good = format!("OD_NONCE={nonce}\r\n{marker}\r\n");
+        let shutdown = json!({"exit_kind":"stopped","machine_stop_reason":"shutdown"});
+        assert_eq!(check(&good, &shutdown, "stopped"), ScenarioStatus::Passed);
+        for uart in [
+            format!("OD_NONCE={nonce}\n"),
+            format!("{marker}\nOD_NONCE={nonce}\n"),
+            format!("OD_NONCE={nonce}\n{marker}"),
+            good.replace("nonce=runNonce001", "nonce=wrongNonce"),
+            good.replace("method=poweroff", "method=reset"),
+            format!("{good}[    3.0] Kernel panic - not syncing: panic despite markers\n"),
+        ] {
+            assert_eq!(check(&uart, &shutdown, "stopped"), ScenarioStatus::Failed);
+        }
+        for stop in [
+            json!({"exit_kind":"stopped"}),
+            json!({"exit_kind":"stopped","machine_stop_reason":"reset"}),
+            json!({"exit_kind":"budget_exhausted","machine_stop_reason":null}),
+            json!({"exit_kind":"halted","machine_stop_reason":"shutdown"}),
+        ] {
+            assert_eq!(check(&good, &stop, "stopped"), ScenarioStatus::Failed);
+        }
+        assert_eq!(check(&good, &shutdown, "halted"), ScenarioStatus::Failed);
     }
 
     #[test]

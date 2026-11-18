@@ -6,6 +6,12 @@
 
 S5-00 принят после независимого архитектурного ревью; проверенный исходный коммит S5-00 — [6b61316](https://github.com/edelars/open_desktop/commit/6b613166adb8f4db3c81696c31d72bf9350c0608). Method gate S5-01 принят как отдельный subgate после независимого ревью; Numeric calibration gate и полный S5-01 остаются blocked до получения измерений для числовых повторов и soak duration (ISSUE-076). Контракт S5-02 принят после независимого архитектурного ревью; проверенный исходный коммит S5-02 — `a14d08a`. Host-side backend и тесты S5-03 приняты после независимого ревью кода и контрактов; проверенный исходный коммит S5-03 — `c20e3d63595d1b7df241e83288eb43a79703fde8`. Process-exit quarantine gap остаётся открытым (ISSUE-077). Предварительный host-side headless профиль и no-guest runner S5-04 приняты после независимого ревью кода и контрактов; проверенный исходный коммит S5-04 — `aa4422bb3247e4aa24e2ec1add03e79c063ed053`. S5-05 принят после независимого ревью сборочных рецептов и артефактов: paired tests подтвердили идентичные rootfs, initramfs и kernel hashes, `e2fsck -fn`, C compile/link/run, точную package-lock selection и initramfs mount/console handoff. Linux guest VM boot и сценарии A–G не выполнялись; S5-05 build recipe исполняет GCC и отдельную C smoke программу в chroot. S5-17 host-side failure tests приняты после независимого ревью; они не закрывают ISSUE-077 и не включают guest-visible error проверки. S5-21 имеет **blocked** статус: accepted profile registry не завершён ([ISSUE-079](../KNOWN_ISSUES.md#issue-079-s5-21-accepted-profile-registry-is-incomplete)), поэтому точное missing-form число не установлено. Анализатор статически разобрал target ELFs, включая E static ELF, и не выполнял их; runtime-generated E/JIT validation относится к отдельной S5-12. Отдельный builder запускал GCC и C smoke для S5-05, но E executable не запускался. [Fixture README](../../tests/fixtures/guest/stage5/README.md) содержит S5-05 команды и provenance; [S5-05 evidence](data/stage5/s5-05-rootfs-pair-review.log), [initramfs evidence](data/stage5/s5-05-initramfs-pair-review.log) и решённая [ISSUE-078](../KNOWN_ISSUES.md#issue-078-s5-05-rootfs-extraction-toolchain-blocked) содержат доказательства сборки. Подготовленный S5-06 suite остаётся `blocked/unaccepted`; S5-07 остаётся `blocked/unaccepted`: свежая unique-nonce automatic N=2 на текущем CPU0 ACPI blob прошла оба marker checks, но strict comparison вернул `matches=false` по machine observations и UART order. Два identical-input direct runs 2026-11-16 дали одинаковый UART, machine stop observations и schema-v5 sidecars, но prior S5-07 RDTSC pair использовал старый ACPI blob (`b1ba6078…`), а replay — текущий CPU0 blob (`6fc25b09…`), поэтому это не изолирует nonce; replay не является acceptance ([evidence](data/stage5/s5-07-identical-input-replay-20261116.log)). S5-08 остаётся blocked: S4-39 принят с ограничениями по S4-46; implementation slice S4-39h теперь поддерживает CPL3 external IRQ через TSS.RSP0 и прошёл focused board integration tests/review, но live guest validation отсутствует, ISSUE-098/099 открыты; S4-31 принят как data-only tables, а S4-38 guest discovery остаётся отдельным runtime evidence gate; также нужна новая успешная S5-07 серия после этой правки. S5-09…S5-16 и S5-18…S5-20 остаются `not_started`. Ни один сценарий A–G не принят, этап 5 не принят.
 
+**S5-08 закрыта (2026-11-18).** Две загрузки одного Stage 4 initramfs с разными nonce завершились ACPI S5 на Open Desktop. Строгая сверка дала `matches=true` без необъяснённых различий. [Результаты](#s5-08-два-acpi-выключения-без-диска-2026-11-18).
+
+**S5-06 закрыта (2026-11-18).** Скрипты A–G проверены внутри двух загрузок отдельного Linux-гостя на физическом Mac mini. [Фактические результаты](#s5-06-проверка-скриптов-a-g-на-физическом-linux-стенде-2026-11-18).
+
+**S5-07 закрыта (2026-11-18).** Серия Stage 4A без диска прошла с двумя уникальными nonce, полным evidence и пустым списком необъяснённых расхождений после повторной сверки сохранённых прогонов. Comparator отклонил подменённый marker. [Результаты и команда](#s5-07-diskless-repeatability-evidence-2026-11-18).
+
 **Обновление S5-07 (2026-11-17):** новая common-ID N=2 серия на проверенных canonical inputs была counted: оба запуска прошли marker checks и ожидаемые syscall checks и достигли budget stop. Profile серии — `smoke_not_acceptance`; counted run eligibility не является acceptance сценария этапа 5. Строгая сверка вернула `matches=false`. Отклонённые optional panic frames делают Stage4 nonce-comparison gate неeligible, поэтому comparator применяет только nonce replacement к UART и сохраняет все machine stop observations. Различаются 26 machine leaves; первый nonce-normalized UART diff — byte 6,569 / line 96, один KHO printk timestamp (`0.021286` против `0.021285`). Существующие v13/v14 captures для той же пары локализуют дополнительный `#PF` до копирования platform string на начальный stack: destination run 2 оказался на отсутствующей соседней странице. Причина отличия выравнивания/состояния страницы и связь отдельного `+1 cr3_changes` не доказаны. Это counted diagnostic series, не S5-07 acceptance; comparator и allowlist не менялись. [Полный corrected residual ledger](data/stage5/s5-07-strict-residual-ledger-20261117.log) и [canonical source log](data/stage5/s5-07-counted-canonical-common-id-n2-20261117.log).
 
 **S5-07 fault-sequence exact replays (2026-11-17):** два точных повторных запуска с existing execution-observation sidecars совпали со своими source runs по полному stop, COM1 bytes, nonce и counted run eligibility. Сняты все 33/34 успешно доставленных `#PF`; omissions `0`, и для каждого события сохранён оригинальный fault page walk. Сверка упорядоченных tuples `(RIP, CR2, error, access, CPL)` выявила точное общее начало из 30 событий, одно вставленное событие в run 2 и совпадение последних трёх событий после него. Дополнительный event — CPL0 write в отсутствующий PT leaf на `0x7fff9d9d7429`, RIP символизован matching debug ELF как `rep_movs_alternative+0x11`. Caller chain указывает `create_elf_tables` при `run_init_process`; инструкции копируют `x86_64\0` в начальный `/init` user stack. Установлено место и операция fault, но не почему соответствующая page отсутствовала только в run 2. CR3/RSP/page-table differences остаются наблюдениями, не доказанной причиной. S5-07 по-прежнему blocked/unaccepted; [подробный evidence log](data/stage5/s5-07-counted-canonical-pf-event-exact-replay-20261117.log).
@@ -35,8 +41,8 @@ S5-00 принят после независимого архитектурно�
 | S5-00 | `accepted` | S5-01 | `blocked` |
 | S5-02 | `accepted` | S5-03 | `accepted` |
 | S5-04 | `accepted` | S5-05 | `accepted` |
-| S5-06 | `blocked` | S5-07 | `blocked` |
-| S5-08 | `blocked` | S5-09 | `not_started` |
+| S5-06 | `accepted` | S5-07 | `accepted` |
+| S5-08 | `accepted` | S5-09 | `not_started` |
 | S5-10 | `not_started` | S5-11 | `not_started` |
 | S5-12 | `not_started` | S5-13 | `not_started` |
 | S5-14 | `not_started` | S5-15 | `not_started` |
@@ -81,7 +87,7 @@ This is a reciprocal documentation handoff only. It does not accept S5-20, S5-19
 | Evidence available | Consumer | Missing gate / limit |
 |---|---|---|
 | S5-02/03/04/17 accepted: storage contract, host backend/failure tests and preliminary no-guest profile; S5-05 accepted build recipe and fixtures | S7-31, S11-28, S11-33 | Host/build evidence only. It does not establish Linux boot, /init, userspace, a guest-visible disk, guest agent, NIC or guest network. |
-| S5-06 scripts and physical Linux preflight (blocked/unaccepted); S5-07 counted nonce A/B pass, common-ID C series failed | Linux boot/userspace consumers S7-31 and S11-28; network guest path S11-33 | A/B reached `/init` and emitted exact nonce; C/run-0001 failed when board external IRQ delivery was refused, while C/run-0002 passed. The run-specific cause is not yet localized. The modeled CPL3 external-IRQ gap from ISSUE-090 now has an implementation and focused board integration coverage through S4-39h; live guest validation is absent. S4-39 remains accepted with limitations under S4-46, ISSUE-090 is resolved for the modeled path, ISSUE-098/099 remain open; S4-31 data-only tables are accepted and S4-38 guest discovery remains a separate runtime evidence gate, and A–G guest acceptance is absent. See [S5-07 follow-up](#s5-07-counted-nonce-series-follow-up-2026-11-15) and [S5-06 physical preflight](#физический-linux-preflight-s5-06-2026-11-14). |
+| S5-06 independent guest-script verification and S5-07 diskless repeatability accepted | Linux boot/userspace consumers S7-31 and S11-28; network guest path S11-33 | S5-06 confirms A–G inside independent Linux on the Mac mini. S5-07 confirms two nonce-tagged runs on the Open Desktop Stage 4A profile. Open Desktop shutdown, disk and networking retain their own runtime gates. See [S5-06 evidence](#s5-06-проверка-скриптов-a-g-на-физическом-linux-стенде-2026-11-18) and [S5-07 evidence](#s5-07-diskless-repeatability-evidence-2026-11-18). |
  | S7-16 remains in_progress/unaccepted; PCI binding and NVMe IRQ route are absent; S4-31 data-only tables are accepted; S4-30 acceptance is narrow and does not include PCI binding | S7-31 and disk scenario S5-09 | Need accepted controller integration, PCI/ECAM binding, IRQ routing, production PCI root resource windows and _PRT routing (ISSUE-065) before claiming Linux NVMe discovery. |
 | S11-31e and S11-32 are not accepted; S11-32 remains blocked to S4-30 and interrupts | S11-33 and Stage 5 scenario F (S5-13) | Host loopback NAT evidence is not guest NAT evidence; a NIC model and accepted Linux guest path are still required. S11-33 DHCP/DNS/ICMP/HTTP counters must come from a real guest run. |
 | No accepted Linux guest agent or guest-side network run exists | S11-28 and S11-33 | Wait for accepted Linux boot/userspace evidence; keep the independent S11-31e, S11-32, S4-30 and S4-38 guest-discovery evidence explicit. |
@@ -816,3 +822,111 @@ On revision `b73d534`, both canonical schema-v20 runs reproduce their own schema
 A balanced six-pair benchmark compared the same direct-walker harness on pre-merge `36a568d` and post-merge `b73d534`. First-A translation walks were 18.0–19.1% faster in the candidate medians across 4 KiB/2 MiB and read/write cases. Warm-A walks were 4.7–5.3% slower. Both orders showed the same sign for every scenario; these are separate measured behaviors and are not combined into an overall throughput claim. Preparation/reset stayed outside timing; the candidate used explicit interleaved RAM mode; each timed scenario ran at least 200 ms. Since setup/reset APIs differ between revisions, First-A describes the measured prepared-fixture scenario and is not a cold-cache result. Cause and application to full Linux workloads are not established. [Scenario results and environment](data/stage5/s5-07-post-main-page-walk-benchmark-20261117.log); [raw runs and harness archive](data/stage5/s5-07-post-main-page-walk-benchmark-20261117.tar.gz).
 
 The strict source-pair comparison remains `matches: false`; S5-07 remains blocked/unaccepted and the comparator/allowlist are unchanged. The next diagnostic is to capture the value immediately before and after the operation that forms `aligned_stack_pointer`, correlate both values to the same exact-nonce ELF stack-copy invocation, and compare signed offsets from each run's `relocated_start`. This should locate where the pointer delta first appears without inferring causality from the `0x1650` difference alone.
+
+
+### S5-07 exact-nonce stack-alignment replay (2026-11-18)
+
+Both schema-v21 replays matched their own post-main schema-v20 stop and UART byte for byte. The rest of each sidecar also matched after removing the new alignment records, their RBP/RSP links, and the schema and capture-description changes. Both alignment captures are `captured`, with one matched pair and zero omissions. Disassembly of the staged 7.0.0-38 kernel identifies the input at the `arch_align_stack` call at `0xffffffff81999bb5` and the result at `0xffffffff81999bba`.
+
+| Observation | Run 0001 | Run 0002 |
+|---|---:|---:|
+| Input offset from the upper candidate page | `+0xfd2` | `+0xfd2` |
+| Return offset from that page | `+0xa80` | `-0xbd0` |
+| Bytes from input to return | `0x552` | `0x1ba2` |
+| Retired instructions between capture points | 10,922 | 10,922 |
+| SHA-256 of schema-v21 sidecar | `f34ece3a61b71b6496d5dba1d18d4e0259e515f0d323e17ca2f8ec5f9f98f7d0` | `ee2f6de8dc63476e30b7c33a625e939441dc0adfed7eec53adee9bfa86b669c2` |
+
+The staged Linux sources identify the operation as subtraction of `get_random_u32_below(8192)` when userspace ASLR is enabled, followed by alignment down to 16 bytes. The earlier extra copy fault is consistent with the different result from this operation. The staged `init/main.c` and `drivers/char/random.c` also show that the early RNG input includes the literal boot command line. A different boot command line can therefore vary guest execution before `/init` prints its marker. The saved pair localizes the extra copy fault. Attribution of the other differences in that pair remains open.
+
+Raw evidence is under `work/stage5/s5-07-schema-v21-align-stack-exact-replay-20261117-a/`. Baseline inputs and current comparison of the exact-nonce source pair are recorded in the [post-main v20 report](data/stage5/s5-07-post-main-schema-v20-exact-replay-20261117.log).
+
+### S5-07 diskless repeatability evidence (2026-11-18)
+
+A single release `linux-direct --test-runs 2` invocation ran the existing Stage 4A diskless scenario with 128 MiB RAM and a 3,000,000,000-instruction budget. The kernel and original initramfs match the pinned [Stage 4 artifact recipe](../testing/MACHINE.md#воспроизведение-linux-direct-boot-s4-39j). The runner passed each generated nonce through Linux bootconfig with a fixed early command line. Both guests loaded bootconfig, emitted their own exact `OD_NONCE` once, used syscall order `[83,165,257,0,3,1,39,35,60]`, and reached `budget_exhausted` at 2,999,999,998 retired instructions. Both per-run manifests report `counted` and `passed`. The Stage 5 series profile is `smoke_not_acceptance`.
+
+| Run | Nonce | UART bytes and SHA-256 | Raw runner JSON SHA-256 | Wall seconds |
+|---|---|---|---|---:|
+| 0001 | `OD518e9262b1f794dd000004cb400000000` | 23,468 / `c5d420dce722119e0ed9fabf2bde063b197ffe2f79b8c493ac8958827bbb58dc` | `cffb371fc100d42f861e297153509e44835d5bfb7ea82e99bc92707e1d29e7ad` | 1,275.184 |
+| 0002 | `OD518e9275407fd9a1000004cb400000001` | 23,468 / `6d5a503ee3e5429edd9d81b540963ddbbd31b4c611c35e998f9b1e677e798f6a` | `1bc054f4ac1e2417ab4ac8abf3ee1a673e8512d837aa47dc03bc15719a5271fb` | 1,202.714 |
+
+Evidence is in `work/stage5/s5-07-bootconfig-n2-20261118-a/` on macOS 26.7.1 (25G241), arm64. The guest run used release runner 0.1.0, base source revision `4cc648c1d6bba92dc2dccbb40dd4454f1d36ce27` with a dirty tree, executable SHA-256 `3063e55a7a75653ed52fe8074f4ed14b080b56c2ebaba330d1b1b86954af555e`. `series.json` SHA-256 is `3648ba4b716f9f2ebf7da2af2d6aa5e2e8ef9f314b74ca1331263794778f2b79`.
+
+The initial automatic comparison rejected the pair because two `stop.inputs` fields duplicated the nonce-bearing loaded initrd digest. Both digests were independently reconstructed from the pinned base initramfs and the exact nonce trailer, and matched each run's guest-RAM readback. After the comparator was taught to verify and account for those two fields as input metadata, the existing series was rechecked through the same within-series comparison function with `--compare-results <series.json> --linux-stage5 --json`. The original `comparison.json` retains the initial verdict. The recheck uses the saved runs and writes `comparison-rechecked.json`, with `matches=true` and `unexplained_differences=[]` (SHA-256 `ea98c57c55bb6aaedc10df70df2b4b80aa0a53c95778d84633ec4eb7b34e3d59`). Both UART streams match after nonce substitution alone. All other stop fields match, including 26,618 CR3 changes, 33 delivered page faults, one delivered general-protection fault and 34,447,936 RDTSC reads.
+
+The negative check copied the evidence, changed one byte in the first guest marker, and rebuilt the UART, raw JSON, and manifest hashes. The Stage 5 comparator returned exit 3 with `recorded guest marker validation does not match UART bytes`. The original evidence was preserved. The command and input requirements are in the [Linux stand procedure](../testing/LINUX_STAND.md#дисковый-профиль-не-требуется-для-s5-07).
+
+
+Final self-review checked the bootconfig trailer and readback evidence, strict comparison and its legacy path, and the schema-v21 capture-to-copy context. Offline verification passed for the workspace all-target check, the release runner build, 1,021 runner tests with five ignored, and 1,639 machine library tests with eight ignored. Both focused machine alignment tests passed after the review fix. Graphify was updated. The layout checker still reports missing historical work artifacts under [ISSUE-023](../KNOWN_ISSUES.md#issue-023--layout-checker-reports-worktree-metadata-and-stale-oracle-links).
+
+
+### S5-06 проверка скриптов A-G на физическом Linux стенде (2026-11-18)
+
+Два холодных запуска обычного Linux в QEMU 10.2.1 с аппаратным KVM на Mac mini (Intel Core i5-3210M, Ubuntu 26.04.1, host Linux 7.0.0-42-generic x86_64). Пакеты QEMU скачаны и распакованы в приватный временный каталог. Гость использовал Q35, один vCPU, 512 МиБ RAM, NVMe и virtio-net через QEMU user networking. SHA-256 всех 13 переданных shell/C файлов совпали с рабочей копией. Оба запуска использовали одноразовый QCOW2-слой с неизменяемой подложкой S5-05. Nonce первого запуска `OD506-8766fb910765b447`, второго `OD506-c0cccd6047f506ef`.
+
+| Скрипт | Фактический результат |
+|---|---|
+| A | Чужой nonce дал `OD_S5_A_NOT_RUN` и exit 78. Для nonce из cmdline гость записал хеш маркера и `OD_S5_A_SHUTDOWN_REQUEST`. QMP зафиксировал `SHUTDOWN` с `guest=true`, `reason=guest-shutdown` и состояние `shutdown` до команды `quit`. |
+| B | Первая загрузка дала `B_PASS phase=write`, вторая со свежим nonce — `B_VERIFY` и `B_PASS phase=verify`. SHA-256 payload из обоих запусков и read-only чтения ext4 на хосте совпал — `654acb6b9dc8cf86b3388e8bf9ea17b7a241e104d603739ba2fc2c4b993581ed`. |
+| C | Архивирование и извлечение прошли внутри гостя. `C_TREE_MATCH files=4` и `C_PASS` подтверждают совпадение деревьев после проверки содержимого и прав. |
+| D | Исходники с ожидаемыми хешами собраны GCC 15 в госте. Программа вернула `sum=5050`, скрипт выдал `D_PASS`. |
+| E | Собранная в госте программа исполнила сгенерированный код до и после изменения страницы, получив `41` и `42`. Дочерний NX-пробник получил ожидаемый отказ. Есть `E_PASS jit_claim=none`. |
+| F | Гостевой TCP-клиент передал 68 байт через virtio-net и QEMU NAT. SHA-256 на эхо-сервере, в исходном и принятом файле гостя совпал — `64844f8a56d8eaab5509556e0ed3904dd6a45d366fd1251c378b4e6859d0c7e5`. Отдельные TCP-подключения подтвердили закрытие принятого соединения и отказ соединения с зарезервированным портом без listener. Есть `F_PASS`. |
+| G | Гость проверил 16 384 страницы в 64 МиБ и вывел полный `OD_S5_G_READY ... checksum=2047871 hold=1`. Обвязка дождалась конца строки и выполнила QMP `stop`. Получены `STOP` и `status=paused` до завершения процесса QEMU. Read-only чтение sentinel из ext4 совпало с гостевым SHA-256 `83fca6f93da11fe367c4adc8f46f948e0da64f12dbef61e581d8aa4848bbef9e`. |
+
+Фиксированный RAW S5-05 совпал до и после проверки — `c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895`. Ядро Ubuntu 7.0.0-38.38 имело SHA-256 `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`. Доступная локальная копия initramfs имела SHA-256 `0915779ef84d1cba3d2d64d44ec3bda0eb8820daf2c305753d72564e1b486dc4` и отличалась от зафиксированного S5-05. Для независимой проверки скриптов собран отдельный initramfs с переносом монтирований `/proc`, `/sys`, `/dev` в новый корень перед `switch_root` и передачей управления тестовой обвязке. Его SHA-256 — `f2723c3dec9cf4da5fdac35f28d2372bede5453a998351652d1978deba18828c`. Расхождение локальных файлов S5-05 учтено в [ISSUE-111](../KNOWN_ISSUES.md#issue-111--локальные-копии-артефактов-s5-05-отличаются-от-принятых).
+
+Полный комплект сохранён в `work/stage5/s5-06-oracle-20261118/`. `oracle.py` (SHA-256 `e69873fc975cbdcb32bcb9848fd583ef6bb5e1e65815716370bf6108a944c154`) содержит подготовку отдельного initramfs, загрузку, проверку UART/QMP и чтение диска. `evidence/boot-*.argv.json` сохраняют аргументы, `evidence/inputs.sha256` — входные хеши, `evidence/summary.json` — результат.
+
+| Файл | SHA-256 |
+|---|---|
+| `boot-1.uart` | `9662d8f490df2f0f916584de0f88ecd476730a44d7fdf1f5f36e4752b99450e8` |
+| `boot-2.uart` | `f7dc9563da37b1d05217c70806b8cfaf00293ce03af2fbcea057cc061ccbbe70` |
+| `boot-1.qmp.jsonl` | `da2764b6ab6db93051e8046c0572c0088f05f965c29f778f73df5c0a40c5c7fb` |
+| `boot-2.qmp.jsonl` | `bd2fe39d9c34cbdc0b987d137d8b2bdbce869687dc7c7a8e714c6fb4cad1ad13` |
+| `inputs.sha256` | `84f3937dcff7945175139db2aed4bc3d356268ee28fbf1f9f26a124056f2efa2` |
+| `summary.json` | `62f24bace289d023f769716cb7d162e5757f5ce97a6b018dc984e8c233cfe7e5` |
+
+Финальное саморевью сверило фактические markers, два stop-события, хеши входов и файлов, а также границы результата по плану. Принята независимая проверка сценарных скриптов S5-06 на физическом стенде. Зачётные прогоны на Open Desktop относятся к S5-08 и отдельным сценарным задачам. Для сетевого прогона Open Desktop остаются S5-13, S11-32, S11-31e и S11-33.
+
+### S5-08 два ACPI выключения без диска (2026-11-18)
+
+Серия `s5-08-stage4a-poweroff-n2-20261118-b` выполнена одним вызовом `linux-direct --test-runs 2` на macOS/arm64 с профилем CPL0 set, Stage 4A, CPL3 включённым через `--user-mode`, 128 МиБ RAM и лимитом 3 000 000 000 инструкций. Профиль серии `stage5_functional`, оба manifest имеют `scenario_status=passed` и конфигурацию `acceptance=counted`. [Команда и проверка сохранённой серии](../testing/LINUX_STAND.md#s5-08-загрузка-и-acpi-выключение-без-диска).
+
+В обоих прогонах Stage 4 `/init` вывел полные `OD_NONCE` и `OD_S5_A_SHUTDOWN_REQUEST` с точным nonce, затем вызвал Linux `reboot(POWER_OFF)`. Последняя запись гостевого syscall journal — номер 169 без возврата в CPL3. UART заканчивается `ACPI: PM: Preparing to enter system sleep state S5` и `reboot: Power down`. Плата записала `exit_kind=stopped` и `machine_stop_reason=shutdown` на 2 320 587 734 инструкциях в каждом прогоне. Сохранённый RIP `0xffffffff81ea6be9` указывает на инструкцию после `outw %ax,%dx` в `acpi_os_write_port` ядра Ubuntu 7.0.0-38.38. Сохранённые `DX=0x604` и `AX=0x3401` соответствуют порту PM1a и битам S5/SLP_EN.
+
+| Run | Nonce | Wall seconds | UART SHA-256 (21 828 байт) | Raw runner JSON SHA-256 |
+|---|---|---:|---|---|
+| 0001 | `OD518e92b942bfaacc00000bded00000000` | 984.743 | `47dbafbb9ede3f5d3a8fc15c69f450f9442d7ec8d4ce5469f52457efe6a6b793` | `926aca67e188c363e4184353acfa4625f25a3ba1c132cb0da8fd952748c80073` |
+| 0002 | `OD518e92c79746c35d80000bded00000001` | 1 005.878 | `a4780b51a67bde74acd39139e530587d1332d0918584fb6b34875fa3e87bea46` | `9ea738137c3e65f92b0bf9899d531d7617122284eb42ad8d7f217db4a9a0972c` |
+
+Серия использовала один kernel SHA-256 `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`, один базовый initramfs SHA-256 `dea0fcb2a0c4401a99f342413567a0a9b4aa5d8929cd0abdaf687e5042567d03`, и один 1 072-байтовый ACPI blob SHA-256 `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`. ACPI manifest hash — `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`. Диск отсутствует. Серия записала базовый Git revision `4cc648c1d6bba92dc2dccbb40dd4454f1d36ce27` с dirty worktree. SHA-256 release runner — `be0f348c03199befb422212602ff3270ebbac7a54fbe52716111eba585182033`.
+
+Сырые данные в `work/stage5/s5-08-stage4a-poweroff-n2-20261118-b/`. SHA-256 `series.json` — `8752181dcba4397f2f6af3c14fa0abcb4f108ab7eb85b880412b3c4e5401c5c0`, `comparison.json` — `38da2d96f623d09de5f41cd4d70ff8912c88cd7f770f58768f1f0cebcc704c53`. Серия вернула код 0, `matches=true` и `unexplained_differences=[]`. UART совпал после подстановки nonce. После сверки двух дублирующих хешей загруженного initrd с readback хешем остальные поля stop совпали. System smoke повторно подтвердил серию через production comparator.
+
+Проверки копий evidence с обновлёнными хешами отклонили reset, исчерпание budget, shutdown без запроса и kernel panic после маркеров. Пройдены 1 022 теста раннера (5 ignored), проверки сборщика initramfs (23 теста, 1 пропущен), offline workspace check и release build. Сборка обычного Stage 4 initramfs из исходников до задачи и текущего дерева совпала побайтно. Финальное саморевью и Graphify выполнены. `wall_elapsed_seconds` описывает два функциональных запуска. Калибровка S5-01 выполняется отдельно по границам принятого сценария.
+
+<a id="s5-09-11-pci-nvme-and-scenario-gates"></a>
+
+### S5-09…11, PCI NVMe и проверка условий приёмки (2026-11-18)
+
+Для Linux direct boot добавлен opt-in PCI NVMe `00:04.0`, class `010802`, 64-битный BAR0/1, MSE, BME и INTx (INTA → GSI 16). Handoff v1.3 передаёт те же окно и маршрут, из которых строится DSDT. Старые golden-проверки проверяют firmware handoff и diskless ACPI побайтно. Из `codex2` (`f0e2b61`) перенесены проверка NSID, завершение или неявная отмена команд при Delete I/O SQ и соответствующие тесты.
+
+`python3 tools/build/build_stage4_acpi_blob.py --linux-nvme` выдаёт `work/stage4/linux_nvme_acpi_blob/stage4_acpi_blob.bin`. SHA-256 blob `a616923796c6188ce7abb9b608af1961665e3fd29c9bdeba68f6387f3d0faaed`, manifest hash `a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af`. ACPICA `iasl` декодировал `_PRT` как `{ 0x0004FFFF, 0, 0, 16 }`, `acpiexec` прочитал producer-апертуру `0xFC00_4000..=0xFC00_5FFF`. Тест платы проверяет BAR через ECAM и conf1, блокировку MMIO/DMA, CQE, маскировку INTx, доставку через IOAPIC и deassert после CQ head.
+
+Загрузчик `load_linux_direct_board_with_nvme` сверил манифест, разместил принятые ядро и initramfs S5-05, показал PCI class `010802` через ECAM и принял отдельную копию RAW через `od_host::persistent_nvme::attach_persistent_nvme`. Проверка закончилась при `retired=0`. Попытка вызвать профиль без APIC отклонена до первой инструкции. CLI для гостевого дискового прогона ещё предстоит подключить.
+
+| Вход | Путь в `work/` | SHA-256 |
+|---|---|---|
+| Kernel | `stage5/s5-09-inputs/vmlinuz-7.0.0-38-generic` | `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e` |
+| Initramfs | `stage5/s5-09-inputs/stage5-initramfs.cpio.gz` | `17621413fae2456b911fa99d2949daeca8cc13801c5d5a4951b85030f8d8f4b1` |
+| Исходный RAW | `stage5/s5-21/stage5-rootfs.raw` | `c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895` |
+
+| Задача | Открытое условие приёмки |
+|---|---|
+| S5-09 (B) | Приёмка S7-16. План включает MSI-X. Figure 31 NVMe Base 2.4 требует log pages `0x00`, `0x05`, `0x12`. После закрытия этих условий нужны два запуска Linux, наблюдение за отсутствием guest Flush, гостевые хеши, readback RAW и проверка ФС. |
+| S5-10 (C) | S5-09 и классификация S5-21/S4-38L7. Для `bash`, `dash`, `tar` статический инвентарь содержит 23 407 неклассифицированных записей. |
+| S5-11 (D) | S5-09 и классификация S5-21. Для `bash`, `dash`, GCC driver/cc1/collect2, assembler и linker остаются 208 864 неклассифицированные записи. |
+
+Числа C/D взяты из `scenarios.C/D.unclassified_instruction_rows` принятого [S5-21 inventory](data/stage5/s5-21-isa-inventory-e-static.json.gz). Они описывают разрыв классификации статического профиля. Полевые результаты A–G из S5-06 относятся к независимому Linux-стенду. Гостевые проверки B–D в Open Desktop остаются открытыми.
+
+Финальное саморевью сверило условия подключения платы, совместимость handoff, декодирование PCI и жизненный цикл уровня INTx с проверками. Прошли 1 963 теста `od-machine` (8 ignored), 156 тестов firmware, 17 тестов постоянного NVMe backend, пять тестов сборщика ACPI и offline workspace check. Graphify обновлён. В `git diff --check` ошибок нет. Общая проверка формата указывает на ранее существовавшие расхождения в `storage_abi_v1.rs` и `image-tool/tests/cli.rs`; проверка карты каталогов сообщает о старых ссылках на отсутствующие результаты под `work/`.

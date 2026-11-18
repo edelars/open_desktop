@@ -59,6 +59,35 @@ fn table<'a>(blob: &'a [u8], signature: &[u8; 4]) -> &'a [u8] {
     panic!("no table {signature:?}");
 }
 
+#[test]
+fn linux_nvme_dsdt_describes_the_bar_and_hardwired_inta() {
+    let blob = build(&LINUX_NVME_DEVICES, 0);
+    assert_eq!(blob, linux_nvme_blob_bytes::<LINUX_NVME_BLOB_LEN>());
+    let dsdt = table(&blob, b"DSDT");
+    let window = [
+        0x87, 0x17, 0, 0, 0x0c, 1, // DWordMemory, producer, positive decode, fixed, RW.
+        0, 0, 0, 0, // Granularity.
+        0, 0x40, 0, 0xfc, // Minimum.
+        0xff, 0x5f, 0, 0xfc, // Maximum.
+        0, 0, 0, 0, // Translation.
+        0, 0x20, 0, 0, // Length.
+    ];
+    let route = [
+        0x08, b'_', b'P', b'R', b'T', 0x12, 0x0e, 1, 0x12, 0x0b, 4, 0x0c, 0xff, 0xff, 4, 0, 0, 0,
+        0x0a, 16,
+    ];
+    assert!(dsdt.windows(window.len()).any(|bytes| bytes == window));
+    assert!(dsdt.windows(route.len()).any(|bytes| bytes == route));
+
+    let mut devices = LINUX_NVME_DEVICES;
+    devices[7].base = devices[6].base;
+    let mut out = [0; STAGE4_BLOB_CAPACITY];
+    assert_eq!(
+        build_blob(&devices, &mut out),
+        Err(BlobError::Manifest(ManifestError::BadPciNvme))
+    );
+}
+
 fn table_address(blob: &[u8], signature: &[u8; 4]) -> u64 {
     for i in 0..le32(blob, 0x48) as usize {
         let (sig, offset, _) = dir_entry(blob, i);

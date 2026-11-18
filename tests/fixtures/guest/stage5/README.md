@@ -59,7 +59,9 @@ This Stage 5 image is reconstructed from a signed Ubuntu archive manifest and ha
 
 No Linux boot or guest disk scenario is claimed here. PCI binding and interrupt routing remain Stage 7/4 gates; S5-01 remains blocked on measured boot/cycle/soak inputs. The rootfs and initramfs are artifacts for later extraction/guest scenarios, not evidence that Linux discovers the NVMe controller.
 
-## Prepared S5-06 guest scenario suite (not run)
+## S5-06 guest scenario suite
+
+The seven scripts passed inside a Linux guest on the physical Mac mini. The [S5-06 evidence](../../../../docs/reports/STAGE_5_REPORT.md#s5-06-проверка-скриптов-a-g-на-физическом-linux-стенде-2026-11-18) records the two boots, shutdown, stop and file hashes.
 
 The seven POSIX shell entry points are in `guest/linux/tests/` and are intended
 to run inside the Linux guest, not on the macOS build host. Each accepts a
@@ -74,11 +76,11 @@ implemented as host-side scenario execution.
 | Scenario | Guest action and primary markers | Pass condition / known gate |
 |---|---|---|
 | A | Writes and hashes a `/run` marker; requests poweroff with `OD_S5_A_SHUTDOWN_REQUEST`. | The script never powers off by default. It requires guest-only command-line keys `od_s5_guest_run=1`, `od_s5_allow_poweroff=1`, `od_s5_nonce=<same nonce>` plus a detected hypervisor/VM product. Otherwise it emits `OD_S5_A_NOT_RUN` and exits 78. These keys are preliminary test inputs, not a protocol. The runner must independently observe `MachineStopReason::Shutdown`; `poweroff` returning is failure. |
-| B | `write` stores a payload at `/var/lib/open-desktop-stage5/B/payload-<first-run-nonce>.bin`; `verify` on the next boot gets a fresh run nonce and the prior `S5_B_WRITE_NONCE`, checks that exact payload and the prior `S5_B_EXPECTED_SHA256`. Emits both current and write nonce with the guest SHA-256. | Write refuses an existing same-nonce path; verify requires a different current nonce, prior write nonce, and prior guest hash. The payload embeds its write nonce so stale data from another run cannot satisfy the comparison. The guest script does not issue NVMe Flush (`VWC=0`). It cannot pass until PCI binding/IRQ, `S4-31`, `S4-39`, and `S7-16` gates are accepted. |
+| B | `write` stores a payload at `/var/lib/open-desktop-stage5/B/payload-<first-run-nonce>.bin`; `verify` on the next boot gets a fresh run nonce and the prior `S5_B_WRITE_NONCE`, checks that exact payload and the prior `S5_B_EXPECTED_SHA256`. Emits both current and write nonce with the guest SHA-256. | Write refuses an existing same-nonce path; verify requires a different current nonce, prior write nonce, and prior guest hash. The payload embeds its write nonce so stale data from another run cannot satisfy the comparison. The guest script does not issue NVMe Flush (`VWC=0`). The Open Desktop disk run S5-09 requires PCI binding/IRQ and the corresponding Stage 4 and S7-16 gates. |
 | C | Creates small, nested, and 64 KiB files; overwrites, renames, chmods, and deletes; archives and extracts the tree; hashes both trees and archive. | Source and extracted SHA lists must match; permissions are checked in guest. The full reboot/fs-recovery criterion belongs to S5-10. |
 | D | `/usr/bin/gcc-15` compiles two fixed C translation units inside guest; runs `stage5_d`, records source/binary/output hashes, prints `OD_S5_D_RESULT ... sum=5050`. | Compiler and linker errors fail. Repeat output comparison across boots belongs to the later runner; no host compiler output is substituted. |
 | E | `/usr/bin/gcc-15` builds `stage5_e.c`. It generates a return-41 function, changes the already-executed page to return 42, then verifies a child executing an RW, non-X page receives `SIGSEGV`. | `OD_S5_E_RESULT ... first=41 second=42 nx=denied`; explicitly interpreter-profile evidence only, with `jit_claim=none`. JIT acceptance remains blocked by `S3-23`/`S3-24`. |
-| F | `/usr/bin/gcc-15` builds the guest C client that sends a bounded payload to a configured remote TCP echo endpoint and verifies the bytes returned; it separately probes an accept-then-close endpoint and a configured unavailable endpoint. | Requires `S5_F_HOST/PORT`, `S5_F_DROP_HOST/PORT`, and `S5_F_UNREACHABLE_HOST/PORT`. Loopback/local endpoints are rejected. No file-copy or localhost fallback exists. The endpoints and NIC path are not implemented here; this remains blocked by `S11-32`, `S11-31e`, and the `S11-33` end-to-end run. |
+| F | `/usr/bin/gcc-15` builds the guest C client that sends a bounded payload to a configured remote TCP echo endpoint and verifies the bytes returned; it separately probes an accept-then-close endpoint and a configured unavailable endpoint. | Requires `S5_F_HOST/PORT`, `S5_F_DROP_HOST/PORT`, and `S5_F_UNREACHABLE_HOST/PORT`. Loopback/local endpoints are rejected. No file-copy or localhost fallback exists. The Linux stand supplies an isolated echo listener, a drop listener, and an unavailable port. The Open Desktop network run tracks `S11-32`, `S11-31e`, and the `S11-33` end-to-end run. |
 | G | `/usr/bin/gcc-15` builds the guest C process that writes and syncs a small disk sentinel, checks each page in a bounded 16–128 MiB allocation, prints `OD_S5_G_READY`, then holds. Default is 64 MiB. | The runner's exact stop point is `OD_S5_G_READY`; process termination must be initiated by the runner, not by a random timer. This does not claim power-loss safety. |
 
 The stable fixture sources are project-authored, use only guest libc/POSIX, and
@@ -149,9 +151,6 @@ clang -std=c11 -Wall -Wextra -Werror -O2 \
 `for script in guest/linux/tests/s5_*.sh; do sh -n "$script"; done` and
 Apple Clang `-fsyntax-only` on guest C sources are static host-side checks only;
 they do not show successful guest compilation, script behavior on Linux, or
-physical stand execution. The F classifier harness tests only local error
-mapping, not a network endpoint. No
-S5-06 scenario has been run. The single physical Linux stand and its limits
-are described in [STAND.md](../../../../docs/testing/STAND.md); S5-01 is still blocked
-on measured run-count/soak inputs, and guest boot remains behind the stated
-PCI/IRQ/firmware gates. This prepared suite is not accepted.
+physical stand execution. The F classifier harness covers local error mapping.
+The independent guest run and the limits of the physical stand are documented
+in the S5-06 evidence and [STAND.md](../../../../docs/testing/STAND.md).

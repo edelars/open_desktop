@@ -21,7 +21,11 @@ use super::backend::NvmeBackend;
 use super::io::{self, IoStats};
 use super::queues::{
     BusDma, Command, Completion, CompletionQueue, GuestDma, MAX_QUEUE_ENTRIES, Outcome, SQE_BYTES,
-    SubmissionQueue, encode_cqe,
+    Status, SubmissionQueue, encode_cqe,
+};
+use super::{NVME_MMIO_BYTES, NVME_PCI_BAR_BASE};
+use crate::pci_ecam::{
+    COMMAND_BUS_MASTER, COMMAND_INTX_DISABLE, COMMAND_MEMORY_ENABLE, PciFunction, Type0Config,
 };
 use crate::{
     AccessWidth, BusDevice, DeviceAccess, DeviceError, GuestPhysicalRange, IoSpace, MachineBus,
@@ -188,6 +192,7 @@ pub(crate) struct NvmeState {
     pub(super) backend: Option<BackendSlot>,
     pub(super) io: IoStats,
     pending: bool,
+    pci: Option<Type0Config>,
 }
 
 /// The attached backend; `Debug` prints only its size (the trait has no `Debug`).
@@ -230,11 +235,35 @@ impl NvmeState {
             backend: None,
             io: IoStats::default(),
             pending: false,
+            pci: None,
         }
     }
 
     pub(super) const fn ready(&self) -> bool {
         self.csts & CSTS_RDY != 0 && self.csts & CSTS_CFS == 0
+    }
+
+    fn memory_decode_enabled(&self) -> bool {
+        self.pci.as_ref().is_none_or(|pci| {
+            pci.command() & COMMAND_MEMORY_ENABLE != 0
+                && pci.memory_bar0_address() == NVME_PCI_BAR_BASE
+        })
+    }
+
+    fn dma_enabled(&self) -> bool {
+        self.pci
+            .as_ref()
+            .is_none_or(|pci| pci.command() & COMMAND_BUS_MASTER != 0)
+    }
+
+    /// PCIe transport revision 1.4 §3.5.1, pin mode with the single vector 0.
+    fn interrupt_pending(&self) -> bool {
+        self.intms & 1 == 0
+            && self
+                .cqs
+                .iter()
+                .flatten()
+                .any(CompletionQueue::requests_interrupt)
     }
 
     pub(super) fn set_fatal(&mut self) {
@@ -277,7 +306,7 @@ impl NvmeState {
             return;
         }
         self.sqs[0] = Some(SubmissionQueue::new(self.asq, sq_entries as u16, 0));
-        self.cqs[0] = Some(CompletionQueue::new(self.acq, cq_entries as u16, false));
+        self.cqs[0] = Some(CompletionQueue::new(self.acq, cq_entries as u16, true));
         self.csts = CSTS_RDY;
     }
 
@@ -516,10 +545,15 @@ impl NvmeState {
         let command = Command::decode(&raw);
         report.commands += 1;
         let outcome = if slot == 0 {
-            admin::execute(self, &command, dma)
+            admin::execute(self, &command, dma, report)
         } else {
             io::execute(self, &command, dma)
         };
+        // A failed CQ DMA write sets CFS. Do not publish a completion for the
+        // command that caused it (or continue an enclosing Delete SQ operation).
+        if !self.ready() {
+            return false;
+        }
         if let Outcome::Done(completion) = outcome {
             if !completion.status.is_success() {
                 let phase = self.cqs[cqid].is_some_and(|cq| cq.phase);
@@ -530,6 +564,36 @@ impl NvmeState {
             }
         }
         true
+    }
+
+    /// Services commands already covered by an I/O SQ's tail before Delete SQ
+    /// removes the queue. If the associated CQ cannot hold all completions, the
+    /// queued commands are implicitly aborted and the SQ is deleted successfully.
+    pub(super) fn drain_io_queue_for_delete(
+        &mut self,
+        slot: usize,
+        dma: &mut dyn GuestDma,
+        report: &mut NvmeServiceReport,
+    ) -> Result<(), Status> {
+        let Some(sq) = self.sqs[slot] else {
+            return Err(Status::INVALID_QUEUE_IDENTIFIER);
+        };
+        let pending = sq.pending_entries();
+        let cqid = usize::from(sq.cqid);
+        let free = self.cqs[cqid].map_or(0, |cq| cq.free_entries());
+        if free < pending {
+            self.sqs[slot] = None;
+            return Ok(());
+        }
+        while self.sqs[slot].is_some_and(|sq| sq.has_work()) {
+            if !self.run_one(slot, dma, report) {
+                return Err(Status::INVALID_QUEUE_DELETION);
+            }
+            if !self.ready() {
+                return Err(Status::INTERNAL_ERROR);
+            }
+        }
+        Ok(())
     }
 
     /// Posts completions of `Asynchronous Event Request` commands whose event arrived.
@@ -585,6 +649,28 @@ pub struct NvmeHandle {
     state: Arc<Mutex<NvmeState>>,
 }
 
+/// The ECAM/conf1 frontend for a controller on a Linux board. BAR registers,
+/// Command and the CQ level share the controller's mutex with MMIO and DMA.
+pub(crate) struct NvmePciFunction(NvmeHandle);
+
+impl PciFunction for NvmePciFunction {
+    fn config_read(&mut self, register: u16, width: AccessWidth) -> u32 {
+        let mut state = lock(&self.0.state);
+        let pending = register & !3 == 0x04 && state.interrupt_pending();
+        let pci = state.pci.as_mut().expect("PCI frontend has a PCI config");
+        pci.observe_interrupt(pending);
+        pci.config_read(register, width)
+    }
+
+    fn config_write(&mut self, register: u16, width: AccessWidth, value: u32) {
+        lock(&self.0.state)
+            .pci
+            .as_mut()
+            .expect("PCI frontend has a PCI config")
+            .config_write(register, width, value);
+    }
+}
+
 impl NvmeDevice {
     /// Creates a powered-off controller (`CSTS.RDY = 0`) and its handle.
     pub fn new_with_handle(config: NvmeConfig) -> Result<(Self, NvmeHandle), NvmeConfigError> {
@@ -596,6 +682,21 @@ impl NvmeDevice {
             },
             NvmeHandle { state },
         ))
+    }
+
+    pub(crate) fn new_pci(
+        config: NvmeConfig,
+    ) -> Result<(Self, NvmeHandle, NvmePciFunction), NvmeConfigError> {
+        let (device, handle) = Self::new_with_handle(config)?;
+        // Reserved test endpoint identity; class/prog-if are the standard NVMe values.
+        // The driver binds by class, never a specific hardware vendor or quirk.
+        let mut pci = Type0Config::new(0xD1A6, 0x0008, 0, 0x01_08_02, Some(NVME_MMIO_BYTES as u32))
+            .expect("NVMe has a valid constant class and BAR size");
+        pci.configure_64_bit_memory_bar0(NVME_PCI_BAR_BASE);
+        pci.configure_inta();
+        lock(&handle.state).pci = Some(pci);
+        let function = NvmePciFunction(handle.clone());
+        Ok((device, handle, function))
     }
 }
 
@@ -623,10 +724,22 @@ impl NvmeHandle {
         Ok(())
     }
 
+    pub(crate) fn pci_interrupt_line(&self) -> bool {
+        let state = lock(&self.state);
+        state.pci.as_ref().is_some_and(|pci| {
+            pci.command() & COMMAND_INTX_DISABLE == 0 && state.interrupt_pending()
+        })
+    }
+
+    pub(crate) fn has_pci_transport(&self) -> bool {
+        lock(&self.state).pci.is_some()
+    }
+
     /// A doorbell write since the last [`service`](Self::service) call: the
     /// machine owner should end the guest quantum and service the controller.
     pub fn doorbell_pending(&self) -> bool {
-        lock(&self.state).pending
+        let state = lock(&self.state);
+        state.pending && state.dma_enabled()
     }
 
     /// `CSTS.RDY = 1` and no fatal status.
@@ -642,11 +755,15 @@ impl NvmeHandle {
         bus: &mut MachineBus,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> NvmeServiceReport {
+        let mut state = lock(&self.state);
+        if !state.dma_enabled() {
+            return NvmeServiceReport::default();
+        }
         let mut dma = BusDma {
             bus,
             committed: committed_write,
         };
-        lock(&self.state).service(&mut dma)
+        state.service(&mut dma)
     }
 }
 
@@ -655,10 +772,14 @@ impl BusDevice for NvmeDevice {
         if access.space != IoSpace::Mmio {
             return Err(DeviceError::UnsupportedSpace);
         }
+        let state = lock(&self.state);
+        if !state.memory_decode_enabled() {
+            return Ok(u64::MAX >> (64 - access.width.bytes() * 8));
+        }
         if access.offset >= reg::DOORBELLS {
             return NvmeState::read_doorbell(access.offset);
         }
-        lock(&self.state).read_register(access.offset, access.width)
+        state.read_register(access.offset, access.width)
     }
 
     fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
@@ -666,6 +787,9 @@ impl BusDevice for NvmeDevice {
             return Err(DeviceError::UnsupportedSpace);
         }
         let mut state = lock(&self.state);
+        if !state.memory_decode_enabled() {
+            return Ok(());
+        }
         if access.offset >= reg::DOORBELLS {
             state.write_doorbell(access.offset, access.width, value)
         } else {

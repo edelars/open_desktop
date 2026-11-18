@@ -4,8 +4,7 @@
 //! One segment, one bus (0). The window is a plain MMIO region served by
 //! [`PciEcam`]. The board registers it behind an opt-in flag (S4-30c,
 //! `FirmwareBoardConfig::pci_ecam`) with an empty bus 0: no production function is
-//! registered; BAR decode is not mapped into the physical memory map (stored
-//! bits only).
+//! registered by the base board. An attached endpoint owns its register decode.
 
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace};
 use std::collections::BTreeMap;
@@ -59,6 +58,11 @@ const _: () = assert!(
 );
 
 const COMMAND_RW_MASK: u32 = 0x0007;
+pub(crate) const COMMAND_MEMORY_ENABLE: u16 = 1 << 1;
+pub(crate) const COMMAND_BUS_MASTER: u16 = 1 << 2;
+pub(crate) const COMMAND_INTX_DISABLE: u16 = 1 << 10;
+const STATUS_INTERRUPT: u32 = 1 << 19;
+const BAR_TYPE_64_BIT: u32 = 0x4;
 
 // Offsets inside the conf1 block.
 const CONF1_ADDRESS_OFFSET: u64 = 0; // 0xCF8, latch changes by dword write only
@@ -120,7 +124,7 @@ pub enum Type0ConfigError {
     InvalidClassCode(u32),
 }
 
-/// Type-0 configuration header with an optional 32-bit memory BAR0.
+/// Type-0 configuration header with an optional memory BAR0.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Type0Config {
     vendor_id: u16,
@@ -128,8 +132,11 @@ pub struct Type0Config {
     revision_class: u32,
     command: u16,
     interrupt_line: u8,
+    interrupt_pin: u8,
+    interrupt_status: bool,
     bar0_mask: u32,
     bar0: u32,
+    bar0_upper: Option<u32>,
 }
 
 impl Type0Config {
@@ -156,8 +163,11 @@ impl Type0Config {
             revision_class: (class_code << 8) | u32::from(revision),
             command: 0,
             interrupt_line: 0,
+            interrupt_pin: 0,
+            interrupt_status: false,
             bar0_mask,
             bar0: 0,
+            bar0_upper: None,
         })
     }
 
@@ -169,14 +179,49 @@ impl Type0Config {
         self.bar0
     }
 
+    /// Assign a 64-bit non-prefetchable BAR to the endpoint's initial address.
+    pub(crate) fn configure_64_bit_memory_bar0(&mut self, address: u64) {
+        debug_assert!(self.bar0_mask != 0);
+        self.bar0 = (address as u32) & self.bar0_mask;
+        self.bar0_upper = Some((address >> 32) as u32);
+    }
+
+    pub(crate) fn memory_bar0_address(&self) -> u64 {
+        u64::from(self.bar0) | (u64::from(self.bar0_upper.unwrap_or(0)) << 32)
+    }
+
+    pub(crate) fn configure_inta(&mut self) {
+        self.interrupt_pin = 1;
+        self.interrupt_line = 0xff;
+    }
+
+    pub(crate) fn observe_interrupt(&mut self, asserted: bool) {
+        self.interrupt_status = asserted;
+    }
+
     fn read_dword(&self, register: u16) -> u32 {
         match register {
             0x00 => u32::from(self.vendor_id) | (u32::from(self.device_id) << 16),
-            0x04 => u32::from(self.command),
+            0x04 => {
+                u32::from(self.command)
+                    | if self.interrupt_status {
+                        STATUS_INTERRUPT
+                    } else {
+                        0
+                    }
+            }
             0x08 => self.revision_class,
             0x0C => 0, // cache line, latency, header type 0x00, BIST
-            0x10 => self.bar0,
-            0x3C => u32::from(self.interrupt_line), // pin (0x3D) is RO 0
+            0x10 => {
+                self.bar0
+                    | if self.bar0_upper.is_some() {
+                        BAR_TYPE_64_BIT
+                    } else {
+                        0
+                    }
+            }
+            0x14 => self.bar0_upper.unwrap_or(0),
+            0x3C => u32::from(self.interrupt_line) | (u32::from(self.interrupt_pin) << 8),
             _ => 0,
         }
     }
@@ -185,9 +230,20 @@ impl Type0Config {
         let merge = |old: u32| (old & !byte_mask) | (value & byte_mask);
         match register {
             0x04 => {
-                self.command = (merge(u32::from(self.command)) & COMMAND_RW_MASK) as u16;
+                let rw_mask = COMMAND_RW_MASK
+                    | if self.interrupt_pin != 0 {
+                        u32::from(COMMAND_INTX_DISABLE)
+                    } else {
+                        0
+                    };
+                self.command = (merge(u32::from(self.command)) & rw_mask) as u16;
             }
             0x10 => self.bar0 = merge(self.bar0) & self.bar0_mask,
+            0x14 => {
+                if let Some(upper) = self.bar0_upper.as_mut() {
+                    *upper = merge(*upper);
+                }
+            }
             0x3C => self.interrupt_line = merge(u32::from(self.interrupt_line)) as u8,
             _ => {}
         }

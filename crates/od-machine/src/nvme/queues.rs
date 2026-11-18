@@ -187,6 +187,10 @@ impl SubmissionQueue {
     pub(crate) const fn has_work(&self) -> bool {
         self.head != self.tail
     }
+    /// Number of commands covered by the current tail doorbell.
+    pub(crate) const fn pending_entries(&self) -> u16 {
+        (self.tail + self.entries - self.head) % self.entries
+    }
     /// Guest address of the entry at `head`.
     pub(crate) fn head_address(&self) -> u64 {
         self.base + u64::from(self.head) * SQE_BYTES as u64
@@ -206,7 +210,7 @@ pub(crate) struct CompletionQueue {
     pub(crate) tail: u16,
     /// Current phase tag; starts at 1 and flips on every wrap of `tail`.
     pub(crate) phase: bool,
-    /// Interrupt enable (`IEN`); interrupts are not delivered in slice A.
+    /// Interrupt enable (`IEN`); the admin CQ has interrupts enabled implicitly.
     pub(crate) interrupt_enabled: bool,
 }
 
@@ -224,6 +228,13 @@ impl CompletionQueue {
     /// A queue with one free slot left is full: head == tail would be "empty".
     pub(crate) const fn is_full(&self) -> bool {
         (self.tail + 1) % self.entries == self.head
+    }
+    pub(crate) const fn requests_interrupt(&self) -> bool {
+        self.interrupt_enabled && self.head != self.tail
+    }
+    /// Number of CQEs that can be posted before the ring becomes full.
+    pub(crate) const fn free_entries(&self) -> u16 {
+        (self.head + self.entries - self.tail - 1) % self.entries
     }
     pub(crate) fn tail_address(&self) -> u64 {
         self.base + u64::from(self.tail) * CQE_BYTES as u64

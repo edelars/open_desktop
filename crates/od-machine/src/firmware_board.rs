@@ -24,6 +24,8 @@ use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters, NoIrqSourc
 use crate::linux_checkpoints::{
     CheckpointRecorder, LinuxCheckpointRecord, LinuxCheckpointTable, LinuxCheckpointTableError,
 };
+use crate::nvme::irq_source::NvmeIoapicIrqSource;
+use crate::nvme::{NVME_PCI_BAR_BASE, NVME_PCI_SLOT};
 use crate::page_walk::translate_long64_2m_ram_read_only;
 use crate::paged_memory_adapter::deliver_nmi_at_boundary;
 use crate::paged_memory_adapter::{
@@ -157,6 +159,7 @@ const DEVICE_CODE_ACPI_PM: u32 = 9;
 const HANDOFF_MINOR_NVME: u16 = 1;
 /// Handoff minor version emitted when the ACPI fixed hardware entry (code 9) is present.
 const HANDOFF_MINOR_ACPI: u16 = 2;
+const HANDOFF_MINOR_NVME_PCI: u16 = 3;
 
 /// Host-supplied board configuration. Defaults follow FIRMWARE_BOOT.md 6.1.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -176,11 +179,14 @@ pub struct FirmwareBoardConfig {
     /// NVMe controller (S7-16). `None` keeps handoff v1.0 byte for byte; `Some`
     /// adds device code 8 and raises `version_minor` to 1 (FIRMWARE_BOOT.md 6.3).
     pub nvme: Option<NvmeConfig>,
+    /// Direct Linux boot only: expose NVMe at 00:04.0 with BAR0/1 and INTx.
+    /// Requires `nvme` and `linux_profile` and selects handoff v1.3.
+    pub nvme_pci: bool,
     /// PCI configuration device (S4-30c): ECAM window plus conf1 ports 0xCF8..=0xCFF
-    /// over an empty bus 0. `false` keeps handoff v1.0 byte for byte (code 7
+    /// over bus 0. `false` keeps handoff v1.0 byte for byte (code 7
     /// `PRESENT = 0`); `true` makes code 7 `PRESENT = 1` (a v1.0 slot, so
     /// `version_minor` and the entry count do not change) and adds the MMIO
-    /// region of the window. The board declares no PCI function.
+    /// region of the window. The Linux board may provide an NVMe PCI function.
     pub pci_ecam: bool,
     /// ACPI fixed hardware (S7-14a): PM1a event/control, PM timer and reset
     /// register on ports `0x0600..0x0610`. The handoff block does not describe it
@@ -199,8 +205,8 @@ pub struct FirmwareBoardConfig {
     /// `pci_ecam` (otherwise `Config`). Binds, on the board clock: the PIT
     /// `0x40..=0x43` and port B `0x61`, the 8259 pair `0x20..=0x21` and
     /// `0xA0..=0xA1`, and the absent-device sinks (read `0xFF`, write ignored)
-    /// for CMOS `0x70..=0x71`, `0xED` and `0x80`. The handoff block and the ACPI
-    /// manifest hash do not depend on it (`false` and `true` give the same bytes).
+    /// for CMOS `0x70..=0x71`, `0xED` and `0x80`. The handoff and ACPI manifest
+    /// are unchanged unless the separate `nvme_pci` option is selected.
     /// Not bound: `0x60/0x64` (a trap), LAPIC shared timer, port tick, IRQ delivery.
     pub linux_profile: bool,
     /// Number of vCPUs `N` (S6-11), `1..=4`; `1` is the board as it was. Each has its own Local
@@ -220,6 +226,7 @@ impl Default for FirmwareBoardConfig {
             system_uuid: [0; 16],
             serial: Vec::new(),
             nvme: None,
+            nvme_pci: false,
             pci_ecam: false,
             acpi_pm: false,
             acpi_tables: false,
@@ -248,12 +255,7 @@ impl FirmwareBoardConfig {
     /// therefore requires rebuilding the blob.
     pub fn acpi_manifest_hash(&self) -> Result<crate::AcpiManifestHash, FirmwareBoardError> {
         validate_config(self)?;
-        let devices = board_devices(
-            self.nvme.is_some(),
-            self.pci_ecam,
-            self.acpi_tables,
-            self.display_enabled,
-        );
+        let devices = configured_board_devices(self);
         let encoded: Vec<[u8; DEVICE_ENTRY_BYTES]> =
             devices.iter().copied().map(DeviceEntry::to_bytes).collect();
         crate::acpi_manifest_hash(&encoded).map_err(|_| {
@@ -471,6 +473,11 @@ fn validate_config(config: &FirmwareBoardConfig) -> Result<(), FirmwareBoardErro
             "linux_profile needs acpi_pm, acpi_tables and pci_ecam",
         ));
     }
+    if config.nvme_pci && !(config.nvme.is_some() && config.linux_profile) {
+        return Err(FirmwareBoardError::Config(
+            "nvme_pci needs nvme and linux_profile",
+        ));
+    }
     if config.serial.len() > 64 || config.serial.iter().any(|b| !(0x20..=0x7e).contains(b)) {
         return Err(FirmwareBoardError::Config(
             "serial must be at most 64 ASCII 0x20..0x7E bytes",
@@ -595,18 +602,32 @@ fn board_devices(nvme: bool, pci_ecam: bool, acpi_tables: bool, display: bool) -
 }
 
 fn configured_board_devices(config: &FirmwareBoardConfig) -> Vec<DeviceEntry> {
-    board_devices(
+    let mut devices = board_devices(
         config.nvme.is_some(),
         config.pci_ecam,
         config.acpi_tables,
         config.display_enabled,
-    )
+    );
+    if let Some(nvme) = devices.get_mut(DEV_NVME_TABLE)
+        && config.nvme_pci
+        && nvme.code == DEVICE_CODE_NVME
+    {
+        nvme.base = NVME_PCI_BAR_BASE;
+        nvme.gsi = crate::apic_pair::NVME_PIN as u32;
+        nvme.irq_flags = 0b11;
+        nvme.param0 = u64::from(NVME_PCI_SLOT);
+    }
+    devices
 }
 
-/// `version_minor` of the handoff block: 2 with the ACPI entry (code 9), else 1
-/// with the NVMe entry (code 8), else 0 (FIRMWARE_BOOT.md 6.4).
+/// `version_minor` of the handoff block, per FIRMWARE_BOOT.md 6.4.
 fn handoff_minor(devices: &[DeviceEntry]) -> u16 {
-    if devices.iter().any(|d| d.code == DEVICE_CODE_ACPI_PM) {
+    if devices
+        .iter()
+        .any(|d| d.code == DEVICE_CODE_NVME && d.gsi != u32::MAX)
+    {
+        HANDOFF_MINOR_NVME_PCI
+    } else if devices.iter().any(|d| d.code == DEVICE_CODE_ACPI_PM) {
         HANDOFF_MINOR_ACPI
     } else if devices.iter().any(|d| d.code == DEVICE_CODE_NVME) {
         HANDOFF_MINOR_NVME
@@ -1818,8 +1839,15 @@ impl LoadedFirmwareBoard {
             return false;
         };
         let io_apic = IoApic::new(self.lapic.clone()).handle();
-        let source = UartIoapicIrqSource::new(pit_ioapic, self.uart.clone(), io_apic);
-        self.irq_source = Box::new(source.clone());
+        let source = UartIoapicIrqSource::new(pit_ioapic, self.uart.clone(), io_apic.clone());
+        self.irq_source = match &self.nvme {
+            Some(nvme) if nvme.has_pci_transport() => Box::new(NvmeIoapicIrqSource::new(
+                Box::new(source.clone()),
+                nvme.clone(),
+                io_apic,
+            )),
+            _ => Box::new(source.clone()),
+        };
         self.uart_ioapic_source = Some(source);
         true
     }
@@ -3234,7 +3262,7 @@ pub(crate) struct AssembledBoard {
 /// `apic_timer_clock` does the same for the Linux-profile LAPIC timer (S4-37a4).
 pub(crate) fn assemble_board(
     config: &FirmwareBoardConfig,
-    pci: PciEcam,
+    mut pci: PciEcam,
     pit_clock: Option<VirtualClockHandle>,
     apic_timer_clock: Option<VirtualClockHandle>,
 ) -> Result<AssembledBoard, FirmwareBoardError> {
@@ -3320,8 +3348,15 @@ pub(crate) fn assemble_board(
     if let Some(nvme_config) = &config.nvme
         && devices[DEV_NVME_TABLE].present()
     {
-        let (device, handle) =
-            NvmeDevice::new_with_handle(nvme_config.clone()).map_err(FirmwareBoardError::Nvme)?;
+        let (device, handle) = if config.nvme_pci {
+            let (device, handle, function) =
+                NvmeDevice::new_pci(nvme_config.clone()).map_err(FirmwareBoardError::Nvme)?;
+            pci.add_function(0, NVME_PCI_SLOT, 0, Box::new(function))
+                .map_err(|_| FirmwareBoardError::Config("NVMe PCI slot is occupied"))?;
+            (device, handle)
+        } else {
+            NvmeDevice::new_with_handle(nvme_config.clone()).map_err(FirmwareBoardError::Nvme)?
+        };
         let device_index = bus_devices.len();
         bus_devices.push(Box::new(device));
         mmio.push(MmioBinding {
@@ -3410,7 +3445,7 @@ pub(crate) fn assemble_board(
             Box::new(DmaPage0::new()),
         )?;
     }
-    let bus = MachineBus::new(
+    let mut bus = MachineBus::new(
         map,
         RamLimits::new(config.ram_bytes),
         bus_devices,
@@ -3418,6 +3453,9 @@ pub(crate) fn assemble_board(
         ports,
     )
     .map_err(FirmwareBoardError::BusBuild)?;
+    if config.nvme_pci {
+        bus.enable_nvme_pci_mmio_window();
+    }
     Ok(AssembledBoard {
         bus,
         uart,
@@ -3644,6 +3682,11 @@ fn load_firmware_image_inner(
 ) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
     let devices = configured_board_devices(config);
     let entry_offset = validate_image(image, handoff_minor(&devices))?;
+    if config.nvme_pci {
+        return Err(FirmwareBoardError::Config(
+            "nvme_pci needs Linux direct boot",
+        ));
+    }
     assemble_board(config, pci, pit_clock, apic_timer_clock)?.load_firmware(image, entry_offset)
 }
 
@@ -4544,6 +4587,176 @@ mod tests {
                 .read_physical(ecam_at(0), AccessWidth::Dword),
             Ok(0xFFFF_FFFF)
         );
+    }
+
+    #[test]
+    fn linux_nvme_pci_bar_decode_bus_master_and_intx_follow_guest_register_writes() {
+        use crate::bus::SetStepMmio;
+        use crate::{AccessWidth, GuestPhysicalAddress};
+        const ASQ: u64 = 0x10_0000;
+        const ACQ: u64 = 0x11_0000;
+        const MSE: u64 = 1 << 1;
+        const BME: u64 = 1 << 2;
+        const PCI_INTERRUPT_STATUS: u64 = 1 << 19;
+        const VECTOR: u8 = 0x51;
+        let local = |off| GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE + off);
+        let io = |off| GuestPhysicalAddress::new(crate::IO_APIC_MMIO_BASE + off);
+        let config = FirmwareBoardConfig {
+            linux_profile: true,
+            pci_ecam: true,
+            acpi_pm: true,
+            acpi_tables: true,
+            nvme: Some(NvmeConfig::default()),
+            nvme_pci: true,
+            ..FirmwareBoardConfig::default()
+        };
+        let mut board = assemble_board(&config, PciEcam::new(), None, None).unwrap();
+        assert_eq!(le_u16(board.handoff_block(), 0x0a).unwrap(), 3);
+        // Generated by the independent firmware ACPI builder for this board.
+        assert_eq!(
+            hex(&config.acpi_manifest_hash().unwrap()),
+            "a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af",
+        );
+        let apic = board.lapic.clone();
+        let bus = &mut board.bus;
+        let cfg = |reg| {
+            GuestPhysicalAddress::new(
+                PCI_ECAM_DESCRIPTOR.base + (u64::from(NVME_PCI_SLOT) << 15) + reg,
+            )
+        };
+        let bar = |off| GuestPhysicalAddress::new(NVME_PCI_BAR_BASE + off);
+        let read =
+            |bus: &mut MachineBus, addr| bus.read_physical(addr, AccessWidth::Dword).unwrap();
+        let write = |bus: &mut MachineBus, addr, value| {
+            bus.write_physical(addr, AccessWidth::Dword, value, |_| {})
+                .unwrap();
+        };
+        assert_eq!(read(bus, cfg(8)) >> 8, 0x01_08_02);
+        assert_eq!(read(bus, cfg(0x3c)) & 0xff00, 0x100);
+        assert_eq!(read(bus, cfg(0x10)), NVME_PCI_BAR_BASE | 4);
+        assert_eq!(read(bus, bar(0)), u64::from(u32::MAX));
+        write(bus, bar(0x14), 1);
+
+        // Probe both halves of the BAR and restore it as firmware would.
+        write(bus, cfg(0x10), u64::from(u32::MAX));
+        write(bus, cfg(0x14), u64::from(u32::MAX));
+        assert_eq!(read(bus, cfg(0x10)), 0xffff_e004);
+        assert_eq!(read(bus, cfg(0x14)), u64::from(u32::MAX));
+        write(bus, cfg(4), MSE);
+        assert_eq!(read(bus, bar(0)), u64::from(u32::MAX));
+        write(bus, cfg(0x10), NVME_PCI_BAR_BASE);
+
+        // ECAM and conf1 program the same address, including the high half.
+        let conf1_bar_high = (1 << 31) | (u32::from(NVME_PCI_SLOT) << 11) | 0x14;
+        bus.write_port(
+            PortAddress::new(PCI_CONF1_BASE_PORT),
+            AccessWidth::Dword,
+            conf1_bar_high,
+        )
+        .unwrap();
+        bus.write_port(
+            PortAddress::new(PCI_CONF1_BASE_PORT + 4),
+            AccessWidth::Dword,
+            0,
+        )
+        .unwrap();
+        assert_eq!(read(bus, bar(0)) & 0xffff, 1023);
+        assert_eq!(
+            read(bus, bar(0x14)),
+            0,
+            "the disabled CC write was discarded"
+        );
+        let (_, set_step_io) = bus.split_for_set_step();
+        assert!(
+            set_step_io
+                .windows()
+                .contains(&(NVME_PCI_BAR_BASE, NVME_MMIO_BYTES))
+        );
+
+        write(bus, bar(0x24), 0x000f_000f);
+        bus.write_physical(bar(0x28), AccessWidth::Qword, ASQ, |_| {})
+            .unwrap();
+        bus.write_physical(bar(0x30), AccessWidth::Qword, ACQ, |_| {})
+            .unwrap();
+        write(bus, bar(0x14), 1 | (6 << 16) | (4 << 20));
+        let mut get_features = [0; 64];
+        get_features[0] = 0x0a; // Get Features.
+        get_features[40] = 0x07; // Number of Queues.
+        bus.write_flat_bytes(GuestPhysicalAddress::new(ASQ), &get_features, |_| {})
+            .unwrap();
+        write(bus, bar(0x1000), 1);
+        let nvme = board.nvme.as_ref().unwrap();
+
+        assert!(!nvme.doorbell_pending());
+        assert_eq!(
+            nvme.service(bus, |_| {}),
+            crate::NvmeServiceReport::default()
+        );
+        assert_eq!(read(bus, cfg(4)) & PCI_INTERRUPT_STATUS, 0);
+
+        let source = NvmeIoapicIrqSource::new(
+            Box::new(NoIrqSource),
+            nvme.clone(),
+            IoApic::new(apic.clone()).handle(),
+        );
+        write(bus, local(0xf0), 0x1ff);
+        write(bus, io(0), (0x10 + 2 * crate::apic_pair::NVME_PIN) as u64);
+        write(
+            bus,
+            io(0x10),
+            u64::from(crate::apic_pair::SCI_LEVEL_LOW) | u64::from(VECTOR),
+        );
+
+        write(
+            bus,
+            cfg(4),
+            MSE | BME | u64::from(crate::pci_ecam::COMMAND_INTX_DISABLE),
+        );
+        assert!(
+            nvme.doorbell_pending(),
+            "disabled DMA must retain queued work"
+        );
+        assert_eq!(nvme.service(bus, |_| {}).completions, 1);
+        assert_eq!(
+            read(bus, cfg(4)) & PCI_INTERRUPT_STATUS,
+            PCI_INTERRUPT_STATUS
+        );
+        source.pending_vector();
+        assert_eq!(apic.pending(), None, "PCI Command disables the wire");
+
+        write(bus, bar(0x0c), 1); // INTMS masks vector 0.
+        assert_eq!(read(bus, cfg(4)) & PCI_INTERRUPT_STATUS, 0);
+        write(bus, cfg(4), MSE | BME);
+        source.pending_vector();
+        assert_eq!(apic.pending(), None, "INTMS masks the interrupt");
+
+        write(bus, bar(0x10), 1); // INTMC unmasks it while a CQE is still pending.
+        assert_eq!(
+            read(bus, cfg(4)) & PCI_INTERRUPT_STATUS,
+            PCI_INTERRUPT_STATUS
+        );
+        source.pending_vector();
+        assert_eq!(apic.acknowledge(), Some(VECTOR));
+        assert_ne!(
+            read(bus, io(0x10)) & u64::from(crate::apic_pair::REMOTE_IRR),
+            0
+        );
+        write(bus, local(0xb0), 0); // EOI with CQE still pending.
+        assert_eq!(
+            apic.acknowledge(),
+            Some(VECTOR),
+            "level re-delivered while asserted"
+        );
+
+        write(bus, bar(0x1004), 1); // CQ head acknowledges the completion.
+        assert_eq!(read(bus, cfg(4)) & PCI_INTERRUPT_STATUS, 0);
+        source.pending_vector();
+        write(bus, local(0xb0), 0);
+        assert_eq!(
+            read(bus, io(0x10)) & u64::from(crate::apic_pair::REMOTE_IRR),
+            0
+        );
+        assert_eq!(apic.pending(), None);
     }
 
     #[test]

@@ -255,10 +255,8 @@ pub struct MachineBus {
     /// Byte length of the region of each `mmio` binding (same order), for the set-step MMIO
     /// dispatch, which must not look at `memory` while the page walk holds it (S4-38L9s).
     mmio_lens: Vec<u64>,
-    /// S4-38L8d: the set loop also serves the Local APIC and IOAPIC windows. `false` unless the
-    /// board turned the APIC profile on (`enable_apic_mmio_windows`), so every other run keeps the ECAM
-    /// window as the only MMIO of the set loop.
-    apic_mmio_windows: bool,
+    /// Selected once by the board to restrict set-step MMIO to its opt-in devices.
+    set_step_windows: &'static [crate::page_walk::MmioWindow],
     ports: Vec<PortRegionBinding>,
 }
 
@@ -722,6 +720,16 @@ const SET_STEP_APIC_WINDOWS: [crate::page_walk::MmioWindow; 3] = [
     (crate::IO_APIC_MMIO_BASE, crate::IO_APIC_MMIO_SIZE),
 ];
 
+const NVME_PCI_WINDOW: crate::page_walk::MmioWindow =
+    (crate::nvme::NVME_PCI_BAR_BASE, crate::NVME_MMIO_BYTES);
+const SET_STEP_NVME_WINDOWS: [crate::page_walk::MmioWindow; 2] = [ECAM_WINDOW, NVME_PCI_WINDOW];
+const SET_STEP_APIC_NVME_WINDOWS: [crate::page_walk::MmioWindow; 4] = [
+    SET_STEP_APIC_WINDOWS[0],
+    SET_STEP_APIC_WINDOWS[1],
+    SET_STEP_APIC_WINDOWS[2],
+    NVME_PCI_WINDOW,
+];
+
 impl SetStepMmio for MachineBusSetStepIo<'_> {
     fn windows(&self) -> &[crate::page_walk::MmioWindow] {
         self.windows
@@ -911,7 +919,7 @@ impl MachineBus {
             devices,
             mmio,
             mmio_lens,
-            apic_mmio_windows,
+            set_step_windows,
             ports,
         } = self;
         (
@@ -921,11 +929,7 @@ impl MachineBus {
                 ports,
                 mmio,
                 mmio_lens,
-                windows: if *apic_mmio_windows {
-                    &SET_STEP_APIC_WINDOWS
-                } else {
-                    &SET_STEP_WINDOWS
-                },
+                windows: set_step_windows,
                 vcpu,
             },
         )
@@ -934,7 +938,19 @@ impl MachineBus {
     /// S4-38L8d: let the set loop reach the Local APIC and IOAPIC windows (off by default). Only the
     /// APIC profile of the Linux board turns it on.
     pub(crate) fn enable_apic_mmio_windows(&mut self) {
-        self.apic_mmio_windows = true;
+        self.set_step_windows = if self.set_step_windows.contains(&NVME_PCI_WINDOW) {
+            &SET_STEP_APIC_NVME_WINDOWS
+        } else {
+            &SET_STEP_APIC_WINDOWS
+        };
+    }
+
+    pub(crate) fn enable_nvme_pci_mmio_window(&mut self) {
+        self.set_step_windows = if self.set_step_windows.contains(&SET_STEP_APIC_WINDOWS[1]) {
+            &SET_STEP_APIC_NVME_WINDOWS
+        } else {
+            &SET_STEP_NVME_WINDOWS
+        };
     }
 
     pub(crate) fn split_for_pio_step(&mut self) -> (&PhysicalMemory, MachineBusPortIo<'_>) {
@@ -1314,7 +1330,7 @@ impl MachineBus {
             devices,
             mmio,
             mmio_lens,
-            apic_mmio_windows: false,
+            set_step_windows: &SET_STEP_WINDOWS,
             ports,
         })
     }

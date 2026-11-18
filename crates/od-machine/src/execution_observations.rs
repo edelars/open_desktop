@@ -27,6 +27,8 @@ pub const LINUX_PAGE_FAULT_EVENT_CAPACITY: usize = 256;
 pub const LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY: usize = 4;
 pub const LINUX_ELF_STACK_COPY_PROFILE: &str = "s5-07-elf-stack-platform-copy-v1";
 pub const LINUX_ELF_STACK_COPY_RIP: u64 = 0xffff_ffff_8199_9bd4;
+pub const LINUX_ELF_STACK_ALIGN_BEFORE_RIP: u64 = 0xffff_ffff_8199_9bb5;
+pub const LINUX_ELF_STACK_ALIGN_AFTER_RIP: u64 = 0xffff_ffff_8199_9bba;
 /// Function entry RIPs from the matching S5-07 kernel debug ELF used by the current exact replay.
 pub const LINUX_ELF_STACK_COPY_BOUNDARIES: [(u64, &str); 3] = [
     (0xffff_ffff_818f_4570, "kernel_execve"),
@@ -350,6 +352,110 @@ pub struct ElfStackCopyBoundaryMarker {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfStackAlignmentPoint {
+    pub rip: u64,
+    pub retired_instructions_before_current: u64,
+    pub cr3: u64,
+    pub cs_selector: Option<u16>,
+    pub cpl: Option<u8>,
+    pub r15: u64,
+    pub rbp: u64,
+    pub rsp: u64,
+    pub pointer: u64,
+    pub instruction_bytes: Option<Vec<u8>>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfStackAlignmentCapture {
+    pub status: &'static str,
+    pub before_call: Option<ElfStackAlignmentPoint>,
+    pub after_return: Option<ElfStackAlignmentPoint>,
+    pub before_omitted: u64,
+    pub after_omitted: u64,
+    pub matched_copy: Option<bool>,
+}
+
+impl Default for ElfStackAlignmentCapture {
+    fn default() -> Self {
+        Self {
+            status: "not_seen",
+            before_call: None,
+            after_return: None,
+            before_omitted: 0,
+            after_omitted: 0,
+            matched_copy: None,
+        }
+    }
+}
+
+impl ElfStackAlignmentCapture {
+    fn finalize(&mut self, copy: Option<&ElfStackCopySnapshot>, copy_retired: Option<u64>) {
+        if self.before_omitted != 0 || self.after_omitted != 0 {
+            self.status = "ambiguous";
+            return;
+        }
+        let (Some(before), Some(after)) = (&self.before_call, &self.after_return) else {
+            self.status = if copy.is_some() {
+                "incomplete"
+            } else {
+                "run_ended_before_target"
+            };
+            return;
+        };
+        if before.error.is_some() || after.error.is_some() {
+            self.status = "read_error";
+            return;
+        }
+        let before_bytes = before.instruction_bytes.as_deref();
+        let after_bytes = after.instruction_bytes.as_deref();
+        if before.rip != LINUX_ELF_STACK_ALIGN_BEFORE_RIP
+            || before_bytes != Some(&[0xe8, 0xf6, 0x9a, 0xa1, 0xff])
+            || after.rip != LINUX_ELF_STACK_ALIGN_AFTER_RIP
+            || after_bytes != Some(&[0xba, 0x07, 0x00, 0x00, 0x00])
+        {
+            self.status = "anchor_mismatch";
+            return;
+        }
+        let same_frame = before.cr3 == after.cr3
+            && before.cs_selector == after.cs_selector
+            && before.cpl == Some(0)
+            && after.cpl == Some(0)
+            && before.r15 == after.r15
+            && before.rbp == after.rbp
+            && before.rsp == after.rsp
+            && after
+                .retired_instructions_before_current
+                .checked_sub(before.retired_instructions_before_current)
+                .is_some_and(|delta| delta >= 1);
+        let copy_matches = copy.is_some_and(|copy| {
+            copy.status == ElfStackCopyStatus::Captured
+                && copy.platform_string_matches == Some(true)
+                && copy.cs_selector == before.cs_selector
+                && copy.cpl == before.cpl
+                && copy.r15 == Some(before.r15)
+                && copy.rbp == Some(before.rbp)
+                && copy.rsp == Some(before.rsp)
+                && copy.cr3 == Some(before.cr3)
+                && copy.bprm_p == Some(before.pointer)
+                && copy.r13 == Some(after.pointer)
+                && copy_retired
+                    .is_some_and(|retired| after.retired_instructions_before_current < retired)
+        });
+        self.matched_copy = copy.map(|_| same_frame && copy_matches);
+        self.status = if !same_frame {
+            "invocation_mismatch"
+        } else if copy.is_none() {
+            "copy_target_not_seen"
+        } else if copy_matches {
+            "captured"
+        } else {
+            "invocation_mismatch"
+        };
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ElfStackCopyPreCopyCr3Ledger {
     pub status: ElfStackCopyCr3LedgerStatus,
     pub event_count: u64,
@@ -456,6 +562,8 @@ pub struct ElfStackCopySnapshot {
     pub cs_selector: Option<u16>,
     pub cpl: Option<u8>,
     pub r15: Option<u64>,
+    pub rbp: Option<u64>,
+    pub rsp: Option<u64>,
     pub r13: Option<u64>,
     pub rdi: Option<u64>,
     pub rsi: Option<u64>,
@@ -471,6 +579,7 @@ pub struct ElfStackCopySnapshot {
     pub error: Option<String>,
     pub return_rip: Option<u64>,
     pub platform_string_matches: Option<bool>,
+    pub alignment: ElfStackAlignmentCapture,
     pub pre_copy_cr3_ledger: Option<ElfStackCopyPreCopyCr3Ledger>,
     pub invocation: Option<ElfStackCopyInvocation>,
 }
@@ -505,6 +614,8 @@ impl ElfStackCopySnapshot {
             cs_selector: None,
             cpl: None,
             r15: None,
+            rbp: None,
+            rsp: None,
             r13: None,
             rdi: None,
             rsi: None,
@@ -520,6 +631,7 @@ impl ElfStackCopySnapshot {
             error: None,
             return_rip: None,
             platform_string_matches: None,
+            alignment: ElfStackAlignmentCapture::default(),
             pre_copy_cr3_ledger: None,
             invocation: None,
         }
@@ -883,6 +995,7 @@ pub(crate) struct LinuxExecutionObservationCollector {
     post_iret_context_mismatch: bool,
     nested_iret_depth: u64,
     elf_stack_copy: Option<ElfStackCopySnapshot>,
+    elf_stack_alignment: ElfStackAlignmentCapture,
     pre_copy_cr3_events: Vec<ElfStackCopyPreCopyCr3Event>,
     pre_copy_cr3_events_omitted: u64,
     pre_copy_cr3_ledger_overflow: bool,
@@ -1343,6 +1456,9 @@ impl LinuxExecutionObservationCollector {
     pub(crate) fn record_elf_stack_copy(&mut self, snapshot: ElfStackCopySnapshot) {
         if self.wants_elf_stack_copy() {
             let mut snapshot = snapshot;
+            let mut alignment = std::mem::take(&mut self.elf_stack_alignment);
+            alignment.finalize(Some(&snapshot), Some(self.retired_total));
+            snapshot.alignment = alignment;
             self.mmu_gather.copy_destination = snapshot.copy_destination;
             self.mmu_gather.destination_in_candidate_pages =
                 snapshot.copy_destination.map(|dest| {
@@ -1410,6 +1526,33 @@ impl LinuxExecutionObservationCollector {
                 snapshot.invocation = None;
             }
             self.elf_stack_copy = Some(snapshot);
+        }
+    }
+
+    pub(crate) fn record_elf_stack_alignment_point(
+        &mut self,
+        mut point: ElfStackAlignmentPoint,
+        before_call: bool,
+    ) {
+        if !self.wants_elf_stack_copy() || self.pre_copy_cr3_ledger_frozen {
+            return;
+        }
+        point.retired_instructions_before_current = self.retired_total;
+        let (slot, omitted) = if before_call {
+            (
+                &mut self.elf_stack_alignment.before_call,
+                &mut self.elf_stack_alignment.before_omitted,
+            )
+        } else {
+            (
+                &mut self.elf_stack_alignment.after_return,
+                &mut self.elf_stack_alignment.after_omitted,
+            )
+        };
+        if slot.is_some() {
+            *omitted = omitted.saturating_add(1);
+        } else {
+            *slot = Some(point);
         }
     }
 
@@ -2374,6 +2517,7 @@ impl LinuxExecutionObservationCollector {
                     ambiguous_polls: self.delay_tsc_ambiguous_polls,
                     entries: self.delay_tsc_entries,
                 });
+        let mut elf_stack_alignment = std::mem::take(&mut self.elf_stack_alignment);
         LinuxExecutionObservations {
             rdtsc_cpl0_sites: self
                 .rdtsc_sites
@@ -2409,6 +2553,8 @@ impl LinuxExecutionObservationCollector {
             post_iret_page_walk_status,
             elf_stack_copy: self.elf_stack_copy.map(|mut snapshot| {
                 if snapshot.status == ElfStackCopyStatus::AwaitingTarget {
+                    elf_stack_alignment.finalize(None, None);
+                    snapshot.alignment = elf_stack_alignment;
                     snapshot.status = ElfStackCopyStatus::RunEndedBeforeTarget;
                     snapshot.pre_copy_cr3_ledger = Some(ElfStackCopyPreCopyCr3Ledger {
                         status: if self.pre_copy_cr3_ledger_overflow {
@@ -4356,5 +4502,94 @@ mod tests {
         );
         assert_eq!(observations.rdtsc_prefix_missing, 1);
         assert!(observations.rdtsc_prefix_samples.is_empty());
+    }
+
+    #[test]
+    fn elf_stack_alignment_pair_is_bounded_and_linked_to_copy_snapshot() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        let r15 = 0xffff_ffff_83ff_0040;
+        let rbp = 0xffff_ffff_8000_7000;
+        let rsp = 0xffff_ffff_8000_6000;
+        let point = |rip, pointer, bytes| ElfStackAlignmentPoint {
+            rip,
+            retired_instructions_before_current: 0,
+            cr3: 0x1000,
+            cs_selector: Some(8),
+            cpl: Some(0),
+            r15,
+            rbp,
+            rsp,
+            pointer,
+            instruction_bytes: Some(bytes),
+            error: None,
+        };
+        collector.retired_total = 80;
+        collector.record_elf_stack_alignment_point(
+            point(
+                LINUX_ELF_STACK_ALIGN_BEFORE_RIP,
+                0xffff_ffff_83ff_0080,
+                vec![0xe8, 0xf6, 0x9a, 0xa1, 0xff],
+            ),
+            true,
+        );
+        collector.retired_total = 81;
+        collector.record_elf_stack_alignment_point(
+            point(
+                LINUX_ELF_STACK_ALIGN_AFTER_RIP,
+                0xffff_ffff_83ff_0000,
+                vec![0xba, 0x07, 0x00, 0x00, 0x00],
+            ),
+            false,
+        );
+        let mut copy = ElfStackCopySnapshot::empty(ElfStackCopyStatus::Captured);
+        copy.cr3 = Some(0x1000);
+        copy.cs_selector = Some(8);
+        copy.cpl = Some(0);
+        copy.r15 = Some(r15);
+        copy.rbp = Some(rbp);
+        copy.rsp = Some(rsp);
+        copy.bprm_p = Some(0xffff_ffff_83ff_0080);
+        copy.r13 = Some(0xffff_ffff_83ff_0000);
+        copy.platform_string_matches = Some(true);
+        collector.retired_total = 82;
+        collector.record_elf_stack_copy(copy);
+        let observations = collector.finish();
+        let alignment = &observations.elf_stack_copy.unwrap().alignment;
+        assert_eq!(alignment.status, "captured");
+        assert_eq!(
+            alignment.before_call.as_ref().unwrap().pointer,
+            0xffff_ffff_83ff_0080
+        );
+        assert_eq!(
+            alignment.after_return.as_ref().unwrap().pointer,
+            0xffff_ffff_83ff_0000
+        );
+        assert_eq!(alignment.matched_copy, Some(true));
+    }
+
+    #[test]
+    fn elf_stack_alignment_repeated_anchor_is_reported_as_ambiguous() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        let point = ElfStackAlignmentPoint {
+            rip: LINUX_ELF_STACK_ALIGN_BEFORE_RIP,
+            retired_instructions_before_current: 0,
+            cr3: 0x1000,
+            cs_selector: Some(8),
+            cpl: Some(0),
+            r15: 0x100,
+            rbp: 0x200,
+            rsp: 0x300,
+            pointer: 0x400,
+            instruction_bytes: Some(vec![0xe8, 0xf6, 0x9a, 0xa1, 0xff]),
+            error: None,
+        };
+        collector.record_elf_stack_alignment_point(point.clone(), true);
+        collector.record_elf_stack_alignment_point(point, true);
+        let copy = ElfStackCopySnapshot::empty(ElfStackCopyStatus::Captured);
+        collector.record_elf_stack_copy(copy);
+        let observations = collector.finish();
+        let alignment = &observations.elf_stack_copy.unwrap().alignment;
+        assert_eq!(alignment.before_omitted, 1);
+        assert_eq!(alignment.status, "ambiguous");
     }
 }

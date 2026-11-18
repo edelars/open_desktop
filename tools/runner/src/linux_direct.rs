@@ -87,11 +87,11 @@ mod checkpoints;
 pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
---nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
+--nonce <token> [--nonce-bootconfig] --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
 --ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-delay-call-summary] [--execution-observations-elf-stack-copy] [--execution-observations-rdtsc-prefix] [--execution-observations-quantum-trace] [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>] [--execution-observations-rdtsc-window <start:end>]]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
-/// nonce is appended as `od.nonce=<nonce>`.
+/// nonce is appended as `od.nonce=<nonce>` unless sent through bootconfig.
 const CMDLINE_PREFIX: &str = "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1";
 /// `nokaslr` is added here, by the runner (decision of S4-37: the loader does not edit it).
 const CMDLINE_SUFFIX: &str = "nokaslr";
@@ -110,6 +110,8 @@ struct Options {
     initramfs: String,
     acpi_blob: String,
     nonce: String,
+    /// Carry the nonce in the initrd bootconfig instead of the early command line.
+    nonce_bootconfig: bool,
     expected_vmlinuz_sha256: String,
     expected_acpi_manifest_hash: [u8; 32],
     expected_initramfs_sha256: String,
@@ -295,7 +297,7 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
     //    placement of od-machine decides the exact limit). The size comes from the file
     //    metadata, so an oversized file is refused before a single byte is read into memory.
     let ram_bytes = options.ram_mib * MIB;
-    let initramfs = match read_capped(&options.initramfs, ram_bytes) {
+    let mut initramfs = match read_capped(&options.initramfs, ram_bytes) {
         Ok(bytes) => bytes,
         Err(detail) if detail == TOO_LARGE => {
             evidence["inputs"]["initramfs"] = json!({"path": options.initramfs});
@@ -366,11 +368,40 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
     });
 
     // 6 (cmdline). The runner builds the line; od-machine checks it.
-    let cmdline = cmdline(
-        &options.nonce,
-        options.linux_norandmaps,
-        options.linux_no_randomize_kstack_offset,
-    );
+    let (cmdline, loaded_initrd_sha256) = if options.nonce_bootconfig {
+        let trailer = nonce_bootconfig_trailer(&options.nonce, initramfs.len() as u64);
+        let loaded_bytes = initramfs.len() + trailer.len();
+        if loaded_bytes as u64 > ram_bytes {
+            return (
+                refusal(
+                    "initrd_too_large",
+                    "initrd_size",
+                    format!(
+                        "the initrd with bootconfig is larger than guest RAM ({ram_bytes} bytes)"
+                    ),
+                    evidence,
+                ),
+                4,
+            );
+        }
+        initramfs.extend_from_slice(&trailer);
+        let loaded_hash = sha256_hex(&initramfs);
+        evidence["inputs"]["initramfs"]["nonce_bootconfig"] = json!({
+            "trailer_sha256": sha256_hex(&trailer),
+            "loaded_sha256": loaded_hash,
+            "loaded_bytes": loaded_bytes,
+        });
+        (nonce_bootconfig_cmdline(), loaded_hash)
+    } else {
+        (
+            cmdline(
+                &options.nonce,
+                options.linux_norandmaps,
+                options.linux_no_randomize_kstack_offset,
+            ),
+            initramfs_sha,
+        )
+    };
     evidence["cmdline"] = json!(cmdline);
 
     // 4-8. od-machine.
@@ -384,7 +415,13 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
     };
     match load_linux_direct_board(&machine_input) {
         Ok(mut boot) => {
-            describe(&mut evidence, &boot, &cmdline, &vmlinuz, &initramfs_sha);
+            describe(
+                &mut evidence,
+                &boot,
+                &cmdline,
+                &vmlinuz,
+                &loaded_initrd_sha256,
+            );
             if let Some(budget) = options.budget {
                 let mut sidecar_file = None;
                 let mut execution_observations_file = None;
@@ -903,6 +940,28 @@ fn cmdline(nonce: &str, linux_norandmaps: bool, linux_no_randomize_kstack_offset
     base
 }
 
+fn nonce_bootconfig_cmdline() -> String {
+    format!("{CMDLINE_PREFIX} {CMDLINE_SUFFIX} bootconfig")
+}
+
+/// Linux bootconfig footer (Linux 7.0, Documentation/admin-guide/bootconfig.rst).
+/// The caller has already validated the nonce as a single unquoted value.
+fn nonce_bootconfig_trailer(nonce: &str, base_bytes: u64) -> Vec<u8> {
+    const MAGIC: &[u8] = b"#BOOTCONFIG\n";
+    const FOOTER_BYTES: usize = 2 * size_of::<u32>() + MAGIC.len();
+
+    let mut trailer = format!("kernel.od.nonce = {nonce}\n\0").into_bytes();
+    let unaligned_bytes = base_bytes % 4 + (trailer.len() + FOOTER_BYTES) as u64;
+    let padding = (4 - unaligned_bytes % 4) % 4;
+    trailer.resize(trailer.len() + padding as usize, 0);
+    let size = trailer.len() as u32;
+    let checksum: u32 = trailer.iter().copied().map(u32::from).sum();
+    trailer.extend_from_slice(&size.to_le_bytes());
+    trailer.extend_from_slice(&checksum.to_le_bytes());
+    trailer.extend_from_slice(MAGIC);
+    trailer
+}
+
 fn merge(target: &mut Value, source: Value) {
     if let (Some(target), Value::Object(source)) = (target.as_object_mut(), source) {
         target.extend(source);
@@ -948,7 +1007,7 @@ fn describe(
     boot: &LinuxDirectBoot,
     cmdline: &str,
     vmlinuz: &[u8],
-    initramfs_sha: &str,
+    loaded_initrd_sha256: &str,
 ) {
     let header = &boot.header;
     evidence["header"] = json!({
@@ -1013,11 +1072,12 @@ fn describe(
     let kernel_input = pm_code(header, vmlinuz).map(sha256_hex);
     let kernel_memory = hex(&boot.kernel_sha256_in_memory);
     let initrd_memory = boot.initrd_sha256_in_memory.as_ref().map(|hash| hex(hash));
+    // With bootconfig, the input payload is the file plus the generated trailer.
     evidence["memory_sha256"] = json!({
         "kernel_pm_code": kernel_memory,
         "kernel_pm_code_matches_file": kernel_input.as_deref() == Some(kernel_memory.as_str()),
         "initrd": initrd_memory,
-        "initrd_matches_file": initrd_memory.as_deref() == Some(initramfs_sha),
+        "initrd_matches_file": initrd_memory.as_deref() == Some(loaded_initrd_sha256),
     });
     let entry = &boot.entry;
     evidence["entry"] = json!({
@@ -1217,6 +1277,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut initramfs = None;
     let mut acpi_blob = None;
     let mut nonce = None;
+    let mut nonce_bootconfig = false;
     let mut expected_vmlinuz = None;
     let mut expected_manifest = None;
     let mut expected_initramfs = None;
@@ -1245,7 +1306,14 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
-        // `--run` is the one flag without a value.
+        // Handle switches before consuming option values.
+        if name == "--nonce-bootconfig" {
+            if std::mem::replace(&mut nonce_bootconfig, true) {
+                return Err("duplicate option --nonce-bootconfig".into());
+            }
+            index += 1;
+            continue;
+        }
         if name == "--run" {
             if std::mem::replace(&mut run, true) {
                 return Err(format!("duplicate option --run; usage: {USAGE}"));
@@ -1490,6 +1558,20 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--user-mode needs --run, --set-cpl0 and --cpuid-profile stage4a or stage4a-apic; usage: {USAGE}"
         ));
     }
+    if nonce_bootconfig
+        && !(run
+            && set_cpl0
+            && cpuid_profile == CpuidProfile::X8664V1Stage4A
+            && user_mode
+            && !diagnostic_past_c7
+            && !linux_norandmaps
+            && !linux_no_randomize_kstack_offset
+            && checkpoint_table.is_none())
+    {
+        return Err(
+            "--nonce-bootconfig needs the counted --run --set-cpl0 --cpuid-profile stage4a --user-mode profile without Linux diagnostics or a checkpoint table".into(),
+        );
+    }
     if linux_norandmaps
         && !(run && set_cpl0 && cpuid_profile == CpuidProfile::X8664V1Stage4A && user_mode)
     {
@@ -1634,6 +1716,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         initramfs: required(initramfs, "--initramfs")?,
         acpi_blob: required(acpi_blob, "--acpi-blob")?,
         nonce,
+        nonce_bootconfig,
         expected_vmlinuz_sha256: parse_sha256(&required(
             expected_vmlinuz,
             "--expected-vmlinuz-sha256",
@@ -2135,6 +2218,23 @@ fn write_execution_observations_sidecar(
     path: &str,
     observations: &LinuxExecutionObservations,
 ) -> Result<(usize, String), String> {
+    let alignment_point_json = |point: &Option<od_machine::ElfStackAlignmentPoint>| {
+        point.as_ref().map(|point| {
+            json!({
+                "rip": hex64(point.rip),
+                "retired_instructions_before_current": point.retired_instructions_before_current,
+                "cr3": hex64(point.cr3),
+                "cs_selector": point.cs_selector.map(|value| format!("0x{value:04x}")),
+                "cpl": point.cpl,
+                "r15": hex64(point.r15),
+                "rbp": hex64(point.rbp),
+                "rsp": hex64(point.rsp),
+                "pointer": hex64(point.pointer),
+                "instruction_bytes": point.instruction_bytes.as_ref().map(|bytes| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()),
+                "error": point.error,
+            })
+        })
+    };
     let elf_stack_copy = observations.elf_stack_copy.as_ref().map(|snapshot| {
         json!({
             "profile": snapshot.profile,
@@ -2145,6 +2245,8 @@ fn write_execution_observations_sidecar(
             "cpl": snapshot.cpl,
             "registers": {
                 "r15": snapshot.r15.map(hex64),
+                "rbp": snapshot.rbp.map(hex64),
+                "rsp": snapshot.rsp.map(hex64),
                 "r13": snapshot.r13.map(hex64),
                 "rdi": snapshot.rdi.map(hex64),
                 "rsi": snapshot.rsi.map(hex64),
@@ -2158,6 +2260,14 @@ fn write_execution_observations_sidecar(
             "instruction_bytes": snapshot.instruction_bytes.as_ref().map(|bytes| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()),
             "return_rip": snapshot.return_rip.map(hex64),
             "platform_string_matches": snapshot.platform_string_matches,
+            "alignment": {
+                "status": snapshot.alignment.status,
+                "before_call": alignment_point_json(&snapshot.alignment.before_call),
+                "after_return": alignment_point_json(&snapshot.alignment.after_return),
+                "before_omitted": snapshot.alignment.before_omitted,
+                "after_omitted": snapshot.alignment.after_omitted,
+                "matched_copy": snapshot.alignment.matched_copy,
+            },
             "pre_copy_cr3_ledger": snapshot.pre_copy_cr3_ledger.as_ref().map(|ledger| json!({
                 "status": match ledger.status {
                     od_machine::ElfStackCopyCr3LedgerStatus::Complete => "complete",
@@ -2478,8 +2588,8 @@ fn write_execution_observations_sidecar(
         })
     });
     let value = json!({
-        "schema_version": 20,
-        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, an optional bounded every-hit entry-RDTSC stream with clock ledger, an optional ordered RDTSC prefix through a sentinel RIP, an optional inclusive hit-ordinal window, an optional strictly gated single-quantum instruction path trace, an optional bounded delay_tsc per-call summary, an optional ordered pre-copy CR3-write ledger, and bounded read-only MMU-gather candidate-page walks",
+        "schema_version": 21,
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, an optional bounded every-hit entry-RDTSC stream with clock ledger, an optional ordered RDTSC prefix through a sentinel RIP, an optional inclusive hit-ordinal window, an optional strictly gated single-quantum instruction path trace, an optional bounded delay_tsc per-call summary, an optional ordered pre-copy CR3-write ledger, bounded read-only MMU-gather candidate-page walks, and two exact read-only ELF stack-alignment instruction anchors",
         "limits": {
             "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
             "rdtsc_site_samples": od_machine::LINUX_RDTSC_SAMPLE_CAPACITY,
@@ -2500,6 +2610,7 @@ fn write_execution_observations_sidecar(
             "elf_stack_copy_page_fault_events": od_machine::LINUX_ELF_STACK_COPY_PF_EVENT_CAPACITY,
             "elf_stack_copy_retired_duration": od_machine::LINUX_ELF_STACK_COPY_RETIRED_CAPACITY,
             "elf_stack_copy_pre_copy_cr3_events": od_machine::LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY,
+            "elf_stack_alignment_points_per_run": 2,
         },
         "rdtsc_cpl0_sites": rdtsc_sites,
         "rdtsc_cpl0_unattributed_reads": observations.rdtsc_cpl0_unattributed_reads,
@@ -3010,6 +3121,7 @@ mod tests {
                 diagnostic_past_c7: false,
                 cpuid_profile: CpuidProfile::DiagnosticV1,
                 user_mode: false,
+                nonce_bootconfig: false,
                 linux_norandmaps: false,
                 linux_no_randomize_kstack_offset: false,
                 checkpoint_table: None,
@@ -4072,6 +4184,51 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn nonce_bootconfig_loads_an_aligned_trailer_without_changing_the_file_or_early_cmdline() {
+        let mut case = Case::good("nonce-bootconfig");
+        let fixture = std::fs::read(&case.options.initramfs).unwrap();
+        let profile = [
+            "--run",
+            "--budget",
+            "1",
+            "--set-cpl0",
+            "--cpuid-profile",
+            "stage4a",
+            "--user-mode",
+            "--nonce-bootconfig",
+        ];
+        assert!(parse_base(&profile).unwrap().nonce_bootconfig);
+        assert!(parse_base(&["--nonce-bootconfig"]).is_err());
+        assert!(parse_base(&[&profile[..], &["--nonce-bootconfig"]].concat()).is_err());
+
+        case.options.nonce_bootconfig = true;
+        let (first, code) = evaluate(&case.options);
+        assert_eq!(code, 0, "{first}");
+        case.options.nonce = "N0nce-2".into();
+        let (second, code) = evaluate(&case.options);
+        assert_eq!(code, 0, "{second}");
+        assert_eq!(first["cmdline"], second["cmdline"]);
+        assert_eq!(first["cmdline"], nonce_bootconfig_cmdline());
+        for result in [&first, &second] {
+            assert_eq!(
+                result["inputs"]["initramfs"]["sha256"],
+                sha256_hex(&fixture)
+            );
+            let payload = result["inputs"]["initramfs"]["nonce_bootconfig"].clone();
+            let len = payload["loaded_bytes"].as_u64().unwrap();
+            assert!(len > fixture.len() as u64);
+            assert_eq!(len % 4, 0);
+            assert_eq!(result["memory_sha256"]["initrd"], payload["loaded_sha256"]);
+            assert_eq!(result["memory_sha256"]["initrd_matches_file"], true);
+        }
+        assert_ne!(
+            first["memory_sha256"]["initrd"],
+            second["memory_sha256"]["initrd"]
+        );
+        assert_eq!(std::fs::read(&case.options.initramfs).unwrap(), fixture);
     }
 
     #[test]
@@ -5761,7 +5918,7 @@ mod tests {
         assert_eq!(metadata["rdtsc_prefix_status"], "sentinel_seen");
         assert_eq!(metadata["rdtsc_prefix_sample_count"], 1);
         let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema_version"], 15);
+        assert_eq!(value["schema_version"], 21);
         assert!(value["elf_stack_copy"].is_null());
         assert_eq!(value["rdtsc_prefix_status"], "sentinel_seen");
         assert_eq!(value["rdtsc_prefix_event_count"], 1);
@@ -6453,6 +6610,7 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
+            nonce_bootconfig: false,
             linux_norandmaps: false,
             linux_no_randomize_kstack_offset: false,
             checkpoint_table: None,
@@ -6510,6 +6668,7 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
+            nonce_bootconfig: false,
             linux_norandmaps: false,
             linux_no_randomize_kstack_offset: false,
             checkpoint_table: None,
@@ -6571,6 +6730,7 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::X8664V1Stage4AApic,
             user_mode: false,
+            nonce_bootconfig: false,
             linux_norandmaps: false,
             linux_no_randomize_kstack_offset: false,
             checkpoint_table: Some(path("docs/reports/data/stage4/s4-38l2-oracle.json")),
@@ -6653,6 +6813,7 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
+            nonce_bootconfig: false,
             linux_norandmaps: false,
             linux_no_randomize_kstack_offset: false,
             checkpoint_table: None,
