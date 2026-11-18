@@ -200,7 +200,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-04. Обеспечить единственного writer
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-05):** частично, коммиты `ba77773`, `31b8c2a`, `bc7b675`: межпроцессный exclusive writer lock (`flock`) с проверкой identity, `ReadLease`, busy-политика export/repair и `ParentLease` ([storage_policy.rs](../../crates/od-host/src/storage_policy.rs), 9 тестов). Не сделаны проверка parent в цепочке (S9-14/16), интеграция с VMHost lifecycle, non-advisory lock на сетевых ФС; lock advisory. Задача не принята — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-04-единственный-writer--частично).
+- **Текущий статус (2026-11-05):** частично, коммиты `ba77773`, `31b8c2a`, `bc7b675`: межпроцессный exclusive writer lock (`flock`) с проверкой identity, `ReadLease`, busy-политика export/repair и `ParentLease` ([storage_policy.rs](../../crates/od-host/src/storage_policy.rs), 9 тестов). Обновлено 2026-11-18: публичный путь подключения диска `attach_persistent_nvme` (`PersistentNvmeBackend::open`) проверен двумя процессами (busy, SIGKILL, повторное открытие); parent в цепочке — `ParentLease` (S9-16). Не сделана интеграция с VMHost lifecycle (VMHost не подключает гостю диски); non-advisory lock на сетевых ФС вне scope, lock advisory. Задача не принята — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-04-единственный-writer--частично).
 - **Где:** `od-storage` ownership, `od-host` file locking, VMHost lifecycle.
 - **Сделать:** exclusive writer ownership для backing и mutating metadata; стабильная file/object identity, read leases и освобождение при shutdown/crash. Path string и PID-файл сами по себе недостаточны; same-file aliases учитывать по поддержанной платформе. Один timeout или возраст lock-файла не разрешает отобрать ownership у живого writer.
 - **Проверить:** два процесса, повторное открытие через alias, writer после crash, stale handle и запрещённое изменение parent, занятый диск при export/repair.
@@ -289,7 +289,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-14. Добавить неизменяемые snapshots и цепочки
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-05):** реализовано, ревью пройдено (единственный major — ошибка после опубликованного снимка — исправлен), коммит `7188582`: `SnapFile`, `ParentRef`, `MAX_CHAIN_DEPTH = 8`, fault-sweep публикации. Предел: production `ParentResolver` нет, CRC блоков предков проверяется лениво, удаление snapshots — S9-17; формат НЕ принят (S9-40) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-14-неизменяемые-snapshots-и-цепочки--реализовано-ревью-пройдено-единственный-major-исправлен).
+- **Текущий статус (2026-11-05):** реализовано, ревью пройдено (единственный major — ошибка после опубликованного снимка — исправлен), коммит `7188582`: `SnapFile`, `ParentRef`, `MAX_CHAIN_DEPTH = 8`, fault-sweep публикации. Предел: resolver цепочки только в офлайн-CLI image-tool (`PathResolver`, `1590c9e`), VMHost цепочку не открывает (обновлено 2026-11-18), CRC блоков предков проверяется лениво, удаление snapshots — S9-17; формат НЕ принят (S9-40) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-14-неизменяемые-snapshots-и-цепочки--реализовано-ревью-пройдено-единственный-major-исправлен).
 - **Где:** `od-storage`, `STORAGE_FORMAT.md`.
 - **Сделать:** snapshot ID/root/parent generation, bounded chain, read resolution, immutable parent и создание writable child. Зафиксировать content и metadata identity родителя; не доверять одному относительному имени файла.
 - **Проверить:** child overwrite не меняет parent; чтение holes/zeros; нескольких snapshot roots; missing parent, цикл и превышение depth. Snapshot metadata publication переживает fault injection.
@@ -307,7 +307,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-16. Проверить parent identities и leases
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-05):** реализовано, ревью пройдено, коммит `33440be`: полная проверка цепочки предков до записи в `open_gated`, типизированные отказы, lease-тесты на реальных файлах. Предел: интеграция с VMHost lifecycle, production resolver; формат НЕ принят (S9-40) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-16-проверка-parent-identities-и-leases--реализовано-ревью-пройдено).
+- **Текущий статус (2026-11-05):** реализовано, ревью пройдено, коммит `33440be`: полная проверка цепочки предков до записи в `open_gated`, типизированные отказы, lease-тесты на реальных файлах. Предел: интеграция с VMHost lifecycle; resolver цепочки есть только в офлайн-CLI image-tool (`PathResolver`, обновлено 2026-11-18); формат НЕ принят (S9-40) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-16-проверка-parent-identities-и-leases--реализовано-ревью-пройдено).
 - **Где:** storage chain resolver и host file access boundary.
 - **Сделать:** validate всю выбранную цепочку до writable open; hold нужные parent/read leases; порядок locks исключает deadlock. File alias/replacement и path traversal не дают подменить parent между check и use.
 - **Проверить:** неправильный parent hash/ID/generation, symlink/alias в заявленном scope, TOCTOU replacement, concurrent child open и incomplete copy bundle.

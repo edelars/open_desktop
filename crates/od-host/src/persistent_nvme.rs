@@ -354,6 +354,8 @@ mod tests {
     const CHILD_MODE_ENV: &str = "OD_S5_03_KILL_MODE";
     #[cfg(target_os = "macos")]
     const CHILD_MARK: &str = "S5_03_EVENT=";
+    #[cfg(target_os = "macos")]
+    const HOLD_MODE_ENV: &str = "OD_S9_04_HOLD_MODE";
 
     #[cfg(target_os = "macos")]
     struct TempFile {
@@ -821,5 +823,97 @@ mod tests {
         );
         // The file is left as-is after process death; this test makes no claim
         // that unacknowledged bytes are durable or recoverable.
+    }
+
+    /// S9-04 child: holds the public attach path (`PersistentNvmeBackend::open`)
+    /// with one acknowledged write, then waits on stdin until it is killed.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn single_writer_hold_child() {
+        if std::env::var_os(HOLD_MODE_ENV).is_none() {
+            return;
+        }
+        use std::io::Write as _;
+        let path_value = std::env::var_os(CHILD_PATH_ENV).expect("child path");
+        let mut backend =
+            PersistentNvmeBackend::open(Path::new(&path_value)).expect("child writer open");
+        NvmeBackend::write_sectors(&mut backend, 1, &[0xc4; SECTOR_BYTES])
+            .expect("child acknowledged write");
+        let mut stdout = std::io::stdout().lock();
+        writeln!(stdout, "{CHILD_MARK}WRITER_HELD").unwrap();
+        stdout.flush().unwrap();
+        let mut line = String::new();
+        let _ = std::io::stdin().lock().read_line(&mut line);
+        drop(backend);
+    }
+
+    /// S9-04: a second process cannot open the same backing as a VM disk while
+    /// the first holds it; after SIGKILL of the first (no destructor, no
+    /// unlock) the kernel releases the lock, the next open succeeds and sees
+    /// the write the first process acknowledged. Process-kill level only: host
+    /// caches stay alive, so this says nothing about power loss.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_second_process_is_busy_until_the_writer_process_is_killed() {
+        let file = TempFile::new(&[0x23; SECTOR_BYTES * 2]);
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "persistent_nvme::tests::single_writer_hold_child",
+                "--nocapture",
+            ])
+            .env(CHILD_PATH_ENV, &file.path)
+            .env(HOLD_MODE_ENV, "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn writer process");
+        let stdout = child.stdout.take().unwrap();
+        let held = std::io::BufReader::new(stdout)
+            .lines()
+            .map(Result::unwrap)
+            .any(|line| line == format!("{CHILD_MARK}WRITER_HELD"));
+        assert!(held, "child did not report a held writer");
+
+        for _ in 0..2 {
+            assert!(
+                matches!(
+                    PersistentNvmeBackend::open(&file.path),
+                    Err(PersistentNvmeOpenError::WriterOpen(
+                        WriterOpenError::WriterBusy
+                    ))
+                ),
+                "a second writer opened while the first process holds the disk"
+            );
+        }
+
+        child.kill().expect("SIGKILL writer process");
+        let status = child.wait().expect("wait for killed child");
+        assert_eq!(
+            std::os::unix::process::ExitStatusExt::signal(&status),
+            Some(9),
+            "the writer must die by SIGKILL (no destructor, no unlock), not exit: {status:?}"
+        );
+
+        let mut backend =
+            PersistentNvmeBackend::open(&file.path).expect("open after the writer was killed");
+        let mut sector = [0u8; SECTOR_BYTES];
+        NvmeBackend::read_sectors(&mut backend, 1, &mut sector).expect("read");
+        assert_eq!(
+            sector, [0xc4; SECTOR_BYTES],
+            "acknowledged write is visible"
+        );
+        NvmeBackend::read_sectors(&mut backend, 0, &mut sector).expect("read");
+        assert_eq!(
+            sector, [0x23; SECTOR_BYTES],
+            "untouched sector is unchanged"
+        );
+        assert!(matches!(
+            PersistentNvmeBackend::open(&file.path),
+            Err(PersistentNvmeOpenError::WriterOpen(
+                WriterOpenError::WriterBusy
+            ))
+        ));
     }
 }
