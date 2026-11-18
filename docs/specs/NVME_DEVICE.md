@@ -10,6 +10,10 @@
 
 На 2026-11-18 получены [NVMe Base 2.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf) и [PCIe Transport 1.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVMe-over-PCIe-Transport-Specification-Revision-1.4-Ratified-2026.07.31.pdf). Figure 31 Base 2.4 требует от I/O controller страницы `0x00`, `0x05` и `0x12`; в текущей модели их нет. §5.3.4 допускает явное и неявное завершение команд удаляемой SQ. §3.5.1 и §3.8.1 PCIe Transport описывают INTx и BAR; §3.8.4 оставляет MSI-X опциональным в стандарте, а план S7-16 включает MSI-X в объём проекта. Полная сверка контроллера остаётся открыта.
 
+Прочитаны поля, относящиеся к размерам записей очередей. Перед включением контроллера спецификация требует допустимые значения `CC.AMS`, `CC.MPS` и `CC.CSS`. Попытка создать I/O SQ/CQ до инициализации обоих полей `CC.IOSQES` и `CC.IOCQES` должна завершаться статусом `Invalid Queue Size`. Figure 41 связывает допустимые значения этих полей с SQES/CQES в Identify Controller. Текущее отклонение записано в [ISSUE-519](../KNOWN_ISSUES.md#issue-519). [NVMe Base 2.4, с. 59–60](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=85)
+
+`CAP.CQR` сверено по Figure 36. Бит 16 при значении 1 требует физически непрерывных очередей и PC в Create I/O SQ/CQ. В модели выставлен бит 16, а `queue_geometry` проверяет PC. [NVMe Base 2.4, с. 58](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=84)
+
 При первой сверке 2026-11-07 использовался заголовок Linux `include/linux/nvme.h` (master):
 
 - страница `https://nvmexpress.org/specifications/` открывается, но прямых ссылок на PDF не содержит (загрузка идёт через форму);
@@ -30,7 +34,7 @@
 - смещения Identify Controller и Identify Namespace;
 - смещения Error log, SMART, Firmware Slot log.
 
-**NOT VERIFIED (ни спецификация, ни заголовок Linux не подтверждают):** `CAP.CQR` (бит 16); коды AER info 0 и 1; правила PRP; значения features по умолчанию; поведение при ошибках; обязательность команд; LID `0x00` и `0x05`; `VS` 2.0.0 против 2.4.0. В исходниках в шапках `controller.rs`, `admin.rs`, `queues.rs` оставлено то же разделение. Наименее надёжные места перечислены в разделе 11.
+**Оставшиеся вопросы сверки:** коды AER info 0 и 1; правила PRP; значения features по умолчанию; поведение при ошибках; обязательность Admin-команд; `VS` 2.0.0 против 2.4.0. Пометки в заголовках `controller.rs`, `admin.rs` и `queues.rs` отражают первоначальную сверку и будут уточнены при изменении кода. Наименее надёжные места перечислены в разделе 11.
 
 ## 2. Размещение и handoff block
 
@@ -233,8 +237,8 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 
 Сверка с Linux `nvme.h` (раздел 1) не заменяет сверку с текстом NVMe Base 2.4; NOT VERIFIED остаётся всё, что в разделе 1 не перечислено как сверенное. Особо проверить при сверке:
 
-- положение и значения полей `CAP` (`MQES`, `CQR`, `TO`, `CSS` бит 37, `MPSMIN/MPSMAX`) и значение `VS` для заявляемой редакции (2.0.0 против 2.4.0; согласовать с `Identify Controller.VER`);
-- **вероятное отклонение:** `CSTS.CFS = 1` при `CC.EN = 1` с `IOSQES ≠ 6` или `IOCQES ≠ 4` (`controller.rs`, `enable`). По спецификации (неподтверждённо) эти поля проверяются при создании I/O-очереди (Create I/O SQ/CQ), а не при включении контроллера; поведение не менялось и не проверялось (`NOT VERIFIED against NVMe Base 2.4: проверка IOSQES/IOCQES при EN=1 против при Create I/O SQ/CQ`);
+- положение и значения полей `CAP` (`MQES`, `TO`, `CSS` бит 37, `MPSMIN/MPSMAX`) и значение `VS` для заявляемой редакции (2.0.0 против 2.4.0; согласовать с `Identify Controller.VER`);
+- **Подтверждённое отклонение.** Текущая модель выставляет CFS при включении контроллера с неинициализированными `IOSQES`/`IOCQES`. Base 2.4 проверяет этот случай при Create I/O SQ/CQ. Для этого сценария также нужна запись размеров в CC при включённом контроллере до создания соответствующих I/O-очередей. [ISSUE-519](../KNOWN_ISSUES.md#issue-519)
 - битовые поля `CC`, `CSTS`, `AQA` и поведение при недопустимых значениях `CC` (здесь — `CSTS.CFS = 1`, `RDY = 0`) и при записи `AQA/ASQ/ACQ` при `CC.EN = 1` (здесь — `Busy` на шине, без эффекта);
 - смещения и размеры полей Identify Controller / Namespace, `FRMW`, `LPA`, `SQES/CQES`, `SUBNQN`, `PSD0`, значение `CNTRLTYPE`, нужны ли `CNS 0x03` и I/O-command-set-specific CNS для заявляемой редакции;
 - перечень обязательных Admin-команд и обязательных features для контроллера ввода-вывода PCIe (раздел 7, 9.1), значения по умолчанию features (`Arbitration = 7`, порог 343 K), допустимость `SEL ≠ 0`;
@@ -249,11 +253,11 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 
 **Открытые вопросы среза A (для ревью и S7-17):**
 
-1. Проверка `IOSQES`/`IOCQES` при `CC.EN = 1` против проверки при Create I/O SQ/CQ (выше, вероятное отклонение).
-2. Supported Log Pages (`LID 0x00`) и Commands Supported and Effects (`LID 0x05`) не реализованы (`Invalid Log Page`); обязательность для заявляемой редакции не сверена — первый кандидат в дефекты.
+1. Сохранить возможность записи `IOSQES`/`IOCQES` после включения до создания соответствующих I/O-очередей. Проверять инициализацию размеров в Create I/O SQ/CQ. [ISSUE-519](../KNOWN_ISSUES.md#issue-519)
+2. Добавить обязательные для целевой Base 2.4 страницы `0x00`, `0x05` и `0x12`. [ISSUE-066](../KNOWN_ISSUES.md#issue-066-s7-16-nvme-spec-values-not-verified)
 3. `VS = 2.0.0` (и `Identify Controller.VER`) против 2.4.0.
 4. Запись doorbell гостем не покрыта тестом end-to-end (раздел 3).
-5. `CAP.CQR`, коды AER info, правила PRP, умолчания features, поведение при ошибках — NOT VERIFIED (раздел 1).
+5. Коды AER info, правила PRP, умолчания features, поведение при ошибках — NOT VERIFIED (раздел 1).
 
 ## 12. Проверка
 

@@ -1894,13 +1894,10 @@ S5-21 residual handoff (2026-11-13): both rootfs and E-inclusive exact inventori
 
 ### ISSUE-066 — S7-16: обязательные log pages и проверка соответствия NVMe
 
-- **Дата обнаружения:** 2026-11-07, при реализации S7-16 (срез A).
-- **Компонент:** `crates/od-machine/src/nvme/`, [NVME_DEVICE.md](specs/NVME_DEVICE.md).
-- **Статус:** открыта.
-- **Обновление (2026-11-18):** I/O `Read/Write/Flush` и постоянный RAW backend реализованы. Figure 31 опубликованной NVMe Base 2.4 подтвердил, что для I/O controller требуются `0x00`, `0x05` и `0x12`. Следующий шаг — реализовать эти страницы с проверкой их данных и закончить сверку S7-16. История первой сверки ниже. [NVME_DEVICE.md §1](specs/NVME_DEVICE.md#1-источники-и-статус-сверки)
-- **Суть и последствия:** текст NVMe Base 2.4, NVM Command Set 1.3 и PCIe Transport 1.4 получить не удалось (страница спецификаций не даёт прямых ссылок, PDF 2.4 не найден, PDF 2.3 не извлекается через `WebFetch` и индексатор). Значения, перечисленные в [NVME_DEVICE.md §1](specs/NVME_DEVICE.md), сверены с заголовком Linux `include/linux/nvme.h` (master, 2026-11-07), **не** с текстом NVMe Base 2.4. NOT VERIFIED остаются: `CAP.CQR` (бит 16), AER info 0/1, правила PRP, умолчания features, поведение при ошибках, обязательность команд, LID `0x00` и `0x05`, `VS` 2.0.0 против 2.4.0. `Read`/`Write`/`Flush` и backend в памяти реализованы в срезе B, но это не подтверждает соответствие значений спецификации. Открыты также: (1) проверка `IOSQES`/`IOCQES` при `CC.EN = 1` (`CFS`) против проверки при Create I/O SQ/CQ — вероятное отклонение (`controller.rs`, `enable`); (2) Supported Log Pages (`0x00`) и Commands Supported and Effects (`0x05`) не реализованы, обязательность не сверена; (3) `VS = 2.0.0`; (4) путь гостевой записи doorbell end-to-end не покрыт тестом (см. NVME_DEVICE.md §3).
-- **Основание:** [STAGE_7_REPORT.md](reports/STAGE_7_REPORT.md), раздел S7-16; NVME_DEVICE.md §1, §10, §11.
-- **Следующий шаг:** получить текст спецификаций и сверить значения, помеченные NOT VERIFIED (NVME_DEVICE.md §11); решить вопрос `IOSQES`/`IOCQES`; покрыть гостевую doorbell-последовательность; после сверки снять пометки `NOT VERIFIED` в исходниках и документе. Кодовые исправления очередей и NSID проверок после первого ревью ожидают независимого повторного ревью; до него S7-16 остаётся `in_progress`.
+- **Дата и компонент.** 2026-11-07, `od-machine`, NVMe I/O controller. Статус открыт.
+- **Основание.** Figure 31 Base 2.4 требует для I/O controller страницы Supported Log Pages (`0x00`), Commands Supported and Effects (`0x05`) и Feature Identifiers Supported and Effects (`0x12`). Текущий профиль реализует `0x01`–`0x03`. [NVMe Base 2.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf)
+- **Последствие.** Гость не получает обязательные для целевой редакции сведения об этих страницах, командах и features.
+- **Следующий шаг.** Реализовать три страницы и проверить их содержимое. Остаток сверки перечислен в [NVME_DEVICE.md](specs/NVME_DEVICE.md#11-not-verified-места-где-расхождение-наиболее-вероятно). Проверка полей размеров записей очередей уточнена отдельно в [ISSUE-519](#issue-519).
 
 <a id="issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes"></a>
 
@@ -6319,3 +6316,12 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Основание.** Ветка Restart в `crates/od-tpm/src/startup.rs` создаёт `Pcrs::new()` с нулевым счётчиком и сохраняет контексты сессий. TPM Library v185 Part 3 §9.3.1 сохраняет PCR Update Counter при Restart. [TPM Library v185 Part 3](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf)
 - **Последствие.** Счётчик после Restart расходится с нормативным значением. Влияние на последующую авторизацию политики остаётся непроверенным.
 - **Следующий шаг.** Сохранять счётчик в ветке Restart и проверить отдельно Reset, Restart и Resume.
+
+<a id="issue-519"></a>
+
+### ISSUE-519 — S7-16: размеры записей I/O-очередей проверяются при включении контроллера
+
+- **Дата и компонент.** 2026-11-18, `od-machine`, NVMe Controller Configuration и Create I/O SQ/CQ. Статус открыт.
+- **Основание.** `enable` в `nvme/controller.rs` выставляет CFS и оставляет RDY сброшенным в момент включения, если `IOSQES != 6` или `IOCQES != 4`. Тест `invalid_cc_values_set_cfs_instead_of_rdy` закрепляет такое поведение для несовпадающих размеров. В работающем контроллере `write_cc` обновляет только SHN, поэтому запись размеров после включения также теряется. Base 2.4 относит отказ по неинициализированным полям `IOSQES`/`IOCQES` к Create I/O SQ/CQ со статусом `Invalid Queue Size`. [NVMe Base 2.4, с. 59–60](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=85)
+- **Последствие.** При допустимых AMS, MPS, CSS и admin-очередях модель преждевременно блокирует admin path, если хост программирует размеры записей I/O-очередей после включения.
+- **Следующий шаг.** Перенести проверку из `enable` в Create I/O SQ/CQ и разрешить запись размеров до создания соответствующих I/O-очередей. Проверить включение с нулевыми полями, работу admin path, отказ Create до инициализации и успех после записи размеров из Identify.

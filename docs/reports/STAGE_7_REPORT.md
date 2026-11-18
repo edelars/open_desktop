@@ -11,7 +11,7 @@
 | Статус | Количество | Задачи |
 |---|---|---|
 | Принято | 7 | S7-01 (сборочная схема `426c98a` принята независимым архитектурным ревью 2026-11-18); S7-00 (коммит `c1ae3dd`; полное независимое ревью scope 2026-11-18 одобрило без замечаний); S7-02 (коммит `9d89aac`; архитектурное ревью 2026-11-18 одобрило полный scope); S7-03 (принята после независимого ревью 2026-11-18); S7-20 (ADR-0009 принят после полного архитектурного повторного ревью 2026-11-18 без замечаний); S7-21 (phase-A command processor scope принят после независимого ревью 2026-11-18, 264 теста; TPM/PTP compliance не заявляется); S7-30 (статический media/GUID audit принят независимым review 2026-11-18; runtime trace назначен S7-32) |
-| `in_progress` | 5 | S7-04 (длинный paged-probe runner-срез продолжается; подробности в строке задачи); S7-12 (ограниченное качество реализации принято независимым ревью 2026-11-18; задача остаётся незакрытой); S7-14 (RTC/CMOS срез принят независимым ревью, коммит `330ea41`; HPET, IRQ/квантовая интеграция и guest evidence остаются открыты); S7-16 (NVMe A/B, исправления по ревью приняты, коммит `f0e2b61`; PCI-привязка — S4-30, прерывания и сверка Base 2.4 остаются открыты); S7-23 (срезы A–C3 в ветке, принято ограниченное ревью среза A, для завершения требуется решение по EK) |
+| `in_progress` | 5 | S7-04 (длинный paged-probe runner-срез продолжается; подробности в строке задачи); S7-12 (ограниченное качество реализации принято независимым ревью 2026-11-18; задача остаётся незакрытой); S7-14 (RTC/CMOS срез принят независимым ревью, коммит `330ea41`; HPET, IRQ/квантовая интеграция и guest evidence остаются открыты); S7-16 (NVMe A/B, PCI/INTx в опциональном профиле; остаются MSI-X, log pages и момент проверки размеров записей очередей); S7-23 (срезы A–C3 в ветке, принято ограниченное ревью среза A, для завершения требуется решение по EK) |
 | `not_started` | 26 | остальные задачи, см. таблицу ниже |
 
 В плане отмечены принятые S7-00, S7-01, S7-02, S7-03, S7-20, S7-21 и S7-30; остальные чекбоксы отмечаются только после соответствующего ревью по `STAGE_7.md` §0.
@@ -36,7 +36,7 @@
 | S7-13 | not_started | — | — | ACPI (RSDP/XSDT/FADT/MADT/MCFG/HPET/TPM2/DSDT) и SMBIOS из handoff block, configuration tables |
 | S7-14 | in_progress | `330ea41` | Независимое ревью RTC/CMOS-среза одобрило, замечаний нет | Опциональный RTC/CMOS из handoff v1.4, shared `VirtualClock`, календарные регистры и documented fidelity limits; HPET, IRQ/квантовая интеграция и guest evidence остаются открыты. См. подробности ниже и [ISSUE-509](../KNOWN_ISSUES.md#issue-509-s7-14-rtc-interrupts-and-intra-quantum-time). |
 | S7-15 | not_started | — | — | GOP поверх собственного дисплейного устройства |
-| S7-16 | in_progress | `f0e2b61` | Независимое повторное ревью одобрило исправления без замечаний | Срезы A/B и Delete SQ/NSID fixes приняты в ограниченном объёме; PCI-привязка — S4-30, прерывания не реализованы, сверка NVMe Base 2.4 остаётся открытой. |
+| S7-16 | in_progress | `ba9692c`, `e44566c` | Ревью срезов A/B и повторное ревью Delete SQ/NSID | Плата прошивки использует фиксированное MMIO. В опциональном PCI-профиле проверены BAR, bus mastering и INTx. Для приёмки остаются MSI-X, [ISSUE-066](../KNOWN_ISSUES.md#issue-066-s7-16-nvme-spec-values-not-verified) и [ISSUE-519](../KNOWN_ISSUES.md#issue-519). |
 | S7-17 | not_started | — | — | Драйвер NVMe прошивки: Block I/O, Disk I/O, GPT partitions |
 | S7-18 | not_started | — | — | Собственная FAT и Simple File System |
 | S7-19 | not_started | — | — | Boot manager: `BootOrder`/`Boot####`, `\EFI\BOOT\BOOTX64.EFI`, загрузка приложения с ESP |
@@ -420,7 +420,31 @@ S7-12 остаётся открытой по общим окнам и маршр
 
 ### S7-16. Минимальный NVMe-контроллер в `od-machine` (срез A)
 
-Статус: `in_progress`. **Срезы A и B реализованы; подтверждённые замечания первого ревью исправлены и ожидают независимого повторного ревью. Коммита реализации пока нет; прерывания не реализованы.** Контракт — [NVME_DEVICE.md](../specs/NVME_DEVICE.md).
+Статус `in_progress`. Исходные срезы A/B входят в ветку коммитами
+`ba9692c` и `e44566c`. Контракт описан в [NVME_DEVICE.md](../specs/NVME_DEVICE.md).
+
+#### Повторная сверка NVMe Base 2.4
+
+На `0411d82` сверены `CAP.CQR` и `CC.IOSQES`/`CC.IOCQES`.
+Проверка физической непрерывности поддержанных очередей соответствует
+установленному CQR. Проверка размеров записей при включении контроллера
+блокирует admin path в случае, для которого Base 2.4 задаёт отказ Create I/O SQ/CQ.
+Найденное расхождение записано как [ISSUE-519](../KNOWN_ISSUES.md#issue-519).
+[NVMe Base 2.4, с. 58–60](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=84)
+
+- `cargo test -p od-machine --lib nvme:: --offline` — 75 тестов прошли.
+  В их числе тест, закрепляющий текущее раннее выставление CFS.
+- `cargo test -p od-machine --lib doorbell_pending_stops_quantum_then_host_services_before_the_next_quantum --offline` —
+  тест прошёл. Фикстура записывает doorbell со стороны host и проверяет
+  остановку кванта и обслуживание DMA.
+- `cargo test -p od-machine --lib linux_nvme_pci_bar_decode_bus_master_and_intx_follow_guest_register_writes --offline` —
+  тест прошёл. Он проверяет PCI config space, BAR, DMA и INTx на модели платы
+  через MachineBus. Исполнение драйвера прошивки остаётся проверкой S7-17.
+- Полный `cargo test -p od-machine --offline` завершился успешно. Прошло 2 120 тестов. Ещё 15 помечены `ignored`.
+
+#### История исходного среза A
+
+Ниже сохранены результаты исходной реализации среза A в ноябре 2026 года. Актуальная сверка CC/CAP приведена выше.
 
 Создано: `docs/specs/NVME_DEVICE.md`; `crates/od-machine/src/nvme/{mod,controller,queues,admin,io,backend,tests}.rs`. Изменено: `firmware_board.rs` (`FirmwareBoardConfig::nvme`, запись device code 8, `LoadedFirmwareBoard::nvme()`, `run_boot` обслуживает контроллер), `lib.rs` (экспорты), `FIRMWARE_BOOT.md` (§2, §6.3), `MACHINE_CONTRACT.md` (раздел «NVMe controller»), `VIRTUAL_BOARD.md` (строка «Boot storage»), `STAGE_7.md` (статус S7-16).
 
