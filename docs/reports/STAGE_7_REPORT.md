@@ -247,7 +247,7 @@ Evidence: `cargo test -p od-tpm` passed **264/264 tests**, including determinist
 | A | `435d7f6` | Иерархии, HMAC-сессии и базовые операции NV. Sol High одобрил заявленный объём. |
 | B | `454f351` | Объекты RSA/ECC, создание ключей, подпись и проверка. Ревью завершено без новых дефектов в объёме среза. |
 | C1 | `46f0300` | RSA/ECDH, защита от перебора (DA), snapshot v2. Закрыт [ISSUE-517](../KNOWN_ISSUES.md#issue-517). |
-| C2 | `2da9887` | Политики, контексты, HMAC, Quote и Certify. Закрыты [ISSUE-514](../KNOWN_ISSUES.md#issue-514), [ISSUE-520](../KNOWN_ISSUES.md#issue-520) и [ISSUE-518](../KNOWN_ISSUES.md#issue-518). Открыт [ISSUE-516](../KNOWN_ISSUES.md#issue-516). |
+| C2 | `2da9887` | Политики, контексты, HMAC, Quote и Certify. Закрыты [ISSUE-514](../KNOWN_ISSUES.md#issue-514), [ISSUE-516](../KNOWN_ISSUES.md#issue-516), [ISSUE-518](../KNOWN_ISSUES.md#issue-518) и [ISSUE-520](../KNOWN_ISSUES.md#issue-520). |
 | C3 | `9c7f46c` | NV counter/bits/extend, GetTime, шифрование параметров, snapshot v3. Открыт [ISSUE-515](../KNOWN_ISSUES.md#issue-515). |
 
 
@@ -276,6 +276,10 @@ RSA, состоянии policy-сессий, защите контекстов �
 Тесты `PCR_Read` показывают исходный счётчик для Reset и сохранённый счётчик с единичным обновлением для Restart и Resume. Отдельный тест сохраняет policy-сессию до использования, восстанавливает её через `ContextLoad` и проверяет `TPM_RC_PCR_CHANGED` после Startup. `PolicyRestart` позволяет построить assertion в новом поколении. [ISSUE-518](../KNOWN_ISSUES.md#issue-518).
 
 Полный `cargo test -p od-tpm --offline` прошёл с 268 успешными тестами. Workspace check, форматирование и `git diff --check` прошли. Graphify обновлён. Независимое ревью `gpt-6.1-sol` с уровнем рассуждения `high` одобрило изменение счётчика и проверку сохранённых policy assertions.
+
+Шифрование TPM-контекстов теперь выводит ключ и IV из proof иерархии и `resetValue`. Тест повторно создаёт тот же primary key после Reset и проверяет изменение шифротекста при совпадающих заголовках и sensitive body. Исходный контекст загружается после Restart и Resume. После Reset его загрузка отклоняется, а новый контекст загружается. [ISSUE-516](../KNOWN_ISSUES.md#issue-516).
+
+Полный `cargo test -p od-tpm --offline` прошёл с 269 успешными тестами. Workspace check, форматирование и `git diff --check` прошли. Graphify обновлён. Независимое ревью `gpt-6.1-sol` с уровнем рассуждения `high` одобрило срез и повторило семь тестов контекстов.
 
 Далее приведены результаты и ограничения, зафиксированные при исходной
 реализации срезов A–C3 7 ноября 2026 года. Актуальные итоги независимых

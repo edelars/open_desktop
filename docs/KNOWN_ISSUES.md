@@ -6296,10 +6296,9 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 
 ### ISSUE-516 — S7-23: параметры шифрования контекста объекта повторяются после TPM Reset
 
-- **Дата и компонент.** 2026-11-18, `od-tpm`, сохранение контекстов объектов из среза C2. Статус открыт.
-- **Основание.** `context_key_iv` выводит ключ и IV из proof иерархии, sequence и savedHandle. Для постоянных иерархий proof определяется постоянными seeds, а TPM Reset сбрасывает счётчик контекстов объектов. Новый null seed участвует в проверке целостности, параметры шифрования от него не зависят. TPM Library v185 Part 3 §9.3.1 требует обновлять ключ шифрования контекстов при TPM Reset. [TPM Library v185 Part 3](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf)
-- **Последствие.** При повторении пары sequence и savedHandle после TPM Reset повторяются ключ и IV контекстного шифрования.
-- **Следующий шаг.** Привязать ключ шифрования контекстов объектов к состоянию, которое меняется при TPM Reset. Проверить отдельно Reset и допустимое сохранение контекста через Restart.
+- **Дата и компонент.** 2026-11-18, `od-tpm`, сохранение контекстов объектов из среза C2. Закрыто.
+- **Основание.** До исправления ключ и IV зависели от proof иерархии, sequence и savedHandle. Постоянный proof и повторение sequence после сброса позволяли повторение параметров шифрования. TPM Library требует обновлять ключ шифрования контекстов при Reset. [TPM Library v185 Part 3, §9.3.1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=43).
+- **Исправление и проверка.** Вывод параметров шифрования использует новый `resetValue` в каждом TPM Reset. Тест проверяет изменение шифротекста при повторном сохранении того же объекта после Reset и успешную загрузку исходного контекста после Restart и Resume. [Контракт TPM](specs/VTPM.md), [отчёт S7-23](reports/STAGE_7_REPORT.md#s7-23--реализация-и-проверки-фазы-b).
 
 <a id="issue-517"></a>
 

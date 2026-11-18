@@ -6,7 +6,9 @@
 //! 14.5-14.7). `TPMS_CONTEXT = sequence (UINT64) || savedHandle || hierarchy || contextBlob
 //! (TPM2B)`, with `contextBlob = integrity (TPM2B) || encContext`:
 //!
-//! - `(symKey, symIv) = KDFa(SHA-256, hProof, "CONTEXT_ENCRYPT", sequence, handle, 256)`: the first
+//! - `encRoot = KDFa(SHA-256, hProof, "ODTPM-CTXENC", resetValue, empty, 256)` binds the encryption
+//!   root to this TPM Reset epoch (Part 3 v185, 9.3.1);
+//! - `(symKey, symIv) = KDFa(SHA-256, encRoot, "CONTEXT_ENCRYPT", sequence, handle, 256)`: the first
 //!   16 octets are the AES-128 key, the next 16 the CFB IV (the key and IV are made after the
 //!   integrity check, as the text requires);
 //! - `encContext = AES-128-CFB(symKey, symIv, TPM2B_CONTEXT_SENSITIVE)`, the sensitive buffer
@@ -158,7 +160,7 @@ fn context_blob_inner(
     saved_handle: u32,
     body: &[u8],
 ) -> Vec<u8> {
-    let (key, iv) = context_key_iv(proof, sequence, saved_handle);
+    let (key, iv) = context_key_iv(proof, reset, sequence, saved_handle);
     let mut plain = Zeroizing::new(Vec::with_capacity(2 + 8 + body.len()));
     plain.extend_from_slice(&((8 + body.len()) as u16).to_be_bytes());
     plain.extend_from_slice(&inner_sequence.to_be_bytes());
@@ -173,11 +175,13 @@ fn context_blob_inner(
 
 fn context_key_iv(
     proof: &[u8],
+    reset: &[u8],
     sequence: u64,
     saved_handle: u32,
 ) -> (Zeroizing<Vec<u8>>, [u8; 16]) {
+    let root = kdfa_sha256(proof, b"ODTPM-CTXENC", reset, &[], 256);
     let material = kdfa_sha256(
-        proof,
+        &root,
         b"CONTEXT_ENCRYPT",
         &sequence.to_be_bytes(),
         &saved_handle.to_be_bytes(),
@@ -254,7 +258,7 @@ fn open_context(
         return Err(OpenError::Integrity);
     }
     // The key and the IV are made only now, after the integrity check (Part 1, 28.3.1).
-    let (key, iv) = context_key_iv(proof, sequence, saved_handle);
+    let (key, iv) = context_key_iv(proof, reset, sequence, saved_handle);
     let plain = aes128_cfb(&key, &iv, enc, false);
     let mut p = Reader::new(&plain);
     let n = usize::from(p.u16().map_err(|_| OpenError::Corrupt)?);
@@ -414,13 +418,13 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
 }
 
 impl Tpm {
-    /// The proof value of a context's hierarchy; the Null hierarchy (objects and every session)
-    /// uses a `nullProof` derived from the Null seed, which a TPM Reset replaces.
-    /// `resetValue` of Equation 52 (module comment).
+    /// Reset-bound material for the encryption root and the context integrity tag.
     fn context_reset_value(&self) -> Zeroizing<Vec<u8>> {
         kdfa_sha256(&self.hv.null_seed[..], b"ODTPM-CTXRESET", &[], &[], 256)
     }
 
+    /// The proof of the context's hierarchy. Null objects and sessions use a `nullProof`
+    /// derived from the Null seed, which a TPM Reset replaces.
     fn context_proof(&self, hierarchy: u32) -> Zeroizing<Vec<u8>> {
         self.proof(hierarchy).unwrap_or_else(|| {
             kdfa_sha256(&self.hv.null_seed[..], b"ODTPM-NULLPROOF", &[], &[], 256)

@@ -1895,6 +1895,50 @@ fn damaged_and_foreign_contexts_are_refused() {
 }
 
 #[test]
+fn object_context_encryption_changes_after_reset_and_keeps_saved_restart_contexts() {
+    use crate::object::sensitive_to_bytes;
+
+    let mut t = started();
+    let create = |t: &mut Tpm| parse_primary(&create_primary(t, OWNER, b"", &ecc_sign())).handle;
+    let sensitive = |t: &Tpm, handle| {
+        let o = t.objects.get(handle).unwrap();
+        sensitive_to_bytes(o.sensitive.as_ref().unwrap(), o.public.type_alg()).unwrap()
+    };
+    let ciphertext = |ctx: &[u8]| {
+        let mut context = Reader::new(&ctx[16..]);
+        let mut blob = Reader::new(context.tpm2b(4096).unwrap());
+        assert_eq!(blob.tpm2b(32).unwrap().len(), 32);
+        blob.bytes(blob.remaining()).unwrap().to_vec()
+    };
+    let object = create(&mut t);
+    let original_sensitive = sensitive(&t, object);
+    let original_public = params(&read_public(&mut t, object), 0).to_vec();
+    let original = params(&save(&mut t, object), 0).to_vec();
+    for startup_type in [su::CLEAR, su::STATE] {
+        shutdown(&mut t, su::STATE);
+        t.init();
+        startup(&mut t, startup_type);
+        let loaded = loaded(&load_ctx(&mut t, &original));
+        assert_eq!(params(&read_public(&mut t, loaded), 0), original_public);
+    }
+
+    shutdown(&mut t, su::CLEAR);
+    t.init();
+    startup(&mut t, su::CLEAR);
+    let recreated = create(&mut t);
+    let new = params(&save(&mut t, recreated), 0).to_vec();
+    assert_eq!(ctx_fields(&new), ctx_fields(&original));
+    assert_eq!(params(&read_public(&mut t, recreated), 0), original_public);
+    assert!(
+        sensitive(&t, recreated) == original_sensitive,
+        "the same sensitive body"
+    );
+    assert_ne!(ciphertext(&new), ciphertext(&original));
+    err(&load_ctx(&mut t, &original), Rc::INTEGRITY.in_param(1));
+    ok(&load_ctx(&mut t, &new));
+}
+
+#[test]
 fn a_context_dies_with_its_hierarchy_seed_a_reset_and_a_disabled_hierarchy() {
     let (mut t, parent) = with_ecc_parent();
     let (key, _, _) = make_child(&mut t, parent, &ecc_sign(), b"kpw", b"");
