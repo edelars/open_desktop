@@ -4809,3 +4809,39 @@ all-targets offline check passes with existing warnings. Scoped rustfmt and
 diff checks pass.
 
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-484 — exact JNZ rel8 +0x17
+
+The focused short JNZ tests cover both branch outcomes, concrete ZF with
+and without definedness, taken-target canonicality, the displacement fetch
+fault, neighboring encodings and CPL3 MOV probe isolation. The short JNZ
+filter passes 10/10, short JZ regressions pass 5/5 and the other CPL0 probe
+matrix passes 1/1.
+
+The runner command
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue484.com1 --budget 20000` uses image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+For `75 17` at `0x201012`, ZF=0 selects
+`0x201012 + 2 + 0x17 = 0x20102b` and ZF=1 selects `0x201014`. The
+firmware run takes the ZF=1 path. Runs with budgets 10335 through 10338
+report BudgetExhausted with that many retired instructions and empty COM1.
+
+| Retired | RIP | Instruction at RIP |
+| ---: | --- | --- |
+| 10,335 | `0x201012` | `75 17`, JNZ rel8 +0x17 |
+| 10,336 | `0x201014` | `48 8D 7C 24 18`, LEA RDI,[RSP+0x18] |
+| 10,337 | `0x201019` | `48 8B 74 24 10`, MOV RSI,[RSP+0x10] |
+| 10,338 | `0x20101e` | `E8 AD 08 00 00`, CALL rel32 +0x8ad (ISSUE-485) |
+
+With budget 20000 the runner attempts the CALL and exits 5 with empty
+COM1. Unsupported opcode changed from 117 (`0x75`, JNZ) to 232
+(`0xe8`, CALL) because the stop moved to a different instruction.
+
+The full offline `od-isa` suite passes (2,322/1,591/126/29/6/1,558/7/15 and
+zero doctests). The paged machine quantum suite passes 110/110. The workspace
+all-targets offline check passes with existing warnings. Scoped rustfmt and
+diff checks pass.
+
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

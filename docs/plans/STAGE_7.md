@@ -3025,3 +3025,16 @@ the caller and stops after 10,335 retired instructions at RIP `0x201012`
 on `75 17` (JNZ rel8 +0x17, ISSUE-484). It reports Unsupported opcode 117
 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-484 — exact JNZ rel8 +0x17 (`75 17`)
+
+Base `PagedCpl0ProbeV1` admits the exact unprefixed short branch. With ZF=0
+it adds signed rel8 +0x17 to next RIP and checks the taken target for
+canonicality. With ZF=1 it advances to next RIP. Both outcomes preserve
+flags and definedness. Tests cover both paths, target and fetch faults,
+neighboring encodings and profile isolation. With budget 20000 the runner
+falls through to `0x201014`, executes the existing LEA and MOV, and stops
+after 10,338 retired instructions at RIP `0x20101e` on `E8 AD 08 00 00`
+(CALL rel32 +0x8ad, ISSUE-485). It reports Unsupported opcode 232 with
+empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
