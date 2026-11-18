@@ -20145,6 +20145,25 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
+        // S7-04: set one decoded byte alias from the existing condition evaluator.
+        Operation::SetCondition {
+            condition,
+            dst: Operand::Register(destination),
+            ..
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && matches!(instruction.opcode.byte, 0x90..=0x9f)
+            && instruction.operand_size == OperandSize::Byte
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            state.write(destination, u64::from(condition.evaluate(state.rflags)));
+            state.rip = next_rip;
+            return result(PagedProbeExit::Retired, 1);
+        }
         // S7-04: execute the compiler's ordinary loads, qword stores and
         // effective address calculations through the shared transfers.
         operation @ (Operation::Mov {
@@ -26377,24 +26396,28 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.write(destination, state.read(source));
             state.rip = next_rip;
         }
-        // S7-04: initialize parser bytes through tracked memory. The base
+        // S7-04: tracked byte and qword immediate stores initialize firmware state. The base
         // probe also accepts its exact `42 C6 44 04 08 01` stack form.
         Operation::MovImmediate {
             dst: Operand::Memory(destination),
             value,
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
-            && instruction.opcode.byte == 0xc6
-            && instruction.operand_size == OperandSize::Byte
-            && destination.size == OperandSize::Byte
             && destination.address_size == OperandSize::Qword
+            && destination.size == instruction.operand_size
             && ((firmware_boot_profile
+                && matches!(
+                    (instruction.opcode.byte, instruction.operand_size),
+                    (0xc6, OperandSize::Byte) | (0xc7, OperandSize::Qword)
+                )
                 && instruction.prefixes
                     == (Prefixes {
                         rex: instruction.prefixes.rex,
                         ..Prefixes::default()
                     }))
-                || (instruction.length == 6
+                || (instruction.opcode.byte == 0xc6
+                    && instruction.operand_size == OperandSize::Byte
+                    && instruction.length == 6
                     && instruction.prefixes
                         == (Prefixes {
                             rex: Some(0x42),
