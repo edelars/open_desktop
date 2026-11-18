@@ -7,7 +7,7 @@
 //! session) and interpreted in part (`jmp`, the handlers, the MMIO accesses of the Local APIC), so a
 //! delivery lands in a vCPU that executes both. The boards are the boards of `host_parallel_board`
 //! (Linux profile, Local APIC windows, clock owner), the tables are 4 KiB pages of one set for all
-//! vCPUs, the state carries no CR3 (the root is the configuration's).
+//! vCPUs. The initial state uses the configured root unless a test supplies its own CR3.
 
 use super::*;
 use crate::host_threads::JitHostQuantum;
@@ -76,6 +76,19 @@ fn put(board: &mut LoadedFirmwareBoard, at: u64, bytes: &[u8]) {
 
 fn put_u64(board: &mut LoadedFirmwareBoard, at: u64, value: u64) {
     put(board, at, &value.to_le_bytes());
+}
+
+fn queue_nmi_from_ap(board: &od_machine::MachineBus) {
+    for (offset, value) in [(0x310, 0), (0x300, 0x400)] {
+        board
+            .write_mmio_shared(
+                1,
+                GuestPhysicalAddress::new(LOCAL_APIC + offset),
+                AccessWidth::Dword,
+                value,
+            )
+            .unwrap();
+    }
 }
 
 // ---- the guest ------------------------------------------------------------------------------
@@ -846,9 +859,139 @@ fn s6_42c_a_guest_split_lock_passes_the_gate_of_the_host_quantum() {
 
 // ---- C: the NMI -------------------------------------------------------------------------------
 
+#[test]
+fn s6_42d_mov_cr3_with_no_flush_bit_faults_without_changing_the_root() {
+    let _guard = jit_guard();
+    let mut board = board(1);
+    put(&mut board, CODE_0, &[0x0F, 0x22, 0xD8]);
+    let lapic = board.local_apic_of(0).unwrap();
+    let set = Cpl0ProfileSet::new(od_isa::execute::ControlRegisterPolicy::Cpl0BaseLong64V1)
+        .with_cpu_owned_cr3(od_isa::MovCr3Long64V1);
+    let old_cr3 = PML4 | 0x08;
+    let mut state = state(CODE_0, STACK_TOP_0);
+    state.cr3 = Some(old_cr3);
+    state.idtr = None;
+    state.gpr[Register::Rax as usize] = old_cr3 | (1 << 63);
+    let before = state.clone();
+    let report = run_paged_host_loop_shared_set(
+        &mut PagedFetchedLoadSession::new(),
+        &PagedHostLoopControl::new(),
+        config(),
+        &mut state,
+        board.bus_mut(),
+        0,
+        PagedHostSetEnv {
+            lapic: &lapic,
+            gate: HostSplitGate::none(),
+            set: &set,
+            skip_first_boundary: &mut false,
+        },
+        &mut 0,
+        1,
+        |_| {},
+        || false,
+    );
+    assert_eq!(
+        report.exit,
+        PagedHostLoopExit::GuestFault(ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None,
+        }),
+    );
+    assert_eq!(report.remaining_budget, 1);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn s6_42d_mov_cr3_changes_native_code_data_and_the_worker_nmi_root() {
+    let _guard = jit_guard();
+    const NEW_PML4: u64 = 0x1_7000;
+    const NEW_PDPT: u64 = 0x1_8000;
+    const NEW_PD: u64 = 0x1_9000;
+    const NEW_PT: u64 = 0x1_A000;
+    const NEW_CODE: u64 = 0x2_7000;
+    const NEW_IDT: u64 = 0x3_2000;
+    const NEW_DATA: u64 = 0x5_1000;
+    const NEW_CR3: u64 = NEW_PML4 | 0x18;
+    const NEW_MARKER: u64 = 0x1234_5678;
+    const FLAGS: u64 = 0x63;
+
+    let mut board = board(2);
+    put_u64(&mut board, NEW_PML4, NEW_PDPT | FLAGS);
+    put_u64(&mut board, NEW_PDPT, NEW_PD | FLAGS);
+    put_u64(&mut board, NEW_PD, NEW_PT | FLAGS);
+    for index in 0..512 {
+        let linear = index << 12;
+        let frame = match linear {
+            CODE_0 => NEW_CODE,
+            IDT_AT => NEW_IDT,
+            DATA => NEW_DATA,
+            _ => linear,
+        };
+        put_u64(&mut board, NEW_PT + index * 8, frame | FLAGS);
+    }
+    put_u64(&mut board, NEW_DATA, NEW_MARKER);
+    put(&mut board, IDT_AT + 2 * 16, &[0; 16]);
+    put(&mut board, NEW_IDT + 2 * 16, &gate(HANDLER_NMI));
+    put(&mut board, CODE_0, &[0x0F, 0x22, 0xD8, 0xCC]);
+    put(
+        &mut board,
+        NEW_CODE,
+        &[
+            0xCC, 0xCC, 0xCC, // only the old root can fetch the first MOV CR3
+            0x0F, 0x22, 0xD8, // MOV CR3, RAX again, with the same raw value
+            0x48, 0x8B, 0x03, // MOV RAX, [RBX]
+            0xF0, 0xFF, 0x03, // LOCK INC dword [RBX]
+            0xF4, 0xEB, 0xFD, // HLT; JMP HLT (resume here after IRETQ)
+        ],
+    );
+    let mut bsp = state(CODE_0, STACK_TOP_0);
+    bsp.gpr[Register::Rax as usize] = NEW_CR3;
+    bsp.gpr[Register::Rbx as usize] = DATA;
+    assert!(host_install_vcpu(&mut board, 0, bsp));
+    let region = SharedJitRegion::new(2, 4).unwrap();
+    let quantum = quantum_of(&region, 2);
+    let (report, ()) = run_host_threads_with_nmi_paging(
+        &mut board,
+        host_config(false),
+        &quantum.nmi_paging(),
+        &|call| quantum.run(call),
+        &|_| quantum.thread_exit(),
+        |control| {
+            assert!(
+                control.wait_until(WAIT, || control.retired()[0] == 5),
+                "{:?}",
+                quantum.last_failure()
+            );
+            let stats = quantum.stats(0);
+            assert_eq!(stats.retired_jit, 2);
+            assert_eq!(stats.atomic_jit_steps, 1);
+            assert_eq!(cell(control, DATA), MARKER);
+            assert_eq!(cell(control, NEW_DATA), NEW_MARKER + 1);
+            queue_nmi_from_ap(control.bus());
+            assert!(control.wait_until(WAIT, || cell(control, COUNTER_NMI) == 1));
+            assert!(control.wait_until(WAIT, || control.retired()[0] >= 12));
+            control.stop_all(WAIT).unwrap();
+            control
+                .with_state(0, |state| {
+                    assert_eq!(state.cr3, Some(NEW_CR3));
+                    assert_eq!(state.gpr[Register::Rax as usize], NEW_MARKER);
+                    assert_eq!(state.gpr[Register::Rsp as usize], STACK_TOP_0);
+                    assert!(!state.nmi_blocked);
+                })
+                .unwrap();
+            control.resume();
+        },
+    )
+    .unwrap();
+    assert_eq!(report.finished, HostParallelFinish::Stopped, "{report:?}");
+    assert_eq!(report.nmi_delivered, [1, 0]);
+    assert_eq!(quantum.last_failure(), None);
+}
+
 /// vCPU 1 sends an NMI to vCPU 0 through the ICR; vCPU 0 (native and interpreted steps) takes it at
-/// a boundary through the root named for it (`JitHostQuantum::nmi_paging`: its configuration's CR3 and EFER,
-/// the state carries none) and the handler of vector 2 runs once.
+/// a boundary through its initial root and configured EFER, and the handler of vector 2 runs once.
 fn nmi_board() -> LoadedFirmwareBoard {
     let mut board = board(2);
     // The IDT is data. Its NX leaf is legal only when EFER.NXE is set.
@@ -900,7 +1043,7 @@ fn s6_42c_an_nmi_is_delivered_through_the_root_named_for_the_vcpu() {
             let state = control.with_state(0, |state| state.clone()).unwrap();
             assert_eq!(state.gpr[Register::Rsp as usize], STACK_TOP_0);
             assert!(!state.nmi_blocked, "IRETQ unblocked the NMI");
-            assert_eq!(state.cr3, None, "the state never carried a CR3");
+            assert_eq!(state.cr3, Some(PML4));
             control.resume();
         },
     )
@@ -940,17 +1083,7 @@ fn s6_42d_a_native_stop_for_an_nmi_returns_to_the_worker_boundary() {
         |control| {
             assert!(control.wait_until(WAIT, || at_poll.load(Ordering::SeqCst)));
             // Use vCPU 1's ICR to enqueue an NMI for vCPU 0 during the delayed poll.
-            for (offset, value) in [(0x310, 0), (0x300, 0x400)] {
-                control
-                    .bus()
-                    .write_mmio_shared(
-                        1,
-                        GuestPhysicalAddress::new(LOCAL_APIC + offset),
-                        AccessWidth::Dword,
-                        value,
-                    )
-                    .unwrap();
-            }
+            queue_nmi_from_ap(control.bus());
             assert!(control.wait_until(WAIT, || {
                 quantum.stats(0).retired_jit == 1
                     && cell(control, COUNTER_NMI) == 1
@@ -1024,6 +1157,7 @@ fn s6_42c_an_nmi_without_a_root_fails_the_run_explicitly() {
     let region = SharedJitRegion::new(2, 4).unwrap();
     let quantum = quantum_of(&region, 2);
     let mut board = nmi_board();
+    queue_nmi_from_ap(board.bus_mut());
     let (report, ()) = run_host_threads_with_nmi_paging(
         &mut board,
         host_config(false),

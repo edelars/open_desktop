@@ -27,7 +27,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use od_isa::execute::{ControlRegisterPolicy, Cpl0ProfileSet};
-use od_isa::{CliProfile, HaltProfile, StiProfile};
+use od_isa::{CliProfile, HaltProfile, MovCr3Long64V1, StiProfile};
 use od_machine::{
     HostNmiPaging, HostQuantumCall, HostQuantumExit, HostQuantumResult, PagedProbeExit,
 };
@@ -144,8 +144,8 @@ impl JitHostQuantum {
 
     /// S6-42c: run the quantum with the guest side of the boundary (see the module documentation):
     /// interrupts of the vCPU's Local APIC, the CPL0 profile set as the interpreter step, guest
-    /// faults delivered, the split `LOCK` behind the gate. The vCPUs' states must carry no CR3 of
-    /// their own (the roots are the configurations').
+    /// faults delivered, the split `LOCK` behind the gate. The vCPU owns its CR3. The configuration
+    /// supplies the initial CR3 for a state that has none.
     #[must_use]
     pub fn with_cpl0_set(mut self) -> Self {
         self.cpl0_set = true;
@@ -158,7 +158,8 @@ impl JitHostQuantum {
         self.configs.iter().map(|config| Some(config.cr3)).collect()
     }
 
-    /// NMI delivery uses the same fixed paging inputs as the native and interpreter steps.
+    /// Supplies NMI delivery with the configured EFER and fallback CR3. A CPU-owned CR3 takes
+    /// precedence after the vCPU starts running the CPL0 set.
     pub fn nmi_paging(&self) -> Vec<Option<HostNmiPaging>> {
         self.configs
             .iter()
@@ -284,8 +285,9 @@ impl JitHostQuantum {
             let set;
             let bus = if self.cpl0_set {
                 // The set the interpreter step runs: the Linux board's CPL0 profile without the
-                // members that need the board (CR3 is the configuration's, not the set's).
+                // members that need the board's devices or MSR cells.
                 set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+                    .with_cpu_owned_cr3(MovCr3Long64V1)
                     .with_cli(&cli)
                     .with_sti(&sti)
                     .with_halt(&halt)

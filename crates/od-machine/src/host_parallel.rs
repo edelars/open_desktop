@@ -300,9 +300,8 @@ impl HostParallelControl<'_, '_> {
 /// in [`crate::ExecutionMode::Parallel`] for the run and back afterwards, and every thread is
 /// joined before this returns).
 ///
-/// `nmi_roots[cpu]` is the page-table root through which an NMI is delivered to vCPU `cpu` when its
-/// state carries no CR3 of its own (a host quantum keeps `state.cr3` empty and walks the root of its
-/// own configuration, so the root is named here too). A vCPU without a root (`None`, or past the end
+/// `nmi_roots[cpu]` is the fallback page-table root through which an NMI is delivered to vCPU `cpu`
+/// when its state carries no CR3 of its own. A vCPU without a root (`None`, or past the end
 /// of the slice) that has an NMI to take at a boundary fails the run with an explicit error; the
 /// board's own root is never used (S6-42c).
 /// This entry uses the guest vCPU's EFER for NMI delivery.

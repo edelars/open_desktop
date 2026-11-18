@@ -57,11 +57,9 @@
 //! the Linux board's CPL0 quantum, `IRETQ`, `STI`, `LOCK` forms, `#PF` and `#GP(0)` delivered through
 //! the guest IDT, the split `LOCK` behind the gate of the run) and, before every step, the loop
 //! asks the interrupt boundary of the vCPU's own Local APIC (`od_machine::host_deliver_pending_irq`:
-//! a delivery retires nothing and is followed by the next iteration's checks). A guest fault the
-//! native path reports is not an exit in this mode: the instruction ran nothing, so the interpreter
-//! step takes it again, raises the same fault and delivers it (a guest fault the IDT cannot take is
-//! the `GuestFault` exit, as before). Without the environment (the loops above) nothing of this
-//! exists and the loop is byte for byte what it was.
+//! a delivery retires nothing and is followed by the next iteration's checks). The loop delivers
+//! a native guest fault using its original fault record. The CPL0 set may own CR3, in which case
+//! every instruction boundary and native memory invocation uses the CPU's current CR3.
 //!
 //! # Not covered
 //!
@@ -274,7 +272,8 @@ impl<'a> PagedVcpuGroup<'a> {
     }
 }
 
-/// Translation and access context of the vCPU, fixed for a call of the loop.
+/// Initial translation and access context of the vCPU. A CPL0 set that owns CR3 uses this value
+/// to initialize a state without CR3, then uses the current CPU value on each step.
 #[derive(Clone, Copy, Debug)]
 pub struct PagedHostLoopConfig {
     pub cr3: u64,
@@ -487,8 +486,7 @@ pub struct PagedHostSetEnv<'a, 's> {
     pub lapic: &'a od_machine::LocalApicHandle,
     /// The gate of the split `LOCK` of the thread (`od_machine::HostQuantumCall::gate`).
     pub gate: od_machine::HostSplitGate<'a>,
-    /// The CPL0 profile set of the interpreter step. It must not own CR3 (the vCPU's `state.cr3`
-    /// stays empty, as the native path requires; the root is `PagedHostLoopConfig::cr3`).
+    /// The CPL0 profile set of the interpreter step, optionally owning the vCPU's CR3.
     pub set: &'a Cpl0ProfileSet<'s>,
     /// The REP rule of the interrupt boundary: the previous call ended inside a partial `REP`, so
     /// no interrupt is delivered at the first boundary. Kept by the caller across calls.
@@ -561,6 +559,23 @@ pub fn run_paged_host_loop_shared_set(
     )
 }
 
+/// The fetched session accepts paging as an explicit input. Adapt just its invocation, where the
+/// admitted forms cannot read or write CR3, and restore the architectural state before returning
+/// to the loop. No guest boundary or caller write callback runs inside this adapter.
+fn with_native_paging<T>(
+    state: &mut od_isa::LongModeState,
+    cpu_owns_cr3: bool,
+    invoke: impl FnOnce(&mut od_isa::LongModeState) -> T,
+) -> T {
+    if !cpu_owns_cr3 {
+        return invoke(state);
+    }
+    let cr3 = state.cr3.take();
+    let result = invoke(state);
+    state.cr3 = cr3;
+    result
+}
+
 fn deliver_native_fault(
     report: &mut PagedHostLoopReport,
     state: &mut od_isa::LongModeState,
@@ -599,22 +614,26 @@ fn try_atomic_step(
     state: &mut od_isa::LongModeState,
     bus: &od_machine::MachineBus,
     config: PagedHostLoopConfig,
+    cpu_owns_cr3: bool,
     stop_byte: &AtomicU8,
     rflags_defined: &mut u64,
     report: &mut PagedHostLoopReport,
     consecutive_native_faults: &mut u64,
     committed_write: &mut dyn FnMut(od_machine::GuestPhysicalRange),
 ) -> Result<bool, PagedHostLoopExit> {
-    let jit = match session.execute_atomic_with_stop(
-        state,
-        bus,
-        config.cr3,
-        config.efer,
-        config.access_context,
-        1,
-        stop_byte,
-        1,
-    ) {
+    let jit = with_native_paging(state, cpu_owns_cr3, |state| {
+        session.execute_atomic_with_stop(
+            state,
+            bus,
+            config.cr3,
+            config.efer,
+            config.access_context,
+            1,
+            stop_byte,
+            1,
+        )
+    });
+    let jit = match jit {
         Ok(jit) => jit,
         Err(refusal) => {
             for range in refusal.fetch_committed_writes {
@@ -702,6 +721,8 @@ pub(crate) fn run_paged_host_loop_core(
     let stop_byte = native_stop.unwrap_or_else(|| control.stop_byte());
     let mut steps_started = 0u64;
     let cpl0_set = matches!(bus, LoopBusRef::SharedSet(..));
+    let cpu_owns_cr3 =
+        matches!(&bus, LoopBusRef::SharedSet(_, _, env) if env.set.has_cpu_owned_cr3());
     let mut consecutive_native_faults = 0;
     loop {
         // Safe point (S3-25c): nothing is executing, no lookup has started. The
@@ -732,6 +753,16 @@ pub(crate) fn run_paged_host_loop_core(
             report.exit = PagedHostLoopExit::EventPending;
             return report;
         }
+        // The interpreter publishes a retired MOV CR3 in the CPU state. Fetch, operand walks and
+        // event delivery all use that value before any subsequent instruction or IRQ can run.
+        let config = if cpu_owns_cr3 {
+            PagedHostLoopConfig {
+                cr3: *state.cr3.get_or_insert(config.cr3),
+                ..config
+            }
+        } else {
+            config
+        };
         // S6-42c: the interrupt boundary of the vCPU's own Local APIC, before the step (and before
         // the native attempt). A delivery retires nothing; the next iteration checks again.
         if let LoopBusRef::SharedSet(machine, vcpu, env) = &mut bus {
@@ -761,14 +792,16 @@ pub(crate) fn run_paged_host_loop_core(
         steps_started += 1;
 
         // JIT path for the admitted forms; a native block gets the caller's byte.
-        let attempt = session.execute_forms_with_stop(
-            state,
-            bus.machine(),
-            config.cr3,
-            config.efer,
-            config.access_context,
-            stop_byte,
-        );
+        let attempt = with_native_paging(state, cpu_owns_cr3, |state| {
+            session.execute_forms_with_stop(
+                state,
+                bus.machine(),
+                config.cr3,
+                config.efer,
+                config.access_context,
+                stop_byte,
+            )
+        });
         match attempt {
             Ok(jit) => {
                 // The walk writes are applied at the safe point after the call.
@@ -863,6 +896,7 @@ pub(crate) fn run_paged_host_loop_core(
                         state,
                         bus.machine(),
                         config,
+                        cpu_owns_cr3,
                         stop_byte,
                         rflags_defined,
                         &mut report,

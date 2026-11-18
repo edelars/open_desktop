@@ -2294,6 +2294,11 @@ impl<'a> Cpl0ProfileSet<'a> {
         self
     }
 
+    /// Whether the set uses the CPU's modeled CR3 for paging context changes.
+    pub const fn has_cpu_owned_cr3(&self) -> bool {
+        self.cpu_owned_cr3
+    }
+
     /// Admit the exact bare `IN AL, DX` (`EC`) and `OUT DX, AL` (`EE`) forms and, since S4-38L7bk,
     /// the exact bare `IN AL, imm8` (`E4 ib`) and `OUT imm8, AL` (`E6 ib`) forms (port = the
     /// zero-extended immediate; same port callback and port-error behaviour) and, since S4-38L9r,
