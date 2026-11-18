@@ -2758,3 +2758,14 @@ reaches `75 18` (JNZ rel8 +0x18, ISSUE-481) at RIP `0x201537` after 10,323
 retired instructions. It reports Unsupported opcode 117 with empty COM1.
 Image SHA-256 is `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-481 runner frontier
+
+Exact base-profile `75 18` (JNZ rel8 +0x18) uses ZF and checks a taken
+target for canonicality. With budget 20000 the runner takes the branch to
+`0x201551`, retires the existing word MOV there and reaches
+`E9 66 FF FF FF` (JMP rel32 -0x9a, ISSUE-482) at RIP `0x201556` after
+10,325 retired instructions. It reports Unsupported opcode 233 with empty
+COM1. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

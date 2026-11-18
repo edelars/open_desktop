@@ -4723,3 +4723,31 @@ all-targets offline check passes with existing warnings. Scoped rustfmt and
 diff checks pass.
 
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-481 — exact JNZ rel8 +0x18
+
+The focused short JNZ tests cover both branch outcomes, concrete ZF with
+and without definedness, taken-target canonicality, the displacement fetch
+fault, neighboring encodings and CPL3 MOV probe isolation. The short JNZ
+filter passes 10/10, short JZ regressions pass 5/5 and the other CPL0 probe
+matrix passes 1/1.
+
+The runner command
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue481.com1 --budget 20000` uses image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+The taken target is `0x201537 + 2 + 0x18 = 0x201551`. The existing five-byte
+`66 C7 07 FF FF` (MOV word ptr [RDI],0xffff) then advances RIP to
+`0x201556`. The JNZ and MOV account for the increase from 10,323 to
+10,325 retired instructions. The Unsupported result reports the opcode
+byte at the stop in decimal, formerly 117 (`0x75`, JNZ) and now 233
+(`0xe9`, JMP). The runner exits 5 with empty COM1. Bytes
+`E9 66 FF FF FF` select JMP rel32 -0x9a (ISSUE-482).
+
+The full offline `od-isa` suite passes (2,322/1,591/126/29/6/1,558/7/15 and
+zero doctests). The paged machine quantum suite passes 110/110. The workspace
+all-targets offline check passes with existing warnings. Scoped rustfmt and
+diff checks pass.
+
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

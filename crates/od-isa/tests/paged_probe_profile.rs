@@ -16061,7 +16061,7 @@ fn rust_helper_jnz_rel8_0x37_is_unsupported_in_cpl3_profile() {
 
 #[test]
 fn rust_helper_jnz_rel8_obeys_zf_and_preserves_flags_and_definedness() {
-    for displacement in [0x23, 0x35, 0x41, 0x4d, 0x59, 0x65] {
+    for displacement in [0x18, 0x23, 0x35, 0x41, 0x4d, 0x59, 0x65] {
         let code = [0x75, displacement];
         for zero in [false, true] {
             for zf_defined in [false, true] {
@@ -16101,7 +16101,7 @@ fn rust_helper_jnz_rel8_obeys_zf_and_preserves_flags_and_definedness() {
 
 #[test]
 fn rust_helper_jnz_rel8_checks_canonicality_only_when_taken() {
-    for displacement in [0x23, 0x35, 0x41, 0x4d, 0x59, 0x65] {
+    for displacement in [0x18, 0x23, 0x35, 0x41, 0x4d, 0x59, 0x65] {
         let code = [0x75, displacement];
         let rip = 0x0000_8000_0000_0000 - code.len() as u64 - u64::from(displacement);
         let mut memory = memory_with_code_at(&code, rip);
@@ -16172,6 +16172,12 @@ fn rust_helper_jnz_rel8_final_byte_fetch_fault_is_atomic() {
 #[test]
 fn rust_helper_jnz_rel8_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
+        (&[0x75, 0x17], 0x75),                // nearby unsupported displacement
+        (&[0x75, 0x19], 0x75),                // nearby unsupported displacement
+        (&[0x74, 0x18], 0x74),                // JZ with same displacement
+        (&[0x66, 0x75, 0x18], 0x75),          // operand-size prefix
+        (&[0x40, 0x75, 0x18], 0x75),          // REX prefix
+        (&[0x0f, 0x85, 0x18, 0, 0, 0], 0x85), // near JNZ
         (&[0x75, 0x22], 0x75),                // nearby unsupported displacement
         (&[0x75, 0x25], 0x75),                // nearby unsupported displacement
         (&[0x74, 0x23], 0x74),                // JZ with same displacement
@@ -16224,7 +16230,7 @@ fn rust_helper_jnz_rel8_neighbours_stay_unsupported_without_mutation() {
 
 #[test]
 fn rust_helper_jnz_rel8_is_unsupported_in_cpl3_profile() {
-    for displacement in [0x23, 0x35, 0x41, 0x4d, 0x59, 0x65] {
+    for displacement in [0x18, 0x23, 0x35, 0x41, 0x4d, 0x59, 0x65] {
         let bytes = [0x75, displacement];
         let mut memory = Memory::new(&bytes);
         let mut cpu = state();
@@ -48584,6 +48590,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x75, 0x20][..], 0x75),
         (&[0x75, 0x0a][..], 0x75),
         (&[0x75, 0x14][..], 0x75),
+        (&[0x75, 0x18][..], 0x75),
         (&[0x75, 0x23][..], 0x75),
         (&[0x75, 0x35][..], 0x75),
         (&[0x75, 0x41][..], 0x75),

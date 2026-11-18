@@ -5848,7 +5848,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-481 — S7-04: exact JNZ rel8 +0x18 frontier (`75 18`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-480.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201537`.
-- **Статус:** открыта. Следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base firmware CPU profile stops on exact `75 18` (JNZ rel8 +0x18).
+- **Статус:** решена для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** exact unprefixed `75 18` branches on ZF=0 to next RIP plus signed rel8. A taken target must be canonical. Flags and definedness are preserved.
 - **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 117 }` at RIP `0x201537` after 10,323 retired instructions. COM1 is empty. Bytes at the link-base shadow are `75 18`.
-- **Следующий шаг:** admit the exact short branch and cover the ZF condition, target canonicality, fault atomicity and profile isolation.
+- **Результат:** the runner takes the branch to RIP `0x201551` and retires the existing word MOV there. It stops after 10,325 retired instructions at RIP `0x201556` on `E9 66 FF FF FF` (JMP rel32 -0x9a, ISSUE-482). It reports `Unsupported { opcode: 233 }` with empty COM1.
+- **Проверка:** focused tests cover ZF, both RIP outcomes, flag definedness, taken-target canonicality, the displacement fetch fault, neighboring encodings and the CPL3 MOV probe. Short JZ and other CPL0 probe regressions pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-482 — S7-04: exact JMP rel32 -0x9a frontier (`E9 66 FF FF FF`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-481.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201556`.
+- **Статус:** открыта. Следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base firmware CPU profile stops on exact `E9 66 FF FF FF` (JMP rel32 -0x9a).
+- **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 233 }` at RIP `0x201556` after 10,325 retired instructions. COM1 is empty. Bytes at the link-base shadow are `E9 66 FF FF FF`.
+- **Следующий шаг:** admit the exact near jump and cover the signed target, canonicality, fault atomicity and profile isolation.
