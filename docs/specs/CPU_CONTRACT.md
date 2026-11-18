@@ -30013,3 +30013,15 @@ taken target raises #GP(0). This fault and a displacement fetch fault
 commit no architectural state. The other CPL0 probes and the paged CPL3
 MOV probe refuse this form.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-482 — bounded JMP rel32 -0x9a
+
+The base paged CPL0 profile admits exact unprefixed `E9 66 FF FF FF` in
+Long64. The executor adds signed rel32 -0x9a to next RIP using 64-bit
+wrapping arithmetic. It validates the target for canonicality before
+committing RIP and preserves all other registers, RFLAGS and flag
+definedness. A noncanonical target raises #GP(0). This fault and a
+final-displacement-byte fetch fault commit no architectural state or
+retirement. The other CPL0 probes and the paged CPL3 MOV probe refuse
+this encoding.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

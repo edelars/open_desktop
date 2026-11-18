@@ -5857,7 +5857,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-482 — S7-04: exact JMP rel32 -0x9a frontier (`E9 66 FF FF FF`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-481.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201556`.
-- **Статус:** открыта. Следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base firmware CPU profile stops on exact `E9 66 FF FF FF` (JMP rel32 -0x9a).
+- **Статус:** решена для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** exact unprefixed `E9 66 FF FF FF` jumps to next RIP plus signed rel32 -0x9a. The target must be canonical. Other registers, flags and flag definedness are preserved.
 - **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 233 }` at RIP `0x201556` after 10,325 retired instructions. COM1 is empty. Bytes at the link-base shadow are `E9 66 FF FF FF`.
-- **Следующий шаг:** admit the exact near jump and cover the signed target, canonicality, fault atomicity and profile isolation.
+- **Результат:** the runner jumps to RIP `0x2014c1` and stops after 10,326 retired instructions on `48 83 C4 18` (ADD RSP,0x18, ISSUE-483). It reports `Unsupported { opcode: 131 }` with empty COM1.
+- **Проверка:** focused tests cover the signed target, canonicality, final-byte fetch fault, flag preservation, neighboring encodings and CPL3 MOV isolation. The other CPL0 probe matrix passes. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-483 — S7-04: exact ADD RSP,0x18 frontier (`48 83 C4 18`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-482.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2014c1`.
+- **Статус:** открыта. Следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base firmware CPU profile stops on exact `48 83 C4 18` (ADD RSP,0x18).
+- **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 131 }` at RIP `0x2014c1` after 10,326 retired instructions. COM1 is empty. Bytes at the link-base shadow are `48 83 C4 18`.
+- **Следующий шаг:** admit the exact qword ADD and cover the arithmetic result and flags, the immediate fetch fault and profile isolation.

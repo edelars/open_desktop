@@ -10608,87 +10608,96 @@ fn rust_helper_jz_rel32_0x83_or_0xe6_is_unsupported_in_cpl3_profile() {
     }
 }
 
+const RUST_HELPER_BACKWARD_JMP_REL32: [([u8; 5], u64); 2] = [
+    ([0xe9, 0x9e, 0xfe, 0xff, 0xff], 0x162),
+    ([0xe9, 0x66, 0xff, 0xff, 0xff], 0x9a),
+];
+
 #[test]
-fn rust_helper_jmp_rel32_minus_162_uses_signed_next_rip_target_and_preserves_state() {
-    let code = [0xe9, 0x9e, 0xfe, 0xff, 0xff]; // JMP rel32 -0x162
-    for initial_defined in [DEFINED, DEFINED & !((1 << 0) | (1 << 6))] {
-        let mut memory = Memory::new(&code);
-        let mut cpu = state();
-        cpu.gpr = gpr_patterns();
-        let before = cpu.clone();
-        let mut pio = Pio::default();
+fn rust_helper_jmp_rel32_backward_uses_signed_next_rip_target_and_preserves_state() {
+    for (code, magnitude) in RUST_HELPER_BACKWARD_JMP_REL32 {
+        for initial_defined in [DEFINED, DEFINED & !((1 << 0) | (1 << 6))] {
+            let mut memory = Memory::new(&code);
+            let mut cpu = state();
+            cpu.gpr = gpr_patterns();
+            let before = cpu.clone();
+            let mut pio = Pio::default();
 
-        let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), initial_defined);
+            let result =
+                step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), initial_defined);
 
-        assert_eq!(result.exit, PagedProbeExit::Retired);
-        assert_eq!(result.instructions_executed, 1);
-        assert_eq!(result.rflags_defined, initial_defined);
-        let mut expected = before;
-        expected.rip = RIP + code.len() as u64 - 0x162;
-        assert_eq!(cpu, expected);
-        assert_eq!((memory.reads, memory.writes), (0, 0));
-        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, initial_defined);
+            let mut expected = before;
+            expected.rip = RIP + code.len() as u64 - magnitude;
+            assert_eq!(cpu, expected, "rel32 displacement is -{magnitude:#x}");
+            assert_eq!((memory.reads, memory.writes), (0, 0));
+            assert!(pio.reads.is_empty() && pio.writes.is_empty());
+        }
     }
 }
 
 #[test]
-fn rust_helper_jmp_rel32_minus_162_checks_target_canonicality() {
-    let code = [0xe9, 0x9e, 0xfe, 0xff, 0xff];
-    let rip = 0xffff_8000_0000_0000;
-    let mut memory = Memory::new(&[]);
-    memory.pages.insert(rip & !0xfff, CODE_PHYSICAL);
-    memory.bytes[CODE_PHYSICAL..CODE_PHYSICAL + code.len()].copy_from_slice(&code);
-    let mut cpu = state();
-    cpu.rip = rip;
-    cpu.gpr = gpr_patterns();
-    let before = cpu.clone();
+fn rust_helper_jmp_rel32_backward_checks_target_canonicality() {
+    for (code, _) in RUST_HELPER_BACKWARD_JMP_REL32 {
+        let rip = 0xffff_8000_0000_0000;
+        let mut memory = Memory::new(&[]);
+        memory.pages.insert(rip & !0xfff, CODE_PHYSICAL);
+        memory.bytes[CODE_PHYSICAL..CODE_PHYSICAL + code.len()].copy_from_slice(&code);
+        let mut cpu = state();
+        cpu.rip = rip;
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
 
-    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+        let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
 
-    assert_eq!(
-        result.exit,
-        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
-            vector: 13,
-            error_code: Some(0),
-            linear_address: None,
-        })
-    );
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(result.rflags_defined, DEFINED);
-    assert_eq!(cpu, before);
-    assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
 }
 
 #[test]
-fn rust_helper_jmp_rel32_minus_162_fetch_fault_is_atomic() {
-    let rip = RIP + 0xffc;
-    let mut memory = Memory::new(&[]);
-    memory.bytes[CODE_PHYSICAL + 0xffc..CODE_PHYSICAL + 0x1000]
-        .copy_from_slice(&[0xe9, 0x9e, 0xfe, 0xff]);
-    let mut cpu = state();
-    cpu.rip = rip;
-    cpu.gpr = gpr_patterns();
-    let before = cpu.clone();
-    memory.fail_fetch_at = Some((rip + 4, page_fault(0x10, rip + 4)));
+fn rust_helper_jmp_rel32_backward_fetch_fault_is_atomic() {
+    for (code, _) in RUST_HELPER_BACKWARD_JMP_REL32 {
+        let rip = RIP + 0xffc;
+        let mut memory = Memory::new(&[]);
+        memory.bytes[CODE_PHYSICAL + 0xffc..CODE_PHYSICAL + 0x1000].copy_from_slice(&code[..4]);
+        let mut cpu = state();
+        cpu.rip = rip;
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        memory.fail_fetch_at = Some((rip + 4, page_fault(0x10, rip + 4)));
 
-    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+        let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
 
-    assert_eq!(
-        result.exit,
-        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
-            vector: 14,
-            error_code: Some(0x10),
-            linear_address: Some(rip + 4),
-        })
-    );
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(result.rflags_defined, DEFINED);
-    assert_eq!(cpu, before);
-    assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x10),
+                linear_address: Some(rip + 4),
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
 }
 
 #[test]
-fn rust_helper_jmp_rel32_minus_162_neighbours_stay_unsupported() {
+fn rust_helper_jmp_rel32_backward_neighbours_stay_unsupported() {
     let cases: &[(&[u8], u8)] = &[
         (&[0xe9, 0x9d, 0xfe, 0xff, 0xff], 0xe9), // adjacent displacement
         (&[0xe9, 0x9f, 0xfe, 0xff, 0xff], 0xe9), // adjacent displacement
@@ -10696,6 +10705,13 @@ fn rust_helper_jmp_rel32_minus_162_neighbours_stay_unsupported() {
         (&[0xeb, 0x9e], 0xeb),                   // JMP rel8
         (&[0x66, 0xe9, 0x9e, 0xfe, 0xff, 0xff], 0xe9), // operand prefix
         (&[0x48, 0xe9, 0x9e, 0xfe, 0xff, 0xff], 0xe9), // REX prefix
+        (&[0xe9, 0x65, 0xff, 0xff, 0xff], 0xe9), // Adjacent displacement.
+        (&[0xe9, 0x67, 0xff, 0xff, 0xff], 0xe9), // Adjacent displacement.
+        (&[0xe9, 0x66, 0xfe, 0xff, 0xff], 0xe9), // Same low byte, different displacement.
+        (&[0xe8, 0x66, 0xff, 0xff, 0xff], 0xe8), // CALL rel32.
+        (&[0xeb, 0x66], 0xeb),                   // JMP rel8.
+        (&[0x66, 0xe9, 0x66, 0xff, 0xff, 0xff], 0xe9), // Operand prefix.
+        (&[0x48, 0xe9, 0x66, 0xff, 0xff, 0xff], 0xe9), // REX prefix.
     ];
     for (bytes, opcode) in cases {
         let mut memory = Memory::new(bytes);
@@ -10713,27 +10729,28 @@ fn rust_helper_jmp_rel32_minus_162_neighbours_stay_unsupported() {
 }
 
 #[test]
-fn rust_helper_jmp_rel32_minus_162_is_unsupported_in_cpl3_profile() {
-    let code = [0xe9, 0x9e, 0xfe, 0xff, 0xff];
-    let mut memory = Memory::new(&code);
-    let mut cpu = state();
-    cpu.cr3 = Some(0x1000);
-    cpu.gpr = gpr_patterns();
-    let before = cpu.clone();
+fn rust_helper_jmp_rel32_backward_is_unsupported_in_cpl3_profile() {
+    for (code, _) in RUST_HELPER_BACKWARD_JMP_REL32 {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.cr3 = Some(0x1000);
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
 
-    let result = execute::step_paged_cpl3_mov(
-        &mut cpu,
-        &mut memory,
-        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
-        0xd00,
-        DEFINED,
-    );
+        let result = execute::step_paged_cpl3_mov(
+            &mut cpu,
+            &mut memory,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+            0xd00,
+            DEFINED,
+        );
 
-    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0xe9 });
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(result.rflags_defined, DEFINED);
-    assert_eq!(cpu, before);
-    assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0xe9 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
 }
 
 #[test]
@@ -48655,6 +48672,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x4c, 0x39, 0xef][..], 0x39),
         (&[0x76, 0x22][..], 0x76),
         (&[0xe9, 0x9e, 0xfe, 0xff, 0xff][..], 0xe9),
+        (&[0xe9, 0x66, 0xff, 0xff, 0xff][..], 0xe9),
         (&[0xe9, 0x65, 0x01, 0x00, 0x00][..], 0xe9),
         (&[0xeb, 0x31][..], 0xeb),
         (&[0x89, 0x1c, 0x24][..], 0x89),

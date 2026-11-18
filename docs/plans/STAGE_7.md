@@ -3001,3 +3001,15 @@ branches to `0x201551`, executes the existing word MOV and stops after
 10,325 retired instructions at RIP `0x201556` on `E9 66 FF FF FF` (JMP
 rel32 -0x9a, ISSUE-482). It reports Unsupported opcode 233 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-482 — exact JMP rel32 -0x9a (`E9 66 FF FF FF`)
+
+Base `PagedCpl0ProbeV1` admits the exact unprefixed near jump. It adds signed
+rel32 -0x9a to next RIP and checks the target for canonicality. It preserves
+flags, definedness and all other registers. Tests cover the signed target,
+canonicality, the displacement fetch fault, neighboring encodings and
+profile isolation. With budget 20000 the runner jumps to RIP `0x2014c1`
+and stops there after 10,326 retired instructions on `48 83 C4 18`
+(ADD RSP,0x18, ISSUE-483). It reports Unsupported opcode 131 with empty
+COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
