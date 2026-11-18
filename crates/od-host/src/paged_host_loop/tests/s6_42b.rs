@@ -5,16 +5,16 @@
 //! interpreter took `&mut MachineBus`. Here no lock of the bus exists anywhere: the threads hold
 //! `&MachineBus`, RAM is `PhysicalMemory` by `&self` (parallel mode: `SeqCst` accesses, `Release`
 //! page generations), and the interpreter fallback takes the device lock for one port access at a
-//! time. `run_paged_host_loop_shared` is the loop; `od_machine::run_host_threads` runs the threads.
+//! time. `run_paged_host_loop_shared` is the loop; `od_machine::run_host_threads_with_nmi_paging` runs the threads.
 
 use super::*;
 use crate::host_threads::JitHostQuantum;
 use crate::jit_region::SharedJitRegion;
 use od_machine::{
     ExecutionMode, HostParallelConfig, HostParallelFinish, host_install_vcpu, host_parallel_board,
-    run_host_threads,
+    run_host_threads_with_nmi_paging,
 };
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Barrier, Mutex};
 use std::time::{Duration, Instant};
 
@@ -357,6 +357,58 @@ fn data_qword(control: &od_machine::HostParallelControl<'_, '_>) -> u64 {
         .unwrap()
 }
 
+#[test]
+fn s6_42d_stop_all_reaches_native_after_the_quantums_last_poll() {
+    let _guard = jit_guard();
+    for cpl0_set in [false, true] {
+        let region = SharedJitRegion::new(1, 2).unwrap();
+        let quantum = JitHostQuantum::new(
+            vec![Some(region.take_part().unwrap())],
+            vec![config()],
+            RFLAGS_DEFINED,
+        );
+        let quantum = if cpl0_set {
+            quantum.with_cpl0_set()
+        } else {
+            quantum
+        };
+        let mut board = host_parallel_board(1).unwrap();
+        populate_tables(board.bus_mut(), &A_PROGRAM);
+        let mut state = loop_state();
+        state.gpr[Register::Rax as usize] = MARKER;
+        assert!(host_install_vcpu(&mut board, 0, state));
+        let at_poll = AtomicBool::new(false);
+
+        let (report, ()) = run_host_threads_with_nmi_paging(
+            &mut board,
+            HostParallelConfig {
+                quantum: 16,
+                budget: 16,
+                end_when_idle: true,
+            },
+            &quantum.nmi_paging(),
+            &|call| run_after_stop_is_posted(&quantum, call, &at_poll, WAIT),
+            &|_| quantum.thread_exit(),
+            |control| {
+                assert!(control.wait_until(WAIT, || at_poll.load(Ordering::SeqCst)));
+                let proof = control.stop_all(WAIT).expect("the thread acknowledges");
+                assert_eq!(proof.acknowledged, 1);
+                assert_eq!(control.retired(), [0]);
+                assert_eq!(data_qword(control), INITIAL_DATA);
+                assert_eq!(quantum.stats(0).native_stop_exits, 1);
+                assert_eq!(control.with_state(0, |state| state.rip), Some(CODE_RIP));
+                control.resume();
+                assert!(control.wait_finished(WAIT), "store and HLT must finish");
+                assert_eq!(control.retired(), [2]);
+                assert_eq!(data_qword(control), MARKER);
+            },
+        )
+        .unwrap();
+        assert_eq!(report.finished, HostParallelFinish::AllIdle);
+        assert_eq!(quantum.stats(0).retired_jit, 1);
+    }
+}
+
 /// The pure interpreter at the same retired count: B's loop is private (its own data cell, its own
 /// stack), so the state of B at any stop is determined by the number of instructions it retired.
 fn oracle(retired: u64) -> Observation {
@@ -399,7 +451,7 @@ fn s6_42b_parallel_control_stops_jit_vcpus_and_a_changes_code_b_executes() {
     assert!(host_install_vcpu(&mut board, 1, a_halted_state()));
 
     let seen = Mutex::new(Vec::<String>::new());
-    let (report, ()) = run_host_threads(
+    let (report, ()) = run_host_threads_with_nmi_paging(
         &mut board,
         HostParallelConfig {
             // A quantum far longer than a stop may wait: every stop lands inside a call and
@@ -408,7 +460,7 @@ fn s6_42b_parallel_control_stops_jit_vcpus_and_a_changes_code_b_executes() {
             budget: u64::MAX,
             end_when_idle: false,
         },
-        &quantum.nmi_roots(),
+        &quantum.nmi_paging(),
         &|call| quantum.run(call),
         &|_| quantum.thread_exit(),
         |control| {
@@ -531,7 +583,7 @@ fn s6_42b_parallel_control_stops_jit_vcpus_and_a_changes_code_b_executes() {
 }
 
 /// M1 of the review of S6-42b: the session and the part of the region of a vCPU thread are dropped
-/// on that thread before `run_host_threads` returns (the exit hook), not by a `thread_local!`
+/// on that thread before `run_host_threads_with_nmi_paging` returns (the exit hook), not by a `thread_local!`
 /// destructor that `thread::scope` does not wait for. So a region made right after a run, with the
 /// parent's own handles dropped, never meets the previous one still live
 /// (`MappingAlreadyLive`), run after run.
@@ -554,14 +606,14 @@ fn s6_42b_the_thread_exit_releases_the_region_before_the_run_returns() {
         add_code_a(board.bus_mut(), &A_PROGRAM);
         assert!(host_install_vcpu(&mut board, 0, b_state()));
         assert!(host_install_vcpu(&mut board, 1, a_halted_state()));
-        let (report, ()) = run_host_threads(
+        let (report, ()) = run_host_threads_with_nmi_paging(
             &mut board,
             HostParallelConfig {
                 quantum: 256,
                 budget: u64::MAX,
                 end_when_idle: false,
             },
-            &quantum.nmi_roots(),
+            &quantum.nmi_paging(),
             &|call| quantum.run(call),
             &|_| {
                 if crate::host_threads::thread_slot_occupied() {

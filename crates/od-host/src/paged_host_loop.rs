@@ -56,12 +56,10 @@
 //! step is one instruction of the CPL0 profile set (`od_machine::run_host_set_step`: the profile of
 //! the Linux board's CPL0 quantum, `IRETQ`, `STI`, `LOCK` forms, `#PF` and `#GP(0)` delivered through
 //! the guest IDT, the split `LOCK` behind the gate of the run) and, before every step, the loop
-//! asks the interrupt boundary of the vCPU's own Local APIC (`od_machine::host_deliver_pending_irq`:
-//! a delivery retires nothing and is followed by the next iteration's checks). A guest fault the
-//! native path reports is not an exit in this mode: the instruction ran nothing, so the interpreter
-//! step takes it again, raises the same fault and delivers it (a guest fault the IDT cannot take is
-//! the `GuestFault` exit, as before). Without the environment (the loops above) nothing of this
-//! exists and the loop is byte for byte what it was.
+//! asks the board source on the BSP and the Local APIC source. A delivery retires nothing and is
+//! followed by the next iteration's checks. The loop delivers
+//! a native guest fault using its original fault record. The CPL0 set may own CR3, in which case
+//! every instruction boundary and native memory invocation uses the CPU's current CR3.
 //!
 //! # Not covered
 //!
@@ -74,9 +72,13 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::{
-    MemoryOperationExecutionErrorV2, MemoryOperationExecutionExitV2, PagedFetchedLoadSession,
+    MemoryOperationExecutionErrorV2, MemoryOperationExecutionExitV2, PagedFetchedLoadErrorKind,
+    PagedFetchedLoadSession, atomic_inline::AtomicInlineExit,
 };
 use od_isa::execute::Cpl0ProfileSet;
+use od_isa::memory::{ArchitecturalFault, PageFaultRecord};
+
+const RFLAGS_RF: u64 = 1 << 16;
 
 /// The request flags of one vCPU loop, as one value read after the STOP byte was
 /// taken down.
@@ -270,7 +272,8 @@ impl<'a> PagedVcpuGroup<'a> {
     }
 }
 
-/// Translation and access context of the vCPU, fixed for a call of the loop.
+/// Initial translation and access context of the vCPU. A CPL0 set that owns CR3 uses this value
+/// to initialize a state without CR3, then uses the current CPU value on each step.
 #[derive(Clone, Copy, Debug)]
 pub struct PagedHostLoopConfig {
     pub cr3: u64,
@@ -301,6 +304,8 @@ pub enum PagedHostLoopExit {
     /// The JIT boundary failed in a way that does not prove the CPU state is
     /// unchanged. The step is not retried.
     JitHostFailure(MemoryOperationExecutionErrorV2),
+    /// A V4 atomic invocation failed at the host boundary.
+    AtomicHostFailure(PagedFetchedLoadErrorKind),
     /// `rflags_defined` has bits outside `INTEGER_FLAGS`; nothing ran.
     InvalidRflagsDefined {
         value: u64,
@@ -312,10 +317,10 @@ pub enum PagedHostLoopExit {
     /// S6-42c (set mode only): the interpreter step could not be resumed from (an integration
     /// error of the CPL0 set); the text is the mapping error.
     InterpreterIntegration(String),
-    /// S6-42c (set mode only): the instruction wrote a timer register of the vCPU's Local APIC, so
-    /// the deadline of the clock owner the call was budgeted for may be stale; the call ends after
-    /// the instruction (as the set quantum of the interpreter ends).
+    /// The CPL0 quantum returns to reconcile a timer deadline or queued device work.
     DeviceBoundary,
+    /// The board latched a shutdown or reset request from the guest.
+    MachineStop(od_machine::MachineStopReason),
 }
 
 /// Counters and exit of one call of [`run_paged_host_loop`].
@@ -349,11 +354,12 @@ pub struct PagedHostLoopReport {
     pub page_fault: Option<od_isa::memory::PageFaultRecord>,
     /// S6-42c (set mode): external interrupts delivered to the guest through its IDT.
     pub irqs_delivered: u64,
-    /// S6-42c (set mode): guest `#PF`/`#GP(0)` delivered through its IDT by the interpreter step.
+    /// S6-42c (set mode): guest `#PF`/`#GP(0)` delivered through its IDT.
     pub exceptions_delivered: u64,
-    /// S6-42c (set mode): native steps that reported a guest fault, redone by the interpreter step
-    /// (which raised and delivered it). Nothing of such a step was retired.
-    pub jit_faults_redone: u64,
+    /// Native faults delivered through the guest IDT from their original fault records.
+    pub jit_faults_delivered: u64,
+    /// Retirements via the V4 atomic JIT, included in `retired_jit`.
+    pub atomic_jit_steps: u64,
 }
 
 impl PagedHostLoopReport {
@@ -373,7 +379,8 @@ impl PagedHostLoopReport {
             page_fault: None,
             irqs_delivered: 0,
             exceptions_delivered: 0,
-            jit_faults_redone: 0,
+            jit_faults_delivered: 0,
+            atomic_jit_steps: 0,
         }
     }
 
@@ -446,6 +453,7 @@ pub(crate) fn run_paged_host_loop_with_hook(
         committed_write,
         before_step,
         || false,
+        None,
     )
 }
 
@@ -476,10 +484,13 @@ impl LoopBusRef<'_, '_> {
 pub struct PagedHostSetEnv<'a, 's> {
     /// The Local APIC of the vCPU (`od_machine::HostQuantumCall::lapic`).
     pub lapic: &'a od_machine::LocalApicHandle,
+    /// The board interrupt source lent to the boot processor for this call.
+    pub board_irq: od_machine::HostBoardIrqSource<'a>,
+    /// The board's COM1 and timer work at host-call boundaries.
+    pub devices: od_machine::HostDeviceServices<'a>,
     /// The gate of the split `LOCK` of the thread (`od_machine::HostQuantumCall::gate`).
     pub gate: od_machine::HostSplitGate<'a>,
-    /// The CPL0 profile set of the interpreter step. It must not own CR3 (the vCPU's `state.cr3`
-    /// stays empty, as the native path requires; the root is `PagedHostLoopConfig::cr3`).
+    /// The CPL0 profile set of the interpreter step, optionally owning the vCPU's CR3.
     pub set: &'a Cpl0ProfileSet<'s>,
     /// The REP rule of the interrupt boundary: the previous call ended inside a partial `REP`, so
     /// no interrupt is delivered at the first boundary. Kept by the caller across calls.
@@ -516,6 +527,7 @@ pub fn run_paged_host_loop_shared(
         committed_write,
         |_, _| {},
         stop,
+        None,
     )
 }
 
@@ -523,14 +535,14 @@ pub fn run_paged_host_loop_shared(
 /// documentation): interrupts of the vCPU's Local APIC delivered through the guest IDT before every
 /// step, the interpreter step the CPL0 profile set of `env`, guest faults delivered, the split
 /// `LOCK` behind the gate. Nothing else differs.
-pub fn run_paged_host_loop_shared_set(
+pub fn run_paged_host_loop_shared_set<'a>(
     session: &mut PagedFetchedLoadSession,
     control: &PagedHostLoopControl,
     config: PagedHostLoopConfig,
     state: &mut od_isa::LongModeState,
-    bus: &od_machine::MachineBus,
+    bus: &'a od_machine::MachineBus,
     vcpu: usize,
-    env: PagedHostSetEnv<'_, '_>,
+    env: PagedHostSetEnv<'a, '_>,
     rflags_defined: &mut u64,
     incoming_budget: u64,
     committed_write: impl FnMut(od_machine::GuestPhysicalRange),
@@ -547,10 +559,150 @@ pub fn run_paged_host_loop_shared_set(
         committed_write,
         |_, _| {},
         stop,
+        None,
     )
 }
 
-fn run_paged_host_loop_core(
+/// The fetched session accepts paging as an explicit input. Adapt just its invocation, where the
+/// admitted forms cannot read or write CR3, and restore the architectural state before returning
+/// to the loop. No guest boundary or caller write callback runs inside this adapter.
+fn with_native_paging<T>(
+    state: &mut od_isa::LongModeState,
+    cpu_owns_cr3: bool,
+    invoke: impl FnOnce(&mut od_isa::LongModeState) -> T,
+) -> T {
+    if !cpu_owns_cr3 {
+        return invoke(state);
+    }
+    let cr3 = state.cr3.take();
+    let result = invoke(state);
+    state.cr3 = cr3;
+    result
+}
+
+fn deliver_native_fault(
+    report: &mut PagedHostLoopReport,
+    state: &mut od_isa::LongModeState,
+    bus: &od_machine::MachineBus,
+    config: PagedHostLoopConfig,
+    fault: &ArchitecturalFault,
+    page_fault: Option<&PageFaultRecord>,
+    consecutive: u64,
+    committed_write: &mut dyn FnMut(od_machine::GuestPhysicalRange),
+) -> bool {
+    let Ok(paging) = od_machine::Long64ProbeConfig::from_cpu_state(state, config.cr3, config.efer)
+    else {
+        return false;
+    };
+    if !od_machine::deliver_host_native_fault(
+        state,
+        bus,
+        &paging,
+        config.access_context,
+        fault,
+        page_fault,
+        consecutive,
+        committed_write,
+    ) {
+        return false;
+    }
+    report.exceptions_delivered += 1;
+    report.jit_faults_delivered += 1;
+    true
+}
+
+/// True when the loop must return to its instruction boundary. A pre-entry
+/// refusal or operand decline leaves the instruction to the CPL0 interpreter.
+fn try_atomic_step(
+    session: &mut PagedFetchedLoadSession,
+    state: &mut od_isa::LongModeState,
+    bus: &od_machine::MachineBus,
+    config: PagedHostLoopConfig,
+    cpu_owns_cr3: bool,
+    stop_byte: &AtomicU8,
+    rflags_defined: &mut u64,
+    report: &mut PagedHostLoopReport,
+    consecutive_native_faults: &mut u64,
+    committed_write: &mut dyn FnMut(od_machine::GuestPhysicalRange),
+) -> Result<bool, PagedHostLoopExit> {
+    let jit = with_native_paging(state, cpu_owns_cr3, |state| {
+        session.execute_atomic_with_stop(
+            state,
+            bus,
+            config.cr3,
+            config.efer,
+            config.access_context,
+            1,
+            stop_byte,
+            1,
+        )
+    });
+    let jit = match jit {
+        Ok(jit) => jit,
+        Err(refusal) => {
+            for range in refusal.fetch_committed_writes {
+                committed_write(range);
+            }
+            if matches!(refusal.kind, PagedFetchedLoadErrorKind::AtomicRun(_)) {
+                return Err(PagedHostLoopExit::AtomicHostFailure(refusal.kind));
+            }
+            return Ok(false);
+        }
+    };
+    for range in jit
+        .fetch_committed_writes
+        .into_iter()
+        .chain(jit.committed_writes)
+    {
+        committed_write(range);
+    }
+    let run = jit.run;
+    let invalid =
+        PagedHostLoopExit::JitHostFailure(MemoryOperationExecutionErrorV2::InvalidAccounting);
+    if jit.block_instructions != 1 || 1u64.checked_sub(run.retired) != Some(run.remaining_budget) {
+        return Err(invalid);
+    }
+    match (run.exit, run.retired) {
+        (AtomicInlineExit::Complete | AtomicInlineExit::CodeInvalidated, 1) => {
+            *rflags_defined = jit.first_flags.apply(*rflags_defined);
+            state.rflags &= !RFLAGS_RF;
+            report.retired_jit += 1;
+            report.steps_jit += 1;
+            report.atomic_jit_steps += 1;
+            report.remaining_budget -= 1;
+            *consecutive_native_faults = 0;
+            Ok(true)
+        }
+        (AtomicInlineExit::StopRequested, 0) => {
+            report.native_stop_exits += 1;
+            Ok(true)
+        }
+        (AtomicInlineExit::Declined, 0) => Ok(false),
+        (AtomicInlineExit::Fault, 0) => {
+            let fault = run.fault.ok_or(PagedHostLoopExit::JitHostFailure(
+                MemoryOperationExecutionErrorV2::InvalidOutcome,
+            ))?;
+            if deliver_native_fault(
+                report,
+                state,
+                bus,
+                config,
+                &fault,
+                run.page_fault.as_ref(),
+                *consecutive_native_faults,
+                committed_write,
+            ) {
+                *consecutive_native_faults += 1;
+                return Ok(true);
+            }
+            report.page_fault = run.page_fault;
+            Err(PagedHostLoopExit::GuestFault(fault))
+        }
+        _ => Err(invalid),
+    }
+}
+
+pub(crate) fn run_paged_host_loop_core(
     session: &mut PagedFetchedLoadSession,
     control: &PagedHostLoopControl,
     config: PagedHostLoopConfig,
@@ -561,6 +713,7 @@ fn run_paged_host_loop_core(
     mut committed_write: impl FnMut(od_machine::GuestPhysicalRange),
     mut before_step: impl FnMut(&PagedHostLoopControl, u64),
     mut external_stop: impl FnMut() -> bool,
+    native_stop: Option<&AtomicU8>,
 ) -> PagedHostLoopReport {
     let mut report = PagedHostLoopReport::new(incoming_budget);
     if *rflags_defined & !od_isa::INTEGER_FLAGS != 0 {
@@ -569,13 +722,28 @@ fn run_paged_host_loop_core(
         };
         return report;
     }
+    let stop_byte = native_stop.unwrap_or_else(|| control.stop_byte());
+    // The bus mode stays fixed for this call. Parallel native blocks live only in an owner part.
+    let native_allowed = bus.machine().execution_mode() != od_machine::ExecutionMode::Parallel
+        || session.has_region_part();
+    if !native_allowed {
+        session.reset();
+    }
     let mut steps_started = 0u64;
+    let cpl0_set = matches!(bus, LoopBusRef::SharedSet(..));
+    let cpu_owns_cr3 =
+        matches!(&bus, LoopBusRef::SharedSet(_, _, env) if env.set.has_cpu_owned_cr3());
+    let mut consecutive_native_faults = 0;
     loop {
         // Safe point (S3-25c): nothing is executing, no lookup has started. The
         // session applies the slot releases it deferred (A4).
         session.safe_point();
+        // Clear the worker's native byte before its request poll. A request posted
+        // after the poll then leaves this same byte raised for native execution.
+        let worker_byte_was_set =
+            native_stop.is_some_and(|byte| byte.swap(0, Ordering::SeqCst) != 0);
         let (byte_was_set, requests) = control.take_byte_and_reread_flags();
-        if byte_was_set {
+        if worker_byte_was_set || byte_was_set {
             report.stop_byte_observations += 1;
             report.retired_at_stop_byte = Some(report.retired_total());
         }
@@ -595,11 +763,29 @@ fn run_paged_host_loop_core(
             report.exit = PagedHostLoopExit::EventPending;
             return report;
         }
-        // S6-42c: the interrupt boundary of the vCPU's own Local APIC, before the step (and before
-        // the native attempt). A delivery retires nothing; the next iteration checks again.
-        if let LoopBusRef::SharedSet(machine, vcpu, env) = &mut bus {
-            let _ = vcpu;
-            match od_machine::host_deliver_pending_irq(
+        // The interpreter publishes a retired MOV CR3 in the CPU state. Fetch, operand walks and
+        // event delivery all use that value before any subsequent instruction or IRQ can run.
+        let config = if cpu_owns_cr3 {
+            PagedHostLoopConfig {
+                cr3: *state.cr3.get_or_insert(config.cr3),
+                ..config
+            }
+        } else {
+            config
+        };
+        // Deliver IRQs before native and interpreted steps. A delivery retires nothing.
+        if let LoopBusRef::SharedSet(machine, _, env) = &mut bus {
+            if steps_started == 0 {
+                if let Some(reason) = env.devices.stop_request() {
+                    report.exit = PagedHostLoopExit::MachineStop(reason);
+                    return report;
+                }
+                if env.devices.pending() || env.devices.nvme_pending() {
+                    report.exit = PagedHostLoopExit::DeviceBoundary;
+                    return report;
+                }
+            }
+            match env.board_irq.deliver_pending(
                 state,
                 machine,
                 env.lapic,
@@ -624,16 +810,20 @@ fn run_paged_host_loop_core(
         steps_started += 1;
 
         // JIT path for the admitted forms; a native block gets the caller's byte.
-        let attempt = session.execute_forms_with_stop(
-            state,
-            bus.machine(),
-            config.cr3,
-            config.efer,
-            config.access_context,
-            control.stop_byte(),
-        );
+        let attempt = native_allowed.then(|| {
+            with_native_paging(state, cpu_owns_cr3, |state| {
+                session.execute_forms_with_stop(
+                    state,
+                    bus.machine(),
+                    config.cr3,
+                    config.efer,
+                    config.access_context,
+                    stop_byte,
+                )
+            })
+        });
         match attempt {
-            Ok(jit) => {
+            Some(Ok(jit)) => {
                 // The walk writes are applied at the safe point after the call.
                 for range in jit
                     .fetch_committed_writes
@@ -672,20 +862,33 @@ fn run_paged_host_loop_core(
                             report.retired_jit += retired;
                             report.remaining_budget -= retired;
                             report.steps_jit += retired;
+                            if retired != 0 {
+                                consecutive_native_faults = 0;
+                                if cpl0_set {
+                                    state.rflags &= !RFLAGS_RF;
+                                }
+                            }
                             continue;
                         }
                         MemoryOperationExecutionExitV2::GuestFault(fault) => {
-                            if matches!(bus, LoopBusRef::SharedSet(..)) {
-                                // S6-42c: nothing of the instruction retired; the interpreter
-                                // step below takes it again, raises the same fault and delivers
-                                // it through the guest IDT (a fault the IDT cannot take is the
-                                // `GuestFault` exit of that step).
-                                report.jit_faults_redone += 1;
-                            } else {
-                                report.page_fault = jit.execution.page_fault.clone();
-                                report.exit = PagedHostLoopExit::GuestFault(fault.clone());
-                                return report;
+                            if cpl0_set
+                                && deliver_native_fault(
+                                    &mut report,
+                                    state,
+                                    bus.machine(),
+                                    config,
+                                    fault,
+                                    jit.execution.page_fault.as_ref(),
+                                    consecutive_native_faults,
+                                    &mut committed_write,
+                                )
+                            {
+                                consecutive_native_faults += 1;
+                                continue;
                             }
+                            report.page_fault = jit.execution.page_fault.clone();
+                            report.exit = PagedHostLoopExit::GuestFault(fault.clone());
+                            return report;
                         }
                         // A single-instruction block never ends this way.
                         MemoryOperationExecutionExitV2::BudgetExhausted
@@ -699,17 +902,44 @@ fn run_paged_host_loop_core(
                 }
             }
             // Refused before the instruction ran; only walk writes of the fetch.
-            Err(refusal) => {
+            Some(Err(refusal)) => {
                 for range in &refusal.fetch_committed_writes {
                     committed_write(*range);
                 }
+                if cpl0_set
+                    && matches!(&refusal.kind,
+                    PagedFetchedLoadErrorKind::UnsupportedForm { bytes }
+                        if od_jit::atomic_adapter::could_start_atomic(bytes))
+                {
+                    match try_atomic_step(
+                        session,
+                        state,
+                        bus.machine(),
+                        config,
+                        cpu_owns_cr3,
+                        stop_byte,
+                        rflags_defined,
+                        &mut report,
+                        &mut consecutive_native_faults,
+                        &mut committed_write,
+                    ) {
+                        Ok(true) => continue,
+                        Ok(false) => {}
+                        Err(exit) => {
+                            report.exit = exit;
+                            return report;
+                        }
+                    }
+                }
             }
+            None => {}
         }
 
         // Exactly one step of the shared interpreter.
         report.jit_refusals += 1;
         // S6-42c: what the CPL0-set step adds to the probe report (set mode only).
         let mut set_step: Option<(bool, u64, bool)> = None;
+        let mut machine_stop = None;
         let quantum = match &mut bus {
             LoopBusRef::Exclusive(bus) => od_machine::run_paged_probe(
                 state,
@@ -752,10 +982,16 @@ fn run_paged_host_loop_core(
                 ) {
                     Ok(step) => {
                         *env.skip_first_boundary = step.partial_rep;
+                        if step.port_accessed {
+                            machine_stop = env.devices.stop_request();
+                        }
                         set_step = Some((
                             step.partial_rep,
                             step.delivered_exceptions,
-                            step.timer_register_written,
+                            step.timer_register_written
+                                || (step.pit_written && env.board_irq.pit_write_ends_quantum())
+                                || (step.port_accessed && env.devices.pending())
+                                || (step.mmio_written && env.devices.nvme_pending()),
                         ));
                         step.report
                     }
@@ -775,10 +1011,17 @@ fn run_paged_host_loop_core(
             return report;
         }
         report.retired_interpreter += retired;
+        if retired != 0 {
+            consecutive_native_faults = 0;
+        }
         report.remaining_budget -= retired;
         report.steps_interpreter += retired;
         if let Some((_, delivered, _)) = set_step {
             report.exceptions_delivered += delivered;
+        }
+        if let Some(reason) = machine_stop {
+            report.exit = PagedHostLoopExit::MachineStop(reason);
+            return report;
         }
         match quantum.exit {
             od_machine::PagedProbeExit::BudgetExhausted => {
@@ -1951,6 +2194,40 @@ mod tests {
         assert_eq!(run.report.steps_jit, 0);
         assert_eq!(run.report.steps_interpreter, 40);
         assert_eq!(observe(&state, &mut bus, false), reference_run.observation);
+    }
+
+    /// Hold the first false poll until another thread posts the native byte.
+    /// The host loop must act on the new request through native execution.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn run_after_stop_is_posted(
+        quantum: &crate::host_threads::JitHostQuantum,
+        mut call: od_machine::HostQuantumCall<'_>,
+        at_poll: &AtomicBool,
+        timeout: std::time::Duration,
+    ) -> Result<od_machine::HostQuantumResult, &'static str> {
+        let byte = call
+            .native_stop
+            .expect("the worker supplies a native STOP byte");
+        let poll = &mut *call.stop;
+        let mut delay_first_poll = || {
+            let requested = poll();
+            if !requested && !at_poll.swap(true, Ordering::SeqCst) {
+                let until = std::time::Instant::now() + timeout;
+                while byte.load(Ordering::SeqCst) == 0 {
+                    assert!(
+                        std::time::Instant::now() < until,
+                        "native STOP was not posted"
+                    );
+                    std::thread::yield_now();
+                }
+            }
+            requested
+        };
+        quantum.run(od_machine::HostQuantumCall {
+            stop: &mut delay_first_poll,
+            board_irq: call.board_irq.reborrow(),
+            ..call
+        })
     }
 
     /// S6-42: tests of several vCPU threads over the slot backend and the

@@ -1292,12 +1292,14 @@ pub struct LoadedFirmwareBoard {
 /// needs: the vCPU's Local APIC, the vCPU itself, the RAM and the page-table root to use when the
 /// vCPU has no CR3 of its own (the board's root, or, for a host thread run of S6-42c, the root the
 /// caller named for that vCPU; `None`: there is none, and an NMI that needs one is an error).
+/// The caller supplies the EFER used by its instruction walk.
 /// A vCPU thread of the parallel mode (S6-34) calls it with the shared reference to the RAM.
 pub(crate) fn deliver_pending_nmi_of(
     apic: &LocalApicHandle,
     vcpu: &mut Vcpu,
     memory: &crate::PhysicalMemory,
     page_table_root: Option<u64>,
+    efer: u64,
 ) -> Result<NmiBoundary, FirmwareBoardError> {
     use od_isa::Cpl0ExternalInterruptDelivery as Delivery;
     use od_isa::Cpl0ExternalInterruptRefusal as Refusal;
@@ -1340,7 +1342,6 @@ pub(crate) fn deliver_pending_nmi_of(
             ));
         }
     }
-    // The walker's EFER is the vCPU's own guest EFER (the guest may change only `SCE`).
     // The walk is built on the vCPU's own CR3 (as the S6-16d quantum does); a vCPU without a
     // modelled CR3 uses the root the caller gave (the board's `page_table_root`, or the host
     // run's root of that vCPU). With neither there is nothing to walk: an explicit refusal, not a
@@ -1352,7 +1353,7 @@ pub(crate) fn deliver_pending_nmi_of(
         .ok_or(FirmwareBoardError::Config(
             "deliver_pending_nmi: the vCPU has no page-table root (no CR3 and no root named for the NMI)",
         ))?;
-    let paging = Long64ProbeConfig::from_cpu_state(&vcpu.state, paging_root, vcpu.guest_efer)
+    let paging = Long64ProbeConfig::from_cpu_state(&vcpu.state, paging_root, efer)
         .map_err(|_| FirmwareBoardError::Config("deliver_pending_nmi: no paging for the vCPU"))?;
     let context = AccessContext {
         mode: InstructionMode::Long64,
@@ -1392,6 +1393,7 @@ pub(crate) struct ThreadParts<'a> {
     pub(crate) uart: Uart16550Handle,
     pub(crate) acpi_pm: Option<AcpiPmHandle>,
     pub(crate) pit: Option<Pit8254Handle>,
+    pub(crate) nvme: Option<NvmeHandle>,
     pub(crate) uart_irq_source: Option<&'a UartPicIrqSource>,
     pub(crate) uart_ioapic_source: Option<&'a UartIoapicIrqSource>,
     pub(crate) irq_source: &'a mut dyn BoardIrqSource,
@@ -1448,6 +1450,7 @@ impl LoadedFirmwareBoard {
             uart: self.uart.clone(),
             acpi_pm: self.acpi_pm.clone(),
             pit: self.pit.clone(),
+            nvme: self.nvme.clone(),
             uart_irq_source: self.uart_irq_source.as_ref(),
             uart_ioapic_source: self.uart_ioapic_source.as_ref(),
             irq_source: &mut *self.irq_source,
@@ -1613,11 +1616,13 @@ impl LoadedFirmwareBoard {
             FirmwareBoardError::Config("deliver_pending_nmi: no such vCPU");
         let apic = self.lapic.for_cpu(index).ok_or(NO_VCPU)?;
         let vcpu = self.vcpus.get_mut(index).ok_or(NO_VCPU)?;
+        let efer = vcpu.guest_efer;
         deliver_pending_nmi_of(
             &apic,
             vcpu,
             self.bus.physical_memory(),
             Some(self.page_table_root),
+            efer,
         )
     }
 
@@ -1863,9 +1868,9 @@ impl LoadedFirmwareBoard {
 
     /// S4-39g: install the PIT channel 0 -> 8259 master IR0 source as the board's interrupt
     /// source (once; a second call keeps the installed one and its state). `false` and nothing
-    /// installed without the Linux-profile PIT and PIC. Called by the user-mode run of the
-    /// Linux board only; the default board keeps [`NoIrqSource`].
-    pub(crate) fn enable_pit_pic_irq(&mut self) -> bool {
+    /// installed without the Linux-profile PIT and PIC, or if the IOAPIC route is active.
+    /// Call during board configuration, before executing the guest.
+    pub fn enable_pit_pic_irq(&mut self) -> bool {
         if self.pit_pic_source.is_some() {
             return true;
         }
@@ -1896,8 +1901,8 @@ impl LoadedFirmwareBoard {
     /// Local APIC and IOAPIC MMIO windows of the set loop (the guest's register accesses). `false`
     /// and nothing installed without the Linux-profile PIT, or when the 8259 source
     /// ([`Self::enable_pit_pic_irq`]) is already installed: the two are exclusive. Called by the
-    /// `X8664V1Stage4AApic` run of the Linux board only.
-    pub(crate) fn enable_pit_ioapic_irq(&mut self) -> bool {
+    /// `X8664V1Stage4AApic` run and by explicitly configured host quanta.
+    pub fn enable_pit_ioapic_irq(&mut self) -> bool {
         if self.pit_ioapic_source.is_some() {
             return true;
         }
@@ -1944,9 +1949,9 @@ impl LoadedFirmwareBoard {
     /// interrupt output -> IOAPIC INTIN4 (once; a second call keeps the installed one). `false` and
     /// nothing changed unless [`Self::enable_pit_ioapic_irq`] installed the PIT source first (so the
     /// IOAPIC and the Local APIC windows are open). The 8259 variant ([`Self::enable_uart_irq4`])
-    /// cannot coexist: it needs the 8259 PIT source, which excludes the IOAPIC one. Called by the
-    /// `X8664V1Stage4AApic` run of the Linux board only.
-    pub(crate) fn enable_uart_ioapic_irq4(&mut self) -> bool {
+    /// cannot coexist: it needs the 8259 PIT source, which excludes the IOAPIC one. A PCI NVMe
+    /// endpoint also contributes its INTx line through the same IOAPIC source.
+    pub fn enable_uart_ioapic_irq4(&mut self) -> bool {
         if self.uart_ioapic_source.is_some() {
             return true;
         }
@@ -2235,6 +2240,11 @@ impl LoadedFirmwareBoard {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn irq_wake_ns(&self) -> Option<u64> {
         self.irq_source.wake_ns()
+    }
+
+    /// An AP receives a board PIT edge only through its own LAPIC.
+    pub(crate) fn ap_pit_wake_ns(&self, cpu: usize) -> Option<u64> {
+        self.pit_ioapic_source.as_ref()?.wake_ns_for(cpu)
     }
 
     /// Charge `retired` instructions to the clock of the CPL0-set loop (one ns each, D7).
@@ -2710,6 +2720,8 @@ impl LoadedFirmwareBoard {
             privilege: PrivilegeLevel::Ring0,
             origin: AccessOrigin::Explicit,
         };
+        let cpuid = self.vcpus[BOOT_VCPU_INDEX].cpuid;
+        let set = set.with_cpuid_topology(cpuid.apic_id, cpuid.cpu_count);
         let mut remaining = instruction_budget;
         let mut retired = 0u64;
         let mut quanta = 0u64;
@@ -2905,7 +2917,7 @@ impl LoadedFirmwareBoard {
                 context,
                 quantum_budget,
                 INTEGER_FLAGS,
-                set,
+                &set,
                 source
                     .as_mut()
                     .map(|source| source as &mut dyn FnMut() -> u64),

@@ -71,7 +71,7 @@ use crate::idle_arbiter::{SchedActivity, WakeView};
 use crate::irq_source::{BoardIrqSource, NoIrqSource};
 use crate::smp_scheduler::{Executed, StopAck};
 use crate::vcpu::{BOOT_VCPU_INDEX, NmiBoundary, Vcpu};
-use crate::{ExecutionMode, LocalApicHandle, PhysicalMemory};
+use crate::{ExecutionMode, LocalApicHandle, MachineStopReason, PhysicalMemory};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -141,6 +141,7 @@ pub(crate) enum ParallelFinish {
     /// The controller asked for the end (or its closure returned).
     Stopped,
     BudgetExhausted,
+    GuestStop(MachineStopReason),
     /// Every vCPU waits for SIPI, has shut down, or is halted with nothing that could wake it.
     AllIdle,
     /// A vCPU's host call, boundary or clock charge failed; every thread was stopped.
@@ -152,6 +153,16 @@ pub(crate) enum ParallelFinish {
     Panicked {
         cpu: usize,
     },
+}
+
+impl ParallelFinish {
+    fn priority(&self) -> u8 {
+        match self {
+            Self::Stopped | Self::BudgetExhausted | Self::AllIdle => 0,
+            Self::GuestStop(_) => 1,
+            Self::Error { .. } | Self::Panicked { .. } => 2,
+        }
+    }
 }
 
 /// What one vCPU's thread did.
@@ -206,6 +217,7 @@ pub(crate) enum ParallelStopError {
 /// One kick cell: the flag the sleeping thread watches and the thread to unpark.
 struct KickCell {
     flag: AtomicBool,
+    native_stop: Option<AtomicU8>,
     thread: OnceLock<Thread>,
 }
 
@@ -216,22 +228,26 @@ struct Kicks {
 }
 
 impl Kicks {
-    fn new(count: usize) -> Self {
+    fn new(count: usize, native_stop: bool) -> Self {
         Self {
             cells: (0..count)
                 .map(|_| KickCell {
                     flag: AtomicBool::new(false),
+                    native_stop: native_stop.then(|| AtomicU8::new(0)),
                     thread: OnceLock::new(),
                 })
                 .collect(),
         }
     }
 
-    /// Kick vCPU `cpu`: set its flag, then unpark its thread. Called under the APIC lock by the
-    /// wake sink: takes no lock.
+    /// Kick vCPU `cpu`: publish the event flag, then the native STOP byte, then unpark.
+    /// Called under the APIC lock by the wake sink: takes no lock.
     fn kick(&self, cpu: usize) {
         let cell = &self.cells[cpu];
         cell.flag.store(true, SEQ);
+        if let Some(byte) = &cell.native_stop {
+            byte.store(1, SEQ);
+        }
         if let Some(thread) = cell.thread.get() {
             thread.unpark();
         }
@@ -347,6 +363,9 @@ pub(crate) struct QuantumCall<'a, 'b> {
     pub(crate) gate: &'a dyn SplitLockGate,
     pub(crate) budget: u64,
     pub(crate) stop: &'a mut dyn FnMut() -> bool,
+    pub(crate) native_stop: Option<&'a AtomicU8>,
+    /// A guest machine stop requested by the host quantum, published after its charge.
+    pub(crate) machine_stop: &'a mut Option<MachineStopReason>,
 }
 
 /// One quantum of a vCPU: the caller builds its CPL0 set and calls
@@ -360,13 +379,42 @@ pub(crate) type QuantumFn<'f> =
 /// thread (and not by a `thread_local!` destructor, which `thread::scope` does not wait for).
 pub(crate) type ThreadExitFn<'f> = dyn Fn(usize) + Sync + 'f;
 
+/// The host quantum borrows the board source through this adapter. The source lock ends at
+/// each method return, before the guest interrupt frame or an instruction can run.
+struct ScopedBoardSource<'a, 'board>(&'a Mutex<&'board mut dyn BoardIrqSource>);
+
+impl BoardIrqSource for ScopedBoardSource<'_, '_> {
+    fn pending_vector(&self) -> Option<u8> {
+        lock(self.0).pending_vector()
+    }
+
+    fn acknowledge(&mut self, vector: u8) {
+        lock(self.0).acknowledge(vector);
+    }
+
+    fn next_deadline_ns(&self) -> Option<u64> {
+        lock(self.0).next_deadline_ns()
+    }
+
+    fn pit_write_ends_quantum(&self) -> bool {
+        lock(self.0).pit_write_ends_quantum()
+    }
+
+    fn irq0_edges(&self) -> u64 {
+        lock(self.0).irq0_edges()
+    }
+
+    fn wake_ns(&self) -> Option<u64> {
+        lock(self.0).wake_ns()
+    }
+}
+
 /// State shared by the threads and the controller.
 struct SharedState<'a> {
     count: usize,
     config: ParallelConfig,
-    /// S6-42b (A7 of S6-40): the quantum does not use the board's interrupt source (a host quantum
-    /// such as the JIT loop of `od-host`), so the boot processor's thread takes the source's lock
-    /// only to compute its budget and not across the call.
+    /// A7 of S6-40: the boot processor locks the board interrupt source per operation during a
+    /// host quantum. The ordinary interpreter quantum takes the lock across the call.
     source_free: bool,
     kicks: Arc<Kicks>,
     cells: Vec<Cell>,
@@ -405,12 +453,13 @@ impl SharedState<'_> {
         owner != NO_OWNER && owner != cpu
     }
 
-    /// The interpreter's stop poll for the call of `cpu`: the end of the run, a stop-all request,
-    /// or another vCPU's split `LOCK`. Only atomics.
+    /// Poll the run's requests. For a host quantum, a kick also returns to the worker so it
+    /// can inspect startup and NMI before the next call.
     fn call_must_end(&self, cpu: usize) -> bool {
-        self.finish.load(Ordering::Acquire)
-            || self.stop_all.load(Ordering::Acquire)
+        self.finish.load(SEQ)
+            || self.stop_all.load(SEQ)
             || self.other_split(cpu)
+            || (self.source_free && self.kicks.flag(cpu))
     }
 
     /// The interrupt source of the board is not in a Local APIC, so nothing posts to the boot
@@ -452,9 +501,17 @@ impl SharedState<'_> {
         }
     }
 
-    /// The first reason wins; every thread is told to end.
+    /// Worker failures take precedence over a guest stop, which takes precedence over ordinary
+    /// completion. Retain the first reason of equal priority.
     fn finish_with(&self, reason: ParallelFinish) {
-        lock(&self.reason).get_or_insert(reason);
+        let mut current = lock(&self.reason);
+        if current
+            .as_ref()
+            .is_none_or(|prior| prior.priority() < reason.priority())
+        {
+            *current = Some(reason);
+        }
+        drop(current);
         self.finish.store(true, SEQ);
         self.kicks.kick_all();
         self.wake_controller();
@@ -786,6 +843,8 @@ struct Worker<'s, 'a, 'e, 'b> {
     /// (the interpreter paths), or the root named for this vCPU by a host run (S6-42c); `None`
     /// when none was named (the NMI is then an error, see `deliver_pending_nmi_of`).
     page_table_root: Option<u64>,
+    /// A host quantum can supply EFER independently of the modelled vCPU MSR.
+    nmi_efer: Option<u64>,
     cpu: usize,
 }
 
@@ -826,7 +885,8 @@ impl Worker<'_, '_, '_, '_> {
             let applied = vcpu.apply_startup(pending);
             cell.init_applied.fetch_add(u64::from(applied.init), SEQ);
             cell.started.fetch_add(u64::from(applied.started), SEQ);
-            match deliver_pending_nmi_of(&apic, vcpu, self.memory(), self.page_table_root) {
+            let efer = self.nmi_efer.unwrap_or(vcpu.guest_efer);
+            match deliver_pending_nmi_of(&apic, vcpu, self.memory(), self.page_table_root, efer) {
                 Ok(nmi) => {
                     cell.nmi_delivered
                         .fetch_add(u64::from(nmi == NmiBoundary::Delivered), SEQ);
@@ -906,7 +966,7 @@ impl Worker<'_, '_, '_, '_> {
         let gate = WorkerGate { shared: sh, cpu };
         let mut stop = || sh.call_must_end(cpu);
         let mut inert = NoIrqSource;
-        let executed = if cpu == BOOT_VCPU_INDEX && sh.source_free {
+        let (executed, machine_stop) = if cpu == BOOT_VCPU_INDEX && sh.source_free {
             // The lock of the board's source and the clock owner's lock are held for the budget
             // only: the call itself runs under none of them.
             let budget = {
@@ -916,7 +976,8 @@ impl Worker<'_, '_, '_, '_> {
                 let deadline = source.next_deadline_ns().filter(|deadline| *deadline > now);
                 owner.step_budget(left, deadline)
             };
-            self.dispatch(vcpu, apic, &mut inert, &gate, budget, &mut stop)?
+            let mut source = ScopedBoardSource(&sh.irq);
+            self.dispatch(vcpu, apic, &mut source, &gate, budget, &mut stop)?
         } else if cpu == BOOT_VCPU_INDEX {
             let mut source = lock(&sh.irq);
             let budget = {
@@ -953,7 +1014,9 @@ impl Worker<'_, '_, '_, '_> {
             .remaining
             .try_update(SEQ, SEQ, |left| Some(left.saturating_sub(executed.retired)))
             .map_or(0, |before| before.saturating_sub(executed.retired));
-        if left_after == 0 {
+        if let Some(reason) = machine_stop {
+            sh.finish_with(ParallelFinish::GuestStop(reason));
+        } else if left_after == 0 {
             sh.finish_with(ParallelFinish::BudgetExhausted);
         }
         Ok(())
@@ -970,12 +1033,13 @@ impl Worker<'_, '_, '_, '_> {
         gate: &WorkerGate<'_, '_>,
         budget: u64,
         stop: &mut dyn FnMut() -> bool,
-    ) -> Result<Executed, FirmwareBoardError> {
+    ) -> Result<(Executed, Option<MachineStopReason>), FirmwareBoardError> {
         let cpu = self.cpu;
-        let quantum = |vcpu: &mut Vcpu,
-                       source: &mut dyn BoardIrqSource,
-                       budget: u64,
-                       stop: &mut dyn FnMut() -> bool| {
+        let mut machine_stop = None;
+        let mut quantum = |vcpu: &mut Vcpu,
+                           source: &mut dyn BoardIrqSource,
+                           budget: u64,
+                           stop: &mut dyn FnMut() -> bool| {
             (self.run)(QuantumCall {
                 env: self.env,
                 vcpu,
@@ -985,10 +1049,13 @@ impl Worker<'_, '_, '_, '_> {
                 gate,
                 budget,
                 stop,
+                native_stop: self.shared.kicks.cells[cpu].native_stop.as_ref(),
+                machine_stop: &mut machine_stop,
             })
         };
         if vcpu.legacy.is_none() {
-            return quantum(vcpu, source, budget, stop);
+            let executed = quantum(vcpu, source, budget, stop)?;
+            return Ok((executed, machine_stop));
         }
         let legacy = crate::ap_legacy_exec::run_legacy_on(vcpu, self.memory(), cpu, budget, stop)?;
         let mut executed = legacy.executed;
@@ -999,7 +1066,7 @@ impl Worker<'_, '_, '_, '_> {
             executed.partial_rep = rest.partial_rep;
             executed.device_ns += rest.device_ns;
         }
-        Ok(executed)
+        Ok((executed, machine_stop))
     }
 }
 
@@ -1103,6 +1170,9 @@ impl ParallelControl<'_, '_> {
             return Err(ParallelStopError::Finished);
         }
         sh.stop_all.store(true, SEQ);
+        if sh.source_free {
+            sh.kicks.kick_all();
+        }
         let deadline = Instant::now() + timeout;
         loop {
             let unacked: Vec<usize> = (0..sh.count)
@@ -1180,8 +1250,8 @@ pub(crate) fn run_threads<R>(
     run_threads_with(board, config, false, run, None, controller)
 }
 
-/// [`run_threads`] with `source_free`: the quantum does not use the board's interrupt source (a
-/// host quantum, S6-42b), so no thread holds that source's lock across a call (A7 of S6-40).
+/// [`run_threads`] with `source_free`: the host quantum receives a board source adapter that locks
+/// each source operation for its duration (A7 of S6-40).
 pub(crate) fn run_threads_with<R>(
     board: &mut LoadedFirmwareBoard,
     config: ParallelConfig,
@@ -1196,22 +1266,34 @@ pub(crate) fn run_threads_with<R>(
         source_free,
         run,
         on_thread_exit,
-        None,
+        NmiPaging::Board,
         controller,
     )
 }
 
-/// [`run_threads_with`] with the page-table root of every vCPU for the delivery of an NMI
-/// (S6-42c): `nmi_roots[cpu]` is the root of vCPU `cpu` when it has no CR3 of its own, `None` (or a
-/// vCPU past the end of the slice) means no root, and an NMI that needs one is an error. Without
-/// `nmi_roots` the board's root is used, as in every interpreter run.
+/// NMI translation inputs for interpreter and host quanta. CR3 in the vCPU
+/// state takes precedence over the fallback root.
+pub(crate) enum NmiPaging<'a> {
+    Board,
+    Roots(&'a [Option<u64>]),
+    Host(&'a [Option<HostNmiPaging>]),
+}
+
+/// Paging inputs shared by a host quantum and NMI delivery on its vCPU.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostNmiPaging {
+    pub root: u64,
+    pub efer: u64,
+}
+
+/// [`run_threads_with`] with explicit NMI translation inputs for host quanta.
 pub(crate) fn run_threads_rooted<R>(
     board: &mut LoadedFirmwareBoard,
     config: ParallelConfig,
     source_free: bool,
     run: &QuantumFn<'_>,
     on_thread_exit: Option<&ThreadExitFn<'_>>,
-    nmi_roots: Option<&[Option<u64>]>,
+    nmi_paging: NmiPaging<'_>,
     controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
 ) -> Result<(ParallelReport, R), FirmwareBoardError> {
     if config.quantum == 0 {
@@ -1225,7 +1307,7 @@ pub(crate) fn run_threads_rooted<R>(
         source_free,
         run,
         on_thread_exit,
-        nmi_roots,
+        nmi_paging,
         controller,
     );
     board.set_execution_mode(previous_mode);
@@ -1238,7 +1320,7 @@ fn run_threads_inner<R>(
     source_free: bool,
     run: &QuantumFn<'_>,
     on_thread_exit: Option<&ThreadExitFn<'_>>,
-    nmi_roots: Option<&[Option<u64>]>,
+    nmi_paging: NmiPaging<'_>,
     controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
 ) -> Result<(ParallelReport, R), FirmwareBoardError> {
     let parts = board.thread_parts()?;
@@ -1249,6 +1331,7 @@ fn run_threads_inner<R>(
         uart,
         acpi_pm,
         pit,
+        nvme,
         uart_irq_source,
         uart_ioapic_source,
         irq_source,
@@ -1264,13 +1347,14 @@ fn run_threads_inner<R>(
             ))
         })
         .collect::<Result<_, _>>()?;
-    let kicks = Arc::new(Kicks::new(count));
+    let kicks = Arc::new(Kicks::new(count, source_free));
     let com1 = Mutex::new(com1);
     let env = ThreadQuantumEnv {
         bus,
         uart,
         acpi_pm,
         pit,
+        nvme,
         uart_irq_source,
         uart_ioapic_source,
         com1: &com1,
@@ -1303,14 +1387,23 @@ fn run_threads_inner<R>(
     let _ = shared.controller.set(thread::current());
     let result = thread::scope(|scope| {
         for cpu in 0..count {
+            let (page_table_root, nmi_efer) = match nmi_paging {
+                NmiPaging::Board => (Some(page_table_root), None),
+                NmiPaging::Roots(roots) => (roots.get(cpu).copied().flatten(), None),
+                NmiPaging::Host(configs) => configs
+                    .get(cpu)
+                    .copied()
+                    .flatten()
+                    .map_or((None, None), |paging| {
+                        (Some(paging.root), Some(paging.efer))
+                    }),
+            };
             let worker = Worker {
                 shared: &shared,
                 env: &env,
                 run,
-                page_table_root: match nmi_roots {
-                    None => Some(page_table_root),
-                    Some(roots) => roots.get(cpu).copied().flatten(),
-                },
+                page_table_root,
+                nmi_efer,
                 cpu,
             };
             thread::Builder::new()
@@ -2073,6 +2166,64 @@ mod tests {
         assert_joined(&report, 2);
     }
 
+    #[test]
+    fn a_guest_stop_preserves_a_worker_error_in_either_publication_order() {
+        use std::time::Instant;
+
+        for first in [0, 1] {
+            let mut board = board(2);
+            system(&mut board, false);
+            let cr3 = board.cr3();
+            for (cpu, code, stack) in [(0, CODE_0, STACK_0), (1, CODE_1, STACK_1)] {
+                install(&mut board, cpu, long_state(code, stack, cr3, false), 0xD01);
+            }
+            let entered = [AtomicBool::new(false), AtomicBool::new(false)];
+            let quantum = |call: QuantumCall<'_, '_>| {
+                entered[call.cpu].store(true, SEQ);
+                let deadline = Instant::now() + WAIT;
+                while !entered[1 - call.cpu].load(SEQ) {
+                    assert!(Instant::now() < deadline, "both workers must enter");
+                    std::thread::yield_now();
+                }
+                if call.cpu != first {
+                    while !(call.stop)() {
+                        assert!(
+                            Instant::now() < deadline,
+                            "first worker must publish a stop"
+                        );
+                        std::thread::yield_now();
+                    }
+                }
+                if call.cpu == 0 {
+                    *call.machine_stop = Some(MachineStopReason::Shutdown);
+                    Ok(Executed {
+                        retired: 1,
+                        partial_rep: false,
+                        device_ns: 0,
+                    })
+                } else {
+                    Err(FirmwareBoardError::Config("expected host error"))
+                }
+            };
+            let (report, ()) = run_threads(&mut board, config(64, u64::MAX), &quantum, |control| {
+                assert!(control.wait_finished(WAIT));
+            })
+            .unwrap();
+            assert!(
+                matches!(
+                    report.finished,
+                    ParallelFinish::Error {
+                        cpu: 1,
+                        error: FirmwareBoardError::Config("expected host error"),
+                    }
+                ),
+                "{report:?}"
+            );
+            assert_eq!(report.cpus[0].retired, 1);
+            assert_joined(&report, 2);
+        }
+    }
+
     // ---- the split LOCK (step 8) -------------------------------------------------------------
 
     /// The operand of the split `LOCK` tests: a dword that starts two bytes before the end of the
@@ -2389,16 +2540,15 @@ mod tests {
         assert_eq!(board.bus_mut().physical_memory().split_lock_refusals(), 1);
         let _ = LOCAL_APIC_MMIO_BASE;
     }
-    /// S6-42b, A7 of S6-40: a run whose quantum does not use the board's interrupt source
-    /// (`source_free`, the host quantum of the JIT loop) holds no lock of the board across the call
-    /// of the quantum: not the source's lock and not the clock owner's. The ordinary run keeps the
-    /// source's lock across the boot processor's call (the control run proves the probe can see it).
+    /// The JIT host quantum can query the board source while leaving the source and clock locks
+    /// available to another thread between operations. The ordinary run is the control.
     #[test]
     fn a_source_free_run_holds_no_board_lock_across_the_quantum_call() {
         use std::sync::atomic::AtomicBool;
         for source_free in [false, true] {
             let mut board = board(1);
             system(&mut board, false);
+            assert!(board.enable_pit_pic_irq());
             install(
                 &mut board,
                 0,
@@ -2408,6 +2558,7 @@ mod tests {
             let inside = AtomicBool::new(false);
             let release = AtomicBool::new(false);
             let quantum = |call: QuantumCall<'_, '_>| -> Result<Executed, FirmwareBoardError> {
+                assert!(call.source.pit_write_ends_quantum(), "real PIT source");
                 inside.store(true, SEQ);
                 while !release.load(SEQ) && !(call.stop)() {
                     std::hint::spin_loop();

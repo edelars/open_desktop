@@ -4,7 +4,7 @@
 use std::cell::{Cell, RefCell};
 
 use crate::binary_float::{Binary32, Binary64, BinaryClass};
-use crate::cpuid::CpuidProfile;
+use crate::cpuid::{CpuidProfile, CpuidResult};
 use crate::long_decode::{
     self, AddressBase, ArithmeticKind, BitKind, BitOffset, BitScanKind, ConditionCode, DecodeError,
     LogicKind, MemoryOperand, OpcodeMap, Operand, Operation, Prefixes, ShiftKind, canonical,
@@ -1918,7 +1918,7 @@ const fn cr3_within_maxphyaddr(value: u64) -> bool {
 pub struct Cpl0ProfileSet<'a> {
     policy: ControlRegisterPolicy,
     cli: Option<&'a crate::CliProfile>,
-    cpuid: Option<&'a CpuidProfile>,
+    cpuid: Option<CpuidSelection<'a>>,
     rdtsc: bool,
     msr: Option<&'a MsrProfile>,
     msr_bases: bool,
@@ -2000,7 +2000,15 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// Admit CPUID under the selected profile, exactly as
     /// [`run_with_cpuid_profile`] does.
     pub const fn with_cpuid(mut self, profile: &'a CpuidProfile) -> Self {
-        self.cpuid = Some(profile);
+        self.cpuid = Some(CpuidSelection::single_vcpu(profile));
+        self
+    }
+    /// Apply the topology of the running vCPU to an already selected CPUID member.
+    pub const fn with_cpuid_topology(mut self, apic_id: u8, cpu_count: u8) -> Self {
+        if let Some(cpuid) = &mut self.cpuid {
+            cpuid.apic_id = apic_id;
+            cpuid.cpu_count = cpu_count;
+        }
         self
     }
 
@@ -2294,6 +2302,11 @@ impl<'a> Cpl0ProfileSet<'a> {
         self
     }
 
+    /// Whether the set uses the CPU's modeled CR3 for paging context changes.
+    pub const fn has_cpu_owned_cr3(&self) -> bool {
+        self.cpu_owned_cr3
+    }
+
     /// Admit the exact bare `IN AL, DX` (`EC`) and `OUT DX, AL` (`EE`) forms and, since S4-38L7bk,
     /// the exact bare `IN AL, imm8` (`E4 ib`) and `OUT imm8, AL` (`E6 ib`) forms (port = the
     /// zero-extended immediate; same port callback and port-error behaviour) and, since S4-38L9r,
@@ -2571,9 +2584,35 @@ struct GuestMsrCells<'a> {
     syscall: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct CpuidSelection<'a> {
+    profile: &'a CpuidProfile,
+    apic_id: u8,
+    cpu_count: u8,
+}
+
+impl<'a> CpuidSelection<'a> {
+    const fn single_vcpu(profile: &'a CpuidProfile) -> Self {
+        Self {
+            profile,
+            apic_id: 0,
+            cpu_count: 1,
+        }
+    }
+
+    fn query(self, leaf: u32, subleaf: u32) -> CpuidResult {
+        self.profile.query_for_vcpu(
+            leaf,
+            subleaf,
+            u32::from(self.apic_id),
+            u32::from(self.cpu_count),
+        )
+    }
+}
+
 #[derive(Clone, Copy)]
 struct ExecutionProfiles<'a> {
-    cpuid: Option<&'a CpuidProfile>,
+    cpuid: Option<CpuidSelection<'a>>,
     msr: Option<&'a MsrProfile>,
     msr_bases: bool,
     msr_efer: Option<&'a Cell<u64>>,
@@ -27993,7 +28032,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
         config,
         rflags_defined,
         ExecutionProfiles {
-            cpuid: cpuid_profile,
+            cpuid: cpuid_profile.map(CpuidSelection::single_vcpu),
             msr: msr_profile,
             msr_bases: false,
             msr_efer: None,
@@ -30034,7 +30073,7 @@ fn step_tracked_with_profiles_and_rdtsc(
         context,
         rflags_defined,
         ExecutionProfiles {
-            cpuid: cpuid_profile,
+            cpuid: cpuid_profile.map(CpuidSelection::single_vcpu),
             msr: msr_profile,
             msr_bases: false,
             msr_efer: None,
@@ -42503,12 +42542,12 @@ fn step_configured(
         return Ok(StepOutcome::Advanced);
     }
     if instruction.operation == Operation::Cpuid {
-        let Some(profile) = cpuid_profile else {
+        let Some(cpuid) = cpuid_profile else {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
         };
-        let result = profile.query(
+        let result = cpuid.query(
             state.gpr[Register::Rax as usize] as u32,
             state.gpr[Register::Rcx as usize] as u32,
         );

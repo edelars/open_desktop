@@ -946,17 +946,25 @@ where
             .filter(|deadline| *deadline > now)
     }
 
-    /// Where the idle jump goes: the next time the board's source can wake the halted boot
-    /// processor, and only if the processor can take it (IF = 1). A source that cannot wake it (a
-    /// masked or in-service line, no edge) gives no deadline, so the run ends as `AllIdle` and does
-    /// not jump from edge to edge for ever (the Linux loop ends as `halted` in the same case).
+    /// The earliest edge that can wake a halted vCPU with IF = 1. The BSP may
+    /// accept the board source directly. An AP can wake from a PIT edge routed
+    /// to its LAPIC through IOAPIC INTIN2.
     fn idle_deadline(&self) -> Option<u64> {
-        let boot = self.board.vcpu(BOOT_VCPU_INDEX)?;
-        if boot.activity() != od_isa::CpuActivity::Halted || !boot.interrupts_enabled() {
-            return None;
-        }
         let now = self.board.clock().now_ns();
-        self.board.irq_wake_ns().filter(|wake| *wake > now)
+        (0..self.board.vcpu_count())
+            .filter_map(|cpu| {
+                let vcpu = self.board.vcpu(cpu)?;
+                if vcpu.activity() != od_isa::CpuActivity::Halted || !vcpu.interrupts_enabled() {
+                    return None;
+                }
+                if cpu == BOOT_VCPU_INDEX {
+                    self.board.irq_wake_ns()
+                } else {
+                    self.board.ap_pit_wake_ns(cpu)
+                }
+            })
+            .filter(|wake| *wake > now)
+            .min()
     }
 
     fn board_wakes(&self, cpu: usize) -> bool {

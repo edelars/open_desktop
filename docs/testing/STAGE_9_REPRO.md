@@ -32,7 +32,7 @@ tools/stage9/run_checks.sh
 | `od_host_storage_policy` | `cargo test -p od-host --lib storage_policy` | 24 passed |
 | `od_host_storage_io` | `cargo test -p od-host --lib storage_io` | 36 passed |
 | `od_host_raw_file_tests` | `cargo test -p od-host --lib raw_file_tests` | 9 passed |
-| `od_host_persistent_nvme` | `cargo test -p od-host --lib persistent_nvme` | 19 passed (в т. ч. S9-04: два процесса, SIGKILL); тесты с файлами сериализованы `process_spawn_guard` ([ISSUE-513](../KNOWN_ISSUES.md#issue-513-s5-persistent-nvme-reopen-test-flaky-in-parallel), закрыто) |
+| `od_host_persistent_nvme` | `cargo test -p od-host --lib persistent_nvme` | 19 passed (в т. ч. S9-04: два процесса, SIGKILL); тесты с файлами сериализованы `process_spawn_guard` ([ISSUE-518](../KNOWN_ISSUES.md#issue-518-s5-persistent-nvme-reopen-test-flaky-in-parallel), закрыто) |
 | `od_host_stage9_storage_kill` | `cargo test -p od-host --test stage9_storage_kill` | 2 passed, 1 ignored (дочерний режим, запускается родителем): kill процесса на реальных файлах для 9 операций (S9-38 уровень 1, [STORAGE_RECOVERY.md §4.2](STORAGE_RECOVERY.md#42-матрица-s9-38-на-уровне-1-kill-процесса-на-реальных-файлах-2026-11-18)) и порядок вызовов commit на host-файле (S9-06). Только macOS, иначе `not_run` |
 | `od_image_tool` | `cargo test -p od-image-tool` | 21 passed (`tests/cli.rs`, в т. ч. `import`) |
 | `workspace_check` | `cargo check --workspace --all-targets --offline` | код 0 |
@@ -50,7 +50,7 @@ tools/stage9/run_checks.sh
 
 Промежуточные запуски того же дня:
 - `20261118-s9-42` — бюджет 1800, до добавления S9-38 и смены статусов: 11 / 0 / 3 / 4;
-- `20261118-s9-42b` — `od_host_persistent_nvme` `failed` из-за ISSUE-513;
+- `20261118-s9-42b` — `od_host_persistent_nvme` `failed` из-за ISSUE-518;
 - `20261118-s9-42c` — HEAD `3719cc9`, тот же case в один поток: 11 / 0 / 2 / 6; холодная пересборка бенчмарка в `20261118-s9-42` заняла около 43 с.
 
 Предыдущий запуск `20261105-final` (HEAD `7c68b98`): 9 passed, 0 failed, 3 not_run, 4 blocked.

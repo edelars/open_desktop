@@ -2105,6 +2105,9 @@ pub(crate) struct PagedCpl0SetReport {
     pub(crate) delivered_page_faults: u64,
     /// Successfully delivered guest `#GP(0)` exceptions in this call.
     pub(crate) delivered_general_protection_faults: u64,
+    pub(crate) pit_written: bool,
+    pub(crate) port_accessed: bool,
+    pub(crate) mmio_written: bool,
     /// S4-13: the counters of the call's fetch translation cache (`None` without one).
     pub(crate) fetch_cache_stats: Option<FetchCacheStats>,
     /// S4-39c: instructions retired through the CPL3 entry (`run_with_cpl3_profile_set`) in this
@@ -2654,6 +2657,9 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
                 delivered_exceptions: 0,
                 delivered_page_faults: 0,
                 delivered_general_protection_faults: 0,
+                pit_written: false,
+                port_accessed: false,
+                mmio_written: false,
                 fetch_cache_stats: None,
                 cpl3_retired: 0,
                 syscall_events: Vec::new(),
@@ -2693,6 +2699,9 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
         .as_ref()
         .is_some_and(|hook| hook.source.pit_write_ends_quantum());
     let mut pit_write_pending = false;
+    let mut pit_written = false;
+    let mut port_accessed = false;
+    let mut mmio_written = false;
     let (exit, page_fault, memory_error) = loop {
         if stop() {
             break (PagedCpl0SetExit::Run(RunExit::StopRequested), None, None);
@@ -2878,9 +2887,10 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
             && invlpg_at_rip(state, bus.ram(), &paging, context, None);
         let control_before = (state.cr0, state.cr4);
         let (ram, io) = bus.split_for_set_step_of_vcpu(vcpu, split_gate);
-        let mut port = PitWriteWatch {
+        let mut port = SetPortWatch {
             inner: io.port_io(),
             pit_written: false,
+            port_accessed: false,
         };
         let mut memory = set_loop_adapter(
             ram,
@@ -2933,9 +2943,10 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
                 || false,
             )
         };
-        if pit_write_ends_quantum && port.pit_written {
-            pit_write_pending = true;
-        }
+        pit_written |= port.pit_written;
+        port_accessed |= port.port_accessed;
+        mmio_written |= io.mmio_written();
+        pit_write_pending |= pit_write_ends_quantum && port.pit_written;
         if let Ok(done) = &result {
             if iretq_detected && done.instructions_executed == 1 {
                 if let Some(pending) = pending_post_iret.as_ref() {
@@ -3292,6 +3303,9 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
         delivered_exceptions,
         delivered_page_faults,
         delivered_general_protection_faults,
+        pit_written,
+        port_accessed,
+        mmio_written,
         fetch_cache_stats: cache.map(FetchTranslationCache::stats),
         cpl3_retired,
         syscall_events: syscall_events.into_iter().collect(),
@@ -3468,48 +3482,58 @@ pub fn with_paged_cpl0_set_memory<R>(
 
 /// The port view of one set call that notes a retired write to the PIT ports `0x40..=0x43`
 /// (S4-38L8b). Reads and every other port pass through untouched.
-struct PitWriteWatch<P> {
+struct SetPortWatch<P> {
     inner: P,
     pit_written: bool,
+    port_accessed: bool,
 }
 
-impl<P: od_isa::PortIo> od_isa::PortIo for PitWriteWatch<P> {
+impl<P: od_isa::PortIo> od_isa::PortIo for SetPortWatch<P> {
     type Error = P::Error;
 
     fn read_u8(&mut self, port: u16) -> Result<u8, Self::Error> {
-        self.inner.read_u8(port)
+        let result = self.inner.read_u8(port);
+        self.port_accessed |= result.is_ok();
+        result
     }
 
     fn write_u8(&mut self, port: u16, value: u8) -> Result<(), Self::Error> {
         let result = self.inner.write_u8(port, value);
-        if result.is_ok() && (0x40..=0x43).contains(&port) {
-            self.pit_written = true;
+        if result.is_ok() {
+            self.port_accessed = true;
+            self.pit_written |= (0x40..=0x43).contains(&port);
         }
         result
     }
 
     fn read_u16(&mut self, port: u16) -> Result<u16, Self::Error> {
-        self.inner.read_u16(port)
+        let result = self.inner.read_u16(port);
+        self.port_accessed |= result.is_ok();
+        result
     }
 
     fn write_u16(&mut self, port: u16, value: u16) -> Result<(), Self::Error> {
         let result = self.inner.write_u16(port, value);
         // A word write covers `port` and `port + 1` (S4-38L9r).
-        if result.is_ok() && (0x3f..=0x43).contains(&port) {
-            self.pit_written = true;
+        if result.is_ok() {
+            self.port_accessed = true;
+            self.pit_written |= (0x3f..=0x43).contains(&port);
         }
         result
     }
 
     fn read_u32(&mut self, port: u16) -> Result<u32, Self::Error> {
-        self.inner.read_u32(port)
+        let result = self.inner.read_u32(port);
+        self.port_accessed |= result.is_ok();
+        result
     }
 
     fn write_u32(&mut self, port: u16, value: u32) -> Result<(), Self::Error> {
         let result = self.inner.write_u32(port, value);
         // A dword write covers `port..=port + 3` (S4-38L9u).
-        if result.is_ok() && (0x3d..=0x43).contains(&port) {
-            self.pit_written = true;
+        if result.is_ok() {
+            self.port_accessed = true;
+            self.pit_written |= (0x3d..=0x43).contains(&port);
         }
         result
     }
@@ -3597,6 +3621,46 @@ pub(crate) fn deliver_pending_irq(
         memory.page_fault,
         memory.memory_error,
     ))
+}
+
+/// Deliver a native instruction's already observed CPL0 fault without executing it again.
+/// As in the CPL0 set loop, only #PF with its walk record and #GP(0) enter the guest IDT.
+pub fn deliver_host_native_fault(
+    state: &mut LongModeState,
+    bus: &MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+    fault: &ArchitecturalFault,
+    page_fault: Option<&PageFaultRecord>,
+    consecutive: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> bool {
+    if state.idtr.is_none() || consecutive >= MAX_DELIVERIES_WITHOUT_RETIREMENT {
+        return false;
+    }
+    let mut memory = set_loop_adapter(
+        bus.physical_memory(),
+        None,
+        *paging,
+        state.rip,
+        &mut committed_write,
+        None,
+        None,
+    );
+    match (fault.vector, fault.error_code) {
+        (14, _) => page_fault.is_some_and(|record| {
+            record.fault() == fault
+                && matches!(
+                    deliver_page_fault_cpl0_set(state, &mut memory, record, context),
+                    Cpl0PageFaultDelivery::Delivered { .. }
+                )
+        }),
+        (13, Some(0)) => matches!(
+            deliver_general_protection_cpl0_set(state, &mut memory, fault, context),
+            Cpl0GeneralProtectionDelivery::Delivered { .. }
+        ),
+        _ => false,
+    }
 }
 
 /// Deliver a non-maskable interrupt through vector 2 at an instruction boundary outside a run of
@@ -8825,7 +8889,7 @@ mod tests {
 
 #[cfg(test)]
 mod pit_word_watch_tests {
-    use super::PitWriteWatch;
+    use super::SetPortWatch;
     use od_isa::PortIo;
 
     #[derive(Default)]
@@ -8859,9 +8923,10 @@ mod pit_word_watch_tests {
     #[test]
     fn word_accesses_pass_through_and_a_word_write_over_the_pit_ports_is_noted() {
         for (port, noted) in [(0x3e_u16, false), (0x3f, true), (0x43, true), (0x44, false)] {
-            let mut watch = PitWriteWatch {
+            let mut watch = SetPortWatch {
                 inner: Recorder::default(),
                 pit_written: false,
+                port_accessed: false,
             };
             assert_eq!(watch.read_u16(port), Ok(0x1234));
             assert_eq!(watch.write_u16(port, 0xbeef), Ok(()));
@@ -8873,7 +8938,7 @@ mod pit_word_watch_tests {
 
 #[cfg(test)]
 mod pit_dword_watch_tests {
-    use super::PitWriteWatch;
+    use super::SetPortWatch;
     use od_isa::PortIo;
 
     #[derive(Default)]
@@ -8907,9 +8972,10 @@ mod pit_dword_watch_tests {
     #[test]
     fn dword_accesses_pass_through_and_a_dword_write_over_the_pit_ports_is_noted() {
         for (port, noted) in [(0x3c_u16, false), (0x3d, true), (0x43, true), (0x44, false)] {
-            let mut watch = PitWriteWatch {
+            let mut watch = SetPortWatch {
                 inner: Recorder::default(),
                 pit_written: false,
+                port_accessed: false,
             };
             assert_eq!(watch.read_u32(port), Ok(0x1234_5678));
             assert_eq!(watch.write_u32(port, 0xdead_beef), Ok(()));

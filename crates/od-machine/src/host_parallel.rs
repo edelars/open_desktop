@@ -17,9 +17,9 @@
 //!
 //! A7 of S6-40: no thread holds a lock of the board across a call of the host quantum. The bus is
 //! handed out by shared reference (no lock of the bus; the devices behind their one lock, taken by
-//! the callee for one access), the quantum does not use the board's interrupt source, so the boot
-//! processor's thread takes that source's lock and the clock owner's lock only to compute its
-//! budget (`run_threads_with`, `source_free`), and the APIC lock is not held either.
+//! the callee for one access). The boot processor's thread takes the source lock and clock owner's
+//! lock to compute its budget. It borrows the source through a per-operation lock while executing
+//! the quantum (`run_threads_with`, `source_free`).
 //!
 //! The quantum polls [`HostQuantumCall::stop`] between instructions (and the run polls it at the
 //! barrier): the stop is acknowledged on the safe point after the quantum returned, never inside
@@ -35,29 +35,32 @@
 //! [`run_host_set_step`] runs ONE instruction of the CPL0 profile set over `&MachineBus` with the
 //! gate, delivering a guest `#PF` or `#GP(0)` through the guest IDT as the set loop does. The base
 //! profile of [`crate::run_paged_probe_shared`] stays what it was (it has no `LOCK`, no `IRETQ`).
-//! Not here (S6-42d): the interrupt source of the board for the boot processor (PIC, PIT), the
-//! COM1 transmit pump and the device ticks of the interpreter quantum, the NVMe doorbell and the PM
-//! stop request, the STOP byte of native blocks.
+//! The boot processor also asks the board's interrupt source. The source lock covers the query
+//! and acknowledgment separately. The host quantum can service queued COM1 transmission and port
+//! ticks between calls. The worker charges device time to the clock owner.
 
 use crate::bus::SplitLockGate;
+use crate::firmware_board::vcpu_quantum::{BootProcessorSource, ThreadQuantumEnv};
 use crate::firmware_board::{FirmwareBoardError, set_exit_to_probe_exit};
-use crate::irq_source::{IrqBoundaryHook, IrqCounters};
+use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters};
 use crate::lapic_irq_source::LapicIrqSource;
 use crate::paged_memory_adapter::{
     IrqBoundaryOutcome, LoopBus, PagedCpl0SetExit, deliver_pending_irq, run_cpl0_set_loop,
 };
 use crate::parallel_run::{
-    ParallelConfig, ParallelControl, ParallelFinish, ParallelReport, ParallelStopError,
-    QuantumCall, run_threads_rooted,
+    HostNmiPaging, NmiPaging, ParallelConfig, ParallelControl, ParallelFinish, ParallelReport,
+    ParallelStopError, QuantumCall, run_threads_rooted,
 };
 use crate::smp_scheduler::Executed;
+use crate::vcpu::BOOT_VCPU_INDEX;
 use crate::{
     FirmwareBoardConfig, GuestPhysicalRange, LoadedFirmwareBoard, LocalApicHandle,
-    Long64ProbeConfig, MachineBus, PagedProbeQuantumReport, PciEcam,
+    Long64ProbeConfig, MachineBus, MachineStopReason, PagedProbeQuantumReport, PciEcam,
 };
 use od_isa::execute::{Cpl0ProfileSet, RunExit};
 use od_isa::memory::AccessContext;
 use od_isa::{CpuActivity, LongModeState};
+use std::sync::atomic::AtomicU8;
 use std::time::Duration;
 
 /// The inputs of a host thread run.
@@ -116,10 +119,17 @@ pub struct HostQuantumCall<'a> {
     /// At most this many instructions (the shared budget and the timer deadline cut it).
     pub budget: u64,
     /// The run's stop poll: the end of the run, a `stop_all` request or another vCPU's split
-    /// `LOCK`. Only atomics. The quantum polls it between instructions and returns when it is true.
+    /// `LOCK` or a kick. The quantum polls it between instructions and returns when it is true.
     pub stop: &'a mut dyn FnMut() -> bool,
+    /// The target vCPU's STOP byte, borrowed for the call. Clear it before polling
+    /// `stop` and pass it to the native entry together with the addressed guest state.
+    pub native_stop: Option<&'a AtomicU8>,
     /// The Local APIC of this vCPU (S6-42c): the source of the vectors the quantum delivers.
     pub lapic: &'a LocalApicHandle,
+    /// The boot processor's source of board vectors. Other vCPUs have only their Local APIC.
+    pub board_irq: HostBoardIrqSource<'a>,
+    /// Board device work available at a quantum boundary.
+    pub devices: HostDeviceServices<'a>,
     /// The gate of the split `LOCK` of this vCPU's thread (S6-42c).
     pub gate: HostSplitGate<'a>,
 }
@@ -133,6 +143,8 @@ pub enum HostQuantumExit {
     Halted,
     /// The vCPU shut down: it is put in `Shutdown`.
     Shutdown,
+    /// The guest issued a board-wide stop through ACPI PM.
+    MachineStop(MachineStopReason),
 }
 
 /// The result of one call of the host quantum.
@@ -140,6 +152,99 @@ pub enum HostQuantumExit {
 pub struct HostQuantumResult {
     pub retired: u64,
     pub exit: HostQuantumExit,
+    /// Port-device time collected by this quantum, to be charged by the clock owner.
+    pub device_ns: u64,
+}
+
+trait HostDeviceWork {
+    fn pending(&self) -> bool;
+    fn service(&self) -> u64;
+    fn stop_request(&self) -> Option<MachineStopReason>;
+    fn nvme_pending(&self) -> bool;
+    fn service_nvme(&self, committed_write: &mut dyn FnMut(GuestPhysicalRange));
+}
+
+impl HostDeviceWork for ThreadQuantumEnv<'_> {
+    fn pending(&self) -> bool {
+        self.uart.holding_occupied()
+            || self
+                .acpi_pm
+                .as_ref()
+                .is_some_and(|pm| pm.timer_tick_pending())
+            || self.pit.as_ref().is_some_and(|pit| pit.port_tick_pending())
+    }
+
+    fn service(&self) -> u64 {
+        self.pump_uart_transmit();
+        let pm = self
+            .acpi_pm
+            .as_ref()
+            .map_or(0, |pm| pm.take_timer_tick_ns());
+        let pit = self.pit.as_ref().map_or(0, |pit| pit.take_port_tick_ns());
+        pm + pit
+    }
+
+    fn stop_request(&self) -> Option<MachineStopReason> {
+        self.acpi_pm.as_ref().and_then(|pm| pm.stop_request())
+    }
+
+    fn nvme_pending(&self) -> bool {
+        self.nvme
+            .as_ref()
+            .is_some_and(crate::NvmeHandle::doorbell_pending)
+    }
+
+    fn service_nvme(&self, committed_write: &mut dyn FnMut(GuestPhysicalRange)) {
+        let Some(nvme) = self.nvme.as_ref().filter(|nvme| nvme.doorbell_pending()) else {
+            return;
+        };
+        if self.stop_request().is_some() {
+            return;
+        }
+        let mut written = Vec::new();
+        nvme.service_ram(self.bus.physical_memory(), |range| written.push(range));
+        // The physical stores already published generations. Observers run outside the device lock.
+        for range in written {
+            committed_write(range);
+        }
+    }
+}
+
+/// Access to queued COM1 transmission and port-device time in a running host quantum.
+#[derive(Clone, Copy)]
+pub struct HostDeviceServices<'a>(Option<&'a dyn HostDeviceWork>);
+
+impl HostDeviceServices<'_> {
+    /// Use the instruction loop without servicing board devices.
+    pub const fn none() -> Self {
+        Self(None)
+    }
+
+    pub fn pending(&self) -> bool {
+        self.0.is_some_and(HostDeviceWork::pending)
+    }
+
+    /// Complete any COM1 transmission and take pending port ticks. Return the ticks with the
+    /// quantum result so that the worker charges their time exactly once.
+    pub fn service(&self) -> u64 {
+        self.0.map_or(0, HostDeviceWork::service)
+    }
+
+    /// Observe the first guest ACPI PM machine stop, latched by the device.
+    pub fn stop_request(&self) -> Option<MachineStopReason> {
+        self.0.and_then(HostDeviceWork::stop_request)
+    }
+
+    pub fn nvme_pending(&self) -> bool {
+        self.0.is_some_and(HostDeviceWork::nvme_pending)
+    }
+
+    /// Service a pending doorbell and publish committed DMA ranges.
+    pub fn service_nvme(&self, mut committed_write: impl FnMut(GuestPhysicalRange)) {
+        if let Some(work) = self.0 {
+            work.service_nvme(&mut committed_write);
+        }
+    }
 }
 
 /// The quantum of every vCPU thread of a host run. Called by every thread (so `Sync`); state that
@@ -158,6 +263,8 @@ pub enum HostParallelFinish {
     /// The controller asked for the end (or its closure returned).
     Stopped,
     BudgetExhausted,
+    /// The run ended at the guest's request to stop the whole board.
+    GuestStop(MachineStopReason),
     /// Every vCPU is halted with nothing that could wake it.
     AllIdle,
     /// A vCPU's quantum, boundary or clock charge failed; every thread was stopped.
@@ -296,15 +403,54 @@ impl HostParallelControl<'_, '_> {
 /// in [`crate::ExecutionMode::Parallel`] for the run and back afterwards, and every thread is
 /// joined before this returns).
 ///
-/// `nmi_roots[cpu]` is the page-table root through which an NMI is delivered to vCPU `cpu` when its
-/// state carries no CR3 of its own (a host quantum keeps `state.cr3` empty and walks the root of its
-/// own configuration, so the root is named here too). A vCPU without a root (`None`, or past the end
+/// `nmi_roots[cpu]` is the fallback page-table root through which an NMI is delivered to vCPU `cpu`
+/// when its state carries no CR3 of its own. A vCPU without a root (`None`, or past the end
 /// of the slice) that has an NMI to take at a boundary fails the run with an explicit error; the
 /// board's own root is never used (S6-42c).
+/// This entry uses the guest vCPU's EFER for NMI delivery.
 pub fn run_host_threads<R>(
     board: &mut LoadedFirmwareBoard,
     config: HostParallelConfig,
     nmi_roots: &[Option<u64>],
+    run: &HostQuantumFn<'_>,
+    on_thread_exit: &HostThreadExitFn<'_>,
+    controller: impl FnOnce(&HostParallelControl<'_, '_>) -> R,
+) -> Result<(HostParallelReport, R), FirmwareBoardError> {
+    run_host_threads_inner(
+        board,
+        config,
+        NmiPaging::Roots(nmi_roots),
+        run,
+        on_thread_exit,
+        controller,
+    )
+}
+
+/// Run host threads with the same CR3 and EFER inputs for NMI delivery as for each host quantum.
+/// CPU-owned CR3 takes precedence over the configured root. For a missing entry, the vCPU must
+/// provide its own CR3 and guest EFER when taking an NMI. These inputs are fixed for the run.
+pub fn run_host_threads_with_nmi_paging<R>(
+    board: &mut LoadedFirmwareBoard,
+    config: HostParallelConfig,
+    nmi_paging: &[Option<HostNmiPaging>],
+    run: &HostQuantumFn<'_>,
+    on_thread_exit: &HostThreadExitFn<'_>,
+    controller: impl FnOnce(&HostParallelControl<'_, '_>) -> R,
+) -> Result<(HostParallelReport, R), FirmwareBoardError> {
+    run_host_threads_inner(
+        board,
+        config,
+        NmiPaging::Host(nmi_paging),
+        run,
+        on_thread_exit,
+        controller,
+    )
+}
+
+fn run_host_threads_inner<R>(
+    board: &mut LoadedFirmwareBoard,
+    config: HostParallelConfig,
+    nmi_paging: NmiPaging<'_>,
     run: &HostQuantumFn<'_>,
     on_thread_exit: &HostThreadExitFn<'_>,
     controller: impl FnOnce(&HostParallelControl<'_, '_>) -> R,
@@ -322,7 +468,10 @@ pub fn run_host_threads<R>(
             bus: call.env.bus,
             budget: call.budget,
             stop: call.stop,
+            native_stop: call.native_stop,
             lapic: call.lapic,
+            board_irq: HostBoardIrqSource((call.cpu == BOOT_VCPU_INDEX).then_some(call.source)),
+            devices: HostDeviceServices(Some(call.env)),
             gate: HostSplitGate(Some(call.gate)),
         })
         .map_err(FirmwareBoardError::Config)?;
@@ -330,11 +479,12 @@ pub fn run_host_threads<R>(
             HostQuantumExit::Running => {}
             HostQuantumExit::Halted => call.vcpu.state.activity = Some(CpuActivity::Halted),
             HostQuantumExit::Shutdown => call.vcpu.state.activity = Some(CpuActivity::Shutdown),
+            HostQuantumExit::MachineStop(reason) => *call.machine_stop = Some(reason),
         }
         Ok(Executed {
             retired: result.retired,
             partial_rep: false,
-            device_ns: 0,
+            device_ns: result.device_ns,
         })
     };
     let (report, value) = run_threads_rooted(
@@ -343,7 +493,7 @@ pub fn run_host_threads<R>(
         true,
         &quantum,
         Some(on_thread_exit),
-        Some(nmi_roots),
+        nmi_paging,
         |control| controller(&HostParallelControl { inner: control }),
     )?;
     Ok((host_report(report), value))
@@ -353,6 +503,7 @@ fn host_report(report: ParallelReport) -> HostParallelReport {
     let finished = match report.finished {
         ParallelFinish::Stopped => HostParallelFinish::Stopped,
         ParallelFinish::BudgetExhausted => HostParallelFinish::BudgetExhausted,
+        ParallelFinish::GuestStop(reason) => HostParallelFinish::GuestStop(reason),
         ParallelFinish::AllIdle => HostParallelFinish::AllIdle,
         ParallelFinish::Error { cpu, error } => HostParallelFinish::Error {
             cpu,
@@ -382,12 +533,29 @@ const HOST_BOARD_ROOT: u64 = 0x1000;
 /// [`host_install_vcpu`]. The board starts in the interleaved mode; [`run_host_threads`] switches
 /// it to the parallel mode for the run.
 pub fn host_parallel_board(vcpu_count: usize) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
+    make_host_parallel_board(vcpu_count, None)
+}
+
+/// Build a host test board with its Linux-profile NVMe PCI endpoint installed.
+pub fn host_parallel_board_with_nvme(
+    vcpu_count: usize,
+    nvme: crate::NvmeConfig,
+) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
+    make_host_parallel_board(vcpu_count, Some(nvme))
+}
+
+fn make_host_parallel_board(
+    vcpu_count: usize,
+    nvme: Option<crate::NvmeConfig>,
+) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
     let config = FirmwareBoardConfig {
         vcpu_count,
         pci_ecam: true,
         acpi_pm: true,
         acpi_tables: true,
         linux_profile: true,
+        nvme_pci: nvme.is_some(),
+        nvme,
         ..FirmwareBoardConfig::default()
     };
     let mut board = crate::firmware_board::assemble_board(&config, PciEcam::new(), None, None)?
@@ -445,48 +613,106 @@ pub fn host_deliver_pending_irq(
     efer: u64,
     context: AccessContext,
     skip_first_boundary: &mut bool,
-    mut committed_write: impl FnMut(GuestPhysicalRange),
+    committed_write: impl FnMut(GuestPhysicalRange),
 ) -> HostIrqBoundary {
-    use crate::irq_source::BoardIrqSource;
-    let mut source = LapicIrqSource::new(lapic.clone());
-    // The cheap question first: the paging configuration is built only when something can be
-    // delivered (or the REP rule has a flag to clear).
-    if !*skip_first_boundary && source.pending_vector().is_none() {
-        return HostIrqBoundary::None;
-    }
-    let context = AccessContext {
-        origin: od_isa::memory::AccessOrigin::Explicit,
-        ..context
-    };
-    let paging = match Long64ProbeConfig::from_cpu_state(state, cr3, efer) {
-        Ok(paging) => paging,
-        Err(error) => {
-            return HostIrqBoundary::Failed(format!("paging configuration refused: {error:?}"));
-        }
-    };
-    let mut counters = IrqCounters::default();
-    let mut hook = IrqBoundaryHook {
-        source: &mut source,
-        counters: &mut counters,
-        delivered_mirror: None,
-        skip_first_boundary: *skip_first_boundary,
-    };
-    let outcome = deliver_pending_irq(
-        &mut hook,
+    HostBoardIrqSource::none().deliver_pending(
         state,
-        bus.physical_memory(),
-        &paging,
+        bus,
+        lapic,
+        cr3,
+        efer,
         context,
-        &mut committed_write,
-        None,
-    );
-    *skip_first_boundary = hook.skip_first_boundary;
-    match outcome {
-        IrqBoundaryOutcome::None => HostIrqBoundary::None,
-        IrqBoundaryOutcome::Delivered => HostIrqBoundary::Delivered,
-        IrqBoundaryOutcome::Failed((exit, page_fault, memory_error)) => HostIrqBoundary::Failed(
-            format!("{exit:?}; page_fault: {page_fault:?}; memory_error: {memory_error:?}"),
-        ),
+        skip_first_boundary,
+        committed_write,
+    )
+}
+
+/// The interrupt source lent to the boot processor for this quantum. Selection and acknowledgment
+/// use the same board-first routing as the interpreter. Each source operation has its own lock scope.
+pub struct HostBoardIrqSource<'a>(Option<&'a mut dyn BoardIrqSource>);
+
+impl HostBoardIrqSource<'_> {
+    /// Use only the Local APIC at the instruction boundary.
+    pub const fn none() -> Self {
+        Self(None)
+    }
+
+    /// Borrow the source for an instruction loop with shorter-lived state.
+    pub fn reborrow(&mut self) -> HostBoardIrqSource<'_> {
+        match self.0.as_mut() {
+            Some(source) => HostBoardIrqSource(Some(&mut **source)),
+            None => HostBoardIrqSource::none(),
+        }
+    }
+
+    /// Whether a successful guest write to the PIT ports calls for a new scheduler deadline.
+    pub fn pit_write_ends_quantum(&self) -> bool {
+        self.0
+            .as_deref()
+            .is_some_and(BoardIrqSource::pit_write_ends_quantum)
+    }
+
+    /// Deliver an eligible board or Local APIC vector through the guest IDT.
+    pub fn deliver_pending(
+        &mut self,
+        state: &mut LongModeState,
+        bus: &MachineBus,
+        lapic: &LocalApicHandle,
+        cr3: u64,
+        efer: u64,
+        context: AccessContext,
+        skip_first_boundary: &mut bool,
+        mut committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> HostIrqBoundary {
+        let mut lapic = LapicIrqSource::new(lapic.clone());
+        let mut boot;
+        let source: &mut dyn BoardIrqSource = if let Some(board) = self.0.as_deref_mut() {
+            boot = BootProcessorSource::new(board, lapic);
+            &mut boot
+        } else {
+            &mut lapic
+        };
+        // The cheap question first: the paging configuration is built only when something can be
+        // delivered (or the REP rule has a flag to clear).
+        if !*skip_first_boundary && source.pending_vector().is_none() {
+            return HostIrqBoundary::None;
+        }
+        let context = AccessContext {
+            origin: od_isa::memory::AccessOrigin::Explicit,
+            ..context
+        };
+        let paging = match Long64ProbeConfig::from_cpu_state(state, cr3, efer) {
+            Ok(paging) => paging,
+            Err(error) => {
+                return HostIrqBoundary::Failed(format!("paging configuration refused: {error:?}"));
+            }
+        };
+        let mut counters = IrqCounters::default();
+        let mut hook = IrqBoundaryHook {
+            source,
+            counters: &mut counters,
+            delivered_mirror: None,
+            skip_first_boundary: *skip_first_boundary,
+        };
+        let outcome = deliver_pending_irq(
+            &mut hook,
+            state,
+            bus.physical_memory(),
+            &paging,
+            context,
+            &mut committed_write,
+            None,
+        );
+        *skip_first_boundary = hook.skip_first_boundary;
+        match outcome {
+            IrqBoundaryOutcome::None => HostIrqBoundary::None,
+            IrqBoundaryOutcome::Delivered => HostIrqBoundary::Delivered,
+            IrqBoundaryOutcome::Failed((exit, page_fault, memory_error)) => {
+                HostIrqBoundary::Failed(format!(
+                    "{exit:?}; page_fault: {page_fault:?}; memory_error: {memory_error:?}"
+                ))
+            }
+        }
     }
 }
 
@@ -521,6 +747,12 @@ pub struct HostSetStepReport {
     /// The guest wrote a timer register of its Local APIC (`0x320`, `0x380`, `0x3E0`): the deadline
     /// the call was budgeted for may be stale, so the caller ends its call (as the set quantum does).
     pub timer_register_written: bool,
+    /// The guest successfully wrote to a PIT programming port.
+    pub pit_written: bool,
+    /// The guest successfully accessed a port. The caller can check for queued device work.
+    pub port_accessed: bool,
+    /// The guest completed a write through the MMIO adapter.
+    pub mmio_written: bool,
 }
 
 /// One instruction of vCPU `step.vcpu` through the CPL0 profile set `set` over `&MachineBus`
@@ -577,6 +809,9 @@ pub fn run_host_set_step(
         partial_rep,
         delivered_exceptions: report.delivered_exceptions,
         timer_register_written,
+        pit_written: report.pit_written,
+        port_accessed: report.port_accessed,
+        mmio_written: report.mmio_written,
     })
 }
 
@@ -738,6 +973,7 @@ mod tests {
                 Ok(HostQuantumResult {
                     retired: 1,
                     exit: HostQuantumExit::Running,
+                    device_ns: 0,
                 })
             };
             let (report, ()) = run_host_threads(

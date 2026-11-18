@@ -36,7 +36,8 @@
 //! the IRR bit that is already set stays set when the entry is masked afterwards. The Local APIC
 //! decides what is deliverable (`eligible`): the highest IRR vector whose priority class is above
 //! the processor priority (TPR and ISR), the Local APIC enabled by the software enable bit of
-//! SVR. [`BoardIrqSource::acknowledge`] is the INTA-like step (`acknowledge_vector`: IRR -> ISR);
+//! SVR. [`BoardIrqSource::acknowledge`] moves the vector already delivered by the vCPU from IRR
+//! to ISR, so a higher request arriving during delivery remains pending.
 //! the EOI register of the Local APIC clears the highest ISR bit. Without an EOI the same vector,
 //! and every vector of the same or a lower class, stays blocked.
 //!
@@ -113,6 +114,29 @@ struct Inner {
 }
 
 impl Inner {
+    /// Time at which this LAPIC can accept a pending request or the next PIT edge.
+    fn wake_ns_for(&mut self, cpu: usize) -> Option<u64> {
+        self.catch_up();
+        let target;
+        let lapic = if cpu == self.lapic.cpu_index() {
+            &self.lapic
+        } else {
+            target = self.lapic.for_cpu(cpu)?;
+            &target
+        };
+        if lapic.eligible().is_some() {
+            return Some(self.clock.snapshot().now_ns());
+        }
+        let (destination, vector) = self.io_apic.intin2_route()?;
+        if cpu != destination || !lapic.would_accept(vector) || self.stats.queue_faults != 0 {
+            return None;
+        }
+        let now = self.clock.snapshot().now_ns();
+        self.queue
+            .next_deadline()
+            .filter(|deadline| *deadline > now)
+    }
+
     fn schedule_after(&mut self, after_tick: u64) {
         let channel = self.pit.snapshot().channel0;
         let Some(tick) = next_out0_rising_tick(&channel, after_tick) else {
@@ -202,6 +226,11 @@ impl Inner {
 pub(crate) struct PitIoapicIrqSource(Arc<Mutex<Inner>>);
 
 impl PitIoapicIrqSource {
+    /// Deadline for the LAPIC of `cpu`, including a PIT edge routed to an AP.
+    pub(crate) fn wake_ns_for(&self, cpu: usize) -> Option<u64> {
+        self.inner().wake_ns_for(cpu)
+    }
+
     /// The source state. Its lock is taken before every device lock it reaches (PIT, PIC, APIC,
     /// clock; MACHINE_CONTRACT.md, S6-33 lock order) and no device ever takes it.
     fn inner(&self) -> MutexGuard<'_, Inner> {
@@ -258,7 +287,7 @@ impl BoardIrqSource for PitIoapicIrqSource {
 
     fn acknowledge(&mut self, vector: u8) {
         let mut inner = self.inner();
-        if inner.lapic.acknowledge_vector(vector, || {}) {
+        if inner.lapic.acknowledge_delivered_vector(vector) {
             inner.stats.acknowledged += 1;
         } else {
             inner.stats.ack_refused += 1;
@@ -297,23 +326,8 @@ impl BoardIrqSource for PitIoapicIrqSource {
     /// the CPU would pass its `HLT` with no interrupt.
     fn wake_ns(&self) -> Option<u64> {
         let mut inner = self.inner();
-        inner.catch_up();
-        if inner.lapic.eligible().is_some() {
-            return Some(inner.clock.snapshot().now_ns());
-        }
-        let (cpu, vector) = inner.io_apic.intin2_route()?;
-        if cpu != inner.lapic.cpu_index() || !inner.lapic.would_accept(vector) {
-            return None;
-        }
-        // After a queue fault (never expected) the source has stopped: no wake time.
-        if inner.stats.queue_faults != 0 {
-            return None;
-        }
-        let now = inner.clock.snapshot().now_ns();
-        inner
-            .queue
-            .next_deadline()
-            .filter(|deadline| *deadline > now)
+        let cpu = inner.lapic.cpu_index();
+        inner.wake_ns_for(cpu)
     }
 }
 
@@ -759,7 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn acknowledge_of_a_vector_that_is_not_eligible_changes_nothing_and_is_counted() {
+    fn acknowledge_of_a_vector_that_is_not_pending_changes_nothing_and_is_counted() {
         let mut rig = Rig::new();
         rig.program(0x34, 10);
         rig.step_to_deadline();
@@ -770,6 +784,24 @@ mod tests {
         source.acknowledge(VECTOR);
         assert_eq!(rig.irr_isr(), (false, true));
         assert_eq!(rig.source.stats().acknowledged, 1);
+    }
+
+    #[test]
+    fn acknowledge_commits_the_delivered_vector_when_a_higher_request_arrives() {
+        let mut rig = Rig::new();
+        rig.program(0x34, 10);
+        rig.step_to_deadline();
+        let mut source = rig.source.clone();
+        let selected = source.pending_vector().unwrap();
+        assert_eq!(selected, VECTOR);
+
+        const HIGHER: u8 = 0xe0;
+        rig.lapic.request_fixed_edge(HIGHER).unwrap();
+        source.acknowledge(selected);
+        assert_eq!(rig.irr_isr(), (false, true));
+        assert_eq!(rig.lapic.vector_state(HIGHER), (true, false));
+        assert_eq!(source.stats().acknowledged, 1);
+        assert_eq!(source.stats().ack_refused, 0);
     }
 
     #[test]

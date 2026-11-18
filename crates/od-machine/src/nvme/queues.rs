@@ -12,7 +12,7 @@
 //! cross-checked with `nvme.h`; the DNR bit and the conditions they are used
 //! for are `NOT VERIFIED against NVMe Base 2.4`.
 
-use crate::{GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MemoryRegionKind};
+use crate::{GuestPhysicalAddress, GuestPhysicalRange, MemoryRegionKind, PhysicalMemory};
 
 /// Submission queue entry size (CC.IOSQES = 6 is the only accepted value).
 pub(crate) const SQE_BYTES: usize = 64;
@@ -259,10 +259,10 @@ pub(crate) trait GuestDma {
     fn write(&mut self, address: u64, data: &[u8]) -> Result<(), DmaError>;
 }
 
-/// [`GuestDma`] over the machine bus; writes report their range to `committed`
+/// [`GuestDma`] over shared physical RAM; writes report their range to `committed`
 /// like every other guest-visible RAM write (code-page tracking).
 pub(crate) struct BusDma<'a, F: FnMut(GuestPhysicalRange)> {
-    pub(crate) bus: &'a mut MachineBus,
+    pub(crate) memory: &'a PhysicalMemory,
     pub(crate) committed: F,
 }
 
@@ -273,7 +273,7 @@ impl<F: FnMut(GuestPhysicalRange)> BusDma<'_, F> {
             return Err(DmaError);
         }
         let start = GuestPhysicalAddress::new(address);
-        match self.bus.memory_kind(start, len) {
+        match self.memory.locate_region_kind(start, len) {
             Ok(MemoryRegionKind::Ram) => Ok(start),
             _ => Err(DmaError),
         }
@@ -283,14 +283,12 @@ impl<F: FnMut(GuestPhysicalRange)> BusDma<'_, F> {
 impl<F: FnMut(GuestPhysicalRange)> GuestDma for BusDma<'_, F> {
     fn read(&mut self, address: u64, buffer: &mut [u8]) -> Result<(), DmaError> {
         let start = self.check_ram(address, buffer.len())?;
-        self.bus
-            .read_flat_bytes(start, buffer)
-            .map_err(|_| DmaError)
+        self.memory.load_bytes(start, buffer).map_err(|_| DmaError)
     }
     fn write(&mut self, address: u64, data: &[u8]) -> Result<(), DmaError> {
         let start = self.check_ram(address, data.len())?;
-        self.bus
-            .write_flat_bytes(start, data, &mut self.committed)
+        self.memory
+            .store_bytes(start, data, &mut self.committed)
             .map_err(|_| DmaError)
     }
 }

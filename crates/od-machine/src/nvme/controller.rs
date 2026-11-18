@@ -755,12 +755,22 @@ impl NvmeHandle {
         bus: &mut MachineBus,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> NvmeServiceReport {
+        self.service_ram(bus.physical_memory(), committed_write)
+    }
+
+    /// Service through RAM without taking the device table lock. The RAM stores publish their code
+    /// page generations as they commit, including writes made by a parallel host worker.
+    pub(crate) fn service_ram(
+        &self,
+        memory: &crate::PhysicalMemory,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> NvmeServiceReport {
         let mut state = lock(&self.state);
         if !state.dma_enabled() {
             return NvmeServiceReport::default();
         }
         let mut dma = BusDma {
-            bus,
+            memory,
             committed: committed_write,
         };
         state.service(&mut dma)

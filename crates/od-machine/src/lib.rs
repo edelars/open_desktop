@@ -272,11 +272,12 @@ pub use page_walk::{
 };
 
 pub use host_parallel::{
-    HostCpl0Step, HostIrqBoundary, HostParallelConfig, HostParallelControl, HostParallelFinish,
-    HostParallelReport, HostQuantumCall, HostQuantumExit, HostQuantumFn, HostQuantumResult,
-    HostSetStepReport, HostSplitGate, HostStopError, HostStopProof, HostThreadExitFn,
-    host_deliver_pending_irq, host_install_vcpu, host_parallel_board, run_host_set_step,
-    run_host_threads,
+    HostBoardIrqSource, HostCpl0Step, HostDeviceServices, HostIrqBoundary, HostParallelConfig,
+    HostParallelControl, HostParallelFinish, HostParallelReport, HostQuantumCall, HostQuantumExit,
+    HostQuantumFn, HostQuantumResult, HostSetStepReport, HostSplitGate, HostStopError,
+    HostStopProof, HostThreadExitFn, host_deliver_pending_irq, host_install_vcpu,
+    host_parallel_board, host_parallel_board_with_nvme, run_host_set_step, run_host_threads,
+    run_host_threads_with_nmi_paging,
 };
 pub use paged_apic_entry::{PagedApicEntryReport, PagedApicEntryResult, poll_paged_apic_entry};
 pub use paged_descriptor::{
@@ -299,12 +300,12 @@ pub use paged_memory_adapter::{
     PagedAtomicOperand, PagedDwordStoreStepReport, PagedInvlpgStepError, PagedInvlpgStepReport,
     PagedMovCr0StepReport, PagedMovCr3StepError, PagedMovCr3StepReport, PagedMovMemoryAdapter,
     PagedMovMemoryScope, PagedMovStepError, PagedMovStepReport, PagedMovStoreScope,
-    PagedStateOpStepReport, PagedStoreRefusal, locate_paged_atomic_operand, step_paged_hlt,
-    step_paged_invlpg, step_paged_mov, step_paged_mov_2m_ram, step_paged_mov_cr0_wp,
-    step_paged_mov_cr3_wp, step_paged_mov_dword_read, step_paged_mov_dword_store,
-    step_paged_mov_word_read, step_paged_mov_word_read_cross_page_fetch, step_paged_sti,
-    with_paged_cpl0_set_memory, with_paged_mov_dword_memory, with_paged_mov_memory,
-    with_paged_mov_store_memory,
+    PagedStateOpStepReport, PagedStoreRefusal, deliver_host_native_fault,
+    locate_paged_atomic_operand, step_paged_hlt, step_paged_invlpg, step_paged_mov,
+    step_paged_mov_2m_ram, step_paged_mov_cr0_wp, step_paged_mov_cr3_wp, step_paged_mov_dword_read,
+    step_paged_mov_dword_store, step_paged_mov_word_read,
+    step_paged_mov_word_read_cross_page_fetch, step_paged_sti, with_paged_cpl0_set_memory,
+    with_paged_mov_dword_memory, with_paged_mov_memory, with_paged_mov_store_memory,
 };
 pub use paged_pio_step::{PagedPioU8StepReport, step_paged_pio_u8};
 pub use paged_probe::{
@@ -315,6 +316,7 @@ pub use paged_probe::{
 pub use paged_vcpu_session::{
     PagedProbeProfile, PagedVcpuError, PagedVcpuHostState, PagedVcpuSession,
 };
+pub use parallel_run::HostNmiPaging;
 pub use stage4_alias_probe::load_stage4_alias_probe;
 pub use stage4_cpl3_syscall_probe::{
     LoadedStage4Cpl3SyscallProbe, STAGE4_CPL3_SYSCALL_DATA_GPA, STAGE4_CPL3_SYSCALL_FINAL_RIP,

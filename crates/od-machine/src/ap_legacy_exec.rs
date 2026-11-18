@@ -267,7 +267,7 @@ mod tests {
     use od_isa::legacy_mode::RealModeState;
     use od_isa::protected_exec::ProtectedRefusal;
     use od_isa::real_mode_exec::{ImageMemoryMut, RealModeCpu};
-    use od_isa::{CpuActivity, LongModeState};
+    use od_isa::{CpuActivity, LongModeState, Register, cpuid::CpuidProfile};
 
     // ---- the test trampoline -------------------------------------------------------------------
     //
@@ -298,6 +298,7 @@ mod tests {
     const GDT_AT: u64 = 0x9100;
     const MARKER: u64 = 0xA000;
     const MARK: u32 = 0x4D41_524B;
+    const BSP_PML4: u64 = 0x1000;
     const PML4: u64 = 0x4000;
     const PDPT: u64 = 0x5000;
     const PD: u64 = 0x6000;
@@ -418,7 +419,7 @@ mod tests {
         };
         let mut board = assemble_board(&config, PciEcam::new(), None, None)
             .unwrap()
-            .into_linux_board(0x1000, 0x1000)
+            .into_linux_board(BSP_PML4, 0x1000)
             .unwrap();
         board.enable_clock_owner().unwrap();
         for (at, bytes) in patches {
@@ -1082,6 +1083,87 @@ mod tests {
                 assert_eq!(cpu.gpr[1], 0, "ECX");
                 assert_eq!(cpu.gpr[2], 0x0781_A379, "EDX, count {count} AP {ap}");
             }
+        }
+    }
+
+    #[test]
+    fn s6_21_long_mode_cpuid_uses_one_profile_and_each_vcpus_topology() {
+        let profile = CpuidProfile::X8664V1Stage4AApic;
+        let mut patches = trampoline(CELLS_AT as u32);
+        patches.iter_mut().find(|(at, _)| *at == LONG_AT).unwrap().1 = vec![0x0f, 0xa2];
+        for count in [1usize, 2, 4] {
+            let mut board = board_with(count, &patches);
+            fixture::patch(&mut board, BSP_PML4, &(PDPT | 3).to_le_bytes());
+            fixture::install(
+                &mut board,
+                0,
+                fixture::long_state(LONG_AT, 0x7000, BSP_PML4, false),
+                0xD01,
+            );
+            let ap = count - 1;
+            if ap > 0 {
+                let bsp_lapic = board.local_apic_of(0).unwrap();
+                bsp_lapic.write_icr(0, ap as u8, INIT_ASSERT).unwrap();
+                bsp_lapic.write_icr(0, ap as u8, sipi(SIPI_VECTOR)).unwrap();
+                board.apply_pending_startup(ap).unwrap();
+                assert!(
+                    run_legacy(&mut board, ap, 100, &mut || false)
+                        .unwrap()
+                        .entered_long_mode
+                );
+                assert_eq!(board.vcpu(ap).unwrap().state.rip, LONG_AT);
+                assert_eq!(
+                    board.vcpu(ap).unwrap().cpuid.profile,
+                    LINUX_AP_CPUID_PROFILE
+                );
+            }
+
+            fixture::with_set(|set| {
+                let set = set.with_cpuid(&profile);
+                for cpu in std::iter::once(0).chain((ap > 0).then_some(ap)) {
+                    for leaf in
+                        (0..=1)
+                            .chain(0x8000_0000..=0x8000_0008)
+                            .chain([0xb, 0x1f, 0x8000_0026])
+                    {
+                        let state = &mut board.vcpu_mut(cpu).unwrap().state;
+                        let flags = state.rflags;
+                        state.rip = LONG_AT;
+                        state.gpr[Register::Rax as usize] = 0xffff_ffff_0000_0000 | u64::from(leaf);
+                        state.gpr[Register::Rbx as usize] = u64::MAX;
+                        state.gpr[Register::Rcx as usize] = 0xffff_ffff_0000_0000;
+                        state.gpr[Register::Rdx as usize] = u64::MAX;
+
+                        let retired = if cpu == 0 {
+                            let report = board
+                                .run_linux_boot_cpl0_set(1, &set, false, false, false)
+                                .unwrap();
+                            assert_eq!(report.run.exit, crate::PagedProbeExit::BudgetExhausted);
+                            report.run.retired
+                        } else {
+                            board
+                                .run_vcpu_set_quantum(cpu, 1, &mut || false, &set)
+                                .unwrap()
+                                .retired
+                        };
+                        assert_eq!(retired, 1);
+
+                        let mut expected = profile.query(leaf, 0);
+                        if leaf == 1 && count > 1 {
+                            expected.ebx = 0x100 | (count as u32) << 16 | (cpu as u32) << 24;
+                        }
+                        let state = &board.vcpu(cpu).unwrap().state;
+                        assert_eq!(state.rip, LONG_AT + 2);
+                        assert_eq!(state.rflags, flags);
+                        assert_eq!(
+                            [Register::Rax, Register::Rbx, Register::Rcx, Register::Rdx]
+                                .map(|reg| state.gpr[reg as usize]),
+                            [expected.eax, expected.ebx, expected.ecx, expected.edx].map(u64::from),
+                            "count {count}, vCPU {cpu}, leaf {leaf:#x}",
+                        );
+                    }
+                }
+            });
         }
     }
 

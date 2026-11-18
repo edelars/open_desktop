@@ -175,6 +175,22 @@ pub fn lower_atomic_instruction(
     lower_atomic_sequence(&[instruction], guest_rip)
 }
 
+/// Cheap rejection of a partial fetch from the ordinary forms probe. The
+/// full decoder and `lower_atomic_instruction` still decide admission.
+pub fn could_start_atomic(bytes: &[u8]) -> bool {
+    let mut bytes = bytes.iter().copied().skip_while(|byte| {
+        matches!(
+            byte,
+            0x26 | 0x2e | 0x36 | 0x3e | 0x40..=0x4f | 0x64..=0x67 | 0xf2 | 0xf3
+        )
+    });
+    match bytes.next() {
+        None | Some(0x86 | 0x87 | 0xf0) => true,
+        Some(0x0f) => matches!(bytes.next(), None | Some(0xae | 0xb0 | 0xb1 | 0xc0 | 0xc1)),
+        _ => false,
+    }
+}
+
 /// S6-41d: lower a contiguous run of decoded atomic-family instructions, the first at `guest_rip`,
 /// to one verified multi-instruction program (terminated by `Exit::BlockComplete` at the RIP after
 /// the last instruction). Temporaries are numbered across the whole program; every instruction
@@ -437,7 +453,13 @@ mod tests {
         let mut memory = Code(bytes.to_vec());
         let decoded = long_decode::decode(&mut memory, 0, AccessContext::default())
             .expect("the form decodes");
-        lower_atomic_instruction(&decoded, 0x2000)
+        let program = lower_atomic_instruction(&decoded, 0x2000);
+        if program.is_ok() {
+            for length in 1..=2.min(bytes.len()) {
+                assert!(could_start_atomic(&bytes[..length]), "{bytes:02x?}");
+            }
+        }
+        program
     }
 
     fn effects(program: &Program) -> Vec<&Operation> {

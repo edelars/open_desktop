@@ -5,17 +5,13 @@
 //! `ParallelControl`). Each thread owns its session and its part of the process `MAP_JIT` region
 //! (S6-42, A1: nothing of the session, the block or the handle crosses a thread; the session is
 //! created on the vCPU's own thread from the part the owner handed out and dropped there, so a slot
-//! is released by its owner). Every call runs [`run_paged_host_loop_shared`]: the JIT path and the
+//! is released by its owner). Each call runs the shared host loop: the JIT path and the
 //! interpreter fallback over `&MachineBus` (RAM through the shared reference, the device lock for one
 //! port access at a time, A7 of S6-40), with the run's stop poll next to the loop's own flags.
 //!
-//! The stop of `ParallelControl::stop_all` reaches the loop as the poll at the top of every
-//! iteration: a block is one instruction, so a native call is never longer than one instruction and
-//! the thread acknowledges on the safe point after its quantum returned, never inside a native call.
-//! The STOP byte that native code polls (`RuntimeContextV1::stop_requested`) is not raised by this
-//! binding: it is needed only for blocks of several instructions (S3-24); the blocks of this loop
-//! are one instruction, so the poll between iterations is the same boundary (open for S3-24
-//! blocks, S6-42d).
+//! The worker supplies its STOP byte and request poll. The loop clears the byte,
+//! reads the requests, then gives the same byte to native code. A stop or a kick
+//! returns to the worker on a safe point after native execution and accounting.
 //!
 //! S6-42c: [`JitHostQuantum::with_cpl0_set`] switches the quantum to the guest side of the
 //! boundary (`run_paged_host_loop_shared_set`): a vector waiting in the vCPU's own Local APIC is
@@ -23,22 +19,24 @@
 //! (so `IRETQ`, `STI`, `LOCK` forms and the rest of the set run), a guest `#PF`/`#GP(0)` is
 //! delivered through the guest IDT, and the split `LOCK` goes through the gate of the run. The
 //! default quantum is the base profile as before (a guest fault or a refusal of the interpreter is
-//! an error of the run). [`JitHostQuantum::nmi_roots`] gives the page-table roots for the NMI
-//! delivery of `od_machine::run_host_threads`.
+//! an error of the run). [`JitHostQuantum::nmi_paging`] gives the paging inputs for NMI delivery
+//! through `od_machine::run_host_threads_with_nmi_paging`.
 
 use std::cell::RefCell;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use od_isa::execute::{ControlRegisterPolicy, Cpl0ProfileSet};
-use od_isa::{CliProfile, HaltProfile, StiProfile};
-use od_machine::{HostQuantumCall, HostQuantumExit, HostQuantumResult, PagedProbeExit};
+use od_isa::{CliProfile, HaltProfile, MovCr3Long64V1, StiProfile};
+use od_machine::{
+    HostNmiPaging, HostQuantumCall, HostQuantumExit, HostQuantumResult, PagedProbeExit,
+};
 
 use crate::PagedFetchedLoadSession;
 use crate::jit_region::{JitPartStats, JitRegionPart};
 use crate::paged_host_loop::{
-    PagedHostLoopConfig, PagedHostLoopControl, PagedHostLoopExit, PagedHostSetEnv,
-    run_paged_host_loop_shared, run_paged_host_loop_shared_set,
+    LoopBusRef, PagedHostLoopConfig, PagedHostLoopControl, PagedHostLoopExit, PagedHostSetEnv,
+    run_paged_host_loop_core,
 };
 
 /// What one vCPU's JIT host loop did, summed over its calls (published after every call, read by
@@ -47,6 +45,7 @@ use crate::paged_host_loop::{
 pub struct HostJitVcpuStats {
     pub calls: u64,
     pub retired_jit: u64,
+    pub native_stop_exits: u64,
     pub retired_interpreter: u64,
     pub steps_jit: u64,
     pub steps_interpreter: u64,
@@ -57,9 +56,11 @@ pub struct HostJitVcpuStats {
     pub irqs_delivered: u64,
     /// S6-42c: guest `#PF`/`#GP(0)` delivered through the guest IDT.
     pub exceptions_delivered: u64,
-    /// S6-42c: native steps that reported a guest fault and were redone by the interpreter step.
-    pub jit_faults_redone: u64,
-    /// S6-42c: calls that ended on a device boundary (a write to a timer register of the Local APIC).
+    /// Native faults delivered through the guest IDT from their original fault records.
+    pub jit_faults_delivered: u64,
+    /// Retirements via the V4 atomic JIT, included in `retired_jit`.
+    pub atomic_jit_steps: u64,
+    /// Calls ended to reconcile a timer deadline or queued device work.
     pub device_boundaries: u64,
     /// Blocks compiled and published by the session so far.
     pub admissions: u64,
@@ -112,8 +113,7 @@ pub struct JitHostQuantum {
 }
 
 impl JitHostQuantum {
-    /// `parts[cpu]` is the part of vCPU `cpu` (`None`: the vCPU's session has no part and the
-    /// native attempts are refused while a region is live, the interpreter runs everything);
+    /// `parts[cpu]` is the part of vCPU `cpu` (`None` uses the interpreter for the parallel run);
     /// `configs[cpu]` is its translation and access context; `rflags_defined` is the interpreter's
     /// initial definedness mask. The three vectors have one element per vCPU.
     pub fn new(
@@ -143,18 +143,32 @@ impl JitHostQuantum {
 
     /// S6-42c: run the quantum with the guest side of the boundary (see the module documentation):
     /// interrupts of the vCPU's Local APIC, the CPL0 profile set as the interpreter step, guest
-    /// faults delivered, the split `LOCK` behind the gate. The vCPUs' states must carry no CR3 of
-    /// their own (the roots are the configurations').
+    /// faults delivered, the split `LOCK` behind the gate. The vCPU owns its CR3. The configuration
+    /// supplies the initial CR3 for a state that has none.
     #[must_use]
     pub fn with_cpl0_set(mut self) -> Self {
         self.cpl0_set = true;
         self
     }
 
-    /// The page-table root of every vCPU (`Some(config.cr3)`), for the `nmi_roots` of
-    /// `od_machine::run_host_threads`: the root an NMI to a vCPU is delivered through.
+    /// Fallback roots for the root-only `od_machine::run_host_threads` entry.
+    /// Use [`Self::nmi_paging`] to also supply the quantum's EFER.
     pub fn nmi_roots(&self) -> Vec<Option<u64>> {
         self.configs.iter().map(|config| Some(config.cr3)).collect()
+    }
+
+    /// Supplies NMI delivery with the configured EFER and fallback CR3. A CPU-owned CR3 takes
+    /// precedence after the vCPU starts running the CPL0 set.
+    pub fn nmi_paging(&self) -> Vec<Option<HostNmiPaging>> {
+        self.configs
+            .iter()
+            .map(|config| {
+                Some(HostNmiPaging {
+                    root: config.cr3,
+                    efer: config.efer,
+                })
+            })
+            .collect()
     }
 
     /// S6-43a: keep, per vCPU, the committed write ranges `(start, length)` of every call
@@ -224,7 +238,7 @@ impl JitHostQuantum {
 
     /// One call of the quantum on the vCPU thread: pass this as `run` of
     /// `od_machine::run_host_threads` (`&|call| quantum.run(call)`).
-    pub fn run(&self, call: HostQuantumCall<'_>) -> Result<HostQuantumResult, &'static str> {
+    pub fn run(&self, mut call: HostQuantumCall<'_>) -> Result<HostQuantumResult, &'static str> {
         let cpu = call.cpu;
         let config = *self
             .configs
@@ -262,63 +276,56 @@ impl JitHostQuantum {
                     logged.push((range.start().get(), range.len()));
                 }
             };
-            let report = if self.cpl0_set {
+            let (cli, sti, halt) = (
+                CliProfile::NonPviLong64V1,
+                StiProfile::NonPviLong64V1,
+                HaltProfile::Long64V1,
+            );
+            let set;
+            let bus = if self.cpl0_set {
                 // The set the interpreter step runs: the Linux board's CPL0 profile without the
-                // members that need the board (CR3 is the configuration's, not the set's).
-                let (cli, sti, halt) = (
-                    CliProfile::NonPviLong64V1,
-                    StiProfile::NonPviLong64V1,
-                    HaltProfile::Long64V1,
-                );
-                let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+                // members that need the board's devices or MSR cells.
+                set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+                    .with_cpu_owned_cr3(MovCr3Long64V1)
                     .with_cli(&cli)
                     .with_sti(&sti)
                     .with_halt(&halt)
                     .with_pio_u8();
-                run_paged_host_loop_shared_set(
-                    &mut thread.session,
-                    &thread.control,
-                    config,
-                    call.state,
+                LoopBusRef::SharedSet(
                     call.bus,
                     cpu,
                     PagedHostSetEnv {
                         lapic: call.lapic,
+                        board_irq: call.board_irq.reborrow(),
+                        devices: call.devices,
                         gate: call.gate,
                         set: &set,
                         skip_first_boundary: &mut thread.skip_first_boundary,
                     },
-                    &mut thread.rflags_defined,
-                    call.budget,
-                    &mut record,
-                    &mut *call.stop,
                 )
             } else {
-                run_paged_host_loop_shared(
-                    &mut thread.session,
-                    &thread.control,
-                    config,
-                    call.state,
-                    call.bus,
-                    cpu,
-                    &mut thread.rflags_defined,
-                    call.budget,
-                    &mut record,
-                    &mut *call.stop,
-                )
+                LoopBusRef::Shared(call.bus, cpu)
             };
-            if let Some(log) = &self.write_log {
-                log[cpu]
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .extend(logged);
-            }
+            let report = run_paged_host_loop_core(
+                &mut thread.session,
+                &thread.control,
+                config,
+                call.state,
+                bus,
+                &mut thread.rflags_defined,
+                call.budget,
+                &mut record,
+                |_, _| {},
+                &mut *call.stop,
+                call.native_stop,
+            );
             {
                 let mut stats = self.stats[cpu]
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 stats.calls += 1;
                 stats.retired_jit += report.retired_jit;
+                stats.native_stop_exits += report.native_stop_exits;
                 stats.retired_interpreter += report.retired_interpreter;
                 stats.steps_jit += report.steps_jit;
                 stats.steps_interpreter += report.steps_interpreter;
@@ -326,7 +333,8 @@ impl JitHostQuantum {
                 stats.stop_exits += u64::from(report.exit == PagedHostLoopExit::StopRequested);
                 stats.irqs_delivered += report.irqs_delivered;
                 stats.exceptions_delivered += report.exceptions_delivered;
-                stats.jit_faults_redone += report.jit_faults_redone;
+                stats.jit_faults_delivered += report.jit_faults_delivered;
+                stats.atomic_jit_steps += report.atomic_jit_steps;
                 stats.device_boundaries +=
                     u64::from(report.exit == PagedHostLoopExit::DeviceBoundary);
                 stats.admissions = thread.session.admissions();
@@ -345,6 +353,7 @@ impl JitHostQuantum {
                 {
                     Some(format!("{exit:?}; page_fault: {:?}", report.page_fault))
                 }
+                PagedHostLoopExit::AtomicHostFailure(error) => Some(format!("{error:?}")),
                 _ => None,
             };
             if let Some(detail) = detail {
@@ -353,40 +362,65 @@ impl JitHostQuantum {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(detail);
             }
+            let service_nvme = matches!(
+                report.exit,
+                PagedHostLoopExit::DeviceBoundary
+                    | PagedHostLoopExit::BudgetExhausted
+                    | PagedHostLoopExit::Interpreter(PagedProbeExit::Halted)
+            );
             let exit = match report.exit {
                 PagedHostLoopExit::BudgetExhausted
                 | PagedHostLoopExit::StopRequested
                 | PagedHostLoopExit::FinishRequested
                 | PagedHostLoopExit::EventPending
-                | PagedHostLoopExit::DeviceBoundary => HostQuantumExit::Running,
-                PagedHostLoopExit::Interpreter(PagedProbeExit::Halted) => HostQuantumExit::Halted,
+                | PagedHostLoopExit::DeviceBoundary => Ok(HostQuantumExit::Running),
+                PagedHostLoopExit::Interpreter(PagedProbeExit::Halted) => {
+                    Ok(HostQuantumExit::Halted)
+                }
                 PagedHostLoopExit::Interpreter(PagedProbeExit::Shutdown) => {
-                    HostQuantumExit::Shutdown
+                    Ok(HostQuantumExit::Shutdown)
                 }
+                PagedHostLoopExit::MachineStop(reason) => Ok(HostQuantumExit::MachineStop(reason)),
                 PagedHostLoopExit::Interpreter(_) => {
-                    return Err("host JIT quantum: the interpreter refused the instruction");
+                    Err("host JIT quantum: the interpreter refused the instruction")
                 }
-                PagedHostLoopExit::GuestFault(_) => {
-                    return Err(if self.cpl0_set {
-                        "host JIT quantum: a guest fault the guest IDT did not take"
-                    } else {
-                        "host JIT quantum: a guest fault (no delivery in this quantum)"
-                    });
-                }
+                PagedHostLoopExit::GuestFault(_) => Err(if self.cpl0_set {
+                    "host JIT quantum: a guest fault the guest IDT did not take"
+                } else {
+                    "host JIT quantum: a guest fault (no delivery in this quantum)"
+                }),
                 PagedHostLoopExit::IrqDeliveryFailed(_) => {
-                    return Err("host JIT quantum: an interrupt could not be delivered");
+                    Err("host JIT quantum: an interrupt could not be delivered")
                 }
                 PagedHostLoopExit::InterpreterIntegration(_) => {
-                    return Err("host JIT quantum: the CPL0 set returned an exit it cannot resume");
+                    Err("host JIT quantum: the CPL0 set returned an exit it cannot resume")
                 }
-                PagedHostLoopExit::JitHostFailure(_) => {
-                    return Err("host JIT quantum: the JIT boundary failed");
+                PagedHostLoopExit::JitHostFailure(_) | PagedHostLoopExit::AtomicHostFailure(_) => {
+                    Err("host JIT quantum: the JIT boundary failed")
                 }
                 PagedHostLoopExit::InvalidRflagsDefined { .. } => {
-                    return Err("host JIT quantum: invalid definedness mask");
+                    Err("host JIT quantum: invalid definedness mask")
                 }
             };
-            Ok(HostQuantumResult { retired, exit })
+            let device_ns = if self.cpl0_set && exit.is_ok() {
+                if service_nvme && !(call.stop)() {
+                    call.devices.service_nvme(&mut record);
+                }
+                call.devices.service()
+            } else {
+                0
+            };
+            if let Some(log) = &self.write_log {
+                log[cpu]
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .extend(logged);
+            }
+            Ok(HostQuantumResult {
+                retired,
+                exit: exit?,
+                device_ns,
+            })
         })
     }
 }

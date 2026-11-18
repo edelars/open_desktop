@@ -2314,6 +2314,8 @@ struct AdmittedAtomic {
     /// (`CodeInvalidated`): never reused, whatever the key says.
     retired: bool,
     instructions: usize,
+    instruction_limit: usize,
+    first_flags: od_isa::long_decode::FlagEffects,
     block: atomic_inline::AtomicInlineBlock,
 }
 
@@ -2370,6 +2372,17 @@ impl PagedFetchedLoadSession {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub fn region_part(&self) -> Option<&jit_region::ActiveJitPart> {
         self.part.as_ref()
+    }
+
+    pub(crate) fn has_region_part(&self) -> bool {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            self.part.is_some()
+        }
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            false
+        }
     }
 
     /// The part the next admission publishes into (a clone of the `Rc`).
@@ -3055,6 +3068,8 @@ pub struct PagedFetchedAtomicReport {
     pub fetched_code: Vec<u8>,
     /// How many guest instructions the block holds (not how many ran: see `run.retired`).
     pub block_instructions: usize,
+    /// Definedness effects of the first instruction, valid once it retires.
+    pub first_flags: od_isa::long_decode::FlagEffects,
     pub fetch_committed_writes: Vec<od_machine::GuestPhysicalRange>,
     pub admission: PagedFetchAdmission,
     /// The memory-ordering mode of the code that ran (the mode of the bus at the call).
@@ -3214,6 +3229,7 @@ impl PagedFetchedLoadSession {
             access_context,
             budget,
             &stop_requested,
+            od_jit::atomic_block::MAX_ATOMIC_BLOCK_INSTRUCTIONS,
         )
     }
 
@@ -3230,6 +3246,7 @@ impl PagedFetchedLoadSession {
         access_context: od_isa::memory::AccessContext,
         budget: u64,
         stop_requested: &AtomicU8,
+        instruction_limit: usize,
     ) -> Result<PagedFetchedAtomicReport, PagedFetchedLoadError> {
         let refuse = |kind| PagedFetchedLoadError {
             kind,
@@ -3265,7 +3282,7 @@ impl PagedFetchedLoadSession {
         }
 
         let rip = state.rip;
-        let window = PAGED_ATOMIC_FETCH_WINDOW.min(0x1000 - (rip & 0xfff) as usize);
+        let window = (15 * instruction_limit).min(0x1000 - (rip & 0xfff) as usize);
         let mut fetch_committed_writes = Vec::new();
         let snapshot = bus
             .tracked_code_snapshot_with_callback(&paging, rip, window, access_context, |range| {
@@ -3286,6 +3303,7 @@ impl PagedFetchedLoadSession {
                 && admitted.linear_base == snapshot.linear_base
                 && admitted.physical_page == snapshot.physical_base
                 && admitted.generation == snapshot.backing_generation
+                && admitted.instruction_limit == instruction_limit
                 && snapshot.bytes.starts_with(&admitted.bytes)
         });
         let admission = if reusable {
@@ -3302,7 +3320,7 @@ impl PagedFetchedLoadSession {
             let mut decoded = Vec::new();
             let mut offset = 0usize;
             let mut stopped_by = None;
-            while decoded.len() < od_jit::atomic_block::MAX_ATOMIC_BLOCK_INSTRUCTIONS {
+            while decoded.len() < instruction_limit {
                 let instruction = match od_isa::long_decode::decode(
                     &mut window_bytes,
                     offset as u64,
@@ -3367,6 +3385,8 @@ impl PagedFetchedLoadSession {
                 mode: order,
                 retired: false,
                 instructions: decoded.len(),
+                instruction_limit,
+                first_flags: decoded[0].flag_effects(),
                 block,
             });
             self.admissions += 1;
@@ -3411,6 +3431,7 @@ impl PagedFetchedLoadSession {
                 )
             })?;
         let block_instructions = admitted.instructions;
+        let first_flags = admitted.first_flags;
         let fetched_code = admitted.bytes.clone();
         if run.exit == atomic_inline::AtomicInlineExit::CodeInvalidated
             && let Some(admitted) = self.admitted_atomic.as_mut()
@@ -3423,6 +3444,7 @@ impl PagedFetchedLoadSession {
             fetched_generation: snapshot.backing_generation,
             fetched_code,
             block_instructions,
+            first_flags,
             fetch_committed_writes,
             admission,
             mode,

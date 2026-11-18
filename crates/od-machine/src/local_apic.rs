@@ -520,6 +520,21 @@ impl LocalApicHandle {
             true
         })
     }
+
+    /// Complete an interrupt entry that the owning vCPU has already committed.
+    /// A concurrent sender can queue a higher vector but cannot replace the frame
+    /// on the target's stack. Leave that new request in IRR for the next boundary.
+    pub(crate) fn acknowledge_delivered_vector(&self, vector: u8) -> bool {
+        self.with_state(|s| {
+            let index = usize::from(vector / 32);
+            let bit = 1 << (vector % 32);
+            if s.irr[index] & bit == 0 {
+                return false;
+            }
+            s.move_to_service(vector);
+            true
+        })
+    }
 }
 
 /// Execute the bounded CPU MSR operation and apply any retired write before

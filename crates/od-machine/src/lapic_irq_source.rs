@@ -11,9 +11,9 @@
 //! * `pending_vector` is `LocalApicHandle::eligible` of its own LAPIC: the highest IRR vector that
 //!   the software-enabled LAPIC could accept (priority class above PPR). The question changes
 //!   nothing.
-//! * `acknowledge` is `acknowledge_vector` of the same LAPIC: the vector moves from IRR to ISR only
-//!   when it is still the eligible one. It is called after the frame is on the guest stack, so the
-//!   guest's `EOI` write (as that vCPU) clears this LAPIC's ISR and no other.
+//! * `acknowledge` moves the delivered vector of the same LAPIC from IRR to ISR once the frame is
+//!   on the guest stack. A higher vector queued during delivery waits for the next boundary.
+//!   The guest's `EOI` write (as that vCPU) clears this LAPIC's ISR.
 //! * `next_deadline_ns` is always `None`: the LAPIC timer deadlines are the clock owner's
 //!   (S4-23j, S6-15), not a limit of this source. A timer event that fires moves a vector into IRR,
 //!   and the next boundary asks `pending_vector` again.
@@ -43,9 +43,7 @@ impl BoardIrqSource for LapicIrqSource {
     }
 
     fn acknowledge(&mut self, vector: u8) {
-        // The loop acknowledges only the vector `pending_vector` gave, right after the frame
-        // committed; a LAPIC that changed in between refuses and keeps its state.
-        let _ = self.0.acknowledge_vector(vector, || {});
+        self.0.acknowledge_delivered_vector(vector);
     }
 
     fn next_deadline_ns(&self) -> Option<u64> {
@@ -119,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn acknowledge_of_a_vector_that_is_not_the_eligible_one_changes_nothing() {
+    fn acknowledge_of_a_vector_that_is_not_pending_changes_nothing() {
         let (mut device, _lapic0, lapic1) = two_enabled();
         device
             .write_from_cpu(1, dword(0x300), SELF_ASSERT | 0x30)
@@ -128,6 +126,31 @@ mod tests {
         source1.acknowledge(0x31);
         assert_eq!(lapic1.vector_state(0x30), (true, false));
         assert_eq!(lapic1.vector_state(0x31), (false, false));
+    }
+
+    #[test]
+    fn a_higher_ipi_queued_during_delivery_does_not_repeat_the_selected_vector() {
+        let (mut device, lapic0, lapic1) = two_enabled();
+        let mut source = LapicIrqSource::new(lapic1.clone());
+        lapic0.write_icr(0, 1, 0x30).unwrap();
+        let selected = source.pending_vector().unwrap();
+        assert_eq!(selected, 0x30);
+
+        // A remote sender can enqueue an IPI while the target writes the guest stack frame.
+        lapic0.write_icr(0, 1, 0x50).unwrap();
+        source.acknowledge(selected);
+        assert_eq!(lapic1.vector_state(0x30), (false, true));
+        assert_eq!(lapic1.vector_state(0x50), (true, false));
+
+        let next = source.pending_vector().unwrap();
+        assert_eq!(next, 0x50);
+        source.acknowledge(next);
+        device.write_from_cpu(1, dword(0xb0), 0).unwrap();
+        assert_eq!(lapic1.vector_state(0x30), (false, true));
+        assert_eq!(lapic1.vector_state(0x50), (false, false));
+        device.write_from_cpu(1, dword(0xb0), 0).unwrap();
+        assert_eq!(lapic1.vector_state(0x30), (false, false));
+        assert_eq!(source.pending_vector(), None);
     }
 
     #[test]

@@ -48,6 +48,7 @@ use crate::uart_pic_irq_source::UartPicIrqSource;
 use crate::vcpu::Vcpu;
 use crate::{AcpiPmHandle, LocalApicHandle, MachineBus, Pit8254Handle, Uart16550Handle};
 use od_isa::execute::Cpl0ProfileSet;
+use std::cell::Cell;
 use std::sync::{Mutex, PoisonError};
 
 /// The source of the boot processor in the quantum of the scheduler (S6-21 step 1): the interrupt
@@ -56,22 +57,33 @@ use std::sync::{Mutex, PoisonError};
 /// APIC's vectors (the IOAPIC source) answers first, so the Local APIC is asked only for what the
 /// board's source does not have. Only the boot processor gets it; an application processor keeps the
 /// [`LapicIrqSource`] alone.
-struct BootProcessorSource<'a> {
+pub(crate) struct BootProcessorSource<'a> {
     board: &'a mut dyn BoardIrqSource,
     lapic: LapicIrqSource,
+    selected_board_vector: Cell<Option<u8>>,
+}
+
+impl<'a> BootProcessorSource<'a> {
+    pub(crate) fn new(board: &'a mut dyn BoardIrqSource, lapic: LapicIrqSource) -> Self {
+        Self {
+            board,
+            lapic,
+            selected_board_vector: Cell::new(None),
+        }
+    }
 }
 
 impl BoardIrqSource for BootProcessorSource<'_> {
     fn pending_vector(&self) -> Option<u8> {
-        self.board
-            .pending_vector()
-            .or_else(|| self.lapic.pending_vector())
+        let board_vector = self.board.pending_vector();
+        self.selected_board_vector.set(board_vector);
+        board_vector.or_else(|| self.lapic.pending_vector())
     }
 
     fn acknowledge(&mut self, vector: u8) {
-        // The loop acknowledges only the vector `pending_vector` gave, and nothing moved since: the
-        // board's source gave it exactly when it still reports it.
-        if self.board.pending_vector() == Some(vector) {
+        // The guest frame is already committed. A later request can change
+        // the board's answer, but the original source still owns this delivery.
+        if self.selected_board_vector.take() == Some(vector) {
             self.board.acknowledge(vector);
         } else {
             self.lapic.acknowledge(vector);
@@ -146,15 +158,13 @@ fn quantum_loop(
     // CR2 is a cell of the vCPU between calls and the state's during the call (S4-38L5c).
     let prior_cr2 = vcpu.state.cr2;
     vcpu.state.cr2 = Some(vcpu.guest_cr2.or(prior_cr2).unwrap_or(0));
+    let set = set.with_cpuid_topology(vcpu.cpuid.apic_id, vcpu.cpuid.cpu_count);
 
     let timer_writes = lapic.timer_register_writes();
     let mut own = LapicIrqSource::new(lapic.clone());
     let mut boot_source;
     let source: &mut dyn BoardIrqSource = if cpu == BOOT_VCPU_INDEX {
-        boot_source = BootProcessorSource {
-            board: board_source,
-            lapic: own.clone(),
-        };
+        boot_source = BootProcessorSource::new(board_source, own.clone());
         &mut boot_source
     } else {
         &mut own
@@ -174,7 +184,7 @@ fn quantum_loop(
         },
         budget,
         INTEGER_FLAGS,
-        set,
+        &set,
         None,
         || {
             stop()
@@ -331,6 +341,7 @@ pub(crate) struct ThreadQuantumEnv<'a> {
     pub(crate) uart: Uart16550Handle,
     pub(crate) acpi_pm: Option<AcpiPmHandle>,
     pub(crate) pit: Option<Pit8254Handle>,
+    pub(crate) nvme: Option<crate::NvmeHandle>,
     pub(crate) uart_irq_source: Option<&'a UartPicIrqSource>,
     pub(crate) uart_ioapic_source: Option<&'a UartIoapicIrqSource>,
     /// The COM1 log. The lock is taken for the whole pump (it is above the UART lock: the pump
@@ -342,7 +353,7 @@ impl ThreadQuantumEnv<'_> {
     /// [`LoadedFirmwareBoard::pump_uart_transmit`] of the threads: every byte the guest left in
     /// the holding register goes to the log, in the order they complete, with the log's lock held
     /// so that two threads never interleave one byte's two steps.
-    fn pump_uart_transmit(&self) {
+    pub(crate) fn pump_uart_transmit(&self) {
         let mut log = self.com1.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(source) = self.uart_irq_source {
             source.sample();
@@ -1374,6 +1385,110 @@ mod tests {
         assert!(counters[0].wakes >= u64::from(handled));
         // Each handled edge is a period of the PIT further on the board clock.
         assert!(board.clock().now_ns() >= u64::from(handled - 1) * 8381);
+    }
+
+    fn pit_ioapic_ap_board(bsp_if: bool) -> LoadedFirmwareBoard {
+        use crate::{AccessWidth, GuestPhysicalAddress, IO_APIC_MMIO_BASE, PortAddress};
+
+        let mut board = board(2);
+        assert!(board.enable_pit_ioapic_irq());
+        system(&mut board, false);
+        patch(&mut board, CODE_1, &[0xfa, 0xf4]); // CLI; HLT
+        let mut handler = count_and_eoi(COUNTER_1);
+        handler.extend([0x48, 0xcf]); // IRETQ
+        patch(&mut board, HANDLER_AP_BOARD, &handler);
+        gate(&mut board, IDT_AT, BOARD_VECTOR, HANDLER_AP_BOARD);
+        for (cpu, code, stack, tables_at) in [
+            (0, CODE_0, STACK_0, TABLES_0),
+            (1, CODE_1, STACK_1, TABLES_1),
+        ] {
+            let cr3 = tables(&mut board, tables_at, 0x60_0000 + cpu as u64 * 0x20_0000, 0);
+            let mut state = long_state(code, stack, cr3, true);
+            state.activity = Some(CpuActivity::Halted);
+            if cpu == 0 && !bsp_if {
+                state.rflags = 2;
+            }
+            install(&mut board, cpu, state, 0xd01);
+        }
+        let bus = board.bus_mut();
+        bus.write_mmio_shared(
+            1,
+            GuestPhysicalAddress::new(LOCAL_APIC_MMIO_BASE + 0xf0),
+            AccessWidth::Dword,
+            0x1ff,
+        )
+        .unwrap();
+        // INTIN2 high dword selects APIC ID 1. The low dword unmasks the edge.
+        for (offset, value) in [
+            (0, 0x15),
+            (0x10, 1 << 24),
+            (0, 0x14),
+            (0x10, u64::from(BOARD_VECTOR)),
+        ] {
+            bus.write_mmio_shared(
+                0,
+                GuestPhysicalAddress::new(IO_APIC_MMIO_BASE + offset),
+                AccessWidth::Dword,
+                value,
+            )
+            .unwrap();
+        }
+        for (port, value) in [(0x43, 0x34), (0x40, 10), (0x40, 0)] {
+            bus.write_port(PortAddress::new(port), AccessWidth::Byte, value)
+                .unwrap();
+        }
+        board
+    }
+
+    #[test]
+    fn the_idle_jump_wakes_the_ap_targeted_by_the_pit_ioapic_route() {
+        for bsp_if in [false, true] {
+            let mut board = pit_ioapic_ap_board(bsp_if);
+            let (finished, counters, _) = run_scheduler(&mut board, QuantumPolicy::Fixed(20), 200);
+            assert_eq!(finished, Finished::AllIdle);
+            assert_eq!(
+                (counters[0].wakes, counters[1].wakes),
+                (0, 1),
+                "BSP.IF={bsp_if}"
+            );
+            assert_eq!(dword(&mut board, COUNTER_1), 1);
+            assert_eq!(vector_state(&board, 1, BOARD_VECTOR), (false, false));
+            assert!(board.clock().now_ns() >= 8381);
+        }
+    }
+
+    #[test]
+    fn the_boot_processor_acknowledges_the_source_that_supplied_the_frame() {
+        use crate::{AccessWidth, GuestPhysicalAddress};
+
+        let mut board = board(2);
+        assert!(board.enable_pit_ioapic_irq());
+        board
+            .bus_mut()
+            .write_mmio_shared(
+                0,
+                GuestPhysicalAddress::new(LOCAL_APIC_MMIO_BASE + 0xf0),
+                AccessWidth::Dword,
+                0x1ff,
+            )
+            .unwrap();
+        let boot_lapic = board.local_apic_of(0).unwrap();
+        let sender = board.local_apic_of(1).unwrap();
+        let mut ioapic_source = board.pit_ioapic_source().unwrap();
+        let stats = ioapic_source.clone();
+        let mut source = BootProcessorSource {
+            board: &mut ioapic_source,
+            lapic: LapicIrqSource::new(boot_lapic.clone()),
+            selected_board_vector: Cell::new(None),
+        };
+        sender.write_icr(1, 0, 0x30).unwrap();
+        assert_eq!(source.pending_vector(), Some(0x30));
+        sender.write_icr(1, 0, 0x50).unwrap();
+        source.acknowledge(0x30);
+        assert_eq!(boot_lapic.vector_state(0x30), (false, true));
+        assert_eq!(boot_lapic.vector_state(0x50), (true, false));
+        assert_eq!(stats.stats().acknowledged, 1);
+        assert_eq!(stats.stats().ack_refused, 0);
     }
 
     /// A source with one vector, pending until it was acknowledged once.
