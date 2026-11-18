@@ -612,12 +612,12 @@ CQE соответствует двум полным кругам. [NVMe Base 2.
 `0x05` и `0x06` возвращают страницы без необязательных полей, `0x07` возвращает
 список активных NSID для NVM, а `0x08` сообщает готовность NSID 1 при
 подключённом backend. Тесты проверяют байты всех четырёх страниц, неизвестный
-CSI, границы NSID и сохранение DMA-буфера при отказе. [NVMe Base 2.4, §5.2.14](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=336) · [NVM Command Set 1.3, §4.1.5](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=83)
+CSI, границы NSID и сохранение DMA-буфера при отказе. [NVMe Base 2.4, §5.2.14](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=362) · [NVM Command Set 1.3, §4.1.5](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=83)
 
 В Identify Controller байт VWC равен `0x04`. `VWCP = 0` сообщает об
 отсутствии энергозависимого кэша записи, `FB = 10b` соответствует
 `Invalid Namespace or Format` при `Flush` для `NSID = 0xFFFF_FFFF`.
-[NVMe Base 2.4, Figure 338](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=374)
+[NVMe Base 2.4, Figure 338](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=400)
 
 Независимое ревью `gpt-6.1-sol` (`high`) одобрило изменение без замечаний.
 Целевой прогон Identify дал 10 успешных тестов. Полный `od-machine` дал
@@ -633,7 +633,7 @@ CSI, границы NSID и сохранение DMA-буфера при отк�
 нему на команду. При выключенных директивах `Write` игнорирует DTYPE и DSPEC.
 Зарезервированные частоты DSM отклоняются. Регрессии проверяют запись и
 чтение тех же 512 байт с флагами, границы `AF` и отказ на поля, относящиеся
-к другим возможностям. [NVM Command Set 1.3, Figures 54–55, 71–72](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=49) · [NVMe Base 2.4, §8.1.9](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=617)
+к другим возможностям. [NVM Command Set 1.3, Figures 54–55, 71–72](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=49) · [NVMe Base 2.4, §8.1.9](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=643)
 
 На Apple M3 Max, macOS 26.7.1 и Rust 1.99.0 сравнили release-сборки на
 `Read` по 512 байт через `MachineBus` и in-memory backend. Каждая серия
@@ -669,7 +669,7 @@ CSI, границы NSID и сохранение DMA-буфера при отк�
 указывает `SLBA`, если начало диапазона уже за пределами пространства имён,
 или `NSZE`, если диапазон пересекает конец. Для общей ошибки backend,
 которая не указывает конкретный блок, поле LBA остаётся нулевым.
-[NVMe Base 2.4, Figure 212](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=219) · [NVM Command Set 1.3, Figure 110](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=76)
+[NVMe Base 2.4, Figure 212](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=245) · [NVM Command Set 1.3, Figure 110](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=76)
 
 Тесты читают запись через Get Log Page и проверяют байтовое представление
 `CNS`, `CSI`, `PSDT`, `QSIZE`, `SV`, `PRP1`, `NSID`, `DSM.AF`, отсутствие
@@ -693,6 +693,27 @@ p95 разнонаправлены.
 Форматирование, офлайн-проверка всех целей workspace и Graphify прошли.
 Проверка структуры вернула прежние 46 диагностик об отсутствующих локальных
 артефактах `work/`.
+
+#### Пороги температуры и SMART AER
+
+SMART показывает `TTC` при равенстве или выходе за один из порогов
+composite temperature. Модель сообщает 300 K. Set Features допускает
+`TMPSEL = 0xF` для единственного датчика. Get Features проверяет конкретный
+датчик. При `TMPTHMH = 0` ненулевой гистерезис отклоняется.
+[NVMe Base 2.4, §5.2.30.1.3](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=488)
+
+При включённом `AEC.SHCW` переход к действующему предупреждению создаёт
+SMART AER типа 1, `info = 1`, `LID = 0x02`. Успешный Get Log Page с
+`RAE = 0` очищает только событие соответствующего журнала, включая событие,
+для которого AER ещё не поступил. Тесты проверяют оба порога, режим без
+уведомления, повторное событие, независимость Error и SMART и поведение RAE.
+[NVMe Base 2.4, §5.2.2 и Figure 154](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=209)
+
+Полный `od-machine` дал 2 134 успешных теста и 15 игнорируемых.
+Форматирование, офлайн-проверка всех целей workspace и Graphify прошли.
+Проверка структуры сохранила прежние 46 диагностик о локальных артефактах
+`work/`. Независимое ревью `gpt-6.1-sol` (`high`) одобрило код, повторило
+98 проверок NVMe и уточнило номера страниц PDF.
 
 #### История исходного среза A
 

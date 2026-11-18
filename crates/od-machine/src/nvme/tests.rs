@@ -1738,6 +1738,83 @@ fn an_event_that_happens_first_completes_the_next_aer_at_once() {
 }
 
 #[test]
+fn composite_temperature_threshold_updates_smart_and_reports_enabled_events() {
+    let mut rig = Rig::enabled();
+    let (_, page) = rig.log_page(0x02, 512, 0, true);
+    assert_eq!((page[0], u16_at(&page, 1)), (0, 300));
+
+    let (first, pending) = rig.admin_try(Sqe::new(OPC_AER));
+    assert!(pending.is_none());
+    let set_all = (0xF << 16) | 300;
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(4, set_all))
+            .status(),
+        (0, 0)
+    );
+    let (_, page) = rig.log_page(0x02, 512, 0, true);
+    assert_eq!(page[0], 2, "temperature equals over threshold");
+    assert!(
+        rig.poll_admin().is_none(),
+        "notification disabled by default"
+    );
+    assert_eq!(rig.admin(Sqe::new(OPC_GET_FEATURES).cdw(4, 0)).dw0, 300);
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_GET_FEATURES).cdw(4, 0xF << 16))
+            .status(),
+        (0, 0x02),
+        "all-sensors selector is Set-only"
+    );
+    let hysteresis = (1 << 22) | 343;
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(4, hysteresis))
+            .status(),
+        (0, 0x02),
+        "hysteresis is not advertised"
+    );
+
+    rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(0x0B, 2));
+    let event = rig.poll_admin().expect("enabled temperature event");
+    assert_eq!(
+        (event.cid, event.dw0, event.status()),
+        (first, 0x0002_0101, (0, 0))
+    );
+    rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(4, 343));
+    let (_, page) = rig.log_page(0x02, 512, 0, false);
+    assert_eq!(page[0], 0, "warning cleared after restoring default");
+
+    let (second, pending) = rig.admin_try(Sqe::new(OPC_AER));
+    assert!(pending.is_none());
+    rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(4, (1 << 20) | 300));
+    let event = rig.poll_admin().expect("under threshold event");
+    assert_eq!((event.cid, event.dw0), (second, 0x0002_0101));
+    let (_, page) = rig.log_page(0x02, 512, 0, true);
+    assert_eq!(page[0], 2, "temperature equals under threshold");
+}
+
+#[test]
+fn log_acknowledgement_clears_only_the_matching_pending_event() {
+    let mut rig = Rig::enabled();
+    rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(0x0B, 2));
+    rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(4, 300)); // pending SMART
+    rig.set_dword(ADMIN_CQ_DOORBELL, 0xFFFF); // pending Error
+    rig.log_page(0x03, 512, 0, false); // firmware-slot log does not own either event
+    rig.log_page(0x02, 512, 0, true); // keep the SMART event
+    rig.log_page(0x01, 64, 0, false); // clear the Error event before requesting it
+
+    let event = rig.admin(Sqe::new(OPC_AER));
+    assert_eq!(event.dw0, 0x0002_0101);
+    rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(4, 343));
+    rig.log_page(0x02, 512, 0, false); // acknowledge the first SMART event
+    rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(4, 300)); // second pending SMART
+    let (_, page) = rig.log_page(0x02, 512, 0, false); // clear before requesting it
+    assert_eq!(
+        page[0], 2,
+        "acknowledgement does not change the temperature warning"
+    );
+    assert!(rig.admin_try(Sqe::new(OPC_AER)).1.is_none());
+}
+
+#[test]
 fn abort_reports_the_target_as_not_aborted() {
     let mut rig = Rig::enabled();
     // Abort targets (SQID 0, CID 0x1234); it has completed or never existed.

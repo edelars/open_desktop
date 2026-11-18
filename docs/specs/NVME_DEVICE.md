@@ -130,7 +130,7 @@ Delete I/O SQ сначала обслуживает команды, уже по�
 
 ## 8. Identify
 
-Обе формы Identify Controller (`0x01`, `0x06`) требуют `NSID = 0` (`Invalid Field` при ненулевом NSID). Формы `0x05`–`0x07` проверяют `CDW11[31:24]` (CSI). Поддержан NVM (`CSI = 0`), другой CSI даёт `Invalid Field in Command`. [NVMe Base 2.4, §5.2.14](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=336)
+Обе формы Identify Controller (`0x01`, `0x06`) требуют `NSID = 0` (`Invalid Field` при ненулевом NSID). Формы `0x05`–`0x07` проверяют `CDW11[31:24]` (CSI). Поддержан NVM (`CSI = 0`), другой CSI даёт `Invalid Field in Command`. [NVMe Base 2.4, §5.2.14](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=362)
 
 `CDW10[7:0]` = CNS; результат — 4096 байт по PRP, остальное содержимое страницы — нули. Поддержаны:
 
@@ -201,13 +201,13 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 |---|---|---|
 | `0x01` | Arbitration | сохраняет `AB`, `LPW/MPW/HPW`; по умолчанию `AB = 7`. Проход round robin выбирает по одной команде на SQ. Приоритеты WRR вне выбранного механизма |
 | `0x02` | Power Management | только `PS = 0`, без workload hint; иное — `Invalid Field` |
-| `0x04` | Temperature Threshold | датчик 0 (composite): порог over (`THSEL = 0`, по умолчанию 343) и under (`THSEL = 1`, по умолчанию 0); `TMPSEL ≠ 0` или `THSEL > 1` — `Invalid Field`; события по порогам не генерируются (температура постоянная) |
+| `0x04` | Temperature Threshold | Единственный датчик composite (`TMPSEL = 0`). Set с `TMPSEL = 0xF` также применяет порог composite. Over (`THSEL = 0`) по умолчанию 343 K, under (`THSEL = 1`) по умолчанию 0 K. Неподдерживаемый селектор или ненулевой `TMPTHH` даёт `Invalid Field`. Достижение или пересечение порога устанавливает `SMART.TTC` |
 | `0x05` | Error Recovery | `TLER[15:0]`, `DULBE` не поддержан (`Invalid Field`); `NSID` — 0, 1 или `0xFFFF_FFFF`, иначе `Invalid Namespace or Format` |
 | `0x07` | Number of Queues | Get — текущее число (по умолчанию 4 SQ и 4 CQ, 0-based `3`, `DW0 = NSQA \| NCQA << 16`); Set — `NSQR/NCQR`, значение больше доступного усекается, `0xFFFF` — `Invalid Field`; после создания любой I/O-очереди — `Command Sequence Error` |
 | `0x08` | Interrupt Coalescing | `THR/TIME` хранятся, на доставку не влияют |
 | `0x09` | Interrupt Vector Configuration | `IV = 0` в режиме INTx, `IV = 0..=4` при MSI-X. Set Features в режиме MSI-X требует I/O CQ с `IEN = 1` и соответствующим вектором. `CD` хранится отдельно для каждого вектора. Get Features возвращает `IV` и `CD` |
 | `0x0A` | Write Atomicity Normal | `DN` хранится |
-| `0x0B` | Asynchronous Event Configuration | допустимы только биты `[7:0]` (SMART/Health critical warning); `OAES = 0` |
+| `0x0B` | Asynchronous Event Configuration | Допустимы биты `[7:0]` SMART/Health critical warning. Бит 1 разрешает событие Temperature Threshold. `OAES = 0` |
 
 Не поддержаны, `Invalid Field`: `0x03` LBA Range Type, `0x06` Volatile Write Cache (`VWC.VWCP = 0`), `0x0C` APST, `0x0D…0x0F`, `0x80` Software Progress Marker и все остальные.
 
@@ -218,17 +218,19 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 | LID | Страница | Содержимое |
 |---|---|---|
 | `0x00` | Supported Log Pages (1024) | 256 little-endian `u32`, по одному на LID. `LSUPP = 1` для шести страниц в таблице. Индексы записей как `LPO` и параметры `LIDSP` не объявлены |
-| `0x01` | Error Information | До 64 записей по 64 байта, новейшая первой. Ошибочный CQE со `M = 1` и запись содержат общий статус. Ошибка параметра указывает байт и бит начала поля SQE в `Parameter Error Location`. Если конкретное поле команды неприменимо, значение нулевое. Ошибка doorbell вне команды даёт `SQID = CID = Parameter Error Location = 0xFFFF`. `LBA Out of Range` указывает первый недопустимый LBA. `NSID` берётся из команды (`0xFFFF_FFFF`, если 0). `Error Count` начинается с 1 и после `u64::MAX` начинается снова. Неиспользованные записи нулевые. [NVMe Base 2.4, Figure 212](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=219) · [NVM Command Set 1.3, Figure 110](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=76) |
-| `0x02` | SMART / Health Information (512) | `Critical Warning = 0`; `Composite Temperature = 300` K; `Available Spare = 100`, `Threshold = 10`; `Percentage Used = 0`; `Data Units Read/Written` (смещения 32/48) — тысячи секторов по 512 байт, с округлением вверх, `Host Read/Write Commands` (64/80) — число успешных `Read`/`Write` с включения питания (срез B; NOT VERIFIED: единицы и округление); `Controller Busy Time` = 0 (нет времени); `Power Cycles = 1`; `Number of Error Information Log Entries` — живой счётчик ошибок; остальное 0. **`Power On Hours`, `Controller Busy Time` = 0, так как у устройства нет источника времени** — разрыв |
+| `0x01` | Error Information | До 64 записей по 64 байта, новейшая первой. Ошибочный CQE со `M = 1` и запись содержат общий статус. Ошибка параметра указывает байт и бит начала поля SQE в `Parameter Error Location`. Если конкретное поле команды неприменимо, значение нулевое. Ошибка doorbell вне команды даёт `SQID = CID = Parameter Error Location = 0xFFFF`. `LBA Out of Range` указывает первый недопустимый LBA. `NSID` берётся из команды (`0xFFFF_FFFF`, если 0). `Error Count` начинается с 1 и после `u64::MAX` начинается снова. Неиспользованные записи нулевые. [NVMe Base 2.4, Figure 212](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=245) · [NVM Command Set 1.3, Figure 110](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=76) |
+| `0x02` | SMART / Health Information (512) | `Critical Warning.TTC` определяется порогами FID `0x04`. `Composite Temperature = 300` K; `Available Spare = 100`, `Threshold = 10`; `Percentage Used = 0`; `Data Units Read/Written` (смещения 32/48) — тысячи секторов по 512 байт, с округлением вверх, `Host Read/Write Commands` (64/80) — число успешных `Read`/`Write` с включения питания (срез B; NOT VERIFIED: единицы и округление); `Controller Busy Time` = 0 (нет времени); `Power Cycles = 1`; `Number of Error Information Log Entries` — живой счётчик ошибок; остальное 0. **`Power On Hours`, `Controller Busy Time` = 0, так как у устройства нет источника времени** — разрыв |
 | `0x03` | Firmware Slot Information (512) | `AFI = 0x01` (активен слот 1, следующий — нет); `FRS1` = `FR`; слоты 2–7 пусты (нули) |
 | `0x05` | Commands Supported and Effects (4096) | 256 little-endian `u32` для Admin с байта 0 и 256 для NVM I/O с байта 1024. `CSUPP = 1` для реализованных команд, `LBCC = 1` для NVM `Write`. Зарезервированный остаток обнулён |
 | `0x12` | Feature Identifiers Supported and Effects (1024) | 256 little-endian `u32`, по одному на FID. `FSUPP = 1` для реализованных features. `FSP` указывает namespace для Error Recovery и controller для остальных. Зарезервированные поля обнулены |
 
-Чтение с `RAE = 0` снимает маску асинхронного события для `0x01` (тип 0 «error status») и для `0x02/0x03` (тип 1). Чтение страниц `0x00`, `0x05` и `0x12` сохраняет настройки AER. Поскольку `CC.CSS = 0`, `CSI` не влияет на эти три страницы. [Base 2.4, Figures 204–211](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=239), [Figures 216–217](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=253), [Figures 270–271](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=302), [NVM Command Set 1.3, Figure 92](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=64).
+Успешное чтение с `RAE = 0` очищает Error event для `0x01` и SMART/Health event для `0x02`. Остальные поддержанные журналы не сбрасывают эти события. Поскольку `CC.CSS = 0`, `CSI` не влияет на эти три страницы. [Base 2.4, Figures 204–211](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=239), [Figures 216–217](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=253), [Figures 270–271](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=302), [NVM Command Set 1.3, Figure 92](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=64).
 
 ### 9.3. Асинхронные события
 
-События генерирует только контроллер при ошибочных doorbell (раздел 5): тип 0 (error status), `info` 0 или 1, log page `0x01`. `DW0` completion AER = `тип \| info << 8 \| log_page << 16`. Событие, возникшее без невыполненного AER, ждёт и завершает следующий AER сразу. Пока событие данного типа не «прочитано» (`Get Log Page` с `RAE = 0`), новые события того же типа не передаются (запись в Error Information log всё равно добавляется). Событий SMART/NS-изменений/firmware-активации нет.
+- Ошибочные doorbell создают Error event (тип 0, `info` 0 или 1, `LID = 0x01`).
+- Переход к разрешённому предупреждению `TTC` создаёт SMART/Health event (тип 1, `info = 1`, `LID = 0x02`). Постоянная composite temperature равна 300 K. Порог можно пересечь изменением настройки; включение уведомления при действующем предупреждении тоже создаёт событие.
+- `DW0` completion AER содержит тип, `info << 8` и `LID << 16`. Если AER ещё нет, событие ждёт запроса. Успешное чтение связанного журнала с `RAE = 0` очищает уже доставленное или ожидающее событие. Следующее пересечение порога может создать новое SMART-событие. [NVMe Base 2.4, §5.2.2](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=209)
 
 ## 10. Что не сделано и почему
 
@@ -244,7 +246,7 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 | Доставка MSI-X в PCI-профиле | Fixed edge в физический xAPIC ID. Гостевые драйверы и другие форматы сообщений остаются непроверенными |
 | Changed Attached Namespace List, телеметрия | `Invalid Log Page` |
 | Время (`Power On Hours`, `Controller Busy Time`, `TO`) | у устройства нет виртуальных часов; `RDY` выставляется синхронно, объявлено `TO = 1` |
-| `NSSR` (NVM subsystem reset), `CRIME`, CMB, PMR, boot partitions, WRR, ключевые события температуры | не реализованы; `CAP` не объявляет их |
+| `NSSR` (NVM subsystem reset), `CRIME`, CMB, PMR, boot partitions, WRR | вне реализованного профиля; `CAP` их не объявляет |
 | Идентификаторы `VID`, `SSVID`, `IEEE` | нулевые; значения проекту не выданы (раздел 8.1) |
 | Моделирование времени исполнения команд | команды завершаются в `service`, без виртуальной задержки |
 
@@ -258,7 +260,7 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 - перечень обязательных Admin-команд и обязательных features для контроллера ввода-вывода PCIe (раздел 7, 9.1), значения по умолчанию features (`Arbitration = 7`, порог 343 K), допустимость `SEL ≠ 0`;
 - коды статусов и их SCT, особенно `PRP Offset Invalid`, `Invalid Interrupt Vector`, `Invalid Queue Deletion`, порядок проверок при создании очередей, `DNR`;
 - применимость прочих расширенных полей Error Information к отдельным ошибкам и сохранение счётчиков через новый экземпляр контроллера. Проверенные поля `Parameter Error Location` и `LBA` описаны в разделе 9.2;
-- коды событий AER (тип 0, `info` 0 и 1) и правила маскирования до `Get Log Page` с `RAE = 0`;
+- расширенные правила AER для других типов событий вне текущего профиля. Маскирование и `RAE` для Error и SMART описаны в разделе 9.3;
 - ответ `Abort`, когда цель не найдена (`DW0` бит 0 = 1), и поведение при несуществующей SQ;
 - реакция на doorbell несозданной очереди и на значение вне диапазона (здесь — запись принимается, событие и запись в журнал, а не ошибка шины);
 - правила PRP: допустимое смещение `PRP1` и `PRP2`-листа, цепочка листов.

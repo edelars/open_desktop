@@ -65,13 +65,16 @@ const ERROR_LOG_ENTRY_BYTES: usize = 64;
 const WARNING_TEMPERATURE_K: u16 = 343;
 const CRITICAL_TEMPERATURE_K: u16 = 358;
 const COMPOSITE_TEMPERATURE_K: u16 = 300;
+const SMART_WARNING_TEMPERATURE: u8 = 1 << 1;
 /// Largest transfer of one command, `MDTS` = 8 (2^8 pages of 4 KiB).
 pub(super) const MDTS: u8 = 8;
 const LBA_DATA_SIZE_LOG2: u8 = 9;
 
 const EVENT_TYPE_ERROR: u8 = 0;
+const EVENT_TYPE_SMART: u8 = 1;
 const EVENT_INFO_INVALID_DOORBELL_REGISTER: u8 = 0;
 const EVENT_INFO_INVALID_DOORBELL_VALUE: u8 = 1;
+const EVENT_INFO_TEMPERATURE_THRESHOLD: u8 = 1;
 
 /// Current values of the supported features (reset by a controller reset).
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -105,6 +108,16 @@ impl Default for Features {
 }
 
 impl Features {
+    fn temperature_warning(&self) -> bool {
+        COMPOSITE_TEMPERATURE_K >= self.temperature_over
+            || COMPOSITE_TEMPERATURE_K <= self.temperature_under
+    }
+
+    fn temperature_event_enabled(&self) -> bool {
+        self.async_event_config & u32::from(SMART_WARNING_TEMPERATURE) != 0
+            && self.temperature_warning()
+    }
+
     /// `(NSQA, NCQA)` the controller currently offers, 0's based.
     fn allocated_queues(&self) -> (u16, u16) {
         self.queues
@@ -213,6 +226,13 @@ impl AerState {
                 Outcome::Deferred
             }
         }
+    }
+
+    /// A successful log read with RAE cleared acknowledges this event type.
+    fn clear(&mut self, event_type: u8) {
+        self.masked &= !(1 << event_type);
+        self.pending
+            .retain(|dw0| dw0 & 0x7 != u32::from(event_type));
     }
 
     pub(super) fn next_ready(&self) -> Option<(u16, u32)> {
@@ -660,8 +680,8 @@ fn get_log_page(
     )?;
     if !retain_event {
         match lid {
-            LID_ERROR_INFORMATION => state.aer.masked &= !(1 << EVENT_TYPE_ERROR),
-            LID_SMART_HEALTH | LID_FIRMWARE_SLOT => state.aer.masked &= !(1 << 1),
+            LID_ERROR_INFORMATION => state.aer.clear(EVENT_TYPE_ERROR),
+            LID_SMART_HEALTH => state.aer.clear(EVENT_TYPE_SMART),
             _ => {}
         }
     }
@@ -732,7 +752,9 @@ fn feature_effects_page() -> Vec<u8> {
 
 fn smart_health_page(state: &NvmeState) -> Vec<u8> {
     let mut page = vec![0u8; 512];
-    // Critical Warning (byte 0) = 0: no warning condition exists.
+    if state.features.temperature_warning() {
+        page[0] = SMART_WARNING_TEMPERATURE;
+    }
     put(&mut page, 1, &COMPOSITE_TEMPERATURE_K.to_le_bytes());
     page[3] = 100; // Available Spare
     page[4] = 10; // Available Spare Threshold
@@ -765,6 +787,7 @@ fn set_features(state: &mut NvmeState, command: &Command) -> Result<Completion, 
     let value = command.cdw11;
     let interrupt_vectors = state.interrupt_vector_count();
     let features = &mut state.features;
+    let temperature_event_was_enabled = features.temperature_event_enabled();
     match (command.cdw10 & 0xFF) as u8 {
         FID_ARBITRATION => features.arbitration = value & 0xFFFF_FF07,
         FID_POWER_MANAGEMENT => {
@@ -779,7 +802,7 @@ fn set_features(state: &mut NvmeState, command: &Command) -> Result<Completion, 
             }
         }
         FID_TEMPERATURE_THRESHOLD => {
-            if temperature_selector(value)? {
+            if temperature_selector(value, true)? {
                 features.temperature_over = value as u16;
             } else {
                 features.temperature_under = value as u16;
@@ -846,19 +869,28 @@ fn set_features(state: &mut NvmeState, command: &Command) -> Result<Completion, 
         }
         _ => return Err(Status::INVALID_FIELD.at_field(10, 0)), // FID
     }
+    if !temperature_event_was_enabled && features.temperature_event_enabled() {
+        state.aer.raise(
+            EVENT_TYPE_SMART,
+            EVENT_INFO_TEMPERATURE_THRESHOLD,
+            LID_SMART_HEALTH,
+        );
+    }
     Ok(Completion::ok(0))
 }
 
-/// `TMPSEL` must name the composite sensor (0); returns whether the
-/// over-temperature (`THSEL` = 0) or under-temperature (1) threshold is meant.
-fn temperature_selector(value: u32) -> Result<bool, Status> {
+/// Selects over or under temperature for the sole composite sensor.
+fn temperature_selector(value: u32, set: bool) -> Result<bool, Status> {
     let select = ((value >> 16) & 0xF) as u8;
     let threshold = (value >> 20) & 0x3;
-    if select != 0 {
+    if select != 0 && !(set && select == 0xF) {
         return Err(Status::INVALID_FIELD.at_field(11, 16)); // TMPSEL
     }
     if threshold > 1 {
         return Err(Status::INVALID_FIELD.at_field(11, 20)); // THSEL
+    }
+    if value & (0b111 << 22) != 0 {
+        return Err(Status::INVALID_FIELD.at_field(11, 22)); // TMPTHH
     }
     Ok(threshold == 0)
 }
@@ -884,7 +916,7 @@ fn get_features(state: &NvmeState, command: &Command) -> Result<Completion, Stat
     let dw0 = match (command.cdw10 & 0xFF) as u8 {
         FID_ARBITRATION => features.arbitration,
         FID_POWER_MANAGEMENT => 0,
-        FID_TEMPERATURE_THRESHOLD => u32::from(if temperature_selector(value)? {
+        FID_TEMPERATURE_THRESHOLD => u32::from(if temperature_selector(value, false)? {
             features.temperature_over
         } else {
             features.temperature_under

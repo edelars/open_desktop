@@ -1904,6 +1904,7 @@ S5-21 residual handoff (2026-11-13): both rootfs and E-inclusive exact inventori
 - **Исправление Identify.** Добавлены обязательные CNS `0x05`–`0x08` для единственного NVM namespace. Бит `VWC.VWCP` остаётся нулём, `VWC.FB = 10b` явно сообщает об отказе на широковещательный `Flush`. [Отчёт](reports/STAGE_7_REPORT.md#структуры-identify-для-nvm).
 - **Исправление Read/Write.** Команды принимают FUA, LR и допустимые подсказки DSM. FUA использует имеющийся контракт write-through. При выключенных директивах поля DTYPE и DSPEC команды Write игнорируются. [Отчёт](reports/STAGE_7_REPORT.md#поля-read-и-write).
 - **Диагностика команды.** Журнал записывает применимый байт и бит поля SQE и первый недопустимый LBA для `LBA Out of Range`. Для doorbell вне команды `Parameter Error Location = 0xFFFF`. [Отчёт](reports/STAGE_7_REPORT.md#поле-параметра-и-lba-в-журнале-ошибок).
+- **Пороги и события.** Настройки Temperature Threshold влияют на SMART.TTC и условное уведомление AER. Чтение связанного журнала очищает ожидающий AER event при `RAE = 0`. [Отчёт](reports/STAGE_7_REPORT.md#пороги-температуры-и-smart-aer).
 - **Следующий шаг.** Проверить прерывания в госте и применимость оставшихся расширенных полей Error Information. Размеры записей очередей исправлены отдельно. [Пункты сверки](specs/NVME_DEVICE.md#11-not-verified-места-где-расхождение-наиболее-вероятно), [ISSUE-519](#issue-519).
 
 <a id="issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes"></a>
