@@ -931,6 +931,17 @@ machine-readable summary записаны в
 
 **Готово:** смесь native blocks и interpreter instructions совпадает с чистым interpreter. Новые S2 формы используются только после их проверки; all-fallback workload не называется JIT-ускорением.
 
+На локальном стенде macOS ARM64 закреплён отказ публикации в production
+paged loop. При занятой MAP_JIT-аренде `MOV RAX,[RBX]` завершается одним
+шагом интерпретатора. После освобождения аренды тот же сеанс доходит до
+следующей итерации и выполняет загрузку нативно. Состояние, бюджет и
+порядок записей совпадают с чистым интерпретатором. Обязательный шаг
+`s3_16_publication_refusal` включён в local selector.
+См. [JIT contract](../specs/JIT_CONTRACT.md#s3-16-paged-publication-refusal).
+Локальный прогон `stage3-20261118-231721-cf43a57691` завершился
+в статусе `local_only`: 345 шагов прошли, 40 остались `not_run`.
+Новый шаг и все 153 самотеста стенда прошли.
+
 **S3-55, bounded generic fallback:** opt-in mixed путь передаёт существующему
 `od_isa::execute::step` точные bare CLD/STD и NOP, отдельно учитывает compile,
 helper и успешные interpreter steps, проверяет progress и повторно проверяет

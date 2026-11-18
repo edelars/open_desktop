@@ -203,6 +203,7 @@ SELF_TEST_NAMES = (
     "test_vmhost_process_timeout_kills_child_group",
     "test_s3_30p3_allocator_helper_clobber_gate_is_pinned_and_fails_closed",
     "test_s3_16_not_rcx_fallback_gate_is_pinned_and_fail_closed",
+    "test_s3_16_publication_refusal_gate_is_pinned",
 )
 SELF_TEST_IDENTITIES = {
     f"__main__.Stage3HarnessValidationTests.{name}" for name in SELF_TEST_NAMES
@@ -1482,6 +1483,10 @@ ADDITIONAL_TEST_GATES = (
         "tests::s3_16o_s3_34_store_store_not_rcx_store_store_fixed_seed_boundaries",
     ),
     (
+        "s3_16_publication_refusal", "local_acceptance", "od-host",
+        "paged_host_loop::tests::s3_16_publication_refusal_interprets_once_and_resumes_native",
+    ),
+    (
         "s3_34dr_load_load_profile_exact_sequences", "local_acceptance", "od-jit",
         "memory_cache::tests::profiles_admit_only_the_exact_load_store_sequences",
     ),
@@ -1798,6 +1803,7 @@ LOCAL_RUST_TEST_SOURCES = (
     "crates/od-host/tests/memory_corpus.rs",
     "crates/od-testkit/src/memory_corpus.rs",
     "crates/od-host/src/lib.rs",
+    "crates/od-host/src/paged_host_loop.rs",
     "crates/od-host/src/session_abi_v1.rs",
     "crates/od-host/src/session.rs",
     "crates/od-host/src/tests/native_register_v1_corpus.rs",

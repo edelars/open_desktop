@@ -2258,6 +2258,63 @@ mod tests {
         assert_eq!(observe(&state, &mut bus, false), before);
     }
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn s3_16_publication_refusal_interprets_once_and_resumes_native() {
+        let _guard = jit_guard();
+        let lease = crate::MapJitLease::acquire().unwrap();
+        let mut session = PagedFetchedLoadSession::new();
+        let control = PagedHostLoopControl::new();
+        let mut bus = make_bus(&LOOP_ALIAS);
+        let mut initial = loop_state();
+        initial.gpr[Register::Rcx as usize] ^= 0xff;
+        let mut state = initial.clone();
+        let mut rflags_defined = RFLAGS_DEFINED;
+
+        // The load is supported, but another owner holds the publication lease.
+        let first = run_loop(
+            &mut session,
+            &control,
+            &mut bus,
+            &mut state,
+            &mut rflags_defined,
+            1,
+        );
+        let reference_first = reference(&LOOP_ALIAS, &initial, 1, false);
+        assert_eq!(first.report.exit, PagedHostLoopExit::BudgetExhausted);
+        assert_eq!(first.report.retired_jit, 0);
+        assert_eq!(first.report.retired_interpreter, 1);
+        assert_eq!(first.report.jit_refusals, 1);
+        assert!(first.report.budget_is_consistent());
+        assert_eq!(session.admissions(), 0);
+        assert_eq!(
+            observe(&state, &mut bus, false),
+            reference_first.observation
+        );
+        assert_eq!(first.writes, reference_first.writes);
+
+        drop(lease);
+        // Resume at the store, then the stack operations, then the same load.
+        let rest = run_loop(
+            &mut session,
+            &control,
+            &mut bus,
+            &mut state,
+            &mut rflags_defined,
+            4,
+        );
+        let reference_all = reference(&LOOP_ALIAS, &initial, 5, false);
+        assert_eq!(rest.report.exit, PagedHostLoopExit::BudgetExhausted);
+        assert_eq!(rest.report.retired_jit, 1);
+        assert_eq!(rest.report.retired_interpreter, 3);
+        assert_eq!(rest.report.jit_refusals, 3);
+        assert!(rest.report.budget_is_consistent());
+        assert_eq!(session.admissions(), 1);
+        assert_eq!(rflags_defined, RFLAGS_DEFINED);
+        assert_eq!(observe(&state, &mut bus, false), reference_all.observation);
+        assert_eq!([first.writes, rest.writes].concat(), reference_all.writes);
+    }
+
     /// Where the native path is unavailable the session refuses every admission
     /// and the loop runs the shared interpreter only (an explicit skip of the
     /// native checks): same state as the pure interpreter, no native step.

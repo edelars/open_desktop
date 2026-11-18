@@ -3524,6 +3524,18 @@ other decoded operations, memory instructions, general Stage 2 fallback,
 dispatcher CLI changes, faults on writable/mapped guest memory and generic
 fallback are outside this partial API.
 
+#### S3-16: paged publication refusal
+
+The single-vCPU paged loop falls back for a supported `MOV RAX,[RBX]`
+when the MAP_JIT lease is busy before native entry. The attempted fetch
+can commit page-walk Accessed bits. The interpreter then consumes one
+instruction and one unit of budget. No block was published for that step.
+After the lease is released, the test resumes the same session at the
+next instruction and checks exactly one native retirement at the next
+visit to the load. The combined write log, registers, RIP, flags, RAM
+and retirement agree with the interpreter. The local Stage 3 selector
+requires the exact `s3_16_publication_refusal` gate.
+
 #### S3-16m: exact bare-NOP continuation for the bounded memory dispatcher
 
 `od_jit::memory_dispatch::run_with_nop_fallback` is a separate opt-in entry;
