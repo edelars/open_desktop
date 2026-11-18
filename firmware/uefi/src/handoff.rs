@@ -9,6 +9,9 @@ const MAGIC: &[u8; 8] = b"ODHANDOF";
 const HEADER_SIZE: usize = 0xA0;
 const CRC_OFFSET: usize = 0x14;
 const NO_OWNER: u32 = u32::MAX;
+const DEVICE_RTC_CMOS: u32 = 10;
+const HANDOFF_MINOR_RTC: u16 = 3;
+const MAX_RTC_BASE_UNIX_SECONDS: u64 = 253_402_300_799;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Handoff<'a> {
@@ -92,6 +95,9 @@ pub enum HandoffError {
         kind: u32,
         version_minor: u16,
     },
+    InvalidRtcBaseTime {
+        index: usize,
+    },
     RequiredDeviceNotPresent {
         index: usize,
         kind: u32,
@@ -168,6 +174,7 @@ impl HandoffError {
             | Self::InvalidDeviceIrqFlags { index, .. }
             | Self::InvalidDeviceRange { index }
             | Self::InvalidDeviceVersion { index, .. }
+            | Self::InvalidRtcBaseTime { index }
             | Self::RequiredDeviceNotPresent { index, .. } => (STOP_HANDOFF_DEVICE, index as u64),
             Self::MissingDeviceType { kind } => (STOP_HANDOFF_DEVICE, u64::from(kind)),
             Self::InvalidHeaderFlags(flags) => (STOP_HANDOFF_SIZE, u64::from(flags)),
@@ -328,7 +335,7 @@ fn validate_devices(
     count: usize,
     version_minor: u16,
 ) -> Result<(), HandoffError> {
-    let mut seen = [false; 10];
+    let mut seen = [false; 11];
     for index in 0..count {
         let at = offset + index * 0x30;
         let kind = u32_at(bytes, at);
@@ -339,12 +346,13 @@ fn validate_devices(
         let present = flags & 1 != 0;
         let pio = flags & 2 != 0;
 
-        if !(1..=9).contains(&kind) {
+        if !(1..=10).contains(&kind) {
             return Err(HandoffError::InvalidDeviceType { index, kind });
         }
         let required_minor = match kind {
             8 => 1,
             9 => 2,
+            DEVICE_RTC_CMOS => HANDOFF_MINOR_RTC,
             _ => 0,
         };
         if version_minor < required_minor {
@@ -367,7 +375,9 @@ fn validate_devices(
                 flags: irq_flags,
             });
         }
-        if pio && !matches!(kind, 1 | 9) || present && matches!(kind, 1 | 9) && !pio {
+        if pio && !matches!(kind, 1 | 9 | DEVICE_RTC_CMOS)
+            || present && matches!(kind, 1 | 9 | DEVICE_RTC_CMOS) && !pio
+        {
             return Err(HandoffError::InvalidDeviceFlags { index, flags });
         }
         if kind >= 8 && !present {
@@ -385,6 +395,19 @@ fn validate_devices(
         {
             return Err(HandoffError::InvalidDeviceRange { index });
         }
+        if kind == DEVICE_RTC_CMOS {
+            let base_time = u64_at(bytes, at + 0x20);
+            let reserved = u64_at(bytes, at + 0x28);
+            if base != 0x70
+                || length != 2
+                || u32_at(bytes, at + 0x18) != NO_OWNER
+                || irq_flags != 0
+                || base_time > MAX_RTC_BASE_UNIX_SECONDS
+                || reserved != 0
+            {
+                return Err(HandoffError::InvalidRtcBaseTime { index });
+            }
+        }
     }
     for kind in 1..=7 {
         if !seen[kind] {
@@ -396,6 +419,11 @@ fn validate_devices(
     }
     if version_minor == 2 && !seen[9] {
         return Err(HandoffError::MissingDeviceType { kind: 9 });
+    }
+    if version_minor >= HANDOFF_MINOR_RTC && !seen[DEVICE_RTC_CMOS as usize] {
+        return Err(HandoffError::MissingDeviceType {
+            kind: DEVICE_RTC_CMOS,
+        });
     }
     Ok(())
 }
@@ -451,7 +479,7 @@ impl<'a> Handoff<'a> {
         if major != 1 {
             return Err(HandoffError::UnsupportedVersion { major, minor });
         }
-        if minor > supported_minor_max || minor > 2 {
+        if minor > supported_minor_max || minor > HANDOFF_MINOR_RTC {
             return Err(HandoffError::UnsupportedVersion { major, minor });
         }
         let header_size = u32_at(bytes, 0x0C);
@@ -504,6 +532,7 @@ impl<'a> Handoff<'a> {
             0 => device_count == 7,
             1 => device_count == 8,
             2 => (8..=9).contains(&device_count),
+            HANDOFF_MINOR_RTC => (8..=10).contains(&device_count),
             _ => false,
         };
         if !valid_device_count {
@@ -588,6 +617,14 @@ impl<'a> Handoff<'a> {
 
     pub const fn device_count(&self) -> usize {
         self.device_count
+    }
+
+    /// Deterministic UTC Unix-seconds base time supplied by handoff v1.3, if present.
+    pub fn rtc_base_unix_seconds(&self) -> Option<u64> {
+        (0..self.device_count).find_map(|index| {
+            let at = self.device_table_offset + index * self.device_entry_size;
+            (u32_at(self.bytes, at) == DEVICE_RTC_CMOS).then(|| u64_at(self.bytes, at + 0x20))
+        })
     }
 
     /// Checks the fixed boot reservations and the temporary page-table reservation against the
@@ -739,6 +776,25 @@ mod tests {
         b[extension + 4..extension + 8].copy_from_slice(&1u32.to_le_bytes());
         b[extension + 8..extension + 16].copy_from_slice(&0xFC00_1000u64.to_le_bytes());
         b[extension + 16..extension + 24].copy_from_slice(&0x2000u64.to_le_bytes());
+        seal(&mut b);
+        b
+    }
+
+    fn sample_minor3() -> Vec<u8> {
+        let mut b = sample();
+        let device_offset = u32_at(&b, 0x3C) as usize;
+        b.resize(b.len() + 0x30, 0);
+        let total_size = b.len() as u32;
+        b[0x10..0x14].copy_from_slice(&total_size.to_le_bytes());
+        b[0x0A..0x0C].copy_from_slice(&HANDOFF_MINOR_RTC.to_le_bytes());
+        b[0x40..0x44].copy_from_slice(&8u32.to_le_bytes());
+        let rtc = device_offset + 7 * 0x30;
+        b[rtc..rtc + 4].copy_from_slice(&DEVICE_RTC_CMOS.to_le_bytes());
+        b[rtc + 4..rtc + 8].copy_from_slice(&3u32.to_le_bytes());
+        b[rtc + 8..rtc + 16].copy_from_slice(&0x70u64.to_le_bytes());
+        b[rtc + 16..rtc + 24].copy_from_slice(&2u64.to_le_bytes());
+        b[rtc + 0x18..rtc + 0x1C].copy_from_slice(&NO_OWNER.to_le_bytes());
+        b[rtc + 0x20..rtc + 0x28].copy_from_slice(&1_700_000_000u64.to_le_bytes());
         seal(&mut b);
         b
     }
@@ -906,6 +962,61 @@ mod tests {
         assert_eq!(parsed.device_count, 7);
         assert_eq!(parsed.device_entry_size, 0x30);
         assert_eq!(parsed.bytes().len(), b.len());
+    }
+
+    #[test]
+    fn parses_v13_rtc_base_time_and_rejects_invalid_rtc_payloads() {
+        let b = sample_minor3();
+        let parsed = Handoff::parse(&b, HANDOFF_MINOR_RTC).unwrap();
+        assert_eq!(parsed.version_minor(), HANDOFF_MINOR_RTC);
+        assert_eq!(parsed.device_count(), 8);
+        assert_eq!(parsed.rtc_base_unix_seconds(), Some(1_700_000_000));
+        assert_eq!(
+            Handoff::parse(&b, HANDOFF_MINOR_RTC - 1),
+            Err(HandoffError::UnsupportedVersion {
+                major: 1,
+                minor: HANDOFF_MINOR_RTC
+            })
+        );
+
+        let mut invalid_time = b.clone();
+        let rtc = u32_at(&b, 0x3C) as usize + 7 * 0x30;
+        invalid_time[rtc + 0x20..rtc + 0x28]
+            .copy_from_slice(&(MAX_RTC_BASE_UNIX_SECONDS + 1).to_le_bytes());
+        seal(&mut invalid_time);
+        assert!(matches!(
+            Handoff::parse(&invalid_time, HANDOFF_MINOR_RTC),
+            Err(HandoffError::InvalidRtcBaseTime { index: 7 })
+        ));
+
+        let mut invalid_port = b.clone();
+        invalid_port[rtc + 8..rtc + 16].copy_from_slice(&0x71u64.to_le_bytes());
+        seal(&mut invalid_port);
+        assert!(matches!(
+            Handoff::parse(&invalid_port, HANDOFF_MINOR_RTC),
+            Err(HandoffError::InvalidRtcBaseTime { index: 7 })
+        ));
+
+        let mut nonzero_reserved = b.clone();
+        nonzero_reserved[rtc + 0x28..rtc + 0x30].copy_from_slice(&1u64.to_le_bytes());
+        seal(&mut nonzero_reserved);
+        assert!(matches!(
+            Handoff::parse(&nonzero_reserved, HANDOFF_MINOR_RTC),
+            Err(HandoffError::InvalidRtcBaseTime { index: 7 })
+        ));
+
+        let mut missing_rtc = b;
+        missing_rtc[rtc..rtc + 4].copy_from_slice(&8u32.to_le_bytes());
+        missing_rtc[rtc + 4..rtc + 8].copy_from_slice(&1u32.to_le_bytes());
+        missing_rtc[rtc + 8..rtc + 16].copy_from_slice(&0xFC00_1000u64.to_le_bytes());
+        missing_rtc[rtc + 16..rtc + 24].copy_from_slice(&0x2000u64.to_le_bytes());
+        seal(&mut missing_rtc);
+        assert!(matches!(
+            Handoff::parse(&missing_rtc, HANDOFF_MINOR_RTC),
+            Err(HandoffError::MissingDeviceType {
+                kind: DEVICE_RTC_CMOS
+            })
+        ));
     }
 
     #[test]

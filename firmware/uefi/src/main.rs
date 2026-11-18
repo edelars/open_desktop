@@ -8,9 +8,9 @@
 use core::arch::asm;
 use core::panic::PanicInfo;
 
-use od_firmware::handoff::{Handoff, HANDOFF_WINDOW_SIZE};
-use od_firmware::stop::{format_stop_line, STOP_INTERNAL, STOP_INVALID_RDI};
 use od_firmware::HANDOFF_GPA;
+use od_firmware::handoff::{HANDOFF_WINDOW_SIZE, Handoff};
+use od_firmware::stop::{STOP_INTERNAL, STOP_INVALID_RDI, format_stop_line};
 
 const COM1_BASE: u16 = 0x3F8;
 const LSR_THRE: u8 = 0x20;
@@ -18,7 +18,7 @@ const LSR_THRE: u8 = 0x20;
 const TX_POLL_LIMIT: u32 = 65536;
 
 // Keep this equal to the image header's handoff_minor_max in build_firmware.py.
-const HANDOFF_MINOR_MAX: u16 = 0;
+const HANDOFF_MINOR_MAX: u16 = 3;
 const HANDOFF_VALIDATED_LINE: &[u8] = b"OD-FW S7-04 handoff validated\r\n";
 
 /// # Safety

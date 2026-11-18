@@ -52,7 +52,7 @@ class ImageHeaderTest(unittest.TestCase):
         self.assertEqual(struct.unpack_from("<Q", image, 0)[0], 0x3147_4D49_5746_444F)
         self.assertEqual(struct.unpack_from("<II", image, 0x08), (1, 0x40))
         self.assertEqual(struct.unpack_from("<QQQ", image, 0x10), (0x0040_0000, 0x0020_0000, 0x40))
-        self.assertEqual(struct.unpack_from("<HHI", image, 0x28), (1, 0, 0))
+        self.assertEqual(struct.unpack_from("<HHI", image, 0x28), (1, 3, 0))
         self.assertEqual(image[0x34:0x40], bytes(12))
         # code after the header is untouched, the tail is zero padding
         self.assertEqual(image[0x40:0x100], sample_raw()[0x40:])
@@ -113,9 +113,9 @@ class ImageHeaderTest(unittest.TestCase):
 # Python validators are pinned to the same bytes. entry_offset = 0x40, image_crc32 = 0x12345678.
 REFERENCE_HEADER_HEX = (
     "4f444657494d4731" "01000000" "40000000" "0000400000000000" "0000200000000000" "4000000000000000"
-    "0100" "0000" "00000000" "78563412" "000000000000000000000000"
+    "0100" "0300" "00000000" "78563412" "000000000000000000000000"
 )
-SAMPLE_IMAGE_CRC32 = 0x460A_95A6
+SAMPLE_IMAGE_CRC32 = 0x782E_EE6C
 
 
 class CrossValidatorTest(unittest.TestCase):

@@ -151,6 +151,10 @@ const DEV_ECAM_TABLE: usize = 6;
 const DEVICE_CODE_ECAM: u32 = 7;
 /// ACPI fixed hardware: PM block and SCI route (S4-31c, handoff v1.2).
 const DEVICE_CODE_ACPI_PM: u32 = 9;
+/// RTC/CMOS ports and deterministic UTC base time (handoff v1.3, S7-14).
+const DEVICE_CODE_RTC_CMOS: u32 = 10;
+const HANDOFF_MINOR_RTC: u16 = 3;
+const MAX_RTC_BASE_UNIX_SECONDS: u64 = 253_402_300_799;
 /// Handoff minor version emitted when the NVMe entry is present.
 const HANDOFF_MINOR_NVME: u16 = 1;
 /// Handoff minor version emitted when the ACPI fixed hardware entry (code 9) is present.
@@ -193,6 +197,10 @@ pub struct FirmwareBoardConfig {
     /// and raises `version_minor` to 2. The memory map is unchanged (the range
     /// is part of the low RAM region); no table bytes are written yet (S4-31d..g).
     pub acpi_tables: bool,
+    /// Optional deterministic RTC base time in UTC Unix seconds (S7-14). Supplying it
+    /// adds handoff device code 10 and requires an image with `handoff_minor_max >= 3`.
+    /// This value is explicit configuration; the machine never reads host wall time.
+    pub rtc_base_unix_seconds: Option<u64>,
     /// Linux profile (S4-37a1), opt-in. Requires `acpi_pm`, `acpi_tables` and
     /// `pci_ecam` (otherwise `Config`). Binds, on the board clock: the PIT
     /// `0x40..=0x43` and port B `0x61`, the 8259 pair `0x20..=0x21` and
@@ -221,6 +229,7 @@ impl Default for FirmwareBoardConfig {
             pci_ecam: false,
             acpi_pm: false,
             acpi_tables: false,
+            rtc_base_unix_seconds: None,
             linux_profile: false,
             vcpu_count: 1,
         }
@@ -246,12 +255,7 @@ impl FirmwareBoardConfig {
     /// therefore requires rebuilding the blob.
     pub fn acpi_manifest_hash(&self) -> Result<crate::AcpiManifestHash, FirmwareBoardError> {
         validate_config(self)?;
-        let devices = board_devices(
-            self.nvme.is_some(),
-            self.pci_ecam,
-            self.acpi_tables,
-            self.display_enabled,
-        );
+        let devices = configured_board_devices(self);
         let encoded: Vec<[u8; DEVICE_ENTRY_BYTES]> =
             devices.iter().copied().map(DeviceEntry::to_bytes).collect();
         crate::acpi_manifest_hash(&encoded).map_err(|_| {
@@ -474,6 +478,14 @@ fn validate_config(config: &FirmwareBoardConfig) -> Result<(), FirmwareBoardErro
             "serial must be at most 64 ASCII 0x20..0x7E bytes",
         ));
     }
+    if config
+        .rtc_base_unix_seconds
+        .is_some_and(|seconds| seconds > MAX_RTC_BASE_UNIX_SECONDS)
+    {
+        return Err(FirmwareBoardError::Config(
+            "RTC base time must be a UTC Unix timestamp through 9999-12-31",
+        ));
+    }
     Ok(())
 }
 
@@ -593,18 +605,33 @@ fn board_devices(nvme: bool, pci_ecam: bool, acpi_tables: bool, display: bool) -
 }
 
 fn configured_board_devices(config: &FirmwareBoardConfig) -> Vec<DeviceEntry> {
-    board_devices(
+    let mut devices = board_devices(
         config.nvme.is_some(),
         config.pci_ecam,
         config.acpi_tables,
         config.display_enabled,
-    )
+    );
+    if let Some(base_unix_seconds) = config.rtc_base_unix_seconds {
+        devices.push(DeviceEntry {
+            code: DEVICE_CODE_RTC_CMOS,
+            flags: DEVICE_PRESENT | DEVICE_PIO,
+            base: 0x70,
+            length: 2,
+            gsi: NO_GSI,
+            irq_flags: 0,
+            param0: base_unix_seconds,
+            param1: 0,
+        });
+    }
+    devices
 }
 
 /// `version_minor` of the handoff block: 2 with the ACPI entry (code 9), else 1
 /// with the NVMe entry (code 8), else 0 (FIRMWARE_BOOT.md 6.4).
 fn handoff_minor(devices: &[DeviceEntry]) -> u16 {
-    if devices.iter().any(|d| d.code == DEVICE_CODE_ACPI_PM) {
+    if devices.iter().any(|d| d.code == DEVICE_CODE_RTC_CMOS) {
+        HANDOFF_MINOR_RTC
+    } else if devices.iter().any(|d| d.code == DEVICE_CODE_ACPI_PM) {
         HANDOFF_MINOR_ACPI
     } else if devices.iter().any(|d| d.code == DEVICE_CODE_NVME) {
         HANDOFF_MINOR_NVME
@@ -5141,6 +5168,11 @@ mod tests {
         test_image(code, &[(0x2A, &2u16.to_le_bytes())])
     }
 
+    /// An image that declares support for handoff minor 3.
+    fn minor3_image(code: &[u8]) -> Vec<u8> {
+        test_image(code, &[(0x2A, &HANDOFF_MINOR_RTC.to_le_bytes())])
+    }
+
     fn crc_is_valid(block: &[u8]) -> bool {
         let mut zeroed = block.to_vec();
         zeroed[0x14..0x18].copy_from_slice(&[0; 4]);
@@ -5272,6 +5304,50 @@ mod tests {
         assert_eq!(
             le_u64(entry, 0x28).unwrap(),
             u64::from(ACPI_RESET_VALUE) | u64::from(ACPI_SLP_TYP_S5) << 8
+        );
+    }
+
+    #[test]
+    fn rtc_base_time_adds_v13_device_entry_without_changing_older_handoffs() {
+        let old = load(&hlt_image());
+        assert_eq!(le_u16(old.handoff_block(), 0x0A).unwrap(), 0);
+        assert_eq!(hex(old.handoff_block()), REFERENCE_HANDOFF_HEX);
+
+        let config = FirmwareBoardConfig {
+            rtc_base_unix_seconds: Some(1_700_000_000),
+            ..reference_config()
+        };
+        let board = load_firmware_image(&minor3_image(&[0xf4]), &config).unwrap();
+        let bytes = board.handoff_block();
+        assert_eq!(le_u16(bytes, 0x0A).unwrap(), HANDOFF_MINOR_RTC);
+        assert_eq!(le_u32(bytes, 0x40).unwrap(), 8);
+        let rtc = le_u32(bytes, 0x3C).unwrap() as usize + 7 * DEVICE_ENTRY_BYTES;
+        assert_eq!(le_u32(bytes, rtc).unwrap(), DEVICE_CODE_RTC_CMOS);
+        assert_eq!(le_u32(bytes, rtc + 4).unwrap(), DEVICE_PRESENT | DEVICE_PIO);
+        assert_eq!(le_u64(bytes, rtc + 8).unwrap(), 0x70);
+        assert_eq!(le_u64(bytes, rtc + 0x10).unwrap(), 2);
+        assert_eq!(le_u32(bytes, rtc + 0x18).unwrap(), NO_GSI);
+        assert_eq!(le_u32(bytes, rtc + 0x1C).unwrap(), 0);
+        assert_eq!(le_u64(bytes, rtc + 0x20).unwrap(), 1_700_000_000);
+        assert_eq!(le_u64(bytes, rtc + 0x28).unwrap(), 0);
+        assert!(crc_is_valid(bytes));
+
+        assert!(matches!(
+            load_firmware_image(&minor2_image(&[0xf4]), &config),
+            Err(FirmwareBoardError::ImageHeader {
+                field: "handoff_minor_max",
+                value: 2
+            })
+        ));
+        let invalid = FirmwareBoardConfig {
+            rtc_base_unix_seconds: Some(MAX_RTC_BASE_UNIX_SECONDS + 1),
+            ..reference_config()
+        };
+        assert_eq!(
+            load_firmware_image(&minor3_image(&[0xf4]), &invalid).err(),
+            Some(FirmwareBoardError::Config(
+                "RTC base time must be a UTC Unix timestamp through 9999-12-31"
+            ))
         );
     }
 
